@@ -73,15 +73,15 @@ int wmain(int argc,wchar_t** argv){
         int top=baseline-tm.tmAscent-format.top;
         Check(height>=tm.tmHeight+tm.tmExternalLeading,"native edit full line height available");
         Check(top+format.top+tm.tmAscent==baseline,"native edit baseline matches DirectWrite rounded baseline");DeleteObject(font);
-        chrome.Paint(titles,0,L"Google — Ggyp ÉÀç",false,TabBase,0);UINT32 body=chrome.SurfacePixel(183,16);
+        chrome.Paint(titles,0,L"Google — Ggyp ÉÀç",false,TabBase,0);UINT32 body=chrome.SurfacePixel(Design::TabStrip::Surface(0).right-2,16);
         Check(SUCCEEDED(chrome.SavePng((output+L"\\hover-tab-"+std::to_wstring(dpi)+L".png").c_str())),"native tab snapshot exported");
-        chrome.Paint(titles,0,L"Google — Ggyp ÉÀç",false,CloseBase,0);UINT32 close=chrome.SurfacePixel(183,16);
+        chrome.Paint(titles,0,L"Google — Ggyp ÉÀç",false,CloseBase,0);UINT32 close=chrome.SurfacePixel(Design::TabStrip::Surface(0).right-2,16);
         Check(body==close&&(close&0xffffff)==0x292929,"close hover never doubles selected surface brightness");
         Check(SUCCEEDED(chrome.SavePng((output+L"\\hover-close-"+std::to_wstring(dpi)+L".png").c_str())),"native close snapshot exported");
-        chrome.Paint(titles,0,L"Google — Ggyp ÉÀç",false,CloseBase+1,0);Check((chrome.SurfacePixel(323,16)&0xffffff)==0x222222,"inactive close uses one opaque hover surface");
+        chrome.Paint(titles,0,L"Google — Ggyp ÉÀç",false,CloseBase+1,0);Check((chrome.SurfacePixel(Design::TabStrip::Surface(1).right-2,16)&0xffffff)==0x222222,"inactive close uses one opaque hover surface");
         Motion::State feedback(false);auto when=Motion::Now()-Motion::Milliseconds(250);feedback.SetInteraction(TabBase,CloseBase,when);feedback.CopySucceeded(when);chrome.SetMotion(&feedback);
         chrome.Paint(titles,0,L"Google — Ggyp ÉÀç",false,CloseBase,0);
-        Check((chrome.SurfacePixel(183,16)&0xffffff)==0x292929,"animated close also keeps one selected surface");
+        Check((chrome.SurfacePixel(Design::TabStrip::Surface(0).right-2,16)&0xffffff)==0x292929,"animated close also keeps one selected surface");
         Check(feedback.copy.Visual(Motion::Now()).opacity==1,"rendered copy-success dwell uses truthful explicit trigger");
         if(dpi==96){Check(SUCCEEDED(chrome.SavePng((output+L"\\copy-check-96.png").c_str())),"Phosphor copy-check native snapshot exported");}
         chrome.SetMotion(nullptr);

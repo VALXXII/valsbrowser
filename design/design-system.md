@@ -1,3 +1,7 @@
+# Current integration note
+
+Current source of truth: [Lottie and geometry contract](lottie-spec.md) and [native integration evidence](lottie-integration-validation.md). Focus is now exactly white at 10% / 1 DIP; previous contrast measurements for the old stronger ring below are historical, not the current focus style. Copy uses authored Lottie segments (300 / 1500 / 300 ms); native tween specification remains a fallback. Paper synchronization is partially blocked by quota: [remaining work](paper-sync-pending.md).
+
 # Native design system foundation
 
 `src/design-system.h` is the shared C++17 token and state policy. The existing
@@ -14,10 +18,10 @@ network asset, font replacement, or browser engine change is introduced.
   opacity has its own surface role. `NativeGray` maps the same tokens to Win32.
 - Geometry: 32 DIP controls, 24 DIP compact/close targets, 16 DIP Phosphor Bold
   glyphs, 14 DIP window glyphs, 6 DIP control radius, 3 DIP embedded radius and
-  2 DIP inset keyboard focus perimeter. Spacing steps are 4/6/8/16 DIPs; tab
-  pitch remains 140, visible tab width 128, close slot remains 24.
+  1 DIP inset keyboard focus perimeter (white at 10% alpha). Spacing steps are 4/6/8/16 DIPs; tab
+  pitch is 134 (6 DIP visible gap), visible tab width 128, close slot remains 24.
 - Type roles preserve bundled Inter Display 14px medium labels / 16px regular
-  address and Gelasio 8px brand. Real DirectWrite line metrics preserve full
+  address and flower vector 16 DIP brand (Gelasio 8px is now a legacy unused role). Real DirectWrite line metrics preserve full
   accents/descenders, with horizontal trimming only. Branding and app icon stay.
 - `ButtonVariant`: Ghost, Raised, Embedded, Window and TabClose. `Resolve`
   gives a single fill/radius/icon/focus policy, independent of command IDs.
