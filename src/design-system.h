@@ -29,6 +29,7 @@ inline constexpr float closeInset=(control-closeSlot)/2;
 // User-specified keyboard focus: exactly 1 DIP, white at 10% alpha.
 inline constexpr float focusStroke=1;
 }
+namespace AddressLoading { inline constexpr float opacity=.08f; }
 namespace Focus { inline constexpr float color=1, opacity=.10f, stroke=Size::focusStroke; }
 static_assert(Size::tabPitch-Size::tab==Space::tabGap,"visible tab gap equals toolbar gap");
 static_assert(Size::closeInset*2+Size::closeSlot==Size::control,"close slot vertically centred in the 32 DIP tab");

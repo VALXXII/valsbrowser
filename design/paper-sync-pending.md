@@ -25,3 +25,13 @@ Read current page and token hash before writing. Original board IDs: foundations
 Quota rechecked during final integration: get_children still returns Weekly MCP limit reached, resets in8hours. No further mutations attempted.
 
 Actual production render artifacts: build/lottie-polish/evidence/keyframe-*.png (visual verification only); exact source values are in src/design-system.h, src/chrome.h, src/lottie-playback.h, design/lottie-spec.md. JSON assets are the motion source, not a newly invented path.
+
+## URL loading fill (new)
+
+Add AddressLoading.opacity=.08: white overlay over the existing URL surface, full32-DIP height, same6-DIP radius, width following navigation milestones15% start /65% source commit /100% completed. Fractions are indicative, never presented as measured byte percentages. Width CSS ease-out cubic-bezier(0,0,.58,1) over360ms; completion fills over360ms then fades200ms. Reduced motion jumps to each target with opacity-only completion. Separate per-tab state, redirect retention and stale-completion guard; no frame wakes while waiting. Actual native specimen: build/url-loading/loading-half.png. Download components remain untouched. This item has not been applied to Paper while its MCP quota is exhausted.
+
+## Display pacing (runtime only)
+
+No Paper token or spec change required: loading fill .08, CSS ease-out 360ms, completion fade 200ms and all other motion durations/curves are unchanged. Native frames are now paced by the Windows compositor clock instead of a 16ms SetTimer (see design/display-pacing.md). If the Paper motion page documents frame cadence, note "display-paced, one paint per compositor tick while moving; idle has no ticks". Not applied to Paper while MCP quota is exhausted.
+
+Final user-approved pacing: on-demand native compositor clock; verified paint cadence120Hz in the native harness, no ongoing idle/minimised frame wakes. CPU percentages and240Hz cost projections withdrawn; no measured240Hz claim. Width360ms ease-out and fade200ms remain unchanged.

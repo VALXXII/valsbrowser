@@ -9,7 +9,10 @@
 #include "motion-presentation.h"
 #include "native-lottie.h"
 #include "lottie-playback.h"
+#include "loading.h"
 #include <set>
+#include <tuple>
+#include <cstring>
 
 namespace NativeChrome {
 template<class T> void Drop(T*& p){if(p){p->Release();p=nullptr;}}
@@ -47,7 +50,46 @@ class Chrome {
     Motion::State* motion=nullptr;
     std::vector<std::shared_ptr<const FaviconImage>> favicons;
     std::map<std::shared_ptr<const FaviconImage>,ID2D1Bitmap*,std::owner_less<std::shared_ptr<const FaviconImage>>> faviconBitmaps;
+    // Device-independent DirectWrite layouts reused across frames: animation frames
+    // must not rebuild text formats/typography for unchanged labels. Bounded.
+    struct TextKey{std::wstring value;float width,height,size,tracking;bool brand,medium;
+        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,brand,medium)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.brand,o.medium);}};
+    struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;};
+    std::map<TextKey,TextEntry> textCache;
+    static constexpr size_t TextCacheLimit=96;
 public:
+    // Present without blocking the UI thread on vblank (pacing comes from FrameClock)
+    // and keep the back buffer so partial invalidation stays correct.
+    D2D1_PRESENT_OPTIONS presentOptions=D2D1_PRESENT_OPTIONS(D2D1_PRESENT_OPTIONS_RETAIN_CONTENTS|D2D1_PRESENT_OPTIONS_IMMEDIATELY);
+    bool cacheText=true; // false only for the pacing harness baseline
+    unsigned long long textLayoutsCreated=0;
+    void ClearTextCache(){for(auto& item:textCache)Drop(item.second.layout);textCache.clear();}
+    Loading::Visual loading;
+    // DIP rectangle repainted for loading-only frames (URL surface incl. embedded buttons).
+    D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
+    // Quantised on-screen identity of the loading fill: equal signatures render
+    // identical pixels, so a loading-only frame with an unchanged signature is skipped.
+    // The edge is an aliased (pixel-snapped) clip: quarter-pixel buckets are aligned to
+    // both integer and half-pixel coverage boundaries, and an edge within 1/256 px of a
+    // boundary gets its own signature, so float rounding on either side can never
+    // merge a real coverage change. Opacity is not quantised (D2D alpha rounding is
+    // not specified): fade frames always repaint.
+    long long LoadingSignature(Loading::Visual v)const{
+        if(v.fraction<=0||v.opacity<=0)return -1;
+        const double x=(bar.left+(bar.right-bar.left)*std::min(v.fraction,1.f))*dpi/96.0*4;
+        const long long lo=(long long)std::floor(x-1/64.),hi=(long long)std::floor(x+1/64.);
+        uint32_t bits=0;const float opacity=std::min(v.opacity,1.f);memcpy(&bits,&opacity,sizeof(bits));
+        return ((lo*2+(hi-lo))<<32)|bits;
+    }
+    void DrawLoading(D2D1_RECT_F clip){
+        if(loading.fraction<=0||loading.opacity<=0)return;
+        clip.left=std::max(clip.left,bar.left);clip.top=std::max(clip.top,bar.top);
+        clip.right=std::min(clip.right,bar.left+(bar.right-bar.left)*loading.fraction);clip.bottom=std::min(clip.bottom,bar.bottom);
+        if(clip.right<=clip.left||clip.bottom<=clip.top)return;
+        target->PushAxisAlignedClip(clip,D2D1_ANTIALIAS_MODE_ALIASED);
+        Color(1,Design::AddressLoading::opacity*loading.opacity);target->FillRoundedRectangle(D2D1::RoundedRect(bar,Design::Radius::control,Design::Radius::control),brush);
+        target->PopAxisAlignedClip();
+    }
     Lottie::Asset copyLottie,refreshLottie;
     Lottie::Playback lottie;
     ID2D1Bitmap* lottieBitmap=nullptr;
@@ -76,7 +118,7 @@ public:
     void SetEnabled(int id,bool enabled){if(enabled)disabled.erase(id);else disabled.insert(id);}
     UINT dpi=96;float width=1180,height=815;int first=0;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     ~Chrome(){Dispose();}
-    void Dispose(){Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display",L"Gelasio"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -88,7 +130,7 @@ public:
     UINT32 SurfacePixel(float x,float y){UINT32 pixel=0;WICRect r{(INT)(x*dpi/96),(INT)(y*dpi/96),1,1};if(surface)surface->CopyPixels(&r,4,4,(BYTE*)&pixel);return pixel;}
     HRESULT Resize(){if(!factory||!hwnd)return S_OK;RECT r;GetClientRect(hwnd,&r);dpi=GetDpiForWindow(hwnd);width=(float)r.right*96/dpi;height=(float)r.bottom*96/dpi;
         if(target){target->SetDpi((float)dpi,(float)dpi);return hwndTarget->Resize(D2D1::SizeU(r.right,r.bottom));}
-        HRESULT hr=factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(),(float)dpi,(float)dpi),D2D1::HwndRenderTargetProperties(hwnd,D2D1::SizeU(r.right,r.bottom)),&hwndTarget);if(FAILED(hr))return hr;target=hwndTarget;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);
+        HRESULT hr=factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(),(float)dpi,(float)dpi),D2D1::HwndRenderTargetProperties(hwnd,D2D1::SizeU(r.right,r.bottom),presentOptions),&hwndTarget);if(FAILED(hr))return hr;target=hwndTarget;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);
     }
     void Color(float c,float alpha=1){brush->SetColor(D2D1::ColorF(c,c,c,alpha));}
     void Round(D2D1_RECT_F r,float radius,float c){Color(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
@@ -101,7 +143,7 @@ public:
         format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
         const float available=std::max(1.f,slot.right-slot.left);
-        hr=write->CreateTextLayout(value.c_str(),(UINT32)value.size(),format,available,4096,&layout);Drop(format);if(FAILED(hr))return hr;
+        hr=write->CreateTextLayout(value.c_str(),(UINT32)value.size(),format,available,4096,&layout);Drop(format);if(FAILED(hr))return hr;++textLayoutsCreated;
         IDWriteTextLayout1* layout1=nullptr;
         if(SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1),(void**)&layout1))){layout1->SetCharacterSpacing(tracking,0,0,{0,(UINT32)value.size()});Drop(layout1);}
         IDWriteTypography* typo=nullptr;write->CreateTypography(&typo);
@@ -121,7 +163,21 @@ public:
         *output=layout;return S_OK;
     }
     TextMeasure MeasureText(const std::wstring& value,D2D1_RECT_F slot,float size,bool medium=false,bool brand=false,float tracking=0){TextMeasure m;IDWriteTextLayout* layout=nullptr;MakeTextLayout(value,slot,size,brand,medium,tracking,&layout,m);Drop(layout);return m;}
-    void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool brand=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(MakeTextLayout(value,slot,size,brand,medium,tracking,&layout,m)))return;
+    // Returns an AddRef'd layout; placement is translated to this slot.
+    HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool brand,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
+        if(!cacheText)return MakeTextLayout(value,slot,size,brand,medium,tracking,output,placement);
+        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,brand,medium};
+        auto it=textCache.find(key);
+        if(it==textCache.end()){
+            if(textCache.size()>=TextCacheLimit)ClearTextCache();
+            TextEntry entry;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
+            HRESULT hr=MakeTextLayout(value,origin,size,brand,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
+            it=textCache.emplace(std::move(key),entry).first;
+        }
+        placement=it->second.measure;placement.originY+=slot.top;placement.inkTop+=slot.top;placement.inkBottom+=slot.top;
+        *output=it->second.layout;(*output)->AddRef();return S_OK;
+    }
+    void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool brand=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,brand,medium,tracking,&layout,m)))return;
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
         auto clip=slot;clip.top=std::min(slot.top,m.inkTop-96.f/dpi);clip.bottom=std::max(slot.bottom,m.inkBottom+96.f/dpi);
@@ -136,7 +192,7 @@ public:
     void FocusRing(D2D1_RECT_F box,float radius){const float inset=Design::Size::focusStroke/2;box.left+=inset;box.top+=inset;box.right-=inset;box.bottom-=inset;Color(Design::Focus::color,Design::Focus::opacity);target->DrawRoundedRectangle(D2D1::RoundedRect(box,radius,radius),brush,Design::Size::focusStroke);}
     void DrawButton(const wchar_t* icon,D2D1_RECT_F box,Design::ButtonVariant variant,Design::ButtonState state){
         auto style=Design::Resolve(variant,state);
-        if(style.fill)Round(box,style.radius,style.surface);
+        if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}
         if(style.focus)FocusRing(box,style.radius);
         Icon(icon,box,style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled),style.iconOpacity);
     }
@@ -177,8 +233,10 @@ public:
     int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==2;}
     void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){if(!target||!brush)return;Build((int)titles.size(),selected);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
-        Round(bar,Design::Radius::control,Design::Surface::raised);if(focus=='L')FocusRing(bar,Design::Radius::control);
-        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=Design::TabStrip::Surface(n-first);D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=Design::TabStrip::CloseSlot(surface);auto title=Design::TabStrip::TitleSlot(surface);auto favicon=Design::TabStrip::FaviconSlot(surface);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
+        Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
+        // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
+        auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
+        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=Design::TabStrip::Surface(n-first);D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=Design::TabStrip::CloseSlot(surface);auto title=Design::TabStrip::TitleSlot(surface);auto favicon=Design::TabStrip::FaviconSlot(surface);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
                 // Exactly one opaque surface: no second close-button hover fill.
                 float emphasis=motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
                 float base=Design::TabSurface(false,tabHover);
@@ -193,7 +251,7 @@ public:
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=L"reload";break;case 'C':icon=L"copy";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){
-                    auto style=Design::Resolve(variant,state);if(style.fill)Round(box,style.radius,style.surface);if(style.focus)FocusRing(box,style.radius);
+                    auto style=Design::Resolve(variant,state);if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}if(style.focus)FocusRing(box,style.radius);
                     float size=style.iconSize*Motion::PressScale(state.press,motion->ReducedMotion(),!state.disabled);
                     bool painted=false;
                     if(!motion->ReducedMotion()){

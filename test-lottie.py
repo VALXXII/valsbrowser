@@ -7,7 +7,9 @@ out=ROOT/'build/lottie-polish'
 evidence=out/'evidence'
 evidence.mkdir(parents=True,exist_ok=True)
 cc=str(ROOT/'tools/w64devkit/bin/g++.exe')
-fixtures=[('tests/lottie/native_lottie_test.cpp','native-lottie-test'),
+fixtures=[('tests/loading_test.cpp','loading-test'),
+          ('tests/frame_clock_test.cpp','frame-clock-test'),
+          ('tests/lottie/native_lottie_test.cpp','native-lottie-test'),
           ('tests/lottie/clipboard_gate_test.cpp','clipboard-gate-test'),
           ('tests/design-system/design_system_test.cpp','design-system-test'),
           ('tests/ui/hover_favicon_test.cpp','hover-favicon-test'),
