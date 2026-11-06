@@ -1,9 +1,12 @@
 # Tab spacing, close slot, focus ring and authored Lottie icons
 
-Author: Claude Opus 5.5 (`claude-opus-5-5`), task `task_a4609f5acd98`, baseline `4cd42ce`.
+Author: Claude Opus 5.5 (`claude-opus-5-5`), tasks `task_a4609f5acd98` (baseline `4cd42ce`) and
+`task_2fdab3f11bea` (revision on `46bffbf`: brand/tab column alignment, single rigid refresh turn).
 Scope: `src/design-system.h` tokens, `assets/lottie/*`, `tests/design-system/geometry_test.cpp`,
 `tests/lottie-assets/*`. The renderer (`src/chrome.h`, `src/main.cpp`, `src/native-lottie.*`)
 belongs to the integration peer. This document is the adapter contract and the Paper sync source.
+
+Final integration status: the adapter actions below are implemented. Brand uses `Brand::Glyph()` / `.opacity`, refresh plays once for500ms, tab selection does not infer a new animation from loading state, DPI cache and brightness are corrected. All five native fixtures, geometry and rlottie asset validation pass; see [release-validation.md](release-validation.md). Historical peer findings below record the original handoff rather than outstanding defects. Paper remains partially blocked by quota.
 
 ## 1. Spacing, derived from the code (not from the screenshot)
 
@@ -13,7 +16,9 @@ belongs to the integration peer. This document is the adapter contract and the P
 | Visible tab-to-tab gap = `tabPitch - tab` | 140 - 128 = **12 DIP** | 134 - 128 = **6 DIP** |
 | Last tab to new-tab button | 6 DIP | 6 DIP, now through `NewTabLeft` |
 | Tab hit regions | contiguous 140 | contiguous 134, no dead zone between tabs |
-| Overflow capacity | `(w-118-51-32)/140` | `TabStrip::Capacity(w) = (w-118-51-6-32)/134` |
+| Overflow capacity | `(w-118-51-32)/140` | `TabStrip::Capacity(w) = (w-118-38-6-32)/134` |
+| First visible tab left edge | 57 | **44** = forward button left (`Toolbar::forwardLeft`) |
+| Brand flower | "Browser" text, then flower in 0..51 box centre | 16 DIP, opacity .32, **centre (22,22)** |
 
 ### Changed and new tokens (`src/design-system.h`)
 
@@ -26,20 +31,32 @@ belongs to the integration peer. This document is the adapter contract and the P
 | `Size::focusStroke` | **1**, was 2 | changed |
 | `Focus::color` / `Focus::opacity` / `Focus::stroke` | 1 (white) / **0.10** / 1 | new, the user's own choice |
 | `Surface::focus` | 190/255 | **legacy**, delete once `chrome.h` uses `Focus::` |
-| `Box`, `TabStrip::{left=51, regionTop=2, regionBottom=40, top=6, bottom=38, trailingReserve=118}` | | new |
+| `Box`, `TabStrip::{regionTop=2, regionBottom=40, top=6, bottom=38, trailingReserve=118}` | | new |
+| `Toolbar::backLeft` / `backCenterX` / `forwardLeft` | 6 / 22 / 44 | new (revision), derived from `Space::sm`, `Size::control`, `controlGap` |
+| `TabStrip::left` | **38** (`= forwardLeft − tabGap`), was 51 | changed (revision) |
+| `Brand::size` / `opacity` | 16 (`= Size::icon`) / **.32** | new (revision) |
+| `Brand::centerX` / `centerY` | **22** (= back button centre) / **22** (= tab favicon centre `6+8+8`) | new (revision) |
+| `Brand::Region()` / `Brand::Glyph()` | `{0,2,38,38}` / `{14,14,30,30}` | new (revision) |
 | `TabStrip::Region / Surface / CloseSlot / FaviconSlot / TitleSlot / NewTabLeft / Capacity` | | new pure helpers |
 
-Static asserts lock the gap to 6, the close slot to vertical centring and the focus stroke to 1.
+Static asserts lock the gap to 6, the close slot to vertical centring, the focus stroke to 1, the first tab
+to x 44 and the brand centre to (22,22) on the favicon centre line.
+
+Brand placement is optical, not box-centred: the brand region is 0..38, whose centre is x 19, but the
+glyph is centred on the back button's centre (x 22) so the flower, back arrow and first-tab favicon read
+as one column and one row. The flower is decorative at .32 opacity; its region keeps the tab-list tooltip
+and focus behaviour.
 
 ### Component geometry (DIP, slot `i`, first tab `i = 0`)
 
 ```
-Region(i)    = {51 + 134i, 2, 51 + 134(i+1), 40}          hit area, contiguous
-Surface(i)   = {57 + 134i, 6, 185 + 134i, 38}             128 x 32 visible tab, radius 6
+Brand        = region {0, 2, 38, 38}, glyph {14, 14, 30, 30}  16 x 16 at opacity .32
+Region(i)    = {38 + 134i, 2, 38 + 134(i+1), 40}          hit area, contiguous
+Surface(i)   = {44 + 134i, 6, 172 + 134i, 38}             128 x 32 visible tab, radius 6
 FaviconSlot  = {tab.left + 8, 14, tab.left + 24, 30}       16 x 16
 TitleSlot    = {tab.left + 32, 6, tab.right - 32, 38}      constant, never shifts with hover
 CloseSlot    = {tab.right - 28, 10, tab.right - 4, 34}     24 x 24, was {right-24,10,right,34}
-NewTabLeft(n)= 51 + 134n + 6                               32 x 32 button at y 6..38
+NewTabLeft(n)= 38 + 134n + 6                               32 x 32 button at y 6..38
 ```
 
 Tab close: the slot is inset 4 DIP from the trailing, top and bottom edges of the tab, so its padding is
@@ -63,18 +80,25 @@ skill's default recommendation. Keyboard order and access are unchanged: tab bod
    `TitleSlot(tab)`. The close icon, the close press scale and the close focus ring all use `CloseSlot(tab)`.
 3. In `FocusRing()`, call `Color(Design::Focus::color, Design::Focus::opacity)` with stroke
    `Design::Focus::stroke` and inset `stroke / 2`. Then delete `Surface::focus`.
-4. In `tests/design-system/design_system_test.cpp`, the tab probe pixels now come from
-   `TabStrip::Surface(n).right - 2`. That replaces the hard-coded 183 and 323. Pixel 323 would fall in
-   the gap at pitch 134.
+4. In `tests/design-system/design_system_test.cpp`, every tab probe pixel now comes from
+   `TabStrip::Surface(n).right - 2`. That replaces all the hard-coded 183 and 323 probes.
+5. **Revision, brand and column:** the brand region is `Design::Brand::Region()`, replacing the
+   hard-coded `{0,2,51,38}` for id 900. Draw `brand-flower` into `Brand::Glyph()` at `Brand::size`, with
+   opacity `Brand::opacity`. Do not centre it in the region box, which would put it at x 19. Tabs follow
+   automatically through `TabStrip::*`.
+6. **Revision, stale UI fixture pixels:** `tests/ui/hover_favicon_test.cpp` (peer-owned) still probes the
+   favicon at x 73 and 65, the old slot 65..81. The slot is now 52..68. Derive the probes from
+   `TabStrip::FaviconSlot(TabStrip::Surface(0))`: the centre x replaces 73, and `left+1` replaces 65.
 
 ## 2. Lottie assets
 
 | File | Comp | fps | Frames | Markers |
 | --- | --- | --- | --- | --- |
 | `assets/lottie/copy-link.json` | 256 x 256 | 30 | ip 0, op 20 (667 ms) | `toCheck` 0 to 10, `toLink` 10 to 20 |
-| `assets/lottie/refresh.json` | 256 x 256 | 30 | ip 0, op 15 (500 ms) | `sweep` 0 to 15 |
+| `assets/lottie/refresh.json` | 256 x 256 | 30 | ip 0, op 15 (500 ms) | `turn` 0 to 15 |
 
-Each file is Bodymovin 5.7 schema with one shape layer (`ty 4`). It uses only `gr / sh / st / tm / tr`.
+Each file is Bodymovin 5.7 schema with one shape layer (`ty 4`). Copy-link uses only `gr / sh / st / tm / tr`.
+Refresh uses only `gr / sh / st / tr`, with no trim.
 There are no masks, mattes, effects, blur, expressions, images or fonts. The files are 3.3 kB and 2.1 kB.
 The 256 grid is the Phosphor grid, so path coordinates equal the icon source. The host scales to 16 DIP × DPI.
 
@@ -122,16 +146,23 @@ Easings come from the generator: `standard = cubic-bezier(0.2, 0, 0, 1)` (better
 | 14 → 17 | | Half B opacity | 0 → 100 | standard |
 | 19, 20 | | rest | identical to frame 0 (verified pixel-exact) | |
 
-**refresh**: one sweep in the arrow's own direction (counter-clockwise) that lands back on rest.
+**refresh** (revised): exactly **one** rigid counter-clockwise turn in the arrow's own direction. This
+supersedes the earlier tail trim. The user disliked the tail regrowing and the apparent local clockwise
+motion.
 
 | Frames | ms | Property | Values | Ease |
 | --- | --- | --- | --- | --- |
-| 0 → 15 | 0 → 500 | Group rotation about (128,128) | 0 → −360° | inOut |
-| 0 → 7 → 15 | 0 → 233 → 500 | Arc trim start (tail) | 0 → 38% → 0 | inOut |
+| 0 → 13.99 | 0 → 466 | Group rotation about (128,128) | 0 → −360° | inOut `(0.45,0,0.2,1)`, no overshoot |
+| 13.99 → 14 | | Hold keyframe (`h:1`) | −360 held, then **0** at frame 14 (same orientation) | hold |
+| 14 → 15 | 467 → 500 | rest | 0° (exact identity) | |
 
-The tail retracts toward the head during the fast middle of the sweep, then grows back, so the path
-changes and the motion is not a rigid rotation alone. Frame 15 equals frame 0, so the sweep loops without
-a seam.
+The arc and head paths are static (`a:0`): their topology, length and trim never change. The orientation
+never increases, so there is no clockwise movement anywhere. Sampled angles per frame are 0, −3.5, −16.4,
+−44.8, −97.4, −168.9, −231.0, −274.6, −304.6, −325.4, −339.8, −349.5, −355.7, −359.0, then frame 14 at
+0 (≡ −360). The −360 → 0 hold swap exists because renderers evaluate `rotate(−360)` with float residue.
+ThorVG showed up to 4/255 of anti-aliasing noise on 5 to 24 pixels. `rotate(0)` is the exact identity, so
+the last frame ThorVG samples (14 = `count−1`) is pixel-identical to rest, and the static icon takes over
+without a snap. Duration stays 500 ms (op 15).
 
 ### Runtime contract for the peer (`lottie-playback.h` / `chrome.h`)
 
@@ -143,9 +174,10 @@ a seam.
    - A re-trigger during Disappear at frame f resumes `toCheck` at frame `19 − f`.
 2. **Ink:** draw at `0.5 * style.iconOpacity`. `DrawLottie` currently passes `style.iconOpacity`, which
    makes the animated icon twice as bright as its static PNG.
-3. **Refresh** loops `sweep` only while a navigation is actually loading. When `RefreshEnd` is called,
-   finish the current cycle up to frame 15, which is rest, instead of cutting off mid-sweep. If the load
-   finishes within one cycle, play it once.
+3. **Refresh (revised): exactly ONE turn per refresh.** Play `turn` (0 → 1 progress over 500 ms) once
+   per refresh trigger. Do not loop it for the length of the load, and do not restart it while a turn is in
+   flight. When it finishes, draw the static icon, which is identical to frame 14. The peer owns the host
+   state.
 4. **Reduced motion** shows a static final frame and runs no Lottie. Copy shows frame 10 (check) for the
    dwell, then frame 0 (link), or the existing opacity-only swap. Refresh stays at rest (frame 0).
 5. **ThorVG `Asset::Sample` side change, found by the harness.** Once one side has been sampled, a
@@ -153,8 +185,7 @@ a seam.
    changes. The harness works around it with one Asset per side. The fix belongs in
    `src/native-lottie.cpp`.
 6. **Frame counting:** ThorVG reports `totalFrame = op − ip`, so 20 and 15, and `Sample(progress)` reaches
-   index `count−1`. Refresh frame 14 is about 0.04 ink off rest. Return to the static PNG or frame 0 at
-   the end, as `RefreshActive` already does.
+   index `count−1`. Refresh frame 14 is now pixel-identical to rest in ThorVG at 16, 32 and 64 px.
 
 ## 3. Validation
 
@@ -164,26 +195,39 @@ browser launch. Output goes to `build/opus-lottie-qa/`.
 - **rlottie 1.3.8** (`rlottie-python` from PyPI, isolated venv): both files parse, with 21 and 16
   frames inclusive. Feature allow-list: `gr/sh/st/tm/tr` only, with no masks, mattes, effects, images or
   expressions. Rest and check frames match Phosphor at 16, 32 and 64 px. The last frame equals the rest
-  frame pixel for pixel. The refresh mid-sweep differs from rest by 0.48. Morph keyframes share the same
+  frame pixel for pixel. Refresh checks: no trim; both paths static; orientation non-increasing at
+  1/100-frame resolution; exactly one turn from 0 to −360; frame 14 at exact rest; 500 ms. Frames 14 and
+  15 are pixel-identical to frame 0. The mid-turn frame differs from rest by 0.41. Morph keyframes share the same
   topology. Contact sheets: `frames/*-contact-{16,64}.png`. Per-frame 32 px PNGs are in `frames/`.
 - **ThorVG 1.1.3, production path** (`src/native-lottie.cpp` + `build/lottie-backend`): both files load,
   with 20 and 15 frames and 0.667 s / 0.500 s. Every frame samples at 16, 32 and 64 px. Rest and check
-  match Phosphor with a difference of at most 0.038. Copy returns to link with a difference of 0.000.
+  match Phosphor with a difference of at most 0.038. Copy returns to link with a difference of 0.000. The
+  last sampled refresh frame (14) is byte-identical to frame 0 at 16, 32 and 64 px.
   Contact sheets: `thorvg/thorvg-*-contact-64.png`.
 - **`tests/design-system/geometry_test.cpp`** checks: a 6 DIP gap for tab ↔ tab and last tab ↔ new tab;
   contiguous hit regions; overflow capacity that is maximal and never overlaps the window controls;
   close insets that are equal at 4 DIP; favicon and close glyph insets that mirror each other at 8 DIP;
-  a fixed title slot; and the 1 DIP white 10% focus ring.
+  a fixed title slot; and the 1 DIP white 10% focus ring. Revision checks: the first tab starts at the
+  forward button's left edge (44); the brand region ends where the tab regions start (38); and the brand
+  glyph is 16 at .32, centred on the back-button centre x and the favicon centre y (22,22). Every
+  expected value is derived from tokens, with no stale pixel literals.
+- `tests/design-system/design_system_test.cpp` passes with the revised tokens (isolated build in
+  `build/opus-lottie-qa/ds`). `tests/ui/hover_favicon_test.cpp` fails until the peer updates its
+  favicon probes (adapter item 6).
 
 ## 4. Paper sync (coordinator applies after integration)
 
-- Tab strip: tabs are 128 × 32 with radius 6 and a **6 px gap**, with the first tab at x 57. Use a
+- Brand: a 16 px flower at **32% opacity**, centred at **(22,22)**, so its glyph box is 14..30 on both
+  axes. Its centre x matches the back button's centre and its centre y matches the tab favicon's centre.
+- Tab strip: tabs are 128 × 32 with radius 6 and a **6 px gap**, with the first tab at **x 44**, aligned
+  with the forward button. Use a
   6 px gap between the last tab and the 32 × 32 new-tab button.
 - Tab content: favicon 16 at inset 8. Title from x+32 to right−32. Close is a 24 × 24 slot at right−28
   with top inset 4, holding a centred 16 px Phosphor Bold `x`. It has no fill of its own.
 - Focus: 1 px inside stroke in `#FFFFFF` at 10% opacity. It replaces the 2 px #BEBEBE ring everywhere.
 - Motion frames: use the copy-link contact sheet frames 0, 3, 6 and 10, and the refresh frames 0, 4, 7,
-  11 and 15. Note the durations of 300 ms reveal / 1500 ms dwell / 300 ms return, and the 500 ms sweep.
+  11 and 14. Note the durations of 300 ms reveal / 1500 ms dwell / 300 ms return, and one 500 ms rigid
+  counter-clockwise turn per refresh, with no tail change.
 
 ## 5. Limits
 

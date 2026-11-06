@@ -19,7 +19,7 @@ for side in (16, 32, 64):
     d = diff(frame('copy-link', side, 10), phosphor('check', side)); req(d < .08, f'ThorVG copy-link f10 == Phosphor check @{side}px ({d:.3f})')
     d = diff(frame('refresh', side, 0), phosphor('reload', side)); req(d < .08, f'ThorVG refresh rest == Phosphor reload @{side}px ({d:.3f})')
     last = counts['refresh'] - 1
-    d = diff(frame('refresh', side, last), phosphor('reload', side)); req(d < .12, f'ThorVG refresh last sampled frame ~ rest @{side}px ({d:.3f})')
+    req(frame('refresh', side, last).tobytes() == frame('refresh', side, 0).tobytes(), f'ThorVG refresh last sampled frame {last} pixel-identical to rest frame 0 @{side}px')
 d = diff(frame('copy-link', 64, counts['copy-link'] - 1), frame('copy-link', 64, 0)); req(d < .01, f'ThorVG copy-link returns to link ({d:.3f})')
 for name, n in counts.items():
     sheet = Image.new('RGB', (n * 72 + 8, 80), (23, 23, 23))

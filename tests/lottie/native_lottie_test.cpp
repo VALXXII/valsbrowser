@@ -24,10 +24,14 @@ int wmain(int argc,wchar_t** argv){
     Require(playback.CopyProgress(at(600))==10./19&&!playback.NextWake(at(600),false).frames,"check dwell uses deadline, no frame ticks");
     playback.CopySucceeded(at(600));Require(playback.CopyProgress(at(600))==10./19,"repeat retains check");
     Require(!playback.NextWake(at(4000),false).delay,"copy stops at rest");
-    playback.RefreshBegin(start);Require(playback.RefreshActive(at(100)),"actual refresh starts");
+    playback.Clear();playback.RefreshBegin(start);Require(playback.RefreshActive(at(100)),"actual refresh starts");
     Require(!playback.NextWake(at(100),true).delay,"reduced motion has no lottie ticks");
-    playback.RefreshEnd(at(100));Require(playback.RefreshActive(at(100))&&!playback.RefreshActive(at(500)),"completion finishes cycle at rest");
-    playback.RefreshBegin(start);Require(!playback.RefreshActive(at(5000)),"refresh motion capped at five seconds");
+    playback.RefreshEnd(at(100));Require(playback.RefreshActive(at(499))&&!playback.RefreshActive(at(500)),"early navigation completion preserves exactly one 500ms turn");
+    playback.RefreshBegin(start);auto half=playback.RefreshProgress(at(250));playback.RefreshBegin(at(250));
+    Require(half==.5&&playback.RefreshProgress(at(250))==half,"repeated activation cannot rewind the current turn");
+    Require(!playback.RefreshActive(at(500))&&!playback.NextWake(at(500),false).delay,"long load cannot loop or leave a frame timer");
+    playback.RefreshEnd(at(2000));Require(!playback.RefreshActive(at(2000))&&playback.RefreshProgress(at(2000))==1,"late completion cannot restart animation");
+    playback.RefreshBegin(at(2100));Require(playback.RefreshActive(at(2200))&&!playback.RefreshActive(at(2600)),"new activation after rest gets one fresh turn");
     playback.Clear();Require(!playback.NextWake(start,false).delay,"teardown idle");
     Lottie::Asset missing;Require(!missing.Load(root+L"/assets/lottie/missing.json"),"missing asset falls back");
     {std::ofstream f(std::filesystem::path(out+L"/invalid.json"));f<<"{invalid json}";}
@@ -41,6 +45,7 @@ int wmain(int argc,wchar_t** argv){
         for(auto pixel:middle->bgra){auto a=pixel>>24;clear+=a==0;ink+=a>0;partial+=a>0&&a<255;Require((pixel&255)<=a&&((pixel>>8)&255)<=a&&((pixel>>16)&255)<=a,"premultiplied alpha");}
         Require(clear>0&&ink>0&&partial>0,"transparent antialiased paths");
         for(unsigned i=0;i<asset.FrameCount();++i)Require(asset.Sample(double(i)/(asset.FrameCount()-1),64),"all frames render");
+        if(std::wstring(name)==L"refresh")Require(asset.Sample(1,64)->bgra==initial,"single CCW turn ends pixel-identical to rest");
         Require(asset.CacheBytes()<=(asset.FrameCount()+1)*64*64*4,"bounded single-DPI cache");
         auto fullBytes=asset.CacheBytes();Require(asset.Sample(.5,16),"DPI replacement");
         Require(asset.CacheBytes()<fullBytes,"DPI releases old cache");Require(!asset.Sample(0,65),"oversize rejected");
@@ -65,6 +70,8 @@ int wmain(int argc,wchar_t** argv){
             Require(SUCCEEDED(chrome.SavePng((out+L"/keyframe-"+std::to_wstring(dpi)+L"-"+std::to_wstring(ms)+L".png").c_str())),"keyframe png");
         }
         chrome.Build(2,0);auto close=Design::TabStrip::CloseSlot(Design::TabStrip::Surface(0));
+        Require(chrome.Hit(Design::Brand::centerX,Design::Brand::centerY)==900,"brand retains tab-list action at approved position");
+        Require(chrome.Hit(Design::TabStrip::Surface(0).left+1,22)==TabBase,"brand hit region cannot intercept the first tab");
         Require(chrome.Hit((close.left+close.right)/2,(close.top+close.bottom)/2)==CloseBase,"centered close hit geometry");
         auto newTab=Design::TabStrip::NewTabLeft(2);Require(newTab-Design::TabStrip::Surface(1).right==6,"last plus gap");
         motion.SetReducedMotion(true);motion.CopySucceeded(start);chrome.lottie.CopySucceeded(start);

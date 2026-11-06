@@ -60,6 +60,58 @@ def phosphor(name, size):
     return alpha(img).point(lambda v: min(255, v * 2))
 
 
+
+def collect(node, out):
+    if isinstance(node, dict):
+        if node.get('ty') == 'sh':
+            out.append(node)
+        for v in node.values():
+            collect(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            collect(v, out)
+
+
+def find_rotation(layers):
+    found = []
+    def visit(n):
+        if isinstance(n, dict):
+            if n.get('ty') == 'tr' and n['r'].get('a') == 1:
+                found.append(n['r'])
+            for v in n.values():
+                visit(v)
+        elif isinstance(n, list):
+            for v in n:
+                visit(v)
+    visit(layers)
+    assert len(found) == 1, 'exactly one animated rotation expected'
+    return found[0]
+
+
+def bezier_y(x, x1, y1, x2, y2):
+    lo, hi = 0.0, 1.0
+    for _ in range(60):  # solve x(t) = x by bisection (x(t) monotonic for x1,x2 in [0,1])
+        t = (lo + hi) / 2
+        xt = 3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t * t * x2 + t ** 3
+        lo, hi = (t, hi) if xt < x else (lo, t)
+    t = (lo + hi) / 2
+    return 3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t * t * y2 + t ** 3
+
+
+def rotation_at(prop, frame):
+    keys = prop['k']
+    if frame <= keys[0]['t']:
+        return keys[0]['s'][0]
+    for a, b in zip(keys, keys[1:]):
+        if frame < b['t']:
+            if a.get('h') == 1:
+                return a['s'][0]
+            u = (frame - a['t']) / (b['t'] - a['t'])
+            e = bezier_y(u, a['o']['x'][0], a['o']['y'][0], a['i']['x'][0], a['i']['y'][0])
+            return a['s'][0] + (b['s'][0] - a['s'][0]) * e
+    return keys[-1]['s'][0]
+
+
 def contact(anim, frames, size, path):
     sheet = Image.new('RGBA', (len(frames) * (size + 8) + 8, size + 16), (23, 23, 23, 255))
     for k, f in enumerate(frames):
@@ -100,10 +152,31 @@ for name in ('copy-link', 'refresh'):
         for size in (16, 32, 64):
             d0 = ink_diff(alpha(render(anim, 0, size)), phosphor('reload', size))
             require(d0 < .08, f'refresh f0 == Phosphor Bold arrow-counter-clockwise at {size}px (ink diff {d0:.3f})')
-        same = ImageChops.difference(render(anim, 0, 64), render(anim, total - 1, 64)).getbbox() is None
-        require(same, 'refresh last frame == rest frame (clean end, seamless loop)')
+        # Constant geometry: no trim, every path static -> constant topology and length.
+        require('tm' not in shapes, 'refresh: no trim paths (no tail shorten/regrow)')
+        paths = []
+        collect(data['layers'], paths)
+        require(paths and all(p['ks']['a'] == 0 for p in paths), f'refresh: all {len(paths)} paths static (constant topology/length)')
+        # Exactly one monotonic counter-clockwise turn.
+        rot = find_rotation(data['layers'])
+        keys = rot['k']
+        hold = keys[-2]
+        require(len(keys) == 3 and hold.get('h') == 1 and hold['s'][0] == -360 and keys[-1]['s'][0] == 0,
+                'refresh: turn ends on a held -360 that normalises to the identical orientation 0')
+        # Unwrapped orientation: the hold swap -360 -> 0 is the same angle (mod 360), not motion.
+        times = [f / 100 for f in range(0, 100 * data['op'] + 1)]
+        unwrapped = [rotation_at(rot, t) - (360 if t >= keys[-1]['t'] else 0) for t in times]
+        require(all(b <= a + 1e-9 for a, b in zip(unwrapped, unwrapped[1:])), 'refresh: orientation non-increasing at 1/100-frame resolution (no clockwise motion)')
+        require(abs(unwrapped[0]) < 1e-9 and abs(unwrapped[-1] + 360) < 1e-9, f'refresh: exactly one turn, 0 -> -360 ({unwrapped[0]} -> {unwrapped[-1]:.3f})')
+        require(rotation_at(rot, data['op'] - 1) == 0, 'refresh: frame op-1 (last host-sampled, 14) is exact rest orientation')
+        sampled = [rotation_at(rot, f) for f in range(data['op'] - 1)]
+        print('     sampled frame angles:', ', '.join(f'{a:.1f}' for a in sampled), '| f14: 0 (== -360)')
+        require(data['op'] / data['fr'] == .5, 'refresh: playback duration stays 500 ms')
+        for f in (data['op'] - 1, data['op']):
+            same = ImageChops.difference(render(anim, 0, 64), render(anim, f, 64)).getbbox() is None
+            require(same, f'refresh frame {f} pixel-identical to rest frame 0 (no end snap)')
         mid = ink_diff(alpha(render(anim, 7, 64)), alpha(render(anim, 0, 64)))
-        require(mid > .2, f'refresh mid-sweep path visibly differs from rest (diff {mid:.3f})')
+        require(mid > .2, f'refresh mid-turn visibly rotated (diff {mid:.3f})')
 
 print('FAILURES: %d' % len(failures))
 sys.exit(1 if failures else 0)

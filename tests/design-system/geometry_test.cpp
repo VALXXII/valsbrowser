@@ -9,8 +9,19 @@ using namespace NativeChrome::Design;
 static void Require(bool ok,const char* what){if(!ok){std::fprintf(stderr,"FAIL: %s\n",what);std::exit(1);}}
 static bool Near(float a,float b){return std::fabs(a-b)<.001f;}
 int main(){
-    // Toolbar reference gap derived from the current toolbar: back {6,38}, forward {44,76}.
-    const float toolbarGap=44-38;
+    // Toolbar reference geometry, from the toolbar layout tokens (back {6,38}, forward {44,76}).
+    const float backLeft=Space::sm,backRight=backLeft+Size::control,forwardLeft=backRight+Space::controlGap;
+    const float toolbarGap=forwardLeft-backRight;
+    Require(Near(Toolbar::backLeft,backLeft)&&Near(Toolbar::forwardLeft,forwardLeft),"toolbar column tokens match the toolbar layout");
+    Require(Near(TabStrip::Surface(0).left,Toolbar::forwardLeft),"first tab surface starts on the forward button's left edge (44)");
+    Require(Near(TabStrip::Region(0).left,Brand::Region().right),"brand region ends where the first tab hit region starts (38)");
+    // Brand flower: 16 DIP, 32% opacity, centred on back-button centre X and tab-favicon centre Y.
+    auto fav0=TabStrip::FaviconSlot(TabStrip::Surface(0));auto glyph=Brand::Glyph();
+    Require(Near(Brand::size,Size::icon)&&Near(glyph.right-glyph.left,Brand::size)&&Near(glyph.bottom-glyph.top,Brand::size),"brand glyph 16x16");
+    Require(Near(Brand::opacity,.32f),"brand opacity .32");
+    Require(Near((glyph.left+glyph.right)/2,(backLeft+backRight)/2),"brand centre X == back button centre X (22)");
+    Require(Near((glyph.top+glyph.bottom)/2,(fav0.top+fav0.bottom)/2),"brand centre Y == tab favicon centre Y (22)");
+    auto brand=Brand::Region();Require(glyph.left>=brand.left&&glyph.right<=brand.right&&glyph.top>=brand.top&&glyph.bottom<=brand.bottom,"brand glyph inside its hit/focus region");
     Require(Near(Space::tabGap,toolbarGap)&&Near(Space::controlGap,toolbarGap),"tab gap == toolbar gap (6 DIP)");
     for(int i=0;i<6;++i){
         auto a=TabStrip::Surface(i),b=TabStrip::Surface(i+1);
@@ -38,6 +49,6 @@ int main(){
     Require(Near(close.left-title.right,Space::xs)&&title.right>title.left,"title reserves the close slot permanently (no hover shift)");
     Require(Near(Size::focusStroke,1)&&Near(Focus::stroke,1),"focus ring is exactly 1 DIP");
     Require(Near(Focus::color,1)&&Near(Focus::opacity,.10f),"focus ring is white at 10% alpha");
-    std::puts("PASS: 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, equal close insets, 1 DIP white 10% focus tokens.");
+    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at forward left, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, equal close insets, 1 DIP white 10% focus tokens.");
     return 0;
 }

@@ -1,3 +1,5 @@
+> Historical first integration report. Final alignment and refresh behavior supersede the old brand placement and loading-loop details below; see [final validation](release-validation.md).
+
 # Lottie + flower native integration � complete, ready for coordinator review
 
 Implemented actual ThorVG 1.1.3 software Lottie playback; displayed frames come from the bundled JSON paths, morphs, trims, opacity and transform keyframes. Chose maintained ThorVG over Samsung rlottie because upstream https://github.com/Samsung/rlottie explicitly states deprecated/unsupported; official ThorVG release https://github.com/thorvg/thorvg/releases/tag/v1.1.3 is pinned. No browser, WebView2, download dialog, process kill, deployment, branch switch, staging or commit occurred. Master remains 75616baccae3961ae99dcd2dc577a38633ee433a and current branch feat/design-system-polish.

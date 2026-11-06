@@ -28,9 +28,9 @@ int wmain(int argc,wchar_t** argv){
         Require(SUCCEEDED(chrome.PaintStateSheet()),"production state sheet render");
         Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/components-"+std::to_wstring(dpi)+L".png").c_str())),"state sheet PNG export");
         chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,CloseBase,0);
-        auto selected=chrome.SurfacePixel(183,16);
+        auto selected=chrome.SurfacePixel(TabStrip::Surface(0).right-2,16);
         chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,TabBase,0);
-        Require(selected==chrome.SurfacePixel(183,16),"close hover has single tab fill");
+        Require(selected==chrome.SurfacePixel(TabStrip::Surface(0).right-2,16),"close hover has single tab fill");
         chrome.SetEnabled('R',false);chrome.Build(2,0);Require(chrome.Hit(chrome.bar.right-57,60)==0,"disabled control excluded from pointer activation");
         auto order=chrome.FocusOrder();Require(std::find(order.begin(),order.end(),'R')==order.end(),"disabled excluded from keyboard order");auto tab=std::find(order.begin(),order.end(),TabBase);Require(tab!=order.end()&&tab+1!=order.end()&&*(tab+1)==CloseBase,"tab body precedes its reserved close action in keyboard order");
         chrome.SetEnabled('R',true);Require(chrome.Hit(chrome.bar.right-57,60)=='R',"enabled control restores same geometry");
@@ -43,7 +43,7 @@ int wmain(int argc,wchar_t** argv){
     const auto start=Motion::Time{};motion.SelectTab(1,start);motion.SelectTab(2,start+Motion::Milliseconds(10));
     int before=0,after=0;for(int ms:{10,70,130}){animated.Paint({L"First",L"Second"},1,L"",false,0,0,nullptr,start+Motion::Milliseconds(ms));int old=animated.SurfacePixel(TabStrip::Surface(0).right-2,16)&255,newer=animated.SurfacePixel(TabStrip::Surface(1).right-2,16)&255;if(ms==10){before=old;Require(newer==23,"new selection starts at existing canvas without entrance jump");}if(ms==130){after=old;Require(newer==41,"selected surface reaches semantic selected endpoint");}Require(old>=23&&old<=41&&newer>=23&&newer<=41,"selection interpolation bounded to opaque surface tokens");}
     Require(before==41&&after==23,"old tab selection surface fades to canvas");
-    motion.SetReducedMotion(true);motion.SelectTab(1,start+Motion::Milliseconds(140));animated.Paint({L"First",L"Second"},0,L"",false,0,0,nullptr,start+Motion::Milliseconds(140));Require((animated.SurfacePixel(183,16)&255)==41,"reduced motion selection updates immediately");
+    motion.SetReducedMotion(true);motion.SelectTab(1,start+Motion::Milliseconds(140));animated.Paint({L"First",L"Second"},0,L"",false,0,0,nullptr,start+Motion::Milliseconds(140));Require((animated.SurfacePixel(TabStrip::Surface(0).right-2,16)&255)==41,"reduced motion selection updates immediately");
     animated.Dispose();Require(!GetModuleHandleW(L"WebView2Loader.dll"),"native fixture never loaded engine");
     std::puts("PASS: typed variants, disabled/focus isolation, opaque state fills, native state sheets at 96/144/192 DPI, stable close hover and glyph ink.");CoUninitialize();return 0;
 }

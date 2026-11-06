@@ -37,8 +37,15 @@ static_assert(Size::focusStroke==1,"focus stroke is the user-chosen 1 DIP");
 // Pure tab-strip geometry (DIPs). Renderers and hit testing call these so
 // visible gaps, hit areas and overflow capacity can never drift apart.
 struct Box { float left, top, right, bottom; };
+// Toolbar column edges (DIP) that the tab row aligns to: back {6,38}, forward {44,76}.
+namespace Toolbar {
+inline constexpr float backLeft=Space::sm, backCenterX=backLeft+Size::control/2;
+inline constexpr float forwardLeft=backLeft+Size::control+Space::controlGap;
+}
 namespace TabStrip {
-inline constexpr float left=51;            // after the 0..51 brand region
+// Region origin chosen so the first visible tab surface starts at forwardLeft (44):
+// left 38 + tabGap 6 = 44. The brand region owns 0..38.
+inline constexpr float left=Toolbar::forwardLeft-Space::tabGap;
 inline constexpr float regionTop=2, regionBottom=40, top=6, bottom=38;
 inline constexpr float trailingReserve=118; // window controls, unchanged
 // Hit region: contiguous, gap belongs to the tab it precedes (no dead zone between tabs).
@@ -53,6 +60,18 @@ inline constexpr Box TitleSlot(Box tab){return {tab.left+32,tab.top,CloseSlot(ta
 inline constexpr float NewTabLeft(int shown){return left+Size::tabPitch*shown+Space::tabGap;}
 inline int Capacity(float width){const float room=width-trailingReserve-left-Space::tabGap-Size::control;return std::max(1,static_cast<int>(room/Size::tabPitch));}
 }
+static_assert(TabStrip::left==38&&TabStrip::Surface(0).left==Toolbar::forwardLeft,"first tab surface aligns with the forward button (44)");
+// Brand flower: optically placed on the toolbar column and tab row, not the
+// geometric centre of its 0..38 region (which would be x 19).
+namespace Brand {
+inline constexpr float size=Size::icon, opacity=.32f;
+inline constexpr float centerX=Toolbar::backCenterX;                                  // 22: back button centre
+inline constexpr float centerY=TabStrip::top+Space::md+Size::icon/2;                  // 22: tab favicon centre
+inline constexpr Box Region(){return {0,TabStrip::regionTop,TabStrip::left,TabStrip::bottom};}   // hit/focus 0..38
+inline constexpr Box Glyph(){return {centerX-size/2,centerY-size/2,centerX+size/2,centerY+size/2};} // {14,14,30,30}
+}
+static_assert(Brand::centerX==22&&Brand::centerY==22,"brand flower centred at 22,22");
+static_assert(Brand::centerY*2==TabStrip::FaviconSlot(TabStrip::Surface(0)).top+TabStrip::FaviconSlot(TabStrip::Surface(0)).bottom,"brand shares the favicon centre line");
 inline constexpr unsigned long NativeGray(float value){auto byte=static_cast<unsigned long>(value*255+.5f);return byte|(byte<<8)|(byte<<16);}
 struct TypeRole { float size; bool medium; float tracking; };
 namespace Type {

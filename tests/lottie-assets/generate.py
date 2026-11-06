@@ -197,20 +197,32 @@ def copy_link():
                 [marker('toCheck', 0, 10), marker('toLink', 10, 10)])
 
 
-# ---- refresh: one counter-clockwise sweep, ends exactly at rest -------------
+# ---- refresh: exactly one rigid counter-clockwise turn -------------------
+# User revision: no tail trim/regrow and no local clockwise motion. Arc and head
+# paths are static (constant topology and length); only the group rotation
+# animates, monotonically 0 -> -360 over frames 0..14 (467 ms), and frame 14
+# is already rest so a host that samples count-1 = 14 ends without a snap.
+# op stays 15 (500 ms) so the playback duration is unchanged.
+REFRESH_OP = 15
+REFRESH_TURN_END = REFRESH_OP - 1
+REFRESH_TURN_HOLD = REFRESH_TURN_END - 0.01   # turn completes, held until normalisation
+
+
 def refresh():
     arc, head = reload_arc().data(), reload_head().data()
-    END_F = 15                               # 500 ms
-    rot = anim(kf(0, [0], EASE_INOUT), last(END_F, [-360]))   # follows the CCW arrow
-    # Tail retracts toward the head during the fast middle of the sweep and
-    # re-extends to rest: the path itself changes, not only the transform.
-    tail = anim(kf(0, [0], EASE_INOUT), kf(7, [38], EASE_INOUT), last(END_F, [0]))
-    shapes = [group('arrow (sweep)', [
+    # 0 -> -360 (CCW, follows the arrow) eased over 0..TURN_HOLD, then a hold
+    # keyframe swaps -360 for the identical orientation 0 at frame 14. Renderers
+    # evaluate rotate(-360) with float residue (ThorVG: up to 4/255 AA noise);
+    # rotate(0) is the exact identity, so frame 14 is pixel-identical to rest.
+    rot = anim(kf(0, [0], EASE_INOUT),
+               {'t': REFRESH_TURN_HOLD, 's': [-360], 'h': 1},
+               last(REFRESH_TURN_END, [0]))
+    shapes = [group('arrow (one turn)', [
         group('head', [shape('head', static(head)), stroke()], transform()),
-        group('arc', [shape('arc', static(arc)), trim('tail', tail, static(100)), stroke()], transform()),
+        group('arc', [shape('arc', static(arc)), stroke()], transform()),
     ], transform(rot=rot))]
-    return comp('refresh', END_F, [layer('refresh', shapes, END_F)],
-                [marker('sweep', 0, END_F)])
+    return comp('refresh', REFRESH_OP, [layer('refresh', shapes, REFRESH_OP)],
+                [marker('turn', 0, REFRESH_OP)])
 
 
 def svg(paths, title):

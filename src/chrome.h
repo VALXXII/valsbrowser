@@ -159,7 +159,7 @@ public:
         return target->EndDraw();
     }
     void Build(int count,int selected){regions.clear();int capacity=Design::TabStrip::Capacity(width);if(selected<first)first=selected;if(selected>=first+capacity)first=selected-capacity+1;first=std::max(0,first);int shown=std::min(capacity,count-first);
-        regions.push_back({900,{0,2,51,38},L"Liste des onglets · molette pour changer"});
+        auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},L"Liste des onglets · molette pour changer"});
         for(int i=0;i<shown;i++){
             auto close=Design::TabStrip::CloseSlot(Design::TabStrip::Surface(i));auto region=Design::TabStrip::Region(i);
             // Close first: its hit area wins over the containing tab, and IDs
@@ -189,7 +189,7 @@ public:
                 if(tabHover>0||focus==CloseBase+n){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),focus==CloseBase+n?1:tabHover);}
                 if(focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::inset);
                 continue;}
-            if(id==900){Icon(L"brand-flower",box,16);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L')continue;
+            if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=L"reload";break;case 'C':icon=L"copy";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){
