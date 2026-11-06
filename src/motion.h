@@ -28,6 +28,24 @@ inline bool SystemReducedMotion() noexcept {
 
 inline float Clamp(float value) noexcept { return value < 0 ? 0 : (value > 1 ? 1 : value); }
 inline float Ease(float value) noexcept { const float t = Clamp(value); return t*t*(3-2*t); }
+enum class Curve { SmoothStep, EaseOut, Icon };
+// Native equivalents of CSS ease-out and cubic-bezier(.2,0,0,1).
+// Invert x by bounded bisection: fixed cost, no overshoot or platform dependency.
+inline float Eased(float value, Curve curve) noexcept {
+    if (curve == Curve::SmoothStep) return Ease(value);
+    const float x = Clamp(value);
+    if (x == 0 || x == 1) return x;
+    const float x1 = curve == Curve::Icon ? .2f : 0.f;
+    const float x2 = curve == Curve::Icon ? 0.f : .58f;
+    float lo = 0, hi = 1;
+    for (int n = 0; n < 20; ++n) {
+        const float t = (lo+hi)*.5f, u = 1-t;
+        const float sample = 3*u*u*t*x1+3*u*t*t*x2+t*t*t;
+        if (sample < x) lo = t; else hi = t;
+    }
+    const float t = (lo+hi)*.5f;
+    return t*t*(3-2*t);
+}
 inline float Fraction(Time now, Time begin, Time end) noexcept {
     if (now <= begin) return 0;
     if (now >= end) return 1;
@@ -57,17 +75,20 @@ inline Wake Earlier(Wake a, Wake b) noexcept {
 class Tween {
     float from_ = 0, target_ = 0;
     Time begin_{}, end_{};
+    Curve curve_ = Curve::SmoothStep;
 public:
     float Value(Time now) const noexcept {
         if (now >= end_) return target_;
-        return from_ + (target_-from_)*Ease(Fraction(now, begin_, end_));
+        return from_ + (target_-from_)*Eased(Fraction(now, begin_, end_), curve_);
     }
     bool Moving(Time now) const noexcept { return from_ != target_ && now < end_; }
-    void Set(float value, Time now, Milliseconds duration, bool reduced = false) noexcept {
+    void Set(float value, Time now, Milliseconds duration, bool reduced = false,
+             Curve curve = Curve::SmoothStep) noexcept {
         value = Clamp(value);
         if (reduced || duration.count() <= 0) { Snap(value); return; }
         if (value == target_) return; // Repeated input/paint must not restart the clock.
         from_ = Value(now); target_ = value; begin_ = now; end_ = now+duration;
+        curve_ = curve;
     }
     void Snap(float value) noexcept { from_ = target_ = Clamp(value); begin_ = end_ = Time{}; }
     void Settle() noexcept { Snap(target_); }
@@ -76,10 +97,13 @@ public:
 struct InteractionVisual { float hover = 0, press = 0; };
 class Interaction {
     Tween hover_, press_;
+    bool polished_ = false;
 public:
+    void EnablePolish(bool enabled = true) noexcept { polished_ = enabled; }
     void Set(bool hover, bool press, Time now, bool reduced = false) noexcept {
-        hover_.Set(hover ? 1.f : 0.f, now, Milliseconds(120), reduced);
-        press_.Set(press ? 1.f : 0.f, now, Milliseconds(80), reduced);
+        const auto curve = polished_ ? Curve::EaseOut : Curve::SmoothStep;
+        hover_.Set(hover ? 1.f : 0.f, now, Milliseconds(120), reduced, curve);
+        press_.Set(press ? 1.f : 0.f, now, Milliseconds(polished_ ? 150 : 80), reduced, curve);
     }
     InteractionVisual Visual(Time now) const noexcept { return {hover_.Value(now), press_.Value(now)}; }
     Wake NextWake(Time now) const noexcept { return hover_.Moving(now) || press_.Moving(now) ? Frame() : Wake{}; }
@@ -94,28 +118,37 @@ struct SuccessVisual {
 };
 class Success {
     bool triggered_ = false, reduced_ = false;
+    bool polished_ = false;
+    float revealFrom_ = 0;
     Time begin_{}, revealEnd_{}, dwellEnd_{}, end_{};
 public:
+    // Configure before first use. Existing users retain their timing and visuals.
+    void EnablePolish(bool enabled = true) noexcept { polished_ = enabled; }
     void Trigger(Time now, bool reduced = false) noexcept {
+        revealFrom_ = polished_ ? Visual(now).opacity : 0;
         triggered_ = true; reduced_ = reduced; begin_ = now;
-        revealEnd_ = now+Milliseconds(reduced ? 0 : 150);
+        // A repeat extends dwell without blinking, including during disappearance.
+        revealEnd_ = now+Milliseconds(polished_ ? (revealFrom_ == 1 ? 0 : (reduced ? 150 : 300)) : (reduced ? 0 : 150));
         dwellEnd_ = revealEnd_+Milliseconds(1500);
-        end_ = dwellEnd_+Milliseconds(reduced ? 0 : 150);
+        end_ = dwellEnd_+Milliseconds(polished_ ? 150 : (reduced ? 0 : 150));
     }
     void Clear() noexcept { triggered_ = false; }
     void ReduceMotion() noexcept {
         // Preserve the original dwell deadline; do not restart or resurrect it.
-        reduced_ = true; revealEnd_ = begin_; end_ = dwellEnd_;
+        reduced_ = true;
+        if (!polished_) { revealEnd_ = begin_; end_ = dwellEnd_; }
     }
     SuccessVisual Visual(Time now) const noexcept {
         if (!triggered_ || now >= end_) return {};
         if (now < revealEnd_) {
-            const auto a = Ease(Fraction(now, begin_, revealEnd_));
-            return {SuccessPhase::Reveal, a, .88f+.12f*a};
+            const auto t = Fraction(now, begin_, revealEnd_);
+            const auto a = polished_ ? revealFrom_+(1-revealFrom_)*Eased(t, Curve::Icon) : Ease(t);
+            return {SuccessPhase::Reveal, a, reduced_ ? 1.f : (polished_ ? .25f+.75f*a : .88f+.12f*a)};
         }
         if (now < dwellEnd_) return {SuccessPhase::Dwell, 1, 1};
-        const auto a = 1-Ease(Fraction(now, dwellEnd_, end_));
-        return {SuccessPhase::Disappear, a, reduced_ ? 1.f : .88f+.12f*a};
+        const auto t = Fraction(now, dwellEnd_, end_);
+        const auto a = 1-(polished_ ? Eased(t, Curve::Icon) : Ease(t));
+        return {SuccessPhase::Disappear, a, reduced_ ? 1.f : (polished_ ? .25f+.75f*a : .88f+.12f*a)};
     }
     Wake NextWake(Time now) const noexcept {
         switch (Visual(now).phase) {
@@ -164,20 +197,61 @@ public:
     Wake NextWake(Time now) const noexcept { return completion_.NextWake(now); }
 };
 
+// Selection affects surface emphasis only. Focus, active content and hit geometry
+// must change synchronously. Use stable tab IDs, or Reset() before index reuse.
+class TabSelection {
+    std::map<int, Tween> values_;
+    bool initialized_ = false;
+public:
+    void Reset() noexcept { values_.clear(); initialized_ = false; }
+    void Set(int selected, Time now, bool reduced = false) {
+        if (selected) values_.try_emplace(selected);
+        for (auto it = values_.begin(); it != values_.end();) {
+            auto& tween = it->second;
+            const float value = it->first == selected ? 1.f : 0.f;
+            if (!initialized_) tween.Snap(value);
+            else tween.Set(value, now, Milliseconds(120), reduced, Curve::EaseOut);
+            if (!tween.Moving(now) && tween.Value(now) == 0) it = values_.erase(it);
+            else ++it;
+        }
+        initialized_ = true;
+    }
+    float Visual(int id, Time now) const noexcept {
+        const auto it = values_.find(id);
+        return it == values_.end() ? 0.f : it->second.Value(now);
+    }
+    void Settle() noexcept { for (auto& item : values_) item.second.Settle(); }
+    Wake NextWake(Time now) const noexcept {
+        for (const auto& item : values_) if (item.second.Moving(now)) return Frame();
+        return {};
+    }
+};
+
 // Optional convenience owner. IDs are opaque: tab/close/control namespaces are
 // chosen by the renderer. No HWNDs, drawing, invalidation or timers live here.
 class State {
     bool reduced_ = true;
+    bool polished_ = false;
     std::map<int, Interaction> interactions_;
 public:
     Success copy;
     Download download;
+    TabSelection selection;
     explicit State(bool reduced = SystemReducedMotion()) noexcept : reduced_(reduced) {}
     bool ReducedMotion() const noexcept { return reduced_; }
+    // Call once before first interaction. No changes to existing defaults.
+    void EnablePolish(bool enabled = true) noexcept {
+        polished_ = enabled; copy.EnablePolish(enabled);
+        for (auto& item : interactions_) item.second.EnablePolish(enabled);
+    }
+    void ClearInteractions() noexcept { interactions_.clear(); }
+    void ForgetInteraction(int id) noexcept { interactions_.erase(id); }
+    void SelectTab(int id, Time now) { selection.Set(id, now, reduced_); }
     void SetReducedMotion(bool reduced) noexcept {
         reduced_ = reduced;
         if (reduced) {
             for (auto& item : interactions_) item.second.Settle();
+            selection.Settle();
             copy.ReduceMotion(); download.ReduceMotion();
         }
     }
@@ -187,6 +261,7 @@ public:
         if (hovered) interactions_.try_emplace(hovered);
         if (pressed) interactions_.try_emplace(pressed);
         for (auto it = interactions_.begin(); it != interactions_.end();) {
+            it->second.EnablePolish(polished_);
             it->second.Set(it->first == hovered, it->first == pressed, now, reduced_);
             const auto v = it->second.Visual(now);
             if (!it->second.NextWake(now).delay && v.hover == 0 && v.press == 0)
@@ -200,6 +275,7 @@ public:
     }
     Wake NextWake(Time now) const noexcept {
         auto wake = Earlier(copy.NextWake(now), download.NextWake(now));
+        wake = Earlier(wake, selection.NextWake(now));
         for (const auto& item : interactions_) wake = Earlier(wake, item.second.NextWake(now));
         return wake;
     }

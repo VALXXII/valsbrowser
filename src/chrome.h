@@ -5,6 +5,9 @@
 #include <map>
 #include "motion.h"
 #include "favicon.h"
+#include "design-system.h"
+#include "motion-presentation.h"
+#include <set>
 
 namespace NativeChrome {
 template<class T> void Drop(T*& p){if(p){p->Release();p=nullptr;}}
@@ -31,7 +34,8 @@ inline bool IsTab(int id){return id>=TabBase&&id<TabBase+128;}
 inline bool IsClose(int id){return id>=CloseBase&&id<CloseBase+128;}
 inline int TabIndex(int id){return IsClose(id)?id-CloseBase:IsTab(id)?id-TabBase:-1;}
 inline int SelectionAfterClose(int count,int active,int closed){if(count<=1)return -1;if(closed<active)return active-1;if(closed==active)return std::min(active,count-2);return active;}
-inline float ControlSurface(int id,float amount){const bool address=id=='R'||id=='C'||id=='B'||id=='F';const float base=address?41.196f/255:23/255.f;return base+(.2f-base)*Motion::Clamp(amount);}
+inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='R'||id=='C')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
+inline float ControlSurface(int id,float amount){return Design::Resolve(VariantFor(id),{amount,0}).surface;}
 struct TextMeasure {float lineHeight=0,baseline=0,originY=0,inkTop=0,inkBottom=0;bool trimmed=false;};
 struct Region{int id;D2D1_RECT_F rect;const wchar_t* tip;};
 class Chrome {
@@ -48,6 +52,10 @@ public:
     std::shared_ptr<const FaviconImage> DecodeFavicon(IStream* stream){if(!wic||!stream)return {};STATSTG stat{};if(FAILED(stream->Stat(&stat,STATFLAG_NONAME))||stat.cbSize.QuadPart==0||stat.cbSize.QuadPart>4*1024*1024)return {};LARGE_INTEGER zero{};if(FAILED(stream->Seek(zero,STREAM_SEEK_SET,nullptr)))return {};IWICBitmapDecoder* decoder=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* converter=nullptr;UINT w=0,h=0;HRESULT hr=wic->CreateDecoderFromStream(stream,nullptr,WICDecodeMetadataCacheOnLoad,&decoder);if(SUCCEEDED(hr))hr=decoder->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=frame->GetSize(&w,&h);if(SUCCEEDED(hr)&&(!w||!h||w>1024||h>1024))hr=E_INVALIDARG;if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&converter);if(SUCCEEDED(hr))hr=converter->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);std::shared_ptr<FaviconImage> image;if(SUCCEEDED(hr)){image=std::make_shared<FaviconImage>();image->width=w;image->height=h;image->stride=w*4;image->pixels.resize(image->stride*h);hr=converter->CopyPixels(nullptr,image->stride,(UINT)image->pixels.size(),image->pixels.data());}Drop(converter);Drop(frame);Drop(decoder);return SUCCEEDED(hr)?image:nullptr;}
     void DrawFavicon(int index,D2D1_RECT_F slot){auto image=index<(int)favicons.size()?favicons[index]:nullptr;if(!image){Icon(L"favicon",slot);return;}auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(bitmap){float factor=std::min((slot.right-slot.left)/image->width,(slot.bottom-slot.top)/image->height),w=image->width*factor,h=image->height*factor;float x=(slot.left+slot.right-w)/2,y=(slot.top+slot.bottom-h)/2;target->DrawBitmap(bitmap,{x,y,x+w,y+h});}else Icon(L"favicon",slot);}
     void SetMotion(Motion::State* state){motion=state;}
+    bool animateSelection=false;
+    std::set<int> disabled;
+    bool Enabled(int id)const{return disabled.count(id)==0;}
+    void SetEnabled(int id,bool enabled){if(enabled)disabled.erase(id);else disabled.insert(id);}
     UINT dpi=96;float width=1180,height=815;int first=0;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     ~Chrome(){Dispose();}
     void Dispose(){ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
@@ -107,38 +115,71 @@ public:
         if(!bitmap){IWICBitmapDecoder* dec=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* conv=nullptr;HRESULT hr=wic->CreateDecoderFromFilename((assets+L"icons\\"+key).c_str(),nullptr,GENERIC_READ,WICDecodeMetadataCacheOnLoad,&dec);if(SUCCEEDED(hr))hr=dec->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&conv);if(SUCCEEDED(hr))hr=conv->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);if(SUCCEEDED(hr))target->CreateBitmapFromWicBitmap(conv,nullptr,&bitmap);Drop(conv);Drop(frame);Drop(dec);}
         if(bitmap){float x=(rect.left+rect.right-size)/2,y=(rect.top+rect.bottom-size)/2;target->DrawBitmap(bitmap,D2D1::RectF(x,y,x+size,y+size),opacity);}
     }
-    void Build(int count,int selected){regions.clear();int capacity=std::max(1,(int)((width-118-51-32)/140));if(selected<first)first=selected;if(selected>=first+capacity)first=selected-capacity+1;first=std::max(0,first);int shown=std::min(capacity,count-first);
+    void FocusRing(D2D1_RECT_F box,float radius){const float inset=Design::Size::focusStroke/2;box.left+=inset;box.top+=inset;box.right-=inset;box.bottom-=inset;Color(Design::Surface::focus);target->DrawRoundedRectangle(D2D1::RoundedRect(box,radius,radius),brush,Design::Size::focusStroke);}
+    void DrawButton(const wchar_t* icon,D2D1_RECT_F box,Design::ButtonVariant variant,Design::ButtonState state){
+        auto style=Design::Resolve(variant,state);
+        if(style.fill)Round(box,style.radius,style.surface);
+        if(style.focus)FocusRing(box,style.radius);
+        Icon(icon,box,style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled),style.iconOpacity);
+    }
+    HRESULT PaintStateSheet(){if(!target)return E_UNEXPECTED;target->BeginDraw();target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+        Text(L"Native components",{24,16,700,48},20,1,false,true);
+        const wchar_t* labels[]={L"Default",L"Hover",L"Pressed",L"Disabled",L"Keyboard focus"};
+        const wchar_t* rows[]={L"Ghost / new tab",L"Raised / navigation",L"Embedded / reload",L"Window controls"};
+        Design::ButtonVariant variants[]={Design::ButtonVariant::Ghost,Design::ButtonVariant::Raised,Design::ButtonVariant::Embedded,Design::ButtonVariant::Window};
+        for(int col=0;col<5;++col)Text(labels[col],{240.f+col*128,56,364.f+col*128,88},14,.7f);
+        for(int row=0;row<4;++row){float y=104.f+row*64;Text(rows[row],{24,y,230,y+32},14,.7f);
+            for(int col=0;col<5;++col){float x=240.f+col*128;Design::ButtonState state{col==1?1.f:0.f,col==2?1.f:0.f,col==3,col==4};
+                if(row==2)Round({x-4,y-4,x+100,y+36},Design::Radius::control,Design::Surface::raised);
+                DrawButton(row==0?L"plus":row==1?L"back":row==2?L"reload":L"minimize",{x,y,x+32,y+32},variants[row],state);
+                if(row==3){DrawButton(L"maximize",{x+36,y,x+68,y+32},variants[row],state);DrawButton(L"close",{x+72,y,x+104,y+32},variants[row],state);}
+            }
+        }
+        Text(L"Tab surfaces / stable close slot",{24,384,400,416},14,.7f);
+        for(int col=0;col<3;++col){float x=240.f+col*190;D2D1_RECT_F tab{x,432,x+128,464};Round(tab,Design::Radius::control,Design::TabSurface(col==0,col==1?1:0));DrawFavicon(0,{x+8,440,x+24,456});Text(L"Ggyp \u00c9\u00e7",{x+32,432,x+100,464},14,.5f,false,true);if(col!=2)Icon(L"tab-close",{x+104,436,x+128,460});if(col==2)FocusRing(tab,Design::Radius::control);}
+        Text(L"Production Direct2D + DirectWrite / Phosphor Bold / no WebView2",{24,496,900,528},14,.7f);
+        return target->EndDraw();
+    }
+    void Build(int count,int selected){regions.clear();int capacity=std::max(1,(int)((width-118-51-Design::Size::control)/Design::Size::tabPitch));if(selected<first)first=selected;if(selected>=first+capacity)first=selected-capacity+1;first=std::max(0,first);int shown=std::min(capacity,count-first);
         regions.push_back({900,{0,2,51,38},L"Liste des onglets · molette pour changer"});
         for(int i=0;i<shown;i++){
-            float left=51.f+140*i;
+            float left=51.f+Design::Size::tabPitch*i;
             // Close first: its hit area wins over the containing tab, and IDs
             // never collide with tabs, keyboard commands or toolbar buttons.
-            regions.push_back({CloseBase+first+i,{left+110,10,left+134,34},L"Fermer cet onglet"});
-            regions.push_back({TabBase+first+i,{left,2,left+140,40},L"Onglet · clic milieu pour fermer"});
+            regions.push_back({CloseBase+first+i,{left+Design::Space::sm+Design::Size::tab-Design::Size::closeSlot,10,left+Design::Space::sm+Design::Size::tab,34},L"Fermer cet onglet"});
+            regions.push_back({TabBase+first+i,{left,2,left+Design::Size::tabPitch,40},L"Onglet · clic milieu pour fermer"});
         }
-        float x=51.f+140*shown;regions.push_back({'T',{x,6,x+32,38},L"Nouvel onglet (Ctrl+T)"});
+        float x=51.f+Design::Size::tabPitch*shown;regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
         regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-103,76};edit={92,44,bar.right-79,76};
-        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L)"});regions.push_back({'R',{bar.right-69,48,bar.right-45,72},L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
+        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
         regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
     }
-    int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return r.id;return 0;}
+    std::vector<int> FocusOrder()const{std::vector<int> order;for(auto& region:regions){if(IsClose(region.id))continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)&&Enabled(CloseBase+TabIndex(region.id)))order.push_back(CloseBase+TabIndex(region.id));}return order;}
+    int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==2;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){if(!target||!brush)return;Build((int)titles.size(),selected);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(23/255.f,23/255.f,23/255.f));
-        Round(bar,6,41.196f/255);
-        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id))continue;if(IsTab(id)){int n=TabIndex(id);D2D1_RECT_F tab{box.left+6,6,box.left+134,38};bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){if(!target||!brush)return;Build((int)titles.size(),selected);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+        Round(bar,Design::Radius::control,Design::Surface::raised);if(focus=='L')FocusRing(bar,Design::Radius::control);
+        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id))continue;if(IsTab(id)){int n=TabIndex(id);D2D1_RECT_F tab{box.left+Design::Space::sm,6,box.left+Design::Space::sm+Design::Size::tab,38};bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
                 // Exactly one opaque surface: no second close-button hover fill.
-                if(n==selected)Round(tab,6,41/255.f);else if(tabHover>0)Round(tab,6,(23+11*tabHover)/255.f);
-                DrawFavicon(n,{tab.left+8,14,tab.left+24,30});
-                Text(titles[n],{tab.left+32,6,tab.right-28,38},14,n==selected?.5f:.50196f*.9f,false,true,-.28f);
-                if(tabHover>0||focus==CloseBase+n){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{tab.right-24,10,tab.right,34},16*(1-.1f*press),focus==CloseBase+n?1:tabHover);}
+                float emphasis=motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
+                float base=Design::TabSurface(false,tabHover);
+                if(emphasis>0||tabHover>0){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
+                if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
+                DrawFavicon(n,{tab.left+Design::Space::md,14,tab.left+Design::Space::md+Design::Size::icon,30});
+                Text(titles[n],{tab.left+32,6,tab.right-Design::Size::closeSlot-Design::Space::xs,38},Design::Type::label.size,n==selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
+                if(tabHover>0||focus==CloseBase+n){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{tab.right-24,10,tab.right,34},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),focus==CloseBase+n?1:tabHover);}
+                if(focus==CloseBase+n)FocusRing({tab.right-24,10,tab.right,34},Design::Radius::inset);
                 continue;}
-            if(id==900){Text(L"Browser",{16,6,45,38},8,.5,true,false,-.16);continue;}if(id=='L')continue;
-            auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};float amount=std::max(interaction.hover,interaction.press);if(focus==id)amount=1;if(amount>0||id=='B'||id=='F')Round(box,id=='R'?3:6,ControlSurface(id,amount));
-            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=L"reload";break;case 'C':icon=L"copy";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){float size=(id=='m'||id=='M'||id=='X')?14:16;size*=1-.08f*interaction.press;if(id=='C'&&motion){auto success=motion->copy.Visual(now);Icon(icon,box,size,1-success.opacity);Icon(L"check",box,16*success.scale,success.opacity);}else Icon(icon,box,size);}
+            if(id==900){Text(L"Browser",{Design::Space::lg,6,45,38},Design::Type::brand.size,Design::Text::secondary,true,Design::Type::brand.medium,Design::Type::brand.tracking);continue;}if(id=='L')continue;
+            auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
+            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=L"reload";break;case 'C':icon=L"copy";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
+                if(id=='C'&&motion){auto style=Design::Resolve(variant,state);if(style.fill)Round(box,style.radius,style.surface);if(style.focus)FocusRing(box,style.radius);auto layers=Motion::CopyPresentation(motion->copy.Visual(now),motion->ReducedMotion());float size=style.iconSize*Motion::PressScale(state.press,motion->ReducedMotion(),!state.disabled);Icon(icon,box,size*layers.copy.scale,layers.copy.opacity*style.iconOpacity);Icon(L"check",box,size*layers.check.scale,layers.check.opacity*style.iconOpacity);}
+                else DrawButton(icon,box,variant,state);}
+
         }
-        Color(1,77/255.f);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-37,55,bar.right-36,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
-        if(!editing)Text(uri.empty()?L"Search, browse, whatever":uri,{92,44,bar.right-79,76},16,128/255.f*.9f,false,false,-.16f);
+        Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-37,55,bar.right-36,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
+        if(!editing)Text(uri.empty()?L"Search, browse, whatever":uri,{92,44,bar.right-79,76},Design::Type::address.size,Design::Text::address,false,Design::Type::address.medium,Design::Type::address.tracking);
         target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };

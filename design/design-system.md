@@ -1,0 +1,92 @@
+# Native design system foundation
+
+`src/design-system.h` is the shared C++17 token and state policy. The existing
+Direct2D/DirectWrite renderer consumes it directly; no chrome WebView, framework,
+network asset, font replacement, or browser engine change is introduced.
+
+## Component contract
+
+- Semantic surfaces: canvas #171717, raised/address approximately #292929,
+  selected #292929, hover #333333, pressed #3e3e3e, inactive-tab hover #222222.
+  Embedded controls interpolate opaque colors from their actual raised parent.
+- Text roles: primary, secondary, muted, disabled and address. The native edit
+  and rendered address share the same composited address text color. Separator
+  opacity has its own surface role. `NativeGray` maps the same tokens to Win32.
+- Geometry: 32 DIP controls, 24 DIP compact/close targets, 16 DIP Phosphor Bold
+  glyphs, 14 DIP window glyphs, 6 DIP control radius, 3 DIP embedded radius and
+  2 DIP inset keyboard focus perimeter. Spacing steps are 4/6/8/16 DIPs; tab
+  pitch remains 140, visible tab width 128, close slot remains 24.
+- Type roles preserve bundled Inter Display 14px medium labels / 16px regular
+  address and Gelasio 8px brand. Real DirectWrite line metrics preserve full
+  accents/descenders, with horizontal trimming only. Branding and app icon stay.
+- `ButtonVariant`: Ghost, Raised, Embedded, Window and TabClose. `Resolve`
+  gives a single fill/radius/icon/focus policy, independent of command IDs.
+  `VariantFor` maps existing controls to variants in the renderer adapter.
+- `ButtonState` accepts bounded hover/press, disabled and keyboard focus.
+  Disabled suppresses interactive fills, focus, press transform and hit testing;
+  keyboard order omits disabled controls. Copy is unavailable on an empty home.
+  Window close/minimize/maximize share one variant and existing icon intensity.
+- Keyboard focus draws a distinct perimeter rather than masquerading as hover.
+  Tab traverses tab bodies and their close actions; arrows switch a focused tab;
+  Enter/Space select or close. Mouse press clears the keyboard focus marker.
+  The focused address field also keeps the perimeter while its native edit owns
+  input. Existing Ctrl+Tab/Ctrl+W/address shortcuts remain.
+- The close slot is always reserved; showing its glyph does not move the title.
+  Tab/close hover paints one opaque parent surface, never two composited fills.
+
+## Motion integration
+
+Production startup opts into the peer's `EnablePolish` model. Buttons and close
+icons use `PressScale` (0.96 endpoint, no scale for disabled/reduced motion).
+Copy/check use complementary `CopyPresentation` layers in the same icon slot,
+including press scaling, driven only by the existing successful clipboard event.
+`Chrome::animateSelection` opts into one blended tab surface; main drives
+`SelectTab(n+1)` and clears interaction/selection state before index reuse.
+Active labels, content, focus and hit geometry update immediately. See
+[motion-polish.md](motion-polish.md) for model timings and tests. No download
+engine hook or synthetic download event was added.
+
+## Native-only review and verification
+
+`tests/design-system/design_system_test.cpp` calls production `DrawButton`,
+`Resolve`, `PaintStateSheet` and `Paint`. It links Direct2D/DirectWrite/WIC only;
+asserts WebView2Loader is never loaded; checks variant disabled/focus separation,
+opaque state interpolation, keyboard exclusion/order, 24 DIP close behavior,
+complete glyph ink and rendered tab selection/reduced-motion endpoints.
+`test-design-system.ps1` builds/runs this fixture and the existing focused
+hover/favicon regression into `build/design-system-preview`.
+
+Generated artifacts (not committed):
+
+- `build/design-system-preview/components-{96,144,192}.png`: default, hover,
+  pressed, disabled, keyboard focus; equal window controls; tab/close surfaces.
+- `build/design-system-preview/chrome-focus-{96,144,192}.png`: production chrome
+  with embedded reload focus and full-height native text.
+- `build/design-system-preview/favicon-alpha-{96,144,192}.png`: existing focused
+  regression using an in-memory PNG to verify alpha, without a site or engine.
+- `build/design-system-preview/browser.exe`: compile-only isolated executable.
+  It was never launched and is not deployed or substituted for build/v2.
+
+Validation performed:
+
+- Focused design fixture compiled with C++17, `-Wall -Wextra -Werror`, and passed.
+- Focused hover/favicon fixture passed: refresh/copy entry/exit samples remain
+  41 -> 46 -> 51 -> 46 -> 41; all three window hover fills match each phase;
+  alpha and stale-navigation/closed-tab favicon guards remain intact.
+- State sheets at 96 and 144 DPI visually inspected; all three scales exported.
+- Isolated browser resource/C++ compilation passed with existing build.ps1
+  compiler options. Running build.ps1 itself was blocked by the machine's
+  script execution policy; equivalent resource/compiler invocations were run
+  directly without changing that policy. No shared build script was edited.
+- Measured grayscale contrast using WCAG sRGB luminance: selected label
+  #949494/#292929 4.80:1; inactive label #808080/#171717 4.54:1; focus perimeter
+  #bebebe/#3e3e3e 5.75:1. Address opacity increased to the secondary role (0.5),
+  giving approximately #949494/#292929 4.80:1 instead of the previous 4.21:1.
+
+Not verified: live browser keyboard walk, UI Automation/screen-reader names and
+roles, forced-colors behavior, live resize/200% text zoom and WebView2 runtime.
+The existing owner-drawn chrome has no new UI Automation provider in this scope;
+this is a component foundation, not an accessibility conformance certification.
+The user's runtime hold remains in force: the prior download-dialog assertion
+0x80004005 was neither reproduced nor changed; no engine/download smoke,
+launch, retry, profile change or deployment occurred.
