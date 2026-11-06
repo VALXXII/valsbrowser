@@ -1,0 +1,16 @@
+// Official @phosphor-icons/core 2.1.1 Bold, MIT. Build-time resvg only.
+const fs = require('node:fs');
+const path = require('node:path');
+const {Resvg} = require('../tools/render/node_modules/@resvg/resvg-js');
+const root = path.join(__dirname, '../assets/icons');
+const mapping={plus:'plus',minimize:'minus',maximize:'square',close:'x',back:'arrow-left',forward:'arrow-right',reload:'arrow-counter-clockwise',copy:'link',downloads:'download-simple',private:'detective',settings:'gear-six','tab-close':'x',check:'check',favicon:'globe-simple'};
+for (const [alias,source] of Object.entries(mapping)) {
+  const official=fs.readFileSync(path.join(root,'phosphor-bold',source+'-bold.svg'),'utf8');
+  const svg=official.replace('fill="currentColor"','fill="#FFFFFF" opacity="0.5"');
+  fs.writeFileSync(path.join(root, alias+'.svg'), svg);
+  for(const dpi of [96,120,144,168,192,240,288,384]) {
+    const px = Math.round((['minimize','maximize','close'].includes(alias)?14:16)*dpi/96);
+    const png = new Resvg(svg,{fitTo:{mode:'width',value:px}}).render().asPng();
+    fs.writeFileSync(path.join(root, `${alias}-${dpi}.png`),png);
+  }
+}
