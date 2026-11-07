@@ -28,5 +28,8 @@ int main(){
     Command(SelectTabBase);Assert(current==0);Command(MoveTabLeft);Assert(current==0);
     Command(SelectTabBase+8);Assert(current==9);Command(MoveTabRight);Assert(current==9);
     pages.resize(2);current=0;Command(SelectTabBase+7);Assert(current==0);Command(SelectTabBase+8);Assert(current==1);
+    // Keyboard-opened menus sit under their control: the flower's opens rightward, the gear's leftward, in device pixels.
+    {auto flower=PlaceMenu({8,6,40,38},1180,144);Assert(!flower.alignRight&&flower.control.left==12&&flower.control.top==9&&flower.control.right==60&&flower.control.bottom==57);
+     auto gear=PlaceMenu({1150,48,1174,72},1180,96);Assert(gear.alignRight&&gear.control.right==1174&&gear.control.bottom==72);}
     Modifiers();pages.clear();std::puts("Keyboard shortcut checks passed");
 }
