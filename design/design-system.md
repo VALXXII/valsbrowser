@@ -22,6 +22,15 @@ network asset, font replacement, or browser engine change is introduced.
   glyphs, 14 DIP window glyphs, 6 DIP control radius, 3 DIP embedded radius and
   1 DIP inset keyboard focus perimeter (white at 10% alpha). Spacing steps are 4/6/8/16 DIPs; tab
   pitch is 134 (6 DIP visible gap), visible tab width 128, close slot remains 24.
+- Crowded tab strip (`TabStrip::Layout`/`Strip`): tabs share the room evenly
+  between 128 and 32 DIP (whole DIPs, 6 DIP gap kept). Below 96 the close slot
+  goes and the title takes its room; below 56 a tab is its centred favicon only.
+  Past that the strip scrolls: the selected tab always stays clear, and each side
+  that still hides tabs gets a 24 DIP canvas-coloured linear-gradient mask over a
+  16 DIP peek of the next hidden tab. Masked tabs stay clickable (selecting scrolls
+  them clear) but take no focus and show no close. Tooltips carry the full title;
+  the flower tooltip carries the tab count. After a pointer close the width stays
+  locked until the pointer leaves the tabs.
 - Type roles preserve bundled Inter Display 14px medium labels / 16px regular
   address and flower vector 16 DIP brand (Gelasio 8px is now a legacy unused role). Real DirectWrite line metrics preserve full
   accents/descenders, with horizontal trimming only. Branding and app icon stay.

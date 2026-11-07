@@ -38,6 +38,39 @@ int main(){
         if(width>=640)Require(TabStrip::NewTabLeft(c)+Size::control<=width-TabStrip::trailingReserve,"capacity never overlaps window controls");
         Require(TabStrip::NewTabLeft(c+1)+Size::control>width-TabStrip::trailingReserve||width<640,"capacity is maximal");
     }
+    // Adaptive strip: tabs shrink from 128 to the 32 DIP favicon-only square, then scroll
+    // with a peeking, masked neighbour on whichever side still hides tabs.
+    {
+        auto few=TabStrip::Layout(1180,2,0,0);
+        Require(Near(few.tab,Size::tab)&&!few.Overflow(),"few tabs keep the natural 128 DIP width");
+        for(int i=0;i<2;++i){Require(Near(few.Surface(i).left,TabStrip::Surface(i).left)&&Near(few.Region(i).right,TabStrip::Region(i).right),"unscrolled natural strip matches the slot helpers");}
+        Require(Near(few.NewTabLeft(),TabStrip::NewTabLeft(2)),"new-tab follows the last tab");
+        float previous=Size::tab+1;
+        for(float width:{560.f,800.f,1180.f,1920.f})for(int count=1;count<=80;++count)for(int selected:{0,count/2,count-1}){
+            auto s=TabStrip::Layout(width,count,selected,1e6f*(selected%2));
+            Require(s.tab>=Size::tabMin&&s.tab<=Size::tab&&Near(s.tab,std::floor(s.tab)),"tab width is a whole DIP between 32 and 128");
+            Require(s.NewTabLeft()+Size::control<=width-TabStrip::trailingReserve+.001f,"new-tab never overlaps window controls");
+            Require(Near(s.Surface(0).left+s.scroll,Toolbar::forwardLeft),"first tab still starts at x44 before scrolling");
+            for(int i=0;i+1<count&&i<4;++i){Require(Near(s.Surface(i+1).left-s.Surface(i).right,Space::tabGap),"6 DIP gap at every width");Require(Near(s.Region(i).right,s.Region(i+1).left),"contiguous regions at every width");}
+            Require(s.Overflow()==(Near(s.tab,Size::tabMin)&&count*(Size::tabMin+Space::tabGap)>s.room),"overflow only once tabs are favicon-only");
+            Require(s.Clear(selected),"selected tab is always fully clear of both fades");
+            Require(s.scroll>=0&&s.scroll<=s.MaxScroll()&&Near(s.scroll,std::round(s.scroll)),"scroll is a whole DIP inside its range");
+            Require(s.HiddenBefore()==(s.Surface(0).left<s.ViewLeft()-.001f),"left mask shown exactly when tabs hide before the view");
+            Require(s.HiddenAfter()==(s.Surface(count-1).right>s.ViewRight()+.001f),"right mask shown exactly when tabs hide after the view");
+            if(s.HiddenAfter()){int peek=-1;for(int i=0;i<count;++i)if(s.Visible(i)&&!s.Clear(i)&&s.Surface(i).right>s.ClearRight())peek=i;Require(peek>=0,"a hidden-side neighbour peeks under the right mask");}
+            if(s.HiddenBefore()){int peek=-1;for(int i=0;i<count;++i)if(s.Visible(i)&&!s.Clear(i)&&s.Surface(i).left<s.ClearLeft())peek=i;Require(peek>=0,"a hidden-side neighbour peeks under the left mask");}
+            if(s.Overflow()&&Near(s.scroll,0))Require([&]{for(int i=0;i<count;++i)if(s.Surface(i).left<s.ViewRight()&&s.Surface(i).right>s.ViewRight())return Near(s.ViewRight()-s.Surface(i).left,TabStrip::peek);return false;}(),"at the start the next hidden tab peeks exactly 16 DIP");
+            if(s.Overflow()&&Near(s.scroll,s.MaxScroll()))Require([&]{for(int i=0;i<count;++i)if(s.Surface(i).left<s.ViewLeft()&&s.Surface(i).right>s.ViewLeft())return Near(s.Surface(i).right-s.ViewLeft(),TabStrip::peek);return false;}(),"at the end the previous hidden tab peeks exactly 16 DIP");
+            if(width==1180&&selected==0){Require(s.tab<=previous,"tabs only shrink as tabs are added");previous=s.tab;}
+        }
+        auto icon=TabStrip::Layout(560,40,0,0);Require(!icon.Titled()&&!icon.HasClose(),"favicon-only tabs drop title and close");
+        auto f=icon.Favicon(1),t=icon.Surface(1);Require(Near(f.left-t.left,t.right-f.right)&&Near(f.left-t.left,Space::md),"favicon centred with 8 DIP insets");
+        auto narrow=TabStrip::Layout(1180,12,3,0);Require(narrow.tab>=Size::tabIconOnly&&narrow.tab<Size::tabCloseAll&&narrow.Titled(),"12 tabs at 1180 are narrow but titled");
+        Require(!narrow.HasClose()&&Near(narrow.Title(3).right,narrow.Surface(3).right-Space::md),"narrow titles take the close room");
+        Require(few.HasClose()&&Near(few.Title(0).right,TabStrip::TitleSlot(few.Surface(0)).right),"wide tabs keep the reserved close slot");
+        auto locked=TabStrip::Layout(1180,11,0,0,narrow.tab);Require(Near(locked.tab,narrow.tab),"locked width survives a pointer close");
+        Require(Near(TabStrip::Layout(1180,13,0,0,narrow.tab).tab,TabStrip::TabWidth(1180,13)),"lock never widens past the fitting width");
+    }
     auto tab=TabStrip::Surface(0),close=TabStrip::CloseSlot(tab);
     Require(Near(close.right-close.left,24)&&Near(close.bottom-close.top,24),"close slot is 24x24");
     const float trailing=tab.right-close.right,top=close.top-tab.top,bottom=tab.bottom-close.bottom;
@@ -49,6 +82,6 @@ int main(){
     Require(Near(close.left-title.right,Space::xs)&&title.right>title.left,"title reserves the close slot permanently (no hover shift)");
     Require(Near(Size::focusStroke,1)&&Near(Focus::stroke,1),"focus ring is exactly 1 DIP");
     Require(Near(Focus::color,1)&&Near(Focus::opacity,.10f),"focus ring is white at 10% alpha");
-    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at forward left, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, equal close insets, 1 DIP white 10% focus tokens.");
+    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at forward left, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, adaptive 128-32 DIP tabs with masked peeking overflow, equal close insets, 1 DIP white 10% focus tokens.");
     return 0;
 }
