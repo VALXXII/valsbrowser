@@ -16,7 +16,7 @@
 
 namespace NativeChrome {
 template<class T> void Drop(T*& p){if(p){p->Release();p=nullptr;}}
-const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf",L"Gelasio-Regular.ttf"};
+const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf"};
 struct FontEnumerator final:IDWriteFontFileEnumerator {
     LONG refs=1; IDWriteFactory* factory; std::wstring folder; int index=-1; IDWriteFontFile* file=nullptr;
     FontEnumerator(IDWriteFactory* f,std::wstring p):factory(f),folder(std::move(p)){factory->AddRef();}
@@ -24,7 +24,7 @@ struct FontEnumerator final:IDWriteFontFileEnumerator {
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** p)override{if(!p)return E_POINTER;*p=nullptr;if(iid==IID_IUnknown||iid==__uuidof(IDWriteFontFileEnumerator)){*p=this;AddRef();return S_OK;}return E_NOINTERFACE;}
     ULONG STDMETHODCALLTYPE AddRef()override{return InterlockedIncrement(&refs);}
     ULONG STDMETHODCALLTYPE Release()override{auto n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
-    HRESULT STDMETHODCALLTYPE MoveNext(BOOL* more)override{Drop(file);*more=++index<3;if(!*more)return S_OK;return factory->CreateFontFileReference((folder+FontFiles[index]).c_str(),nullptr,&file);}
+    HRESULT STDMETHODCALLTYPE MoveNext(BOOL* more)override{Drop(file);*more=++index<(int)(sizeof(FontFiles)/sizeof(FontFiles[0]));if(!*more)return S_OK;return factory->CreateFontFileReference((folder+FontFiles[index]).c_str(),nullptr,&file);}
     HRESULT STDMETHODCALLTYPE GetCurrentFontFile(IDWriteFontFile** out)override{if(!file)return E_FAIL;*out=file;file->AddRef();return S_OK;}
 };
 struct FontLoader final:IDWriteFontCollectionLoader {
@@ -42,7 +42,7 @@ inline int SelectionAfterClose(int count,int active,int closed){if(count<=1)retu
 inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='R'||id=='C')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
 inline float ControlSurface(int id,float amount){return Design::Resolve(VariantFor(id),{amount,0}).surface;}
 struct TextMeasure {float lineHeight=0,baseline=0,originY=0,inkTop=0,inkBottom=0;bool trimmed=false;};
-struct Region{int id;D2D1_RECT_F rect;const wchar_t* tip;};
+struct Region{int id;D2D1_RECT_F rect;const wchar_t* tip;bool focusable=true;};
 class Chrome {
     HWND hwnd=nullptr;std::wstring assets;ID2D1Factory* factory=nullptr;ID2D1RenderTarget* target=nullptr;ID2D1HwndRenderTarget* hwndTarget=nullptr;IWICBitmap* surface=nullptr;ID2D1SolidColorBrush* brush=nullptr;
     IDWriteFactory* write=nullptr;FontLoader* fontLoader=nullptr;IDWriteFontCollection* fonts=nullptr;IWICImagingFactory* wic=nullptr;
@@ -52,8 +52,8 @@ class Chrome {
     std::map<std::shared_ptr<const FaviconImage>,ID2D1Bitmap*,std::owner_less<std::shared_ptr<const FaviconImage>>> faviconBitmaps;
     // Device-independent DirectWrite layouts reused across frames: animation frames
     // must not rebuild text formats/typography for unchanged labels. Bounded.
-    struct TextKey{std::wstring value;float width,height,size,tracking;bool brand,medium;
-        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,brand,medium)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.brand,o.medium);}};
+    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium;
+        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium);}};
     struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;};
     std::map<TextKey,TextEntry> textCache;
     static constexpr size_t TextCacheLimit=96;
@@ -117,12 +117,27 @@ public:
     std::set<int> disabled;
     bool Enabled(int id)const{return disabled.count(id)==0;}
     void SetEnabled(int id,bool enabled){if(enabled)disabled.erase(id);else disabled.insert(id);}
-    UINT dpi=96;float width=1180,height=815;int first=0;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
+    int dragIndex=-1;float dragOffset=0;
+    UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
+    // Tab strip: adaptive width + horizontal scroll (DIP). `lockedTab` (0 = off) is set by
+    // the host after a pointer close and cleared when the pointer leaves the strip.
+    float scroll=0,lockedTab=0;Design::TabStrip::Strip strip;
+    std::vector<std::wstring> tips;std::wstring brandTip; // owned tooltip text for `regions`
+    ID2D1GradientStopCollection* fadeStops=nullptr;ID2D1LinearGradientBrush* fadeBrush=nullptr;
+    void DropFade(){Drop(fadeBrush);Drop(fadeStops);}
+    // Canvas-coloured linear mask over the strip edge that still has hidden tabs:
+    // opaque at the clip edge, transparent `fade` DIP inward.
+    void DrawFade(float edge,float inner){
+        if(!fadeBrush){const float c=Design::Surface::canvas;D2D1_GRADIENT_STOP stops[]={{0,D2D1::ColorF(c,c,c,1)},{1,D2D1::ColorF(c,c,c,0)}};
+            if(FAILED(target->CreateGradientStopCollection(stops,2,&fadeStops))||FAILED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,0},{1,0}),fadeStops,&fadeBrush))){DropFade();return;}}
+        fadeBrush->SetStartPoint({edge,0});fadeBrush->SetEndPoint({inner,0});
+        target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
+    }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
-        fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display",L"Gelasio"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
+        fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
         hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wic));return hr;
     }
     HRESULT Init(HWND h,const std::wstring& root){hwnd=h;HRESULT hr=InitResources(root);return FAILED(hr)?hr:Resize();}
@@ -135,10 +150,11 @@ public:
     }
     void Color(float c,float alpha=1){brush->SetColor(D2D1::ColorF(c,c,c,alpha));}
     void Round(D2D1_RECT_F r,float radius,float c){Color(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
-    HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool brand,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
+    // Enable tabular figures explicitly for counters; titles and URLs keep proportional digits.
+    HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
         if(!write||!fonts||!output)return E_UNEXPECTED;
         IDWriteTextFormat* format=nullptr;IDWriteTextLayout* layout=nullptr;
-        HRESULT hr=write->CreateTextFormat(brand?L"Gelasio":L"Inter Display",fonts,medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
+        HRESULT hr=write->CreateTextFormat(L"Inter Display",fonts,medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
         if(FAILED(hr))return hr;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -148,7 +164,7 @@ public:
         IDWriteTextLayout1* layout1=nullptr;
         if(SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1),(void**)&layout1))){layout1->SetCharacterSpacing(tracking,0,0,{0,(UINT32)value.size()});Drop(layout1);}
         IDWriteTypography* typo=nullptr;write->CreateTypography(&typo);
-        if(typo){for(auto tag:{DWRITE_MAKE_OPENTYPE_TAG('c','p','s','p'),DWRITE_MAKE_OPENTYPE_TAG('c','v','1','2'),DWRITE_MAKE_OPENTYPE_TAG('t','n','u','m')})typo->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)tag,1});layout->SetTypography(typo,{0,(UINT32)value.size()});Drop(typo);}
+        if(typo){for(auto tag:{DWRITE_MAKE_OPENTYPE_TAG('c','p','s','p'),DWRITE_MAKE_OPENTYPE_TAG('c','v','1','2')})typo->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)tag,1});if(tabular)typo->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,1});layout->SetTypography(typo,{0,(UINT32)value.size()});Drop(typo);}
         DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);
         DWRITE_LINE_METRICS line{};UINT32 count=0;layout->GetLineMetrics(&line,1,&count);
         placement.lineHeight=std::max(metrics.height,line.height);placement.baseline=line.baseline;
@@ -163,22 +179,22 @@ public:
         placement.inkBottom=placement.originY+layout->GetMaxHeight()+overhang.bottom;
         *output=layout;return S_OK;
     }
-    TextMeasure MeasureText(const std::wstring& value,D2D1_RECT_F slot,float size,bool medium=false,bool brand=false,float tracking=0){TextMeasure m;IDWriteTextLayout* layout=nullptr;MakeTextLayout(value,slot,size,brand,medium,tracking,&layout,m);Drop(layout);return m;}
+    TextMeasure MeasureText(const std::wstring& value,D2D1_RECT_F slot,float size,bool medium=false,bool tabular=false,float tracking=0){TextMeasure m;IDWriteTextLayout* layout=nullptr;MakeTextLayout(value,slot,size,tabular,medium,tracking,&layout,m);Drop(layout);return m;}
     // Returns an AddRef'd layout; placement is translated to this slot.
-    HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool brand,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
-        if(!cacheText)return MakeTextLayout(value,slot,size,brand,medium,tracking,output,placement);
-        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,brand,medium};
+    HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
+        if(!cacheText)return MakeTextLayout(value,slot,size,tabular,medium,tracking,output,placement);
+        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium};
         auto it=textCache.find(key);
         if(it==textCache.end()){
             if(textCache.size()>=TextCacheLimit)ClearTextCache();
             TextEntry entry;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
-            HRESULT hr=MakeTextLayout(value,origin,size,brand,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
+            HRESULT hr=MakeTextLayout(value,origin,size,tabular,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
             it=textCache.emplace(std::move(key),entry).first;
         }
         placement=it->second.measure;placement.originY+=slot.top;placement.inkTop+=slot.top;placement.inkBottom+=slot.top;
         *output=it->second.layout;(*output)->AddRef();return S_OK;
     }
-    void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool brand=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,brand,medium,tracking,&layout,m)))return;
+    void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,tabular,medium,tracking,&layout,m)))return;
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
         auto clip=slot;clip.top=std::min(slot.top,m.inkTop-96.f/dpi);clip.bottom=std::max(slot.bottom,m.inkBottom+96.f/dpi);
@@ -190,7 +206,9 @@ public:
         if(!bitmap){IWICBitmapDecoder* dec=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* conv=nullptr;HRESULT hr=wic->CreateDecoderFromFilename((assets+L"icons\\"+key).c_str(),nullptr,GENERIC_READ,WICDecodeMetadataCacheOnLoad,&dec);if(SUCCEEDED(hr))hr=dec->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&conv);if(SUCCEEDED(hr))hr=conv->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);if(SUCCEEDED(hr))target->CreateBitmapFromWicBitmap(conv,nullptr,&bitmap);Drop(conv);Drop(frame);Drop(dec);}
         if(bitmap){float x=(rect.left+rect.right-size)/2,y=(rect.top+rect.bottom-size)/2;target->DrawBitmap(bitmap,D2D1::RectF(x,y,x+size,y+size),opacity);}
     }
-    void FocusRing(D2D1_RECT_F box,float radius){const float inset=Design::Size::focusStroke/2;box.left+=inset;box.top+=inset;box.right-=inset;box.bottom-=inset;Color(Design::Focus::color,Design::Focus::opacity);target->DrawRoundedRectangle(D2D1::RoundedRect(box,radius,radius),brush,Design::Size::focusStroke);}
+    // True when focus last moved by keyboard (Tab, arrows, shortcuts); a pointer press clears it.
+    bool keyboardModality=true;
+    void FocusRing(D2D1_RECT_F box,float radius){const float inset=Design::Size::focusStroke/2;box.left+=inset;box.top+=inset;box.right-=inset;box.bottom-=inset;Color(Design::Focus::color,Design::Focus::Opacity(keyboardModality));target->DrawRoundedRectangle(D2D1::RoundedRect(box,radius,radius),brush,Design::Size::focusStroke);}
     void DrawButton(const wchar_t* icon,D2D1_RECT_F box,Design::ButtonVariant variant,Design::ButtonState state){
         auto style=Design::Resolve(variant,state);
         if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}
@@ -198,56 +216,70 @@ public:
         Icon(icon,box,style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled),style.iconOpacity);
     }
     HRESULT PaintStateSheet(){if(!target)return E_UNEXPECTED;target->BeginDraw();target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
-        Text(L"Native components",{24,16,700,48},20,1,false,true);
-        const wchar_t* labels[]={L"Default",L"Hover",L"Pressed",L"Disabled",L"Keyboard focus"};
+        Text(L"Native components",{24,16,700,48},20,1,false,true);const bool modality=keyboardModality;
+        const wchar_t* labels[]={L"Default",L"Hover",L"Pressed",L"Disabled",L"Keyboard focus",L"Pointer focus"};
         const wchar_t* rows[]={L"Ghost / new tab",L"Raised / navigation",L"Embedded / reload",L"Window controls"};
         Design::ButtonVariant variants[]={Design::ButtonVariant::Ghost,Design::ButtonVariant::Raised,Design::ButtonVariant::Embedded,Design::ButtonVariant::Window};
-        for(int col=0;col<5;++col)Text(labels[col],{240.f+col*128,56,364.f+col*128,88},14,.7f);
+        for(int col=0;col<6;++col)Text(labels[col],{240.f+col*128,56,364.f+col*128,88},14,.7f);
         for(int row=0;row<4;++row){float y=104.f+row*64;Text(rows[row],{24,y,230,y+32},14,.7f);
-            for(int col=0;col<5;++col){float x=240.f+col*128;Design::ButtonState state{col==1?1.f:0.f,col==2?1.f:0.f,col==3,col==4};
+            for(int col=0;col<6;++col){float x=240.f+col*128;Design::ButtonState state{col==1?1.f:0.f,col==2?1.f:0.f,col==3,col>=4};keyboardModality=col!=5;
                 if(row==2)Round({x-4,y-4,x+100,y+36},Design::Radius::control,Design::Surface::raised);
                 DrawButton(row==0?L"plus":row==1?L"back":row==2?L"reload":L"minimize",{x,y,x+32,y+32},variants[row],state);
                 if(row==3){DrawButton(L"maximize",{x+36,y,x+68,y+32},variants[row],state);DrawButton(L"close",{x+72,y,x+104,y+32},variants[row],state);}
             }
         }
+        keyboardModality=true;
         Text(L"Tab surfaces / stable close slot",{24,384,400,416},14,.7f);
-        for(int col=0;col<3;++col){float x=240.f+col*190;D2D1_RECT_F tab{x,432,x+128,464};Round(tab,Design::Radius::control,Design::TabSurface(col==0,col==1?1:0));DrawFavicon(0,{x+8,440,x+24,456});Text(L"Ggyp \u00c9\u00e7",{x+32,432,x+96,464},14,.5f,false,true);if(col!=2)Icon(L"tab-close",{x+100,436,x+124,460});if(col==2)FocusRing(tab,Design::Radius::control);}
+        for(int col=0;col<3;++col){float x=240.f+col*190;D2D1_RECT_F tab{x,432,x+128,464};Round(tab,Design::Radius::control,Design::TabSurface(col==0,col==1?1:0));DrawFavicon(0,{x+8,440,x+24,456});Text(L"Ggyp \u00c9\u00e7",{x+32,432,x+96,464},14,.5f,false,true);if(col!=2)Icon(L"tab-close",{x+100,436,x+124,460});if(col==2)FocusRing(tab,Design::Radius::control);}keyboardModality=modality;
         Text(L"Production Direct2D + DirectWrite / Phosphor Bold / no WebView2",{24,496,900,528},14,.7f);
         return target->EndDraw();
     }
-    void Build(int count,int selected){regions.clear();int capacity=Design::TabStrip::Capacity(width);if(selected<first)first=selected;if(selected>=first+capacity)first=selected-capacity+1;first=std::max(0,first);int shown=std::min(capacity,count-first);
-        auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},L"Liste des onglets · molette pour changer"});
-        for(int i=0;i<shown;i++){
-            auto close=Design::TabStrip::CloseSlot(Design::TabStrip::Surface(i));auto region=Design::TabStrip::Region(i);
+    void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr){regions.clear();tips.clear();
+        namespace TS=Design::TabStrip;strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;
+        brandTip=L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
+        auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},brandTip.c_str()});
+        // Tooltips carry the full title: compact tabs truncate or hide it.
+        tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back((title.empty()?L"Onglet":title)+L" - Ctrl+1...8 / Ctrl+9 (dernier) - Ctrl+Maj+PgPréc/PgSuiv pour déplacer - clic milieu pour fermer");}
+        for(int i=0;i<count;i++){if(!strip.Visible(i))continue;
+            auto close=TS::CloseSlot(strip.Surface(i));auto region=strip.Region(i);
+            region.left=std::max(region.left,TS::left);region.right=std::min(region.right,strip.ViewRight());
             // Close first: its hit area wins over the containing tab, and IDs
             // never collide with tabs, keyboard commands or toolbar buttons.
-            regions.push_back({CloseBase+first+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
-            regions.push_back({TabBase+first+i,{region.left,region.top,region.right,region.bottom},L"Onglet · clic milieu pour fermer"});
+            // Tabs under a fade stay clickable (selecting scrolls them clear) but
+            // expose no close target and take no keyboard focus.
+            const bool clear=strip.Clear(i);
+            if(clear&&strip.HasClose())regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
+            regions.push_back({TabBase+i,{region.left,region.top,region.right,region.bottom},tips[i].c_str(),clear});
         }
-        float x=Design::TabStrip::NewTabLeft(shown);regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
+        float x=strip.NewTabLeft();regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
         regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-103,76};edit={92,44,bar.right-79,76};
-        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
+        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
         regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
     }
-    std::vector<int> FocusOrder()const{std::vector<int> order;for(auto& region:regions){if(IsClose(region.id))continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)&&Enabled(CloseBase+TabIndex(region.id)))order.push_back(CloseBase+TabIndex(region.id));}return order;}
+    std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
     int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
-    bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==2;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){if(!target||!brush)return;Build((int)titles.size(),selected);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+    bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){if(!target||!brush)return;Build((int)titles.size(),selected,&titles);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
-        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=Design::TabStrip::Surface(n-first);D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=Design::TabStrip::CloseSlot(surface);auto title=Design::TabStrip::TitleSlot(surface);auto favicon=Design::TabStrip::FaviconSlot(surface);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
+        auto paintRegions=regions;
+        // Paint the grabbed tab last so it stays above its neighbours.
+        if(dragIndex>=0){auto it=std::find_if(paintRegions.begin(),paintRegions.end(),[&](const Region& r){return r.id==TabBase+dragIndex;});if(it!=paintRegions.end()){auto r=*it;paintRegions.erase(it);paintRegions.push_back(r);}}
+        for(auto& r:paintRegions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=strip.Surface(n);if(n==dragIndex){surface.left+=dragOffset;surface.right+=dragOffset;}D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=Design::TabStrip::CloseSlot(surface);auto title=strip.TitleIn(surface);auto favicon=strip.FaviconIn(surface);const bool closable=strip.Clear(n)&&strip.HasClose()&&n!=dragIndex;
+                // Partially scrolled tabs are cut at the strip viewport, then masked.
+                target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
                 // Exactly one opaque surface: no second close-button hover fill.
-                float emphasis=motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
+                float emphasis=dragIndex<0&&motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
                 float base=Design::TabSurface(false,tabHover);
-                if(emphasis>0||tabHover>0){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
+                if(emphasis>0||tabHover>0||n==dragIndex){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
                 if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
                 DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom});
-                Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
-                if(tabHover>0||focus==CloseBase+n){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),focus==CloseBase+n?1:tabHover);}
-                if(focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::inset);
-                continue;}
+                if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
+                if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),focus==CloseBase+n?1:tabHover);}
+                if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::inset);
+                target->PopAxisAlignedClip();continue;}
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
@@ -268,9 +300,11 @@ public:
                 else DrawButton(icon,box,variant,state);}
 
         }
+        if(strip.HiddenBefore())DrawFade(strip.ViewLeft(),strip.ViewLeft()+Design::TabStrip::fade);
+        if(strip.HiddenAfter())DrawFade(strip.ViewRight(),strip.ViewRight()-Design::TabStrip::fade);
         Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-37,55,bar.right-36,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
         if(!editing)Text(uri.empty()?L"Search, browse, whatever":uri,{92,44,bar.right-79,76},Design::Type::address.size,Design::Text::address,false,Design::Type::address.medium,Design::Type::address.tracking);
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
 }

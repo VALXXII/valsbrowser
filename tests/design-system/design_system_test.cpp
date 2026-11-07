@@ -25,6 +25,28 @@ int wmain(int argc,wchar_t** argv){
     Require(VariantFor('X')==VariantFor('m')&&VariantFor('M')==VariantFor('m'),"identical window control variant");
     for(UINT dpi:{96,144,192}){
         Chrome chrome;Require(SUCCEEDED(chrome.InitOffscreen(argv[1],dpi,1180,560)),"production offscreen renderer");
+        // Verify real glyph coverage and OpenType features on production layouts.
+        for(bool medium:{false,true}){
+            IDWriteTextLayout* layout=nullptr;TextMeasure measure;
+            Require(SUCCEEDED(chrome.MakeTextLayout(L"\u00e9\u00e8\u00e0\u00f9\u00c9\u00c8\u00c0\u00d9e\u0301a\u0300",{0,0,500,32},14,false,medium,0,&layout,measure)),"accent layout");
+            IDWriteFontCollection* collection=nullptr;Require(SUCCEEDED(layout->GetFontCollection(0,&collection)),"layout font collection");
+            Require(collection->GetFontFamilyCount()==1,"only Inter Display required");
+            IDWriteFontFamily* family=nullptr;IDWriteFont* font=nullptr;IDWriteFontFace* face=nullptr;
+            Require(SUCCEEDED(collection->GetFontFamily(0,&family)),"Inter family");
+            Require(SUCCEEDED(family->GetFirstMatchingFont(medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STRETCH_NORMAL,DWRITE_FONT_STYLE_NORMAL,&font)),"Inter weight");
+            Require(SUCCEEDED(font->CreateFontFace(&face)),"Inter face");
+            UINT32 points[]={0xe9,0xe8,0xe0,0xf9,0xc9,0xc8,0xc0,0xd9,0x301,0x300};UINT16 glyphs[10]{};
+            Require(SUCCEEDED(face->GetGlyphIndices(points,10,glyphs)),"French glyph lookup");
+            for(auto glyph:glyphs)Require(glyph!=0,"accent has a real glyph, not a missing-glyph box");
+            Drop(face);Drop(font);Drop(family);Drop(collection);Drop(layout);
+        }
+        for(bool tabular:{false,true}){
+            IDWriteTextLayout* layout=nullptr;TextMeasure measure;
+            Require(SUCCEEDED(chrome.CachedTextLayout(L"0123456789",{0,0,500,32},14,tabular,false,0,&layout,measure)),"cached digit layout");
+            IDWriteTypography* typography=nullptr;Require(SUCCEEDED(layout->GetTypography(0,&typography)),"layout typography");
+            bool found=false;for(UINT32 i=0;i<typography->GetFontFeatureCount();++i){DWRITE_FONT_FEATURE feature{};typography->GetFontFeature(i,&feature);if(feature.nameTag==DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES)found=feature.parameter==1;}
+            Require(found==tabular,"tabular figures only for explicit counters, including cache");Drop(typography);Drop(layout);
+        }
         Require(SUCCEEDED(chrome.PaintStateSheet()),"production state sheet render");
         Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/components-"+std::to_wstring(dpi)+L".png").c_str())),"state sheet PNG export");
         chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,CloseBase,0);
@@ -35,6 +57,10 @@ int wmain(int argc,wchar_t** argv){
         auto order=chrome.FocusOrder();Require(std::find(order.begin(),order.end(),'R')==order.end(),"disabled excluded from keyboard order");auto tab=std::find(order.begin(),order.end(),TabBase);Require(tab!=order.end()&&tab+1!=order.end()&&*(tab+1)==CloseBase,"tab body precedes its reserved close action in keyboard order");
         chrome.SetEnabled('R',true);Require(chrome.Hit(chrome.bar.right-57,60)=='R',"enabled control restores same geometry");
         auto m=chrome.MeasureText(L"Ggyp \u00c9\u00e7",{0,0,200,32},Type::label.size,true);Require(m.inkTop>=0&&m.inkBottom<=32,"complete glyph ink retained");
+        chrome.keyboardModality=false;chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,0,'L');const int pointerRing=chrome.SurfacePixel(chrome.bar.left,(chrome.bar.top+chrome.bar.bottom)/2)&255;
+        Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/chrome-focus-pointer-"+std::to_wstring(dpi)+L".png").c_str())),"production chrome pointer focus snapshot");
+        chrome.keyboardModality=true;chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,0,'L');const int keyboardRing=chrome.SurfacePixel(chrome.bar.left,(chrome.bar.top+chrome.bar.bottom)/2)&255;
+        Require(keyboardRing>pointerRing+40,"keyboard focus ring is markedly stronger than pointer focus ring");
         chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,0,'R');
         Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/chrome-focus-"+std::to_wstring(dpi)+L".png").c_str())),"production chrome focus snapshot");
     }
@@ -45,5 +71,5 @@ int wmain(int argc,wchar_t** argv){
     Require(before==41&&after==23,"old tab selection surface fades to canvas");
     motion.SetReducedMotion(true);motion.SelectTab(1,start+Motion::Milliseconds(140));animated.Paint({L"First",L"Second"},0,L"",false,0,0,nullptr,start+Motion::Milliseconds(140));Require((animated.SurfacePixel(TabStrip::Surface(0).right-2,16)&255)==41,"reduced motion selection updates immediately");
     animated.Dispose();Require(!GetModuleHandleW(L"WebView2Loader.dll"),"native fixture never loaded engine");
-    std::puts("PASS: typed variants, disabled/focus isolation, opaque state fills, native state sheets at 96/144/192 DPI, stable close hover and glyph ink.");CoUninitialize();return 0;
+    std::puts("PASS: typed variants, disabled/focus isolation, pointer vs keyboard focus strength, opaque state fills, native state sheets at 96/144/192 DPI, stable close hover and glyph ink.");CoUninitialize();return 0;
 }

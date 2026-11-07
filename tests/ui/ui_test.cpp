@@ -55,7 +55,7 @@ int wmain(int argc,wchar_t** argv){
     for(UINT dpi:{96,120,144,168,192,240,288,384}){
         Chrome chrome;Check(SUCCEEDED(chrome.InitOffscreen(root,dpi,1180,84)),"offscreen Direct2D/WIC setup");
         const D2D1_RECT_F line{0,0,500,32};
-        for(float size:{14.f,16.f})for(const auto& sample:{L"G",L"Google",L"Ggyp",L"ÉÀç",L"ÀÉÎÔÜ gypqj"}){
+        for(float size:{14.f,16.f})for(const auto& sample:{L"G",L"Google",L"Ggyp",L"\u00e9\u00e8\u00e0\u00f9 \u00c9\u00c8\u00c0\u00d9",L"e\u0301 e\u0300 a\u0300",L"ÉÀç",L"ÀÉÎÔÜ gypqj"}){
             auto m=chrome.MeasureText(sample,line,size,size==14);
             Check(m.lineHeight>size,"real font line height exceeds old clipped label box");
             Check(m.inkTop>=-.01f&&m.inkBottom<=32.01f,"all measured vertical glyph ink fits complete control");
@@ -64,7 +64,6 @@ int wmain(int argc,wchar_t** argv){
         auto shortTitle=chrome.MeasureText(L"Google",{89,6,157,38},14,true,false,-.28f);
         auto longTitle=chrome.MeasureText(titles[2],{89,6,157,38},14,true,false,-.28f);
         Check(!shortTitle.trimmed&&longTitle.trimmed,"ellipsis restricted to real horizontal overflow");
-        auto brand=chrome.MeasureText(L"Browser",{16,6,45,38},8,false,true,-.16f);Check(brand.inkTop>=6&&brand.inkBottom<=38,"brand glyph ink preserved");
         HFONT font=CreateFontW(-MulDiv(16,dpi,96),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(edit,WM_SETFONT,(WPARAM)font,0);
         HDC dc=GetDC(edit);auto old=SelectObject(dc,font);TEXTMETRICW tm{};GetTextMetricsW(dc,&tm);SelectObject(dc,old);ReleaseDC(edit,dc);
         auto address=chrome.MeasureText(L"Ag",{92,44,998,76},16,false,false,-.16f);int baseline=(int)std::lround((address.originY+address.baseline)*dpi/96);

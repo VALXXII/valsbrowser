@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <cmath>
 
 namespace NativeChrome::Design {
 // Values are DIPs; native DPI scaling happens only at the render boundary.
@@ -21,16 +22,28 @@ namespace Radius { inline constexpr float control=6, inset=3; }
 namespace Size {
 inline constexpr float control=32, compact=24, icon=16, windowIcon=14;
 // tabPitch = visible tab + gap. Was 140 (12 DIP visible gap, double the toolbar).
+// `tab` is the natural (widest) tab; crowded strips shrink tabs down to `tabMin`,
+// a favicon-only square the height of every other control.
 inline constexpr float tab=128, tabPitch=tab+Space::tabGap, closeSlot=24;
+inline constexpr float tabMin=control;
+// Below `tabCloseAll` tabs drop the close slot so the title keeps the room (middle
+// click, context menu and Ctrl+W still close); below `tabIconOnly` a tab is just
+// its centred favicon.
+inline constexpr float tabCloseAll=96, tabIconOnly=56;
 // Close slot is inset equally from the tab's trailing, top and bottom edges
 // (4 DIP), so the centered 16 DIP glyph box sits 8 DIP from each edge,
 // mirroring the favicon's 8 DIP leading inset.
 inline constexpr float closeInset=(control-closeSlot)/2;
-// User-specified keyboard focus: exactly 1 DIP, white at 10% alpha.
+// Focus ring: exactly 1 DIP white. Pointer focus keeps the user-chosen subtle
+// 10% alpha; keyboard focus (Tab, arrows, shortcuts) rises to 50% so it meets
+// WCAG 1.4.11 (>= 3:1) on every chrome surface it crosses (issue #3).
 inline constexpr float focusStroke=1;
 }
 namespace AddressLoading { inline constexpr float opacity=.08f; }
-namespace Focus { inline constexpr float color=1, opacity=.10f, stroke=Size::focusStroke; }
+namespace Focus {
+inline constexpr float color=1, pointerOpacity=.10f, keyboardOpacity=.50f, stroke=Size::focusStroke;
+inline constexpr float Opacity(bool keyboard){return keyboard?keyboardOpacity:pointerOpacity;}
+}
 static_assert(Size::tabPitch-Size::tab==Space::tabGap,"visible tab gap equals toolbar gap");
 static_assert(Size::closeInset*2+Size::closeSlot==Size::control,"close slot vertically centred in the 32 DIP tab");
 static_assert(Size::focusStroke==1,"focus stroke is the user-chosen 1 DIP");
@@ -60,7 +73,62 @@ inline constexpr Box TitleSlot(Box tab){return {tab.left+32,tab.top,CloseSlot(ta
 // New-tab button keeps the same 6 DIP visible gap after the last tab.
 inline constexpr float NewTabLeft(int shown){return left+Size::tabPitch*shown+Space::tabGap;}
 inline int Capacity(float width){const float room=width-trailingReserve-left-Space::tabGap-Size::control;return std::max(1,static_cast<int>(room/Size::tabPitch));}
+// Edge mask width: hidden tabs keep a peeking sliver under a canvas-coloured
+// linear gradient on the side where they are, so overflow is never silent.
+inline constexpr float fade=24, peek=Size::tabMin/2;
+inline constexpr Box IconSlot(Box tab){const float x=(tab.left+tab.right-Size::icon)/2;return {x,tab.top+Space::md,x+Size::icon,tab.top+Space::md+Size::icon};}
+// Region width available to tab pitches before the new-tab button.
+inline float Room(float width){return std::max(Size::tabMin+Space::tabGap,width-trailingReserve-left-Space::tabGap-Size::control);}
+// Adaptive width: tabs share the room evenly between 128 and 32 DIP, whole DIPs.
+inline float TabWidth(float width,int count){if(count<=0)return Size::tab;return std::clamp(std::floor(Room(width)/count-Space::tabGap),Size::tabMin,Size::tab);}
+// A laid-out, horizontally scrolled strip. Same invariants as the slot helpers
+// above (6 DIP gap, contiguous regions, first tab at x44 when unscrolled), with
+// `tab` adaptive and `scroll` shifting content under a [ViewLeft, ViewRight] clip.
+struct Strip {
+    int count=0; float tab=Size::tab, room=0, view=0, scroll=0;
+    float Pitch()const{return tab+Space::tabGap;}
+    float Content()const{return count*Pitch();}
+    float MaxScroll()const{return std::max(0.f,Content()-view);}
+    bool Overflow()const{return Content()>room;}
+    float ViewLeft()const{return left+Space::tabGap;}
+    float ViewRight()const{return left+view;}
+    bool HiddenBefore()const{return scroll>.5f;}
+    bool HiddenAfter()const{return scroll<MaxScroll()-.5f;}
+    float ClearLeft()const{return ViewLeft()+(HiddenBefore()?fade:0);}
+    float ClearRight()const{return ViewRight()-(HiddenAfter()?fade:0);}
+    Box Region(int i)const{return {left+Pitch()*i-scroll,regionTop,left+Pitch()*(i+1)-scroll,regionBottom};}
+    Box Surface(int i)const{const float x=left+Pitch()*i-scroll+Space::tabGap;return {x,top,x+tab,bottom};}
+    // Fully outside the fades: drawn unmasked, keyboard-focusable, closable.
+    bool Clear(int i)const{auto s=Surface(i);return s.left>=ClearLeft()-.01f&&s.right<=ClearRight()+.01f;}
+    bool Visible(int i)const{auto s=Surface(i);return s.right>ViewLeft()&&s.left<ViewRight();}
+    bool Titled()const{return tab>=Size::tabIconOnly;}
+    bool HasClose()const{return tab>=Size::tabCloseAll;}
+    // Title reserves the close slot whenever the tab can show one (no hover shift).
+    // `...In` take a surface so a dragged (offset) tab lays out the same way.
+    Box TitleIn(Box s)const{auto t=TitleSlot(s);if(!HasClose())t.right=s.right-Space::md;return t;}
+    Box FaviconIn(Box s)const{return Titled()?FaviconSlot(s):IconSlot(s);}
+    Box Title(int i)const{return TitleIn(Surface(i));}
+    Box Favicon(int i)const{return FaviconIn(Surface(i));}
+    float NewTabLeft()const{return ViewRight()+Space::tabGap;}
+};
+// `locked` (0 = off) caps the width while the pointer stays on the strip after a
+// pointer close, so the next close button lands under the cursor.
+inline Strip Layout(float width,int count,int selected,float scroll,float locked=0){
+    Strip s;s.count=std::max(0,count);s.room=std::floor(Room(width));s.tab=TabWidth(width,s.count);if(locked>0)s.tab=std::min(s.tab,std::max(locked,Size::tabMin));
+    // Overflowing view = whole pitches + the first hidden tab's `peek`, so at either
+    // scroll end the hidden neighbour shows exactly half a favicon-only tab.
+    s.view=s.Overflow()?std::floor((s.room-Space::tabGap-peek)/s.Pitch())*s.Pitch()+Space::tabGap+peek:s.Content();
+    float x=std::clamp(scroll,0.f,s.MaxScroll());
+    if(selected>=0&&selected<s.count&&s.Overflow()){
+        // Keep the selected tab clear of both fades; the neighbour peeks under one.
+        const float start=s.Pitch()*selected,end=start+Space::tabGap+s.tab;
+        x=std::min(x,start-fade);x=std::max(x,end-s.view+fade);
+    }
+    s.scroll=std::clamp(std::round(x),0.f,s.MaxScroll());return s;
 }
+}
+static_assert(Size::tabMin==2*Space::md+Size::icon,"favicon-only tab keeps the 8 DIP favicon inset on both sides");
+static_assert(Size::tabIconOnly<Size::tabCloseAll&&Size::tabCloseAll<=Size::tab,"tab compaction thresholds are ordered");
 static_assert(TabStrip::left==38&&TabStrip::Surface(0).left==Toolbar::forwardLeft,"first tab surface aligns with the forward button (44)");
 // Brand flower: optically placed on the toolbar column and tab row, not the
 // geometric centre of its 0..38 region (which would be x 19).
@@ -76,7 +144,7 @@ static_assert(Brand::centerY*2==TabStrip::FaviconSlot(TabStrip::Surface(0)).top+
 inline constexpr unsigned long NativeGray(float value){auto byte=static_cast<unsigned long>(value*255+.5f);return byte|(byte<<8)|(byte<<16);}
 struct TypeRole { float size; bool medium; float tracking; };
 namespace Type {
-inline constexpr TypeRole label{14,true,-.28f}, address{16,false,-.16f}, brand{8,false,-.16f};
+inline constexpr TypeRole label{14,true,-.28f}, address{16,false,-.16f};
 }
 enum class ButtonVariant { Ghost, Raised, Embedded, Window, TabClose };
 struct ButtonState { float hover=0, press=0; bool disabled=false, focus=false; };
