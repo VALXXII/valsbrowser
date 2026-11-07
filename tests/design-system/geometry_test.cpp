@@ -65,6 +65,12 @@ int main(){
         }
         auto icon=TabStrip::Layout(560,40,0,0);Require(!icon.Titled()&&!icon.HasClose(),"favicon-only tabs drop title and close");
         auto f=icon.Favicon(1),t=icon.Surface(1);Require(Near(f.left-t.left,t.right-f.right)&&Near(f.left-t.left,Space::md),"favicon centred with 8 DIP insets");
+        auto swap=icon.CloseIn(icon.Surface(1));
+        Require(icon.Closable(1,1)&&icon.SwapsClose(1,1)&&!icon.Closable(2,1),"favicon-only: only the selected tab swaps its favicon for close");
+        Require(Near(swap.right-swap.left,Size::closeSlot)&&Near(swap.left-t.left,Size::closeInset)&&Near(t.right-swap.right,Size::closeInset)&&Near(swap.top-t.top,Size::closeInset),"swapped close is the 24 DIP slot centred with 4 DIP insets");
+        auto narrowSwap=TabStrip::Layout(1180,12,3,0);auto ns=narrowSwap.CloseIn(narrowSwap.Surface(3)),nf=narrowSwap.Favicon(3);
+        Require(narrowSwap.SwapsClose(3,3)&&Near((ns.left+ns.right)/2,(nf.left+nf.right)/2)&&ns.right<=narrowSwap.Title(3).left,"narrow selected tab swaps close onto the favicon without touching the title");
+        Require(few.Closable(0,1)&&!few.SwapsClose(0,0),"wide tabs keep the trailing close on every tab");
         auto narrow=TabStrip::Layout(1180,12,3,0);Require(narrow.tab>=Size::tabIconOnly&&narrow.tab<Size::tabCloseAll&&narrow.Titled(),"12 tabs at 1180 are narrow but titled");
         Require(!narrow.HasClose()&&Near(narrow.Title(3).right,narrow.Surface(3).right-Space::md),"narrow titles take the close room");
         Require(few.HasClose()&&Near(few.Title(0).right,TabStrip::TitleSlot(few.Surface(0)).right),"wide tabs keep the reserved close slot");

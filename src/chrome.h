@@ -111,7 +111,7 @@ public:
     void SetFavicons(std::vector<std::shared_ptr<const FaviconImage>> images){favicons=std::move(images);for(auto it=faviconBitmaps.begin();it!=faviconBitmaps.end();){if(std::find(favicons.begin(),favicons.end(),it->first)==favicons.end()){Drop(it->second);it=faviconBitmaps.erase(it);}else ++it;}}
     // Missing/empty/invalid site images are normal favicon absence, not engine errors.
     std::shared_ptr<const FaviconImage> DecodeFavicon(IStream* stream){if(!wic||!stream)return {};STATSTG stat{};if(FAILED(stream->Stat(&stat,STATFLAG_NONAME))||stat.cbSize.QuadPart==0||stat.cbSize.QuadPart>4*1024*1024)return {};LARGE_INTEGER zero{};if(FAILED(stream->Seek(zero,STREAM_SEEK_SET,nullptr)))return {};IWICBitmapDecoder* decoder=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* converter=nullptr;UINT w=0,h=0;HRESULT hr=wic->CreateDecoderFromStream(stream,nullptr,WICDecodeMetadataCacheOnLoad,&decoder);if(SUCCEEDED(hr))hr=decoder->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=frame->GetSize(&w,&h);if(SUCCEEDED(hr)&&(!w||!h||w>1024||h>1024))hr=E_INVALIDARG;if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&converter);if(SUCCEEDED(hr))hr=converter->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);std::shared_ptr<FaviconImage> image;if(SUCCEEDED(hr)){image=std::make_shared<FaviconImage>();image->width=w;image->height=h;image->stride=w*4;image->pixels.resize(image->stride*h);hr=converter->CopyPixels(nullptr,image->stride,(UINT)image->pixels.size(),image->pixels.data());}Drop(converter);Drop(frame);Drop(decoder);return SUCCEEDED(hr)?image:nullptr;}
-    void DrawFavicon(int index,D2D1_RECT_F slot){auto image=index<(int)favicons.size()?favicons[index]:nullptr;if(!image){Icon(L"favicon",slot);return;}auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(bitmap){float factor=std::min((slot.right-slot.left)/image->width,(slot.bottom-slot.top)/image->height),w=image->width*factor,h=image->height*factor;float x=(slot.left+slot.right-w)/2,y=(slot.top+slot.bottom-h)/2;target->DrawBitmap(bitmap,{x,y,x+w,y+h});}else Icon(L"favicon",slot);}
+    void DrawFavicon(int index,D2D1_RECT_F slot,float opacity=1){if(opacity<=0)return;auto image=index<(int)favicons.size()?favicons[index]:nullptr;if(!image){Icon(L"favicon",slot,16,opacity);return;}auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(bitmap){float factor=std::min((slot.right-slot.left)/image->width,(slot.bottom-slot.top)/image->height),w=image->width*factor,h=image->height*factor;float x=(slot.left+slot.right-w)/2,y=(slot.top+slot.bottom-h)/2;target->DrawBitmap(bitmap,{x,y,x+w,y+h},opacity);}else Icon(L"favicon",slot,16,opacity);}
     void SetMotion(Motion::State* state){motion=state;}
     bool animateSelection=false;
     std::set<int> disabled;
@@ -241,14 +241,14 @@ public:
         // Tooltips carry the full title: compact tabs truncate or hide it.
         tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back((title.empty()?L"Onglet":title)+L" - Ctrl+1...8 / Ctrl+9 (dernier) - Ctrl+Maj+PgPréc/PgSuiv pour déplacer - clic milieu pour fermer");}
         for(int i=0;i<count;i++){if(!strip.Visible(i))continue;
-            auto close=TS::CloseSlot(strip.Surface(i));auto region=strip.Region(i);
+            auto close=strip.CloseIn(strip.Surface(i));auto region=strip.Region(i);
             region.left=std::max(region.left,TS::left);region.right=std::min(region.right,strip.ViewRight());
             // Close first: its hit area wins over the containing tab, and IDs
             // never collide with tabs, keyboard commands or toolbar buttons.
             // Tabs under a fade stay clickable (selecting scrolls them clear) but
             // expose no close target and take no keyboard focus.
             const bool clear=strip.Clear(i);
-            if(clear&&strip.HasClose())regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
+            if(clear&&strip.Closable(i,selected))regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
             regions.push_back({TabBase+i,{region.left,region.top,region.right,region.bottom},tips[i].c_str(),clear});
         }
         float x=strip.NewTabLeft();regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
@@ -267,7 +267,7 @@ public:
         auto paintRegions=regions;
         // Paint the grabbed tab last so it stays above its neighbours.
         if(dragIndex>=0){auto it=std::find_if(paintRegions.begin(),paintRegions.end(),[&](const Region& r){return r.id==TabBase+dragIndex;});if(it!=paintRegions.end()){auto r=*it;paintRegions.erase(it);paintRegions.push_back(r);}}
-        for(auto& r:paintRegions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=strip.Surface(n);if(n==dragIndex){surface.left+=dragOffset;surface.right+=dragOffset;}D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=Design::TabStrip::CloseSlot(surface);auto title=strip.TitleIn(surface);auto favicon=strip.FaviconIn(surface);const bool closable=strip.Clear(n)&&strip.HasClose()&&n!=dragIndex;
+        for(auto& r:paintRegions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=strip.Surface(n);if(n==dragIndex){surface.left+=dragOffset;surface.right+=dragOffset;}D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=strip.CloseIn(surface);auto title=strip.TitleIn(surface);auto favicon=strip.FaviconIn(surface);const bool closable=strip.Clear(n)&&strip.Closable(n,selected)&&n!=dragIndex;
                 // Partially scrolled tabs are cut at the strip viewport, then masked.
                 target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
                 // Exactly one opaque surface: no second close-button hover fill.
@@ -275,9 +275,11 @@ public:
                 float base=Design::TabSurface(false,tabHover);
                 if(emphasis>0||tabHover>0||n==dragIndex){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
                 if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
-                DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom});
+                // Narrow selected tab: the close glyph cross-fades in over the favicon it replaces.
+                const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
+                DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},strip.SwapsClose(n,selected)?1-closeShown:1);
                 if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
-                if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),focus==CloseBase+n?1:tabHover);}
+                if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown);}
                 if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::inset);
                 target->PopAxisAlignedClip();continue;}
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L')continue;

@@ -26,6 +26,8 @@ network asset, font replacement, or browser engine change is introduced.
 - Crowded tab strip (`TabStrip::Layout`/`Strip`): tabs share the room evenly
   between 128 and 32 DIP (whole DIPs, 6 DIP gap kept). Below 96 the close slot
   goes and the title takes its room; below 56 a tab is its centred favicon only.
+  On those narrow tabs the selected one swaps its favicon for a centred 24 DIP
+  close on hover/focus (cross-fade); inactive ones keep that spot for selecting.
   Past that the strip scrolls: the selected tab always stays clear, and each side
   that still hides tabs gets a 24 DIP canvas-coloured linear-gradient mask over a
   16 DIP peek of the next hidden tab. Masked tabs stay clickable (selecting scrolls
