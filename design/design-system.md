@@ -2,7 +2,7 @@
 
 Final integration: `main`, derived from `feat/design-system-polish`. Flower16/.32 centred(22,22), first tab x44 aligned with forward, rigid CCW refresh once500ms independent of network completion. Full native regression and packaging: [release validation](release-validation.md).
 
-Current source of truth: [Lottie and geometry contract](lottie-spec.md) and [native integration evidence](lottie-integration-validation.md). Focus is now exactly white at 10% / 1 DIP; previous contrast measurements for the old stronger ring below are historical, not the current focus style. Copy uses authored Lottie segments (300 / 1500 / 300 ms); native tween specification remains a fallback. Paper synchronization is partially blocked by quota: [remaining work](paper-sync-pending.md).
+Current source of truth: [Lottie and geometry contract](lottie-spec.md) and [native integration evidence](lottie-integration-validation.md). Focus is a 1 DIP white ring with two strengths: pointer focus 10%, keyboard focus 50% (issue #3); previous contrast measurements for the old stronger ring below are historical, not the current focus style. Copy uses authored Lottie segments (300 / 1500 / 300 ms); native tween specification remains a fallback. Paper synchronization is partially blocked by quota: [remaining work](paper-sync-pending.md).
 
 # Native design system foundation
 
@@ -20,7 +20,8 @@ network asset, font replacement, or browser engine change is introduced.
   opacity has its own surface role. `NativeGray` maps the same tokens to Win32.
 - Geometry: 32 DIP controls, 24 DIP compact/close targets, 16 DIP Phosphor Bold
   glyphs, 14 DIP window glyphs, 6 DIP control radius, 3 DIP embedded radius and
-  1 DIP inset keyboard focus perimeter (white at 10% alpha). Spacing steps are 4/6/8/16 DIPs; tab
+  1 DIP inset focus perimeter: white at 10% alpha after a pointer press,
+  white at 50% alpha when focus moved by keyboard. Spacing steps are 4/6/8/16 DIPs; tab
   pitch is 134 (6 DIP visible gap), visible tab width 128, close slot remains 24.
 - Type roles preserve bundled Inter Display 14px medium labels / 16px regular
   address and flower vector 16 DIP brand (Gelasio 8px is now a legacy unused role). Real DirectWrite line metrics preserve full
@@ -35,6 +36,12 @@ network asset, font replacement, or browser engine change is introduced.
 - Keyboard focus draws a distinct perimeter rather than masquerading as hover.
   Tab traverses tab bodies and their close actions; arrows switch a focused tab;
   Enter/Space select or close. Mouse press clears the keyboard focus marker.
+- Two focus modalities share one ring geometry. Tab, arrows, Enter/Space on a
+  focused control and shortcuts (Ctrl+L/T/W/R/Tab, F5, Alt+arrows) switch to
+  keyboard modality (50%); a mouse press on the chrome or in the address field
+  switches back to pointer modality (10%, the original user-chosen value).
+  Measured WCAG contrast of the 50% ring: #8b8b8b/#171717 5.26:1,
+  #949494/#292929 4.79:1, #999999/#333333 4.43:1, #9f9f9f/#3e3e3e 3.99:1.
   The focused address field also keeps the perimeter while its native edit owns
   input. Existing Ctrl+Tab/Ctrl+W/address shortcuts remain.
 - The close slot is always reserved; showing its glyph does not move the title.
