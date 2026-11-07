@@ -72,7 +72,7 @@ std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 struct ClosedTab { std::wstring uri,title; int index; };
 std::vector<ClosedTab> closedTabs; bool sessionReady=false;
 std::wstring base; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
-NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
+NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeChrome::DownloadsUI::Drawer downloadDrawer; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; } tabDrag;
 void InvalidateChrome();
 void CancelTabDrag(){tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;InvalidateChrome();}
@@ -89,7 +89,7 @@ std::shared_ptr<Tab> Active();
 // differs from what was last painted; any other motion (or the frame right after it
 // ends, so its endpoint is painted) repaints the whole header.
 void InvalidateMotion(NativeChrome::Motion::Time now){
-    downloadPanel.Frame(now);
+    downloadPanel.Frame(now);downloadDrawer.Frame(now);
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
@@ -97,7 +97,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.lottie.NextWake(now,reduced));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,downloadPanel.NextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -256,7 +256,25 @@ void SaveDownloads(){
     {std::ofstream out(temp,std::ios::binary|std::ios::trunc);DL::WriteHistory(out,downloads);out.close();if(!out){Log(L"DOWNLOADS save failed");return;}}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"DOWNLOADS replace failed");
 }
-void LoadDownloads(){if(smoke)return;std::ifstream in(std::filesystem::path(base)/L"downloads",std::ios::binary);downloads=DL::ReadHistory(in,nextDownloadId);}
+// History written before start times existed: date each row from its file's
+// creation time (when the download began writing it), else from the history
+// file itself, then save so the date sticks.
+std::int64_t FileTimeUnixMs(const FILETIME& t){return NativeChrome::DownloadsUI::FileTimeMs(t)-11644473600000LL;}
+void LoadDownloads(){
+    if(smoke)return;
+    const auto path=std::filesystem::path(base)/L"downloads";
+    {std::ifstream in(path,std::ios::binary);downloads=DL::ReadHistory(in,nextDownloadId);}
+    WIN32_FILE_ATTRIBUTE_DATA history{};const bool known=GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&history)!=0;
+    bool migrated=false;
+    for(auto& item:downloads){
+        if(item.started>0)continue;
+        WIN32_FILE_ATTRIBUTE_DATA file{};
+        if(GetFileAttributesExW(item.path.c_str(),GetFileExInfoStandard,&file))item.started=FileTimeUnixMs(file.ftCreationTime);
+        else if(known)item.started=FileTimeUnixMs(history.ftLastWriteTime);
+        migrated=migrated||item.started>0;
+    }
+    if(migrated){Log(L"DOWNLOADS history dated from file times");SaveDownloads();}
+}
 std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     switch(r){
     case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE:return L"Disk full";
@@ -272,7 +290,8 @@ std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     if(r>=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED&&r<=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT)return L"Server error";
     return L"File error";
 }
-void DownloadsChanged(){downloadPanel.Changed();}
+void ShowDownloadDrawer();
+void DownloadsChanged(){downloadPanel.Changed();downloadDrawer.Changed();}
 // Pull the operation's current state into its history row (UI thread, engine events).
 void SyncDownload(int id){
     auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item)return;
@@ -301,25 +320,44 @@ void SyncDownload(int id){
             std::ifstream file(std::filesystem::path(item->path),std::ios::binary);std::string body((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());file.close();
             if(body!="browser smoke download"||!downloadPanel.Visible()||downloads.empty()||downloads.front().id!=id||DL::FileName(item->path)!=L"smoke-download.txt"){Fail(L"Smoke download assertion",E_FAIL);return;}
             Log(L"SMOKE download started, shown in history and completed: "+DL::Bytes(item->received,item->total));
-            DeleteFileW(item->path.c_str());downloadPanel.Hide(false);PostMessageW(window,WM_APP+3,0,0);
+            ShowDownloadDrawer();
+            if(!downloadDrawer.Visible()||!IsWindowVisible(downloadDrawer.Window())||downloadPanel.Visible()||chrome.latched!='D'){Fail(L"Smoke download drawer did not open",E_FAIL);return;}
+            downloadDrawer.Hide(false,false);
+            if(downloadDrawer.Visible()||IsWindowVisible(downloadDrawer.Window())||chrome.latched){Fail(L"Smoke download drawer did not close",E_FAIL);return;}
+            Log(L"SMOKE download history drawer opened from View all and closed");
+            DeleteFileW(item->path.c_str());PostMessageW(window,WM_APP+3,0,0);
         }else if(item->state!=DL::State::InProgress){Fail(L"Smoke download did not complete",E_FAIL);return;}
     }
 }
+void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
 void ShowDownloads(){
     if(!downloadPanel.Window())return;
-    for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;
+    RefreshMissing();
     // Right edge on the toolbar's 6 DIP margin, just under the toolbar row.
     RECT anchor{0,S(48),S(chrome.width-NativeChrome::Design::Space::sm),S(76)};MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
     chrome.latched='D';InvalidateChrome();downloadPanel.Show(anchor);
 }
-void ToggleDownloads(){if(downloadPanel.Visible()){downloadPanel.Hide(true);return;}ShowDownloads();}
+// "View all": the popover gives way to the drawer docked on the right.
+void ShowDownloadDrawer(){
+    if(!downloadDrawer.Window())return;
+    RefreshMissing();chrome.latched='D';InvalidateChrome();
+    // From the popover: its rectangle morphs into the drawer.
+    RECT from{};const bool morph=downloadPanel.Visible()&&GetWindowRect(downloadPanel.Window(),&from);
+    downloadDrawer.Show(morph?&from:nullptr);downloadPanel.Hide(false);
+}
+void CloseDownloadSurfaces(bool animate=true){downloadPanel.Hide(false);downloadDrawer.Hide(false,animate);}
+void ToggleDownloads(){
+    if(downloadDrawer.Visible()&&!downloadDrawer.Closing()){downloadDrawer.Hide(true,true);return;}
+    if(downloadPanel.Visible()){downloadPanel.Hide(true);return;}
+    ShowDownloads();
+}
 HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args){
     if(halted||!args)return S_OK;
     args->put_Handled(TRUE); // the native popover replaces WebView2's flyout
     if(smoke){const auto target=base+L"\\smoke-download.txt";DeleteFileW(target.c_str());args->put_ResultFilePath(target.c_str());}
     ICoreWebView2DownloadOperation* raw=nullptr;if(FAILED(args->get_DownloadOperation(&raw))||!raw){Log(L"DOWNLOAD operation unavailable");return S_OK;}
     auto entry=std::make_shared<DownloadOperation>();entry->op.p=raw;
-    DL::Item item;item.id=nextDownloadId++;const int id=item.id;
+    DL::Item item;item.id=nextDownloadId++;item.started=NativeChrome::DownloadsUI::UnixNowMs();const int id=item.id;
     LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){item.path=text;CoTaskMemFree(text);}
     text=nullptr;if(SUCCEEDED(raw->get_Uri(&text))&&text){item.uri=text;CoTaskMemFree(text);}
     if(item.path.empty())item.path=L"download";
@@ -333,7 +371,7 @@ HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args){
     raw->add_StateChanged(state,&token);state->Release();
     Log(L"DOWNLOAD started "+DL::FileName(downloads.front().path));
     // Open (or refresh) the history first so even an instant completion is shown.
-    if(downloadPanel.Visible())DownloadsChanged();else ShowDownloads();
+    if(downloadPanel.Visible()||(downloadDrawer.Visible()&&!downloadDrawer.Closing()))DownloadsChanged();else ShowDownloads();
     SyncDownload(id);
     return S_OK;
 }
@@ -345,10 +383,10 @@ void DownloadAction(int id,DL::Action action){
     case DL::Action::Resume:case DL::Action::Retry:if(op&&SUCCEEDED(op->Resume())){entry->userPaused=false;SyncDownload(id);}break;
     case DL::Action::Cancel:if(op){op->Cancel();SyncDownload(id);}break;
     case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();break;}
-    case DL::Action::ShowInFolder:{const auto path=item->path;downloadPanel.Hide(false);
+    case DL::Action::ShowInFolder:{const auto path=item->path;CloseDownloadSurfaces();
         PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
         if(FAILED(hr))Log(L"DOWNLOAD show in folder failed "+path);break;}
-    case DL::Action::Open:{const auto path=item->path;downloadPanel.Hide(false);
+    case DL::Action::Open:{const auto path=item->path;CloseDownloadSurfaces();
         if((INT_PTR)ShellExecuteW(window,nullptr,path.c_str(),nullptr,nullptr,SW_SHOWNORMAL)<=32)Log(L"DOWNLOAD open failed "+path);break;}
     default:break;
     }
@@ -357,8 +395,12 @@ void CreateDownloadPanel(){
     NativeChrome::DownloadsUI::Popover::Hooks hooks;
     hooks.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
     hooks.action=[](int id,DL::Action action){DownloadAction(id,action);};
-    hooks.closed=[](bool keyboard){chrome.latched=0;InvalidateChrome();if(keyboard&&!halted)FocusPage();};
+    // The toolbar button stays latched while either surface is (still) open.
+    hooks.closed=[](bool keyboard){chrome.latched=(downloadPanel.Visible()||(downloadDrawer.Visible()&&!downloadDrawer.Closing()))?'D':0;InvalidateChrome();if(keyboard&&!halted)FocusPage();};
+    hooks.viewAll=[](){ShowDownloadDrawer();};
+    auto drawerHooks=hooks;
     if(!downloadPanel.Create(instance,window,base,&downloads,std::move(hooks)))Log(L"DOWNLOADS panel unavailable");
+    if(!downloadDrawer.Create(instance,window,base,&downloads,std::move(drawerHooks)))Log(L"DOWNLOADS drawer unavailable");
 }
 
 void RequestFavicon(const std::shared_ptr<Tab>& tab){
@@ -512,12 +554,13 @@ case WM_NCMOUSELEAVE:UpdateInteraction(0,0);return 0;
 case WM_NCLBUTTONDBLCLK:if(w==HTCAPTION){Command('M');return 0;}break;
 case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&monitor)){info->ptMaxPosition={monitor.rcWork.left-monitor.rcMonitor.left,monitor.rcWork.top-monitor.rcMonitor.top};info->ptMaxSize={monitor.rcWork.right-monitor.rcWork.left,monitor.rcWork.bottom-monitor.rcWork.top};}return 0;}
 case WM_DPICHANGED:{auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();return 0;}
-case WM_SIZE:motionMinimized=w==SIZE_MINIMIZED;if(!motionMinimized)Layout();ScheduleMotion(NativeChrome::Motion::Now());return 0;
+case WM_SIZE:motionMinimized=w==SIZE_MINIMIZED;if(!motionMinimized){Layout();downloadDrawer.Reposition();}else CloseDownloadSurfaces(false);ScheduleMotion(NativeChrome::Motion::Now());return 0;
+case WM_MOVE:downloadDrawer.Reposition();return 0;
 case WM_ERASEBKGND:return 1;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
 case WM_MOUSEMOVE:{if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_MOUSELEAVE:UnlockTabWidth();UpdateInteraction(0,pressed);return 0;
-case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));downloadDismissClick=id=='D'&&GetTickCount64()-downloadPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).left;}}return 0;}
+case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).left;}}return 0;}
 case WM_LBUTTONUP:{bool dragged=tabDrag.active;CancelTabDrag();int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
 case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
@@ -554,5 +597,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,(base+L"\\profile").c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);downloadPanel.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);downloadPanel.Dispose();downloadDrawer.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }
