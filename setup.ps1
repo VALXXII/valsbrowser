@@ -7,8 +7,10 @@ if (!(Test-Path 'tools\w64devkit\bin\g++.exe')) {
     Invoke-WebRequest 'https://github.com/skeeto/w64devkit/releases/download/v2.11.0/w64devkit-x64-2.11.0.7z.exe' -OutFile $archive
     if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '54C2BB9962E8A30C8270E34C5EFC3D5FEE579F53087FA7D435B95FBBA2AF7B2B') { throw 'Empreinte w64devkit inattendue.' }
     # L'archive auto-extractible officielle accepte les options 7-Zip.
-    & $archive x "-o$PSScriptRoot\tools" -y
-    if ($LASTEXITCODE -ne 0) { throw "Extraction échouée : $LASTEXITCODE" }
+    # Le SFX est une application graphique : PowerShell ne l'attend pas avec &.
+    $extraction = Start-Process -FilePath $archive -ArgumentList @('x', "`"-o$PSScriptRoot\tools`"", '-y') -WindowStyle Hidden -Wait -PassThru
+    if ($extraction.ExitCode -ne 0) { throw "Extraction échouée : $($extraction.ExitCode)" }
+    if (!(Test-Path 'tools\w64devkit\bin\g++.exe')) { throw 'Compilateur absent après extraction.' }
 }
 if (!(Test-Path 'deps\webview2\build\native\include\WebView2.h')) {
     Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4314.35/microsoft.web.webview2.1.0.4314.35.nupkg' -OutFile deps/webview2.zip
