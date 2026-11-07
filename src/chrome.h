@@ -117,6 +117,7 @@ public:
     std::set<int> disabled;
     bool Enabled(int id)const{return disabled.count(id)==0;}
     void SetEnabled(int id,bool enabled){if(enabled)disabled.erase(id);else disabled.insert(id);}
+    int dragIndex=-1;float dragOffset=0;
     UINT dpi=96;float width=1180,height=815;int first=0;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     ~Chrome(){Dispose();}
     void Dispose(){ClearTextCache();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
@@ -237,11 +238,14 @@ public:
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
-        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=Design::TabStrip::Surface(n-first);D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=Design::TabStrip::CloseSlot(surface);auto title=Design::TabStrip::TitleSlot(surface);auto favicon=Design::TabStrip::FaviconSlot(surface);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
+        auto paintRegions=regions;
+        // Paint the grabbed tab last so it stays above its neighbours.
+        if(dragIndex>=0){auto it=std::find_if(paintRegions.begin(),paintRegions.end(),[&](const Region& r){return r.id==TabBase+dragIndex;});if(it!=paintRegions.end()){auto r=*it;paintRegions.erase(it);paintRegions.push_back(r);}}
+        for(auto& r:paintRegions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=Design::TabStrip::Surface(n-first);if(n==dragIndex){surface.left+=dragOffset;surface.right+=dragOffset;}D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=Design::TabStrip::CloseSlot(surface);auto title=Design::TabStrip::TitleSlot(surface);auto favicon=Design::TabStrip::FaviconSlot(surface);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
                 // Exactly one opaque surface: no second close-button hover fill.
-                float emphasis=motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
+                float emphasis=dragIndex<0&&motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
                 float base=Design::TabSurface(false,tabHover);
-                if(emphasis>0||tabHover>0){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
+                if(emphasis>0||tabHover>0||n==dragIndex){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
                 if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
                 DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom});
                 Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);

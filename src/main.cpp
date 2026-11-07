@@ -62,6 +62,9 @@ Com<ICoreWebView2Environment> environment;
 std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 std::wstring base; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
 NativeChrome::Chrome chrome; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false;
+struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; } tabDrag;
+void InvalidateChrome();
+void CancelTabDrag(){tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;InvalidateChrome();}
 int S(float value){return (int)std::lround(value*GetDpiForWindow(window)/96.f);}
 void RefreshTools();
 void ExtraCommand(int cmd);
@@ -116,6 +119,31 @@ void Layout(){if(!window)return;chrome.Resize();chrome.Build((int)pages.size(),c
 }
 void Update(){auto t=Active();if(!t)return;chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+L" — browser").c_str());chrome.Build((int)pages.size(),current);RefreshTools();InvalidateRect(window,nullptr,FALSE);}
 void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());for(int i=0;i<(int)pages.size();++i)if(pages[i]->controller.p)Check(pages[i]->controller->put_IsVisible(i==n&&!pages[i]->home),L"put_IsVisible");Update();auto t=Active();if(t->controller.p&&!t->home)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
+// Move shared pointers, preserving the active WebView and its asynchronous callbacks.
+void MoveTab(int from,int to){
+    if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
+    auto active=Active();auto tab=pages[from];pages.erase(pages.begin()+from);pages.insert(pages.begin()+to,tab);
+    current=(int)(std::find(pages.begin(),pages.end(),active)-pages.begin());
+    motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;Update();
+}
+void DragTab(POINT point){
+    if(!tabDrag.tab||halted)return;
+    auto it=std::find(pages.begin(),pages.end(),tabDrag.tab);if(it==pages.end()){CancelTabDrag();return;}
+    if(!tabDrag.active){
+        if(std::abs(point.x-tabDrag.start.x)<=GetSystemMetrics(SM_CXDRAG)&&std::abs(point.y-tabDrag.start.y)<=GetSystemMetrics(SM_CYDRAG))return;
+        tabDrag.active=true;
+    }
+    float x=point.x*96.f/GetDpiForWindow(window);
+    int from=(int)(it-pages.begin()),shown=std::min(NativeChrome::Design::TabStrip::Capacity(chrome.width),(int)pages.size()-chrome.first);
+    int slot=0;while(slot+1<shown&&x>=NativeChrome::Design::TabStrip::Region(slot).right)++slot;
+    MoveTab(from,chrome.first+slot);
+    it=std::find(pages.begin(),pages.end(),tabDrag.tab);chrome.dragIndex=(int)(it-pages.begin());
+    auto surface=NativeChrome::Design::TabStrip::Surface(chrome.dragIndex-chrome.first);
+    float left=NativeChrome::Design::TabStrip::Surface(0).left;
+    float right=NativeChrome::Design::TabStrip::Surface(shown-1).right;
+    chrome.dragOffset=std::clamp(x-tabDrag.grab,left,right-NativeChrome::Design::Size::tab)-surface.left;
+    InvalidateChrome();
+}
 const wchar_t* HomeHtml=LR"HTML(<!doctype html><html lang="fr"><meta charset="utf-8"><title>Nouvel onglet</title><style>html,body{margin:0;background:#171717;color:white;min-height:100%;color-scheme:dark}</style><body></body></html>)HTML";
 std::wstring Destination(std::wstring s){auto first=s.find_first_not_of(L" \t\r\n");if(first==std::wstring::npos)return L"";s=s.substr(first,s.find_last_not_of(L" \t\r\n")-first+1);if(s==L"about:blank")return s;
     auto low=s;std::transform(low.begin(),low.end(),low.begin(),towlower);if(low.rfind(L"https://",0)==0||low.rfind(L"http://",0)==0)return s;
@@ -125,13 +153,13 @@ std::wstring Destination(std::wstring s){auto first=s.find_first_not_of(L" \t\r\
 void NewTab(std::wstring uri=L"");
 void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();Check(uri.empty()?t->view->NavigateToString(HomeHtml):t->view->Navigate(uri.c_str()),uri.empty()?L"NavigateToString":L"Navigate");}
 void CloseAt(int index){if(halted||index<0||index>=(int)pages.size())return;
-    const bool active=index==current;const int next=NativeChrome::SelectionAfterClose((int)pages.size(),current,index);
+    CancelTabDrag();const bool active=index==current;const int next=NativeChrome::SelectionAfterClose((int)pages.size(),current,index);
     motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=pages[index];t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);
     if(pages.empty()){current=-1;NewTab();}else if(active)Select(next);else{current=next;motion.SelectTab(current+1,NativeChrome::Motion::Now());Update();}
 }
 void Close(){CloseAt(current);}
-void Command(int cmd){if(halted||!chrome.Enabled(cmd))return;auto t=Active();switch(cmd){case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab();FocusAddress();break;case 'W':Close();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes)Check(t->view->GoBack(),L"GoBack");}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes)Check(t->view->GoForward(),L"GoForward");}break;default:ExtraCommand(cmd);break;}}
-int Key(UINT key){bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0;if(ctrl&&key==VK_TAB)return GetKeyState(VK_SHIFT)<0?'[':']';if(ctrl&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;if(key==VK_F5)return 'R';if(alt&&key==VK_LEFT)return 'B';if(alt&&key==VK_RIGHT)return 'F';return 0;}
+void Command(int cmd){if(halted||!chrome.Enabled(cmd))return;if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();switch(cmd){case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab();FocusAddress();break;case 'W':Close();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes)Check(t->view->GoBack(),L"GoBack");}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes)Check(t->view->GoForward(),L"GoForward");}break;default:ExtraCommand(cmd);break;}}
+int Key(UINT key){bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0;if(ctrl&&GetKeyState(VK_SHIFT)<0&&(key==VK_PRIOR||key==VK_NEXT))return key==VK_PRIOR?'{':'}';if(ctrl&&key==VK_TAB)return GetKeyState(VK_SHIFT)<0?'[':']';if(ctrl&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;if(key==VK_F5)return 'R';if(alt&&key==VK_LEFT)return 'B';if(alt&&key==VK_RIGHT)return 'F';return 0;}
 
 void RequestFavicon(const std::shared_ptr<Tab>& tab){
     if(halted||!tab||tab->closed||!tab->faviconView.p)return;
@@ -150,7 +178,7 @@ void RequestFavicon(const std::shared_ptr<Tab>& tab){
     HRESULT hr=tab->faviconView->GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG,callback);callback->Release();Check(hr,L"GetFavicon");
 }
 
-void NewTab(std::wstring uri){if(halted||!environment.p)return;if(pages.size()>=128){MessageBoxW(window,L"Limite de 128 onglets atteinte.",L"browser",MB_OK);return;}motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=std::make_shared<Tab>();pages.push_back(t);Select((int)pages.size()-1);std::weak_ptr<Tab> weak=t;
+void NewTab(std::wstring uri){if(halted||!environment.p)return;if(pages.size()>=128){MessageBoxW(window,L"Limite de 128 onglets atteinte.",L"browser",MB_OK);return;}motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=std::make_shared<Tab>();CancelTabDrag();pages.push_back(t);Select((int)pages.size()-1);std::weak_ptr<Tab> weak=t;
     auto done=Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,HRESULT,ICoreWebView2Controller*>([weak,uri](HRESULT hr,ICoreWebView2Controller* c)->HRESULT{
         if(!Check(hr,L"CreateController callback"))return S_OK;auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
         EventRegistrationToken token{};
@@ -226,17 +254,17 @@ case WM_DPICHANGED:{auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->rig
 case WM_SIZE:motionMinimized=w==SIZE_MINIMIZED;if(!motionMinimized)Layout();ScheduleMotion(NativeChrome::Motion::Now());return 0;
 case WM_ERASEBKGND:return 1;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);return 0;}
-case WM_MOUSEMOVE:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
+case WM_MOUSEMOVE:{if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_MOUSELEAVE:UpdateInteraction(0,pressed);return 0;
-case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(id){keyboardFocus=0;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);}return 0;}
-case WM_LBUTTONUP:{int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);if(original&&original==id){if(NativeChrome::IsClose(id))CloseAt(NativeChrome::TabIndex(id));else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
-case WM_CAPTURECHANGED:case WM_CANCELMODE:UpdateInteraction(hover,0);return 0;
-case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
+case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(id){keyboardFocus=0;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-NativeChrome::Design::TabStrip::Surface(NativeChrome::TabIndex(id)-chrome.first).left;}}return 0;}
+case WM_LBUTTONUP:{bool dragged=tabDrag.active;CancelTabDrag();int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id))CloseAt(NativeChrome::TabIndex(id));else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
+case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
+case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
 case WM_SETTINGCHANGE:motion.SetReducedMotion(NativeChrome::Motion::SystemReducedMotion());InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());return 0;
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0)CloseAt(NativeChrome::TabIndex(id));return 0;}
 case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0){int tabIndex=NativeChrome::TabIndex(id);HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");POINT p;GetCursorPos(&p);int cmd=TrackPopupMenu(menu,TPM_RETURNCMD,p.x,p.y,0,h,nullptr);DestroyMenu(menu);if(cmd=='W')CloseAt(tabIndex);}else if(GET_Y_LPARAM(l)<S(44))TabMenu();return 0;}
 case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(p.y<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
-case WM_KEYDOWN:if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
+case WM_KEYDOWN:if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
     if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);return 0;}break;
 case WM_CTLCOLOREDIT:{static HBRUSH field=CreateSolidBrush(NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::raised));SetBkColor((HDC)w,NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::raised));SetTextColor((HDC)w,NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::raised+(1-NativeChrome::Design::Surface::raised)*NativeChrome::Design::Text::address));return (LRESULT)field;}
 case Shortcut:Command((int)w);return 0;
