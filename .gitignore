@@ -3,3 +3,5 @@
 /build/
 /profile/
 *.log
+__pycache__/
+*.py[cod]

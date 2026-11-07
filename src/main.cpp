@@ -24,6 +24,15 @@
 #include "chrome.h"
 #include "native-ui.h"
 #include "frame-clock.h"
+// Self-update host integration is compiled into identity-stamped builds only
+// (tools/release/build.py defines BROWSER_HAS_BUILD_INFO). Unstamped builds and the
+// native fixtures that include this file keep the portable, update-free behaviour.
+#ifdef BROWSER_HAS_BUILD_INFO
+#define BROWSER_UPDATES 1
+#include "build-info.h"
+#include "update-core.h"
+#include "update-toast.h"
+#endif
 
 // COM callbacks use the official SDK interface IDs, independent of compiler UUID extensions.
 template<class T> const wchar_t* GuidText();
@@ -65,7 +74,7 @@ Com<ICoreWebView2Environment> environment;
 std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 struct ClosedTab { std::wstring uri,title; int index; };
 std::vector<ClosedTab> closedTabs; bool sessionReady=false;
-std::wstring base; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
+std::wstring base,dataDir,profileDir,sessionFile,logFile; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
 NativeChrome::Chrome chrome; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; } tabDrag;
 void InvalidateChrome();
@@ -73,6 +82,16 @@ void CancelTabDrag(){tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;Invalida
 int S(float value){return (int)std::lround(value*GetDpiForWindow(window)/96.f);}
 void RefreshTools();
 void ExtraCommand(int cmd);
+// Self-update host hooks (no-ops in unstamped builds).
+std::wstring AboutTitle(){
+#ifdef BROWSER_UPDATES
+    return std::wstring(L"browser ")+BROWSER_VERSION_WIDE;
+#else
+    return L"browser";
+#endif
+}
+void CheckForUpdates(); bool UpdateCheckAvailable(); bool FocusUpdateToast(); bool UpdateToastHasFocus();
+constexpr int CheckUpdatesCommand=3020;
 void InvalidateChrome(){RECT r;GetClientRect(window,&r);r.bottom=std::min(r.bottom,(LONG)S(84));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
@@ -106,7 +125,7 @@ void SmokeCheck();
 void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
-void Log(const std::wstring& s){std::ofstream f(Utf8(base+L"\\prototype.log"),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
+void Log(const std::wstring& s){if(logFile.empty())return;std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
 void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();chrome.lottie.Clear();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
@@ -123,7 +142,9 @@ void FocusPage(){
     InvalidateChrome();
 }
 void ToggleChromeFocus(){
-    if(GetFocus()==window||GetFocus()==address){FocusPage();return;}
+    // F6 cycle: page -> toolbar -> update toast (when one is shown) -> page.
+    if(UpdateToastHasFocus()){FocusPage();return;}
+    if(GetFocus()==window||GetFocus()==address){editing=false;if(FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}FocusPage();return;}
     SetFocus(window);auto order=chrome.FocusOrder();keyboardFocus=order.empty()?0:order.front();InvalidateChrome();
 }
 void FindInPage(){
@@ -213,17 +234,19 @@ int Key(UINT key){
 }
 
 // Store UTF-8 URLs alongside the profile, preserving blank tabs and selection.
+// Portable builds keep <exe dir>\session; installed builds use the stable data
+// directory resolved by the update core (outside every version directory).
 void SaveSession(){
-    if(smoke||!sessionReady)return;
+    if(smoke||!sessionReady||pages.empty())return;
     BrowserSession::State state;state.active=current;
     for(auto& tab:pages)state.urls.push_back(tab->home?"":Utf8(tab->uri));
-    const auto path=std::filesystem::path(base)/L"session",temp=std::filesystem::path(base)/L"session.tmp";
+    const auto path=std::filesystem::path(sessionFile),temp=std::filesystem::path(sessionFile+L".tmp");
     {std::ofstream out(temp,std::ios::binary|std::ios::trunc);BrowserSession::Write(out,state);out.close();if(!out){Log(L"SESSION save failed");return;}}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"SESSION replace failed");
 }
 void RestoreSession(){
     BrowserSession::State state;
-    if(!smoke){std::ifstream in(std::filesystem::path(base)/L"session",std::ios::binary);state=BrowserSession::Read(in);}
+    if(!smoke){std::ifstream in(std::filesystem::path(sessionFile),std::ios::binary);state=BrowserSession::Read(in);}
     for(const auto& url:state.urls){
         int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);
         if(!url.empty()&&!size){state=BrowserSession::State{};break;}
@@ -348,15 +371,78 @@ HMENU CreateTabMenu(){
 void TabMenu(){HMENU menu=CreateTabMenu();POINT p;GetCursorPos(&p);int cmd=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(cmd>=1000)Select(cmd-1000);}
 void ExtraCommand(int cmd){auto t=Active();switch(cmd){
 case 900:TabMenu();break;
+case CheckUpdatesCommand:CheckForUpdates();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;
 case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
 case 'X':PostMessageW(window,WM_CLOSE,0,0);break;
 case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
 case 'D':if(t&&t->view.p){ICoreWebView2_9* view9=nullptr;IID iid;CLSIDFromString(L"{4d7b2eab-9fdc-468d-b998-a9260b5ed651}",&iid);if(Check(t->view->QueryInterface(iid,(void**)&view9),L"QueryInterface downloads")){Check(view9->OpenDefaultDownloadDialog(),L"OpenDefaultDownloadDialog");view9->Release();}}break;
 case 'P':MessageBoxW(window,L"La navigation privée n'est pas disponible dans cette version.\n\nLes onglets actuels utilisent le profil normal local (cookies et cache persistants). Aucun onglet privé n'a été ouvert.",L"Navigation privée — indisponible",MB_OK|MB_ICONINFORMATION);break;
-case 'S':{HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'T',L"Nouvel onglet\tCtrl+T");AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");AppendMenuW(menu,MF_STRING,900,L"Liste des onglets");AppendMenuW(menu,MF_STRING,'D',L"Téléchargements");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,'A',L"À propos de browser");POINT p;GetCursorPos(&p);int selected=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(selected)Command(selected);break;}
-case 'A':MessageBoxW(window,L"browser\nInterface native issue du canvas Paper.\nRecherche : DuckDuckGo.\nProfil normal local, sans synchronisation.\nCtrl+L / Alt+D : adresse - F6 : page / barre\nCtrl+T/W : ouvrir / fermer - Ctrl+Maj+T : rouvrir\nCtrl+Tab : onglet suivant\nCtrl+1...8 : onglet - Ctrl+9 : dernier\nCtrl+Maj+PgPr\u00e9c/PgSuiv : d\u00e9placer l’onglet\nCtrl+F : rechercher - Alt+\u2190/\u2192 : historique\n\nLe menu regroupe les actions disponibles ; aucun réglage système n'est modifié.",L"À propos",MB_OK);break;
+case 'S':{HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'T',L"Nouvel onglet\tCtrl+T");AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");AppendMenuW(menu,MF_STRING,900,L"Liste des onglets");AppendMenuW(menu,MF_STRING,'D',L"Téléchargements");
+#ifdef BROWSER_UPDATES
+AppendMenuW(menu,MF_STRING|(UpdateCheckAvailable()?0:MF_GRAYED),CheckUpdatesCommand,L"Rechercher des mises à jour");
+#endif
+AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,'A',L"À propos de browser");POINT p;GetCursorPos(&p);int selected=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(selected)Command(selected);break;}
+case 'A':MessageBoxW(window,(AboutTitle()+L"\nInterface native issue du canvas Paper.\nRecherche : DuckDuckGo.\nProfil normal local, sans synchronisation.\nCtrl+L / Alt+D : adresse - F6 : page / barre\nCtrl+T/W : ouvrir / fermer - Ctrl+Maj+T : rouvrir\nCtrl+Tab : onglet suivant\nCtrl+1...8 : onglet - Ctrl+9 : dernier\nCtrl+Maj+PgPr\u00e9c/PgSuiv : d\u00e9placer l’onglet\nCtrl+F : rechercher - Alt+\u2190/\u2192 : historique\n\nLe menu regroupe les actions disponibles ; aucun réglage système n'est modifié.").c_str(),L"À propos",MB_OK);break;
 }}
+#ifndef BROWSER_UPDATES
+void CheckForUpdates(){} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
+#else
+// ---- Self-update host -------------------------------------------------------
+// The engine works on its own threads and only posts UpdateMessage (coalesced and
+// generation-tagged, stale ones are refused by OnNotify); everything here runs on
+// the UI thread. Update failures stay inside the toast: they never set `halted`
+// and never touch tabs, WebView2, page downloads or the session.
+constexpr UINT UpdateMessage=WM_APP+9;
+UpdateCore::Engine updates; BrowserUpdate::Toast updateToast; bool updatesStarted=false,closingForInstall=false;
+void ShowUpdateView(){if(updatesStarted)updateToast.SetView(updates.View());}
+void UpdateAction(BrowserUpdate::Action action){
+    if(!updatesStarted||closingForInstall)return;
+    // The session is saved before the helper exists and again by WM_CLOSE.
+    if(action==BrowserUpdate::Action::RestartInstall)SaveSession();
+    const auto result=updates.Perform(action);
+    ShowUpdateView();
+    if(result==UpdateCore::ActionResult::CloseForInstall){
+        // The helper waits for this exact process to exit on its own; close normally.
+        closingForInstall=true;Log(L"UPDATE install handoff: saving session and closing");PostMessageW(window,WM_CLOSE,0,0);
+    }
+}
+std::wstring ExePath(){std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return exe;}
+UpdateCore::Config UpdateConfig(){
+    UpdateCore::Config config;config.currentVersion=BROWSER_UPDATE_VERSION;config.repository=BROWSER_UPDATE_REPO_WIDE;config.exePath=ExePath();
+    config.notifyWindow=window;config.notifyMessage=UpdateMessage;config.enabled=!smoke&&!config.exePath.empty();
+    return config;
+}
+// Fixtures pass an isolated config (temp install root, mocked transport).
+void StartUpdates(UpdateCore::Config config=UpdateConfig()){
+    if(!updateToast.Init(window,base+L"\\assets",UpdateAction))Log(L"UPDATE toast unavailable");
+    updateToast.SetFocusReleaseHandler([]{FocusPage();});
+    updatesStarted=updates.Start(config);
+    Log(updatesStarted?L"UPDATE engine started "+config.currentVersion:L"UPDATE engine disabled");
+    ShowUpdateView();
+}
+bool UpdateCheckAvailable(){return updatesStarted&&!closingForInstall;}
+void CheckForUpdates(){if(UpdateCheckAvailable()){updates.CheckNow();ShowUpdateView();}}
+void StopUpdates(){if(updatesStarted){updatesStarted=false;updates.Shutdown();}updateToast.Close();}
+void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
+bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
+bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
+#endif
+// Portable layout (unchanged): profile, session and log beside the executable.
+// Installed layout <root>\versions\<v>\browser.exe keeps profile/session/log in the
+// stable <root>\data, outside every version directory (ResolveDataPaths is pure;
+// the one-time copy of a portable profile is done by the helper, never here).
+void ResolveBrowserPaths(const std::wstring& installRoot=L""){
+    dataDir=base;profileDir=base+L"\\profile";sessionFile=base+L"\\session";logFile=base+L"\\prototype.log";
+#ifdef BROWSER_UPDATES
+    auto paths=UpdateCore::ResolveDataPaths(ExePath(),installRoot);
+    if(paths.installed&&!paths.dataDir.empty()&&!paths.profileDir.empty()&&!paths.sessionFile.empty()){
+        std::error_code ignored;std::filesystem::create_directories(std::filesystem::path(paths.dataDir),ignored);
+        dataDir=paths.dataDir;profileDir=paths.profileDir;sessionFile=paths.sessionFile;if(!paths.logFile.empty())logFile=paths.logFile;}
+#else
+    (void)installRoot;
+#endif
+}
 LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
     if(msg==WM_IME_STARTCOMPOSITION)addressKeys.SetComposing(true);
     if(msg==WM_IME_ENDCOMPOSITION)addressKeys.SetComposing(false);
@@ -378,8 +464,22 @@ case WM_NCMOUSEMOVE:if(w==HTMAXBUTTON){UpdateInteraction('M',0);TRACKMOUSEEVENT 
 case WM_NCMOUSELEAVE:UpdateInteraction(0,0);return 0;
 case WM_NCLBUTTONDBLCLK:if(w==HTCAPTION){Command('M');return 0;}break;
 case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&monitor)){info->ptMaxPosition={monitor.rcWork.left-monitor.rcMonitor.left,monitor.rcWork.top-monitor.rcMonitor.top};info->ptMaxSize={monitor.rcWork.right-monitor.rcWork.left,monitor.rcWork.bottom-monitor.rcWork.top};}return 0;}
-case WM_DPICHANGED:{auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();return 0;}
-case WM_SIZE:motionMinimized=w==SIZE_MINIMIZED;if(!motionMinimized)Layout();ScheduleMotion(NativeChrome::Motion::Now());return 0;
+case WM_DPICHANGED:{auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();
+#ifdef BROWSER_UPDATES
+    LayoutUpdateToast();
+#endif
+    return 0;}
+case WM_SIZE:motionMinimized=w==SIZE_MINIMIZED;if(!motionMinimized)Layout();ScheduleMotion(NativeChrome::Motion::Now());
+#ifdef BROWSER_UPDATES
+    // Minimised: the toast stops its clock/timer (zero wakes); restored: re-anchor bottom-left.
+    updateToast.SetOwnerVisible(!motionMinimized);if(!motionMinimized)LayoutUpdateToast();
+#endif
+    return 0;
+#ifdef BROWSER_UPDATES
+case WM_WINDOWPOSCHANGED:LayoutUpdateToast();break; // DefWindowProc still derives WM_SIZE/WM_MOVE
+case WM_EXITSIZEMOVE:LayoutUpdateToast();return 0;
+case UpdateMessage:if(updatesStarted&&updates.OnNotify(w))ShowUpdateView();return 0;
+#endif
 case WM_ERASEBKGND:return 1;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
 case WM_MOUSEMOVE:{if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
@@ -414,12 +514,20 @@ case FrameMessage:{if(l==NativeChrome::FrameClock::ClockLost){frameClock.Stop();
     frameClock.Acknowledge();auto now=NativeChrome::Motion::Now();if(!halted&&!motionMinimized)InvalidateMotion(now);ScheduleMotion(now);return 0;}
 case WM_TIMER:if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case WM_CLOSE:SaveSession();DestroyWindow(h);return 0;
-case WM_DESTROY:KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();PostQuitMessage(0);return 0;
+case WM_DESTROY:
+#ifdef BROWSER_UPDATES
+    StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
+#endif
+    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
+#ifdef BROWSER_UPDATES
+    StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
+#endif
     loader=LoadLibraryExW((base+L"\\WebView2Loader.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!loader)Fail(L"LoadLibrary WebView2Loader.dll",HRESULT_FROM_WIN32(GetLastError()));
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
-    if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,(base+L"\\profile").c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
+    if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,profileDir.c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }

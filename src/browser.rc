@@ -1,8 +1,15 @@
 #include <windows.h>
+// Release builds (tools/release/build.py) embed the monotonic build identity.
+#ifdef BROWSER_HAS_BUILD_INFO
+#include "build-info.h"
+#else
+#define BROWSER_FILEVERSION 0,2,0,0
+#define BROWSER_VERSION_TEXT "0.2.0"
+#endif
 101 ICON "assets/browser.ico"
 1 VERSIONINFO
- FILEVERSION 0,2,0,0
- PRODUCTVERSION 0,2,0,0
+ FILEVERSION BROWSER_FILEVERSION
+ PRODUCTVERSION BROWSER_FILEVERSION
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -16,8 +23,8 @@ BEGIN
    VALUE "ProductName", "browser\0"
    VALUE "InternalName", "browser\0"
    VALUE "OriginalFilename", "browser.exe\0"
-   VALUE "FileVersion", "0.2.0\0"
-   VALUE "ProductVersion", "0.2.0\0"
+   VALUE "FileVersion", BROWSER_VERSION_TEXT "\0"
+   VALUE "ProductVersion", BROWSER_VERSION_TEXT "\0"
   END
  END
  BLOCK "VarFileInfo"

@@ -51,3 +51,19 @@ La preview native a ete approuvee. Le build installe utilise le compositor clock
 Ctrl+Maj+T rouvre le dernier onglet fermé à sa position initiale (25 entrées, hors accueil). L’action figure aussi dans le menu principal et le menu contextuel des onglets.
 
 À la fermeture de la fenêtre, les URL, les onglets vides et l’index actif sont sauvegardés dans `session`, à côté de `profile/`, puis restaurés au lancement. Un fichier absent ou invalide ouvre un nouvel onglet. Le smoke test utilise une session vierge sans toucher à ce fichier. `tests/session_test.cpp` couvre le format et les fichiers invalides ; `test.ps1` l’exécute avant le smoke test.
+
+## Mises à jour automatiques
+
+Chaque merge poussé sur `main` du dépôt distant (privé) `VALXXII/browser` déclenche le workflow `.github/workflows/update-release.yml` : build Windows x64 avec les outils figés du projet, tests natifs, paquet `browser-0.3.N-win-x64.lsrupd` + `update-manifest-win-x64.txt`, puis publication dans le dépôt public de binaires `VALXXII/browser-releases`, seulement si tout a réussi et après activation (secret `UPDATES_RELEASE_TOKEN`, variable `UPDATES_PUBLISH_ENABLED=true`). Un merge local non poussé ne déclenche rien ; la première release automatique suppose ce workflow présent sur `main` distant. Aucune release n'est publiée à ce jour.
+
+Le navigateur vérifie une fois au démarrage (silencieux hors ligne ou sans release), propose « Download », progression réelle, « Cancel », puis « Restart and install » ; rien n'est installé sans ce clic. Vérification manuelle : menu principal ▸ « Rechercher des mises à jour ». Installation par utilisateur dans `%LOCALAPPDATA%\browser` (versions séparées, profil et session stables dans `data\`, copie unique depuis un build portable, jamais de déplacement ni de suppression de l'ancien profil).
+
+Build et tests sans PowerShell :
+
+```
+python tools/release/build.py --out build/update-integration
+python tests/update-integration/run_all.py --app build/update-integration
+python tools/release/package.py --app build/update-integration --out build/update-integration-dist
+```
+
+Version : `0.3.<git rev-list --count HEAD>`. Détails : [design/updates.md](design/updates.md).
