@@ -99,8 +99,11 @@ struct Strip {
     bool Titled()const{return tab>=Size::tabIconOnly;}
     bool HasClose()const{return tab>=Size::tabCloseAll;}
     // Title reserves the close slot whenever the tab can show one (no hover shift).
-    Box Title(int i)const{auto s=Surface(i);auto t=TitleSlot(s);if(!HasClose())t.right=s.right-Space::md;return t;}
-    Box Favicon(int i)const{return Titled()?FaviconSlot(Surface(i)):IconSlot(Surface(i));}
+    // `...In` take a surface so a dragged (offset) tab lays out the same way.
+    Box TitleIn(Box s)const{auto t=TitleSlot(s);if(!HasClose())t.right=s.right-Space::md;return t;}
+    Box FaviconIn(Box s)const{return Titled()?FaviconSlot(s):IconSlot(s);}
+    Box Title(int i)const{return TitleIn(Surface(i));}
+    Box Favicon(int i)const{return FaviconIn(Surface(i));}
     float NewTabLeft()const{return ViewRight()+Space::tabGap;}
 };
 // `locked` (0 = off) caps the width while the pointer stays on the strip after a
