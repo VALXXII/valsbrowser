@@ -336,7 +336,16 @@ Command('M');if(!IsZoomed(window)){Fail(L"Smoke maximize assertion",E_FAIL);retu
 }}
 
 void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect={S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
-void TabMenu(){HMENU menu=CreatePopupMenu();for(int i=0;i<(int)pages.size();++i)AppendMenuW(menu,MF_STRING|(i==current?MF_CHECKED:0),1000+i,pages[i]->title.c_str());POINT p;GetCursorPos(&p);int cmd=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(cmd>=1000)Select(cmd-1000);}
+HMENU CreateTabMenu(){
+    HMENU menu=CreatePopupMenu();
+    for(int i=0;i<(int)pages.size();++i){
+        // Menu strings interpret '&' as a mnemonic. Keep page titles verbatim.
+        const auto label=NativeUI::EscapeMenuText(pages[i]->title);
+        AppendMenuW(menu,MF_STRING|(i==current?MF_CHECKED:0),1000+i,label.c_str());
+    }
+    return menu;
+}
+void TabMenu(){HMENU menu=CreateTabMenu();POINT p;GetCursorPos(&p);int cmd=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(cmd>=1000)Select(cmd-1000);}
 void ExtraCommand(int cmd){auto t=Active();switch(cmd){
 case 900:TabMenu();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;

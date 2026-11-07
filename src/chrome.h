@@ -16,7 +16,7 @@
 
 namespace NativeChrome {
 template<class T> void Drop(T*& p){if(p){p->Release();p=nullptr;}}
-const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf",L"Gelasio-Regular.ttf"};
+const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf"};
 struct FontEnumerator final:IDWriteFontFileEnumerator {
     LONG refs=1; IDWriteFactory* factory; std::wstring folder; int index=-1; IDWriteFontFile* file=nullptr;
     FontEnumerator(IDWriteFactory* f,std::wstring p):factory(f),folder(std::move(p)){factory->AddRef();}
@@ -24,7 +24,7 @@ struct FontEnumerator final:IDWriteFontFileEnumerator {
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** p)override{if(!p)return E_POINTER;*p=nullptr;if(iid==IID_IUnknown||iid==__uuidof(IDWriteFontFileEnumerator)){*p=this;AddRef();return S_OK;}return E_NOINTERFACE;}
     ULONG STDMETHODCALLTYPE AddRef()override{return InterlockedIncrement(&refs);}
     ULONG STDMETHODCALLTYPE Release()override{auto n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
-    HRESULT STDMETHODCALLTYPE MoveNext(BOOL* more)override{Drop(file);*more=++index<3;if(!*more)return S_OK;return factory->CreateFontFileReference((folder+FontFiles[index]).c_str(),nullptr,&file);}
+    HRESULT STDMETHODCALLTYPE MoveNext(BOOL* more)override{Drop(file);*more=++index<(int)(sizeof(FontFiles)/sizeof(FontFiles[0]));if(!*more)return S_OK;return factory->CreateFontFileReference((folder+FontFiles[index]).c_str(),nullptr,&file);}
     HRESULT STDMETHODCALLTYPE GetCurrentFontFile(IDWriteFontFile** out)override{if(!file)return E_FAIL;*out=file;file->AddRef();return S_OK;}
 };
 struct FontLoader final:IDWriteFontCollectionLoader {
@@ -52,8 +52,8 @@ class Chrome {
     std::map<std::shared_ptr<const FaviconImage>,ID2D1Bitmap*,std::owner_less<std::shared_ptr<const FaviconImage>>> faviconBitmaps;
     // Device-independent DirectWrite layouts reused across frames: animation frames
     // must not rebuild text formats/typography for unchanged labels. Bounded.
-    struct TextKey{std::wstring value;float width,height,size,tracking;bool brand,medium;
-        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,brand,medium)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.brand,o.medium);}};
+    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium;
+        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium);}};
     struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;};
     std::map<TextKey,TextEntry> textCache;
     static constexpr size_t TextCacheLimit=96;
@@ -137,7 +137,7 @@ public:
     void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
-        fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display",L"Gelasio"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
+        fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
         hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wic));return hr;
     }
     HRESULT Init(HWND h,const std::wstring& root){hwnd=h;HRESULT hr=InitResources(root);return FAILED(hr)?hr:Resize();}
@@ -150,10 +150,11 @@ public:
     }
     void Color(float c,float alpha=1){brush->SetColor(D2D1::ColorF(c,c,c,alpha));}
     void Round(D2D1_RECT_F r,float radius,float c){Color(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
-    HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool brand,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
+    // Enable tabular figures explicitly for counters; titles and URLs keep proportional digits.
+    HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
         if(!write||!fonts||!output)return E_UNEXPECTED;
         IDWriteTextFormat* format=nullptr;IDWriteTextLayout* layout=nullptr;
-        HRESULT hr=write->CreateTextFormat(brand?L"Gelasio":L"Inter Display",fonts,medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
+        HRESULT hr=write->CreateTextFormat(L"Inter Display",fonts,medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
         if(FAILED(hr))return hr;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -163,7 +164,7 @@ public:
         IDWriteTextLayout1* layout1=nullptr;
         if(SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1),(void**)&layout1))){layout1->SetCharacterSpacing(tracking,0,0,{0,(UINT32)value.size()});Drop(layout1);}
         IDWriteTypography* typo=nullptr;write->CreateTypography(&typo);
-        if(typo){for(auto tag:{DWRITE_MAKE_OPENTYPE_TAG('c','p','s','p'),DWRITE_MAKE_OPENTYPE_TAG('c','v','1','2'),DWRITE_MAKE_OPENTYPE_TAG('t','n','u','m')})typo->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)tag,1});layout->SetTypography(typo,{0,(UINT32)value.size()});Drop(typo);}
+        if(typo){for(auto tag:{DWRITE_MAKE_OPENTYPE_TAG('c','p','s','p'),DWRITE_MAKE_OPENTYPE_TAG('c','v','1','2')})typo->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)tag,1});if(tabular)typo->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,1});layout->SetTypography(typo,{0,(UINT32)value.size()});Drop(typo);}
         DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);
         DWRITE_LINE_METRICS line{};UINT32 count=0;layout->GetLineMetrics(&line,1,&count);
         placement.lineHeight=std::max(metrics.height,line.height);placement.baseline=line.baseline;
@@ -178,22 +179,22 @@ public:
         placement.inkBottom=placement.originY+layout->GetMaxHeight()+overhang.bottom;
         *output=layout;return S_OK;
     }
-    TextMeasure MeasureText(const std::wstring& value,D2D1_RECT_F slot,float size,bool medium=false,bool brand=false,float tracking=0){TextMeasure m;IDWriteTextLayout* layout=nullptr;MakeTextLayout(value,slot,size,brand,medium,tracking,&layout,m);Drop(layout);return m;}
+    TextMeasure MeasureText(const std::wstring& value,D2D1_RECT_F slot,float size,bool medium=false,bool tabular=false,float tracking=0){TextMeasure m;IDWriteTextLayout* layout=nullptr;MakeTextLayout(value,slot,size,tabular,medium,tracking,&layout,m);Drop(layout);return m;}
     // Returns an AddRef'd layout; placement is translated to this slot.
-    HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool brand,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
-        if(!cacheText)return MakeTextLayout(value,slot,size,brand,medium,tracking,output,placement);
-        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,brand,medium};
+    HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
+        if(!cacheText)return MakeTextLayout(value,slot,size,tabular,medium,tracking,output,placement);
+        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium};
         auto it=textCache.find(key);
         if(it==textCache.end()){
             if(textCache.size()>=TextCacheLimit)ClearTextCache();
             TextEntry entry;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
-            HRESULT hr=MakeTextLayout(value,origin,size,brand,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
+            HRESULT hr=MakeTextLayout(value,origin,size,tabular,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
             it=textCache.emplace(std::move(key),entry).first;
         }
         placement=it->second.measure;placement.originY+=slot.top;placement.inkTop+=slot.top;placement.inkBottom+=slot.top;
         *output=it->second.layout;(*output)->AddRef();return S_OK;
     }
-    void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool brand=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,brand,medium,tracking,&layout,m)))return;
+    void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,tabular,medium,tracking,&layout,m)))return;
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
         auto clip=slot;clip.top=std::min(slot.top,m.inkTop-96.f/dpi);clip.bottom=std::max(slot.bottom,m.inkBottom+96.f/dpi);
@@ -258,7 +259,7 @@ public:
     }
     std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
     int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
-    bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==2;}
+    bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
     void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){if(!target||!brush)return;Build((int)titles.size(),selected,&titles);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).

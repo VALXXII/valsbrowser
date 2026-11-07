@@ -144,7 +144,7 @@ static_assert(Brand::centerY*2==TabStrip::FaviconSlot(TabStrip::Surface(0)).top+
 inline constexpr unsigned long NativeGray(float value){auto byte=static_cast<unsigned long>(value*255+.5f);return byte|(byte<<8)|(byte<<16);}
 struct TypeRole { float size; bool medium; float tracking; };
 namespace Type {
-inline constexpr TypeRole label{14,true,-.28f}, address{16,false,-.16f}, brand{8,false,-.16f};
+inline constexpr TypeRole label{14,true,-.28f}, address{16,false,-.16f};
 }
 enum class ButtonVariant { Ghost, Raised, Embedded, Window, TabClose };
 struct ButtonState { float hover=0, press=0; bool disabled=false, focus=false; };

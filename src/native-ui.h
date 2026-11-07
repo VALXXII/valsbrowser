@@ -1,7 +1,13 @@
 #pragma once
 #include <windows.h>
+#include <string>
 #include <dwmapi.h>
 namespace NativeUI {
+inline std::wstring EscapeMenuText(const std::wstring& text){
+    std::wstring label;label.reserve(text.size());
+    for(wchar_t c:text){label+=c;if(c==L'&')label+=c;}
+    return label;
+}
 // TranslateMessage queues WM_CHAR even when the subsequent keydown is handled.
 // Swallow only characters belonging to an address action; preserve IME input.
 struct AddressKeyState {
