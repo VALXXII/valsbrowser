@@ -8,7 +8,7 @@ La recherche Windows **browser** utilise d?sormais **`build/v2/browser-display-p
 
 - Onglets : gap visible de 6 DIP, comme les boutons ; largeur 128, pas 134.
 - Croix d'onglet : cible 24 x 24, inset egal de 4 DIP, glyphe Phosphor Bold 16.
-- Focus clavier : bordure blanche de 1 DIP, opacite 10 %, selon le choix utilisateur.
+- Focus : bordure blanche de 1 DIP ; opacite 10 % apres un clic souris (choix utilisateur), 50 % en navigation clavier (Tab, fleches, raccourcis) pour un contraste >= 3:1.
 - Fleur vectorielle 16 DIP ? 32 % d?opacit?, centr?e en (22,22), align?e sur le bouton pr?c?dent et le favicon. Le premier onglet commence ? x44, comme le bouton suivant. La fleur ouvre toujours la liste des onglets.
 - Actualiser et copier : vraies animations Lottie vectorielles, moteur natif ThorVG 1.1.3 statique. Aucun moteur JavaScript ni WebView d'interface ajoute.
 - Copier : morph lien ? coche en 300 ms apr?s r?ussite du presse-papiers, maintien 1500 ms, retour en 300 ms. Actualiser : un seul tour antihoraire en 500 ms, sans modification de la longueur du trac?, sans boucle ni red?marrage pendant le tour. La dur?e du chargement ne change pas cette animation.
