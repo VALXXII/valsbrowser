@@ -1,6 +1,11 @@
 ﻿$ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 & "$PSScriptRoot\build.ps1" -OutputDirectory 'build\smoke-v2'
+& "$PSScriptRoot/tools/w64devkit/bin/g++.exe" -std=c++17 -Wall -Wextra -Werror -static tests/session_test.cpp -o build/smoke-v2/session_test.exe
+if ($LASTEXITCODE -ne 0) { throw 'Session test compilation failed.' }
+& "$PSScriptRoot/build/smoke-v2/session_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Session tests failed.' }
+
 Set-Content 'build\smoke-v2\prototype.log' ''
 $process = Start-Process -FilePath "$PSScriptRoot\build\smoke-v2\browser.exe" -ArgumentList '--smoke-test' -WorkingDirectory "$PSScriptRoot\build\smoke-v2" -PassThru
 if (!$process.WaitForExit(30000)) {
