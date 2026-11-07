@@ -34,11 +34,16 @@ inline constexpr float tabCloseAll=96, tabIconOnly=56;
 // (4 DIP), so the centered 16 DIP glyph box sits 8 DIP from each edge,
 // mirroring the favicon's 8 DIP leading inset.
 inline constexpr float closeInset=(control-closeSlot)/2;
-// User-specified keyboard focus: exactly 1 DIP, white at 10% alpha.
+// Focus ring: exactly 1 DIP white. Pointer focus keeps the user-chosen subtle
+// 10% alpha; keyboard focus (Tab, arrows, shortcuts) rises to 50% so it meets
+// WCAG 1.4.11 (>= 3:1) on every chrome surface it crosses (issue #3).
 inline constexpr float focusStroke=1;
 }
 namespace AddressLoading { inline constexpr float opacity=.08f; }
-namespace Focus { inline constexpr float color=1, opacity=.10f, stroke=Size::focusStroke; }
+namespace Focus {
+inline constexpr float color=1, pointerOpacity=.10f, keyboardOpacity=.50f, stroke=Size::focusStroke;
+inline constexpr float Opacity(bool keyboard){return keyboard?keyboardOpacity:pointerOpacity;}
+}
 static_assert(Size::tabPitch-Size::tab==Space::tabGap,"visible tab gap equals toolbar gap");
 static_assert(Size::closeInset*2+Size::closeSlot==Size::control,"close slot vertically centred in the 32 DIP tab");
 static_assert(Size::focusStroke==1,"focus stroke is the user-chosen 1 DIP");

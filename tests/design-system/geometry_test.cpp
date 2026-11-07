@@ -81,7 +81,8 @@ int main(){
     auto title=TabStrip::TitleSlot(tab);
     Require(Near(close.left-title.right,Space::xs)&&title.right>title.left,"title reserves the close slot permanently (no hover shift)");
     Require(Near(Size::focusStroke,1)&&Near(Focus::stroke,1),"focus ring is exactly 1 DIP");
-    Require(Near(Focus::color,1)&&Near(Focus::opacity,.10f),"focus ring is white at 10% alpha");
-    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at forward left, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, adaptive 128-32 DIP tabs with masked peeking overflow, equal close insets, 1 DIP white 10% focus tokens.");
+    Require(Near(Focus::color,1)&&Near(Focus::pointerOpacity,.10f)&&Near(Focus::Opacity(false),.10f),"pointer focus ring is white at 10% alpha");
+    Require(Near(Focus::keyboardOpacity,.50f)&&Near(Focus::Opacity(true),.50f),"keyboard focus ring is white at 50% alpha");
+    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at forward left, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, adaptive 128-32 DIP tabs with masked peeking overflow, equal close insets, 1 DIP white focus tokens (pointer 10%, keyboard 50%).");
     return 0;
 }
