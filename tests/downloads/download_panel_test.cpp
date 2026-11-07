@@ -63,6 +63,37 @@ static void ModelChecks() {
     // Geometry from the Paper frame.
     Expect(Panel::MaskSolid() == 186 && Panel::MaskStart() == 98, "mask spans the name before the actions");
     Expect(Panel::Close().left == 232 && Panel::Close().right == 256, "header close centred on the first line");
+    // Periods: local calendar days (offset +1h here), unknown start = oldest.
+    const std::int64_t day = 86400000LL, hour = 3600000LL, noon = 20000 * day + 11 * hour; // local 12:00
+    Expect(PeriodOf(noon - 11 * hour, noon, hour) == Period::Today, "same local day");
+    Expect(PeriodOf(noon - 13 * hour, noon, hour) == Period::Yesterday, "previous local day");
+    Expect(PeriodOf(noon - 7 * day, noon, hour) == Period::LastWeek && PeriodOf(noon - 8 * day, noon, hour) == Period::LastMonth, "week boundary");
+    Expect(PeriodOf(noon - 31 * day, noon, hour) == Period::LastMonth && PeriodOf(noon - 40 * day, noon, hour) == Period::LastYear, "month boundary");
+    Expect(PeriodOf(0, noon, hour) == Period::LastYear, "unknown start");
+    // History v2 keeps the start time; v1 files still load.
+    std::vector<Item> dated(1); dated[0].state = State::Completed; dated[0].path = L"C:\\d\\a.zip"; dated[0].total = 9; dated[0].started = 1714564800000LL;
+    std::stringstream v2; WriteHistory(v2, dated); int id2 = 1; auto back = ReadHistory(v2, id2);
+    Expect(back.size() == 1 && back[0].started == 1714564800000LL && back[0].path == dated[0].path, "history v2 start time");
+    std::istringstream v1("browser-downloads 1\r\nC\t9\tC:\\d\\old.zip\thttps://x.test\t\n"); int id1 = 1; auto old = ReadHistory(v1, id1);
+    Expect(old.size() == 1 && old[0].started == 0 && old[0].path == L"C:\\d\\old.zip", "history v1 compatible");
+    // Curves and layout.
+    Expect(Curves::drawer.At(0) == 0 && Curves::drawer.At(1) == 1 && Curves::drawer.At(.25f) > .5f, "drawer curve starts fast");
+    Expect(std::abs(Curves::emphasized.At(.5f) - Motion::Eased(.5f, Motion::Curve::Icon)) < .002f, "bezier matches the existing icon curve");
+    Expect(Panel::Height(4, true) == 276 && Panel::Height(9, true) == 276 && Panel::Height(0) == 100, "popover: four rows + View all");
+    std::vector<Item> six(6); auto pop = DownloadsUI::PopoverSlots(six);
+    Expect(pop.size() == 5 && pop.back().kind == DownloadsUI::SlotKind::ViewAll && pop.back().top == 244, "popover slots");
+    std::array<std::vector<int>, PeriodCount> groups; groups[0] = {0, 1, 2, 3}; groups[1] = {4, 5};
+    std::array<float, PeriodCount> open{1, 1, 1, 1, 1}; float bottom = 0;
+    auto slots = DownloadsUI::DrawerSlots(six, groups, open, 0, &bottom);
+    Expect(slots.size() == 8 && slots[0].top == 59 && slots[5].kind == DownloadsUI::SlotKind::Section && slots[5].top == 299, "drawer sections on the 240 DIP stride");
+    Expect(slots[1].top == 95 && bottom == 299 + 24 + 12 + 2 * 48 + 16, "drawer rows and content end");
+    open[0] = 0; auto folded = DownloadsUI::DrawerSlots(six, groups, open, 0);
+    Expect(folded.size() == 4 && folded[1].kind == DownloadsUI::SlotKind::Section && folded[1].top == 59 + 36, "folded section keeps only its header");
+    open[0] = .5f; auto half = DownloadsUI::DrawerSlots(six, groups, open, 0);
+    auto start = DownloadsUI::MorphSlots(six, slots, 0), end = DownloadsUI::MorphSlots(six, slots, 1);
+    Expect(start[1].top == 52 && start[0].opacity == 0 && start.back().kind == DownloadsUI::SlotKind::ViewAll && start.back().opacity == 1, "morph starts as the popover");
+    Expect(end[1].top == 95 && end[0].opacity == 1 && end.back().opacity == 0 && end[5].opacity == 1, "morph lands on the drawer");
+    Expect(half[1].kind == DownloadsUI::SlotKind::Row && half[1].clipBottom == 59 + 24 + .5f * (12 + 4 * 48) && half[1].opacity == .5f, "folding rows are clipped and faded");
 }
 
 struct Fixture {
@@ -75,20 +106,57 @@ struct Fixture {
         Item d = c; d.id = 4;
         items = {a, b, c, d};
     }
-    // reveals: per row id, progress time since hover began (ms); -1 = settled.
-    bool Render(const wchar_t* name, UINT dpi, std::map<int, int> hovered, float entrance = 1, int focus = 0, std::vector<Item>* list = nullptr) {
-        auto& rows = list ? *list : items;
-        Chrome chrome; const float height = Panel::Height(static_cast<int>(rows.size()));
-        if (FAILED(chrome.InitOffscreen(root, dpi, Panel::width, height))) { std::fprintf(stderr, "offscreen init failed\n"); return false; }
+    // hovered: per row id, time since hover began (ms); -1 = settled.
+    // shape: optional visible rectangle (the window region); outside it shows a page grey.
+    bool Paint(const wchar_t* name, UINT dpi, float height, std::vector<Item>& rows, std::map<int, int> hovered, const std::vector<DownloadsUI::Slot>& slots, float entrance, int focus, DownloadsUI::Scene scene, float width = Panel::width, const D2D1_RECT_F* shape = nullptr) {
+        Chrome chrome;
+        if (FAILED(chrome.InitOffscreen(root, dpi, width, height))) { std::fprintf(stderr, "offscreen init failed\n"); return false; }
         DownloadsUI::View view(chrome);
         std::map<int, RowReveal> reveals; const auto now = Motion::Time{} + std::chrono::seconds(100);
         for (auto [id, ms] : hovered) { auto& r = reveals[id]; if (ms < 0) r.Snap(true); else r.Set(true, now - Motion::Milliseconds(ms), false); }
-        DownloadsUI::Scene scene; scene.items = &rows; scene.reveals = &reveals; scene.now = now; scene.entrance = entrance; scene.focus = focus; scene.keyboard = focus != 0;
+        scene.items = &rows; scene.reveals = &reveals; scene.now = now; scene.entrance = entrance; scene.focus = focus; scene.keyboard = focus != 0;
         scene.nowMs = 1000000; for (auto& item : rows) if (item.state == State::InProgress) item.endTime = scene.nowMs + 14000;
-        auto* target = chrome.RenderTarget(); target->BeginDraw(); view.Paint(scene, height); HRESULT hr = target->EndDraw();
+        auto* target = chrome.RenderTarget(); target->BeginDraw(); view.Paint(scene, slots, height);
+        if (shape) {
+            chrome.Color(40 / 255.f);
+            target->FillRectangle(D2D1::RectF(0, 0, width, shape->top), chrome.SolidBrush());
+            target->FillRectangle(D2D1::RectF(0, shape->bottom, width, height), chrome.SolidBrush());
+            target->FillRectangle(D2D1::RectF(0, shape->top, shape->left, shape->bottom), chrome.SolidBrush());
+            target->FillRectangle(D2D1::RectF(shape->right, shape->top, width, shape->bottom), chrome.SolidBrush());
+        }
+        HRESULT hr = target->EndDraw();
         view.Release();
         if (FAILED(hr)) { std::fprintf(stderr, "EndDraw %08lx\n", static_cast<unsigned long>(hr)); return false; }
         return SUCCEEDED(chrome.SavePng((out + L"\\" + name).c_str()));
+    }
+    bool Render(const wchar_t* name, UINT dpi, std::map<int, int> hovered, float entrance = 1, int focus = 0, std::vector<Item>* list = nullptr) {
+        auto& rows = list ? *list : items;
+        const int shown = std::min<int>(Panel::popoverRows, static_cast<int>(rows.size()));
+        const float height = Panel::Height(shown, !rows.empty());
+        DownloadsUI::Scene scene; scene.viewBottom = height - Panel::padding / 2;
+        return Paint(name, dpi, height, rows, hovered, DownloadsUI::PopoverSlots(rows), entrance, focus, scene);
+    }
+    // Drawer: three periods holding the four Paper rows; `open` per period.
+    bool Drawer(const wchar_t* name, UINT dpi, float height, std::array<float, PeriodCount> open, float scroll, int focus = 0) {
+        std::vector<Item> rows; std::array<std::vector<int>, PeriodCount> groups;
+        for (int p = 0; p < 3; ++p) for (int k = 0; k < 4; ++k) { Item item = items[k]; item.id = p * 10 + k + 1; groups[p].push_back(static_cast<int>(rows.size())); rows.push_back(item); }
+        float bottom = 0; auto slots = DownloadsUI::DrawerSlots(rows, groups, open, scroll, &bottom);
+        DownloadsUI::Scene scene; scene.viewTop = DrawerLayout::viewTop; scene.viewBottom = height; scene.edge = true;
+        scene.fadeTop = Motion::Clamp(scroll / DrawerLayout::topFade); scene.fadeBottom = Motion::Clamp((bottom - height - scroll) / Panel::pitch);
+        return Paint(name, dpi, height, rows, {{2, -1}, {4, -1}, {12, -1}, {14, -1}, {22, -1}}, slots, 1, focus, scene);
+    }
+    // Popover -> drawer morph at progress t (eased), as the drawer window paints it.
+    bool Morph(const wchar_t* name, UINT dpi, float height, float t) {
+        std::vector<Item> rows; std::array<std::vector<int>, PeriodCount> groups;
+        for (int p = 0; p < 3; ++p) for (int k = 0; k < 4; ++k) { Item item = items[k]; item.id = p * 10 + k + 1; groups[p].push_back(static_cast<int>(rows.size())); rows.push_back(item); }
+        float bottom = 0; auto docked = DownloadsUI::DrawerSlots(rows, groups, {1, 1, 1, 1, 1}, 0, &bottom);
+        const float width = Panel::width + DrawerLayout::margin, popoverHeight = Panel::Height(4, true);
+        DownloadsUI::Scene scene; scene.viewTop = DrawerLayout::viewTop; scene.edge = true; scene.edgeOpacity = t;
+        scene.originX = DrawerLayout::margin * t; // popover column starts at x 0 (6 DIP in from the window edge)
+        scene.viewBottom = height + (popoverHeight - Panel::padding / 2 - height) * (1 - t);
+        scene.fadeBottom = Motion::Clamp((bottom - height) / Panel::pitch) * t;
+        const D2D1_RECT_F shape{DrawerLayout::margin * t, 0, Panel::width + (width - Panel::width) * t, popoverHeight + (height - popoverHeight) * t};
+        return Paint(name, dpi, height, rows, {}, DownloadsUI::MorphSlots(rows, docked, t), 1, 0, scene, width, &shape);
     }
 };
 
@@ -97,9 +165,10 @@ int wmain(int argc, wchar_t** argv) {
     if (argc >= 3) {
         if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
         Fixture f(argv[1], argv[2]);
-        // Same scale as the Paper export (x2.875) for a side-by-side comparison.
-        const UINT paper = 276;
+        // Same scales as the Paper exports: x2.875 (first frame), x1.875 (View all + drawer).
+        const UINT paper = 276, drawerPaper = 180;
         Expect(f.Render(L"panel-paper.png", paper, {{2, -1}, {4, -1}}), "render Paper states");
+        Expect(f.Render(L"panel-viewall.png", drawerPaper, {{2, -1}, {4, -1}}), "render popover with View all");
         Expect(f.Render(L"panel-96.png", 96, {{2, -1}, {4, -1}}), "render 100%");
         Expect(f.Render(L"panel-192.png", 192, {{2, -1}, {4, -1}}), "render 200%");
         for (int ms : {0, 40, 80, 120, 160, 220}) {
@@ -108,6 +177,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         Expect(f.Render(L"entrance-050.png", paper, {}, .5f), "render entrance");
         Expect(f.Render(L"focus.png", paper, {{4, -1}}, 1, DownloadsUI::ActionHit(4, 0)), "render keyboard focus");
+        Expect(f.Render(L"focus-viewall.png", drawerPaper, {}, 1, DownloadsUI::ViewAllHit), "render View all focus");
         std::vector<Item> states(4);
         states[0].id = 1; states[0].path = L"C:\\d\\video.mp4"; states[0].state = State::Paused; states[0].received = 5000000; states[0].total = 90000000;
         states[1].id = 2; states[1].path = L"C:\\d\\archive.zip"; states[1].state = State::Failed; states[1].reason = L"Network error"; states[1].canResume = true;
@@ -115,6 +185,18 @@ int wmain(int argc, wchar_t** argv) {
         states[3].id = 4; states[3].path = L"C:\\d\\gone.txt"; states[3].state = State::Completed; states[3].missing = true;
         Expect(f.Render(L"states.png", paper, {{1, -1}, {2, -1}}, 1, 0, &states), "render other states");
         std::vector<Item> empty; Expect(f.Render(L"empty.png", paper, {}, 1, 0, &empty), "render empty");
+        // Drawer at the Paper drawer's height (728 DIP) and scale.
+        Expect(f.Drawer(L"drawer-paper.png", drawerPaper, 728, {1, 1, 1, 1, 1}, 0), "render drawer");
+        Expect(f.Drawer(L"drawer-96.png", 96, 728, {1, 1, 1, 1, 1}, 0), "render drawer 100%");
+        for (int i = 0; i <= 4; ++i) {
+            wchar_t name[64]; std::swprintf(name, 64, L"drawer-fold-%d.png", i);
+            Expect(f.Drawer(name, drawerPaper, 728, {1, 1 - Curves::drawer.At(i / 4.f), 1, 1, 1}, 0), "render fold frame");
+        }
+        for (int i = 0; i <= 6; ++i) {
+            wchar_t name[64]; std::swprintf(name, 64, L"morph-%d.png", i);
+            Expect(f.Morph(name, drawerPaper, 728, Curves::drawer.At(i / 6.f)), "render morph frame");
+        }
+        Expect(f.Drawer(L"drawer-scrolled.png", drawerPaper, 728, {1, 1, 1, 1, 1}, 120, DownloadsUI::SectionHit(Period::Yesterday)), "render scrolled drawer");
         CoUninitialize();
     }
     if (failures) { std::fprintf(stderr, "%d download panel check(s) failed\n", failures); return 1; }
