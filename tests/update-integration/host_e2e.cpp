@@ -61,7 +61,7 @@ int wmain(int argc,wchar_t** argv){
     if(FAILED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)))return 70;
     // Same path resolution as wWinMain, against the temp install root.
     auto exe=ExePath();base=exe.substr(0,exe.find_last_of(L'\\'));ResolveBrowserPaths(root);
-    Note("mode "+Utf8(mode));Note("exe "+Utf8(exe));Note("dataDir "+Utf8(dataDir));Note("sessionFile "+Utf8(sessionFile));Note("profileDir "+Utf8(profileDir));
+    Note("mode "+Utf8(mode));Note("exe "+Utf8(exe));Note("dataDir "+Utf8(dataDir));Note("sessionFile "+Utf8(sessionFile));Note("profileDir "+Utf8(profileDir));Note("downloadsFile "+Utf8(downloadsFile));
     Expect(Utf8(BROWSER_UPDATE_REPO_WIDE)=="VALXXII/browser-releases","production feed repository is the public releases repo");
 
     WNDCLASSW wc{};wc.hInstance=instance;wc.lpfnWndProc=OwnerProc;wc.lpszClassName=L"HostE2EOwner";RegisterClassW(&wc);
@@ -72,6 +72,11 @@ int wmain(int argc,wchar_t** argv){
     for(auto uri:{L"https://example.com/a",L"https://example.org/b?q=canary"}){auto t=std::make_shared<Tab>();t->uri=uri;t->home=false;pages.push_back(t);}
     {auto t=std::make_shared<Tab>();t->home=true;pages.push_back(t);}
     current=1;sessionReady=true;
+    LoadDownloads();const size_t historyBefore=downloads.size();Note("history rows loaded "+std::to_string(historyBefore));
+    {DL::Item item;item.id=nextDownloadId++;item.path=dataDir+L"\canary-download.bin";item.uri=L"https://example.com/canary-download.bin";
+     item.state=DL::State::Completed;item.received=item.total=4096;item.started=1790000000000LL;downloads.insert(downloads.begin(),item);}
+    // Real download surfaces (popover + drawer) beside the toast, as in the browser.
+    CreateDownloadPanel();
 
     auto transport=std::make_shared<DiskTransport>();transport->dir=serve;transport->chunkDelayMs=mode==L"cancel"?40:4;transport->offline=mode==L"offline";const bool quietMode=mode==L"offline"||mode==L"norelease";
     UpdateCore::Config config=UpdateConfig();
@@ -86,7 +91,8 @@ int wmain(int argc,wchar_t** argv){
     }
     Expect(!updates.OnNotify((WPARAM)0x1234560),"stale/foreign notification generation is refused");
 
-    std::vector<std::string> phases;bool toastSeen=false,sawManualCheck=false,noReleaseDone=false,downloaded=false,installAsked=false,cancelled=false,dismissed=false,rechecked=false,sawProgress=false,manualOffline=false;
+    int coexistFrames=0;
+    std::vector<std::string> phases;bool drawerChecked=false,coexist=false,toastSeen=false,sawManualCheck=false,noReleaseDone=false,downloaded=false,installAsked=false,cancelled=false,dismissed=false,rechecked=false,sawProgress=false,manualOffline=false;
     BrowserUpdate::View last;auto started=GetTickCount64();
     SetTimer(window,99,quietMode?3000:60000,nullptr); // watchdog / offline settle time
     MSG msg;
@@ -109,7 +115,15 @@ int wmain(int argc,wchar_t** argv){
         last=v;
         using P=BrowserUpdate::Phase;
         if(mode==L"install"){
-            if(v.phase==P::Available&&!downloaded&&updateToast.Shown()){downloaded=true;Expect(true,"Available card presented on screen by the toast before acting");UpdateAction(BrowserUpdate::Action::Download);}
+            if(v.phase==P::Available&&!drawerChecked&&updateToast.Shown()&&downloadDrawer.Window()){drawerChecked=true;
+                ShowDownloadDrawer();coexist=true;}
+            else if(coexist&&!downloaded&&updateToast.Shown()&&downloadDrawer.Visible()&&IsWindowVisible(downloadDrawer.Window())){
+                RECT toast{},drawer{},overlap{};GetWindowRect(updateToast.Window(),&toast);GetWindowRect(downloadDrawer.Window(),&drawer);
+                if(++coexistFrames<30&&IntersectRect(&overlap,&toast,&drawer))continue; // let both settle (spring/slide)
+                Expect(!IntersectRect(&overlap,&toast,&drawer),"toast card and open download drawer do not overlap (SetReservedRight)");
+                Expect(GetWindow(updateToast.Window(),GW_OWNER)==window&&GetWindow(downloadDrawer.Window(),GW_OWNER)==window,"drawer and toast share the browser window as owner");
+                CloseDownloadSurfaces(false);Expect(!downloadDrawer.Visible(),"drawer closed, toast still offered");
+                downloaded=true;Expect(true,"Available card presented on screen by the toast before acting");UpdateAction(BrowserUpdate::Action::Download);}
             else if(v.phase==P::Ready&&!installAsked&&updateToast.Shown()){installAsked=true;UpdateAction(BrowserUpdate::Action::RestartInstall);
                 Expect(closingForInstall,"RestartInstall accepted: helper launched, host closing");
                 Expect(!UpdateCheckAvailable(),"manual check disabled while closing for install");}
@@ -144,6 +158,12 @@ int wmain(int argc,wchar_t** argv){
     std::ifstream in(std::filesystem::path(sessionFile),std::ios::binary);auto saved=BrowserSession::Read(in);
     Expect(saved.urls.size()==3&&saved.urls[0]=="https://example.com/a"&&saved.urls[1]=="https://example.org/b?q=canary"&&saved.urls[2].empty()&&saved.active==1,"session saved to the resolved session file before exit");
     Expect(!std::filesystem::exists(std::filesystem::path(sessionFile+L".tmp")),"no session temp file left");
+    {std::ifstream hin(std::filesystem::path(downloadsFile),std::ios::binary);int next=1;auto saved=DL::ReadHistory(hin,next);
+     bool found=false;for(auto& d:saved)found=found||d.uri==L"https://example.com/canary-download.bin";
+     Expect(found&&saved.size()==historyBefore+1,"download history saved to the resolved downloads file on close (existing rows kept)");}
+    Expect(!std::filesystem::exists(std::filesystem::path(downloadsFile+L".tmp")),"no downloads temp file left");
+    if(mode==L"install")Expect(drawerChecked&&coexist,"drawer/toast coexistence exercised");
+    downloadPanel.Dispose();downloadDrawer.Dispose();
     if(mode==L"install")Expect(installAsked&&sawProgress,"real byte progress observed before Ready");
     if(mode==L"install"||mode==L"cancel")Expect(toastSeen,"toast card was presented while an update was offered");
     if(mode==L"cancel")Expect(cancelled&&dismissed,"cancel and dismiss exercised");

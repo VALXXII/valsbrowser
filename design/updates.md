@@ -65,7 +65,7 @@ compiled without it and keep linking only `native-lottie.cpp`.
 
 * The first update from a portable build (e.g. today's `build\v2\browser.exe`) installs into
   `%LOCALAPPDATA%\browser` and the helper performs a **one-time copy** of `profile\` and `session`
-  (and `downloads` after the latest-main reconciliation) into `data\` — after the exact browser PID
+  and the `downloads` history into `data\` — after the exact browser PID
   exited **and** the WebView2 `lockfile` can be opened exclusively (≤ 60 s). Locked or failing copy ⇒
   migration and install aborted, nothing overwritten, the previous app restarted, error shown once.
   The legacy folder is never moved, modified or deleted; an existing `data\` is never overwritten.
@@ -123,14 +123,20 @@ core packer `tools/update-package/make_update_package.py`.
   (WebView2 hold): host code is verified by compilation of the production build and by native fixtures that
   drive the production `main.cpp` update branches with the real engine, helper and toast.
 
-## Pending reconciliation with latest origin/main (download history drawer, PR #28/#29)
+## Reconciled with latest origin/main (download history drawer PR #28/#29, navigation states PR #30)
 
-The integration was done on baseline 322fdb4. When origin/main is merged:
-* store the downloads history at `DataPaths::downloadsFile` (`<dataDir>\downloads`) instead of
-  `<base>\downloads` (`SaveDownloads`/`LoadDownloads`), so it lives in the stable data directory; the helper
-  already migrates `downloads` once from a portable folder;
-* upstream `WM_SIZE` closes the download surfaces when minimised and `WM_MOVE` repositions the drawer:
-  keep both and add the toast calls next to them (`SetOwnerVisible`, `Layout`);
-* call `updateToast.SetReservedRight(width of the open drawer in DIP)` when the drawer opens/closes
-  (0 when closed) so the bottom-left card never overlaps it;
-* `WM_CLOSE` saves session and downloads; keep both before `DestroyWindow` (install handoff relies on it).
+Merge of updater baseline 728fb29 with origin/main 1a69d7b (resolved in `src/main.cpp` and `README.md`):
+* download history lives at `downloadsFile`: `<exeDir>\downloads` when portable (unchanged),
+  `<root>\data\downloads` when installed (`DataPaths::downloadsFile`); the helper copies it once from a
+  portable folder together with profile and session (never `downloads.tmp`, never moves the source);
+* `WM_CLOSE` saves session and downloads (atomic temp + replace) before `DestroyWindow`; the install
+  handoff relies on it, and `WM_DESTROY` then stops the engine and closes the toast;
+* `WM_SIZE` keeps the upstream drawer reposition / close-on-minimise and calls `Toast::SetOwnerVisible`
+  (which re-lays the card out); `WM_MOVE` repositions drawer and toast; `WM_DPICHANGED`/`WM_EXITSIZEMOVE`
+  lay the toast out; the earlier `WM_WINDOWPOSCHANGED` hook was dropped (it duplicated WM_SIZE/WM_MOVE);
+* `SyncUpdateToastReserve()` sets `Toast::SetReservedRight(DrawerLayout::width + margin)` while the drawer
+  is open and 0 once it starts closing (called when the drawer is shown and from the surfaces' `closed` hook);
+* focus: F6 cycles page → toolbar → toast (when shown) → page; the drawer keeps its own Tab/Esc handling
+  and Esc returns focus to the page, so both surfaces give focus back the same way;
+* no id collisions: upstream uses WM_APP+1/2/3/8, updates WM_APP+9 and menu command 3020.
+Evidence: `build/coordination/update-integration-report.md` (final section).

@@ -17,7 +17,8 @@ Scenarios (each in its own fresh directory under build/update-integration-tests/
   cancel     cancel mid-download, dismiss, manual re-check, close during download (bounded).
   offline    network failure: silent startup, manual check shows Error (Retry).
   norelease  no published release (404): silent startup, manual check ends up-to-date.
-Data checks use SHA-256 canary hashes of whole directory trees.
+Data checks use SHA-256 canary hashes of whole directory trees; the download history (upstream
+drawer) is checked for preservation (installed) and exact one-time migration (portable).
 """
 from __future__ import annotations
 import hashlib, json, os, shutil, subprocess, sys, time
@@ -66,6 +67,19 @@ def make_profile(path: Path, tag: str):
         f.write_text(data, encoding='utf-8')
 
 
+HISTORY_ROW = 'C\t1234\t1780000000000\tC:\\canary\\old-report.pdf\thttps://example.com/old-report.pdf\t\n'
+
+
+def make_history(path: Path):
+    path.write_text('browser-downloads 2\n' + HISTORY_ROW, encoding='utf-8', newline='\n')
+
+
+def check_history(path: Path, what: str):
+    text = path.read_text(encoding='utf-8') if path.exists() else ''
+    check('https://example.com/old-report.pdf' in text and 'https://example.com/canary-download.bin' in text,
+          f'{what}: download history keeps the old row and the row saved on close')
+
+
 def build_fixtures(work: Path) -> dict:
     gen = work / 'gen'
     B.write_build_info(gen, V.identity(int(OLD.split('.')[-1]), 'f' * 40, 'dev'), 'VALXXII/browser-releases')
@@ -97,7 +111,7 @@ def place_app(dest: Path, fx: dict, exe_name: str = 'browser.exe') -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(fx['host'], dest / exe_name)
     shutil.copy2(fx['helper'], dest / 'update-helper.exe')
-    shutil.copytree(ROOT / 'assets/fonts', dest / 'assets/fonts', dirs_exist_ok=True)
+    shutil.copytree(ROOT / 'assets', dest / 'assets', dirs_exist_ok=True)  # toast fonts + download panel icons
     return dest / exe_name
 
 
@@ -140,6 +154,7 @@ def scenario_installed(base: Path, fx: dict):
     place_app(app, fx)
     (root / 'current').write_text(OLD + '\n')
     make_profile(root / 'data/profile', 'installed')
+    make_history(root / 'data/downloads')
     before = tree_hash(root / 'data/profile')
     rc = run_host(app / 'browser.exe', 'install', root, fx['serve'], base / 'host-report.txt')
     check(rc == 0, 'host flow (installed): Available -> Download -> Ready -> RestartInstall -> session saved -> clean exit')
@@ -147,6 +162,8 @@ def scenario_installed(base: Path, fx: dict):
     common_install_checks(root, launches, root / 'data/session')
     check((app / 'browser.exe').is_file(), f'previous version {OLD} retained for rollback')
     check(tree_hash(root / 'data/profile') == before, 'stable profile byte-identical after install (canary hash)')
+    check_history(root / 'data/downloads', 'installed')
+    check(not (app / 'downloads').exists(), 'no download history written inside the version directory')
 
 
 def scenario_portable(base: Path, fx: dict):
@@ -155,15 +172,21 @@ def scenario_portable(base: Path, fx: dict):
     exe = place_app(portable, fx, 'browser-main-78f5340.exe')
     make_profile(portable / 'profile', 'portable')
     (portable / 'session').write_text('browser-session-1\n0\n1\n"https://legacy.example"\n', encoding='utf-8')
+    make_history(portable / 'downloads')
     rc = run_host(exe, 'install', root, fx['serve'], base / 'host-report.txt')
     check(rc == 0, 'host flow (portable/legacy exe-adjacent data): install requested and clean exit')
     legacy_before = tree_hash(portable / 'profile')  # after host exit, before/while helper migrates
     session_before = (portable / 'session').read_bytes()
+    history_before = (portable / 'downloads').read_bytes()
     launches = wait_install(root)
     common_install_checks(root, launches, root / 'data/session')
     check(tree_hash(root / 'data/profile') == legacy_before, 'one-time migration copied the legacy profile exactly (canary hash)')
     check(tree_hash(portable / 'profile') == legacy_before, 'legacy profile left untouched (copy, never move)')
     check((portable / 'session').read_bytes() == session_before, 'legacy session left untouched')
+    check_history(portable / 'downloads', 'portable (written by the legacy app on close)')
+    migrated = root / 'data/downloads'
+    check(migrated.exists() and migrated.read_bytes() == history_before, 'one-time migration copied the download history exactly')
+    check((portable / 'downloads').read_bytes() == history_before, 'legacy download history left untouched')
     check(exe.is_file(), 'legacy portable app (browser-main-78f5340.exe) left in place')
 
 
