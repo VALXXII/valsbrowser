@@ -23,6 +23,7 @@ public:
         if(!active_||complete_||id!=id_)return;
         from_=Fraction(now);target_=1;changed_=finished_=now;complete_=true;
     }
+    bool IsLoading() const { return active_&&!complete_; }
     void Clear(){active_=complete_=false;}
     Visual Sample(Motion::Time now,bool reduced=false) const {
         if(!active_)return {};
