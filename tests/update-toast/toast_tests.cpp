@@ -392,6 +392,19 @@ static void WindowTests() {
     CHECK((ex & WS_EX_LAYERED) && (ex & WS_EX_NOACTIVATE) && (ex & WS_EX_TOOLWINDOW) && !(ex & WS_EX_TOPMOST));
     CHECK(!IsWindowVisible(popup) && !toast.Shown());
     auto* impl = reinterpret_cast<Toast::Impl*>(GetWindowLongPtrW(popup, GWLP_USERDATA));
+    const DWM_SYSTEMBACKDROP_TYPE acrylic = DWMSBT_TRANSIENTWINDOW, noBackdrop = DWMSBT_NONE;
+    const bool supportsBackdrop = SUCCEEDED(DwmSetWindowAttribute(owner, DWMWA_SYSTEMBACKDROP_TYPE, &acrylic, sizeof(acrylic)));
+    DwmSetWindowAttribute(owner, DWMWA_SYSTEMBACKDROP_TYPE, &noBackdrop, sizeof(noBackdrop));
+    HWND backdrop = impl->backdrop;
+    CHECK(supportsBackdrop == (backdrop != nullptr));
+    CHECK(MaterialOpacity >= .98f); // unblurred fallback cannot expose competing page text
+    if (backdrop) {
+        CHECK(GetWindow(backdrop, GW_OWNER) == owner && !IsWindowVisible(backdrop));
+        const auto style = GetWindowLongPtrW(backdrop, GWL_EXSTYLE);
+        CHECK(!(style & WS_EX_LAYERED) && (style & WS_EX_NOACTIVATE) && (style & WS_EX_TRANSPARENT));
+        DWM_SYSTEMBACKDROP_TYPE actual = DWMSBT_NONE;
+        CHECK(SUCCEEDED(DwmGetWindowAttribute(backdrop, DWMWA_SYSTEMBACKDROP_TYPE, &actual, sizeof(actual))) && actual == acrylic);
+    }
     const auto statsBefore = impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0;
     toast.SetView(V(Phase::Available));
     Pump(600);
@@ -400,6 +413,12 @@ static void WindowTests() {
     // Bottom-left anchoring against the owner client.
     RECT client{}; GetClientRect(owner, &client); MapWindowPoints(owner, nullptr, (POINT*)&client, 2);
     RECT pr{}; GetWindowRect(popup, &pr);
+    if (backdrop) {
+        RECT br{}; GetWindowRect(backdrop, &br);
+        CHECK(IsWindowVisible(backdrop) && EqualRect(&pr, &br));
+        CHECK(GetWindow(popup, GW_HWNDNEXT) == backdrop);
+        CHECK(SendMessageW(backdrop, WM_NCHITTEST, 0, MAKELPARAM(pr.left + 20, pr.top + 20)) == HTTRANSPARENT);
+    }
     const float s = GetDpiForWindow(owner) / 96.f;
     CHECK(pr.left == client.left + (LONG)std::lround(14 * s));
     CHECK(pr.bottom == client.bottom - (LONG)std::lround(14 * s));
@@ -456,12 +475,14 @@ static void WindowTests() {
     SetWindowPos(owner, nullptr, 0, 0, MulDiv(240, sys, 96), MulDiv(400, sys, 96), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     toast.Layout(); Pump(100);
     CHECK(!toast.Fits() && !IsWindowVisible(popup));
+    CHECK(!backdrop || !IsWindowVisible(backdrop));
     SetWindowPos(owner, nullptr, 0, 0, MulDiv(900, sys, 96), MulDiv(640, sys, 96), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     toast.Layout(); Pump(400);
     CHECK(toast.Fits() && IsWindowVisible(popup));
     // Minimise: hidden, no frames.
     ShowWindow(owner, SW_MINIMIZE); toast.SetOwnerVisible(false); Pump(200);
     CHECK(!IsWindowVisible(popup));
+    CHECK(!backdrop || !IsWindowVisible(backdrop));
     ShowWindow(owner, SW_RESTORE); toast.SetOwnerVisible(true); Pump(400);
     CHECK(IsWindowVisible(popup));
     // Installed: only by the real event; finite dwell then a single Dismiss and exit.
@@ -477,6 +498,7 @@ static void WindowTests() {
     CHECK(!IsWindowVisible(popup));
     toast.Close(); toast.Close();
     CHECK(!IsWindow(popup));
+    CHECK(!backdrop || !IsWindow(backdrop));
     DestroyWindow(owner);
     Pump(50);
 }

@@ -36,10 +36,9 @@ inline constexpr float surface = 23 / 255.f, surfaceOpacity = .5f, borderOpacity
 inline constexpr float edgeLeft = 14, edgeBottom = 14.447f;
 inline constexpr float available = 153.59375f, downloading = 139.59375f, ready = 153.59375f, installed = 105.59375f;
 }
-// Native material: Paper's backdrop-filter blur(8px) cannot sample WebView2 pixels
-// from a layered popup without a capture path, so the unblurred surface is made
-// denser (see design/update-toast.md). Identical on the dark canvas Paper shows.
-inline constexpr float MaterialOpacity = .88f;
+// Opaque fallback when desktop acrylic is unavailable or transparency is disabled.
+// The live acrylic surface uses Paper::surfaceOpacity over the compositor's blur.
+inline constexpr float MaterialOpacity = .98f;
 // Card snapped to whole DIPs at the bottom edge; Paper's 14.447 is a canvas artefact.
 inline constexpr float EdgeBottom = 14;
 // Narrowest card that keeps every title on one line (measured: "New update available").

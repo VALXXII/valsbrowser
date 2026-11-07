@@ -7,6 +7,7 @@
 #include "design-system.h"
 #include <d2d1.h>
 #include <dwrite_1.h>
+#include <dwmapi.h>
 #include <cstdlib>
 #include <map>
 
@@ -337,13 +338,13 @@ public:
         }
     }
     // Paints a sampled frame into the card box {0,0,width,height} (DIP) of the bound target.
-    void Paint(const Frame& f, float width, float height, const ButtonVisual visuals[2], bool reduced) {
+    void Paint(const Frame& f, float width, float height, const ButtonVisual visuals[2], bool reduced, float materialOpacity = MaterialOpacity) {
         if (!f.visible || !brush) return;
         const bool fade = f.opacity < .999f;
         if (fade) target->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                                                           D2D1::IdentityMatrix(), f.opacity), nullptr);
         const D2D1_ROUNDED_RECT card = D2D1::RoundedRect(D2D1::RectF(0, 0, width, height), Paper::radius, Paper::radius);
-        Color(Paper::surface, MaterialOpacity);
+        Color(Paper::surface, materialOpacity);
         target->FillRoundedRectangle(card, brush);
         const float b = Paper::border;
         Color(1, Paper::borderOpacity);
@@ -372,7 +373,8 @@ using namespace ToastDetail;
 struct Toast::Impl {
     static constexpr UINT FrameMessage = WM_APP + 0x51, ActionMessage = WM_APP + 0x52;
     static constexpr UINT_PTR DwellTimer = 1, FallbackTimer = 2;
-    HWND owner = nullptr, hwnd = nullptr;
+    HWND owner = nullptr, hwnd = nullptr, backdrop = nullptr;
+    int backdropW = 0, backdropH = 0, backdropRadius = 0;
     Options options;
     ActionHandler onAction;
     std::function<void()> onRelease;
@@ -401,6 +403,7 @@ struct Toast::Impl {
     void Destroy() {
         clock.Stop(); clockReady = false;
         if (hwnd) { HWND h = hwnd; hwnd = nullptr; SetWindowLongPtrW(h, GWLP_USERDATA, 0); if (IsWindow(h)) DestroyWindow(h); }
+        if (backdrop) { if (IsWindow(backdrop)) DestroyWindow(backdrop); backdrop = nullptr; }
         Drop(dc); painter.Unbind();
         if (memory) { if (oldBitmap) SelectObject(memory, oldBitmap); DeleteDC(memory); memory = nullptr; }
         if (bitmap) { DeleteObject(bitmap); bitmap = nullptr; }
@@ -426,7 +429,55 @@ struct Toast::Impl {
         }
         hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"BrowserUpdateToast", L"",
                                WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
+        if (hwnd) CreateBackdrop(instance);
         return hwnd != nullptr;
+    }
+    // DWM cannot paint a system backdrop into an UpdateLayeredWindow surface.
+    // Keep the acrylic in a separate, non-layered owned popup directly beneath
+    // the transparent text/control surface. DWM samples the live page itself;
+    // there is no page capture, bitmap polling or additional animation timer.
+    static LRESULT CALLBACK BackdropProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+        if (m == WM_NCHITTEST) return HTTRANSPARENT;
+        if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+        if (m == WM_PAINT) {
+            PAINTSTRUCT p; HDC dc = BeginPaint(h, &p);
+            FillRect(dc, &p.rcPaint, (HBRUSH)GetStockObject(BLACK_BRUSH));
+            EndPaint(h, &p); return 0;
+        }
+        return DefWindowProcW(h, m, w, l);
+    }
+    void CreateBackdrop(HINSTANCE instance) {
+        WNDCLASSW wc{}; wc.lpfnWndProc = BackdropProc; wc.hInstance = instance;
+        wc.lpszClassName = L"BrowserUpdateBackdrop";
+        RegisterClassW(&wc);
+        backdrop = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+            wc.lpszClassName, L"", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, nullptr);
+        if (!backdrop) return;
+        const BOOL dark = TRUE;
+        DwmSetWindowAttribute(backdrop, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+        const DWM_SYSTEMBACKDROP_TYPE material = DWMSBT_TRANSIENTWINDOW;
+        const MARGINS margins{-1, -1, -1, -1};
+        if (FAILED(DwmExtendFrameIntoClientArea(backdrop, &margins)) ||
+            FAILED(DwmSetWindowAttribute(backdrop, DWMWA_SYSTEMBACKDROP_TYPE, &material, sizeof(material)))) {
+            DestroyWindow(backdrop); backdrop = nullptr; // Windows < 11 22H2: readable solid fallback
+        }
+    }
+    bool PresentBackdrop(int w, int h, float opacity) {
+        if (!backdrop) return false;
+        if (opacity <= 1.f / 255) { ShowWindow(backdrop, SW_HIDE); return false; }
+        const int radius = (int)std::lround(Paper::radius * scale);
+        if (w != backdropW || h != backdropH || radius != backdropRadius) {
+            HRGN clip = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
+            if (!clip || !SetWindowRgn(backdrop, clip, FALSE)) {
+                if (clip) DeleteObject(clip);
+                ShowWindow(backdrop, SW_HIDE); return false;
+            }
+            backdropW = w; backdropH = h; backdropRadius = radius;
+        }
+        if (!SetWindowPos(backdrop, hwnd, card.left, card.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+            ShowWindow(backdrop, SW_HIDE); return false;
+        }
+        return true;
     }
     // ---- geometry ------------------------------------------------------------
     struct Client { RECT px{}; float scale = 1, w = 0, h = 0; };
@@ -503,7 +554,10 @@ struct Toast::Impl {
         v.hover = iv.hover; v.press = iv.press; v.focus = focused && focus == i; v.keyboard = keyboard;
         return v;
     }
-    void Hide() { if (hwnd && windowShown) { ShowWindow(hwnd, SW_HIDE); windowShown = false; } }
+    void Hide() {
+        if (backdrop) ShowWindow(backdrop, SW_HIDE);
+        if (hwnd && windowShown) { ShowWindow(hwnd, SW_HIDE); windowShown = false; }
+    }
     void Present(Motion::Time now) {
         if (!hwnd) return;
         const Frame f = presenter.Sample(now);
@@ -523,10 +577,11 @@ struct Toast::Impl {
         if (FAILED(dc->BindDC(memory, &bind))) return;
         dc->SetDpi((float)dpi, (float)dpi);
         if (FAILED(painter.Bind(dc))) return;
+        const bool acrylic = PresentBackdrop(w, h, f.opacity);
         dc->BeginDraw();
         dc->Clear(D2D1::ColorF(0, 0, 0, 0));
         const ButtonVisual visuals[2] = {Visual(0, now), Visual(1, now)};
-        painter.Paint(f, width, cardHeight, visuals, presenter.Reduced());
+        painter.Paint(f, width, cardHeight, visuals, presenter.Reduced(), acrylic ? Paper::surfaceOpacity : MaterialOpacity);
         const HRESULT hr = dc->EndDraw();
         if (hr == D2DERR_RECREATE_TARGET) { painter.Unbind(); Drop(dc); Request(); return; }
         POINT dst{card.left, card.top}, src{0, 0}; SIZE size{w, h};

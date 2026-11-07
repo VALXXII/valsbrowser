@@ -83,11 +83,15 @@ Static cues always carry the state (title, icon, label, track); motion is never 
 
 ## Deviations from Paper (justified)
 
-1. **Material**: Paper is `#171717` @ 50 % with `backdrop-filter: blur(8px)`. A layered popup cannot sample the
-   WebView2 pixels underneath without a screen-capture path (cost, privacy, latency), and DWM system backdrops do not
-   combine with per-pixel-alpha rounded layered windows. Without blur, 50 % lets page text show through and compete
-   with the toast text. The native card uses `#171717` @ **88 %**: identical on the dark canvas Paper shows, legible
-   on light/busy pages (see `available-light-*.png`).
+1. **Material**: Paper is `#171717` @ 50 % with `backdrop-filter: blur(8px)`. Windows 11 22H2+ uses
+   `DWMSBT_TRANSIENTWINDOW` (Desktop Acrylic) in a separate non-layered owned popup directly beneath the
+   layered text/control popup. DWM blurs the live page; no capture, polling or extra timer is used. The tint
+   remains 50 %. The blur strength is managed by Windows rather than fixed at 8 px. Both surfaces share the
+   card's animated position, height and 10-DIP rounded clip; the material appears at the first nonzero frame,
+   while foreground opacity follows the existing fade. Both hide on minimize/insufficient space and close
+   together. The backdrop never activates and is hit-test transparent. Windows controls the material fallback
+   when transparency is disabled; unsupported APIs or presentation failures use a readable 98 % tint.
+   API reference: https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type
 2. **Bottom inset** 14 instead of 14.447 DIP (Paper canvas artefact), so the card's bottom edge lands on whole
    device pixels; heights keep Paper's fractional values and are rounded to device pixels at present time.
 3. **Minimum width** 224 DIP (narrowest card keeping *New update available* on one line). Narrower clients (or a
