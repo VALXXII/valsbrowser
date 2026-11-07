@@ -52,6 +52,17 @@ Ctrl+Maj+T rouvre le dernier onglet fermé à sa position initiale (25 entrées,
 
 À la fermeture de la fenêtre, les URL, les onglets vides et l’index actif sont sauvegardés dans `session`, à côté de `profile/`, puis restaurés au lancement. Un fichier absent ou invalide ouvre un nouvel onglet. Le smoke test utilise une session vierge sans toucher à ce fichier. `tests/session_test.cpp` couvre le format et les fichiers invalides ; `test.ps1` l’exécute avant le smoke test.
 
+## Lecteurs d'écran
+
+La barre du haut est dessinée en Direct2D ; `src/accessibility.h` la décrit aux lecteurs d'écran (Narrateur, NVDA, JAWS) via UI Automation. Chaque contrôle a un nom parlé, son raccourci à part (AcceleratorKey) et son état :
+
+- « Liste des onglets », puis la liste « Onglets » : un élément par onglet (titre, « sélectionné », « 2 sur 3 », « Chargement en cours »), avec son bouton « Fermer l'onglet … ». Les onglets masqués par le défilement restent listés et sélectionnables.
+- « Nouvel onglet », « Réduire », « Agrandir » / « Restaurer », « Fermer la fenêtre ».
+- Barre d'outils « Navigation » : « Précédent » et « Suivant » (désactivés sans historique), « Adresse ou recherche » (valeur = URL ; une fois ouverte, c'est l'EDIT natif, nommé pareil), « Actualiser » / « Arrêter le chargement », « Copier le lien », « Téléchargements », « Navigation privée », « Réglages ».
+- Tab, flèches et F6 annoncent l'élément focalisé ; changer d'onglet annonce la sélection ; une copie réussie dit « Lien copié ». Les lecteurs peuvent aussi activer, sélectionner et fermer directement.
+
+`uiautomationcore.dll` est chargé à l'exécution : aucune dépendance de lien en plus, et le navigateur démarre aussi sur les Windows sans notifications UIA (avant Windows 10 1709). Vérification : `test-accessibility.ps1` (vrai client UI Automation, également dans `run_all.py`) ; à la main, Narrateur (Ctrl+Win+Entrée) puis Tab dans la barre du haut, ou Accessibility Insights for Windows.
+
 ## Historique des téléchargements
 
 Le bouton Téléchargements (et le menu Réglages) ouvre un popover natif « Download history » sous la barre d'outils, d'après la frame Paper : 268 DIP de large, en-tête 24, lignes de 48 (tuile 32 avec l'icône Windows du fichier, nom 16 medium, détail 14). Le flyout WebView2 par défaut est remplacé (`DownloadStarting` marqué `Handled`) et le popover s'ouvre au début de chaque téléchargement.

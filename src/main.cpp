@@ -25,6 +25,7 @@
 #include "native-ui.h"
 #include "frame-clock.h"
 #include "download-panel.h"
+#include "accessibility.h"
 #include <shlobj.h>
 // Self-update host integration is compiled into identity-stamped builds only
 // (tools/release/build.py defines BROWSER_HAS_BUILD_INFO). Unstamped builds and the
@@ -74,7 +75,9 @@ template<class T> struct Com {
     T* p=nullptr; ~Com(){if(p)p->Release();} T* operator->()const{return p;}
     void set(T* q){if(q)q->AddRef();if(p)p->Release();p=q;}
 };
-struct Tab { Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false; };
+// Stable per-tab identity (never reused): accessibility keys survive closes and moves.
+inline unsigned NextTabSerial(){static unsigned serial=0;return ++serial;}
+struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false; };
 HWND window,tabs,address,back,forward,reload,add,closeTab,home;
 HFONT font; HBRUSH paper; HINSTANCE instance; HMODULE loader;
 Com<ICoreWebView2Environment> environment;
@@ -558,6 +561,7 @@ HMENU CreateTabMenu(){
     }
     return menu;
 }
+void AnnounceCopied();
 // A keyboard-opened menu drops just below its control (DIP region -> device pixels), aligned to the
 // control's outer edge: the flower's menu opens rightward, the gear's leftward.
 struct MenuPlacement{RECT control;bool alignRight;};
@@ -585,7 +589,7 @@ case CheckUpdatesCommand:CheckForUpdates();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;
 case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
 case 'X':PostMessageW(window,WM_CLOSE,0,0);break;
-case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
+case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);AnnounceCopied();}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
 case 'D':if(downloadDismissClick){downloadDismissClick=false;break;}ToggleDownloads();break;
 case 'P':MessageBoxW(window,L"La navigation privée n'est pas disponible dans cette version.\n\nLes onglets actuels utilisent le profil normal local (cookies et cache persistants). Aucun onglet privé n'a été ouvert.",L"Navigation privée — indisponible",MB_OK|MB_ICONINFORMATION);break;
 case 'S':{HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'T',L"Nouvel onglet\tCtrl+T");AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");AppendMenuW(menu,MF_STRING,900,L"Liste des onglets");AppendMenuW(menu,MF_STRING,'D',L"Téléchargements");
@@ -677,6 +681,136 @@ void ResolveBrowserPaths(const std::wstring& installRoot=L""){
     (void)installRoot;
 #endif
 }
+// ---- Accessibility ----------------------------------------------------------
+// The chrome is painted with Direct2D, so Windows sees no controls in it.
+// src/accessibility.h exposes them to screen readers through UI Automation; this
+// section describes them. Keys: chrome region ids for fixed controls, a container
+// constant for the strip and the toolbar, and the tab's serial for a tab (kind 1)
+// or its close button (kind 2), so an element never silently becomes another tab
+// after a close or a move.
+Accessibility::Bridge accessibility;
+constexpr long long AccessibleStrip=0x10000,AccessibleToolbar=0x10001;
+constexpr UINT AccessibleMessage=WM_APP+11;
+enum AccessibleActionKind { AccessibleInvoke=1, AccessibleSelect, AccessibleSetValue };
+std::wstring accessibleAddress;
+long long AccessibleTabKey(int index,bool close=false){return index>=0&&index<(int)pages.size()?((close?2LL:1LL)<<32)|pages[index]->serial:0;}
+long long AccessibleKey(int id){if(NativeChrome::IsClose(id))return AccessibleTabKey(NativeChrome::TabIndex(id),true);if(NativeChrome::IsTab(id))return AccessibleTabKey(NativeChrome::TabIndex(id));return id;}
+// Chrome region id currently realising a key (0 once its tab is gone).
+int AccessibleRegion(long long key){
+    const long long kind=key>>32;if(kind!=1&&kind!=2)return (int)key;
+    for(int i=0;i<(int)pages.size();++i)if(pages[i]->serial==(unsigned)(key&0xffffffff))return (kind==2?NativeChrome::CloseBase:NativeChrome::TabBase)+i;
+    return 0;
+}
+// Spoken names: the tooltip text without its shortcut, which goes to AcceleratorKey.
+struct AccessibleLabel { std::wstring name,accelerator,help; const wchar_t* id; };
+AccessibleLabel AccessibleButton(int id){
+    switch(id){
+    case 900:return {L"Liste des onglets",L"",std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"TabList"};
+    case 'T':return {L"Nouvel onglet",L"Ctrl+T",L"",L"NewTab"};
+    case 'm':return {L"Réduire",L"",L"",L"Minimize"};
+    case 'M':return {window&&IsZoomed(window)?L"Restaurer":L"Agrandir",L"",L"",L"Maximize"};
+    case 'X':return {L"Fermer la fenêtre",L"Alt+F4",L"",L"Close"};
+    case 'B':return {L"Précédent",L"Alt+Flèche gauche",L"",L"Back"};
+    case 'F':return {L"Suivant",L"Alt+Flèche droite",L"",L"Forward"};
+    case 'R':return {chrome.navigationLoading?L"Arrêter le chargement":L"Actualiser",L"Ctrl+R",L"",L"Reload"};
+    case 'C':return {L"Copier le lien",L"",L"",L"CopyLink"};
+    case 'D':return {L"Téléchargements",L"",L"",L"Downloads"};
+    case 'P':return {L"Navigation privée",L"",L"Non disponible dans cette version",L"Private"};
+    case 'S':return {L"Réglages",L"",L"",L"Settings"};
+    default:return {L"",L"",L"",L""};
+    }
+}
+bool AddressOpen(){return editing&&address&&IsWindowVisible(address);}
+// Snapshot of the chrome as UI Automation nodes, in reading order:
+// tab list button, tabs (each with its close button), new tab, window buttons, toolbar.
+std::vector<Accessibility::Node> AccessibleNodes(){
+    using Accessibility::Node;using Accessibility::Role;namespace TS=NativeChrome::Design::TabStrip;
+    std::vector<Node> nodes;
+    auto screen=[](D2D1_RECT_F r){RECT p{S(r.left),S(r.top),S(r.right),S(r.bottom)};MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;};
+    auto region=[](int id)->const NativeChrome::Region*{for(auto& r:chrome.regions)if(r.id==id)return &r;return nullptr;};
+    auto button=[&](int id,long long parent){
+        auto* r=region(id);if(!r)return;auto label=AccessibleButton(id);
+        Node n;n.key=id;n.parent=parent;n.name=label.name;n.accelerator=label.accelerator;n.help=label.help;n.automationId=label.id;
+        n.bounds=screen(r->rect);n.enabled=chrome.Enabled(id);n.focusable=r->focusable&&n.enabled;nodes.push_back(std::move(n));
+    };
+    button(900,0);
+    Node strip;strip.key=AccessibleStrip;strip.role=Role::Tab;strip.name=L"Onglets";strip.automationId=L"Tabs";strip.focusable=false;
+    strip.bounds=screen({chrome.strip.ViewLeft(),TS::regionTop,chrome.strip.ViewRight(),TS::regionBottom});nodes.push_back(strip);
+    for(int i=0;i<(int)pages.size();++i){
+        const auto& page=*pages[i];const std::wstring title=page.title.empty()?L"Onglet sans titre":page.title;
+        Node tab;tab.key=AccessibleTabKey(i);tab.parent=AccessibleStrip;tab.role=Role::TabItem;tab.name=title;tab.automationId=L"Tab";
+        tab.selected=i==current;tab.position=i+1;tab.count=(int)pages.size();
+        if(i<8)tab.accelerator=L"Ctrl+"+std::to_wstring(i+1);else if(i==(int)pages.size()-1)tab.accelerator=L"Ctrl+9";
+        if(page.loading.IsLoading())tab.status=L"Chargement en cours";
+        // Tabs scrolled out of the strip stay listed (and selectable) but off screen.
+        if(auto* r=region(NativeChrome::TabBase+i)){tab.bounds=screen(r->rect);tab.focusable=r->focusable;}else{tab.offscreen=true;tab.focusable=false;}
+        nodes.push_back(tab);
+        if(auto* r=region(NativeChrome::CloseBase+i)){
+            Node close;close.key=AccessibleTabKey(i,true);close.parent=tab.key;close.name=L"Fermer l'onglet "+title;
+            if(i==current)close.accelerator=L"Ctrl+W";
+            close.automationId=L"CloseTab";close.bounds=screen(r->rect);close.enabled=chrome.Enabled(r->id);nodes.push_back(std::move(close));
+        }
+    }
+    button('T',0);button('m',0);button('M',0);button('X',0);
+    Node bar;bar.key=AccessibleToolbar;bar.role=Role::ToolBar;bar.name=L"Navigation";bar.automationId=L"Toolbar";bar.focusable=false;
+    bar.bounds=screen({6,chrome.bar.top,chrome.width-6,chrome.bar.bottom});nodes.push_back(bar);
+    button('B',AccessibleToolbar);button('F',AccessibleToolbar);
+    // While the real EDIT is open it stands for the address itself (named through
+    // AccessibleHost().label), with its own value, text and caret.
+    if(auto* r=region('L');r&&!AddressOpen()){
+        Node edit;edit.key='L';edit.parent=AccessibleToolbar;edit.role=Role::Edit;edit.name=L"Adresse ou recherche";edit.accelerator=L"Ctrl+L";edit.automationId=L"Address";
+        edit.bounds=screen(r->rect);
+        if(auto t=Active();t&&!t->home)edit.value=t->uri;
+        nodes.push_back(std::move(edit));
+    }
+    for(int id:{'R','C','D','P','S'})button(id,AccessibleToolbar);
+    return nodes;
+}
+// Keyboard focus on a drawn control (the window itself has focus). The open address
+// EDIT and the page (WebView2) are real windows and report their own focus.
+long long AccessibleFocus(){return window&&GetFocus()==window?AccessibleKey(keyboardFocus):0;}
+void SyncAccessibility();
+void AccessibleSetFocus(long long key){
+    const int id=AccessibleRegion(key);if(!id||halted)return;
+    if(id=='L'){FocusAddress();return;}
+    editing=false;ShowWindow(address,SW_HIDE);SetFocus(window);keyboardModality=true;keyboardFocus=id;InvalidateChrome();SyncAccessibility();
+}
+// UIA calls must not block (menus and message boxes are modal): actions are posted.
+void AccessibleAction(int action,long long key){
+    const int id=AccessibleRegion(key);if(!id||halted)return;keyboardModality=true;
+    switch(action){
+    case AccessibleInvoke:
+        if(NativeChrome::IsClose(id)){CloseAt(NativeChrome::TabIndex(id));break;}
+        if(NativeChrome::IsTab(id))break;
+        // A menu opens under the control it belongs to, as with Enter on that control.
+        if(id==900||id=='S'){editing=false;ShowWindow(address,SW_HIDE);SetFocus(window);keyboardFocus=id;InvalidateChrome();}
+        Command(id);break;
+    case AccessibleSelect:if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));break;
+    case AccessibleSetValue:if(id=='L'){const auto value=std::move(accessibleAddress);accessibleAddress.clear();FocusAddress();SetWindowTextW(address,value.c_str());SendMessageW(address,EM_SETSEL,value.size(),value.size());}break;
+    default:break;
+    }
+}
+Accessibility::Host AccessibleHost(){
+    Accessibility::Host host;host.window=window;host.nodes=AccessibleNodes;host.focused=AccessibleFocus;
+    host.label=[](HWND child,Accessibility::Node& node){if(!child||child!=address)return false;node.name=L"Adresse ou recherche";node.accelerator=L"Ctrl+L";node.automationId=L"Address";return true;};
+    host.invoke=[](long long key){PostMessageW(window,AccessibleMessage,AccessibleInvoke,(LPARAM)key);};
+    host.select=[](long long key){PostMessageW(window,AccessibleMessage,AccessibleSelect,(LPARAM)key);};
+    host.focus=AccessibleSetFocus;
+    host.setValue=[](long long key,const std::wstring& value){accessibleAddress=value;PostMessageW(window,AccessibleMessage,AccessibleSetValue,(LPARAM)key);};
+    return host;
+}
+// Raises what changed since the last call: tab set, selected tab, chrome focus.
+struct { long long focus=0,selection=0; unsigned long long tabs=0; } accessibleState;
+void SyncAccessibility(){
+    if(!accessibility.Listening())return;
+    unsigned long long tabs=pages.size();for(auto& t:pages)tabs=tabs*1000003ull+t->serial;
+    if(tabs!=accessibleState.tabs){accessibleState.tabs=tabs;accessibility.ChildrenChanged(AccessibleStrip);}
+    const long long selection=AccessibleTabKey(current);
+    if(selection!=accessibleState.selection){accessibleState.selection=selection;accessibility.Raise(selection,UIA_SelectionItem_ElementSelectedEventId);}
+    const long long focus=AccessibleFocus();
+    if(focus!=accessibleState.focus){accessibleState.focus=focus;accessibility.Raise(focus,UIA_AutomationFocusChangedEventId);}
+}
+void AnnounceCopied(){accessibility.Notify('C',L"Lien copié",L"CopyLink");}
 LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
     if(msg==WM_IME_STARTCOMPOSITION)addressKeys.SetComposing(true);
     if(msg==WM_IME_ENDCOMPOSITION)addressKeys.SetComposing(false);
@@ -686,12 +820,12 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
     if(msg==WM_KILLFOCUS){editing=false;ShowWindow(h,SW_HIDE);InvalidateRect(window,nullptr,FALSE);}
     if(msg==WM_KEYDOWN&&w==VK_ESCAPE&&addressKeys.HandleKey(VK_ESCAPE)){editing=false;ShowWindow(h,SW_HIDE);FocusPage();Update();return 0;}
     if(msg==WM_KEYDOWN&&w==VK_RETURN&&addressKeys.HandleKey(VK_RETURN)){int n=GetWindowTextLengthW(h);std::wstring s(n+1,0);GetWindowTextW(h,s.data(),n+1);s.resize(n);editing=false;ShowWindow(h,SW_HIDE);Navigate(Active(),Destination(s));FocusPage();return 0;}
-    if(msg==WM_KEYDOWN&&w==VK_TAB&&addressKeys.HandleKey(VK_TAB)){editing=false;ShowWindow(h,SW_HIDE);SetFocus(window);keyboardFocus='R';keyboardModality=true;InvalidateRect(window,nullptr,FALSE);return 0;}
+    if(msg==WM_KEYDOWN&&w==VK_TAB&&addressKeys.HandleKey(VK_TAB)){editing=false;ShowWindow(h,SW_HIDE);SetFocus(window);keyboardFocus='R';keyboardModality=true;InvalidateRect(window,nullptr,FALSE);SyncAccessibility();return 0;}
     return DefSubclassProc(h,msg,w,l);
 }
 void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
-LRESULT CALLBACK WndProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;switch(msg){
-case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);return 0;
+LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;switch(msg){
+case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);return 0;
 case WM_NCHITTEST:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(y<44&&!id)return HTCAPTION;return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
 case WM_NCMOUSEMOVE:if(w==HTMAXBUTTON){UpdateInteraction('M',0);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE|TME_NONCLIENT,h,0};TrackMouseEvent(&track);return 0;}break;
@@ -750,6 +884,7 @@ case WM_CTLCOLOREDIT:{
     return (LRESULT)background.Brush(rect.right,edge,NativeGray(surface),NativeGray(surface+(1-surface)*alpha));
 }
 case Shortcut:keyboardModality=true;Command((int)w);return 0;
+case AccessibleMessage:AccessibleAction((int)w,(long long)l);return 0;
 case WM_APP+2:SmokeCheck();return 0;
 case WM_APP+3:SmokeAdvance();return 0;
 case FrameMessage:{if(l==NativeChrome::FrameClock::ClockLost){frameClock.Stop();frameClockReady=false;ScheduleMotion(NativeChrome::Motion::Now());return 0;}
@@ -761,12 +896,20 @@ case WM_TIMER:
     if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case WM_CLOSE:SaveSession();SaveDownloads();DestroyWindow(h);return 0;
-case WM_DESTROY:
+case WM_DESTROY:accessibility.Detach();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif
     KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
+// Every message may move keyboard focus, the selection or the tab set: report the
+// change to UI Automation clients once the message is handled.
+LRESULT CALLBACK WndProc(HWND h,UINT msg,WPARAM w,LPARAM l){
+    if(msg==WM_GETOBJECT){LRESULT result;if(accessibility.OnGetObject(h,w,l,result))return result;}
+    const LRESULT result=ChromeProc(h,msg,w,l);
+    if(h==window&&msg!=WM_GETOBJECT&&msg!=WM_DESTROY&&msg!=WM_NCDESTROY)SyncAccessibility();
+    return result;
+}
 int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
 #ifdef BROWSER_UPDATES
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
@@ -779,5 +922,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,profileDir.c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);downloadPanel.Dispose();downloadDrawer.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);downloadPanel.Dispose();downloadDrawer.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }
