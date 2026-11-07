@@ -25,6 +25,28 @@ int wmain(int argc,wchar_t** argv){
     Require(VariantFor('X')==VariantFor('m')&&VariantFor('M')==VariantFor('m'),"identical window control variant");
     for(UINT dpi:{96,144,192}){
         Chrome chrome;Require(SUCCEEDED(chrome.InitOffscreen(argv[1],dpi,1180,560)),"production offscreen renderer");
+        // Verify real glyph coverage and OpenType features on production layouts.
+        for(bool medium:{false,true}){
+            IDWriteTextLayout* layout=nullptr;TextMeasure measure;
+            Require(SUCCEEDED(chrome.MakeTextLayout(L"\u00e9\u00e8\u00e0\u00f9\u00c9\u00c8\u00c0\u00d9e\u0301a\u0300",{0,0,500,32},14,false,medium,0,&layout,measure)),"accent layout");
+            IDWriteFontCollection* collection=nullptr;Require(SUCCEEDED(layout->GetFontCollection(0,&collection)),"layout font collection");
+            Require(collection->GetFontFamilyCount()==1,"only Inter Display required");
+            IDWriteFontFamily* family=nullptr;IDWriteFont* font=nullptr;IDWriteFontFace* face=nullptr;
+            Require(SUCCEEDED(collection->GetFontFamily(0,&family)),"Inter family");
+            Require(SUCCEEDED(family->GetFirstMatchingFont(medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STRETCH_NORMAL,DWRITE_FONT_STYLE_NORMAL,&font)),"Inter weight");
+            Require(SUCCEEDED(font->CreateFontFace(&face)),"Inter face");
+            UINT32 points[]={0xe9,0xe8,0xe0,0xf9,0xc9,0xc8,0xc0,0xd9,0x301,0x300};UINT16 glyphs[10]{};
+            Require(SUCCEEDED(face->GetGlyphIndices(points,10,glyphs)),"French glyph lookup");
+            for(auto glyph:glyphs)Require(glyph!=0,"accent has a real glyph, not a missing-glyph box");
+            Drop(face);Drop(font);Drop(family);Drop(collection);Drop(layout);
+        }
+        for(bool tabular:{false,true}){
+            IDWriteTextLayout* layout=nullptr;TextMeasure measure;
+            Require(SUCCEEDED(chrome.CachedTextLayout(L"0123456789",{0,0,500,32},14,tabular,false,0,&layout,measure)),"cached digit layout");
+            IDWriteTypography* typography=nullptr;Require(SUCCEEDED(layout->GetTypography(0,&typography)),"layout typography");
+            bool found=false;for(UINT32 i=0;i<typography->GetFontFeatureCount();++i){DWRITE_FONT_FEATURE feature{};typography->GetFontFeature(i,&feature);if(feature.nameTag==DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES)found=feature.parameter==1;}
+            Require(found==tabular,"tabular figures only for explicit counters, including cache");Drop(typography);Drop(layout);
+        }
         Require(SUCCEEDED(chrome.PaintStateSheet()),"production state sheet render");
         Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/components-"+std::to_wstring(dpi)+L".png").c_str())),"state sheet PNG export");
         chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,CloseBase,0);
