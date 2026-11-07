@@ -64,6 +64,8 @@ def existing_fixtures() -> None:
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # Screen-reader view of the chrome through a real UI Automation client (issue #2)
+    fixture('accessibility_test', [*LOOSE, *TVG, WV2, 'tests/accessibility/accessibility_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-loleaut32'])
     # Download history popover/drawer (upstream PR #28/#29, same line as test-downloads.ps1)
     downloads_evidence = ROOT / 'build/downloads-qa'
     downloads_evidence.mkdir(parents=True, exist_ok=True)
