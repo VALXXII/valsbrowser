@@ -28,8 +28,14 @@ static void Pump(double ms) {
 static double Median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v.empty() ? 0 : v[v.size() / 2]; }
 static void Exercise(HWND hwnd, bool compositor) {
     FrameClock::Clock clock; frames = lost = 0; arrivals.clear();
+    // Windows Server 2022 (the CI host) predates the compositor-clock API.
+    // The production clock intentionally uses DWM timing on those systems.
+    HMODULE dcomp = compositor ? LoadLibraryExW(L"dcomp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) : nullptr;
+    const bool compositorAvailable = dcomp && GetProcAddress(dcomp, "DCompositionWaitForCompositorClock");
+    if (dcomp) FreeLibrary(dcomp);
+    const auto expectedSource = compositorAvailable ? FrameClock::Source::CompositorClock : FrameClock::Source::DwmTiming;
     Check(clock.Start(hwnd, Msg, compositor), "start");
-    Check(clock.CurrentSource() == (compositor ? FrameClock::Source::CompositorClock : FrameClock::Source::DwmTiming), "expected source");
+    Check(clock.CurrentSource() == expectedSource, "expected source for available Windows APIs");
     Pump(250);
     Check(frames == 0 && clock.Stats()->wakes == 0 && clock.Stats()->ticks == 0, "idle: no wakes, ticks or messages without a request");
     for (int i = 0; i < 5; ++i) clock.Request();
@@ -59,7 +65,7 @@ static void Exercise(HWND hwnd, bool compositor) {
     frames = 0; clock.Request(); Pump(80);
     Check(frames == 0 && lost == 0 && !clock.Running(), "no frames or lost-clock notices after stop");
     printf("  source=%ls median=%.2fms frames=60 stop=%.2fms ticks=%llu coalesced=%llu timeouts=%llu failures=%llu\n",
-           FrameClock::SourceName(compositor ? FrameClock::Source::CompositorClock : FrameClock::Source::DwmTiming),
+           FrameClock::SourceName(expectedSource),
            median, stopMs, clock.Stats() ? clock.Stats()->ticks.load() : 0ULL, clock.Stats() ? clock.Stats()->coalesced.load() : 0ULL,
            clock.Stats() ? clock.Stats()->timeouts.load() : 0ULL, clock.Stats() ? clock.Stats()->failures.load() : 0ULL);
 }
@@ -108,6 +114,6 @@ int wmain(int argc, wchar_t** argv) {
     l.Finish(1, at(400)); Check(l.NextWake(at(900), false).frames && !l.NextWake(at(961), false).delay, "fill+fade ends at 560ms");
     DestroyWindow(hwnd);
     Check(!GetModuleHandleW(L"WebView2Loader.dll"), "no WebView2");
-    puts("PASS frame clock: pixel-exact loading-frame gating (96/144 DPI), idle dormant, request coalescing, paced loop, no backlog, cancel, prompt stop, dead-window exit, both sources");
+    puts("PASS frame clock: pixel-exact loading-frame gating (96/144 DPI), idle dormant, request coalescing, paced loop, no backlog, cancel, prompt stop, dead-window exit, available sources");
     return 0;
 }
