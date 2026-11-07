@@ -65,6 +65,15 @@ struct Config {
 
 enum class ActionResult { Ignored, Handled, CloseForInstall };
 
+// Portable -> installed continuity. A legacy portable exe (e.g. the Start Menu shortcut target
+// build\v2\browser-main-<sha>.exe) whose data was migrated into <root>\data by a successful update returns
+// the installed <root>\versions\<current>\browser.exe it must hand over to; otherwise empty (keep running
+// portable). Empty when: exePath is itself installed, <root>\data\migrated-from.txt does not name exactly
+// this exe's directory, <root>\current is missing/invalid, the target is missing/not a regular exe, any of
+// root/versions/<v>/data is a reparse point, or the last install result is "failed" for that version.
+// Pure: creates and modifies nothing.
+std::wstring PortableForwardTarget(const std::wstring& exePath, const std::wstring& installRoot = L"");
+
 // Called once by the browser early at startup (Engine::Start does it for you).
 // Returns Installed exactly once for the helper-launched expected version, Error once after a rolled-back install, else Hidden.
 BrowserUpdate::View NoteStartup(const Config& config);
@@ -83,6 +92,17 @@ public:
     bool OnNotify(WPARAM generation);
     ActionResult Perform(BrowserUpdate::Action action);
     void CheckNow();
+    // Quiet periodic check for a long-running browser. Starts a background check only when it is due
+    // (persisted next-check reached: 6 h after success, 1 h..24 h back-off after failure), no worker is
+    // running, the view is Hidden (never during Checking/Available/Downloading/Ready/Installing/Installed/
+    // Error) and the build is enabled. Results follow the automatic rules: offline/no release stay Hidden,
+    // a dismissed or already-notified version is not shown again. Returns true if a check was started.
+    bool AutoCheck();
+    // Milliseconds until AutoCheck should next be tried: time to the persisted next-check, clamped to
+    // [AutoCheckMinMs, AutoCheckMaxMs]; 0 when updates are disabled/shut down (do not arm). The host keeps
+    // ONE one-shot timer with this delay and re-arms it after each notification and each AutoCheck call.
+    DWORD AutoCheckDelayMs() const;
+    static constexpr DWORD AutoCheckMinMs = 15 * 60 * 1000, AutoCheckMaxMs = 6 * 3600 * 1000;
     LastCheck LastCheckResult() const;
     bool Enabled() const { return enabled_; }
 
@@ -95,6 +115,7 @@ private:
     };
     void Launch(Op op, bool manual, bool startup);
     void StopWorker();
+    void Finished();
     void RunCheck(std::uint64_t gen, bool manual, bool startup);
     void RunDownload(std::uint64_t gen, UpdatePackage::Manifest manifest);
     bool Publish(std::uint64_t gen, const BrowserUpdate::View& view);
@@ -122,7 +143,7 @@ private:
     BrowserUpdate::View view_;
     std::uint64_t generation_ = 0;
     WPARAM session_ = 0;
-    std::atomic<bool> notifyPending_{false}, cancel_{false}, shutdown_{false};
+    std::atomic<bool> notifyPending_{false}, cancel_{false}, shutdown_{false}, busy_{false};
     std::thread worker_;
     Op failedOp_ = Op::None;
     LastCheck lastCheck_ = LastCheck::None;

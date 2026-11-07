@@ -17,6 +17,9 @@ Scenarios (each in its own fresh directory under build/update-integration-tests/
   cancel     cancel mid-download, dismiss, manual re-check, close during download (bounded).
   offline    network failure: silent startup, manual check shows Error (Retry).
   norelease  no published release (404): silent startup, manual check ends up-to-date.
+  periodic   mocked clock: one-shot due-aware timer finds a release published while running.
+The portable scenario then starts the legacy exe again (old shortcut target): it must hand over to the
+installed current version on the stable data folder, with guard runs that must NOT hand over.
 Data checks use SHA-256 canary hashes of whole directory trees; the download history (upstream
 drawer) is checked for preservation (installed) and exact one-time migration (portable).
 """
@@ -115,8 +118,8 @@ def place_app(dest: Path, fx: dict, exe_name: str = 'browser.exe') -> Path:
     return dest / exe_name
 
 
-def run_host(exe: Path, mode: str, root: Path, serve: Path, report: Path) -> int:
-    proc = subprocess.run([str(exe), mode, str(root), str(serve), OLD, str(report)], cwd=exe.parent, timeout=120)
+def run_host(exe: Path, mode: str, root: Path, serve: Path, report: Path, arg: str = OLD) -> int:
+    proc = subprocess.run([str(exe), mode, str(root), str(serve), arg, str(report)], cwd=exe.parent, timeout=120)
     print(report.read_text(encoding='utf-8') if report.exists() else '(no report)')
     return proc.returncode
 
@@ -187,7 +190,80 @@ def scenario_portable(base: Path, fx: dict):
     migrated = root / 'data/downloads'
     check(migrated.exists() and migrated.read_bytes() == history_before, 'one-time migration copied the download history exactly')
     check((portable / 'downloads').read_bytes() == history_before, 'legacy download history left untouched')
+    relaunch_legacy(base, root, portable, exe, fx)
+
+
+def launches(root: Path) -> list[str]:
+    log = root / 'fake-launches.txt'
+    return log.read_text(encoding='utf-8').splitlines() if log.exists() else []
+
+
+def wait_new_line(root: Path, count: int, prefix: str, timeout=20.0) -> str:
+    end = time.time() + timeout
+    while time.time() < end:  # bounded wait for the launched fake process
+        lines = launches(root)
+        if len(lines) > count and any(l.startswith(prefix) for l in lines[count:]):
+            return next(l for l in lines[count:] if l.startswith(prefix))
+        time.sleep(0.2)
+    return ''
+
+
+def relaunch_legacy(base: Path, root: Path, portable: Path, exe: Path, fx: dict):
+    """The old Start Menu shortcut target (the legacy portable exe itself) is started again."""
+    profile_before = tree_hash(portable / 'profile')
+    n = len(launches(root))
+    rc = run_host(exe, 'relaunch', root, fx['serve'], base / 'relaunch-report.txt', 'expect-forward')
+    check(rc == 0, 'legacy shortcut target relaunched after migration hands over (production ForwardToInstalled)')
+    line = wait_new_line(root, n, f'start {NEW} ')
+    data = str((root / 'data').resolve())
+    check(bool(line) and line.lower().endswith('data=' + data.lower()),
+          f'installed current {NEW} started on the stable data folder ({line!r})')
+    check(tree_hash(portable / 'profile') == profile_before, 'legacy profile still untouched after the hand-over')
+    # Guards (no hand-over): tampered migration record, failed install of current, bogus current pointer.
+    record = root / 'data' / 'migrated-from.txt'
+    original = record.read_bytes()
+    record.write_text(str(base / 'somewhere-else') + '\n', encoding='utf-8')
+    check(run_host(exe, 'relaunch', root, fx['serve'], base / 'guard1.txt', 'expect-stay') == 0,
+          'guard: migration record of another folder -> legacy stays portable')
+    record.write_bytes(original)
+    result = root / 'updates' / 'last-result'
+    saved_result = result.read_bytes() if result.exists() else None
+    result.write_text(f'browser-result 1\nstatus failed\nversion {NEW}\nreason no-startup-ack\nreported 0\n', encoding='utf-8')
+    check(run_host(exe, 'relaunch', root, fx['serve'], base / 'guard2.txt', 'expect-stay') == 0,
+          'guard: install of current recorded as failed (rollback) -> never forwards to it')
+    if saved_result is None:
+        result.unlink()
+    else:
+        result.write_bytes(saved_result)
+    current = root / 'current'
+    current.write_text('..\\..\\evil\n', encoding='utf-8')
+    check(run_host(exe, 'relaunch', root, fx['serve'], base / 'guard3.txt', 'expect-stay') == 0,
+          'guard: bogus current pointer -> legacy stays portable')
+    current.write_text(NEW + '\n', encoding='utf-8')
+    # Installed kind never forwards (no loop): the installed copy of the host exe in a versions dir.
+    installed_host = root / 'versions' / '9.9.9' / 'browser.exe'
+    installed_host.parent.mkdir(parents=True)
+    shutil.copy2(fx['host'], installed_host)
+    shutil.copytree(ROOT / 'assets', installed_host.parent / 'assets')
+    check(run_host(installed_host, 'relaunch', root, fx['serve'], base / 'guard4.txt', 'expect-stay') == 0,
+          'guard: installed-kind exe never forwards (no launch loop)')
+    shutil.rmtree(installed_host.parent)
+    check(len([l for l in launches(root)[n:] if l.startswith('start ')]) == 1, 'exactly one hand-over launch across all guard runs')
     check(exe.is_file(), 'legacy portable app (browser-main-78f5340.exe) left in place')
+
+
+def scenario_periodic(base: Path, fx: dict):
+    """Running browser, mocked clock: startup finds nothing, the one-shot due-aware timer later finds 0.3.6."""
+    root = base / 'root'
+    app = root / 'versions' / OLD
+    place_app(app, fx)
+    (root / 'current').write_text(OLD + '\n')
+    make_profile(root / 'data/profile', 'periodic')
+    before = tree_hash(root / 'data/profile')
+    rc = run_host(app / 'browser.exe', 'periodic', root, fx['serve'], base / 'host-report.txt')
+    check(rc == 0, 'periodic: newer release found without restart, TTL respected, timer bounded and cancelled on close')
+    check(not (root / 'fake-launches.txt').exists(), 'periodic: nothing installed or launched without RestartInstall')
+    check(tree_hash(root / 'data/profile') == before, 'periodic: profile untouched')
 
 
 def scenario_inprocess(base: Path, fx: dict, mode: str):
@@ -218,7 +294,8 @@ def main() -> int:
     for name, fn in (('installed', scenario_installed), ('portable', scenario_portable),
                      ('cancel', lambda b, f: scenario_inprocess(b, f, 'cancel')),
                      ('offline', lambda b, f: scenario_inprocess(b, f, 'offline')),
-                     ('norelease', lambda b, f: scenario_inprocess(b, f, 'norelease'))):
+                     ('norelease', lambda b, f: scenario_inprocess(b, f, 'norelease')),
+                     ('periodic', scenario_periodic)):
         print(f'\n===== scenario {name}', flush=True)
         base = work / name
         base.mkdir()

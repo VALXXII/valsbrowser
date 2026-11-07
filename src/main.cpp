@@ -581,9 +581,20 @@ void SyncUpdateToastReserve(){} void CheckForUpdates(){} bool UpdateCheckAvailab
 // generation-tagged, stale ones are refused by OnNotify); everything here runs on
 // the UI thread. Update failures stay inside the toast: they never set `halted`
 // and never touch tabs, WebView2, page downloads or the session.
-constexpr UINT UpdateMessage=WM_APP+9;
+constexpr UINT UpdateMessage=WM_APP+9; constexpr UINT_PTR UpdateTimerId=74;
 UpdateCore::Engine updates; BrowserUpdate::Toast updateToast; bool updatesStarted=false,closingForInstall=false;
+DWORD updateTimerDelayMs=0; // armed one-shot delay (0 = none); read by fixtures
 void ShowUpdateView(){if(updatesStarted)updateToast.SetView(updates.View());}
+// Periodic checks for a long-running browser: ONE one-shot timer, due-aware and re-armed after every
+// engine notification and every firing. Delay = time to the persisted next-check (6 h TTL / back-off),
+// never below 15 min nor above 6 h, so an idle browser wakes at most a few times per hour and usually
+// once per 6 h; the engine itself decides (quietly) whether a check is due and allowed.
+void ArmUpdateTimer(){
+    const DWORD delay=updatesStarted&&!closingForInstall?updates.AutoCheckDelayMs():0;
+    if(!delay){KillTimer(window,UpdateTimerId);updateTimerDelayMs=0;return;}
+    if(SetTimer(window,UpdateTimerId,delay,nullptr))updateTimerDelayMs=delay;else updateTimerDelayMs=0;
+}
+void UpdateTimerFired(){KillTimer(window,UpdateTimerId);updateTimerDelayMs=0;if(updatesStarted&&!closingForInstall)updates.AutoCheck();ArmUpdateTimer();}
 void UpdateAction(BrowserUpdate::Action action){
     if(!updatesStarted||closingForInstall)return;
     // The session is saved before the helper exists and again by WM_CLOSE.
@@ -607,11 +618,22 @@ void StartUpdates(UpdateCore::Config config=UpdateConfig()){
     updateToast.SetFocusReleaseHandler([]{FocusPage();});
     updatesStarted=updates.Start(config);
     Log(updatesStarted?L"UPDATE engine started "+config.currentVersion:L"UPDATE engine disabled");
-    ShowUpdateView();
+    ShowUpdateView();ArmUpdateTimer();
 }
 bool UpdateCheckAvailable(){return updatesStarted&&!closingForInstall;}
 void CheckForUpdates(){if(UpdateCheckAvailable()){updates.CheckNow();ShowUpdateView();}}
-void StopUpdates(){if(updatesStarted){updatesStarted=false;updates.Shutdown();}updateToast.Close();}
+void StopUpdates(){if(window)KillTimer(window,UpdateTimerId);updateTimerDelayMs=0;if(updatesStarted){updatesStarted=false;updates.Shutdown();}updateToast.Close();}
+// Legacy portable exe (old Start Menu shortcut target) after a successful first install: hand over to the
+// installed current version (stable profile/session) instead of reopening the obsolete portable copy.
+// Validation lives in UpdateCore::PortableForwardTarget; any failure keeps the portable browser running.
+bool ForwardToInstalled(const std::wstring& installRoot=L""){
+    const auto target=UpdateCore::PortableForwardTarget(ExePath(),installRoot);if(target.empty())return false;
+    const auto dir=target.substr(0,target.find_last_of(L'\\'));std::wstring command=L"\""+target+L"\"";
+    STARTUPINFOW si{sizeof(si)};PROCESS_INFORMATION pi{};
+    if(!CreateProcessW(target.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,dir.c_str(),&si,&pi)){Log(L"UPDATE forward to installed failed, staying portable");return false;}
+    AllowSetForegroundWindow(pi.dwProcessId);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
+    Log(L"UPDATE portable launch forwarded to "+target);return true;
+}
 void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
 // The bottom-left card keeps clear of the download drawer docked on the right.
 void SyncUpdateToastReserve(){const bool open=downloadDrawer.Visible()&&!downloadDrawer.Closing();updateToast.SetReservedRight(open?NativeChrome::Downloads::DrawerLayout::width+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
@@ -673,7 +695,7 @@ case WM_MOVE:downloadDrawer.Reposition();
     return 0;
 #ifdef BROWSER_UPDATES
 case WM_EXITSIZEMOVE:LayoutUpdateToast();return 0;
-case UpdateMessage:if(updatesStarted&&updates.OnNotify(w))ShowUpdateView();return 0;
+case UpdateMessage:if(updatesStarted&&updates.OnNotify(w)){ShowUpdateView();ArmUpdateTimer();}return 0;
 #endif
 case WM_ERASEBKGND:return 1;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
@@ -707,7 +729,11 @@ case WM_APP+2:SmokeCheck();return 0;
 case WM_APP+3:SmokeAdvance();return 0;
 case FrameMessage:{if(l==NativeChrome::FrameClock::ClockLost){frameClock.Stop();frameClockReady=false;ScheduleMotion(NativeChrome::Motion::Now());return 0;}
     frameClock.Acknowledge();auto now=NativeChrome::Motion::Now();if(!halted&&!motionMinimized)InvalidateMotion(now);ScheduleMotion(now);return 0;}
-case WM_TIMER:if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
+case WM_TIMER:
+#ifdef BROWSER_UPDATES
+    if(w==UpdateTimerId){UpdateTimerFired();return 0;}
+#endif
+    if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case WM_CLOSE:SaveSession();SaveDownloads();DestroyWindow(h);return 0;
 case WM_DESTROY:
 #ifdef BROWSER_UPDATES
@@ -716,6 +742,9 @@ case WM_DESTROY:
     KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
 int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+#ifdef BROWSER_UPDATES
+    if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
+#endif
     Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}LoadDownloads();CreateDownloadPanel();frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread

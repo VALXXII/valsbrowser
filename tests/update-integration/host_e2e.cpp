@@ -14,6 +14,7 @@
 #include <thread>
 
 namespace {
+std::atomic<std::int64_t> mockNow{1800000000};
 std::wstring reportPath; std::vector<std::string> report; int failures=0;
 void Note(const std::string& line){report.push_back(line);std::printf("%s\n",line.c_str());std::fflush(stdout);}
 void Expect(bool ok,const std::string& what){Note(std::string(ok?"PASS ":"FAIL ")+what);if(!ok)++failures;}
@@ -48,13 +49,13 @@ struct DiskTransport final:UpdateCore::Transport {
 
 // Owner window: forwards exactly the host branches under test to the production WndProc.
 LRESULT CALLBACK OwnerProc(HWND h,UINT msg,WPARAM w,LPARAM l){
-    if(msg==UpdateMessage||msg==WM_CLOSE||msg==WM_DESTROY||(msg==WM_SIZE&&w==SIZE_MINIMIZED))return WndProc(h,msg,w,l);
+    if(msg==UpdateMessage||msg==WM_CLOSE||msg==WM_DESTROY||(msg==WM_SIZE&&w==SIZE_MINIMIZED)||(msg==WM_TIMER&&w==UpdateTimerId))return WndProc(h,msg,w,l);
     return DefWindowProcW(h,msg,w,l);
 }
 }
 
 int wmain(int argc,wchar_t** argv){
-    if(argc<6){std::fprintf(stderr,"usage: host_e2e <install|cancel|offline> <root> <serveDir> <version> <report>\n");return 64;}
+    if(argc<6){std::fprintf(stderr,"usage: host_e2e <install|cancel|offline|norelease|periodic|relaunch> <root> <serveDir> <version|expect-forward|expect-stay> <report>\n");return 64;}
     const std::wstring mode=argv[1],root=argv[2],serve=argv[3],version=argv[4];reportPath=argv[5];
     instance=GetModuleHandleW(nullptr);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -63,6 +64,15 @@ int wmain(int argc,wchar_t** argv){
     auto exe=ExePath();base=exe.substr(0,exe.find_last_of(L'\\'));ResolveBrowserPaths(root);
     Note("mode "+Utf8(mode));Note("exe "+Utf8(exe));Note("dataDir "+Utf8(dataDir));Note("sessionFile "+Utf8(sessionFile));Note("profileDir "+Utf8(profileDir));Note("downloadsFile "+Utf8(downloadsFile));
     Expect(Utf8(BROWSER_UPDATE_REPO_WIDE)=="VALXXII/browser-releases","production feed repository is the public releases repo");
+    if(mode==L"relaunch"){
+        // The legacy exe (old Start Menu shortcut target) started again: the production early hand-over,
+        // called exactly as wWinMain does, before any window, profile or WebView2.
+        const bool expect=version==L"expect-forward";
+        const auto target=UpdateCore::PortableForwardTarget(exe,root);Note("forward target "+Utf8(target));
+        const bool forwarded=ForwardToInstalled(root);
+        Expect(forwarded==expect,expect?"legacy exe handed over to the installed current version":"legacy exe kept running portable (no hand-over)");
+        Note(failures?"RESULT FAIL":"RESULT PASS");Flush();CoUninitialize();return failures?1:0;
+    }
 
     WNDCLASSW wc{};wc.hInstance=instance;wc.lpfnWndProc=OwnerProc;wc.lpszClassName=L"HostE2EOwner";RegisterClassW(&wc);
     window=CreateWindowExW(0,wc.lpszClassName,L"host_e2e (native fixture, no WebView2)",WS_OVERLAPPEDWINDOW,-30000,-30000,900,600,nullptr,nullptr,instance,nullptr);
@@ -73,15 +83,16 @@ int wmain(int argc,wchar_t** argv){
     {auto t=std::make_shared<Tab>();t->home=true;pages.push_back(t);}
     current=1;sessionReady=true;
     LoadDownloads();const size_t historyBefore=downloads.size();Note("history rows loaded "+std::to_string(historyBefore));
-    {DL::Item item;item.id=nextDownloadId++;item.path=dataDir+L"\canary-download.bin";item.uri=L"https://example.com/canary-download.bin";
+    {DL::Item item;item.id=nextDownloadId++;item.path=dataDir+L"\\canary-download.bin";item.uri=L"https://example.com/canary-download.bin";
      item.state=DL::State::Completed;item.received=item.total=4096;item.started=1790000000000LL;downloads.insert(downloads.begin(),item);}
     // Real download surfaces (popover + drawer) beside the toast, as in the browser.
     CreateDownloadPanel();
 
-    auto transport=std::make_shared<DiskTransport>();transport->dir=serve;transport->chunkDelayMs=mode==L"cancel"?40:4;transport->offline=mode==L"offline";const bool quietMode=mode==L"offline"||mode==L"norelease";
+    auto transport=std::make_shared<DiskTransport>();transport->dir=mode==L"periodic"?serve+L"\\not-yet-published":serve;transport->chunkDelayMs=mode==L"cancel"?40:4;transport->offline=mode==L"offline";const bool quietMode=mode==L"offline"||mode==L"norelease";
     UpdateCore::Config config=UpdateConfig();
     config.currentVersion=version;config.installRoot=root;config.transport=transport;config.startupDelayMs=quietMode?0:50;
     config.enabled=true;
+    if(mode==L"periodic")config.clock=[]{return mockNow.load();};
     StartUpdates(config);
     Expect(updatesStarted,"engine started from the host");
     Expect(updateToast.Window()!=nullptr,"toast popup created (owned layered popup)");
@@ -91,6 +102,29 @@ int wmain(int argc,wchar_t** argv){
     }
     Expect(!updates.OnNotify((WPARAM)0x1234560),"stale/foreign notification generation is refused");
 
+    if(mode==L"periodic"){
+        using P=BrowserUpdate::Phase;
+        auto pump=[&](auto done,DWORD ms){auto end=GetTickCount64()+ms;MSG m;for(;;){while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){TranslateMessage(&m);DispatchMessageW(&m);}if(done())return true;if(GetTickCount64()>end)return false;Sleep(5);}};
+        const DWORD hour=3600u*1000u;
+        Expect(pump([&]{return updates.LastCheckResult()==UpdateCore::Engine::LastCheck::UpToDate;},5000),"startup check: no release published yet, quiet");
+        pump([]{return false;},200);
+        Expect(updates.View().phase==P::Hidden,"nothing shown after the startup check");
+        Expect(updateTimerDelayMs==6*hour,"ONE one-shot timer armed for the 6 h TTL (armed "+std::to_string(updateTimerDelayMs)+" ms), no idle polling");
+        const int r0=transport->requests;
+        mockNow+=3600;PostMessageW(window,WM_TIMER,UpdateTimerId,0);pump([]{return false;},300);
+        Expect(transport->requests==r0,"timer firing before the TTL makes no request");
+        Expect(updateTimerDelayMs==5*hour,"re-armed for the remaining 5 h");
+        // A merge is published while the browser keeps running.
+        transport->dir=serve;mockNow+=5*3600+1;PostMessageW(window,WM_TIMER,UpdateTimerId,0);
+        Expect(pump([&]{return updates.View().phase==P::Available;},10000),"running browser finds the newer release without restart");
+        Expect(updates.View().version==L"0.3.6","offer is the published version");
+        Expect(pump([&]{return updateToast.Shown();},5000),"toast offers it");
+        Expect(transport->requests==r0+1,"exactly one manifest request for the due check");
+        Expect(updateTimerDelayMs>=15*60*1000u&&updateTimerDelayMs<=6*hour,"timer re-armed with a bounded delay while the offer is visible ("+std::to_string(updateTimerDelayMs)+" ms)");
+        const int r1=transport->requests;mockNow+=7*3600;PostMessageW(window,WM_TIMER,UpdateTimerId,0);pump([]{return false;},300);
+        Expect(transport->requests==r1&&updates.View().phase==P::Available,"no automatic check while an offer is on screen");
+        PostMessageW(window,WM_CLOSE,0,0);
+    }
     int coexistFrames=0;
     std::vector<std::string> phases;bool drawerChecked=false,coexist=false,toastSeen=false,sawManualCheck=false,noReleaseDone=false,downloaded=false,installAsked=false,cancelled=false,dismissed=false,rechecked=false,sawProgress=false,manualOffline=false;
     BrowserUpdate::View last;auto started=GetTickCount64();
@@ -154,6 +188,7 @@ int wmain(int argc,wchar_t** argv){
     const auto elapsed=GetTickCount64()-started;
     Note("elapsed_ms "+std::to_string(elapsed));
     Expect(!updatesStarted&&updateToast.Window()==nullptr,"WM_DESTROY stopped the engine and closed the toast");
+    Expect(updateTimerDelayMs==0,"periodic check timer cancelled on close");
     // The session the browser wrote on close (WM_CLOSE -> SaveSession -> atomic replace).
     std::ifstream in(std::filesystem::path(sessionFile),std::ios::binary);auto saved=BrowserSession::Read(in);
     Expect(saved.urls.size()==3&&saved.urls[0]=="https://example.com/a"&&saved.urls[1]=="https://example.org/b?q=canary"&&saved.urls[2].empty()&&saved.active==1,"session saved to the resolved session file before exit");

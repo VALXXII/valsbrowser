@@ -100,7 +100,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     c.installRoot = installed ? g_root : L"";
     BrowserUpdate::View v;
     if (installed) v = UpdateCore::NoteStartup(c);
-    Log("start " + Ver() + " phase=" + std::to_string(int(v.phase)));
+    Log("start " + Ver() + " phase=" + std::to_string(int(v.phase)) + " data=" +
+        UpdatePackage::Narrow(UpdateCore::ResolveDataPaths(exe, installed ? g_root : L"").dataDir));
     Sleep(300);
     return 0;
 #endif

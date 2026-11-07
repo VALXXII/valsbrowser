@@ -87,7 +87,8 @@ as main is never force-pushed). `0.0.0` (local/dev) disables the engine.
 ## Known limitations
 
 - No delta updates, no resume of interrupted downloads (restart from zero), uncompressed package (~payload size).
-- A browser left open for days does not re-check until next start or a manual check (by design: no idle loop).
+- Long-running browsers re-check through `Engine::AutoCheck` driven by one host one-shot timer
+  (`AutoCheckDelayMs`, 15 min…6 h; see design/updates.md) — no idle loop in the engine itself.
 - Taskbar pins created on a versioned exe path do not follow updates unless the host sets an explicit AppUserModelID; shortcuts
   should target `<root>\browser.exe`.
 - The root launcher can only be refreshed when not running at that instant (best effort; format is stable).

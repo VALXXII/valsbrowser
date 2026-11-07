@@ -59,7 +59,9 @@ std::vector<std::string> Lines(const std::string& text) {
     while (start < text.size()) {
         auto end = text.find('\n', start);
         if (end == std::string::npos) end = text.size();
-        out.push_back(text.substr(start, end - start));
+        std::size_t stop = end;
+        if (stop > start && text[stop - 1] == '\r') --stop;  // tolerate CRLF records
+        out.push_back(text.substr(start, stop - start));
         start = end + 1;
     }
     return out;
@@ -113,6 +115,40 @@ DataPaths ResolveDataPaths(const std::wstring& exePath, const std::wstring& inst
         p.logFile = dir + L"\\prototype.log";
     }
     return p;
+}
+
+std::wstring PortableForwardTarget(const std::wstring& exePath, const std::wstring& installRoot) {
+    const std::wstring exe = FullPath(exePath);
+    const std::wstring root = FullPath(installRoot.empty() ? DefaultInstallRoot() : installRoot);
+    if (exe.empty() || root.empty() || exe.size() < 3 || exe[1] != L':') return L"";
+    if (ResolveDataPaths(exe, root).installed) return L"";       // installed kind never forwards (no loop)
+    if (UP::IsUnder(exe, root) || Lower(Parent(exe)) == Lower(root)) return L"";  // launcher/anything inside root
+    const std::wstring data = root + L"\\data", versions = root + L"\\versions";
+    for (const std::wstring& dir : {root, data, versions})
+        if (!UP::IsDirectory(dir) || UP::IsReparsePoint(dir)) return L"";
+    // The successful first install recorded where the portable data came from: it must be this exe's folder.
+    std::string from;
+    if (!UP::ReadSmallFile(data + L"\\migrated-from.txt", 4096, from)) return L"";
+    while (!from.empty() && (from.back() == '\n' || from.back() == '\r')) from.pop_back();
+    if (from.empty() || Lower(FullPath(UP::Widen(from))) != Lower(Parent(exe))) return L"";
+    std::string current;
+    if (!UP::ReadSmallFile(root + L"\\current", 64, current)) return L"";
+    while (!current.empty() && (current.back() == '\n' || current.back() == '\r')) current.pop_back();
+    UP::Version v;
+    if (!UP::ParseVersion(current, v) || UP::IsZero(v)) return L"";
+    // Never hand over to a version whose install just failed (rollback keeps/relaunches the previous app).
+    std::string result;
+    if (UP::ReadSmallFile(root + L"\\updates\\last-result", 4096, result)) {
+        auto lines = Lines(result);
+        if (!lines.empty() && lines[0] == "browser-result 1" && Field(lines, "status") == "failed" && Field(lines, "version") == current)
+            return L"";
+    }
+    const std::wstring dir = versions + L"\\" + UP::Widen(current), target = dir + L"\\browser.exe";
+    if (!UP::IsDirectory(dir) || UP::IsReparsePoint(dir)) return L"";
+    DWORD attributes = GetFileAttributesW(target.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return L"";
+    if (Lower(target) == Lower(exe)) return L"";
+    return target;
 }
 
 // ---------------------------------------------------------------- URL policy
@@ -529,10 +565,37 @@ void Engine::Launch(Op op, bool manual, bool startup) {
         gen = ++generation_;
         manifest = manifest_;
     }
+    busy_ = true;
     if (op == Op::Check)
-        worker_ = std::thread([this, gen, manual, startup] { RunCheck(gen, manual, startup); });
+        worker_ = std::thread([this, gen, manual, startup] { RunCheck(gen, manual, startup); Finished(); });
     else
-        worker_ = std::thread([this, gen, manifest] { RunDownload(gen, manifest); });
+        worker_ = std::thread([this, gen, manifest] { RunDownload(gen, manifest); Finished(); });
+}
+
+// Worker done (also quiet automatic checks that publish no view): one coalesced notification lets the host
+// re-arm its single due-aware timer from the freshly persisted next-check.
+void Engine::Finished() {
+    busy_ = false;
+    if (!shutdown_ && !cancel_) Post();
+}
+
+bool Engine::AutoCheck() {
+    if (!enabled_ || shutdown_ || !config_.automaticCheck || busy_) return false;
+    if (View().phase != Phase::Hidden) return false;  // never interrupt an offer, a download, an install or an error
+    State state = LoadState();
+    const std::int64_t now = Now();
+    if (now < state.nextCheck && state.nextCheck - now <= FailureMax) return false;  // TTL / back-off: no request
+    Launch(Op::Check, false, false);
+    return true;
+}
+
+DWORD Engine::AutoCheckDelayMs() const {
+    if (!enabled_ || shutdown_ || !config_.automaticCheck) return 0;
+    State state = LoadState();
+    const std::int64_t wait = state.nextCheck - Now();
+    if (wait <= 0 || wait > FailureMax) return AutoCheckMinMs;  // due (or corrupt): retry no sooner than the floor
+    const std::int64_t ms = wait * 1000;
+    return DWORD(std::min<std::int64_t>(AutoCheckMaxMs, std::max<std::int64_t>(AutoCheckMinMs, ms)));
 }
 
 void Engine::Shutdown() {

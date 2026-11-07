@@ -664,6 +664,161 @@ void TestNoteStartup() {
     CHECK(UpdateCore::NoteStartup(c).phase == Phase::Hidden);
 }
 
+std::wstring LowerW(std::wstring s) {
+    for (auto& c : s) c = towlower(c);
+    return s;
+}
+
+// A long-running browser finds a newer release without restart; TTL/back-off respected; never interrupts.
+void TestAutoCheck() {
+    Fixture f;
+    f.root = TempDir(L"engine-autocheck");
+    MockResponse nf;
+    nf.status = UpdateCore::HttpResult::NotFound;
+    f.transport->Set(UpdateCore::ManifestUrl(Repo), nf);
+    UpdateCore::Engine e;
+    g_engine = &e;
+    e.Start(f.Config());
+    CHECK(PumpUntil([&] { return e.LastCheckResult() == UpdateCore::Engine::LastCheck::UpToDate; }, 3000));
+    Pump(150);  // let the startup worker finish
+    const int afterStartup = f.transport->Requests();
+    // Next due in 6 h: the host arms ONE timer for ~6 h (never a high-rate wake).
+    DWORD delay = e.AutoCheckDelayMs();
+    CHECK(delay == 6u * 3600u * 1000u);
+    f.now += 3600;
+    CHECK(e.AutoCheckDelayMs() == 5u * 3600u * 1000u);
+    CHECK(!e.AutoCheck());  // TTL: no request
+    Pump(50);
+    CHECK(f.transport->Requests() == afterStartup);
+    f.now += 4 * 3600 + 3590;  // 10 s before due: floor 15 min, still no request
+    CHECK(e.AutoCheckDelayMs() == UpdateCore::Engine::AutoCheckMinMs);
+    CHECK(!e.AutoCheck());
+    // A release appears while the browser keeps running; once due, the quiet check finds it.
+    f.Publish("0.3.2", 2 * 1024 * 1024, 20, 64 * 1024);
+    f.now += 11;
+    CHECK(e.AutoCheck());
+    CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
+    CHECK(e.View().version == L"0.3.2");
+    // Visible offer: no further automatic checks, delay stays bounded (>= 15 min).
+    f.now += 7 * 3600;
+    int before = f.transport->Requests();
+    CHECK(!e.AutoCheck());
+    CHECK(e.AutoCheckDelayMs() >= UpdateCore::Engine::AutoCheckMinMs && e.AutoCheckDelayMs() <= UpdateCore::Engine::AutoCheckMaxMs);
+    // Download in progress is never cancelled by an auto check.
+    CHECK(e.Perform(Action::Download) == UpdateCore::ActionResult::Handled);
+    CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Downloading; }, 3000));
+    CHECK(!e.AutoCheck());
+    CHECK(PhaseOf(e) == Phase::Downloading);
+    CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Ready; }, 10000));
+    CHECK(!e.AutoCheck());  // Ready offer is not replaced by a check
+    CHECK(f.transport->Requests() == before + 1);  // only the package download
+    // Dismissed version stays quiet on later automatic checks.
+    CHECK(e.Perform(Action::Dismiss) == UpdateCore::ActionResult::Handled);
+    e.Shutdown();
+    CHECK(!e.AutoCheck() && e.AutoCheckDelayMs() == 0);  // shut down: nothing to arm
+    {
+        UpdateCore::Engine e2;
+        g_engine = &e2;
+        auto c = f.Config();
+        c.automaticCheck = false;  // no startup check; only AutoCheck
+        e2.Start(c);
+        CHECK(e2.AutoCheckDelayMs() == 0);  // automatic checks disabled => host arms nothing
+        e2.Shutdown();
+    }
+    {  // offline auto check: quiet, back-off 1 h, then retried only when due
+        Fixture g;
+        g.root = TempDir(L"engine-autocheck-offline");
+        UpdateCore::Engine e3;
+        g_engine = &e3;
+        e3.Start(g.Config());
+        CHECK(PumpUntil([&] { return e3.LastCheckResult() == UpdateCore::Engine::LastCheck::Failed; }, 3000));
+        Pump(50);
+        CHECK(PhaseOf(e3) == Phase::Hidden);
+        CHECK(e3.AutoCheckDelayMs() == 3600u * 1000u);
+        int r0 = g.transport->Requests();
+        g.now += 1800;
+        CHECK(!e3.AutoCheck());
+        g.now += 1801;
+        CHECK(e3.AutoCheck());
+        CHECK(PumpUntil([&] { return g.transport->Requests() == r0 + 1; }, 3000));
+        Pump(100);
+        CHECK(PhaseOf(e3) == Phase::Hidden);
+        CHECK(e3.AutoCheckDelayMs() == 2u * 3600u * 1000u);
+        CHECK(!e3.AutoCheck());  // busy guard / not due: no overlapping check
+        // Clean close while an automatic check is in flight (slow transport) is bounded.
+        MockResponse slow;
+        slow.body = std::string(1024, 'x');
+        slow.chunk = 1;
+        slow.chunkDelayMs = 50;
+        g.transport->Set(UpdateCore::ManifestUrl(Repo), slow);
+        g.now += 3 * 3600;
+        CHECK(e3.AutoCheck());
+        Pump(100);
+        ULONGLONG t0 = GetTickCount64();
+        e3.Shutdown();
+        CHECK(GetTickCount64() - t0 < 2000);
+    }
+}
+
+// Legacy portable exe (old shortcut target) hands over to the installed current version only when safe.
+void TestPortableForward() {
+    std::wstring base = TempDir(L"forward"), root = base + L"\\root", portable = base + L"\\portable";
+    std::wstring legacy = portable + L"\\browser-main-78f5340.exe";
+    CreateDirectoryW(root.c_str(), nullptr);
+    CreateDirectoryW(portable.c_str(), nullptr);
+    WriteText(legacy, "MZ legacy");
+    auto target = root + L"\\versions\\0.3.6\\browser.exe";
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());  // nothing installed
+    CreateDirectoryW((root + L"\\versions").c_str(), nullptr);
+    CreateDirectoryW((root + L"\\versions\\0.3.6").c_str(), nullptr);
+    CreateDirectoryW((root + L"\\data").c_str(), nullptr);
+    WriteText(target, "MZ new");
+    WriteText(root + L"\\current", "0.3.6\n");
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());  // no migration record
+    WriteText(root + L"\\data\\migrated-from.txt", UP::Narrow(base + L"\\other") + "\n");
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());  // migrated from another folder
+    WriteText(root + L"\\data\\migrated-from.txt", UP::Narrow(portable) + "\n");
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root) == FullPath(target));
+    CHECK(LowerW(UpdateCore::PortableForwardTarget(base + L"\\PORTABLE\\Browser-Main-78f5340.exe", root)) == LowerW(FullPath(target)));
+    // Installed kind never forwards (no loop), neither does anything inside the root (launcher).
+    CHECK(UpdateCore::PortableForwardTarget(target, root).empty());
+    CHECK(UpdateCore::PortableForwardTarget(root + L"\\browser.exe", root).empty());
+    // Bogus pointers are rejected.
+    for (const char* bad : {"..\\..\\evil\n", "0.3.9\n", "0.0.0\n", "x\n", "C:\\Windows\n", ""}) {
+        WriteText(root + L"\\current", bad);
+        CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());
+    }
+    DeleteFileW((root + L"\\current").c_str());
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());  // rolled-back first install deletes current
+    WriteText(root + L"\\current", "0.3.6\n");
+    // A failed install of that version (rollback) is never forwarded to; another version's failure is irrelevant.
+    CreateDirectoryW((root + L"\\updates").c_str(), nullptr);
+    WriteText(root + L"\\updates\\last-result", "browser-result 1\nstatus failed\nversion 0.3.6\nreason no-startup-ack\nreported 0\n");
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());
+    WriteText(root + L"\\updates\\last-result", "browser-result 1\nstatus failed\nversion 0.3.7\nreason x\nreported 1\n");
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root) == FullPath(target));
+    WriteText(root + L"\\updates\\last-result", "browser-result 1\nstatus installed\nversion 0.3.6\nreason ack\nreported 1\n");
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root) == FullPath(target));
+    // Target must be a regular file in a real directory.
+    DeleteFileW(target.c_str());
+    CreateDirectoryW(target.c_str(), nullptr);
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());
+    RemoveDirectoryW(target.c_str());
+    CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());  // missing exe
+    // Reparse points (junctions) anywhere on the path are refused.
+    std::wstring elsewhere = base + L"\\elsewhere";
+    CreateDirectoryW(elsewhere.c_str(), nullptr);
+    WriteText(elsewhere + L"\\browser.exe", "MZ planted");
+    RemoveDirectoryW((root + L"\\versions\\0.3.6").c_str());
+    if (CreateJunction(root + L"\\versions\\0.3.6", elsewhere)) {
+        CHECK(UpdateCore::PortableForwardTarget(legacy, root).empty());
+        RemoveDirectoryW((root + L"\\versions\\0.3.6").c_str());
+    } else {
+        CHECK(false);  // junction creation must work for this guard to be tested
+    }
+    std::string legacyBody;
+    CHECK(UP::ReadSmallFile(legacy, 64, legacyBody) && legacyBody == "MZ legacy");  // pure: legacy untouched
+}
 }  // namespace
 
 int wmain() {
@@ -678,6 +833,8 @@ int wmain() {
     TestEngineAvailableAndNotified();
     TestEngineDownload();
     TestEngineCancelAndFailures();
+    TestAutoCheck();
+    TestPortableForward();
     g_engine = nullptr;
     return Report("update_core_test");
 }

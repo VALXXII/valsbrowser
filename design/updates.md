@@ -13,8 +13,9 @@ Latest evidence and hashes: `build/coordination/update-integration-report.md`.
    native-only regression + update suite, packages the allowlisted payload and — only if every step
    passed — publishes release `v0.3.<N>` to the **public binary feed** `VALXXII/browser-releases`
    (the source repository stays private).
-3. A running browser checks once, ~4 s after start (TTL 6 h; failure back-off 1 h → 24 h; no idle
-   timer, no polling). Offline / no published release / private feed ⇒ silent.
+3. The browser checks ~4 s after start and then **occasionally while it stays open**: one one-shot,
+   due-aware timer (persisted TTL 6 h after success; back-off 1 h → 24 h after failure; never re-armed
+   below 15 min nor above 6 h; no polling, no frame timer). Offline / no published release ⇒ silent.
 4. The toast (bottom-left, above the page, never takes focus) offers **Download** → real byte progress
    and ETA (or unknown) with **Cancel** → **Restart and install**. Nothing is installed without that click.
 5. Restart: the session is saved, the validated helper is started, the browser closes normally. The helper
@@ -140,3 +141,56 @@ Merge of updater baseline 728fb29 with origin/main 1a69d7b (resolved in `src/mai
   and Esc returns focus to the page, so both surfaces give focus back the same way;
 * no id collisions: upstream uses WM_APP+1/2/3/8, updates WM_APP+9 and menu command 3020.
 Evidence: `build/coordination/update-integration-report.md` (final section).
+
+## Periodic checks and portable → installed continuity (task_92063d1c4daf)
+
+### Periodic quiet checks
+* Engine API (`src/update-core.h`): `bool Engine::AutoCheck()` starts a quiet background check only if it
+  is due from the persisted `updates\state` next-check, no worker is running, the view is `Hidden` (never
+  during Checking / Available / Downloading / Ready / Installing / Installed dwell / Error) and automatic
+  checks are enabled; it never cancels a download. `DWORD Engine::AutoCheckDelayMs()` returns the time to the
+  next due check clamped to `[AutoCheckMinMs = 15 min, AutoCheckMaxMs = 6 h]`, or 0 (disabled/shut down:
+  arm nothing). Every finished worker (also quiet checks that publish no view) posts one coalesced
+  notification so the host re-arms from the freshly persisted state.
+* Host (`src/main.cpp`): `ArmUpdateTimer()` keeps ONE one-shot `SetTimer(UpdateTimerId=74)`; armed after
+  `Start`, re-armed after every accepted notification and every firing (`UpdateTimerFired` →
+  `AutoCheck` → re-arm); killed in `StopUpdates` (WM_DESTROY) and while closing for install. Results follow
+  the automatic rules: offline/404 stay hidden, dismissed or already-notified versions are not toasted again.
+* Cadence bound: at most one wake per 15 min (only when due but blocked, e.g. a visible offer), normally one
+  per 6 h, one per 1–24 h while offline. A timer is tick based: after sleep/hibernation it fires late, and
+  the engine's wall-clock due check decides.
+* Tests: `TestAutoCheck` (mock clock: 6 h delay after startup, TTL skip without request, 15 min floor, a
+  release published while running is found, no auto check over an offer / during a download / over Ready,
+  dismissed stays quiet, offline back-off 1 h → 2 h quiet, bounded shutdown with an auto check in flight,
+  disabled ⇒ 0) and host `periodic` scenario (production timer path through `WndProc` WM_TIMER: armed 6 h,
+  early firing makes no request and re-arms 5 h, publication found without restart and toasted, exactly one
+  manifest request, no check over a visible offer, timer cancelled on close).
+
+### Portable → installed continuity (old Start Menu shortcut)
+The helper's stable launcher `%LOCALAPPDATA%\browser\browser.exe` exists after the first install, but the
+existing shortcut still targets the legacy portable exe (e.g. `build\v2\browser-main-78f5340.exe`). Chosen
+minimal, safe continuity: **early portable bootstrap forwarding**, no shortcut is modified.
+* `std::wstring UpdateCore::PortableForwardTarget(exePath, installRoot = L"")` (pure) returns
+  `<root>\versions\<current>\browser.exe` only when: the exe is portable-kind (installed exes and anything
+  inside the root never forward ⇒ no loop); `<root>`, `data`, `versions` and the version directory are real
+  directories (no reparse points); `data\migrated-from.txt` names exactly this exe's folder
+  (case-insensitive full path); `current` is a valid non-zero version; `updates\last-result` is not
+  `failed` for that version; the target is a regular file. Otherwise empty.
+* Host: in `wWinMain`, right after path resolution and before any window, profile or WebView2,
+  `ForwardToInstalled()` starts that exe (cwd = its folder, no arguments, `AllowSetForegroundWindow`) and the
+  portable process exits 0. Any failure keeps the portable browser running. `--smoke-test` never forwards.
+* Rollback safety: a failed first install deletes `current` and drops the migrated `data` (so the relaunched
+  portable app stays portable); an installed→installed rollback restores `current` to the previous version
+  (forwarding then targets that previous, working version); a recorded failed install of `current` is never
+  forwarded to.
+* Tests: `TestPortableForward` (no install, no record, record of another folder, case-insensitive match,
+  installed/launcher kind, bogus pointers `..\..\evil`, `0.3.9`, `0.0.0`, `x`, absolute, empty, missing
+  `current`, failed vs other-version/installed results, directory-instead-of-exe, missing exe, junction ⇒
+  refused, purity) and E2E: after the portable install the **same legacy exe file is started again** (relaunch
+  mode calls the production `ForwardToInstalled` exactly as `wWinMain` does) → the installed 0.3.6 fake
+  starts and logs `data=<root>\data`; guard runs (tampered record, failed result with CRLF, bogus current,
+  installed-kind copy) do not hand over; exactly one hand-over launch overall; legacy profile untouched.
+* Limits: the shortcut itself still points at the legacy exe (by design: no real shortcut mutation); the
+  legacy folder must stay on disk for the forwarder to run; a portable copy moved elsewhere no longer matches
+  the record and stays portable (its data was the migrated source and is untouched). The forwarding hop is
+  not exercised with the real WebView2 browser (hold); it runs before any WebView2 code.
