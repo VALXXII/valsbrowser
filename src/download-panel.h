@@ -37,6 +37,7 @@ inline std::int64_t UnixNowMs() { FILETIME ft; GetSystemTimeAsFileTime(&ft); ret
 // Local time minus UTC (ms), for calendar-day periods.
 inline std::int64_t LocalOffsetMs() { FILETIME utc, local; GetSystemTimeAsFileTime(&utc); FileTimeToLocalFileTime(&utc, &local); return FileTimeMs(local) - FileTimeMs(utc); }
 
+namespace Popup { inline constexpr float border = .02f; } // hairline: white 2% over the canvas (Paper)
 // One laid-out element of a list. Rows of a folding section are clipped to the
 // band their section still uncovers and fade with it.
 enum class SlotKind { Row, Section, ViewAll, Empty };
@@ -54,9 +55,13 @@ struct Scene {
     int focus = 0; bool keyboard = false;
     float entrance = 1, viewTop = Panel::ViewTop(), viewBottom = 1e6f;
     float fadeTop = 0, fadeBottom = 0; // scroll edge effects (drawer)
+    float fadeTopSize = DrawerLayout::topFade;
     bool edge = false;                 // drawer: hairline on its leading edge
     float originX = 0, originY = 0;    // where the 268 DIP column sits in the window (drawer morph)
     float edgeOpacity = 1;
+    // Drawer morph: the popover's hairline border, carried by the drawer and
+    // fading out as it docks (content coordinates).
+    D2D1_RECT_F frame{}; float frameRadius = 0, frameOpacity = 0;
     std::int64_t nowMs = 0;
     Motion::Time now{};
 };
@@ -158,6 +163,8 @@ public:
         return bitmap;
     }
     void ForgetIcons() { for (auto& icon : icons_) Drop(icon.second); icons_.clear(); }
+    // Shell icon lookups cost milliseconds: resolve them before a motion needs them.
+    void Preload(const std::vector<Item>& items) { if (!chrome_.RenderTarget()) return; for (auto& item : items) FileIcon(item); }
 
     // Draws `paint` (panel coordinates) shifted by visual.offset, faded and, when
     // the effect exists, Gaussian-blurred over `bounds` via an offscreen layer.
@@ -358,8 +365,8 @@ public:
         }
         // Scroll edge effects: content dissolves into the canvas where more lies beyond.
         if (fade_ && scene.fadeTop > 0) {
-            fade_->SetStartPoint({0, scene.viewTop + DrawerLayout::topFade}); fade_->SetEndPoint({0, scene.viewTop}); fade_->SetOpacity(Motion::Clamp(scene.fadeTop));
-            target->FillRectangle(D2D1::RectF(0, scene.viewTop, Panel::width, scene.viewTop + DrawerLayout::topFade), fade_);
+            fade_->SetStartPoint({0, scene.viewTop + scene.fadeTopSize}); fade_->SetEndPoint({0, scene.viewTop}); fade_->SetOpacity(Motion::Clamp(scene.fadeTop));
+            target->FillRectangle(D2D1::RectF(0, scene.viewTop, Panel::width, scene.viewTop + scene.fadeTopSize), fade_);
         }
         if (fade_ && scene.fadeBottom > 0) {
             fade_->SetStartPoint({0, viewBottom - DrawerLayout::bottomFade}); fade_->SetEndPoint({0, viewBottom}); fade_->SetOpacity(Motion::Clamp(scene.fadeBottom));
@@ -369,9 +376,15 @@ public:
         target->PopAxisAlignedClip();
         if (entering) dc_->PopLayer();
         target->SetTransform(origin);
+        if (scene.frameOpacity > 0) {
+            const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width));
+            auto f = scene.frame; f.left += px / 2; f.top += px / 2; f.right -= px / 2; f.bottom -= px / 2;
+            chrome_.Color(1, Popup::border * scene.frameOpacity);
+            target->DrawRoundedRectangle(D2D1::RoundedRect(f, scene.frameRadius, scene.frameRadius), brush, px);
+        }
         if (scene.edge && scene.edgeOpacity > 0) { // one physical pixel, a touch lighter than the canvas
             const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width));
-            chrome_.Color(1, .02f * scene.edgeOpacity); target->FillRectangle(D2D1::RectF(0, 0, px, height), brush);
+            chrome_.Color(1, Popup::border * scene.edgeOpacity); target->FillRectangle(D2D1::RectF(0, 0, px, height), brush);
         }
         target->SetTransform(D2D1::IdentityMatrix());
     }
@@ -585,6 +598,7 @@ protected:
     }
     bool CreateSurface(HINSTANCE instance, HWND owner, const std::wstring& root, std::vector<Item>* items, Hooks hooks, UINT classStyle, float width, float height) {
         owner_ = owner; items_ = items; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_);
+        chrome_.textCacheLimit = 1024; // every row's name/detail runs + labels, at any history size
         WNDCLASSW wc{}; wc.style = classStyle; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = ClassName();
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Download history", WS_POPUP, 0, 0, Px(width), Px(height), owner, nullptr, instance, this);
@@ -633,7 +647,7 @@ class Popover final : public Host {
     void Configure() override {
         // Windows 11: rounded, antialiased corners and a hairline border from DWM.
         const int round = 2; // DWMWCP_ROUND
-        const COLORREF border = Design::NativeGray(Design::Surface::canvas + .04f);
+        const COLORREF border = Design::NativeGray(Design::Surface::canvas + Popup::border * (1 - Design::Surface::canvas));
         if (FAILED(DwmSetWindowAttribute(hwnd_, 33, &round, sizeof(round))))
             SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, Px(Panel::width) + 1, Px(Height()) + 1, Px(Panel::radius * 2), Px(Panel::radius * 2)), TRUE);
         DwmSetWindowAttribute(hwnd_, 34, &border, sizeof(border));
@@ -647,7 +661,7 @@ class Popover final : public Host {
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) override { if (msg == WM_DPICHANGED) { Place(); return 0; } return Host::Handle(h, msg, w, l); }
 public:
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, std::vector<Item>* items, Hooks hooks) {
-        items_ = items; return CreateSurface(instance, owner, root, items, std::move(hooks), CS_DROPSHADOW, Panel::width, Height());
+        items_ = items; return CreateSurface(instance, owner, root, items, std::move(hooks), 0, Panel::width, Height());
     }
     // anchor: toolbar button rectangle in screen pixels; the popover's right edge aligns with it.
     void Show(RECT anchor) {
@@ -657,7 +671,10 @@ public:
         focus_ = 0; keyboard_ = false; ClearPointer();
         auto now = Motion::Now();
         entrance_.Snap(0); entrance_.Set(1, now, Entrance::duration, motion_.ReducedMotion(), Motion::Curve::Icon);
-        Place(); visible_ = true; Activated();
+        Place(); visible_ = true;
+        // Shown first without activation, painted, then activated: never a blank frame.
+        SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        PaintNow(); ValidateRect(hwnd_, nullptr); Activated();
         Repoint(); Ticker(); // pointer already over the panel: reveal immediately
     }
     void Dismiss(bool keyboard) override { Hide(keyboard); }
@@ -714,7 +731,8 @@ class Drawer final : public Host {
     std::array<Lane, PeriodCount> fold_;
     bool closing_ = false;
     RECT morphFrom_{}; float morphRadius_ = 0; // popover rectangle in window pixels
-    int appliedVisible_ = -1, appliedMorph_ = -1; RECT appliedOwner_{};
+    int appliedVisible_ = -1, appliedMorph_ = -1; RECT appliedOwner_{}, appliedWindow_{};
+    bool warmed_ = false; std::tuple<size_t, int, LONG, LONG, UINT> warmSignature_{};
     std::array<std::vector<int>, PeriodCount> Groups() const {
         std::array<std::vector<int>, PeriodCount> groups;
         if (!items_) return groups;
@@ -751,6 +769,20 @@ class Drawer final : public Host {
         const float scroll = scroll_.Value(scene.now), max = MaxScroll(scene.now, false);
         scene.fadeTop = Motion::Clamp(scroll / DrawerLayout::topFade);
         scene.fadeBottom = Motion::Clamp((max - scroll) / Panel::pitch) * t;
+        if (t < 1) {
+            // The popover's border rides the growing shape and fades as it docks.
+            const float s = Scale(), w = (DrawerLayout::width + DrawerLayout::margin);
+            auto lerp = [t](float a, float b) { return a + (b - a) * t; };
+            scene.frame = {lerp(morphFrom_.left * s, DrawerLayout::margin) - scene.originX, lerp(morphFrom_.top * s, 0) - scene.originY,
+                           lerp(morphFrom_.right * s, w) - scene.originX, lerp(morphFrom_.bottom * s, SurfaceHeight()) - scene.originY};
+            scene.frameRadius = morphRadius_ * s * (1 - t); scene.frameOpacity = 1 - t;
+            // Content meets the moving edge through a fade, never a hard cut.
+            const float edge = 4 * t * (1 - t);
+            scene.fadeBottom = std::max(scene.fadeBottom, edge); scene.fadeTop = std::max(scene.fadeTop, edge);
+            scene.fadeTopSize = DrawerLayout::topFade * 2; // headers emerge from under the title through a deeper fade
+            const float headerBottom = Panel::headerTop + Panel::headerHeight; // 36: content may rise to the header line while it docks
+            scene.viewTop = headerBottom + (DrawerLayout::viewTop - headerBottom) * t;
+        }
     }
     Motion::Wake ExtraWake(Motion::Time now) const override {
         bool moving = slide_.Moving(now) || scroll_.Moving(now) || morph_.Moving(now);
@@ -779,19 +811,27 @@ class Drawer final : public Host {
         if (!force && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return;
         const bool resized = !EqualRect(&owner, &appliedOwner_);
         appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner;
-        SetWindowPos(hwnd_, nullptr, owner.right - width + (column - shown), top, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+        const RECT window{owner.right - width + (column - shown), top, owner.right + (column - shown), top + height};
+        if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         HRGN region = nullptr;
         if (shown > 0) {
+            // Owner clip: everything left of the owner's right edge, rounding the corner it shares with it.
             const int right = margin + shown, r = OwnerPx(20);
             region = IsZoomed(owner_) ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);
-            if (t < 1) { // popover rectangle (rounded like DWM's popup corners) growing into the docked column
+            // Shape: the docked column [margin, width] — never the margin strip, which
+            // only exists for the popover to morph from — or, while morphing, the
+            // popover rectangle (rounded like DWM's popup corners) growing into it.
+            HRGN shape = nullptr;
+            if (t < 1) {
                 auto lerp = [t](LONG a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
                 const int radius = static_cast<int>(std::lround(morphRadius_ * (1 - t))) * 2 + 1;
-                HRGN shape = CreateRoundRectRgn(lerp(morphFrom_.left, margin), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, width) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
-                CombineRgn(region, region, shape, RGN_AND); DeleteObject(shape);
-            }
+                shape = CreateRoundRectRgn(lerp(morphFrom_.left, margin), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, width) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
+            } else shape = CreateRectRgn(margin, 0, width, height);
+            CombineRgn(region, region, shape, RGN_AND); DeleteObject(shape);
         } else region = CreateRectRgn(0, 0, 0, 0);
-        SetWindowRgn(hwnd_, region, TRUE);
+        // No redraw: the content for this frame is already presented (morph frames
+        // paint first) or unchanged (slide), so a region change costs no paint.
+        SetWindowRgn(hwnd_, region, FALSE);
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll(now, true))); RefreshTips(); }
     }
     void ScrollTo(float target, Motion::Time now, Motion::Milliseconds duration) {
@@ -805,7 +845,7 @@ class Drawer final : public Host {
     bool ActivateOther(int hit, bool) override {
         if (!IsSection(hit)) return false;
         auto now = Motion::Now(); auto& lane = fold_[static_cast<int>(HitPeriod(hit))];
-        lane.Set(lane.Target() > .5f ? 0.f : 1.f, now, Motion::Milliseconds(0), motion_.ReducedMotion() ? Motion::Milliseconds(0) : DrawerMotion::fold, Curves::drawer);
+        lane.Set(lane.Target() > .5f ? 0.f : 1.f, now, Motion::Milliseconds(0), motion_.ReducedMotion() ? Motion::Milliseconds(0) : DrawerMotion::fold, DrawerMotion::foldSpring);
         ScrollTo(scroll_.Target(), now, DrawerMotion::fold); // content got shorter: settle within bounds
         Repoint(); RefreshTips(); if (hooks_.schedule) hooks_.schedule(now);
         return true;
@@ -828,7 +868,7 @@ class Drawer final : public Host {
         return Host::Handle(h, msg, w, l);
     }
     void Finish() {
-        closing_ = false; visible_ = false; appliedVisible_ = appliedMorph_ = -1;
+        closing_ = false; visible_ = false; appliedVisible_ = appliedMorph_ = -1; appliedWindow_ = {};
         morph_.Snap(1);
         KillTimer(hwnd_, TickTimer); ShowWindow(hwnd_, SW_HIDE);
     }
@@ -838,13 +878,29 @@ public:
         return CreateSurface(instance, owner, root, items, std::move(hooks), 0, DrawerLayout::width + DrawerLayout::margin, 400);
     }
     bool Closing() const { return closing_; }
-    // from: the popover's screen rectangle to morph out of, or null to slide in.
-    void Show(const RECT* from = nullptr) {
+    // Prepares everything the first drawer frames need (window size, render
+    // target, shell icons, text layouts) while hidden. Called while the popover
+    // is open so "View all" starts the morph immediately.
+    void Warm() {
+        if (!hwnd_ || visible_ || !items_) return;
+        // Same history, same owner size: caches and render target are still warm.
+        const RECT owner = OwnerClient();
+        const auto signature = std::make_tuple(items_->size(), items_->empty() ? 0 : items_->front().id, owner.right - owner.left, owner.bottom - owner.top, GetDpiForWindow(owner_));
+        if (warmed_ && signature == warmSignature_) return;
+        warmed_ = true; warmSignature_ = signature;
+        auto now = Motion::Now();
+        appliedWindow_ = {}; appliedOwner_ = {}; ApplyGeometry(now, true);
+        view_.Preload(*items_);
+        const float morph = morph_.Value(now); morph_.Snap(1); PaintNow(); morph_.Snap(morph);
+        appliedVisible_ = appliedMorph_ = -1;
+    }
+    // from: the popover's screen rectangle to morph out of, or null to slide in;
+    // under: the popover window, kept above the drawer until the hand-off.
+    void Show(const RECT* from = nullptr, HWND under = nullptr) {
         if (!hwnd_) return;
         motion_.SetReducedMotion(Motion::SystemReducedMotion());
         auto now = Motion::Now(); const bool reduced = motion_.ReducedMotion();
         if (!visible_) { slide_.Snap(0); scroll_.Snap(0); morph_.Snap(1); focus_ = 0; keyboard_ = false; ClearPointer(); }
-        closing_ = false; visible_ = true;
         if (from && !reduced) {
             // Window-local pixels of the popover, the drawer's column at its docked place.
             const RECT owner = OwnerClient();
@@ -852,15 +908,30 @@ public:
             morphFrom_ = {from->left - left, from->top - top, from->right - left, from->bottom - top};
             morphFrom_.left = std::max(0L, morphFrom_.left); morphFrom_.top = std::max(0L, morphFrom_.top);
             morphRadius_ = static_cast<float>(OwnerPx(Panel::radius));
-            slide_.Snap(1); morph_.Snap(0); morph_.Set(1, now, Motion::Milliseconds(0), DrawerMotion::morph, Curves::drawer);
+            slide_.Snap(1);
+            if (!visible_) Warm(); // cheap when already warmed while the popover was open
+            morph_.Snap(0);        // its clock starts once the hand-off is on screen (below)
         } else {
             morph_.Snap(1);
+            view_.Preload(*items_);
             // Re-opening mid-exit continues from where the drawer is on screen.
-            slide_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : DrawerMotion::enter, Curves::drawer);
+            slide_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : DrawerMotion::enter, DrawerMotion::enterSpring);
         }
-        // First frame painted before the window appears, so the hand-off from the
-        // popover shows no blank frame.
-        ApplyGeometry(now, true); PaintNow(); Activated();
+        closing_ = false; visible_ = true;
+        // Hand-off without a blank frame. A window only keeps what it is painted
+        // with while it is really on screen, so the drawer is shown in the
+        // popover's shape *underneath* the popover (which still covers it), is
+        // painted there, and DWM composes that frame. Only then is it activated,
+        // which hides the popover: the drawer under it is already showing it.
+        ApplyGeometry(now, true);
+        SetWindowPos(hwnd_, under ? under : HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        PaintNow(); ValidateRect(hwnd_, nullptr); DwmFlush();
+        if (under) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        Activated();
+        // The morph's clock starts now that its first frame is on screen: any time
+        // spent above must never be skipped by the animation (that was a jump).
+        now = Motion::Now();
+        if (from && !reduced) morph_.Set(1, now, Motion::Milliseconds(0), DrawerMotion::morph, DrawerMotion::morphSpring);
         Repoint(); RefreshTips(); Ticker();
         if (hooks_.schedule) hooks_.schedule(now);
     }
@@ -870,7 +941,7 @@ public:
         if (!visible_ || closing_) { if (visible_ && !animate) Finish(); return; }
         hiddenAt = GetTickCount64(); ClearPointer();
         auto now = Motion::Now(); closing_ = true;
-        slide_.Set(0, now, Motion::Milliseconds(0), animate && !motion_.ReducedMotion() ? DrawerMotion::exit : Motion::Milliseconds(0), Curves::drawer);
+        slide_.Set(0, now, Motion::Milliseconds(0), animate && !motion_.ReducedMotion() ? DrawerMotion::exit : Motion::Milliseconds(0), DrawerMotion::exitSpring);
         if (!slide_.Moving(now)) Finish();
         if (hooks_.closed) hooks_.closed(keyboard);
         if (visible_ && hooks_.schedule) hooks_.schedule(now);

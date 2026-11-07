@@ -56,12 +56,14 @@ class Chrome {
         bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium);}};
     struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;};
     std::map<TextKey,TextEntry> textCache;
-    static constexpr size_t TextCacheLimit=96;
 public:
     // Present without blocking the UI thread on vblank (pacing comes from FrameClock)
     // and keep the back buffer so partial invalidation stays correct.
     D2D1_PRESENT_OPTIONS presentOptions=D2D1_PRESENT_OPTIONS(D2D1_PRESENT_OPTIONS_RETAIN_CONTENTS|D2D1_PRESENT_OPTIONS_IMMEDIATELY);
     bool cacheText=true; // false only for the pacing harness baseline
+    // Main chrome keeps 96 (pacing-tested); the downloads surfaces need room for
+    // every visible row so animation frames never rebuild layouts.
+    size_t textCacheLimit=96;
     unsigned long long textLayoutsCreated=0;
     void ClearTextCache(){for(auto& item:textCache)Drop(item.second.layout);textCache.clear();}
     Loading::Visual loading;
@@ -197,7 +199,7 @@ public:
         TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium};
         auto it=textCache.find(key);
         if(it==textCache.end()){
-            if(textCache.size()>=TextCacheLimit)ClearTextCache();
+            if(textCache.size()>=textCacheLimit)ClearTextCache();
             TextEntry entry;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
             HRESULT hr=MakeTextLayout(value,origin,size,tabular,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
             it=textCache.emplace(std::move(key),entry).first;

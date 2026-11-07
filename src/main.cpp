@@ -103,7 +103,7 @@ void InvalidateChrome(){RECT r;GetClientRect(window,&r);r.bottom=std::min(r.bott
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
 // clock is unavailable the legacy SetTimer path remains (not display synchronised).
-constexpr UINT FrameMessage=WM_APP+8; NativeChrome::FrameClock::Clock frameClock; bool frameClockReady=false,motionFullFrames=false; long long paintedLoading=-2;
+constexpr UINT FrameMessage=WM_APP+8; constexpr UINT_PTR DrawerWarmTimerId=73; NativeChrome::FrameClock::Clock frameClock; bool frameClockReady=false,motionFullFrames=false; long long paintedLoading=-2;
 std::shared_ptr<Tab> Active();
 // Loading-only frames repaint just the URL surface, and only when the quantised fill
 // differs from what was last painted; any other motion (or the frame right after it
@@ -369,6 +369,8 @@ void ShowDownloads(){
     // Right edge on the toolbar's 6 DIP margin, just under the toolbar row.
     RECT anchor{0,S(48),S(chrome.width-NativeChrome::Design::Space::sm),S(76)};MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
     chrome.latched='D';InvalidateChrome();downloadPanel.Show(anchor);
+    // Once the popover has settled, prepare the drawer so "View all" never waits.
+    SetTimer(window,DrawerWarmTimerId,260,nullptr);
 }
 // "View all": the popover gives way to the drawer docked on the right.
 void ShowDownloadDrawer(){
@@ -376,7 +378,7 @@ void ShowDownloadDrawer(){
     RefreshMissing();chrome.latched='D';InvalidateChrome();
     // From the popover: its rectangle morphs into the drawer.
     RECT from{};const bool morph=downloadPanel.Visible()&&GetWindowRect(downloadPanel.Window(),&from);
-    downloadDrawer.Show(morph?&from:nullptr);downloadPanel.Hide(false);
+    downloadDrawer.Show(morph?&from:nullptr,morph?downloadPanel.Window():nullptr);downloadPanel.Hide(false);
     SyncUpdateToastReserve();
 }
 void CloseDownloadSurfaces(bool animate=true){downloadPanel.Hide(false);downloadDrawer.Hide(false,animate);}
@@ -756,6 +758,7 @@ case WM_TIMER:
 #ifdef BROWSER_UPDATES
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
+    if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case WM_CLOSE:SaveSession();SaveDownloads();DestroyWindow(h);return 0;
 case WM_DESTROY:

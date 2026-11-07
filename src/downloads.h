@@ -339,6 +339,28 @@ struct Bezier {
         return 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t;
     }
 };
+// Critically damped spring from rest (Apple's damping 1.0): zero initial
+// velocity, so the first frame never jumps, then a smooth settle with no
+// overshoot. `response` is the spring's period (s); the duration it is driven
+// over is Settle(response), where it is within 0.1% of its target.
+struct Spring {
+    float response;
+    static constexpr float settle = 9.2334f; // omega * t where (1 + x) e^-x = 0.001
+    float At(float x) const noexcept {
+        x = Motion::Clamp(x);
+        if (x >= 1) return 1;
+        const float w = settle * x;
+        return (1 - (1 + w) * std::exp(-w)) / .999f;
+    }
+};
+constexpr Motion::Milliseconds Settle(float response) { return Motion::Milliseconds(static_cast<long long>(response * Spring::settle / 6.2831853f * 1000 + .5f)); }
+// Lanes run either a cubic-bezier or a spring.
+struct Easing {
+    bool spring = false; Bezier bezier{.2f, 0, 0, 1}; Spring physics{.3f};
+    constexpr Easing(Bezier b) : bezier(b) {}
+    constexpr Easing(Spring p) : spring(true), physics(p) {}
+    float At(float x) const noexcept { return spring ? physics.At(x) : bezier.At(x); }
+};
 namespace Curves {
 inline constexpr Bezier emphasized{.2f, 0, 0, 1};   // Motion::Curve::Icon
 inline constexpr Bezier drawer{.32f, .72f, 0, 1};   // iOS sheet curve: fast start, long settle
@@ -346,7 +368,7 @@ inline constexpr Bezier drawer{.32f, .72f, 0, 1};   // iOS sheet curve: fast sta
 class Lane {
     float from_ = 0, to_ = 0;
     Motion::Time begin_{}, end_{};
-    Bezier curve_ = Curves::emphasized;
+    Easing curve_ = Curves::emphasized;
 public:
     float Value(Motion::Time now) const noexcept {
         if (now >= end_) return to_;
@@ -354,7 +376,7 @@ public:
         return from_ + (to_ - from_) * curve_.At(Motion::Fraction(now, begin_, end_));
     }
     // Retargets from the value on screen now, so interruptions never jump.
-    void Set(float target, Motion::Time now, Motion::Milliseconds delay, Motion::Milliseconds duration, Bezier curve = Curves::emphasized) noexcept {
+    void Set(float target, Motion::Time now, Motion::Milliseconds delay, Motion::Milliseconds duration, Easing curve = Curves::emphasized) noexcept {
         if (target == to_) return;
         from_ = Value(now); to_ = target; curve_ = curve;
         if (duration.count() <= 0) { from_ = to_; begin_ = end_ = now; return; }
@@ -394,7 +416,15 @@ public:
 // Drawer: slides in from the window's right edge and leaves the same way
 // (spatial consistency); sections fold on the same curve; wheel steps glide.
 namespace DrawerMotion {
-inline constexpr Motion::Milliseconds enter{320}, exit{220}, fold{280}, scroll{160}, morph{360};
+// Every drawer motion starts from rest on a critically damped spring (no click
+// carries velocity, so nothing should leave at speed): enter, exit (snappier),
+// section fold. Wheel steps keep the short emphasized curve.
+inline constexpr Spring enterSpring{.32f}, exitSpring{.24f}, foldSpring{.26f};
+inline constexpr Motion::Milliseconds enter = Settle(.32f), exit = Settle(.24f), fold = Settle(.26f), scroll{160};
+// The morph rides a critically damped spring (response 0.32 s): it leaves the
+// popover from rest, so the hand-off frame is identical to the popover.
+inline constexpr Spring morphSpring{.32f};
+inline constexpr Motion::Milliseconds morph = Settle(.32f);
 // Morph: the drawer list glides from the popover's rows into place; content the
 // popover did not show fades in over the last 75%; "View all" leaves in the first 30%.
 inline constexpr float morphLead = .25f, morphLinkOut = .3f;

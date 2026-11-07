@@ -78,6 +78,13 @@ static void ModelChecks() {
     Expect(old.size() == 1 && old[0].started == 0 && old[0].path == L"C:\\d\\old.zip", "history v1 compatible");
     // Curves and layout.
     Expect(Curves::drawer.At(0) == 0 && Curves::drawer.At(1) == 1 && Curves::drawer.At(.25f) > .5f, "drawer curve starts fast");
+    // Morph spring: from rest (first 120 Hz frame moves < 2%), monotonic, lands exactly.
+    {
+        const auto& m = DrawerMotion::morphSpring; const float frame = 1000.f / 120 / DrawerMotion::morph.count();
+        bool monotonic = true; float last = 0; for (int i = 1; i <= 200; ++i) { const float v = m.At(i / 200.f); monotonic = monotonic && v >= last && v <= 1.0001f; last = v; }
+        Expect(m.At(0) == 0 && m.At(frame) < .02f && monotonic && m.At(1) == 1 && std::abs(m.At(.999f) - 1) < .002f, "morph spring starts from rest and settles without overshoot");
+        Expect(DrawerMotion::morph.count() >= 400 && DrawerMotion::morph.count() <= 520, "morph settle time");
+    }
     Expect(std::abs(Curves::emphasized.At(.5f) - Motion::Eased(.5f, Motion::Curve::Icon)) < .002f, "bezier matches the existing icon curve");
     Expect(Panel::Height(4, true) == 276 && Panel::Height(9, true) == 276 && Panel::Height(0) == 100, "popover: four rows + View all");
     std::vector<Item> six(6); auto pop = DownloadsUI::PopoverSlots(six);
@@ -155,6 +162,7 @@ struct Fixture {
         scene.originX = DrawerLayout::margin * t; // popover column starts at x 0 (6 DIP in from the window edge)
         scene.viewBottom = height + (popoverHeight - Panel::padding / 2 - height) * (1 - t);
         scene.fadeBottom = Motion::Clamp((bottom - height) / Panel::pitch) * t;
+        const float edge = 4 * t * (1 - t); scene.fadeBottom = std::max(scene.fadeBottom, edge); scene.fadeTop = edge; scene.fadeTopSize = DrawerLayout::topFade * 2; scene.viewTop = 36 + (DrawerLayout::viewTop - 36) * t;
         const D2D1_RECT_F shape{DrawerLayout::margin * t, 0, Panel::width + (width - Panel::width) * t, popoverHeight + (height - popoverHeight) * t};
         return Paint(name, dpi, height, rows, {}, DownloadsUI::MorphSlots(rows, docked, t), 1, 0, scene, width, &shape);
     }
@@ -169,6 +177,7 @@ int wmain(int argc, wchar_t** argv) {
         const UINT paper = 276, drawerPaper = 180;
         Expect(f.Render(L"panel-paper.png", paper, {{2, -1}, {4, -1}}), "render Paper states");
         Expect(f.Render(L"panel-viewall.png", drawerPaper, {{2, -1}, {4, -1}}), "render popover with View all");
+        Expect(f.Render(L"panel-viewall-plain.png", drawerPaper, {}), "render popover hand-off reference");
         Expect(f.Render(L"panel-96.png", 96, {{2, -1}, {4, -1}}), "render 100%");
         Expect(f.Render(L"panel-192.png", 192, {{2, -1}, {4, -1}}), "render 200%");
         for (int ms : {0, 40, 80, 120, 160, 220}) {
@@ -190,11 +199,11 @@ int wmain(int argc, wchar_t** argv) {
         Expect(f.Drawer(L"drawer-96.png", 96, 728, {1, 1, 1, 1, 1}, 0), "render drawer 100%");
         for (int i = 0; i <= 4; ++i) {
             wchar_t name[64]; std::swprintf(name, 64, L"drawer-fold-%d.png", i);
-            Expect(f.Drawer(name, drawerPaper, 728, {1, 1 - Curves::drawer.At(i / 4.f), 1, 1, 1}, 0), "render fold frame");
+            Expect(f.Drawer(name, drawerPaper, 728, {1, 1 - DrawerMotion::foldSpring.At(i / 4.f), 1, 1, 1}, 0), "render fold frame");
         }
         for (int i = 0; i <= 6; ++i) {
             wchar_t name[64]; std::swprintf(name, 64, L"morph-%d.png", i);
-            Expect(f.Morph(name, drawerPaper, 728, Curves::drawer.At(i / 6.f)), "render morph frame");
+            Expect(f.Morph(name, drawerPaper, 728, DrawerMotion::morphSpring.At(i / 6.f)), "render morph frame");
         }
         Expect(f.Drawer(L"drawer-scrolled.png", drawerPaper, 728, {1, 1, 1, 1, 1}, 120, DownloadsUI::SectionHit(Period::Yesterday)), "render scrolled drawer");
         CoUninitialize();
