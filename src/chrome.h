@@ -226,12 +226,12 @@ public:
             // Close first: its hit area wins over the containing tab, and IDs
             // never collide with tabs, keyboard commands or toolbar buttons.
             regions.push_back({CloseBase+first+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
-            regions.push_back({TabBase+first+i,{region.left,region.top,region.right,region.bottom},L"Onglet · clic milieu pour fermer"});
+            regions.push_back({TabBase+first+i,{region.left,region.top,region.right,region.bottom},L"Onglet - Ctrl+1...8 / Ctrl+9 (dernier) - Ctrl+Maj+PgPr\u00e9c/PgSuiv pour d\u00e9placer - clic milieu pour fermer"});
         }
         float x=Design::TabStrip::NewTabLeft(shown);regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
         regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-103,76};edit={92,44,bar.right-79,76};
-        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
+        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
         regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
     }
     std::vector<int> FocusOrder()const{std::vector<int> order;for(auto& region:regions){if(IsClose(region.id))continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)&&Enabled(CloseBase+TabIndex(region.id)))order.push_back(CloseBase+TabIndex(region.id));}return order;}
