@@ -1,0 +1,309 @@
+#pragma once
+// Download history: engine-independent model, text formatting, persistence,
+// panel geometry and the row hover reveal. No HWND, Direct2D or WebView2 here.
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cwchar>
+#include <cwctype>
+#include <istream>
+#include <ostream>
+#include <string>
+#include <vector>
+#include "motion.h"
+#include "design-system.h"
+
+namespace NativeChrome { namespace Downloads {
+enum class State { InProgress, Paused, Completed, Failed, Cancelled };
+struct Item {
+    int id = 0;
+    std::wstring path, uri, reason;  // reason: short failure text (Failed only)
+    State state = State::InProgress;
+    std::int64_t received = 0, total = 0; // total <= 0: unknown size, never simulated
+    std::int64_t endTime = 0;             // estimated end, Unix ms; 0 = unknown
+    bool canResume = false, missing = false;
+};
+// Row actions, left to right. None marks an empty slot.
+enum class Action { None, Pause, Resume, Cancel, Retry, Remove, ShowInFolder, Open };
+struct Actions { Action first = Action::None, second = Action::None; };
+inline Actions ActionsFor(const Item& item) {
+    switch (item.state) {
+    case State::InProgress: return {Action::Pause, Action::Cancel};
+    case State::Paused: return {Action::Resume, Action::Cancel};
+    case State::Completed: return item.missing ? Actions{Action::None, Action::Remove} : Actions{Action::ShowInFolder, Action::Open};
+    case State::Failed: return item.canResume ? Actions{Action::Retry, Action::Remove} : Actions{Action::None, Action::Remove};
+    case State::Cancelled: return {Action::None, Action::Remove};
+    }
+    return {};
+}
+inline const wchar_t* IconFor(Action action) {
+    switch (action) {
+    case Action::Pause: return L"pause";
+    case Action::Resume: return L"resume";
+    case Action::Cancel: case Action::Remove: return L"close";
+    case Action::Retry: return L"retry";
+    case Action::ShowInFolder: return L"folder";
+    case Action::Open: return L"open";
+    default: return nullptr;
+    }
+}
+inline const wchar_t* TipFor(Action action) {
+    switch (action) {
+    case Action::Pause: return L"Pause";
+    case Action::Resume: return L"Resume";
+    case Action::Cancel: return L"Cancel download";
+    case Action::Retry: return L"Retry";
+    case Action::Remove: return L"Remove from history";
+    case Action::ShowInFolder: return L"Show in folder";
+    case Action::Open: return L"Open";
+    default: return L"";
+    }
+}
+
+// ---- Text ---------------------------------------------------------------
+inline std::wstring FileName(const std::wstring& path) {
+    const auto slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+// "In …/Downloads": the containing folder only, the rest elided.
+inline std::wstring FolderLabel(const std::wstring& path) {
+    auto end = path.find_last_of(L"\\/");
+    if (end == std::wstring::npos || end == 0) return L"Downloaded";
+    auto start = path.find_last_of(L"\\/", end - 1);
+    std::wstring folder = path.substr(start == std::wstring::npos ? 0 : start + 1, end - (start == std::wstring::npos ? 0 : start + 1));
+    if (folder.empty()) return L"Downloaded";
+    if (folder.back() == L':') return L"In " + folder;  // drive root, e.g. "In D:"
+    return L"In …/" + folder;
+}
+// Up to three significant figures, trailing ".0" dropped: 50.4, 200, 1.2.
+inline std::wstring Number(double value) {
+    wchar_t text[32];
+    const double tenths = std::round(value * 10) / 10;
+    if (tenths >= 100) std::swprintf(text, 32, L"%.0f", std::round(value));
+    else std::swprintf(text, 32, L"%.1f", tenths);
+    std::wstring s = text;
+    if (s.size() > 2 && s.compare(s.size() - 2, 2, L".0") == 0) s.resize(s.size() - 2);
+    return s;
+}
+// Binary units, as Windows Explorer shows them. Both sides share the total's
+// unit ("50.4/200MB"); an unknown total shows the received amount alone.
+inline std::wstring Bytes(std::int64_t received, std::int64_t total) {
+    static const wchar_t* units[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
+    const double reference = static_cast<double>(std::max<std::int64_t>(total > 0 ? total : received, 0));
+    int unit = 0; double scale = 1;
+    while (unit < 4 && reference >= scale * 1024) { scale *= 1024; ++unit; }
+    const double r = std::max<std::int64_t>(received, 0) / scale;
+    if (total <= 0) return Number(r) + units[unit];
+    return Number(std::min(r, total / scale)) + L"/" + Number(total / scale) + units[unit];
+}
+// "00:14", "12:03", "1:02:03". Negative/unknown is empty.
+inline std::wstring Remaining(std::int64_t seconds) {
+    if (seconds < 0) return L"";
+    wchar_t text[32];
+    const long long h = seconds / 3600, m = (seconds / 60) % 60, s = seconds % 60;
+    if (h > 0) std::swprintf(text, 32, L"%lld:%02lld:%02lld", h, m, s);
+    else std::swprintf(text, 32, L"%02lld:%02lld", m, s);
+    return text;
+}
+// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant).
+inline std::int64_t DaysFromCivil(std::int64_t y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const std::int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + static_cast<std::int64_t>(doe) - 719468;
+}
+// WebView2 reports the estimate as ISO 8601 ("2024-05-01T12:00:00.123Z",
+// optional offset). Returns Unix ms, or 0 when absent/unparseable.
+inline std::int64_t ParseIsoTime(const std::wstring& text) {
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0, consumed = 0;
+    if (std::swscanf(text.c_str(), L"%4d-%2d-%2dT%2d:%2d:%2d%n", &y, &mo, &d, &h, &mi, &s, &consumed) < 6 || consumed <= 0) return 0;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) return 0;
+    std::int64_t ms = ((DaysFromCivil(y, mo, d) * 24 + h) * 60 + mi) * 60000LL + s * 1000LL;
+    size_t i = static_cast<size_t>(consumed);
+    if (i < text.size() && text[i] == L'.') {
+        int digits = 0, fraction = 0; ++i;
+        while (i < text.size() && iswdigit(text[i])) { if (digits < 3) { fraction = fraction * 10 + (text[i] - L'0'); ++digits; } ++i; }
+        while (digits < 3) { fraction *= 10; ++digits; }
+        ms += fraction;
+    }
+    if (i < text.size() && (text[i] == L'+' || text[i] == L'-')) {
+        int oh = 0, om = 0;
+        if (std::swscanf(text.c_str() + i + 1, L"%2d:%2d", &oh, &om) >= 1) ms -= (text[i] == L'+' ? 1 : -1) * (oh * 60LL + om) * 60000LL;
+    }
+    return ms;
+}
+inline std::wstring FailureText(const std::wstring& reason) { return reason.empty() ? L"Failed" : L"Failed · " + reason; }
+
+// ---- History persistence -------------------------------------------------
+// Finished downloads only (completed / failed / cancelled), newest first,
+// one UTF-8 line each: state<TAB>bytes<TAB>path<TAB>uri. In-progress
+// operations belong to the engine and are not restored.
+constexpr size_t HistoryLimit = 50;
+inline std::string ToUtf8(const std::wstring& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        std::uint32_t c = s[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.size() && s[i + 1] >= 0xDC00 && s[i + 1] <= 0xDFFF) { c = 0x10000 + ((c - 0xD800) << 10) + (s[i + 1] - 0xDC00); ++i; }
+        if (c == L'\t' || c == L'\n' || c == L'\r') c = L' ';
+        if (c < 0x80) out += static_cast<char>(c);
+        else if (c < 0x800) { out += static_cast<char>(0xC0 | (c >> 6)); out += static_cast<char>(0x80 | (c & 0x3F)); }
+        else if (c < 0x10000) { out += static_cast<char>(0xE0 | (c >> 12)); out += static_cast<char>(0x80 | ((c >> 6) & 0x3F)); out += static_cast<char>(0x80 | (c & 0x3F)); }
+        else { out += static_cast<char>(0xF0 | (c >> 18)); out += static_cast<char>(0x80 | ((c >> 12) & 0x3F)); out += static_cast<char>(0x80 | ((c >> 6) & 0x3F)); out += static_cast<char>(0x80 | (c & 0x3F)); }
+    }
+    return out;
+}
+// Strict decoder: any malformed sequence rejects the line.
+inline bool FromUtf8(const std::string& s, std::wstring& out) {
+    out.clear();
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char b = static_cast<unsigned char>(s[i]);
+        std::uint32_t c; int extra;
+        if (b < 0x80) { c = b; extra = 0; }
+        else if ((b & 0xE0) == 0xC0) { c = b & 0x1F; extra = 1; }
+        else if ((b & 0xF0) == 0xE0) { c = b & 0x0F; extra = 2; }
+        else if ((b & 0xF8) == 0xF0) { c = b & 0x07; extra = 3; }
+        else return false;
+        if (i + static_cast<size_t>(extra) >= s.size()) return false;
+        for (int k = 1; k <= extra; ++k) { const unsigned char n = static_cast<unsigned char>(s[i + k]); if ((n & 0xC0) != 0x80) return false; c = (c << 6) | (n & 0x3F); }
+        if ((extra == 1 && c < 0x80) || (extra == 2 && c < 0x800) || (extra == 3 && (c < 0x10000 || c > 0x10FFFF)) || (c >= 0xD800 && c <= 0xDFFF)) return false;
+        if (c >= 0x10000) { c -= 0x10000; out += static_cast<wchar_t>(0xD800 + (c >> 10)); out += static_cast<wchar_t>(0xDC00 + (c & 0x3FF)); }
+        else out += static_cast<wchar_t>(c);
+        i += 1 + extra;
+    }
+    return true;
+}
+inline bool Persistent(const Item& item) { return item.state == State::Completed || item.state == State::Failed || item.state == State::Cancelled; }
+inline void WriteHistory(std::ostream& out, const std::vector<Item>& items) {
+    out << "browser-downloads 1\n";
+    size_t written = 0;
+    for (const auto& item : items) {
+        if (!Persistent(item) || item.path.empty() || written >= HistoryLimit) continue;
+        const char state = item.state == State::Completed ? 'C' : item.state == State::Failed ? 'F' : 'X';
+        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason) << '\n';
+        ++written;
+    }
+}
+// Unknown versions or malformed lines are skipped, never fatal.
+inline std::vector<Item> ReadHistory(std::istream& in, int& nextId) {
+    std::vector<Item> items; std::string line;
+    if (!std::getline(in, line) || line != "browser-downloads 1") return items;
+    while (items.size() < HistoryLimit && std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::vector<std::string> fields; size_t start = 0;
+        for (;;) { auto tab = line.find('\t', start); fields.push_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start)); if (tab == std::string::npos) break; start = tab + 1; }
+        if (fields.size() < 4 || fields[0].size() != 1) continue;
+        Item item;
+        switch (fields[0][0]) { case 'C': item.state = State::Completed; break; case 'F': item.state = State::Failed; break; case 'X': item.state = State::Cancelled; break; default: continue; }
+        char* end = nullptr; const long long bytes = std::strtoll(fields[1].c_str(), &end, 10);
+        if (fields[1].empty() || !end || *end || bytes < 0) continue;
+        if (!FromUtf8(fields[2], item.path) || item.path.empty() || !FromUtf8(fields[3], item.uri)) continue;
+        if (fields.size() > 4 && !FromUtf8(fields[4], item.reason)) continue;
+        item.received = item.total = bytes; item.id = nextId++;
+        items.push_back(std::move(item));
+    }
+    return items;
+}
+
+// ---- Panel geometry (DIP) ------------------------------------------------
+// Measured from the Paper "Download history" frame: 16 DIP padding, a 24 DIP
+// header, rows of a 32 DIP tile + two 16 DIP lines on a 48 DIP pitch.
+namespace Panel {
+using Design::Box;
+inline constexpr float width = 268, padding = Design::Space::lg, headerHeight = Design::Size::compact;
+inline constexpr float tile = Design::Size::control, rowGap = Design::Space::lg, pitch = tile + rowGap;
+inline constexpr float textLeft = padding + tile + Design::Space::md;           // 56
+inline constexpr float line = 16, detailText = 14, detailIcon = 14, iconGap = Design::Space::xs, groupGap = Design::Space::sm;
+inline constexpr float button = Design::Size::compact, buttonGap = Design::Space::sm;
+inline constexpr float actionsRight = width - padding - Design::Space::sm;     // 246
+inline constexpr float maskFade = 88;  // gradient over the name before the actions
+inline constexpr float radius = 8;     // Windows 11 popup corner (DWM)
+inline constexpr int maxVisibleRows = 7;
+inline constexpr float anchorGap = 4;  // below the toolbar button
+inline constexpr float headerTop = padding - (headerHeight - line) / 2;        // 12: header row centred on the first text line
+inline constexpr float firstRow = headerTop + headerHeight + Design::Space::lg; // 52
+inline constexpr float Height(int rows) {
+    const int shown = rows < 1 ? 1 : (rows > maxVisibleRows ? maxVisibleRows : rows);
+    return firstRow + shown * pitch - rowGap + padding;
+}
+inline constexpr Box Title() { return {padding, padding, width - padding - button, padding + line}; }
+inline constexpr Box Close() { return {width - padding + (button - Design::Size::icon) / 2 - button, headerTop, width - padding + (button - Design::Size::icon) / 2, headerTop + button}; }
+inline constexpr float RowTop(int index, float scroll = 0) { return firstRow + index * pitch - scroll; }
+inline constexpr Box Tile(float top) { return {padding, top, padding + tile, top + tile}; }
+// The name's line box sits 1.5 DIP high so its x-height centres like the Paper text.
+inline constexpr float nameRaise = 1.5f;
+inline constexpr Box Name(float top) { return {textLeft, top - nameRaise, width - padding, top + line - nameRaise}; }
+inline constexpr Box Detail(float top) { return {textLeft, top + line, width - padding, top + 2 * line}; }
+// Hover band: half the gap above and below so the pointer never falls between rows.
+inline constexpr Box Hover(float top) { return {0, top - rowGap / 2, width, top + tile + rowGap / 2}; }
+inline constexpr Box ActionBox(float top, int slot) { // slot 0 = left, 1 = right
+    const float right = actionsRight - (1 - slot) * (button + buttonGap);
+    return {right - button, top + (tile - button) / 2, right, top + (tile + button) / 2};
+}
+inline constexpr float MaskSolid() { return ActionBox(0, 0).left - Design::Space::sm; } // 186
+inline constexpr float MaskStart() { return MaskSolid() - maskFade; }                    // 98
+inline constexpr float ViewTop() { return firstRow - rowGap / 2; }
+}
+static_assert(Panel::firstRow == 52, "rows start 16 DIP under the 24 DIP header");
+static_assert(Panel::textLeft == 56, "row text 8 DIP after the 32 DIP tile");
+static_assert(Panel::Height(4) == 244, "four rows match the Paper frame height");
+static_assert(Panel::ActionBox(0, 1).right == 246 && Panel::ActionBox(0, 0).right == 216, "actions: 24 DIP buttons, 6 DIP gap");
+
+// ---- Row reveal motion ----------------------------------------------------
+// Hovering a row slides the name mask and its two actions in from the right
+// while they un-blur and fade in, staggered so the mask leads. Leaving reverses
+// faster and together. Each lane retargets from its current value, so quick
+// pointer sweeps never jump. Reduced motion keeps only a short cross-fade.
+struct LayerVisual { float opacity = 0, offset = 0, blur = 0; };
+class Lane {
+    float from_ = 0, to_ = 0;
+    Motion::Time begin_{}, end_{};
+public:
+    float Value(Motion::Time now) const noexcept {
+        if (now >= end_) return to_;
+        if (now <= begin_) return from_;
+        return from_ + (to_ - from_) * Motion::Eased(Motion::Fraction(now, begin_, end_), Motion::Curve::Icon);
+    }
+    void Set(float target, Motion::Time now, Motion::Milliseconds delay, Motion::Milliseconds duration) noexcept {
+        if (target == to_) return;
+        from_ = Value(now); to_ = target;
+        if (duration.count() <= 0) { from_ = to_; begin_ = end_ = now; return; }
+        begin_ = now + delay; end_ = begin_ + duration;
+    }
+    void Snap(float value) noexcept { from_ = to_ = value; begin_ = end_ = Motion::Time{}; }
+    bool Moving(Motion::Time now) const noexcept { return from_ != to_ && now < end_; }
+    float Target() const noexcept { return to_; }
+};
+namespace Reveal {
+inline constexpr Motion::Milliseconds enter{240}, exit{140}, stagger{35}, fade{100};
+inline constexpr float maskTravel = 24, buttonTravel = 12, maxBlur = 4;
+}
+class RowReveal {
+    Lane lanes_[3]; // 0 = mask, 1 = left action, 2 = right action
+    bool reduced_ = false;
+public:
+    void Set(bool shown, Motion::Time now, bool reduced) noexcept {
+        reduced_ = reduced;
+        for (int i = 0; i < 3; ++i) {
+            if (reduced) lanes_[i].Set(shown ? 1.f : 0.f, now, Motion::Milliseconds(0), Reveal::fade);
+            else if (shown) lanes_[i].Set(1, now, Reveal::stagger * i, Reveal::enter);
+            else lanes_[i].Set(0, now, Motion::Milliseconds(0), Reveal::exit);
+        }
+    }
+    void Snap(bool shown) noexcept { for (auto& lane : lanes_) lane.Snap(shown ? 1.f : 0.f); }
+    LayerVisual Layer(int index, Motion::Time now) const noexcept {
+        const float p = lanes_[index].Value(now);
+        if (reduced_) return {p, 0, 0};
+        const float travel = index == 0 ? Reveal::maskTravel : Reveal::buttonTravel;
+        return {p, (1 - p) * travel, (1 - p) * Reveal::maxBlur};
+    }
+    bool Shown() const noexcept { return lanes_[0].Target() > 0; }
+    bool Idle(Motion::Time now) const noexcept { for (auto& lane : lanes_) if (lane.Moving(now) || lane.Value(now) > 0) return false; return true; }
+    Motion::Wake NextWake(Motion::Time now) const noexcept { for (auto& lane : lanes_) if (lane.Moving(now)) return Motion::Frame(); return {}; }
+};
+// Panel entrance: content settles down 6 DIP while fading in.
+namespace Entrance { inline constexpr Motion::Milliseconds duration{180}; inline constexpr float travel = 6; }
+}} // namespace NativeChrome::Downloads

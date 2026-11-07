@@ -24,6 +24,8 @@
 #include "chrome.h"
 #include "native-ui.h"
 #include "frame-clock.h"
+#include "download-panel.h"
+#include <shlobj.h>
 
 // COM callbacks use the official SDK interface IDs, independent of compiler UUID extensions.
 template<class T> const wchar_t* GuidText();
@@ -41,6 +43,10 @@ GUID_TEXT(ICoreWebView2FaviconChangedEventHandler,"{2913da94-833d-4de0-8dca-900f
 GUID_TEXT(ICoreWebView2GetFaviconCompletedHandler,"{a2508329-7da8-49d7-8c05-fa125e4aee8d}")
 GUID_TEXT(ICoreWebView2NavigationStartingEventHandler,"{9adbe429-f36d-432b-9ddc-f8881fbd76e3}")
 GUID_TEXT(ICoreWebView2FindStartCompletedHandler,"{6a90ecaf-44b0-5bd9-8f07-1967e17be9fb}")
+GUID_TEXT(ICoreWebView2DownloadStartingEventHandler,"{efedc989-c396-41ca-83f7-07f845a55724}")
+GUID_TEXT(ICoreWebView2BytesReceivedChangedEventHandler,"{828e8ab6-d94c-4264-9cef-5217170d6251}")
+GUID_TEXT(ICoreWebView2EstimatedEndTimeChangedEventHandler,"{28f0d425-93fe-4e63-9f8d-2aeec6d3ba1e}")
+GUID_TEXT(ICoreWebView2StateChangedEventHandler,"{81336594-7ede-4ba9-bf71-acf0a95b58dd}")
 template<class I, class... A> class Handler final : public I {
     LONG refs=1; IID iid{}; std::function<HRESULT(A...)> fn;
 public:
@@ -66,7 +72,7 @@ std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 struct ClosedTab { std::wstring uri,title; int index; };
 std::vector<ClosedTab> closedTabs; bool sessionReady=false;
 std::wstring base; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
-NativeChrome::Chrome chrome; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
+NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; } tabDrag;
 void InvalidateChrome();
 void CancelTabDrag(){tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;InvalidateChrome();}
@@ -83,6 +89,7 @@ std::shared_ptr<Tab> Active();
 // differs from what was last painted; any other motion (or the frame right after it
 // ends, so its endpoint is painted) repaints the whole header.
 void InvalidateMotion(NativeChrome::Motion::Time now){
+    downloadPanel.Frame(now);
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
@@ -90,7 +97,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.lottie.NextWake(now,reduced));motionFullFrames=ui.delay.has_value();
-    auto wake=ui;if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,downloadPanel.NextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -233,6 +240,127 @@ void RestoreSession(){
     sessionReady=true;
 }
 
+// ---- Downloads -------------------------------------------------------------
+// WebView2's own flyout is suppressed (Handled); operations feed the native
+// "Download history" popover. Finished entries persist in `downloads` next to
+// `session`; in-progress operations belong to the engine and are not restored.
+namespace DL=NativeChrome::Downloads;
+std::vector<DL::Item> downloads; int nextDownloadId=1;
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; };
+std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
+bool downloadDismissClick=false;
+DL::Item* FindDownload(int id){for(auto& item:downloads)if(item.id==id)return &item;return nullptr;}
+void SaveDownloads(){
+    if(smoke)return;
+    const auto path=std::filesystem::path(base)/L"downloads",temp=std::filesystem::path(base)/L"downloads.tmp";
+    {std::ofstream out(temp,std::ios::binary|std::ios::trunc);DL::WriteHistory(out,downloads);out.close();if(!out){Log(L"DOWNLOADS save failed");return;}}
+    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"DOWNLOADS replace failed");
+}
+void LoadDownloads(){if(smoke)return;std::ifstream in(std::filesystem::path(base)/L"downloads",std::ios::binary);downloads=DL::ReadHistory(in,nextDownloadId);}
+std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
+    switch(r){
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE:return L"Disk full";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED:return L"Access denied";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG:return L"Name too long";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE:return L"File too large";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"Blocked";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED:return L"Offline";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST:return L"Network error";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_DOWNLOAD_PROCESS_CRASHED:return L"Interrupted";
+    default:break;
+    }
+    if(r>=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED&&r<=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT)return L"Server error";
+    return L"File error";
+}
+void DownloadsChanged(){downloadPanel.Changed();}
+// Pull the operation's current state into its history row (UI thread, engine events).
+void SyncDownload(int id){
+    auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item)return;
+    auto entry=found->second;auto* op=entry->op.p;if(!op)return;
+    INT64 total=0,received=0;op->get_TotalBytesToReceive(&total);op->get_BytesReceived(&received);item->total=total;item->received=received;
+    LPWSTR text=nullptr;if(SUCCEEDED(op->get_ResultFilePath(&text))&&text){if(*text)item->path=text;CoTaskMemFree(text);}
+    text=nullptr;item->endTime=0;if(SUCCEEDED(op->get_EstimatedEndTime(&text))&&text){item->endTime=DL::ParseIsoTime(text);CoTaskMemFree(text);}
+    BOOL resume=FALSE;op->get_CanResume(&resume);item->canResume=resume!=FALSE;
+    COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
+    const auto before=item->state;
+    if(state==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED){item->state=DL::State::Completed;item->missing=false;}
+    else if(state==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS)item->state=entry->userPaused?DL::State::Paused:DL::State::InProgress;
+    else{
+        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;op->get_InterruptReason(&reason);
+        if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED)item->state=DL::State::Paused;
+        else if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED)item->state=DL::State::Cancelled;
+        else{item->state=DL::State::Failed;item->reason=InterruptText(reason);}
+    }
+    if(item->state!=before)Log(L"DOWNLOAD state="+std::to_wstring((int)item->state)+L" "+DL::FileName(item->path));
+    // Terminal rows keep no engine reference; resumable failures keep it for Retry.
+    if(item->state==DL::State::Completed||item->state==DL::State::Cancelled||(item->state==DL::State::Failed&&!item->canResume))downloadOps.erase(found);
+    if(item->state!=before&&DL::Persistent(*item))SaveDownloads();
+    DownloadsChanged();
+    if(smoke&&item->state!=before&&testStage==7){
+        if(item->state==DL::State::Completed){
+            std::ifstream file(std::filesystem::path(item->path),std::ios::binary);std::string body((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());file.close();
+            if(body!="browser smoke download"||!downloadPanel.Visible()||downloads.empty()||downloads.front().id!=id||DL::FileName(item->path)!=L"smoke-download.txt"){Fail(L"Smoke download assertion",E_FAIL);return;}
+            Log(L"SMOKE download started, shown in history and completed: "+DL::Bytes(item->received,item->total));
+            DeleteFileW(item->path.c_str());downloadPanel.Hide(false);PostMessageW(window,WM_APP+3,0,0);
+        }else if(item->state!=DL::State::InProgress){Fail(L"Smoke download did not complete",E_FAIL);return;}
+    }
+}
+void ShowDownloads(){
+    if(!downloadPanel.Window())return;
+    for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;
+    // Right edge on the toolbar's 6 DIP margin, just under the toolbar row.
+    RECT anchor{0,S(48),S(chrome.width-NativeChrome::Design::Space::sm),S(76)};MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
+    chrome.latched='D';InvalidateChrome();downloadPanel.Show(anchor);
+}
+void ToggleDownloads(){if(downloadPanel.Visible()){downloadPanel.Hide(true);return;}ShowDownloads();}
+HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args){
+    if(halted||!args)return S_OK;
+    args->put_Handled(TRUE); // the native popover replaces WebView2's flyout
+    if(smoke){const auto target=base+L"\\smoke-download.txt";DeleteFileW(target.c_str());args->put_ResultFilePath(target.c_str());}
+    ICoreWebView2DownloadOperation* raw=nullptr;if(FAILED(args->get_DownloadOperation(&raw))||!raw){Log(L"DOWNLOAD operation unavailable");return S_OK;}
+    auto entry=std::make_shared<DownloadOperation>();entry->op.p=raw;
+    DL::Item item;item.id=nextDownloadId++;const int id=item.id;
+    LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){item.path=text;CoTaskMemFree(text);}
+    text=nullptr;if(SUCCEEDED(raw->get_Uri(&text))&&text){item.uri=text;CoTaskMemFree(text);}
+    if(item.path.empty())item.path=L"download";
+    downloads.insert(downloads.begin(),item);downloadOps[id]=entry;
+    EventRegistrationToken token{};
+    auto bytes=Callback<ICoreWebView2BytesReceivedChangedEventHandler,ICoreWebView2DownloadOperation*,IUnknown*>([id](ICoreWebView2DownloadOperation*,IUnknown*)->HRESULT{if(!halted)SyncDownload(id);return S_OK;});
+    raw->add_BytesReceivedChanged(bytes,&token);bytes->Release();
+    auto end=Callback<ICoreWebView2EstimatedEndTimeChangedEventHandler,ICoreWebView2DownloadOperation*,IUnknown*>([id](ICoreWebView2DownloadOperation*,IUnknown*)->HRESULT{if(!halted)SyncDownload(id);return S_OK;});
+    raw->add_EstimatedEndTimeChanged(end,&token);end->Release();
+    auto state=Callback<ICoreWebView2StateChangedEventHandler,ICoreWebView2DownloadOperation*,IUnknown*>([id](ICoreWebView2DownloadOperation*,IUnknown*)->HRESULT{if(!halted)SyncDownload(id);return S_OK;});
+    raw->add_StateChanged(state,&token);state->Release();
+    Log(L"DOWNLOAD started "+DL::FileName(downloads.front().path));
+    // Open (or refresh) the history first so even an instant completion is shown.
+    if(downloadPanel.Visible())DownloadsChanged();else ShowDownloads();
+    SyncDownload(id);
+    return S_OK;
+}
+void DownloadAction(int id,DL::Action action){
+    auto* item=FindDownload(id);if(!item)return;
+    auto found=downloadOps.find(id);auto entry=found==downloadOps.end()?nullptr:found->second;auto* op=entry?entry->op.p:nullptr;
+    switch(action){
+    case DL::Action::Pause:if(op&&SUCCEEDED(op->Pause())){entry->userPaused=true;SyncDownload(id);}break;
+    case DL::Action::Resume:case DL::Action::Retry:if(op&&SUCCEEDED(op->Resume())){entry->userPaused=false;SyncDownload(id);}break;
+    case DL::Action::Cancel:if(op){op->Cancel();SyncDownload(id);}break;
+    case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();break;}
+    case DL::Action::ShowInFolder:{const auto path=item->path;downloadPanel.Hide(false);
+        PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
+        if(FAILED(hr))Log(L"DOWNLOAD show in folder failed "+path);break;}
+    case DL::Action::Open:{const auto path=item->path;downloadPanel.Hide(false);
+        if((INT_PTR)ShellExecuteW(window,nullptr,path.c_str(),nullptr,nullptr,SW_SHOWNORMAL)<=32)Log(L"DOWNLOAD open failed "+path);break;}
+    default:break;
+    }
+}
+void CreateDownloadPanel(){
+    NativeChrome::DownloadsUI::Popover::Hooks hooks;
+    hooks.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
+    hooks.action=[](int id,DL::Action action){DownloadAction(id,action);};
+    hooks.closed=[](bool keyboard){chrome.latched=0;InvalidateChrome();if(keyboard&&!halted)FocusPage();};
+    if(!downloadPanel.Create(instance,window,base,&downloads,std::move(hooks)))Log(L"DOWNLOADS panel unavailable");
+}
+
 void RequestFavicon(const std::shared_ptr<Tab>& tab){
     if(halted||!tab||tab->closed||!tab->faviconView.p)return;
     LPWSTR raw=nullptr;if(!Check(tab->faviconView->get_FaviconUri(&raw),L"get_FaviconUri"))return;
@@ -294,7 +422,9 @@ HRESULT ProcessFailed(const std::shared_ptr<Tab>& t,ICoreWebView2ProcessFailedEv
 
 void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environment.p)return;if(pages.size()>=128){MessageBoxW(window,L"Limite de 128 onglets atteinte.",L"browser",MB_OK);return;}motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=std::make_shared<Tab>();t->uri=uri;t->home=uri.empty();t->title=std::move(title);if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());CancelTabDrag();pages.insert(pages.begin()+index,t);Select(index);std::weak_ptr<Tab> weak=t;
     auto done=Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,HRESULT,ICoreWebView2Controller*>([weak,uri](HRESULT hr,ICoreWebView2Controller* c)->HRESULT{
-        if(!Check(hr,L"CreateController callback"))return S_OK;auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
+        // A tab closed before its controller arrived (e.g. reopened then closed, or the
+        // window closing) may complete with E_ABORT: that is not an engine failure.
+        auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(!Check(hr,L"CreateController callback"))return S_OK;if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
         Com<ICoreWebView2Settings> settings;Com<ICoreWebView2Settings3> settings3;
         if(!Check(t->view->get_Settings(&settings.p),L"get_Settings")||
            !Check(settings->QueryInterface(IID_ICoreWebView2Settings3,(void**)&settings3.p),L"QueryInterface Settings3")||
@@ -318,6 +448,7 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         result=c->add_AcceleratorKeyPressed(key,&token);key->Release();if(!Check(result,L"add_AcceleratorKeyPressed"))return S_OK;
         auto failed=Callback<ICoreWebView2ProcessFailedEventHandler,ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs* a)->HRESULT{return ProcessFailed(weak.lock(),a);});
         result=t->view->add_ProcessFailed(failed,&token);failed->Release();if(!Check(result,L"add_ProcessFailed"))return S_OK;
+        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");}
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;Navigate(t,uri);return S_OK;
     });
     HRESULT hr=environment->CreateCoreWebView2Controller(window,done);done->Release();Check(hr,L"CreateCoreWebView2Controller");
@@ -331,8 +462,10 @@ case 2:Navigate(Active(),L"https://example.org/");break;
 case 3:Command('B');break;
 case 4:Command('F');break;
 case 5:Command('R');break;
-case 6:{ICoreWebView2_9* downloads=nullptr;IID iid;CLSIDFromString(L"{4d7b2eab-9fdc-468d-b998-a9260b5ed651}",&iid);if(!Check(Active()->view->QueryInterface(iid,(void**)&downloads),L"Smoke downloads interface"))return;Com<ICoreWebView2_9> owner;owner.p=downloads;Command('D');if(halted)return;BOOL open=FALSE;if(!Check(downloads->get_IsDefaultDownloadDialogOpen(&open),L"Smoke download dialog state"))return;if(!open){Fail(L"Smoke download dialog did not open",E_FAIL);return;}if(!Check(downloads->CloseDefaultDownloadDialog(),L"Smoke close download dialog"))return;Log(L"SMOKE native downloads opened and closed");}
-Command('M');if(!IsZoomed(window)){Fail(L"Smoke maximize assertion",E_FAIL);return;}Command('M');if(IsZoomed(window)){Fail(L"Smoke restore assertion",E_FAIL);return;}Log(L"SMOKE native maximize/restore verified DPI="+std::to_wstring(GetDpiForWindow(window)));auto closed=Active();int closedIndex=current;Command('W');Command('U');if(!Active()||Active()->uri!=closed->uri||current!=closedIndex||pages.size()!=2||!closedTabs.empty()){Fail(L"Smoke reopen tab assertion",E_FAIL);return;}Command('W');Log(L"SMOKE reopen closed tab at original index verified");Command('L');if(!chrome.AssetsReady()||pages.size()!=1||GetFocus()!=address||Destination(L"deux mots")!=L"https://duckduckgo.com/?q=deux%20mots"){Fail(L"Smoke native controls assertion",E_FAIL);return;}Log(L"SMOKE PASS: blank #171717 home, bundled font families, 11 exported SVG icons, 2 tabs, HTTPS, document titles, back, forward, reload, close tab, address focus, search encoding");KillTimer(window,1);PostMessageW(window,WM_CLOSE,0,0);break;
+case 6:{Command('D');if(halted)return;if(!downloadPanel.Visible()||!IsWindowVisible(downloadPanel.Window())){Fail(L"Smoke download history did not open",E_FAIL);return;}downloadPanel.Hide(false);if(downloadPanel.Visible()||chrome.latched){Fail(L"Smoke download history did not close",E_FAIL);return;}Log(L"SMOKE native download history opened and closed");
+    auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR)->HRESULT{Check(hr,L"Smoke download script");return S_OK;});
+    HRESULT hr=Active()->view->ExecuteScript(L"(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['browser smoke download'],{type:'text/plain'}));a.download='browser-smoke.txt';document.body.appendChild(a);a.click();})()",cb);cb->Release();Check(hr,L"Smoke download ExecuteScript");break;}
+case 7:Command('M');if(!IsZoomed(window)){Fail(L"Smoke maximize assertion",E_FAIL);return;}Command('M');if(IsZoomed(window)){Fail(L"Smoke restore assertion",E_FAIL);return;}Log(L"SMOKE native maximize/restore verified DPI="+std::to_wstring(GetDpiForWindow(window)));auto closed=Active();int closedIndex=current;Command('W');Command('U');if(!Active()||Active()->uri!=closed->uri||current!=closedIndex||pages.size()!=2||!closedTabs.empty()){Fail(L"Smoke reopen tab assertion",E_FAIL);return;}Command('W');Log(L"SMOKE reopen closed tab at original index verified");Command('L');if(!chrome.AssetsReady()||pages.size()!=1||GetFocus()!=address||Destination(L"deux mots")!=L"https://duckduckgo.com/?q=deux%20mots"){Fail(L"Smoke native controls assertion",E_FAIL);return;}Log(L"SMOKE PASS: blank #171717 home, bundled font families, 11 exported SVG icons, 2 tabs, HTTPS, document titles, back, forward, reload, close tab, address focus, search encoding");KillTimer(window,1);PostMessageW(window,WM_CLOSE,0,0);break;
 }}
 
 void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect={S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
@@ -352,7 +485,7 @@ case 'm':ShowWindow(window,SW_MINIMIZE);break;
 case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
 case 'X':PostMessageW(window,WM_CLOSE,0,0);break;
 case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
-case 'D':if(t&&t->view.p){ICoreWebView2_9* view9=nullptr;IID iid;CLSIDFromString(L"{4d7b2eab-9fdc-468d-b998-a9260b5ed651}",&iid);if(Check(t->view->QueryInterface(iid,(void**)&view9),L"QueryInterface downloads")){Check(view9->OpenDefaultDownloadDialog(),L"OpenDefaultDownloadDialog");view9->Release();}}break;
+case 'D':if(downloadDismissClick){downloadDismissClick=false;break;}ToggleDownloads();break;
 case 'P':MessageBoxW(window,L"La navigation privée n'est pas disponible dans cette version.\n\nLes onglets actuels utilisent le profil normal local (cookies et cache persistants). Aucun onglet privé n'a été ouvert.",L"Navigation privée — indisponible",MB_OK|MB_ICONINFORMATION);break;
 case 'S':{HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'T',L"Nouvel onglet\tCtrl+T");AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");AppendMenuW(menu,MF_STRING,900,L"Liste des onglets");AppendMenuW(menu,MF_STRING,'D',L"Téléchargements");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,'A',L"À propos de browser");POINT p;GetCursorPos(&p);int selected=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(selected)Command(selected);break;}
 case 'A':MessageBoxW(window,L"browser\nInterface native issue du canvas Paper.\nRecherche : DuckDuckGo.\nProfil normal local, sans synchronisation.\nCtrl+L / Alt+D : adresse - F6 : page / barre\nCtrl+T/W : ouvrir / fermer - Ctrl+Maj+T : rouvrir\nCtrl+Tab : onglet suivant\nCtrl+1...8 : onglet - Ctrl+9 : dernier\nCtrl+Maj+PgPr\u00e9c/PgSuiv : d\u00e9placer l’onglet\nCtrl+F : rechercher - Alt+\u2190/\u2192 : historique\n\nLe menu regroupe les actions disponibles ; aucun réglage système n'est modifié.",L"À propos",MB_OK);break;
@@ -384,7 +517,7 @@ case WM_ERASEBKGND:return 1;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
 case WM_MOUSEMOVE:{if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_MOUSELEAVE:UnlockTabWidth();UpdateInteraction(0,pressed);return 0;
-case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).left;}}return 0;}
+case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));downloadDismissClick=id=='D'&&GetTickCount64()-downloadPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).left;}}return 0;}
 case WM_LBUTTONUP:{bool dragged=tabDrag.active;CancelTabDrag();int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
 case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
@@ -413,13 +546,13 @@ case WM_APP+3:SmokeAdvance();return 0;
 case FrameMessage:{if(l==NativeChrome::FrameClock::ClockLost){frameClock.Stop();frameClockReady=false;ScheduleMotion(NativeChrome::Motion::Now());return 0;}
     frameClock.Acknowledge();auto now=NativeChrome::Motion::Now();if(!halted&&!motionMinimized)InvalidateMotion(now);ScheduleMotion(now);return 0;}
 case WM_TIMER:if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
-case WM_CLOSE:SaveSession();DestroyWindow(h);return 0;
+case WM_CLOSE:SaveSession();SaveDownloads();DestroyWindow(h);return 0;
 case WM_DESTROY:KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}LoadDownloads();CreateDownloadPanel();frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
     loader=LoadLibraryExW((base+L"\\WebView2Loader.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!loader)Fail(L"LoadLibrary WebView2Loader.dll",HRESULT_FROM_WIN32(GetLastError()));
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,(base+L"\\profile").c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);downloadPanel.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }
