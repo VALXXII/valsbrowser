@@ -108,6 +108,12 @@ struct Strip {
     Box TitleIn(Box s)const{auto t=TitleSlot(s);if(!HasClose())t.right=s.right-Space::md;return t;}
     Box FaviconIn(Box s)const{return Titled()?FaviconSlot(s):IconSlot(s);}
     Box Title(int i)const{return TitleIn(Surface(i));}
+    // Tabs too narrow for a trailing close slot swap their favicon for the close glyph
+    // on hover/focus, centred on the favicon. Selected tab only: on an inactive tab
+    // that spot must keep selecting it, never close it by surprise.
+    bool SwapsClose(int i,int selected)const{return !HasClose()&&i==selected;}
+    bool Closable(int i,int selected)const{return HasClose()||SwapsClose(i,selected);}
+    Box CloseIn(Box s)const{if(HasClose())return CloseSlot(s);auto f=FaviconIn(s);const float x=(f.left+f.right)/2,y=(f.top+f.bottom)/2,h=Size::closeSlot/2;return {x-h,y-h,x+h,y+h};}
     Box Favicon(int i)const{return FaviconIn(Surface(i));}
     float NewTabLeft()const{return ViewRight()+Space::tabGap;}
 };
