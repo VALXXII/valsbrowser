@@ -23,6 +23,7 @@ struct Item {
     State state = State::InProgress;
     std::int64_t received = 0, total = 0; // total <= 0: unknown size, never simulated
     std::int64_t endTime = 0;             // estimated end, Unix ms; 0 = unknown
+    std::int64_t started = 0;             // when the download began, Unix ms; 0 = unknown (oldest group)
     bool canResume = false, missing = false;
 };
 // Row actions, left to right. None marks an empty slot.
@@ -138,6 +139,34 @@ inline std::int64_t ParseIsoTime(const std::wstring& text) {
 }
 inline std::wstring FailureText(const std::wstring& reason) { return reason.empty() ? L"Failed" : L"Failed · " + reason; }
 
+
+// ---- Periods (drawer sections) --------------------------------------------
+// Local calendar days, newest first: today, yesterday, the rest of the last
+// week, of the last month, then everything older ("Last year").
+enum class Period { Today, Yesterday, LastWeek, LastMonth, LastYear };
+constexpr int PeriodCount = 5;
+inline const wchar_t* PeriodLabel(Period period) {
+    switch (period) {
+    case Period::Today: return L"Today";
+    case Period::Yesterday: return L"Yesterday";
+    case Period::LastWeek: return L"Last week";
+    case Period::LastMonth: return L"Last month";
+    default: return L"Last year";
+    }
+}
+inline std::int64_t FloorDiv(std::int64_t a, std::int64_t b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); }
+// offset: local time minus UTC, in ms (the caller reads it from the OS).
+inline Period PeriodOf(std::int64_t started, std::int64_t now, std::int64_t offset) {
+    if (started <= 0) return Period::LastYear;
+    const std::int64_t day = 86400000LL;
+    const std::int64_t ago = FloorDiv(now + offset, day) - FloorDiv(started + offset, day);
+    if (ago <= 0) return Period::Today;
+    if (ago == 1) return Period::Yesterday;
+    if (ago <= 7) return Period::LastWeek;
+    if (ago <= 31) return Period::LastMonth;
+    return Period::LastYear;
+}
+
 // ---- History persistence -------------------------------------------------
 // Finished downloads only (completed / failed / cancelled), newest first,
 // one UTF-8 line each: state<TAB>bytes<TAB>path<TAB>uri. In-progress
@@ -178,23 +207,34 @@ inline bool FromUtf8(const std::string& s, std::wstring& out) {
 }
 inline bool Persistent(const Item& item) { return item.state == State::Completed || item.state == State::Failed || item.state == State::Cancelled; }
 inline void WriteHistory(std::ostream& out, const std::vector<Item>& items) {
-    out << "browser-downloads 1\n";
+    out << "browser-downloads 2\n";
     size_t written = 0;
     for (const auto& item : items) {
         if (!Persistent(item) || item.path.empty() || written >= HistoryLimit) continue;
         const char state = item.state == State::Completed ? 'C' : item.state == State::Failed ? 'F' : 'X';
-        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason) << '\n';
+        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason) << '\n';
         ++written;
     }
 }
-// Unknown versions or malformed lines are skipped, never fatal.
+// Unknown versions or malformed lines are skipped, never fatal. Version 1
+// (no start time) still loads; its rows land in the oldest group.
 inline std::vector<Item> ReadHistory(std::istream& in, int& nextId) {
     std::vector<Item> items; std::string line;
-    if (!std::getline(in, line) || line != "browser-downloads 1") return items;
+    if (!std::getline(in, line)) return items;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const int version = line == "browser-downloads 2" ? 2 : line == "browser-downloads 1" ? 1 : 0;
+    if (!version) return items;
     while (items.size() < HistoryLimit && std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         std::vector<std::string> fields; size_t start = 0;
         for (;;) { auto tab = line.find('\t', start); fields.push_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start)); if (tab == std::string::npos) break; start = tab + 1; }
+        std::int64_t started = 0;
+        if (version == 2) {
+            if (fields.size() < 5) continue;
+            char* stop = nullptr; started = std::strtoll(fields[2].c_str(), &stop, 10);
+            if (fields[2].empty() || !stop || *stop || started < 0) continue;
+            fields.erase(fields.begin() + 2);
+        }
         if (fields.size() < 4 || fields[0].size() != 1) continue;
         Item item;
         switch (fields[0][0]) { case 'C': item.state = State::Completed; break; case 'F': item.state = State::Failed; break; case 'X': item.state = State::Cancelled; break; default: continue; }
@@ -202,7 +242,7 @@ inline std::vector<Item> ReadHistory(std::istream& in, int& nextId) {
         if (fields[1].empty() || !end || *end || bytes < 0) continue;
         if (!FromUtf8(fields[2], item.path) || item.path.empty() || !FromUtf8(fields[3], item.uri)) continue;
         if (fields.size() > 4 && !FromUtf8(fields[4], item.reason)) continue;
-        item.received = item.total = bytes; item.id = nextId++;
+        item.received = item.total = bytes; item.started = started; item.id = nextId++;
         items.push_back(std::move(item));
     }
     return items;
@@ -221,13 +261,16 @@ inline constexpr float button = Design::Size::compact, buttonGap = Design::Space
 inline constexpr float actionsRight = width - padding - Design::Space::sm;     // 246
 inline constexpr float maskFade = 88;  // gradient over the name before the actions
 inline constexpr float radius = 8;     // Windows 11 popup corner (DWM)
-inline constexpr int maxVisibleRows = 7;
-inline constexpr float anchorGap = 4;  // below the toolbar button
+inline constexpr int popoverRows = 4;  // latest downloads; "View all" opens the drawer
+inline constexpr float anchorGap = 8;  // below the toolbar button: top on the page edge (84), like the drawer
 inline constexpr float headerTop = padding - (headerHeight - line) / 2;        // 12: header row centred on the first text line
 inline constexpr float firstRow = headerTop + headerHeight + Design::Space::lg; // 52
-inline constexpr float Height(int rows) {
-    const int shown = rows < 1 ? 1 : (rows > maxVisibleRows ? maxVisibleRows : rows);
-    return firstRow + shown * pitch - rowGap + padding;
+inline constexpr float RowsBottom(int rows) { return firstRow + (rows < 1 ? 1 : rows) * pitch - rowGap; }
+// "View all": one text line, 16 DIP under the last row.
+inline constexpr float ViewAllTop(int rows) { return RowsBottom(rows) + rowGap; }
+inline constexpr float Height(int rows, bool viewAll = false) {
+    const int shown = rows < 1 ? 1 : (rows > popoverRows ? popoverRows : rows);
+    return (viewAll ? ViewAllTop(shown) + line : RowsBottom(shown)) + padding;
 }
 inline constexpr Box Title() { return {padding, padding, width - padding - button, padding + line}; }
 inline constexpr Box Close() { return {width - padding + (button - Design::Size::icon) / 2 - button, headerTop, width - padding + (button - Design::Size::icon) / 2, headerTop + button}; }
@@ -246,10 +289,33 @@ inline constexpr Box ActionBox(float top, int slot) { // slot 0 = left, 1 = righ
 inline constexpr float MaskSolid() { return ActionBox(0, 0).left - Design::Space::sm; } // 186
 inline constexpr float MaskStart() { return MaskSolid() - maskFade; }                    // 98
 inline constexpr float ViewTop() { return firstRow - rowGap / 2; }
+// Text-link hit area: the label plus 4 DIP around it.
+inline constexpr Box ViewAll(float top, float labelWidth) { return {padding - 4, top - 4, padding + labelWidth + 4, top + line + 4}; }
 }
+// ---- Drawer geometry (DIP) -------------------------------------------------
+// Measured from the Paper "Download history" drawer: the popover's width and
+// header, docked to the window's right edge under the toolbar. Sections: a 24
+// DIP header (label + caret aligned with the close button), 12 DIP, the rows,
+// 12 DIP; four rows give the 240 DIP stride of the frame.
+namespace DrawerLayout {
+using Design::Box;
+inline constexpr float width = Panel::width, top = 84; // window client DIP: under the toolbar
+// The popover floats 6 DIP in from the window edge; the drawer window keeps that
+// strip (clipped by its region) so the popover rectangle can morph into it.
+inline constexpr float margin = Design::Space::sm;
+inline constexpr float firstSection = 59, sectionHeight = Design::Size::compact, toRows = 12, after = 12;
+inline constexpr float viewTop = Panel::headerTop + Panel::headerHeight + Design::Space::md; // 44: content scrolls under the header
+inline constexpr float topFade = 16, bottomFade = 128;
+inline constexpr float Block(int rows, float open) { return sectionHeight + open * (toRows + rows * Panel::pitch) + after; }
+inline constexpr Box Label(float y) { return {Panel::padding, y + (sectionHeight - Panel::line) / 2, Panel::width - Panel::padding - Panel::button, y + (sectionHeight + Panel::line) / 2}; }
+inline constexpr Box Caret(float y) { return {Panel::Close().left, y, Panel::Close().right, y + sectionHeight}; }
+inline constexpr Box Header(float y) { return {0, y, width, y + sectionHeight}; }
+}
+static_assert(DrawerLayout::Block(4, 1) == 240, "four rows: the 240 DIP section stride of the Paper drawer");
+static_assert(Panel::Height(4, true) == 276, "four rows + View all match the Paper popover height");
 static_assert(Panel::firstRow == 52, "rows start 16 DIP under the 24 DIP header");
 static_assert(Panel::textLeft == 56, "row text 8 DIP after the 32 DIP tile");
-static_assert(Panel::Height(4) == 244, "four rows match the Paper frame height");
+static_assert(Panel::Height(4) == 244, "four rows match the first Paper frame height");
 static_assert(Panel::ActionBox(0, 1).right == 246 && Panel::ActionBox(0, 0).right == 216, "actions: 24 DIP buttons, 6 DIP gap");
 
 // ---- Row reveal motion ----------------------------------------------------
@@ -258,18 +324,39 @@ static_assert(Panel::ActionBox(0, 1).right == 246 && Panel::ActionBox(0, 0).righ
 // faster and together. Each lane retargets from its current value, so quick
 // pointer sweeps never jump. Reduced motion keeps only a short cross-fade.
 struct LayerVisual { float opacity = 0, offset = 0, blur = 0; };
+// CSS-style cubic-bezier(x1, y1, x2, y2): bounded bisection on x, no overshoot.
+struct Bezier {
+    float x1, y1, x2, y2;
+    float At(float x) const noexcept {
+        x = Motion::Clamp(x);
+        if (x == 0 || x == 1) return x;
+        float lo = 0, hi = 1;
+        for (int n = 0; n < 24; ++n) {
+            const float t = (lo + hi) * .5f, u = 1 - t;
+            if (3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t < x) lo = t; else hi = t;
+        }
+        const float t = (lo + hi) * .5f, u = 1 - t;
+        return 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t;
+    }
+};
+namespace Curves {
+inline constexpr Bezier emphasized{.2f, 0, 0, 1};   // Motion::Curve::Icon
+inline constexpr Bezier drawer{.32f, .72f, 0, 1};   // iOS sheet curve: fast start, long settle
+}
 class Lane {
     float from_ = 0, to_ = 0;
     Motion::Time begin_{}, end_{};
+    Bezier curve_ = Curves::emphasized;
 public:
     float Value(Motion::Time now) const noexcept {
         if (now >= end_) return to_;
         if (now <= begin_) return from_;
-        return from_ + (to_ - from_) * Motion::Eased(Motion::Fraction(now, begin_, end_), Motion::Curve::Icon);
+        return from_ + (to_ - from_) * curve_.At(Motion::Fraction(now, begin_, end_));
     }
-    void Set(float target, Motion::Time now, Motion::Milliseconds delay, Motion::Milliseconds duration) noexcept {
+    // Retargets from the value on screen now, so interruptions never jump.
+    void Set(float target, Motion::Time now, Motion::Milliseconds delay, Motion::Milliseconds duration, Bezier curve = Curves::emphasized) noexcept {
         if (target == to_) return;
-        from_ = Value(now); to_ = target;
+        from_ = Value(now); to_ = target; curve_ = curve;
         if (duration.count() <= 0) { from_ = to_; begin_ = end_ = now; return; }
         begin_ = now + delay; end_ = begin_ + duration;
     }
@@ -304,6 +391,15 @@ public:
     bool Idle(Motion::Time now) const noexcept { for (auto& lane : lanes_) if (lane.Moving(now) || lane.Value(now) > 0) return false; return true; }
     Motion::Wake NextWake(Motion::Time now) const noexcept { for (auto& lane : lanes_) if (lane.Moving(now)) return Motion::Frame(); return {}; }
 };
+// Drawer: slides in from the window's right edge and leaves the same way
+// (spatial consistency); sections fold on the same curve; wheel steps glide.
+namespace DrawerMotion {
+inline constexpr Motion::Milliseconds enter{320}, exit{220}, fold{280}, scroll{160}, morph{360};
+// Morph: the drawer list glides from the popover's rows into place; content the
+// popover did not show fades in over the last 75%; "View all" leaves in the first 30%.
+inline constexpr float morphLead = .25f, morphLinkOut = .3f;
+inline constexpr float foldTravel = 8; // rows tuck up under their header as they fold
+}
 // Panel entrance: content settles down 6 DIP while fading in.
 namespace Entrance { inline constexpr Motion::Milliseconds duration{180}; inline constexpr float travel = 6; }
 }} // namespace NativeChrome::Downloads

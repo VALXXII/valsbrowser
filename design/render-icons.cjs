@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {Resvg} = require('../tools/render/node_modules/@resvg/resvg-js');
 const root = path.join(__dirname, '../assets/icons');
-const mapping={plus:'plus',minimize:'minus',maximize:'square',close:'x',back:'arrow-left',forward:'arrow-right',reload:'arrow-counter-clockwise',copy:'link',downloads:'download-simple',private:'detective',settings:'gear-six','tab-close':'x',check:'check',favicon:'globe-simple',pause:'pause',resume:'play',open:'play-circle',folder:'folder-open','arrow-down':'arrow-down',timer:'timer','check-circle':'check-circle',warning:'warning-circle',retry:'arrow-clockwise','detail-pause':'pause','detail-close':'x'};
+const mapping={plus:'plus',minimize:'minus',maximize:'square',close:'x',back:'arrow-left',forward:'arrow-right',reload:'arrow-counter-clockwise',copy:'link',downloads:'download-simple',private:'detective',settings:'gear-six','tab-close':'x',check:'check',favicon:'globe-simple',pause:'pause',resume:'play',open:'play-circle',folder:'folder-open','arrow-down':'arrow-down',timer:'timer','check-circle':'check-circle',warning:'warning-circle',retry:'arrow-clockwise','detail-pause':'pause','detail-close':'x',caret:'caret-down'};
 // Detail-line glyphs sit beside 14 px text.
 const small=['arrow-down','timer','check-circle','warning','detail-pause','detail-close'];
 for (const [alias,source] of Object.entries(mapping)) {
