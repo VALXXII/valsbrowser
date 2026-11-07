@@ -556,9 +556,29 @@ HMENU CreateTabMenu(){
     }
     return menu;
 }
-void TabMenu(){HMENU menu=CreateTabMenu();POINT p;GetCursorPos(&p);int cmd=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(cmd>=1000)Select(cmd-1000);}
+// A keyboard-opened menu drops just below its control (DIP region -> device pixels), aligned to the
+// control's outer edge: the flower's menu opens rightward, the gear's leftward.
+struct MenuPlacement{RECT control;bool alignRight;};
+MenuPlacement PlaceMenu(const D2D1_RECT_F& control,float chromeWidth,UINT dpi){
+    auto px=[dpi](float v){return (LONG)std::lround(v*dpi/96.f);};
+    return {{px(control.left),px(control.top),px(control.right),px(control.bottom)},control.left+control.right>chromeWidth};
+}
+// `anchor` is the chrome region a keyboard-opened menu belongs to; 0 keeps the menu at the pointer.
+int TrackMenu(HMENU menu,int anchor){
+    UINT flags=TPM_RETURNCMD|TPM_RIGHTBUTTON;POINT p{};TPMPARAMS params{sizeof(params)};
+    auto region=anchor?std::find_if(chrome.regions.begin(),chrome.regions.end(),[anchor](const NativeChrome::Region& r){return r.id==anchor;}):chrome.regions.end();
+    if(region==chrome.regions.end()){GetCursorPos(&p);return (int)TrackPopupMenuEx(menu,flags,p.x,p.y,window,nullptr);}
+    auto place=PlaceMenu(region->rect,chrome.width,GetDpiForWindow(window));
+    MapWindowPoints(window,nullptr,(POINT*)&place.control,2);params.rcExclude=place.control;
+    flags|=TPM_TOPALIGN|TPM_VERTICAL|(place.alignRight?TPM_RIGHTALIGN:TPM_LEFTALIGN);
+    return (int)TrackPopupMenuEx(menu,flags,place.alignRight?place.control.right:place.control.left,place.control.bottom,window,&params);
+}
+// Commands reached by Enter/Space on a focused chrome control anchor their menu to it; a click clears keyboardFocus first.
+int KeyboardAnchor(){return GetFocus()==window?keyboardFocus:0;}
+void TabMenu(int anchor){HMENU menu=CreateTabMenu();int cmd=TrackMenu(menu,anchor);DestroyMenu(menu);if(cmd>=1000)Select(cmd-1000);}
+void TabContextMenu(int tabIndex,int anchor){HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");int cmd=TrackMenu(menu,anchor);DestroyMenu(menu);if(cmd=='W')CloseAt(tabIndex);else if(cmd=='U')Command(cmd);}
 void ExtraCommand(int cmd){auto t=Active();switch(cmd){
-case 900:TabMenu();break;
+case 900:TabMenu(KeyboardAnchor());break;
 case CheckUpdatesCommand:CheckForUpdates();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;
 case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
@@ -570,7 +590,7 @@ case 'S':{HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'T',L"Nouvel o
 #ifdef BROWSER_UPDATES
 AppendMenuW(menu,MF_STRING|(UpdateCheckAvailable()?0:MF_GRAYED),CheckUpdatesCommand,L"Rechercher des mises à jour");
 #endif
-AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,'A',L"À propos de browser");POINT p;GetCursorPos(&p);int selected=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,window,nullptr);DestroyMenu(menu);if(selected)Command(selected);break;}
+AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,'A',L"À propos de browser");int selected=TrackMenu(menu,KeyboardAnchor());DestroyMenu(menu);if(selected)Command(selected);break;}
 case 'A':MessageBoxW(window,(AboutTitle()+L"\nInterface native issue du canvas Paper.\nRecherche : DuckDuckGo.\nProfil normal local, sans synchronisation.\nCtrl+L / Alt+D : adresse - F6 : page / barre\nCtrl+T/W : ouvrir / fermer - Ctrl+Maj+T : rouvrir\nCtrl+Tab : onglet suivant\nCtrl+1...8 : onglet - Ctrl+9 : dernier\nCtrl+Maj+PgPr\u00e9c/PgSuiv : d\u00e9placer l’onglet\nCtrl+F : rechercher - Alt+\u2190/\u2192 : historique\n\nLe menu regroupe les actions disponibles ; aucun réglage système n'est modifié.").c_str(),L"À propos",MB_OK);break;
 }}
 #ifndef BROWSER_UPDATES
@@ -707,7 +727,10 @@ case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelTabDrag();if(GetCapture()==h)Rel
 case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
 case WM_SETTINGCHANGE:motion.SetReducedMotion(NativeChrome::Motion::SystemReducedMotion());InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());return 0;
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}return 0;}
-case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0){int tabIndex=NativeChrome::TabIndex(id);HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");POINT p;GetCursorPos(&p);int cmd=TrackPopupMenu(menu,TPM_RETURNCMD,p.x,p.y,0,h,nullptr);DestroyMenu(menu);if(cmd=='W')CloseAt(tabIndex);else if(cmd=='U')Command(cmd);}else if(GET_Y_LPARAM(l)<S(44))TabMenu();return 0;}
+case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(GET_Y_LPARAM(l)<S(44))TabMenu(0);return 0;}
+// Menu key / Shift+F10 arrive with lParam (-1,-1): on a focused tab or its close button, open the right-click menu
+// below it; on the flower or the gear, open their own menu.
+case WM_CONTEXTMENU:if(GET_X_LPARAM(l)==-1&&GET_Y_LPARAM(l)==-1&&GetFocus()==h){int tabIndex=NativeChrome::TabIndex(keyboardFocus);if(tabIndex>=0&&tabIndex<(int)pages.size()){keyboardModality=true;TabContextMenu(tabIndex,keyboardFocus);return 0;}if(keyboardFocus==900||keyboardFocus=='S'){keyboardModality=true;Command(keyboardFocus);return 0;}}break;
 case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(p.y<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
 case WM_KEYDOWN:if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
     if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);return 0;}break;
