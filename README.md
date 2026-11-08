@@ -65,7 +65,7 @@ La barre du haut est dessinée en Direct2D ; `src/accessibility.h` la décrit au
 
 ## Historique des téléchargements
 
-Le bouton Téléchargements (et le menu Réglages) ouvre un popover natif « Download history » sous la barre d'outils, d'après la frame Paper : 268 DIP de large, en-tête 24, lignes de 48 (tuile 32 avec l'icône Windows du fichier, nom 16 medium, détail 14). Le flyout WebView2 par défaut est remplacé (`DownloadStarting` marqué `Handled`) et le popover s'ouvre au début de chaque téléchargement.
+Le bouton Téléchargements ouvre un popover natif « Download history » sous la barre d'outils, d'après la frame Paper : 268 DIP de large, en-tête 24, lignes de 48 (tuile 32 avec l'icône Windows du fichier, nom 16 medium, détail 14). Le flyout WebView2 par défaut est remplacé (`DownloadStarting` marqué `Handled`) et le popover s'ouvre au début de chaque téléchargement.
 
 - En cours : `↓ 50.4/200MB ⏱ 00:14` ; au survol, pause et annuler. En pause : reprendre / annuler. Terminé : `✓ In …/Downloads` ; au survol, afficher dans l'Explorateur (fichier sélectionné) et ouvrir. Échec, annulé ou fichier supprimé : statut explicite, réessayer si le moteur le permet, retirer de l'historique.
 - Survol : le masque du nom puis les deux boutons glissent depuis la droite (24 / 12 DIP) en se défloutant (flou gaussien Direct2D, 4 → 0 DIP) et en fondu, décalés de 35 ms, 240 ms en cubic-bezier(.2,0,0,1) ; la sortie est groupée et plus courte (140 ms). Interruptible sans saut. Mouvement réduit : fondu 100 ms seul. Ouverture : contenu qui descend de 6 DIP en 180 ms. Images cadencées par le même compositor clock que la barre d'outils, aucun timer au repos (sauf le compte à rebours 1 s pendant un téléchargement visible).
@@ -75,6 +75,22 @@ Le bouton Téléchargements (et le menu Réglages) ouvre un popover natif « Dow
 - Les téléchargements terminés, échoués ou annulés (50 max) sont conservés dans `downloads`, à côté de `session`, avec leur date de début (format 2 ; une ligne sans date, héritée de l'ancien format, prend la date de création de son fichier, sinon celle du fichier d'historique, puis est réenregistrée).
 
 Vérification : `test-downloads.ps1` (formatage, historique, timing du reveal, rendus PNG des états et des frames d'animation dans `build/downloads-qa`) et l'étape téléchargement du smoke `test.ps1`.
+
+## Réglages
+
+Le bouton Réglages (engrenage) ouvre un drawer natif de 268 DIP ancré au bord droit sous la barre d'outils, d'après la frame Paper « Réglages — panneau » (`src/settings-panel.h`). Il fonctionne comme le drawer des téléchargements, sans morph : il glisse depuis le bord droit (ressort critique, 320 ms) et repart par le même chemin (220 ms), la fenêtre se déplaçant sous une région qui épouse le coin de la fenêtre principale. Les deux drawers partagent le bord droit : en ouvrir un ferme l'autre. Un clic hors du drawer, Échap, la croix ou l'engrenage le referment ; les dialogues qu'il ouvre (dossier, confirmation) le laissent ouvert.
+
+- Moteur de recherche : DuckDuckGo (par défaut), Google, Brave Search, puis Bing, Ecosia et Qwant derrière « Voir plus… » (dépliage comme une section de téléchargements ; déplié d'office si le moteur choisi s'y trouve). La sélection est une plaque qui glisse vers la ligne choisie avec sa coche (ressort 260 ms). La barre d'adresse cherche avec ce moteur. Chaque moteur montre son favicon, embarqué dans `assets/engines` (aucune requête réseau), atténué tant qu'il n'est pas choisi.
+- Démarrage : « Restaurer les onglets » (activé) ; désactivé, le navigateur démarre sur un onglet vide (la session reste enregistrée).
+- Téléchargements : « Enregistrer dans » (sélecteur de dossier Windows ; vide = dossier Téléchargements du système, transmis au profil WebView2) et « Demander où enregistrer » (boîte Enregistrer sous pour chaque téléchargement ; Annuler annule le téléchargement sans ligne d'historique).
+- Affichage : « Réduire les animations », qui s'ajoute à l'interrupteur « Effets d'animation » de Windows et s'applique immédiatement à toute l'interface.
+- Pied : « Effacer les données… » (confirmation, puis historique, cookies, cache et données des sites du profil, onglets fermés et liste des téléchargements terminés ; les fichiers restent) et la version avec l'état des mises à jour ; le bouton lance une vérification, son icône tourne pendant la recherche.
+- Interrupteurs : la pastille glisse sur un ressort court (200 ms) et s'étire de 3 DIP pendant l'appui. Survol et appui teintent la ligne entière (seul fond : sur la ligne du dossier, l'icône s'éclaircit sans fond propre), focus clavier : Tab / flèches, Entrée / Espace. Défilement molette et fondus de bord quand la fenêtre est trop basse. Mouvement réduit : changements d'état instantanés, sans déplacement.
+- Les réglages sont enregistrés dans `settings` (UTF-8, `clé=valeur`), à côté de `session` ; un fichier absent ou abîmé garde les valeurs par défaut. Le smoke test n'en lit ni n'en écrit aucun.
+
+Vérification : `tests/settings_test.cpp` (format, valeurs par défaut, URL de recherche), lancé par `test.ps1`, et l'étape « settings drawer opened and closed » du smoke.
+
+La croix de fermeture de la fenêtre se teinte au survol (#FA6A59 à 30 %, glyphe #FFD0C8 à 80 %), comme dans Paper.
 
 ## Mises à jour automatiques
 

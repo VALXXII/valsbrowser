@@ -564,7 +564,11 @@ void Engine::Launch(Op op, bool manual, bool startup) {
         std::lock_guard<std::mutex> lock(mutex_);
         gen = ++generation_;
         manifest = manifest_;
+        // A manual check reads as Checking at once (menu, drawer, Retry), not after the worker's first publish;
+        // set under the generation bump so no stale worker can overwrite it.
+        if (op == Op::Check && manual) view_ = Make(Phase::Checking, "");
     }
+    if (op == Op::Check && manual) Post();
     busy_ = true;
     if (op == Op::Check)
         worker_ = std::thread([this, gen, manual, startup] { RunCheck(gen, manual, startup); Finished(); });

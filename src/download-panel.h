@@ -617,6 +617,8 @@ public:
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
     void Invalidate() { if (hwnd_ && visible_) InvalidateRect(hwnd_, nullptr, FALSE); }
+    // Live preference change while open (Show() re-reads it otherwise).
+    void SetReducedMotion(bool reduced) { motion_.SetReducedMotion(reduced); Invalidate(); }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
         auto wake = Motion::Earlier(motion_.NextWake(now), ExtraWake(now));
@@ -666,7 +668,7 @@ public:
     // anchor: toolbar button rectangle in screen pixels; the popover's right edge aligns with it.
     void Show(RECT anchor) {
         if (!hwnd_) return;
-        motion_.SetReducedMotion(Motion::SystemReducedMotion());
+        motion_.SetReducedMotion(Motion::PreferredReducedMotion());
         anchorRight_ = static_cast<float>(anchor.right); anchorTop_ = anchor.bottom + Px(Panel::anchorGap);
         focus_ = 0; keyboard_ = false; ClearPointer();
         auto now = Motion::Now();
@@ -898,7 +900,7 @@ public:
     // under: the popover window, kept above the drawer until the hand-off.
     void Show(const RECT* from = nullptr, HWND under = nullptr) {
         if (!hwnd_) return;
-        motion_.SetReducedMotion(Motion::SystemReducedMotion());
+        motion_.SetReducedMotion(Motion::PreferredReducedMotion());
         auto now = Motion::Now(); const bool reduced = motion_.ReducedMotion();
         if (!visible_) { slide_.Snap(0); scroll_.Snap(0); morph_.Snap(1); focus_ = 0; keyboard_ = false; ClearPointer(); }
         if (from && !reduced) {

@@ -207,17 +207,43 @@ public:
         placement=it->second.measure;placement.originY+=slot.top;placement.inkTop+=slot.top;placement.inkBottom+=slot.top;
         *output=it->second.layout;(*output)->AddRef();return S_OK;
     }
+    // Text colour (alpha unused: Text's opacity applies). White everywhere except
+    // where a surface sets it around a call (danger text, dark monograms).
+    D2D1_COLOR_F ink{1,1,1,1};
     void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,tabular,medium,tracking,&layout,m)))return;
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
         auto clip=slot;clip.top=std::min(slot.top,m.inkTop-96.f/dpi);clip.bottom=std::max(slot.bottom,m.inkBottom+96.f/dpi);
-        target->PushAxisAlignedClip(clip,D2D1_ANTIALIAS_MODE_ALIASED);Color(1,opacity);
+        target->PushAxisAlignedClip(clip,D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(ink.r,ink.g,ink.b,opacity));
         target->DrawTextLayout(D2D1::Point2F(slot.left,m.originY),layout,brush,D2D1_DRAW_TEXT_OPTIONS_NONE);
         target->PopAxisAlignedClip();Drop(layout);
     }
-    void Icon(const wchar_t* name,D2D1_RECT_F rect,float size=16,float opacity=1){if(opacity<=0)return;int imageDpi=384;for(int d:{96,120,144,168,192,240,288,384})if(d>=int(dpi)){imageDpi=d;break;}std::wstring key=std::wstring(name)+L"-"+std::to_wstring(imageDpi)+L".png";auto& bitmap=bitmaps[key];
+    ID2D1Bitmap* IconBitmap(const wchar_t* name){int imageDpi=384;for(int d:{96,120,144,168,192,240,288,384})if(d>=int(dpi)){imageDpi=d;break;}std::wstring key=std::wstring(name)+L"-"+std::to_wstring(imageDpi)+L".png";auto& bitmap=bitmaps[key];
         if(!bitmap){IWICBitmapDecoder* dec=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* conv=nullptr;HRESULT hr=wic->CreateDecoderFromFilename((assets+L"icons\\"+key).c_str(),nullptr,GENERIC_READ,WICDecodeMetadataCacheOnLoad,&dec);if(SUCCEEDED(hr))hr=dec->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&conv);if(SUCCEEDED(hr))hr=conv->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);if(SUCCEEDED(hr))target->CreateBitmapFromWicBitmap(conv,nullptr,&bitmap);Drop(conv);Drop(frame);Drop(dec);}
-        if(bitmap){float x=(rect.left+rect.right-size)/2,y=(rect.top+rect.bottom-size)/2;target->DrawBitmap(bitmap,D2D1::RectF(x,y,x+size,y+size),opacity);}
+        return bitmap;
+    }
+    // Any bundled image under assets\ (e.g. L"engines\\google.png"), cached like the icons; null when missing.
+    ID2D1Bitmap* AssetBitmap(const std::wstring& relative){auto& bitmap=bitmaps[L"asset:"+relative];
+        if(!bitmap){IWICBitmapDecoder* dec=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* conv=nullptr;HRESULT hr=wic->CreateDecoderFromFilename((assets+relative).c_str(),nullptr,GENERIC_READ,WICDecodeMetadataCacheOnLoad,&dec);if(SUCCEEDED(hr))hr=dec->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&conv);if(SUCCEEDED(hr))hr=conv->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);if(SUCCEEDED(hr))target->CreateBitmapFromWicBitmap(conv,nullptr,&bitmap);Drop(conv);Drop(frame);Drop(dec);}
+        return bitmap;
+    }
+    void Icon(const wchar_t* name,D2D1_RECT_F rect,float size=16,float opacity=1){if(opacity<=0)return;
+        if(auto* bitmap=IconBitmap(name)){float x=(rect.left+rect.right-size)/2,y=(rect.top+rect.bottom-size)/2;target->DrawBitmap(bitmap,D2D1::RectF(x,y,x+size,y+size),opacity);}
+    }
+    // The white glyph used as a mask for a colour (icons ship white only).
+    void TintedIcon(const wchar_t* name,D2D1_RECT_F rect,float size,D2D1_COLOR_F color){if(color.a<=0)return;auto* bitmap=IconBitmap(name);if(!bitmap)return;
+        const float x=(rect.left+rect.right-size)/2,y=(rect.top+rect.bottom-size)/2;const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        brush->SetColor(color);const auto source=bitmap->GetSize();target->FillOpacityMask(bitmap,brush,D2D1_OPACITY_MASK_CONTENT_GRAPHICS,D2D1::RectF(x,y,x+size,y+size),D2D1::RectF(0,0,source.width,source.height));target->SetAntialiasMode(mode);
+    }
+    // Window close (Paper): hover warms the plate to #FA6A59 at 30% and the glyph to #FFD0C8 at 80%;
+    // pressing deepens the plate. Other window controls keep the neutral Window variant.
+    void DrawCloseWindow(D2D1_RECT_F box,Design::ButtonState state){
+        const float h=state.disabled?0:std::clamp(state.hover,0.f,1.f),p=state.disabled?0:std::clamp(state.press,0.f,1.f);
+        if(h>0||p>0){brush->SetColor(D2D1::ColorF(250/255.f,106/255.f,89/255.f,.30f*h+.12f*p));target->FillRoundedRectangle(D2D1::RoundedRect(box,Design::Radius::control,Design::Radius::control),brush);}
+        if(state.focus&&!state.disabled)FocusRing(box,Design::Radius::control);
+        const float size=Design::Size::windowIcon*Motion::PressScale(p,motion&&motion->ReducedMotion(),!state.disabled);
+        const float opacity=state.disabled?Design::Text::disabled:1-.2f*h;
+        TintedIcon(L"close",box,size,D2D1::ColorF(1,1+(208/255.f-1)*h,1+(200/255.f-1)*h,opacity));
     }
     // True when focus last moved by keyboard (Tab, arrows, shortcuts); a pointer press clears it.
     bool keyboardModality=true;
@@ -312,6 +338,7 @@ public:
                         Icon(icon,box,size,(1-a)*style.iconOpacity);Icon(L"check",box,size,a*style.iconOpacity);
                     }else if(!painted)Icon(icon,box,size,style.iconOpacity);
                 }
+                else if(id=='X')DrawCloseWindow(box,state);
                 else DrawButton(icon,box,variant,state);}
 
         }

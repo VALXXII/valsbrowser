@@ -399,7 +399,7 @@ struct Toast::Impl {
     unsigned long long presents = 0;
 
     ~Impl() { Destroy(); }
-    bool Reduced() const { return options.forceReducedMotion >= 0 ? options.forceReducedMotion != 0 : Motion::SystemReducedMotion(); }
+    bool Reduced() const { return options.forceReducedMotion >= 0 ? options.forceReducedMotion != 0 : Motion::PreferredReducedMotion(); }
     void Destroy() {
         clock.Stop(); clockReady = false;
         if (hwnd) { HWND h = hwnd; hwnd = nullptr; SetWindowLongPtrW(h, GWLP_USERDATA, 0); if (IsWindow(h)) DestroyWindow(h); }
@@ -766,6 +766,7 @@ void Toast::SetOwnerVisible(bool visible) {
     if (!visible) { impl_->clock.Cancel(); impl_->Hide(); if (impl_->hwnd) KillTimer(impl_->hwnd, Impl::FallbackTimer); impl_->fallbackFrames = false; }
     else Layout();
 }
+void Toast::SyncReducedMotion() { if (impl_) { impl_->presenter.SetReduced(impl_->Reduced(), NativeChrome::Motion::Now()); impl_->Request(); } }
 void Toast::SetReservedRight(float dip) { if (impl_) { impl_->reservedRight = std::max(0.f, dip); Layout(); } }
 bool Toast::Focus() {
     if (!impl_ || !impl_->hwnd || !impl_->windowShown || !impl_->presenter.Interactive()) return false;

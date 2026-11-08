@@ -25,6 +25,11 @@ inline bool SystemReducedMotion() noexcept {
     return true;
 #endif
 }
+// The app's own "Réduire les animations": either switch quiets every surface.
+// Process-wide so popups created later (and fixtures, which never set it) agree.
+inline bool appReducedMotion = false;
+inline void SetAppReducedMotion(bool reduced) noexcept { appReducedMotion = reduced; }
+inline bool PreferredReducedMotion() noexcept { return appReducedMotion || SystemReducedMotion(); }
 
 inline float Clamp(float value) noexcept { return value < 0 ? 0 : (value > 1 ? 1 : value); }
 inline float Ease(float value) noexcept { const float t = Clamp(value); return t*t*(3-2*t); }
@@ -237,7 +242,7 @@ public:
     Success copy;
     Download download;
     TabSelection selection;
-    explicit State(bool reduced = SystemReducedMotion()) noexcept : reduced_(reduced) {}
+    explicit State(bool reduced = PreferredReducedMotion()) noexcept : reduced_(reduced) {}
     bool ReducedMotion() const noexcept { return reduced_; }
     // Call once before first interaction. No changes to existing defaults.
     void EnablePolish(bool enabled = true) noexcept {

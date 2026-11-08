@@ -136,7 +136,12 @@ int wmain(int argc,wchar_t** argv){
             if(quietMode&&!manualOffline){
                 Expect(updates.View().phase==BrowserUpdate::Phase::Hidden,mode==L"offline"?"offline startup check stays silent (Hidden)":"startup check without a published release stays silent (Hidden)");
                 Expect(transport->requests>0,"startup check actually ran");
-                manualOffline=true;Command(CheckUpdatesCommand);SetTimer(window,99,15000,nullptr);continue;
+                {const auto quiet=SettingsVersion();const std::wstring want=mode==L"offline"?L" · Hors ligne":L" · À jour";
+                 Expect(quiet.text==AboutTitle()+want&&quiet.canCheck&&!quiet.checking,"settings footer reports the silent startup result");}
+                manualOffline=true;Command(CheckUpdatesCommand);
+                {const auto now=SettingsVersion();
+                 Expect(updates.View().phase==BrowserUpdate::Phase::Checking&&now.checking&&!now.canCheck&&now.text==AboutTitle()+L" · Recherche…","manual check reads as Checking at once (settings footer spins, button disabled)");}
+                SetTimer(window,99,15000,nullptr);continue;
             }
             Expect(false,"watchdog: flow did not finish in time");PostMessageW(window,WM_CLOSE,0,0);continue;
         }
@@ -145,7 +150,8 @@ int wmain(int argc,wchar_t** argv){
         auto v=updates.View();
         if(updateToast.Shown()&&v.phase!=BrowserUpdate::Phase::Hidden)toastSeen=true;
         if(v.phase!=last.phase){phases.push_back(PhaseName(v.phase));Note(std::string("phase ")+PhaseName(v.phase)+" "+Utf8(v.version)+(v.error.empty()?"":" error="+Utf8(v.error)));}
-        if(v.phase==BrowserUpdate::Phase::Downloading&&v.received>0&&v.total>0){if(!sawProgress)Note("progress "+std::to_string(v.received)+"/"+std::to_string(v.total));sawProgress=true;}
+        if(v.phase==BrowserUpdate::Phase::Downloading&&v.received>0&&v.total>0){if(!sawProgress){Note("progress "+std::to_string(v.received)+"/"+std::to_string(v.total));
+            const auto s=SettingsVersion();Expect(s.text.rfind(AboutTitle()+L" · Téléch. ",0)==0&&!s.canCheck,"settings footer shows download progress, no check meanwhile");}sawProgress=true;}
         last=v;
         using P=BrowserUpdate::Phase;
         if(mode==L"install"){
@@ -178,11 +184,13 @@ int wmain(int argc,wchar_t** argv){
                 PostMessageW(window,WM_CLOSE,0,0);rechecked=false;Note("closing during download t="+std::to_string(GetTickCount64()-t0));
             }
         }else if(mode==L"offline"){
-            if(manualOffline&&v.phase==P::Error){Expect(true,"manual check reports the failure (Error with Retry)");PostMessageW(window,WM_CLOSE,0,0);}
+            if(manualOffline&&v.phase==P::Error){Expect(true,"manual check reports the failure (Error with Retry)");
+                Expect(SettingsVersion().text==AboutTitle()+L" · Hors ligne"&&SettingsVersion().canCheck,"settings footer shows the failed check and allows another");PostMessageW(window,WM_CLOSE,0,0);}
         }else if(mode==L"norelease"){
             if(manualOffline&&v.phase==P::Checking)sawManualCheck=true;
             if(manualOffline&&sawManualCheck&&v.phase==P::Hidden&&!noReleaseDone){noReleaseDone=true;
-                Expect(updates.LastCheckResult()==UpdateCore::Engine::LastCheck::UpToDate,"manual check with no published release ends up-to-date (no card)");PostMessageW(window,WM_CLOSE,0,0);}
+                Expect(updates.LastCheckResult()==UpdateCore::Engine::LastCheck::UpToDate,"manual check with no published release ends up-to-date (no card)");
+                Expect(SettingsVersion().text==AboutTitle()+L" · À jour"&&!SettingsVersion().checking,"settings footer shows up to date");PostMessageW(window,WM_CLOSE,0,0);}
         }
     }
     const auto elapsed=GetTickCount64()-started;

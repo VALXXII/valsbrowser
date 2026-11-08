@@ -27,6 +27,8 @@ public:
     void SetView(const View& view);
     void Layout();
     void SetOwnerVisible(bool visible);
+    // Re-read the reduced-motion preference (Windows' switch or the app's own setting).
+    void SyncReducedMotion();
     // DIP on the owner's right the card must avoid (e.g. an open downloads drawer). Default 0.
     void SetReservedRight(float dip);
     bool Focus();
