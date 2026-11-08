@@ -19,7 +19,8 @@ network asset, font replacement, or browser engine change is introduced.
   and rendered address share the same composited address text color. Separator
   opacity has its own surface role. `NativeGray` maps the same tokens to Win32.
 - Geometry: 32 DIP controls, 24 DIP compact/close targets, 16 DIP Phosphor Bold
-  glyphs, 14 DIP window glyphs, 6 DIP control radius, 3 DIP embedded radius and
+  glyphs, 14 DIP window glyphs, 6 DIP control radius, one 6 DIP `Radius::button` for every rectangular
+  button (Downloads reference; Copy link/Reload included), 3 DIP link-focus radius and
   1 DIP inset focus perimeter: white at 10% alpha after a pointer press,
   white at 50% alpha when focus moved by keyboard. Spacing steps are 4/6/8/16 DIPs; tab
   pitch is 134 (6 DIP visible gap), visible tab width 128, close slot remains 24.
