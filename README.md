@@ -58,7 +58,7 @@ La barre du haut est dessinée en Direct2D ; `src/accessibility.h` la décrit au
 
 - « Liste des onglets », puis la liste « Onglets » : un élément par onglet (titre, « sélectionné », « 2 sur 3 », « Chargement en cours »), avec son bouton « Fermer l'onglet … ». Les onglets masqués par le défilement restent listés et sélectionnables.
 - « Nouvel onglet », « Réduire », « Agrandir » / « Restaurer », « Fermer la fenêtre ».
-- Barre d'outils « Navigation » : « Précédent » et « Suivant » (désactivés sans historique), « Adresse ou recherche » (valeur = URL ; une fois ouverte, c'est l'EDIT natif, nommé pareil), « Actualiser » / « Arrêter le chargement », « Copier le lien », « Téléchargements », « Navigation privée », « Réglages ».
+- Barre d'outils « Navigation » : « Précédent » et « Suivant » (désactivés sans historique), « Adresse ou recherche » (valeur = URL ; une fois ouverte, c'est l'EDIT natif, nommé pareil), « Actualiser » / « Arrêter le chargement », « Copier le lien », « Historique » (Ctrl+H), « Téléchargements », « Navigation privée », « Réglages ».
 - Tab, flèches et F6 annoncent l'élément focalisé ; changer d'onglet annonce la sélection ; une copie réussie dit « Lien copié ». Les lecteurs peuvent aussi activer, sélectionner et fermer directement.
 
 `uiautomationcore.dll` est chargé à l'exécution : aucune dépendance de lien en plus, et le navigateur démarre aussi sur les Windows sans notifications UIA (avant Windows 10 1709). Vérification : `test-accessibility.ps1` (vrai client UI Automation, également dans `run_all.py`) ; à la main, Narrateur (Ctrl+Win+Entrée) puis Tab dans la barre du haut, ou Accessibility Insights for Windows.
@@ -75,6 +75,18 @@ Le bouton Téléchargements ouvre un popover natif « Download history » sous l
 - Les téléchargements terminés, échoués ou annulés (50 max) sont conservés dans `downloads`, à côté de `session`, avec leur date de début (format 2 ; une ligne sans date, héritée de l'ancien format, prend la date de création de son fichier, sinon celle du fichier d'historique, puis est réenregistrée).
 
 Vérification : `test-downloads.ps1` (formatage, historique, timing du reveal, rendus PNG des états et des frames d'animation dans `build/downloads-qa`) et l'étape téléchargement du smoke `test.ps1`.
+
+## Historique de navigation
+
+Le bouton Historique de la barre d'outils (horloge Phosphor Bold « clock-counter-clockwise », juste à gauche de Téléchargements ; le champ d'adresse raccourcit de 30 DIP pour lui) ou Ctrl+H ouvre un drawer natif « History » ancré au bord droit sous la barre d'outils, sous son bouton et là où se rangent les drawers Téléchargements et Réglages (ouvrir l'un ferme les autres) : le jumeau du drawer des téléchargements (268 DIP, en-tête 24 avec la croix, sections Today / Yesterday / Last week / Last month / Last year repliables sur leur chevron, lignes de 48 DIP, fondus de bord au défilement, molette lissée). Les pages viennent de l'historique déjà tenu pour les suggestions d'adresse (`history`, à côté de `session`, 1 000 pages, une entrée par page datée de sa dernière visite) : rien de nouveau n'est stocké.
+
+- Ligne : tuile 32 avec le favicon mémorisé du site (globe sinon, document pour un fichier local), titre de la page (ou son adresse lisible, ou le nom du fichier), détail `github.com · 14:05` (aujourd'hui et hier), `Nov 3` (cette année), `Nov 3, 2025` (avant).
+- Clic : ouvre la page dans l'onglet actif et ferme le drawer. Au survol, le titre s'éclaire, le masque puis deux actions glissent depuis la droite en se défloutant (même révélation que les téléchargements) : « + » ouvre dans un nouvel onglet (aussi Ctrl+clic, clic milieu, Ctrl/Maj+Entrée), « × » retire la page de l'historique (et son favicon si le site n'a plus de page).
+- Recherche : champ sous l'en-tête, focalisé à l'ouverture ; taper n'importe où filtre aussitôt (chaque mot dans le titre ou l'adresse, sans casse), bouton d'effacement, Entrée ouvre le premier résultat. États vides : « No history yet » / « No results for “…” ».
+- Clavier : Tab / flèches haut-bas entre croix, recherche, sections et lignes ; droite / gauche atteignent les deux actions d'une ligne ; Entrée / Espace activent ; Suppr retire la ligne ; Échap efface d'abord la recherche, puis ferme et rend le focus à la page. Infobulles sur chaque bouton. Le bouton est nommé « Historique » (raccourci Ctrl+H) dans la barre « Navigation » pour UI Automation ; le Narrateur annonce l'ouverture (nombre de pages), l'élément focalisé, le nombre de résultats et les suppressions (notifications portées par ce bouton).
+- Mouvement : glisse depuis le bord droit et repart par le même chemin (ressorts critiquement amortis des drawers, réponse 0,32 s à l'entrée, 0,24 s à la sortie), sans redimensionner ni repeindre pendant le glissement ; mouvement réduit : tout est instantané, révélations en fondu 100 ms. Aucun timer au repos (curseur de recherche fixe).
+
+Vérification : `test-history.ps1` (filtrage, ordre, périodes, libellés de date, géométrie, persistance, rendus PNG des états dans `build/history-qa`) et l'étape historique du smoke `test.ps1` (ouverture depuis le bouton Historique, recherche, Échap, fermeture).
 
 ## Réglages
 

@@ -72,6 +72,12 @@ def existing_fixtures() -> None:
     fixture('download_panel_test', [*STRICT, '-municode', *TVG, 'tests/downloads/download_panel_test.cpp', 'src/native-lottie.cpp', THORVG,
             '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
             [ROOT, downloads_evidence])
+    # Browsing history drawer opened by the toolbar button (same line as test-history.ps1)
+    history_evidence = ROOT / 'build/history-qa'
+    history_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('history_panel_test', [*STRICT, '-municode', *TVG, 'tests/history/history_panel_test.cpp', 'src/native-lottie.cpp', THORVG,
+            '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
+            [ROOT, history_evidence])
 
 
 def peer_suites() -> None:

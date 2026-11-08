@@ -374,10 +374,10 @@ public:
         }
         float x=strip.NewTabLeft();regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
-        regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-103,76};edit={bar.left+Design::Address::textInset,44,bar.right-79,76};
+        regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-133,76};edit={bar.left+Design::Address::textInset,44,bar.right-79,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
         regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
-        regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
+        regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
     }
     std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
     int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
@@ -406,7 +406,7 @@ public:
                 target->PopAxisAlignedClip();continue;}
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
-            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
+            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){
                     auto style=Design::Resolve(variant,state);if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}if(style.focus)FocusRing(box,style.radius);
                     float size=style.iconSize*Motion::PressScale(state.press,motion->ReducedMotion(),!state.disabled);
