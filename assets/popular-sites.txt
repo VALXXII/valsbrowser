@@ -1,0 +1,147 @@
+# browser popular sites 1
+# Offline suggestions for sites never visited yet (issue #20). One site per line:
+#   host<TAB>Name<TAB>alias alias…
+# Order is priority: earlier lines win when several sites match. Visited sites
+# (the history) always rank first. Icons: assets\sites\<host>.png.
+google.com	Google
+youtube.com	YouTube
+facebook.com	Facebook
+instagram.com	Instagram
+wikipedia.org	Wikipédia
+fr.wikipedia.org	Wikipédia en français
+chatgpt.com	ChatGPT
+amazon.fr	Amazon
+x.com	X	twitter
+leboncoin.fr	leboncoin
+netflix.com	Netflix
+mail.google.com	Gmail	gmail
+web.whatsapp.com	WhatsApp Web	whatsapp
+google.fr	Google France
+tiktok.com	TikTok
+linkedin.com	LinkedIn
+reddit.com	Reddit
+outlook.live.com	Outlook	outlook hotmail
+claude.ai	Claude
+github.com	GitHub
+vinted.fr	Vinted
+twitch.tv	Twitch
+open.spotify.com	Spotify	spotify
+amazon.com	Amazon.com
+bing.com	Bing
+duckduckgo.com	DuckDuckGo
+drive.google.com	Google Drive
+docs.google.com	Google Docs
+calendar.google.com	Google Agenda
+maps.google.com	Google Maps
+translate.google.com	Google Traduction
+gemini.google.com	Gemini
+perplexity.ai	Perplexity
+chat.mistral.ai	Le Chat (Mistral)	mistral
+deepl.com	DeepL
+music.youtube.com	YouTube Music
+primevideo.com	Prime Video
+disneyplus.com	Disney+
+canalplus.com	Canal+
+france.tv	france.tv
+arte.tv	ARTE
+tf1.fr	TF1+
+dailymotion.com	Dailymotion
+crunchyroll.com	Crunchyroll
+deezer.com	Deezer
+soundcloud.com	SoundCloud
+threads.com	Threads
+bsky.app	Bluesky	bluesky
+pinterest.com	Pinterest
+snapchat.com	Snapchat
+discord.com	Discord
+web.telegram.org	Telegram Web	telegram
+messenger.com	Messenger
+proton.me	Proton	protonmail
+icloud.com	iCloud
+notion.so	Notion
+dropbox.com	Dropbox
+microsoft365.com	Microsoft 365	office
+onedrive.live.com	OneDrive	onedrive
+canva.com	Canva
+trello.com	Trello
+slack.com	Slack
+zoom.us	Zoom
+teams.microsoft.com	Microsoft Teams	teams
+figma.com	Figma
+framer.com	Framer
+paper.design	Paper
+dribbble.com	Dribbble
+behance.net	Behance
+gitlab.com	GitLab
+stackoverflow.com	Stack Overflow
+developer.mozilla.org	MDN Web Docs	mdn
+npmjs.com	npm
+vercel.com	Vercel
+codepen.io	CodePen
+huggingface.co	Hugging Face
+medium.com	Medium
+dev.to	DEV Community
+cdiscount.com	Cdiscount
+fnac.com	Fnac
+darty.com	Darty
+boulanger.com	Boulanger
+ebay.fr	eBay
+aliexpress.com	AliExpress
+temu.com	Temu
+shein.com	SHEIN
+zalando.fr	Zalando
+ikea.com	IKEA
+decathlon.fr	Decathlon
+carrefour.fr	Carrefour
+backmarket.fr	Back Market
+lemonde.fr	Le Monde
+lefigaro.fr	Le Figaro
+liberation.fr	Libération
+francetvinfo.fr	franceinfo	franceinfo
+bfmtv.com	BFMTV
+20minutes.fr	20 Minutes
+ouest-france.fr	Ouest-France
+leparisien.fr	Le Parisien
+mediapart.fr	Mediapart
+actu.fr	actu.fr
+lequipe.fr	L'Équipe
+bbc.com	BBC
+nytimes.com	The New York Times
+theguardian.com	The Guardian
+impots.gouv.fr	impots.gouv	impots
+service-public.fr	Service-Public.fr
+ameli.fr	ameli
+caf.fr	Caf
+francetravail.fr	France Travail
+ants.gouv.fr	ANTS	ants
+legifrance.gouv.fr	Légifrance	legifrance
+laposte.fr	La Poste
+doctolib.fr	Doctolib
+boursorama.com	Boursorama
+credit-agricole.fr	Crédit Agricole
+labanquepostale.fr	La Banque Postale
+societegenerale.fr	Société Générale
+mabanque.bnpparibas	BNP Paribas	bnp bnpparibas
+lcl.fr	LCL
+revolut.com	Revolut
+paypal.com	PayPal
+sncf-connect.com	SNCF Connect	sncf
+blablacar.fr	BlaBlaCar
+booking.com	Booking.com
+airbnb.fr	Airbnb
+uber.com	Uber
+waze.com	Waze
+wordreference.com	WordReference
+larousse.fr	Larousse
+meteofrance.com	Météo-France	meteo
+allocine.fr	AlloCiné
+imdb.com	IMDb
+marmiton.org	Marmiton
+deliveroo.fr	Deliveroo
+ubereats.com	Uber Eats
+seloger.com	SeLoger
+pap.fr	PAP
+store.steampowered.com	Steam	steam
+epicgames.com	Epic Games
+jeuxvideo.com	jeuxvideo.com
+chess.com	Chess.com

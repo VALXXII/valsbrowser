@@ -104,7 +104,7 @@ NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; N
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; } tabDrag;
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
 // user typed (the field may also show an inline completion or an arrowed row).
-AddressBar::History history; NativeChrome::AddressUI::Suggestions suggestions; std::wstring addressTyped; bool addressSetting=false,addressDeleting=false;
+AddressBar::History history; std::vector<AddressBar::PopularSite> popularSites; NativeChrome::AddressUI::Suggestions suggestions; std::wstring addressTyped; bool addressSetting=false,addressDeleting=false;
 // Browsing history drawer (src/history-panel.h): the toolbar History button (or Ctrl+H) opens it docked on the right.
 NativeChrome::HistoryUI::Drawer historyDrawer; bool historyDismissClick=false;
 void InvalidateChrome();
@@ -275,7 +275,7 @@ void AddressEdited(){
     if(addressSetting||!editing||halted)return;
     const auto text=AddressText();DWORD from=0,to=0;SendMessageW(address,EM_GETSEL,(WPARAM)&from,(LPARAM)&to);
     const bool atEnd=from==to&&to==text.size();
-    addressTyped=text;auto data=AddressBar::Suggest(text,history,atEnd&&!addressDeleting);addressDeleting=false;
+    addressTyped=text;auto data=AddressBar::Suggest(text,history,atEnd&&!addressDeleting,&popularSites);addressDeleting=false;
     if(!data.completion.empty())SetAddressText(text+data.completion,(int)text.size(),-1);
     if(data.rows.empty()){HideSuggestions();return;}
     PlaceSuggestions(std::move(data),0);AnnounceSuggestion();
@@ -308,12 +308,12 @@ void OpenSuggestion(int index){
 }
 void RemoveSuggestion(int index){
     const auto rows=suggestions.Data().rows;if(index<0||index>=(int)rows.size()||rows[index].kind!=AddressBar::Kind::Site)return;
-    const auto& row=rows[index];if(!(row.host?history.RemoveHost(row.text):history.Remove(row.url)))return;
+    const auto& row=rows[index];if(row.popular||!(row.host?history.RemoveHost(row.text):history.Remove(row.url)))return;
     SaveHistory();Log(L"HISTORY removed "+row.text);
     if(!history.HasSite(row.site))ForgetSiteIcon(row.site);
     // Recompute from what was typed, without completing it again.
     SetAddressText(addressTyped,(int)addressTyped.size(),(int)addressTyped.size());
-    auto data=AddressBar::Suggest(addressTyped,history,false);
+    auto data=AddressBar::Suggest(addressTyped,history,false,&popularSites);
     if(data.rows.empty()){HideSuggestions();return;}
     const int active=std::min(index,(int)data.rows.size()-1);PlaceSuggestions(std::move(data),active);AnnounceSuggestion();
 }
@@ -379,13 +379,28 @@ bool SearchResultPage(const std::wstring& uri){for(int i=0;i<BrowserSettings::En
 // <data>\favicons\<site>.png and shown by the suggestions. Never fetched while typing.
 std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> siteIcons;std::set<std::wstring> siteIconsMissing;std::map<std::wstring,size_t> siteIconsWritten;
 std::wstring SiteIconFile(const std::wstring& site){std::wstring name=site;for(auto& c:name)if(!(iswalnum(c)||c==L'.'||c==L'-'))c=L'_';return dataDir+L"\\favicons\\"+name+L".png";}
+std::shared_ptr<const NativeChrome::FaviconImage> DecodeIconFile(const std::wstring& path){
+    std::shared_ptr<const NativeChrome::FaviconImage> image;IStream* stream=nullptr;
+    if(SUCCEEDED(SHCreateStreamOnFileEx(path.c_str(),STGM_READ|STGM_SHARE_DENY_WRITE,FILE_ATTRIBUTE_NORMAL,FALSE,nullptr,&stream))&&stream){image=chrome.DecodeFavicon(stream);stream->Release();}
+    return image;
+}
+// Icons shipped for the popular sites (assets\sites\<site>.png|.ico): read-only,
+// cached with misses, and only a fallback behind the icon remembered from a visit.
+std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> bundledIcons;
+std::shared_ptr<const NativeChrome::FaviconImage> BundledIcon(const std::wstring& site){
+    auto found=bundledIcons.find(site);if(found!=bundledIcons.end())return found->second;
+    std::wstring name=site;for(auto& c:name)if(!(iswalnum(c)||c==L'.'||c==L'-'))c=L'_';
+    std::shared_ptr<const NativeChrome::FaviconImage> image;
+    for(const wchar_t* ext:{L".png",L".ico"})if(!image)image=DecodeIconFile(base+L"\\assets\\sites\\"+name+ext);
+    return bundledIcons[site]=image;
+}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site){
     if(site.empty())return {};auto found=siteIcons.find(site);if(found!=siteIcons.end())return found->second;
-    if(smoke||siteIconsMissing.count(site))return {};
-    std::shared_ptr<const NativeChrome::FaviconImage> image;IStream* stream=nullptr;
-    if(SUCCEEDED(SHCreateStreamOnFileEx(SiteIconFile(site).c_str(),STGM_READ|STGM_SHARE_DENY_WRITE,FILE_ATTRIBUTE_NORMAL,FALSE,nullptr,&stream))&&stream){image=chrome.DecodeFavicon(stream);stream->Release();}
-    if(image)siteIcons[site]=image;else siteIconsMissing.insert(site);
-    return image;
+    if(!smoke&&!siteIconsMissing.count(site)){
+        if(auto image=DecodeIconFile(SiteIconFile(site))){siteIcons[site]=image;return image;}
+        siteIconsMissing.insert(site);
+    }
+    return BundledIcon(site);
 }
 void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const NativeChrome::FaviconImage>& image,IStream* stream){
     const auto site=AddressBar::SiteOf(uri);if(site.empty()||!image)return;
@@ -402,7 +417,8 @@ void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const Native
 // A site's icon lives as long as the site has a page in the history.
 void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.erase(site);siteIconsWritten.erase(site);siteIconsMissing.insert(site);if(smoke)return;if(!DeleteFileW(SiteIconFile(site).c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND)Log(L"FAVICONS delete failed "+site);}
 void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke)return;std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
-void LoadHistory(){if(smoke)return;std::ifstream in(std::filesystem::path(HistoryFile()),std::ios::binary);history=AddressBar::History::Read(in);}
+void LoadPopularSites(){std::ifstream in(std::filesystem::path(base+L"\\assets\\popular-sites.txt"),std::ios::binary);popularSites=AddressBar::ReadPopular(in);if(popularSites.empty())Log(L"ADDRESS popular sites unavailable");}
+void LoadHistory(){LoadPopularSites();if(smoke)return;std::ifstream in(std::filesystem::path(HistoryFile()),std::ios::binary);history=AddressBar::History::Read(in);}
 void RestoreSession(){
     BrowserSession::State state;
     // "Restaurer les onglets" off: start on a fresh tab (the session is still saved on exit).
@@ -1138,6 +1154,9 @@ case 7:Command('M');if(!IsZoomed(window)){Fail(L"Smoke maximize assertion",E_FAI
     if(!suggestions.Visible()||AddressText()!=L"example.com"||from!=9||to!=11||suggestions.Active()!=0){Fail(L"Smoke address suggestions UI assertion",E_FAIL);return;}
     SendMessageW(address,WM_KEYDOWN,VK_ESCAPE,0);if(suggestions.Visible()){Fail(L"Smoke address suggestions escape assertion",E_FAIL);return;}
     Log(L"SMOKE address suggestions: typing example.c proposes example.com with inline completion; Escape closes");}
+    {auto you=AddressBar::Suggest(L"yout",AddressBar::History{},true,&popularSites);
+     if(popularSites.size()<100||you.rows.empty()||you.rows[0].text!=L"youtube.com"||you.completion!=L"ube.com"||!SiteIcon(L"youtube.com")||!SiteIcon(L"arte.tv")){Fail(L"Smoke popular sites assertion",E_FAIL);return;}
+     Log(L"SMOKE popular sites: "+std::to_wstring(popularSites.size())+L" bundled, yout -> youtube.com with its bundled icon (PNG and ICO decode)");}
     Log(L"SMOKE PASS: blank #171717 home, bundled font families, 11 exported SVG icons, 2 tabs, HTTPS, document titles, back, forward, reload, close tab, address focus, search encoding");KillTimer(window,1);PostMessageW(window,WM_CLOSE,0,0);break;
 }}
 
@@ -1597,7 +1616,7 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
     if(msg==WM_KILLFOCUS&&!contextMenu.Open()){HideSuggestions();editing=false;ShowWindow(h,SW_HIDE);InvalidateRect(window,nullptr,FALSE);}
     if(msg==WM_KEYDOWN&&(w==VK_BACK||w==VK_DELETE))addressDeleting=true;
     if(msg==WM_KEYDOWN&&(w==VK_UP||w==VK_DOWN)&&suggestions.Visible()&&!addressKeys.composing){MoveSuggestion(w==VK_UP?-1:1);return 0;}
-    if(msg==WM_KEYDOWN&&w==VK_DELETE&&GetKeyState(VK_SHIFT)<0&&suggestions.Visible()){const int a=suggestions.Active();if(a>=0&&a<(int)suggestions.Data().rows.size()&&suggestions.Data().rows[a].kind==AddressBar::Kind::Site){RemoveSuggestion(a);return 0;}}
+    if(msg==WM_KEYDOWN&&w==VK_DELETE&&GetKeyState(VK_SHIFT)<0&&suggestions.Visible()){const int a=suggestions.Active();if(a>=0&&a<(int)suggestions.Data().rows.size()&&suggestions.Data().rows[a].kind==AddressBar::Kind::Site&&!suggestions.Data().rows[a].popular){RemoveSuggestion(a);return 0;}}
     if(msg==WM_KEYDOWN&&w==VK_ESCAPE&&addressKeys.HandleKey(VK_ESCAPE)){if(EscapeSuggestions())return 0;editing=false;ShowWindow(h,SW_HIDE);FocusPage();Update();return 0;}
     if(msg==WM_KEYDOWN&&w==VK_RETURN&&addressKeys.HandleKey(VK_RETURN)&&suggestions.Visible()){OpenSuggestion(suggestions.Active());return 0;}
     if(msg==WM_KEYDOWN&&w==VK_RETURN&&addressKeys.returnHandled){int n=GetWindowTextLengthW(h);std::wstring s(n+1,0);GetWindowTextW(h,s.data(),n+1);s.resize(n);editing=false;ShowWindow(h,SW_HIDE);Navigate(Active(),Destination(s));FocusPage();return 0;}
