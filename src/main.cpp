@@ -25,6 +25,8 @@
 #include "native-ui.h"
 #include "frame-clock.h"
 #include "download-panel.h"
+#include "settings.h"
+#include "settings-panel.h"
 #include "accessibility.h"
 #include <shlobj.h>
 // Self-update host integration is compiled into identity-stamped builds only
@@ -58,6 +60,7 @@ GUID_TEXT(ICoreWebView2DownloadStartingEventHandler,"{efedc989-c396-41ca-83f7-07
 GUID_TEXT(ICoreWebView2BytesReceivedChangedEventHandler,"{828e8ab6-d94c-4264-9cef-5217170d6251}")
 GUID_TEXT(ICoreWebView2EstimatedEndTimeChangedEventHandler,"{28f0d425-93fe-4e63-9f8d-2aeec6d3ba1e}")
 GUID_TEXT(ICoreWebView2StateChangedEventHandler,"{81336594-7ede-4ba9-bf71-acf0a95b58dd}")
+GUID_TEXT(ICoreWebView2ClearBrowsingDataCompletedHandler,"{e9710a06-1d1d-49b2-8234-226f35846ae5}")
 template<class I, class... A> class Handler final : public I {
     LONG refs=1; IID iid{}; std::function<HRESULT(A...)> fn;
 public:
@@ -84,8 +87,8 @@ Com<ICoreWebView2Environment> environment;
 std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 struct ClosedTab { std::wstring uri,title; int index; };
 std::vector<ClosedTab> closedTabs; bool sessionReady=false;
-std::wstring base,dataDir,profileDir,sessionFile,logFile,downloadsFile; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
-NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeChrome::DownloadsUI::Drawer downloadDrawer; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
+std::wstring base,dataDir,profileDir,sessionFile,logFile,downloadsFile,settingsFile; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
+NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeChrome::DownloadsUI::Drawer downloadDrawer; NativeChrome::SettingsUI::Drawer settingsDrawer; BrowserSettings::State settings; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; } tabDrag;
 void InvalidateChrome();
 void CancelTabDrag(){tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;InvalidateChrome();}
@@ -101,6 +104,7 @@ std::wstring AboutTitle(){
 #endif
 }
 void CheckForUpdates(); bool UpdateCheckAvailable(); bool FocusUpdateToast(); bool UpdateToastHasFocus(); void SyncUpdateToastReserve();
+void SyncUpdateToastMotion();
 constexpr int CheckUpdatesCommand=3020;
 void InvalidateChrome(){RECT r;GetClientRect(window,&r);r.bottom=std::min(r.bottom,(LONG)S(84));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
@@ -112,7 +116,7 @@ std::shared_ptr<Tab> Active();
 // differs from what was last painted; any other motion (or the frame right after it
 // ends, so its endpoint is painted) repaints the whole header.
 void InvalidateMotion(NativeChrome::Motion::Time now){
-    downloadPanel.Frame(now);downloadDrawer.Frame(now);
+    downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
@@ -120,7 +124,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.lottie.NextWake(now,reduced));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -222,7 +226,7 @@ const wchar_t* HomeHtml=LR"HTML(<!doctype html><html lang="fr"><meta charset="ut
 std::wstring Destination(std::wstring s){auto first=s.find_first_not_of(L" \t\r\n");if(first==std::wstring::npos)return L"";s=s.substr(first,s.find_last_not_of(L" \t\r\n")-first+1);if(s==L"about:blank")return s;
     auto low=s;std::transform(low.begin(),low.end(),low.begin(),towlower);if(low.rfind(L"https://",0)==0||low.rfind(L"http://",0)==0)return s;
     if(s.find_first_of(L" \t")==std::wstring::npos && s.find(L"://")==std::wstring::npos && (s.find(L'.')!=std::wstring::npos||s.rfind(L"localhost",0)==0))return L"https://"+s;
-    std::wstring q;for(unsigned char c:Utf8(s)){if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~')q+=(wchar_t)c;else{wchar_t b[4];swprintf(b,4,L"%%%02X",c);q+=b;}}return L"https://duckduckgo.com/?q="+q;
+    std::wstring q;for(unsigned char c:Utf8(s)){if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~')q+=(wchar_t)c;else{wchar_t b[4];swprintf(b,4,L"%%%02X",c);q+=b;}}return BrowserSettings::SearchUrl(settings.engine,q);
 }
 void NewTab(std::wstring uri=L"",int index=-1,std::wstring title=L"Nouvel onglet");
 void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closedTabs.back();NewTab(tab.uri,tab.index,tab.title);if(!halted)closedTabs.pop_back();}
@@ -266,7 +270,8 @@ void SaveSession(){
 }
 void RestoreSession(){
     BrowserSession::State state;
-    if(!smoke){std::ifstream in(std::filesystem::path(sessionFile),std::ios::binary);state=BrowserSession::Read(in);}
+    // "Restaurer les onglets" off: start on a fresh tab (the session is still saved on exit).
+    if(!smoke&&settings.restoreTabs){std::ifstream in(std::filesystem::path(sessionFile),std::ios::binary);state=BrowserSession::Read(in);}
     for(const auto& url:state.urls){
         int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);
         if(!url.empty()&&!size){state=BrowserSession::State{};break;}
@@ -326,7 +331,7 @@ std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     if(r>=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED&&r<=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT)return L"Server error";
     return L"File error";
 }
-void ShowDownloadDrawer();
+void ShowDownloadDrawer();void SyncLatch();
 void DownloadsChanged(){downloadPanel.Changed();downloadDrawer.Changed();}
 // Pull the operation's current state into its history row (UI thread, engine events).
 void SyncDownload(int id){
@@ -368,7 +373,7 @@ void SyncDownload(int id){
 void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
 void ShowDownloads(){
     if(!downloadPanel.Window())return;
-    RefreshMissing();
+    RefreshMissing();settingsDrawer.Hide(false,true);
     // Right edge on the toolbar's 6 DIP margin, just under the toolbar row.
     RECT anchor{0,S(48),S(chrome.width-NativeChrome::Design::Space::sm),S(76)};MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
     chrome.latched='D';InvalidateChrome();downloadPanel.Show(anchor);
@@ -378,7 +383,7 @@ void ShowDownloads(){
 // "View all": the popover gives way to the drawer docked on the right.
 void ShowDownloadDrawer(){
     if(!downloadDrawer.Window())return;
-    RefreshMissing();chrome.latched='D';InvalidateChrome();
+    RefreshMissing();settingsDrawer.Hide(false,true);chrome.latched='D';InvalidateChrome();
     // From the popover: its rectangle morphs into the drawer.
     RECT from{};const bool morph=downloadPanel.Visible()&&GetWindowRect(downloadPanel.Window(),&from);
     downloadDrawer.Show(morph?&from:nullptr,morph?downloadPanel.Window():nullptr);downloadPanel.Hide(false);
@@ -390,11 +395,68 @@ void ToggleDownloads(){
     if(downloadPanel.Visible()){downloadPanel.Hide(true);return;}
     ShowDownloads();
 }
+// Download settings (folder, "Demander où enregistrer") applied as a download starts.
+std::wstring EffectiveDownloadFolder();
+bool downloadFolderOnProfile=false; // the engine profile already saves into EffectiveDownloadFolder()
+// Without the profile setting: the engine's suggested name, deduplicated in our folder.
+std::wstring UniqueDownloadPath(const std::wstring& folder,const std::wstring& suggested){
+    namespace fs=std::filesystem;const fs::path file=fs::path(suggested).filename();fs::path target=fs::path(folder)/file;
+    for(int n=1;n<1000&&GetFileAttributesW(target.c_str())!=INVALID_FILE_ATTRIBUTES;n++)target=fs::path(folder)/(file.stem().wstring()+L" ("+std::to_wstring(n)+L")"+file.extension().wstring());
+    return target.wstring();
+}
+// Save dialog for one download: false = the user cancelled. A dialog that cannot
+// open keeps the engine's path rather than losing the download.
+bool AskDownloadPath(std::wstring& path){
+    namespace fs=std::filesystem;const auto file=fs::path(path).filename().wstring(),ext=fs::path(path).extension().wstring();
+    IFileSaveDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileSaveDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog){Log(L"DOWNLOADS save dialog unavailable");return true;}
+    FILEOPENDIALOGOPTIONS options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_FORCEFILESYSTEM|FOS_OVERWRITEPROMPT|FOS_PATHMUSTEXIST|FOS_NOREADONLYRETURN);
+    // Same type first (keeps the extension when the name is retyped), then anything.
+    std::wstring kind=ext.size()>1?ext.substr(1):L"";for(auto& c:kind)c=(wchar_t)std::towupper(c);const std::wstring label=L"Fichier "+kind,spec=L"*"+ext;
+    const COMDLG_FILTERSPEC types[2]={{label.c_str(),spec.c_str()},{L"Tous les fichiers",L"*.*"}};
+    if(kind.empty())dialog->SetFileTypes(1,types+1);else{dialog->SetFileTypes(2,types);dialog->SetDefaultExtension(ext.c_str()+1);}
+    dialog->SetTitle(L"Enregistrer le téléchargement");dialog->SetFileName(file.c_str());
+    IShellItem* folder=nullptr;if(SUCCEEDED(SHCreateItemFromParsingName(EffectiveDownloadFolder().c_str(),nullptr,IID_PPV_ARGS(&folder)))&&folder){dialog->SetFolder(folder);folder->Release();}
+    bool keep=true;const HRESULT hr=dialog->Show(window);
+    if(hr==HRESULT_FROM_WIN32(ERROR_CANCELLED))keep=false;
+    else if(FAILED(hr))Log(L"DOWNLOADS save dialog failed hr="+std::to_wstring((unsigned long)hr));
+    else{IShellItem* item=nullptr;PWSTR chosen=nullptr;if(SUCCEEDED(dialog->GetResult(&item))&&item&&SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&chosen))&&chosen)path=chosen;else Log(L"DOWNLOADS save dialog result unavailable");CoTaskMemFree(chosen);if(item)item->Release();}
+    dialog->Release();return keep;
+}
+void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args);
+// "Demander où enregistrer": the engine waits on a deferral while the save dialog
+// runs from the message loop, never re-entrantly inside its event handler.
+constexpr UINT DownloadAskMessage=WM_APP+21;
+struct PendingDownload { Com<ICoreWebView2DownloadStartingEventArgs> args; Com<ICoreWebView2Deferral> deferral; };
+std::vector<std::shared_ptr<PendingDownload>> pendingDownloads; bool downloadAsking=false;
+void AskPendingDownloads(){
+    // The modal dialog pumps messages: later downloads queue up behind this loop.
+    if(downloadAsking)return;downloadAsking=true;
+    while(!pendingDownloads.empty()){
+        auto pending=pendingDownloads.front();pendingDownloads.erase(pendingDownloads.begin());auto* args=pending->args.p;
+        LPWSTR text=nullptr;std::wstring path;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){path=text;CoTaskMemFree(text);}
+        if(!halted&&AskDownloadPath(path)){if(FAILED(args->put_ResultFilePath(path.c_str())))Log(L"DOWNLOADS put_ResultFilePath failed "+path);TrackDownload(args);}
+        else{args->put_Cancel(TRUE);Log(L"DOWNLOAD cancelled from the save dialog");}
+        if(FAILED(pending->deferral->Complete()))Log(L"DOWNLOADS deferral completion failed");
+    }
+    downloadAsking=false;
+}
 HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args){
     if(halted||!args)return S_OK;
     args->put_Handled(TRUE); // the native popover replaces WebView2's flyout
-    if(smoke){const auto target=base+L"\\smoke-download.txt";DeleteFileW(target.c_str());args->put_ResultFilePath(target.c_str());}
-    ICoreWebView2DownloadOperation* raw=nullptr;if(FAILED(args->get_DownloadOperation(&raw))||!raw){Log(L"DOWNLOAD operation unavailable");return S_OK;}
+    if(smoke){const auto target=base+L"\\smoke-download.txt";DeleteFileW(target.c_str());args->put_ResultFilePath(target.c_str());TrackDownload(args);return S_OK;}
+    if(settings.askWhereToSave){
+        auto pending=std::make_shared<PendingDownload>();
+        if(SUCCEEDED(args->GetDeferral(&pending->deferral.p))&&pending->deferral.p){pending->args.set(args);pendingDownloads.push_back(pending);PostMessageW(window,DownloadAskMessage,0,0);return S_OK;}
+        Log(L"DOWNLOADS deferral unavailable: saving without asking");
+    }
+    if(!downloadFolderOnProfile&&!settings.downloadFolder.empty()){
+        LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){const auto target=UniqueDownloadPath(settings.downloadFolder,text);CoTaskMemFree(text);if(FAILED(args->put_ResultFilePath(target.c_str())))Log(L"DOWNLOADS put_ResultFilePath failed "+target);}
+    }
+    TrackDownload(args);return S_OK;
+}
+// History row + popover for a download whose path is settled.
+void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args){
+    ICoreWebView2DownloadOperation* raw=nullptr;if(FAILED(args->get_DownloadOperation(&raw))||!raw){Log(L"DOWNLOAD operation unavailable");return;}
     auto entry=std::make_shared<DownloadOperation>();entry->op.p=raw;
     DL::Item item;item.id=nextDownloadId++;item.started=NativeChrome::DownloadsUI::UnixNowMs();const int id=item.id;
     LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){item.path=text;CoTaskMemFree(text);}
@@ -412,7 +474,6 @@ HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args){
     // Open (or refresh) the history first so even an instant completion is shown.
     if(downloadPanel.Visible()||(downloadDrawer.Visible()&&!downloadDrawer.Closing()))DownloadsChanged();else ShowDownloads();
     SyncDownload(id);
-    return S_OK;
 }
 void DownloadAction(int id,DL::Action action){
     auto* item=FindDownload(id);if(!item)return;
@@ -435,11 +496,149 @@ void CreateDownloadPanel(){
     hooks.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
     hooks.action=[](int id,DL::Action action){DownloadAction(id,action);};
     // The toolbar button stays latched while either surface is (still) open.
-    hooks.closed=[](bool keyboard){chrome.latched=(downloadPanel.Visible()||(downloadDrawer.Visible()&&!downloadDrawer.Closing()))?'D':0;SyncUpdateToastReserve();InvalidateChrome();if(keyboard&&!halted)FocusPage();};
+    hooks.closed=[](bool keyboard){SyncLatch();SyncUpdateToastReserve();if(keyboard&&!halted)FocusPage();};
     hooks.viewAll=[](){ShowDownloadDrawer();};
     auto drawerHooks=hooks;
     if(!downloadPanel.Create(instance,window,base,&downloads,std::move(hooks)))Log(L"DOWNLOADS panel unavailable");
     if(!downloadDrawer.Create(instance,window,base,&downloads,std::move(drawerHooks)))Log(L"DOWNLOADS drawer unavailable");
+}
+
+// ---- Settings ----------------------------------------------------------------
+// "Réglages" drawer (src/settings-panel.h): the gear slides it in from the right
+// edge, where the download history docks too, so opening one closes the other.
+// The state persists in `settings` next to `session`; smoke runs keep the
+// defaults and never write it. Each setting's behaviour lives in one function
+// below, called by SettingChanged() after the drawer changed the state.
+bool settingsDismissClick=false;
+void SaveSettings(){
+    if(smoke)return;
+    const auto path=std::filesystem::path(settingsFile),temp=std::filesystem::path(settingsFile+L".tmp");
+    {std::ofstream out(temp,std::ios::binary|std::ios::trunc);BrowserSettings::Write(out,settings);out.close();if(!out){Log(L"SETTINGS save failed");return;}}
+    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"SETTINGS replace failed");
+}
+void LoadSettings(){if(smoke)return;std::ifstream in(std::filesystem::path(settingsFile),std::ios::binary);settings=BrowserSettings::Read(in);}
+// Download folder: the chosen one, else the system Downloads folder.
+std::wstring SystemDownloadFolder(){PWSTR known=nullptr;std::wstring path;if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads,0,nullptr,&known))&&known)path=known;CoTaskMemFree(known);return path;}
+std::wstring EffectiveDownloadFolder(){return settings.downloadFolder.empty()?SystemDownloadFolder():settings.downloadFolder;}
+void SettingChanged(BrowserSettings::Change change);
+// SETTINGS(downloads): folder picker for "Enregistrer dans" (modal; the drawer stays open).
+void PickDownloadFolder(){
+    IFileOpenDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog){Log(L"DOWNLOADS folder picker unavailable");return;}
+    FILEOPENDIALOGOPTIONS options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);
+    dialog->SetTitle(L"Enregistrer les téléchargements dans");
+    IShellItem* start=nullptr;if(SUCCEEDED(SHCreateItemFromParsingName(EffectiveDownloadFolder().c_str(),nullptr,IID_PPV_ARGS(&start)))&&start){dialog->SetFolder(start);start->Release();}
+    std::wstring chosen;const HRESULT hr=dialog->Show(window);
+    if(SUCCEEDED(hr)){IShellItem* item=nullptr;PWSTR path=nullptr;if(SUCCEEDED(dialog->GetResult(&item))&&item&&SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&path))&&path)chosen=path;else Log(L"DOWNLOADS picked folder has no file system path");CoTaskMemFree(path);if(item)item->Release();}
+    else if(hr!=HRESULT_FROM_WIN32(ERROR_CANCELLED))Log(L"DOWNLOADS folder picker failed hr="+std::to_wstring((unsigned long)hr));
+    dialog->Release();if(chosen.empty())return;
+    // Picking Windows' own Downloads stores "default", so it keeps following Windows.
+    const auto same=[](std::wstring a,std::wstring b){while(a.size()>3&&(a.back()==L'\\'||a.back()==L'/'))a.pop_back();while(b.size()>3&&(b.back()==L'\\'||b.back()==L'/'))b.pop_back();return CompareStringOrdinal(a.c_str(),(int)a.size(),b.c_str(),(int)b.size(),TRUE)==CSTR_EQUAL;};
+    const std::wstring folder=same(chosen,SystemDownloadFolder())?L"":chosen;
+    if(folder==settings.downloadFolder)return;
+    settings.downloadFolder=folder;Log(L"SETTINGS download folder "+EffectiveDownloadFolder());
+    SettingChanged(BrowserSettings::Change::DownloadFolder);
+}
+// The profile is shared by every tab: setting it once covers existing and future
+// downloads (those in progress keep their path).
+bool ApplyDownloadFolder(ICoreWebView2* view){
+    const auto folder=EffectiveDownloadFolder();if(folder.empty())return true;
+    Com<ICoreWebView2_13> view13;Com<ICoreWebView2Profile> profile;
+    if(!view||FAILED(view->QueryInterface(IID_ICoreWebView2_13,(void**)&view13.p))||!view13.p||FAILED(view13->get_Profile(&profile.p))||!profile.p)return false;
+    if(FAILED(profile->put_DefaultDownloadFolderPath(folder.c_str()))){Log(L"DOWNLOADS put_DefaultDownloadFolderPath failed "+folder);return false;}
+    return true;
+}
+// SETTINGS(downloads): push the folder to the engine (new and existing tabs).
+// Without a profile, DownloadStarting() sets each download's path instead.
+void ApplyDownloadSettings(){
+    if(smoke)return;
+    bool any=false,applied=false;for(auto& t:pages)if(t&&!t->closed&&t->view.p){any=true;if(ApplyDownloadFolder(t->view.p)){applied=true;break;}}
+    if(!any)return;
+    static bool logged=false;if(!applied&&!logged){Log(L"DOWNLOADS profile download folder unavailable: path set per download");logged=true;}
+    downloadFolderOnProfile=applied;
+}
+// SETTINGS(motion): Windows' animation switch or "Réduire les animations".
+bool ReducedMotionPreferred(){NativeChrome::Motion::SetAppReducedMotion(settings.reduceMotion);return NativeChrome::Motion::PreferredReducedMotion();}
+// SETTINGS(motion): every animated surface follows ReducedMotionPreferred(). Also on
+// startup and WM_SETTINGCHANGE. Popups re-read the process-wide preference on Show();
+// Lottie and the loading bar take motion.ReducedMotion() at each frame.
+void ApplyReducedMotion(){
+    const bool reduced=ReducedMotionPreferred();
+    // Settles running interactions; a half-played copy Lottie must not resume later.
+    motion.SetReducedMotion(reduced);if(reduced)chrome.lottie.Clear();
+    downloadPanel.SetReducedMotion(reduced);downloadDrawer.SetReducedMotion(reduced);
+    SyncUpdateToastMotion();
+    settingsDrawer.SetReducedMotion();
+    InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
+}
+// SETTINGS(data): "Effacer les données…" (modal confirmation first).
+void AnnounceDataCleared();
+// The exe carries no comctl32 v6 manifest, so TaskDialogIndirect is resolved at
+// run time (absent from v5) and the prompt falls back to a plain MessageBox.
+bool ConfirmClearData(){
+    const wchar_t* title=L"Effacer les données de navigation ?";
+    const wchar_t* body=L"L'historique, les cookies et données de site, le cache, les formulaires et mots de passe enregistrés de ce profil ainsi que la liste des téléchargements seront effacés. Les fichiers téléchargés restent sur le disque et les onglets ouverts restent ouverts.\n\nCette action est irréversible.";
+    using TaskDialogFn=HRESULT(WINAPI*)(const TASKDIALOGCONFIG*,int*,int*,BOOL*);
+    HMODULE comctl=GetModuleHandleW(L"comctl32.dll");
+    auto taskDialog=comctl?reinterpret_cast<TaskDialogFn>(GetProcAddress(comctl,"TaskDialogIndirect")):nullptr;
+    if(taskDialog){
+        TASKDIALOG_BUTTON buttons[]={{IDOK,L"Effacer"},{IDCANCEL,L"Annuler"}};
+        TASKDIALOGCONFIG config{};config.cbSize=sizeof config;config.hwndParent=window;config.hInstance=instance;
+        config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=L"Effacer les données";
+        config.pszMainIcon=TD_WARNING_ICON;config.pszMainInstruction=title;config.pszContent=body;
+        config.pButtons=buttons;config.cButtons=2;config.nDefaultButton=IDCANCEL;
+        int button=IDCANCEL;if(SUCCEEDED(taskDialog(&config,&button,nullptr,nullptr)))return button==IDOK;
+    }
+    return MessageBoxW(window,(std::wstring(title)+L"\n\n"+body).c_str(),L"Effacer les données",MB_OKCANCEL|MB_ICONWARNING|MB_DEFBUTTON2)==IDOK;
+}
+void ClearBrowsingData(){
+    if(smoke||!ConfirmClearData())return;
+    // Local traces: reopen stack and finished download rows; live downloads (and their ops) stay.
+    closedTabs.clear();
+    downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[](const DL::Item& d){return d.state!=DL::State::InProgress&&d.state!=DL::State::Paused;}),downloads.end());
+    for(auto it=downloadOps.begin();it!=downloadOps.end();)it=FindDownload(it->first)?std::next(it):downloadOps.erase(it);
+    SaveDownloads();DownloadsChanged();
+    // Engine data lives in the shared profile: any live tab's webview reaches it.
+    Com<ICoreWebView2Profile2> profile;
+    for(auto& t:pages){if(!t->view.p)continue;Com<ICoreWebView2_13> view13;Com<ICoreWebView2Profile> base;
+        if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_13,(void**)&view13.p))&&view13.p&&SUCCEEDED(view13->get_Profile(&base.p))&&base.p&&
+           SUCCEEDED(base->QueryInterface(IID_ICoreWebView2Profile2,(void**)&profile.p))&&profile.p)break;}
+    if(!profile.p){Log(L"SETTINGS clear data: no ICoreWebView2Profile2 (no live tab or old runtime); local traces only");AnnounceDataCleared();return;}
+    auto done=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{
+        if(SUCCEEDED(hr)){Log(L"SETTINGS browsing data cleared");AnnounceDataCleared();}else{wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"SETTINGS clear data failed ")+code);}return S_OK;});
+    HRESULT hr=profile->ClearBrowsingDataAll(done);done->Release();
+    if(FAILED(hr)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"SETTINGS ClearBrowsingDataAll failed ")+code);}
+}
+// SETTINGS(updates): footer line and the check-for-updates button.
+NativeChrome::SettingsUI::Drawer::Version SettingsVersion(); // defined with the self-update host (needs the engine)
+void SettingChanged(BrowserSettings::Change change){
+    using BrowserSettings::Change;SaveSettings();
+    switch(change){
+    case Change::Engine:Log(L"SETTINGS search engine "+std::wstring(BrowserSettings::Info(settings.engine).name));break;
+    case Change::RestoreTabs:Log(settings.restoreTabs?L"SETTINGS restore tabs on":L"SETTINGS restore tabs off");break;
+    case Change::DownloadFolder:case Change::AskWhereToSave:ApplyDownloadSettings();break;
+    case Change::ReduceMotion:Log(settings.reduceMotion?L"SETTINGS reduced motion on":L"SETTINGS reduced motion off");ApplyReducedMotion();break;
+    }
+}
+// The toolbar button of the surface that is (still) open stays latched.
+void SyncLatch(){chrome.latched=settingsDrawer.Open()?'S':(downloadPanel.Visible()||(downloadDrawer.Visible()&&!downloadDrawer.Closing()))?'D':0;InvalidateChrome();}
+void ShowSettings(){
+    if(!settingsDrawer.Window())return;
+    CloseDownloadSurfaces();chrome.latched='S';InvalidateChrome();
+    settingsDrawer.Show();SyncUpdateToastReserve();
+}
+void ToggleSettings(){if(settingsDrawer.Open()){settingsDrawer.Hide(true,true);return;}ShowSettings();}
+void CreateSettingsPanel(){
+    NativeChrome::SettingsUI::Drawer::Hooks hooks;
+    hooks.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
+    hooks.closed=[](bool keyboard){SyncLatch();SyncUpdateToastReserve();if(keyboard&&!halted)FocusPage();};
+    hooks.changed=SettingChanged;
+    hooks.pickFolder=PickDownloadFolder;
+    hooks.clearData=ClearBrowsingData;
+    hooks.checkUpdates=[](){CheckForUpdates();};
+    hooks.version=SettingsVersion;
+    hooks.downloadFolder=EffectiveDownloadFolder;
+    hooks.reducedMotion=ReducedMotionPreferred;
+    if(!settingsDrawer.Create(instance,window,base,&settings,std::move(hooks)))Log(L"SETTINGS drawer unavailable");
 }
 
 void RequestFavicon(const std::shared_ptr<Tab>& tab){
@@ -531,7 +730,7 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         result=c->add_AcceleratorKeyPressed(key,&token);key->Release();if(!Check(result,L"add_AcceleratorKeyPressed"))return S_OK;
         auto failed=Callback<ICoreWebView2ProcessFailedEventHandler,ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs* a)->HRESULT{return ProcessFailed(weak.lock(),a);});
         result=t->view->add_ProcessFailed(failed,&token);failed->Release();if(!Check(result,L"add_ProcessFailed"))return S_OK;
-        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");}
+        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();}
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;Navigate(t,uri);return S_OK;
     });
     HRESULT hr=environment->CreateCoreWebView2Controller(window,done);done->Release();Check(hr,L"CreateCoreWebView2Controller");
@@ -546,6 +745,7 @@ case 3:Command('B');break;
 case 4:Command('F');break;
 case 5:Command('R');break;
 case 6:{Command('D');if(halted)return;if(!downloadPanel.Visible()||!IsWindowVisible(downloadPanel.Window())){Fail(L"Smoke download history did not open",E_FAIL);return;}downloadPanel.Hide(false);if(downloadPanel.Visible()||chrome.latched){Fail(L"Smoke download history did not close",E_FAIL);return;}Log(L"SMOKE native download history opened and closed");
+    Command('S');if(!settingsDrawer.Visible()||!IsWindowVisible(settingsDrawer.Window())||chrome.latched!='S'){Fail(L"Smoke settings drawer did not open",E_FAIL);return;}settingsDrawer.Hide(false,false);if(settingsDrawer.Visible()||chrome.latched){Fail(L"Smoke settings drawer did not close",E_FAIL);return;}Log(L"SMOKE settings drawer opened and closed");
     auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR)->HRESULT{Check(hr,L"Smoke download script");return S_OK;});
     HRESULT hr=Active()->view->ExecuteScript(L"(()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['browser smoke download'],{type:'text/plain'}));a.download='browser-smoke.txt';document.body.appendChild(a);a.click();})()",cb);cb->Release();Check(hr,L"Smoke download ExecuteScript");break;}
 case 7:Command('M');if(!IsZoomed(window)){Fail(L"Smoke maximize assertion",E_FAIL);return;}Command('M');if(IsZoomed(window)){Fail(L"Smoke restore assertion",E_FAIL);return;}Log(L"SMOKE native maximize/restore verified DPI="+std::to_wstring(GetDpiForWindow(window)));auto closed=Active();int closedIndex=current;Command('W');Command('U');if(!Active()||Active()->uri!=closed->uri||current!=closedIndex||pages.size()!=2||!closedTabs.empty()){Fail(L"Smoke reopen tab assertion",E_FAIL);return;}Command('W');Log(L"SMOKE reopen closed tab at original index verified");Command('L');if(!chrome.AssetsReady()||pages.size()!=1||GetFocus()!=address||Destination(L"deux mots")!=L"https://duckduckgo.com/?q=deux%20mots"){Fail(L"Smoke native controls assertion",E_FAIL);return;}Log(L"SMOKE PASS: blank #171717 home, bundled font families, 11 exported SVG icons, 2 tabs, HTTPS, document titles, back, forward, reload, close tab, address focus, search encoding");KillTimer(window,1);PostMessageW(window,WM_CLOSE,0,0);break;
@@ -592,15 +792,13 @@ case 'X':PostMessageW(window,WM_CLOSE,0,0);break;
 case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);AnnounceCopied();}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
 case 'D':if(downloadDismissClick){downloadDismissClick=false;break;}ToggleDownloads();break;
 case 'P':MessageBoxW(window,L"La navigation privée n'est pas disponible dans cette version.\n\nLes onglets actuels utilisent le profil normal local (cookies et cache persistants). Aucun onglet privé n'a été ouvert.",L"Navigation privée — indisponible",MB_OK|MB_ICONINFORMATION);break;
-case 'S':{HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'T',L"Nouvel onglet\tCtrl+T");AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");AppendMenuW(menu,MF_STRING,900,L"Liste des onglets");AppendMenuW(menu,MF_STRING,'D',L"Téléchargements");
-#ifdef BROWSER_UPDATES
-AppendMenuW(menu,MF_STRING|(UpdateCheckAvailable()?0:MF_GRAYED),CheckUpdatesCommand,L"Rechercher des mises à jour");
-#endif
-AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,'A',L"À propos de browser");int selected=TrackMenu(menu,KeyboardAnchor());DestroyMenu(menu);if(selected)Command(selected);break;}
+case 'S':if(settingsDismissClick){settingsDismissClick=false;break;}ToggleSettings();break;
 case 'A':MessageBoxW(window,(AboutTitle()+L"\nInterface native issue du canvas Paper.\nRecherche : DuckDuckGo.\nProfil normal local, sans synchronisation.\nCtrl+L / Alt+D : adresse - F6 : page / barre\nCtrl+T/W : ouvrir / fermer - Ctrl+Maj+T : rouvrir\nCtrl+Tab : onglet suivant\nCtrl+1...8 : onglet - Ctrl+9 : dernier\nCtrl+Maj+PgPr\u00e9c/PgSuiv : d\u00e9placer l’onglet\nCtrl+F : rechercher - Alt+\u2190/\u2192 : historique\n\nLe menu regroupe les actions disponibles ; aucun réglage système n'est modifié.").c_str(),L"À propos",MB_OK);break;
 }}
 #ifndef BROWSER_UPDATES
 void SyncUpdateToastReserve(){} void CheckForUpdates(){} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
+NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){return {AboutTitle(),false,false};}
+void SyncUpdateToastMotion(){}
 #else
 // ---- Self-update host -------------------------------------------------------
 // The engine works on its own threads and only posts UpdateMessage (coalesced and
@@ -610,7 +808,7 @@ void SyncUpdateToastReserve(){} void CheckForUpdates(){} bool UpdateCheckAvailab
 constexpr UINT UpdateMessage=WM_APP+9; constexpr UINT_PTR UpdateTimerId=74;
 UpdateCore::Engine updates; BrowserUpdate::Toast updateToast; bool updatesStarted=false,closingForInstall=false;
 DWORD updateTimerDelayMs=0; // armed one-shot delay (0 = none); read by fixtures
-void ShowUpdateView(){if(updatesStarted)updateToast.SetView(updates.View());}
+void ShowUpdateView(){if(updatesStarted)updateToast.SetView(updates.View());settingsDrawer.Changed();}
 // Periodic checks for a long-running browser: ONE one-shot timer, due-aware and re-armed after every
 // engine notification and every firing. Delay = time to the persisted next-check (6 h TTL / back-off),
 // never below 15 min nor above 6 h, so an idle browser wakes at most a few times per hour and usually
@@ -648,6 +846,26 @@ void StartUpdates(UpdateCore::Config config=UpdateConfig()){
 }
 bool UpdateCheckAvailable(){return updatesStarted&&!closingForInstall;}
 void CheckForUpdates(){if(UpdateCheckAvailable()){updates.CheckNow();ShowUpdateView();}}
+// Settings footer: "browser <v> · <statut>", kept within ~200 DIP at 14 px (hence the terse wording).
+// A manual check from the drawer goes through the engine like the menu command, so the toast
+// surfaces Available/Ready/Error by itself; "À jour" only lives here (the toast stays hidden).
+NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){
+    using P=BrowserUpdate::Phase;using L=UpdateCore::Engine::LastCheck;
+    if(!updatesStarted||!updates.Enabled())return {AboutTitle(),false,false};
+    const auto v=updates.View();std::wstring status;
+    switch(v.phase){
+    case P::Hidden:{const auto last=updates.LastCheckResult();status=last==L::UpToDate?L"À jour":last==L::Available?L"Disponible":last==L::Failed?L"Hors ligne":L"";break;}
+    case P::Checking:status=L"Recherche…";break;
+    case P::Available:status=L"Disponible";break;
+    case P::Downloading:status=v.total?L"Téléch. "+std::to_wstring(std::min<std::uint64_t>(100,v.received*100/v.total))+L" %":std::wstring(L"Téléchargement…");break;
+    case P::Ready:status=L"À installer";break;
+    case P::Installing:status=L"Installation…";break;
+    case P::Installed:status=L"Installée";break;
+    case P::Error:status=v.version.empty()?L"Hors ligne":L"Échec";break; // empty version = the check itself failed
+    }
+    const bool busy=v.phase==P::Checking||v.phase==P::Downloading||v.phase==P::Installing;
+    return {status.empty()?AboutTitle():AboutTitle()+L" · "+status,v.phase==P::Checking,UpdateCheckAvailable()&&!busy};
+}
 void StopUpdates(){if(window)KillTimer(window,UpdateTimerId);updateTimerDelayMs=0;if(updatesStarted){updatesStarted=false;updates.Shutdown();}updateToast.Close();}
 // Legacy portable exe (old Start Menu shortcut target) after a successful first install: hand over to the
 // installed current version (stable profile/session) instead of reopening the obsolete portable copy.
@@ -662,21 +880,22 @@ bool ForwardToInstalled(const std::wstring& installRoot=L""){
 }
 void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
 // The bottom-left card keeps clear of the download drawer docked on the right.
-void SyncUpdateToastReserve(){const bool open=downloadDrawer.Visible()&&!downloadDrawer.Closing();updateToast.SetReservedRight(open?NativeChrome::Downloads::DrawerLayout::width+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
+void SyncUpdateToastReserve(){const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open();updateToast.SetReservedRight(open?NativeChrome::Downloads::DrawerLayout::width+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
+void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
 #endif
 // Portable layout (unchanged): profile, session and log beside the executable.
 // Installed layout <root>\versions\<v>\browser.exe keeps profile/session/log in the
 // stable <root>\data, outside every version directory (ResolveDataPaths is pure;
 // the one-time copy of a portable profile is done by the helper, never here).
 void ResolveBrowserPaths(const std::wstring& installRoot=L""){
-    dataDir=base;profileDir=base+L"\\profile";sessionFile=base+L"\\session";downloadsFile=base+L"\\downloads";logFile=base+L"\\prototype.log";
+    dataDir=base;profileDir=base+L"\\profile";sessionFile=base+L"\\session";downloadsFile=base+L"\\downloads";settingsFile=base+L"\\settings";logFile=base+L"\\prototype.log";
 #ifdef BROWSER_UPDATES
     auto paths=UpdateCore::ResolveDataPaths(ExePath(),installRoot);
     if(paths.installed&&!paths.dataDir.empty()&&!paths.profileDir.empty()&&!paths.sessionFile.empty()){
         std::error_code ignored;std::filesystem::create_directories(std::filesystem::path(paths.dataDir),ignored);
-        dataDir=paths.dataDir;profileDir=paths.profileDir;sessionFile=paths.sessionFile;downloadsFile=paths.downloadsFile.empty()?paths.dataDir+L"\\downloads":paths.downloadsFile;if(!paths.logFile.empty())logFile=paths.logFile;}
+        dataDir=paths.dataDir;profileDir=paths.profileDir;sessionFile=paths.sessionFile;downloadsFile=paths.downloadsFile.empty()?paths.dataDir+L"\\downloads":paths.downloadsFile;settingsFile=paths.dataDir+L"\\settings";if(!paths.logFile.empty())logFile=paths.logFile;}
 #else
     (void)installRoot;
 #endif
@@ -811,6 +1030,8 @@ void SyncAccessibility(){
     if(focus!=accessibleState.focus){accessibleState.focus=focus;accessibility.Raise(focus,UIA_AutomationFocusChangedEventId);}
 }
 void AnnounceCopied(){accessibility.Notify('C',L"Lien copié",L"CopyLink");}
+// Raised on the Réglages button: it always exists, unlike drawer rows.
+void AnnounceDataCleared(){accessibility.Notify('S',L"Données effacées",L"ClearData");}
 LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
     if(msg==WM_IME_STARTCOMPOSITION)addressKeys.SetComposing(true);
     if(msg==WM_IME_ENDCOMPOSITION)addressKeys.SetComposing(false);
@@ -837,14 +1058,14 @@ case WM_DPICHANGED:{auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->rig
     LayoutUpdateToast();
 #endif
     return 0;}
-case WM_SIZE:motionMinimized=w==SIZE_MINIMIZED;if(!motionMinimized){Layout();downloadDrawer.Reposition();}else CloseDownloadSurfaces(false);ScheduleMotion(NativeChrome::Motion::Now());
+case WM_SIZE:motionMinimized=w==SIZE_MINIMIZED;if(!motionMinimized){Layout();downloadDrawer.Reposition();settingsDrawer.Reposition();}else{CloseDownloadSurfaces(false);settingsDrawer.Hide(false,false);}ScheduleMotion(NativeChrome::Motion::Now());
 #ifdef BROWSER_UPDATES
     // Minimised: the toast stops its clock/timer (zero wakes); otherwise SetOwnerVisible(true)
     // re-lays the card out (bottom-left anchor, drawer reserve kept).
     updateToast.SetOwnerVisible(!motionMinimized);
 #endif
     return 0;
-case WM_MOVE:downloadDrawer.Reposition();
+case WM_MOVE:downloadDrawer.Reposition();settingsDrawer.Reposition();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
 #endif
@@ -857,11 +1078,11 @@ case WM_ERASEBKGND:return 1;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
 case WM_MOUSEMOVE:{if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_MOUSELEAVE:UnlockTabWidth();UpdateInteraction(0,pressed);return 0;
-case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).left;}}return 0;}
+case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id))SetFocus(h);SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).left;}}return 0;}
 case WM_LBUTTONUP:{bool dragged=tabDrag.active;CancelTabDrag();int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
 case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
-case WM_SETTINGCHANGE:motion.SetReducedMotion(NativeChrome::Motion::SystemReducedMotion());InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());return 0;
+case WM_SETTINGCHANGE:ApplyReducedMotion();return 0; // Windows' switch, OR'd with the app's own
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}return 0;}
 case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(GET_Y_LPARAM(l)<S(44))TabMenu(0);return 0;}
 // Menu key / Shift+F10 arrive with lParam (-1,-1): on a focused tab or its close button, open the right-click menu
@@ -885,6 +1106,7 @@ case WM_CTLCOLOREDIT:{
 }
 case Shortcut:keyboardModality=true;Command((int)w);return 0;
 case AccessibleMessage:AccessibleAction((int)w,(long long)l);return 0;
+case DownloadAskMessage:AskPendingDownloads();return 0;
 case WM_APP+2:SmokeCheck();return 0;
 case WM_APP+3:SmokeAdvance();return 0;
 case FrameMessage:{if(l==NativeChrome::FrameClock::ClockLost){frameClock.Stop();frameClockReady=false;ScheduleMotion(NativeChrome::Motion::Now());return 0;}
@@ -914,7 +1136,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
 #ifdef BROWSER_UPDATES
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
 #endif
-    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}LoadDownloads();CreateDownloadPanel();frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
+    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}LoadSettings();motion.SetReducedMotion(ReducedMotionPreferred());LoadDownloads();CreateDownloadPanel();CreateSettingsPanel();frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
@@ -922,5 +1144,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,profileDir.c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);downloadPanel.Dispose();downloadDrawer.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }
