@@ -735,6 +735,7 @@ void Toast::SetOwnerVisible(bool visible) {
 }
 void Toast::SyncReducedMotion() { if (impl_) { impl_->presenter.SetReduced(impl_->Reduced(), NativeChrome::Motion::Now()); impl_->Request(); } }
 void Toast::SetReservedRight(float dip) { if (impl_) { impl_->reservedRight = std::max(0.f, dip); Layout(); } }
+void Toast::SetTopReserve(float dip) { if (impl_ && impl_->options.topReserve != dip) { impl_->options.topReserve = std::max(0.f, dip); Layout(); } }
 bool Toast::Focus() {
     if (!impl_ || !impl_->hwnd || !impl_->windowShown || !impl_->presenter.Interactive()) return false;
     impl_->keyboard = true;

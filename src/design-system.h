@@ -47,6 +47,29 @@ namespace AddressLoading { inline constexpr float opacity=.08f; }
 // Danger tone (Paper --color-browser-danger #FF7B6E): an invalid certificate,
 // "Effacer les données…". Always paired with an icon and a label, never alone.
 namespace Danger { inline constexpr float r=1, g=.482f, b=.431f, plate=.14f; }
+// Accent (Paper --color-browser-accent #3E67FF): the text caret of every native field,
+// later the user-chosen highlight. One accessor so a future "Couleur d'accentuation"
+// setting only calls SetAccent (the value persists in `settings` as accent=#RRGGBB).
+struct Rgb { float r, g, b; };
+namespace Accent {
+inline constexpr unsigned long defaultRgb=0x3E67FF;
+inline constexpr float caretOpacity=.9f;   // Paper #3E67FFE6 / #FF7B6EE6
+inline Rgb& Current(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
+inline void Set(unsigned long rgb){Current()={((rgb>>16)&255)/255.f,((rgb>>8)&255)/255.f,(rgb&255)/255.f};}
+inline Rgb Get(){return Current();}
+}
+inline Rgb DangerRgb(){return {Danger::r,Danger::g,Danger::b};}
+// Vertical chrome (Paper "Favoris — flow", 2026-11-08): the page starts right under the
+// chrome, with no top padding (4 DIP on the sides and bottom only). Chrome = tab row
+// 2+36, gap 6, toolbar 32, bottom padding 4, 1 DIP hairline = 81; the optional
+// bookmarks band adds its 6 DIP gap and 34 DIP row (32 DIP items, bottom-aligned) = 121.
+namespace Vertical {
+inline constexpr float toolbarBottom=76, hairline=80, top=81;
+inline constexpr float bandGap=Space::sm, bandRow=34, bandTop=toolbarBottom+bandGap+(bandRow-32), bandBottom=bandTop+32; // 84..116
+inline constexpr float bandExtra=bandGap+bandRow; // 40
+inline constexpr float ContentTop(bool band){return top+(band?bandExtra:0);}
+}
+static_assert(Vertical::ContentTop(false)==81&&Vertical::ContentTop(true)==121,"Paper chrome heights: 81 without the bookmarks band, 121 with it");
 // Address bar (issue #20). The indicator lives in a 24 DIP slot 4 DIP inside the
 // field, the same lane as the suggestion icons; text starts at 32 DIP.
 namespace Address {

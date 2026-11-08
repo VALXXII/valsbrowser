@@ -112,7 +112,7 @@ static void Client(){
     Expect(!unnamed,"no unnamed chrome control");
     // Toolbar order follows the screen.
     std::vector<std::wstring> toolbar;for(auto& i:items)if(i.parent==L"Navigation")toolbar.push_back(i.name);
-    Expect(toolbar==std::vector<std::wstring>{L"Précédent",L"Suivant",L"Connexion sécurisée",L"Adresse ou recherche",L"Actualiser",L"Copier le lien",L"Historique",L"Téléchargements",L"Navigation privée",L"Réglages"},"toolbar reading order");
+    Expect(toolbar==std::vector<std::wstring>{L"Précédent",L"Suivant",L"Connexion sécurisée",L"Adresse ou recherche",L"Actualiser",L"Copier le lien",L"Ajouter aux favoris",L"Historique",L"Téléchargements",L"Navigation privée",L"Réglages"},"toolbar reading order");
 
     // 2. States and shortcuts.
     auto* back=Find(items,L"Précédent");auto* reload=Find(items,L"Actualiser");auto* copy=Find(items,L"Copier le lien");

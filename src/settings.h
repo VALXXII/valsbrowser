@@ -60,6 +60,27 @@ inline std::wstring SleepLabel(int minutes) {
 constexpr int ZoomChoices[] = {80, 90, 100, 110, 125, 150};
 constexpr int ZoomCount = 6;
 inline std::wstring ZoomLabel(int percent) { return std::to_wstring(percent) + L" %"; }
+// Bookmarks bar under the toolbar: shown once it holds a bookmark (default), always, or never.
+enum class BookmarksBar { Auto, Always, Never };
+constexpr int BookmarksBarCount = 3;
+inline const ChoiceInfo& Info(BookmarksBar b) {
+    static const ChoiceInfo choices[BookmarksBarCount] = {
+        {L"Si elle contient des favoris", L"La barre apparaît dès le premier favori.", "auto"},
+        {L"Toujours", L"La barre reste affichée, même vide.", "always"},
+        {L"Jamais", L"Les favoris restent dans le menu et le tiroir Favoris.", "never"},
+    };
+    const int i = static_cast<int>(b); return choices[i >= 0 && i < BookmarksBarCount ? i : 0];
+}
+inline const wchar_t* ShortLabel(BookmarksBar b) { return b == BookmarksBar::Always ? L"Toujours" : b == BookmarksBar::Never ? L"Jamais" : L"Automatique"; }
+// Accent colour (#RRGGBB): groundwork for a future choice; the caret reads it today.
+constexpr std::uint32_t DefaultAccent = 0x3E67FF;
+inline std::string AccentText(std::uint32_t rgb) { char t[8]; const char* hex = "0123456789ABCDEF"; t[0] = '#'; for (int i = 0; i < 6; ++i) t[1 + i] = hex[(rgb >> (20 - 4 * i)) & 15]; t[7] = 0; return t; }
+inline bool ParseAccent(const std::string& v, std::uint32_t& out) {
+    if (v.size() != 7 || v[0] != '#') return false;
+    std::uint32_t x = 0;
+    for (size_t i = 1; i < 7; ++i) { const char c = v[i]; int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; if (d < 0) return false; x = x * 16 + static_cast<std::uint32_t>(d); }
+    out = x; return true;
+}
 
 struct State {
     Engine engine = Engine::DuckDuckGo;
@@ -74,16 +95,19 @@ struct State {
     bool clearOnExit = false;      // clear browsing data when the browser closes
     int sleepMinutes = 120;        // one of SleepChoices
     int zoomPercent = 100;         // one of ZoomChoices
+    BookmarksBar bookmarksBar = BookmarksBar::Auto;
+    std::uint32_t accent = DefaultAccent; // #RRGGBB
     bool operator==(const State& o) const {
         return engine == o.engine && restoreTabs == o.restoreTabs && downloadFolder == o.downloadFolder &&
                askWhereToSave == o.askWhereToSave && reduceMotion == o.reduceMotion && searchSuggestions == o.searchSuggestions &&
                tracking == o.tracking && passwords == o.passwords && autofill == o.autofill && clearOnExit == o.clearOnExit &&
-               sleepMinutes == o.sleepMinutes && zoomPercent == o.zoomPercent;
+               sleepMinutes == o.sleepMinutes && zoomPercent == o.zoomPercent &&
+               bookmarksBar == o.bookmarksBar && accent == o.accent;
     }
 };
 // What a panel interaction changed; the host applies and saves it.
 enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceMotion,
-                    SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom };
+                    SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom, BookmarksBar };
 
 inline void Write(std::ostream& out, const State& s) {
     out << "browser-settings 1\n"
@@ -98,7 +122,9 @@ inline void Write(std::ostream& out, const State& s) {
         << "autofill=" << (s.autofill ? 1 : 0) << '\n'
         << "clear-on-exit=" << (s.clearOnExit ? 1 : 0) << '\n'
         << "sleep-minutes=" << s.sleepMinutes << '\n'
-        << "zoom-percent=" << s.zoomPercent << '\n';
+        << "zoom-percent=" << s.zoomPercent << '\n'
+        << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
+        << "accent=" << AccentText(s.accent) << '\n';
 }
 inline State Read(std::istream& in) {
     State s; std::string line;
@@ -121,6 +147,8 @@ inline State Read(std::istream& in) {
         else if (key == "tracking") { for (int i = 0; i < TrackingCount; ++i) if (value == Info(static_cast<Tracking>(i)).key) s.tracking = static_cast<Tracking>(i); }
         else if (key == "sleep-minutes") { for (int m : SleepChoices) if (value == std::to_string(m)) s.sleepMinutes = m; }
         else if (key == "zoom-percent") { for (int z : ZoomChoices) if (value == std::to_string(z)) s.zoomPercent = z; }
+        else if (key == "bookmarks-bar") { for (int i = 0; i < BookmarksBarCount; ++i) if (value == Info(static_cast<BookmarksBar>(i)).key) s.bookmarksBar = static_cast<BookmarksBar>(i); }
+        else if (key == "accent") { std::uint32_t rgb = 0; if (ParseAccent(value, rgb)) s.accent = rgb; }
         else if (key == "download-folder") { std::wstring folder; if (value.size() < 32768 && NativeChrome::Downloads::FromUtf8(value, folder)) s.downloadFolder = folder; }
     }
     return s;

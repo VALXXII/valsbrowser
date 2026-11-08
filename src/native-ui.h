@@ -28,6 +28,36 @@ public:
     }
 };
 
+// Coloured text caret for a native EDIT (Paper: 1 DIP, accent #3E67FF at 90%, danger
+// while a field is invalid). Windows inverts the caret bitmap over the field (XOR), so
+// over the field's known flat surface `background` the visible colour is exactly `color`.
+// The EDIT recreates its caret on focus: call this after WM_SETFOCUS and whenever the
+// colour changes (validity). One bitmap per call; the previous one is released.
+class AccentCaret {
+    HBITMAP bitmap_=nullptr;
+public:
+    ~AccentCaret(){if(bitmap_)DeleteObject(bitmap_);}
+    static COLORREF Mix(COLORREF over,COLORREF color,float alpha){
+        auto c=[alpha](int b,int f){return (int)(b+(f-b)*alpha+.5f);};
+        return RGB(c(GetRValue(over),GetRValue(color)),c(GetGValue(over),GetGValue(color)),c(GetBValue(over),GetBValue(color)));
+    }
+    void Apply(HWND edit,COLORREF background,COLORREF color,int width,int height){
+        if(!edit||GetFocus()!=edit)return;
+        width=width<1?1:width;height=height<1?1:height;
+        BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
+        void* pixels=nullptr;HDC dc=GetDC(edit);HBITMAP next=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&pixels,nullptr,0);ReleaseDC(edit,dc);
+        if(!next||!pixels)return;
+        const COLORREF x=color^background;const DWORD bgr=DWORD(GetBValue(x))|(DWORD(GetGValue(x))<<8)|(DWORD(GetRValue(x))<<16);
+        for(int i=0;i<width*height;++i)((DWORD*)pixels)[i]=bgr;
+        DestroyCaret();
+        if(!CreateCaret(edit,next,width,height)){DeleteObject(next);return;}
+        if(bitmap_)DeleteObject(bitmap_);
+        bitmap_=next;
+        // The EDIT placed its own caret already: keep its position, show ours.
+        ShowCaret(edit);
+        DWORD start=0,end=0;SendMessageW(edit,EM_GETSEL,(WPARAM)&start,(LPARAM)&end);SendMessageW(edit,EM_SETSEL,start,end);
+    }
+};
 inline std::wstring EscapeMenuText(const std::wstring& text){
     std::wstring label;label.reserve(text.size());
     for(wchar_t c:text){label+=c;if(c==L'&')label+=c;}

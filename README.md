@@ -1,5 +1,15 @@
 # browser - Windows natif
 
+## Preview favoris
+
+Build portable : `build/bookmarks-preview/browser.exe`. Le profil, les réglages et les favoris de cette preview restent dans ce dossier, séparés du navigateur installé. Le ZIP `build/browser-bookmarks-preview.zip` contient le programme, ses ressources et les instructions ; extraire le dossier entier avant de lancer `browser.exe`.
+
+Ctrl+D ou l'étoile enregistrent la page et ouvrent le popover de modification. Ctrl+Maj+B affiche/masque la barre ; Ctrl+Maj+O ouvre le tiroir Favoris avec recherche. Les dossiers, sous-dossiers, déplacements, duplication et suppressions se gèrent aussi au clic droit. Ctrl+Z ou le toast annulent la dernière opération. La barre se réordonne par glisser ou Ctrl+Maj+Gauche/Droite ; Alt+Haut/Bas réordonne les lignes du tiroir.
+
+Les adresses invalides restent rouges jusqu'à correction ; le curseur utilise l'accent centralisé. Le futur choix de couleur dispose déjà du réglage persistant `accent=#RRGGBB` (pas encore de sélecteur dans les réglages). La visibilité persistante utilise `bookmarks-bar=auto|always|never`.
+
+Vérifications : `test-bookmarks.ps1`, `test-bookmarks-ui.ps1`, `test.ps1`, `test-ui.ps1`, `test-design-system.ps1`, `test-accessibility.ps1`. Captures natives dans `build/bookmarks-ui-qa` ; compte rendu dans `design/bookmarks-preview-validation.md`.
+
 Version int?gr?e sur `main`, issue de `feat/design-system-polish`. La branche historique `master` est conserv?e.
 
 ## Version Lottie + polish

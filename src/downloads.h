@@ -262,7 +262,7 @@ inline constexpr float actionsRight = width - padding - Design::Space::sm;     /
 inline constexpr float maskFade = 88;  // gradient over the name before the actions
 inline constexpr float radius = 8;     // Windows 11 popup corner (DWM)
 inline constexpr int popoverRows = 4;  // latest downloads; "View all" opens the drawer
-inline constexpr float anchorGap = 8;  // below the toolbar button: top on the page edge (84), like the drawer
+inline constexpr float anchorGap = 8;  // below the toolbar button: top on the page edge (81), like the drawer
 inline constexpr float headerTop = padding - (headerHeight - line) / 2;        // 12: header row centred on the first text line
 inline constexpr float firstRow = headerTop + headerHeight + Design::Space::lg; // 52
 inline constexpr float RowsBottom(int rows) { return firstRow + (rows < 1 ? 1 : rows) * pitch - rowGap; }
@@ -299,7 +299,7 @@ inline constexpr Box ViewAll(float top, float labelWidth) { return {padding - 4,
 // 12 DIP; four rows give the 240 DIP stride of the frame.
 namespace DrawerLayout {
 using Design::Box;
-inline constexpr float width = Panel::width, top = 84; // window client DIP: under the toolbar
+inline constexpr float width = Panel::width, top = Design::Vertical::top; // window client DIP: right under the chrome (81, no top padding)
 // The popover floats 6 DIP in from the window edge; the drawer window keeps that
 // strip (clipped by its region) so the popover rectangle can morph into it.
 inline constexpr float margin = Design::Space::sm;

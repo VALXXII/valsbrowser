@@ -10,7 +10,7 @@
 namespace BrowserUpdate {
 struct ToastOptions {
     float edgeInset = 14;              // DIP from the owner client's left and bottom edges (Paper)
-    float topReserve = 84;             // DIP of chrome the card must never cover
+    float topReserve = 81;             // DIP of chrome the card must never cover (121 with the bookmarks band)
     bool allowCompositorClock = true;  // false = DWM vblank timing (fixtures only)
     int forceReducedMotion = -1;       // -1 follow Windows "Show animations"; 0/1 override
 };
@@ -31,6 +31,8 @@ public:
     void SyncReducedMotion();
     // DIP on the owner's right the card must avoid (e.g. an open downloads drawer). Default 0.
     void SetReservedRight(float dip);
+    // DIP of chrome above the page (the bookmarks band grows it from 81 to 121).
+    void SetTopReserve(float dip);
     bool Focus();
     void SetFocusReleaseHandler(std::function<void()> handler);
     void Close();

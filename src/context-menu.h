@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 #include "chrome.h"
+#include "accessibility.h"
+#include <functional>
 
 namespace NativeChrome {
 namespace ContextMenu {
@@ -27,8 +29,15 @@ struct Item {
     std::wstring description;         // optional second line (choice menus: what the option does)
     std::wstring label, shortcut;     // label may carry '&' mnemonics ("&&" is a literal '&')
     bool enabled = true, checked = false, separator = false;
+    bool danger = false;              // destructive command (Paper: #FF7B6E label); its label always says what it does
+    std::wstring icon;                // optional 16 DIP glyph (assets/icons name) in a leading column, white 70%
+    std::shared_ptr<const FaviconImage> image; // optional site icon in the same column (wins over `icon`)
+    std::wstring help;                // UI Automation help text (e.g. a bookmark's address)
     std::vector<Item> children;       // non-empty: a submenu
 };
+// How a menu ended: the chosen id plus the gesture, so a bookmark row can open in a
+// new tab (Ctrl / Shift) or ask for its own context menu (right click, Menu key).
+struct Choice { int id = 0; bool ctrl = false, shift = false, context = false; };
 inline Item Separator() { Item item; item.separator = true; return item; }
 inline Item Command(int id, std::wstring label, std::wstring shortcut = L"", bool enabled = true, bool checked = false) {
     Item item; item.id = id; item.label = std::move(label); item.shortcut = std::move(shortcut); item.enabled = enabled; item.checked = checked; return item;
@@ -49,6 +58,8 @@ namespace Layout {
 inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 24;
 inline constexpr float radius = 10, rowRadius = 6, text = 14, line = 20, trailing = 16, minWidth = 200, maxWidth = 440;
 inline constexpr float submenuDelayMs = 200;
+// Leading icon column (only when a row of the level has one): 16 DIP glyph, 8 DIP to the label (Paper c-99tvvr).
+inline constexpr float icon = 16, iconGap = 8, iconOpacity = .7f;
 // Key caps (Paper): one pill per key, 6 DIP sides, 2 DIP tall padding, radius 4, 2 DIP apart.
 inline constexpr float keyPadX = 6, keyHeight = 20, keyRadius = 4, keyGap = 2;
 // Described choices (Paper "menu décrit"): title line + wrapped description, 7/8 DIP padding.
@@ -72,10 +83,16 @@ class Menu {
         // Opening motion: final window position and the direction it arrives from.
         bool entering = false; Motion::Time opened{}; POINT final{}; int fromX = 0, fromY = 0;
         ID2D1Effect* blur = nullptr;
+        bool icons = false;               // the level reserves the icon column
+        Accessibility::Bridge uia;        // Menu + MenuItem tree for screen readers
+        int announced = -2;               // last row reported as focused
     };
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_;
     std::vector<std::unique_ptr<Level>> levels_; int depth_ = 0; // open levels
-    int result_ = 0; bool done_ = false, reduced_ = false;
+    int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_;
+    std::function<void(int)> background_; // middle click on a row: open in the background, menu stays
+    bool contextRows_ = false;            // right click on a row returns it with context = true
+    static constexpr UINT InvokeMessage = WM_APP + 40; // UIA actions are posted, never run inside the provider call
     static constexpr UINT_PTR FrameTimer = 1, SubmenuTimer = 2;
 
     static bool Selectable(const Item& item) { return !item.separator && item.enabled; }
@@ -94,6 +111,7 @@ class Menu {
                 const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(level->hwnd, 34, &none, sizeof(none));
                 level->motion.EnablePolish(); level->chrome.SetMotion(&level->motion); level->chrome.textCacheLimit = 192;
                 level->chrome.Init(level->hwnd, root_);
+                Attach(*level, static_cast<int>(levels_.size()));
             }
             levels_.push_back(std::move(level));
         }
@@ -107,10 +125,10 @@ class Menu {
             if (plus == start && plus + 1 == shortcut.size()) plus = std::wstring::npos; // a literal "+" key
             std::wstring key = shortcut.substr(start, plus == std::wstring::npos ? std::wstring::npos : plus - start);
             std::wstring low = key; for (auto& ch : low) ch = static_cast<wchar_t>(towlower(ch));
-            if (low.find(L"left") != std::wstring::npos || low.find(L"gauche") != std::wstring::npos) key = L"\u2190";
-            else if (low.find(L"right") != std::wstring::npos || low.find(L"droite") != std::wstring::npos) key = L"\u2192";
-            else if (low.find(L"up") != std::wstring::npos || low.find(L"haut") != std::wstring::npos) key = L"\u2191";
-            else if (low.find(L"down") != std::wstring::npos || low.find(L"bas") != std::wstring::npos) key = L"\u2193";
+            if (low == L"left" || low == L"arrowleft" || low == L"gauche") key = L"\u2190";
+            else if (low == L"right" || low == L"arrowright" || low == L"droite") key = L"\u2192";
+            else if (low == L"up" || low == L"arrowup" || low == L"haut") key = L"\u2191";
+            else if (low == L"down" || low == L"arrowdown" || low == L"bas") key = L"\u2193";
             else if (low == L"shift") key = L"Maj";
             if (!key.empty()) keys.push_back(key);
             if (plus == std::wstring::npos) break;
@@ -157,14 +175,16 @@ class Menu {
     // Content-driven width: the widest label, plus the shortcut column or a trailing glyph.
     // A menu with described choices takes the fixed Paper width and wraps descriptions.
     void Measure(Level& l) {
-        float label = 0, shortcut = 0; bool glyph = false, described = false;
+        float label = 0, shortcut = 0; bool glyph = false, described = false; l.icons = false;
         for (const auto& item : *l.items) {
             if (item.separator) continue;
             label = std::max(label, l.chrome.TextWidth(Plain(item.label), Layout::text));
             if (!item.shortcut.empty()) shortcut = std::max(shortcut, KeysWidth(l, item.shortcut));
             glyph = glyph || item.checked || !item.children.empty();
             described = described || !item.description.empty();
+            l.icons = l.icons || !item.icon.empty() || item.image != nullptr;
         }
+        if (l.icons) label += Layout::icon + Layout::iconGap;
         float tail = shortcut > 0 ? Layout::shortcutGap + shortcut : 0;
         if (glyph) tail = std::max(tail, Layout::shortcutGap + Layout::trailing);
         l.width = std::clamp(std::ceil(2 * Layout::pad + 2 + Layout::padLeft + label + tail + Layout::padRight), Layout::minWidth, Layout::maxWidth);
@@ -202,9 +222,11 @@ class Menu {
         Paint(l); ValidateRect(l.hwnd, nullptr);
         if (l.entering) SetTimer(l.hwnd, FrameTimer, 10, nullptr);
         if (activate) { SetForegroundWindow(l.hwnd); SetFocus(l.hwnd); }
+        l.announced = -2;
+        if (l.uia.Listening()) { l.uia.ChildrenChanged(MenuKey); l.uia.Raise(MenuKey, UIA_MenuOpenedEventId); }
     }
     void CloseFrom(int index) {
-        for (int i = index; i < depth_; ++i) { KillTimer(levels_[i]->hwnd, FrameTimer); KillTimer(levels_[i]->hwnd, SubmenuTimer); ShowWindow(levels_[i]->hwnd, SW_HIDE); levels_[i]->entering = false; }
+        for (int i = index; i < depth_; ++i) { if (levels_[i]->uia.Listening()) levels_[i]->uia.Raise(MenuKey, UIA_MenuClosedEventId); KillTimer(levels_[i]->hwnd, FrameTimer); KillTimer(levels_[i]->hwnd, SubmenuTimer); ShowWindow(levels_[i]->hwnd, SW_HIDE); levels_[i]->entering = false; }
         if (index < depth_) depth_ = index;
         if (index > 0 && index - 1 < depth_) { levels_[index - 1]->child = -1; Invalidate(*levels_[index - 1]); }
     }
@@ -219,17 +241,20 @@ class Menu {
         Open(index + 1, (*l.items)[i].children, at, r.left + Px(l, Layout::pad), r.top + Px(l, l.tops[i] + Layout::row) + Px(l, Layout::pad + 1), false);
         Invalidate(l);
     }
-    void Finish(int id) { result_ = id; done_ = true; PostMessageW(owner_, WM_NULL, 0, 0); }
-    void Activate(int index, int i) {
+    void Finish(int id) { result_ = id; choice_.id = id; done_ = true; PostMessageW(owner_, WM_NULL, 0, 0); }
+    void Activate(int index, int i, bool ctrl = false, bool shift = false, bool context = false) {
         Level& l = *levels_[index]; if (i < 0 || i >= static_cast<int>(l.items->size())) return;
         const Item& item = (*l.items)[i]; if (!Selectable(item)) return;
-        if (!item.children.empty()) { l.hover = i; OpenChild(index); if (depth_ > index + 1) Move(index + 1, 1, true); return; }
+        if (context && (!contextRows_ || !item.id)) return;
+        if (!item.children.empty() && !context) { l.hover = i; OpenChild(index); if (depth_ > index + 1) Move(index + 1, 1, true); return; }
+        choice_ = {}; choice_.ctrl = ctrl; choice_.shift = shift; choice_.context = context;
         Finish(item.id);
     }
     void SetHover(int index, int i, bool keyboard) {
         Level& l = *levels_[index]; l.keyboard = keyboard;
         if (l.hover == i) return;
         l.hover = i; Interact(l);
+        if (keyboard && i >= 0 && l.uia.Listening() && l.announced != i) { l.announced = i; l.uia.Raise(RowKey(i), UIA_AutomationFocusChangedEventId); }
         // Hovering another row of a parent closes its open submenu after the same delay.
         KillTimer(l.hwnd, SubmenuTimer);
         if (!keyboard && (i != l.child)) SetTimer(l.hwnd, SubmenuTimer, static_cast<UINT>(Layout::submenuDelayMs), nullptr);
@@ -319,12 +344,24 @@ class Menu {
                 l.chrome.Icon(L"check", box, 14, dim); l.chrome.Icon(L"check", box, 14, dim); tail -= Layout::trailing + Layout::shortcutGap;
             }
             if (!item.shortcut.empty()) tail = DrawKeys(l, item.shortcut, tail, titleTop + Layout::line / 2, dim) - Layout::shortcutGap;
-            const float labelRight = std::max(left + Layout::padLeft + 8, std::min(tail + Layout::shortcutGap - 8, right - Layout::padRight));
-            l.chrome.Text(Plain(item.label), {left + Layout::padLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, (.9f + .1f * h) * dim);
+            float textLeft = left + Layout::padLeft;
+            if (l.icons) {
+                const D2D1_RECT_F box{textLeft, titleTop + (Layout::line - Layout::icon) / 2, textLeft + Layout::icon, titleTop + (Layout::line + Layout::icon) / 2};
+                if (!(item.image && l.chrome.DrawSiteImage(item.image, box, dim)) && !item.icon.empty()) {
+                    // Glyphs ship at 50%: a second pass at 80% lands on Paper's 70% (.5 + .8 x .5 x .5).
+                    l.chrome.Icon(item.icon.c_str(), box, Layout::icon, dim); l.chrome.Icon(item.icon.c_str(), box, Layout::icon, .8f * dim);
+                }
+                textLeft += Layout::icon + Layout::iconGap;
+            }
+            const float labelRight = std::max(textLeft + 8, std::min(tail + Layout::shortcutGap - 8, right - Layout::padRight));
+            const bool danger = item.danger && item.enabled;
+            if (danger) l.chrome.ink = D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, 1);
+            l.chrome.Text(Plain(item.label), {textLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, danger ? 1.f : (.9f + .1f * h) * dim);
+            l.chrome.ink = D2D1::ColorF(1, 1, 1, 1);
             // Description: 50% at rest, a touch brighter on the hovered choice.
             for (size_t k = 0; k < lines.size(); ++k) {
                 const float y = titleTop + Layout::line + 1 + k * Layout::descriptionLine;
-                l.chrome.Text(lines[k], {left + Layout::padLeft, y, right - Layout::padRight - Layout::trailing - 10, y + Layout::descriptionLine}, Layout::text, (.5f + .1f * h) * dim);
+                l.chrome.Text(lines[k], {textLeft, y, right - Layout::padRight - Layout::trailing - 10, y + Layout::descriptionLine}, Layout::text, (.5f + .1f * h) * dim);
             }
         }
         // Hairline on the region's rounded outline (DWM no longer draws one).
@@ -344,9 +381,11 @@ class Menu {
         case VK_RIGHT: if (l.hover >= 0 && !(*l.items)[l.hover].children.empty()) Activate(index, l.hover); return true;
         case VK_LEFT: if (index > 0) CloseFrom(index); return true;
         case VK_ESCAPE: if (index > 0) CloseFrom(index); else Finish(0); return true;
-        case VK_RETURN: case VK_SPACE: if (l.hover >= 0) Activate(index, l.hover); return true;
+        case VK_RETURN: case VK_SPACE: if (l.hover >= 0) Activate(index, l.hover, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0); return true;
+        case VK_APPS: if (l.hover >= 0) Activate(index, l.hover, false, false, true); return true;
         case VK_TAB: Move(index, GetKeyState(VK_SHIFT) < 0 ? -1 : 1); return true;
-        case VK_MENU: case VK_F10: Finish(0); return true;
+        case VK_F10: if (GetKeyState(VK_SHIFT) < 0) { if (l.hover >= 0) Activate(index, l.hover, false, false, true); return true; } Finish(0); return true;
+        case VK_MENU: Finish(0); return true;
         default: break;
         }
         // Access keys: a unique match runs, several cycle through.
@@ -366,6 +405,8 @@ class Menu {
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM lp) {
         const int index = IndexOf(h); Level* l = index >= 0 ? levels_[index].get() : nullptr;
         switch (msg) {
+        case WM_GETOBJECT: if (l) { LRESULT result; if (l->uia.OnGetObject(h, w, lp, result)) return result; } break;
+        case InvokeMessage: if (l && index < depth_ && static_cast<int>(w) < static_cast<int>(l->items->size())) { if (lp == 1) { l->hover = static_cast<int>(w); OpenChild(index); } else if (lp == 2) CloseFrom(index + 1); else Activate(index, static_cast<int>(w)); } return 0;
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); if (l) Paint(*l); EndPaint(h, &ps); return 0; }
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
@@ -386,15 +427,52 @@ class Menu {
             SetHover(index, row, false); return 0;
         }
         case WM_MOUSELEAVE: if (l && !l->keyboard && l->child < 0) SetHover(index, -1, false); return 0;
-        case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); Interact(*l); } return 0;
-        case WM_LBUTTONUP: case WM_RBUTTONUP: {
+        case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); Interact(*l); } return 0;
+        case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
             if (!l) return 0;
             const int row = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); l->pressed = -1; Interact(*l);
-            if (row >= 0) Activate(index, row);
+            if (row < 0) return 0;
+            const Item& item = (*l->items)[row];
+            // Middle click opens a link row in the background and keeps the menu open, as in every browser.
+            if (msg == WM_MBUTTONUP) { if (background_ && Selectable(item) && item.children.empty() && item.id) background_(item.id); return 0; }
+            // Right click on a row of a bookmark menu asks for that row's own menu.
+            if (msg == WM_RBUTTONUP && contextRows_ && item.id) { Activate(index, row, false, false, true); return 0; }
+            Activate(index, row, (w & MK_CONTROL) != 0, (w & MK_SHIFT) != 0);
             return 0;
         }
         }
         return DefWindowProcW(h, msg, w, lp);
+    }
+    // ---- UI Automation: each level is a Menu, each row a MenuItem ------------------
+    static constexpr long long MenuKey = 1;
+    static long long RowKey(int i) { return 100 + i; }
+    void Attach(Level& level, int index) {
+        Accessibility::Host host; host.window = level.hwnd;
+        host.nodes = [this, index] { return Nodes(index); };
+        host.focused = [this, index]() -> long long { if (index >= depth_) return 0; const auto& l = *levels_[index]; return index == depth_ - 1 && l.hover >= 0 ? RowKey(l.hover) : 0; };
+        host.invoke = [this, index](long long key) { if (index < depth_) PostMessageW(levels_[index]->hwnd, InvokeMessage, static_cast<WPARAM>(key - 100), 0); };
+        host.expand = [this, index](long long key, bool open) { if (index < depth_) PostMessageW(levels_[index]->hwnd, InvokeMessage, static_cast<WPARAM>(key - 100), open ? 1 : 2); };
+        host.focus = [this, index](long long key) { if (index < depth_ && key >= 100) SetHover(index, static_cast<int>(key - 100), true); };
+        level.uia.Attach(std::move(host));
+    }
+    std::vector<Accessibility::Node> Nodes(int index) const {
+        std::vector<Accessibility::Node> nodes; if (index >= depth_ || index >= static_cast<int>(levels_.size())) return nodes;
+        const Level& l = *levels_[index]; if (!l.items || !l.hwnd) return nodes;
+        RECT window{}; GetWindowRect(l.hwnd, &window); const float k = l.dpi / 96.f;
+        Accessibility::Node menu; menu.key = MenuKey; menu.role = Accessibility::Role::Menu; menu.name = index == 0 ? L"Menu" : L"Sous-menu"; menu.automationId = L"ContextMenu"; menu.focusable = false; menu.bounds = window; nodes.push_back(menu);
+        int count = 0; for (const auto& item : *l.items) if (!item.separator) ++count;
+        int position = 0;
+        for (size_t i = 0; i < l.items->size() && i < l.tops.size(); ++i) {
+            const Item& item = (*l.items)[i]; if (item.separator) continue;
+            Accessibility::Node n; n.key = RowKey(static_cast<int>(i)); n.parent = MenuKey; n.role = Accessibility::Role::MenuItem;
+            n.name = Plain(item.label); n.accelerator = item.shortcut; n.help = !item.help.empty() ? item.help : item.description; n.enabled = item.enabled;
+            if (item.checked) n.status = L"Sélectionné";
+            if (!item.children.empty()) n.expand = l.child == static_cast<int>(i) && depth_ > index + 1 ? 2 : 1;
+            n.position = ++position; n.count = count; n.automationId = L"MenuItem";
+            n.bounds = {window.left + static_cast<LONG>(Layout::pad * k), window.top + static_cast<LONG>(l.tops[i] * k), window.right - static_cast<LONG>(Layout::pad * k), window.top + static_cast<LONG>((l.tops[i] + l.heights[i]) * k)};
+            nodes.push_back(std::move(n));
+        }
+        return nodes;
     }
 public:
     ~Menu() { Dispose(); }
@@ -404,14 +482,27 @@ public:
         RegisterClassW(&wc);
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the windows.
-    void Dispose() { for (auto& l : levels_) { if (l->blur) { l->blur->Release(); l->blur = nullptr; } l->chrome.Dispose(); } levels_.clear(); depth_ = 0; }
+    void Dispose() { for (auto& l : levels_) { l->uia.Detach(); if (l->blur) { l->blur->Release(); l->blur = nullptr; } l->chrome.Dispose(); } levels_.clear(); depth_ = 0; }
     bool Open() const { return depth_ > 0; }
     // Modal: returns the chosen item's id, 0 when dismissed. `at` is a screen
     // point; `exclude` (keyboard-opened menus) is the control to drop below.
     // alignRight: a keyboard-opened menu ends at the control's right edge (gear-side controls).
+    // Bookmark menus: the whole gesture. `background` runs on a middle click without closing;
+    // a right click (or the Menu key) on a row with an id returns {id, context = true}.
+    Choice TrackChoice(const std::vector<Item>& items, POINT at, const RECT* exclude, bool keyboard, bool reduced, bool alignRight, std::function<void(int)> background) {
+        background_ = std::move(background); contextRows_ = true;
+        const int id = Track(items, at, exclude, keyboard, reduced, alignRight);
+        background_ = nullptr; contextRows_ = false;
+        Choice c = choice_; c.id = id; if (!id) c = {};
+        return c;
+    }
+    // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
+    std::vector<Accessibility::Node> AccessibleNodes(int index) const { return Nodes(index); }
+    HWND LevelWindow(int index) const { return index < depth_ ? levels_[index]->hwnd : nullptr; }
+    int Depth() const { return depth_; }
     int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false) {
         if (!owner_ || items.empty() || depth_) return 0;
-        result_ = 0; done_ = false; reduced_ = reduced;
+        result_ = 0; done_ = false; reduced_ = reduced; choice_ = {};
         int flipX = at.x, flipY = at.y;
         const bool fromRight = exclude && alignRight;
         if (exclude) { at = {fromRight ? exclude->right : exclude->left, exclude->bottom}; flipX = fromRight ? exclude->right : exclude->right; flipY = exclude->top; }

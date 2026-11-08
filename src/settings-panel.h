@@ -38,7 +38,7 @@ enum Hit : int {
     None = 0, Close = 1, Back = 2, EngineBase = 10, More = 20,
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
     ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43,
-    Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53,
+    Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, BookmarksBarHit = 54,
     SiteBase = 100, PermissionBase = 400,
 };
 inline int EngineHit(int index) { return EngineBase + index; }
@@ -157,6 +157,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         endGroup();
         labelAt(L"Affichage");
         add(Kind::Value, Zoom, row, L"Zoom des pages", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
+        add(Kind::Value, BookmarksBarHit, row, L"Barre de favoris", st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
         add(Kind::Switch, ReduceMotion, row, L"Réduire les animations");
         y -= rowGap;
     } else if (view == View::Sites) {
@@ -723,6 +724,11 @@ private:
             for (int i = 0; i < ZoomCount; ++i) items.push_back(ContextMenu::Command(i + 1, ZoomLabel(ZoomChoices[i]), L"", true, state_->zoomPercent == ZoomChoices[i]));
             const int chosen = Choose(items, hit, keyboard);
             if (chosen > 0 && ZoomChoices[chosen - 1] != state_->zoomPercent) { state_->zoomPercent = ZoomChoices[chosen - 1]; if (hooks_.changed) hooks_.changed(Change::Zoom); }
+        } else if (hit == BookmarksBarHit) {
+            std::vector<ContextMenu::Item> items;
+            for (int i = 0; i < BookmarksBarCount; ++i) { const auto b = static_cast<BrowserSettings::BookmarksBar>(i); auto item = ContextMenu::Command(i + 1, Info(b).label, L"", true, state_->bookmarksBar == b); item.description = Info(b).description; items.push_back(item); }
+            const int chosen = Choose(items, hit, keyboard);
+            if (chosen > 0 && static_cast<BrowserSettings::BookmarksBar>(chosen - 1) != state_->bookmarksBar) { state_->bookmarksBar = static_cast<BrowserSettings::BookmarksBar>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::BookmarksBar); }
         } else if (hit == Permissions) { LoadSites(); Navigate(1, now); }
         else if (IsSite(hit)) { site_ = hit - SiteBase; Navigate(2, now); }
         else if (IsPermission(hit) && site_ >= 0 && site_ < static_cast<int>(sites_.size())) {

@@ -11,6 +11,7 @@
 #include "lottie-playback.h"
 #include "loading.h"
 #include "address.h"
+#include "bookmarks-bar.h"
 #include <set>
 #include <tuple>
 #include <cstring>
@@ -36,11 +37,15 @@ struct FontLoader final:IDWriteFontCollectionLoader {
     HRESULT STDMETHODCALLTYPE CreateEnumeratorFromKey(IDWriteFactory* f,const void*,UINT32,IDWriteFontFileEnumerator** out)override{*out=new FontEnumerator(f,folder);return S_OK;}
 };
 constexpr int TabBase=1000, CloseBase=2000;
+// Bookmarks band items: BookmarkBase + visible index (no collision with tabs, closes or the 3000+ keyboard commands).
+constexpr int BookmarkBase=4000, BookmarkLimit=1000;
+inline bool IsBookmark(int id){return id>=BookmarkBase&&id<BookmarkBase+BookmarkLimit;}
+inline int BookmarkIndex(int id){return IsBookmark(id)?id-BookmarkBase:-1;}
 inline bool IsTab(int id){return id>=TabBase&&id<TabBase+128;}
 inline bool IsClose(int id){return id>=CloseBase&&id<CloseBase+128;}
 inline int TabIndex(int id){return IsClose(id)?id-CloseBase:IsTab(id)?id-TabBase:-1;}
 inline int SelectionAfterClose(int count,int active,int closed){if(count<=1)return -1;if(closed<active)return active-1;if(closed==active)return std::min(active,count-2);return active;}
-inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='R'||id=='C')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
+inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='R'||id=='C'||id=='K')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
 inline float ControlSurface(int id,float amount){return Design::Resolve(VariantFor(id),{amount,0}).surface;}
 struct TextMeasure {float lineHeight=0,baseline=0,originY=0,inkTop=0,inkBottom=0;bool trimmed=false;};
 struct Region{int id;D2D1_RECT_F rect;const wchar_t* tip;bool focusable=true;};
@@ -301,6 +306,88 @@ public:
         Text(L"Production Direct2D + DirectWrite / Phosphor Bold / no WebView2",{24,496,900,528},14,.7f);
         return target->EndDraw();
     }
+    // ---- Bookmarks (star in the field, optional band under the toolbar) -------------
+    // Set by the host before Build/Paint. `bandShown` false keeps the 81 DIP chrome.
+    struct BandItem { unsigned id=0; std::wstring title,tip; bool folder=false,local=false; std::shared_ptr<const FaviconImage> image; };
+    std::vector<BandItem> bandItems; bool bandShown=false,bandButtonForced=false;
+    bool starred=false;            // the active page is bookmarked: filled star
+    int bandOpen=0;                // region whose menu is open: keeps its hover fill, chevron points up
+    int bandRover=-1;              // band item that takes the band's single Tab stop (roving focus)
+    int bandDrag=-1;float bandDragOffset=0; // item being dragged (visible index) and its pointer offset
+    int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
+    BookmarksBar::Result band;     // last layout (Build)
+    float ContentTop()const{return Design::Vertical::ContentTop(bandShown);}
+    D2D1_RECT_F BandRect(int i)const{return {band.left[i],BookmarksBar::Layout::top,band.left[i]+band.width[i],BookmarksBar::Layout::bottom};}
+    float BandTitleWidth(const BandItem& item){return item.title.empty()?0:TextWidth(item.title,Design::Type::label.size,Design::Type::label.medium,false,Design::Type::label.tracking);}
+    void BuildBand(){
+        band={};if(!bandShown)return;
+        std::vector<BookmarksBar::Item> items;items.reserve(bandItems.size());
+        for(auto& item:bandItems)items.push_back({BookmarksBar::Layout::Natural(BandTitleWidth(item),item.folder)});
+        band=BookmarksBar::Arrange(width,items,bandButtonForced);
+        for(int i=0;i<band.visible&&i<BookmarkLimit;++i)regions.push_back({BookmarkBase+i,BandRect(i),bandItems[i].tip.c_str(),i==bandRover||(bandRover<0&&i==0)});
+        if(band.overflow)regions.push_back({'O',{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom},L"Autres favoris et favoris masqués",bandRover<0&&band.visible==0});
+        if(bandItems.empty()&&!band.overflow)regions.push_back({'E',{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom},L"Ajouter cette page aux favoris (Ctrl+D)"});
+    }
+    float EmptyBandWidth(){return 8+Design::Size::icon+6+TextWidth(L"Ajouter cette page",Design::Type::label.size,true,false,Design::Type::label.tracking)+16+KeyCapsWidth()+8;}
+    float KeyCapsWidth(){return 2*12+TextWidth(L"Ctrl",14,false,true)+TextWidth(L"D",14,false,true)+2;}
+    // Fill of a band item's own surface (for the title's fade mask).
+    float BandSurface(float hover,float press){return Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).fill?Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).surface:Design::Surface::canvas;}
+    void DrawBandItem(int i,const BandItem& item,int hover,int focus,Motion::Time now){
+        namespace L=BookmarksBar::Layout;const int id=BookmarkBase+i;
+        D2D1_RECT_F box=BandRect(i);const bool dragged=i==bandDrag;
+        if(dragged){box.left+=bandDragOffset;box.right+=bandDragOffset;}
+        auto v=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
+        if(id==bandOpen||i==bandDropInto)v.hover=1;
+        const float surface=dragged?Design::Surface::raised:BandSurface(v.hover,v.press);
+        if(dragged||v.hover>0||v.press>0)Round(box,Design::Radius::control,surface);
+        if(focus==id)FocusRing(box,Design::Radius::control);
+        const float cy=(box.top+box.bottom)/2;const D2D1_RECT_F icon{box.left+L::itemPad,cy-8,box.left+L::itemPad+16,cy+8};
+        if(item.folder)Icon(L"folder-closed",icon,16,1);
+        else if(!DrawSiteImage(item.image,icon))Icon(item.local?L"file":L"favicon",icon,16,1);
+        const float emphasis=std::max(v.hover,id==bandOpen?1.f:0.f);
+        float right=box.right-L::itemPad;
+        if(item.folder){
+            // Discreet chevron: 12 DIP at 32% (secondary on hover), pointing up while its menu is open.
+            const D2D1_RECT_F caret{right-L::chevron,cy-L::chevron/2,right,cy+L::chevron/2};
+            D2D1_MATRIX_3X2_F base;target->GetTransform(&base);
+            if(id==bandOpen)target->SetTransform(D2D1::Matrix3x2F::Rotation(180,{(caret.left+caret.right)/2,(caret.top+caret.bottom)/2})*base);
+            Icon(L"caret",caret,L::chevron,id==bandOpen?1.f:.64f+.36f*v.hover);
+            target->SetTransform(base);right=caret.left-L::chevronGap;
+        }
+        if(item.title.empty())return;
+        const float left=icon.right+L::iconGap;if(right<=left+1)return;
+        const float textWidth=BandTitleWidth(item);
+        target->PushAxisAlignedClip(D2D1::RectF(left,box.top,right,box.bottom),D2D1_ANTIALIAS_MODE_ALIASED);
+        Text(item.title,{left,box.top,left+textWidth+2,box.bottom},Design::Type::label.size,Design::Text::secondary+(Design::Text::primary-Design::Text::secondary)*emphasis,false,Design::Type::label.medium,Design::Type::label.tracking);
+        target->PopAxisAlignedClip();
+        // Truncated titles dissolve into the item's surface (never an ellipsis), like the address.
+        if(left+textWidth>right+.5f){
+            const float c=surface,fade=std::min(16.f,right-left);ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;
+            D2D1_GRADIENT_STOP g[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
+            if(SUCCEEDED(target->CreateGradientStopCollection(g,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({right-fade,0},{right,0}),stops,&gradient)))target->FillRectangle(D2D1::RectF(right-fade,box.top+1,right,box.bottom-1),gradient);
+            Drop(gradient);Drop(stops);
+        }
+    }
+    void DrawBand(int hover,int focus,Motion::Time now){
+        if(!bandShown)return;
+        for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now);
+        if(bandDrag>=0&&bandDrag<band.visible&&bandDrag<(int)bandItems.size())DrawBandItem(bandDrag,bandItems[bandDrag],hover,focus,now);
+        if(band.overflow){const D2D1_RECT_F box{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom};
+            auto v=motion?motion->Visual('O',now):Motion::InteractionVisual{hover=='O'?1.f:0.f,0};if(bandOpen=='O')v.hover=1;
+            DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});}
+        if(bandItems.empty()&&!band.overflow){
+            // "Toujours" with no bookmark yet: one quiet way in, never an empty strip.
+            const D2D1_RECT_F box{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom};
+            auto v=motion?motion->Visual('E',now):Motion::InteractionVisual{hover=='E'?1.f:0.f,0};
+            const auto style=Design::Resolve(Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='E'});
+            if(style.fill)Round(box,style.radius,style.surface);
+            if(style.focus)FocusRing(box,style.radius);
+            const float cy=(box.top+box.bottom)/2;Icon(L"star",{box.left+8,cy-8,box.left+24,cy+8},16,1);
+            const float tw=TextWidth(L"Ajouter cette page",Design::Type::label.size,true,false,Design::Type::label.tracking);
+            Text(L"Ajouter cette page",{box.left+30,box.top,box.left+30+tw+2,box.bottom},Design::Type::label.size,Design::Text::secondary+.5f*v.hover,false,true,Design::Type::label.tracking);
+            float x=box.left+30+tw+16;for(const wchar_t* key:{L"Ctrl",L"D"}){const float w=TextWidth(key,14,false,true)+12;FillBox({x,cy-10,x+w,cy+10},4,D2D1::ColorF(1,1,1,.06f));keycap=true;Text(key,{x+5,cy-10,x+w,cy+10},14,Design::Text::disabled,true);keycap=false;x+=w+2;}
+        }
+    }
     // ---- Address field (issue #20) -------------------------------------------------
     // Set by the host before Build/Paint: what the bar reads outside editing, and the
     // leading glyph while the EDIT is open (null: the security icon).
@@ -380,12 +467,19 @@ public:
         }
         float x=strip.NewTabLeft();regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
-        regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-133,76};edit={bar.left+Design::Address::textInset,44,bar.right-79,76};
+        regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-133,76};edit={bar.left+Design::Address::textInset,44,bar.right-111,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
-        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
+        // Field actions, right to left 8 DIP apart (Paper): star, copy link, a hairline, reload.
+        regions.push_back({'L',{bar.left,44,bar.right-105,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-101,48,bar.right-101+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
+        regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
         regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
+        BuildBand();
     }
-    std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
+    std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(IsBookmark(region.id)||region.id=='O'){if(region.id!=BandStop())continue;}if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
+    // The band's single Tab stop: the last focused item, else the first (or the » button alone).
+    int BandStop()const{if(!bandShown)return 0;if(bandRover>=0&&bandRover<band.visible)return BookmarkBase+bandRover;if(bandRover==-2&&band.overflow)return 'O';if(band.visible>0)return BookmarkBase;return band.overflow?'O':0;}
+    // Band order for arrows: visible items, then the » button.
+    std::vector<int> BandOrder()const{std::vector<int> o;for(int i=0;i<band.visible;++i)o.push_back(BookmarkBase+i);if(band.overflow)o.push_back('O');return o;}
     int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
@@ -416,7 +510,7 @@ public:
                 target->PopAxisAlignedClip();continue;}
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
-            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
+            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){
                     auto style=Design::Resolve(variant,state);if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}if(style.focus)FocusRing(box,style.radius);
                     float size=style.iconSize*Motion::PressScale(state.press,motion->ReducedMotion(),!state.disabled);
@@ -437,8 +531,11 @@ public:
         }
         if(strip.HiddenBefore())DrawFade(strip.ViewLeft(),strip.ViewLeft()+Design::TabStrip::fade);
         if(strip.HiddenAfter())DrawFade(strip.ViewRight(),strip.ViewRight()-Design::TabStrip::fade);
-        Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-37,55,bar.right-36,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
+        Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-69,55,bar.right-68,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
         DrawAddress(editing,hover=='I');
+        DrawBand(hover,focus,now);
+        // Chrome's lower edge: a 1 DIP #FFFFFF05 hairline, then the page (Paper: no top padding).
+        Color(1,5/255.f);target->FillRectangle(D2D1::RectF(0,ContentTop()-1,width,ContentTop()),brush);
         target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
