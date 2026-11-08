@@ -183,8 +183,7 @@ public:
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, s.size, L"en-us", &formats[r]);
             if (FAILED(hr)) return hr;
             formats[r]->SetWordWrapping(s.wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
-            formats[r]->SetTextAlignment(r == (int)Role::Stat ? DWRITE_TEXT_ALIGNMENT_TRAILING :
-                s.center ? DWRITE_TEXT_ALIGNMENT_CENTER : DWRITE_TEXT_ALIGNMENT_LEADING);
+            formats[r]->SetTextAlignment(s.center ? DWRITE_TEXT_ALIGNMENT_CENTER : DWRITE_TEXT_ALIGNMENT_LEADING);
             // CSS line box: half-leading above the font's ascent.
             const float baseline = (s.line - (ascent + descent) * s.size) / 2 + ascent * s.size;
             formats[r]->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, s.line, baseline);
@@ -252,14 +251,17 @@ public:
         return Layout(c, width, lines);
     }
     struct StatColumns { Rect size, timer, eta; };
-    // Geometry depends only on the row and font, never on the current counters.
-    // Reserve the longest ETA format even while it is unknown or below one hour.
+    // Compact like the original row, with just enough fixed space for three-digit
+    // MB counters. The timer follows that slot, never the changing text width.
     StatColumns Stats(const Rect& row) {
         const float etaWidth = std::ceil(NaturalWidth(Role::Stat, L"99:59:59"));
-        const float etaLeft = row.right - etaWidth;
-        const float timerLeft = etaLeft - Paper::statGap - Paper::statIcon;
-        return {{row.left + Paper::statIcon + Paper::statGap, row.top, timerLeft - Paper::statsGap, row.bottom},
-                {timerLeft, row.top, etaLeft - Paper::statGap, row.bottom},
+        const float sizeWidth = std::min(std::ceil(NaturalWidth(Role::Stat, L"000.0/000.0MB")),
+            row.Width() - 2 * Paper::statIcon - 3 * Paper::statGap - etaWidth);
+        const float sizeLeft = row.left + Paper::statIcon + Paper::statGap;
+        const float timerLeft = sizeLeft + sizeWidth + Paper::statGap;
+        const float etaLeft = timerLeft + Paper::statIcon + Paper::statGap;
+        return {{sizeLeft, row.top, sizeLeft + sizeWidth, row.bottom},
+                {timerLeft, row.top, timerLeft + Paper::statIcon, row.bottom},
                 {etaLeft, row.top, row.right, row.bottom}};
     }
 

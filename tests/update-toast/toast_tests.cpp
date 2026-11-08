@@ -262,11 +262,13 @@ static void PainterTests(Painter& painter) {
         const auto g = painter.Measure(Describe(V(Phase::Downloading)), width);
         const auto columns = painter.Stats(g.stats);
         CHECK(columns.size.Width() > 0 && columns.eta.right == g.stats.right);
-        CHECK(columns.size.right + Paper::statsGap == columns.timer.left);
+        CHECK(columns.size.right + Paper::statGap == columns.timer.left);
+        CHECK(columns.timer.right + Paper::statGap == columns.eta.left);
+        CHECK(columns.size.Width() <= std::ceil(painter.NaturalWidth(Role::Stat, L"000.0/000.0MB")));
         for (auto* eta : {L"00:00", L"59:59", L"1:00:00", L"99:00:00", L"--:--"}) {
             auto* text = painter.Text(Role::Stat, eta, columns.eta.Width());
             DWRITE_TEXT_METRICS m{}; CHECK(text && SUCCEEDED(text->GetMetrics(&m)));
-            CHECK(Near(m.left + m.width, columns.eta.Width(), .02f));
+            CHECK(Near(m.left, 0, .02f));
         }
     }
     CHECK(Near(painter.NaturalWidth(Role::Stat, L"000.0"), painter.NaturalWidth(Role::Stat, L"111.1"), .01f));
