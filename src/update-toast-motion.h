@@ -56,23 +56,22 @@ struct Content {
     std::vector<Button> buttons;
 };
 
-inline std::wstring Trim0(double value) {
+inline std::wstring OneDecimal(double value) {
     wchar_t text[32];
     std::swprintf(text, 32, L"%.1f", value);
-    std::wstring s = text;
-    if (s.size() > 2 && s.compare(s.size() - 2, 2, L".0") == 0) s.resize(s.size() - 2);
-    return s;
+    return text;
 }
-// "50.4/200MB" (Paper). Binary megabytes, as Windows Explorer labels them. Units
+// Always one decimal, including .0, so live statistics keep their precision/shape.
+// Binary megabytes, as Windows Explorer labels them. Units
 // switch to GB from 1000 MB on the total so the row stays short.
 inline std::wstring FormatSize(std::uint64_t received, std::uint64_t total) {
     const double mb = 1024.0 * 1024.0, gb = mb * 1024.0;
     const bool giga = (total ? total : received) >= 1000 * mb;
     const double unit = giga ? gb : mb;
     const wchar_t* suffix = giga ? L"GB" : L"MB";
-    if (!total) return Trim0(received / unit) + suffix;
+    if (!total) return OneDecimal(received / unit) + suffix;
     if (received > total) received = total;
-    return Trim0(received / unit) + L"/" + Trim0(total / unit) + suffix;
+    return OneDecimal(received / unit) + L"/" + OneDecimal(total / unit) + suffix;
 }
 // "00:14" (Paper). Unknown (negative / NaN) => empty, never invented.
 inline std::wstring FormatEta(double seconds) {

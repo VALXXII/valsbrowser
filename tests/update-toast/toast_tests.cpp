@@ -26,7 +26,7 @@ static void ModelTests() {
     CHECK(a.title == L"New update available" && a.body == L"A new update is ready to be downloaded." && a.buttons.size() == 1 && a.buttons[0].label == L"Download" && a.buttons[0].action == Action::Download);
     auto d = Describe(V(Phase::Downloading, 52848230, 209715200, 14));
     CHECK(d.title == L"Downloading..." && d.buttons[0].label == L"Cancel" && d.buttons[0].action == Action::Cancel);
-    CHECK(d.size == L"50.4/200MB");
+    CHECK(d.size == L"50.4/200.0MB");
     CHECK(d.eta == L"00:14");
     auto r = Describe(V(Phase::Ready));
     CHECK(r.title == L"Ready for install" && r.body == L"The update is ready to be installed." && r.buttons[0].label == L"Restart and install" && r.buttons[0].action == Action::RestartInstall);
@@ -41,7 +41,9 @@ static void ModelTests() {
     auto u = Describe(V(Phase::Downloading, 3 * 1048576 + 300000, 0, -1));
     CHECK(u.size == L"3.3MB" && u.eta.empty() && u.progress < 0);
     CHECK(FormatEta(-1).empty() && FormatEta(NAN).empty() && FormatEta(0) == L"00:00" && FormatEta(59.2) == L"01:00" && FormatEta(3725) == L"1:02:05");
-    CHECK(FormatSize(0, 209715200) == L"0/200MB" && FormatSize(300 * 1048576ull, 200 * 1048576ull) == L"200/200MB");
+    CHECK(FormatSize(0, 209715200) == L"0.0/200.0MB" && FormatSize(300 * 1048576ull, 200 * 1048576ull) == L"200.0/200.0MB");
+    CHECK(FormatSize(75 * 1048576ull, 200 * 1048576ull) == L"75.0/200.0MB");
+    CHECK(FormatSize(3 * 1048576ull, 0) == L"3.0MB");
     CHECK(FormatSize(512ull * 1048576, 1536ull * 1048576) == L"0.5/1.5GB");
     CHECK(Describe(V(Phase::Downloading, 50, 100)).progress == .5f);
     // Paper geometry: exact card heights with two-line bodies.
@@ -255,10 +257,20 @@ static void PainterTests(Painter& painter) {
     CHECK(Near(painter.Measure(Describe(V(Phase::Ready)), 269).height, Paper::ready));
     CHECK(Near(painter.Measure(Describe(V(Phase::Installed)), 269).height, Paper::installed));
     CHECK(Near(painter.Measure(Describe(V(Phase::Downloading, 1, 2, 3)), 269).height, Paper::downloading));
-    // ETA is dropped rather than overflowing on a narrow card.
-    auto big = Describe(V(Phase::Downloading, 1023ull * 1048576 * 1024, 1024ull * 1048576 * 1024, 359999));
-    CHECK(painter.EtaFits(Describe(V(Phase::Downloading, 52848230, 209715200, 14)), 235));
-    CHECK(!painter.EtaFits(big, 120));
+    // Fixed columns fit every supported width, even with an hours ETA.
+    for (float width : {MinWidth, Paper::width}) {
+        const auto g = painter.Measure(Describe(V(Phase::Downloading)), width);
+        const auto columns = painter.Stats(g.stats);
+        CHECK(columns.size.Width() > 0 && columns.eta.right == g.stats.right);
+        CHECK(columns.size.right + Paper::statsGap == columns.timer.left);
+        for (auto* eta : {L"00:00", L"59:59", L"1:00:00", L"99:00:00", L"--:--"}) {
+            auto* text = painter.Text(Role::Stat, eta, columns.eta.Width());
+            DWRITE_TEXT_METRICS m{}; CHECK(text && SUCCEEDED(text->GetMetrics(&m)));
+            CHECK(Near(m.left + m.width, columns.eta.Width(), .02f));
+        }
+    }
+    CHECK(Near(painter.NaturalWidth(Role::Stat, L"000.0"), painter.NaturalWidth(Role::Stat, L"111.1"), .01f));
+    CHECK(Near(painter.NaturalWidth(Role::Stat, L"000.0"), painter.NaturalWidth(Role::Stat, L"888.8"), .01f));
     // Text cache stays bounded.
     for (int i = 0; i < 200; ++i) painter.Text(Role::Body, std::to_wstring(i), 100);
     CHECK(painter.cache.size() <= Painter::CacheLimit);
@@ -357,6 +369,29 @@ static void SnapshotTests(Painter& painter) {
         for (UINT y = 0; y < t.h; ++y) for (UINT x = 0; x < t.w; ++x) if (px[(y * t.w + x) * 4 + 1] > 90 && ((int)x < s || (int)y < s || x >= t.w - s || y >= t.h - s)) ++outside;
         CHECK(outside == 0);
         wchar_t name[64]; std::swprintf(name, 64, L"narrow-error-%d.png", (int)dpi); CHECK(t.Save(name));
+    }
+}
+
+// Production pixels in the ETA column must be identical when only byte counters change.
+static void StableStatsTests(Painter& painter) {
+    const ButtonVisual rest[2]{};
+    constexpr std::uint64_t mb = 1048576;
+    for (float dpi : {96.f, 120.f, 144.f, 192.f}) for (float width : {MinWidth, Paper::width}) {
+        std::vector<BYTE> reference;
+        for (std::uint64_t received : {0ull, 99 * mb / 10, 10 * mb, 749 * mb / 10, 75 * mb, 999 * mb / 10, 100 * mb, 200 * mb}) {
+            Presenter pr; const Frame frame = Settled(pr, painter, V(Phase::Downloading, received, 200 * mb, 14), width);
+            Canvas canvas; CHECK(canvas.Create(painter, width, frame.height, dpi));
+            canvas.rt->BeginDraw(); canvas.rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+            painter.Paint(frame, width, frame.height, rest, false); CHECK(SUCCEEDED(canvas.rt->EndDraw()));
+            const auto columns = painter.Stats(frame.layers[1].geometry->stats);
+            const auto pixels = canvas.Pixels(); const float scale = dpi / 96.f;
+            std::vector<BYTE> etaPixels;
+            for (UINT y = (UINT)std::floor(columns.eta.top * scale); y < (UINT)std::ceil(columns.eta.bottom * scale); ++y)
+                for (UINT x = (UINT)std::floor(columns.timer.left * scale); x < (UINT)std::ceil(columns.eta.right * scale); ++x)
+                    for (UINT c = 0; c < 4; ++c) etaPixels.push_back(pixels[(y * canvas.w + x) * 4 + c]);
+            if (reference.empty()) reference = etaPixels;
+            else CHECK(etaPixels == reference);
+        }
     }
 }
 
@@ -512,6 +547,7 @@ int wmain(int argc, wchar_t** argv) {
         if (FAILED(painter.Init(repo + L"\\assets"))) { std::fprintf(stderr, "painter init failed\n"); return 2; }
         PainterTests(painter);
         SnapshotTests(painter);
+        StableStatsTests(painter);
     }
     bool windows = true;
     for (int i = 3; i < argc; ++i) if (std::wstring(argv[i]) == L"--no-window") windows = false;

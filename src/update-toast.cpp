@@ -183,7 +183,8 @@ public:
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, s.size, L"en-us", &formats[r]);
             if (FAILED(hr)) return hr;
             formats[r]->SetWordWrapping(s.wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
-            formats[r]->SetTextAlignment(s.center ? DWRITE_TEXT_ALIGNMENT_CENTER : DWRITE_TEXT_ALIGNMENT_LEADING);
+            formats[r]->SetTextAlignment(r == (int)Role::Stat ? DWRITE_TEXT_ALIGNMENT_TRAILING :
+                s.center ? DWRITE_TEXT_ALIGNMENT_CENTER : DWRITE_TEXT_ALIGNMENT_LEADING);
             // CSS line box: half-leading above the font's ascent.
             const float baseline = (s.line - (ascent + descent) * s.size) / 2 + ascent * s.size;
             formats[r]->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, s.line, baseline);
@@ -192,6 +193,7 @@ public:
         if (FAILED(hr)) return hr;
         DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
         formats[(int)Role::Button]->SetTrimming(&trim, ellipsis);
+        formats[(int)Role::Stat]->SetTrimming(&trim, ellipsis);
         for (Glyph g : {Glyph::Info, Glyph::Download, Glyph::CheckCircle, Glyph::ArrowDown, Glyph::Timer}) {
             ID2D1PathGeometry* path = nullptr;
             hr = BuildPath(factory, IconData(g).d, &path);
@@ -249,12 +251,16 @@ public:
         if (!c.body.empty()) BalancedWidth(c.body, ContentWidth(width), &lines);
         return Layout(c, width, lines);
     }
-    // Downloading stats: ETA is dropped when the row would not fit (narrow cards).
-    bool EtaFits(const Content& c, float rowWidth) {
-        if (c.eta.empty()) return false;
-        const float need = Paper::statIcon + Paper::statGap + NaturalWidth(Role::Stat, c.size) + Paper::statGap +
-                           Paper::statIcon + Paper::statGap + NaturalWidth(Role::Stat, c.eta);
-        return need <= rowWidth + .01f;
+    struct StatColumns { Rect size, timer, eta; };
+    // Geometry depends only on the row and font, never on the current counters.
+    // Reserve the longest ETA format even while it is unknown or below one hour.
+    StatColumns Stats(const Rect& row) {
+        const float etaWidth = std::ceil(NaturalWidth(Role::Stat, L"99:59:59"));
+        const float etaLeft = row.right - etaWidth;
+        const float timerLeft = etaLeft - Paper::statGap - Paper::statIcon;
+        return {{row.left + Paper::statIcon + Paper::statGap, row.top, timerLeft - Paper::statsGap, row.bottom},
+                {timerLeft, row.top, etaLeft - Paper::statGap, row.bottom},
+                {etaLeft, row.top, row.right, row.bottom}};
     }
 
     void Unbind() { Drop(brush); target = nullptr; }
@@ -296,16 +302,11 @@ public:
         }
         if (c.stats) {
             const float y = g.stats.top + dy, rowH = 14;
-            float x = g.stats.left;
-            Icon(Glyph::ArrowDown, {x, y, x + Paper::statIcon, y + rowH}, Paper::statIcon, Paper::iconOpacity * a);
-            x += Paper::statIcon + Paper::statGap;
-            Label(Role::Stat, c.size, x, y, 4096, Paper::textOpacity * a);
-            x += NaturalWidth(Role::Stat, c.size) + Paper::statGap;
-            if (EtaFits(c, g.stats.Width())) {
-                Icon(Glyph::Timer, {x, y, x + Paper::statIcon, y + rowH}, Paper::statIcon, Paper::iconOpacity * a);
-                x += Paper::statIcon + Paper::statGap;
-                Label(Role::Stat, c.eta, x, y, 4096, Paper::textOpacity * a);
-            }
+            const auto columns = Stats(g.stats);
+            Icon(Glyph::ArrowDown, {g.stats.left, y, g.stats.left + Paper::statIcon, y + rowH}, Paper::statIcon, Paper::iconOpacity * a);
+            Label(Role::Stat, c.size, columns.size.left, y, columns.size.Width(), Paper::textOpacity * a);
+            Icon(Glyph::Timer, {columns.timer.left, y, columns.timer.right, y + rowH}, Paper::statIcon, Paper::iconOpacity * a);
+            Label(Role::Stat, c.eta.empty() ? L"--:--" : c.eta, columns.eta.left, y, columns.eta.Width(), Paper::textOpacity * a);
             const Rect t{g.track.left, g.track.top + dy, g.track.right, g.track.bottom + dy};
             const float r = Paper::track / 2;
             Color(1, Paper::trackOpacity * a);
