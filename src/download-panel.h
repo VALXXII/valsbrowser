@@ -246,6 +246,14 @@ public:
     void ActionButton(Action action, D2D1_RECT_F box, int hit, const Scene& scene) {
         const auto* icon = IconFor(action); if (!icon) return;
         auto v = Interaction(scene, hit);
+        if (action == Action::ShowInFolder) { // closed folder that opens under the pointer (or keyboard focus)
+            const auto style = Design::Resolve(Design::ButtonVariant::Ghost, {v.hover, v.press, false, scene.focus == hit});
+            if (style.fill) chrome_.Round(box, style.radius, style.surface);
+            if (style.focus) chrome_.FocusRing(box, style.radius);
+            const bool reduced = scene.motion && scene.motion->ReducedMotion();
+            chrome_.FolderGlyph(box, style.iconSize * Motion::PressScale(v.press, reduced), style.iconOpacity, scene.focus == hit ? 1.f : v.hover, reduced);
+            return;
+        }
         chrome_.DrawButton(icon, box, Design::ButtonVariant::Ghost, {v.hover, v.press, false, scene.focus == hit});
     }
     void Row(const Item& item, float top, const Scene& scene) {
@@ -642,22 +650,25 @@ class Popover final : public Host {
     float Height() const { return Panel::Height(Rows(), items_ && !items_->empty()); }
     std::vector<Slot> Slots(Motion::Time) const override { static const std::vector<Item> none; return PopoverSlots(items_ ? *items_ : none); }
     float SurfaceHeight() const override { return Height(); }
-    void Decorate(Scene& scene) const override { scene.entrance = entrance_.Value(scene.now); scene.viewBottom = Height() - Panel::padding / 2; }
+    void Decorate(Scene& scene) const override {
+        scene.entrance = entrance_.Value(scene.now); scene.viewBottom = Height() - Panel::padding / 2;
+        // The hairline DWM used to draw, on the region's rounded outline.
+        scene.frame = {0, 0, Panel::width, Height()}; scene.frameRadius = Panel::radius; scene.frameOpacity = 1;
+    }
     Motion::Wake ExtraWake(Motion::Time now) const override { return entrance_.Moving(now) ? Motion::Frame() : Motion::Wake{}; }
     bool ActivateOther(int hit, bool) override { if (hit != ViewAllHit) return false; if (hooks_.viewAll) hooks_.viewAll(); return true; }
     const wchar_t* ClassName() const override { return L"LisiereDownloads"; }
     void Configure() override {
-        // Windows 11: rounded, antialiased corners and a hairline border from DWM.
-        const int round = 2; // DWMWCP_ROUND
-        const COLORREF border = Design::NativeGray(Design::Surface::canvas + Popup::border * (1 - Design::Surface::canvas));
-        if (FAILED(DwmSetWindowAttribute(hwnd_, 33, &round, sizeof(round))))
-            SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, Px(Panel::width) + 1, Px(Height()) + 1, Px(Panel::radius * 2), Px(Panel::radius * 2)), TRUE);
-        DwmSetWindowAttribute(hwnd_, 34, &border, sizeof(border));
+        // No DWM rounding: on Windows 11 it brings a drop shadow with it. The window
+        // region rounds the corners instead (Place) and the hairline is painted (Decorate).
+        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square)); // DWMWCP_DONOTROUND
+        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none)); // DWMWA_COLOR_NONE
     }
     void Place() {
         if (!hwnd_) return;
         const int w = Px(Panel::width), h = Px(Height());
         SetWindowPos(hwnd_, HWND_TOP, static_cast<int>(std::lround(anchorRight_)) - w, static_cast<int>(std::lround(anchorTop_)), w, h, SWP_NOACTIVATE);
+        SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, w + 1, h + 1, Px(Panel::radius * 2), Px(Panel::radius * 2)), TRUE);
         RefreshTips();
     }
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) override { if (msg == WM_DPICHANGED) { Place(); return 0; } return Host::Handle(h, msg, w, l); }

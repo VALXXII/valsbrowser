@@ -242,8 +242,23 @@ public:
         if(h>0||p>0){brush->SetColor(D2D1::ColorF(250/255.f,106/255.f,89/255.f,.30f*h+.12f*p));target->FillRoundedRectangle(D2D1::RoundedRect(box,Design::Radius::control,Design::Radius::control),brush);}
         if(state.focus&&!state.disabled)FocusRing(box,Design::Radius::control);
         const float size=Design::Size::windowIcon*Motion::PressScale(p,motion&&motion->ReducedMotion(),!state.disabled);
-        const float opacity=state.disabled?Design::Text::disabled:1-.2f*h;
-        TintedIcon(L"close",box,size,D2D1::ColorF(1,1+(208/255.f-1)*h,1+(200/255.f-1)*h,opacity));
+        // close-mask is the glyph at full opacity (the regular icons bake in 50%): at rest it matches
+        // the neighbouring window icons (50% white); hovered it reaches #FFD0C8 at 95%, clearly legible.
+        const float opacity=state.disabled?Design::Text::disabled*.5f:.5f+.45f*h;
+        TintedIcon(L"close-mask",box,size,D2D1::ColorF(1,1+(208/255.f-1)*h,1+(200/255.f-1)*h,opacity));
+    }
+    // Folder glyph shared by the settings and download surfaces: closed at rest, it opens with
+    // `open` (the owner's hover tween, so no extra frames): cross-fade, the open folder tipping in
+    // from its bottom-left hinge (-10 deg, 90%). Reduced motion keeps only the cross-fade.
+    void FolderGlyph(D2D1_RECT_F box,float size,float opacity,float open,bool reduced){
+        const float h=std::clamp(open,0.f,1.f);
+        Icon(L"folder-closed",box,size,opacity*(1-h));
+        if(h<=.001f)return;
+        D2D1_MATRIX_3X2_F base;target->GetTransform(&base);
+        const D2D1_POINT_2F hinge{(box.left+box.right-size)/2,(box.top+box.bottom+size)/2};
+        if(!reduced)target->SetTransform(D2D1::Matrix3x2F::Scale(.9f+.1f*h,.9f+.1f*h,hinge)*D2D1::Matrix3x2F::Rotation(-10.f*(1-h),hinge)*base);
+        Icon(L"folder",box,size,opacity*h);
+        target->SetTransform(base);
     }
     // True when focus last moved by keyboard (Tab, arrows, shortcuts); a pointer press clears it.
     bool keyboardModality=true;
