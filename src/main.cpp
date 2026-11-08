@@ -78,6 +78,11 @@ GUID_TEXT(ICoreWebView2TrySuspendCompletedHandler,"{00f206a7-9d17-4605-91f6-4e8e
 GUID_TEXT(ICoreWebView2PrintToPdfCompletedHandler,"{ccf1ef04-fd8e-4d5f-b2de-0983e41b8c36}")
 GUID_TEXT(ICoreWebView2GetNonDefaultPermissionSettingsCompletedHandler,"{38274481-a15c-4563-94cf-990edc9aeb95}")
 GUID_TEXT(ICoreWebView2SetPermissionStateCompletedHandler,"{fc77fb30-9c9e-4076-b8c7-7644a703ca1b}")
+GUID_TEXT(ICoreWebView2ProfileGetBrowserExtensionsCompletedHandler,"{fce16a1c-f107-4601-8b75-fc4940ae25d0}")
+GUID_TEXT(ICoreWebView2ProfileAddBrowserExtensionCompletedHandler,"{df1aab27-82b9-4ab6-aae8-017a49398c14}")
+GUID_TEXT(ICoreWebView2BrowserExtensionEnableCompletedHandler,"{30c186ce-7fad-421f-a3bc-a8eaf071ddb8}")
+GUID_TEXT(ICoreWebView2BrowserExtensionRemoveCompletedHandler,"{8e41909a-9b18-4bb1-8cdf-930f467a50be}")
+GUID_TEXT(ICoreWebView2WebMessageReceivedEventHandler,"{57213f19-00e6-49fa-8e07-898ea01ecbd2}")
 template<class I, class... A> class Handler final : public I {
     LONG refs=1; IID iid{}; std::function<HRESULT(A...)> fn;
 public:
@@ -97,14 +102,23 @@ template<class T> struct Com {
 };
 // Stable per-tab identity (never reused): accessibility keys survive closes and moves.
 inline unsigned NextTabSerial(){static unsigned serial=0;return ++serial;}
+// SETTINGS(https): per-tab HTTPS-only bookkeeping. `upgrade` is the navigation that tries
+// https:// for `insecure` (the http:// address asked for); `shown` is the http:// address
+// whose "not secure" interstitial the tab displays (NavigateToString), `token` authenticates
+// its button messages and `from` is where "Revenir" leads.
+struct HttpsOnlyState { std::wstring insecure,expectHost,shown,token,from; UINT64 upgrade=0; bool pending=false; };
 struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false,certificateError=false;
-    ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; // hiddenAt: when it last stopped being shown
+    ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; HttpsOnlyState https; // hiddenAt: when it last stopped being shown
     // Split view: group id (0 = none), relative size, use order (rails collapse the least
     // recent), on screen now, first navigation done (until then the controller stays hidden).
     int group=0; float weight=1; std::uint64_t usedAt=0; bool shown=false,revealed=false; RECT placed{}; int placedVisible=-1;
     // Resize preview: `navStamp` changes with every navigation (a snapshot never outlives it);
     // `frozen`: bounds held while the preview stands in for the page.
     std::uint64_t navStamp=0; bool frozen=false; };
+// NEWTAB: the home tab's last render showed most visited sites (Tab is shared; kept beside it).
+// A home tab stays hidden (the native canvas shows through) unless it shows tiles.
+struct HomeTiles { std::vector<unsigned> serials; bool Has(const Tab& t)const{return std::find(serials.begin(),serials.end(),t.serial)!=serials.end();} void Set(const Tab& t,bool on){serials.erase(std::remove(serials.begin(),serials.end(),t.serial),serials.end());if(on)serials.push_back(t.serial);} } homeTiles;
+bool PageShown(const Tab& t){return !t.home||homeTiles.Has(t);}
 void TabShown(const std::shared_ptr<Tab>& tab);
 HWND window,tabs,address,back,forward,reload,add,closeTab,home;
 HFONT font; HBRUSH paper; HINSTANCE instance; HMODULE loader;
@@ -204,7 +218,7 @@ void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
 void UnlockTabWidth(){if(chrome.lockedTab<=0)return;chrome.lockedTab=0;BuildChrome();RefreshTools();InvalidateChrome();}
 void FocusPage(){
     keyboardFocus=0;editing=false;ShowWindow(address,SW_HIDE);SetFocus(window);
-    auto t=Active();if(t&&t->controller.p&&!t->home&&!halted)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus page");
+    auto t=Active();if(t&&t->controller.p&&PageShown(*t)&&!halted)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus page");
     InvalidateChrome();
 }
 std::vector<int> ShownPanels();
@@ -249,7 +263,7 @@ void Update(){
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+L" — browser").c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
-void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&!t->home)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
+void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
 void MoveTab(int from,int to){
     if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
@@ -348,7 +362,7 @@ void ApplyPages(){
     for(auto& t:pages){
         bool show=false;RECT bounds=full;
         if(v.group&&t->group==v.group){const int m=(int)(std::find(v.members.begin(),v.members.end(),t)-v.members.begin());const int s=v.a.SlotOf(m);if(s>=0&&!v.a.slots[s].rail){show=true;bounds=PixelRect(v.a.slots[s].box);}}
-        else show=t==active&&!t->home;
+        else show=t==active&&PageShown(*t); // a home tab shows only when it carries the frequent sites
         show=show&&t->revealed;
         if(!show&&t->shown)t->hiddenAt=now;
         if(show&&t->sleeping){t->sleeping=false;Com<ICoreWebView2_3> v3;if(t->view.p&&SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))&&v3.p)v3->Resume();}
@@ -823,11 +837,16 @@ const wchar_t* HomeHtml=LR"HTML(<!doctype html><html lang="fr"><meta charset="ut
 std::wstring Destination(std::wstring s){auto first=s.find_first_not_of(L" \t\r\n");if(first==std::wstring::npos)return L"";s=s.substr(first,s.find_last_not_of(L" \t\r\n")-first+1);if(s==L"about:blank")return s;
     auto low=s;std::transform(low.begin(),low.end(),low.begin(),towlower);if(low.rfind(L"https://",0)==0||low.rfind(L"http://",0)==0)return s;
     if(s.find_first_of(L" \t")==std::wstring::npos && s.find(L"://")==std::wstring::npos && (s.find(L'.')!=std::wstring::npos||s.rfind(L"localhost",0)==0))return L"https://"+s;
-    return BrowserSettings::SearchUrl(settings.engine,AddressBar::PercentEncode(s));
+    return BrowserSettings::SearchUrl(settings.engine,AddressBar::PercentEncode(s),settings.customSearch);
 }
 void NewTab(std::wstring uri=L"",int index=-1,std::wstring title=L"Nouvel onglet");
+// SETTINGS(tabs): where a user-created tab ("+", Ctrl+T, menu) opens; -1 = at the end.
+int UserTabIndex(){return !smoke&&settings.tabPosition==BrowserSettings::TabPosition::NextToActive&&current>=0&&current<(int)pages.size()?current+1:-1;}
 void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closedTabs.back();NewTab(tab.uri,tab.index,tab.title);if(!halted)closedTabs.pop_back();}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();t->uri=uri;Check(uri.empty()?t->view->NavigateToString(HomeHtml):t->view->Navigate(uri.c_str()),uri.empty()?L"NavigateToString":L"Navigate");}
+std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
+// SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
+std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();t->uri=uri;if(uri.empty()){const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml);Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
 // ---- Address suggestions (issue #20) -----------------------------------------
 // The EDIT keeps focus: typing recomputes the list, the arrows move its active row
 // (the field shows what Enter will open), Escape restores then closes, Enter opens.
@@ -872,7 +891,7 @@ std::wstring SuggestionTarget(const AddressBar::Suggestion& row){
     switch(row.kind){
     case AddressBar::Kind::Site:return row.url;
     case AddressBar::Kind::Address:return Destination(row.text);
-    default:return BrowserSettings::SearchUrl(settings.engine,AddressBar::PercentEncode(AddressBar::Trim(row.text)));
+    default:return BrowserSettings::SearchUrl(settings.engine,AddressBar::PercentEncode(AddressBar::Trim(row.text)),settings.customSearch);
     }
 }
 void OpenSuggestion(int index){
@@ -899,15 +918,18 @@ void CreateSuggestions(){
     if(!suggestions.Create(instance,window,base,std::move(hooks)))Log(L"ADDRESS suggestions unavailable");
 }
 void CloseAt(int index){if(halted||index<0||index>=(int)pages.size())return;
+    // SETTINGS(tabs): "Fermer la fenêtre avec le dernier onglet": the normal window close (session
+    // save, clear on exit) with the tab still alive; one tab never asks "Fermer N onglets ?".
+    if(pages.size()==1&&settings.closeWithLastTab&&!smoke){Log(L"TABS last tab closed: closing the window");PostMessageW(window,WM_CLOSE,0,0);return;}
     CancelTabDrag();const bool active=index==current;int next=NativeChrome::SelectionAfterClose((int)pages.size(),current,index);
     {auto closing=pages[index];if(active&&closing->group){auto m=Members(closing->group);auto it=std::find(m.begin(),m.end(),closing);std::shared_ptr<Tab> heir=it!=m.end()&&it+1!=m.end()?*(it+1):it!=m.begin()&&it!=m.end()?*(it-1):nullptr;if(heir){const int j=TabIndexOf(heir);next=j>index?j-1:j;}}}
     motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=pages[index];if(!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);DissolveSmallGroups();
-    if(pages.empty()){current=-1;NewTab();}else if(active)Select(next);else{current=next;motion.SelectTab(current+1,NativeChrome::Motion::Now());ApplyPages();Update();}
+    if(pages.empty()){current=-1;NewTab(NewTabTarget());}else if(active)Select(next);else{current=next;motion.SelectTab(current+1,NativeChrome::Motion::Now());ApplyPages();Update();}
 }
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
 std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.group)for(auto& s:v.a.slots)if(!s.rail)out.push_back(TabIndexOf(v.members[s.member]));return out;}
 void Close(){CloseAt(current);}
-void Command(int cmd){if(halted||!chrome.Enabled(cmd))return;if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:FindInPage();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab();FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes)Check(t->view->GoBack(),L"GoBack");}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes)Check(t->view->GoForward(),L"GoForward");}break;default:ExtraCommand(cmd);break;}}
+void Command(int cmd){if(halted||!chrome.Enabled(cmd))return;if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:FindInPage();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes)Check(t->view->GoBack(),L"GoBack");}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes)Check(t->view->GoForward(),L"GoForward");}break;default:ExtraCommand(cmd);break;}}
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     if(ctrl&&!alt){
@@ -919,7 +941,7 @@ int Key(UINT key){
         // In the page WebView2 handles Ctrl+F itself, retaining its native find state.
         if(!shift&&key=='F')return GetFocus()==window||GetFocus()==address?FindPage:0;
         // Ctrl+P likewise: the page opens the same browser print preview itself (no double dialog).
-        if(!shift&&key=='P')return GetFocus()==window||GetFocus()==address?PrintActive:0;
+        if(!shift&&key=='P')return GetFocus()==window||GetFocus()==address||(Active()&&Active()->home)?PrintActive:0; // a home tab (frequent sites shown) never prints
         if(!shift&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;
         if(!shift&&key=='H')return 'Y'; // history, as in every desktop browser
     }
@@ -965,7 +987,9 @@ void SaveHistory(){
 }
 // Result pages of the search engines are not suggested back: typing "git" should
 // offer the sites visited, not every past search for it.
-bool SearchResultPage(const std::wstring& uri){for(int i=0;i<BrowserSettings::EngineCount;++i)if(uri.rfind(BrowserSettings::Info(static_cast<BrowserSettings::Engine>(i)).search,0)==0)return true;return false;}
+bool SearchResultPage(const std::wstring& uri){for(int i=0;i<BrowserSettings::EngineCount;++i){const std::wstring prefix=BrowserSettings::Info(static_cast<BrowserSettings::Engine>(i)).search;if(!prefix.empty()&&uri.rfind(prefix,0)==0)return true;}
+    // The custom engine: its template up to %s (empty or unusable: nothing matches).
+    const std::wstring custom=BrowserSettings::SearchTemplate(settings.customSearch);const size_t at=custom.find(L"%s");return at!=std::wstring::npos&&at>0&&uri.rfind(custom.substr(0,at),0)==0;}
 // Remembered site icons (issue #20): the favicon a tab received, kept per site in
 // <data>\favicons\<site>.png and shown by the suggestions. Never fetched while typing.
 std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> siteIcons;std::set<std::wstring> siteIconsMissing;std::map<std::wstring,size_t> siteIconsWritten;
@@ -1010,6 +1034,61 @@ void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.e
 void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke)return;std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
 void LoadPopularSites(){std::ifstream in(std::filesystem::path(base+L"\\assets\\popular-sites.txt"),std::ios::binary);popularSites=AddressBar::ReadPopular(in);if(popularSites.empty())Log(L"ADDRESS popular sites unavailable");}
 void LoadHistory(){LoadPopularSites();if(smoke)return;std::ifstream in(std::filesystem::path(HistoryFile()),std::ios::binary);history=AddressBar::History::Read(in);}
+// ---- New tab page (SETTINGS newtab) ----------------------------------------------
+// "Sites fréquents": the home tab shows the most visited hosts (AddressBar::TopSites, the
+// ranking of the address bar's host rows) as plain http(s) links. Self-contained document
+// (NavigateToString, so it stays about:blank = a home tab): icons and font are data: URIs,
+// the CSP allows nothing else (no script, no network). Nothing visited yet: HomeHtml.
+std::wstring HtmlEscape(const std::wstring& s){std::wstring r;r.reserve(s.size());for(wchar_t c:s){switch(c){case L'&':r+=L"&amp;";break;case L'<':r+=L"&lt;";break;case L'>':r+=L"&gt;";break;case L'"':r+=L"&quot;";break;case L'\'':r+=L"&#39;";break;default:r+=c<0x20?L' ':c;}}return r;}
+// data:<mime>;base64,… of a local file (empty when missing, empty or above `cap` bytes).
+std::wstring DataUri(const std::wstring& path,const wchar_t* mime,size_t cap){
+    std::ifstream in(std::filesystem::path(path),std::ios::binary|std::ios::ate);if(!in)return L"";const auto size=(std::streamoff)in.tellg();if(size<=0||(size_t)size>cap)return L"";
+    std::string bytes((size_t)size,'\0');in.seekg(0);if(!in.read(bytes.data(),size))return L"";
+    static const char* digits="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";std::wstring r=std::wstring(L"data:")+mime+L";base64,";r.reserve(r.size()+(bytes.size()+2)/3*4);
+    for(size_t i=0;i<bytes.size();i+=3){const unsigned n=((unsigned char)bytes[i]<<16)|(i+1<bytes.size()?(unsigned char)bytes[i+1]<<8:0)|(i+2<bytes.size()?(unsigned char)bytes[i+2]:0);
+        r+=(wchar_t)digits[(n>>18)&63];r+=(wchar_t)digits[(n>>12)&63];r+=i+1<bytes.size()?(wchar_t)digits[(n>>6)&63]:L'=';r+=i+2<bytes.size()?(wchar_t)digits[n&63]:L'=';}
+    return r;
+}
+// The site's icon as the suggestions show it: remembered from a visit, else the bundled one.
+std::wstring SiteIconUri(const std::wstring& site){
+    if(auto uri=DataUri(SiteIconFile(site),L"image/png",48*1024);!uri.empty())return uri;
+    const auto name=std::filesystem::path(SiteIconFile(site)).stem().wstring(); // same file-name rule as BundledIcon
+    if(auto uri=DataUri(base+L"\\assets\\sites\\"+name+L".png",L"image/png",48*1024);!uri.empty())return uri;
+    return DataUri(base+L"\\assets\\sites\\"+name+L".ico",L"image/x-icon",48*1024);
+}
+std::wstring HomeDocument(){
+    homeTiles.serials.erase(std::remove_if(homeTiles.serials.begin(),homeTiles.serials.end(),[](unsigned s){return std::none_of(pages.begin(),pages.end(),[s](const std::shared_ptr<Tab>& t){return t->serial==s;});}),homeTiles.serials.end());
+    if(settings.newTabPage!=BrowserSettings::NewTabPage::FrequentSites)return HomeHtml;
+    std::wstring tiles;
+    for(const auto& h:AddressBar::TopSites(history,8)){
+        const auto site=AddressBar::SiteOf(h.url);if(site.empty()||h.url.size()>2048)continue; // http(s) only
+        std::wstring name=h.host;for(const auto& p:popularSites)if(p.host==h.host&&!p.name.empty()){name=p.name;break;}
+        const auto icon=SiteIconUri(site);std::wstring glyph;
+        if(icon.empty()){wchar_t first=name.empty()?L'?':(wchar_t)towupper(name[0]);glyph=L"<span class=\"l\" aria-hidden=\"true\">"+HtmlEscape(std::wstring(1,first>=0xD800&&first<=0xDFFF?L'?':first))+L"</span>";}
+        else glyph=L"<img src=\""+icon+L"\" alt=\"\" width=\"32\" height=\"32\">";
+        tiles+=L"<li><a href=\""+HtmlEscape(h.url)+L"\" title=\""+HtmlEscape(AddressBar::MatchText(h.url))+L"\"><span class=\"i\">"+glyph+L"</span><span class=\"n\">"+HtmlEscape(name)+L"</span></a></li>";
+    }
+    if(tiles.empty())return HomeHtml;
+    static const std::wstring font=DataUri(base+L"\\assets\\fonts\\InterDisplay-Medium.ttf",L"font/ttf",1024*1024);
+    const bool reduced=motion.ReducedMotion();
+    return std::wstring(LR"HTML(<!doctype html><html lang="fr"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'"><title>Nouvel onglet</title><style>)HTML")
+        +(font.empty()?L"":L"@font-face{font-family:\"Inter Display\";src:url("+font+L") format(\"truetype\");font-weight:500;font-display:block}")
+        +LR"CSS(html,body{margin:0;background:#171717;color:white;min-height:100%;color-scheme:dark}
+body{display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:"Inter Display",Inter,system-ui,sans-serif;font-feature-settings:"cv01","cv02","cv03","cv04","cv13";font-weight:500}
+ul{list-style:none;margin:0;padding:24px 16px;display:grid;grid-template-columns:repeat(4,120px);gap:16px 8px}
+@media (max-width:519px){ul{grid-template-columns:repeat(2,120px)}}
+a{display:flex;flex-direction:column;align-items:center;gap:8px;width:120px;padding:8px 0;box-sizing:border-box;border-radius:12px;color:rgba(255,255,255,.7);text-decoration:none;outline:none}
+a:hover{color:rgba(255,255,255,.9)}
+a:focus-visible{outline:2px solid rgba(255,255,255,.5);outline-offset:2px}
+.i{display:flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:12px;background:rgba(255,255,255,.04)}
+a:hover .i{background:rgba(255,255,255,.08)}
+a:active .i{background:rgba(255,255,255,.06)}
+.i img{width:32px;height:32px}
+.l{width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.12);color:rgba(255,255,255,.9);font-size:16px;line-height:32px;text-align:center}
+.n{max-width:112px;font-size:14px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+)CSS"+(reduced?L"":L".i{transition:background-color 120ms ease-out}@media (prefers-reduced-motion:reduce){.i{transition:none}}")
+        +L"</style><body><nav aria-label=\"Sites fréquents\"><ul>"+tiles+L"</ul></nav></body></html>";
+}
 void RestoreSession(){
     BrowserSession::State state;
     // "Restaurer les onglets" off: start on a fresh tab (the session is still saved on exit).
@@ -1019,7 +1098,7 @@ void RestoreSession(){
         if(!url.empty()&&!size){state=BrowserSession::State{};break;}
     }
     for(const auto& url:state.urls){int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);std::wstring uri(size,0);if(size)MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),uri.data(),size);NewTab(uri);}
-    if(pages.empty())NewTab();else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);}
+    if(pages.empty())NewTab(NewTabTarget());else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);}
     sessionReady=true;if(splitTest)SetTimer(window,SplitTestTimer,1500,nullptr);
 }
 
@@ -1332,21 +1411,24 @@ void ApplyReducedMotion(){
 void AnnounceDataCleared();
 // The exe carries no comctl32 v6 manifest, so TaskDialogIndirect is resolved at
 // run time (absent from v5) and the prompt falls back to a plain MessageBox.
-bool ConfirmClearData(){
-    const wchar_t* title=L"Effacer les données de navigation ?";
-    const wchar_t* body=L"L'historique, les cookies et données de site, le cache, les formulaires et mots de passe enregistrés de ce profil ainsi que la liste des téléchargements seront effacés. Les fichiers téléchargés restent sur le disque et les onglets ouverts restent ouverts.\n\nCette action est irréversible.";
+// `ok` labels IDOK (Annuler is IDCANCEL); `body` may be null; `okDefault` picks the default button.
+bool ConfirmDialog(const wchar_t* caption,const wchar_t* title,const wchar_t* body,const wchar_t* ok,bool okDefault){
     using TaskDialogFn=HRESULT(WINAPI*)(const TASKDIALOGCONFIG*,int*,int*,BOOL*);
     HMODULE comctl=GetModuleHandleW(L"comctl32.dll");
     auto taskDialog=comctl?reinterpret_cast<TaskDialogFn>(GetProcAddress(comctl,"TaskDialogIndirect")):nullptr;
     if(taskDialog){
-        TASKDIALOG_BUTTON buttons[]={{IDOK,L"Effacer"},{IDCANCEL,L"Annuler"}};
+        TASKDIALOG_BUTTON buttons[]={{IDOK,ok},{IDCANCEL,L"Annuler"}};
         TASKDIALOGCONFIG config{};config.cbSize=sizeof config;config.hwndParent=window;config.hInstance=instance;
-        config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=L"Effacer les données";
+        config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=caption;
         config.pszMainIcon=TD_WARNING_ICON;config.pszMainInstruction=title;config.pszContent=body;
-        config.pButtons=buttons;config.cButtons=2;config.nDefaultButton=IDCANCEL;
+        config.pButtons=buttons;config.cButtons=2;config.nDefaultButton=okDefault?IDOK:IDCANCEL;
         int button=IDCANCEL;if(SUCCEEDED(taskDialog(&config,&button,nullptr,nullptr)))return button==IDOK;
     }
-    return MessageBoxW(window,(std::wstring(title)+L"\n\n"+body).c_str(),L"Effacer les données",MB_OKCANCEL|MB_ICONWARNING|MB_DEFBUTTON2)==IDOK;
+    return MessageBoxW(window,(std::wstring(title)+(body?std::wstring(L"\n\n")+body:L"")).c_str(),caption,MB_OKCANCEL|MB_ICONWARNING|(okDefault?MB_DEFBUTTON1:MB_DEFBUTTON2))==IDOK;
+}
+bool ConfirmClearData(){
+    return ConfirmDialog(L"Effacer les données",L"Effacer les données de navigation ?",
+        L"L'historique, les cookies et données de site, le cache, les formulaires et mots de passe enregistrés de ce profil ainsi que la liste des téléchargements seront effacés. Les fichiers téléchargés restent sur le disque et les onglets ouverts restent ouverts.\n\nCette action est irréversible.",L"Effacer",false);
 }
 std::wstring HrText(HRESULT hr){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);return code;}
 // Local traces: reopen stack, history, site icons and finished download rows; live downloads (and their ops) stay.
@@ -1421,6 +1503,21 @@ bool ClearOnExitAndClose(){
     if(!StartClearEngineData(profile.p,[](HRESULT){FinishExitClear();})){exitClear=ExitClear::Idle;KillTimer(window,ExitClearTimerId);return false;}
     Log(L"SETTINGS clear on exit: waiting for the engine");
     return true;
+}
+// SETTINGS(tabs): "Confirmer avant de fermer plusieurs onglets", asked at WM_CLOSE (caption
+// button, Alt+F4, taskbar). False = keep the window. Never for smoke runs, the updater's
+// install handoff (closeWithoutPrompt), a close already under way (clear on exit), or a
+// WM_CLOSE arriving while the question is open.
+bool closeWithoutPrompt=false;
+bool ConfirmWindowClose(){
+    static bool asking=false;if(asking)return false;
+    if(smoke||halted||closeWithoutPrompt||exitClear!=ExitClear::Idle||!settings.confirmCloseTabs)return true;
+    const int n=(int)std::count_if(pages.begin(),pages.end(),[](const std::shared_ptr<Tab>& t){return t&&!t->closed;});if(n<=1)return true;
+    if(IsIconic(window))ShowWindow(window,SW_RESTORE);
+    const std::wstring title=L"Fermer "+std::to_wstring(n)+L" onglets ?";
+    asking=true;const bool ok=ConfirmDialog(L"Fermer la fenêtre",title.c_str(),settings.restoreTabs?L"Les onglets seront rouverts au prochain démarrage.":nullptr,L"Fermer",true);asking=false;
+    if(!ok)Log(L"TABS window close cancelled");
+    return ok;
 }
 // SETTINGS(permissions): the panel's Autorisations views. Load is asynchronous (engine call);
 // `done` runs on the UI thread with the sites that have at least one non-default permission.
@@ -1520,9 +1617,10 @@ void ApplySleepSettings(){
 }
 // Called by Select: the previous tab starts its out-of-sight clock; a sleeping tab wakes
 // (put_IsVisible(TRUE) resumes it too; Resume also covers a hidden home tab).
+void ApplyTabSettings();void ApplyMemorySaver();
 void TabShown(const std::shared_ptr<Tab>& tab){
     auto previous=shownTab.lock();if(previous==tab)return;
-    if(previous)previous->hiddenAt=GetTickCount64();shownTab=tab;
+    if(previous)previous->hiddenAt=GetTickCount64();shownTab=tab;ApplyTabSettings();ApplyMemorySaver();
     if(tab&&tab->sleeping){tab->sleeping=false;Com<ICoreWebView2_3> v3;if(tab->view.p&&SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))&&v3.p)v3->Resume();InvalidateChrome();}
     ApplySleepSettings();
 }
@@ -1549,6 +1647,250 @@ void SleepTabs(){
 // SETTINGS(tabs): settings.zoomPercent as every tab's zoom (and new tabs').
 void ApplyZoom(ICoreWebView2Controller* c){if(c&&FAILED(c->put_ZoomFactor(settings.zoomPercent/100.0)))Log(L"SETTINGS put_ZoomFactor failed");}
 void ApplyZoomSettings(){for(auto& t:pages)if(!t->closed)ApplyZoom(t->controller.p);ApplyPages();}
+// SETTINGS(v3) stubs, filled per area: tabs/media, https/cookies, adblock/memory, new tab page.
+// SETTINGS(tabs): tab position, close confirmation and close-with-last-tab are read where tabs
+// open/close (UserTabIndex, ConfirmWindowClose, CloseAt). Here: "Couper le son des onglets en
+// arrière-plan", only the active tab plays sound. Re-applied by TabShown (selection) and for each
+// new webview. There is no per-tab user mute, so turning it off unmutes every tab; while it has
+// never been on, no tab is touched.
+bool backgroundMuted=false;
+void ApplyTabSettings(){
+    if(halted||(!settings.muteBackground&&!backgroundMuted))return;
+    static bool logged=false;auto active=Active();
+    for(auto& t:pages){if(!t||t->closed||!t->view.p)continue;
+        Com<ICoreWebView2_8> v8;HRESULT hr=t->view->QueryInterface(IID_ICoreWebView2_8,(void**)&v8.p);
+        if(SUCCEEDED(hr)&&v8.p)hr=v8->put_IsMuted(settings.muteBackground&&t!=active?TRUE:FALSE);else if(SUCCEEDED(hr))hr=E_NOINTERFACE;
+        if(FAILED(hr)&&!logged){Log(L"SETTINGS mute background tabs unavailable "+HrText(hr));logged=true;}
+    }
+    backgroundMuted=settings.muteBackground;
+}
+// SETTINGS(media): the autoplay policy is an engine argument set in wWinMain before the
+// environment exists, so a change applies at the next launch.
+void ApplyMediaSettings(){Log(L"SETTINGS autoplay "+std::wstring(BrowserSettings::Info(settings.autoplay).label)+L": applies at next launch");}
+// SETTINGS(https): "HTTPS uniquement". Top-level http:// navigations are cancelled in
+// NavigationStarting and retried as https:// (local and private hosts and the hosts allowed
+// this session are left alone). When the https:// attempt fails to connect, or its server
+// redirects back to http://, the tab shows the "Ce site n'est pas sécurisé" page (NavigateToString,
+// the address bar keeps the http:// address); its buttons post `token:back` / `token:continue`.
+std::vector<std::wstring> httpAllowedHosts; // « Continuer quand même », for this session only
+std::vector<std::function<void()>> deferredJobs;
+// Navigations started from inside a WebView2 event handler run on the next message instead.
+void CALLBACK RunDeferredJobs(HWND,UINT,UINT_PTR id,DWORD){KillTimer(nullptr,id);auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& job:jobs)if(!halted)job();}
+void Defer(std::function<void()> job){deferredJobs.push_back(std::move(job));if(deferredJobs.size()==1&&!SetTimer(nullptr,0,0,RunDeferredJobs)){auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& j:jobs)if(!halted)j();}}
+// Lower-case host (IPv6 kept in brackets), explicit port and authority end of an http:// URL.
+bool HttpParts(const std::wstring& uri,std::wstring& host,std::wstring& port,size_t& end){
+    if(uri.size()<8||_wcsnicmp(uri.c_str(),L"http://",7)!=0)return false;
+    end=uri.find_first_of(L"/?#",7);if(end==std::wstring::npos)end=uri.size();
+    std::wstring authority=uri.substr(7,end-7);const auto at=authority.rfind(L'@');if(at!=std::wstring::npos)authority.erase(0,at+1);
+    size_t colon=std::wstring::npos;
+    if(!authority.empty()&&authority[0]==L'['){const auto close=authority.find(L']');if(close==std::wstring::npos)return false;host=authority.substr(0,close+1);if(close+1<authority.size()&&authority[close+1]==L':')colon=close+1;}
+    else{colon=authority.find(L':');host=authority.substr(0,colon);}
+    port=colon==std::wstring::npos?L"":authority.substr(colon+1);
+    std::transform(host.begin(),host.end(),host.begin(),towlower);while(!host.empty()&&host.back()==L'.')host.pop_back();
+    return !host.empty();
+}
+bool EndsWith(const std::wstring& s,const wchar_t* suffix){const size_t n=wcslen(suffix);return s.size()>=n&&s.compare(s.size()-n,n,suffix)==0;}
+// Hosts that never get an https:// upgrade: loopback, link-local and private addresses,
+// single-label intranet names, *.local / *.localhost, and the session allowlist.
+bool HttpExempt(const std::wstring& host){
+    if(std::find(httpAllowedHosts.begin(),httpAllowedHosts.end(),host)!=httpAllowedHosts.end())return true;
+    if(host[0]==L'[')return host==L"[::1]"||host.rfind(L"[fe80:",0)==0||host.rfind(L"[fc",0)==0||host.rfind(L"[fd",0)==0||host.rfind(L"[::ffff:127.",0)==0;
+    if(host==L"localhost"||EndsWith(host,L".localhost")||EndsWith(host,L".local")||host.find(L'.')==std::wstring::npos)return true;
+    unsigned a=0,b=0,c=0,d=0;wchar_t extra=0;
+    if(swscanf(host.c_str(),L"%u.%u.%u.%u%lc",&a,&b,&c,&d,&extra)==4&&a<256&&b<256&&c<256&&d<256)
+        return a==127||a==10||a==0||(a==172&&b>=16&&b<=31)||(a==192&&b==168)||(a==169&&b==254);
+    return false;
+}
+std::wstring HtmlText(const std::wstring& s){std::wstring r;for(wchar_t ch:s){switch(ch){case L'&':r+=L"&amp;";break;case L'<':r+=L"&lt;";break;case L'>':r+=L"&gt;";break;case L'"':r+=L"&quot;";break;case L'\'':r+=L"&#39;";break;default:r+=ch;}}return r;}
+// The "not secure" page for `insecure` (an http:// address), in place of the failed attempt.
+void ShowInsecureInterstitial(const std::shared_ptr<Tab>& t,const std::wstring& insecure){
+    if(halted||!t||t->closed||!t->view.p)return;
+    std::wstring host,port;size_t end=0;if(!HttpParts(insecure,host,port,end))return;
+    GUID guid{};wchar_t token[40]{};if(FAILED(CoCreateGuid(&guid))||!StringFromGUID2(guid,token,40))return;
+    auto& h=t->https;h.shown=insecure;h.token=token;h.pending=true;h.upgrade=0;
+    t->uri=insecure;t->home=false;t->title=L"Ce site n'est pas sécurisé";
+    Log(L"HTTPS interstitial "+insecure);
+    const bool still=motion.ReducedMotion();
+    std::wstring html=LR"HTML(<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Ce site n'est pas sécurisé</title><style>
+html,body{margin:0;height:100%;background:#171717;color:rgba(255,255,255,.9);font-family:"Inter Display",Inter,system-ui,sans-serif}
+body{display:flex;align-items:center;justify-content:center;padding:0 16px;box-sizing:border-box}
+main{width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;text-align:center)HTML";
+    html+=still?L"}":L";animation:in 150ms ease-out}@keyframes in{from{opacity:0}}@media (prefers-reduced-motion:reduce){main{animation:none}}";
+    html+=LR"HTML(
+h1{margin:0;font-size:20px;line-height:28px;font-weight:600;text-wrap:balance}
+p{margin:8px 0 24px;font-size:14px;line-height:20px;color:rgba(255,255,255,.6);text-wrap:balance;overflow-wrap:anywhere}
+p b{font-weight:500;color:rgba(255,255,255,.9)}
+div{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
+button{height:32px;padding:0 14px;border:0;border-radius:8px;font:inherit;font-size:14px;font-weight:500;cursor:pointer}
+button:focus-visible{outline:2px solid rgba(255,255,255,.9);outline-offset:2px}
+#back{background:rgba(255,255,255,.9);color:#171717}#back:hover{background:#fff}
+#go{background:rgba(255,255,255,.08);color:rgba(255,255,255,.9)}#go:hover{background:rgba(255,255,255,.12)}
+</style><main><h1>Ce site n'est pas sécurisé</h1><p>La connexion chiffrée (HTTPS) à <b>)HTML";
+    html+=HtmlText(host);
+    html+=LR"HTML(</b> n'a pas pu être établie. Si vous continuez, ce que vous échangez avec ce site, comme des mots de passe ou des numéros de carte, ne sera pas chiffré et pourra être lu ou modifié par d'autres.</p>
+<div><button id="back" autofocus>Revenir</button><button id="go">Continuer quand même</button></div></main>
+<script>const t=")HTML";
+    html+=token;
+    html+=LR"HTML(";const send=a=>window.chrome.webview.postMessage(t+":"+a);back.onclick=()=>send("back");go.onclick=()=>send("continue");</script></html>)HTML";
+    Check(t->view->NavigateToString(html.c_str()),L"NavigateToString interstitial");
+    if(t==Active())Update();
+}
+// NavigationStarting hook (top-level). True when the navigation was cancelled here.
+bool HttpsNavigationStarting(const std::shared_ptr<Tab>& t,ICoreWebView2NavigationStartingEventArgs* a,const std::wstring& uri,UINT64 id){
+    auto& h=t->https;const bool blank=uri==L"about:blank"||uri.rfind(L"data:",0)==0;
+    if(blank&&h.pending){h.pending=false;return false;} // the interstitial itself
+    COREWEBVIEW2_NAVIGATION_KIND kind=COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT;
+    {Com<ICoreWebView2NavigationStartingEventArgs3> a3;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationStartingEventArgs3,(void**)&a3.p))&&a3.p)a3->get_NavigationKind(&kind);}
+    if(blank&&!h.shown.empty()&&t->uri==h.shown&&kind==COREWEBVIEW2_NAVIGATION_KIND_RELOAD){ // Reload on the interstitial: try https:// again
+        a->put_Cancel(TRUE);std::weak_ptr<Tab> weak=t;auto target=h.shown;h.shown.clear();
+        Defer([weak,target]{auto tab=weak.lock();if(tab&&!tab->closed)Navigate(tab,target);});return true;}
+    h.shown.clear();h.pending=false;
+    if(!h.expectHost.empty()){std::wstring host,port;size_t end=0;if(uri.rfind(L"https://",0)==0&&HttpParts(L"http://"+uri.substr(8),host,port,end)&&host==h.expectHost)h.upgrade=id;h.expectHost.clear();}
+    std::wstring host,port;size_t end=0;
+    if(!settings.httpsOnly||!HttpParts(uri,host,port,end)||HttpExempt(host))return false;
+    if(FAILED(a->put_Cancel(TRUE)))return false;
+    BOOL redirected=FALSE;a->get_IsRedirected(&redirected);
+    const bool downgrade=redirected&&h.upgrade==id; // the https:// attempt redirected back to http://
+    if(!downgrade){LPWSTR source=nullptr;h.from=SUCCEEDED(t->view->get_Source(&source))&&source?source:L"";CoTaskMemFree(source);}
+    std::weak_ptr<Tab> weak=t;
+    if(downgrade||(!port.empty()&&port!=L"80")){ // https:// cannot be tried on another port
+        Log(L"HTTPS no secure version "+uri);
+        Defer([weak,uri]{ShowInsecureInterstitial(weak.lock(),uri);});return true;}
+    std::wstring secure=L"https://"+uri.substr(7,end-7-(port.empty()?0:port.size()+1))+uri.substr(end);
+    h.insecure=uri;h.expectHost=host;h.upgrade=0;
+    Log(L"HTTPS upgrade "+uri);
+    Defer([weak,secure]{auto tab=weak.lock();if(tab&&!tab->closed)Navigate(tab,secure);});
+    return true;
+}
+// NavigationCompleted hook for a failed navigation: an https:// upgrade that could not connect
+// (DNS, TCP, TLS or certificate) gives the interstitial. True when it was shown.
+bool HttpsUpgradeFailed(const std::shared_ptr<Tab>& t,UINT64 id,COREWEBVIEW2_WEB_ERROR_STATUS error){
+    auto& h=t->https;if(!h.upgrade||h.upgrade!=id||h.insecure.empty())return false;h.upgrade=0;
+    switch(error){
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT:case COREWEBVIEW2_WEB_ERROR_STATUS_ERROR_HTTP_INVALID_SERVER_RESPONSE:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT:case COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_REDIRECT_FAILED:case COREWEBVIEW2_WEB_ERROR_STATUS_UNEXPECTED_ERROR:
+        Log(L"HTTPS upgrade failed WebErrorStatus="+std::to_wstring(error)+L" "+h.insecure);
+        ShowInsecureInterstitial(t,h.insecure);return true;
+    default:return false; // offline, cancelled, authentication: the engine's own page
+    }
+}
+// The interstitial's buttons. Only the document the tab shows as interstitial, with its token.
+HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){
+    if(halted||!t||t->closed||t->https.shown.empty()||t->https.pending||t->uri!=t->https.shown)return S_OK;
+    LPWSTR source=nullptr,raw=nullptr;
+    const bool blank=SUCCEEDED(a->get_Source(&source))&&source&&(wcscmp(source,L"about:blank")==0||wcsncmp(source,L"data:",5)==0);CoTaskMemFree(source);
+    if(!blank||FAILED(a->TryGetWebMessageAsString(&raw))||!raw){CoTaskMemFree(raw);return S_OK;}
+    std::wstring message=raw;CoTaskMemFree(raw);const auto& h=t->https;
+    if(message.size()<=h.token.size()+1||message.compare(0,h.token.size(),h.token)!=0||message[h.token.size()]!=L':')return S_OK;
+    const std::wstring action=message.substr(h.token.size()+1),insecure=h.shown;std::weak_ptr<Tab> weak=t;
+    if(action==L"continue"){
+        std::wstring host,port;size_t end=0;if(!HttpParts(insecure,host,port,end))return S_OK;
+        if(std::find(httpAllowedHosts.begin(),httpAllowedHosts.end(),host)==httpAllowedHosts.end())httpAllowedHosts.push_back(host);
+        Log(L"HTTPS allowed for this session "+host);
+        Defer([weak,insecure]{auto tab=weak.lock();if(tab&&!tab->closed)Navigate(tab,insecure);});
+    }else if(action==L"back"){
+        std::wstring from=h.from;const bool web=_wcsnicmp(from.c_str(),L"https://",8)==0||_wcsnicmp(from.c_str(),L"http://",7)==0;
+        Defer([weak,from,web]{auto tab=weak.lock();if(tab&&!tab->closed)Navigate(tab,web?from:L"");});
+    }
+    return S_OK;
+}
+// SETTINGS(cookies): third-party cookie blocking is Chromium's ForceThirdPartyCookieBlockingEnabled
+// feature (net::cookie_util::IsForceThirdPartyCookieBlockingEnabled also needs
+// ThirdPartyStoragePartitioning), an engine argument set in wWinMain: applies at the next launch.
+// Adds features to the --enable-features list of an argument string without duplicating either.
+std::wstring WithEnabledFeatures(std::wstring args,const std::vector<std::wstring>& features){
+    const std::wstring key=L"--enable-features=";auto at=args.rfind(key); // the last one wins
+    if(at==std::wstring::npos){std::wstring list;for(auto& f:features)list+=(list.empty()?L"":L",")+f;return args+(args.empty()?L"":L" ")+key+list;}
+    size_t start=at+key.size();if(start<args.size()&&args[start]==L'"')++start;
+    const size_t stop=args.find_first_of(L" \t\"",start);const std::wstring present=L","+args.substr(start,stop==std::wstring::npos?std::wstring::npos:stop-start)+L",";
+    std::wstring add;for(auto& f:features)if(present.find(L","+f+L",")==std::wstring::npos)add+=f+L",";
+    if(!add.empty()){if(start==args.size()||present==L",,")add.pop_back();args.insert(start,add);}
+    return args;
+}
+void ApplySecuritySettings(){
+    Log(settings.httpsOnly?L"SETTINGS https-only on":L"SETTINGS https-only off");
+    Log(std::wstring(settings.blockThirdPartyCookies?L"SETTINGS block third-party cookies on":L"SETTINGS block third-party cookies off")+L": applies at next launch");
+}
+// SETTINGS(adblock): settings.adBlock runs uBlock Origin Lite (MV3, unmodified, GPLv3; fetched by
+// fetch-ublock-lite.py into assets\extensions\ublock-lite). Blocking is declarativeNetRequest inside
+// the engine: no per-request callback here. Engine extensions are on outside smoke runs (EngineOptions)
+// and the profile keeps the install, so the toggle is Enable(TRUE/FALSE), live for every tab.
+// The unpacked extension's id follows its folder, and each installed version has its own folder:
+// dataDir\adblock remembers "<folder>\n<id>" of the current install; any other "uBlock Origin Lite"
+// in the profile is an older version's leftover and is removed. One sync at a time.
+bool adBlockSynced=false,adBlockBusy=false,adBlockAgain=false,adBlockNoProfileLogged=false;void ApplyAdBlock();
+const wchar_t* const AdBlockName=L"uBlock Origin Lite";
+std::wstring AdBlockFolder(){return base+L"\\assets\\extensions\\ublock-lite";}
+std::string AdBlockMarker(const std::wstring& id){return Utf8(AdBlockFolder())+"\n"+Utf8(id);}
+void AdBlockDone(){adBlockBusy=false;if(adBlockAgain&&!halted){adBlockAgain=false;ApplyAdBlock();}}
+void AdBlockEnable(ICoreWebView2BrowserExtension* ext,bool on){
+    auto done=Callback<ICoreWebView2BrowserExtensionEnableCompletedHandler,HRESULT>([on](HRESULT hr)->HRESULT{
+        Log(FAILED(hr)?L"SETTINGS adblock Enable failed":on?L"SETTINGS adblock on (uBlock Origin Lite enabled)":L"SETTINGS adblock off (uBlock Origin Lite disabled)");AdBlockDone();return S_OK;});
+    HRESULT hr=ext->Enable(on?TRUE:FALSE,done);done->Release();if(FAILED(hr)){Log(L"SETTINGS adblock Enable call failed");AdBlockDone();}
+}
+void AdBlockInstall(ICoreWebView2Profile7* profile){
+    const auto folder=AdBlockFolder();
+    if(GetFileAttributesW((folder+L"\\manifest.json").c_str())==INVALID_FILE_ATTRIBUTES){Log(L"SETTINGS adblock: extension missing ("+folder+L"); browsing continues without ad blocking");AdBlockDone();return;}
+    auto done=Callback<ICoreWebView2ProfileAddBrowserExtensionCompletedHandler,HRESULT,ICoreWebView2BrowserExtension*>([](HRESULT hr,ICoreWebView2BrowserExtension* ext)->HRESULT{
+        LPWSTR id=nullptr;
+        if(FAILED(hr)||!ext||FAILED(ext->get_Id(&id))||!id){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"SETTINGS adblock install failed ")+code);AdBlockDone();return S_OK;}
+        const std::wstring extId=id;CoTaskMemFree(id);
+        {std::ofstream f(std::filesystem::path(dataDir+L"\\adblock"),std::ios::binary|std::ios::trunc);f<<AdBlockMarker(extId);}
+        Log(L"SETTINGS adblock installed uBlock Origin Lite "+extId);
+        if(!settings.adBlock){AdBlockEnable(ext,false);return S_OK;} // turned off while installing
+        AdBlockDone();return S_OK;});
+    HRESULT hr=profile->AddBrowserExtension(folder.c_str(),done);done->Release();if(FAILED(hr)){Log(L"SETTINGS adblock AddBrowserExtension call failed");AdBlockDone();}
+}
+void ApplyAdBlock(){
+    if(smoke||halted)return;if(adBlockBusy){adBlockAgain=true;return;}
+    Com<ICoreWebView2Profile7> profile;
+    if(!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){if(!adBlockNoProfileLogged){adBlockNoProfileLogged=true;Log(L"SETTINGS adblock: no ICoreWebView2Profile7 yet (no live tab or old runtime)");}return;}
+    adBlockSynced=adBlockBusy=true;
+    auto listed=Callback<ICoreWebView2ProfileGetBrowserExtensionsCompletedHandler,HRESULT,ICoreWebView2BrowserExtensionList*>([](HRESULT hr,ICoreWebView2BrowserExtensionList* list)->HRESULT{
+        Com<ICoreWebView2Profile7> profile;
+        if(halted||FAILED(hr)||!list||!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){if(!halted)Log(L"SETTINGS adblock: extension list unavailable");AdBlockDone();return S_OK;}
+        std::string marker;{std::ifstream in(std::filesystem::path(dataDir+L"\\adblock"),std::ios::binary);marker.assign(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());}
+        Com<ICoreWebView2BrowserExtension> ours;UINT count=0;list->get_Count(&count);
+        for(UINT i=0;i<count;++i){
+            Com<ICoreWebView2BrowserExtension> ext;LPWSTR id=nullptr,name=nullptr;
+            if(FAILED(list->GetValueAtIndex(i,&ext.p))||!ext.p)continue;
+            if(SUCCEEDED(ext->get_Id(&id))&&id&&SUCCEEDED(ext->get_Name(&name))&&name&&std::wstring(name)==AdBlockName){
+                if(!ours.p&&marker==AdBlockMarker(id))ours.set(ext.p);
+                else{Log(L"SETTINGS adblock removing a previous install "+std::wstring(id));auto removed=Callback<ICoreWebView2BrowserExtensionRemoveCompletedHandler,HRESULT>([](HRESULT r)->HRESULT{if(FAILED(r))Log(L"SETTINGS adblock remove failed");return S_OK;});if(FAILED(ext->Remove(removed)))Log(L"SETTINGS adblock Remove call failed");removed->Release();}}
+            if(id)CoTaskMemFree(id);if(name)CoTaskMemFree(name);
+        }
+        if(ours.p){BOOL on=FALSE;ours->get_IsEnabled(&on);if(!!on!=settings.adBlock){AdBlockEnable(ours.p,settings.adBlock);return S_OK;}Log(settings.adBlock?L"SETTINGS adblock on":L"SETTINGS adblock off");AdBlockDone();return S_OK;}
+        if(settings.adBlock){AdBlockInstall(profile.p);return S_OK;}
+        Log(L"SETTINGS adblock off (not installed)");AdBlockDone();return S_OK;});
+    HRESULT hr=profile->GetBrowserExtensions(listed);listed->Release();if(FAILED(hr)){Log(L"SETTINGS adblock GetBrowserExtensions call failed");adBlockBusy=false;}
+}
+// SETTINGS(memory): settings.memorySaver asks the engine to trim background tabs
+// (MemoryUsageTargetLevel LOW, scripts keep running); the active tab, and every tab once it is
+// off, is NORMAL. Re-applied by TabShown (selection) and for each new webview. Sleeping tabs are
+// left alone: the engine ignores the level while suspended, TrySuspend sets LOW and Resume NORMAL.
+void ApplyMemorySaver(){
+    static bool unsupportedLogged=false;auto active=Active();
+    for(auto& t:pages){
+        if(!t||t->closed||t->sleeping||!t->view.p)continue;
+        Com<ICoreWebView2_19> v19;if(FAILED(t->view->QueryInterface(IID_ICoreWebView2_19,(void**)&v19.p))||!v19.p){if(!unsupportedLogged){unsupportedLogged=true;Log(L"SETTINGS memory saver: ICoreWebView2_19 unavailable");}return;}
+        const auto want=settings.memorySaver&&t!=active?COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW:COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL;
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL now=COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL;
+        if(SUCCEEDED(v19->get_MemoryUsageTargetLevel(&now))&&now==want)continue;
+        if(FAILED(v19->put_MemoryUsageTargetLevel(want)))Log(L"SETTINGS memory saver: put_MemoryUsageTargetLevel failed "+t->uri);
+    }
+}
+// NEWTAB: open home tabs re-render (frequent sites <-> blank); other tabs are untouched.
+// "Page personnalisée" applies to the next new tab: an open home tab then shows the blank page.
+void ApplyNewTabPage(){
+    Log(std::wstring(L"SETTINGS new tab page ")+(settings.newTabPage==BrowserSettings::NewTabPage::FrequentSites?L"frequent sites":settings.newTabPage==BrowserSettings::NewTabPage::Custom?L"custom":L"blank"));
+    if(halted)return;const auto html=HomeDocument();const bool blank=html==HomeHtml;
+    for(auto& t:std::vector<std::shared_ptr<Tab>>(pages))if(!t->closed&&t->home&&t->view.p&&!(blank&&!homeTiles.Has(*t)))Navigate(t,L"");
+}
 // SETTINGS(updates): footer line and the check-for-updates button.
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(); // defined with the self-update host (needs the engine)
 void SettingChanged(BrowserSettings::Change change){
@@ -1563,6 +1905,13 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::ClearOnExit:break;
     case Change::Sleep:ApplySleepSettings();break;
     case Change::Zoom:ApplyZoomSettings();break;
+    case Change::CustomSearch:break;
+    case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
+    case Change::Autoplay:ApplyMediaSettings();break;
+    case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
+    case Change::AdBlock:ApplyAdBlock();break;
+    case Change::MemorySaver:ApplyMemorySaver();break;
+    case Change::NewTabPage:case Change::Homepage:ApplyNewTabPage();break;
     }
 }
 // The toolbar button of the surface that is (still) open stays latched.
@@ -1660,6 +2009,7 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
     if(!ok){
         COREWEBVIEW2_WEB_ERROR_STATUS error;a->get_WebErrorStatus(&error);
         if(error==COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)return S_OK;
+        if(HttpsUpgradeFailed(t,navigationId,error))return S_OK;
         Log(L"NAVIGATION FAILED WebErrorStatus="+std::to_wstring(error)+L" "+t->uri);
         // A new controller starts hidden until its first navigation completes.
         // Reveal the error document too, including a failed first address.
@@ -1668,7 +2018,7 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
     }
     RequestFavicon(t);if(halted)return S_OK;
     Log(L"NAVIGATION OK "+t->uri);
-    if(!t->home&&!SearchResultPage(t->uri)&&history.Record(t->uri,t->title==L"Nouvel onglet"?L"":t->title,NativeChrome::DownloadsUI::UnixNowMs())){SaveHistory();historyDrawer.Changed();}
+    if(!t->home&&t->https.shown.empty()&&!SearchResultPage(t->uri)&&history.Record(t->uri,t->title==L"Nouvel onglet"?L"":t->title,NativeChrome::DownloadsUI::UnixNowMs())){SaveHistory();historyDrawer.Changed();}
     t->revealed=true;ApplyPages();if(t==Active())Update();
     return S_OK;
 }
@@ -1705,13 +2055,13 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
         auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
         HRESULT faviconResult=t->faviconView->add_FaviconChanged(faviconChanged,&token);faviconChanged->Release();if(!Check(faviconResult,L"add_FaviconChanged"))return S_OK;
-        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;++tab->navStamp;LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
+        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;++tab->navStamp;LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
         HRESULT startingResult=t->view->add_NavigationStarting(starting,&token);starting->Release();if(!Check(startingResult,L"add_NavigationStarting favicon"))return S_OK;
-        auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);t->home=t->uri==L"about:blank";}t->loading.Committed(NativeChrome::Motion::Now());if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
+        auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);t->home=t->uri==L"about:blank";if(!t->https.shown.empty()&&(t->home||t->uri.rfind(L"data:",0)==0)){t->uri=t->https.shown;t->home=false;}}t->loading.Committed(NativeChrome::Motion::Now());if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
         auto history=Callback<ICoreWebView2HistoryChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted&&tab==Active())Update();return S_OK;});
         result=t->view->add_HistoryChanged(history,&token);history->Release();if(!Check(result,L"add_HistoryChanged"))return S_OK;
-        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&::history.SetTitle(t->uri,t->title)){SaveHistory();historyDrawer.Changed();}}Update();return S_OK;});
+        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&::history.SetTitle(t->uri,t->title)){SaveHistory();historyDrawer.Changed();}}Update();return S_OK;});
         result=t->view->add_DocumentTitleChanged(title,&token);title->Release();if(!Check(result,L"add_DocumentTitleChanged"))return S_OK;
         auto nav=Callback<ICoreWebView2NavigationCompletedEventHandler,ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs* a)->HRESULT{return NavigationCompleted(weak.lock(),a);});
         result=t->view->add_NavigationCompleted(nav,&token);nav->Release();if(!Check(result,L"add_NavigationCompleted"))return S_OK;
@@ -1723,9 +2073,11 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         result=c->add_GotFocus(gotFocus,&token);gotFocus->Release();if(!Check(result,L"add_GotFocus"))return S_OK;
         auto failed=Callback<ICoreWebView2ProcessFailedEventHandler,ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs* a)->HRESULT{return ProcessFailed(weak.lock(),a);});
         result=t->view->add_ProcessFailed(failed,&token);failed->Release();if(!Check(result,L"add_ProcessFailed"))return S_OK;
+        // SETTINGS(https): buttons of the "Ce site n'est pas sécurisé" page.
+        {auto message=Callback<ICoreWebView2WebMessageReceivedEventHandler,ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs* a)->HRESULT{return InterstitialMessage(weak.lock(),a);});if(FAILED(t->view->add_WebMessageReceived(message,&token)))Log(L"HTTPS add_WebMessageReceived failed");message->Release();}
         // Invalid server certificate: the engine keeps its own interstitial; the bar says "Non sécurisé".
         {Com<ICoreWebView2_14> view14;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&view14.p))&&view14.p){auto cert=Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler,ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=true;Log(L"CERTIFICATE error "+tab->uri);if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}
-        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();}
+        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();ApplyTabSettings();ApplyMemorySaver();if(!adBlockSynced)ApplyAdBlock();}
         {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;Navigate(t,uri);return S_OK;
     });
@@ -2337,6 +2689,7 @@ void ReadPageMenu(ICoreWebView2ContextMenuItemCollection* list,std::vector<CM::I
 }
 HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args){
     if(halted||!tab||!args||pendingPageMenu||contextMenu.Open())return S_OK;
+    if(tab->home){args->put_Handled(TRUE);return S_OK;} // NEWTAB: the frequent sites page has no menu (Ctrl/middle click still opens a tile in a new tab)
     auto pending=std::make_shared<PendingPageMenu>();
     Com<ICoreWebView2ContextMenuItemCollection> list;if(FAILED(args->get_MenuItems(&list.p))||!list.p)return S_OK;
     ReadPageMenu(list.p,pending->items,pending->commands);if(pending->items.empty())return S_OK; // nothing to show: the engine keeps its own menu
@@ -2369,7 +2722,7 @@ void ExtraCommand(int cmd){auto t=Active();switch(cmd){
 case 'I':FocusAddress();break; // the security indicator opens the address
 case 900:TabMenu(KeyboardAnchor());break;
 case 'Y':if(historyDismissClick){historyDismissClick=false;break;}ToggleHistory(KeyboardAnchor()!=0||keyboardModality);break;
-case PrintActive:PrintPage(t);break;
+case PrintActive:if(t&&!t->home)PrintPage(t);break; // like the tab menu: nothing to print on a home tab
 case CheckUpdatesCommand:CheckForUpdates();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;
 case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
@@ -2412,7 +2765,7 @@ void UpdateAction(BrowserUpdate::Action action){
     ShowUpdateView();
     if(result==UpdateCore::ActionResult::CloseForInstall){
         // The helper waits for this exact process to exit on its own; close normally.
-        closingForInstall=true;Log(L"UPDATE install handoff: saving session and closing");PostMessageW(window,WM_CLOSE,0,0);
+        closingForInstall=true;closeWithoutPrompt=true;Log(L"UPDATE install handoff: saving session and closing");PostMessageW(window,WM_CLOSE,0,0);
     }
 }
 std::wstring ExePath(){std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return exe;}
@@ -2748,7 +3101,7 @@ case WM_TIMER:
     if(w==ExitClearTimerId){Log(L"SETTINGS clear on exit: timed out, closing");FinishExitClear();return 0;}
     if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
-case WM_CLOSE:SaveSession();SaveDownloads();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
+case WM_CLOSE:if(!ConfirmWindowClose())return 0;SaveSession();SaveDownloads();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
 case WM_DESTROY:accessibility.Detach();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
@@ -2766,6 +3119,37 @@ LRESULT CALLBACK WndProc(HWND h,UINT msg,WPARAM w,LPARAM l){
     if(h==window&&msg!=WM_GETOBJECT&&msg!=WM_DESTROY&&msg!=WM_NCDESTROY)SyncAccessibility();
     return result;
 }
+// Options for CreateCoreWebView2EnvironmentWithOptions (the SDK's WebView2EnvironmentOptions.h needs
+// WRL). `arguments` is AdditionalBrowserArguments; `extensions` (AreBrowserExtensionsEnabled) is on
+// outside smoke runs for the ad blocker. The options of a running engine are fixed: a change takes
+// effect at the next launch. `target` mirrors the SDK default (CORE_WEBVIEW_TARGET_PRODUCT_VERSION
+// of deps/webview2 1.0.4314.35).
+class EngineOptions final:public ICoreWebView2EnvironmentOptions,public ICoreWebView2EnvironmentOptions6{
+    LONG refs=1;
+    static HRESULT Get(const std::wstring& s,LPWSTR* out){if(!out)return E_POINTER;*out=nullptr;if(s.empty())return S_OK;const size_t n=(s.size()+1)*sizeof(wchar_t);*out=static_cast<LPWSTR>(CoTaskMemAlloc(n));if(!*out)return E_OUTOFMEMORY;memcpy(*out,s.c_str(),n);return S_OK;}
+    static HRESULT Put(std::wstring& s,LPCWSTR v){s=v?v:L"";return S_OK;}
+public:
+    std::wstring arguments,language,target=L"156.0.4314.35";BOOL sso=FALSE,extensions=FALSE;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** out) override{
+        if(!out)return E_POINTER;*out=nullptr;
+        if(id==IID_IUnknown||id==IID_ICoreWebView2EnvironmentOptions)*out=static_cast<ICoreWebView2EnvironmentOptions*>(this);
+        else if(id==IID_ICoreWebView2EnvironmentOptions6)*out=static_cast<ICoreWebView2EnvironmentOptions6*>(this);
+        else return E_NOINTERFACE;
+        AddRef();return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override{return InterlockedIncrement(&refs);}
+    ULONG STDMETHODCALLTYPE Release() override{ULONG n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
+    HRESULT STDMETHODCALLTYPE get_AdditionalBrowserArguments(LPWSTR* v) override{return Get(arguments,v);}
+    HRESULT STDMETHODCALLTYPE put_AdditionalBrowserArguments(LPCWSTR v) override{return Put(arguments,v);}
+    HRESULT STDMETHODCALLTYPE get_Language(LPWSTR* v) override{return Get(language,v);}
+    HRESULT STDMETHODCALLTYPE put_Language(LPCWSTR v) override{return Put(language,v);}
+    HRESULT STDMETHODCALLTYPE get_TargetCompatibleBrowserVersion(LPWSTR* v) override{return Get(target,v);}
+    HRESULT STDMETHODCALLTYPE put_TargetCompatibleBrowserVersion(LPCWSTR v) override{return Put(target,v);}
+    HRESULT STDMETHODCALLTYPE get_AllowSingleSignOnUsingOSPrimaryAccount(BOOL* v) override{if(!v)return E_POINTER;*v=sso;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_AllowSingleSignOnUsingOSPrimaryAccount(BOOL v) override{sso=v;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_AreBrowserExtensionsEnabled(BOOL* v) override{if(!v)return E_POINTER;*v=extensions;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_AreBrowserExtensionsEnabled(BOOL v) override{extensions=v;return S_OK;}
+};
 int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;smoke=smoke||splitTest;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
 #ifdef BROWSER_UPDATES
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
@@ -2778,9 +3162,16 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     // Engine UI (page menu labels, print preview, dialogs) in French; any user-set arguments are kept.
     {const DWORD size=GetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",nullptr,0);std::wstring value(size,L'\0');
      if(size)value.resize(GetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.data(),size));
-     if(value.find(L"--lang=")==std::wstring::npos){value+=(value.empty()?L"":L" ")+std::wstring(L"--lang=fr");SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.c_str());}}
+     const std::wstring given=value;
+     if(value.find(L"--lang=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--lang=fr");
+     // SETTINGS(media): autoplay policy, fixed for the engine's lifetime (LoadSettings ran above). Muted
+     // autoplay stays allowed under user-gesture-required; a user-set policy is kept.
+     if(value.find(L"--autoplay-policy=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(settings.autoplay==BrowserSettings::Autoplay::Allowed?L"--autoplay-policy=no-user-gesture-required":L"--autoplay-policy=user-gesture-required");
+     // SETTINGS(cookies): third-party cookies blocked for the engine's lifetime (see WithEnabledFeatures).
+     if(settings.blockThirdPartyCookies)value=WithEnabledFeatures(value,{L"ForceThirdPartyCookieBlockingEnabled",L"ThirdPartyStoragePartitioning"});
+     if(value!=given)SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.c_str());}
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
-    if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,profileDir.c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
+    if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});auto options=new EngineOptions();options->extensions=!smoke;HRESULT hr=create(nullptr,profileDir.c_str(),options,done);options->Release();done->Release();Check(hr,L"CreateEnvironment");}
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }

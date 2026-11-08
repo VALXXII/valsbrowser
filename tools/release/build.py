@@ -42,6 +42,9 @@ LICENSES = {  # destination name -> source
     'WebView2-NOTICE.txt': 'deps/webview2/NOTICE.txt',
     'ThorVG-LICENSE.txt': 'third_party/thorvg/LICENSE',
     'RapidJSON-LICENSE.txt': 'third_party/thorvg/RapidJSON-LICENSE',
+    # Ad blocker: unmodified uBlock Origin Lite (GPLv3) in assets/extensions/ublock-lite.
+    'uBOLite-LICENSE.txt': 'assets/extensions/ublock-lite/LICENSE.txt',
+    'uBOLite-NOTICE.txt': 'third_party/ublock-lite/NOTICE.txt',
 }
 
 
@@ -102,6 +105,7 @@ def build(out: Path, info: dict, repo: str) -> None:
         raise SystemExit('Missing WebView2 SDK: run setup.ps1 first.')
     if not THORVG.exists():
         run([sys.executable, ROOT / 'build-lottie.py'])
+    run([sys.executable, ROOT / 'fetch-ublock-lite.py'])  # pinned ad blocker; no-op when present
     if '/' not in repo or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._/' for c in repo):
         raise SystemExit(f'Invalid update repository: {repo!r}')
     obj = out.parent / (out.name + '-obj')
