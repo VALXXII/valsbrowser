@@ -70,6 +70,11 @@ compiled without it and keep linking only `native-lottie.cpp`.
   exited **and** the WebView2 `lockfile` can be opened exclusively (≤ 60 s). Locked or failing copy ⇒
   migration and install aborted, nothing overwritten, the previous app restarted, error shown once.
   The legacy folder is never moved, modified or deleted; an existing `data\` is never overwritten.
+  The copy goes to `data.migrating-<nonce>\` and is published by one directory rename. On-access
+  scanners (Defender) and the search indexer briefly open files just written there, and NTFS then
+  refuses the rename (`ERROR_ACCESS_DENIED`): the staging, install, migration and rollback directory
+  renames (`UpdatePackage::MoveDirectory`) retry access/sharing/lock errors for up to 15 s, never replaces
+  an existing destination, and logs the failing step with its Win32 error (`helper.log`).
 * Packages can never contain profile/session/log/unknown files (packer allowlist, verified again by
   the extractor; `tools/release/package.py` refuses such entries before packing).
 * Development never touched the real profile/session: every test uses isolated directories under

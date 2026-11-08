@@ -660,6 +660,20 @@ bool RemoveTree(const std::wstring& path) {
     }
     return RemoveDirectoryW(Long(path).c_str()) != 0 && ok;
 }
+bool MoveDirectory(const std::wstring& from, const std::wstring& to, unsigned long timeoutMs, int* attempts) {
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    for (int n = 1;; ++n) {
+        if (attempts) *attempts = n;
+        if (MoveFileExW(Long(from).c_str(), Long(to).c_str(), 0)) return true;
+        const DWORD e = GetLastError();
+        if ((e != ERROR_ACCESS_DENIED && e != ERROR_SHARING_VIOLATION && e != ERROR_LOCK_VIOLATION) ||
+            GetTickCount64() >= deadline || !IsDirectory(from) || PathExists(to)) {
+            SetLastError(e);
+            return false;
+        }
+        Sleep(100);
+    }
+}
 bool IsUnder(const std::wstring& child, const std::wstring& root) {
     auto norm = [](const std::wstring& p) {
         std::wstring in = StripFinalPrefix(p);

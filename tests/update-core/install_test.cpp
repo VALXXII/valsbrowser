@@ -167,6 +167,57 @@ void TestPortableMigration(const std::wstring& exeName = L"browser.exe", const s
     CHECK(paths.installed && paths.profileDir == root + L"\\data\\profile");
 }
 
+// Real-world failure (Defender/Search indexer on the dev machine): a scanner opens a file the helper has just copied
+// into <root>\data.migrating-<nonce>, and NTFS refuses to rename that directory to <root>\data (ERROR_ACCESS_DENIED),
+// which used to abort the update with "migration-failed". Reproduced deterministically: the test keeps the portable
+// session busy so the helper is parked between the profile copy and the publish, opens a copied profile file like a
+// scanner (no FILE_SHARE_DELETE), lets the helper reach the rename, then releases the scanner handle.
+void TestPortableMigrationScannerHold() {
+    std::wstring s = TempDir(L"e2e-portable-scanned"), root = s + L"\\root", feed = s + L"\\feed", portable = s + L"\\portable";
+    const std::wstring exeName = L"browser-main-78f5340.exe";
+    MkDirs(portable);
+    Copy(Fx(L"fake-0.3.1.exe"), portable + L"\\" + exeName);
+    Canaries c;
+    c.Make(portable, ProfileFiles);
+    c.Make(portable, {L"downloads"});
+    Feed(feed, Fx(L"fake-0.3.2.exe"), "0.3.2");
+    HANDLE lock = CreateFileW((portable + L"\\profile\\EBWebView\\lockfile").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    CHECK(lock != INVALID_HANDLE_VALUE);
+    CHECK(Run(portable + L"\\" + exeName, L"--update \"" + root + L"\" \"" + feed + L"\"", 60000) == 0);
+    // The browser saved its session on exit; keep it busy (sharing violation, retried by the helper's copy).
+    HANDLE session = CreateFileW((portable + L"\\session").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    CHECK(session != INVALID_HANDLE_VALUE);
+    CloseHandle(lock);
+    // Wait for the helper's work copy of the profile, then hold one copied file like an on-access scanner.
+    HANDLE scanner = INVALID_HANDLE_VALUE;
+    for (ULONGLONG end = GetTickCount64() + 30000; scanner == INVALID_HANDLE_VALUE && GetTickCount64() < end; Sleep(20)) {
+        WIN32_FIND_DATAW fd;
+        HANDLE find = FindFirstFileW((root + L"\\data.migrating-*").c_str(), &fd);
+        if (find == INVALID_HANDLE_VALUE) continue;
+        FindClose(find);
+        scanner = CreateFileW((root + L"\\" + fd.cFileName + L"\\profile\\EBWebView\\Local State").c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    }
+    CHECK(scanner != INVALID_HANDLE_VALUE);
+    CloseHandle(session);  // the helper copies the session and reaches the rename while the scanner still holds its file
+    Sleep(1500);
+    CHECK(!UP::PathExists(root + L"\\data"));  // never published partially
+    CHECK(!UP::PathExists(root + L"\\current"));
+    CloseHandle(scanner);
+    CHECK(WaitFor(root + L"\\updates\\last-result", "status installed", 60000));
+    CHECK(ReadText(root + L"\\updates\\helper.log").find("portable data published after") != std::string::npos);  // it did wait
+    CHECK(ReadText(root + L"\\current") == "0.3.2\n");
+    CHECK(c.Same(root + L"\\data"));
+    CHECK(c.Same(portable));  // source untouched
+    CHECK(ReadText(root + L"\\data\\session") == "session-from-0.3.1\n");
+    CHECK(ReadText(root + L"\\data\\migrated-from.txt").find("portable") != std::string::npos);
+    CHECK(WaitFor(root + L"\\fake-launches.txt", "start 0.3.2 phase=6", 10000));
+    WIN32_FIND_DATAW leftover;
+    HANDLE find = FindFirstFileW((root + L"\\data.migrating-*").c_str(), &leftover);
+    CHECK(find == INVALID_HANDLE_VALUE);  // work copy consumed by the rename, nothing left behind
+    if (find != INVALID_HANDLE_VALUE) FindClose(find);
+}
+
 void TestInstalledRollback() {
     std::wstring s = TempDir(L"e2e-rollback"), root = s + L"\\root", feed = s + L"\\feed";
     Canaries c;
@@ -300,6 +351,7 @@ int wmain(int argc, wchar_t** argv) {
     // Real portable naming used by current dev installs (build\v2\browser-main-78f5340.exe).
     TestPortableMigration(L"browser-main-78f5340.exe", L"-renamed");
     TestPortableRollback(L"browser-main-78f5340.exe", L"-renamed");
+    TestPortableMigrationScannerHold();
     TestPortableRollback(L"browser-url-ease.exe", L"-renamed2");
     return Report("install_test");
 }

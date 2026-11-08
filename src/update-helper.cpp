@@ -21,6 +21,8 @@ namespace {
 constexpr DWORD WaitBrowserMs = 10 * 60 * 1000;
 constexpr DWORD ProfileUnlockMs = 60 * 1000;
 constexpr DWORD AckWaitMs = 120 * 1000;
+// Directory renames retried while a scanner/indexer still holds a file just written under them (UP::MoveDirectory).
+constexpr DWORD TransientRenameMs = 15 * 1000;
 
 std::wstring g_log;
 
@@ -288,10 +290,17 @@ bool CopyTree(const std::wstring& src, const std::wstring& dst, ULONGLONG deadli
             ok = CopyTree(src + L"\\" + name, dst + L"\\" + name, deadline, depth + 1);
         else
             ok = CopyWithRetry(src + L"\\" + name, dst + L"\\" + name, deadline);
-        if (!ok) Log("migration copy failed: " + UP::Narrow(src + L"\\" + name));
+        if (!ok) Log("migration copy failed: " + UP::Narrow(src + L"\\" + name) + " (error " + std::to_string(GetLastError()) + ")");
     } while (ok && FindNextFileW(find, &fd));
     FindClose(find);
     return ok;
+}
+
+// Logs the failing migration step with its Win32 error. Always false, so it can end an `ok = step || ...` chain.
+bool MigrationStepFailed(const std::string& step) {
+    DWORD e = GetLastError();
+    Log("migration step failed: " + step + " (error " + std::to_string(e) + ")");
+    return false;
 }
 
 // One-time copy of portable <exeDir>\profile + session into <root>\data. Existing data is never overwritten.
@@ -314,18 +323,20 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
     }
     std::wstring work = root + L"\\data.migrating-" + UP::Widen(nonce);
     UP::RemoveTree(work);
-    if (!CreateDirectoryW(work.c_str(), nullptr)) return false;
+    if (!CreateDirectoryW(work.c_str(), nullptr)) return MigrationStepFailed("create work dir");
     ULONGLONG deadline = GetTickCount64() + 30000;
     bool ok = true;
-    if (UP::IsDirectory(profile)) ok = CopyTree(profile, work + L"\\profile", deadline);
+    if (UP::IsDirectory(profile)) ok = CopyTree(profile, work + L"\\profile", deadline) || MigrationStepFailed("copy profile");
     // Plain data files next to the profile (session, download history). Transient *.tmp files are not copied.
     for (const wchar_t* name : {L"session", L"downloads"}) {
         std::wstring file = src + L"\\" + name;
         if (ok && UP::PathExists(file) && !UP::IsDirectory(file) && !UP::IsReparsePoint(file))
-            ok = CopyWithRetry(file, work + L"\\" + name, deadline);
+            ok = CopyWithRetry(file, work + L"\\" + name, deadline) || MigrationStepFailed("copy " + UP::Narrow(name));
     }
-    if (ok) ok = UP::AtomicWriteFile(work + L"\\migrated-from.txt", UP::Narrow(src) + "\n");
-    if (ok) ok = MoveFileExW(work.c_str(), data.c_str(), 0) != 0;
+    if (ok) ok = UP::AtomicWriteFile(work + L"\\migrated-from.txt", UP::Narrow(src) + "\n") || MigrationStepFailed("write migrated-from.txt");
+    int attempts = 0;
+    if (ok) ok = UP::MoveDirectory(work, data, TransientRenameMs, &attempts) || MigrationStepFailed("publish data");
+    if (ok && attempts > 1) Log("portable data published after " + std::to_string(attempts) + " rename attempts (file briefly held)");
     if (!ok) {
         UP::RemoveTree(work);
         Log("migration failed; source untouched");
@@ -414,12 +425,12 @@ int RunInstall(const std::string& nonce) {
     if (UP::PathExists(target)) {
         if (hadCurrent && oldCurrent == p.version) return abortBeforeSwitch("target-is-current", 23);
         std::wstring trash = versions + L"\\.trash-" + UP::Widen(nonce);
-        if (!MoveFileExW(target.c_str(), trash.c_str(), 0)) return abortBeforeSwitch("target-in-use", 23);
+        if (!UP::MoveDirectory(target, trash, TransientRenameMs)) return abortBeforeSwitch("target-in-use", 23);
         UP::RemoveTree(trash);
     }
-    if (!MoveFileExW(stage.c_str(), target.c_str(), 0)) return abortBeforeSwitch("move-failed", 24);
+    if (!UP::MoveDirectory(stage, target, TransientRenameMs)) return abortBeforeSwitch("move-failed", 24);
     if (!UP::VerifyStagedTree(target, p.version, error)) {
-        MoveFileExW(target.c_str(), stage.c_str(), 0);
+        UP::MoveDirectory(target, stage, TransientRenameMs);
         return abortBeforeSwitch("installed-tree-invalid " + error, 25);
     }
     // Data: never start the new version on a live or half-copied profile.
@@ -498,11 +509,11 @@ int RunInstall(const std::string& nonce) {
         DeleteFileW(pending.c_str());
         restore();
         std::wstring failed = versions + L"\\.failed-" + UP::Widen(nonce);
-        if (MoveFileExW(target.c_str(), failed.c_str(), 0)) UP::RemoveTree(failed);
+        if (UP::MoveDirectory(target, failed, TransientRenameMs)) UP::RemoveTree(failed);
         if (migrated && WaitProfileUnlocked(root + L"\\data\\profile", ProfileUnlockMs)) {
             // The copy made by this run is discarded so a later retry re-migrates the (still authoritative) portable data.
             std::wstring dropped = root + L"\\data.rolledback-" + UP::Widen(nonce);
-            if (MoveFileExW((root + L"\\data").c_str(), dropped.c_str(), 0)) UP::RemoveTree(dropped);
+            if (UP::MoveDirectory(root + L"\\data", dropped, TransientRenameMs)) UP::RemoveTree(dropped);
         }
         WriteResult(updates, "failed", p.version, "no-startup-ack");
         Relaunch(p.previousExe);

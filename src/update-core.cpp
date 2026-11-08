@@ -794,7 +794,8 @@ void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
         UP::RemoveTree(work);
         return fail(L"Une ancienne copie de la mise à jour est verrouillée.");
     }
-    if (!MoveFileExW(work.c_str(), target.c_str(), 0)) {
+    // A scanner/indexer may still hold a file just extracted into `work`: the rename is retried briefly.
+    if (!UP::MoveDirectory(work, target, 15 * 1000)) {
         UP::RemoveTree(work);
         return fail(L"Impossible de préparer la mise à jour.");
     }

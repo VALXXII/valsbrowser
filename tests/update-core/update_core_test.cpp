@@ -819,6 +819,45 @@ void TestPortableForward() {
     std::string legacyBody;
     CHECK(UP::ReadSmallFile(legacy, 64, legacyBody) && legacyBody == "MZ legacy");  // pure: legacy untouched
 }
+// A file just written into a directory and still open elsewhere (on-access scanner, indexer) makes NTFS refuse to
+// rename the directory with ERROR_ACCESS_DENIED. UP::MoveDirectory retries that, bounded, and never replaces.
+void TestMoveDirectoryTransientHold() {
+    std::wstring s = TempDir(L"move-directory"), from = s + L"\\work", to = s + L"\\data";
+    CreateDirectoryW(from.c_str(), nullptr);
+    CHECK(WriteText(from + L"\\session", "payload"));
+    auto hold = [](const std::wstring& file) {  // scanner-like handle: read/write sharing, no FILE_SHARE_DELETE
+        return CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    };
+    HANDLE scanner = hold(from + L"\\session");
+    CHECK(scanner != INVALID_HANDLE_VALUE);
+    // Precondition (the production failure): a plain rename is refused while the file is held.
+    CHECK(!MoveFileExW(from.c_str(), to.c_str(), 0) && GetLastError() == ERROR_ACCESS_DENIED);
+    // Held for good: bounded failure, nothing moved.
+    int attempts = 0;
+    ULONGLONG start = GetTickCount64();
+    CHECK(!UP::MoveDirectory(from, to, 600, &attempts));
+    CHECK(GetLastError() == ERROR_ACCESS_DENIED);
+    CHECK(GetTickCount64() - start >= 500 && GetTickCount64() - start < 5000 && attempts > 1);
+    CHECK(UP::PathExists(from + L"\\session") && !UP::PathExists(to));
+    // Released while retrying: the rename completes with the content intact.
+    HANDLE release = CreateThread(nullptr, 0, [](LPVOID h) -> DWORD { Sleep(700); CloseHandle(HANDLE(h)); return 0; }, scanner, 0, nullptr);
+    CHECK(release != nullptr);
+    attempts = 0;
+    CHECK(UP::MoveDirectory(from, to, 10000, &attempts));
+    CHECK(attempts > 1);  // it really had to wait for the holder
+    WaitForSingleObject(release, INFINITE);
+    CloseHandle(release);
+    CHECK(!UP::PathExists(from) && ReadText(to + L"\\session") == "payload");
+    // Never replaces: an existing destination fails at once and both trees stay as they were.
+    CreateDirectoryW(from.c_str(), nullptr);
+    CHECK(WriteText(from + L"\\session", "other"));
+    start = GetTickCount64();
+    CHECK(!UP::MoveDirectory(from, to, 10000, &attempts));
+    CHECK(GetTickCount64() - start < 2000 && attempts == 1);
+    CHECK(ReadText(to + L"\\session") == "payload" && ReadText(from + L"\\session") == "other");
+    // Missing source: not transient, fails at once.
+    CHECK(!UP::MoveDirectory(s + L"\\missing", s + L"\\elsewhere", 10000, &attempts) && attempts == 1);
+}
 }  // namespace
 
 int wmain() {
@@ -835,6 +874,7 @@ int wmain() {
     TestEngineCancelAndFailures();
     TestAutoCheck();
     TestPortableForward();
+    TestMoveDirectoryTransientHold();
     g_engine = nullptr;
     return Report("update_core_test");
 }
