@@ -14,6 +14,7 @@
 namespace BrowserUpdate { namespace ToastDetail {
 using namespace ToastModel;
 namespace Motion = NativeChrome::Motion;
+static_assert(Paper::buttonRadius == NativeChrome::Design::Radius::button, "toast actions share the Downloads button radius");
 template <class T> inline void Drop(T*& p) { if (p) { p->Release(); p = nullptr; } }
 
 // Phosphor Bold path data, verbatim from the Paper boards (MIT, assets/icons/phosphor-bold/LICENSE).
@@ -327,7 +328,7 @@ public:
             D2D1_MATRIX_3X2_F old; target->GetTransform(&old);
             if (scale != 1) target->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F((b.left + b.right) / 2, (b.top + b.bottom) / 2)) * old);
             Color(style.surface, a);
-            const D2D1_ROUNDED_RECT shape = D2D1::RoundedRect(D2D1::RectF(b.left, b.top, b.right, b.bottom), Paper::buttonRadius, Paper::buttonRadius);
+            const D2D1_ROUNDED_RECT shape = D2D1::RoundedRect(D2D1::RectF(b.left, b.top, b.right, b.bottom), style.radius, style.radius);
             target->FillRoundedRectangle(shape, brush);
             Label(Role::Button, c.buttons[i].label, b.left + Paper::buttonPadX, b.top + (Paper::buttonHeight - 14) / 2,
                      b.Width() - 2 * Paper::buttonPadX, Paper::buttonTextOpacity * a);
@@ -335,7 +336,7 @@ public:
                 const float s = NativeChrome::Design::Focus::stroke;
                 Color(NativeChrome::Design::Focus::color, NativeChrome::Design::Focus::Opacity(v.keyboard) * a);
                 target->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(b.left + s / 2, b.top + s / 2, b.right - s / 2, b.bottom - s / 2),
-                                                               Paper::buttonRadius - s / 2, Paper::buttonRadius - s / 2), brush, s);
+                                                               style.radius - s / 2, style.radius - s / 2), brush, s);
             }
             target->SetTransform(old);
         }

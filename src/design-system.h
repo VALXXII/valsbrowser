@@ -18,7 +18,11 @@ inline constexpr float xs=4, sm=6, md=8, lg=16;
 // so visible tab->tab and last tab->new-tab use the same 6 DIP.
 inline constexpr float controlGap=sm, tabGap=controlGap;
 }
-namespace Radius { inline constexpr float control=6, inset=3; }
+// `button` is the one corner for every rectangular button, taken from the toolbar
+// Downloads button (Ghost, 6 DIP): Copy link, Reload, tab close, popup remove,
+// settings icon buttons and update-toast actions all share it. `inset` stays for
+// non-button focus perimeters (text links).
+namespace Radius { inline constexpr float control=6, inset=3, button=control; }
 namespace Size {
 inline constexpr float control=32, compact=24, icon=16, windowIcon=14;
 // tabPitch = visible tab + gap. Was 140 (12 DIP visible gap, double the toolbar).
@@ -173,7 +177,7 @@ inline ButtonStyle Resolve(ButtonVariant variant,ButtonState state={}) {
     // Interpolate opaque colors from the actual parent: never transparent black.
     const float hovered=base+(Surface::hover-base)*h;
     return {hovered+(Surface::pressed-hovered)*p,
-        variant==ButtonVariant::Embedded?Radius::inset:Radius::control,
+        Radius::button,
         variant==ButtonVariant::Window?Size::windowIcon:Size::icon,
         state.disabled?Text::disabled:Text::primary,
         variant!=ButtonVariant::TabClose&&(raised||h>0||p>0),state.focus&&!state.disabled};

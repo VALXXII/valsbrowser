@@ -210,15 +210,15 @@ private:
     static D2D1_RECT_F R(Design::Box b) { return {b.left, b.top, b.right, b.bottom}; }
     Motion::InteractionVisual Interaction(int hit, Motion::Time now) const { return motion_.Visual(hit, now); }
 
-    // Ghost icon button (Paper: 14 DIP glyph at 70%, radius 3): fills and brightens on hover.
+    // Ghost icon button (14 DIP glyph at 70%, shared button radius): fills and brightens on hover.
     void IconButton(const wchar_t* icon, Design::Box box, int hit, Motion::Time now, float rotation = 0, bool enabled = true) {
         auto* t = chrome_.RenderTarget(); const auto v = Interaction(hit, now);
         const float h = enabled ? v.hover : 0, p = enabled ? v.press : 0;
         if (h > 0 || p > 0) {
             const float c = Design::Surface::canvas, hovered = c + (Design::Surface::hover - c) * h, fill = hovered + (Design::Surface::pressed - hovered) * p;
-            chrome_.Round(R(box), Design::Radius::inset, fill);
+            chrome_.Round(R(box), Design::Radius::button, fill);
         }
-        if (focus_ == hit) chrome_.FocusRing(R(box), Design::Radius::inset);
+        if (focus_ == hit) chrome_.FocusRing(R(box), Design::Radius::button);
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
         if (rotation != 0) t->SetTransform(D2D1::Matrix3x2F::Rotation(rotation, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base);
         const float size = 14 * Motion::PressScale(p, Reduced(), enabled);

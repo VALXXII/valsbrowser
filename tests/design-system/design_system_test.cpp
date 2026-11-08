@@ -19,6 +19,7 @@ int wmain(int argc,wchar_t** argv){
         Require(disabled.surface==idle.surface&&!disabled.focus&&Motion::PressScale(1,false,false)==1,"disabled ignores hover, press and focus");
         Require(disabled.iconOpacity<idle.iconOpacity,"disabled is visibly unavailable");
         Require(focus.focus&&focus.surface==idle.surface,"keyboard focus independent of fill");
+        Require(idle.radius==Resolve(ButtonVariant::Ghost).radius&&idle.radius==Radius::button,"every button variant shares the Downloads (Ghost) radius");
         Require(std::abs(Motion::PressScale(1)-.96f)<.0001f,"pressed scale endpoint");
         if(variant!=ButtonVariant::TabClose)Require(press.surface>=hover.surface&&hover.surface>=idle.surface,"monotonic opaque interaction fills");
     }

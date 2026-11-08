@@ -171,7 +171,7 @@ public:
             if (removable) {
                 const auto box = removeBox;
                 brush->SetColor(D2D1::ColorF(1, 1, 1, hoverRemove_ ? (pressRemove_ ? .16f : .1f) : .06f));
-                target->FillRoundedRectangle(D2D1::RoundedRect(box, Design::Radius::inset, Design::Radius::inset), brush);
+                target->FillRoundedRectangle(D2D1::RoundedRect(box, Design::Radius::button, Design::Radius::button), brush);
                 c.Icon(L"detail-close", box, Design::Size::windowIcon * (pressRemove_ ? .96f : 1.f), .7f);
             }
         }
