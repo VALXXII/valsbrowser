@@ -32,13 +32,12 @@ inline constexpr float buttonSurface = 41 / 255.f;          // #292929
 inline constexpr float statIcon = 14, statGap = 4, statSize = 14, statTracking = -.01f;
 inline constexpr float statsRow = 14 - textTrim, statsGap = 8, track = 4;
 inline constexpr float trackOpacity = .10f, fillOpacity = .5f; // --opacity-browser-focus / -secondary
-inline constexpr float surface = 23 / 255.f, surfaceOpacity = .5f, borderOpacity = 13 / 255.f; // #171717 50%, #FFFFFF0D
+inline constexpr float surface = 23 / 255.f, borderOpacity = 13 / 255.f; // #171717, #FFFFFF0D
 inline constexpr float edgeLeft = 14, edgeBottom = 14.447f;
 inline constexpr float available = 153.59375f, downloading = 139.59375f, ready = 153.59375f, installed = 105.59375f;
 }
-// Opaque fallback when desktop acrylic is unavailable or transparency is disabled.
-// The live acrylic surface uses Paper::surfaceOpacity over the compositor's blur.
-inline constexpr float MaterialOpacity = .98f;
+// Solid card, explicitly requested: no acrylic, blur or page transparency.
+inline constexpr float MaterialOpacity = 1.f;
 // Card snapped to whole DIPs at the bottom edge; Paper's 14.447 is a canvas artefact.
 inline constexpr float EdgeBottom = 14;
 // Narrowest card that keeps every title on one line (measured: "New update available").

@@ -83,15 +83,11 @@ Static cues always carry the state (title, icon, label, track); motion is never 
 
 ## Deviations from Paper (justified)
 
-1. **Material**: Paper is `#171717` @ 50 % with `backdrop-filter: blur(8px)`. Windows 11 22H2+ uses
-   `DWMSBT_TRANSIENTWINDOW` (Desktop Acrylic) in a separate non-layered owned popup directly beneath the
-   layered text/control popup. DWM blurs the live page; no capture, polling or extra timer is used. The tint
-   remains 50 %. The blur strength is managed by Windows rather than fixed at 8 px. Both surfaces share the
-   card's animated position, height and 10-DIP rounded clip; the material appears at the first nonzero frame,
-   while foreground opacity follows the existing fade. Both hide on minimize/insufficient space and close
-   together. The backdrop never activates and is hit-test transparent. Windows controls the material fallback
-   when transparency is disabled; unsupported APIs or presentation failures use a readable 98 % tint.
-   API reference: https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type
+1. **Material (user override)**: solid `#171717` at **100 %**. Acrylic and blur are removed.
+   A single non-layered owned popup draws with an opaque Direct2D HWND render target; the system backdrop
+   is explicitly disabled and the DWM frame is not extended into the client area. The 10-DIP window region
+   clips the whole card after sizing. The background stays solid during content fades, and the card keeps
+   its existing movement, layout, border, keyboard handling and minimize behavior.
 2. **Bottom inset** 14 instead of 14.447 DIP (Paper canvas artefact), so the card's bottom edge lands on whole
    device pixels; heights keep Paper's fractional values and are rounded to device pixels at present time.
 3. **Minimum width** 224 DIP (narrowest card keeping *New update available* on one line). Narrower clients (or a

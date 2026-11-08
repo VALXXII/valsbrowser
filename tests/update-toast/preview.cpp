@@ -78,6 +78,22 @@ static LRESULT CALLBACK PageProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 const int w2 = (int)((30 + (row * 13 + n * 29) % 70) * s);
                 RECT word{x, y, x + w2, y + (int)(9 * s)}; FillRect(dc, &word, ink); x += w2 + (int)(8 * s);
             }
+        // Busy, high-contrast content exposes clipping/blur problems immediately.
+        HFONT font = CreateFontW(-(int)(16 * s), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+            DEFAULT_PITCH, L"Segoe UI");
+        HGDIOBJ oldFont = SelectObject(dc, font); SetBkMode(dc, TRANSPARENT);
+        for (int y = (int)(22 * s); y < r.bottom; y += (int)(110 * s)) {
+            SetTextColor(dc, light ? RGB(25, 55, 155) : RGB(170, 195, 255));
+            const wchar_t* title = L"Download Orca - onorca.com";
+            TextOutW(dc, (int)(24 * s), y, title, lstrlenW(title));
+            SetTextColor(dc, light ? RGB(25, 25, 25) : RGB(245, 245, 245));
+            const wchar_t* detail = L"Orca is the Agent Development Environment.";
+            TextOutW(dc, (int)(24 * s), y + (int)(26 * s), detail, lstrlenW(detail));
+            const wchar_t* hint = L"Resize this window and switch toast states to inspect the material.";
+            TextOutW(dc, (int)(24 * s), y + (int)(50 * s), hint, lstrlenW(hint));
+        }
+        SelectObject(dc, oldFont); DeleteObject(font);
         if (drawer) { RECT d{r.right - (int)(270 * s), 0, r.right, r.bottom}; HBRUSH db = CreateSolidBrush(RGB(23, 23, 23)); FillRect(dc, &d, db); DeleteObject(db); }
         DeleteObject(ink);
         EndPaint(h, &ps); return 0;
@@ -166,7 +182,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.lpszClassName = L"ToastPreview"; wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
     const UINT dpi = GetDpiForSystem();
-    HWND h = CreateWindowW(wc.lpszClassName, L"Update toast preview — MOCK flow (no network, no installer)",
+    HWND h = CreateWindowW(wc.lpszClassName, L"Aperçu du toaster — simulation, aucune installation",
                            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(1180, dpi, 96), MulDiv(815, dpi, 96),
                            nullptr, nullptr, instance, nullptr);
     if (!h) return 2;

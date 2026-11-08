@@ -1,4 +1,4 @@
-// Native update toast renderer + owned layered popup. See update-toast.h and
+// Native update toast renderer + one owned opaque popup. See update-toast.h and
 // build/coordination/update-toast-contract.md. No WebView2, no browser main.
 #include "update-toast.h"
 #include "update-toast-motion.h"
@@ -338,13 +338,13 @@ public:
         }
     }
     // Paints a sampled frame into the card box {0,0,width,height} (DIP) of the bound target.
-    void Paint(const Frame& f, float width, float height, const ButtonVisual visuals[2], bool reduced, float materialOpacity = MaterialOpacity) {
+    void Paint(const Frame& f, float width, float height, const ButtonVisual visuals[2], bool reduced) {
         if (!f.visible || !brush) return;
         const bool fade = f.opacity < .999f;
         if (fade) target->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                                                           D2D1::IdentityMatrix(), f.opacity), nullptr);
         const D2D1_ROUNDED_RECT card = D2D1::RoundedRect(D2D1::RectF(0, 0, width, height), Paper::radius, Paper::radius);
-        Color(Paper::surface, materialOpacity);
+        Color(Paper::surface, MaterialOpacity);
         target->FillRoundedRectangle(card, brush);
         const float b = Paper::border;
         Color(1, Paper::borderOpacity);
@@ -373,8 +373,8 @@ using namespace ToastDetail;
 struct Toast::Impl {
     static constexpr UINT FrameMessage = WM_APP + 0x51, ActionMessage = WM_APP + 0x52;
     static constexpr UINT_PTR DwellTimer = 1, FallbackTimer = 2;
-    HWND owner = nullptr, hwnd = nullptr, backdrop = nullptr;
-    int backdropW = 0, backdropH = 0, backdropRadius = 0;
+    HWND owner = nullptr, hwnd = nullptr;
+    int clipW = 0, clipH = 0, clipRadius = 0;
     Options options;
     ActionHandler onAction;
     std::function<void()> onRelease;
@@ -393,9 +393,8 @@ struct Toast::Impl {
     UINT dpi = 96;
     // Last presented geometry (screen px) for hit testing.
     RECT card{}; float scale = 1, cardHeight = 0;
-    // Layered surface (bounded: grows to the largest card only).
-    HDC memory = nullptr; HBITMAP bitmap = nullptr; HGDIOBJ oldBitmap = nullptr; int capW = 0, capH = 0;
-    ID2D1DCRenderTarget* dc = nullptr;
+    // One opaque HWND surface contains the complete card.
+    ID2D1HwndRenderTarget* surface = nullptr;
     unsigned long long presents = 0;
 
     ~Impl() { Destroy(); }
@@ -403,11 +402,8 @@ struct Toast::Impl {
     void Destroy() {
         clock.Stop(); clockReady = false;
         if (hwnd) { HWND h = hwnd; hwnd = nullptr; SetWindowLongPtrW(h, GWLP_USERDATA, 0); if (IsWindow(h)) DestroyWindow(h); }
-        if (backdrop) { if (IsWindow(backdrop)) DestroyWindow(backdrop); backdrop = nullptr; }
-        Drop(dc); painter.Unbind();
-        if (memory) { if (oldBitmap) SelectObject(memory, oldBitmap); DeleteDC(memory); memory = nullptr; }
-        if (bitmap) { DeleteObject(bitmap); bitmap = nullptr; }
-        capW = capH = 0; windowShown = false;
+        painter.Unbind(); Drop(surface);
+        windowShown = false;
     }
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -427,55 +423,32 @@ struct Toast::Impl {
             if (!atom && GetLastError() == ERROR_CLASS_ALREADY_EXISTS) atom = 1;
             if (!atom) return false;
         }
-        hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"BrowserUpdateToast", L"",
+        hwnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"BrowserUpdateToast", L"",
                                WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
-        if (hwnd) CreateBackdrop(instance);
+        if (hwnd) ConfigureWindow();
         return hwnd != nullptr;
     }
-    // DWM cannot paint a system backdrop into an UpdateLayeredWindow surface.
-    // Keep the acrylic in a separate, non-layered owned popup directly beneath
-    // the transparent text/control surface. DWM samples the live page itself;
-    // there is no page capture, bitmap polling or additional animation timer.
-    static LRESULT CALLBACK BackdropProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-        if (m == WM_NCHITTEST) return HTTRANSPARENT;
-        if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
-        if (m == WM_PAINT) {
-            PAINTSTRUCT p; HDC dc = BeginPaint(h, &p);
-            FillRect(dc, &p.rcPaint, (HBRUSH)GetStockObject(BLACK_BRUSH));
-            EndPaint(h, &p); return 0;
-        }
-        return DefWindowProcW(h, m, w, l);
+    void ConfigureWindow() {
+        const DWM_WINDOW_CORNER_PREFERENCE square = DWMWCP_DONOTROUND;
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square, sizeof(square));
+        const COLORREF noBorder = DWMWA_COLOR_NONE;
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
+        const DWM_SYSTEMBACKDROP_TYPE material = DWMSBT_NONE;
+        DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &material, sizeof(material));
     }
-    void CreateBackdrop(HINSTANCE instance) {
-        WNDCLASSW wc{}; wc.lpfnWndProc = BackdropProc; wc.hInstance = instance;
-        wc.lpszClassName = L"BrowserUpdateBackdrop";
-        RegisterClassW(&wc);
-        backdrop = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
-            wc.lpszClassName, L"", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, nullptr);
-        if (!backdrop) return;
-        const BOOL dark = TRUE;
-        DwmSetWindowAttribute(backdrop, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-        const DWM_SYSTEMBACKDROP_TYPE material = DWMSBT_TRANSIENTWINDOW;
-        const MARGINS margins{-1, -1, -1, -1};
-        if (FAILED(DwmExtendFrameIntoClientArea(backdrop, &margins)) ||
-            FAILED(DwmSetWindowAttribute(backdrop, DWMWA_SYSTEMBACKDROP_TYPE, &material, sizeof(material)))) {
-            DestroyWindow(backdrop); backdrop = nullptr; // Windows < 11 22H2: readable solid fallback
-        }
-    }
-    bool PresentBackdrop(int w, int h, float opacity) {
-        if (!backdrop) return false;
-        if (opacity <= 1.f / 255) { ShowWindow(backdrop, SW_HIDE); return false; }
+    bool Place(int w, int h) {
+        RECT previous{}; GetWindowRect(hwnd, &previous);
+        if (!EqualRect(&previous, &card) &&
+            !SetWindowPos(hwnd, nullptr, card.left, card.top, w, h, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW)) return false;
         const int radius = (int)std::lround(Paper::radius * scale);
-        if (w != backdropW || h != backdropH || radius != backdropRadius) {
+        // Clip after sizing, with one rounded outline for the whole card.
+        if (w != clipW || h != clipH || radius != clipRadius) {
             HRGN clip = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
-            if (!clip || !SetWindowRgn(backdrop, clip, FALSE)) {
+            if (!clip || !SetWindowRgn(hwnd, clip, FALSE)) {
                 if (clip) DeleteObject(clip);
-                ShowWindow(backdrop, SW_HIDE); return false;
+                return false;
             }
-            backdropW = w; backdropH = h; backdropRadius = radius;
-        }
-        if (!SetWindowPos(backdrop, hwnd, card.left, card.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
-            ShowWindow(backdrop, SW_HIDE); return false;
+            clipW = w; clipH = h; clipRadius = radius;
         }
         return true;
     }
@@ -527,25 +500,16 @@ struct Toast::Impl {
         }
     }
     bool EnsureSurface(int w, int h) {
-        if (w <= capW && h <= capH && memory && dc) return true;
-        const int cw = std::max(w, capW), ch = std::max(h, capH);
-        if (!memory) memory = CreateCompatibleDC(nullptr);
-        if (!memory) return false;
-        BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        info.bmiHeader.biWidth = cw; info.bmiHeader.biHeight = -ch; info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
-        void* bits = nullptr;
-        HBITMAP next = CreateDIBSection(memory, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (!next) return false;
-        HGDIOBJ previous = SelectObject(memory, next);
-        if (!oldBitmap) oldBitmap = previous;
-        if (bitmap) DeleteObject(bitmap);
-        bitmap = next; capW = cw; capH = ch;
-        if (!dc) {
+        const auto size = D2D1::SizeU(w, h);
+        if (!surface) {
             const auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
-            if (FAILED(painter.factory->CreateDCRenderTarget(&props, &dc))) return false;
-            dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE); // ClearType needs an opaque surface
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96, 96);
+            if (FAILED(painter.factory->CreateHwndRenderTarget(props,
+                D2D1::HwndRenderTargetProperties(hwnd, size, D2D1_PRESENT_OPTIONS_RETAIN_CONTENTS), &surface))) return false;
+            surface->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        } else {
+            const auto previous = surface->GetPixelSize();
+            if ((previous.width != size.width || previous.height != size.height) && FAILED(surface->Resize(size))) return false;
         }
         return true;
     }
@@ -555,7 +519,6 @@ struct Toast::Impl {
         return v;
     }
     void Hide() {
-        if (backdrop) ShowWindow(backdrop, SW_HIDE);
         if (hwnd && windowShown) { ShowWindow(hwnd, SW_HIDE); windowShown = false; }
     }
     void Present(Motion::Time now) {
@@ -572,21 +535,15 @@ struct Toast::Impl {
         const int bottom = c.px.bottom - (int)std::lround(EdgeBottom * scale) + (int)std::lround(f.offset * scale);
         const int w = (int)std::lround(width * scale), h = std::max(1, (int)std::lround(f.height * scale));
         card = {left, bottom - h, left + w, bottom}; cardHeight = h / scale;
-        if (!EnsureSurface(w, h)) return;
-        RECT bind{0, 0, w, h};
-        if (FAILED(dc->BindDC(memory, &bind))) return;
-        dc->SetDpi((float)dpi, (float)dpi);
-        if (FAILED(painter.Bind(dc))) return;
-        const bool acrylic = PresentBackdrop(w, h, f.opacity);
-        dc->BeginDraw();
-        dc->Clear(D2D1::ColorF(0, 0, 0, 0));
+        if (!Place(w, h) || !EnsureSurface(w, h)) { Hide(); return; }
+        surface->SetDpi((float)dpi, (float)dpi);
+        if (FAILED(painter.Bind(surface))) return;
+        surface->BeginDraw();
+        surface->Clear(D2D1::ColorF(Paper::surface, Paper::surface, Paper::surface, 1.f));
         const ButtonVisual visuals[2] = {Visual(0, now), Visual(1, now)};
-        painter.Paint(f, width, cardHeight, visuals, presenter.Reduced(), acrylic ? Paper::surfaceOpacity : MaterialOpacity);
-        const HRESULT hr = dc->EndDraw();
-        if (hr == D2DERR_RECREATE_TARGET) { painter.Unbind(); Drop(dc); Request(); return; }
-        POINT dst{card.left, card.top}, src{0, 0}; SIZE size{w, h};
-        BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-        UpdateLayeredWindow(hwnd, nullptr, &dst, &size, memory, &src, 0, &blend, ULW_ALPHA);
+        painter.Paint(f, width, cardHeight, visuals, presenter.Reduced());
+        const HRESULT hr = surface->EndDraw();
+        if (FAILED(hr)) { painter.Unbind(); Drop(surface); Hide(); Request(); return; }
         ++presents;
         if (!windowShown) {
             SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -632,6 +589,12 @@ struct Toast::Impl {
     bool Handle(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT& result) {
         const auto now = Motion::Now();
         switch (m) {
+        case WM_ERASEBKGND: result = 1; return true;
+        case WM_PAINT: {
+            PAINTSTRUCT p; BeginPaint(h, &p); EndPaint(h, &p);
+            if (windowShown) Present(now);
+            return true;
+        }
         case WM_NCHITTEST: {
             float x, y; POINT p{(short)LOWORD(l), (short)HIWORD(l)};
             result = Local(p, x, y) ? HTCLIENT : HTTRANSPARENT; return true;

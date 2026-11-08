@@ -1,5 +1,5 @@
 #pragma once
-// Native update toast: an owned, layered, non-activating popup drawn with Direct2D.
+// Native update toast: one opaque, owned, non-activating Direct2D popup.
 // Contract: build/coordination/update-toast-contract.md. UI thread only.
 #include <windows.h>
 #include <functional>
