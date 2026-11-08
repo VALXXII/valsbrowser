@@ -153,8 +153,12 @@ std::shared_ptr<Tab> Active();
 // Loading-only frames repaint just the URL surface, and only when the quantised fill
 // differs from what was last painted; any other motion (or the frame right after it
 // ends, so its endpoint is painted) repaints the whole header.
+void InvalidateDownloadIcon();
 void InvalidateMotion(NativeChrome::Motion::Time now){
     SplitFrame(now);GripFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);
+    // Downloads icon: its own button only (also the frame that lands its last pose).
+    chrome.downloadIcon.Settle(now);
+    {static bool painting=false;const bool moving=chrome.downloadIcon.NextWake(now).delay.has_value();if(moving||painting)InvalidateDownloadIcon();painting=moving;}
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
@@ -162,7 +166,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.lottie.NextWake(now,reduced));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),historyDrawer.NextWake(now)));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),historyDrawer.NextWake(now)));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -1070,6 +1074,21 @@ std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     return L"File error";
 }
 void ShowDownloadDrawer();void SyncLatch();
+// Toolbar icon: a run lasts while any download is active; its progress counts
+// every download of the run (completed ones included) so it never goes back.
+std::set<int> downloadIconRun;
+void InvalidateDownloadIcon(){auto d=chrome.DownloadIconDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);}
+void UpdateDownloadIcon(bool completedNow){
+    bool active=false;
+    for(auto& item:downloads)if(item.state==DL::State::InProgress||item.state==DL::State::Paused){active=true;downloadIconRun.insert(item.id);}
+    long double received=0,total=0;
+    for(auto& item:downloads)if(downloadIconRun.count(item.id)&&item.total>0&&(item.state==DL::State::InProgress||item.state==DL::State::Paused||item.state==DL::State::Completed)){total+=item.total;received+=std::min(item.received,item.total);}
+    const float fraction=total>0?static_cast<float>(received/total):0.f;
+    auto now=NativeChrome::Motion::Now();
+    chrome.downloadIcon.Update(active,fraction,completedNow,now,motion.ReducedMotion());
+    if(!active)downloadIconRun.clear();
+    InvalidateDownloadIcon();ScheduleMotion(now);
+}
 void DownloadsChanged(){downloadPanel.Changed();downloadDrawer.Changed();}
 // Pull the operation's current state into its history row (UI thread, engine events).
 void SyncDownload(int id){
@@ -1094,6 +1113,7 @@ void SyncDownload(int id){
     if(item->state==DL::State::Completed||item->state==DL::State::Cancelled||(item->state==DL::State::Failed&&!item->canResume))downloadOps.erase(found);
     if(item->state!=before&&DL::Persistent(*item))SaveDownloads();
     DownloadsChanged();
+    UpdateDownloadIcon(item->state!=before&&item->state==DL::State::Completed);
     if(smoke&&item->state!=before&&testStage==7){
         if(item->state==DL::State::Completed){
             std::ifstream file(std::filesystem::path(item->path),std::ios::binary);std::string body((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());file.close();
@@ -1220,7 +1240,7 @@ void DownloadAction(int id,DL::Action action){
     case DL::Action::Pause:if(op&&SUCCEEDED(op->Pause())){entry->userPaused=true;SyncDownload(id);}break;
     case DL::Action::Resume:case DL::Action::Retry:if(op&&SUCCEEDED(op->Resume())){entry->userPaused=false;SyncDownload(id);}break;
     case DL::Action::Cancel:if(op){op->Cancel();SyncDownload(id);}break;
-    case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();break;}
+    case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
     case DL::Action::ShowInFolder:{const auto path=item->path;CloseDownloadSurfaces();
         PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
         if(FAILED(hr))Log(L"DOWNLOAD show in folder failed "+path);break;}

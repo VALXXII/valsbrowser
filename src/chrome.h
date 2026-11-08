@@ -9,6 +9,7 @@
 #include "motion-presentation.h"
 #include "native-lottie.h"
 #include "lottie-playback.h"
+#include "download-icon.h"
 #include "loading.h"
 #include "address.h"
 #include <set>
@@ -70,6 +71,8 @@ public:
     Loading::Visual loading;
     bool navigationLoading=false;
     // DIP rectangle repainted for loading-only frames (URL surface incl. embedded buttons).
+    // DIP rectangle repainted for download-icon-only frames (the 'D' button).
+    D2D1_RECT_F DownloadIconDirty()const{return {width-98,47,width-72,73};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
     // Quantised on-screen identity of the loading fill: equal signatures render
     // identical pixels, so a loading-only frame with an unchanged signature is skipped.
@@ -140,6 +143,50 @@ public:
     ID2D1Bitmap* lottieBitmap=nullptr;
     unsigned lottieSide=0;
     void InitLottie(){copyLottie.Load(assets+L"lottie\\copy-link.json");refreshLottie.Load(assets+L"lottie\\refresh.json");lottie.Configure(copyLottie.Duration(),refreshLottie.Duration(),copyLottie.FrameCount());}
+    // ---- Animated downloads icon (download-icon.h) ----
+    // The host feeds the model; Paint draws its pose for the 'D' button.
+    DownloadIcon::Model downloadIcon;
+    Lottie::Asset dlTrack,dlFill,dlArrow,dlCut;
+    ID2D1Bitmap* dlBitmap=nullptr;unsigned dlSide=0;int dlRing=-1,dlArrowFrame=-1;bool dlFailed=false;std::vector<uint32_t> dlPixels;
+    void DropDownloadIcon(){Drop(dlBitmap);dlRing=dlArrowFrame=-1;}
+    // One Asset serves one pixel size (the player cannot re-target): reload on a DPI change.
+    bool LoadDownloadIcon(unsigned side){
+        if(dlSide==side)return !dlFailed;
+        DropDownloadIcon();dlSide=side;
+        dlFailed=!(dlTrack.Load(assets+L"lottie\\download-ring-track.json")&&dlFill.Load(assets+L"lottie\\download-ring-fill.json")&&dlArrow.Load(assets+L"lottie\\download-arrow.json")&&dlCut.Load(assets+L"lottie\\download-arrow-cutout.json"))
+            ||dlTrack.FrameCount()!=DownloadIcon::RingFrames||dlFill.FrameCount()!=DownloadIcon::RingFrames||dlArrow.FrameCount()!=DownloadIcon::ArrowFrames||dlCut.FrameCount()!=DownloadIcon::ArrowFrames;
+        return !dlFailed;
+    }
+    bool DrawDownloadIcon(DownloadIcon::Pose pose,D2D1_RECT_F box,float size,float opacity){
+        const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(size*dpi/96)),1u,64u);
+        if(!LoadDownloadIcon(side))return false;
+        if(!dlBitmap||pose.ring!=dlRing||pose.arrow!=dlArrowFrame){
+            auto at=[](Lottie::Asset& a,int frame,int frames,unsigned px){return a.Sample(double(frame)/(frames-1),px);};
+            auto t=at(dlTrack,pose.ring,DownloadIcon::RingFrames,side),f=at(dlFill,pose.ring,DownloadIcon::RingFrames,side);
+            auto a=at(dlArrow,pose.arrow,DownloadIcon::ArrowFrames,side),c=at(dlCut,pose.arrow,DownloadIcon::ArrowFrames,side);
+            if(!t||!f||!a||!c)return false;
+            DownloadIcon::Compose(t->bgra.data(),f->bgra.data(),c->bgra.data(),a->bgra.data(),side*side,dlPixels);
+            HRESULT hr=S_OK;
+            if(!dlBitmap)hr=target->CreateBitmap(D2D1::SizeU(side,side),dlPixels.data(),side*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED)),&dlBitmap);
+            else hr=dlBitmap->CopyFromMemory(nullptr,dlPixels.data(),side*4);
+            if(FAILED(hr)||!dlBitmap){DropDownloadIcon();return false;}
+            dlRing=pose.ring;dlArrowFrame=pose.arrow;
+        }
+        const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->DrawBitmap(dlBitmap,{x,y,x+size,y+size},opacity);return true;
+    }
+    // Blue ring stroke that grows, blurs and fades (blur approximated by two
+    // softer, wider passes: at most 0.6 DIP, a true blur effect would not show).
+    void DrawDownloadRipple(float t,D2D1_RECT_F box,float size){
+        if(t<0||t>=1)return;
+        namespace R=DownloadIcon::Ripple;
+        const float p=Motion::Eased(t,Motion::Curve::Icon),unit=size/256.f,scale=1+(R::grow-1)*p;
+        const float radius=R::radius*unit*scale,width=R::stroke*unit*scale,blur=R::blur*unit*p,alpha=R::opacity*(1-p);
+        const D2D1_ELLIPSE e=D2D1::Ellipse({(box.left+box.right)/2,(box.top+box.bottom)/2},radius,radius);
+        auto pass=[&](float w,float a){brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],a));target->DrawEllipse(e,brush,w);};
+        if(blur>.05f){pass(width+blur*2,alpha*.25f);pass(width+blur,alpha*.35f);}
+        pass(width,alpha*(blur>.05f?.6f:1.f));
+    }
     bool DrawLottie(Lottie::Asset& asset,double progress,D2D1_RECT_F box,float size,float opacity){
         const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(16.f*dpi/96)),1u,64u);
         auto frame=asset.Sample(progress,side);if(!frame)return false;
@@ -174,7 +221,7 @@ public:
     IDWriteFontCollection* FontCollection()const{return fonts;}
     IWICImagingFactory* Imaging()const{return wic;}
     ID2D1RenderTarget* SwapTarget(ID2D1RenderTarget* next){auto old=target;target=next;return old;}
-    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     float TextWidth(const std::wstring& value,float size,bool medium=false,bool tabular=false,float tracking=0){if(value.empty())return 0;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,{0,0,4096,32},size,tabular,medium,tracking,&layout,m)))return 0;DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);Drop(layout);return metrics.widthIncludingTrailingWhitespace;}
     // Toolbar button drawn in its hover state while the popover it opened is shown.
     int latched=0;
@@ -206,7 +253,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);DropDownloadIcon();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -497,6 +544,14 @@ public:
                         Icon(icon,box,size,(1-a)*style.iconOpacity);Icon(L"check",box,size,a*style.iconOpacity);
                     }else if(!painted)Icon(icon,box,size,style.iconOpacity);
                 }
+                else if(id=='D'&&(!downloadIcon.At(now).idle||downloadIcon.At(now).ripple>=0)){
+                    auto pose=downloadIcon.At(now);auto style=Design::Resolve(variant,state);
+                    if(style.fill)Round(box,style.radius,style.surface);
+                    if(style.focus)FocusRing(box,style.radius);
+                    const float size=style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled);
+                    if(pose.idle||!DrawDownloadIcon(pose,box,size,style.iconOpacity))Icon(icon,box,size,style.iconOpacity);
+                    DrawDownloadRipple(pose.ripple,box,style.iconSize);
+                }
                 else if(id=='X')DrawCloseWindow(box,state);
                 else DrawButton(icon,box,variant,state);}
 
@@ -506,7 +561,7 @@ public:
         Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-37,55,bar.right-36,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
         DrawAddress(editing,hover=='I');
         DrawSplit();
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();DropDownloadIcon();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
 }
