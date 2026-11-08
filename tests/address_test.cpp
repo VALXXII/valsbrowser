@@ -1,6 +1,8 @@
 #include "../src/address.h"
 #include <cstdio>
 #include <sstream>
+#include <fstream>
+#include <filesystem>
 #define CHECK(x) do{if(!(x)){std::fprintf(stderr,"FAIL %s:%d %s\n",__FILE__,__LINE__,#x);return 1;}}while(0)
 using namespace AddressBar;
 static std::wstring Joined(const Display& d){std::wstring s;for(auto& r:d.runs)s+=r.text;return s;}
@@ -84,6 +86,33 @@ int main(){
     for(const char* bad:{"","garbage","browser-history 1\nx\t1\thttps://a.b\tT\n","browser-history 1\n1\t1\tjavascript:alert(1)\tT\n"}){std::istringstream in(bad);CHECK(History::Read(in).Items().empty());}
     History full;for(int i=0;i<1100;++i)full.Record(L"https://site"+std::to_wstring(i)+L".com/",L"",i);
     CHECK(full.Items().size()==History::Limit);
+    // Bundled popular sites: offered before any visit, after the history.
+    std::istringstream list("# browser popular sites 1\n# comment\ngoogle.com\tGoogle\nyoutube.com\tYouTube\ngoogle.fr\tGoogle France\nmail.google.com\tGmail\tgmail\nx.com\tX\ttwitter\nbad host\tNo\n");
+    auto popular=ReadPopular(list);
+    CHECK(popular.size()==5&&popular[3].aliases.size()==1&&popular[3].aliases[0]==L"gmail"&&popular[1].name==L"YouTube");
+    {std::istringstream wrong("garbage\nyoutube.com\n");CHECK(ReadPopular(wrong).empty());}
+    History none;
+    auto you=Suggest(L"yout",none,true,&popular);
+    CHECK(you.rows[0].text==L"youtube.com"&&you.rows[0].popular&&you.rows[0].url==L"https://youtube.com/"&&you.completion==L"ube.com"&&you.rows[0].title==L"YouTube");
+    CHECK(Suggest(L"y",none,true,&popular).completion.empty()&&Suggest(L"y",none,true,&popular).rows[0].kind==Kind::Search);
+    auto goo=Suggest(L"google",none,true,&popular);
+    CHECK(goo.rows[0].text==L"google.com"&&goo.completion==L".com"&&goo.rows[1].text==L"google.fr");
+    auto gma=Suggest(L"gma",none,true,&popular);
+    CHECK(gma.rows[0].text==L"mail.google.com"&&gma.rows[0].alias==L"gmail"&&gma.completion==L"il"&&gma.rows[0].match==std::wstring::npos);
+    auto gmail=Suggest(L"gmail",none,true,&popular);
+    CHECK(gmail.rows[0].text==L"mail.google.com"&&gmail.completion.empty()&&gmail.rows.back().kind==Kind::Search);
+    CHECK(Suggest(L"twitter",none,true,&popular).rows[0].text==L"x.com");
+    // The history wins over the list, and a visited host is not repeated.
+    History mine;mine.Record(L"https://youtube.fr/",L"YouTube FR",1);mine.Record(L"https://youtube.com/",L"YouTube",2);
+    auto ranked=Suggest(L"yout",mine,true,&popular);
+    CHECK(!ranked.rows[0].popular&&!ranked.rows[1].popular);
+    int youtubes=0;for(auto& r:ranked.rows)if(r.text==L"youtube.com")++youtubes;CHECK(youtubes==1);
+    // The shipped list parses, and every site ships its icon (run from the repository root).
+    {std::ifstream shipped("assets/popular-sites.txt",std::ios::binary);auto all=ReadPopular(shipped);
+     CHECK(all.size()>=100);
+     for(auto& p:all){std::error_code e;const bool icon=std::filesystem::exists(L"assets/sites/"+p.host+L".png",e)||std::filesystem::exists(L"assets/sites/"+p.host+L".ico",e);if(!icon)std::fwprintf(stderr,L"missing icon %ls\n",p.host.c_str());CHECK(icon);}
+     auto you=Suggest(L"yout",History{},true,&all);CHECK(you.rows[0].text==L"youtube.com"&&you.completion==L"ube.com");
+     auto gm=Suggest(L"gma",History{},true,&all);CHECK(gm.rows[0].text==L"mail.google.com"&&gm.completion==L"il");}
     std::puts("address tests passed");
     return 0;
 }
