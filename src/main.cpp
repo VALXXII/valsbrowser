@@ -905,11 +905,14 @@ int ShowMenu(const std::vector<CM::Item>& items,int anchor){
 }
 // Commands reached by Enter/Space on a focused chrome control anchor their menu to it; a click clears keyboardFocus first.
 int KeyboardAnchor(){return GetFocus()==window?keyboardFocus:0;}
-void TabMenu(int anchor){
+std::vector<CM::Item> TabMenuItems(){
     std::vector<CM::Item> items;
     // Titles are verbatim: '&' would read as an access key.
     for(int i=0;i<(int)pages.size();++i)items.push_back(CM::Command(1000+i,NativeUI::EscapeMenuText(pages[i]->title.empty()?L"Onglet sans titre":pages[i]->title),L"",true,i==current));
-    const int cmd=ShowMenu(items,anchor);if(cmd>=1000&&cmd-1000<(int)pages.size())Select(cmd-1000);
+    return items;
+}
+void TabMenu(int anchor){
+    const int cmd=ShowMenu(TabMenuItems(),anchor);if(cmd>=1000&&cmd-1000<(int)pages.size())Select(cmd-1000);
 }
 bool CopyToClipboard(const std::wstring& text){
     if(text.empty()||!OpenClipboard(window))return false;bool done=false;const auto bytes=(text.size()+1)*sizeof(wchar_t);
