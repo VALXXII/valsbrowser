@@ -15,3 +15,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Native motion checks failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Address background harness compilation failed.' }
 & build/native-qa/address_background_test.exe
 if ($LASTEXITCODE -ne 0) { throw 'Address background checks failed.' }
+
+# Address bar (issue #20): rest states, editing glyph and suggestion rows, 96/144 DPI.
+New-Item -ItemType Directory -Force build/native-qa/address | Out-Null
+& tools/w64devkit/bin/g++.exe -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -DTVG_STATIC -Ideps/thorvg-1.1.3/inc tests/ui/address_render_test.cpp src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o build/native-qa/address_render_test.exe -ld2d1 -ldwrite -lwindowscodecs -lole32 -luuid -lcomctl32 -lgdi32 -ldwmapi
+if ($LASTEXITCODE -ne 0) { throw 'Address render harness compilation failed.' }
+& build/native-qa/address_render_test.exe $PSScriptRoot "$PSScriptRoot/build/native-qa/address"
+if ($LASTEXITCODE -ne 0) { throw 'Address render checks failed.' }
