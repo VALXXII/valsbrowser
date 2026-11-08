@@ -52,7 +52,7 @@ class Suggestions {
     int Px(float dip) const { return static_cast<int>(std::lround(dip * dpi_ / 96.f)); }
     float Width() const { RECT r{}; if (hwnd_ && GetClientRect(hwnd_, &r) && r.right > 0) return r.right * 96.f / dpi_; return width_; }
     D2D1_RECT_F Row(int i) const { const float top = Layout::pad + Layout::row * i; return {Layout::pad, top, Width() - Layout::pad, top + Layout::row}; }
-    bool Removable(int i) const { return i >= 0 && i < static_cast<int>(data_.rows.size()) && data_.rows[i].kind == AddressBar::Kind::Site; }
+    bool Removable(int i) const { return i >= 0 && i < static_cast<int>(data_.rows.size()) && data_.rows[i].kind == AddressBar::Kind::Site && !data_.rows[i].popular; }
     D2D1_RECT_F RemoveBox(int i) const { auto r = Row(i); return {r.right - Layout::removeInset - Layout::remove, r.top + Layout::removeInset, r.right - Layout::removeInset, r.bottom - Layout::removeInset}; }
     int HitRow(float y) const { const int i = static_cast<int>(std::floor((y - Layout::pad) / Layout::row)); return y >= Layout::pad && i >= 0 && i < static_cast<int>(data_.rows.size()) ? i : -1; }
     static bool Inside(D2D1_RECT_F r, float x, float y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
