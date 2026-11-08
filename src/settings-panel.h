@@ -149,7 +149,30 @@ private:
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false, modal_ = false, animatingPainted_ = false, spinning_ = false;
     int appliedVisible_ = -1; RECT appliedOwner_{}, appliedWindow_{};
-    Motion::Time spinStart_{};
+    Motion::Time spinStart_{}, landStart_{};
+    // Update spinner: a constant counter-clockwise turn while a check runs. When
+    // it ends, the glyph keeps its speed and eases into the next full turn (cubic
+    // Hermite: the spin's velocity in, zero out), so it settles on its rest pose.
+    bool landing_ = false; float landFrom_ = 0, landDistance_ = 0, landSeconds_ = 0;
+    static constexpr float spinSpeed = 360.f * 1000 / Timing::spin.count(); // degrees per second
+    float Seconds(Motion::Time from, Motion::Time to) const { return static_cast<float>(std::chrono::duration<double>(to - from).count()); }
+    bool Landing(Motion::Time now) const { return landing_ && Seconds(landStart_, now) < landSeconds_; }
+    bool Spinning(Motion::Time now) const { return !Reduced() && (spinning_ || Landing(now)); }
+    float SpinDegrees(Motion::Time now) const {
+        if (spinning_) return std::fmod(Seconds(spinStart_, now) * spinSpeed, 360.f);
+        if (!Landing(now)) return 0;
+        const float u = Motion::Clamp(Seconds(landStart_, now) / landSeconds_), u2 = u * u, u3 = u2 * u;
+        return std::fmod(landFrom_ + (3 * u2 - 2 * u3) * landDistance_ + (u - 2 * u2 + u3) * spinSpeed * landSeconds_, 360.f);
+    }
+    void SetChecking(bool checking, Motion::Time now) {
+        if (checking && !spinning_) { spinStart_ = now - std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double>(SpinDegrees(now) / spinSpeed)); landing_ = false; }
+        else if (!checking && spinning_ && !Reduced()) {
+            landFrom_ = SpinDegrees(now); landDistance_ = 360 - landFrom_;
+            if (landDistance_ < 60) landDistance_ += 360; // too close to rest to brake smoothly: one more turn
+            landSeconds_ = std::clamp(2 * landDistance_ / spinSpeed, .25f, .7f); landStart_ = now; landing_ = true;
+        }
+        spinning_ = checking;
+    }
     static int SwitchIndex(int hit) { return hit == RestoreTabs ? 0 : hit == AskWhere ? 1 : hit == ReduceMotion ? 2 : -1; }
     bool SwitchValue(int hit) const {
         if (!state_) return false;
@@ -269,9 +292,12 @@ private:
         chrome_.Text(L"Enregistrer dans", {Layout::textLeft, s.top + 8, Layout::Trailing(s.top).left - 8, s.top + 28}, 16, .7f, false, false, -.16f);
         const std::wstring folder = hooks_.downloadFolder ? hooks_.downloadFolder() : (state_ ? state_->downloadFolder : L"");
         chrome_.Text(FolderText(folder), {Layout::textLeft, s.top + 30, Layout::Trailing(s.top).left - 8, s.top + 46}, 14, .5f, false, false, -.14f);
-        // The folder glyph answers the whole row: hover anywhere brightens it (the row tint is the only fill).
+        // The folder glyph answers the whole row (the row tint is the only fill): closed at
+        // rest, it opens on hover. Cross-fade on the row's own hover tween (no extra frames),
+        // the open folder tipping in from its bottom-left hinge (-10 deg, 90%) as it appears.
         const auto v = Interaction(Folder, now); const auto box = Layout::Trailing(s.top, Layout::folderRow);
-        chrome_.Icon(L"folder", R(box), 14 * Motion::PressScale(v.press, Reduced()), .7f + .3f * v.hover);
+        const float h = Motion::Clamp(v.hover);
+        chrome_.FolderGlyph(R(box), 14 * Motion::PressScale(v.press, Reduced()), .7f + .3f * h, h, Reduced());
     }
     float PlateTop(Motion::Time now) const { return plate_.Value(now); }
     void Plate(Motion::Time now, float scroll) {
@@ -297,7 +323,8 @@ private:
         const float y = Layout::VersionTop(h);
         chrome_.Text(version.text, {Layout::textLeft, y, Layout::Trailing(y, Layout::slot).left - 4, y + Layout::slot}, 14, .5f, true, false, -.14f);
         float turn = 0;
-        if (spinning_ && !Reduced()) turn = 360.f * static_cast<float>(std::fmod(std::chrono::duration<double>(now - spinStart_).count() * 1000 / Timing::spin.count(), 1.0));
+        // Counter-clockwise, the way the glyph's arrow points (like the toolbar's refresh turn).
+        if (Spinning(now)) turn = -SpinDegrees(now);
         IconButton(L"reload", Layout::Trailing(y, Layout::slot), CheckUpdates, now, turn, version.canCheck && !version.checking);
     }
     void Paint(Motion::Time now) {
@@ -572,7 +599,7 @@ public:
             plate_.Snap(EngineTop(SelectedIndex(), more_.Target()));
             for (int i = 0; i < 3; ++i) { switches_[i].Snap(SwitchValue(i == 0 ? RestoreTabs : i == 1 ? AskWhere : ReduceMotion) ? 1.f : 0.f); knobPress_[i].Snap(0); }
         }
-        { const auto version = hooks_.version ? hooks_.version() : Version{}; if (version.checking && !spinning_) spinStart_ = now; spinning_ = version.checking; }
+        { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }
         closing_ = false; visible_ = true;
         // Shown at its current extent (nothing yet on a fresh open), painted, then
         // repainted by Frame() while the slide uncovers it.
@@ -609,15 +636,14 @@ public:
         if (!BrowserSettings::Primary(state_->engine) && more_.Target() < .5f) more_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Downloads::DrawerMotion::fold, Downloads::DrawerMotion::foldSpring);
         plate_.Set(EngineTop(SelectedIndex(), more_.Target()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
         const bool checking = hooks_.version && hooks_.version().checking;
-        if (checking && !spinning_) spinStart_ = now;
-        spinning_ = checking;
+        SetChecking(checking, now);
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
-        bool moving = slide_.Moving(now) || scroll_.Moving(now) || more_.Moving(now) || plate_.Moving(now) || (spinning_ && !Reduced());
+        bool moving = slide_.Moving(now) || scroll_.Moving(now) || more_.Moving(now) || plate_.Moving(now) || Spinning(now);
         for (auto& lane : switches_) moving = moving || lane.Moving(now);
         for (auto& lane : knobPress_) moving = moving || lane.Moving(now);
         return Motion::Earlier(motion_.NextWake(now), moving ? Motion::Frame() : Motion::Wake{});
@@ -629,7 +655,7 @@ public:
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
         // A window keeps only what it is painted with while its region shows it:
         // the entering slide repaints as it uncovers; the exit moves finished pixels.
-        bool content = (!closing_ && slide_.Moving(now)) || scroll_.Moving(now) || more_.Moving(now) || plate_.Moving(now) || (spinning_ && !Reduced()) || motion_.NextWake(now).delay.has_value();
+        bool content = (!closing_ && slide_.Moving(now)) || scroll_.Moving(now) || more_.Moving(now) || plate_.Moving(now) || Spinning(now) || motion_.NextWake(now).delay.has_value();
         for (auto& lane : switches_) content = content || lane.Moving(now);
         for (auto& lane : knobPress_) content = content || lane.Moving(now);
         if (content || animatingPainted_) Invalidate();

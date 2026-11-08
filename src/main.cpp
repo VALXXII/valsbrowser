@@ -29,6 +29,7 @@
 #include "address.h"
 #include "address-popup.h"
 #include "settings-panel.h"
+#include "context-menu.h"
 #include "accessibility.h"
 #include <shlobj.h>
 // Self-update host integration is compiled into identity-stamped builds only
@@ -62,6 +63,7 @@ GUID_TEXT(ICoreWebView2DownloadStartingEventHandler,"{efedc989-c396-41ca-83f7-07
 GUID_TEXT(ICoreWebView2BytesReceivedChangedEventHandler,"{828e8ab6-d94c-4264-9cef-5217170d6251}")
 GUID_TEXT(ICoreWebView2EstimatedEndTimeChangedEventHandler,"{28f0d425-93fe-4e63-9f8d-2aeec6d3ba1e}")
 GUID_TEXT(ICoreWebView2StateChangedEventHandler,"{81336594-7ede-4ba9-bf71-acf0a95b58dd}")
+GUID_TEXT(ICoreWebView2ContextMenuRequestedEventHandler,"{04d3fe1d-ab87-42fb-a898-da241d35b63c}")
 GUID_TEXT(ICoreWebView2ServerCertificateErrorDetectedEventHandler,"{969b3a26-d85e-4795-8199-fef57344da22}")
 GUID_TEXT(ICoreWebView2ClearBrowsingDataCompletedHandler,"{e9710a06-1d1d-49b2-8234-226f35846ae5}")
 template<class I, class... A> class Handler final : public I {
@@ -91,7 +93,7 @@ std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 struct ClosedTab { std::wstring uri,title; int index; };
 std::vector<ClosedTab> closedTabs; bool sessionReady=false;
 std::wstring base,dataDir,profileDir,sessionFile,logFile,downloadsFile,settingsFile; const COLORREF BG=NativeChrome::Design::NativeGray(NativeChrome::Design::Surface::canvas);
-NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeChrome::DownloadsUI::Drawer downloadDrawer; NativeChrome::SettingsUI::Drawer settingsDrawer; BrowserSettings::State settings; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
+NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeChrome::DownloadsUI::Drawer downloadDrawer; NativeChrome::SettingsUI::Drawer settingsDrawer; NativeChrome::ContextMenu::Menu contextMenu; BrowserSettings::State settings; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; } tabDrag;
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
 // user typed (the field may also show an inline completion or an arrowed row).
@@ -100,6 +102,7 @@ void InvalidateChrome();
 void CancelTabDrag(){tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;InvalidateChrome();}
 int S(float value){return (int)std::lround(value*GetDpiForWindow(window)/96.f);}
 void RefreshTools();
+struct ICoreWebView2ContextMenuRequestedEventArgs; HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args);
 void ExtraCommand(int cmd);
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
@@ -853,6 +856,7 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         // Invalid server certificate: the engine keeps its own interstitial; the bar says "Non sécurisé".
         {Com<ICoreWebView2_14> view14;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&view14.p))&&view14.p){auto cert=Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler,ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=true;Log(L"CERTIFICATE error "+tab->uri);if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}
         {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();}
+        {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;Navigate(t,uri);return S_OK;
     });
     HRESULT hr=environment->CreateCoreWebView2Controller(window,done);done->Release();Check(hr,L"CreateCoreWebView2Controller");
@@ -880,15 +884,7 @@ case 7:Command('M');if(!IsZoomed(window)){Fail(L"Smoke maximize assertion",E_FAI
 }}
 
 void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect={S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
-HMENU CreateTabMenu(){
-    HMENU menu=CreatePopupMenu();
-    for(int i=0;i<(int)pages.size();++i){
-        // Menu strings interpret '&' as a mnemonic. Keep page titles verbatim.
-        const auto label=NativeUI::EscapeMenuText(pages[i]->title);
-        AppendMenuW(menu,MF_STRING|(i==current?MF_CHECKED:0),1000+i,label.c_str());
-    }
-    return menu;
-}
+namespace CM=NativeChrome::ContextMenu;
 void AnnounceCopied();
 // A keyboard-opened menu drops just below its control (DIP region -> device pixels), aligned to the
 // control's outer edge: the flower's menu opens rightward, the gear's leftward.
@@ -897,20 +893,104 @@ MenuPlacement PlaceMenu(const D2D1_RECT_F& control,float chromeWidth,UINT dpi){
     auto px=[dpi](float v){return (LONG)std::lround(v*dpi/96.f);};
     return {{px(control.left),px(control.top),px(control.right),px(control.bottom)},control.left+control.right>chromeWidth};
 }
-// `anchor` is the chrome region a keyboard-opened menu belongs to; 0 keeps the menu at the pointer.
-int TrackMenu(HMENU menu,int anchor){
-    UINT flags=TPM_RETURNCMD|TPM_RIGHTBUTTON;POINT p{};TPMPARAMS params{sizeof(params)};
+// Every right-click menu is the native one (src/context-menu.h). `anchor` is the chrome
+// region a keyboard-opened menu belongs to; 0 opens it at the pointer.
+int ShowMenu(const std::vector<CM::Item>& items,int anchor){
+    POINT p{};GetCursorPos(&p);
     auto region=anchor?std::find_if(chrome.regions.begin(),chrome.regions.end(),[anchor](const NativeChrome::Region& r){return r.id==anchor;}):chrome.regions.end();
-    if(region==chrome.regions.end()){GetCursorPos(&p);return (int)TrackPopupMenuEx(menu,flags,p.x,p.y,window,nullptr);}
+    if(region==chrome.regions.end())return contextMenu.Track(items,p,nullptr,false,motion.ReducedMotion());
     auto place=PlaceMenu(region->rect,chrome.width,GetDpiForWindow(window));
-    MapWindowPoints(window,nullptr,(POINT*)&place.control,2);params.rcExclude=place.control;
-    flags|=TPM_TOPALIGN|TPM_VERTICAL|(place.alignRight?TPM_RIGHTALIGN:TPM_LEFTALIGN);
-    return (int)TrackPopupMenuEx(menu,flags,place.alignRight?place.control.right:place.control.left,place.control.bottom,window,&params);
+    MapWindowPoints(window,nullptr,(POINT*)&place.control,2);
+    return contextMenu.Track(items,p,&place.control,true,motion.ReducedMotion(),place.alignRight);
 }
 // Commands reached by Enter/Space on a focused chrome control anchor their menu to it; a click clears keyboardFocus first.
 int KeyboardAnchor(){return GetFocus()==window?keyboardFocus:0;}
-void TabMenu(int anchor){HMENU menu=CreateTabMenu();int cmd=TrackMenu(menu,anchor);DestroyMenu(menu);if(cmd>=1000)Select(cmd-1000);}
-void TabContextMenu(int tabIndex,int anchor){HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,'W',L"Fermer cet onglet\tCtrl+W");AppendMenuW(menu,MF_STRING|((closedTabs.empty()||pages.size()>=128)?MF_GRAYED:0),'U',L"Rouvrir l'onglet fermé\tCtrl+Maj+T");int cmd=TrackMenu(menu,anchor);DestroyMenu(menu);if(cmd=='W')CloseAt(tabIndex);else if(cmd=='U')Command(cmd);}
+void TabMenu(int anchor){
+    std::vector<CM::Item> items;
+    // Titles are verbatim: '&' would read as an access key.
+    for(int i=0;i<(int)pages.size();++i)items.push_back(CM::Command(1000+i,NativeUI::EscapeMenuText(pages[i]->title.empty()?L"Onglet sans titre":pages[i]->title),L"",true,i==current));
+    const int cmd=ShowMenu(items,anchor);if(cmd>=1000&&cmd-1000<(int)pages.size())Select(cmd-1000);
+}
+bool CopyToClipboard(const std::wstring& text){
+    if(text.empty()||!OpenClipboard(window))return false;bool done=false;const auto bytes=(text.size()+1)*sizeof(wchar_t);
+    if(HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes)){if(void* data=GlobalLock(mem)){memcpy(data,text.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();done=SetClipboardData(CF_UNICODETEXT,mem)!=nullptr;}if(!done)GlobalFree(mem);}
+    CloseClipboard();return done;
+}
+// Tab right click (Paper "Clic droit menu — poli"): acts on the tab that was clicked.
+void TabContextMenu(int tabIndex,int anchor){
+    if(tabIndex<0||tabIndex>=(int)pages.size())return;
+    enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem};
+    auto tab=pages[tabIndex];const bool link=!tab->home&&!tab->uri.empty();
+    const std::vector<CM::Item> items{CM::Command(NewTabItem,L"Nouvel onglet",L"Ctrl+T"),CM::Command(ReloadItem,L"Actualiser",L"Ctrl+R",tab->view.p!=nullptr),CM::Command(CopyItem,L"Copier le lien",L"",link),CM::Separator(),
+        CM::Command(ReopenItem,L"Rouvrir l'onglet fermé",L"Ctrl+Maj+T",!closedTabs.empty()&&pages.size()<128),CM::Separator(),
+        CM::Command(CloseItem,L"Fermer l'onglet",L"Ctrl+W"),CM::Command(CloseOthersItem,L"Fermer les autres onglets",L"",pages.size()>1)};
+    switch(ShowMenu(items,anchor)){
+    case NewTabItem:Command('T');break;
+    case ReloadItem:if(tabIndex==current)Command('R');else if(tab->view.p)Check(tab->view->Reload(),L"Reload");break;
+    case CopyItem:if(tabIndex==current)Command('C');else if(CopyToClipboard(tab->uri))AnnounceCopied();break;
+    case ReopenItem:Command('U');break;
+    case CloseItem:{auto it=std::find(pages.begin(),pages.end(),tab);if(it!=pages.end())CloseAt((int)(it-pages.begin()));break;}
+    case CloseOthersItem:for(int i=(int)pages.size()-1;i>=0;--i)if(pages[i]!=tab)CloseAt(i);break;
+    default:break;
+    }
+}
+// Address field right click: the EDIT's own commands in the native menu.
+void AddressContextMenu(LPARAM at){
+    enum{UndoItem=1,CutItem,CopyItem,PasteItem,DeleteItem,SelectAllItem};
+    DWORD from=0,to=0;SendMessageW(address,EM_GETSEL,(WPARAM)&from,(LPARAM)&to);const bool selection=to>from;const int length=GetWindowTextLengthW(address);
+    const std::vector<CM::Item> items{CM::Command(UndoItem,L"Annuler",L"Ctrl+Z",SendMessageW(address,EM_CANUNDO,0,0)!=0),CM::Separator(),
+        CM::Command(CutItem,L"Couper",L"Ctrl+X",selection),CM::Command(CopyItem,L"Copier",L"Ctrl+C",selection),CM::Command(PasteItem,L"Coller",L"Ctrl+V",IsClipboardFormatAvailable(CF_UNICODETEXT)!=0),CM::Command(DeleteItem,L"Supprimer",L"Suppr",selection),CM::Separator(),
+        CM::Command(SelectAllItem,L"Tout sélectionner",L"Ctrl+A",length>0&&!(from==0&&(int)to==length))};
+    POINT p{GET_X_LPARAM(at),GET_Y_LPARAM(at)};RECT edit{};const bool keyboard=p.x==-1&&p.y==-1;
+    if(keyboard){GetWindowRect(address,&edit);p={edit.left,edit.bottom};}
+    const int cmd=contextMenu.Track(items,p,keyboard?&edit:nullptr,keyboard,motion.ReducedMotion());
+    if(IsWindowVisible(address))SetFocus(address);
+    switch(cmd){case UndoItem:SendMessageW(address,WM_UNDO,0,0);break;case CutItem:SendMessageW(address,WM_CUT,0,0);break;case CopyItem:SendMessageW(address,WM_COPY,0,0);break;case PasteItem:SendMessageW(address,WM_PASTE,0,0);break;case DeleteItem:SendMessageW(address,WM_CLEAR,0,0);break;case SelectAllItem:SendMessageW(address,EM_SETSEL,0,-1);break;default:break;}
+}
+// Web page right click: WebView2 hands over its menu (ContextMenuRequested); it is
+// shown natively once the event returns (deferral), then the engine runs the choice.
+constexpr UINT PageMenuMessage=WM_APP+22;
+struct PendingPageMenu{Com<ICoreWebView2ContextMenuRequestedEventArgs> args;Com<ICoreWebView2Deferral> deferral;std::weak_ptr<Tab> tab;std::vector<CM::Item> items;std::vector<INT32> commands;POINT at{};bool keyboard=false;};
+std::shared_ptr<PendingPageMenu> pendingPageMenu;
+void ReadPageMenu(ICoreWebView2ContextMenuItemCollection* list,std::vector<CM::Item>& out,std::vector<INT32>& commands){
+    UINT32 count=0;if(!list||FAILED(list->get_Count(&count)))return;
+    for(UINT32 i=0;i<count;++i){
+        Com<ICoreWebView2ContextMenuItem> item;if(FAILED(list->GetValueAtIndex(i,&item.p))||!item.p)continue;
+        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND kind=COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND;item->get_Kind(&kind);
+        if(kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SEPARATOR){if(!out.empty()&&!out.back().separator)out.push_back(CM::Separator());continue;}
+        CM::Item m;LPWSTR text=nullptr;
+        if(SUCCEEDED(item->get_Label(&text))&&text){m.label=text;CoTaskMemFree(text);}
+        text=nullptr;if(SUCCEEDED(item->get_ShortcutKeyDescription(&text))&&text){m.shortcut=text;CoTaskMemFree(text);}
+        BOOL flag=TRUE;item->get_IsEnabled(&flag);m.enabled=flag!=FALSE;
+        flag=FALSE;item->get_IsChecked(&flag);m.checked=flag&&(kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_CHECK_BOX||kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_RADIO);
+        if(kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU){Com<ICoreWebView2ContextMenuItemCollection> children;if(SUCCEEDED(item->get_Children(&children.p))&&children.p)ReadPageMenu(children.p,m.children,commands);if(m.children.empty())continue;}
+        else{INT32 command=0;item->get_CommandId(&command);commands.push_back(command);m.id=(int)commands.size();}
+        out.push_back(std::move(m));
+    }
+    while(!out.empty()&&out.back().separator)out.pop_back();
+}
+HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args){
+    if(halted||!tab||!args||pendingPageMenu||contextMenu.Open())return S_OK;
+    auto pending=std::make_shared<PendingPageMenu>();
+    Com<ICoreWebView2ContextMenuItemCollection> list;if(FAILED(args->get_MenuItems(&list.p))||!list.p)return S_OK;
+    ReadPageMenu(list.p,pending->items,pending->commands);if(pending->items.empty())return S_OK; // nothing to show: the engine keeps its own menu
+    if(FAILED(args->GetDeferral(&pending->deferral.p))||!pending->deferral.p)return S_OK;
+    args->put_Handled(TRUE);pending->args.set(args);pending->tab=tab;
+    // Location is relative to the WebView, in the same pixels as the controller bounds.
+    POINT location{};args->get_Location(&location);RECT bounds{};if(tab->controller.p)tab->controller->get_Bounds(&bounds);
+    // A mouse right click opens at the pointer; the Menu key or Shift+F10 at the engine's location.
+    pending->keyboard=GetAsyncKeyState(VK_APPS)<0||(GetAsyncKeyState(VK_F10)<0&&GetAsyncKeyState(VK_SHIFT)<0);
+    if(pending->keyboard){pending->at={bounds.left+location.x,bounds.top+location.y};ClientToScreen(window,&pending->at);}else GetCursorPos(&pending->at);
+    pendingPageMenu=pending;PostMessageW(window,PageMenuMessage,0,0);return S_OK;
+}
+void ShowPageMenu(){
+    auto pending=std::move(pendingPageMenu);if(!pending)return;
+    const int choice=halted?0:contextMenu.Track(pending->items,pending->at,nullptr,pending->keyboard,motion.ReducedMotion());
+    if(pending->args.p)pending->args->put_SelectedCommandId(choice>0&&choice<=(int)pending->commands.size()?pending->commands[choice-1]:-1);
+    if(pending->deferral.p)pending->deferral->Complete();
+    // Keyboard focus goes back to the page the menu came from.
+    if(auto tab=pending->tab.lock();tab&&!tab->closed&&tab->controller.p&&tab==Active())tab->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+}
 void ExtraCommand(int cmd){auto t=Active();switch(cmd){
 case 'I':FocusAddress();break; // the security indicator opens the address
 case 900:TabMenu(KeyboardAnchor());break;
@@ -1190,7 +1270,8 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
     if(msg==WM_CHAR&&addressKeys.ConsumeChar(w))return 0;
     if(msg==WM_GETDLGCODE){LRESULT code=DefSubclassProc(h,msg,w,l)|DLGC_WANTCHARS|DLGC_WANTARROWS;auto message=(MSG*)l;if(message&&!addressKeys.composing&&(message->wParam==VK_RETURN||message->wParam==VK_ESCAPE))code|=DLGC_WANTMESSAGE;return code;}
     if(msg==WM_LBUTTONDOWN&&keyboardModality){keyboardModality=false;InvalidateRect(window,nullptr,FALSE);}
-    if(msg==WM_KILLFOCUS){HideSuggestions();editing=false;ShowWindow(h,SW_HIDE);InvalidateRect(window,nullptr,FALSE);}
+    if(msg==WM_CONTEXTMENU){AddressContextMenu(l);return 0;}
+    if(msg==WM_KILLFOCUS&&!contextMenu.Open()){HideSuggestions();editing=false;ShowWindow(h,SW_HIDE);InvalidateRect(window,nullptr,FALSE);}
     if(msg==WM_KEYDOWN&&(w==VK_BACK||w==VK_DELETE))addressDeleting=true;
     if(msg==WM_KEYDOWN&&(w==VK_UP||w==VK_DOWN)&&suggestions.Visible()&&!addressKeys.composing){MoveSuggestion(w==VK_UP?-1:1);return 0;}
     if(msg==WM_KEYDOWN&&w==VK_DELETE&&GetKeyState(VK_SHIFT)<0&&suggestions.Visible()){const int a=suggestions.Active();if(a>=0&&a<(int)suggestions.Data().rows.size()&&suggestions.Data().rows[a].kind==AddressBar::Kind::Site){RemoveSuggestion(a);return 0;}}
@@ -1264,6 +1345,7 @@ case WM_CTLCOLOREDIT:{
 case Shortcut:keyboardModality=true;Command((int)w);return 0;
 case AccessibleMessage:AccessibleAction((int)w,(long long)l);return 0;
 case DownloadAskMessage:AskPendingDownloads();return 0;
+case PageMenuMessage:ShowPageMenu();return 0;
 case WM_APP+2:SmokeCheck();return 0;
 case WM_APP+3:SmokeAdvance();return 0;
 case FrameMessage:{if(l==NativeChrome::FrameClock::ClockLost){frameClock.Stop();frameClockReady=false;ScheduleMotion(NativeChrome::Motion::Now());return 0;}
@@ -1293,7 +1375,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
 #ifdef BROWSER_UPDATES
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
 #endif
-    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}LoadSettings();motion.SetReducedMotion(ReducedMotionPreferred());LoadDownloads();LoadHistory();CreateDownloadPanel();CreateSuggestions();CreateSettingsPanel();frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
+    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}LoadSettings();motion.SetReducedMotion(ReducedMotionPreferred());LoadDownloads();LoadHistory();CreateDownloadPanel();CreateSuggestions();CreateSettingsPanel();contextMenu.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
@@ -1301,5 +1383,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,profileDir.c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();contextMenu.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }
