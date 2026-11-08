@@ -38,6 +38,8 @@ L'ancien echec `Smoke download dialog did not open : 0x80004005` disparait avec 
 
 [Design system](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-2-0) : synchronisation partielle. Les tokens et la marque ont ete mis a jour avant que le quota MCP hebdomadaire bloque les composants et timelines restants. Voir [reprise precise](design/paper-sync-pending.md). Les anciens canvas utilisateur sont conserves.
 
+[Vue partagée — flow](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-3-0) : flow validé de la split view. Décisions, implémentation et preuves : [design/split-view.md](design/split-view.md).
+
 ## Progression dans la barre URL
 
 Fill blanc additionnel ?8%, sur toute la hauteur de la barre. Progression indicative par ?tapes de navigation, arriv?e ? pleine largeur puis fondu. Aucun timer pendant l?attente r?seau ou au repos. Voir [d?tails et validation](design/url-loading.md). Les six fixtures natives passent ; navigation r?elle non test?e sous le maintien de l?arr?t WebView2.
@@ -73,6 +75,8 @@ Le bouton Téléchargements ouvre un popover natif « Download history » sous l
 - Le popover montre les 4 derniers téléchargements et un lien « View all » (16 DIP sous la dernière ligne, hauteur 276).
 - « View all » ouvre un drawer de 268 DIP ancré au bord droit, sous la barre d'outils jusqu'en bas de la fenêtre : tout l'historique groupé par Today / Yesterday / Last week / Last month / Last year (jours calendaires locaux). Chaque section se replie avec son chevron (aligné sur la croix) : les lignes se rangent sous l'en-tête en fondu, le chevron tourne de -90°, la suite remonte, 280 ms. Depuis « View all », le popover se transforme en drawer (morph 360 ms, cubic-bezier(.32,.72,0,1)) : son rectangle s'étire jusqu'au bord droit et au bas de la fenêtre pendant que la liste glisse d'un bloc depuis les lignes du popover, les en-têtes de section sortant de sous le titre et le reste apparaissant en fondu ; « View all » s'efface dans les premiers 30 %. Coût : aucune fenêtre redimensionnée ni transparente, une image Direct2D et une région GDI par image d'écran pendant 360 ms, rien au repos. La croix, Échap ou le bouton Téléchargements le font repartir vers la droite (220 ms) : la fenêtre se déplace sous une région qui épouse le coin arrondi de la fenêtre principale, sans repeindre. Un drawer ouvert autrement glisse depuis le bord droit (320 ms). Défilement molette lissé (160 ms), fondus de bord (16 DIP en haut, 128 DIP en bas) seulement quand du contenu dépasse. Mouvement réduit : tout est instantané.
 - Les téléchargements terminés, échoués ou annulés (50 max) sont conservés dans `downloads`, à côté de `session`, avec leur date de début (format 2 ; une ligne sans date, héritée de l'ancien format, prend la date de création de son fichier, sinon celle du fichier d'historique, puis est réenregistrée).
+
+- Icône animée du bouton Téléchargements (Lottie natif ThorVG, `design/lottie/download-progress.py`) : au démarrage, le plateau se referme en anneau (233 ms) et la flèche y descend ; tant que des téléchargements sont actifs, la flèche fait un va-et-vient (1,3 s) pendant que l'anneau se remplit en #3E67FF selon la progression cumulée ; à la fin, une onde bleue (×1,9, flou, 600 ms) part de l'anneau, puis tout revient au plateau (450 ms) au repos de la flèche. Annulation : retour sans onde. Quatre calques (tracé, remplissage, flèche, découpe) composés nativement ; le gris utilise l'encre des autres icônes. Seul le bouton est repeint, rien au repos ; mouvement réduit : anneau statique avec la progression.
 
 Vérification : `test-downloads.ps1` (formatage, historique, timing du reveal, rendus PNG des états et des frames d'animation dans `build/downloads-qa`) et l'étape téléchargement du smoke `test.ps1`.
 
@@ -126,3 +130,45 @@ python tools/release/package.py --app build/update-integration --out build/updat
 ```
 
 Version : `0.3.<git rev-list --count HEAD>`. Détails : [design/updates.md](design/updates.md).
+
+## Vue partagée (split view)
+
+Glisser un onglet sous la barre d'adresse le soulève. Le bord le plus proche décide :
+à gauche ou à droite pour placer les pages côte à côte, en haut ou en bas pour les
+empiler. Sur une vue partagée, le centre d'un panneau remplace ce site et ses bords
+insèrent un site de plus. Il n'y a pas de plafond : chaque site garde au moins 360 px
+CSS de large (256 de haut empilé), convertis selon le zoom de page. Sans place, la
+pastille « Pas de place pour un 4ᵉ site » refuse le dépôt ; l'aperçu, lui, ne porte que le nom court du site déplacé (« GitHub », pas le titre complet de la page). Quand la fenêtre rétrécit,
+le site le moins récent se replie en rail de 32 DIP, sans fermeture ni rechargement.
+
+- Les coins extérieurs du bas des pages sont arrondis à 6 DIP, comme la fenêtre, avec un
+  vrai masquage natif.
+- Le panneau actif porte l'adresse et les commandes. Un clic ou le focus dans une page
+  l'active, jamais le survol. Son contour est neutre : discret après un clic (blanc 10 %),
+  fort au clavier (blanc 50 %). L'accent #3E67FF reste réservé à l'aperçu de dépôt.
+  F6 / Maj+F6 parcourent les panneaux puis la barre.
+- Dans la barre, les onglets d'un groupe ont une bordure neutre, des coins extérieurs
+  arrondis et intérieurs droits, un petit séparateur entre eux ; l'actif se lit à sa
+  surface.
+- Séparateurs : au repos, un gap neutre de 4 DIP. La poignée sombre (8 × 36) n'apparaît
+  qu'au survol, au glisser ou au focus clavier (avec un anneau). La cible au pointeur
+  reste de 16 DIP. Dès que le glisser démarre (3 DIP), le séparateur passe en accent et
+  les deux pages voisines sont masquées par des surfaces #171717. Chacune porte au
+  centre le favicon, le nom court et le domaine nu du site. Les pages réapparaissent une
+  fois rendues à leur nouvelle taille. Glisser (aimants ⅓ ½ ⅔ à deux sites), double-clic
+  pour répartir
+  également, ou menu « Redimensionner les panneaux » au clavier (flèches, Tab, Entrée,
+  Échap).
+- Sans glisser, le menu d'onglet (clic droit, touche Menu, Maj+F10) nomme sa cible dans
+  un en-tête : « Avec YouTube · affiché », ou « Avec la vue partagée · 3 sites ».
+  Viennent ensuite « À droite / À gauche / Au-dessus / En dessous » (pour un groupe :
+  « Ajouter au début / à la fin », « Insérer entre › » et « Remplacer un site › »), puis
+  « Avec un autre site › » pour n'importe quel autre onglet ou groupe. Une action
+  indisponible garde sa raison écrite. Sur un groupe : « Inverser les panneaux »,
+  « Empiler les panneaux » ou « Placer côte à côte », « Quitter la vue partagée ».
+- Échap ou Alt+Tab pendant un glisser restaurent l'ordre des onglets. Fermer un panneau
+  passe la main à son voisin. Les groupes sont enregistrés dans la session (format 2).
+
+Vérification : `test-split-view.ps1` pour le modèle et le comportement, et
+`test-split-view.ps1 -Native` pour de vraies WebView2 sur des pages locales (sans
+réseau), avec les captures dans `build/split-dev/split-qa`.

@@ -9,6 +9,7 @@
 #include "motion-presentation.h"
 #include "native-lottie.h"
 #include "lottie-playback.h"
+#include "download-icon.h"
 #include "loading.h"
 #include "address.h"
 #include <set>
@@ -70,6 +71,8 @@ public:
     Loading::Visual loading;
     bool navigationLoading=false;
     // DIP rectangle repainted for loading-only frames (URL surface incl. embedded buttons).
+    // DIP rectangle repainted for download-icon-only frames (the 'D' button).
+    D2D1_RECT_F DownloadIconDirty()const{return {width-98,47,width-72,73};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
     // Quantised on-screen identity of the loading fill: equal signatures render
     // identical pixels, so a loading-only frame with an unchanged signature is skipped.
@@ -85,6 +88,47 @@ public:
         uint32_t bits=0;const float opacity=std::min(v.opacity,1.f);memcpy(&bits,&opacity,sizeof(bits));
         return ((lo*2+(hi-lo))<<32)|bits;
     }
+    // Split view canvas: rails (collapsed sites), the active panel's accent ring drawn
+    // 1 DIP off the page (2 DIP stroke, inside the 4 DIP half-gap) and the separator handles.
+    void DrawSplit(){
+        if(!split.shown)return;
+        for(size_t i=0;i<split.rails.size();++i){auto r=split.rails[i];Round(r,Design::Radius::control,Design::Surface::tabHover);
+            const float cx=(r.left+r.right)/2;const int tab=i<split.railTabs.size()?split.railTabs[i]:-1;
+            const bool vertical=r.bottom-r.top>r.right-r.left;const float top=vertical?r.top+12:(r.top+r.bottom)/2-8;const float left=vertical?cx-8:r.left+12;
+            if(tab>=0)DrawFavicon(tab,{left,top,left+16,top+16});}
+        // Active panel ring (Paper 08): neutral, 1 DIP off the page, 2 DIP. After a click it is
+        // discreet (white 10 %); reached by keyboard (F6, menu) it is the focus ring's 50 % (5.26:1).
+        // The accent is kept for drop previews and manipulation, never a permanent frame.
+        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line).
+        if(split.ring){auto a=split.active;Color(1,keyboardModality?Design::Focus::keyboardOpacity:Design::Focus::pointerOpacity);
+            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},2,2,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
+        // Separator (Paper 08): at rest only the 4 DIP canvas gap, a thin neutral line. The
+        // handle, 8 x 36 #2F2F2F fully rounded, appears while hovered, dragged or keyboard-focused
+        // and overlaps both page edges by 2 DIP. Pages are child windows that cover the canvas,
+        // so it is normally drawn by the grip window above them; this path is the fallback
+        // without grips (no layered children), where only the gap part shows.
+        if(split.paintHandles)for(int i=0;i<(int)split.handles.size();++i){if(i!=split.hotHandle&&i!=split.focusedHandle)continue;auto h=split.handles[i];
+            const bool row=h.bottom-h.top>h.right-h.left;const float cx=(h.left+h.right)/2,cy=(h.top+h.bottom)/2;
+            D2D1_RECT_F pill=row?D2D1_RECT_F{cx-4,cy-18,cx+4,cy+18}:D2D1_RECT_F{cx-18,cy-4,cx+18,cy+4};
+            Color(47/255.f);target->FillRoundedRectangle(D2D1::RoundedRect(pill,4,4),brush);
+            if(i==split.focusedHandle){Color(1,Design::Focus::keyboardOpacity);target->DrawRoundedRectangle(D2D1::RoundedRect({pill.left-2,pill.top-2,pill.right+2,pill.bottom+2},6,6),brush,2);}}
+    }
+    // Rectangle with a radius per corner (top-left, top-right, bottom-right, bottom-left).
+    ID2D1PathGeometry* CornerBox(D2D1_RECT_F r,float tl,float tr,float br,float bl){
+        ID2D1PathGeometry* g=nullptr;if(!factory||FAILED(factory->CreatePathGeometry(&g)))return nullptr;ID2D1GeometrySink* s=nullptr;if(FAILED(g->Open(&s))){g->Release();return nullptr;}
+        auto arc=[&](D2D1_POINT_2F to,float radius){if(radius>0)s->AddArc(D2D1::ArcSegment(to,{radius,radius},0,D2D1_SWEEP_DIRECTION_CLOCKWISE,D2D1_ARC_SIZE_SMALL));else s->AddLine(to);};
+        s->BeginFigure({r.left+tl,r.top},D2D1_FIGURE_BEGIN_HOLLOW);s->AddLine({r.right-tr,r.top});arc({r.right,r.top+tr},tr);s->AddLine({r.right,r.bottom-br});arc({r.right-br,r.bottom},br);
+        s->AddLine({r.left+bl,r.bottom});arc({r.left,r.bottom-bl},bl);s->AddLine({r.left,r.top+tl});arc({r.left+tl,r.top},tl);s->EndFigure(D2D1_FIGURE_END_CLOSED);s->Close();s->Release();return g;
+    }
+    // Tab outline with different left/right corner radii (split group members).
+    ID2D1PathGeometry* TabShape(D2D1_RECT_F r,float rl,float rr){
+        ID2D1PathGeometry* g=nullptr;if(!factory||FAILED(factory->CreatePathGeometry(&g)))return nullptr;ID2D1GeometrySink* s=nullptr;if(FAILED(g->Open(&s))){g->Release();return nullptr;}
+        auto arc=[&](D2D1_POINT_2F to,float radius){if(radius>0)s->AddArc(D2D1::ArcSegment(to,{radius,radius},0,D2D1_SWEEP_DIRECTION_CLOCKWISE,D2D1_ARC_SIZE_SMALL));else s->AddLine(to);};
+        s->BeginFigure({r.left+rl,r.top},D2D1_FIGURE_BEGIN_FILLED);s->AddLine({r.right-rr,r.top});arc({r.right,r.top+rr},rr);s->AddLine({r.right,r.bottom-rr});arc({r.right-rr,r.bottom},rr);
+        s->AddLine({r.left+rl,r.bottom});arc({r.left,r.bottom-rl},rl);s->AddLine({r.left,r.top+rl});arc({r.left+rl,r.top},rl);s->EndFigure(D2D1_FIGURE_END_CLOSED);s->Close();s->Release();return g;
+    }
+    void FillShape(D2D1_RECT_F r,float rl,float rr,float c){if(auto g=TabShape(r,rl,rr)){Color(c);target->FillGeometry(g,brush);g->Release();}}
+    void StrokeShape(D2D1_RECT_F r,float rl,float rr,float width,float alpha){if(auto g=TabShape(r,rl,rr)){Color(1,alpha);target->DrawGeometry(g,brush,width);g->Release();}}
     void DrawLoading(D2D1_RECT_F clip){
         if(loading.fraction<=0||loading.opacity<=0)return;
         clip.left=std::max(clip.left,bar.left);clip.top=std::max(clip.top,bar.top);
@@ -99,6 +143,50 @@ public:
     ID2D1Bitmap* lottieBitmap=nullptr;
     unsigned lottieSide=0;
     void InitLottie(){copyLottie.Load(assets+L"lottie\\copy-link.json");refreshLottie.Load(assets+L"lottie\\refresh.json");lottie.Configure(copyLottie.Duration(),refreshLottie.Duration(),copyLottie.FrameCount());}
+    // ---- Animated downloads icon (download-icon.h) ----
+    // The host feeds the model; Paint draws its pose for the 'D' button.
+    DownloadIcon::Model downloadIcon;
+    Lottie::Asset dlTrack,dlFill,dlArrow,dlCut;
+    ID2D1Bitmap* dlBitmap=nullptr;unsigned dlSide=0;int dlRing=-1,dlArrowFrame=-1;bool dlFailed=false;std::vector<uint32_t> dlPixels;
+    void DropDownloadIcon(){Drop(dlBitmap);dlRing=dlArrowFrame=-1;}
+    // One Asset serves one pixel size (the player cannot re-target): reload on a DPI change.
+    bool LoadDownloadIcon(unsigned side){
+        if(dlSide==side)return !dlFailed;
+        DropDownloadIcon();dlSide=side;
+        dlFailed=!(dlTrack.Load(assets+L"lottie\\download-ring-track.json")&&dlFill.Load(assets+L"lottie\\download-ring-fill.json")&&dlArrow.Load(assets+L"lottie\\download-arrow.json")&&dlCut.Load(assets+L"lottie\\download-arrow-cutout.json"))
+            ||dlTrack.FrameCount()!=DownloadIcon::RingFrames||dlFill.FrameCount()!=DownloadIcon::RingFrames||dlArrow.FrameCount()!=DownloadIcon::ArrowFrames||dlCut.FrameCount()!=DownloadIcon::ArrowFrames;
+        return !dlFailed;
+    }
+    bool DrawDownloadIcon(DownloadIcon::Pose pose,D2D1_RECT_F box,float size,float opacity){
+        const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(size*dpi/96)),1u,64u);
+        if(!LoadDownloadIcon(side))return false;
+        if(!dlBitmap||pose.ring!=dlRing||pose.arrow!=dlArrowFrame){
+            auto at=[](Lottie::Asset& a,int frame,int frames,unsigned px){return a.Sample(double(frame)/(frames-1),px);};
+            auto t=at(dlTrack,pose.ring,DownloadIcon::RingFrames,side),f=at(dlFill,pose.ring,DownloadIcon::RingFrames,side);
+            auto a=at(dlArrow,pose.arrow,DownloadIcon::ArrowFrames,side),c=at(dlCut,pose.arrow,DownloadIcon::ArrowFrames,side);
+            if(!t||!f||!a||!c)return false;
+            DownloadIcon::Compose(t->bgra.data(),f->bgra.data(),c->bgra.data(),a->bgra.data(),side*side,dlPixels);
+            HRESULT hr=S_OK;
+            if(!dlBitmap)hr=target->CreateBitmap(D2D1::SizeU(side,side),dlPixels.data(),side*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED)),&dlBitmap);
+            else hr=dlBitmap->CopyFromMemory(nullptr,dlPixels.data(),side*4);
+            if(FAILED(hr)||!dlBitmap){DropDownloadIcon();return false;}
+            dlRing=pose.ring;dlArrowFrame=pose.arrow;
+        }
+        const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->DrawBitmap(dlBitmap,{x,y,x+size,y+size},opacity);return true;
+    }
+    // Blue ring stroke that grows, blurs and fades (blur approximated by two
+    // softer, wider passes: at most 0.6 DIP, a true blur effect would not show).
+    void DrawDownloadRipple(float t,D2D1_RECT_F box,float size){
+        if(t<0||t>=1)return;
+        namespace R=DownloadIcon::Ripple;
+        const float p=Motion::Eased(t,Motion::Curve::Icon),unit=size/256.f,scale=1+(R::grow-1)*p;
+        const float radius=R::radius*unit*scale,width=R::stroke*unit*scale,blur=R::blur*unit*p,alpha=R::opacity*(1-p);
+        const D2D1_ELLIPSE e=D2D1::Ellipse({(box.left+box.right)/2,(box.top+box.bottom)/2},radius,radius);
+        auto pass=[&](float w,float a){brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],a));target->DrawEllipse(e,brush,w);};
+        if(blur>.05f){pass(width+blur*2,alpha*.25f);pass(width+blur,alpha*.35f);}
+        pass(width,alpha*(blur>.05f?.6f:1.f));
+    }
     bool DrawLottie(Lottie::Asset& asset,double progress,D2D1_RECT_F box,float size,float opacity){
         const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(16.f*dpi/96)),1u,64u);
         auto frame=asset.Sample(progress,side);if(!frame)return false;
@@ -129,9 +217,11 @@ public:
     void Redirect(ID2D1RenderTarget* t){target=t;}
     ID2D1SolidColorBrush* SolidBrush()const{return brush;}
     ID2D1Factory* Factory()const{return factory;}
+    IDWriteFactory* WriteFactory()const{return write;}
+    IDWriteFontCollection* FontCollection()const{return fonts;}
     IWICImagingFactory* Imaging()const{return wic;}
     ID2D1RenderTarget* SwapTarget(ID2D1RenderTarget* next){auto old=target;target=next;return old;}
-    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     float TextWidth(const std::wstring& value,float size,bool medium=false,bool tabular=false,float tracking=0){if(value.empty())return 0;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,{0,0,4096,32},size,tabular,medium,tracking,&layout,m)))return 0;DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);Drop(layout);return metrics.widthIncludingTrailingWhitespace;}
     // Toolbar button drawn in its hover state while the popover it opened is shown.
     int latched=0;
@@ -141,6 +231,12 @@ public:
     bool Enabled(int id)const{return disabled.count(id)==0;}
     void SetEnabled(int id,bool enabled){if(enabled)disabled.erase(id);else disabled.insert(id);}
     int dragIndex=-1;float dragOffset=0;
+    // Split view (src/split-view.h). `tabGroups` holds each tab's group (0 = none):
+    // adjacent members are drawn joined. A tab lifted into the drag overlay leaves
+    // an outlined slot. `split` is painted on the canvas around the page windows.
+    std::vector<int> tabGroups;int liftedIndex=-1,visibleTabGroup=0;
+    std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
+    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     // Tab strip: adaptive width + horizontal scroll (DIP). `lockedTab` (0 = off) is set by
     // the host after a pointer close and cleared when the pointer leaves the strip.
@@ -157,7 +253,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);DropDownloadIcon();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -395,15 +491,32 @@ public:
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
         auto paintRegions=regions;
+        // Split groups: a 2 x 10 separator (white 30 %) between adjacent members of one group.
+        if(!tabGroups.empty()){target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);
+            for(int n=0;n+1<(int)tabGroups.size()&&n+1<strip.count;++n)if(tabGroups[n]&&tabGroups[n]==tabGroups[n+1]&&n!=liftedIndex&&n+1!=liftedIndex&&n!=dragIndex&&n+1!=dragIndex){
+                auto a=strip.Surface(n),b=strip.Surface(n+1);const float x=(a.right+b.left)/2,y=(a.top+a.bottom)/2;Color(1,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({x-1,y-5,x+1,y+5},1,1),brush);}
+            // Designated target of the split menu: one tab outlined on its shape, a group around its members (2 DIP out, radius 8).
+            if(!menuTargets.empty()){D2D1_RECT_F u{1e9f,1e9f,-1e9f,-1e9f};for(int n:menuTargets)if(n>=0&&n<strip.count){auto r=strip.Surface(n);u={std::min(u.left,r.left),std::min(u.top,r.top),std::max(u.right,r.right),std::max(u.bottom,r.bottom)};}
+                if(u.right>u.left){const bool group=menuTargets.size()>1;if(group)u={u.left-2,u.top-2,u.right+2,u.bottom+2};const float rr=group?8.f:Design::Radius::control;
+                    Color(1,Design::Focus::keyboardOpacity);target->DrawRoundedRectangle(D2D1::RoundedRect({u.left+.5f,u.top+.5f,u.right-.5f,u.bottom-.5f},rr-.5f,rr-.5f),brush,1);}}
+            target->PopAxisAlignedClip();}
         // Paint the grabbed tab last so it stays above its neighbours.
         if(dragIndex>=0){auto it=std::find_if(paintRegions.begin(),paintRegions.end(),[&](const Region& r){return r.id==TabBase+dragIndex;});if(it!=paintRegions.end()){auto r=*it;paintRegions.erase(it);paintRegions.push_back(r);}}
         for(auto& r:paintRegions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=strip.Surface(n);if(n==dragIndex){surface.left+=dragOffset;surface.right+=dragOffset;}D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=strip.CloseIn(surface);auto title=strip.TitleIn(surface);auto favicon=strip.FaviconIn(surface);const bool closable=strip.Clear(n)&&strip.Closable(n,selected)&&n!=dragIndex;
                 // Partially scrolled tabs are cut at the strip viewport, then masked.
-                target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
+                target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);if(n==liftedIndex){Color(1,.10f);target->DrawRoundedRectangle(D2D1::RoundedRect({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},5.5f,5.5f),brush,1);target->PopAxisAlignedClip();continue;}bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
                 // Exactly one opaque surface: no second close-button hover fill.
                 float emphasis=dragIndex<0&&motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
-                float base=Design::TabSurface(false,tabHover);
-                if(emphasis>0||tabHover>0||n==dragIndex){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
+                const int group=n<(int)tabGroups.size()?tabGroups[n]:0;const bool member=group!=0;
+                // Split group (Paper 08): members share a neutral 1 DIP white-10 % border, outer
+                // corners 6 / inner corners 2, and a 2 x 10 separator between them. In the group
+                // on screen every member has a surface; the active one is the selected #292929.
+                float base=member&&group==visibleTabGroup?std::max(Design::Surface::tabHover,Design::TabSurface(false,tabHover)):Design::TabSurface(false,tabHover);
+                if(member){const bool first=n==0||tabGroups[n-1]!=group,last=n+1>=(int)tabGroups.size()||tabGroups[n+1]!=group;
+                    const float rl=first?Design::Radius::control:2,rr=last?Design::Radius::control:2;
+                    if(emphasis>0||tabHover>0||n==dragIndex||group==visibleTabGroup)FillShape(tab,rl,rr,base+(Design::Surface::selected-base)*emphasis);
+                    StrokeShape({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},std::max(0.f,rl-.5f),std::max(0.f,rr-.5f),1,Design::Focus::pointerOpacity);}
+                else if(emphasis>0||tabHover>0||n==dragIndex){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
                 if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
                 // Narrow selected tab: the close glyph cross-fades in over the favicon it replaces.
                 const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
@@ -431,6 +544,14 @@ public:
                         Icon(icon,box,size,(1-a)*style.iconOpacity);Icon(L"check",box,size,a*style.iconOpacity);
                     }else if(!painted)Icon(icon,box,size,style.iconOpacity);
                 }
+                else if(id=='D'&&(!downloadIcon.At(now).idle||downloadIcon.At(now).ripple>=0)){
+                    auto pose=downloadIcon.At(now);auto style=Design::Resolve(variant,state);
+                    if(style.fill)Round(box,style.radius,style.surface);
+                    if(style.focus)FocusRing(box,style.radius);
+                    const float size=style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled);
+                    if(pose.idle||!DrawDownloadIcon(pose,box,size,style.iconOpacity))Icon(icon,box,size,style.iconOpacity);
+                    DrawDownloadRipple(pose.ripple,box,style.iconSize);
+                }
                 else if(id=='X')DrawCloseWindow(box,state);
                 else DrawButton(icon,box,variant,state);}
 
@@ -439,7 +560,8 @@ public:
         if(strip.HiddenAfter())DrawFade(strip.ViewRight(),strip.ViewRight()-Design::TabStrip::fade);
         Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-37,55,bar.right-36,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
         DrawAddress(editing,hover=='I');
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        DrawSplit();
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();DropDownloadIcon();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
 }
