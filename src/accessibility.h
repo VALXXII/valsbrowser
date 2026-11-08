@@ -70,7 +70,7 @@ private:
     }
 };
 
-enum class Role { Button, Tab, TabItem, Edit, ToolBar };
+enum class Role { Button, Tab, TabItem, Edit, ToolBar, List, ListItem };
 // One accessible control. `parent` 0 is the window (fragment root). Nodes are listed
 // in depth-first reading order: a parent precedes its children.
 struct Node {
@@ -114,6 +114,8 @@ inline int ControlType(Role role){
     case Role::TabItem:return UIA_TabItemControlTypeId;
     case Role::Edit:return UIA_EditControlTypeId;
     case Role::ToolBar:return UIA_ToolBarControlTypeId;
+    case Role::List:return UIA_ListControlTypeId;
+    case Role::ListItem:return UIA_ListItemControlTypeId;
     default:return UIA_ButtonControlTypeId;
     }
 }
@@ -146,8 +148,8 @@ public:
     HRESULT STDMETHODCALLTYPE GetPatternProvider(PATTERNID pattern,IUnknown** out)override{
         if(!out)return E_POINTER;*out=nullptr;Node n;if(!context->Find(key,n))return NotAvailable;
         const bool supported=(pattern==UIA_InvokePatternId&&n.role==Role::Button)||
-            (pattern==UIA_SelectionPatternId&&n.role==Role::Tab)||
-            (pattern==UIA_SelectionItemPatternId&&n.role==Role::TabItem)||
+            (pattern==UIA_SelectionPatternId&&(n.role==Role::Tab||n.role==Role::List))||
+            (pattern==UIA_SelectionItemPatternId&&(n.role==Role::TabItem||n.role==Role::ListItem))||
             (pattern==UIA_ValuePatternId&&n.role==Role::Edit);
         if(supported){*out=static_cast<IRawElementProviderSimple*>(this);AddRef();}
         return S_OK;

@@ -40,6 +40,16 @@ inline constexpr float closeInset=(control-closeSlot)/2;
 inline constexpr float focusStroke=1;
 }
 namespace AddressLoading { inline constexpr float opacity=.08f; }
+// Danger tone (Paper --color-browser-danger #FF7B6E): an invalid certificate,
+// "Effacer les données…". Always paired with an icon and a label, never alone.
+namespace Danger { inline constexpr float r=1, g=.482f, b=.431f, plate=.14f; }
+// Address bar (issue #20). The indicator lives in a 24 DIP slot 4 DIP inside the
+// field, the same lane as the suggestion icons; text starts at 32 DIP.
+namespace Address {
+inline constexpr float slotInset=Space::xs, slot=Size::compact, textInset=slotInset+slot+Space::xs; // 4, 24, 32
+inline constexpr float chipRadius=4, chipIcon=14, chipPadLeft=Space::xs, chipPadRight=Space::md, chipPlate=.06f;
+inline constexpr float divider=Space::md, fade=24, primary=Text::primary, secondary=Text::secondary;
+}
 namespace Focus {
 inline constexpr float color=1, pointerOpacity=.10f, keyboardOpacity=.50f, stroke=Size::focusStroke;
 inline constexpr float Opacity(bool keyboard){return keyboard?keyboardOpacity:pointerOpacity;}
