@@ -10,6 +10,8 @@
 // high-frequency gesture: no entrance motion), hover fills fade in 120 ms on the
 // shared interaction tweens, and it closes at once. Submenus open after a short
 // hover, at once from Right / Enter.
+#include <d2d1_1.h>
+#include <d2d1effects.h>
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <memory>
@@ -22,6 +24,7 @@ namespace ContextMenu {
 
 struct Item {
     int id = 0;                       // returned by Track(); 0 is never returned for an item
+    std::wstring description;         // optional second line (choice menus: what the option does)
     std::wstring label, shortcut;     // label may carry '&' mnemonics ("&&" is a literal '&')
     bool enabled = true, checked = false, separator = false;
     std::vector<Item> children;       // non-empty: a submenu
@@ -46,18 +49,29 @@ namespace Layout {
 inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 24;
 inline constexpr float radius = 10, rowRadius = 6, text = 14, line = 20, trailing = 16, minWidth = 200, maxWidth = 440;
 inline constexpr float submenuDelayMs = 200;
-inline float Height(const Item& item) { return item.separator ? separator : row; }
+// Key caps (Paper): one pill per key, 6 DIP sides, 2 DIP tall padding, radius 4, 2 DIP apart.
+inline constexpr float keyPadX = 6, keyHeight = 20, keyRadius = 4, keyGap = 2;
+// Described choices (Paper "menu décrit"): title line + wrapped description, 7/8 DIP padding.
+inline constexpr float describedWidth = 288, describedTop = 7, describedBottom = 8, descriptionLine = 18;
+// Opening: fades in, slides 6 DIP away from its anchor and comes into focus (blur 3 DIP to 0), 180 ms ease-out.
+inline constexpr float enterSlide = 6, enterBlur = 3, enterMs = 180;
 }
+// CLSID_D2D1GaussianBlur (d2d1effects.h declares it extern; dxguid is not linked).
+inline constexpr GUID BlurEffect{0x1feb6d69, 0x2fe6, 0x4ac9, {0x8c, 0x58, 0x1d, 0x7f, 0x93, 0xe7, 0xa6, 0xa5}};
 static_assert(Layout::radius == Layout::rowRadius + Layout::pad, "concentric shell: row radius + inset");
 
 class Menu {
     struct Level {
         HWND hwnd = nullptr; Chrome chrome; Motion::State motion;
         const std::vector<Item>* items = nullptr;
-        std::vector<float> tops; float width = Layout::minWidth, height = 0;
+        std::vector<float> tops, heights; std::vector<std::vector<std::wstring>> descriptions; // wrapped lines
+        float width = Layout::minWidth, height = 0;
         int hover = -1, pressed = -1, child = -1; // child: index whose submenu is open
         bool keyboard = false;
         UINT dpi = 96;
+        // Opening motion: final window position and the direction it arrives from.
+        bool entering = false; Motion::Time opened{}; POINT final{}; int fromX = 0, fromY = 0;
+        ID2D1Effect* blur = nullptr;
     };
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_;
     std::vector<std::unique_ptr<Level>> levels_; int depth_ = 0; // open levels
@@ -73,8 +87,9 @@ class Menu {
     Level& Ensure(int index) {
         while (static_cast<int>(levels_.size()) <= index) {
             auto level = std::make_unique<Level>();
-            level->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"LisiereContextMenu", L"", WS_POPUP, 0, 0, 1, 1, owner_, nullptr, instance_, this);
+            level->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, L"LisiereContextMenu", L"", WS_POPUP, 0, 0, 1, 1, owner_, nullptr, instance_, this);
             if (level->hwnd) {
+                SetLayeredWindowAttributes(level->hwnd, 0, 255, LWA_ALPHA); // whole-window alpha for the opening fade
                 const int square = 1; DwmSetWindowAttribute(level->hwnd, 33, &square, sizeof(square)); // no DWM rounding: it brings a shadow
                 const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(level->hwnd, 34, &none, sizeof(none));
                 level->motion.EnablePolish(); level->chrome.SetMotion(&level->motion); level->chrome.textCacheLimit = 192;
@@ -84,20 +99,83 @@ class Menu {
         }
         return *levels_[index];
     }
+    // "Ctrl+Maj+T" -> {Ctrl, Maj, T}; the engine's arrow names become arrows.
+    static std::vector<std::wstring> Keys(const std::wstring& shortcut) {
+        std::vector<std::wstring> keys; size_t start = 0;
+        while (start <= shortcut.size()) {
+            size_t plus = shortcut.find(L'+', start);
+            if (plus == start && plus + 1 == shortcut.size()) plus = std::wstring::npos; // a literal "+" key
+            std::wstring key = shortcut.substr(start, plus == std::wstring::npos ? std::wstring::npos : plus - start);
+            std::wstring low = key; for (auto& ch : low) ch = static_cast<wchar_t>(towlower(ch));
+            if (low.find(L"left") != std::wstring::npos || low.find(L"gauche") != std::wstring::npos) key = L"\u2190";
+            else if (low.find(L"right") != std::wstring::npos || low.find(L"droite") != std::wstring::npos) key = L"\u2192";
+            else if (low.find(L"up") != std::wstring::npos || low.find(L"haut") != std::wstring::npos) key = L"\u2191";
+            else if (low.find(L"down") != std::wstring::npos || low.find(L"bas") != std::wstring::npos) key = L"\u2193";
+            else if (low == L"shift") key = L"Maj";
+            if (!key.empty()) keys.push_back(key);
+            if (plus == std::wstring::npos) break;
+            start = plus + 1;
+        }
+        return keys;
+    }
+    float KeyWidth(Level& l, const std::wstring& key) { l.chrome.keycap = true; const float w = l.chrome.TextWidth(key, Layout::text, false, true); l.chrome.keycap = false; return std::ceil(w) + 2 * Layout::keyPadX; }
+    float KeysWidth(Level& l, const std::wstring& shortcut) {
+        float w = 0; for (const auto& key : Keys(shortcut)) w += (w > 0 ? Layout::keyGap : 0) + KeyWidth(l, key); return w;
+    }
+    // Draws the caps right-aligned to `right`, vertically centred on `cy`; returns their left edge.
+    float DrawKeys(Level& l, const std::wstring& shortcut, float right, float cy, float dim) {
+        auto* t = l.chrome.RenderTarget(); auto* brush = l.chrome.SolidBrush(); const auto keys = Keys(shortcut);
+        float x = right;
+        for (size_t k = keys.size(); k-- > 0;) {
+            const float w = KeyWidth(l, keys[k]); const D2D1_RECT_F cap{x - w, cy - Layout::keyHeight / 2, x, cy + Layout::keyHeight / 2};
+            brush->SetColor(D2D1::ColorF(1, 1, 1, .06f * dim)); t->FillRoundedRectangle(D2D1::RoundedRect(cap, Layout::keyRadius, Layout::keyRadius), brush);
+            l.chrome.keycap = true; l.chrome.Text(keys[k], {cap.left + Layout::keyPadX - 1, cap.top, cap.right, cap.bottom}, Layout::text, Design::Text::disabled * dim, true); l.chrome.keycap = false;
+            x = cap.left - Layout::keyGap;
+        }
+        return x + Layout::keyGap;
+    }
+    // Balanced wrap (CSS text-wrap: balance): the greedy line count at the narrowest width keeping it.
+    std::vector<std::wstring> Wrap(Level& l, const std::wstring& text, float width) {
+        auto lines = Greedy(l, text, width);
+        if (lines.size() < 2) return lines;
+        float lo = width / lines.size(), hi = width;
+        for (int k = 0; k < 10 && hi - lo > .5f; ++k) { const float mid = (lo + hi) / 2; if (Greedy(l, text, mid).size() == lines.size()) hi = mid; else lo = mid; }
+        return Greedy(l, text, hi);
+    }
+    std::vector<std::wstring> Greedy(Level& l, const std::wstring& text, float width) {
+        std::vector<std::wstring> lines; std::wstring line, word;
+        auto flush = [&] { if (!line.empty()) lines.push_back(line); line.clear(); };
+        for (size_t i = 0; i <= text.size(); ++i) {
+            if (i < text.size() && text[i] != L' ') { word += text[i]; continue; }
+            if (word.empty()) continue;
+            const std::wstring candidate = line.empty() ? word : line + L" " + word;
+            if (!line.empty() && l.chrome.TextWidth(candidate, Layout::text) > width) { flush(); line = word; } else line = candidate;
+            word.clear();
+        }
+        flush(); return lines;
+    }
     // Content-driven width: the widest label, plus the shortcut column or a trailing glyph.
+    // A menu with described choices takes the fixed Paper width and wraps descriptions.
     void Measure(Level& l) {
-        float label = 0, shortcut = 0; bool glyph = false;
+        float label = 0, shortcut = 0; bool glyph = false, described = false;
         for (const auto& item : *l.items) {
             if (item.separator) continue;
             label = std::max(label, l.chrome.TextWidth(Plain(item.label), Layout::text));
-            if (!item.shortcut.empty()) shortcut = std::max(shortcut, l.chrome.TextWidth(item.shortcut, Layout::text, false, true));
+            if (!item.shortcut.empty()) shortcut = std::max(shortcut, KeysWidth(l, item.shortcut));
             glyph = glyph || item.checked || !item.children.empty();
+            described = described || !item.description.empty();
         }
         float tail = shortcut > 0 ? Layout::shortcutGap + shortcut : 0;
         if (glyph) tail = std::max(tail, Layout::shortcutGap + Layout::trailing);
         l.width = std::clamp(std::ceil(2 * Layout::pad + 2 + Layout::padLeft + label + tail + Layout::padRight), Layout::minWidth, Layout::maxWidth);
-        l.tops.clear(); float y = Layout::pad + 1;
-        for (const auto& item : *l.items) { l.tops.push_back(y); y += Layout::Height(item); }
+        if (described) l.width = std::max(l.width, Layout::describedWidth);
+        const float textWidth = l.width - 2 * Layout::pad - 2 - Layout::padLeft - Layout::padRight - Layout::trailing - 10;
+        l.tops.clear(); l.heights.clear(); l.descriptions.clear(); float y = Layout::pad + 1;
+        for (const auto& item : *l.items) {
+            auto lines = item.description.empty() ? std::vector<std::wstring>{} : Wrap(l, item.description, textWidth);
+            const float h = item.separator ? Layout::separator : lines.empty() ? Layout::row : Layout::describedTop + Layout::line + 1 + lines.size() * Layout::descriptionLine + Layout::describedBottom;
+            l.tops.push_back(y); l.heights.push_back(h); l.descriptions.push_back(std::move(lines)); y += h;
+        }
         l.height = y + Layout::pad + 1;
     }
     static RECT WorkArea(POINT p) { MONITORINFO info{sizeof(info)}; GetMonitorInfoW(MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST), &info); return info.rcWork; }
@@ -112,25 +190,31 @@ class Menu {
         if (x + w > work.right) x = std::max<int>(work.left, flipX - w);
         if (y + h > work.bottom) y = std::max<int>(work.top, std::min<int>(flipY, work.bottom) - h);
         x = std::max<int>(x, work.left); y = std::max<int>(y, work.top);
+        // It arrives from its anchor: downward under it, upward when flipped above, sideways for a submenu.
+        l.final = {x, y}; l.fromX = index > 0 ? (x < at.x ? 1 : -1) : 0; l.fromY = index > 0 ? 0 : (y < at.y ? 1 : -1);
+        l.entering = !reduced_; l.opened = Motion::Now();
         SetWindowPos(l.hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
+        Step(l, l.opened);
         SetWindowRgn(l.hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, Px(l, Layout::radius * 2), Px(l, Layout::radius * 2)), FALSE);
         l.chrome.Resize();
         depth_ = index + 1;
         ShowWindow(l.hwnd, activate ? SW_SHOW : SW_SHOWNOACTIVATE);
         Paint(l); ValidateRect(l.hwnd, nullptr);
+        if (l.entering) SetTimer(l.hwnd, FrameTimer, 10, nullptr);
         if (activate) { SetForegroundWindow(l.hwnd); SetFocus(l.hwnd); }
     }
     void CloseFrom(int index) {
-        for (int i = index; i < depth_; ++i) { KillTimer(levels_[i]->hwnd, FrameTimer); KillTimer(levels_[i]->hwnd, SubmenuTimer); ShowWindow(levels_[i]->hwnd, SW_HIDE); }
+        for (int i = index; i < depth_; ++i) { KillTimer(levels_[i]->hwnd, FrameTimer); KillTimer(levels_[i]->hwnd, SubmenuTimer); ShowWindow(levels_[i]->hwnd, SW_HIDE); levels_[i]->entering = false; }
         if (index < depth_) depth_ = index;
         if (index > 0 && index - 1 < depth_) { levels_[index - 1]->child = -1; Invalidate(*levels_[index - 1]); }
     }
     void OpenChild(int index) {
         Level& l = *levels_[index]; const int i = l.hover;
         if (i < 0 || (*l.items)[i].children.empty() || !(*l.items)[i].enabled) return;
+        // (submenus never carry descriptions; their rows are Layout::row tall)
         if (l.child == i && depth_ > index + 1) return;
         CloseFrom(index + 1); l.child = i;
-        RECT r; GetWindowRect(l.hwnd, &r);
+        RECT r; GetWindowRect(l.hwnd, &r); OffsetRect(&r, l.final.x - r.left, l.final.y - r.top); // its resting place, even mid-entrance
         const POINT at{r.right - Px(l, Layout::pad), r.top + Px(l, l.tops[i]) - Px(l, Layout::pad + 1)};
         Open(index + 1, (*l.items)[i].children, at, r.left + Px(l, Layout::pad), r.top + Px(l, l.tops[i] + Layout::row) + Px(l, Layout::pad + 1), false);
         Invalidate(l);
@@ -160,18 +244,56 @@ class Menu {
         for (int k = 0; k < n; ++k) { i = (i + step + n) % n; if (Selectable((*l.items)[i])) { SetHover(index, i, true); return; } }
     }
     int HitRow(const Level& l, float y) const {
-        for (size_t i = 0; i < l.tops.size(); ++i) if (y >= l.tops[i] && y < l.tops[i] + Layout::Height((*l.items)[i])) return (*l.items)[i].separator ? -1 : static_cast<int>(i);
+        for (size_t i = 0; i < l.tops.size(); ++i) if (y >= l.tops[i] && y < l.tops[i] + l.heights[i]) return (*l.items)[i].separator ? -1 : static_cast<int>(i);
         return -1;
     }
     void Invalidate(Level& l) {
         if (!l.hwnd) return; InvalidateRect(l.hwnd, nullptr, FALSE);
         if (l.motion.NextWake(Motion::Now()).delay) SetTimer(l.hwnd, FrameTimer, 10, nullptr);
     }
+    static float EnterProgress(const Level& l, Motion::Time now) {
+        const float u = Motion::Clamp(static_cast<float>(std::chrono::duration<double, std::milli>(now - l.opened).count()) / Layout::enterMs);
+        return 1 - (1 - u) * (1 - u) * (1 - u) * (1 - u); // ease-out quart: quick to arrive, soft to land
+    }
+    // Window part of the entrance: alpha and position (cheap: DWM composes both).
+    void Step(Level& l, Motion::Time now) {
+        if (!l.hwnd) return;
+        const float e = l.entering ? EnterProgress(l, now) : 1;
+        if (e >= 1) l.entering = false;
+        const float fade = l.entering ? Motion::Clamp(e * 1.4f) : 1;
+        SetLayeredWindowAttributes(l.hwnd, 0, static_cast<BYTE>(std::lround(255 * fade)), LWA_ALPHA);
+        const int offset = Px(l, Layout::enterSlide * (1 - e));
+        SetWindowPos(l.hwnd, nullptr, l.final.x + l.fromX * offset, l.final.y + l.fromY * offset, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     void Paint(Level& l) {
         if (!l.chrome.RenderTarget()) l.chrome.Resize();
-        auto* t = l.chrome.RenderTarget(); auto* brush = l.chrome.SolidBrush(); if (!t || !brush || !l.items) return;
+        auto* target = l.chrome.RenderTarget(); if (!target || !l.chrome.SolidBrush() || !l.items) return;
         const auto now = Motion::Now(); const float c = Design::Surface::canvas;
-        t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1));
+        target->BeginDraw();
+        // Coming into focus: the frame is drawn off screen and blurred while it enters.
+        const float blur = l.entering ? Layout::enterBlur * (1 - EnterProgress(l, now)) : 0;
+        ID2D1DeviceContext* dc = nullptr; ID2D1BitmapRenderTarget* layer = nullptr; ID2D1Bitmap* image = nullptr; bool drawn = false;
+        if (blur > .05f && SUCCEEDED(target->QueryInterface(__uuidof(ID2D1DeviceContext), reinterpret_cast<void**>(&dc))) &&
+            (l.blur || SUCCEEDED(dc->CreateEffect(BlurEffect, &l.blur))) && SUCCEEDED(target->CreateCompatibleRenderTarget(&layer))) {
+            l.chrome.Redirect(layer); layer->BeginDraw(); PaintContent(l, now); const HRESULT hr = layer->EndDraw(); l.chrome.Redirect(target);
+            if (SUCCEEDED(hr) && SUCCEEDED(layer->GetBitmap(&image))) {
+                const D2D1_BORDER_MODE border = D2D1_BORDER_MODE_HARD; // the canvas keeps its edge: no dark halo
+                l.blur->SetInput(0, image);
+                l.blur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, reinterpret_cast<const BYTE*>(&blur), sizeof(blur));
+                l.blur->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, reinterpret_cast<const BYTE*>(&border), sizeof(border));
+                target->Clear(D2D1::ColorF(c, c, c, 1)); dc->DrawImage(l.blur); l.blur->SetInput(0, nullptr); drawn = true;
+            }
+        }
+        if (!drawn) PaintContent(l, now);
+        if (image) image->Release();
+        if (layer) layer->Release();
+        if (dc) dc->Release();
+        if (target->EndDraw() == D2DERR_RECREATE_TARGET) { if (l.blur) { l.blur->Release(); l.blur = nullptr; } l.chrome.RecreateTarget(); }
+        if (!l.motion.NextWake(now).delay && !l.entering) KillTimer(l.hwnd, FrameTimer);
+    }
+    void PaintContent(Level& l, Motion::Time now) {
+        auto* t = l.chrome.RenderTarget(); auto* brush = l.chrome.SolidBrush(); const float c = Design::Surface::canvas;
+        t->Clear(D2D1::ColorF(c, c, c, 1));
         l.chrome.keyboardModality = l.keyboard;
         const float left = Layout::pad + 1, right = l.width - Layout::pad - 1;
         for (size_t i = 0; i < l.items->size(); ++i) {
@@ -180,33 +302,35 @@ class Menu {
             const auto v = l.motion.Visual(static_cast<int>(i) + 1, now);
             // The open submenu's row keeps its fill while the pointer is in the submenu.
             const float h = item.enabled ? std::max(v.hover, static_cast<int>(i) == l.child ? 1.f : 0.f) : 0;
-            const D2D1_RECT_F row{left, top, right, top + Layout::row};
+            const auto& lines = l.descriptions[i]; const bool described = !lines.empty();
+            const D2D1_RECT_F row{left, top, right, top + l.heights[i]};
+            const float titleTop = described ? top + Layout::describedTop : top + (Layout::row - Layout::line) / 2; // glyphs align with the title line
             if (h > 0 || v.press > 0) { brush->SetColor(D2D1::ColorF(1, 1, 1, .08f * h + .04f * v.press)); t->FillRoundedRectangle(D2D1::RoundedRect(row, Layout::rowRadius, Layout::rowRadius), brush); }
             const float dim = item.enabled ? 1.f : Design::Text::disabled;
             float tail = right - Layout::padRight;
             if (!item.children.empty()) {
-                const D2D1_RECT_F box{tail - Layout::trailing, top + (Layout::row - Layout::trailing) / 2, tail, top + (Layout::row + Layout::trailing) / 2};
+                const D2D1_RECT_F box{tail - Layout::trailing, titleTop + (Layout::line - Layout::trailing) / 2, tail, titleTop + (Layout::line + Layout::trailing) / 2};
                 D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
                 t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base);
                 l.chrome.Icon(L"caret", box, 16, .7f * dim); t->SetTransform(base); tail -= Layout::trailing + Layout::shortcutGap;
             } else if (item.checked) {
-                const D2D1_RECT_F box{tail - Layout::trailing, top + (Layout::row - Layout::trailing) / 2, tail, top + (Layout::row + Layout::trailing) / 2};
+                const D2D1_RECT_F box{tail - Layout::trailing, titleTop + (Layout::line - Layout::trailing) / 2, tail, titleTop + (Layout::line + Layout::trailing) / 2};
                 // Icons ship at 50%: two passes give the check its ~75% weight.
                 l.chrome.Icon(L"check", box, 14, dim); l.chrome.Icon(L"check", box, 14, dim); tail -= Layout::trailing + Layout::shortcutGap;
             }
-            if (!item.shortcut.empty()) {
-                const float w = l.chrome.TextWidth(item.shortcut, Layout::text, false, true);
-                l.chrome.Text(item.shortcut, {tail - w - 1, top, tail + 1, top + Layout::row}, Layout::text, Design::Text::disabled * dim, true);
-                tail -= w + Layout::shortcutGap;
+            if (!item.shortcut.empty()) tail = DrawKeys(l, item.shortcut, tail, titleTop + Layout::line / 2, dim) - Layout::shortcutGap;
+            const float labelRight = std::max(left + Layout::padLeft + 8, std::min(tail + Layout::shortcutGap - 8, right - Layout::padRight));
+            l.chrome.Text(Plain(item.label), {left + Layout::padLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, (.9f + .1f * h) * dim);
+            // Description: 50% at rest, a touch brighter on the hovered choice.
+            for (size_t k = 0; k < lines.size(); ++k) {
+                const float y = titleTop + Layout::line + 1 + k * Layout::descriptionLine;
+                l.chrome.Text(lines[k], {left + Layout::padLeft, y, right - Layout::padRight - Layout::trailing - 10, y + Layout::descriptionLine}, Layout::text, (.5f + .1f * h) * dim);
             }
-            l.chrome.Text(Plain(item.label), {left + Layout::padLeft, top, std::max(left + Layout::padLeft + 8, std::min(tail + Layout::shortcutGap - 8, right - Layout::padRight)), top + Layout::row}, Layout::text, (.9f + .1f * h) * dim);
         }
         // Hairline on the region's rounded outline (DWM no longer draws one).
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         brush->SetColor(D2D1::ColorF(1, 1, 1, .06f));
         t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(px / 2, px / 2, l.width - px / 2, l.height - px / 2), Layout::radius, Layout::radius), brush, px);
-        if (t->EndDraw() == D2DERR_RECREATE_TARGET) l.chrome.RecreateTarget();
-        if (!l.motion.NextWake(now).delay) KillTimer(l.hwnd, FrameTimer);
     }
     // Keyboard for the whole stack: the deepest open level owns it.
     bool Key(WPARAM key) {
@@ -251,7 +375,7 @@ class Menu {
             return 0;
         case WM_TIMER:
             if (!l) return 0;
-            if (w == FrameTimer) { InvalidateRect(h, nullptr, FALSE); return 0; }
+            if (w == FrameTimer) { if (l->entering) Step(*l, Motion::Now()); InvalidateRect(h, nullptr, FALSE); return 0; }
             if (w == SubmenuTimer) { KillTimer(h, SubmenuTimer); if (l->hover >= 0 && !(*l->items)[l->hover].children.empty()) OpenChild(index); else if (l->hover >= 0 && l->child >= 0 && l->hover != l->child) CloseFrom(index + 1); }
             return 0;
         case WM_MOUSEMOVE: {
@@ -280,7 +404,7 @@ public:
         RegisterClassW(&wc);
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the windows.
-    void Dispose() { for (auto& l : levels_) l->chrome.Dispose(); levels_.clear(); depth_ = 0; }
+    void Dispose() { for (auto& l : levels_) { if (l->blur) { l->blur->Release(); l->blur = nullptr; } l->chrome.Dispose(); } levels_.clear(); depth_ = 0; }
     bool Open() const { return depth_ > 0; }
     // Modal: returns the chosen item's id, 0 when dismissed. `at` is a screen
     // point; `exclude` (keyboard-opened menus) is the control to drop below.
