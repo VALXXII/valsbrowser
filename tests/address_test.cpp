@@ -113,6 +113,12 @@ int main(){
      for(auto& p:all){std::error_code e;const bool icon=std::filesystem::exists(L"assets/sites/"+p.host+L".png",e)||std::filesystem::exists(L"assets/sites/"+p.host+L".ico",e);if(!icon)std::fwprintf(stderr,L"missing icon %ls\n",p.host.c_str());CHECK(icon);}
      auto you=Suggest(L"yout",History{},true,&all);CHECK(you.rows[0].text==L"youtube.com"&&you.completion==L"ube.com");
      auto gm=Suggest(L"gma",History{},true,&all);CHECK(gm.rows[0].text==L"mail.google.com"&&gm.completion==L"il");}
+    // New tab page: most visited hosts (pages summed), best first, http(s) only, capped.
+    {History t;t.Record(L"https://a.example/",L"A",1);t.Record(L"https://www.b.example/x",L"",5);t.Record(L"https://b.example/y",L"",6);
+     t.Record(L"http://c.example/",L"C",7);t.Record(L"file:///C:/f.txt",L"",9);t.Record(L"https://a.example/",L"A",2);t.Record(L"https://a.example/z",L"",3);
+     auto top=TopSites(t,8);CHECK(top.size()==3&&top[0].host==L"a.example"&&top[0].visits==3&&top[0].root&&top[0].url==L"https://a.example/");
+     CHECK(top[1].host==L"b.example"&&top[1].url==L"https://www.b.example/"&&!top[1].root&&top[2].host==L"c.example");
+     CHECK(TopSites(t,2).size()==2&&TopSites(History{},8).empty());}
     std::puts("address tests passed");
     return 0;
 }
