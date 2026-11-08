@@ -67,6 +67,10 @@ GUID_TEXT(ICoreWebView2StateChangedEventHandler,"{81336594-7ede-4ba9-bf71-acf0a9
 GUID_TEXT(ICoreWebView2ContextMenuRequestedEventHandler,"{04d3fe1d-ab87-42fb-a898-da241d35b63c}")
 GUID_TEXT(ICoreWebView2ServerCertificateErrorDetectedEventHandler,"{969b3a26-d85e-4795-8199-fef57344da22}")
 GUID_TEXT(ICoreWebView2ClearBrowsingDataCompletedHandler,"{e9710a06-1d1d-49b2-8234-226f35846ae5}")
+GUID_TEXT(ICoreWebView2TrySuspendCompletedHandler,"{00f206a7-9d17-4605-91f6-4e8e4de192e3}")
+GUID_TEXT(ICoreWebView2PrintToPdfCompletedHandler,"{ccf1ef04-fd8e-4d5f-b2de-0983e41b8c36}")
+GUID_TEXT(ICoreWebView2GetNonDefaultPermissionSettingsCompletedHandler,"{38274481-a15c-4563-94cf-990edc9aeb95}")
+GUID_TEXT(ICoreWebView2SetPermissionStateCompletedHandler,"{fc77fb30-9c9e-4076-b8c7-7644a703ca1b}")
 template<class I, class... A> class Handler final : public I {
     LONG refs=1; IID iid{}; std::function<HRESULT(A...)> fn;
 public:
@@ -86,7 +90,9 @@ template<class T> struct Com {
 };
 // Stable per-tab identity (never reused): accessibility keys survive closes and moves.
 inline unsigned NextTabSerial(){static unsigned serial=0;return ++serial;}
-struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false,certificateError=false; };
+struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false,certificateError=false;
+    ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; }; // hiddenAt: when it last stopped being the active tab
+void TabShown(const std::shared_ptr<Tab>& tab);
 HWND window,tabs,address,back,forward,reload,add,closeTab,home;
 HFONT font; HBRUSH paper; HINSTANCE instance; HMODULE loader;
 Com<ICoreWebView2Environment> environment;
@@ -211,7 +217,7 @@ void Update(){
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+L" — browser").c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
-void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());for(int i=0;i<(int)pages.size();++i)if(pages[i]->controller.p)Check(pages[i]->controller->put_IsVisible(i==n&&!pages[i]->home),L"put_IsVisible");Update();auto t=Active();if(t->controller.p&&!t->home)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
+void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());for(int i=0;i<(int)pages.size();++i)if(pages[i]->controller.p)Check(pages[i]->controller->put_IsVisible(i==n&&!pages[i]->home),L"put_IsVisible");Update();auto t=Active();TabShown(t);if(t->controller.p&&!t->home)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
 void MoveTab(int from,int to){
     if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
@@ -256,6 +262,8 @@ void HideSuggestions(){if(!suggestions.Visible())return;suggestions.Hide();chrom
 std::wstring AddressText(){int n=GetWindowTextLengthW(address);std::wstring s(n+1,0);GetWindowTextW(address,s.data(),n+1);s.resize(n);return s;}
 void SetAddressText(const std::wstring& s,int from,int to){addressSetting=true;SetWindowTextW(address,s.c_str());SendMessageW(address,EM_SETSEL,from,to);addressSetting=false;}
 void PlaceSuggestions(AddressBar::Suggestions data,int active){
+    // SETTINGS(privacy): "Suggestions de recherche" off keeps the list closed (inline completion stays).
+    if(!settings.searchSuggestions){HideSuggestions();return;}
     RECT r{S(chrome.bar.left),S(chrome.bar.top),S(chrome.bar.right),S(chrome.bar.bottom)};MapWindowPoints(window,nullptr,(POINT*)&r,2);
     const bool was=suggestions.Visible();
     suggestions.Show(std::move(data),active,BrowserSettings::Info(settings.engine).name,r.left,r.bottom,r.right,GetDpiForWindow(window));
@@ -321,7 +329,7 @@ void CloseAt(int index){if(halted||index<0||index>=(int)pages.size())return;
     motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=pages[index];if(!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);
     if(pages.empty()){current=-1;NewTab();}else if(active)Select(next);else{current=next;motion.SelectTab(current+1,NativeChrome::Motion::Now());Update();}
 }
-enum ShortcutCommand { FocusChrome=3000, FindPage, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
+enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
 void Close(){CloseAt(current);}
 void Command(int cmd){if(halted||!chrome.Enabled(cmd))return;if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FindPage:FindInPage();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab();FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes)Check(t->view->GoBack(),L"GoBack");}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes)Check(t->view->GoForward(),L"GoForward");}break;default:ExtraCommand(cmd);break;}}
 int Key(UINT key){
@@ -334,6 +342,8 @@ int Key(UINT key){
         if(key==VK_TAB)return shift?'[':']';
         // In the page WebView2 handles Ctrl+F itself, retaining its native find state.
         if(!shift&&key=='F')return GetFocus()==window||GetFocus()==address?FindPage:0;
+        // Ctrl+P likewise: the page opens the same browser print preview itself (no double dialog).
+        if(!shift&&key=='P')return GetFocus()==window||GetFocus()==address?PrintActive:0;
         if(!shift&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;
         if(!shift&&key=='H')return 'Y'; // history, as in every desktop browser
     }
@@ -715,24 +725,207 @@ bool ConfirmClearData(){
     }
     return MessageBoxW(window,(std::wstring(title)+L"\n\n"+body).c_str(),L"Effacer les données",MB_OKCANCEL|MB_ICONWARNING|MB_DEFBUTTON2)==IDOK;
 }
-void ClearBrowsingData(){
-    if(smoke||!ConfirmClearData())return;
-    // Local traces: reopen stack and finished download rows; live downloads (and their ops) stay.
+std::wstring HrText(HRESULT hr){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);return code;}
+// Local traces: reopen stack, history, site icons and finished download rows; live downloads (and their ops) stay.
+void ClearLocalTraces(){
     closedTabs.clear();history.Clear();SaveHistory();ClearSiteIcons();historyDrawer.Changed();
     downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[](const DL::Item& d){return d.state!=DL::State::InProgress&&d.state!=DL::State::Paused;}),downloads.end());
     for(auto it=downloadOps.begin();it!=downloadOps.end();)it=FindDownload(it->first)?std::next(it):downloadOps.erase(it);
     SaveDownloads();DownloadsChanged();
-    // Engine data lives in the shared profile: any live tab's webview reaches it.
-    Com<ICoreWebView2Profile2> profile;
-    for(auto& t:pages){if(!t->view.p)continue;Com<ICoreWebView2_13> view13;Com<ICoreWebView2Profile> base;
-        if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_13,(void**)&view13.p))&&view13.p&&SUCCEEDED(view13->get_Profile(&base.p))&&base.p&&
-           SUCCEEDED(base->QueryInterface(IID_ICoreWebView2Profile2,(void**)&profile.p))&&profile.p)break;}
-    if(!profile.p){Log(L"SETTINGS clear data: no ICoreWebView2Profile2 (no live tab or old runtime); local traces only");AnnounceDataCleared();return;}
-    auto done=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{
-        if(SUCCEEDED(hr)){Log(L"SETTINGS browsing data cleared");AnnounceDataCleared();}else{wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"SETTINGS clear data failed ")+code);}return S_OK;});
-    HRESULT hr=profile->ClearBrowsingDataAll(done);done->Release();
-    if(FAILED(hr)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"SETTINGS ClearBrowsingDataAll failed ")+code);}
 }
+// Engine data lives in the shared profile: any live tab's webview reaches it. `out`
+// receives the profile as `iid` (false: no live tab, or a runtime without it).
+bool LiveProfile(REFIID iid,void** out){
+    *out=nullptr;
+    for(auto& t:pages){if(!t||t->closed||!t->view.p)continue;Com<ICoreWebView2_13> view13;Com<ICoreWebView2Profile> base;
+        if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_13,(void**)&view13.p))&&view13.p&&SUCCEEDED(view13->get_Profile(&base.p))&&base.p&&
+           SUCCEEDED(base->QueryInterface(iid,out))&&*out)return true;}
+    return false;
+}
+// ClearBrowsingDataAll; `done` runs on the UI thread with the engine's result. False when
+// the call itself failed (logged), so `done` will never run.
+bool StartClearEngineData(ICoreWebView2Profile2* profile,std::function<void(HRESULT)> done){
+    auto handler=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([done](HRESULT hr)->HRESULT{
+        if(SUCCEEDED(hr))Log(L"SETTINGS browsing data cleared");else Log(L"SETTINGS clear data failed "+HrText(hr));done(hr);return S_OK;});
+    HRESULT hr=profile->ClearBrowsingDataAll(handler);handler->Release();
+    if(FAILED(hr)){Log(L"SETTINGS ClearBrowsingDataAll failed "+HrText(hr));return false;}
+    return true;
+}
+void ClearBrowsingData(){
+    if(smoke||!ConfirmClearData())return;
+    ClearLocalTraces();
+    Com<ICoreWebView2Profile2> profile;
+    if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){Log(L"SETTINGS clear data: no ICoreWebView2Profile2 (no live tab or old runtime); local traces only");AnnounceDataCleared();return;}
+    StartClearEngineData(profile.p,[](HRESULT hr){if(SUCCEEDED(hr))AnnounceDataCleared();});
+}
+// SETTINGS(privacy): tracking prevention, password saving and form autofill on every
+// tab's profile/settings (also called for each new tab); see ClearOnExitAndClose for quitting.
+// Tracking prevention is profile-wide (the environment keeps EnableTrackingPrevention at
+// its default TRUE: no options are passed); passwords/autofill are per-webview settings.
+void ApplyPrivacySettings(){
+    if(smoke)return;
+    static bool trackingLogged=false,formsLogged=false;bool any=false;
+    for(auto& t:pages){if(!t||t->closed||!t->view.p)continue;any=true;
+        Com<ICoreWebView2Settings> base;Com<ICoreWebView2Settings4> s4;
+        if(FAILED(t->view->get_Settings(&base.p))||!base.p||FAILED(base->QueryInterface(IID_ICoreWebView2Settings4,(void**)&s4.p))||!s4.p){
+            if(!formsLogged){Log(L"SETTINGS ICoreWebView2Settings4 unavailable: password and autofill switches ignored");formsLogged=true;}continue;}
+        HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords?TRUE:FALSE);if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(settings.autofill?TRUE:FALSE);
+        if(FAILED(hr)&&!formsLogged){Log(L"SETTINGS password/autofill settings failed "+HrText(hr));formsLogged=true;}
+    }
+    if(!any)return;
+    Com<ICoreWebView2Profile3> profile;HRESULT hr=E_NOINTERFACE;
+    if(LiveProfile(IID_ICoreWebView2Profile3,(void**)&profile.p))hr=profile->put_PreferredTrackingPreventionLevel(static_cast<COREWEBVIEW2_TRACKING_PREVENTION_LEVEL>(settings.tracking));
+    if(FAILED(hr)&&!trackingLogged){Log(L"SETTINGS tracking prevention unavailable "+HrText(hr));trackingLogged=true;}
+}
+// SETTINGS(privacy): "Effacer en quittant" at WM_CLOSE. Returns true when it took over the
+// close (it destroys the window itself once the engine finished, or after a timeout).
+// The engine clears through the live webviews, so the window (and its tabs) stays up
+// meanwhile; a slow or stuck engine must not keep the browser from quitting.
+constexpr UINT_PTR ExitClearTimerId=75;constexpr UINT ExitClearTimeoutMs=3000;
+enum class ExitClear{Idle,Waiting,Done} exitClear=ExitClear::Idle;
+void FinishExitClear(){
+    if(exitClear!=ExitClear::Waiting)return; // completion and timeout race: first one wins
+    exitClear=ExitClear::Done;KillTimer(window,ExitClearTimerId);DestroyWindow(window);
+}
+bool ClearOnExitAndClose(){
+    if(exitClear!=ExitClear::Idle)return true; // repeated WM_CLOSE while waiting
+    if(!settings.clearOnExit||smoke)return false;
+    ClearLocalTraces();
+    Com<ICoreWebView2Profile2> profile;
+    if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){Log(L"SETTINGS clear on exit: no ICoreWebView2Profile2; local traces only");return false;}
+    if(!SetTimer(window,ExitClearTimerId,ExitClearTimeoutMs,nullptr))return false; // no timeout guard: do not wait
+    exitClear=ExitClear::Waiting;
+    if(!StartClearEngineData(profile.p,[](HRESULT){FinishExitClear();})){exitClear=ExitClear::Idle;KillTimer(window,ExitClearTimerId);return false;}
+    Log(L"SETTINGS clear on exit: waiting for the engine");
+    return true;
+}
+// SETTINGS(permissions): the panel's Autorisations views. Load is asynchronous (engine call);
+// `done` runs on the UI thread with the sites that have at least one non-default permission.
+struct EnginePermission { std::wstring origin; COREWEBVIEW2_PERMISSION_KIND kind; COREWEBVIEW2_PERMISSION_STATE state; };
+void LogPermissionHr(const wchar_t* what,HRESULT hr){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"SETTINGS permissions ")+what+L" failed "+code);}
+// Permissions live in the shared profile: any live tab's webview reaches it.
+bool PermissionProfile(Com<ICoreWebView2Profile4>& profile){
+    for(auto& t:pages){if(t->closed||!t->view.p)continue;Com<ICoreWebView2_13> view13;Com<ICoreWebView2Profile> base;
+        if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_13,(void**)&view13.p))&&view13.p&&SUCCEEDED(view13->get_Profile(&base.p))&&base.p&&
+           SUCCEEDED(base->QueryInterface(IID_ICoreWebView2Profile4,(void**)&profile.p))&&profile.p)return true;}
+    Log(L"SETTINGS permissions: no ICoreWebView2Profile4 (no live tab or old runtime)");return false;
+}
+BrowserSettings::Permission PermissionFromEngine(COREWEBVIEW2_PERMISSION_KIND k){
+    using P=BrowserSettings::Permission;
+    switch(k){case COREWEBVIEW2_PERMISSION_KIND_CAMERA:return P::Camera;case COREWEBVIEW2_PERMISSION_KIND_MICROPHONE:return P::Microphone;
+    case COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION:return P::Location;case COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:return P::Notifications;
+    case COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ:return P::Clipboard;default:return P::Other;}
+}
+// In-flight Set/Reset calls: the drawer reloads right after a change, so a Load issued
+// meanwhile waits for them instead of reading the pre-change state.
+int permissionWrites=0; std::vector<std::function<void()>> permissionLoadsWaiting;
+void PermissionWriteDone(){if(--permissionWrites>0)return;permissionWrites=0;auto waiting=std::move(permissionLoadsWaiting);permissionLoadsWaiting.clear();for(auto& f:waiting)f();}
+void WritePermission(ICoreWebView2Profile4* profile,const std::wstring& origin,COREWEBVIEW2_PERMISSION_KIND kind,COREWEBVIEW2_PERMISSION_STATE state){
+    ++permissionWrites;
+    auto cb=Callback<ICoreWebView2SetPermissionStateCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{if(FAILED(hr))LogPermissionHr(L"SetPermissionState",hr);PermissionWriteDone();return S_OK;});
+    HRESULT hr=profile->SetPermissionState(kind,origin.c_str(),state,cb);cb->Release();
+    if(FAILED(hr)){LogPermissionHr(L"SetPermissionState call",hr);PermissionWriteDone();}
+}
+// Raw engine list; `done` runs on the UI thread (WebView2 completes there), never once halted or the window is gone.
+void QueryPermissions(std::function<void(std::vector<EnginePermission>)> done){
+    Com<ICoreWebView2Profile4> profile;if(halted||!PermissionProfile(profile)){if(!halted)done({});return;}
+    auto cb=Callback<ICoreWebView2GetNonDefaultPermissionSettingsCompletedHandler,HRESULT,ICoreWebView2PermissionSettingCollectionView*>(
+        [done](HRESULT hr,ICoreWebView2PermissionSettingCollectionView* view)->HRESULT{
+        if(halted||!IsWindow(window))return S_OK;
+        std::vector<EnginePermission> out;UINT32 count=0;
+        if(FAILED(hr)||!view||FAILED(view->get_Count(&count))){LogPermissionHr(L"GetNonDefaultPermissionSettings",FAILED(hr)?hr:E_POINTER);done({});return S_OK;}
+        for(UINT32 i=0;i<count;i++){Com<ICoreWebView2PermissionSetting> s;if(FAILED(view->GetValueAtIndex(i,&s.p))||!s.p)continue;
+            EnginePermission e{};LPWSTR origin=nullptr;
+            if(FAILED(s->get_PermissionKind(&e.kind))||FAILED(s->get_PermissionState(&e.state))||FAILED(s->get_PermissionOrigin(&origin))||!origin){if(origin)CoTaskMemFree(origin);continue;}
+            e.origin=origin;CoTaskMemFree(origin);if(e.state!=COREWEBVIEW2_PERMISSION_STATE_DEFAULT&&!e.origin.empty())out.push_back(std::move(e));}
+        done(std::move(out));return S_OK;});
+    HRESULT hr=profile->GetNonDefaultPermissionSettings(cb);cb->Release();
+    if(FAILED(hr)){LogPermissionHr(L"GetNonDefaultPermissionSettings call",hr);done({});}
+}
+// SETTINGS(permissions): the panel's Autorisations views. Load is asynchronous (engine call);
+// `done` runs on the UI thread with the sites that have at least one non-default permission.
+void LoadSitePermissions(std::function<void(std::vector<BrowserSettings::Site>)> done){
+    if(permissionWrites>0){permissionLoadsWaiting.push_back([done](){LoadSitePermissions(done);});return;}
+    QueryPermissions([done](std::vector<EnginePermission> raw){
+        using namespace BrowserSettings;
+        std::vector<std::pair<std::wstring,SitePermission>> rows;
+        for(auto& e:raw)rows.push_back({e.origin,{PermissionFromEngine(e.kind),e.state==COREWEBVIEW2_PERMISSION_STATE_ALLOW?PermissionState::Allow:PermissionState::Block}});
+        std::stable_sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){return a.first!=b.first?a.first<b.first:(int)a.second.kind<(int)b.second.kind;});
+        std::vector<Site> sites;
+        for(auto& r:rows){
+            if(sites.empty()||sites.back().origin!=r.first)sites.push_back({r.first,{}});
+            auto& perms=sites.back().permissions;
+            // Several engine kinds fold into Other: one row, a block anywhere wins.
+            if(!perms.empty()&&perms.back().kind==r.second.kind){if(r.second.state==PermissionState::Block)perms.back().state=PermissionState::Block;continue;}
+            perms.push_back(r.second);}
+        done(std::move(sites));});
+}
+void SetSitePermission(const std::wstring& origin,BrowserSettings::Permission kind,BrowserSettings::PermissionState state){
+    using namespace BrowserSettings;
+    if(origin.empty()||halted)return;
+    const auto engineState=state==PermissionState::Allow?COREWEBVIEW2_PERMISSION_STATE_ALLOW:state==PermissionState::Block?COREWEBVIEW2_PERMISSION_STATE_DENY:COREWEBVIEW2_PERMISSION_STATE_DEFAULT;
+    if(kind!=Permission::Other){
+        const auto k=kind==Permission::Camera?COREWEBVIEW2_PERMISSION_KIND_CAMERA:kind==Permission::Microphone?COREWEBVIEW2_PERMISSION_KIND_MICROPHONE:kind==Permission::Location?COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION:kind==Permission::Notifications?COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ;
+        Com<ICoreWebView2Profile4> profile;if(PermissionProfile(profile))WritePermission(profile.p,origin,k,engineState);
+        return;}
+    // Other covers several engine kinds: apply to those this origin already has. The query
+    // counts as a write so a reload waits for the whole change.
+    ++permissionWrites;
+    QueryPermissions([origin,engineState](std::vector<EnginePermission> raw){
+        Com<ICoreWebView2Profile4> profile;
+        if(PermissionProfile(profile))for(auto& e:raw)if(e.origin==origin&&PermissionFromEngine(e.kind)==Permission::Other)WritePermission(profile.p,e.origin,e.kind,engineState);
+        PermissionWriteDone();});
+}
+// Empty origin: every site.
+void ResetSitePermissions(const std::wstring& origin){
+    if(halted)return;
+    ++permissionWrites;
+    QueryPermissions([origin](std::vector<EnginePermission> raw){
+        Com<ICoreWebView2Profile4> profile;
+        if(PermissionProfile(profile))for(auto& e:raw)if(origin.empty()||e.origin==origin)WritePermission(profile.p,e.origin,e.kind,COREWEBVIEW2_PERMISSION_STATE_DEFAULT);
+        Log(origin.empty()?L"SETTINGS permissions reset for every site":L"SETTINGS permissions reset for "+origin);
+        PermissionWriteDone();});
+}
+// SETTINGS(tabs): background tabs sleep after settings.sleepMinutes out of sight.
+// One 60 s timer, armed only while the setting is on and an awake background tab exists.
+constexpr UINT_PTR SleepTimerId=76; bool sleepTimerArmed=false; std::weak_ptr<Tab> shownTab;
+void ApplySleepSettings(){
+    if(!window)return;auto active=Active();bool want=false;
+    if(settings.sleepMinutes>0&&!halted)for(auto& t:pages)if(t!=active&&!t->closed&&!t->sleeping){want=true;break;}
+    if(want==sleepTimerArmed)return;
+    if(want)sleepTimerArmed=SetTimer(window,SleepTimerId,60000,nullptr)!=0;else{KillTimer(window,SleepTimerId);sleepTimerArmed=false;}
+}
+// Called by Select: the previous tab starts its out-of-sight clock; a sleeping tab wakes
+// (put_IsVisible(TRUE) resumes it too; Resume also covers a hidden home tab).
+void TabShown(const std::shared_ptr<Tab>& tab){
+    auto previous=shownTab.lock();if(previous==tab)return;
+    if(previous)previous->hiddenAt=GetTickCount64();shownTab=tab;
+    if(tab&&tab->sleeping){tab->sleeping=false;Com<ICoreWebView2_3> v3;if(tab->view.p&&SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))&&v3.p)v3->Resume();InvalidateChrome();}
+    ApplySleepSettings();
+}
+void SleepTabs(){
+    if(halted||settings.sleepMinutes<=0){ApplySleepSettings();return;}
+    const ULONGLONG now=GetTickCount64(),after=settings.sleepMinutes*60000ull;auto active=Active();
+    // Downloads are not tied to a tab: any live transfer defers sleeping.
+    const bool downloading=std::any_of(downloads.begin(),downloads.end(),[](const DL::Item& d){return d.state==DL::State::InProgress;});
+    if(!downloading)for(auto& t:pages){
+        if(t==active||t->closed||t->sleeping||t->home||!t->view.p||now-t->hiddenAt<after)continue;
+        Com<ICoreWebView2_8> v8;BOOL audio=FALSE;
+        if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_8,(void**)&v8.p))&&v8.p&&SUCCEEDED(v8->get_IsDocumentPlayingAudio(&audio))&&audio)continue;
+        Com<ICoreWebView2_3> v3;if(FAILED(t->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))||!v3.p)continue;
+        std::weak_ptr<Tab> weak=t;
+        auto done=Callback<ICoreWebView2TrySuspendCompletedHandler,HRESULT,BOOL>([weak](HRESULT hr,BOOL ok)->HRESULT{
+            auto tab=weak.lock();if(!tab||tab->closed||halted||FAILED(hr)||!ok)return S_OK;
+            // Selected while the suspend was in flight: wake it straight back.
+            if(tab==Active()){Com<ICoreWebView2_3> v;if(SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v.p))&&v.p)v->Resume();return S_OK;}
+            tab->sleeping=true;Log(L"TABS sleeping "+tab->uri);InvalidateChrome();ApplySleepSettings();return S_OK;});
+        HRESULT hr=v3->TrySuspend(done);done->Release();if(FAILED(hr))Log(L"TABS TrySuspend failed "+t->uri);
+    }
+    ApplySleepSettings();
+}
+// SETTINGS(tabs): settings.zoomPercent as every tab's zoom (and new tabs').
+void ApplyZoom(ICoreWebView2Controller* c){if(c&&FAILED(c->put_ZoomFactor(settings.zoomPercent/100.0)))Log(L"SETTINGS put_ZoomFactor failed");}
+void ApplyZoomSettings(){for(auto& t:pages)if(!t->closed)ApplyZoom(t->controller.p);}
 // SETTINGS(updates): footer line and the check-for-updates button.
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(); // defined with the self-update host (needs the engine)
 void SettingChanged(BrowserSettings::Change change){
@@ -742,6 +935,11 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::RestoreTabs:Log(settings.restoreTabs?L"SETTINGS restore tabs on":L"SETTINGS restore tabs off");break;
     case Change::DownloadFolder:case Change::AskWhereToSave:ApplyDownloadSettings();break;
     case Change::ReduceMotion:Log(settings.reduceMotion?L"SETTINGS reduced motion on":L"SETTINGS reduced motion off");ApplyReducedMotion();break;
+    case Change::SearchSuggestions:if(!settings.searchSuggestions)HideSuggestions();break;
+    case Change::Tracking:case Change::Passwords:case Change::Autofill:ApplyPrivacySettings();break;
+    case Change::ClearOnExit:break;
+    case Change::Sleep:ApplySleepSettings();break;
+    case Change::Zoom:ApplyZoomSettings();break;
     }
 }
 // The toolbar button of the surface that is (still) open stays latched.
@@ -763,6 +961,11 @@ void CreateSettingsPanel(){
     hooks.version=SettingsVersion;
     hooks.downloadFolder=EffectiveDownloadFolder;
     hooks.reducedMotion=ReducedMotionPreferred;
+    hooks.loadSites=LoadSitePermissions;
+    hooks.setPermission=SetSitePermission;
+    hooks.resetSites=ResetSitePermissions;
+    // Value rows open the native menu as their list of choices.
+    hooks.choose=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.left,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
     if(!settingsDrawer.Create(instance,window,base,&settings,std::move(hooks)))Log(L"SETTINGS drawer unavailable");
 }
 
@@ -897,7 +1100,7 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         result=t->view->add_ProcessFailed(failed,&token);failed->Release();if(!Check(result,L"add_ProcessFailed"))return S_OK;
         // Invalid server certificate: the engine keeps its own interstitial; the bar says "Non sécurisé".
         {Com<ICoreWebView2_14> view14;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&view14.p))&&view14.p){auto cert=Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler,ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=true;Log(L"CERTIFICATE error "+tab->uri);if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}
-        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();}
+        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();}
         {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;Navigate(t,uri);return S_OK;
     });
@@ -967,12 +1170,53 @@ bool CopyToClipboard(const std::wstring& text){
     if(HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes)){if(void* data=GlobalLock(mem)){memcpy(data,text.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();done=SetClipboardData(CF_UNICODETEXT,mem)!=nullptr;}if(!done)GlobalFree(mem);}
     CloseClipboard();return done;
 }
+// ---- Print / PDF -------------------------------------------------------------
+// Print: the engine's own print preview (ICoreWebView2_16); older runtimes get window.print().
+void PrintPage(std::shared_ptr<Tab> tab){
+    if(halted||!tab||tab->closed||!tab->view.p)return;
+    Com<ICoreWebView2_16> view16;
+    if(SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_16,(void**)&view16.p))&&view16.p&&SUCCEEDED(view16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER)))return;
+    Log(L"PRINT ShowPrintUI unavailable: window.print()");
+    if(FAILED(tab->view->ExecuteScript(L"window.print()",nullptr)))Log(L"PRINT window.print failed");
+}
+// PDF name: page title, else host; characters Windows refuses become spaces.
+std::wstring PdfFileName(const Tab& tab){
+    std::wstring name=tab.home?L"":tab.title;if(name.empty())name=AddressBar::SiteOf(tab.uri);
+    for(auto& c:name)if(c<32||wcschr(L"<>:\"/\\|?*",c))c=L' ';
+    if(name.size()>120)name.resize(120);
+    while(!name.empty()&&(name.back()==L' '||name.back()==L'.'))name.pop_back();
+    while(!name.empty()&&name.front()==L' ')name.erase(name.begin());
+    std::wstring upper=name;for(auto& c:upper)c=(wchar_t)std::towupper(c);
+    static const wchar_t* reserved[]={L"CON",L"PRN",L"AUX",L"NUL",L"COM1",L"COM2",L"COM3",L"COM4",L"COM5",L"COM6",L"COM7",L"COM8",L"COM9",L"LPT1",L"LPT2",L"LPT3",L"LPT4",L"LPT5",L"LPT6",L"LPT7",L"LPT8",L"LPT9"};
+    for(auto r:reserved)if(upper==r){name+=L" (page)";break;}
+    return (name.empty()?L"page":name)+L".pdf";
+}
+// Save as PDF straight into the download folder; the file then appears in the
+// download history like a finished download (no engine operation behind it).
+void SavePageAsPdf(std::shared_ptr<Tab> tab){
+    if(halted||!tab||tab->closed||!tab->view.p)return;
+    Com<ICoreWebView2_7> view7;if(FAILED(tab->view->QueryInterface(IID_ICoreWebView2_7,(void**)&view7.p))||!view7.p){Log(L"PDF ICoreWebView2_7 unavailable");return;}
+    const auto folder=EffectiveDownloadFolder();if(folder.empty()){Log(L"PDF no download folder");return;}
+    std::error_code ignored;std::filesystem::create_directories(folder,ignored);
+    const auto path=UniqueDownloadPath(folder,PdfFileName(*tab));const auto uri=tab->home?std::wstring():tab->uri;const auto started=NativeChrome::DownloadsUI::UnixNowMs();
+    auto done=Callback<ICoreWebView2PrintToPdfCompletedHandler,HRESULT,BOOL>([path,uri,started](HRESULT hr,BOOL ok)->HRESULT{
+        if(FAILED(hr)||!ok){Log(L"PDF failed hr="+std::to_wstring((unsigned long)hr)+L" "+path);return S_OK;}
+        if(halted)return S_OK;
+        DL::Item item;item.id=nextDownloadId++;item.path=path;item.uri=uri;item.started=started;item.state=DL::State::Completed;
+        WIN32_FILE_ATTRIBUTE_DATA file{};if(GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&file))item.total=item.received=((std::int64_t)file.nFileSizeHigh<<32)|file.nFileSizeLow;
+        downloads.insert(downloads.begin(),item);SaveDownloads();Log(L"PDF saved "+DL::FileName(path));
+        if(downloadPanel.Visible()||(downloadDrawer.Visible()&&!downloadDrawer.Closing()))DownloadsChanged();else ShowDownloads();
+        return S_OK;});
+    const HRESULT hr=view7->PrintToPdf(path.c_str(),nullptr,done);done->Release();
+    if(FAILED(hr))Log(L"PDF PrintToPdf failed hr="+std::to_wstring((unsigned long)hr));
+}
 // Tab right click (Paper "Clic droit menu — poli"): acts on the tab that was clicked.
 void TabContextMenu(int tabIndex,int anchor){
     if(tabIndex<0||tabIndex>=(int)pages.size())return;
-    enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem};
-    auto tab=pages[tabIndex];const bool link=!tab->home&&!tab->uri.empty();
+    enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem,PrintItem,PdfItem};
+    auto tab=pages[tabIndex];const bool link=!tab->home&&!tab->uri.empty(),page=link&&tab->view.p;
     const std::vector<CM::Item> items{CM::Command(NewTabItem,L"Nouvel onglet",L"Ctrl+T"),CM::Command(ReloadItem,L"Actualiser",L"Ctrl+R",tab->view.p!=nullptr),CM::Command(CopyItem,L"Copier le lien",L"",link),CM::Separator(),
+        CM::Command(PrintItem,L"Imprimer…",L"Ctrl+P",page),CM::Command(PdfItem,L"Enregistrer en PDF",L"",page),CM::Separator(),
         CM::Command(ReopenItem,L"Rouvrir l'onglet fermé",L"Ctrl+Maj+T",!closedTabs.empty()&&pages.size()<128),CM::Separator(),
         CM::Command(CloseItem,L"Fermer l'onglet",L"Ctrl+W"),CM::Command(CloseOthersItem,L"Fermer les autres onglets",L"",pages.size()>1)};
     switch(ShowMenu(items,anchor)){
@@ -980,6 +1224,9 @@ void TabContextMenu(int tabIndex,int anchor){
     case ReloadItem:if(tabIndex==current)Command('R');else if(tab->view.p)Check(tab->view->Reload(),L"Reload");break;
     case CopyItem:if(tabIndex==current)Command('C');else if(CopyToClipboard(tab->uri))AnnounceCopied();break;
     case ReopenItem:Command('U');break;
+    // The preview draws inside the page: a background tab is brought forward first.
+    case PrintItem:{auto it=std::find(pages.begin(),pages.end(),tab);if(it==pages.end())break;if(tab!=Active())Select((int)(it-pages.begin()));PrintPage(tab);break;}
+    case PdfItem:SavePageAsPdf(tab);break;
     case CloseItem:{auto it=std::find(pages.begin(),pages.end(),tab);if(it!=pages.end())CloseAt((int)(it-pages.begin()));break;}
     case CloseOthersItem:for(int i=(int)pages.size()-1;i>=0;--i)if(pages[i]!=tab)CloseAt(i);break;
     default:break;
@@ -1003,6 +1250,8 @@ void AddressContextMenu(LPARAM at){
 constexpr UINT PageMenuMessage=WM_APP+22;
 struct PendingPageMenu{Com<ICoreWebView2ContextMenuRequestedEventArgs> args;Com<ICoreWebView2Deferral> deferral;std::weak_ptr<Tab> tab;std::vector<CM::Item> items;std::vector<INT32> commands;POINT at{};bool keyboard=false;};
 std::shared_ptr<PendingPageMenu> pendingPageMenu;
+// Our own page-menu entries: ids far above the engine command indices (1..commands.size()).
+constexpr int PagePrintItem=0x10000,PagePdfItem=0x10001;
 void ReadPageMenu(ICoreWebView2ContextMenuItemCollection* list,std::vector<CM::Item>& out,std::vector<INT32>& commands){
     UINT32 count=0;if(!list||FAILED(list->get_Count(&count)))return;
     for(UINT32 i=0;i<count;++i){
@@ -1016,7 +1265,9 @@ void ReadPageMenu(ICoreWebView2ContextMenuItemCollection* list,std::vector<CM::I
         flag=FALSE;item->get_IsChecked(&flag);m.checked=flag&&(kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_CHECK_BOX||kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_RADIO);
         if(kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU){Com<ICoreWebView2ContextMenuItemCollection> children;if(SUCCEEDED(item->get_Children(&children.p))&&children.p)ReadPageMenu(children.p,m.children,commands);if(m.children.empty())continue;}
         else{INT32 command=0;item->get_CommandId(&command);commands.push_back(command);m.id=(int)commands.size();}
+        text=nullptr;std::wstring name;if(SUCCEEDED(item->get_Name(&text))&&text){name=text;CoTaskMemFree(text);}
         out.push_back(std::move(m));
+        if(name==L"print")out.push_back(CM::Command(PagePdfItem,L"Enregistrer en PDF")); // beside the engine's own print
     }
     while(!out.empty()&&out.back().separator)out.pop_back();
 }
@@ -1025,6 +1276,12 @@ HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenu
     auto pending=std::make_shared<PendingPageMenu>();
     Com<ICoreWebView2ContextMenuItemCollection> list;if(FAILED(args->get_MenuItems(&list.p))||!list.p)return S_OK;
     ReadPageMenu(list.p,pending->items,pending->commands);if(pending->items.empty())return S_OK; // nothing to show: the engine keeps its own menu
+    // No engine print item (e.g. on a link or selection): our print group goes before the last group.
+    auto& items=pending->items;std::function<bool(const std::vector<CM::Item>&)> has=[&](const std::vector<CM::Item>& v){for(auto& m:v)if(m.id==PagePdfItem||has(m.children))return true;return false;};
+    if(!tab->home&&!has(items)){
+        auto last=std::find_if(items.rbegin(),items.rend(),[](const CM::Item& m){return m.separator;});auto at=last==items.rend()?items.end():std::prev(last.base());
+        items.insert(at,{CM::Separator(),CM::Command(PagePrintItem,L"Imprimer…"),CM::Command(PagePdfItem,L"Enregistrer en PDF")});
+    }
     if(FAILED(args->GetDeferral(&pending->deferral.p))||!pending->deferral.p)return S_OK;
     args->put_Handled(TRUE);pending->args.set(args);pending->tab=tab;
     // Location is relative to the WebView, in the same pixels as the controller bounds.
@@ -1041,11 +1298,14 @@ void ShowPageMenu(){
     if(pending->deferral.p)pending->deferral->Complete();
     // Keyboard focus goes back to the page the menu came from.
     if(auto tab=pending->tab.lock();tab&&!tab->closed&&tab->controller.p&&tab==Active())tab->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    // Our entries run once the engine has closed its menu (it got -1 for them).
+    if(auto tab=pending->tab.lock();tab&&!tab->closed){if(choice==PagePrintItem)PrintPage(tab);else if(choice==PagePdfItem)SavePageAsPdf(tab);}
 }
 void ExtraCommand(int cmd){auto t=Active();switch(cmd){
 case 'I':FocusAddress();break; // the security indicator opens the address
 case 900:TabMenu(KeyboardAnchor());break;
 case 'Y':if(historyDismissClick){historyDismissClick=false;break;}ToggleHistory(KeyboardAnchor()!=0||keyboardModality);break;
+case PrintActive:PrintPage(t);break;
 case CheckUpdatesCommand:CheckForUpdates();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;
 case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
@@ -1141,7 +1401,7 @@ bool ForwardToInstalled(const std::wstring& installRoot=L""){
 }
 void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
 // The bottom-left card keeps clear of the download drawer docked on the right.
-void SyncUpdateToastReserve(){const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open();updateToast.SetReservedRight(open?NativeChrome::Downloads::DrawerLayout::width+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
+void SyncUpdateToastReserve(){const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open();updateToast.SetReservedRight(open?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
 void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
@@ -1225,6 +1485,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
         tab.selected=i==current;tab.position=i+1;tab.count=(int)pages.size();
         if(i<8)tab.accelerator=L"Ctrl+"+std::to_wstring(i+1);else if(i==(int)pages.size()-1)tab.accelerator=L"Ctrl+9";
         if(page.loading.IsLoading())tab.status=L"Chargement en cours";
+        if(page.sleeping)tab.status+=tab.status.empty()?L"En veille":L", en veille";
         // Tabs scrolled out of the strip stay listed (and selectable) but off screen.
         if(auto* r=region(NativeChrome::TabBase+i)){tab.bounds=screen(r->rect);tab.focusable=r->focusable;}else{tab.offscreen=true;tab.focusable=false;}
         nodes.push_back(tab);
@@ -1367,7 +1628,7 @@ case WM_EXITSIZEMOVE:LayoutUpdateToast();return 0;
 case UpdateMessage:if(updatesStarted&&updates.OnNotify(w)){ShowUpdateView();ArmUpdateTimer();}return 0;
 #endif
 case WM_ERASEBKGND:return 1;
-case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
+case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));{std::vector<bool> asleep;for(auto&t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
 case WM_MOUSEMOVE:{if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();return 0;}break;
 case WM_MOUSELEAVE:UnlockTabWidth();UpdateInteraction(0,pressed);return 0;
@@ -1409,9 +1670,11 @@ case WM_TIMER:
 #ifdef BROWSER_UPDATES
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
+    if(w==SleepTimerId){SleepTabs();return 0;}
+    if(w==ExitClearTimerId){Log(L"SETTINGS clear on exit: timed out, closing");FinishExitClear();return 0;}
     if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
-case WM_CLOSE:SaveSession();SaveDownloads();DestroyWindow(h);return 0;
+case WM_CLOSE:SaveSession();SaveDownloads();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
 case WM_DESTROY:accessibility.Detach();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
@@ -1435,6 +1698,10 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
     loader=LoadLibraryExW((base+L"\\WebView2Loader.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!loader)Fail(L"LoadLibrary WebView2Loader.dll",HRESULT_FROM_WIN32(GetLastError()));
+    // Engine UI (page menu labels, print preview, dialogs) in French; any user-set arguments are kept.
+    {const DWORD size=GetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",nullptr,0);std::wstring value(size,L'\0');
+     if(size)value.resize(GetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.data(),size));
+     if(value.find(L"--lang=")==std::wstring::npos){value+=(value.empty()?L"":L" ")+std::wstring(L"--lang=fr");SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.c_str());}}
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,profileDir.c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}

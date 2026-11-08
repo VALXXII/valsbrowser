@@ -53,8 +53,8 @@ class Chrome {
     std::map<std::shared_ptr<const FaviconImage>,ID2D1Bitmap*,std::owner_less<std::shared_ptr<const FaviconImage>>> faviconBitmaps;
     // Device-independent DirectWrite layouts reused across frames: animation frames
     // must not rebuild text formats/typography for unchanged labels. Bounded.
-    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium;
-        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium);}};
+    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium,keycap;
+        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium,keycap)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium,o.keycap);}};
     struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;};
     std::map<TextKey,TextEntry> textCache;
 public:
@@ -111,6 +111,7 @@ public:
         target->DrawBitmap(lottieBitmap,{x,y,x+size,y+size},.5f*opacity);return true;
     }
     void ClearFaviconBitmaps(){for(auto& item:faviconBitmaps)Drop(item.second);faviconBitmaps.clear();}
+    std::vector<bool> sleeping; // per tab (set with the favicons): suspended background tabs draw dimmed
     void SetFavicons(std::vector<std::shared_ptr<const FaviconImage>> images){favicons=std::move(images);for(auto it=faviconBitmaps.begin();it!=faviconBitmaps.end();){if(std::find(favicons.begin(),favicons.end(),it->first)==favicons.end()){Drop(it->second);it=faviconBitmaps.erase(it);}else ++it;}}
     // Missing/empty/invalid site images are normal favicon absence, not engine errors.
     std::shared_ptr<const FaviconImage> DecodeFavicon(IStream* stream){if(!wic||!stream)return {};STATSTG stat{};if(FAILED(stream->Stat(&stat,STATFLAG_NONAME))||stat.cbSize.QuadPart==0||stat.cbSize.QuadPart>4*1024*1024)return {};LARGE_INTEGER zero{};if(FAILED(stream->Seek(zero,STREAM_SEEK_SET,nullptr)))return {};IWICBitmapDecoder* decoder=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* converter=nullptr;UINT w=0,h=0;HRESULT hr=wic->CreateDecoderFromStream(stream,nullptr,WICDecodeMetadataCacheOnLoad,&decoder);if(SUCCEEDED(hr))hr=decoder->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=frame->GetSize(&w,&h);if(SUCCEEDED(hr)&&(!w||!h||w>1024||h>1024))hr=E_INVALIDARG;if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&converter);if(SUCCEEDED(hr))hr=converter->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);std::shared_ptr<FaviconImage> image;if(SUCCEEDED(hr)){image=std::make_shared<FaviconImage>();image->width=w;image->height=h;image->stride=w*4;image->pixels.resize(image->stride*h);hr=converter->CopyPixels(nullptr,image->stride,(UINT)image->pixels.size(),image->pixels.data());}Drop(converter);Drop(frame);Drop(decoder);return SUCCEEDED(hr)?image:nullptr;}
@@ -124,6 +125,8 @@ public:
     // Hosts that paint their own surfaces (the downloads popover) reuse the fonts,
     // icons and helpers through these; SwapTarget redirects them to an offscreen layer.
     ID2D1RenderTarget* RenderTarget()const{return target;}
+    // Draws into `t` (a compatible render target: it shares this one's brushes and bitmaps) until restored.
+    void Redirect(ID2D1RenderTarget* t){target=t;}
     ID2D1SolidColorBrush* SolidBrush()const{return brush;}
     ID2D1Factory* Factory()const{return factory;}
     IWICImagingFactory* Imaging()const{return wic;}
@@ -184,7 +187,8 @@ public:
         IDWriteTextLayout1* layout1=nullptr;
         if(SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1),(void**)&layout1))){layout1->SetCharacterSpacing(tracking,0,0,{0,(UINT32)value.size()});Drop(layout1);}
         IDWriteTypography* typo=nullptr;write->CreateTypography(&typo);
-        if(typo){for(auto tag:{DWRITE_MAKE_OPENTYPE_TAG('c','p','s','p'),DWRITE_MAKE_OPENTYPE_TAG('c','v','1','2')})typo->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)tag,1});if(tabular)typo->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,1});layout->SetTypography(typo,{0,(UINT32)value.size()});Drop(typo);}
+        // Inter Display variants of the Paper type ramp: cv01-cv04 + cv13; key caps take cv11 instead of cv13.
+        if(typo){for(auto tag:{DWRITE_MAKE_OPENTYPE_TAG('c','v','0','1'),DWRITE_MAKE_OPENTYPE_TAG('c','v','0','2'),DWRITE_MAKE_OPENTYPE_TAG('c','v','0','3'),DWRITE_MAKE_OPENTYPE_TAG('c','v','0','4'),keycap?DWRITE_MAKE_OPENTYPE_TAG('c','v','1','1'):DWRITE_MAKE_OPENTYPE_TAG('c','v','1','3')})typo->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)tag,1});if(tabular)typo->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,1});layout->SetTypography(typo,{0,(UINT32)value.size()});Drop(typo);}
         DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);
         DWRITE_LINE_METRICS line{};UINT32 count=0;layout->GetLineMetrics(&line,1,&count);
         placement.lineHeight=std::max(metrics.height,line.height);placement.baseline=line.baseline;
@@ -203,7 +207,7 @@ public:
     // Returns an AddRef'd layout; placement is translated to this slot.
     HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
         if(!cacheText)return MakeTextLayout(value,slot,size,tabular,medium,tracking,output,placement);
-        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium};
+        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium,keycap};
         auto it=textCache.find(key);
         if(it==textCache.end()){
             if(textCache.size()>=textCacheLimit)ClearTextCache();
@@ -217,6 +221,8 @@ public:
     // Text colour (alpha unused: Text's opacity applies). White everywhere except
     // where a surface sets it around a call (danger text, dark monograms).
     D2D1_COLOR_F ink{1,1,1,1};
+    // Keyboard key caps (menus) use their own variant set; set around the call like `ink`.
+    bool keycap=false;
     void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,tabular,medium,tracking,&layout,m)))return;
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
@@ -399,8 +405,10 @@ public:
                 if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
                 // Narrow selected tab: the close glyph cross-fades in over the favicon it replaces.
                 const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
-                DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},strip.SwapsClose(n,selected)?1-closeShown:1);
-                if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
+                // Sleeping (never the selected tab): favicon at 40%, title at 32% instead of muted.
+                const bool asleep=n!=selected&&n<(int)sleeping.size()&&sleeping[n];
+                DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},(strip.SwapsClose(n,selected)?1-closeShown:1)*(asleep?.4f:1));
+                if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:asleep?.32f:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
                 if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown);}
                 if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
                 target->PopAxisAlignedClip();continue;}

@@ -20,3 +20,7 @@ for (const [alias,source] of Object.entries(mapping)) {
 {const svg=fs.readFileSync(path.join(root,'phosphor-bold','x-bold.svg'),'utf8').replace('fill="currentColor"','fill="#FFFFFF"');
   fs.writeFileSync(path.join(root,'close-mask.svg'),svg);
   for(const dpi of [96,120,144,168,192,240,288,384])fs.writeFileSync(path.join(root,`close-mask-${dpi}.png`),new Resvg(svg,{fitTo:{mode:'width',value:Math.round(14*dpi/96)}}).render().asPng());}
+// Mask-only 14 px glyphs (full opacity) for the settings header buttons: drawn at Paper's exact 70%.
+for(const [alias,source] of [['back','arrow-left'],['reload','arrow-counter-clockwise']]){const svg=fs.readFileSync(path.join(root,'phosphor-bold',source+'-bold.svg'),'utf8').replace('fill="currentColor"','fill="#FFFFFF"');
+  fs.writeFileSync(path.join(root,`${alias}-mask.svg`),svg);
+  for(const dpi of [96,120,144,168,192,240,288,384])fs.writeFileSync(path.join(root,`${alias}-mask-${dpi}.png`),new Resvg(svg,{fitTo:{mode:'width',value:Math.round(14*dpi/96)}}).render().asPng());}
