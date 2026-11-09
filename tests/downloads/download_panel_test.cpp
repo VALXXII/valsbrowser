@@ -202,6 +202,11 @@ static void IconChecks() {
     // Reduced motion: no morph, no loop, no ripple; progress still shown.
     Model r; r.Update(true, .5f, false, t0, true);
     Expect(r.At(t0).ring == Morph + Steps / 2 && r.At(at(500)).arrow == Morph && !r.NextWake(t0).delay, "reduced motion: static ring with progress");
+    // The x4 ripple stays inside the repainted rectangle (16 DIP icon, button centre).
+    {
+        const float reachDip = Ripple::reach * 16 / 256, ringDip = (Ripple::radius * Ripple::grow + Ripple::stroke * Ripple::grow / 2) * 16 / 256;
+        Expect(Ripple::grow == 4 && reachDip > ringDip && reachDip < 40, "ripple reach covers the x4 ring and its blur");
+    }
     // Composition: grey ink like the other icons, fill opaque, the cut-out removes both.
     const uint32_t opaque = 0xFF949494u, none = 0, blue = 0xFF3E67FFu;
     std::vector<uint32_t> out;
@@ -257,7 +262,7 @@ int wmain(int argc, wchar_t** argv) {
             auto at = [&](double frames) { return t0 + std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double>(frames / Fps)); };
             struct Shot { const wchar_t* name; double when; float fraction; bool complete; };
             const Shot shots[] = {{L"icon-0-idle", -1, 0, false}, {L"icon-1-start", 7, 0, false}, {L"icon-2-waiting", 30, 0, false},
-                                  {L"icon-3-bob-low", 14 + 39, 0, false}, {L"icon-4-40pct", 60, .4f, false}, {L"icon-5-ripple", 72, 1, true},
+                                  {L"icon-3-bob-low", 14 + 39, 0, false}, {L"icon-4-40pct", 60, .4f, false}, {L"icon-5-ripple", 72, 1, true}, {L"icon-5b-ripple-30", 70 + 11, 1, true}, {L"icon-5c-ripple-60", 70 + 22, 1, true},
                                   {L"icon-6-done", 92 + 12, 1, true}};
             for (const auto& shot : shots) {
                 Chrome chrome; if (FAILED(chrome.InitOffscreen(f.root, 180, 360, 84))) { Expect(false, "toolbar offscreen"); continue; }
