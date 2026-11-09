@@ -8,7 +8,7 @@ Paper : fichier *Browser Design*, page **Split View — flow** (page dédiée, a
 écran existant modifié) :
 https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-3-0
 
-Les écrans clonent le chrome du prototype **Lisière — prototype actuel V3** (Page 1)
+Les écrans clonent le chrome du prototype **Lisière — prototype actuel V3** (page « Chrome — prototype, adresse, menus, téléchargements », ex-Page 1)
 et suivent la géométrie native de `src/design-system.h`. Le pas d'onglet utilisé est
 le pas natif (128 + gap 6), pas l'ancien gap de 12 encore dessiné dans V3. Le contenu
 est inséré de 4 DIP (`main.cpp`, `Layout()` : bounds `{4, 84, w-4, h-4}`).
