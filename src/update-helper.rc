@@ -1,0 +1,7 @@
+#include <windows.h>
+// The update helper is also copied to <root>\browser.exe as the stable launcher that the
+// Start Menu shortcut targets, so it carries the same app icon as the browser it starts.
+#ifdef BROWSER_HAS_BUILD_INFO
+#include "build-info.h"
+#endif
+#include "app-icon.rc"

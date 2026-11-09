@@ -107,6 +107,16 @@ def integration() -> None:
     run('host integration + mocked end-to-end install', [sys.executable, HERE / 'e2e_install.py'])
 
 
+def ico_png(path: Path) -> bytes:
+    """The 256 px PNG entry of an ICO (unique per variant; windres embeds it verbatim)."""
+    data = path.read_bytes()
+    for i in range(struct.unpack_from('<H', data, 4)[0]):
+        size, offset = struct.unpack_from('<II', data, 6 + 16 * i + 8)
+        if data[offset:offset + 8] == b'\x89PNG\r\n\x1a\n':
+            return data[offset:offset + size]
+    sys.exit(f'{path} has no PNG entry')
+
+
 def check_app(app: Path) -> None:
     print(f'== static checks {app}')
     info = json.loads((app / 'version.json').read_text(encoding='utf-8'))
@@ -129,6 +139,18 @@ def check_app(app: Path) -> None:
                 sys.exit('BROWSER_UPDATE_VERSION string not embedded in browser.exe')
             if info['updateRepository'].encode('utf-16-le') not in data:
                 sys.exit('update repository not embedded in browser.exe')
+    # App icon policy (tools/release/version.py): release -> live, dev -> preview. Both executables
+    # embed exactly that ICO's 256 px image, never the other one, and assets/browser.ico is that ICO.
+    sys.path.insert(0, str(ROOT / 'tools/release'))
+    import version as V
+    want = V.app_icon(info['channel'])
+    other = V.app_icon('dev' if info['channel'] == 'release' else 'release')
+    if (app / 'assets/browser.ico').read_bytes() != want.read_bytes():
+        sys.exit(f'assets/browser.ico is not {want.name}')
+    for exe in ('browser.exe', 'update-helper.exe'):
+        data = (app / exe).read_bytes()
+        if ico_png(want) not in data or ico_png(other) in data:
+            sys.exit(f'{exe} does not embed {want.name} (channel {info["channel"]})')
     for required in ('WebView2Loader.dll', 'assets/fonts/InterDisplay-Regular.ttf', 'WebView2-LICENSE.txt'):
         if not (app / required).is_file():
             sys.exit(f'missing {required}')
