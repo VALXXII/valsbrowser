@@ -7,7 +7,7 @@ int main(){
     State defaults;
     assert(defaults.engine==Engine::DuckDuckGo&&defaults.restoreTabs&&defaults.downloadFolder.empty()&&!defaults.askWhereToSave&&!defaults.reduceMotion);
     // Round trip, including a non-ASCII folder.
-    State original;original.engine=Engine::Qwant;original.restoreTabs=false;original.downloadFolder=L"D:\\Téléchargements\\été";original.askWhereToSave=true;original.reduceMotion=true;original.searchSuggestions=false;original.tracking=Tracking::Strict;original.passwords=false;original.autofill=false;original.clearOnExit=true;original.sleepMinutes=30;original.zoomPercent=125;original.customSearch=L"https://exemple.fr/?q=%s";original.newTabPage=NewTabPage::Custom;original.homepage=L"https://exemple.fr/accueil";original.tabPosition=TabPosition::NextToActive;original.confirmCloseTabs=false;original.closeWithLastTab=true;original.adBlock=false;original.httpsOnly=true;original.blockThirdPartyCookies=true;original.memorySaver=false;original.muteBackground=true;original.autoplay=Autoplay::Allowed;
+    State original;original.engine=Engine::Qwant;original.restoreTabs=false;original.downloadFolder=L"D:\\Téléchargements\\été";original.askWhereToSave=true;original.reduceMotion=true;original.searchSuggestions=false;original.tracking=Tracking::Strict;original.passwords=false;original.autofill=false;original.clearOnExit=true;original.sleepMinutes=30;original.zoomPercent=125;original.customSearch=L"https://exemple.fr/?q=%s";original.newTabPage=NewTabPage::Custom;original.homepage=L"https://exemple.fr/accueil";original.tabPosition=TabPosition::NextToActive;original.confirmCloseTabs=false;original.closeWithLastTab=true;original.adBlock=false;original.httpsOnly=true;original.blockThirdPartyCookies=true;original.memorySaver=false;original.muteBackground=true;original.autoplay=Autoplay::Allowed;original.grayscaleText=true;
     std::stringstream stream;Write(stream,original);assert(Read(stream)==original);
     for(int i=0;i<EngineCount;++i){State s;s.engine=static_cast<Engine>(i);s.customSearch=L"https://s.fr/?q=%s";std::stringstream io;Write(io,s);assert(Read(io).engine==s.engine);}
     // Bookmarks visibility and the future custom accent must survive restart.
@@ -30,7 +30,7 @@ int main(){
      assert(SearchUrl(Engine::Custom,L"x",L"")==L"https://duckduckgo.com/?q=x");
      assert(HomepageUrl(L"exemple.fr")==L"https://exemple.fr");assert(HomepageUrl(L"http://localhost:8080/")==L"http://localhost:8080/");
      assert(HomepageUrl(L"pas une adresse")==L"");assert(HomepageUrl(L"javascript://x.fr")==L"");
-     State d;assert(d.newTabPage==NewTabPage::Blank&&d.tabPosition==TabPosition::End&&d.confirmCloseTabs&&!d.closeWithLastTab&&d.adBlock&&!d.httpsOnly&&!d.blockThirdPartyCookies&&d.memorySaver&&!d.muteBackground&&d.autoplay==Autoplay::Muted);
+     State d;assert(d.newTabPage==NewTabPage::Blank&&d.tabPosition==TabPosition::End&&d.confirmCloseTabs&&!d.closeWithLastTab&&d.adBlock&&!d.httpsOnly&&!d.blockThirdPartyCookies&&d.memorySaver&&!d.muteBackground&&d.autoplay==Autoplay::Muted&&!d.grayscaleText);
      std::istringstream orphan("browser-settings 1\nengine=custom\nnew-tab-page=custom\nhomepage=pas valide\n");State r=Read(orphan);assert(r.engine==Engine::DuckDuckGo&&r.newTabPage==NewTabPage::Blank);}
     // Search URLs take already-encoded terms; the panel order keeps three primary engines.
     assert(SearchUrl(Engine::DuckDuckGo,L"deux%20mots")==L"https://duckduckgo.com/?q=deux%20mots");
