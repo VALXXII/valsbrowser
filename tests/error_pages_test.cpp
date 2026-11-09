@@ -55,6 +55,20 @@ int main() {
         Require(Has(page, L"Nouvel essai dans " + std::to_wstring(delay) + L" s") == (delay != 0), "countdown shown only while retries remain");
     }
     for (Kind k : {Kind::Reset, Kind::Unreachable, Kind::Generic}) { auto p = ErrorPages::Html(k, L"https://exemple.test", token, false); Require(Has(p, L"<h1>") && Has(p, L"Réessayer"), "derived variants render"); }
+    // One action row for every variant: the other action left, « Réessayer » right (DOM = Tab order),
+    // never wrapped (a long DNS label ellipsises); only a viewport under 360 px stacks them.
+    for (Kind k : {Kind::Offline, Kind::NameNotResolved, Kind::Refused, Kind::TimedOut, Kind::Reset, Kind::Unreachable, Kind::Generic}) {
+        for (bool retrying : {false, true}) {
+            auto p = ErrorPages::Html(k, L"https://un-nom-de-domaine-vraiment-tres-long-pour-tester.exemple.test/", token, retrying);
+            const auto row = p.find(L"<div class=\"actions\">"), first = p.find(L"<button", row), second = p.find(L"<button", first + 1), end = p.find(L"</div>", row);
+            Require(row != std::wstring::npos && second < end, "actions: both buttons in one row");
+            Require(p.find(L"data-action=\"retry\"", second) < p.find(L">", second), "actions: Réessayer is the right-hand button");
+        }
+    }
+    {
+        auto p = ErrorPages::Html(Kind::Reset, L"https://exemple.test", token, false);
+        Require(Has(p, L".actions{display:flex;flex-direction:row;flex-wrap:nowrap") && Has(p, L"white-space:nowrap") && Has(p, L"text-overflow:ellipsis") && Has(p, L"button[data-action=retry]{flex-shrink:0}") && Has(p, L"@media (max-width:359px){.actions{flex-direction:column"), "actions: one row, no wrap, ellipsis, narrow fallback only");
+    }
 
     // Injection: the URL is text, never markup or script; the token cannot break the script.
     const std::wstring evil = L"https://x.test/\"><script>alert(1)</script><img src=x onerror=alert(2)>";

@@ -1,16 +1,18 @@
-"""Package the « Éléments & popups » design preview (portable, no profile, no logs).
+﻿"""Package the « Éléments & popups » design preview (portable, no profile, no logs).
 
-Usage: python tools/release/design_preview_zip.py
-Input : build/design-elements-preview (python tools/release/build.py --out build/design-elements-preview --preview)
+Usage: python tools/release/design_preview_zip.py [build folder]
+Input : build/design-elements-preview (python tools/release/build.py --out build/design-elements-preview --preview),
+        or another build folder (when a running preview locks the default one)
 Output: build/browser-design-elements-preview.zip (+ .sha256)
 """
 from pathlib import Path
 import hashlib
 import json
+import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-app = ROOT / 'build/design-elements-preview'
+app = (ROOT / sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'build/design-elements-preview'
 archive = ROOT / 'build/browser-design-elements-preview.zip'
 folder = 'design-elements-preview'
 version = json.loads((app / 'version.json').read_text(encoding='utf-8'))
@@ -48,6 +50,17 @@ l'onglet ouvert par le navigateur, avec un jeton propre à ce lancement.
 RACCOURCIS UTILES
 Ctrl+F rechercher (Entrée / Maj+Entrée, F3), Ctrl+/ raccourcis clavier, F11 plein écran,
 Échap quitter le plein écran d'une page, Ctrl+Maj+F12 sandbox.
+
+NOUVEAU DANS CETTE PREVIEW
+- Barre d'adresse : puce de demande d'autorisation (caméra, micro, les deux groupés, position,
+  notifications, presse-papiers) : en attente pendant le popover, puis « autorisé » (persistant pour la page,
+  y compris les choix mémorisés) ou « bloqué » ; clic = état du site avec retrait (recharge la page).
+  « En cours » (point bleu) : DÉMONSTRATION seulement (sandbox B02) — WebView2 ne signale pas l'usage caméra/micro.
+- Téléchargement dangereux (démo) : « Plus d'options » ouvre le menu, « Conserver quand même… »
+  demande confirmation (Annuler par défaut) ; résultat simulé, protections du moteur intactes.
+- Partage d'écran (démo) : fenêtre avec catégories et vignettes fictives, « Partager » explicite.
+- Certificat client : ligne d'émetteur sans espacement de lettres ; info-bulles et raccourcis sur le fond canvas.
+- Pages d'erreur réseau : actions sur une ligne, « Réessayer » à droite ; empilées sous 360 px.
 
 LIMITES CONNUES
 Aucune ombre portée sur nos fenêtres : les coins arrondis sont découpés par une région

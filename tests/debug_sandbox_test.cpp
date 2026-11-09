@@ -47,6 +47,13 @@ static void BridgeTests() {
     auto ok = DebugSandbox::ParseCommand(Cmd(token, L"modal.clearData", L"busy"), token);
     Require(ok && ok->name == L"modal.clearData" && ok->variant == L"busy", "valid command parsed");
     Require(DebugSandbox::ParseCommand(L"{\"token\":\"" + token + L"\",\"command\":\"sandbox.ping\"}", token).has_value(), "variant-less command");
+    {   // Input modality of the page button: "keyboard" | "pointer" only, never anything else.
+        auto viaKey = DebugSandbox::ParseCommand(L"{\"token\":\"" + token + L"\",\"command\":\"prompt.permission\",\"variant\":\"camera\",\"via\":\"keyboard\"}", token);
+        auto viaPtr = DebugSandbox::ParseCommand(L"{\"token\":\"" + token + L"\",\"command\":\"prompt.permission\",\"variant\":\"camera\",\"via\":\"pointer\"}", token);
+        Require(viaKey && viaKey->keyboard && viaPtr && !viaPtr->keyboard, "via: keyboard / pointer accepted");
+        Require(!DebugSandbox::ParseCommand(L"{\"token\":\"" + token + L"\",\"command\":\"prompt.permission\",\"variant\":\"camera\",\"via\":\"touch\"}", token), "via: other values rejected");
+        Require(!DebugSandbox::ParseCommand(L"{\"token\":\"" + token + L"\",\"command\":\"prompt.permission\",\"variant\":\"camera\",\"via\":\"pointer\",\"x\":\"1\"}", token), "a fifth key is still rejected");
+    }
     Require(DebugSandbox::ParseCommand(L"\"{\\\"token\\\":\\\"" + token + L"\\\",\\\"command\\\":\\\"find.open\\\",\\\"variant\\\":\\\"seed\\\"}\"", token).has_value(), "JSON form of the posted string");
     Require(!DebugSandbox::ParseCommand(Cmd(L"{00000000-0000-0000-0000-000000000000}", L"find.open", L"default"), token), "wrong token");
     Require(!DebugSandbox::ParseCommand(L"{\"command\":\"find.open\",\"variant\":\"default\"}", token), "absent token");
@@ -179,6 +186,8 @@ static void NativeTests(HINSTANCE instance, const std::wstring& root) {
     // --- Tooltip (C5): never activates, never takes clicks, delay then neighbour instant.
     {
         Tooltip::Tip tip; Require(tip.Create(instance, owner, root), "tooltip created");
+        // User request 2026-11-09: C5 surfaces take the canvas token (--color-browser-canvas #171717).
+        Require(Tooltip::Layout::surface == 0x171717 && ShortcutsPanel::Layout::Surface == 0x17 && std::lround(Design::Surface::canvas * 255) == 0x17, "C5 tooltip + shortcuts panel on the canvas surface");
         Require(NativeUI::IsShadowless(tip.Window()) && Styled(tip.Window(), WS_EX_NOACTIVATE | WS_EX_TRANSPARENT), "tooltip shadowless + click-through");
         RECT target{page.left + 40, page.top - 40, page.left + 72, page.top - 8};
         tip.Hover({L"Recharger", L"Ctrl+R", L""}, target); Require(!tip.Visible() && tip.Pending(), "600 ms hover delay");

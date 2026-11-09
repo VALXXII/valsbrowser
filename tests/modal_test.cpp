@@ -5,11 +5,13 @@
 // Usage: modal_test.exe <repo root>
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include "../src/chrome.h"
 #include "../src/modal.h"
 #include "../src/origin-prompt.h"
 #include "../src/password-demo.h"
+#include "../src/settings-panel.h"
 
 using namespace NativeChrome;
 static int failures = 0, checks = 0;
@@ -111,6 +113,79 @@ int wmain(int argc, wchar_t** argv) {
         d.SetBusy(true, L"Effacement…"); d.Finish(Modal::AcceptButton);
         Check(calls == 1 && button == Modal::AcceptButton, "clear data: Finish answers once");
         d.FinishAnimationsForTest();
+    }
+    {   // A5 Période: a real drop-down list (shadowless native menu under the field), never a cycle.
+        // The keys are queued before the list opens; its modal loop reads them like a user's.
+        int calls = 0; bool held = false;
+        auto spec = Modal::ClearDataSpec();
+        spec.buttons[1].closes = false; spec.onButton = [&](int) { held = true; };
+        d.Show(spec, Area(), [&](const Modal::Result&) { ++calls; });
+        while (d.FocusForTest() != D::SelectHit) d.KeyForTest(VK_TAB);
+        auto post = [&](std::initializer_list<WPARAM> keys) { for (auto k : keys) PostMessageW(owner, WM_KEYDOWN, k, 0); };
+        auto period = [&] { return d.Snapshot().select; };
+        // While open: the list is a shadowless popup dropped under the field, the current row checked.
+        static Modal::Dialog* probeDialog; static bool probed, shadowless, below, current; static int ticks; probeDialog = &d; probed = shadowless = below = current = false; ticks = 0;
+        auto probe = [](HWND, UINT, UINT_PTR id, DWORD) {   // waits for the list to be open and settled (180 ms entrance)
+            auto* m = probeDialog->MenuForTest();
+            if (!m || !m->Open() || m->TestEntering(0)) { if (++ticks > 100) { KillTimer(nullptr, id); PostMessageW(probeDialog->Window(), WM_KEYDOWN, VK_ESCAPE, 0); } return; }
+            KillTimer(nullptr, id);
+            HWND w = m->LevelWindow(0); RECT r{}; GetWindowRect(w, &r);
+            const auto f = probeDialog->BoxForTest(D::SelectHit); RECT dr{}; GetWindowRect(probeDialog->Window(), &dr);
+            const float k = GetDpiForWindow(w) / 96.f;
+            probed = true; shadowless = NativeUI::IsShadowless(w) && !(GetClassLongPtrW(w, GCL_STYLE) & CS_DROPSHADOW);
+            below = std::abs(r.top - (dr.top + static_cast<LONG>(std::lround(f.bottom * k)))) <= 1 && std::abs(r.right - (dr.left + static_cast<LONG>(std::lround(f.right * k)))) <= 1;
+            const auto nodes = m->AccessibleNodes(0); int checked = -1, i = -1; for (auto& n : nodes) if (n.role == Accessibility::Role::MenuItem) { ++i; if (n.status == L"Sélectionné") checked = i; }
+            current = checked == 1 && nodes.size() == 6;
+            std::printf("     list %ld,%ld-%ld,%ld under field bottom %ld right %ld\n", r.left, r.top, r.right, r.bottom, dr.top + static_cast<LONG>(std::lround(f.bottom * k)), dr.left + static_cast<LONG>(std::lround(f.right * k)));
+            PostMessageW(probeDialog->Window(), WM_KEYDOWN, VK_ESCAPE, 0);
+        };
+        const UINT_PTR probeTimer = SetTimer(nullptr, 0, 20, probe); d.KeyForTest(VK_RETURN); KillTimer(nullptr, probeTimer);
+        Check(probed && shadowless, "période: the list is a shadowless popup (no DWM rounding, no CS_DROPSHADOW)");
+        Check(below, "période: the list drops under the field, right edges aligned");
+        Check(current, "période: five options, the current one marked « Sélectionné »");
+        Check(period() == 1 && d.Visible() && calls == 0 && !held, "période: Échap closes the list, value unchanged, nothing cleared");
+        Check(d.FocusForTest() == D::SelectHit && GetFocus() == d.Window(), "période: focus back on the field after Échap");
+        // Entrée opens on the checked row: ↓ then Entrée picks the next one.
+        post({VK_DOWN, VK_RETURN}); d.KeyForTest(VK_RETURN);
+        Check(period() == 2 && !held && calls == 0 && d.Visible(), "période: Entrée opens, ↓ + Entrée choose « 7 derniers jours », no clearing");
+        Check(d.FocusForTest() == D::SelectHit && GetFocus() == d.Window(), "période: focus back on the field after a choice");
+        // Every option, from Alt+↓, Espace, ↓, F4 and the pointer.
+        const wchar_t* openers[] = {L"alt", L"space", L"down", L"f4", L"pointer"};
+        bool all = true;
+        for (int i = 0; i < 5; ++i) {
+            std::vector<WPARAM> keys{VK_HOME}; for (int j = 0; j < i; ++j) keys.push_back(VK_DOWN); keys.push_back(VK_RETURN);
+            for (auto k : keys) PostMessageW(owner, WM_KEYDOWN, k, 0);
+            const std::wstring how = openers[i];
+            if (how == L"alt") d.AltKeyForTest(VK_DOWN); else if (how == L"space") d.KeyForTest(VK_SPACE); else if (how == L"down") d.KeyForTest(VK_DOWN); else if (how == L"f4") d.KeyForTest(VK_F4); else d.ActivateForTest(D::SelectHit);
+            const bool ok = period() == i && d.Visible() && !held && calls == 0 && !d.ChoosingForTest(); all = all && ok;
+            std::printf("     option %d via %ls -> %d (%ls)\n", i, openers[i], period(), Modal::ClearDataPeriods()[static_cast<size_t>(period())].c_str());
+        }
+        Check(all, "période: each of the 5 options can be chosen (Alt+↓, Espace, ↓, F4, pointer), dialog stays open");
+        // ↑/↓ on the closed field never change the value silently: Échap keeps it.
+        post({VK_ESCAPE}); d.KeyForTest(VK_UP);
+        Check(period() == 4, "période: ↑ opens the list instead of cycling; Échap keeps « Depuis toujours »");
+        // A click outside the list (on the owner) dismisses it without choosing.
+        post({VK_HOME}); PostMessageW(owner, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(5, 5)); d.ActivateForTest(D::SelectHit);
+        Check(period() == 4 && d.Visible() && calls == 0 && !held, "période: click outside cancels, value unchanged");
+        // The dialog closes while the list is open (tab closed, Abort): the late answer is dropped.
+        static Modal::Dialog* abortDialog; abortDialog = &d;
+        SetTimer(nullptr, 0, 60, [](HWND, UINT, UINT_PTR id, DWORD) { KillTimer(nullptr, id); abortDialog->Abort(); });
+        post({VK_HOME}); d.KeyForTest(VK_RETURN);
+        auto* m = d.MenuForTest(); Pump(60);
+        Check(calls == 1 && !d.Visible() && !held && m && !m->Open(), "période: Abort while the list is open closes both, done once, nothing cleared");
+        d.FinishAnimationsForTest();
+    }
+    {   // Host hook (browser): the shared menu through ChooseFromMenu; keyboard flag and anchor passed.
+        ContextMenu::Menu shared; shared.Init(hi, owner, root);
+        int hookCalls = 0; bool sawKeyboard = false; int sawCurrent = -1; RECT sawAnchor{};
+        Modal::Dialog::Hooks h; h.dismiss = [&] { shared.Cancel(); }; h.choose = [&](const std::vector<std::wstring>& o, int cur, RECT a, bool kb) { ++hookCalls; sawKeyboard = kb; sawCurrent = cur; sawAnchor = a; return Modal::ChooseFromMenu(shared, o, cur, a, kb, true); };
+        Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "host hook: Create");
+        int calls = 0; hd.Show(Modal::ClearDataSpec(), Area(), [&](const Modal::Result&) { ++calls; });
+        while (hd.FocusForTest() != D::SelectHit) hd.KeyForTest(VK_TAB);
+        PostMessageW(owner, WM_KEYDOWN, VK_UP, 0); PostMessageW(owner, WM_KEYDOWN, VK_RETURN, 0); hd.AltKeyForTest(VK_DOWN);
+        Check(hookCalls == 1 && sawKeyboard && sawCurrent == 1 && sawAnchor.bottom > sawAnchor.top, "host hook: called once with keyboard, current and the field's screen rect");
+        Check(hd.Snapshot().select == 0 && calls == 0 && hd.Visible() && !hd.MenuForTest(), "host hook: ↑ + Entrée from the checked row -> « Dernière heure », no own menu created");
+        hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose(); shared.Dispose();
     }
     {   // Abort / Dispose / owner destroyed: done({-1}) once.
         int calls = 0, button = -9;
@@ -239,16 +314,323 @@ int wmain(int argc, wchar_t** argv) {
         Check(calls == 1 && got.action == OriginPrompt::Action::Never, "password save: Jamais pour ce site");
         p.Surface().FinishAnimationsForTest();
     }
-    {   // B07 dangerous download: Supprimer / Plus d'options -> Keep (no menu wired).
+    {   // B07 dangerous download: « Plus d'options » never answers by itself (regression: it used to keep the file).
         OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::DangerousDownload; s.origin = L"pilotes.exemple"; s.detail = L"HP_M110_Setup_v3.2.1.exe";
-        int calls = 0; OriginPrompt::Result got;
-        p.Show(s, {900, 150, 924, 174}, [&](OriginPrompt::Result& r) { ++calls; got = r; });
-        p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
-        Check(calls == 1 && got.action == OriginPrompt::Action::Keep, "dangerous download: Plus d'options -> Keep");
-        p.Surface().FinishAnimationsForTest();
+        Modal::Result more; more.button = OriginPrompt::Id::More;
+        Check(OriginPrompt::Map(s, more).action == OriginPrompt::Action::Dismiss, "dangerous download: More alone maps to no decision");
+    }
+    {   // Certificate issuer line is plain text (tracking 0); password dots keep Paper's 0.08em.
+        OriginPrompt::Spec c; c.kind = OriginPrompt::Kind::ClientCertificate; c.origin = L"banque.exemple.test"; c.accounts = {{L"Camille Démo", L"Émis par Autorité Démo · expire en 2027"}};
+        const auto mc = OriginPrompt::Build(c, true);
+        Check(mc.accounts.size() == 1 && mc.accounts[0].plain && Modal::AccountHintStyle(mc.accounts[0]).trackingEm == 0, "certificate: issuer line not letter-spaced");
+        OriginPrompt::Spec f; f.kind = OriginPrompt::Kind::PasswordFill; f.origin = L"compte.exemple.test"; f.accounts = {{L"camille.demo@exemple.test", L"Utilisé il y a 2 jours"}};
+        const auto mf = OriginPrompt::Build(f, true);
+        Check(mf.accounts.size() == 1 && !mf.accounts[0].plain && Modal::AccountHintStyle(mf.accounts[0]).trackingEm > .07f, "password fill: dots keep 0.08em");
     }
     p.Dispose();
+    // ---- B07 « Plus d'options » with a scripted host menu --------------------------------------------
+    {
+        OriginPrompt::Prompt q; int nextMenu = 0, menus = 0, dismissed = 0, copied = 0, reported = 0; std::vector<ContextMenu::Item> seen; RECT menuAnchor{};
+        std::function<void()> duringMenu;
+        OriginPrompt::Prompt::Hooks h;
+        h.menu = [&](const std::vector<ContextMenu::Item>& items, RECT anchor, bool) { ++menus; seen = items; menuAnchor = anchor; if (duringMenu) duringMenu(); return nextMenu; };
+        h.dismiss = [&] { ++dismissed; };
+        h.download = [&](OriginPrompt::Prompt::Command c, const OriginPrompt::Spec&) { if (c == OriginPrompt::Prompt::CopyLink) ++copied; else if (c == OriginPrompt::Prompt::Report) ++reported; };
+        Check(q.Create(hi, owner, root, std::move(h)), "B07 prompt with host menu");
+        OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::DangerousDownload; s.origin = L"telechargements.exemple.test"; s.detail = L"facture-2026.pdf.exe"; s.demo = true;
+        int calls = 0; OriginPrompt::Result got;
+        auto show = [&] { calls = 0; got = {}; q.Show(s, {900, 150, 924, 174}, [&](OriginPrompt::Result& r) { ++calls; got = r; }); q.Surface().FinishAnimationsForTest(); };
+        show();
+        nextMenu = 0; q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(menus == 1 && seen.size() == 4 && seen[2].separator && seen[3].danger && seen[0].label == L"Copier le lien du fichier" && seen[3].label == L"Conserver quand même…", "B07: More opens the Paper FYS-0 menu (2 rows, separator, danger row)");
+        const auto more = q.Surface().BoxForTest(Modal::Dialog::ButtonHit(1)); (void)more;
+        Check(menuAnchor.right > menuAnchor.left && menuAnchor.bottom > menuAnchor.top, "B07: menu anchored to the « Plus d'options » button");
+        Check(calls == 0 && q.Visible() && q.Current().kind == OriginPrompt::Kind::DangerousDownload, "B07: Échap / click outside the menu keeps the popover, no answer");
+        nextMenu = OriginPrompt::Prompt::CopyLink; q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        nextMenu = OriginPrompt::Prompt::Report; q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(copied == 1 && reported == 1 && calls == 0 && q.Visible(), "B07: Copier le lien / Signaler run and keep the popover open");
+        nextMenu = OriginPrompt::Prompt::KeepAnyway; q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 0 && q.ConfirmingForTest() && q.Surface().CurrentSpec().automationId == L"KeepDangerousFile" && q.Surface().CurrentSpec().scope == Modal::Scope::Anchor, "B08: Conserver quand même… opens the confirmation in the popover");
+        Check(q.Surface().FocusForTest() == Modal::Dialog::ButtonHit(0), "B08: « Annuler » is the default focus");
+        q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0));
+        Check(calls == 0 && !q.ConfirmingForTest() && q.Current().kind == OriginPrompt::Kind::DangerousDownload && q.Visible(), "B08: Annuler returns to the blocked download, nothing kept");
+        nextMenu = OriginPrompt::Prompt::KeepAnyway; q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        q.Surface().KeyForTest(VK_ESCAPE);
+        Check(calls == 1 && got.action != OriginPrompt::Action::Keep, "B08: Échap in the confirmation never keeps the file");
+        q.Surface().FinishAnimationsForTest();
+        show(); nextMenu = OriginPrompt::Prompt::KeepAnyway; q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 1 && got.action == OriginPrompt::Action::Keep, "B08: only « Conserver » keeps (simulated result)");
+        q.Surface().FinishAnimationsForTest();
+        show(); const int before = dismissed; nextMenu = OriginPrompt::Prompt::KeepAnyway; duringMenu = [&] { q.Abort(); };
+        q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1)); duringMenu = nullptr;
+        Check(calls == 1 && got.action == OriginPrompt::Action::Dismiss && dismissed == before + 1 && !q.ConfirmingForTest(), "B07: popover aborted while its menu is open: menu dismissed, the late choice dropped");
+        q.Surface().FinishAnimationsForTest();
+        q.Dispose();
+    }
+    // ---- B08 screen share picker (demo thumbnails) ---------------------------------------------------
+    {
+        OriginPrompt::Prompt q; Check(q.Create(hi, owner, root, {}), "B08 share prompt");
+        OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::ScreenShare; s.origin = L"meet.exemple.test"; s.demo = true; s.sources = {L"Onglets", L"Fenêtres", L"Écrans"};
+        s.shareSources = {{L"Ordre du jour", 0, 0}, {L"Visio", 0, 5}, {L"Budget", 1, 3}, {L"Notes", 1, 1}, {L"Navigateur", 1, 4}, {L"Écran 1", 2, 2}};
+        int calls = 0; OriginPrompt::Result got;
+        q.SetPageArea({100, 100, 1300, 900});
+        auto show = [&] { calls = 0; got = {}; q.Show(s, {}, [&](OriginPrompt::Result& r) { ++calls; got = r; }); q.Surface().FinishAnimationsForTest(); };
+        show(); auto& d = q.Surface();
+        Check(d.WidthForTest() == 640 && d.ColumnsForTest() == 3, "share: larger picker (640 DIP, 3 columns) on a wide page");
+        Check(!d.EnabledForTest(Modal::Dialog::ButtonHit(1)) && d.SourcesForTest().selected < 0, "share: « Partager » disabled until a source is selected");
+        Check(d.FocusForTest() == Modal::Dialog::SourceHit(0), "share: focus starts on the first thumbnail");
+        const auto t0 = d.BoxForTest(Modal::Dialog::SourceHit(0)), t1 = d.BoxForTest(Modal::Dialog::SourceHit(1));
+        Check(t0.right <= t1.left - 8 + .5f && t0.top == t1.top && t0.bottom - t0.top > 80, "share: thumbnails side by side, 8 apart");
+        d.KeyForTest(VK_RETURN);
+        Check(d.SourcesForTest().selected == 0 && d.EnabledForTest(Modal::Dialog::ButtonHit(1)) && calls == 0, "share: Entrée selects (does not share yet)");
+        d.KeyForTest(VK_RIGHT);
+        Check(d.SourcesForTest().selected == 1 && d.FocusForTest() == Modal::Dialog::SourceHit(1), "share: → moves the selection");
+        d.ActivateForTest(Modal::Dialog::CategoryHit(1));
+        Check(d.SourcesForTest().category == 1 && d.SourcesForTest().selected < 0 && !d.EnabledForTest(Modal::Dialog::ButtonHit(1)), "share: another category clears the choice");
+        Check(d.BoxForTest(Modal::Dialog::SourceHit(2)).right > 0 && d.BoxForTest(Modal::Dialog::SourceHit(0)).right == 0, "share: only the category's sources are shown");
+        d.ActivateForTest(Modal::Dialog::SourceHit(3));
+        d.PaintForTest();
+        d.ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 1 && got.action == OriginPrompt::Action::Choose && got.choice == 3, "share: Partager returns the selected source (demo)");
+        d.FinishAnimationsForTest();
+        show(); q.Surface().KeyForTest(VK_ESCAPE);
+        Check(calls == 1 && got.action == OriginPrompt::Action::Cancel, "share: Échap cancels");
+        q.Surface().FinishAnimationsForTest();
+        auto none = s; none.shareSources.clear();
+        calls = 0; q.Show(none, {}, [&](OriginPrompt::Result& r) { ++calls; got = r; }); q.Surface().FinishAnimationsForTest();
+        Check(!q.Surface().EnabledForTest(Modal::Dialog::ButtonHit(1)) && q.Surface().FocusForTest() == Modal::Dialog::CategoryHit(0), "share: no source: Partager disabled, focus on the categories");
+        q.Surface().PaintForTest(); q.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 0, "share: disabled Partager does nothing");
+        q.Abort(); q.Surface().FinishAnimationsForTest();
+        q.SetPageArea({100, 100, 560, 520});
+        show();
+        Check(q.Surface().WidthForTest() <= 460 - 32 + .5f && q.Surface().ColumnsForTest() == 2 && q.Surface().HeightForTest() <= 420 - 16 - 32 + 1, "share: narrow/short page: 2 columns, smaller thumbnails, fits");
+        q.Abort(); q.Surface().FinishAnimationsForTest();
+        q.Dispose();
+    }
+    // ---- B01 address-bar request chip model ----------------------------------------------------------
+    {
+        using namespace SiteRequest;
+        auto g = Glyphs({Kind::Microphone, Kind::Camera});
+        Check(g.size() == 2 && g[0] == Path::camera && g[1] == Path::microphone, "chip: camera before microphone (B01)");
+        Check(Glyphs({Kind::Geolocation}) == std::vector<const char*>{Path::position} && Glyphs({Kind::Notifications})[0] == Path::bell && Glyphs({Kind::ClipboardRead})[0] == Path::clipboard, "chip: position / notifications / clipboard glyphs");
+        Check(Glyphs({Kind::Camera, Kind::Camera}).size() == 1 && Glyphs({1, 2, 3, 4, 6}).size() == maxGlyphs, "chip: one glyph per kind, at most 3");
+        Check(ChipWidth(2) == 5 + 14 + 4 + 14 + 5 && TextShift(0) == 0 && TextShift(1) == 2 + 24 + 4, "chip: Paper DJ8-0 width, URL shift");
+        Check(DialogKit::Glyph::camera == Path::camera && OriginPrompt::Text::Glyph(OriginPrompt::Permission::Geolocation) == GlyphOf(Kind::Geolocation), "chip: same glyphs as the popover");
+        Grants gr; Record(gr, {Kind::Camera, Kind::Microphone}, true);
+        Check(Resolve(gr).state == State::Granted && Resolve(gr).kinds.size() == 2, "state: granted after Autoriser, not in use");
+        Check(!SetActive(gr, Kind::Geolocation, true) && gr.active.empty(), "state: in use only for a granted kind");
+        Check(SetActive(gr, Kind::Camera, true) && Resolve(gr).state == State::Active, "state: verified use = Active");
+        SetActive(gr, Kind::Camera, false);
+        Check(Resolve(gr).state == State::Granted, "state: use stopped, grant kept");
+        Record(gr, {Kind::Camera}, false);
+        Check(!Has(gr.granted, Kind::Camera) && Has(gr.blocked, Kind::Camera) && Resolve(gr).state == State::Granted && Resolve(gr).kinds.size() == 1, "state: a later block replaces the grant");
+        Revoke(gr, Kind::Microphone);
+        Check(Resolve(gr).state == State::Blocked, "state: only refusals left = Blocked");
+        Check(ChipWidth(2, State::Active) == 5 + 6 + 6 + 14 + 6 + 14 + 5 && ChipWidth(1, State::Granted) == ChipWidth(1), "chip: Paper E4Q-0 active width (dot + 6 gaps)");
+    }
+    {   // B02 status popover (EAC-0): one-way toggles, link to the site settings, honest subtitle.
+        OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::SiteStatus; s.origin = L"meet.exemple.test";
+        s.granted = {OriginPrompt::Permission::Camera, OriginPrompt::Permission::Microphone}; s.blocked = {OriginPrompt::Permission::Geolocation};
+        auto m = OriginPrompt::Build(s, true);
+        Check(m.title == L"meet.exemple.test peut utiliser" && m.rows.size() == 3 && m.rows[0].toggle == 1 && m.rows[2].toggle == -1 && m.rows[2].trailing == L"Bloqué", "status: granted rows with toggles, blocked row without");
+        Check(m.subtitle.find(L"ne signale pas") != std::wstring::npos && !m.links.empty(), "status (real): says in-use is not reported; site settings link");
+        s.demo = true; s.active = {OriginPrompt::Permission::Camera}; m = OriginPrompt::Build(s, true);
+        Check(m.title == L"meet.exemple.test utilise" && m.rows[0].trailing == L"En cours" && m.demo, "status (demo): in use, badge Démonstration");
+        Modal::Result r; r.button = OriginPrompt::Id::Manage;
+        Check(OriginPrompt::Map(s, r).action == OriginPrompt::Action::Manage && OriginPrompt::Map(s, Modal::Result{}).action == OriginPrompt::Action::Dismiss, "status: link = Manage, Échap = nothing");
+        OriginPrompt::Prompt q; std::vector<int> revoked; OriginPrompt::Prompt::Hooks h; h.revoke = [&](int k, const OriginPrompt::Spec&) { revoked.push_back(k); };
+        Check(q.Create(hi, owner, root, std::move(h)), "status prompt");
+        int calls = 0; s.demo = false; s.active.clear();
+        q.Show(s, {200, 150, 224, 174}, [&](OriginPrompt::Result&) { ++calls; }); q.Surface().FinishAnimationsForTest();
+        Check(q.Surface().FocusForTest() == Modal::Dialog::RowHit(0), "status: focus on the first toggle");
+        q.Surface().KeyForTest(VK_SPACE);
+        Check(revoked == std::vector<int>{OriginPrompt::Permission::Camera} && calls == 0 && q.Visible(), "status: Espace switches the toggle off = revoke, popover stays");
+        const auto& rows = q.Surface().CurrentSpec().rows;
+        Check(rows.size() == 3 && rows[0].toggle == 1 && rows[0].label == L"Micro" && rows[1].toggle == 0 && rows[1].trailing == L"Retirée", "status: revoked row off and inert");
+        Check(!q.Surface().EnabledForTest(Modal::Dialog::RowHit(1)), "status: an off toggle cannot re-grant");
+        q.Surface().PaintForTest();
+        q.Surface().KeyForTest(VK_ESCAPE);
+        Check(calls == 1 && revoked.size() == 1, "status: Échap closes, nothing else revoked");
+        q.Surface().FinishAnimationsForTest(); q.Dispose();
+    }
     // ---- B05 password demo -----------------------------------------------------------------------
+    // ---- Focus-visible contract: real focus always on the safe initial control, ring by input ---------
+    {
+        bool hostKeyboard = false; Modal::Dialog::Hooks h; h.keyboard = [&] { return hostKeyboard; };
+        Modal::Dialog f; Check(f.Create(hi, owner, root, std::move(h)), "modality dialog");
+        auto spec = Modal::ConfirmSpec(L"exemple.fr", L"Continuer ?"); spec.modality = Modal::Spec::Modality::Pointer;
+        int calls = 0; Modal::Result got;
+        f.Show(spec, Area(), [&](const Modal::Result& r) { ++calls; got = r; }); f.FinishAnimationsForTest();
+        const int initial = f.FocusForTest();
+        Check(initial != 0 && !f.FocusVisibleForTest(), "pointer-opened: focus on the initial control, no ring");
+        f.KeyForTest(VK_TAB);
+        Check(f.FocusVisibleForTest() && f.FocusForTest() != 0, "Tab: ring shown on the focused control");
+        f.ActivateForTest(0);   // a pointer action (no-op hit) goes back to pointer modality
+        Check(!f.FocusVisibleForTest(), "pointer again: ring hidden, focus kept");
+        f.KeyForTest(VK_ESCAPE); Check(calls == 1 && got.button != Modal::AcceptButton, "Échap still cancels with the ring hidden");
+        f.FinishAnimationsForTest();
+        spec.modality = Modal::Spec::Modality::Keyboard; f.Show(spec, Area(), [&](const Modal::Result&) {}); f.FinishAnimationsForTest();
+        Check(f.FocusVisibleForTest(), "keyboard-opened (Entrée / Espace / UIA): ring at once");
+        f.Abort(); f.FinishAnimationsForTest();
+        spec.modality = Modal::Spec::Modality::Host; hostKeyboard = false; f.Show(spec, Area(), [&](const Modal::Result&) {}); f.FinishAnimationsForTest();
+        Check(!f.FocusVisibleForTest(), "host modality pointer: no ring");
+        f.Abort(); f.FinishAnimationsForTest(); hostKeyboard = true;
+        f.Show(spec, Area(), [&](const Modal::Result&) {}); f.FinishAnimationsForTest();
+        Check(f.FocusVisibleForTest(), "host modality keyboard (shortcut): ring");
+        f.Abort(); f.FinishAnimationsForTest(); f.Dispose();
+        // Origin prompts default to pointer (page input is not visible to the browser).
+        OriginPrompt::Prompt q; Check(q.Create(hi, owner, root, {}), "modality prompt");
+        OriginPrompt::Spec ps; ps.kind = OriginPrompt::Kind::Permission; ps.origin = L"meet.exemple.test"; ps.permissions = {OriginPrompt::Permission::Camera};
+        q.Show(ps, {200, 150, 224, 174}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest();
+        Check(q.Surface().FocusForTest() != 0 && !q.Surface().FocusVisibleForTest(), "permission after a click: Bloquer focused, no ring");
+        q.Surface().KeyForTest(VK_TAB); Check(q.Surface().FocusVisibleForTest(), "permission: Tab shows the ring");
+        q.Abort(); q.Surface().FinishAnimationsForTest();
+        ps.modality = Modal::Spec::Modality::Keyboard; q.Show(ps, {200, 150, 224, 174}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest();
+        Check(q.Surface().FocusVisibleForTest(), "permission opened from the keyboard: ring");
+        q.Abort(); q.Surface().FinishAnimationsForTest();
+        // B06 (user override): 16/20 title on the tile's line, check row in the head lanes.
+        OriginPrompt::Spec e; e.kind = OriginPrompt::Kind::ExternalApp; e.origin = L"meet.exemple.test"; e.detail = L"mailto:camille.demo@exemple.test";
+        const auto m = OriginPrompt::Build(e, true);
+        Check(!m.largeTitle && m.checkInHeadLane && m.tileGlyph, "B06: regular title, lane check row");
+        q.SetPageArea({100, 100, 1100, 800});
+        for (UINT dpiCase = 0; dpiCase < 1; ++dpiCase) {
+            q.Show(e, {}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest(); auto& d = q.Surface();
+            const auto box = d.BoxForTest(Modal::Dialog::SimpleCheckHit);
+            Check(d.TitleDropForTest() == 6 && d.HeadLeftForTest() == 16 + 44, "B06: title line centred on the 32 DIP tile, text lane at 44");
+            Check(box.left == 16 && box.right == d.WidthForTest() - 16 && box.bottom - box.top >= 18, "B06: whole check row clickable (box lane + label lane)");
+            for (UINT dpi : {96u, 144u, 192u}) Check(d.RenderForTest(root + L"/build/popups/b06-external-" + std::to_wstring(dpi) + L".png", dpi), "B06 render sample");
+            d.ActivateForTest(Modal::Dialog::SimpleCheckHit); d.PaintForTest();
+            Check(d.RenderForTest(root + L"/build/popups/b06-external-checked-144.png", 144), "B06 checked sample");
+            d.Abort(); d.FinishAnimationsForTest();
+        }
+        e.detail = L"un-schema-tres-long-pour-tester-le-retour-a-la-ligne-propre:x"; e.origin = L"un-sous-domaine-vraiment-tres-long.organisation-exemple.test";
+        q.Show(e, {}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest();
+        Check(q.Surface().BoxForTest(Modal::Dialog::SimpleCheckHit).bottom - q.Surface().BoxForTest(Modal::Dialog::SimpleCheckHit).top >= 36, "B06: long scheme wraps (two lines), still one hit row");
+        Check(q.Surface().RenderForTest(root + L"/build/popups/b06-external-long-144.png", 144), "B06 long sample");
+        q.Surface().PaintForTest(); q.Abort(); q.Surface().FinishAnimationsForTest();
+        e.frame = L"publicite.exemple.test"; const auto mf = OriginPrompt::Build(e, true);
+        Check(mf.checkLabel.empty() && !mf.checkInHeadLane && !mf.notices.empty(), "B06 iframe: no remembering, notice kept");
+        q.Show(e, {}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest(); Check(q.Surface().RenderForTest(root + L"/build/popups/b06-external-iframe-144.png", 144), "B06 iframe sample"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        ID2D1Factory* fac = nullptr; D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &fac);
+        auto* g = DialogKit::SvgGeometry(fac, DialogKit::Glyph::external); D2D1_RECT_F gb{}; if (g) g->GetBounds(nullptr, &gb);
+        Check(g && std::fabs((gb.left + gb.right) / 2 - 128) < 1 && std::fabs((gb.top + gb.bottom) / 2 - 128) < 1, "B06: external glyph ink is centred in its 256 box (so in the tile)");
+        if (g) g->Release(); if (fac) fac->Release();
+        q.Dispose();
+    }
+    // ---- Popover lanes & roles (B06 rule generalised): every origin popover, rendered at 3 DPI ---------
+    {
+        OriginPrompt::Prompt q; Check(q.Create(hi, owner, root, {}), "alignment prompt"); q.SetPageArea({100, 100, 1300, 900});
+        auto show = [&](const OriginPrompt::Spec& sp) { q.Show(sp, {200, 150, 224, 174}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest(); return &q.Surface(); };
+        auto shots = [&](const char* name) { for (UINT dpi : {96u, 144u, 192u}) { std::wstring n(name, name + std::strlen(name)); q.Surface().RenderForTest(root + L"/build/qa-alignment/" + n + L"-" + std::to_wstring(dpi) + L".png", dpi); } };
+        using OP = OriginPrompt::Spec; namespace Pm = OriginPrompt::Permission;
+        OP single; single.kind = OriginPrompt::Kind::Permission; single.origin = L"meteofrance.com"; single.permissions = {Pm::Geolocation};
+        auto* d = show(single);
+        Check(d->LaneCheckForTest() && d->LaneBoxLeftForTest() == 4 && d->LaneTextForTest() == 32 && d->HeadLeftForTest() == 16 + 32, "permission (single): check box centred in the 24 DIP glyph lane, label on the title/description column (32)");
+        Check(d->TitleStyleForTest().size == 16 && d->TitleStyleForTest().line == 20 && d->TitleStyleForTest().medium, "permission: title 16/20 Medium");
+        d->KeyForTest(VK_TAB); shots("permission-single"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP grouped = single; grouped.origin = L"un-sous-domaine-vraiment-tres-long.visio-exemple.test"; grouped.permissions = {Pm::Camera, Pm::Microphone, Pm::Geolocation};
+        d = show(grouped);
+        Check(d->LaneBoxLeftForTest() == 8 && d->LaneTextForTest() == 36, "permission (grouped): box in the rows' glyph lane (4 + 24), label on the rows' text column (36)");
+        shots("permission-grouped"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP bell = single; bell.permissions = {Pm::Notifications}; d = show(bell);
+        Check(!d->LaneCheckForTest() || q.Surface().CurrentSpec().checkLabel.empty(), "notifications: notice instead of a check");
+        Check(d->LaneTextForTest() == 32, "notifications: notice text on the description column");
+        shots("permission-notifications"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP auth; auth.kind = OriginPrompt::Kind::BasicAuth; auth.origin = L"intranet.exemple.test"; auth.detail = L"Zone protégée"; d = show(auth);
+        Check(d->TitleStyleForTest().size == 16 && !d->LaneCheckForTest(), "Basic auth: 16/20 title (was 20/24), form check unchanged");
+        shots("basic-auth"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        auth.user = L"camille.demo"; d = show(auth); q.AuthRefused(); shots("basic-auth-error"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        {   // Head / lane glyphs: ink centred in their box within 0.5 DIP at 16 DIP (geometry, not screenshots).
+            ID2D1Factory* fac = nullptr; D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &fac); bool centred = true;
+            for (const char* g : {DialogKit::Glyph::camera, DialogKit::Glyph::microphone, DialogKit::Glyph::position, DialogKit::Glyph::bell, DialogKit::Glyph::clipboard, DialogKit::Glyph::info, DialogKit::Glyph::external, DialogKit::Glyph::file}) {
+                auto* geo = DialogKit::SvgGeometry(fac, g); D2D1_RECT_F b{}; if (geo) { geo->GetBounds(nullptr, &b); geo->Release(); } else centred = false;
+                const float dx = ((b.left + b.right) / 2 - 128) * 16 / 256, dy = ((b.top + b.bottom) / 2 - 128) * 16 / 256;
+                if (std::fabs(dx) > .5f || std::fabs(dy) > .5f || b.left < 0 || b.top < 0 || b.right > 256.5f || b.bottom > 256.5f) { centred = false; std::printf("glyph off-centre %.2f %.2f\n", dx, dy); }
+            }
+            Check(centred, "popover glyphs: ink centred (<= 0.5 DIP) and inside the 256 box (never clipped)");
+            if (fac) fac->Release();
+        }
+        OP cert; cert.kind = OriginPrompt::Kind::ClientCertificate; cert.origin = L"banque.exemple.test"; cert.accounts = {{L"Camille Démo", L"Émis par Autorité Démo · expire en 2027"}, {L"Poste de travail démo", L"Émis par CA Interne Démo"}};
+        d = show(cert); Check(d->TitleStyleForTest().size == 16, "certificate: 16/20 title (was 20/24)"); shots("certificate"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP share; share.kind = OriginPrompt::Kind::ScreenShare; share.origin = L"meet.exemple.test"; share.demo = true; share.shareSources = {{L"Ordre du jour", 0, 0}, {L"Visio", 0, 5}};
+        d = show(share); Check(d->TitleStyleForTest().size == 16, "screen share: 16/20 title (was 20/24)"); shots("screen-share"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP ext; ext.kind = OriginPrompt::Kind::ExternalApp; ext.origin = L"meet.exemple.test"; ext.detail = L"mailto:x"; ext.frame = L"publicite.exemple.test";
+        d = show(ext); Check(d->LaneTextForTest() == 44, "B06 iframe: notice text on the description column under the tile (44, was 32)");
+        shots("external-iframe"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        ext.frame.clear(); d = show(ext); Check(d->LaneBoxLeftForTest() == 8 && d->LaneTextForTest() == 44, "B06: unchanged (box 8, text 44)"); shots("external"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP save; save.kind = OriginPrompt::Kind::PasswordSave; save.origin = L"compte.exemple.test"; save.user = L"camille.demo@exemple.test"; save.demo = true;
+        d = show(save); Check(d->TitleStyleForTest().size == 16 && !d->LaneCheckForTest(), "password save: 16/20, form layout kept"); shots("password-save"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP fill; fill.kind = OriginPrompt::Kind::PasswordFill; fill.origin = L"compte.exemple.test"; fill.accounts = {{L"camille.demo@exemple.test", L"Utilisé il y a 2 jours"}};
+        show(fill); shots("password-fill"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP danger; danger.kind = OriginPrompt::Kind::DangerousDownload; danger.origin = L"telechargements.exemple.test"; danger.detail = L"facture-2026.pdf.exe";
+        show(danger); shots("dangerous-download"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        OP status; status.kind = OriginPrompt::Kind::SiteStatus; status.origin = L"meet.exemple.test"; status.granted = {Pm::Camera, Pm::Microphone}; status.blocked = {Pm::Geolocation};
+        show(status); shots("site-status"); q.Abort(); q.Surface().FinishAnimationsForTest();
+        q.Dispose();
+    }
+    // « Ouvrir tout » (> 20 favoris) from a menu: the confirmation's ring follows how the item was picked.
+    {
+        ContextMenu::Menu menu; menu.Init(hi, owner, root);
+        std::vector<ContextMenu::Item> items{ContextMenu::Command(7, L"Ouvrir tout"), ContextMenu::Command(8, L"Autre")};
+        PostMessageW(owner, WM_KEYDOWN, VK_RETURN, 0);
+        const int id = menu.Track(items, {300, 300}, nullptr, true, true);
+        Check(id == 7 && menu.LastChoiceKeyboard(), "menu: Entrée picks the item, choice marked keyboard");
+        PostMessageW(owner, WM_KEYDOWN, VK_ESCAPE, 0);
+        Check(menu.Track(items, {300, 300}, nullptr, true, true) == 0 && !menu.LastChoiceKeyboard(), "menu: dismissed, no keyboard choice");
+        menu.Dispose();
+    }
+    // ---- Settings drawer: « Autorisations du site » opens ON its view (no root page under it) --------
+    {
+        BrowserSettings::State st; SettingsUI::Drawer::Hooks dh; std::function<void(std::vector<BrowserSettings::Site>)> pending;
+        // « Effacer les données… » from the drawer: the confirmation's ring follows the drawer's own input,
+        // not the chrome's last one (host = keyboardModality, synced by the hook as main does).
+        bool hostKeyboard = true; bool ring = false; int opened = 0;
+        Modal::Dialog::Hooks ch; ch.keyboard = [&] { return hostKeyboard; };
+        Modal::Dialog confirm; Check(confirm.Create(hi, owner, root, std::move(ch)), "clear-data dialog");
+        dh.clearData = [&](bool keyboard) {
+            hostKeyboard = keyboard; ++opened;
+            confirm.Show(Modal::ClearDataSpec(), Area(), [](const Modal::Result&) {}); confirm.FinishAnimationsForTest();
+            ring = confirm.FocusVisibleForTest() && confirm.FocusForTest() != 0;
+            confirm.Abort(); confirm.FinishAnimationsForTest();
+        };
+        dh.loadSites = [&](std::function<void(std::vector<BrowserSettings::Site>)> done) { pending = std::move(done); };
+        SettingsUI::Drawer dr; Check(dr.Create(hi, owner, root, &st, std::move(dh)), "drawer created");
+        using V = SettingsUI::View; const auto t0 = Motion::Now();
+        dr.ShowSites();
+        bool only = true; for (int ms = 0; ms <= 400; ms += 8) { auto v = dr.PaintedViewsForTest(t0 + Motion::Milliseconds(ms)); only = only && v.size() == 1 && v[0] == V::Sites; }
+        Check(dr.CurrentViewForTest() == V::Sites && dr.DepthForTest() == 1 && only, "cold open: every entrance frame paints Sites only (no Main page)");
+        Check(!dr.PageMovingForTest(t0) && dr.SlideForTest(t0) < 1, "cold open: the drawer slides, the page does not");
+        Check(!dr.SitesNoteForTest(t0) && dr.SitesNoteForTest(t0 + Motion::Milliseconds(600)), "slow load: no « Chargement… » within 250 ms, shown after");
+        pending({}); pending = nullptr;
+        Check(!dr.SitesNoteForTest(Motion::Now() + Motion::Milliseconds(300)), "loaded: list / empty state, no note");
+        dr.ShowSites(); Check(dr.CurrentViewForTest() == V::Sites && !dr.PageMovingForTest(Motion::Now()), "already on Sites: nothing moves");
+        dr.Hide(false, false); dr.Show();
+        Check(dr.CurrentViewForTest() == V::Main, "plain open: Main (Retour path intact)");
+        const auto t1 = Motion::Now(); dr.ShowSites();
+        Check(dr.CurrentViewForTest() == V::Sites && dr.DepthForTest() == 1 && dr.PageMovingForTest(t1 + Motion::Milliseconds(5)), "open on Main: a normal push to Sites");
+        dr.Hide(false, true); dr.ShowSites();   // re-asked while leaving
+        bool only2 = true; const auto t2 = Motion::Now(); for (int ms = 0; ms <= 400; ms += 8) { auto v = dr.PaintedViewsForTest(t2 + Motion::Milliseconds(ms)); only2 = only2 && v.size() == 1 && v[0] == V::Sites; }
+        Check(only2 && dr.Visible(), "re-opened while closing: straight onto Sites, no ghost page");
+        {   // Scroll fades: opaque canvas at the edge, reach follows what is hidden (continuous, never a dimmed overlay).
+            using D = SettingsUI::Drawer; const auto top = D::FadeReachForTest(0, 120), mid = D::FadeReachForTest(60, 120), almost = D::FadeReachForTest(117, 120), end = D::FadeReachForTest(120, 120);
+            Check(top.first == 0 && top.second == 48 && mid.first == 16 && mid.second == 48, "fades: top none at rest, bottom full while content remains");
+            Check(almost.second == 3 && end.second == 0 && end.first == 16, "fades: the bottom fade shrinks to nothing as the end is reached (no half-dimmed band)");
+            bool continuous = true; float last = D::FadeReachForTest(0, 120).second;
+            for (float sc = 0; sc <= 120; sc += .5f) { const float v = D::FadeReachForTest(sc, 120).second; continuous = continuous && std::fabs(v - last) <= .5f + 1e-3f; last = v; }
+            Check(continuous, "fades: reach changes continuously with scroll");
+        }
+        {   // Keyboard in the chrome, then a CLICK on the drawer row: no ring (focus still on the safe control).
+            hostKeyboard = true; dr.ActivateForTest(SettingsUI::ClearData, false);
+            Check(opened == 1 && !ring, "chrome keyboard then click « Effacer les données… »: no focus ring");
+            dr.ActivateForTest(SettingsUI::ClearData, true);
+            Check(opened == 2 && ring, "same row from the keyboard (Entrée / Espace / UIA): ring");
+            dr.ActivateForTest(SettingsUI::ClearData, false);
+            Check(opened == 3 && !ring, "pointer again: no ring");
+        }
+        dr.Hide(false, false); dr.Dispose(); confirm.Dispose();
+    }
     {
         PasswordDemo::Window demo; Check(demo.Create(hi, owner, root, {}), "PasswordDemo::Create");
         int closed = 0;

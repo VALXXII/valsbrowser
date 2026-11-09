@@ -13,6 +13,8 @@
 #include "loading.h"
 #include "address.h"
 #include "bookmarks-bar.h"
+#include "svg-path.h"
+#include "site-request.h"
 #include <set>
 #include <tuple>
 #include <cstring>
@@ -290,7 +292,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -531,6 +533,48 @@ public:
     float ChipWidth(const wchar_t* label){namespace A=Design::Address;return A::chipPadLeft+Design::Size::icon+Design::Space::xs+TextWidth(label,Design::Type::label.size,true,false,Design::Type::label.tracking)+A::chipPadRight;}
     // Hit/tooltip box of the indicator: the icon slot, or the whole chip. None while editing.
     D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};auto box=AddressSlot();const wchar_t* chip=address.chip();if(*chip)box.right=box.left+ChipWidth(chip);return box;}
+    // Pending permission request (Paper B01 « Puce permission »): set by the host while the
+    // request's popover is open for the active tab, cleared with it. Glyphs are SiteRequest::Path
+    // strings (the popover's own), the tip names the request for the tooltip and UI Automation.
+    std::vector<const char*> requestGlyphs; std::wstring requestTip;
+    // State and motion set by the host each frame: `requestFrom` -> `requestState` cross-fade
+    // (`requestMix` 0..1), chip opacity, the URL's animated offset (-1: follow the chip), and
+    // whether the chip takes clicks (not while it fades out).
+    SiteRequest::State requestState=SiteRequest::State::Pending,requestFrom=SiteRequest::State::Pending;
+    float requestMix=1,requestAlpha=1,requestShift=-1;bool requestLive=true;
+    D2D1_RECT_F request{};
+    // Chip box: 2 DIP after the security slot (or its « Non sécurisé » plate). None while editing.
+    D2D1_RECT_F RequestBox(){if(requestGlyphs.empty())return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};namespace L=SiteRequest::Layout;const float c=AddressCenter(),l=i.right+L::lead;return {l,c-L::height/2,l+SiteRequest::ChipWidth(requestGlyphs.size(),requestState),c+L::height/2};}
+    std::map<const char*,ID2D1PathGeometry*> pathGlyphs; // factory resources: survive target loss
+    void DropPathGlyphs(){for(auto& g:pathGlyphs)if(g.second)g.second->Release();pathGlyphs.clear();}
+    void PathGlyph(const char* d,D2D1_RECT_F box,float size,D2D1_COLOR_F color){
+        if(!target||!brush||!factory||!d)return;
+        auto& g=pathGlyphs[d];
+        if(!g)g=DialogKit::SvgGeometry(factory,d);
+        if(!g)return;
+        D2D1_MATRIX_3X2_F old;target->GetTransform(&old);const float k=size/256,x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->SetTransform(D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);brush->SetColor(color);target->FillGeometry(g,brush);target->SetTransform(old);}
+    // One state of the chip at opacity `a`, left-aligned in `box` (its own width).
+    void DrawChipState(SiteRequest::State st,D2D1_RECT_F box,float a){
+        namespace L=SiteRequest::Layout;using SiteRequest::State;if(a<=0)return;
+        box.right=box.left+SiteRequest::ChipWidth(requestGlyphs.size(),st);
+        const auto accent=Design::Accent::Get();
+        if(st==State::Pending){const float p=((L::plate>>16)&0xFF)/255.f;FillBox(box,L::radius,D2D1::ColorF(p,p,p,a));}
+        else if(st==State::Active)FillBox(box,L::radius,D2D1::ColorF(accent.r,accent.g,accent.b,L::tint*a));
+        float gx=box.left+L::padX;const float cy=(box.top+box.bottom)/2;
+        if(st==State::Active){brush->SetColor(D2D1::ColorF(accent.r,accent.g,accent.b,a));target->FillEllipse(D2D1::Ellipse({gx+L::dot/2,cy},L::dot/2,L::dot/2),brush);gx+=L::dot+L::activeGap;}
+        const float glyphAlpha=(st==State::Granted||st==State::Blocked?L::dimmed:1.f)*a;const float step=L::icon+(st==State::Active?L::activeGap:L::gap);
+        for(auto* g:requestGlyphs){const D2D1_RECT_F gb{gx,box.top,gx+L::icon,box.bottom};PathGlyph(g,gb,L::icon,D2D1::ColorF(1,1,1,glyphAlpha));
+            if(st==State::Blocked){ // Paper E5Z-0: a slash cut out in the field colour, then drawn at 70 %
+                const float k=L::icon/256,x0=gb.left,y0=cy-L::icon/2;const D2D1_POINT_2F p0{x0+28*k,y0+20*k},p1{x0+236*k,y0+236*k};
+                ID2D1StrokeStyle* round=nullptr;D2D1_STROKE_STYLE_PROPERTIES sp{};sp.startCap=sp.endCap=D2D1_CAP_STYLE_ROUND;factory->CreateStrokeStyle(sp,nullptr,0,&round);
+                const float f=Design::Surface::raised;brush->SetColor(D2D1::ColorF(f,f,f,a));target->DrawLine(p0,p1,brush,44*k,round);
+                brush->SetColor(D2D1::ColorF(1,1,1,glyphAlpha));target->DrawLine(p0,p1,brush,22*k,round);if(round)round->Release();}
+            gx+=step;}}
+    void DrawRequestChip(D2D1_RECT_F box){
+        const float a=std::clamp(requestAlpha,0.f,1.f),m=std::clamp(requestMix,0.f,1.f);
+        if(m<1&&requestFrom!=requestState)DrawChipState(requestFrom,box,a*(1-m));
+        DrawChipState(requestState,box,a*(requestFrom!=requestState?m:1.f));}
     D2D1_COLOR_F DangerColor(float a=1)const{return D2D1::ColorF(Design::Danger::r,Design::Danger::g,Design::Danger::b,a);}
     void FillBox(D2D1_RECT_F r,float radius,D2D1_COLOR_F c){brush->SetColor(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     void DrawAddress(bool editing,bool indicatorHover){
@@ -551,11 +595,14 @@ public:
             if(danger)ink=DangerColor();
             Text(chip,{glyph.right+Design::Space::xs,line.top,plate.right,line.bottom},Design::Type::label.size,danger?1.f:A::secondary,false,true,Design::Type::label.tracking);
             ink=D2D1::ColorF(1,1,1,1);
-            const float d=plate.right+A::divider;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
+            float edge=plate.right;if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
+            const float d=edge+A::divider;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
             x=d+1+A::divider;
         }else{
             if(indicatorHover)FillBox(slot,A::chipRadius,D2D1::ColorF(1,1,1,A::chipPlate));
             Icon(address.icon(),slot,Design::Size::icon,A::secondary);
+            // B01: lock (50 %) stays in its slot; the request chip follows, the URL moves past it.
+            if(request.right>request.left){DrawRequestChip(request);x=requestShift>=0?bar.left+A::textInset+requestShift:request.right+SiteRequest::Layout::trail+Design::Space::xs;}
         }
         // Runs share one baseline; the overflowing tail is clipped under a fade, never ellipsised.
         target->PushAxisAlignedClip(D2D1::RectF(x,line.top,right,line.bottom),D2D1_ANTIALIAS_MODE_ALIASED);
@@ -597,6 +644,7 @@ public:
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
         regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-133,76};edit={bar.left+Design::Address::textInset,44,bar.right-111,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
+        request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link, a hairline, reload.
         regions.push_back({'L',{bar.left,44,bar.right-105,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-101,48,bar.right-101+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
@@ -653,7 +701,7 @@ public:
                 if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown);}
                 if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
                 target->PopAxisAlignedClip();continue;}
-            if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I')continue;
+            if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){

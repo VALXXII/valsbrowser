@@ -8,7 +8,7 @@
 //
 // API (final):
 //   NativeChrome::OriginPrompt::Prompt
-//     bool Create(HINSTANCE, HWND owner, const std::wstring& root, Hooks{wake, choose})
+//     bool Create(HINSTANCE, HWND owner, const std::wstring& root, Hooks{wake, choose, menu, dismiss, download})
 //     void Dispose()                       // done({Dismiss}) if still pending
 //     bool Show(Spec, RECT anchor, std::function<void(Result&)> done)  // false if one is open
 //         `anchor`: screen rect of the origin indicator (centred kinds use SetPageArea's rect,
@@ -28,7 +28,7 @@
 
 namespace NativeChrome {
 namespace OriginPrompt {
-enum class Kind { Permission, BasicAuth, ExternalApp, DangerousDownload, ClientCertificate, ScreenShare, KeepFile, PasswordSave, PasswordUpdate, PasswordFill };
+enum class Kind { Permission, BasicAuth, ExternalApp, DangerousDownload, ClientCertificate, ScreenShare, KeepFile, PasswordSave, PasswordUpdate, PasswordFill, SiteStatus };
 enum class Action { Dismiss, Allow, AllowOnce, Block, Submit, Cancel, Open, Keep, Delete, Choose, Save, Never, Fill, Manage };
 // COREWEBVIEW2_PERMISSION_KIND values (no WebView2 header needed here).
 namespace Permission {
@@ -50,7 +50,13 @@ struct Spec {
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
     std::wstring reason;                 // DangerousDownload: « Microsoft Defender SmartScreen le signale… »
     bool insecure = false;               // BasicAuth over plain HTTP
-    std::vector<std::wstring> sources;   // ScreenShare: « Onglet », « Fenêtre », « Écran entier »
+    std::vector<std::wstring> sources;   // ScreenShare: category names (« Onglets », « Fenêtres », « Écrans »)
+    std::vector<Modal::Source> shareSources;   // ScreenShare: fictitious sources (title, category, thumbnail art)
+    // SiteStatus (B02 « Clic sur la puce », EAC-0): what this page may use. `active` only from a
+    // verified in-use source (the sandbox demonstration), `revoked` turned off from this popover.
+    std::vector<int> granted, active, blocked, revoked, remembered;
+    // Origin prompts come from pages (or the address-bar chip): pointer unless the host knows better.
+    Modal::Spec::Modality modality = Modal::Spec::Modality::Pointer;
 };
 struct Result { Action action = Action::Dismiss; bool remember = false; std::wstring user, password; int choice = -1; };
 
@@ -130,7 +136,8 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         break;
     }
     case Kind::BasicAuth: {
-        m.automationId = L"HttpAuthentication"; m.scope = Scope::Page; m.largeTitle = true; m.title = L"Connexion requise";
+        // Popover title role 16/20 Medium (user override of Paper's 20/24 SemiBold, as B06).
+        m.automationId = L"HttpAuthentication"; m.scope = Scope::Page; m.title = L"Connexion requise";
         m.subtitle = s.origin + L" demande un identifiant.";
         if (!s.detail.empty()) m.subtitle += L" « " + s.detail + L" »";   // the site's words, quoted (B06 note)
         if (s.insecure) m.notices.push_back({DialogKit::Glyph::lockOpen, L"Connexion non sécurisée : ces identifiants seront envoyés en clair.", true});
@@ -142,7 +149,8 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         break;
     }
     case Kind::ExternalApp: {
-        m.automationId = L"ExternalApplication"; m.scope = Scope::Page; m.largeTitle = true; m.tileGlyph = DialogKit::Glyph::external; m.softButtons = true;
+        // Title in the popovers' 16/20 role (user override of Paper's 20/24), tile on the title line.
+        m.automationId = L"ExternalApplication"; m.scope = Scope::Page; m.tileGlyph = DialogKit::Glyph::external; m.softButtons = true;
         std::wstring scheme = s.detail.substr(0, s.detail.find(L':'));
         if (!s.frame.empty()) {
             m.title = L"Ouvrir une application ?";
@@ -153,7 +161,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         } else {
             m.title = s.app.empty() ? L"Ouvrir une application ?" : L"Ouvrir " + s.app + L" ?";
             m.subtitle = s.origin + L" veut ouvrir une application installée sur cet ordinateur.";
-            if (!scheme.empty()) { m.checkLabel = L"Toujours autoriser ce site à ouvrir les liens " + scheme; m.originCheck = true; }
+            if (!scheme.empty()) { m.checkLabel = L"Toujours autoriser ce site à ouvrir les liens " + scheme; m.originCheck = true; m.checkInHeadLane = true; }
             const std::wstring short_ = s.app.empty() ? L"Ouvrir" : L"Ouvrir " + s.app.substr(0, s.app.find(L' '));
             m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, false, true, false, L"ExternalCancel"), button(Id::Accept, short_, Role::Primary, true, false, true, L"ExternalOpen")};
         }
@@ -177,19 +185,44 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         break;
     }
     case Kind::ClientCertificate: {   // B08 concept: WebView2 exposes ClientCertificateRequested, list as accounts
-        m.automationId = L"ClientCertificate"; m.scope = Scope::Page; m.largeTitle = true; m.title = L"Choisir un certificat";
+        m.automationId = L"ClientCertificate"; m.scope = Scope::Page; m.title = L"Choisir un certificat";
         m.subtitle = s.origin + L" demande un certificat pour vous identifier.";
         m.accountsTitle = L"Certificats disponibles";
-        for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint});
+        for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true});   // issuer line: plain text, no dot tracking
         m.softButtons = true;
         m.buttons = {button(Id::Cancel, L"Ne pas envoyer", Role::Secondary, true, true, false, L"CertificateCancel")};
         break;
     }
     case Kind::ScreenShare: {   // B08 concept (Démonstration): the engine's picker cannot be replaced
-        m.automationId = L"ScreenShare"; m.scope = Scope::Page; m.largeTitle = true; m.title = L"Partager avec " + s.origin; m.demo = true;
-        m.hasSelect = true; m.select.label = L"Source"; m.select.options = s.sources.empty() ? std::vector<std::wstring>{L"Onglet", L"Fenêtre", L"Écran entier"} : s.sources; m.select.index = 0;
+        // Same 16/20 title as every popover: the 640 DIP picker's hierarchy comes from its thumbnails.
+        m.automationId = L"ScreenShare"; m.scope = Scope::Page; m.title = L"Partager avec " + s.origin; m.demo = true;
+        // A larger picker with thumbnails (user request 2026-11-09): pick a category, select a source,
+        // then « Partager ». Thumbnails are drawn locally for the demonstration: nothing is captured.
+        m.width = 640;
+        m.sources.shown = true; m.sources.categories = s.sources.empty() ? std::vector<std::wstring>{L"Onglets", L"Fenêtres", L"Écrans"} : s.sources;
+        m.sources.items = s.shareSources; m.sources.category = 0; m.sources.selected = -1; m.sources.acceptId = Id::Accept;
+        for (size_t c = 0; c < m.sources.categories.size(); ++c) { bool any = false; for (auto& i : m.sources.items) any = any || i.category == static_cast<int>(c); if (any) { m.sources.category = static_cast<int>(c); break; } }
+        m.notices.push_back({DialogKit::Glyph::info, L"Aperçus fictifs dessinés pour la démonstration : rien n'est capturé ni partagé.", false});
         m.softButtons = true;
-        m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, false, true, true, L"ShareCancel"), button(Id::Accept, L"Partager", Role::Primary, true, false, false, L"ShareConfirm")};
+        Button share = button(Id::Accept, L"Partager", Role::Primary, true, false, false, L"ShareConfirm"); share.disabled = true;   // until a source is selected
+        m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, false, true, false, L"ShareCancel"), share};
+        break;
+    }
+    case Kind::SiteStatus: {   // B02 EAC-0 / EBA-0: opened from the address-bar chip, never asks anything
+        m.automationId = L"SitePermissions"; m.scope = Scope::Anchor; m.width = 340; m.demo = s.demo;
+        const bool inUse = !s.active.empty();
+        m.title = inUse ? s.origin + L" utilise" : !s.granted.empty() ? s.origin + L" peut utiliser" : s.origin + L" : accès refusé";
+        m.subtitle = s.demo ? (inUse ? L"Utilisation simulée par la sandbox (démonstration)." : L"Démonstration : rien n'est accordé à un vrai site.")
+                            : L"Le moteur ne signale pas l'utilisation en cours : seule l'autorisation est affichée.";
+        for (int k : s.granted) {
+            Row r{Text::Glyph(k), Text::Noun(k), std::find(s.active.begin(), s.active.end(), k) != s.active.end() ? L"En cours" : L"", 1};
+            const bool kept = std::find(s.remembered.begin(), s.remembered.end(), k) != s.remembered.end();
+            r.detail = s.demo ? L"Désactiver retire l'autorisation de démonstration." : std::wstring(kept ? L"Mémorisée pour ce site. " : L"Pour cette page. ") + L"Désactiver la retire et recharge la page.";
+            m.rows.push_back(r);
+        }
+        for (int k : s.revoked) { Row r{Text::Glyph(k), Text::Noun(k), L"Retirée", 0}; r.detail = L"Le site devra la redemander."; m.rows.push_back(r); }
+        for (int k : s.blocked) m.rows.push_back(Row{Text::Glyph(k), Text::Noun(k), L"Bloqué", -1});
+        m.links = {{Id::Manage, L"Autorisations du site"}};
         break;
     }
     case Kind::PasswordSave: case Kind::PasswordUpdate: {   // B04, Démonstration: nothing is stored
@@ -229,10 +262,12 @@ inline Result Map(const Spec& s, const Modal::Result& r) {
         if (r.button == Id::Accept) { out.action = Action::Submit; if (r.values.size() > 1) { out.user = r.values[0]; out.password = r.values[1]; } } else out.action = Action::Cancel;
         out.remember = false; break;
     case Kind::ExternalApp: out.action = r.button == Id::Accept ? Action::Open : Action::Cancel; if (!s.frame.empty()) out.remember = false; break;
-    case Kind::DangerousDownload: out.action = r.button == Id::Accept ? Action::Delete : r.button == Id::More ? Action::Keep : Action::Dismiss; break;
+    // « Plus d'options » never answers by itself: Keep only comes from the B08 confirmation (KeepFile).
+    case Kind::DangerousDownload: out.action = r.button == Id::Accept ? Action::Delete : Action::Dismiss; break;
     case Kind::KeepFile: out.action = r.button == Id::Accept ? Action::Keep : Action::Cancel; break;
+    case Kind::SiteStatus: out.action = r.button == Id::Manage ? Action::Manage : Action::Dismiss; break;
     case Kind::ClientCertificate: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
-    case Kind::ScreenShare: if (r.button == Id::Accept) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
+    case Kind::ScreenShare: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
     case Kind::PasswordSave: case Kind::PasswordUpdate:
         out.action = r.button == Id::Accept ? Action::Save : r.button == Id::Never ? Action::Never : r.button == Id::Later ? Action::Cancel : Action::Dismiss;
         if (r.button == Id::Accept && !r.values.empty()) out.user = r.values[0];   // the (fictitious) password is never returned
@@ -247,43 +282,80 @@ inline Result Map(const Spec& s, const Modal::Result& r) {
 
 class Prompt {
 public:
+    // B07 « Plus d'options » commands (Paper FYS-0): two plain rows, a separator, the danger row.
+    enum Command { CopyLink = 1, Report = 2, KeepAnyway = 3 };
+    static std::vector<ContextMenu::Item> MoreItems() {
+        auto keep = ContextMenu::Command(KeepAnyway, L"Conserver quand même…"); keep.danger = true;
+        return {ContextMenu::Command(CopyLink, L"Copier le lien du fichier"), ContextMenu::Command(Report, L"Signaler une erreur à Microsoft"), ContextMenu::Separator(), keep};
+    }
     struct Hooks {
         std::function<void()> wake;
-        // B07 « Plus d'options » menu (Copier le lien du fichier, Signaler une erreur à Microsoft,
-        // Conserver quand même…): chosen index or -1. Without it « Plus d'options » means Keep.
+        // Native list of a select (B08 certificate / screen share): chosen index or -1.
         std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        // B07 « Plus d'options » command list: chosen Command, 0 when dismissed (shared host menu).
+        std::function<int(const std::vector<ContextMenu::Item>&, RECT anchorScreen, bool keyboard)> menu;
+        std::function<void()> dismiss;   // end the host list now (the prompt closed while it was open)
+        // CopyLink / Report chosen: the popover stays open (non-terminal commands).
+        std::function<void(Command, const Spec&)> download;
+        std::function<bool()> keyboard;   // Modality::Host prompts (the address-bar chip)
+        // SiteStatus: a toggle switched off (revoke this kind for this page / site).
+        std::function<void(int kind, const Spec&)> revoke;
     };
 private:
     Modal::Dialog dialog_; Hooks hooks_; Spec spec_; std::function<void(Result&)> done_;
     RECT page_{}; bool hasPage_ = false;
+    Spec parent_; bool confirming_ = false;   // B08 confirmation shown in place of the B07 popover
+    // B07/B08 content for the open popover: same anchor, same width, onButton wired.
+    Modal::Spec Content(const Spec& s) {
+        Modal::Spec m = Build(s, true);
+        const auto& now = dialog_.CurrentSpec();
+        m.scope = Modal::Scope::Anchor; m.anchor = now.anchor; m.anchorRight = now.anchorRight; m.width = now.width;
+        m.onButton = [this](int id) { OnButton(id); };
+        return m;
+    }
     void OnButton(int id) {
-        if (id != Id::More) return;
-        int chosen = 2;   // « Conserver quand même… » when no menu is wired
-        if (hooks_.choose) {
-            const auto box = dialog_.BoxForTest(Modal::Dialog::ButtonHit(1)); (void)box;
-            RECT r{}; GetWindowRect(dialog_.Window(), &r);
-            chosen = hooks_.choose({L"Copier le lien du fichier", L"Signaler une erreur à Microsoft", L"Conserver quand même…"}, -1, r, false);
+        if (spec_.kind == Kind::SiteStatus && Modal::Dialog::IsRow(id)) {
+            const size_t i = static_cast<size_t>(id - 9000); if (i >= spec_.granted.size()) return;   // rows: granted first
+            const int k = spec_.granted[i]; const Spec before = spec_;
+            spec_.granted.erase(spec_.granted.begin() + static_cast<long>(i));
+            spec_.active.erase(std::remove(spec_.active.begin(), spec_.active.end(), k), spec_.active.end()); spec_.revoked.push_back(k);
+            if (dialog_.Visible()) { dialog_.Update(Content(spec_)); dialog_.FocusControl(spec_.granted.empty() ? Modal::Dialog::LinkHit(0) : Modal::Dialog::RowHit(std::min(i, spec_.granted.size() - 1))); }
+            if (hooks_.revoke) hooks_.revoke(k, before);   // last: the host may reload the page (the popover then closes)
+            return;
         }
-        if (chosen == 2) dialog_.Finish(Id::More);
+        if (confirming_) {   // « Annuler » of the confirmation: back to the blocked download, nothing kept
+            if (id == Id::Cancel) { confirming_ = false; spec_ = parent_; dialog_.Update(Content(spec_)); dialog_.FocusControl(Modal::Dialog::ButtonHit(1)); }
+            return;
+        }
+        if (id != Id::More || spec_.kind != Kind::DangerousDownload) return;
+        const int chosen = dialog_.TrackMenu(MoreItems(), Modal::Dialog::ButtonHit(1), dialog_.KeyboardModality());
+        if (chosen == CopyLink || chosen == Report) { if (hooks_.download) hooks_.download(static_cast<Command>(chosen), spec_); return; }
+        if (chosen != KeepAnyway) return;   // Échap / click outside: the popover stays as it was
+        // B08 « Confirmation dans le popover — Annuler par défaut »: Keep only after « Conserver ».
+        parent_ = spec_; confirming_ = true;
+        Spec keep = spec_; keep.kind = Kind::KeepFile; spec_ = keep;
+        Modal::Spec m = Content(spec_);
+        for (auto& b : m.buttons) if (b.id == Id::Cancel) b.closes = false;
+        dialog_.Update(std::move(m));
     }
 public:
     ~Prompt() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, Hooks hooks) {
         hooks_ = std::move(hooks);
-        Modal::Dialog::Hooks h; h.wake = hooks_.wake; h.choose = hooks_.choose;
+        Modal::Dialog::Hooks h; h.wake = hooks_.wake; h.choose = hooks_.choose; h.menu = hooks_.menu; h.dismiss = hooks_.dismiss; h.keyboard = hooks_.keyboard;
         return dialog_.Create(instance, owner, root, std::move(h));
     }
     void Dispose() { dialog_.Dispose(); done_ = nullptr; }
     void SetPageArea(RECT page) { page_ = page; hasPage_ = true; if (dialog_.Visible() && dialog_.CurrentSpec().scope == Modal::Scope::Page) dialog_.Reposition(page); }
     bool Show(Spec spec, RECT anchor, std::function<void(Result&)> done) {
         if (dialog_.Visible() || !dialog_.Window()) return false;
-        spec_ = std::move(spec); done_ = std::move(done);
-        Modal::Spec m = Build(spec_, true); m.anchor = anchor;
+        spec_ = std::move(spec); done_ = std::move(done); confirming_ = false;
+        Modal::Spec m = Build(spec_, true); m.anchor = anchor; m.modality = spec_.modality;
         m.onButton = [this](int id) { OnButton(id); };
         RECT area = hasPage_ ? page_ : RECT{};
         if (!hasPage_) { HWND owner = GetWindow(dialog_.Window(), GW_OWNER); if (owner) { GetClientRect(owner, &area); MapWindowPoints(owner, nullptr, reinterpret_cast<POINT*>(&area), 2); } }
         return dialog_.Show(std::move(m), area, [this](const Modal::Result& r) {
-            auto done = std::move(done_); done_ = nullptr;
+            auto done = std::move(done_); done_ = nullptr; confirming_ = false;
             Result out = Map(spec_, r);
             if (done) done(out);
             SecureZeroMemory(out.password.data(), out.password.size() * sizeof(wchar_t)); out.password.clear();
@@ -296,6 +368,7 @@ public:
     HWND Window() const { return dialog_.Window(); }
     const Spec& Current() const { return spec_; }
     Modal::Dialog& Surface() { return dialog_; }   // tests
+    bool ConfirmingForTest() const { return confirming_; }
     Motion::Wake NextWake(Motion::Time now) const { return dialog_.NextWake(now); }
     void Frame(Motion::Time now) { dialog_.Frame(now); }
     void SetReducedMotion(bool reduced) { dialog_.SetReducedMotion(reduced); }

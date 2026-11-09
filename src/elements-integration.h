@@ -139,6 +139,7 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
     case COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD:spec=MD::BeforeUnloadSpec(origin,false);break;
     }
     Log(L"DIALOG kind="+std::to_wstring(kind)+L" "+origin);
+    spec.modality=MD::Spec::Modality::Pointer; // the page's own input is not visible here: ring on Tab / arrows only
     ComRef<ICoreWebView2ScriptDialogOpeningEventArgs> args(a);const unsigned serial=t->serial;
     AskModal(std::move(spec),t,[args,deferral,kind,serial](const MD::Result& r){
         if(r.checked&&kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD)scriptDialogsBlocked.insert(serial);
@@ -159,10 +160,118 @@ struct PromptJob {
 };
 std::deque<PromptJob> promptQueue; PromptJob promptActive; bool promptOpen=false;
 void PumpPrompt();
+// B01 address-bar chip: shown exactly while a permission popover is open for the active tab
+// (real request or sandbox demo), so it follows that request's tab and origin and disappears
+// with its answer, cancellation, navigation, tab switch/close or shutdown. Nothing survives the
+// answer: WebView2 gives no verified capture state, and « autorisé » is not « en cours ».
+bool RequestChipOpen(){
+    if(halted||!promptOpen||promptActive.spec.kind!=OP::Kind::Permission||!originPrompt.Visible())return false;
+    auto t=promptActive.tab.lock();return t&&!t->closed&&t==Active();
+}
+std::wstring RequestChipTip(const OP::Spec& s){
+    std::wstring nouns;const auto& p=s.permissions;
+    for(size_t i=0;i<p.size();++i){std::wstring n=OP::Text::Noun(p[i]);if(i)n[0]=towlower(n[0]);nouns+=(i==0?L"":i+1==p.size()?L" et ":L", ")+n;}
+    return s.origin+L" demande : "+(nouns.empty()?std::wstring(L"une autorisation"):nouns)+L" (en attente de votre réponse)";
+}
+// Per-tab site state behind the chip once a request is answered. Real tabs: what WE granted or
+// blocked for this document (deferral answers) plus what the engine has saved for its origin
+// (ICoreWebView2Profile4::GetNonDefaultPermissionSettings, re-read after each navigation).
+// « In use » is never inferred: WebView2 exposes no camera / microphone capture state (only
+// ScreenCaptureStarting and IsDocumentPlayingAudio, which is audio OUTPUT), so `active` is only
+// set by the sandbox demonstration, on its own demo state. Cleared on navigation and tab close.
+// `origin`: the tab's top-level document (scope); `requester`: who asked (a frame may differ), used to revoke.
+struct SiteState { std::wstring origin,requester; SiteRequest::Grants g; std::vector<int> remembered; bool demo=false; };
+std::map<unsigned,SiteState> siteStates;
+SiteState* SiteStateOf(const std::shared_ptr<Tab>& t){
+    if(!t||t->closed)return nullptr;auto it=siteStates.find(t->serial);if(it==siteStates.end())return nullptr;
+    if(!it->second.demo&&it->second.origin!=OriginOf(t->uri))return nullptr;   // another document's grants never show
+    return &it->second;
+}
+void RecordSiteAnswer(const std::shared_ptr<Tab>& t,const std::wstring& requester,const std::vector<int>& kinds,bool allowed,bool remembered,bool demo){
+    if(!t||t->closed||halted)return;auto& st=siteStates[t->serial];const std::wstring origin=demo?std::wstring(L"demo"):OriginOf(t->uri);
+    if(st.origin!=origin||st.demo!=demo){st=SiteState{};st.origin=origin;st.demo=demo;}
+    st.requester=requester;
+    SiteRequest::Record(st.g,kinds,allowed);
+    for(int k:kinds){if(allowed&&remembered)SiteRequest::Add(st.remembered,k);else SiteRequest::Remove(st.remembered,k);}
+}
+std::wstring Nouns(const std::vector<int>& p){
+    std::wstring nouns;for(size_t i=0;i<p.size();++i){std::wstring n=OP::Text::Noun(p[i]);if(i)n[0]=towlower(n[0]);nouns+=(i==0?L"":i+1==p.size()?L" et ":L", ")+n;}
+    return nouns.empty()?std::wstring(L"une autorisation"):nouns;
+}
+// What the bar should show for the active tab right now (glyphs empty: nothing).
+struct ChipTarget { std::vector<const char*> glyphs; SiteRequest::State state=SiteRequest::State::Pending; std::wstring tip; };
+ChipTarget ChipFor(){
+    ChipTarget c;if(halted||editing)return c;
+    if(RequestChipOpen()){c.glyphs=SiteRequest::Glyphs(promptActive.spec.permissions);c.tip=RequestChipTip(promptActive.spec);return c;}
+    if(auto* st=SiteStateOf(Active())){
+        const auto shown=SiteRequest::Resolve(st->g);if(shown.kinds.empty())return c;
+        c.glyphs=SiteRequest::Glyphs(shown.kinds);c.state=shown.state;
+        const std::wstring site=st->demo?std::wstring(L"meet.exemple.test"):OriginLabel(st->requester+L"/");
+        c.tip=site+L" : "+Nouns(shown.kinds)+L" — "+SiteRequest::StateLabel(shown.state)+(st->demo?L" (démonstration)":L"")+L". Afficher les autorisations du site";
+    }
+    return c;
+}
+// Chip motion (Paper popover timings): appear = fade 150 ms + the URL easing aside; leave = fade
+// 120 ms, URL easing back, no clicks meanwhile; state change = 120 ms cross-fade. Every tween
+// retargets from its current value. Reduced motion: fades only, the URL moves at once.
+struct ChipMotion {
+    std::vector<const char*> glyphs; SiteRequest::State state=SiteRequest::State::Pending,from=SiteRequest::State::Pending; std::wstring tip;
+    NativeChrome::Motion::Tween alpha,mix,shiftT; float shiftFrom=0,shiftTo=0; bool leaving=false;
+    float Shift(NativeChrome::Motion::Time now)const{return shiftFrom+(shiftTo-shiftFrom)*shiftT.Value(now);}
+    bool Moving(NativeChrome::Motion::Time now)const{return alpha.Moving(now)||mix.Moving(now)||shiftT.Moving(now);}
+} chipMotion;
+void ChipShiftTo(float to,NativeChrome::Motion::Time now,int ms){
+    const bool reduced=motion.ReducedMotion();const float cur=chipMotion.Shift(now);
+    chipMotion.shiftFrom=cur;chipMotion.shiftTo=to;chipMotion.shiftT.Snap(0);chipMotion.shiftT.Set(1,now,NativeChrome::Motion::Milliseconds(ms),reduced,NativeChrome::Motion::Curve::EaseOut);
+}
+void ApplyChipToChrome(NativeChrome::Motion::Time now){
+    auto& m=chipMotion;chrome.requestGlyphs=m.glyphs;chrome.requestState=m.state;chrome.requestFrom=m.from;chrome.requestMix=m.mix.Value(now);
+    chrome.requestAlpha=m.alpha.Value(now);chrome.requestShift=m.glyphs.empty()?-1:m.Shift(now);chrome.requestLive=!m.leaving;chrome.requestTip=m.tip;
+}
+void SyncRequestChip(){
+    using namespace NativeChrome::Motion;namespace L=SiteRequest::Layout;
+    const auto now=Now();auto& m=chipMotion;auto t=ChipFor();
+    if(!t.glyphs.empty()){
+        if(m.glyphs.empty()||m.leaving){
+            const bool fresh=m.glyphs.empty();m.glyphs=t.glyphs;m.state=m.from=t.state;m.mix.Snap(1);m.leaving=false;
+            if(fresh)m.alpha.Snap(0);m.alpha.Set(1,now,Milliseconds(L::enterMs),false,Curve::EaseOut);
+            ChipShiftTo(SiteRequest::TextShift(t.glyphs.size(),t.state),now,L::enterMs);
+        }else{
+            if(t.state!=m.state){m.from=m.state;m.state=t.state;m.mix.Snap(0);m.mix.Set(1,now,Milliseconds(L::stateMs),false,Curve::EaseOut);}
+            if(t.glyphs!=m.glyphs)m.glyphs=t.glyphs;
+            const float to=SiteRequest::TextShift(m.glyphs.size(),m.state);if(to!=m.shiftTo)ChipShiftTo(to,now,L::stateMs);
+        }
+        m.tip=t.tip;
+    }else if(!m.glyphs.empty()&&!m.leaving){
+        m.leaving=true;m.tip.clear();m.alpha.Set(0,now,Milliseconds(L::exitMs),false,Curve::EaseOut);ChipShiftTo(0,now,L::exitMs);
+    }
+    ApplyChipToChrome(now);
+    // A permission held back while the address was being edited shows once editing ends.
+    if(!editing&&!promptOpen&&!halted){auto a=Active();for(auto& q:promptQueue)if(q.tab.lock()==a){Defer([]{PumpPrompt();});break;}}
+}
+NativeChrome::Motion::Wake ChipNextWake(NativeChrome::Motion::Time now){return chipMotion.Moving(now)?NativeChrome::Motion::Frame():NativeChrome::Motion::Wake{};}
+void ChipFrame(NativeChrome::Motion::Time now){
+    auto& m=chipMotion;if(m.glyphs.empty())return;
+    const bool done=m.leaving&&!m.alpha.Moving(now)&&!m.shiftT.Moving(now);
+    if(done){m=ChipMotion{};ApplyChipToChrome(now);BuildChrome();InvalidateChrome();if(accessibility.Listening())accessibility.ChildrenChanged(AccessibleToolbarKey);return;}
+    if(m.Moving(now)||chrome.requestAlpha!=m.alpha.Value(now)){ApplyChipToChrome(now);InvalidateChrome();}
+}
+void RefreshRequestChip(){if(halted||!window)return;BuildChrome();InvalidateChrome();RequestElementFrame();if(accessibility.Listening())accessibility.ChildrenChanged(AccessibleToolbarKey);}
+void ShowSiteStatus(const std::shared_ptr<Tab>& t);
+void SandboxLog(const std::shared_ptr<Tab>& t,const std::wstring& line);
+// The chip's click / UIA Invoke: back to the popover already open for this request, or the
+// site's status popover. It never answers, re-grants or creates a request.
+void RequestChipActivated(){
+    if(RequestChipOpen()){HWND w=originPrompt.Window();if(w){SetForegroundWindow(w);SetFocus(w);}Log(L"PERMISSION chip: popover focused");return;}
+    if(promptOpen&&promptActive.spec.kind==OP::Kind::SiteStatus){HWND w=originPrompt.Window();if(w){SetForegroundWindow(w);SetFocus(w);}return;}
+    if(SiteStateOf(Active())){ShowSiteStatus(Active());return;}
+    Log(L"PERMISSION chip: nothing to show");
+}
 void FinishPrompt(OP::Result& r){
     if(!promptOpen)return;promptOpen=false;auto job=std::move(promptActive);promptActive=PromptJob{};
     for(auto& answer:job.answers)answer(r);
     SecureZeroMemory(r.password.data(),r.password.size()*sizeof(wchar_t));
+    if(job.spec.kind==OP::Kind::Permission){Log(L"PERMISSION chip cleared");RefreshRequestChip();}
     Defer([]{PumpPrompt();});
 }
 void PumpPrompt(){
@@ -171,10 +280,14 @@ void PumpPrompt(){
         auto t=it->tab.lock();
         if(!t||t->closed){auto job=std::move(*it);promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);PumpPrompt();return;}
         if(t!=Active())continue;
+        // Never pull focus out of the address while it is being edited: the request waits (its
+        // page waits too) and shows when editing ends (SyncRequestChip).
+        if(it->spec.kind==OP::Kind::Permission&&editing)continue;
         promptActive=std::move(*it);promptQueue.erase(it);promptOpen=true;originPrompt.SetPageArea(PageScreenRect());
+        const bool permission=promptActive.spec.kind==OP::Kind::Permission;
         if(!originPrompt.Show(promptActive.spec,OriginAnchorRect(),[](OP::Result& r){FinishPrompt(r);})){
             Log(L"PROMPT show failed");OP::Result none;FinishPrompt(none);
-        }
+        }else if(permission){RefreshRequestChip();Log(L"PERMISSION chip shown glyphs="+std::to_wstring(chrome.requestGlyphs.size()));}
         return;
     }
 }
@@ -197,6 +310,50 @@ void AbortTabPrompts(const std::shared_ptr<Tab>& t){
     if(promptOpen){auto q=promptActive.tab.lock();if(!q||q==t)originPrompt.Abort();}
 }
 void PromptTabChanged(){if(promptOpen){auto q=promptActive.tab.lock();if(q!=Active())originPrompt.Abort();}PumpPrompt();}
+// A top-level navigation of `t` ends its pending permission requests (queued and open): they
+// belonged to the document being left. Authentication and other prompts are left alone.
+void ElementsNavigationStarting(const std::shared_ptr<Tab>& t){
+    if(!t)return;
+    for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if(it->spec.kind==OP::Kind::Permission&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
+    if(promptOpen&&(promptActive.spec.kind==OP::Kind::Permission||promptActive.spec.kind==OP::Kind::SiteStatus)){auto q=promptActive.tab.lock();if(!q||q==t){Log(L"PERMISSION navigation: popover closed");originPrompt.Abort();}}
+    if(siteStates.erase(t->serial))Log(L"PERMISSION navigation: site state cleared");
+    if(t==Active())RefreshRequestChip();
+}
+// After a successful top-level navigation: the engine's saved decisions for this origin (the same
+// source as Réglages › Autorisations). Allowed ones show as Granted (« mémorisée »).
+void QueryPermissions(std::function<void(std::vector<EnginePermission>)> done);
+void ElementsNavigationCompleted(const std::shared_ptr<Tab>& t,bool ok){
+    if(!ok||!t||t->closed||halted||t->home)return;
+    const std::wstring origin=OriginOf(t->uri);if(origin.rfind(L"http",0)!=0)return;
+    std::weak_ptr<Tab> weak=t;const unsigned stamp=t->navStamp;
+    QueryPermissions([weak,origin,stamp](std::vector<EnginePermission> all){
+        auto tab=weak.lock();if(!tab||tab->closed||halted||tab->navStamp!=stamp||OriginOf(tab->uri)!=origin)return;
+        std::vector<int> allowed;
+        for(auto& e:all){std::wstring o=e.origin;while(!o.empty()&&o.back()==L'/')o.pop_back();if(o==origin&&e.state==COREWEBVIEW2_PERMISSION_STATE_ALLOW)allowed.push_back((int)e.kind);}
+        if(allowed.empty())return;
+        RecordSiteAnswer(tab,origin,allowed,true,true,false);Log(L"PERMISSION saved grants shown: "+std::to_wstring(allowed.size()));
+        if(tab==Active())RefreshRequestChip();
+    });
+}
+// B02 status popover from the chip: rows with one-way toggles (revoke), « Autorisations du site ».
+void ShowSiteStatus(const std::shared_ptr<Tab>& t){
+    auto* st=SiteStateOf(t);if(!st)return;
+    OP::Spec s;s.kind=OP::Kind::SiteStatus;s.demo=st->demo;s.modality=MD::Spec::Modality::Host;s.origin=st->demo?std::wstring(L"meet.exemple.test"):OriginLabel(st->requester+L"/");
+    s.granted=st->g.granted;s.active=st->g.active;s.blocked=st->g.blocked;s.remembered=st->remembered;
+    Log(L"PERMISSION status popover");
+    AskPrompt(std::move(s),t,[](OP::Result& r){if(r.action==OP::Action::Manage)Defer([]{settingsDrawer.ShowSites();});});
+}
+// A toggle switched off in the status popover. Demo: the demo state only. Real: the engine's
+// saved setting goes back to « Demander » and the page reloads, so the open document loses the
+// access too (a grant cannot be withdrawn from a live document otherwise).
+void RevokeSitePermission(int kind,const OP::Spec& s){
+    auto t=promptActive.tab.lock();auto* st=SiteStateOf(t);if(!st)return;
+    SiteRequest::Revoke(st->g,kind);SiteRequest::Remove(st->remembered,kind);
+    if(st->demo){Log(L"PERMISSION demo revoked kind="+std::to_wstring(kind));SandboxLog(t,L"prompt.permission → autorisation de démonstration retirée");RefreshRequestChip();return;}
+    const std::wstring origin=st->requester;Log(L"PERMISSION revoked kind="+std::to_wstring(kind)+L" "+origin);
+    Com<ICoreWebView2Profile4> profile;if(PermissionProfile(profile))WritePermission(profile.p,origin,(COREWEBVIEW2_PERMISSION_KIND)kind,COREWEBVIEW2_PERMISSION_STATE_DEFAULT);
+    (void)s;RefreshRequestChip();std::weak_ptr<Tab> weak=t;Defer([weak]{auto tab=weak.lock();if(tab&&!tab->closed&&tab->view.p){Log(L"PERMISSION revoke: page reloaded");tab->view->Reload();}});
+}
 
 HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2PermissionRequestedEventArgs* a){
     if(!a)return S_OK;
@@ -213,8 +370,12 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
     OP::Spec spec;spec.kind=OP::Kind::Permission;spec.origin=OriginLabel(uri);spec.permissions={(int)kind};spec.userInitiated=user!=FALSE;
     const std::wstring key=OriginOf(uri);Log(L"PERMISSION request kind="+std::to_wstring(kind)+L" "+key);
-    AskPrompt(std::move(spec),t,[args,deferral,deny,kind](OP::Result& r){
+    std::weak_ptr<Tab> weakTab=t;
+    AskPrompt(std::move(spec),t,[args,deferral,deny,kind,weakTab,key](OP::Result& r){
         Com<ICoreWebView2PermissionRequestedEventArgs3> a3;const bool has3=SUCCEEDED(args->QueryInterface(IID_ICoreWebView2PermissionRequestedEventArgs3,(void**)&a3.p))&&a3.p;
+        // The bar keeps what was actually written into the engine's answer (never Dismiss).
+        if(r.action==OP::Action::Allow||r.action==OP::Action::AllowOnce||r.action==OP::Action::Block)
+            RecordSiteAnswer(weakTab.lock(),key,{(int)kind},r.action!=OP::Action::Block,r.action==OP::Action::Allow&&r.remember,false);
         switch(r.action){
         case OP::Action::Allow:args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);if(has3)a3->put_SavesInProfile(r.remember?TRUE:FALSE);break;
         case OP::Action::AllowOnce:args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);if(has3)a3->put_SavesInProfile(FALSE);break;
@@ -640,6 +801,7 @@ void ElementsTabClosed(const std::shared_ptr<Tab>& t){
     if(findSession.tab.lock()==t){if(findBar.Visible())findBar.Hide();FindDetach();}
     if(t->pageFullscreen){t->pageFullscreen=false;if(fullscreen.page){const bool was=InFullscreen();fullscreen.page=false;ApplyFullscreen(was);}}
     scriptDialogsBlocked.erase(t->serial);
+    siteStates.erase(t->serial);
 }
 // Keys pressed while one of our dialogs, prompts or the find bar has focus: their fields keep
 // them, except Ctrl+F / F3 in the find bar. True when Key() must return `cmd` (0: none).
@@ -653,7 +815,7 @@ bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd){
     }
     return InWindow(shortcutsPanel.Window(),f)||InWindow(modal.Window(),f)||InWindow(originPrompt.Window(),f)||InWindow(passwordDemo.Window(),f)||InWindow(contextToast.Window(),f);
 }
-void ElementsTabChanged(){ModalTabChanged();PromptTabChanged();FindTabChanged();FullscreenTabChanged();}
+void ElementsTabChanged(){ModalTabChanged();PromptTabChanged();FindTabChanged();FullscreenTabChanged();RefreshRequestChip();}
 void RepositionElementSurfaces(){
     if(modal.Visible())modal.Reposition(PageScreenRect());
     if(originPrompt.Visible())originPrompt.Reposition(OriginAnchorRect());
@@ -664,13 +826,34 @@ void RepositionElementSurfaces(){
 void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
 NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now){
     using NativeChrome::Motion::Earlier;
-    return Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now)));
+    return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
 }
-void ElementsFrame(NativeChrome::Motion::Time now){modal.Frame(now);originPrompt.Frame(now);passwordDemo.Frame(now);shortcutsPanel.Frame(now);sandboxTip.Frame(now);chromeTip.Frame(now);findBar.Frame(now);contextToast.Frame(now);fullscreenHint.Frame(now);}
+void ElementsFrame(NativeChrome::Motion::Time now){ChipFrame(now);modal.Frame(now);originPrompt.Frame(now);passwordDemo.Frame(now);shortcutsPanel.Frame(now);sandboxTip.Frame(now);chromeTip.Frame(now);findBar.Frame(now);contextToast.Frame(now);fullscreenHint.Frame(now);}
+// B07 « Plus d'options » non-terminal commands. Only the sandbox demonstration reaches them (real
+// dangerous downloads keep the engine's own UI and protections): the link is a fictitious
+// demo address, the report is simulated, and the result goes to the sandbox journal.
+bool CopyToClipboard(const std::wstring& text);
+void PromptDownloadCommand(OP::Prompt::Command c,const OP::Spec& s){
+    auto t=promptActive.tab.lock();
+    std::wstring line;
+    if(c==OP::Prompt::CopyLink){const std::wstring link=L"https://"+s.origin+L"/"+s.detail;line=CopyToClipboard(link)?L"prompt.dangerousDownload → lien copié (démonstration) : "+link:L"prompt.dangerousDownload → copie du lien impossible";}
+    else line=L"prompt.dangerousDownload → signalement simulé (démonstration : rien n'est envoyé à Microsoft)";
+    Log(L"SANDBOX "+line);if(t&&!t->closed)SandboxLog(t,line);
+}
 void CreateElementSurfaces(){
     const std::wstring root=base;
-    MD::Dialog::Hooks mh;mh.wake=[]{RequestElementFrame();};if(!modal.Create(instance,window,root,std::move(mh)))Log(L"MODAL unavailable");
-    OP::Prompt::Hooks ph;ph.wake=[]{RequestElementFrame();};if(!originPrompt.Create(instance,window,root,std::move(ph)))Log(L"PROMPT unavailable");
+    // The Période select (Effacer les données) drops the shared shadowless menu under its field.
+    MD::Dialog::Hooks mh;mh.wake=[]{RequestElementFrame();};mh.keyboard=[]{return keyboardModality;};
+    mh.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};
+    mh.dismiss=[]{contextMenu.Cancel();};
+    if(!modal.Create(instance,window,root,std::move(mh)))Log(L"MODAL unavailable");
+    OP::Prompt::Hooks ph;ph.wake=[]{RequestElementFrame();};ph.keyboard=[]{return keyboardModality;};
+    // B07 « Plus d'options » and the B08 selects drop the same shared, shadowless menu.
+    ph.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};ph.dismiss=[]{contextMenu.Cancel();};
+    ph.menu=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.right,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
+    ph.download=[](OP::Prompt::Command c,const OP::Spec& s){PromptDownloadCommand(c,s);};
+    ph.revoke=[](int kind,const OP::Spec& s){RevokeSitePermission(kind,s);};
+    if(!originPrompt.Create(instance,window,root,std::move(ph)))Log(L"PROMPT unavailable");
     NativeChrome::FindBar::Hooks fh;
     fh.query=[](const std::wstring& s,const NativeChrome::FindBar::Options& o){FindQuery(s,o);};
     fh.next=[]{if(findSession.find.p&&!findSession.term.empty())findSession.find->FindNext();};
@@ -694,6 +877,7 @@ void DisposeElementSurfaces(){
     if(modalOpen)modal.Abort();
     while(!promptQueue.empty()){auto job=std::move(promptQueue.front());promptQueue.pop_front();OP::Result none;for(auto& a:job.answers)a(none);}
     if(promptOpen)originPrompt.Abort();
+    siteStates.clear();chipMotion=ChipMotion{};
     FindDetach();
     modal.Dispose();originPrompt.Dispose();findBar.Dispose();contextToast.Dispose();fullscreenHint.Dispose();passwordDemo.Dispose();shortcutsPanel.Dispose();sandboxTip.Dispose();chromeTip.Dispose();
 }
@@ -738,10 +922,12 @@ bool SandboxPasswordManager(const std::wstring& v,std::function<void(const std::
 }
 void SandboxCommand(const std::shared_ptr<Tab>& t,const NativeChrome::DebugSandbox::Command& c){
     std::weak_ptr<Tab> weak=t;
+    // The page button's input (Entrée / Espace vs pointer) is the host's last input for what it opens.
+    keyboardModality=c.keyboard;
     auto log=[weak](const std::wstring& line){Log(L"SANDBOX "+line);SandboxLog(weak.lock(),line);};
     const std::wstring& n=c.name;const std::wstring& v=c.variant;const std::wstring what=n+(v.empty()?L"":L" · "+v);
     auto modalDone=[log,what](const MD::Result& r){log(what+L" → "+ModalOutcome(r));};
-    auto promptDone=[log,what](OP::Result& r){log(what+L" → "+PromptOutcome(r));if(r.action==OP::Action::Manage)Defer([log]{SandboxPasswordManager(L"list",log);});};
+    auto promptDone=[log,what](OP::Result& r){log(what+L" → "+PromptOutcome(r)+(r.action==OP::Action::Keep||r.action==OP::Action::Delete?L" (résultat simulé : aucun fichier réel)":L""));if(r.action==OP::Action::Manage)Defer([log]{SandboxPasswordManager(L"list",log);});};
     const std::wstring demoOrigin=L"meet.exemple.test";
     if(n==L"sandbox.ping"){log(L"Pont actif · jeton vérifié · onglet "+std::to_wstring(t->serial));return;}
     // ---- A: modals
@@ -771,7 +957,7 @@ void SandboxCommand(const std::shared_ptr<Tab>& t,const NativeChrome::DebugSandb
     // ---- B: origin prompts (demo origin, nothing granted to any site)
     if(n==L"password.manager"){if(!SandboxPasswordManager(v,log))log(what+L" → indisponible");return;}
     if(n.rfind(L"prompt.",0)==0){
-        OP::Spec s;s.origin=demoOrigin;s.demo=true;
+        OP::Spec s;s.origin=demoOrigin;s.demo=true;s.modality=c.keyboard?MD::Spec::Modality::Keyboard:MD::Spec::Modality::Pointer;
         if(n==L"prompt.permission"){s.kind=OP::Kind::Permission;
             if(v==L"camera")s.permissions={COREWEBVIEW2_PERMISSION_KIND_CAMERA};
             else if(v==L"microphone")s.permissions={COREWEBVIEW2_PERMISSION_KIND_MICROPHONE};
@@ -784,13 +970,38 @@ void SandboxCommand(const std::shared_ptr<Tab>& t,const NativeChrome::DebugSandb
         else if(n==L"prompt.externalApp"){s.kind=OP::Kind::ExternalApp;s.detail=L"mailto:camille.demo@exemple.test";}
         else if(n==L"prompt.dangerousDownload"){s.kind=OP::Kind::DangerousDownload;s.origin=L"telechargements.exemple.test";s.detail=L"facture-2026.pdf.exe";s.reason=L"Microsoft Defender SmartScreen signale ce fichier comme dangereux (démonstration).";}
         else if(n==L"prompt.clientCertificate"){s.kind=OP::Kind::ClientCertificate;s.origin=L"banque.exemple.test";s.accounts={{L"Camille Démo",L"Émis par Autorité Démo · expire en 2027"},{L"Poste de travail démo",L"Émis par CA Interne Démo"}};}
-        else if(n==L"prompt.screenShare"){s.kind=OP::Kind::ScreenShare;s.sources={L"Onglet",L"Fenêtre",L"Écran entier"};}
+        else if(n==L"prompt.screenShare"){s.kind=OP::Kind::ScreenShare;s.sources={L"Onglets",L"Fenêtres",L"Écrans"};
+            // Fictitious sources only (titles and thumbnails): no real tab, window or screen is listed or captured.
+            if(v!=L"empty")s.shareSources={{L"Ordre du jour — onglet démo",0,0},{L"Visioconférence — onglet démo",0,5},
+                {L"Budget 2027 — tableur démo",1,3},{L"Notes — éditeur démo",1,1},{L"Navigateur — fenêtre démo",1,4},{L"Présentation — fenêtre démo",1,0},
+                {L"Écran 1 (démo)",2,2},{L"Écran 2 (démo)",2,4}};
+            auto titles=std::make_shared<std::vector<std::wstring>>();for(auto& x:s.shareSources)titles->push_back(x.title);
+            AskPrompt(std::move(s),t,[log,what,titles](OP::Result& r){
+                if(r.action==OP::Action::Choose&&r.choice>=0&&r.choice<(int)titles->size())log(what+L" → partage simulé de « "+(*titles)[(size_t)r.choice]+L" » (démonstration : aucune capture)");
+                else log(what+L" → "+PromptOutcome(r));});
+            return;}
         else if(n==L"prompt.keepFile"){s.kind=OP::Kind::KeepFile;s.origin=L"telechargements.exemple.test";s.detail=L"archive-photos.zip";}
         else if(n==L"prompt.passwordFill"){s.kind=OP::Kind::PasswordFill;s.origin=L"compte.exemple.test";s.accounts={{L"camille.demo@exemple.test",L"Utilisé il y a 2 jours"}};if(v==L"two")s.accounts.push_back({L"equipe.demo@exemple.test",L"Utilisé le 3 mars"});}
         else if(n==L"prompt.passwordSave"){s.kind=v==L"update"?OP::Kind::PasswordUpdate:OP::Kind::PasswordSave;s.origin=L"compte.exemple.test";s.user=L"camille.demo@exemple.test";}
         else{log(what+L" → inconnue");return;}
         // The sandbox tab is the active one: the prompt anchors to its address bar as a real one would.
+        if(s.kind==OP::Kind::Permission){
+            // Demo answers drive the demo chip state of the sandbox tab only (origin meet.exemple.test, « démonstration »).
+            const auto kinds=s.permissions;std::weak_ptr<Tab> wt=t;
+            AskPrompt(std::move(s),t,[promptDone,kinds,wt](OP::Result& r){
+                if(r.action==OP::Action::Allow||r.action==OP::Action::AllowOnce||r.action==OP::Action::Block){RecordSiteAnswer(wt.lock(),L"demo",kinds,r.action!=OP::Action::Block,r.action==OP::Action::Allow&&r.remember,true);Defer([]{RefreshRequestChip();});}
+                promptDone(r);});
+            return;}
         AskPrompt(std::move(s),t,promptDone);return;}
+    // ---- B02 after the decision (demo state of the sandbox tab; a real tab is never touched)
+    if(n==L"permission.demo"){
+        auto it=siteStates.find(t->serial);SiteState* st=it!=siteStates.end()&&it->second.demo?&it->second:nullptr;
+        if(v==L"reset"){if(st)siteStates.erase(it);RefreshRequestChip();log(what+L" → état de démonstration effacé");return;}
+        if(!st||st->g.granted.empty()){log(what+L" → accordez d'abord une autorisation de démonstration (B02 : Démo caméra…, puis Autoriser)");return;}
+        if(v==L"active"){for(int k:st->g.granted)SiteRequest::SetActive(st->g,k,true);RefreshRequestChip();log(what+L" → utilisation simulée en cours (point bleu)");return;}
+        if(v==L"stopped"){st->g.active.clear();RefreshRequestChip();log(what+L" → utilisation simulée arrêtée, autorisation conservée");return;}
+        if(v==L"status"){ShowSiteStatus(t);log(what+L" → état du site ouvert");return;}
+        log(what+L" → inconnue");return;}
     // ---- C
     if(n==L"find.open"){OpenFindBar();if(v==L"seed"){findBar.SetText(L"oxyde");FindQuery(L"oxyde",findBar.CurrentOptions());}log(what+L" → barre ouverte (Ctrl+F)");return;}
     if(n==L"error.page"||n==L"error.offline"){

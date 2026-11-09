@@ -4,7 +4,7 @@
 //
 // API (final; design/missing-elements-contracts.md, adapted where Paper needed more):
 //   NativeChrome::Modal::Dialog
-//     bool Create(HINSTANCE, HWND owner, const std::wstring& root, Hooks{wake, choose})
+//     bool Create(HINSTANCE, HWND owner, const std::wstring& root, Hooks{wake, choose, dismiss})
 //     void Dispose()                                   // done({-1}) if still pending
 //     bool Show(Spec, RECT area, std::function<void(const Result&)> done) // false if open
 //     void Abort()                                     // done({-1}), then closes
@@ -51,6 +51,8 @@
 #include "chrome.h"
 #include "native-ui.h"
 #include "accessibility.h"
+#include "context-menu.h"
+#include "site-request.h"
 
 namespace NativeChrome {
 // ---------------------------------------------------------------------------------------
@@ -97,70 +99,13 @@ inline constexpr const char* warning = "M128,20A108,108,0,1,0,236,128,108.12,108
 inline constexpr const char* caretDown = "M216.49,104.49l-80,80a12,12,0,0,1-17,0l-80-80a12,12,0,0,1,17-17L128,159l71.51-71.52a12,12,0,0,1,17,17Z";
 inline constexpr const char* caretRight = "M184.49,136.49l-80,80a12,12,0,0,1-17-17L159,128,87.51,56.49a12,12,0,1,1,17-17l80,80A12,12,0,0,1,184.49,136.49Z";
 inline constexpr const char* close = "M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z";
-inline constexpr const char* download = "M228,144v64a12,12,0,0,1-12,12H40a12,12,0,0,1-12-12V144a12,12,0,0,1,24,0v52H204V144a12,12,0,0,1,24,0Zm-108.49,8.49a12,12,0,0,0,17,0l40-40a12,12,0,0,0-17-17L140,115V32a12,12,0,0,0-24,0v83L96.49,95.51a12,12,0,0,0-17,17Z";
+inline constexpr const char* download = SiteRequest::Path::download;
 inline constexpr const char* checkCircle = "M176.49,95.51a12,12,0,0,1,0,17l-56,56a12,12,0,0,1-17,0l-24-24a12,12,0,1,1,17-17L112,143l47.51-47.52A12,12,0,0,1,176.49,95.51ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z";
 // Brand flower (viewBox 936 0 288 288), #DFDFDF in the À propos tile.
 inline constexpr const char* flower = "M1178.594 144a49.5 49.5 0 0 0-49.297-85.386 49.5 49.5 0 0 0-98.595 0A49.5 49.5 0 0 0 981.404 144a49.5 49.5 0 0 0 49.298 85.377 49.5 49.5 0 0 0 98.595 0A49.5 49.5 0 0 0 1178.594 144ZM1057.5 144a22.5 22.5 0 1 1 22.5 22.5A22.5 22.5 0 0 1 1057.5 144Zm81.393-59.984a22.5 22.5 0 1 1 22.5 38.97c-2.982 1.722-11.836 5.49-33.862 7.222a49.59 49.59 0 0 0-11.835-20.452C1128.217 91.53 1135.912 85.737 1138.893 84.016ZM1080 40.5a22.5 22.5 0 0 1 22.5 22.5c0 3.442-1.126 12.994-10.677 32.94a49.264 49.264 0 0 0-23.625 0C1058.624 75.994 1057.5 66.444 1057.5 63A22.5 22.5 0 0 1 1080 40.5ZM990.371 92.25a22.5 22.5 0 0 1 30.735-8.234c2.982 1.722 10.676 7.516 23.197 25.74a49.59 49.59 0 0 0-11.835 20.452c-22.028-1.732-30.882-5.502-33.862-7.222A22.5 22.5 0 0 1 990.371 92.25Zm30.735 111.736a22.5 22.5 0 1 1-22.5-38.97c2.982-1.722 11.836-5.49 33.862-7.222a49.59 49.59 0 0 0 11.835 20.452C1031.782 196.47 1024.087 202.264 1021.106 203.986ZM1080 247.5a22.5 22.5 0 0 1-22.5-22.5c0-3.442 1.126-12.994 10.676-32.94a49.264 49.264 0 0 0 23.625 0C1101.374 212.007 1102.5 221.558 1102.5 225A22.5 22.5 0 0 1 1080 247.5Zm89.628-51.75a22.5 22.5 0 0 1-30.735 8.236c-2.982-1.722-10.676-7.516-23.197-25.74a49.59 49.59 0 0 0 11.835-20.452c22.028 1.732 30.882 5.502 33.862 7.222A22.5 22.5 0 0 1 1169.628 195.75Z";
 }
 
-// SVG path data (M L H V C S Q T A Z, absolute and relative) to a Direct2D geometry in
-// viewBox units. Nonzero fill like SVG. Returns nullptr on malformed data.
-inline ID2D1PathGeometry* SvgGeometry(ID2D1Factory* factory, const char* d) {
-    if (!factory || !d) return nullptr;
-    ID2D1PathGeometry* path = nullptr; ID2D1GeometrySink* sink = nullptr;
-    if (FAILED(factory->CreatePathGeometry(&path))) return nullptr;
-    if (FAILED(path->Open(&sink))) { path->Release(); return nullptr; }
-    sink->SetFillMode(D2D1_FILL_MODE_WINDING);
-    const char* p = d; char cmd = 0; bool open = false, ok = true;
-    D2D1_POINT_2F cur{0, 0}, start{0, 0}, ctrl{0, 0}; char last = 0;
-    auto skip = [&] { while (*p == ' ' || *p == ',' || *p == '\n' || *p == '\t' || *p == '\r') ++p; };
-    auto number = [&](float& out) { skip(); char* end = nullptr; out = std::strtof(p, &end); if (end == p) return false; p = end; return true; };
-    auto flag = [&](bool& out) { skip(); if (*p != '0' && *p != '1') return false; out = *p == '1'; ++p; return true; };
-    auto begin = [&] { if (!open) { sink->BeginFigure(cur, D2D1_FIGURE_BEGIN_FILLED); start = cur; open = true; } };
-    while (ok) {
-        skip(); if (!*p) break;
-        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) cmd = *p++;
-        else if (!cmd) { ok = false; break; }
-        const bool rel = cmd >= 'a'; const char c = static_cast<char>(rel ? cmd - 32 : cmd);
-        const D2D1_POINT_2F o = rel ? cur : D2D1_POINT_2F{0, 0};
-        if (c == 'Z') { if (open) { sink->EndFigure(D2D1_FIGURE_END_CLOSED); open = false; } cur = start; last = 'Z'; cmd = 0; continue; }
-        if (c == 'M') {
-            float x, y; if (!number(x) || !number(y)) { ok = false; break; }
-            if (open) { sink->EndFigure(D2D1_FIGURE_END_OPEN); open = false; }
-            cur = {o.x + x, o.y + y}; begin(); cmd = rel ? 'l' : 'L'; last = 'M'; continue;
-        }
-        begin();
-        if (c == 'L') { float x, y; if (!number(x) || !number(y)) { ok = false; break; } cur = {o.x + x, o.y + y}; sink->AddLine(cur); }
-        else if (c == 'H') { float x; if (!number(x)) { ok = false; break; } cur.x = rel ? cur.x + x : x; sink->AddLine(cur); }
-        else if (c == 'V') { float y; if (!number(y)) { ok = false; break; } cur.y = rel ? cur.y + y : y; sink->AddLine(cur); }
-        else if (c == 'C' || c == 'S') {
-            float x1 = 0, y1 = 0, x2, y2, x, y; D2D1_POINT_2F a;
-            if (c == 'C') { if (!number(x1) || !number(y1)) { ok = false; break; } a = {o.x + x1, o.y + y1}; }
-            else a = (last == 'C' || last == 'S') ? D2D1_POINT_2F{2 * cur.x - ctrl.x, 2 * cur.y - ctrl.y} : cur;
-            if (!number(x2) || !number(y2) || !number(x) || !number(y)) { ok = false; break; }
-            const D2D1_POINT_2F b{o.x + x2, o.y + y2}, e{o.x + x, o.y + y};
-            sink->AddBezier(D2D1::BezierSegment(a, b, e)); ctrl = b; cur = e;
-        } else if (c == 'Q' || c == 'T') {
-            float x1, y1, x, y; D2D1_POINT_2F a;
-            if (c == 'Q') { if (!number(x1) || !number(y1)) { ok = false; break; } a = {o.x + x1, o.y + y1}; }
-            else a = (last == 'Q' || last == 'T') ? D2D1_POINT_2F{2 * cur.x - ctrl.x, 2 * cur.y - ctrl.y} : cur;
-            if (!number(x) || !number(y)) { ok = false; break; }
-            const D2D1_POINT_2F e{o.x + x, o.y + y};
-            sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(a, e)); ctrl = a; cur = e;
-        } else if (c == 'A') {
-            float rx, ry, rot, x, y; bool large, sweep;
-            if (!number(rx) || !number(ry) || !number(rot) || !flag(large) || !flag(sweep) || !number(x) || !number(y)) { ok = false; break; }
-            const D2D1_POINT_2F e{o.x + x, o.y + y};
-            sink->AddArc(D2D1::ArcSegment(e, D2D1::SizeF(std::fabs(rx), std::fabs(ry)), rot, sweep ? D2D1_SWEEP_DIRECTION_CLOCKWISE : D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, large ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
-            cur = e;
-        } else { ok = false; break; }
-        last = c;
-    }
-    if (open) sink->EndFigure(D2D1_FIGURE_END_OPEN);
-    const HRESULT closed = sink->Close(); sink->Release();
-    if (!ok || FAILED(closed)) { path->Release(); return nullptr; }
-    return path;
-}
+// SvgGeometry (SVG path data to a Direct2D geometry) lives in svg-path.h, shared with the toolbar.
 
 // Text styles straight from Paper (size/line-height in px = DIP, tracking in em).
 struct Style { float size = 14, line = 20; bool medium = false; float trackingEm = 0; bool tabular = false; };
@@ -339,20 +284,20 @@ inline LRESULT CALLBACK PlaceholderProc(HWND h, UINT msg, WPARAM w, LPARAM l, UI
 // ---------------------------------------------------------------------------------------
 // Glyphs of the origin popovers (B01–B08), Paper exports, viewBox 0 0 256 256.
 namespace DialogKit { namespace Glyph {
-inline constexpr const char* camera = "M251.77,73a12,12,0,0,0-12.33.32L204,95.58V72a20,20,0,0,0-20-20H32A20,20,0,0,0,12,72V184a20,20,0,0,0,20,20H184a20,20,0,0,0,20-20V160.42l35.44,22.15A12,12,0,0,0,256,172.4V83.6A12,12,0,0,0,251.77,73ZM180,180H36V76H180Zm52-29.65-28-17.5V123.15l28-17.5Z";
-inline constexpr const char* microphone = "M128,180a52.06,52.06,0,0,0,52-52V64A52,52,0,0,0,76,64v64A52.06,52.06,0,0,0,128,180ZM100,64a28,28,0,0,1,56,0v64a28,28,0,0,1-56,0Zm40,155.22V240a12,12,0,0,1-24,0V219.22A92.14,92.14,0,0,1,36,128a12,12,0,0,1,24,0,68,68,0,0,0,136,0,12,12,0,0,1,24,0A92.14,92.14,0,0,1,140,219.22Z";
-inline constexpr const char* position = "M128,60a44,44,0,1,0,44,44A44.05,44.05,0,0,0,128,60Zm0,64a20,20,0,1,1,20-20A20,20,0,0,1,128,124Zm0-112a92.1,92.1,0,0,0-92,92c0,77.36,81.64,135.4,85.12,137.83a12,12,0,0,0,13.76,0,259,259,0,0,0,42.18-39C205.15,170.57,220,136.37,220,104A92.1,92.1,0,0,0,128,12Zm31.3,174.71A249.35,249.35,0,0,1,128,216.89a249.35,249.35,0,0,1-31.3-30.18C80,167.37,60,137.31,60,104a68,68,0,0,1,136,0C196,137.31,176,167.37,159.3,186.71Z";
-inline constexpr const char* bell = "M225.29,165.93C216.61,151,212,129.57,212,104a84,84,0,0,0-168,0c0,25.58-4.59,47-13.27,61.93A20.08,20.08,0,0,0,30.66,186,19.77,19.77,0,0,0,48,196H84.18a44,44,0,0,0,87.64,0H208a19.77,19.77,0,0,0,17.31-10A20.08,20.08,0,0,0,225.29,165.93ZM128,212a20,20,0,0,1-19.6-16h39.2A20,20,0,0,1,128,212ZM54.66,172C63.51,154,68,131.14,68,104a60,60,0,0,1,120,0c0,27.13,4.48,50,13.33,68Z";
-inline constexpr const char* clipboard = "M200,28H163.94A51.89,51.89,0,0,0,92.06,28H56A20,20,0,0,0,36,48V216a20,20,0,0,0,20,20H200a20,20,0,0,0,20-20V48A20,20,0,0,0,200,28Zm-72,0a28,28,0,0,1,27.71,24H100.29A28,28,0,0,1,128,28Zm68,184H60V52H76.4A12,12,0,0,0,76,56V64a12,12,0,0,0,12,12h80a12,12,0,0,0,12-12V56a12,12,0,0,0-.4-4H196Z";
-inline constexpr const char* info = "M108,84a16,16,0,1,1,16,16A16,16,0,0,1,108,84Zm128,44A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Zm-72,36.68V132a20,20,0,0,0-20-20,12,12,0,0,0-4,23.32V168a20,20,0,0,0,20,20,12,12,0,0,0,4-23.32Z";
+inline constexpr const char* camera = SiteRequest::Path::camera;
+inline constexpr const char* microphone = SiteRequest::Path::microphone;
+inline constexpr const char* position = SiteRequest::Path::position;
+inline constexpr const char* bell = SiteRequest::Path::bell;
+inline constexpr const char* clipboard = SiteRequest::Path::clipboard;
+inline constexpr const char* info = SiteRequest::Path::info;
 inline constexpr const char* lockOpen = "M208,76H100V56a28,28,0,0,1,28-28c13.51,0,25.65,9.62,28.24,22.39a12,12,0,1,0,23.52-4.78C174.87,21.5,153.1,4,128,4A52.06,52.06,0,0,0,76,56V76H48A20,20,0,0,0,28,96V208a20,20,0,0,0,20,20H208a20,20,0,0,0,20-20V96A20,20,0,0,0,208,76Zm-4,128H52V100H204Z";
 inline constexpr const char* external = "M228,104a12,12,0,0,1-24,0V69l-59.51,59.51a12,12,0,0,1-17-17L187,52H152a12,12,0,0,1,0-24h64a12,12,0,0,1,12,12Zm-44,24a12,12,0,0,0-12,12v64H52V84h64a12,12,0,0,0,0-24H48A20,20,0,0,0,28,80V208a20,20,0,0,0,20,20H176a20,20,0,0,0,20-20V140A12,12,0,0,0,184,128Z";
 inline constexpr const char* triangle = "M240.26,186.1,152.81,34.23h0a28.74,28.74,0,0,0-49.62,0L15.74,186.1a27.45,27.45,0,0,0,0,27.71A28.31,28.31,0,0,0,40.55,228h174.9a28.31,28.31,0,0,0,24.79-14.19A27.45,27.45,0,0,0,240.26,186.1Zm-20.8,15.7a4.46,4.46,0,0,1-4,2.2H40.55a4.46,4.46,0,0,1-4-2.2,3.56,3.56,0,0,1,0-3.73L124,46.2a4.77,4.77,0,0,1,8,0l87.44,151.87A3.56,3.56,0,0,1,219.46,201.8ZM116,136V104a12,12,0,0,1,24,0v32a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,176Z";
-inline constexpr const char* file = "M216.49,79.52l-56-56A12,12,0,0,0,152,20H56A20,20,0,0,0,36,40V216a20,20,0,0,0,20,20H200a20,20,0,0,0,20-20V88A12,12,0,0,0,216.49,79.52ZM160,57l23,23H160ZM60,212V44h76V92a12,12,0,0,0,12,12h48V212Z";
+inline constexpr const char* file = SiteRequest::Path::file;
 inline constexpr const char* key = "M160,12A84.09,84.09,0,0,0,79.43,119.53L23.51,175.51A12,12,0,0,0,20,184v40a12,12,0,0,0,12,12H72a12,12,0,0,0,12-12V212H96a12,12,0,0,0,12-12V188h12a12,12,0,0,0,8.49-3.51l7.93-7.94A84,84,0,1,0,160,12Zm0,144a59.66,59.66,0,0,1-24.43-5.18,12,12,0,0,0-13.48,2.45L115,164H96a12,12,0,0,0-12,12v12H72a12,12,0,0,0-12,12v12H44V189l58.73-58.73a12,12,0,0,0,2.45-13.48A60,60,0,1,1,160,156Zm36-76a16,16,0,1,1-16-16A16,16,0,0,1,196,80Z";
 inline constexpr const char* eye = "M251,123.13c-.37-.81-9.13-20.26-28.48-39.61C196.63,57.67,164,44,128,44S59.37,57.67,33.51,83.52C14.16,102.87,5.4,122.32,5,123.13a12.08,12.08,0,0,0,0,9.75c.37.82,9.13,20.26,28.49,39.61C59.37,198.34,92,212,128,212s68.63-13.66,94.48-39.51c19.36-19.35,28.12-38.79,28.49-39.61A12.08,12.08,0,0,0,251,123.13Zm-46.06,33C183.47,177.27,157.59,188,128,188s-55.47-10.73-76.91-31.88A130.36,130.36,0,0,1,29.52,128,130.45,130.45,0,0,1,51.09,99.89C72.54,78.73,98.41,68,128,68s55.46,10.73,76.91,31.89A130.36,130.36,0,0,1,226.48,128,130.45,130.45,0,0,1,204.91,156.12ZM128,84a44,44,0,1,0,44,44A44.05,44.05,0,0,0,128,84Zm0,64a20,20,0,1,1,20-20A20,20,0,0,1,128,148Z";
 // Not exported in Paper's B02 grid (MIDI, screen, certificate, generic): closest Phosphor shapes drawn from the same set.
-inline constexpr const char* screen = "M208,36H48A28,28,0,0,0,20,64V176a28,28,0,0,0,28,28h68v16H96a12,12,0,0,0,0,24h64a12,12,0,0,0,0-24H140V204h68a28,28,0,0,0,28-28V64A28,28,0,0,0,208,36Zm4,140a4,4,0,0,1-4,4H48a4,4,0,0,1-4-4V64a4,4,0,0,1,4-4H208a4,4,0,0,1,4,4Z";
+inline constexpr const char* screen = SiteRequest::Path::screen;
 }}
 
 namespace Modal {
@@ -387,9 +332,23 @@ struct Status { StatusIcon icon = StatusIcon::None; std::wstring title, detail; 
 struct Info { std::wstring text, trailing; };                 // A6 download in progress row
 struct Link { int id = 0; std::wstring label; };
 struct Notice { const char* glyph = nullptr; std::wstring text; bool boxed = false; }; // B06 lock box / info line
-struct Row { const char* glyph = nullptr; std::wstring label, trailing; };          // B01/B02 request rows
-struct Account { std::wstring user, masked; };                                       // B03 fill list (masked: dots only)
+// B01/B02 request rows. `toggle` (B02 « Clic sur la puce », EAC-0): -1 none, 1 on, 0 off. A toggle
+// only ever switches off from here (revoking); an off toggle is inert, re-granting needs the site
+// to ask again. Its row calls Spec::onButton(Dialog::RowHit(i)) and the dialog stays open.
+struct Row { const char* glyph = nullptr; std::wstring label, trailing; int toggle = -1; std::wstring detail; };
+// B03 fill list: `masked` is the password as dots (tracked 0.08em, Paper EK1-0) unless `plain`;
+// a plain second line (certificate issuer, FW8-0) is ordinary 14 px secondary text, tracking 0.
+struct Account { std::wstring user, masked; bool plain = false; };
 struct DangerCard { std::wstring title, subtitle, text; bool shown = false; };       // B07
+// B08 screen share picker (Démonstration): categories in a segmented control (Paper FX2-0), the
+// sources of the current one as thumbnails (FX9-0) drawn locally from `art` (fictitious content,
+// never a capture). Selecting only marks a source; the accept button stays disabled until one is.
+struct Source { std::wstring title; int category = 0, art = 0; };
+struct SourcePicker {
+    std::vector<std::wstring> categories; std::vector<Source> items; int category = 0, selected = -1;
+    std::wstring empty = L"Aucune source disponible dans cette catégorie.";
+    bool shown = false; int acceptId = 1;   // Modal::AcceptButton
+};
 struct Spec {
     Kind kind = Kind::Generic; Scope scope = Scope::Window;
     std::wstring automationId, title, subtitle, body, origin /* « exemple.com indique » */, message /* page text */, footnote;
@@ -401,6 +360,9 @@ struct Spec {
     RECT anchor{}; bool anchorRight = false;                   // Scope::Anchor
     std::vector<Field> fields;
     std::wstring checkLabel; bool checkValue = false, originCheck = false; // single row check (A2/A6; B0x style)
+    // B06 (user override of Paper FJ5-0): the check row shares the head's lanes — box centred in the
+    // 32 DIP tile lane, label on the description's left edge, same 14/18 regular role, 70 % white.
+    bool checkInHeadLane = false;
     std::vector<Check> checks;                                 // detailed list (A5)
     Select select; bool hasSelect = false;
     std::vector<Notice> notices; std::vector<Row> rows; std::vector<Info> infos;
@@ -408,20 +370,49 @@ struct Spec {
     std::vector<Link> links;                                   // links close with done(link.id)
     std::wstring accountsTitle; std::vector<Account> accounts; std::wstring manageLabel; int manageId = -1; // B03
     DangerCard danger;
+    SourcePicker sources;
     bool accountsNavigate = false;                             // B05: account rows call onButton(Dialog::AccountHit(i)) and stay open
     std::vector<Button> buttons; bool stretchButtons = false, softButtons = false;
     bool demo = false;                                         // badge « Démonstration »
     std::function<std::wstring(const std::vector<std::wstring>&)> validate; // inline error or ""
     std::function<void(int)> onButton;                         // buttons with closes = false
+    // Input that opened the dialog. Focus always lands on the initial control (Entrée / Échap work);
+    // only the RING depends on it: Keyboard shows it at once, Pointer hides it until Tab / arrows /
+    // Espace, Host asks Hooks::keyboard (the host's last chrome input). Page-originated requests
+    // (permissions, JavaScript dialogs) say Pointer: the page's own input is not visible to us.
+    enum class Modality { Host, Pointer, Keyboard } modality = Modality::Host;
 };
 struct Result { int button = -1; std::vector<std::wstring> values; bool checked = false; std::vector<bool> checks; int select = -1; };
+
+// The select's list: the shared native menu (Paper « Clic droit menu » rows, region-rounded and
+// shadowless), dropped under the field with the right edges aligned, the current option checked
+// and, from the keyboard, highlighted. Returns the chosen index, -1 when dismissed.
+// Second line of an account row: password dots keep Paper's 0.08em; any other text is not tracked.
+inline DialogKit::Style AccountHintStyle(const Account& a) { return {14, 16, false, a.plain ? 0.f : .08f}; }
+
+inline int ChooseFromMenu(ContextMenu::Menu& menu, const std::vector<std::wstring>& options, int current, RECT anchor, bool keyboard, bool reduced) {
+    std::vector<ContextMenu::Item> items;
+    for (size_t i = 0; i < options.size(); ++i) {
+        std::wstring label; for (wchar_t c : options[i]) { label += c; if (c == L'&') label += L'&'; }   // no mnemonics
+        items.push_back(ContextMenu::Command(static_cast<int>(i) + 1, std::move(label), L"", true, static_cast<int>(i) == current));
+    }
+    const int id = menu.Track(items, {anchor.right, anchor.bottom}, &anchor, keyboard, reduced, true, true);
+    return id > 0 && id <= static_cast<int>(options.size()) ? id - 1 : -1;
+}
 
 class Dialog {
 public:
     struct Hooks {
         std::function<void()> wake;   // ask the host clock for a frame (NextWake changed)
-        // Optional native menu (Période select, B07 « Plus d'options »): chosen index or -1.
+        // Native list for the Période select (B07 « Plus d'options »): chosen index or -1. Hosts with a
+        // shared ContextMenu::Menu pass ChooseFromMenu on it; without a hook the dialog opens its own
+        // (same shadowless menu). Choosing only changes the value: it never triggers the action.
         std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        std::function<void()> dismiss;   // with `choose` / `menu`: end that list now (the dialog closed while it was open)
+        // Command list (B07 « Plus d'options »): chosen id, 0 when dismissed. Hosts pass their shared
+        // ContextMenu::Menu; without it the dialog opens its own (same shadowless menu).
+        std::function<int(const std::vector<ContextMenu::Item>&, RECT anchorScreen, bool keyboard)> menu;
+        std::function<bool()> keyboard;   // Spec::Modality::Host: was the host's last input the keyboard?
     };
     // Focus/hit ids (stable; exposed for tests and UIA).
     static int ButtonHit(size_t i) { return 1000 + static_cast<int>(i); }
@@ -431,9 +422,15 @@ public:
     static int AccountHit(size_t i) { return 6200 + static_cast<int>(i); }
     static int RevealHit(size_t i) { return 6900 + static_cast<int>(i); }
     static int FieldStop(size_t i) { return 7000 + static_cast<int>(i); }
+    static int RowHit(size_t i) { return 9000 + static_cast<int>(i); }
+    static bool IsRow(int hit) { return hit >= 9000 && hit < 9100; }
+    static int CategoryHit(size_t i) { return 8000 + static_cast<int>(i); }
+    static int SourceHit(size_t i) { return 8100 + static_cast<int>(i); }   // index into Spec::sources.items
+    static bool IsCategory(int hit) { return hit >= 8000 && hit < 8100; }
+    static bool IsSource(int hit) { return hit >= 8100 && hit < 8900; }
 private:
     using Kit = DialogKit::Kit;
-    enum class B { Badge, Head, Message, Select, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions };
+    enum class B { Badge, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions };
     struct Block { B type; size_t index; D2D1_RECT_F r; };
     struct Box { int hit = 0; D2D1_RECT_F r{}; };
     HWND hwnd_ = nullptr, scrim_ = nullptr, owner_ = nullptr, restore_ = nullptr; HINSTANCE instance_ = nullptr;
@@ -441,6 +438,9 @@ private:
     Chrome* pc_ = &chrome_;   // paint target (the window, or an offscreen bitmap for RenderForTest)
     std::wstring root_;
     Spec spec_; std::function<void(const Result&)> done_; RECT area_{};
+    std::unique_ptr<ContextMenu::Menu> menu_;   // the select's list when no Hooks::choose
+    unsigned generation_ = 0;                   // bumped by Show/Update: a list answer for an older spec is dropped
+    bool hostMenu_ = false;                     // the open list belongs to the host (Hooks::choose / menu)
     std::vector<DialogKit::EditField> edits_; std::vector<bool> revealed_; HFONT font_ = nullptr;
     std::vector<Block> blocks_; std::vector<Box> boxes_; std::vector<float> fieldTops_;
     float width_ = P::width, height_ = 0;
@@ -448,6 +448,7 @@ private:
     bool open_ = false, closing_ = false, keyboard_ = true, busy_ = false, submitted_ = false, reduced_ = false, choosing_ = false;
     std::wstring busyLabel_, error_, fieldError_;
     int hover_ = 0, pressed_ = 0, focus_ = 0;
+    float thumbScale_ = 1; int sourceColumns_ = 2;   // B08 grid: shrinks thumbnails before overflowing
     Motion::Tween fade_; Motion::Time spinStart_{};
     static constexpr long long GroupKey = 1;
 
@@ -472,7 +473,49 @@ private:
         if (hit >= 1000 && hit < 2000) return !ButtonDisabled(spec_.buttons[static_cast<size_t>(hit - 1000)]);
         if (hit >= 2000 && hit < 2999) return !spec_.checks[static_cast<size_t>(hit - 2000)].disabled;
         if (hit == StatusHit) return spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled;
+        if (IsRow(hit)) { const size_t i = static_cast<size_t>(hit - 9000); return i < spec_.rows.size() && spec_.rows[i].toggle == 1; }
+        if (IsSource(hit)) return spec_.sources.shown && static_cast<size_t>(hit - 8100) < spec_.sources.items.size() && spec_.sources.items[static_cast<size_t>(hit - 8100)].category == spec_.sources.category;
         return true;
+    }
+    // ---- B08 source picker ----------------------------------------------------------------------
+    std::vector<size_t> VisibleSources() const {
+        std::vector<size_t> v; const auto& sp = spec_.sources;
+        for (size_t i = 0; i < sp.items.size(); ++i) if (sp.items[i].category == sp.category) v.push_back(i);
+        return v;
+    }
+    int SourceStop() const {   // the grid's single Tab stop: the selected source, else the first one
+        const auto v = VisibleSources(); if (v.empty()) return 0;
+        for (size_t i : v) if (static_cast<int>(i) == spec_.sources.selected) return SourceHit(i);
+        return SourceHit(v.front());
+    }
+    void SyncAccept() {
+        for (auto& b : spec_.buttons) if (b.id == spec_.sources.acceptId) b.disabled = spec_.sources.selected < 0;
+    }
+    void SetCategory(int c, bool keyboard) {
+        auto& sp = spec_.sources; if (!sp.shown || sp.categories.empty()) return;
+        c = std::clamp(c, 0, static_cast<int>(sp.categories.size()) - 1);
+        if (c != sp.category) {
+            sp.category = c;
+            // A source of another category is never shared by accident: the choice starts over.
+            if (sp.selected >= 0 && (sp.selected >= static_cast<int>(sp.items.size()) || sp.items[static_cast<size_t>(sp.selected)].category != c)) sp.selected = -1;
+            SyncAccept(); Relayout();
+        }
+        keyboard_ = keyboard; FocusStop(CategoryHit(static_cast<size_t>(c)));
+        if (uia_.Listening()) uia_.Raise(CategoryHit(static_cast<size_t>(c)), UIA_SelectionItem_ElementSelectedEventId);
+    }
+    void SelectSource(size_t i, bool keyboard) {
+        auto& sp = spec_.sources; if (!sp.shown || i >= sp.items.size() || sp.items[i].category != sp.category) return;
+        sp.selected = static_cast<int>(i); SyncAccept();
+        keyboard_ = keyboard; FocusStop(SourceHit(i));
+        if (uia_.Listening()) { uia_.Raise(SourceHit(i), UIA_SelectionItem_ElementSelectedEventId); uia_.ChildrenChanged(GroupKey); }
+    }
+    // Arrows move the selection inside the grid (left/right by one, up/down by a row), like a list box.
+    bool MoveSource(int step) {
+        const auto v = VisibleSources(); if (v.empty()) return true;
+        auto it = std::find(v.begin(), v.end(), static_cast<size_t>(focus_ - 8100));
+        int i = it == v.end() ? 0 : static_cast<int>(it - v.begin()) + step;
+        i = std::clamp(i, 0, static_cast<int>(v.size()) - 1);
+        SelectSource(v[static_cast<size_t>(i)], true); return true;
     }
     // ---- layout (DIP) -------------------------------------------------------------------------
     float HeadTextWidth() const {
@@ -482,6 +525,23 @@ private:
         return w;
     }
     float HeadLeft() const { return Pad() + (spec_.tileGlyph ? 44.f : spec_.headGlyph ? 32.f : 0.f); }
+    // ---- Popover lanes (B06 rule, generalised 2026-11-09) ----------------------------------
+    // A popover's head has a leading lane (32 DIP tile, 24 DIP glyph, or the 24 DIP glyph lane of the
+    // request rows, inset 4) and a text column. Secondary lines — the remembering check, notices — put
+    // their box / glyph centred in that lane and their text on the description's column, in the
+    // description's role (14/18 regular); interactive text is brighter (70 %) than the description (60 %).
+    struct Lane { float left = 0, width = 24, text = 32; };   // DIP from the content's left edge
+    Lane SecondaryLane() const {
+        if (spec_.tileGlyph) return {0, 32, 44};
+        if (spec_.headGlyph) return {0, 24, 32};
+        for (const auto& r : spec_.rows) if (r.glyph) return {4, 24, 36};
+        return {0, 24, 32};
+    }
+    // The check sits in the lane when the popover has one, or when it is the origin check of a fieldless
+    // popover (B01/B02 « Mémoriser pour ce site », B06). Form checks under fields keep their own row.
+    bool LaneCheck() const { return spec_.checkInHeadLane || (spec_.originCheck && spec_.fields.empty()); }
+    // With a 32 DIP tile and a regular (not large) title, the title's first line is centred on the tile.
+    float TileTitleDrop() const { return spec_.tileGlyph && !spec_.largeTitle && !spec_.title.empty() ? (32 - TitleStyle().line) / 2 : 0; }
     DialogKit::Style TitleStyle() const { auto s = spec_.largeTitle ? DialogKit::Type::aboutTitle : DialogKit::Type::title; if (spec_.largeTitle) s.trackingEm = -.02f; return s; }
     float HeadHeight() {
         const float cw = ContentWidth();
@@ -492,7 +552,7 @@ private:
         if (!spec_.subtitle.empty()) h += (h > 0 ? (spec_.largeTitle ? 8 : 4) : 0) + kit_.Height(spec_.subtitle, DialogKit::Type::detail, tw);
         if (!spec_.body.empty()) h += (h > 0 ? 4 : 0) + kit_.Height(spec_.body, DialogKit::Type::body, tw);
         if (!spec_.footnote.empty() && !spec_.appTile) h += 8 + kit_.Height(spec_.footnote, DialogKit::Type::body, tw);
-        if (spec_.tileGlyph) h = std::max(h, 32.f);
+        if (spec_.tileGlyph) h = std::max(h + TileTitleDrop(), 32.f);
         if (spec_.closeButton) h = std::max(h, 24.f);
         return h;
     }
@@ -525,11 +585,33 @@ private:
         }
         for (size_t i = 0; i < spec_.notices.size(); ++i) {
             const auto& n = spec_.notices[i];
-            const float h = n.boxed ? 16 + kit_.Height(n.text, DialogKit::Type::detail, cw - 20 - 22) : kit_.Height(n.text, DialogKit::Type::detail, cw - 32);
+            const float h = n.boxed ? 16 + kit_.Height(n.text, DialogKit::Type::detail, cw - 20 - 22) : kit_.Height(n.text, DialogKit::Type::detail, cw - SecondaryLane().text);
             next(B::Notice, i, h, n.boxed ? 8.f : -1.f);
         }
-        if (!spec_.rows.empty()) { const auto r = next(B::Rows, 0, 32 * spec_.rows.size() + 4 * (spec_.rows.size() - 1)); (void)r; }
+        if (!spec_.rows.empty()) {
+            const auto r = next(B::Rows, 0, 32 * spec_.rows.size() + 4 * (spec_.rows.size() - 1));
+            for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle >= 0) boxes_.push_back({RowHit(i), {left, r.top + 36.f * i, right, r.top + 36.f * i + 32}});
+        }
         if (spec_.hasSelect) { const auto r = next(B::Select, 0, P::field); boxes_.push_back({SelectHit, {right - 184, r.top, right, r.bottom}}); }
+        if (spec_.sources.shown) {
+            // Paper FX2-0: #FFFFFF0D track, padding 2, gap 2, segments 28 high.
+            const auto& sp = spec_.sources; const size_t n = std::max<size_t>(1, sp.categories.size());
+            const auto seg = next(B::Segments, 0, 32);
+            const float sw = (cw - 4 - 2.f * (n - 1)) / n;
+            for (size_t i = 0; i < sp.categories.size(); ++i) { const float x = left + 2 + i * (sw + 2); boxes_.push_back({CategoryHit(i), {x, seg.top + 2, x + sw, seg.top + 30}}); }
+            // Paper FX9-0: tiles 8 apart, padding 6, thumbnail radius 4 then a 14/18 caption 6 below.
+            sourceColumns_ = cw >= 480 ? 3 : 2;
+            const int cols = sourceColumns_; const float tw = (cw - 8.f * (cols - 1)) / cols;
+            const float th = std::max(40.f, std::round((tw - 12) * .55f * thumbScale_));
+            const float tile = 6 + th + 6 + 18 + 6;
+            const auto vis = VisibleSources();
+            const size_t rows = (vis.size() + cols - 1) / cols;
+            const auto grid = next(B::Sources, 0, vis.empty() ? 96.f : rows * tile + 8.f * (rows - 1));
+            for (size_t k = 0; k < vis.size(); ++k) {
+                const float x = left + (k % cols) * (tw + 8), y = grid.top + (k / cols) * (tile + 8);
+                boxes_.push_back({SourceHit(vis[k]), {x, y, x + tw, y + tile}});
+            }
+        }
         if (!spec_.checks.empty()) {
             float h = 12; std::vector<float> tops, heights;
             for (size_t i = 0; i < spec_.checks.size(); ++i) { if (i) h += 12; tops.push_back(h); const float rh = 20 + (spec_.checks[i].detail.empty() ? 0 : 2 + DialogKit::Type::detail.line); heights.push_back(rh); h += rh; }
@@ -566,6 +648,12 @@ private:
             actionsLift = false;
         }
         if (!spec_.checkLabel.empty()) {
+            if (LaneCheck()) {
+                const float lane = SecondaryLane().text; const float h = std::max(DialogKit::Type::detail.line, kit_.Height(spec_.checkLabel, DialogKit::Type::detail, cw - lane));
+                const auto r = next(B::Check, 0, h);
+                boxes_.push_back({SimpleCheckHit, {left, r.top, right, r.bottom}});
+                actionsLift = false;
+            } else {
             const bool origin = spec_.originCheck; const auto style = origin && spec_.fields.empty() ? DialogKit::Type::message : DialogKit::Type::detail;
             const float h = origin ? (spec_.fields.empty() ? 20.f : 18.f) : 32.f;
             const auto r = next(B::Check, 0, h);
@@ -573,6 +661,7 @@ private:
             const float w = std::min(cw, lead + kit_.Width(spec_.checkLabel, origin && spec_.fields.empty() ? DialogKit::Type::field : style) + 8);
             boxes_.push_back({SimpleCheckHit, {left, r.top, left + w, r.bottom}});
             actionsLift = false;
+            }
         }
         if (!error_.empty()) next(B::Error, 0, kit_.Height(error_, DialogKit::Type::body, cw - 22));
         if (spec_.danger.shown) {
@@ -591,7 +680,8 @@ private:
     }
     // Fit into the available height: the message viewport shrinks first (min 3 lines).
     void Fit(float available) {
-        messageLines_ = P::messageLines; Build();
+        messageLines_ = P::messageLines; thumbScale_ = 1; Build();
+        while (height_ > available && spec_.sources.shown && thumbScale_ > .5f) { thumbScale_ -= .1f; Build(); }
         while (height_ > available && messageLines_ > 3 && messageFull_ > messageLines_ * DialogKit::Type::message.line - 1) { --messageLines_; Build(); }
         scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, messageFull_ - messageHeight_));
     }
@@ -700,6 +790,8 @@ private:
         std::vector<int> o;
         for (size_t i = 0; i < spec_.fields.size(); ++i) { o.push_back(FieldStop(i)); if (spec_.fields[i].reveal) o.push_back(RevealHit(i)); }
         if (spec_.hasSelect) o.push_back(SelectHit);
+        for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle == 1) o.push_back(RowHit(i));
+        if (spec_.sources.shown) { if (!spec_.sources.categories.empty()) o.push_back(CategoryHit(static_cast<size_t>(spec_.sources.category))); if (const int s = SourceStop()) o.push_back(s); }
         for (size_t i = 0; i < spec_.checks.size(); ++i) if (!spec_.checks[i].disabled) o.push_back(CheckHit(i));
         if (spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled) o.push_back(StatusHit);
         for (size_t i = 0; i < spec_.links.size(); ++i) o.push_back(LinkHit(i));
@@ -713,12 +805,12 @@ private:
     }
     int CurrentStop() const { const int i = EditIndex(GetFocus()); return i >= 0 ? FieldStop(static_cast<size_t>(i)) : focus_; }
     void FocusStop(int stop) {
-        if (stop >= 7000) {
+        if (stop >= 7000 && stop < 8000) {   // field stops (7000..7999); 8000+ are B08 picker ids
             focus_ = 0; const size_t i = static_cast<size_t>(stop - 7000);
             if (i < edits_.size() && edits_[i].edit) { SetFocus(edits_[i].edit); SendMessageW(edits_[i].edit, EM_SETSEL, 0, -1); }
         } else { focus_ = stop; SetFocus(hwnd_); }
         InvalidateRect(hwnd_, nullptr, FALSE);
-        if (uia_.Listening() && stop > 0 && stop < 7000) uia_.Raise(stop, UIA_AutomationFocusChangedEventId);
+        if (uia_.Listening() && stop > 0 && (stop < 7000 || stop >= 8000)) uia_.Raise(stop, UIA_AutomationFocusChangedEventId);
     }
     void Cycle(bool back) {
         const auto o = Order(); if (o.empty()) return;
@@ -730,6 +822,8 @@ private:
     int InitialStop() const {
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].value.empty() || i + 1 == spec_.fields.size()) return FieldStop(i);
         if (!spec_.accounts.empty()) return AccountHit(0);
+        for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle == 1) return RowHit(i);
+        if (spec_.sources.shown) { if (const int s = SourceStop()) return s; if (!spec_.sources.categories.empty()) return CategoryHit(static_cast<size_t>(spec_.sources.category)); }
         for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].initialFocus && !ButtonDisabled(spec_.buttons[i])) return ButtonHit(i);
         for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].isCancel && !ButtonDisabled(spec_.buttons[i])) return ButtonHit(i);
         for (size_t i = 0; i < spec_.buttons.size(); ++i) if (!ButtonDisabled(spec_.buttons[i])) return ButtonHit(i);
@@ -741,11 +835,12 @@ private:
     Result Collect(int button) const {
         Result r; r.button = button; r.values = Values(); r.checked = spec_.checkValue;
         for (auto& c : spec_.checks) r.checks.push_back(c.value);
-        r.select = spec_.hasSelect ? spec_.select.index : -1;
+        r.select = spec_.sources.shown ? spec_.sources.selected : spec_.hasSelect ? spec_.select.index : -1;
         return r;
     }
     void Close(Result result) {
         if (!open_) return;
+        if (choosing_) { if (hostMenu_) { if (hooks_.dismiss) hooks_.dismiss(); } else if (menu_) menu_->Cancel(); }
         open_ = false; busy_ = false; choosing_ = false;
         auto done = std::move(done_); done_ = nullptr;
         // Secrets never outlive the answer: the EDIT buffers are overwritten now.
@@ -785,13 +880,23 @@ private:
         Close(Collect(-1));
     }
     RECT ScreenOf(D2D1_RECT_F r) const { RECT s{Px(r.left), Px(r.top), Px(r.right), Px(r.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&s), 2); return s; }
+    // Opens the list under the field (modal, like TrackPopupMenu). Échap / a click outside leave the
+    // value as it was; the dialog may be closed or replaced meanwhile, then the answer is dropped.
     void ChooseSelect(bool keyboard) {
-        if (!spec_.hasSelect || spec_.select.options.empty()) return;
+        if (!open_ || busy_ || choosing_ || !spec_.hasSelect || spec_.select.options.empty()) return;
+        const auto options = spec_.select.options; const int current = spec_.select.index; const unsigned generation = generation_;
+        const RECT anchor = ScreenOf(Find(SelectHit));
+        keyboard_ = keyboard; focus_ = SelectHit; InvalidateRect(hwnd_, nullptr, FALSE);
+        choosing_ = true; hostMenu_ = static_cast<bool>(hooks_.choose);
         int next = -1;
-        if (hooks_.choose) {
-            choosing_ = true; next = hooks_.choose(spec_.select.options, spec_.select.index, ScreenOf(Find(SelectHit)), keyboard); choosing_ = false;
-            if (open_ && IsWindowVisible(hwnd_)) { SetForegroundWindow(hwnd_); FocusStop(SelectHit); }
-        } else next = (spec_.select.index + 1) % static_cast<int>(spec_.select.options.size());
+        if (hooks_.choose) next = hooks_.choose(options, current, anchor, keyboard);
+        else {
+            if (!menu_) { menu_ = std::make_unique<ContextMenu::Menu>(); menu_->Init(instance_, hwnd_, root_); }
+            next = ChooseFromMenu(*menu_, options, current, anchor, keyboard, reduced_);
+        }
+        choosing_ = false;
+        if (!open_ || generation != generation_ || !hwnd_ || !IsWindowVisible(hwnd_)) return;
+        SetForegroundWindow(hwnd_); keyboard_ = keyboard; FocusStop(SelectHit);
         SetSelect(next);
     }
     void SetSelect(int index) {
@@ -813,6 +918,14 @@ private:
         else if (hit == ManageHit) Close(Collect(spec_.manageId));
         else if (hit >= 6900 && hit < 7000) ToggleReveal(static_cast<size_t>(hit - 6900));
         else if (hit == CloseHit) Cancel();
+        else if (IsRow(hit)) { if (spec_.onButton) spec_.onButton(hit); }
+        else if (IsCategory(hit)) SetCategory(hit - 8000, keyboard);
+        else if (IsSource(hit)) {
+            const size_t i = static_cast<size_t>(hit - 8100);
+            // Entrée / Espace on the selected source shares it (as the default button would); a click only selects.
+            if (keyboard && static_cast<int>(i) == spec_.sources.selected) { for (size_t b = 0; b < spec_.buttons.size(); ++b) if (spec_.buttons[b].id == spec_.sources.acceptId) { Press(b); return; } }
+            SelectSource(i, keyboard);
+        }
     }
     bool Key(WPARAM key) {
         if (!open_) return false;
@@ -822,14 +935,16 @@ private:
         case VK_TAB: Cycle(GetKeyState(VK_SHIFT) < 0); return true;
         case VK_RETURN: {
             keyboard_ = true;
-            if (!inEdit && focus_ && focus_ != SelectHit && !(focus_ >= 2000 && focus_ <= 2999)) { Activate(focus_, true); return true; }
+            if (!inEdit && focus_ == SelectHit) { Activate(SelectHit, true); return true; }   // opens the list
+            if (!inEdit && focus_ && !(focus_ >= 2000 && focus_ <= 2999)) { Activate(focus_, true); return true; }
             for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].isDefault && spec_.buttons[i].role != Role::Danger) { Press(i); return true; }
             return true;
         }
         case VK_SPACE: if (!inEdit && focus_) { Activate(focus_, true); return true; } return false;
         case VK_DOWN: case VK_UP: {
             const int step = key == VK_DOWN ? 1 : -1;
-            if (!inEdit && focus_ == SelectHit) { SetSelect(spec_.select.index + step); return true; }
+            if (!inEdit && IsSource(focus_)) return MoveSource(step * sourceColumns_);
+            if (!inEdit && focus_ == SelectHit) { Activate(SelectHit, true); return true; }   // ↑/↓ open the list, never change silently
             if (!inEdit && ((focus_ >= 6200 && focus_ < 6900) || focus_ == ManageHit)) {   // B03: ↓ then Entrée
                 std::vector<int> list; for (size_t i = 0; i < spec_.accounts.size(); ++i) list.push_back(AccountHit(i)); if (!spec_.manageLabel.empty()) list.push_back(ManageHit);
                 auto it = std::find(list.begin(), list.end(), focus_); int i = static_cast<int>(it - list.begin()) + step; i = std::clamp(i, 0, static_cast<int>(list.size()) - 1);
@@ -838,11 +953,20 @@ private:
             if (!inEdit) { Scroll(step * DialogKit::Type::message.line); return true; }
             return false;
         }
-        case VK_F4: if (!inEdit && focus_ == SelectHit) { ChooseSelect(true); return true; } return false;
+        case VK_F4: if (!inEdit && focus_ == SelectHit) { Activate(SelectHit, true); return true; } return false;
         case VK_NEXT: case VK_PRIOR: if (!inEdit) { Scroll((key == VK_NEXT ? 1 : -1) * std::max(DialogKit::Type::message.line, messageHeight_ - DialogKit::Type::message.line)); return true; } return false;
-        case VK_LEFT: case VK_RIGHT: if (!inEdit && focus_ >= 1000 && focus_ < 2000) { Cycle(key == VK_LEFT); return true; } return false;
+        case VK_LEFT: case VK_RIGHT:
+            if (!inEdit && IsCategory(focus_)) { SetCategory(focus_ - 8000 + (key == VK_LEFT ? -1 : 1), true); return true; }
+            if (!inEdit && IsSource(focus_)) return MoveSource(key == VK_LEFT ? -1 : 1);
+            if (!inEdit && focus_ >= 1000 && focus_ < 2000) { Cycle(key == VK_LEFT); return true; } return false;
+        case VK_HOME: case VK_END: if (!inEdit && IsSource(focus_)) return MoveSource(key == VK_HOME ? -1000 : 1000); return false;
         }
         return false;
+    }
+    // Alt+↓ / Alt+↑ on the select open its list (combo box convention).
+    bool AltKey(WPARAM key) {
+        if (!open_ || (key != VK_DOWN && key != VK_UP) || focus_ != SelectHit || EditIndex(GetFocus()) >= 0) return false;
+        Activate(SelectHit, true); return true;
     }
     void Scroll(float dy) { const float max = std::max(0.f, messageFull_ - messageHeight_); const float s = std::clamp(scroll_ + dy, 0.f, max); if (s != scroll_) { scroll_ = s; InvalidateRect(hwnd_, nullptr, FALSE); } }
     void Interact() { motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, Motion::Now()); for (size_t i = 0; i < edits_.size(); ++i) edits_[i].SetColor(FieldColor(i)); InvalidateRect(hwnd_, nullptr, FALSE); if (hooks_.wake) hooks_.wake(); }
@@ -906,9 +1030,11 @@ private:
         case WM_LBUTTONUP: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); const int was = pressed_; pressed_ = 0; if (GetCapture() == h) ReleaseCapture(); Interact(); if (was && was == hit) Activate(hit, false); return 0; }
         case WM_MOUSEWHEEL: Scroll(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3 * DialogKit::Type::message.line); return 0;
         case WM_KEYDOWN: if (Key(w)) return 0; break;
+        case WM_SYSKEYDOWN: if (AltKey(w)) return 0; break;
         case WM_SETFOCUS: InvalidateRect(h, nullptr, FALSE); return 0;
         case WM_DPICHANGED: if (open_) { MakeFont(); Place(false); } return 0;
         case WM_APP + 1: Activate(static_cast<int>(w), true); return 0;
+        case WM_APP + 3: { const int k = static_cast<int>(w); if (IsCategory(k)) SetCategory(k - 8000, true); else if (IsSource(k)) SelectSource(static_cast<size_t>(k - 8100), true); return 0; }   // UIA Select: never shares
         case WM_DESTROY: if (open_) { open_ = false; auto done = std::move(done_); done_ = nullptr; if (done) done(Result{}); } uia_.Detach(); return 0;
         }
         return DefWindowProcW(h, msg, w, l);
@@ -933,7 +1059,7 @@ private:
         } else {
             if (spec_.tileGlyph) { kit_.Fill({left, y, left + 32, y + 32}, Design::Radius::control, DialogKit::Gray(Design::Surface::raised)); kit_.DrawGlyph(spec_.tileGlyph, {left, y, left + 32, y + 32}, 16, DialogKit::White(.8f)); }
             else if (spec_.headGlyph) kit_.DrawGlyph(spec_.headGlyph, {left, y + 2, left + 24, y + 18}, 16, DialogKit::White(P::body));
-            const float tx = HeadLeft(), tw = HeadTextWidth();
+            const float tx = HeadLeft(), tw = HeadTextWidth(); y += TileTitleDrop();
             if (!spec_.title.empty()) { kit_.Text(spec_.title, TitleStyle(), tx, y, tw, DialogKit::White(1), true); y += kit_.Height(spec_.title, TitleStyle(), tw); }
             if (!spec_.subtitle.empty()) { y += spec_.largeTitle ? 8 : 4; kit_.Text(spec_.subtitle, DialogKit::Type::detail, tx, y, tw, DialogKit::White(P::origin), true); y += kit_.Height(spec_.subtitle, DialogKit::Type::detail, tw); }
             if (!spec_.body.empty()) { y += 4; kit_.Text(spec_.body, DialogKit::Type::body, tx, y, tw, DialogKit::White(P::body), true); y += kit_.Height(spec_.body, DialogKit::Type::body, tw); }
@@ -963,6 +1089,21 @@ private:
             kit_.Text(busyLabel_, DialogKit::Type::body, left + 24, top + 6, leftmost - left - 24 - 8, DialogKit::White(P::body));
         }
     }
+    // Fictitious thumbnails (B08 demo), drawn locally: no capture of the desktop or of any window.
+    // 0 document (Paper FXB-0), 1 dark app (FXH-0), 2 desktop, 3 spreadsheet, 4 browser, 5 call.
+    void PaintThumbnail(int art, D2D1_RECT_F t) {
+        auto hex = [](unsigned v) { return DialogKit::Rgb(v); };
+        const float w = t.right - t.left, h = t.bottom - t.top;
+        auto bar = [&](float x, float y, float bw, float bh, unsigned c) { if (y + bh > h - 2) return; kit_.Fill({t.left + x, t.top + y, t.left + x + bw, t.top + y + bh}, 2, hex(c)); };
+        switch (art % 6) {
+        case 0: kit_.Fill(t, 4, hex(0xE9ECEF)); bar(8, 8, std::round(w * .7f) - 16, 8, 0xC5CBD3); bar(8, 22, std::round(w * .9f) - 16, 6, 0xD6DBE1); bar(8, 34, std::round(w * .8f) - 16, 6, 0xD6DBE1); bar(8, 46, std::round(w * .6f) - 16, 6, 0xD6DBE1); break;
+        case 1: kit_.Fill(t, 4, hex(0x2B2D31)); bar(8, 8, std::round(w * .5f) - 16, 8, 0x4A4D55); bar(8, 22, std::round(w * .85f) - 16, 6, 0x3A3D44); break;
+        case 2: kit_.Fill(t, 4, hex(0x1F3A5F)); kit_.Fill({t.left, t.bottom - 10, t.right, t.bottom}, 0, hex(0x14243B)); bar(8, 8, 14, 14, 0x3D5A80); bar(8, 28, 14, 14, 0x3D5A80); bar(w / 2 - 20, h * .25f, 40, h * .35f, 0x2E4B73); break;
+        case 3: { kit_.Fill(t, 4, hex(0xF4F6F8)); kit_.Fill({t.left, t.top, t.right, t.top + 10}, 0, hex(0x2F6B4F)); for (float y = 16; y < h - 4; y += 9) kit_.Fill({t.left + 4, t.top + y, t.right - 4, t.top + y + 1}, 0, hex(0xD6DBE1)); for (float x = w / 4; x < w - 4; x += w / 4) kit_.Fill({t.left + x, t.top + 12, t.left + x + 1, t.bottom - 4}, 0, hex(0xD6DBE1)); break; }
+        case 4: kit_.Fill(t, 4, hex(0x171717)); kit_.Fill({t.left, t.top, t.right, t.top + 12}, 0, hex(0x292929)); bar(6, 3, 30, 6, 0x3E3E3E); bar(8, 20, std::round(w * .55f), 8, 0x3E3E3E); bar(8, 34, w - 16, std::max(8.f, h - 42), 0x232323); break;
+        default: { kit_.Fill(t, 4, hex(0x202124)); const float cwh = (w - 18) / 2, chh = (h - 18) / 2; bar(6, 6, cwh, chh, 0x3C4043); bar(12 + cwh, 6, cwh, chh, 0x35363A); bar(6, 12 + chh, cwh, chh, 0x35363A); bar(12 + cwh, 12 + chh, cwh, chh, 0x3C4043); break; }
+        }
+    }
     void Paint() {
         if (pc_ == &chrome_ && !chrome_.RenderTarget()) chrome_.Resize();
         auto* t = pc_->RenderTarget(); if (!t || !pc_->SolidBrush()) return;
@@ -990,19 +1131,63 @@ private:
                     if (n.glyph) kit_.DrawGlyph(n.glyph, {left + 10, b.r.top + 8 + 2, left + 24, b.r.top + 8 + 16}, 14, DialogKit::White(P::body));
                     kit_.Text(n.text, DialogKit::Type::detail, left + 32, b.r.top + 8, cw - 42, DialogKit::White(P::secondaryText), true);
                 } else {
-                    kit_.DrawGlyph(n.glyph ? n.glyph : DialogKit::Glyph::info, {left, b.r.top + 2, left + 24, b.r.top + 16}, 14, DialogKit::White(P::muted));
-                    kit_.Text(n.text, DialogKit::Type::detail, left + 32, b.r.top, cw - 32, DialogKit::White(P::origin), true);
+                    const auto ln = SecondaryLane();
+                    kit_.DrawGlyph(n.glyph ? n.glyph : DialogKit::Glyph::info, {left + ln.left, b.r.top + 2, left + ln.left + ln.width, b.r.top + 16}, 14, DialogKit::White(P::muted));
+                    kit_.Text(n.text, DialogKit::Type::detail, left + ln.text, b.r.top, cw - ln.text, DialogKit::White(P::origin), true);
                 }
                 break;
             }
             case B::Rows: {
                 float ry = b.r.top;
-                for (const auto& row : spec_.rows) {
-                    if (row.glyph) kit_.DrawGlyph(row.glyph, {left + 4, ry + 4, left + 28, ry + 28}, 16, DialogKit::White(P::body));
+                for (size_t i = 0; i < spec_.rows.size(); ++i) {
+                    const auto& row = spec_.rows[i];
+                    if (row.toggle >= 0) {   // EAC-0 row: hover / focus on the whole row, 28 x 16 switch at its end
+                        const D2D1_RECT_F rr{left, ry, right, ry + 32}; const auto v = motion_.Visual(RowHit(i), now);
+                        if (row.toggle == 1 && (v.hover > 0 || v.press > 0)) kit_.Fill(rr, P::fieldRadius, RowFill(RowHit(i), now));
+                        const D2D1_RECT_F track{right - 4 - 28, ry + 8, right - 4, ry + 24};
+                        kit_.Fill(track, 8, row.toggle == 1 ? DialogKit::White(0xB3 / 255.f) : DialogKit::White(.12f));
+                        const float kx = row.toggle == 1 ? track.right - 2 - 12 : track.left + 2;
+                        kit_.Fill({kx, track.top + 2, kx + 12, track.top + 14}, 6, row.toggle == 1 ? DialogKit::Gray(Design::Surface::canvas) : DialogKit::White(.5f));
+                        if (Focused(RowHit(i))) kit_.Ring(rr, P::fieldRadius, DialogKit::White(P::ring));
+                    }
+                    if (row.glyph) kit_.DrawGlyph(row.glyph, {left + 4, ry + 4, left + 28, ry + 28}, 16, DialogKit::White(row.toggle >= 0 ? 0xB3 / 255.f : P::body));
                     const float tw = row.trailing.empty() ? 0 : kit_.Width(row.trailing, DialogKit::Type::detail);
-                    kit_.Text(row.label, DialogKit::Type::field, left + 36, ry + 6, cw - 36 - (tw > 0 ? tw + 16 : 0), DialogKit::White(1));
-                    if (tw > 0) kit_.Text(row.trailing, DialogKit::Type::detail, right - 8 - tw, ry + 7, tw + 1, DialogKit::White(P::origin));
+                    const float tail = (tw > 0 ? tw + 16 : 0) + (row.toggle >= 0 ? 28 + 12 : 0);
+                    kit_.Text(row.label, DialogKit::Type::field, left + 36, ry + 6, cw - 36 - tail, DialogKit::White(row.toggle == 0 ? P::muted : 1.f));
+                    if (tw > 0) kit_.Text(row.trailing, DialogKit::Type::detail, right - 8 - tw - (row.toggle >= 0 ? 28 + 8 : 0), ry + 7, tw + 1, row.trailing == L"En cours" ? DialogKit::AccentColor() : DialogKit::White(P::origin));
                     ry += 36;
+                }
+                break;
+            }
+            case B::Segments: {
+                const auto& sp = spec_.sources;
+                kit_.Fill(b.r, 6, DialogKit::White(0x0D / 255.f));
+                for (size_t i = 0; i < sp.categories.size(); ++i) {
+                    const auto r = Find(CategoryHit(i)); const auto v = motion_.Visual(CategoryHit(i), now); const bool on = static_cast<int>(i) == sp.category;
+                    if (on) kit_.Fill(r, 4, DialogKit::Gray(Design::Surface::pressed));
+                    else if (v.hover > 0) kit_.Fill(r, 4, DialogKit::White(.04f * v.hover));
+                    const float tw = kit_.Width(sp.categories[i], DialogKit::Type::button);
+                    kit_.Text(sp.categories[i], DialogKit::Type::button, (r.left + r.right - tw) / 2, r.top + 5, tw + 2, DialogKit::White(on ? 1.f : 0x99 / 255.f));
+                    if (Focused(CategoryHit(i))) kit_.Ring(r, 4, DialogKit::White(P::ring));
+                }
+                break;
+            }
+            case B::Sources: {
+                const auto& sp = spec_.sources; const auto vis = VisibleSources();
+                if (vis.empty()) {
+                    kit_.Fill(b.r, 6, DialogKit::White(.03f));
+                    const float tw = std::min(cw - 32, kit_.Width(sp.empty, DialogKit::Type::detail));
+                    kit_.Text(sp.empty, DialogKit::Type::detail, left + (cw - tw) / 2, b.r.top + (b.r.bottom - b.r.top - 18) / 2, tw + 2, DialogKit::White(P::muted));
+                    break;
+                }
+                for (size_t i : vis) {
+                    const auto r = Find(SourceHit(i)); const auto v = motion_.Visual(SourceHit(i), now); const bool on = static_cast<int>(i) == sp.selected;
+                    if (on) { kit_.Fill(r, 6, DialogKit::AccentColor(P::badgeTint)); kit_.Ring(r, 6, DialogKit::AccentColor()); }
+                    else if (v.hover > 0 || v.press > 0) kit_.Fill(r, 6, DialogKit::White(.05f * std::max(v.hover, v.press)));
+                    const D2D1_RECT_F thumb{r.left + 6, r.top + 6, r.right - 6, r.bottom - 6 - 18 - 6};
+                    PaintThumbnail(sp.items[i].art, thumb);
+                    kit_.Text(sp.items[i].title, DialogKit::Type::detail, r.left + 6, thumb.bottom + 6, r.right - r.left - 12, DialogKit::White(on ? 1.f : 0xB3 / 255.f), false, &r);
+                    if (Focused(SourceHit(i))) kit_.Ring({r.left - 2, r.top - 2, r.right + 2, r.bottom + 2}, 8, DialogKit::White(P::ring));
                 }
                 break;
             }
@@ -1107,7 +1292,7 @@ private:
                     const float lw = kit_.Width(initial, letter);
                     kit_.Text(initial, letter, (avatar.left + avatar.right - lw) / 2, avatar.top + 6, lw + 1, DialogKit::White(P::secondaryText));
                     kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(1));
-                    kit_.Text(spec_.accounts[i].masked, {14, 16, false, .08f}, r.left + 42, r.top + 27, cw - 50, DialogKit::White(P::muted));
+                    kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - 50, DialogKit::White(P::muted));
                 }
                 if (!spec_.manageLabel.empty()) {
                     const auto r = Find(ManageHit); const auto v = motion_.Visual(ManageHit, now);
@@ -1121,7 +1306,14 @@ private:
             }
             case B::Check: {
                 const auto r = Find(SimpleCheckHit); const auto v = motion_.Visual(SimpleCheckHit, now);
-                if (spec_.originCheck) {
+                if (LaneCheck()) {
+                    const auto ln = SecondaryLane(); const float lane = ln.text, line = DialogKit::Type::detail.line, bx = r.left + ln.left + (ln.width - 16) / 2;
+                    const D2D1_RECT_F box{bx, r.top + (line - 16) / 2, bx + 16, r.top + (line + 16) / 2};
+                    if (spec_.checkValue) { kit_.Fill(box, 4, DialogKit::AccentColor()); kit_.DrawGlyph(DialogKit::Glyph::check, box, 12, DialogKit::White(1)); }
+                    else { auto* br = pc_->SolidBrush(); br->SetColor(DialogKit::White(0x66 / 255.f + .2f * v.hover)); t->DrawRoundedRectangle(D2D1::RoundedRect({box.left + .75f, box.top + .75f, box.right - .75f, box.bottom - .75f}, 3.25f, 3.25f), br, 1.5f); }
+                    kit_.Text(spec_.checkLabel, DialogKit::Type::detail, r.left + lane, r.top, r.right - r.left - lane, DialogKit::White(0xB3 / 255.f + (0xE6 - 0xB3) / 255.f * v.hover), true);
+                    if (Focused(SimpleCheckHit)) kit_.Ring({r.left - 4, r.top - 4, r.right + 4, r.bottom + 4}, P::fieldRadius, DialogKit::White(P::ring));
+                } else if (spec_.originCheck) {
                     const bool big = spec_.fields.empty(); const float bx = big ? r.left + 8 : r.left;
                     const D2D1_RECT_F box{bx, r.top + (r.bottom - r.top - 16) / 2, bx + 16, r.top + (r.bottom - r.top + 16) / 2};
                     if (spec_.checkValue) { kit_.Fill(box, 4, DialogKit::AccentColor()); kit_.DrawGlyph(DialogKit::Glyph::check, box, 12, DialogKit::White(1)); }
@@ -1166,6 +1358,16 @@ private:
         g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
         auto add = [&](int key, const std::wstring& name, D2D1_RECT_F r, bool enabled, const std::wstring& id = L"") { Accessibility::Node n; n.key = key; n.parent = GroupKey; n.name = name; n.bounds = ScreenOf(r); n.enabled = enabled; n.automationId = id; nodes.push_back(n); return nodes.size() - 1; };
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].reveal) { const auto at = add(RevealHit(i), L"Afficher le mot de passe", Find(RevealHit(i)), !busy_); nodes[at].toggle = i < revealed_.size() && revealed_[i] ? 2 : 1; }
+        if (spec_.sources.shown) {
+            const auto& sp = spec_.sources;
+            for (size_t i = 0; i < sp.categories.size(); ++i) { const auto at = add(CategoryHit(i), sp.categories[i], Find(CategoryHit(i)), !busy_, L"ShareCategory"); nodes[at].role = Accessibility::Role::TabItem; nodes[at].selected = static_cast<int>(i) == sp.category; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(sp.categories.size()); }
+            const auto vis = VisibleSources();
+            for (size_t k = 0; k < vis.size(); ++k) { const size_t i = vis[k]; const auto at = add(SourceHit(i), sp.items[i].title, Find(SourceHit(i)), !busy_, L"ShareSource"); nodes[at].role = Accessibility::Role::ListItem; nodes[at].selected = static_cast<int>(i) == sp.selected; nodes[at].position = static_cast<int>(k) + 1; nodes[at].count = static_cast<int>(vis.size()); nodes[at].help = L"Aperçu fictif (démonstration)"; }
+        }
+        for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle >= 0) {
+            const auto at = add(RowHit(i), spec_.rows[i].label, Find(RowHit(i)), spec_.rows[i].toggle == 1 && !busy_, L"SitePermissionToggle");
+            nodes[at].toggle = spec_.rows[i].toggle == 1 ? 2 : 1; nodes[at].help = spec_.rows[i].trailing.empty() ? spec_.rows[i].detail : spec_.rows[i].trailing + L" · " + spec_.rows[i].detail;
+        }
         if (spec_.hasSelect) { const auto at = add(SelectHit, spec_.select.label, Find(SelectHit), !busy_); nodes[at].expand = 1; if (spec_.select.index >= 0 && spec_.select.index < static_cast<int>(spec_.select.options.size())) nodes[at].help = spec_.select.options[static_cast<size_t>(spec_.select.index)]; }
         for (size_t i = 0; i < spec_.checks.size(); ++i) { const auto at = add(CheckHit(i), spec_.checks[i].label, Find(CheckHit(i)), !spec_.checks[i].disabled && !busy_); nodes[at].toggle = spec_.checks[i].value ? 2 : 1; nodes[at].help = spec_.checks[i].detail; }
         if (spec_.hasStatus && spec_.status.hasButton) { const auto at = add(StatusHit, spec_.status.button.label, Find(StatusHit), Enabled(StatusHit)); nodes[at].help = spec_.status.title + L" · " + spec_.status.detail; }
@@ -1195,6 +1397,7 @@ public:
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? focus_ : 0; };
         host.invoke = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
         host.toggle = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
+        host.select = [this](long long key) { if (IsCategory(static_cast<int>(key)) || IsSource(static_cast<int>(key))) PostMessageW(hwnd_, WM_APP + 3, static_cast<WPARAM>(key), 0); };
         host.expand = [this](long long key, bool) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
         host.label = [this](HWND child, Accessibility::Node& n) {
             const int i = EditIndex(child); if (i < 0) return false;
@@ -1208,19 +1411,23 @@ public:
     }
     void Dispose() {
         if (open_) { open_ = false; auto done = std::move(done_); done_ = nullptr; if (done) done(Result{}); }
+        // A list still tracking (Dispose from inside its loop) is only dismissed: its Track() is on the stack.
+        if (choosing_) { if (hostMenu_) { if (hooks_.dismiss) hooks_.dismiss(); } else if (menu_) menu_->Cancel(); }
+        else if (menu_) menu_->Dispose();   // its windows go with hwnd_ (their owner) below
         uia_.Detach(); DestroyEdits(); kit_.Release(); chrome_.Dispose();
         if (font_) DeleteObject(font_);
         font_ = nullptr;
         if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
         if (scrim_ && IsWindow(scrim_)) DestroyWindow(scrim_);
         hwnd_ = scrim_ = nullptr; closing_ = false;
+        if (!choosing_) menu_.reset();
     }
     bool Show(Spec spec, RECT area, std::function<void(const Result&)> done) {
         if (!hwnd_ || open_) return false;
         if (closing_) FinishClosing();
-        spec_ = std::move(spec); done_ = std::move(done); area_ = area;
+        spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
         busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
-        keyboard_ = true; open_ = true; spinStart_ = Motion::Now();
+        keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now();
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
         SetWindowTextW(hwnd_, AccessibleName().c_str());
         EnableWindow(hwnd_, TRUE);
@@ -1238,7 +1445,7 @@ public:
     // Replace the content of an open dialog (B05 list ↔ detail ↔ confirmation); keeps `done`.
     void Update(Spec spec) {
         if (!open_) return;
-        spec_ = std::move(spec); busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); scroll_ = 0; hover_ = pressed_ = 0; motion_.ClearInteractions();
+        spec_ = std::move(spec); ++generation_; busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); scroll_ = 0; hover_ = pressed_ = 0; motion_.ClearInteractions();
         SetWindowTextW(hwnd_, AccessibleName().c_str()); CreateEdits(); Place(false); FocusStop(InitialStop());
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
@@ -1246,6 +1453,30 @@ public:
     // Current answers (fields, checks, select, single check) with button = -1, dialog untouched.
     Result Snapshot() const { return Collect(-1); }
     void Finish(int button) { if (open_) Close(Collect(button)); }
+    // A command list dropped under the control `hit` (right edges aligned), modal like TrackPopupMenu.
+    // The dialog stays open while the list owns activation (no light dismiss towards our own menu);
+    // Échap / a click outside close only the list. Returns the chosen id, 0 when dismissed or when
+    // the dialog was closed or replaced meanwhile. Focus comes back to `hit`.
+    int TrackMenu(const std::vector<ContextMenu::Item>& items, int hit, bool keyboard) {
+        if (!open_ || busy_ || choosing_ || items.empty() || !hwnd_) return 0;
+        const unsigned generation = generation_; const RECT anchor = ScreenOf(Find(hit));
+        keyboard_ = keyboard; focus_ = hit; InvalidateRect(hwnd_, nullptr, FALSE);
+        choosing_ = true; hostMenu_ = static_cast<bool>(hooks_.menu);
+        int id = 0;
+        if (hooks_.menu) id = hooks_.menu(items, anchor, keyboard);
+        else {
+            if (!menu_) { menu_ = std::make_unique<ContextMenu::Menu>(); menu_->Init(instance_, hwnd_, root_); }
+            id = menu_->Track(items, {anchor.right, anchor.bottom}, &anchor, keyboard, reduced_, true);
+        }
+        choosing_ = false;
+        if (!open_ || generation != generation_ || !hwnd_ || !IsWindowVisible(hwnd_)) return 0;
+        SetForegroundWindow(hwnd_); keyboard_ = keyboard; FocusStop(hit);
+        return id;
+    }
+    bool KeyboardModality() const { return keyboard_; }
+    bool OpenedFromKeyboard() const { return spec_.modality == Spec::Modality::Keyboard || (spec_.modality == Spec::Modality::Host && hooks_.keyboard && hooks_.keyboard()); }
+    // Focus a control of the current content (after Update, e.g. back on « Plus d'options »).
+    void FocusControl(int hit) { if (open_ && Enabled(hit)) FocusStop(hit); }
     void SetBusy(bool busy, const std::wstring& label = L"") {
         if (!open_) return;
         busy_ = busy; busyLabel_ = label; if (busy) { error_.clear(); spinStart_ = Motion::Now(); hover_ = pressed_ = 0; motion_.ClearInteractions(); }
@@ -1276,19 +1507,32 @@ public:
     void Frame(Motion::Time now) {
         if (!hwnd_) return;
         if (closing_ && !fade_.Moving(now)) { FinishClosing(); return; }
-        if (open_ && fade_.Moving(now)) Place(true);
+        if ((open_ || closing_) && fade_.Moving(now)) Place(true);   // exit retraces the 4 DIP entrance, shorter
         ApplyAlpha();
         if (open_ || closing_) InvalidateRect(hwnd_, nullptr, FALSE);
     }
     void SetReducedMotion(bool reduced) { reduced_ = reduced; motion_.SetReducedMotion(reduced); if (open_) InvalidateRect(hwnd_, nullptr, FALSE); }
     // Test helpers (native harness).
+    bool FocusVisibleForTest() const { return keyboard_ && focus_ != 0; }   // the ring is drawn (window focus aside)
     int FocusForTest() const { return CurrentStop(); }
+    float HeadLeftForTest() const { return HeadLeft(); }
+    float LaneTextForTest() const { return SecondaryLane().text; }
+    float LaneBoxLeftForTest() const { const auto l = SecondaryLane(); return l.left + (l.width - 16) / 2; }
+    bool LaneCheckForTest() const { return LaneCheck(); }
+    DialogKit::Style TitleStyleForTest() const { return TitleStyle(); }
+    float TitleDropForTest() const { return TileTitleDrop(); }
     void KeyForTest(WPARAM key) { Key(key); }
+    void AltKeyForTest(WPARAM key) { AltKey(key); }
+    bool ChoosingForTest() const { return choosing_; }
+    ContextMenu::Menu* MenuForTest() const { return menu_.get(); }
     void ActivateForTest(int hit) { Activate(hit, false); }
     void SetFieldForTest(size_t i, const std::wstring& text) { if (i < edits_.size() && edits_[i].edit) { SetWindowTextW(edits_[i].edit, text.c_str()); Revalidate(); } }
     std::wstring FieldForTest(size_t i) const { return i < edits_.size() ? edits_[i].Text() : L""; }
     HWND EditForTest(size_t i) const { return i < edits_.size() ? edits_[i].edit : nullptr; }
     D2D1_RECT_F BoxForTest(int hit) const { return Find(hit); }
+    const SourcePicker& SourcesForTest() const { return spec_.sources; }
+    bool EnabledForTest(int hit) const { return Enabled(hit); }
+    int ColumnsForTest() const { return sourceColumns_; }
     float HeightForTest() const { return height_; }
     float WidthForTest() const { return width_; }
     bool BusyForTest() const { return busy_; }
@@ -1296,9 +1540,9 @@ public:
     std::wstring FieldErrorForTest() const { return fieldError_; }
     void FinishAnimationsForTest() { fade_.Settle(); if (closing_) FinishClosing(); else if (open_) { Place(false); ApplyAlpha(); } }
     // Paint the current content into a PNG (offscreen Direct2D, works on a locked desktop).
-    bool RenderForTest(const std::wstring& png) {
+    bool RenderForTest(const std::wstring& png, UINT dpi = 0) {
         if (!open_) return false;
-        Chrome off; if (FAILED(off.InitOffscreen(root_, Dpi(), width_, height_))) return false;
+        Chrome off; if (FAILED(off.InitOffscreen(root_, dpi ? dpi : Dpi(), width_, height_))) return false;
         kit_.Release(); kit_.Bind(&off); pc_ = &off;
         Paint();
         const bool ok = SUCCEEDED(off.SavePng(png.c_str()));

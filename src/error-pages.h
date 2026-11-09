@@ -178,6 +178,8 @@ inline Copy CopyFor(Kind kind, const std::wstring& host) {
     default: return {L"Cette page ne s'est pas chargée", L"Une erreur a empêché l'ouverture de ", L". Réessayez dans un instant.", L"Réessayer", L"Détails techniques"};
     }
 }
+// Button order of the action row: « Réessayer » (whichever button carries it) comes last, on the right.
+inline bool RetryLast(const Copy& c) { return c.primaryAction == Action::Retry; }
 inline const wchar_t* ActionName(Action a) {
     switch (a) { case Action::Retry: return L"retry"; case Action::Back: return L"back"; case Action::Details: return L"details"; case Action::Search: return L"search"; case Action::NetworkSettings: return L"network"; case Action::AutoRetry: return L"autoRetry"; }
     return L"";
@@ -198,8 +200,10 @@ main{width:100%;max-width:420px;display:flex;flex-direction:column;align-items:c
 h1{margin:0;font-size:20px;line-height:28px;font-weight:600;text-wrap:balance}
 p{margin:8px 0 24px;font-size:14px;line-height:20px;color:#FFFFFF99;text-wrap:balance}
 p b{font-weight:500;color:#FFFFFFE6}
-.actions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
-button{height:32px;padding:0 14px;border:0;border-radius:8px;font:inherit;font-size:14px;line-height:32px;font-weight:500;cursor:pointer}
+.actions{display:flex;flex-direction:row;flex-wrap:nowrap;justify-content:center;gap:8px;max-width:100%}
+button{height:32px;padding:0 14px;border:0;border-radius:8px;font:inherit;font-size:14px;line-height:32px;font-weight:500;cursor:pointer;flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button[data-action=retry]{flex-shrink:0}
+@media (max-width:359px){.actions{flex-direction:column;align-items:stretch;width:100%}}
 button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}
 .primary{background:#FFFFFFE6;color:#171717}.primary:hover{background:#FFFFFF}.primary:active{background:#FFFFFFCC}
 .primary[aria-disabled=true]{opacity:.6;cursor:default}
@@ -215,8 +219,13 @@ button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}
     h += extras.reducedMotion ? L"" : L"main{animation:in 160ms ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}}@media (prefers-reduced-motion:reduce){main{animation:none}}";
     h += L"</style><main role=\"main\"><h1>" + WebText::Html(c.title) + L"</h1><p>" + WebText::Html(c.before) + L"<b>" + WebText::Html(host) + L"</b>" + WebText::Html(c.after) + L"</p>";
     const std::wstring primaryLabel = retrying ? std::wstring(L"Rechargement…") : c.primary;
-    h += L"<div class=\"actions\"><button id=\"primary\" class=\"primary\" data-action=\"" + std::wstring(ActionName(c.primaryAction)) + L"\"" + (retrying ? L" aria-disabled=\"true\"" : L" autofocus") + L">" + WebText::Html(primaryLabel) + L"</button>";
-    h += L"<button id=\"secondary\" class=\"secondary\" data-action=\"" + std::wstring(ActionName(c.secondaryAction)) + L"\"" + (details ? L" aria-expanded=\"false\" aria-controls=\"details\"" : L"") + L">" + WebText::Html(c.secondary) + L"</button></div>";
+    // One row for every variant (user request 2026-11-09): the other action on the left,
+    // « Réessayer » on the right, in DOM order so Tab follows what is seen. Labels never wrap
+    // (a long « Rechercher « … » » ellipsises, « Réessayer » never shrinks); under 360 px (split
+    // view halves) they stack, full width, same order.
+    const std::wstring primaryButton = L"<button id=\"primary\" class=\"primary\" data-action=\"" + std::wstring(ActionName(c.primaryAction)) + L"\"" + (retrying ? L" aria-disabled=\"true\"" : L" autofocus") + L" title=\"" + WebText::Html(primaryLabel) + L"\">" + WebText::Html(primaryLabel) + L"</button>";
+    const std::wstring secondaryButton = L"<button id=\"secondary\" class=\"secondary\" data-action=\"" + std::wstring(ActionName(c.secondaryAction)) + L"\"" + (details ? L" aria-expanded=\"false\" aria-controls=\"details\"" : L"") + L">" + WebText::Html(c.secondary) + L"</button>";
+    h += L"<div class=\"actions\">" + (RetryLast(c) ? secondaryButton + primaryButton : primaryButton + secondaryButton) + L"</div>";
     if (details) {
         const std::wstring code = extras.code.empty() ? std::wstring(L"Code inconnu") : extras.code;
         h += L"<div id=\"details\" class=\"details\" hidden><b>" + WebText::Html(code) + L"</b>" + (extras.detail.empty() ? L"" : L"<span>" + WebText::Html(extras.detail) + L"</span>") + L"</div>";

@@ -4,7 +4,8 @@
 // native EDIT filter. Opens centred over the page, focus in the filter; Échap closes and gives
 // focus back; a click elsewhere closes. No shadow (NativeUI::ConfigureShadowlessPopup).
 //
-// Paper values (get_jsx EWC-0): 560 wide, #292929, border 1 px #FFFFFF0F, radius 6
+// Paper values (get_jsx EWC-0): 560 wide, #171717 (--color-browser-canvas, user request
+//   2026-11-09, was #292929), border 1 px #FFFFFF0F, radius 6
 //   header padding 12 / 16 left / 12 right: title 16/20 medium #FFFFFFE6, close 24x24 radius 3,
 //     glyph 14 #FFFFFFB3 (hover #333333)
 //   filter: padding 0 12 8; field h 32 #FFFFFF0A, border 1 px #FFFFFF1A, radius 6, padding 8,
@@ -26,6 +27,7 @@ namespace Layout {
 inline constexpr float width = 560, radius = 6, header = 48, filter = 40, close = 24, closeGlyph = 14;
 inline constexpr float sectionTop = 8, heading = 32, row = 32, rowRadius = 6, padX = 12, rowPad = 8, keyGap = 4, keyHeight = 24, keyPad = 6, keyMin = 24, bottom = 12;
 inline constexpr float pageMargin = 24, enterMs = 160, slide = 8;
+inline constexpr unsigned Surface = 0x17;   // --color-browser-canvas (Design::Surface::canvas = 23/255)
 }
 struct Shortcut { const wchar_t* label; std::vector<const wchar_t*> keys; };
 struct Section { const wchar_t* title; std::vector<Shortcut> rows; };
@@ -71,7 +73,7 @@ class Panel {
     float ListHeight() const { return height_ - ListTop() - 1; }
     D2D1_RECT_F CloseBox() const { const float r = Layout::width - 1 - Layout::padX; return {r - Layout::close, 12, r, 36}; }
     D2D1_RECT_F Field() const { return {1 + Layout::padX, Layout::header, Layout::width - 1 - Layout::padX, Layout::header + 32}; }
-    static COLORREF FieldGray() { const int g = static_cast<int>(std::lround(0x29 + (255 - 0x29) * (0x0A / 255.f))); return RGB(g, g, g); }
+    static COLORREF FieldGray() { const int g = static_cast<int>(std::lround(Layout::Surface + (255 - static_cast<int>(Layout::Surface)) * (0x0A / 255.f))); return RGB(g, g, g); }   // #FFFFFF0A over the panel surface
     static COLORREF Ink(float a) { const int b = GetRValue(FieldGray()); const int c = static_cast<int>(std::lround(b + (255 - b) * a)); return RGB(c, c, c); }
     std::wstring Query() const { if (!edit_) return L""; std::wstring s(static_cast<size_t>(GetWindowTextLengthW(edit_)) + 1, L'\0'); s.resize(static_cast<size_t>(GetWindowTextW(edit_, s.data(), static_cast<int>(s.size())))); return s; }
     void Build() {
@@ -93,7 +95,7 @@ class Panel {
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         const auto now = Motion::Now(); chrome_.keyboardModality = keyboard_;
         t->BeginDraw(); t->Clear(PopupKit::Gray(0x17));
-        PopupKit::Fill(chrome_, {0, 0, width, height_}, radius, PopupKit::Gray(0x29));
+        PopupKit::Fill(chrome_, {0, 0, width, height_}, radius, PopupKit::Gray(Surface));
         PopupKit::DrawText(chrome_, L"Raccourcis clavier", {1 + 16, 13, width - 60, 33}, {16, 20, 0, true}, PopupKit::White(.9f));
         const auto cb = CloseBox(); const auto cv = motion_.Visual(CloseHit, now); const float lit = std::max(cv.hover, cv.press);
         if (lit > 0) PopupKit::Fill(chrome_, cb, 3, PopupKit::Gray(cv.press > cv.hover ? 0x3E : 0x33, lit));

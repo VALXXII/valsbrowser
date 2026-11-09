@@ -138,6 +138,7 @@ struct LayoutInput {
     bool autoplayPending = false, cookiesPending = false, grayscalePending = false; // differ from what the engine started with
     const BrowserSettings::State* state = nullptr;
     const std::vector<BrowserSettings::Site>* sites = nullptr; bool sitesLoaded = false;
+    bool sitesQuiet = false;   // first load still within its grace period: no « Chargement… » flash
     int site = -1;                                             // Site view: index into sites
 };
 inline std::wstring Host(const std::wstring& origin) {
@@ -239,7 +240,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         y -= rowGap;
     } else if (view == View::Sites) {
         const size_t n = in.sites ? in.sites->size() : 0;
-        if (!in.sitesLoaded) { add(Kind::Note, None, row, L"Chargement…"); }
+        if (!in.sitesLoaded) { if (!in.sitesQuiet) add(Kind::Note, None, row, L"Chargement…"); }
         else if (!n) { add(Kind::Note, None, 2 * descriptionLine, L"Aucun site n'a encore demandé d'accès."); }
         else {
             labelAt(n == 1 ? L"1 site" : std::to_wstring(n) + L" sites");
@@ -366,7 +367,7 @@ public:
         std::function<void(bool)> closed;                           // true when closed from the keyboard
         std::function<void(BrowserSettings::Change)> changed;       // the state changed: apply + save
         std::function<void()> pickFolder;                           // modal folder picker (may change the state)
-        std::function<void()> clearData;                            // modal confirmation + clear
+        std::function<void(bool keyboard)> clearData;               // modal confirmation + clear; `keyboard`: how the row was activated (focus ring)
         std::function<void()> checkUpdates;
         std::function<Version()> version;                           // "browser 0.3.x · À jour"
         std::function<std::wstring()> downloadFolder;               // effective folder (default resolved)
@@ -390,6 +391,9 @@ private:
     // Search: the query typed in the root's field and what it finds.
     std::wstring query_; std::vector<SearchResult> results_; NativeUI::AccentCaret caret_;
     std::vector<BrowserSettings::Site> sites_; bool sitesLoaded_ = false; int site_ = -1; unsigned loadTicket_ = 0;
+    // A first permissions load answered within this grace shows the list (or « Aucun site ») directly.
+    static constexpr int loadGraceMs = 250; Motion::Time loadStart_{};
+    bool LoadQuiet(Motion::Time now) const { return !sitesLoaded_ && now < loadStart_ + Motion::Milliseconds(loadGraceMs); }
     std::map<int, std::vector<std::wstring>> lines_; std::vector<std::wstring> noSitesLines_, sitesNoteLines_;
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
@@ -463,7 +467,7 @@ private:
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
         in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
-        in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.site = site_; return in;
+        in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_; return in;
     }
     mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
     void Reveals(Motion::Time now, bool target) const {
@@ -770,6 +774,10 @@ private:
             DangerRow(L"Tout retirer", top + 13 + 40 + 8, ResetAll, now, !sites_.empty());
         } else DangerRow(L"Retirer les autorisations", top + 13, ResetSite, now, true);
     }
+    // Scroll edge fades (DIP): reach grows with the content hidden on that side, capped by Layout.
+    static std::pair<float, float> FadeReach(float scroll, float max) {
+        return {std::clamp(scroll, 0.f, Layout::topFade), std::clamp(max - scroll, 0.f, Layout::bottomFade)};
+    }
     // One view at a horizontal offset (navigation push/pop).
     void PaintView(int depth, float x, float opacity, Motion::Time now) {
         auto* target = chrome_.RenderTarget(); const View view = views_[depth];
@@ -787,7 +795,9 @@ private:
         }
         IconButton(L"close", Layout::CloseButton(), Close, now);
         // Content, clipped between the header and the footer.
-        const float viewTop = Layout::viewTop - Layout::groupGap / 2, viewBottom = ViewBottom(view);
+        // Clip and fades share device-pixel-aligned edges (no unfaded sliver at 125/150 %).
+        const float dip = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width));
+        const float viewTop = std::ceil((Layout::viewTop - Layout::groupGap / 2) / dip) * dip, viewBottom = std::floor(ViewBottom(view) / dip) * dip;
         const float scroll = scrolls_[depth].Value(now); paintScroll_ = scroll;
         const bool dim = view == View::Main && Searching(); float searchTop = Layout::viewTop - scroll;
         target->PushAxisAlignedClip(D2D1::RectF(0, viewTop, Layout::width, viewBottom), D2D1_ANTIALIAS_MODE_ALIASED);
@@ -821,15 +831,19 @@ private:
         if (dim) ResultCardPaint(searchTop, now);
         // Scroll edge effects: content dissolves into the canvas where more lies beyond.
         const float max = MaxScroll(view, now, false);
-        if (fade_ && scroll > 0) {
-            fade_->SetStartPoint({0, viewTop + Layout::topFade}); fade_->SetEndPoint({0, viewTop}); fade_->SetOpacity(Motion::Clamp(scroll / Layout::topFade));
-            target->FillRectangle(D2D1::RectF(0, viewTop, Layout::width, viewTop + Layout::topFade), fade_);
+        // The fade is always opaque canvas AT the edge (what the clip cuts is never visible) and only
+        // its reach follows the distance left to scroll, so it eases away continuously at either end.
+        // (It used to dim the whole overlay instead — by the top fade's 16 DIP — which near the bottom
+        // let half-clipped rows show through, cut by a hard line at the footer.)
+        const auto [topReach, bottomReach] = FadeReach(scroll, max);
+        if (fade_ && topReach > 0) {
+            fade_->SetStartPoint({0, viewTop + topReach}); fade_->SetEndPoint({0, viewTop});
+            target->FillRectangle(D2D1::RectF(0, viewTop, Layout::width, viewTop + topReach), fade_);
         }
-        if (fade_ && max - scroll > 0) {
-            fade_->SetStartPoint({0, viewBottom - Layout::bottomFade}); fade_->SetEndPoint({0, viewBottom}); fade_->SetOpacity(Motion::Clamp((max - scroll) / Layout::topFade));
-            target->FillRectangle(D2D1::RectF(0, viewBottom - Layout::bottomFade, Layout::width, viewBottom), fade_);
+        if (fade_ && bottomReach > 0) {
+            fade_->SetStartPoint({0, viewBottom - bottomReach}); fade_->SetEndPoint({0, viewBottom});
+            target->FillRectangle(D2D1::RectF(0, viewBottom - bottomReach, Layout::width, viewBottom), fade_);
         }
-        if (fade_) fade_->SetOpacity(1);
         target->PopAxisAlignedClip();
         Footer(view, now);
         if (layered) target->PopLayer();
@@ -982,7 +996,7 @@ private:
     }
     void LoadSites() {
         if (!hooks_.loadSites) { sitesLoaded_ = true; return; }
-        const unsigned ticket = ++loadTicket_;
+        const unsigned ticket = ++loadTicket_; loadStart_ = Motion::Now();
         hooks_.loadSites([this, ticket](std::vector<BrowserSettings::Site> sites) {
             if (ticket != loadTicket_ || !hwnd_) return; // a newer load superseded this one
             sites_ = std::move(sites); sitesLoaded_ = true;
@@ -1086,7 +1100,7 @@ private:
             Navigate(depth_ - 1, now); LoadSites();
         } else if (hit == ResetAll && !sites_.empty()) { if (hooks_.resetSites) hooks_.resetSites(L""); sites_.clear(); LoadSites(); }
         else if (hit == Folder) { if (hooks_.pickFolder) Modal([&] { hooks_.pickFolder(); }); }
-        else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(); }); }
+        else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
@@ -1347,6 +1361,20 @@ public:
     // Recently closed by deactivation: the click that caused it must not reopen it.
     ULONGLONG hiddenAt = 0;
     Drawer() { slide_.Snap(0); page_.Snap(0); customReveal_.Snap(0); homeReveal_.Snap(0); }
+    // Tests: the navigation stack and page position (to prove which view each frame paints).
+    View CurrentViewForTest() const { return Current(); }
+    void ActivateForTest(int hit, bool keyboard) { Activate(hit, keyboard); }   // as a click (false) or Entrée / Espace / UIA (true)
+    int DepthForTest() const { return depth_; }
+    float PageForTest(Motion::Time now) const { return page_.Value(now); }
+    float SlideForTest(Motion::Time now) const { return slide_.Value(now); }
+    bool PageMovingForTest(Motion::Time now) const { return page_.Moving(now); }
+    // The views a frame at `now` paints (same rule as Paint): one, or two during a push / pop.
+    std::vector<View> PaintedViewsForTest(Motion::Time now) const {
+        const float pos = page_.Value(now); const int lo = std::clamp(static_cast<int>(std::floor(pos)), 0, MaxDepth - 1), hi = std::min(MaxDepth - 1, lo + 1);
+        if (pos - lo < .001f || lo == hi) return {views_[lo]}; return {views_[lo], views_[hi]};
+    }
+    static std::pair<float, float> FadeReachForTest(float scroll, float max) { return FadeReach(scroll, max); }
+    bool SitesNoteForTest(Motion::Time now) const { return !sitesLoaded_ && !LoadQuiet(now); }   // « Chargement… » drawn
     ~Drawer() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, BrowserSettings::State* state, Hooks hooks) {
         owner_ = owner; state_ = state; hooks_ = std::move(hooks);
@@ -1373,10 +1401,28 @@ public:
     bool Open() const { return visible_ && !closing_; }
     // Slides in from the window's right edge; reopening mid-exit continues from
     // where the drawer is on screen.
-    void Show() {
+    void Show() { Show(View::Main); }
+    // Opens on `target`. Closed (or leaving): the stack is rebuilt as Main > target and the page
+    // position snapped there BEFORE the first paint and the slide, so the drawer enters already on
+    // its view (no root page sliding away under it). Already open: the normal push / pop.
+    void Show(View target) {
         if (!hwnd_ || !state_) return;
         SyncReducedMotion();
         auto now = Motion::Now(); const bool reduced = Reduced();
+        const bool cold = !visible_ || closing_;
+        if (visible_ && !closing_ && target != View::Main && Current() != target) {
+            if (target == View::Sites) LoadSites();
+            if (depth_ >= 1 && views_[1] == target) Navigate(1, now);          // e.g. a site's detail: back to the list
+            else if (depth_ + 1 < MaxDepth) Push(target, now);               // from what is on screen, like a row
+            else { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); focus_ = 0; motion_.ClearInteractions(); }
+            Repoint(); RefreshTips(); Invalidate(); Schedule(now);
+            return;
+        }
+        if (cold && visible_ && target != View::Main) {   // re-shown while leaving: straight onto the target
+            if (editing_) Commit(false);
+            views_.fill(View::Main); views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); site_ = -1; focus_ = 0; motion_.ClearInteractions();
+            if (target == View::Sites) LoadSites();
+        }
         if (!visible_) {
             slide_.Snap(0); for (auto& lane : scrolls_) lane.Snap(0); focus_ = 0; keyboard_ = false; hover_ = pressed_ = 0; motion_.ClearInteractions();
             depth_ = 0; views_.fill(View::Main); page_.Snap(0); site_ = -1; query_.clear(); results_.clear();
@@ -1384,6 +1430,7 @@ public:
             MeasureDescriptions();
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
+            if (target != View::Main) { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); }
         }
         { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }
         closing_ = false; visible_ = true;
@@ -1395,6 +1442,8 @@ public:
         ApplyGeometry(now); Invalidate();
         Repoint(); RefreshTips(); Schedule(now);
     }
+    // Opens straight on « Autorisations des sites » (B02 « Autorisations du site » link).
+    void ShowSites() { Show(View::Sites); }
     // Leaves along the path it came in on; `animate` false hides at once.
     void Hide(bool keyboard, bool animate) {
         if (!visible_ || closing_) { if (visible_ && !animate) Finish(); return; }
@@ -1432,7 +1481,9 @@ public:
     }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
-        return Motion::Earlier(motion_.NextWake(now), Moving(now) ? Motion::Frame() : Motion::Wake{});
+        auto wake = Motion::Earlier(motion_.NextWake(now), Moving(now) ? Motion::Frame() : Motion::Wake{});
+        if (LoadQuiet(now)) wake = Motion::Earlier(wake, Motion::Deadline(now, loadStart_ + Motion::Milliseconds(loadGraceMs)));   // then « Chargement… »
+        return wake;
     }
     // Display-paced frame from the host clock; also paints the frame after motion ends.
     void Frame(Motion::Time now) {

@@ -24,7 +24,9 @@ inline constexpr wchar_t Host[] = L"browser-debug.invalid";
 inline constexpr wchar_t Url[] = L"https://browser-debug.invalid/sandbox";
 inline constexpr size_t MaxMessage = 512;
 
-struct Command { std::wstring name; std::wstring variant; };
+// `keyboard`: the page button was activated from the keyboard (Entrée / Espace), so the native
+// component opens with a visible focus ring; a pointer click opens it with the ring hidden.
+struct Command { std::wstring name; std::wstring variant; bool keyboard = false; };
 // Allow-listed commands and their variants ("" = the command takes no variant).
 struct CommandSpec { const wchar_t* name; std::vector<const wchar_t*> variants; const wchar_t* meaning; };
 inline const std::vector<CommandSpec>& Commands() {
@@ -43,6 +45,7 @@ inline const std::vector<CommandSpec>& Commands() {
         {L"modal.about", {L"upToDate", L"checking", L"available", L"error"}, L"A8 : À propos de Browser, état de version"},
         {L"modal.private", {L"current", L"concept"}, L"A9 : navigation privée, actuel ou concept"},
         {L"prompt.permission", {L"camera", L"microphone", L"cameraMicrophone", L"geolocation", L"notifications", L"clipboard", L"blocked"}, L"B01/B02 : vrai popover d'autorisation, origine démo ; blocked = état bloqué"},
+        {L"permission.demo", {L"active", L"stopped", L"status", L"reset"}, L"B02 : état démo après décision (actif simulé, arrêté, état du site, réinitialiser) ; jamais un vrai site"},
         {L"prompt.passwordFill", {L"one", L"two"}, L"B03 : remplir un mot de passe, comptes fictifs"},
         {L"prompt.passwordSave", {L"save", L"update"}, L"B04 : enregistrer / mettre à jour, compte fictif"},
         {L"password.manager", {L"list", L"detail", L"delete"}, L"B05 : réglages mots de passe, données fictives en mémoire"},
@@ -50,7 +53,7 @@ inline const std::vector<CommandSpec>& Commands() {
         {L"prompt.externalApp", {L"default"}, L"B06 : ouvrir une application externe (démo)"},
         {L"prompt.dangerousDownload", {L"default"}, L"B07 : téléchargement dangereux bloqué (démo)"},
         {L"prompt.clientCertificate", {L"default"}, L"B08 : certificat client (concept)"},
-        {L"prompt.screenShare", {L"default"}, L"B08 : partage d'écran (concept)"},
+        {L"prompt.screenShare", {L"default", L"empty"}, L"B08 : partage d'écran avec aperçus fictifs (démo)"},
         {L"prompt.keepFile", {L"default"}, L"B08 : conserver le fichier (concept)"},
         {L"find.open", {L"default", L"seed"}, L"C1/C2 : ouvre la vraie barre Ctrl+F ; seed = pré-remplie « oxyde »"},
         {L"error.page", {L"nameNotResolved", L"refused", L"timedOut", L"reset", L"unreachable", L"generic"}, L"C4 : page d'erreur native dans un nouvel onglet (adresse *.invalid)"},
@@ -74,13 +77,14 @@ inline bool Allowed(const std::wstring& name, const std::wstring& variant) {
     for (auto* v : c->variants) if (variant == v) return true;
     return false;
 }
-// {"token":"…","command":"…","variant":"…"} (variant optional), as a string or its JSON form.
+// {"token":"…","command":"…","variant":"…","via":"keyboard|pointer"} (variant, via optional), as a string or its JSON form.
 inline std::optional<Command> ParseCommand(const std::wstring& message, const std::wstring& token) {
     if (message.size() > MaxMessage) return std::nullopt;
-    auto m = FlatJson::Parse(message, MaxMessage, 3);
-    if (!m || !FlatJson::OnlyKeys(*m, {L"token", L"command", L"variant"}, {L"token", L"command"})) return std::nullopt;
+    auto m = FlatJson::Parse(message, MaxMessage, 4);
+    if (!m || !FlatJson::OnlyKeys(*m, {L"token", L"command", L"variant", L"via"}, {L"token", L"command"})) return std::nullopt;
     if (!FlatJson::SameToken((*m)[L"token"], token)) return std::nullopt;
     Command c{(*m)[L"command"], m->count(L"variant") ? (*m)[L"variant"] : L""};
+    if (m->count(L"via")) { const auto& via = (*m)[L"via"]; if (via != L"keyboard" && via != L"pointer") return std::nullopt; c.keyboard = via == L"keyboard"; }
     if (!Allowed(c.name, c.variant)) return std::nullopt;
     return c;
 }
@@ -134,7 +138,9 @@ inline const std::vector<Entry>& Catalogue() {
             {L"Caméra", nullptr, nullptr, L"camera"}, {L"Micro", nullptr, nullptr, L"microphone"}, {L"Géolocalisation", nullptr, nullptr, L"geolocation"},
             {L"Notifications", nullptr, nullptr, L"notifications"}, {L"Presse-papiers", nullptr, nullptr, L"clipboard"},
             {L"Démo caméra", L"prompt.permission", L"camera", nullptr}, {L"Démo micro", L"prompt.permission", L"microphone", nullptr}, {L"Démo position", L"prompt.permission", L"geolocation", nullptr},
-            {L"Démo notifications", L"prompt.permission", L"notifications", nullptr}, {L"Démo presse-papiers", L"prompt.permission", L"clipboard", nullptr}, {L"Démo bloqué", L"prompt.permission", L"blocked", nullptr}}},
+            {L"Démo notifications", L"prompt.permission", L"notifications", nullptr}, {L"Démo presse-papiers", L"prompt.permission", L"clipboard", nullptr}, {L"Démo bloqué", L"prompt.permission", L"blocked", nullptr},
+            {L"Démo : utilisation en cours", L"permission.demo", L"active", nullptr}, {L"Démo : utilisation arrêtée", L"permission.demo", L"stopped", nullptr},
+            {L"Démo : état du site", L"permission.demo", L"status", nullptr}, {L"Démo : réinitialiser", L"permission.demo", L"reset", nullptr}}},
         {L"B03", L"Contexte — Mots de passe : remplir (2 comptes)", Status::Demo, L"Comptes fictifs uniquement (camille.demo@exemple.test), jamais lus ni enregistrés.", {
             {L"Un compte", L"prompt.passwordFill", L"one", nullptr}, {L"Deux comptes", L"prompt.passwordFill", L"two", nullptr}}},
         {L"B04", L"Mots de passe — enregistrer, mettre à jour, remplir", Status::Demo, L"Compte fictif en mémoire.", {
@@ -146,7 +152,7 @@ inline const std::vector<Entry>& Catalogue() {
             {L"Authentification HTTP", L"prompt.basicAuth", L"default", nullptr}, {L"Identifiants refusés", L"prompt.basicAuth", L"error", nullptr}}},
         {L"B07", L"Téléchargement dangereux bloqué", Status::Demo, L"Aucun fichier n'est téléchargé.", {{L"Ouvrir", L"prompt.dangerousDownload", L"default", nullptr}}},
         {L"B08", L"Concepts — certificat client, partage d'écran, téléchargement", Status::Demo, L"Concepts à confirmer.", {
-            {L"Certificat client", L"prompt.clientCertificate", L"default", nullptr}, {L"Partage d'écran", L"prompt.screenShare", L"default", nullptr}, {L"Conserver le fichier", L"prompt.keepFile", L"default", nullptr}}},
+            {L"Certificat client", L"prompt.clientCertificate", L"default", nullptr}, {L"Partage d'écran", L"prompt.screenShare", L"default", nullptr}, {L"Partage d'écran (aucune source)", L"prompt.screenShare", L"empty", nullptr}, {L"Conserver le fichier", L"prompt.keepFile", L"default", nullptr}}},
         {L"B09", L"Note technique — faisabilité WebView2 (hors UI)", Status::Note, L"Pas d'interface : document de faisabilité.", {}},
         {L"C1", L"Contexte — Rechercher dans la page (Ctrl+F)", Status::Integrated, L"Ctrl+F sur le bloc de test « Texte pour la recherche » ci-dessous.", {
             {L"Ouvrir la barre", L"find.open", L"default", nullptr}, {L"Ouvrir avec « oxyde »", L"find.open", L"seed", nullptr}}},
@@ -291,7 +297,7 @@ const L=document.getElementById("log");let unload=null;
 const time=()=>new Date().toLocaleTimeString("fr-FR");
 window.__sandboxLog=(text,kind)=>{if(kind==="natif")document.getElementById("bridge").textContent="Pont : actif";const e=L.querySelector(".empty");if(e)e.remove();const li=document.createElement("li");if(kind)li.className=kind;const b=document.createElement("b");b.textContent=time();li.append(b,document.createTextNode(String(text)));L.prepend(li);while(L.children.length>200)L.lastChild.remove();};
 const log=t=>window.__sandboxLog(t,"web");
-const send=(command,variant)=>{try{window.chrome.webview.postMessage(JSON.stringify(variant?{token:TOKEN,command,variant}:{token:TOKEN,command}))}catch(e){log("Pont indisponible : "+e.message)}};
+const send=(command,variant,via)=>{try{const m=variant?{token:TOKEN,command,variant}:{token:TOKEN,command};if(via)m.via=via;window.chrome.webview.postMessage(JSON.stringify(m))}catch(e){log("Pont indisponible : "+e.message)}};
 document.getElementById("reset").addEventListener("click",()=>{L.replaceChildren();const li=document.createElement("li");li.className="empty";li.textContent="Journal réinitialisé.";L.append(li)});
 const media=async(c,label)=>{try{const s=await navigator.mediaDevices.getUserMedia(c);s.getTracks().forEach(t=>t.stop());log(label+" : autorisé")}catch(e){log(label+" : "+e.name)}};
 const scene=document.getElementById("scene");
@@ -311,7 +317,7 @@ const tests={
  fullscreen:()=>full(false),fullscreenLocked:()=>full(true)
 };
 document.addEventListener("click",e=>{const b=e.target.closest("button,a");if(!b)return;
- if(b.dataset.command){send(b.dataset.command,b.dataset.variant);log("→ "+b.dataset.label)}
+ if(b.dataset.command){send(b.dataset.command,b.dataset.variant,e.detail===0?"keyboard":"pointer");log("→ "+b.dataset.label)}
  else if(b.dataset.js&&tests[b.dataset.js])tests[b.dataset.js](b);
  else if(b.dataset.log)log(b.dataset.log)});
 {const ctx=scene.getContext("2d");let t=0;const draw=()=>{const w=scene.width,h=scene.height;const g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,"#1E2A44");g.addColorStop(1,"#0E0E0E");ctx.fillStyle=g;ctx.fillRect(0,0,w,h);const y=h*.55+Math.sin(t/40)*h*.08;ctx.fillStyle="#3E67FF";ctx.beginPath();ctx.arc(w*.5,y,h*.12,0,Math.PI*2);ctx.fill();ctx.fillStyle="#171717";ctx.fillRect(0,h*.62,w,h*.38);t++;if(!matchMedia("(prefers-reduced-motion: reduce)").matches)requestAnimationFrame(draw)};draw()}

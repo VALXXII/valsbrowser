@@ -5,7 +5,8 @@
 // WS_EX_NOACTIVATE) and never paints a shadow (NativeUI::ConfigureShadowlessPopup).
 //
 // Paper values (get_jsx, EP1-0 « Variantes » ETR-0 and « Contexte barre d'outils » ERT-0):
-//   surface #3E3E3E (--color-browser-pressed), border 1 px #FFFFFF0F, radius 6 (window region)
+//   surface #171717 (--color-browser-canvas, Design::Surface::canvas; user request 2026-11-09,
+//   was #3E3E3E), border 1 px #FFFFFF0F keeps the edge, radius 6 (window region)
 //   single line: height 28, padding-inline 8 (4 on the right when a key cap ends the row), gap 8
 //   label 14/20 Inter Display regular #FFFFFFE6 ; key cap h 20, radius 3, #FFFFFF14, padding 6,
 //   13/20 medium #FFFFFFB3 ; detail lines 14/20 #FFFFFF80 ; multi-line: padding 6/8, gap 4
@@ -247,7 +248,7 @@ inline constexpr float radius = 6, height = 28, padX = 8, padKey = 4, gap = 8, t
 inline constexpr float keyHeight = 20, keyPad = 6, keySize = 13, maxWidth = 320, padY = 6, headerGap = 4, titleGap = 2;
 inline constexpr float offset = 6;                                  // px under the target (Paper EW9-0)
 inline constexpr int delayMs = 600, neighbourMs = 300, fadeMs = 120;  // Paper EW8-0
-inline constexpr unsigned surface = 0x3E3E3E;                       // --color-browser-pressed
+inline constexpr unsigned surface = 0x171717;                       // --color-browser-canvas (Design::Surface::canvas)
 inline constexpr float border = 0x0F / 255.f, label = 0xE6 / 255.f, keyPlate = 0x14 / 255.f, keyText = 0xB3 / 255.f, detail = 0x80 / 255.f;
 }
 // `label` names the action, `shortcut` (optional) its keys (« Ctrl+R »), `detail` an optional
