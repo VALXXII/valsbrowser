@@ -98,7 +98,8 @@ class View {
         }
         if (s.caret && focused) { // static caret: no blink timer at rest
             const float x = std::round(text.left + std::min(s.query.empty() ? 0.f : chrome_.TextWidth(s.query, Panel::line, false, false, -.16f), text.right - text.left - 2)) + .5f;
-            chrome_.Color(1, .9f); target->DrawLine({x, text.top - 1}, {x, text.bottom + 1}, chrome_.SolidBrush(), 1);
+            const auto a = Design::Accent::Get(); chrome_.SolidBrush()->SetColor(D2D1::ColorF(a.r, a.g, a.b, Design::Accent::caretOpacity));
+            target->DrawLine({x, text.top - 1}, {x, text.bottom + 1}, chrome_.SolidBrush(), 1);
         }
         if (clear) {
             const auto c = Interaction(s, ClearHit);

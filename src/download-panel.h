@@ -18,6 +18,7 @@
 #include <map>
 #include <vector>
 #include "chrome.h"
+#include "native-ui.h"
 #include "downloads.h"
 
 namespace NativeChrome {
@@ -659,16 +660,13 @@ class Popover final : public Host {
     bool ActivateOther(int hit, bool) override { if (hit != ViewAllHit) return false; if (hooks_.viewAll) hooks_.viewAll(); return true; }
     const wchar_t* ClassName() const override { return L"LisiereDownloads"; }
     void Configure() override {
-        // No DWM rounding: on Windows 11 it brings a drop shadow with it. The window
-        // region rounds the corners instead (Place) and the hairline is painted (Decorate).
-        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square)); // DWMWCP_DONOTROUND
-        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none)); // DWMWA_COLOR_NONE
+        // DWM rounds the corners (antialiased, with its shadow); the hairline is painted (Decorate).
+        NativeUI::RoundNatively(hwnd_);
     }
     void Place() {
         if (!hwnd_) return;
         const int w = Px(Panel::width), h = Px(Height());
         SetWindowPos(hwnd_, HWND_TOP, static_cast<int>(std::lround(anchorRight_)) - w, static_cast<int>(std::lround(anchorTop_)), w, h, SWP_NOACTIVATE);
-        SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, w + 1, h + 1, Px(Panel::radius * 2), Px(Panel::radius * 2)), TRUE);
         RefreshTips();
     }
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) override { if (msg == WM_DPICHANGED) { Place(); return 0; } return Host::Handle(h, msg, w, l); }
@@ -828,7 +826,9 @@ class Drawer final : public Host {
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         HRGN region = nullptr;
         if (shown > 0) {
-            // Owner clip: everything left of the owner's right edge, rounding the corner it shares with it.
+            // Owner clip: everything left of the owner's right edge, rounding the corner it shares with it
+            // at 10 DIP, inside the owner's antialiased 8 DIP DWM corner: canvas over canvas, so the
+            // visible outline stays the owner's smooth one.
             const int right = margin + shown, r = OwnerPx(20);
             region = IsZoomed(owner_) ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);
             // Shape: the docked column [margin, width] — never the margin strip, which

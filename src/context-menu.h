@@ -2,8 +2,9 @@
 // Native context menu: one component for every right click (web pages through
 // WebView2's ContextMenuRequested, tabs, the tab list, the address field),
 // painted with Direct2D from the Paper frame "Clic droit menu — poli": 14 DIP
-// text, 32 DIP rows, 9 DIP separators, a 4 DIP inset shell of radius 10 (the
-// rows' 6 + 4, concentric), a white 6% hairline and no drop shadow.
+// text, 32 DIP rows, 9 DIP separators, a 4 DIP inset shell rounded by DWM (antialiased,
+// 8 = the rows' 4 + 4, concentric; Paper's 10 = 6 + 4), a white 6% hairline and DWM's
+// standard shadow.
 //
 // Track() is modal like TrackPopupMenu: it runs its own message loop and
 // returns the chosen id (0 = dismissed). It opens instantly (a right click is a
@@ -19,6 +20,7 @@
 #include <string>
 #include <vector>
 #include "chrome.h"
+#include "native-ui.h"
 #include "accessibility.h"
 #include <functional>
 
@@ -72,7 +74,7 @@ inline std::wstring Plain(const std::wstring& label, wchar_t* mnemonic = nullptr
 
 namespace Layout {
 inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 24;
-inline constexpr float radius = 10, rowRadius = 6, text = 14, line = 20, trailing = 16, minWidth = 200, maxWidth = 440;
+inline constexpr float radius = NativeUI::nativeCornerRadius, rowRadius = 4, text = 14, line = 20, trailing = 16, minWidth = 200, maxWidth = 440;
 inline constexpr float submenuDelayMs = 200;
 // Leading icon column (only when a row of the level has one): 16 DIP glyph, 8 DIP to the label (Paper c-99tvvr).
 inline constexpr float icon = 16, iconGap = 8, iconOpacity = .7f;
@@ -126,8 +128,7 @@ class Menu {
             level->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, L"LisiereContextMenu", L"", WS_POPUP, 0, 0, 1, 1, owner_, nullptr, instance_, this);
             if (level->hwnd) {
                 SetLayeredWindowAttributes(level->hwnd, 0, 255, LWA_ALPHA); // whole-window alpha for the opening fade
-                const int square = 1; DwmSetWindowAttribute(level->hwnd, 33, &square, sizeof(square)); // no DWM rounding: it brings a shadow
-                const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(level->hwnd, 34, &none, sizeof(none));
+                NativeUI::RoundNatively(level->hwnd); // antialiased DWM corner, with its shadow
                 level->motion.EnablePolish(); level->chrome.SetMotion(&level->motion); level->chrome.textCacheLimit = 192;
                 level->chrome.Init(level->hwnd, root_);
                 Attach(*level, static_cast<int>(levels_.size()));
@@ -237,7 +238,6 @@ class Menu {
         l.entering = !reduced_; l.opened = Motion::Now();
         SetWindowPos(l.hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
         Step(l, l.opened);
-        SetWindowRgn(l.hwnd, CreateRoundRectRgn(0, 0, w + 1, h + 1, Px(l, Layout::radius * 2), Px(l, Layout::radius * 2)), FALSE);
         l.chrome.Resize();
         depth_ = index + 1;
         ShowWindow(l.hwnd, activate ? SW_SHOW : SW_SHOWNOACTIVATE);

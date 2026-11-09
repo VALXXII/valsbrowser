@@ -19,7 +19,7 @@ using Ms = std::chrono::milliseconds;
 // Exact Paper values (file "Browser Design", artboards New update download /
 // downloading / install / installed). DIPs; opacities 0..1.
 namespace Paper {
-inline constexpr float width = 269, border = 1, radius = 10, padX = 16, padY = 16, gap = 16;
+inline constexpr float width = 269, border = 1, radius = 8 /* DWM native corner, NativeUI::nativeCornerRadius */, padX = 16, padY = 16, gap = 16;
 // Paper text frames are 0.40625 DIP shorter than their line box; card heights below depend on it.
 inline constexpr float textTrim = .40625f;
 inline constexpr float titleRow = 16, titleIcon = 16, titleGap = 6, titleSize = 16, titleLine = 14, titleTracking = -.01f;
