@@ -75,6 +75,8 @@ def existing_fixtures() -> None:
     fixture('site_name_test', [*STRICT, 'tests/split-view/site_name_test.cpp'])
     fixture('split_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_ui_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Screen-reader view of the chrome through a real UI Automation client (issue #2)
+    # Native menus: a submenu's row hover follows the pointer mid-entrance (cascade, keyboard, reduced motion)
+    fixture('context_menu_hover_test', [*LOOSE, '-municode', *TVG, 'tests/ui/context_menu_hover_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32'], [ROOT])
     fixture('accessibility_test', [*LOOSE, *TVG, WV2, 'tests/accessibility/accessibility_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-loleaut32'])
     # Download history popover/drawer (upstream PR #28/#29, same line as test-downloads.ps1)
     downloads_evidence = ROOT / 'build/downloads-qa'
