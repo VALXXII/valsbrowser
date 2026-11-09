@@ -65,6 +65,17 @@ static_assert(Size::focusStroke==1,"focus stroke is the user-chosen 1 DIP");
 // Pure tab-strip geometry (DIPs). Renderers and hit testing call these so
 // visible gaps, hit areas and overflow capacity can never drift apart.
 struct Box { float left, top, right, bottom; };
+// Web viewport, the native frame that hosts the WebView2 site (Paper "Lisière —
+// prototype actuel V3": Outline > Viewbox). The site sits flush under the toolbar
+// (square top corners) inside a 2 DIP canvas outline on its left, right and bottom
+// edges, with 8 DIP bottom corners concentric with the 10 DIP window corner (8+2).
+// Maximised, the window corner is square, so the viewport corner is too.
+namespace Viewport {
+inline constexpr float top=84, inset=2, radius=8, windowRadius=radius+inset;
+inline constexpr Box Bounds(float width,float height){return {inset,top,std::max(inset,width-inset),std::max(top,height-inset)};}
+inline constexpr float Radius(bool maximized){return maximized?0:radius;}
+}
+static_assert(Viewport::windowRadius==10,"viewport corner stays concentric with the 10 DIP window corner");
 // Toolbar column edges (DIP) that the tab row aligns to: back {6,38}, forward {44,76}.
 namespace Toolbar {
 inline constexpr float backLeft=Space::sm, backCenterX=backLeft+Size::control/2;
