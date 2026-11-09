@@ -22,7 +22,7 @@ TOP_PATTERN = re.compile(r'^(browser\.exe|update-helper\.exe|WebView2Loader\.dll
                          r'[A-Za-z0-9.]+-(LICENSE|NOTICE)\.txt)$')
 # Runtime data that may sit beside a portable exe; never packaged, never touched.
 RUNTIME_DATA = {'profile', 'session', 'session.tmp', 'downloads', 'downloads.tmp',
-                'prototype.log', 'browser.log'}
+                'bookmarks', 'bookmarks.bak', 'bookmarks.tmp', 'prototype.log', 'browser.log'}
 FORBIDDEN_SUFFIXES = ('.o', '.obj', '.a', '.pdb', '.log', '.tmp', '.partial', '.cpp', '.h', '.py', '.ps1')
 
 
@@ -42,7 +42,7 @@ def stage(app: Path, staging: Path) -> list[str]:
     for entry in sorted(app.iterdir(), key=lambda p: p.name.lower()):
         if entry.is_symlink():
             raise SystemExit(f'Refusing symlink/reparse point in payload: {entry}')
-        if entry.name in RUNTIME_DATA:
+        if entry.name in RUNTIME_DATA or entry.name.startswith('bookmarks.damaged-'):
             skipped.append(entry.name)
             continue
         if entry.is_dir():

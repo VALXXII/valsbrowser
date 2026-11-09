@@ -70,7 +70,7 @@ private:
     }
 };
 
-enum class Role { Button, Tab, TabItem, Edit, ToolBar, List, ListItem };
+enum class Role { Button, Tab, TabItem, Edit, ToolBar, List, ListItem, Menu, MenuItem, Group };
 // One accessible control. `parent` 0 is the window (fragment root). Nodes are listed
 // in depth-first reading order: a parent precedes its children.
 struct Node {
@@ -80,6 +80,11 @@ struct Node {
     RECT bounds{};            // screen pixels
     bool enabled=true,focusable=true,selected=false,offscreen=false;
     int position=0,count=0;   // 1-based place in its set (tab items)
+    // ExpandCollapse (a folder or menu row that opens a submenu, a drawer folder): 0 none, 1 collapsed, 2 expanded.
+    int expand=0;
+    // Toggle (the bookmark star): 0 none, 1 off, 2 on.
+    int toggle=0;
+    int level=0;              // tree depth for list items (drawer folders), 0 = none
 };
 // Callbacks run on the window's UI thread (providers use COM threading in its STA).
 // Actions must not block: invoke/select/setValue are expected to post their work.
@@ -90,6 +95,8 @@ struct Host {
     std::function<bool(HWND,Node&)> label;          // name/shortcut for a child HWND, if any
     std::function<void(long long)> invoke,select,focus;
     std::function<void(long long,const std::wstring&)> setValue;
+    std::function<void(long long,bool)> expand;     // true = expand, false = collapse
+    std::function<void(long long)> toggle;
 };
 
 class Root;
@@ -116,13 +123,16 @@ inline int ControlType(Role role){
     case Role::ToolBar:return UIA_ToolBarControlTypeId;
     case Role::List:return UIA_ListControlTypeId;
     case Role::ListItem:return UIA_ListItemControlTypeId;
+    case Role::Menu:return UIA_MenuControlTypeId;
+    case Role::MenuItem:return UIA_MenuItemControlTypeId;
+    case Role::Group:return UIA_GroupControlTypeId;
     default:return UIA_ButtonControlTypeId;
     }
 }
 constexpr ProviderOptions Options=ProviderOptions(ProviderOptions_ServerSideProvider|ProviderOptions_UseComThreading);
 
 class Element final:public IRawElementProviderSimple,public IRawElementProviderFragment,public IInvokeProvider,
-    public ISelectionProvider,public ISelectionItemProvider,public IValueProvider {
+    public ISelectionProvider,public ISelectionItemProvider,public IValueProvider,public IExpandCollapseProvider,public IToggleProvider {
     LONG refs=1;Context* context;long long key;
 public:
     Element(Context* c,long long k):context(c),key(k){context->AddRef();}
@@ -137,6 +147,8 @@ public:
         else if(iid==__uuidof(ISelectionProvider))*out=static_cast<ISelectionProvider*>(this);
         else if(iid==__uuidof(ISelectionItemProvider))*out=static_cast<ISelectionItemProvider*>(this);
         else if(iid==__uuidof(IValueProvider))*out=static_cast<IValueProvider*>(this);
+        else if(iid==__uuidof(IExpandCollapseProvider))*out=static_cast<IExpandCollapseProvider*>(this);
+        else if(iid==__uuidof(IToggleProvider))*out=static_cast<IToggleProvider*>(this);
         else return E_NOINTERFACE;
         AddRef();return S_OK;
     }
@@ -147,7 +159,8 @@ public:
     HRESULT STDMETHODCALLTYPE get_ProviderOptions(ProviderOptions* out)override{if(!out)return E_POINTER;*out=Options;return S_OK;}
     HRESULT STDMETHODCALLTYPE GetPatternProvider(PATTERNID pattern,IUnknown** out)override{
         if(!out)return E_POINTER;*out=nullptr;Node n;if(!context->Find(key,n))return NotAvailable;
-        const bool supported=(pattern==UIA_InvokePatternId&&n.role==Role::Button)||
+        const bool supported=(pattern==UIA_InvokePatternId&&(n.role==Role::Button||(n.role==Role::MenuItem&&!n.expand)||n.role==Role::ListItem))||
+            (pattern==UIA_ExpandCollapsePatternId&&n.expand)||(pattern==UIA_TogglePatternId&&n.toggle)||
             (pattern==UIA_SelectionPatternId&&(n.role==Role::Tab||n.role==Role::List))||
             (pattern==UIA_SelectionItemPatternId&&(n.role==Role::TabItem||n.role==Role::ListItem))||
             (pattern==UIA_ValuePatternId&&n.role==Role::Edit);
@@ -170,6 +183,8 @@ public:
         case UIA_IsOffscreenPropertyId:SetBool(out,n.offscreen);break;
         case UIA_PositionInSetPropertyId:if(n.position)SetInt(out,n.position);break;
         case UIA_SizeOfSetPropertyId:if(n.count)SetInt(out,n.count);break;
+        case UIA_LevelPropertyId:if(n.level)SetInt(out,n.level);break;
+        case UIA_IsControlElementPropertyId:case UIA_IsContentElementPropertyId:SetBool(out,true);break;
         default:break;
         }
         return S_OK;
@@ -237,6 +252,14 @@ public:
         *out=context->api.allocString(n.value.c_str());return *out?S_OK:E_OUTOFMEMORY;
     }
     HRESULT STDMETHODCALLTYPE get_IsReadOnly(BOOL* out)override{if(!out)return E_POINTER;*out=FALSE;return S_OK;}
+    // IExpandCollapseProvider (folders, submenu rows, overflow button)
+    HRESULT STDMETHODCALLTYPE Expand()override{Node n;if(!context->Find(key,n))return NotAvailable;if(!n.enabled)return NotEnabled;if(!n.expand)return InvalidOperation;if(context->host.expand)context->host.expand(key,true);return S_OK;}
+    HRESULT STDMETHODCALLTYPE Collapse()override{Node n;if(!context->Find(key,n))return NotAvailable;if(!n.enabled)return NotEnabled;if(!n.expand)return InvalidOperation;if(context->host.expand)context->host.expand(key,false);return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_ExpandCollapseState(ExpandCollapseState* out)override{if(!out)return E_POINTER;*out=ExpandCollapseState_LeafNode;Node n;if(!context->Find(key,n))return NotAvailable;
+        if(n.expand)*out=n.expand==2?ExpandCollapseState_Expanded:ExpandCollapseState_Collapsed;return S_OK;}
+    // IToggleProvider (the bookmark star: On = this page is bookmarked)
+    HRESULT STDMETHODCALLTYPE Toggle()override{Node n;if(!context->Find(key,n))return NotAvailable;if(!n.enabled)return NotEnabled;if(context->host.toggle)context->host.toggle(key);else if(context->host.invoke)context->host.invoke(key);return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_ToggleState(ToggleState* out)override{if(!out)return E_POINTER;*out=ToggleState_Off;Node n;if(!context->Find(key,n))return NotAvailable;*out=n.toggle==2?ToggleState_On:ToggleState_Off;return S_OK;}
 };
 
 // Properties only, merged over a child HWND's own providers (its patterns and its

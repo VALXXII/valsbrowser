@@ -130,6 +130,27 @@ inline std::wstring HomepageUrl(const std::wstring& raw) {
     if (name.empty() || (name.find(L'.') == std::wstring::npos && !StartsWithNoCase(name, L"localhost"))) return L"";
     return v;
 }
+// Bookmarks bar under the toolbar: shown once it holds a bookmark (default), always, or never.
+enum class BookmarksBar { Auto, Always, Never };
+constexpr int BookmarksBarCount = 3;
+inline const ChoiceInfo& Info(BookmarksBar b) {
+    static const ChoiceInfo choices[BookmarksBarCount] = {
+        {L"Si elle contient des favoris", L"La barre apparaît dès le premier favori.", "auto"},
+        {L"Toujours", L"La barre reste affichée, même vide.", "always"},
+        {L"Jamais", L"Les favoris restent dans le menu et le tiroir Favoris.", "never"},
+    };
+    const int i = static_cast<int>(b); return choices[i >= 0 && i < BookmarksBarCount ? i : 0];
+}
+inline const wchar_t* ShortLabel(BookmarksBar b) { return b == BookmarksBar::Always ? L"Toujours" : b == BookmarksBar::Never ? L"Jamais" : L"Automatique"; }
+// Accent colour (#RRGGBB): groundwork for a future choice; the caret reads it today.
+constexpr std::uint32_t DefaultAccent = 0x3E67FF;
+inline std::string AccentText(std::uint32_t rgb) { char t[8]; const char* hex = "0123456789ABCDEF"; t[0] = '#'; for (int i = 0; i < 6; ++i) t[1 + i] = hex[(rgb >> (20 - 4 * i)) & 15]; t[7] = 0; return t; }
+inline bool ParseAccent(const std::string& v, std::uint32_t& out) {
+    if (v.size() != 7 || v[0] != '#') return false;
+    std::uint32_t x = 0;
+    for (size_t i = 1; i < 7; ++i) { const char c = v[i]; int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; if (d < 0) return false; x = x * 16 + static_cast<std::uint32_t>(d); }
+    out = x; return true;
+}
 
 struct State {
     Engine engine = Engine::DuckDuckGo;
@@ -144,6 +165,8 @@ struct State {
     bool clearOnExit = false;      // clear browsing data when the browser closes
     int sleepMinutes = 120;        // one of SleepChoices
     int zoomPercent = 100;         // one of ZoomChoices
+    BookmarksBar bookmarksBar = BookmarksBar::Auto;
+    std::uint32_t accent = DefaultAccent; // #RRGGBB
     std::wstring customSearch;     // Engine::Custom: http(s) template with %s (SearchTemplate)
     NewTabPage newTabPage = NewTabPage::Blank;
     std::wstring homepage;         // NewTabPage::Custom (HomepageUrl)
@@ -164,14 +187,15 @@ struct State {
                newTabPage == o.newTabPage && homepage == o.homepage && tabPosition == o.tabPosition &&
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
-               muteBackground == o.muteBackground && autoplay == o.autoplay;
+               muteBackground == o.muteBackground && autoplay == o.autoplay &&
+               bookmarksBar == o.bookmarksBar && accent == o.accent;
     }
 };
 // What a panel interaction changed; the host applies and saves it.
 enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceMotion,
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
-                    AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay };
+                    AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar };
 
 inline void Write(std::ostream& out, const State& s) {
     out << "browser-settings 1\n"
@@ -198,7 +222,9 @@ inline void Write(std::ostream& out, const State& s) {
         << "block-third-party-cookies=" << (s.blockThirdPartyCookies ? 1 : 0) << '\n'
         << "memory-saver=" << (s.memorySaver ? 1 : 0) << '\n'
         << "mute-background=" << (s.muteBackground ? 1 : 0) << '\n'
-        << "autoplay=" << Info(s.autoplay).key << '\n';
+        << "autoplay=" << Info(s.autoplay).key << '\n'
+        << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
+        << "accent=" << AccentText(s.accent) << '\n';
 }
 inline State Read(std::istream& in) {
     State s; std::string line;
@@ -233,6 +259,8 @@ inline State Read(std::istream& in) {
         else if (key == "autoplay") { for (int i = 0; i < AutoplayCount; ++i) if (value == Info(static_cast<Autoplay>(i)).key) s.autoplay = static_cast<Autoplay>(i); }
         else if (key == "custom-search") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.customSearch = SearchTemplate(v); }
         else if (key == "homepage") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.homepage = HomepageUrl(v); }
+        else if (key == "bookmarks-bar") { for (int i = 0; i < BookmarksBarCount; ++i) if (value == Info(static_cast<BookmarksBar>(i)).key) s.bookmarksBar = static_cast<BookmarksBar>(i); }
+        else if (key == "accent") { std::uint32_t rgb = 0; if (ParseAccent(value, rgb)) s.accent = rgb; }
         else if (key == "download-folder") { std::wstring folder; if (value.size() < 32768 && NativeChrome::Downloads::FromUtf8(value, folder)) s.downloadFolder = folder; }
     }
     // A custom choice without its address falls back to the default.

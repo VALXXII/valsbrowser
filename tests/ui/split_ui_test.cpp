@@ -26,6 +26,15 @@ int main() {
     pages = {yt, luma, paper}; current = 0; yt->usedAt = ++useClock; ApplyPages();
     assert(Shown() == 1 && yt->shown && !chrome.split.shown);
 
+    // The bookmarks band is chrome, not a split drop zone. Lifting begins below
+    // the current page edge, including when the band changes the content height.
+    settings.bookmarksBar=BrowserSettings::BookmarksBar::Always;BuildChrome();ApplyPages();
+    assert(ContentBox().top==121);
+    Drag(paper,300,100,false);assert(!tabDrag.lifted&&splitGroups.empty());
+    CancelTabDrag(true);
+    settings.bookmarksBar=BrowserSettings::BookmarksBar::Auto;BuildChrome();ApplyPages();
+    assert(ContentBox().top==81);
+
     // 1. Reorder stays in the strip: a drop above the content never splits.
     Drag(paper, 60, 20); assert(splitGroups.empty() && !tabDrag.tab);
 

@@ -175,6 +175,44 @@ inline bool Recordable(const std::wstring& url) {
     return Split(url, p) && (p.scheme == L"https" || p.scheme == L"http" || p.scheme == L"file") && url.size() < 4096;
 }
 
+// A host a person could mean: dot-separated labels, none empty (so "lemonde..fr" is a
+// typo, not a page), letters, digits, '-' or any non-ASCII letter (IDN), an optional
+// numeric port; or "localhost". IPv6 literals are bracketed and kept as typed.
+inline bool PlausibleHost(const std::wstring& hostPort) {
+    if (hostPort.empty()) return false;
+    if (hostPort[0] == L'[') return hostPort.find(L']') != std::wstring::npos;
+    std::wstring host = hostPort; const auto colon = host.rfind(L':');
+    if (colon != std::wstring::npos) {
+        const std::wstring port = host.substr(colon + 1); host = host.substr(0, colon);
+        if (port.empty() || port.size() > 5 || port.find_first_not_of(L"0123456789") != std::wstring::npos) return false;
+    }
+    if (host.empty() || host.front() == L'.' || host.back() == L'.' || host.find(L"..") != std::wstring::npos) return false;
+    for (wchar_t c : host) if (!(c >= 0x80 || iswalnum(c) || c == L'-' || c == L'.')) return false;
+    return host.find(L'.') != std::wstring::npos || Lower(host) == L"localhost";
+}
+// A bookmark address typed by hand (never a search): trimmed; an explicit scheme must be
+// http, https or file; otherwise text that looks like an address gets https://.
+// Empty result = refused ("Adresse non valide").
+inline std::wstring Normalize(const std::wstring& typed) {
+    const std::wstring s = Trim(typed);
+    if (s.empty() || s.size() >= 4096 || s.find_first_of(L" \t\r\n") != std::wstring::npos) return L"";
+    const std::wstring low = Lower(s);
+    if (low.find(L"://") != std::wstring::npos) {
+        Parts p; if (!Split(s, p) || !Recordable(s)) return L"";
+        if (p.scheme == L"file") return s.size() > 8 ? s : L"";
+        return PlausibleHost(p.host) ? s : L"";
+    }
+    const auto colon = low.find(L':');
+    // "mailto:x", "javascript:…": a scheme without "//" is never an address. "host:port" is.
+    if (colon != std::wstring::npos && !StartsWith(low, L"localhost") && low.find(L'.') > colon && low.find(L'/') > colon) {
+        const auto after = low.substr(colon + 1);
+        if (after.empty() || !iswdigit(after[0])) return L"";
+    }
+    const auto end = s.find_first_of(L"/?#");
+    if (!PlausibleHost(s.substr(0, end))) return L"";
+    return L"https://" + s;
+}
+
 class History {
 public:
     static constexpr size_t Limit = 1000;

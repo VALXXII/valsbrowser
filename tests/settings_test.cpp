@@ -10,6 +10,11 @@ int main(){
     State original;original.engine=Engine::Qwant;original.restoreTabs=false;original.downloadFolder=L"D:\\Téléchargements\\été";original.askWhereToSave=true;original.reduceMotion=true;original.searchSuggestions=false;original.tracking=Tracking::Strict;original.passwords=false;original.autofill=false;original.clearOnExit=true;original.sleepMinutes=30;original.zoomPercent=125;original.customSearch=L"https://exemple.fr/?q=%s";original.newTabPage=NewTabPage::Custom;original.homepage=L"https://exemple.fr/accueil";original.tabPosition=TabPosition::NextToActive;original.confirmCloseTabs=false;original.closeWithLastTab=true;original.adBlock=false;original.httpsOnly=true;original.blockThirdPartyCookies=true;original.memorySaver=false;original.muteBackground=true;original.autoplay=Autoplay::Allowed;
     std::stringstream stream;Write(stream,original);assert(Read(stream)==original);
     for(int i=0;i<EngineCount;++i){State s;s.engine=static_cast<Engine>(i);s.customSearch=L"https://s.fr/?q=%s";std::stringstream io;Write(io,s);assert(Read(io).engine==s.engine);}
+    // Bookmarks visibility and the future custom accent must survive restart.
+    for(auto bar:{BookmarksBar::Auto,BookmarksBar::Always,BookmarksBar::Never}){
+        State s;s.bookmarksBar=bar;s.accent=0xA054CB;std::stringstream io;Write(io,s);assert(Read(io)==s);
+    }
+    {std::istringstream invalid("browser-settings 1\nbookmarks-bar=invalid\naccent=#XYZXYZ\n");assert(Read(invalid)==State{});}
     // Missing, foreign or damaged files keep the defaults; unknown keys and bad values are ignored.
     for(const char* bad:{"","garbage\nengine=google\n","browser-settings 2\nengine=google\n"}){std::istringstream in(bad);assert(Read(in)==State{});}
     std::istringstream partial("browser-settings 1\r\nengine=bing\r\nrestore-tabs=maybe\r\nfuture-key=1\r\nreduce-motion=1\r\nengine=nope\r\n");

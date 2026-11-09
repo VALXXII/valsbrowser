@@ -4,7 +4,7 @@
 #include "../src/chrome.h"
 #include <cstdio>
 using namespace NativeChrome;
-void Check(bool ok){if(!ok){puts("FAIL loading");exit(1);}}
+#define Check(ok) do { if(!(ok)){std::printf("FAIL loading at line %d: %s\n",__LINE__,#ok);exit(1);} } while(false)
 int wmain(int argc,wchar_t** argv){
  Check(argc==3);CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
  auto at=[](int ms){return Motion::Time{}+Motion::Milliseconds(ms);};Loading::State a,b;
@@ -23,9 +23,11 @@ int wmain(int argc,wchar_t** argv){
  chrome.Paint({L"Loading"},0,L"https://example.test/",false,0,0);auto rest=chrome.SurfacePixel(100,48)&255;
  chrome.loading={.5f,1};chrome.Paint({L"Loading"},0,L"https://example.test/",false,0,0);
  auto fill=chrome.SurfacePixel(100,48)&255;Check(fill>=rest+16&&fill<=rest+18);
- Check((chrome.SurfacePixel(chrome.bar.right-100,48)&255)==rest);
+ // Sample the editable field: the star moved Reload into the old sample point.
+ const float farField=chrome.edit.right-8;
+ Check((chrome.SurfacePixel(farField,48)&255)==rest);
  Check(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/loading-half.png").c_str())));
  chrome.loading={1,1};chrome.Paint({L"Loading"},0,L"https://example.test/",false,0,0);
- Check((chrome.SurfacePixel(chrome.bar.right-100,48)&255)==fill);
+ Check((chrome.SurfacePixel(farField,48)&255)==fill);
  Check(!GetModuleHandleW(L"WebView2Loader.dll"));puts("PASS loading lifecycle, stale completion, per-tab state, reduced motion, idle timers, 8% native fill pixels");return 0;
 }

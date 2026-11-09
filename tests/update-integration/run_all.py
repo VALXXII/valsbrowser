@@ -57,6 +57,12 @@ def existing_fixtures() -> None:
     # test-lottie.py: loading, frame clock, lottie, clipboard gate, design system, hover, ui
     run('test-lottie.py (native lottie/ui fixtures)', [sys.executable, ROOT / 'test-lottie.py'])
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
+    fixture('bookmarks_test', [*STRICT, 'tests/bookmarks_test.cpp'])
+    bookmarks_evidence = ROOT / 'build/bookmarks-ui-qa'
+    bookmarks_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('bookmarks_ui_test', [*LOOSE, '-municode', *TVG, WV2,
+            'tests/bookmarks/bookmarks_ui_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, bookmarks_evidence])
     fixture('geometry_test', [*STRICT, 'tests/design-system/geometry_test.cpp'])
     fixture('motion_test', [*STRICT, '-pedantic', 'tests/motion/motion_test.cpp', '-luser32'])
     fixture('polish_test', [*STRICT, 'tests/motion/polish_test.cpp', '-luser32'])

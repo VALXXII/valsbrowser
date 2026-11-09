@@ -54,9 +54,9 @@ int wmain(int argc,wchar_t** argv){
         auto selected=chrome.SurfacePixel(TabStrip::Surface(0).right-2,16);
         chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,TabBase,0);
         Require(selected==chrome.SurfacePixel(TabStrip::Surface(0).right-2,16),"close hover has single tab fill");
-        chrome.SetEnabled('R',false);chrome.Build(2,0);Require(chrome.Hit(chrome.bar.right-57,60)==0,"disabled control excluded from pointer activation");
+        chrome.SetEnabled('R',false);chrome.Build(2,0);Require(chrome.Hit(chrome.bar.right-89,60)==0,"disabled control excluded from pointer activation");
         auto order=chrome.FocusOrder();Require(std::find(order.begin(),order.end(),'R')==order.end(),"disabled excluded from keyboard order");auto tab=std::find(order.begin(),order.end(),TabBase);Require(tab!=order.end()&&tab+1!=order.end()&&*(tab+1)==CloseBase,"tab body precedes its reserved close action in keyboard order");
-        chrome.SetEnabled('R',true);Require(chrome.Hit(chrome.bar.right-57,60)=='R',"enabled control restores same geometry");
+        chrome.SetEnabled('R',true);Require(chrome.Hit(chrome.bar.right-89,60)=='R',"enabled control restores same geometry");
         auto m=chrome.MeasureText(L"Ggyp \u00c9\u00e7",{0,0,200,32},Type::label.size,true);Require(m.inkTop>=0&&m.inkBottom<=32,"complete glyph ink retained");
         chrome.keyboardModality=false;chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,0,'L');const int pointerRing=chrome.SurfacePixel(chrome.bar.left,(chrome.bar.top+chrome.bar.bottom)/2)&255;
         Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/chrome-focus-pointer-"+std::to_wstring(dpi)+L".png").c_str())),"production chrome pointer focus snapshot");
