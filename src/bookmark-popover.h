@@ -31,7 +31,7 @@
 namespace NativeChrome {
 namespace BookmarkPopover {
 namespace Layout {
-inline constexpr float width = 320, padding = 16, gap = 16, radius = 8;
+inline constexpr float width = 320, padding = 16, gap = 16, radius = NativeUI::nativeCornerRadius;
 inline constexpr float label = 18, labelGap = 6, field = 32, fieldPad = 10, help = 36, helpGap = 6;
 inline constexpr float actionsTop = 4, button = 32, close = 24, closeInset = 8;
 inline constexpr float caretHeight = 18, enterMs = 180, enterSlide = 6;
@@ -122,7 +122,6 @@ class Popover {
         RECT r{}; GetWindowRect(hwnd_, &r);
         const int w = Px(Layout::width), h = Px(Height());
         SetWindowPos(hwnd_, nullptr, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-        SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, w + 1, h + 1, Px(Layout::radius * 2), Px(Layout::radius * 2)), TRUE);
         chrome_.Resize(); PlaceEdits(); InvalidateRect(hwnd_, nullptr, FALSE);
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
@@ -355,8 +354,7 @@ public:
         CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"Favori", WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
-        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square));
-        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none));
+        NativeUI::RoundNatively(hwnd_);
         name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
         url_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
         for (HWND e : {name_, url_}) { SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SetWindowSubclass(e, EditProc, 7, reinterpret_cast<DWORD_PTR>(this)); }
@@ -399,7 +397,6 @@ public:
         if (y + h > bounds.bottom - margin) y = std::max<int>(bounds.top + margin, anchor.top - Px(Design::Space::md) - h);
         final_ = {x, y}; visible_ = true; opened_ = Motion::Now(); entering_ = !reduced;
         SetWindowPos(hwnd_, HWND_TOP, x, entering_ ? y - Px(Layout::enterSlide) : y, w, h, SWP_NOACTIVATE);
-        SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, w + 1, h + 1, Px(Layout::radius * 2), Px(Layout::radius * 2)), FALSE);
         SetLayeredWindowAttributes(hwnd_, 0, entering_ ? 0 : 255, LWA_ALPHA);
         chrome_.Resize(); PlaceEdits();
         ShowWindow(hwnd_, SW_SHOW); Paint(); ValidateRect(hwnd_, nullptr);

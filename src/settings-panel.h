@@ -30,6 +30,7 @@
 #include "downloads.h"
 #include "settings.h"
 #include "context-menu.h"
+#include "native-ui.h"
 
 namespace NativeChrome {
 namespace SettingsUI {
@@ -296,7 +297,7 @@ private:
     std::map<int, std::vector<std::wstring>> lines_; std::vector<std::wstring> noSitesLines_, sitesNoteLines_;
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
-    HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
+    HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0; NativeUI::AccentCaret caret_;
     HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
@@ -908,6 +909,7 @@ private:
         auto* self = reinterpret_cast<Drawer*>(data);
         switch (msg) {
         case WM_GETDLGCODE: return DLGC_WANTALLKEYS | DefSubclassProc(h, msg, w, l);
+        case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->AccentCaret(h); return r; }
         case WM_KEYDOWN:
             if (w == VK_RETURN) { self->Commit(true); return 0; }
             if (w == VK_ESCAPE) { self->cancelEdit_ = true; self->EndEdit(); return 0; }
@@ -935,6 +937,12 @@ private:
         case WM_NCDESTROY: RemoveWindowSubclass(h, EditProc, 0); break;
         }
         return DefSubclassProc(h, msg, w, l);
+    }
+    // Paper caret: 1 DIP, accent at 90% over the field's own fill, the EDIT's line height.
+    void AccentCaret(HWND edit) {
+        const COLORREF fill = Gray(FieldFill(0, true)); const auto a = Design::Accent::Get();
+        TEXTMETRICW tm{}; HDC dc = GetDC(edit); const auto old = SelectObject(dc, editFont_); GetTextMetricsW(dc, &tm); SelectObject(dc, old); ReleaseDC(edit, dc);
+        caret_.Apply(edit, fill, NativeUI::AccentCaret::Mix(fill, RGB(std::lround(a.r * 255), std::lround(a.g * 255), std::lround(a.b * 255)), Design::Accent::caretOpacity), std::max(1, Px(1)), std::max(1, static_cast<int>(tm.tmHeight)));
     }
     COLORREF Gray(float amount) const { const int v = static_cast<int>(std::lround(Tint(amount) * 255)); return RGB(v, v, v); }
     void StartEdit(int hit) {

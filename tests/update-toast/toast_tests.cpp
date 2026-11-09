@@ -443,9 +443,10 @@ static void WindowTests() {
     RECT pr{}; GetWindowRect(popup, &pr);
     CHECK(impl->surface && impl->surface->GetPixelSize().width == (UINT)(pr.right - pr.left));
     HRGN materialClip = CreateRectRgn(0, 0, 0, 0);
-    CHECK(GetWindowRgn(popup, materialClip) != ERROR);
-    CHECK(!PtInRegion(materialClip, 0, 0) && PtInRegion(materialClip, 20, 20));
+    CHECK(GetWindowRgn(popup, materialClip) == ERROR); // no aliased GDI region:
     DeleteObject(materialClip);
+    DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DEFAULT;
+    CHECK(SUCCEEDED(DwmGetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner))) && corner == DWMWCP_ROUND); // DWM antialiases the corners
     bool separateMaterial = false;
     EnumThreadWindows(GetCurrentThreadId(), [](HWND h, LPARAM p) -> BOOL {
         wchar_t name[80]{}; GetClassNameW(h, name, 80);

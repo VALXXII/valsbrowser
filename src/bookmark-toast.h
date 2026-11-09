@@ -1,6 +1,6 @@
 #pragma once
 // Undo toast for bookmark removals (Paper "09 · Supprimer et annuler"): bottom-left of
-// the window, 14 DIP inset, #292929 card, radius 10, 1 DIP #FFFFFF0F border, padding
+// the window, 14 DIP inset, #292929 card, radius 8 (DWM-rounded; Paper 10), 1 DIP #FFFFFF0F border, padding
 // 8/12, gap 16: trash glyph 16 (50%), the message (14 medium, white), "Annuler", and a
 // 24x24 close. One at a time (the newest replaces the previous one, which stays
 // undoable with Ctrl+Z). Lives 6 s, paused while hovered or focused. Enters in 240 ms
@@ -18,7 +18,7 @@
 namespace NativeChrome {
 namespace BookmarkToast {
 namespace Layout {
-inline constexpr float inset = 14, height = 42, padX = 12, gap = 16, radius = 10, close = 24, maxText = 420;
+inline constexpr float inset = 14, height = 42, padX = 12, gap = 16, radius = NativeUI::nativeCornerRadius, close = 24, maxText = 420;
 inline constexpr float lifeMs = 6000, enterMs = 240, exitMs = 150, reducedMs = 100, rise = 12;
 }
 class Toast {
@@ -27,7 +27,6 @@ class Toast {
     std::wstring text_, action_ = L"Annuler"; std::function<void()> undo_, closed_; bool sticky_ = false;
     bool visible_ = false, leaving_ = false, reduced_ = false, hovered_ = false, keyboard_ = false;
     int hover_ = 0, pressed_ = 0, focus_ = 0; float bottomReserve_ = 0;
-    int regionWidth_ = 0, regionHeight_ = 0, regionRadius_ = 0;
     Motion::Time phase_{}; ULONGLONG remaining_ = 0, resumed_ = 0;
     static constexpr UINT_PTR FrameTimer = 1, LifeTimer = 2;
     float Dpi() const { return static_cast<float>(GetDpiForWindow(owner_)); }
@@ -44,16 +43,6 @@ class Toast {
     }
     void Place(float progress, bool entering) {
         const POINT rest = Rest(); const int w = Px(Width()), h = Px(Layout::height);
-        // The HWND must have the card's outline too: an opaque canvas clear must
-        // never leave a rectangular backing visible outside the rounded card.
-        // Cache the mask; fade/rise frames only move the existing window.
-        const int radius = Px(Layout::radius * 2);
-        if (w != regionWidth_ || h != regionHeight_ || radius != regionRadius_) {
-            HRGN shape = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius);
-            if (shape && SetWindowRgn(hwnd_, shape, TRUE)) {
-                regionWidth_ = w; regionHeight_ = h; regionRadius_ = radius;
-            } else if (shape) DeleteObject(shape); // Windows owns it only on success.
-        }
         const float rise = reduced_ ? 0 : (entering ? Layout::rise * (1 - progress) : 0);
         SetWindowPos(hwnd_, HWND_TOP, rest.x, rest.y + Px(rise), w, h, SWP_NOACTIVATE);
         SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(std::lround(255 * Motion::Clamp(progress))), LWA_ALPHA);
@@ -128,21 +117,20 @@ class Toast {
 public:
     std::function<void()> returnFocus_; // Escape / F6 from the toast: back to the page
     ~Toast() { Dispose(); }
-    void Dispose() { uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false; regionWidth_ = regionHeight_ = regionRadius_ = 0; }
+    void Dispose() { uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root) {
         owner_ = owner; motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarkToast";
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE, wc.lpszClassName, L"Favoris", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        // Our Direct2D card owns the surface, border and radius. Never ask DWM
-        // for acrylic/Mica, its non-client frame, or its automatic corner shape.
+        // Our Direct2D card owns the opaque surface and border; DWM only rounds the
+        // window (antialiased, RoundNatively). Never acrylic/Mica or its non-client frame.
         NativeUI::ConfigureFullClientFrame(hwnd_);
         const int noBackdrop = 1; // DWMSBT_NONE (Windows 11; harmless on Windows 10).
         DwmSetWindowAttribute(hwnd_, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &noBackdrop, sizeof(noBackdrop));
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
-        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square));
-        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none));
+        NativeUI::RoundNatively(hwnd_);
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] {
             std::vector<Accessibility::Node> nodes; if (!visible_) return nodes;
