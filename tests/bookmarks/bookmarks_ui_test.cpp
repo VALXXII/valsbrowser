@@ -250,13 +250,11 @@ static void Client(){
     OnUi([]{RemoveBookmark(demoPaper);});
     Expect(WaitFor([&]{return note.Has(L"Favori supprimé");}),"removal announced « Favori supprimé. Ctrl+Z pour annuler »");
     OnUi([]{
-        HWND toast=bookmarkToast.Window();RECT bounds{};GetWindowRect(toast,&bounds);
-        HRGN outline=CreateRectRgn(0,0,0,0);const int shape=GetWindowRgn(toast,outline);
-        const int width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;
-        Expect(shape==COMPLEXREGION&&!PtInRegion(outline,0,0)&&!PtInRegion(outline,width-1,0)&&
-            !PtInRegion(outline,0,height-1)&&!PtInRegion(outline,width-1,height-1)&&PtInRegion(outline,width/2,height/2),
-            "toast HWND clips all four backing corners to the custom card radius");
-        DeleteObject(outline);
+        HWND toast=bookmarkToast.Window();
+        HRGN outline=CreateRectRgn(0,0,0,0);const int shape=GetWindowRgn(toast,outline);DeleteObject(outline);
+        // Windows 10 / Server 2022 (CI) cannot report the corner preference: only Windows 11 is checked for ROUND.
+        int corner=0;const bool reported=SUCCEEDED(DwmGetWindowAttribute(toast,33,&corner,sizeof(corner)));
+        Expect(shape==ERROR&&(!reported||corner==2),"toast HWND is rounded by DWM (antialiased), never by an aliased GDI region");
         Capture(toast,L"toast-undo");Capture(window,L"window-toast");UndoBookmark();
     });
     Expect(WaitFor([&]{return note.Has(L"Favori restauré");}),"undo announced « Favori restauré »");

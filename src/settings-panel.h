@@ -1,6 +1,8 @@
 #pragma once
 // Native "Réglages" drawer, painted with Direct2D through its own Chrome
-// instance (shared fonts, icons, helpers). It docks to the window's right edge
+// instance (shared fonts, icons, helpers). Layout from the Paper page
+// "Réglages v4": a short root (search, the two most used settings, four
+// categories with a summary of their state) and one sub-view per category. It docks to the window's right edge
 // under the toolbar like the download history drawer, but always arrives with
 // a slide and leaves the same way. Layout from the Paper frames "Réglages —
 // panneau v2", "Autorisations des sites (sous-vue)" and "Autorisations ›
@@ -30,6 +32,7 @@
 #include "downloads.h"
 #include "settings.h"
 #include "context-menu.h"
+#include "native-ui.h"
 
 namespace NativeChrome {
 namespace SettingsUI {
@@ -43,10 +46,12 @@ enum Hit : int {
     ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43,
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64,
-    CustomSearchField = 70, HomepageField = 71,
-    SiteBase = 100, PermissionBase = 400,
+    CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
+    CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84,
+    SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
-inline bool IsField(int hit) { return hit == CustomSearchField || hit == HomepageField; }
+inline bool IsField(int hit) { return hit == CustomSearchField || hit == HomepageField || hit == SearchField; }
+inline bool IsResult(int hit) { return hit >= ResultBase && hit < ResultBase + 32; }
 inline int EngineHit(int index) { return EngineBase + index; }
 inline bool IsEngine(int hit) { return hit >= EngineBase && hit < EngineBase + BrowserSettings::EngineCount; }
 inline bool IsSite(int hit) { return hit >= SiteBase && hit < PermissionBase; }
@@ -72,8 +77,11 @@ inline constexpr float folderRow = 54, twoLinePad = 8, descriptionLine = 18, sit
 // Address field: a 32 DIP field, 6 DIP, one 18 DIP hint line.
 inline constexpr float field = 32, fieldHint = 6, fieldRow = field + fieldHint + descriptionLine;
 inline constexpr float TwoLine(size_t lines) { return 2 * twoLinePad + 20 + 2 + lines * descriptionLine; }
-// Footers. Main: hairline, 12, "Effacer les données…" (32), 8, version (24), 16.
-inline constexpr float footer = 1 + 12 + row + 8 + slot + padBottom;                              // 93
+// Footer of every settings view: hairline, 12, version (24), 16.
+inline constexpr float footer = 1 + 12 + slot + padBottom;                                        // 53
+// Search results: a card 6 DIP under the field; rows of title + path (8 / 10 / 12 padding).
+inline constexpr float resultGap = 6, resultRow = 8 + 20 + 2 + 18 + 8, resultPadLeft = 10, resultPadRight = 12, maxResults = 7;
+inline constexpr float searchDim = .32f;                                                           // the root behind results (--opacity-browser-disabled)
 inline constexpr float switchWidth = 28, switchHeight = 16, knob = 12, knobInset = 2, knobStretch = 3;
 inline constexpr float topFade = 16, bottomFade = 48;
 inline constexpr Box Title(bool sub) { return {sub ? nameLeft : textLeft, padTop, rowRight - slot - 8, padTop + headerHeight}; }
@@ -95,22 +103,37 @@ inline constexpr Spring selectSpring{.26f}, switchSpring{.2f}, pageSpring{.34f};
 inline constexpr Motion::Milliseconds select = Settle(.26f), toggle = Settle(.2f), press{120}, spin{900}, page = Settle(.34f);
 }
 
-enum class View { Main, Sites, Site };
+enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site };
+inline const wchar_t* Title(View v) {
+    switch (v) {
+    case View::Engine: return L"Moteur de recherche"; case View::Tabs: return L"Onglets"; case View::Privacy: return L"Confidentialité";
+    case View::Downloads: return L"Téléchargements"; case View::Display: return L"Affichage et son"; case View::Sites: return L"Autorisations";
+    default: return L"Réglages";
+    }
+}
+// The row that opened a view (focus lands back on it when the view is popped).
+inline int Opener(View v) {
+    switch (v) {
+    case View::Engine: return CatEngine; case View::Tabs: return CatTabs; case View::Privacy: return CatPrivacy;
+    case View::Downloads: return CatDownloads; case View::Display: return CatDisplay; case View::Sites: return Permissions; default: return None;
+    }
+}
 // One laid-out element of a view's scrolling list (content coordinates).
-enum class Kind { Label, Engine, More, Switch, Folder, Value, Nav, SiteRow, Note, Field };
+enum class Kind { Label, Engine, Switch, Folder, Value, Nav, SiteRow, Note, Field, Search, Danger };
 struct Slot {
     Kind kind = Kind::Label; int hit = 0, index = -1;
     float top = 0, height = Layout::row, opacity = 1;
     float clipTop = -1e6f, clipBottom = 1e6f;
     std::wstring text, value;              // label; value/summary/description text
     std::vector<std::wstring> lines;       // wrapped description (two-line switches)
+    const wchar_t* icon = nullptr;         // leading 16 DIP glyph (root rows): the label moves to nameLeft
 };
 // Per-frame inputs of the pure layout.
 struct LayoutInput {
-    float more = 0;                                            // fold of the extra engines (1 = shown)
     const std::map<int, std::vector<std::wstring>>* lines = nullptr; // wrapped descriptions by hit
     std::vector<std::wstring> noSitesLines;                     // "Autorisations des sites" with nothing to manage
     float customReveal = 0, homeReveal = 0;                     // address fields unfolding (0..1)
+    std::wstring folderName;                                     // the downloads folder's own name (root summary)
     bool autoplayPending = false, cookiesPending = false;       // differ from what the engine started with
     const BrowserSettings::State* state = nullptr;
     const std::vector<BrowserSettings::Site>* sites = nullptr; bool sitesLoaded = false;
@@ -143,58 +166,67 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         s.clipTop = std::max(clipTop, y); s.clipBottom = std::min(clipBottom, y + r * fieldRow);
         slots.push_back(s); y += r * (fieldRow + rowGap);
     };
+    auto lead = [&](Kind kind, int hit, const wchar_t* icon, const wchar_t* text, std::wstring value) { auto* s = add(kind, hit, row, text, std::move(value)); s->icon = icon; return s; };
+    auto pending = [&](int hit, bool note) { auto lines = described(hit); if (note) lines.push_back(L"Au prochain démarrage."); return lines; };
     if (view == View::Main) {
-        labelAt(L"Moteur de recherche");
-        for (int i = 0; i < BrowserSettings::PrimaryEngines; ++i) { auto* s = add(Kind::Engine, EngineHit(i), row); s->index = i; }
-        const float m = Motion::Clamp(in.more), customField = Motion::Clamp(in.customReveal) * (fieldRow + rowGap);
-        const float extra = (BrowserSettings::EngineCount - BrowserSettings::PrimaryEngines) * pitch + customField;
-        if (m > .001f) {
-            const float clipTop = y, clipBottom = y + m * extra;
-            for (int i = BrowserSettings::PrimaryEngines; i < BrowserSettings::EngineCount; ++i) {
-                Slot s; s.kind = Kind::Engine; s.hit = EngineHit(i); s.index = i; s.top = y + (i - BrowserSettings::PrimaryEngines) * pitch - (1 - m) * 8; s.opacity = m;
-                if (m < 1) { s.clipTop = clipTop; s.clipBottom = clipBottom; }
-                if (s.top < clipBottom) slots.push_back(s);
-            }
-            // The custom engine's address sits right under its row, inside the fold.
-            const float keep = y; y += (BrowserSettings::EngineCount - BrowserSettings::PrimaryEngines) * pitch - (1 - m) * 8;
-            fieldAt(CustomSearchField, in.customReveal, m < 1 ? clipTop : -1e6f, m < 1 ? clipBottom : 1e6f, m);
-            y = keep;
-        }
-        y += m * extra;
-        add(Kind::More, More, row);
-        add(Kind::Switch, Suggestions, row, L"Suggestions de recherche");
+        add(Kind::Search, SearchField, field);
         endGroup();
-        labelAt(L"Démarrage");
-        add(Kind::Switch, RestoreTabs, row, L"Restaurer les onglets");
-        add(Kind::Value, HomePageHit, row, L"Page d'accueil", st ? BrowserSettings::Info(st->newTabPage).label : L"");
+        lead(Kind::Nav, CatEngine, L"favicon-mask", L"Moteur de recherche", st ? (st->engine == Engine::Custom ? std::wstring(L"Personnalisé") : std::wstring(BrowserSettings::Info(st->engine).name)) : L"");
+        lead(Kind::Value, HomePageHit, L"home-mask", L"Page d'accueil", st ? BrowserSettings::Info(st->newTabPage).label : L"");
         fieldAt(HomepageField, in.homeReveal);
         endGroup();
-        labelAt(L"Onglets");
+        lead(Kind::Nav, CatTabs, L"tabs-mask", L"Onglets", st ? (st->restoreTabs ? L"Restaurés" : L"Non restaurés") : L"");
+        lead(Kind::Nav, CatPrivacy, L"shield-mask", L"Confidentialité", st ? BrowserSettings::Info(st->tracking).label : L"");
+        lead(Kind::Nav, CatDownloads, L"downloads-mask", L"Téléchargements", st ? (st->askWhereToSave ? std::wstring(L"Demander") : in.folderName) : L"");
+        lead(Kind::Nav, CatDisplay, L"eye-mask", L"Affichage et son", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
+        y -= rowGap;
+    } else if (view == View::Engine) {
+        for (int i = 0; i < BrowserSettings::EngineCount; ++i) { auto* s = add(Kind::Engine, EngineHit(i), row); s->index = i; }
+        fieldAt(CustomSearchField, in.customReveal);
+        endGroup();
+        twoLine(Suggestions, L"Suggestions de recherche");
+        y -= rowGap;
+    } else if (view == View::Tabs) {
+        labelAt(L"Ouverture");
+        twoLine(RestoreTabs, L"Restaurer les onglets");
         add(Kind::Value, TabPositionHit, row, L"Nouveaux onglets", st ? BrowserSettings::Info(st->tabPosition).label : L"");
+        endGroup();
+        labelAt(L"Fermeture");
         twoLine(ConfirmClose, L"Confirmer la fermeture");
         twoLine(CloseWithLastTab, L"Fermer avec le dernier onglet");
         endGroup();
-        labelAt(L"Téléchargements");
-        add(Kind::Folder, Folder, folderRow);
-        add(Kind::Switch, AskWhere, row, L"Demander où enregistrer");
-        endGroup();
-        labelAt(L"Confidentialité");
+        labelAt(L"Veille");
+        add(Kind::Value, Sleep, row, L"Onglets en veille", st ? BrowserSettings::SleepLabel(st->sleepMinutes) : L"");
+        twoLine(MemorySaver, L"Économiseur de mémoire");
+        y -= rowGap;
+    } else if (view == View::Privacy) {
+        labelAt(L"Protection");
         add(Kind::Value, Tracking, row, L"Anti-pistage", st ? BrowserSettings::Info(st->tracking).label : L"");
         twoLine(AdBlock, L"Bloqueur de publicités");
         twoLine(HttpsOnly, L"HTTPS uniquement");
-        { auto lines = described(ThirdPartyCookies); if (in.cookiesPending) lines.push_back(L"Au prochain démarrage.");
-          auto* s = add(Kind::Switch, ThirdPartyCookies, TwoLine(lines.size()), L"Bloquer les cookies tiers"); s->lines = std::move(lines); }
+        { auto lines = pending(ThirdPartyCookies, in.cookiesPending); auto* s = add(Kind::Switch, ThirdPartyCookies, TwoLine(lines.size()), L"Bloquer les cookies tiers"); s->lines = std::move(lines); }
+        endGroup();
+        labelAt(L"Formulaires");
         twoLine(Passwords, L"Mots de passe");
         twoLine(Autofill, L"Saisie automatique");
-        add(Kind::Switch, ClearOnExit, row, L"Effacer en quittant");
+        endGroup();
+        labelAt(L"Données");
         if (in.sitesLoaded && in.sites && in.sites->empty()) {
             // Nothing to manage yet: an inert row says why instead of opening an empty view.
             auto* s = add(Kind::Nav, None, TwoLine(in.noSitesLines.size()), L"Autorisations des sites"); s->lines = in.noSitesLines;
         } else add(Kind::Nav, Permissions, row, L"Autorisations des sites", in.sitesLoaded && in.sites ? std::to_wstring(in.sites->size()) : L"");
-        endGroup();
-        labelAt(L"Performances");
-        add(Kind::Value, Sleep, row, L"Onglets en veille", st ? BrowserSettings::SleepLabel(st->sleepMinutes) : L"");
-        twoLine(MemorySaver, L"Économiseur de mémoire");
+        twoLine(ClearOnExit, L"Effacer en quittant");
+        add(Kind::Danger, ClearData, row, L"Effacer les données…");
+        y -= rowGap;
+    } else if (view == View::Downloads) {
+        add(Kind::Folder, Folder, folderRow);
+        twoLine(AskWhere, L"Demander où enregistrer");
+        y -= rowGap;
+    } else if (view == View::Display) {
+        labelAt(L"Pages");
+        add(Kind::Value, Zoom, row, L"Zoom des pages", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
+        add(Kind::Value, BookmarksBarHit, row, L"Barre de favoris", st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
+        twoLine(ReduceMotion, L"Réduire les animations");
         endGroup();
         labelAt(L"Son et vidéo");
         {
@@ -202,11 +234,6 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
             if (in.autoplayPending) s->lines = {L"Au prochain démarrage."};
         }
         twoLine(MuteBackground, L"Couper le son en arrière-plan");
-        endGroup();
-        labelAt(L"Affichage");
-        add(Kind::Value, Zoom, row, L"Zoom des pages", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
-        add(Kind::Value, BookmarksBarHit, row, L"Barre de favoris", st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
-        add(Kind::Switch, ReduceMotion, row, L"Réduire les animations");
         y -= rowGap;
     } else if (view == View::Sites) {
         const size_t n = in.sites ? in.sites->size() : 0;
@@ -245,19 +272,82 @@ inline std::wstring FolderText(const std::wstring& path) {
 }
 // Second lines of the two-line switches.
 inline const std::pair<int, const wchar_t*> Descriptions[] = {
-    {Passwords, L"Propose d'enregistrer vos identifiants, puis les remplit à la connexion."},
-    {Autofill, L"Remplit les formulaires avec votre nom, adresse et e-mail."},
+    {Suggestions, L"Propose des recherches et des sites pendant la saisie."},
+    {RestoreTabs, L"Rouvre les onglets de la dernière session."},
     {ConfirmClose, L"Avant de fermer une fenêtre avec plusieurs onglets."},
     {CloseWithLastTab, L"Sinon, un onglet vide reste ouvert."},
-    {AdBlock, L"Masque les publicités et les traqueurs qu'elles chargent."},
-    {HttpsOnly, L"Passe les sites en connexion sécurisée et prévient quand c'est impossible."},
-    {ThirdPartyCookies, L"Certaines connexions intégrées à d'autres sites peuvent ne plus marcher."},
     {MemorySaver, L"Allège les onglets en arrière-plan avant leur mise en veille."},
+    {AdBlock, L"Masque les publicités et les traqueurs qu'elles chargent."},
+    {HttpsOnly, L"Prévient avant d'ouvrir un site non sécurisé."},
+    {ThirdPartyCookies, L"Certaines connexions intégrées peuvent ne plus marcher."},
+    {Passwords, L"Propose de les enregistrer, puis les remplit."},
+    {Autofill, L"Remplit nom, adresse et e-mail."},
+    {ClearOnExit, L"À la fermeture, supprime l'historique, les cookies et le cache."},
+    {AskWhere, L"Choisir le dossier à chaque téléchargement."},
+    {ReduceMotion, L"S'ajoute au réglage d'animation de Windows."},
     {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
 };
+// Settings search: every row a query can reach, with where it lives and the words it answers to.
+struct Searchable { int hit; const wchar_t* title; const wchar_t* path; View view; const wchar_t* keywords; };
+inline const Searchable SearchIndex[] = {
+    {CatEngine, L"Moteur de recherche", L"Réglages", View::Main, L"google duckduckgo bing qwant ecosia brave personnalise"},
+    {Suggestions, L"Suggestions de recherche", L"Moteur de recherche", View::Engine, L"saisie barre d'adresse"},
+    {HomePageHit, L"Page d'accueil", L"Réglages", View::Main, L"nouvel onglet sites frequents accueil"},
+    {RestoreTabs, L"Restaurer les onglets", L"Onglets › Ouverture", View::Tabs, L"session demarrage"},
+    {TabPositionHit, L"Nouveaux onglets", L"Onglets › Ouverture", View::Tabs, L"position ouvrir"},
+    {ConfirmClose, L"Confirmer la fermeture", L"Onglets › Fermeture", View::Tabs, L"fermer fenetre"},
+    {CloseWithLastTab, L"Fermer avec le dernier onglet", L"Onglets › Fermeture", View::Tabs, L"fenetre"},
+    {Sleep, L"Onglets en veille", L"Onglets › Veille", View::Tabs, L"memoire suspendre performances"},
+    {MemorySaver, L"Économiseur de mémoire", L"Onglets › Veille", View::Tabs, L"ram performances"},
+    {Tracking, L"Anti-pistage", L"Confidentialité › Protection", View::Privacy, L"traqueurs tracking pistage"},
+    {AdBlock, L"Bloqueur de publicités", L"Confidentialité › Protection", View::Privacy, L"pubs annonces ublock"},
+    {HttpsOnly, L"HTTPS uniquement", L"Confidentialité › Protection", View::Privacy, L"securise chiffre http"},
+    {ThirdPartyCookies, L"Bloquer les cookies tiers", L"Confidentialité › Protection", View::Privacy, L"traqueurs"},
+    {Passwords, L"Mots de passe", L"Confidentialité › Formulaires", View::Privacy, L"identifiants connexion"},
+    {Autofill, L"Saisie automatique", L"Confidentialité › Formulaires", View::Privacy, L"formulaires adresse e-mail"},
+    {Permissions, L"Autorisations des sites", L"Confidentialité › Données", View::Privacy, L"camera micro position notifications"},
+    {ClearOnExit, L"Effacer en quittant", L"Confidentialité › Données", View::Privacy, L"cookies historique cache"},
+    {ClearData, L"Effacer les données…", L"Confidentialité › Données", View::Privacy, L"cookies historique cache supprimer"},
+    {Folder, L"Enregistrer dans", L"Téléchargements", View::Downloads, L"dossier emplacement"},
+    {AskWhere, L"Demander où enregistrer", L"Téléchargements", View::Downloads, L"dossier emplacement"},
+    {Zoom, L"Zoom des pages", L"Affichage et son › Pages", View::Display, L"taille agrandir"},
+    {BookmarksBarHit, L"Barre de favoris", L"Affichage et son › Pages", View::Display, L"favoris marque-pages"},
+    {ReduceMotion, L"Réduire les animations", L"Affichage et son › Pages", View::Display, L"mouvement accessibilite"},
+    {AutoplayHit, L"Lecture automatique", L"Affichage et son › Son et vidéo", View::Display, L"video son"},
+    {MuteBackground, L"Couper le son en arrière-plan", L"Affichage et son › Son et vidéo", View::Display, L"muet son"},
+};
+// Case- and accent-insensitive form for matching ("Économiseur" ~ "economiseur").
+inline std::wstring Folded(const std::wstring& text) {
+    std::wstring out; out.reserve(text.size());
+    for (wchar_t c : text) {
+        c = static_cast<wchar_t>(towlower(c));
+        switch (c) {
+        case L'à': case L'â': case L'ä': c = L'a'; break; case L'é': case L'è': case L'ê': case L'ë': c = L'e'; break;
+        case L'î': case L'ï': c = L'i'; break; case L'ô': case L'ö': c = L'o'; break; case L'ù': case L'û': case L'ü': c = L'u'; break;
+        case L'ç': c = L'c'; break; case L'’': c = L'\''; break; default: break;
+        }
+        out += c;
+    }
+    return out;
+}
+// Results: title matches first (with the matched span), then keyword matches.
+struct SearchResult { const Searchable* entry; size_t at = std::wstring::npos, length = 0; };
+inline std::vector<SearchResult> SearchSettings(const std::wstring& query) {
+    std::vector<SearchResult> titled, keyed; const std::wstring q = Folded(BrowserSettings::TrimText(query));
+    if (q.empty()) return {};
+    for (const auto& e : SearchIndex) {
+        const size_t at = Folded(e.title).find(q);
+        if (at != std::wstring::npos) titled.push_back({&e, at, q.size()});
+        else if (Folded(e.keywords).find(q) != std::wstring::npos) keyed.push_back({&e});
+    }
+    titled.insert(titled.end(), keyed.begin(), keyed.end());
+    if (titled.size() > static_cast<size_t>(Layout::maxResults)) titled.resize(static_cast<size_t>(Layout::maxResults));
+    return titled;
+}
 // Address fields: placeholder, hint, error.
 struct FieldText { const wchar_t* placeholder; const wchar_t* hint; const wchar_t* error; };
 inline FieldText FieldTexts(int hit) {
+    if (hit == SearchField) return {L"Rechercher un réglage", L"", L""};
     if (hit == CustomSearchField) return {L"https://exemple.fr/?q=%s", L"%s est remplacé par votre recherche.", L"Ajoutez %s à l'endroit de la recherche."};
     return {L"exemple.fr", L"S'ouvre dans chaque nouvel onglet.", L"Cette adresse n'est pas valide."};
 }
@@ -288,15 +378,18 @@ private:
     Chrome chrome_; Motion::State motion_;
     BrowserSettings::State* state_ = nullptr; Hooks hooks_;
     ID2D1GradientStopCollection* stops_ = nullptr; ID2D1LinearGradientBrush* fade_ = nullptr;
-    Lane slide_, more_, plate_, page_;
-    std::array<Lane, 3> scrolls_;              // one per view depth
+    Lane slide_, plate_, page_;
+    static constexpr int MaxDepth = 4;
+    std::array<Lane, MaxDepth> scrolls_;       // one per view depth
     std::array<Lane, SwitchCount> switches_, knobPress_;
-    View views_[3] = {View::Main, View::Sites, View::Site}; int depth_ = 0; // navigation stack: depth 0..2
+    std::array<View, MaxDepth> views_{View::Main, View::Main, View::Main, View::Main}; int depth_ = 0; // navigation stack
+    // Search: the query typed in the root's field and what it finds.
+    std::wstring query_; std::vector<SearchResult> results_; NativeUI::AccentCaret caret_;
     std::vector<BrowserSettings::Site> sites_; bool sitesLoaded_ = false; int site_ = -1; unsigned loadTicket_ = 0;
     std::map<int, std::vector<std::wstring>> lines_; std::vector<std::wstring> noSitesLines_, sitesNoteLines_;
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
-    HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
+    HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0; NativeUI::AccentCaret caret_;
     HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
@@ -353,11 +446,14 @@ private:
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
     float Height() const { RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
     View Current() const { return views_[depth_]; }
+    int DepthOf(View v) const { for (int d = depth_; d >= 0; --d) if (views_[d] == v) return d; return -1; }
+    bool Searching() const { return !BrowserSettings::TrimText(query_).empty(); }
     // Footer height per view (DIP): main = clear + version; sites = note + "Tout retirer"; site = one danger row.
-    float FooterHeight(View v) const { return v == View::Main ? Layout::footer : v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : 1 + 12 + Layout::row + Layout::padBottom; }
+    float FooterHeight(View v) const { return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer; }
     float ViewBottom(View v) const { return Height() - FooterHeight(v); }
-    LayoutInput Input(float more) const {
-        LayoutInput in; in.more = more; in.lines = &lines_; in.noSitesLines = noSitesLines_;
+    LayoutInput Input() const {
+        LayoutInput in; in.lines = &lines_;
+        if (state_) { std::wstring f = FolderText(hooks_.downloadFolder ? hooks_.downloadFolder() : state_->downloadFolder); if (f.rfind(L"…\\", 0) == 0) f = f.substr(2); in.folderName = f; } in.noSitesLines = noSitesLines_;
         in.customReveal = customRevealValue_; in.homeReveal = homeRevealValue_;
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
@@ -369,18 +465,18 @@ private:
         homeRevealValue_ = target ? homeReveal_.Target() : homeReveal_.Value(now);
     }
     std::vector<Slot> Slots(View v, Motion::Time now, bool target = false) const {
-        const int d = v == View::Main ? 0 : v == View::Sites ? 1 : 2; Reveals(now, target);
-        return ContentSlots(v, Input(target ? more_.Target() : more_.Value(now)), target ? scrolls_[d].Target() : scrolls_[d].Value(now));
+        const int d = std::max(0, DepthOf(v)); Reveals(now, target);
+        return ContentSlots(v, Input(), target ? scrolls_[d].Target() : scrolls_[d].Value(now));
     }
     float MaxScroll(View v, Motion::Time now, bool target) const {
-        float bottom = 0; Reveals(now, target); ContentSlots(v, Input(target ? more_.Target() : more_.Value(now)), 0, &bottom);
+        float bottom = 0; Reveals(now, target); ContentSlots(v, Input(), 0, &bottom);
         return std::max(0.f, bottom + Layout::groupGap - ViewBottom(v));
     }
     int SelectedIndex() const { return state_ ? static_cast<int>(state_->engine) : 0; }
     // Selection plate: content y of the selected row (animated), unscrolled.
-    float EngineTop(int index, float more) const {
+    float EngineTop(int index) const {
         Reveals(Motion::Now(), true);
-        for (const auto& s : ContentSlots(View::Main, Input(more), 0)) if (s.kind == Kind::Engine && s.index == index) return s.top;
+        for (const auto& s : ContentSlots(View::Engine, Input(), 0)) if (s.kind == Kind::Engine && s.index == index) return s.top;
         return Layout::viewTop + Layout::label + Layout::rowGap; // hidden engine: tucked under the first row
     }
     template<class T> static void Drop(T*& p) { if (p) { p->Release(); p = nullptr; } }
@@ -467,21 +563,13 @@ private:
     }
     void EngineRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top), s.hit);
-        const float plateTop = plate_.Value(now), closeness = Motion::Clamp(1 - std::abs(plateTop - (s.top + scrolls_[0].Value(now))) / Layout::pitch);
+        const float plateTop = plate_.Value(now), closeness = Motion::Clamp(1 - std::abs(plateTop - (s.top + paintScroll_)) / Layout::pitch);
         EngineTile(s.index, s.top, closeness);
         chrome_.Text(BrowserSettings::Info(static_cast<Engine>(s.index)).name, {Layout::nameLeft, s.top, Layout::slotRight - Layout::slot - 4, s.top + Layout::row}, 16, .7f + .3f * closeness, false, false, -.16f);
     }
-    void MoreRow(const Slot& s, Motion::Time now) {
-        RowFocus(Layout::Row(s.top), More);
-        auto* t = chrome_.RenderTarget(); const auto icon = Layout::Icon(s.top);
-        D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
-        t->SetTransform(D2D1::Matrix3x2F::Rotation(180.f * Motion::Clamp(more_.Value(now)), {(icon.left + icon.right) / 2, (icon.top + icon.bottom) / 2}) * base);
-        // "Voir moins" cannot fold away the selected engine: it rests dimmed then.
-        const float opacity = more_.Target() > .5f && state_ && !BrowserSettings::Primary(state_->engine) ? Design::Text::disabled : .7f;
-        chrome_.Icon(L"caret", R(icon), 16, opacity);
-        t->SetTransform(base);
-        chrome_.Text(more_.Target() > .5f ? L"Voir moins" : L"Voir plus…", {Layout::nameLeft, s.top, Layout::slotRight, s.top + Layout::row}, 16, opacity, false, false, -.16f);
-    }
+    float paintScroll_ = 0; // scroll of the view being painted (the plate rides on it)
+    // Leading glyph of a root row: full-opacity 16 DIP mask at Paper's 70%, brighter on hover.
+    void Lead(const Slot& s, float hover) { if (s.icon) chrome_.TintedIcon(s.icon, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); }
     void SwitchRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const int i = SwitchIndex(s.hit); const float on = Motion::Clamp(switches_[i].Value(now));
@@ -508,7 +596,8 @@ private:
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
         const float w = chrome_.TextWidth(s.value, 14, false, false, -.14f);
-        Label16(s.text, Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        Lead(s, v.hover);
+        Label16(s.text, s.icon ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
         chrome_.Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
         chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         // A pending note (engine policy applied at the next launch) under the label.
@@ -536,6 +625,71 @@ private:
         else Label14(texts.hint, Layout::textLeft, hint, Layout::rowRight, .5f);
     }
     static float FieldFill(float hover, bool editing) { return editing ? .02f : .03f + .02f * hover; }
+    // Root search (Paper "Rechercher un réglage"): a 4% well; focused, a 10% hairline;
+    // a typed query shows a clear button. The EDIT sits on the text while editing.
+    static constexpr float searchFill = .04f;
+    void SearchRow(const Slot& s, Motion::Time now) {
+        const auto v = Interaction(s.hit, now); const bool editing = editing_ == SearchField;
+        const Design::Box box{Layout::rowLeft, s.top, Layout::rowRight, s.top + Layout::field};
+        chrome_.Round(R(box), Design::Radius::control, Tint(searchFill + .02f * v.hover * (editing ? 0 : 1)));
+        auto* brush = chrome_.SolidBrush(); auto* t = chrome_.RenderTarget();
+        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
+        if (editing) { brush->SetColor(D2D1::ColorF(1, 1, 1, .1f)); t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(box.left + px / 2, box.top + px / 2, box.right - px / 2, box.bottom - px / 2), Design::Radius::control, Design::Radius::control), brush, px); }
+        if (focus_ == s.hit && !editing) chrome_.FocusRing(R(box), Design::Radius::control);
+        const Design::Box glass{box.left + 8, s.top + 9, box.left + 22, s.top + 23};
+        chrome_.TintedIcon(L"search-mask", R(glass), 14, D2D1::ColorF(1, 1, 1, editing || Searching() ? .7f : .5f));
+        if (!editing) {
+            if (query_.empty()) Label14(FieldTexts(SearchField).placeholder, SearchTextLeft(), s.top + 7, Layout::rowRight - 8, .4f);
+            else chrome_.Text(query_, {SearchTextLeft(), s.top + 7, ClearBox(s.top).left - 4, s.top + 25}, 14, .9f, false, false, -.14f);
+        }
+        if (Searching()) chrome_.TintedIcon(L"close-mask", R(ClearBox(s.top)), 12, D2D1::ColorF(1, 1, 1, .5f + .3f * Interaction(SearchDismiss, now).hover));
+    }
+    static constexpr float SearchTextLeft() { return Layout::rowLeft + 8 + 14 + 8; } // 42
+    static Design::Box ClearBox(float top) { return {Layout::rowRight - 4 - 20, top + 4, Layout::rowRight - 4, top + 28}; }
+    // Results card: opaque (#202020, the field's own 4%), 6 DIP under the field, over the dimmed root.
+    Design::Box ResultCard(float fieldTop) const {
+        const float top = fieldTop + Layout::field + Layout::resultGap;
+        return {Layout::rowLeft, top, Layout::rowRight, top + std::max<size_t>(1, results_.size()) * Layout::resultRow};
+    }
+    void ResultCardPaint(float fieldTop, Motion::Time now) {
+        const auto card = ResultCard(fieldTop);
+        chrome_.Round(R(card), Design::Radius::control, Tint(searchFill));
+        if (results_.empty()) { Label14(L"Aucun réglage pour « " + BrowserSettings::TrimText(query_) + L" »", card.left + Layout::resultPadLeft, card.top + 19, card.right - Layout::resultPadRight, .5f); return; }
+        for (size_t i = 0; i < results_.size(); ++i) {
+            const auto& r = results_[i]; const int hit = ResultBase + static_cast<int>(i);
+            const Design::Box row{card.left, card.top + i * Layout::resultRow, card.right, card.top + (i + 1) * Layout::resultRow};
+            const auto v = Interaction(hit, now);
+            if (v.hover > 0 || v.press > 0) chrome_.Round(R(row), Design::Radius::control, Tint(searchFill + .04f * v.hover + .03f * v.press));
+            if (focus_ == hit) chrome_.FocusRing(R(row), Design::Radius::control);
+            const int sw = SwitchIndex(r.entry->hit);
+            const float right = row.right - Layout::resultPadRight - (sw >= 0 ? Layout::switchWidth : 16) - 16, x = row.left + Layout::resultPadLeft, y = row.top + 8;
+            // Title at 70%, the matched span in full white.
+            const std::wstring title = r.entry->title;
+            if (r.at == std::wstring::npos) Label16(title, x, y, right, .7f + .2f * v.hover);
+            else {
+                const std::wstring a = title.substr(0, r.at), m = title.substr(r.at, r.length), b = title.substr(r.at + r.length);
+                const float wa = chrome_.TextWidth(a, 16, false, false, -.16f), wm = chrome_.TextWidth(m, 16, false, false, -.16f);
+                Label16(a, x, y, x + wa + 1, .7f + .2f * v.hover); Label16(m, x + wa, y, x + wa + wm + 1, 1); Label16(b, x + wa + wm, y, right, .7f + .2f * v.hover);
+            }
+            Label14(r.entry->path, x, y + 22, right, .5f);
+            if (sw >= 0) {
+                // The switch works from the result itself.
+                const float on = Motion::Clamp(switches_[sw].Value(now));
+                const Design::Box track{row.right - Layout::resultPadRight - Layout::switchWidth, row.top + (Layout::resultRow - Layout::switchHeight) / 2, row.right - Layout::resultPadRight, row.top + (Layout::resultRow + Layout::switchHeight) / 2};
+                const float base = Tint(searchFill), offTrack = base + (1 - base) * .10f, onTrack = base + (1 - base) * .70f;
+                const float trackGray = offTrack + (onTrack - offTrack) * on;
+                Fill(track, Layout::switchHeight / 2, trackGray, trackGray, trackGray, 1);
+                const float offKnob = offTrack + (1 - offTrack) * .7f, c = Design::Surface::canvas, knobGray = offKnob + (c - offKnob) * on;
+                const float travel = Layout::switchWidth - 2 * Layout::knobInset - Layout::knob, left = track.left + Layout::knobInset + travel * on;
+                Fill({left, track.top + Layout::knobInset, left + Layout::knob, track.top + Layout::knobInset + Layout::knob}, Layout::knob / 2, knobGray, knobGray, knobGray, 1);
+            } else {
+                auto* t = chrome_.RenderTarget(); const Design::Box chevron{row.right - Layout::resultPadRight - 16, row.top + (Layout::resultRow - 24) / 2, row.right - Layout::resultPadRight, row.top + (Layout::resultRow + 24) / 2};
+                D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+                t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
+                chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover); t->SetTransform(base);
+            }
+        }
+    }
     // Label + count + right chevron: pushes a sub-view.
     void NavRow(const Slot& s, Motion::Time now) {
         if (!s.hit) { // inert: label + why, no chevron, no hover
@@ -545,9 +699,11 @@ private:
         }
         RowFocus(Layout::Row(s.top), s.hit);
         auto* t = chrome_.RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
-        const float w = chrome_.TextWidth(s.value, 14, true);
-        Label16(s.text, Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
-        if (!s.value.empty()) chrome_.Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, true);
+        const bool counted = s.hit == Permissions; // a count reads in tabular figures; a summary in text
+        const float w = chrome_.TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        Lead(s, v.hover);
+        Label16(s.text, s.icon ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        if (!s.value.empty()) chrome_.Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, counted, false, counted ? 0.f : -.14f);
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
         t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
         chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
@@ -588,13 +744,13 @@ private:
         Label16(text, Layout::textLeft, top + 6, Layout::rowRight, enabled ? 1.f : Design::Text::disabled);
         chrome_.ink = D2D1::ColorF(1, 1, 1, 1);
     }
+    void DangerContent(const Slot& s, Motion::Time now) { DangerRow(s.text.c_str(), s.top, s.hit, now, true); }
     void Footer(View view, Motion::Time now) {
         const float h = Height(), top = h - FooterHeight(view);
         auto* t = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         chrome_.Color(1, .04f); t->FillRectangle(D2D1::RectF(Layout::rowLeft, top, Layout::rowRight, top + px), brush);
-        if (view == View::Main) {
-            DangerRow(L"Effacer les données…", top + 13, ClearData, now, true);
+        if (view != View::Sites && view != View::Site) {
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
@@ -620,27 +776,31 @@ private:
         if (view == View::Main) chrome_.Text(L"Réglages", R(Layout::Title(false)), 16, .9f, false, true, -.16f);
         else {
             IconButton(L"back", Layout::BackButton(), Back, now);
-            const std::wstring title = view == View::Sites ? L"Autorisations" : (site_ >= 0 && site_ < static_cast<int>(sites_.size()) ? Host(sites_[site_].origin) : L"");
+            const std::wstring title = view == View::Site ? (site_ >= 0 && site_ < static_cast<int>(sites_.size()) ? Host(sites_[site_].origin) : L"") : Title(view);
             chrome_.Text(title, R(Layout::Title(true)), 16, .9f, false, true, -.16f);
         }
         IconButton(L"close", Layout::CloseButton(), Close, now);
         // Content, clipped between the header and the footer.
         const float viewTop = Layout::viewTop - Layout::groupGap / 2, viewBottom = ViewBottom(view);
-        const float scroll = scrolls_[depth].Value(now);
+        const float scroll = scrolls_[depth].Value(now); paintScroll_ = scroll;
+        const bool dim = view == View::Main && Searching(); float searchTop = Layout::viewTop - scroll;
         target->PushAxisAlignedClip(D2D1::RectF(0, viewTop, Layout::width, viewBottom), D2D1_ANTIALIAS_MODE_ALIASED);
         const auto slots = Slots(view, now);
         // Three passes: row fills, then the selection plate over them, then row contents.
         auto pass = [&](bool surfaces) { for (const auto& s : slots) {
-            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note || s.kind == Kind::Field))) continue;
-            const bool clipped = s.clipTop > -1e5f, fading = s.opacity < .998f;
+            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note || s.kind == Kind::Field || s.kind == Kind::Search || s.kind == Kind::Danger))) continue;
+            if (s.kind == Kind::Search) searchTop = s.top;
+            const float opacity = s.opacity * (dim && s.kind != Kind::Search ? Layout::searchDim : 1.f); // results own the root while a query stands
+            const bool clipped = s.clipTop > -1e5f, fading = opacity < .998f;
             if (clipped) target->PushAxisAlignedClip(D2D1::RectF(0, std::max(s.clipTop, viewTop), Layout::width, std::min(s.clipBottom, viewBottom)), D2D1_ANTIALIAS_MODE_ALIASED);
-            if (fading) PushOpacity(s.opacity);
+            if (fading) PushOpacity(opacity);
             if (surfaces) RowSurface(Layout::Row(s.top, s.height), s.hit, now);
             else switch (s.kind) {
             case Kind::Label: chrome_.Text(s.text, {Layout::textLeft, s.top, Layout::rowRight, s.top + 20}, 14, .5f, false, true, -.14f); break;
             case Kind::Note: { const auto lines = Wrap(s.text, Layout::rowRight - Layout::textLeft); for (size_t k = 0; k < lines.size(); ++k) Label14(lines[k], Layout::textLeft, s.top + k * 20, Layout::rowRight, .5f, 20); break; }
             case Kind::Engine: EngineRow(s, now); break;
-            case Kind::More: MoreRow(s, now); break;
+            case Kind::Search: SearchRow(s, now); break;
+            case Kind::Danger: DangerContent(s, now); break;
             case Kind::Switch: SwitchRow(s, now); break;
             case Kind::Folder: FolderRow(s, now); break;
             case Kind::Value: ValueRow(s, now); break;
@@ -651,7 +811,8 @@ private:
             if (fading) target->PopLayer();
             if (clipped) target->PopAxisAlignedClip();
         } };
-        pass(true); if (view == View::Main) Plate(now, scroll); pass(false);
+        pass(true); if (view == View::Engine) Plate(now, scroll); pass(false);
+        if (dim) ResultCardPaint(searchTop, now);
         // Scroll edge effects: content dissolves into the canvas where more lies beyond.
         const float max = MaxScroll(view, now, false);
         if (fade_ && scroll > 0) {
@@ -681,10 +842,10 @@ private:
         chrome_.keyboardModality = keyboard_;
         // Navigation: views below the current position slide 30% left and dim; the
         // one above enters from the right edge (iOS push). Reduced motion: no travel.
-        const float pos = page_.Value(now); const int lo = static_cast<int>(std::floor(pos)), hi = std::min(2, lo + 1);
+        const float pos = page_.Value(now); const int lo = std::clamp(static_cast<int>(std::floor(pos)), 0, MaxDepth - 1), hi = std::min(MaxDepth - 1, lo + 1);
         target->PushAxisAlignedClip(D2D1::RectF(0, 0, Layout::width, h), D2D1_ANTIALIAS_MODE_ALIASED);
         const float t = pos - lo;
-        if (t < .001f || lo == hi) PaintView(std::clamp(lo, 0, 2), 0, 1, now);
+        if (t < .001f || lo == hi) PaintView(lo, 0, 1, now);
         else { PaintView(lo, -.3f * Layout::width * t, 1 - .5f * t, now); PaintView(hi, Layout::width * (1 - t), 1, now); }
         target->PopAxisAlignedClip();
         // Leading edge: one physical pixel, a touch lighter than the canvas (as the download drawer).
@@ -706,12 +867,20 @@ private:
         if (in(Layout::CloseButton())) return Close;
         if (view != View::Main && in(Layout::BackButton())) return Back;
         const float footerTop = h - FooterHeight(view);
-        if (view == View::Main) {
+        if (view != View::Sites && view != View::Site) {
             if (in(Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot))) return CheckUpdates;
-            if (in(Layout::Row(footerTop + 13))) return ClearData;
         } else if (view == View::Sites) { if (!sites_.empty() && in(Layout::Row(footerTop + 13 + 40 + 8))) return ResetAll; }
         else if (in(Layout::Row(footerTop + 13))) return ResetSite;
         if (y < Layout::viewTop - Layout::groupGap / 2 || y >= footerTop) return None;
+        if (view == View::Main && Searching()) {
+            // While results stand, only the field and the card answer; the dimmed root dismisses.
+            const float fieldTop = Layout::viewTop - scrolls_[0].Value(Motion::Now());
+            if (in(ClearBox(fieldTop))) return SearchDismiss;
+            if (in(Layout::Row(fieldTop, Layout::field))) return SearchField;
+            const auto card = ResultCard(fieldTop);
+            if (in(card)) { const int i = static_cast<int>((y - card.top) / Layout::resultRow); return i < static_cast<int>(results_.size()) ? ResultBase + i : None; }
+            return SearchDismiss;
+        }
         for (const auto& s : Slots(view, Motion::Now())) {
             if (!s.hit || s.opacity < .5f) continue;
             if (in(Layout::Row(s.top, s.height)) && y >= s.clipTop && y < s.clipBottom) return s.hit;
@@ -722,8 +891,9 @@ private:
         const View view = Current(); std::vector<int> order;
         if (view != View::Main) order.push_back(Back);
         order.push_back(Close);
+        if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
         for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f) order.push_back(s.hit);
-        if (view == View::Main) { order.push_back(ClearData); if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
+        if (view != View::Sites && view != View::Site) { if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
         else if (view == View::Sites) { if (!sites_.empty()) order.push_back(ResetAll); }
         else order.push_back(ResetSite);
         return order;
@@ -771,13 +941,38 @@ private:
         return 0;
     }
     void Navigate(int depth, Motion::Time now) {
-        depth = std::clamp(depth, 0, 2);
+        depth = std::clamp(depth, 0, MaxDepth - 1);
         if (depth > depth_) scrolls_[depth].Snap(0);
         // Popping back lands keyboard focus on the row that pushed the view.
-        const int from = depth_; depth_ = depth; motion_.ClearInteractions();
-        focus_ = depth < from && keyboard_ ? (depth == 0 ? Permissions : SiteBase + std::max(0, site_)) : 0;
+        const int from = depth_; const View left = views_[from]; depth_ = depth; motion_.ClearInteractions();
+        if (editing_) Commit(false);
+        focus_ = depth < from && keyboard_ ? (left == View::Site ? SiteBase + std::max(0, site_) : Opener(left)) : 0;
         if (focus_) { const auto order = FocusOrder(); if (std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; }
         page_.Set(static_cast<float>(depth), now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::page, Timing::pageSpring);
+    }
+    void Push(View v, Motion::Time now) {
+        if (depth_ + 1 >= MaxDepth) return;
+        views_[depth_ + 1] = v;
+        if (v == View::Engine) plate_.Snap(EngineTop(SelectedIndex()));
+        Navigate(depth_ + 1, now);
+    }
+    // Search ---------------------------------------------------------------------------
+    void SetQuery(std::wstring q) {
+        query_ = std::move(q); results_ = SearchSettings(query_);
+        motion_.ClearInteractions(); if (IsResult(focus_)) focus_ = 0;
+        Invalidate(); Schedule(Motion::Now());
+    }
+    void ClearSearch() { if (edit_ && editing_ == SearchField) SetWindowTextW(edit_, L""); SetQuery(L""); }
+    // A result: a switch toggles where it is; anything else opens its view on the row.
+    void OpenResult(int index, bool keyboard) {
+        if (index < 0 || index >= static_cast<int>(results_.size())) return;
+        const auto& e = *results_[index].entry; const auto now = Motion::Now();
+        if (SwitchIndex(e.hit) >= 0) { Activate(e.hit, keyboard); return; }
+        if (editing_) EndEdit();
+        if (e.view != View::Main) Push(e.view, now);
+        else ClearSearch();
+        keyboard_ = true; focus_ = e.hit; Reveal(e.hit);
+        Repoint(); RefreshTips(); Invalidate(); Schedule(now);
     }
     void LoadSites() {
         if (!hooks_.loadSites) { sitesLoaded_ = true; return; }
@@ -785,7 +980,7 @@ private:
         hooks_.loadSites([this, ticket](std::vector<BrowserSettings::Site> sites) {
             if (ticket != loadTicket_ || !hwnd_) return; // a newer load superseded this one
             sites_ = std::move(sites); sitesLoaded_ = true;
-            if (depth_ == 2 && (site_ < 0 || site_ >= static_cast<int>(sites_.size()))) Navigate(1, Motion::Now());
+            if (Current() == View::Site && (site_ < 0 || site_ >= static_cast<int>(sites_.size()))) Navigate(depth_ - 1, Motion::Now());
             if (visible_) { auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; RefreshTips(); Invalidate(); Schedule(Motion::Now()); }
         });
     }
@@ -800,17 +995,11 @@ private:
             if (engine == Engine::Custom && SearchTemplate(state_->customSearch).empty()) { customPending_ = true; SyncReveals(now); StartEdit(CustomSearchField); }
             else if (state_->engine != engine) {
                 state_->engine = engine;
-                plate_.Set(EngineTop(static_cast<int>(engine), more_.Target()), now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
+                plate_.Set(EngineTop(static_cast<int>(engine)), now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
                 if (hooks_.changed) hooks_.changed(Change::Engine);
                 if (engine != Engine::Custom) customPending_ = false;
                 SyncReveals(now);
             }
-        } else if (hit == More) {
-            const float target = more_.Target() > .5f ? 0.f : 1.f;
-            if (target == 0 && !Primary(state_->engine)) return; // folding away the selected engine would hide the plate
-            more_.Set(target, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Downloads::DrawerMotion::fold, Downloads::DrawerMotion::foldSpring);
-            plate_.Set(EngineTop(SelectedIndex(), target), now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Downloads::DrawerMotion::fold, Downloads::DrawerMotion::foldSpring);
-            ScrollTo(scrolls_[0].Target(), now);
         } else if (SwitchIndex(hit) >= 0) {
             bool* value = SwitchField(hit); if (!value) return;
             *value = !*value;
@@ -852,6 +1041,13 @@ private:
             const int chosen = Choose(items, hit, keyboard);
             if (chosen > 0 && static_cast<BrowserSettings::Autoplay>(chosen - 1) != state_->autoplay) { state_->autoplay = static_cast<BrowserSettings::Autoplay>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::Autoplay); }
         } else if (IsField(hit)) { if (editing_ != hit) StartEdit(hit); return; }
+        else if (hit == SearchDismiss) { if (editing_) EndEdit(); ClearSearch(); }
+        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_); }
+        else if (hit == CatEngine) Push(View::Engine, now);
+        else if (hit == CatTabs) Push(View::Tabs, now);
+        else if (hit == CatPrivacy) { LoadSites(); Push(View::Privacy, now); }
+        else if (hit == CatDownloads) Push(View::Downloads, now);
+        else if (hit == CatDisplay) Push(View::Display, now);
         else if (hit == Zoom) {
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < ZoomCount; ++i) items.push_back(ContextMenu::Command(i + 1, ZoomLabel(ZoomChoices[i]), L"", true, state_->zoomPercent == ZoomChoices[i]));
@@ -862,8 +1058,8 @@ private:
             for (int i = 0; i < BookmarksBarCount; ++i) { const auto b = static_cast<BrowserSettings::BookmarksBar>(i); auto item = ContextMenu::Command(i + 1, Info(b).label, L"", true, state_->bookmarksBar == b); item.description = Info(b).description; items.push_back(item); }
             const int chosen = Choose(items, hit, keyboard);
             if (chosen > 0 && static_cast<BrowserSettings::BookmarksBar>(chosen - 1) != state_->bookmarksBar) { state_->bookmarksBar = static_cast<BrowserSettings::BookmarksBar>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::BookmarksBar); }
-        } else if (hit == Permissions) { LoadSites(); Navigate(1, now); }
-        else if (IsSite(hit)) { site_ = hit - SiteBase; Navigate(2, now); }
+        } else if (hit == Permissions) { LoadSites(); Push(View::Sites, now); }
+        else if (IsSite(hit)) { site_ = hit - SiteBase; Push(View::Site, now); }
         else if (IsPermission(hit) && site_ >= 0 && site_ < static_cast<int>(sites_.size())) {
             auto& site = sites_[site_]; const int index = hit - PermissionBase;
             if (index < 0 || index >= static_cast<int>(site.permissions.size())) return;
@@ -881,7 +1077,7 @@ private:
             }
         } else if (hit == ResetSite && site_ >= 0 && site_ < static_cast<int>(sites_.size())) {
             if (hooks_.resetSites) hooks_.resetSites(sites_[site_].origin);
-            Navigate(1, now); LoadSites();
+            Navigate(depth_ - 1, now); LoadSites();
         } else if (hit == ResetAll && !sites_.empty()) { if (hooks_.resetSites) hooks_.resetSites(L""); sites_.clear(); LoadSites(); }
         else if (hit == Folder) { if (hooks_.pickFolder) Modal([&] { hooks_.pickFolder(); }); }
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(); }); }
@@ -890,6 +1086,7 @@ private:
     }
     // ---- Address fields -----------------------------------------------------------
     std::wstring FieldValue(int hit) const {
+        if (hit == SearchField) return query_;
         const auto d = drafts_.find(hit); if (d != drafts_.end()) return d->second;
         if (!state_) return L"";
         return hit == CustomSearchField ? state_->customSearch : state_->homepage;
@@ -898,21 +1095,31 @@ private:
     bool HomeVisible() const { return state_ && (state_->newTabPage == BrowserSettings::NewTabPage::Custom || homePending_); }
     void SyncReveals(Motion::Time now, bool snap = false) {
         const auto d = snap || Reduced() ? Motion::Milliseconds(0) : Downloads::DrawerMotion::fold;
-        if (snap) { customReveal_.Snap(CustomVisible() ? 1.f : 0.f); homeReveal_.Snap(HomeVisible() ? 1.f : 0.f); return; }
+        if (snap) { customReveal_.Snap(CustomVisible() ? 1.f : 0.f); homeReveal_.Snap(HomeVisible() ? 1.f : 0.f); plate_.Snap(EngineTop(SelectedIndex())); return; }
         customReveal_.Set(CustomVisible() ? 1.f : 0.f, now, Motion::Milliseconds(0), d, Downloads::DrawerMotion::foldSpring);
         homeReveal_.Set(HomeVisible() ? 1.f : 0.f, now, Motion::Milliseconds(0), d, Downloads::DrawerMotion::foldSpring);
-        plate_.Set(EngineTop(SelectedIndex(), more_.Target()), now, Motion::Milliseconds(0), d, Downloads::DrawerMotion::foldSpring);
+        plate_.Set(EngineTop(SelectedIndex()), now, Motion::Milliseconds(0), d, Downloads::DrawerMotion::foldSpring);
         Invalidate(); Schedule(now); // the lanes need frames even when no other motion runs
     }
     static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
         auto* self = reinterpret_cast<Drawer*>(data);
         switch (msg) {
         case WM_GETDLGCODE: return DLGC_WANTALLKEYS | DefSubclassProc(h, msg, w, l);
+        case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->AccentCaret(h); return r; }
         case WM_KEYDOWN:
+            if (self->editing_ == SearchField) {
+                // Enter opens the first result, Down walks into them, Escape clears then leaves.
+                if (w == VK_RETURN) { if (!self->results_.empty()) self->OpenResult(0, true); return 0; }
+                if (w == VK_DOWN && !self->results_.empty()) { self->keyboard_ = true; self->EndEdit(); self->focus_ = ResultBase; self->Invalidate(); return 0; }
+                if (w == VK_ESCAPE) { if (GetWindowTextLengthW(h)) self->ClearSearch(); else self->EndEdit(); return 0; }
+                if (w == VK_TAB) { self->keyboard_ = true; self->EndEdit(); return 0; }
+                break;
+            }
             if (w == VK_RETURN) { self->Commit(true); return 0; }
             if (w == VK_ESCAPE) { self->cancelEdit_ = true; self->EndEdit(); return 0; }
             if (w == VK_TAB) { self->Commit(false); return 0; }
             break;
+        case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->ApplyCaret(); return r; }
         case WM_KILLFOCUS: if (self->editing_ && !self->cancelEdit_) self->Commit(false); break;
         case WM_PAINT: {
             // No comctl32 v6 (no cue banner): the placeholder is painted over the empty field, as when it rests.
@@ -929,6 +1136,10 @@ private:
         case WM_CUT: case WM_PASTE: case WM_CLEAR: case WM_UNDO: case EM_REPLACESEL: {
             // Placeholder and error follow the text as it is typed.
             const LRESULT r = DefSubclassProc(h, msg, w, l);
+            if (self->editing_ == SearchField) { // live: results follow every keystroke
+                const int n = GetWindowTextLengthW(h); std::wstring text(static_cast<size_t>(n) + 1, L'\0'); GetWindowTextW(h, text.data(), n + 1); text.resize(static_cast<size_t>(n));
+                self->SetQuery(std::move(text));
+            }
             if (self->errors_[self->editing_]) { self->errors_[self->editing_] = false; self->Invalidate(); }
             InvalidateRect(h, nullptr, TRUE); return r;
         }
@@ -936,7 +1147,22 @@ private:
         }
         return DefSubclassProc(h, msg, w, l);
     }
+    // Paper caret: 1 DIP, accent at 90% over the field's own fill, the EDIT's line height.
+    void AccentCaret(HWND edit) {
+        const COLORREF fill = Gray(FieldFill(0, true)); const auto a = Design::Accent::Get();
+        TEXTMETRICW tm{}; HDC dc = GetDC(edit); const auto old = SelectObject(dc, editFont_); GetTextMetricsW(dc, &tm); SelectObject(dc, old); ReleaseDC(edit, dc);
+        caret_.Apply(edit, fill, NativeUI::AccentCaret::Mix(fill, RGB(std::lround(a.r * 255), std::lround(a.g * 255), std::lround(a.b * 255)), Design::Accent::caretOpacity), std::max(1, Px(1)), std::max(1, static_cast<int>(tm.tmHeight)));
+    }
     COLORREF Gray(float amount) const { const int v = static_cast<int>(std::lround(Tint(amount) * 255)); return RGB(v, v, v); }
+    float EditFill() const { return editing_ == SearchField ? searchFill : FieldFill(0, true); }
+    // The accent caret (#3E67FF at 90%), exact over the field's flat fill; danger while an address is invalid.
+    void ApplyCaret() {
+        if (!edit_) return;
+        const bool error = editing_ != SearchField && errors_[editing_];
+        const auto c = error ? Design::DangerRgb() : Design::Accent::Get();
+        const COLORREF fill = Gray(EditFill());
+        caret_.Apply(edit_, fill, NativeUI::AccentCaret::Mix(fill, RGB(std::lround(c.r * 255), std::lround(c.g * 255), std::lround(c.b * 255)), Design::Accent::caretOpacity), std::max(1, Px(1)), Px(18));
+    }
     void StartEdit(int hit) {
         if (!hwnd_ || !state_) return;
         if (!edit_) {
@@ -955,7 +1181,7 @@ private:
         editing_ = hit; cancelEdit_ = false; focus_ = hit;
         const std::wstring value = FieldValue(hit);
         SetWindowTextW(edit_, value.c_str());
-        SendMessageW(edit_, EM_SETSEL, 0, -1);
+        SendMessageW(edit_, EM_SETSEL, hit == SearchField ? value.size() : 0, -1); // a query resumes at its end
         editRect_ = {}; editShown_ = false; PlaceEdit(Motion::Now());
         SetFocus(edit_);
         Reveal(hit); Invalidate(); Schedule(Motion::Now());
@@ -966,9 +1192,10 @@ private:
         for (const auto& s : Slots(Current(), now)) {
             if (s.hit != editing_) continue;
             const float top = s.top + 6, bottom = s.top + 26;
-            const bool shown = depth_ == 0 && !page_.Moving(now) && top >= s.clipTop - .5f && bottom <= s.clipBottom + .5f &&
+            const bool shown = !page_.Moving(now) && top >= s.clipTop - .5f && bottom <= s.clipBottom + .5f &&
                                top >= Layout::viewTop - Layout::groupGap / 2 && bottom <= ViewBottom(Current());
-            const RECT r{Px(Layout::textLeft), Px(top), Px(Layout::rowRight - 8), Px(bottom)};
+            const bool search = editing_ == SearchField;
+            const RECT r{Px(search ? SearchTextLeft() : Layout::textLeft), Px(top), Px(search ? ClearBox(s.top).left - 4 : Layout::rowRight - 8), Px(bottom)};
             if (EqualRect(&r, &editRect_) && shown == editShown_) return; // moving it repaints: only when it changes
             editRect_ = r; editShown_ = shown;
             SetWindowPos(edit_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
@@ -979,6 +1206,7 @@ private:
     // Enter / Tab / focus loss: keep a valid address, flag an invalid one.
     void Commit(bool stay) {
         if (!editing_ || !state_) return;
+        if (editing_ == SearchField) { EndEdit(); return; } // the query stays; nothing to validate
         const int hit = editing_; const auto now = Motion::Now(); using namespace BrowserSettings;
         const int n = GetWindowTextLengthW(edit_); std::wstring text(static_cast<size_t>(n) + 1, L'\0'); GetWindowTextW(edit_, text.data(), n + 1); text.resize(static_cast<size_t>(n));
         if (TrimText(text).empty()) { // emptied: drop a pending choice, keep the saved one
@@ -987,7 +1215,7 @@ private:
             EndEdit(); SyncReveals(now); return;
         }
         const std::wstring clean = hit == CustomSearchField ? SearchTemplate(text) : HomepageUrl(text);
-        if (clean.empty()) { drafts_[hit] = text; errors_[hit] = true; if (!stay) EndEdit(); Invalidate(); Schedule(now); return; }
+        if (clean.empty()) { drafts_[hit] = text; errors_[hit] = true; if (!stay) EndEdit(); else ApplyCaret(); Invalidate(); Schedule(now); return; }
         drafts_.erase(hit); errors_[hit] = false;
         if (hit == CustomSearchField) {
             const bool changedText = clean != state_->customSearch; state_->customSearch = clean; customPending_ = false;
@@ -1003,7 +1231,7 @@ private:
     void EndEdit() {
         if (!editing_) return;
         const int hit = editing_; editing_ = 0;
-        if (cancelEdit_) { drafts_.erase(hit); errors_[hit] = false; if (hit == CustomSearchField) customPending_ = false; else homePending_ = false; SyncReveals(Motion::Now()); }
+        if (cancelEdit_ && hit != SearchField) { drafts_.erase(hit); errors_[hit] = false; if (hit == CustomSearchField) customPending_ = false; else homePending_ = false; SyncReveals(Motion::Now()); }
         cancelEdit_ = false;
         if (edit_) { ShowWindow(edit_, SW_HIDE); editShown_ = false; if (GetFocus() == edit_ && hwnd_) SetFocus(hwnd_); }
         focus_ = keyboard_ ? hit : 0; Invalidate(); Schedule(Motion::Now());
@@ -1020,7 +1248,8 @@ private:
         };
         add(Close, Layout::CloseButton(), L"Fermer (Échap)");
         const View view = Current();
-        if (view != View::Main) { add(Back, Layout::BackButton(), L"Retour"); return; }
+        if (view != View::Main) add(Back, Layout::BackButton(), L"Retour");
+        if (view == View::Sites || view == View::Site) return;
         add(CheckUpdates, Layout::Trailing(Height() - Layout::padBottom - Layout::slot, Layout::slot), L"Rechercher une mise à jour");
         for (const auto& s : Slots(view, Motion::Now())) if (s.kind == Kind::Folder && s.top >= Layout::viewTop - 1 && s.top + s.height <= ViewBottom(view))
             add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : L"Changer de dossier");
@@ -1050,7 +1279,7 @@ private:
             region = IsZoomed(owner_) ? CreateRectRgn(0, 0, shown, height) : CreateRoundRectRgn(-r * 2, -r * 2, shown + 1, height + 1, r, r);
         } else region = CreateRectRgn(0, 0, 0, 0);
         SetWindowRgn(hwnd_, region, FALSE);
-        if (resized) { for (int d = 0; d < 3; ++d) scrolls_[d].Snap(std::clamp(scrolls_[d].Target(), 0.f, MaxScroll(views_[d], now, true))); RefreshTips(); Invalidate(); }
+        if (resized) { for (int d = 0; d <= depth_; ++d) scrolls_[d].Snap(std::clamp(scrolls_[d].Target(), 0.f, MaxScroll(views_[d], now, true))); RefreshTips(); Invalidate(); }
     }
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
@@ -1067,7 +1296,7 @@ private:
         case WM_ERASEBKGND: return 1;
         case WM_CTLCOLOREDIT: {
             // The EDIT blends into the field: its exact fill, text at 90% white.
-            HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(FieldFill(0, true));
+            HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(EditFill());
             SetTextColor(dc, Gray(.9f)); SetBkColor(dc, fill);
             if (editBrush_) DeleteObject(editBrush_);
             editBrush_ = CreateSolidBrush(fill); return reinterpret_cast<LRESULT>(editBrush_);
@@ -1096,6 +1325,7 @@ private:
         case WM_MOUSEWHEEL: { const auto now = Motion::Now(); ScrollTo(scrolls_[depth_].Target() - GET_WHEEL_DELTA_WPARAM(w) / 120.f * Layout::pitch * 1.5f, now); Repoint(); Schedule(now); return 0; }
         case WM_KEYDOWN: {
             // Escape and Backspace step back out of a sub-view; Escape on the main view closes.
+            if (w == VK_ESCAPE && depth_ == 0 && Searching()) { keyboard_ = true; ClearSearch(); Interact(hover_, pressed_); return 0; }
             if ((w == VK_ESCAPE || w == VK_BACK || (w == VK_LEFT && GetKeyState(VK_MENU) < 0)) && depth_ > 0) { keyboard_ = true; Navigate(depth_ - 1, Motion::Now()); Interact(hover_, pressed_); RefreshTips(); return 0; }
             if (w == VK_ESCAPE) { Hide(true, true); return 0; }
             if (w == VK_TAB || w == VK_DOWN || w == VK_UP) {
@@ -1107,6 +1337,8 @@ private:
                 focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_); return 0;
             }
             if ((w == VK_RETURN || w == VK_SPACE) && focus_) { keyboard_ = true; Activate(focus_, true); return 0; }
+            // Typing on the root starts a search (as Ctrl+F / F3 would).
+            if (depth_ == 0 && ((w == 'F' && GetKeyState(VK_CONTROL) < 0) || w == VK_F3)) { keyboard_ = true; StartEdit(SearchField); return 0; }
             return 0;
         }
         }
@@ -1115,7 +1347,7 @@ private:
 public:
     // Recently closed by deactivation: the click that caused it must not reopen it.
     ULONGLONG hiddenAt = 0;
-    Drawer() { slide_.Snap(0); more_.Snap(0); page_.Snap(0); customReveal_.Snap(0); homeReveal_.Snap(0); }
+    Drawer() { slide_.Snap(0); page_.Snap(0); customReveal_.Snap(0); homeReveal_.Snap(0); }
     ~Drawer() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, BrowserSettings::State* state, Hooks hooks) {
         owner_ = owner; state_ = state; hooks_ = std::move(hooks);
@@ -1148,12 +1380,9 @@ public:
         auto now = Motion::Now(); const bool reduced = Reduced();
         if (!visible_) {
             slide_.Snap(0); for (auto& lane : scrolls_) lane.Snap(0); focus_ = 0; keyboard_ = false; hover_ = pressed_ = 0; motion_.ClearInteractions();
-            depth_ = 0; page_.Snap(0); site_ = -1;
+            depth_ = 0; views_.fill(View::Main); page_.Snap(0); site_ = -1; query_.clear(); results_.clear();
             customPending_ = homePending_ = false; drafts_.clear(); errors_.clear(); SyncReveals(now, true);
             MeasureDescriptions();
-            // The selected engine is always on screen: unfold when it sits behind "Voir plus…".
-            more_.Snap(BrowserSettings::Primary(state_->engine) ? 0.f : 1.f);
-            plate_.Snap(EngineTop(SelectedIndex(), more_.Target()));
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
         }
@@ -1187,16 +1416,16 @@ public:
         if (!hwnd_ || !visible_ || !state_) return;
         const auto now = Motion::Now(); const bool reduced = Reduced();
         for (int i = 0; i < SwitchCount; ++i) switches_[i].Set(SwitchValue(SwitchHits[i]) ? 1.f : 0.f, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::toggle, Timing::switchSpring);
-        if (!BrowserSettings::Primary(state_->engine) && more_.Target() < .5f) more_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Downloads::DrawerMotion::fold, Downloads::DrawerMotion::foldSpring);
         SyncReveals(now);
-        plate_.Set(EngineTop(SelectedIndex(), more_.Target()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
+        plate_.Set(EngineTop(SelectedIndex()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
         SetChecking(hooks_.version && hooks_.version().checking, now);
+        if (Searching()) results_ = SearchSettings(query_);
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     bool Moving(Motion::Time now) const {
-        bool moving = slide_.Moving(now) || more_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now);
+        bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now);
         for (auto& lane : scrolls_) moving = moving || lane.Moving(now);
         for (auto& lane : switches_) moving = moving || lane.Moving(now);
         for (auto& lane : knobPress_) moving = moving || lane.Moving(now);

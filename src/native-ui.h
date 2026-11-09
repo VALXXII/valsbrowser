@@ -74,5 +74,11 @@ struct AddressKeyState {
 // All pixels are client-drawn; retain resize/Snap styles and hit testing while
 // suppressing standard activated nonclient frame painting.
 inline void ConfigureFullClientFrame(HWND window){DWMNCRENDERINGPOLICY policy=DWMNCRP_DISABLED;DwmSetWindowAttribute(window,DWMWA_NCRENDERING_POLICY,&policy,sizeof(policy));const DWORD noBorder=0xfffffffe;DwmSetWindowAttribute(window,34,&noBorder,sizeof(noBorder));}
+// Rounded windows take DWM's native Windows 11 corner: the compositor antialiases it.
+// A GDI window region is a 1-bit mask (stair-stepped corners), so none is kept. The
+// accepted cost: DWM's fixed 8 DIP radius and its standard shadow. Painted outlines
+// on these surfaces use nativeCornerRadius so they follow the DWM edge.
+inline constexpr float nativeCornerRadius=8;
+inline void RoundNatively(HWND window){if(!window)return;SetWindowRgn(window,nullptr,FALSE);const int round=2/*DWMWCP_ROUND*/;DwmSetWindowAttribute(window,33,&round,sizeof(round));const COLORREF none=0xFFFFFFFE;DwmSetWindowAttribute(window,34,&none,sizeof(none));}
 inline bool HandleFrame(HWND window,UINT message,WPARAM w,LPARAM,LRESULT& result){switch(message){case WM_NCCALCSIZE:result=0;return true;case WM_NCPAINT:result=0;return true;case WM_NCACTIVATE:result=DefWindowProcW(window,message,w,-1);InvalidateRect(window,nullptr,FALSE);return true;}return false;}
 }
