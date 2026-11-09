@@ -139,6 +139,8 @@ Imprimer : « Imprimer… » (Ctrl+P, aperçu d'impression du moteur) et « Enre
 
 La croix de fermeture de la fenêtre se teinte au survol (#FA6A59 à 30 %, glyphe #FFD0C8 à 80 %), comme dans Paper.
 
+Aperçu d'URL : au survol d'un lien, une bulle native (`src/status-bubble.h`) remplace la barre d'état du moteur, au coin bas gauche du panneau survolé uniquement (split view compris), d'après la frame Paper « Aperçu URL — contexte bas gauche » : 23 DIP, #171717, coin haut droit 8, Inter Display 14 blanc à 50 %, largeur ajustée au texte jusqu'à 393 DIP puis « … ». Transparente à la souris. Correspondance et preuves : [design/url-preview-paper.md](design/url-preview-paper.md) ; test : `test-status-bubble.ps1`.
+
 ## Mises à jour automatiques
 
 Chaque merge poussé sur `main` du dépôt distant (privé) `VALXXII/browser` déclenche le workflow `.github/workflows/update-release.yml` : build Windows x64 avec les outils figés du projet, tests natifs, paquet `browser-0.3.N-win-x64.lsrupd` + `update-manifest-win-x64.txt`, puis publication dans le dépôt public de binaires `VALXXII/browser-releases`, seulement si tout a réussi et après activation (secret `UPDATES_RELEASE_TOKEN`, variable `UPDATES_PUBLISH_ENABLED=true`). Un merge local non poussé ne déclenche rien ; la première release automatique suppose ce workflow présent sur `main` distant. Aucune release n'est publiée à ce jour.

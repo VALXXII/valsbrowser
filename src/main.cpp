@@ -39,6 +39,7 @@
 #include "bookmarks-panel.h"
 #include "split-view.h"
 #include "split-overlay.h"
+#include "status-bubble.h"
 #include "site-name.h"
 #include <wrl/client.h>
 #include <shlobj.h>
@@ -78,6 +79,7 @@ GUID_TEXT(ICoreWebView2StateChangedEventHandler,"{81336594-7ede-4ba9-bf71-acf0a9
 GUID_TEXT(ICoreWebView2ContextMenuRequestedEventHandler,"{04d3fe1d-ab87-42fb-a898-da241d35b63c}")
 GUID_TEXT(ICoreWebView2ServerCertificateErrorDetectedEventHandler,"{969b3a26-d85e-4795-8199-fef57344da22}")
 GUID_TEXT(ICoreWebView2ClearBrowsingDataCompletedHandler,"{e9710a06-1d1d-49b2-8234-226f35846ae5}")
+GUID_TEXT(ICoreWebView2StatusBarTextChangedEventHandler,"{a5e3b0d0-10df-4156-bfad-3b43867acac6}")
 GUID_TEXT(ICoreWebView2TrySuspendCompletedHandler,"{00f206a7-9d17-4605-91f6-4e8e4de192e3}")
 GUID_TEXT(ICoreWebView2PrintToPdfCompletedHandler,"{ccf1ef04-fd8e-4d5f-b2de-0983e41b8c36}")
 GUID_TEXT(ICoreWebView2GetNonDefaultPermissionSettingsCompletedHandler,"{38274481-a15c-4563-94cf-990edc9aeb95}")
@@ -118,7 +120,9 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     int group=0; float weight=1; std::uint64_t usedAt=0; bool shown=false,revealed=false; RECT placed{}; int placedVisible=-1;
     // Resize preview: `navStamp` changes with every navigation (a snapshot never outlives it);
     // `frozen`: bounds held while the preview stands in for the page.
-    std::uint64_t navStamp=0; bool frozen=false; };
+    std::uint64_t navStamp=0; bool frozen=false;
+    // Link preview: the engine's status text (hovered link), drawn by our own bubble.
+    std::wstring status; };
 // NEWTAB: the home tab's last render showed most visited sites (Tab is shared; kept beside it).
 // A home tab stays hidden (the native canvas shows through) unless it shows tiles.
 struct HomeTiles { std::vector<unsigned> serials; bool Has(const Tab& t)const{return std::find(serials.begin(),serials.end(),t.serial)!=serials.end();} void Set(const Tab& t,bool on){serials.erase(std::remove(serials.begin(),serials.end(),t.serial),serials.end());if(on)serials.push_back(t.serial);} } homeTiles;
@@ -136,7 +140,7 @@ namespace SV=NativeChrome::Split;
 // `origin`: index at the press, restored by Escape. `lifted`: dragged out of the strip into the split overlay.
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; int origin=-1; bool lifted=false; float grabY=0; SV::Target target; } tabDrag;
 std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t useClock=0; int splitResize=-1;
-NativeChrome::SplitUI::Overlay splitOverlay;
+NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 namespace CM=NativeChrome::ContextMenu; extern std::vector<CM::Item> lastSplitMenu; void TabContextMenu(int tabIndex,int anchor); bool ResizePlaceholdersUp(); extern std::vector<HWND> splitGrips; void SyncGripLooks(); bool PointerOnGrip(); bool GripsAnimating(); void GripFrame(NativeChrome::Motion::Time now); void Select(int n); void EndSplitDrag(bool restore); void SyncSplitDecor(); void ApplyPages(); bool SplitDragMove(POINT point); bool SplitAnimating(); void SplitFrame(NativeChrome::Motion::Time now);
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
@@ -357,6 +361,20 @@ void SyncSplitDecor(){
     d.focusedHandle=splitResize;if(sepDrag.active)d.hotHandle=sepDrag.handle;else if(d.hotHandle>=(int)d.handles.size())d.hotHandle=-1;
     d.paintHandles=splitGrips.empty();SyncGripLooks();
 }
+// Link preview (status bubble): shown only over the page whose link is hovered, while
+// that page is on screen; gone when the hover ends, on navigation, tab switch or close.
+void SyncStatusBubble(){
+    std::shared_ptr<Tab> tab;if(!halted&&window&&!IsIconic(window))for(auto& t:pages)if(t&&t->serial==statusSerial){tab=t;break;}
+    // A page taken off screen (tab switch, split change) forgets its hover: no stale bubble on return.
+    if(tab&&(!tab->shown||tab->placedVisible!=1)){tab->status.clear();statusSerial=0;tab=nullptr;}
+    if(!tab||tab->closed||tab->status.empty()||IsRectEmpty(&tab->placed)){statusBubble.Hide();return;}
+    statusBubble.Show(tab->status,tab->placed);
+}
+void SetTabStatus(const std::shared_ptr<Tab>& t,std::wstring text){
+    if(!t)return;t->status=std::move(text);
+    if(!t->status.empty())statusSerial=t->serial;else if(statusSerial!=t->serial)return;
+    SyncStatusBubble();
+}
 void SyncGrips(const SplitView& v);void SyncCornerMasks();void BlendCorners(HDC dc,POINT client);void SyncGripLooks();void HoverAfterDrag();bool ResizePreviewValid();void ClearResizePreview();
 RECT PixelRect(const SV::Box& b){return {S(b.left),S(b.top),S(b.right),S(b.bottom)};}
 // The one place that sizes and shows page controllers. A tab alone keeps the existing
@@ -391,7 +409,7 @@ void ApplyPages(){
         }
     }
     if(under)ReleaseDC(window,under);
-    SyncGrips(v);SyncCornerMasks();SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);
+    SyncGrips(v);SyncCornerMasks();SyncSplitDecor();SyncStatusBubble();InvalidateRect(window,nullptr,FALSE);
 }
 // Separator grips. Pages are child windows of another process: over them the main
 // window gets no mouse input, so the 4 DIP gap alone would be the target. A layered
@@ -2074,12 +2092,20 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         if(!Check(t->view->get_Settings(&settings.p),L"get_Settings")||
            !Check(settings->QueryInterface(IID_ICoreWebView2Settings3,(void**)&settings3.p),L"QueryInterface Settings3")||
            !Check(settings3->put_AreBrowserAcceleratorKeysEnabled(TRUE),L"Enable browser accelerators"))return S_OK;
+        // Link preview: our own bubble (status-bubble.h) replaces the engine's status bar.
+        {Com<ICoreWebView2_12> view12;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_12,(void**)&view12.p))&&view12.p){
+            auto status=Callback<ICoreWebView2StatusBarTextChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;Com<ICoreWebView2_12> v12;LPWSTR text=nullptr;
+                if(v&&SUCCEEDED(v->QueryInterface(IID_ICoreWebView2_12,(void**)&v12.p))&&v12.p&&SUCCEEDED(v12->get_StatusBarText(&text))){SetTabStatus(tab,text?text:L"");CoTaskMemFree(text);}return S_OK;});
+            EventRegistrationToken statusToken{};
+            if(SUCCEEDED(view12->add_StatusBarTextChanged(status,&statusToken))){if(FAILED(settings->put_IsStatusBarEnabled(FALSE)))Log(L"STATUS put_IsStatusBarEnabled failed: engine bubble kept");}
+            else Log(L"STATUS add_StatusBarTextChanged failed: engine bubble kept");status->Release();}
+         else Log(L"STATUS ICoreWebView2_12 unavailable: engine bubble kept");}
         EventRegistrationToken token{};
         IID faviconInterface;CLSIDFromString(L"{517B2D1D-7DAE-4A66-A4F4-10352FFB9518}",&faviconInterface);
         if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
         auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
         HRESULT faviconResult=t->faviconView->add_FaviconChanged(faviconChanged,&token);faviconChanged->Release();if(!Check(faviconResult,L"add_FaviconChanged"))return S_OK;
-        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;++tab->navStamp;LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
+        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
         HRESULT startingResult=t->view->add_NavigationStarting(starting,&token);starting->Release();if(!Check(startingResult,L"add_NavigationStarting favicon"))return S_OK;
         auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);t->home=t->uri==L"about:blank";if(!t->https.shown.empty()&&(t->home||t->uri.rfind(L"data:",0)==0)){t->uri=t->https.shown;t->home=false;}}t->loading.Committed(NativeChrome::Motion::Now());if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
@@ -3560,7 +3586,7 @@ case WM_SIZE:HideSuggestions();motionMinimized=w==SIZE_MINIMIZED;if(!motionMinim
     updateToast.SetOwnerVisible(!motionMinimized);
 #endif
     return 0;
-case WM_MOVE:HideSuggestions();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
+case WM_MOVE:HideSuggestions();SyncStatusBubble();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
 #endif
@@ -3687,7 +3713,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
 #ifdef BROWSER_UPDATES
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
 #endif
-    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();contextMenu.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSW wc{};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(hi,MAKEINTRESOURCEW(101));wc.hbrBackground=paper;RegisterClassW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();contextMenu.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
@@ -3706,5 +3732,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});auto options=new EngineOptions();options->extensions=!smoke;HRESULT hr=create(nullptr,profileDir.c_str(),options,done);options->Release();done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }
