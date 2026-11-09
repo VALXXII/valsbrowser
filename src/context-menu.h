@@ -264,6 +264,7 @@ class Menu {
         Open(index + 1, (*l.items)[i].children, at, r.left + Px(l, Layout::pad), r.top + Px(l, l.tops[i] + Layout::row) + Px(l, Layout::pad + 1), false);
         Invalidate(l);
     }
+    void Back(int index) { const int row = levels_[index - 1]->child; CloseFrom(index); if (row >= 0) SetHover(index - 1, row, true); }
     void Finish(int id) { result_ = id; choice_.id = id; done_ = true; PostMessageW(owner_, WM_NULL, 0, 0); }
     void Activate(int index, int i, bool ctrl = false, bool shift = false, bool context = false) {
         Level& l = *levels_[index]; if (i < 0 || i >= static_cast<int>(l.items->size())) return;
@@ -282,6 +283,17 @@ class Menu {
         KillTimer(l.hwnd, SubmenuTimer);
         if (!keyboard && (i != l.child)) SetTimer(l.hwnd, SubmenuTimer, static_cast<UINT>(Layout::submenuDelayMs), nullptr);
     }
+    // The row fill is the hover tween alone (pointer over the row, or keyboard focus): an open
+    // branch never holds it. Leaving the row retargets the tween from its current value at once,
+    // even mid-entrance of the submenu, which stays open for the trajectory (SubmenuTimer).
+    static float RowFill(const Motion::InteractionVisual& v) { return v.hover; }
+    void PointerMove(int index, float y) {
+        Level& l = *levels_[index]; const int row = HitRow(l, y);
+        SetHover(index, row >= 0 && !(*l.items)[row].enabled ? -1 : row, false);
+    }
+    // Leaving a level (to its submenu, another level or outside) drops the pointer hover; the
+    // submenu stays open. Keyboard focus is not the pointer's to clear.
+    void PointerLeave(int index) { Level& l = *levels_[index]; if (!l.keyboard) SetHover(index, -1, false); }
     void Interact(Level& l) {
         l.motion.SetInteraction(l.hover + 1, l.pressed >= 0 && l.pressed == l.hover ? l.pressed + 1 : 0, Motion::Now());
         Invalidate(l);
@@ -401,8 +413,7 @@ class Menu {
                 continue;
             }
             const auto v = l.motion.Visual(static_cast<int>(i) + 1, now);
-            // The open submenu's row keeps its fill while the pointer is in the submenu.
-            const float h = item.enabled ? std::max(v.hover, static_cast<int>(i) == l.child ? 1.f : 0.f) : 0;
+            const float h = item.enabled ? RowFill(v) : 0;
             const auto& lines = l.descriptions[i]; const bool described = !lines.empty();
             const D2D1_RECT_F row{left, top, right, top + l.heights[i]};
             const float titleTop = described ? top + Layout::describedTop : top + (Layout::row - Layout::line) / 2; // glyphs align with the title line
@@ -464,8 +475,8 @@ class Menu {
         case VK_HOME: Move(index, 1, true); return true;
         case VK_END: Move(index, -1, true); return true;
         case VK_RIGHT: if (l.hover >= 0 && !(*l.items)[l.hover].children.empty()) Activate(index, l.hover); return true;
-        case VK_LEFT: if (index > 0) CloseFrom(index); return true;
-        case VK_ESCAPE: if (index > 0) CloseFrom(index); else Finish(0); return true;
+        case VK_LEFT: if (index > 0) Back(index); return true;
+        case VK_ESCAPE: if (index > 0) Back(index); else Finish(0); return true;
         case VK_RETURN: case VK_SPACE: if (l.hover >= 0) Activate(index, l.hover, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0); return true;
         case VK_APPS: if (l.hover >= 0) Activate(index, l.hover, false, false, true); return true;
         case VK_TAB: Move(index, GetKeyState(VK_SHIFT) < 0 ? -1 : 1); return true;
@@ -507,11 +518,9 @@ class Menu {
         case WM_MOUSEMOVE: {
             if (!l || ignorePointer) return 0;
             TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0}; TrackMouseEvent(&track);
-            const int row = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l));
-            if (row >= 0 && !(*l->items)[row].enabled) { SetHover(index, -1, false); return 0; }
-            SetHover(index, row, false); return 0;
+            PointerMove(index, GET_Y_LPARAM(lp) / Scale(*l)); return 0;
         }
-        case WM_MOUSELEAVE: if (l && !ignorePointer && !l->keyboard && l->child < 0) SetHover(index, -1, false); return 0;
+        case WM_MOUSELEAVE: if (l && !ignorePointer) PointerLeave(index); return 0;
         case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); Interact(*l); } return 0;
         case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
             if (!l) return 0;
@@ -581,6 +590,20 @@ public:
         for (size_t i = 0; i < l.items->size(); ++i) if (Plain((*l.items)[i].label) == label && Selectable((*l.items)[i])) { SetHover(level, static_cast<int>(i), keyboard); return true; }
         return false;
     }
+    // Fixture hooks: the pointer as the window procedure sees it, and what a row paints now.
+    void TestPointerMove(int level, const std::wstring& label) {
+        if (level < 0 || level >= depth_) return; auto& l = *levels_[level];
+        for (size_t i = 0; i < l.items->size(); ++i) if (Plain((*l.items)[i].label) == label) { PointerMove(level, l.tops[i] + 1); return; }
+    }
+    void TestPointerLeave(int level) { if (level >= 0 && level < depth_) PointerLeave(level); }
+    bool TestKey(WPARAM key) { return Key(key); }
+    float TestRowFill(int level, const std::wstring& label, Motion::Time now) const {
+        if (level < 0 || level >= depth_) return -1; const auto& l = *levels_[level];
+        for (size_t i = 0; i < l.items->size(); ++i) if (Plain((*l.items)[i].label) == label) return (*l.items)[i].enabled ? RowFill(l.motion.Visual(static_cast<int>(i) + 1, now)) : 0;
+        return -1;
+    }
+    bool TestEntering(int level) const { return level >= 0 && level < depth_ && levels_[level]->entering; }
+    int TestHoverRow(int level) const { return level >= 0 && level < depth_ ? levels_[level]->hover : -2; }
     // Modal: returns the chosen item's id, 0 when dismissed. `at` is a screen
     // point; `exclude` (keyboard-opened menus) is the control to drop below.
     // alignRight: a keyboard-opened menu ends at the control's right edge (gear-side controls).
