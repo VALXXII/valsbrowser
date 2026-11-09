@@ -20,9 +20,10 @@ int wmain(int argc,wchar_t** argv){
  Check(a.Sample(at(1860)).opacity==0&&!a.NextWake(at(1860),false).delay);
  a.Start(3,at(2000));Check(a.Sample(at(2000),true).fraction==.15f&&!a.NextWake(at(2000),true).delay);
  Chrome chrome;Check(SUCCEEDED(chrome.InitOffscreen(argv[1],96,1180,100)));
- chrome.Paint({L"Loading"},0,L"https://example.test/",false,0,0);auto rest=chrome.SurfacePixel(100,48)&255;
+ chrome.Paint({L"Loading"},0,L"https://example.test/",false,0,0);const float inField=chrome.bar.left+18; // the standalone Reload now sits at 83..115
+ auto rest=chrome.SurfacePixel(inField,48)&255;
  chrome.loading={.5f,1};chrome.Paint({L"Loading"},0,L"https://example.test/",false,0,0);
- auto fill=chrome.SurfacePixel(100,48)&255;Check(fill>=rest+16&&fill<=rest+18);
+ auto fill=chrome.SurfacePixel(inField,48)&255;Check(fill>=rest+16&&fill<=rest+18);
  // Sample the editable field: the star moved Reload into the old sample point.
  const float farField=chrome.edit.right-8;
  Check((chrome.SurfacePixel(farField,48)&255)==rest);

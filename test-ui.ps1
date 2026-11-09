@@ -10,6 +10,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Native UI checks failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Native motion harness compilation failed.' }
 & build/native-qa/motion_test.exe
 if ($LASTEXITCODE -ne 0) { throw 'Native motion checks failed.' }
+& tools/w64devkit/bin/g++.exe -std=c++17 -Wall -Wextra -Werror -pedantic -static tests/motion/nav_motion_test.cpp -o build/native-qa/nav_motion_test.exe -luser32
+if ($LASTEXITCODE -ne 0) { throw 'Navigation motion harness compilation failed.' }
+& build/native-qa/nav_motion_test.exe
+if ($LASTEXITCODE -ne 0) { throw 'Navigation motion checks failed.' }
 
 & tools/w64devkit/bin/g++.exe -std=c++17 -Wall -Wextra -Werror -static tests/address_background_test.cpp -o build/native-qa/address_background_test.exe -lgdi32 -luser32 -ldwmapi
 if ($LASTEXITCODE -ne 0) { throw 'Address background harness compilation failed.' }

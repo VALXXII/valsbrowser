@@ -41,6 +41,7 @@
 #include "split-overlay.h"
 #include "status-bubble.h"
 #include "site-name.h"
+#include "motion-lab.h"
 #include <wrl/client.h>
 #include <shlobj.h>
 // Self-update host integration is compiled into identity-stamped builds only
@@ -179,6 +180,21 @@ void InvalidateChrome(){RECT r;GetClientRect(window,&r);r.bottom=std::min(r.bott
 // clock is unavailable the legacy SetTimer path remains (not display synchronised).
 constexpr UINT FrameMessage=WM_APP+8; constexpr UINT_PTR DrawerWarmTimerId=73; NativeChrome::FrameClock::Clock frameClock; bool frameClockReady=false,motionFullFrames=false; long long paintedLoading=-2;
 std::shared_ptr<Tab> Active();
+// Lands every chrome icon animation on its resting state (tab switch, reduced motion,
+// timer failure, halt): no half-played Lottie, travel or Stop morph resumes later.
+void ClearChromeMotion(){chrome.lottie.Clear();auto t=Active();chrome.nav.Reduce(t&&t->loading.IsLoading());}
+// ---- Motion lab (review only: --motion-lab) ----
+// Every tunable feeds a real model input; a normal launch never changes the defaults.
+bool motionLabMode=false; NativeChrome::MotionLab::Panel motionLab;
+constexpr int MotionLabCommand=3040; constexpr UINT_PTR MotionLabTimerId=93;
+NativeChrome::NavMotion::SpringParams TravelParams(bool back){namespace T=NativeChrome::Tuning;auto& v=T::Current();
+    return back?NativeChrome::NavMotion::SpringParams{v[T::BackPeak],v[T::BackResponse],v[T::BackDamping]}:NativeChrome::NavMotion::SpringParams{v[T::ForwardPeak],v[T::ForwardResponse],v[T::ForwardDamping]};}
+void ApplyMotionTuning(){namespace T=NativeChrome::Tuning;auto& v=T::Current();
+    chrome.lottie.Tune(v[T::RefreshTurn]/1000.,v[T::CopySpeed],v[T::CopyDwell]/1000.);
+    chrome.downloadIcon.Tune(v[T::DownloadSpeed],NativeChrome::Motion::Milliseconds((long long)v[T::DownloadRipple]));
+    chrome.nav.stop.Configure(NativeChrome::Motion::Milliseconds((long long)v[T::StopMorph]),v[T::StopTurn]);}
+// Feeds the active tab's real loading state to the Reload <-> Stop morph.
+void SyncStopMorph(NativeChrome::Motion::Time now){chrome.nav.stop.Sync(chrome.navigationLoading,chrome.lottie.TurnEnd(),now,motion.ReducedMotion());}
 // Loading-only frames repaint just the URL surface, and only when the quantised fill
 // differs from what was last painted; any other motion (or the frame right after it
 // ends, so its endpoint is painted) repaints the whole header.
@@ -186,22 +202,22 @@ void InvalidateDownloadIcon();
 void InvalidateMotion(NativeChrome::Motion::Time now){
     SplitFrame(now);GripFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
-    chrome.downloadIcon.Settle(now);
+    chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);
     {static bool painting=false;const bool moving=chrome.downloadIcon.NextWake(now).delay.has_value();if(moving||painting)InvalidateDownloadIcon();painting=moving;}
-    const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay;
+    const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
     auto d=chrome.LoadingDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
-    const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.lottie.NextWake(now,reduced));motionFullFrames=ui.delay.has_value();
+    const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
     auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
     auto due=now+*wake.delay;if(motionDeadline&&*motionDeadline<=due)return;
     KillTimer(window,MotionTimerId);motionDeadline=due;
-    if(!SetTimer(window,MotionTimerId,(UINT)wake.delay->count(),nullptr)){motionDeadline.reset();motion.SetReducedMotion(true);motion.copy.Clear();chrome.lottie.Clear();motion.SetInteraction(hover,0,now);InvalidateChrome();}
+    if(!SetTimer(window,MotionTimerId,(UINT)wake.delay->count(),nullptr)){motionDeadline.reset();motion.SetReducedMotion(true);motion.copy.Clear();ClearChromeMotion();motion.SetInteraction(hover,0,now);InvalidateChrome();}
 }
 void UpdateInteraction(int newHover,int newPressed){hover=newHover;pressed=newPressed;auto now=NativeChrome::Motion::Now();int group=NativeChrome::IsClose(hover)?NativeChrome::TabBase+NativeChrome::TabIndex(hover):hover;motion.SetInteraction(group,pressed==hover?pressed:0,now);InvalidateChrome();ScheduleMotion(now);}
 
@@ -216,7 +232,7 @@ void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
 void Log(const std::wstring& s){if(logFile.empty())return;std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
-void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();chrome.lottie.Clear();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
+void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
 void FocusAddress(){editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
@@ -280,7 +296,7 @@ void Update(){
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+L" — browser").c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
-void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
+void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
 void MoveTab(int from,int to){
     if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
@@ -571,7 +587,7 @@ void ActivatePanel(const std::shared_ptr<Tab>& tab){
     const bool keyboard=!(GetAsyncKeyState(VK_LBUTTON)<0||GetAsyncKeyState(VK_RBUTTON)<0||GetAsyncKeyState(VK_MBUTTON)<0);
     if(tab==Active()){if(keyboard!=keyboardModality){keyboardModality=keyboard;SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);}return;}
     const int i=TabIndexOf(tab);if(i<0)return;
-    current=i;tab->usedAt=++useClock;editing=false;ShowWindow(address,SW_HIDE);chrome.lottie.Clear();motion.SelectTab(i+1,NativeChrome::Motion::Now());
+    current=i;tab->usedAt=++useClock;editing=false;ShowWindow(address,SW_HIDE);ClearChromeMotion();motion.SelectTab(i+1,NativeChrome::Motion::Now());
     keyboardModality=keyboard;
     SyncSplitDecor();Update();ScheduleMotion(NativeChrome::Motion::Now());
 }
@@ -962,12 +978,14 @@ void CloseAt(int index){if(halted||index<0||index>=(int)pages.size())return;
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
 std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.group)for(auto& s:v.a.slots)if(!s.rail)out.push_back(TabIndexOf(v.members[s.member]));return out;}
 void Close(){CloseAt(current);}
-void Command(int cmd){if(halted||!chrome.Enabled(cmd))return;if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:FindInPage();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes)Check(t->view->GoBack(),L"GoBack");}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes)Check(t->view->GoForward(),L"GoForward");}break;default:ExtraCommand(cmd);break;}}
+void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
+    if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:FindInPage();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     // The bookmark popover's fields keep every key (Ctrl+D, Ctrl+Z… belong to the text there).
     if(BookmarkPopoverFocus())return 0;
+    if(motionLabMode&&ctrl&&alt&&shift&&key=='M')return MotionLabCommand;
     if(ctrl&&!alt){
         if(!shift&&key=='D')return 'K';
         if(shift&&key=='B')return BookmarkBarCommand;
@@ -1198,7 +1216,9 @@ void ShowDownloadDrawer();void SyncLatch();
 // every download of the run (completed ones included) so it never goes back.
 std::set<int> downloadIconRun;
 void InvalidateDownloadIcon(){auto d=chrome.DownloadIconDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);}
+bool labDownloadRunning=false; // motion lab download replay (a real download cancels it)
 void UpdateDownloadIcon(bool completedNow){
+    if(labDownloadRunning){labDownloadRunning=false;KillTimer(window,MotionLabTimerId);}
     bool active=false;
     for(auto& item:downloads)if(item.state==DL::State::InProgress||item.state==DL::State::Paused){active=true;downloadIconRun.insert(item.id);}
     long double received=0,total=0;
@@ -1208,6 +1228,37 @@ void UpdateDownloadIcon(bool completedNow){
     chrome.downloadIcon.Update(active,fraction,completedNow,now,motion.ReducedMotion());
     if(!active)downloadIconRun.clear();
     InvalidateDownloadIcon();ScheduleMotion(now);
+}
+// Motion lab replays: the real models and renderer, never a navigation, reload, clipboard
+// write or download. Reduced motion shows each end state at once, like the real triggers.
+NativeChrome::Motion::Time labDownloadStart{};
+constexpr double LabDownloadSeconds=1.4;
+void MotionLabDownloadTick(){
+    auto now=NativeChrome::Motion::Now();const double t=std::chrono::duration<double>(now-labDownloadStart).count();
+    if(!labDownloadRunning){KillTimer(window,MotionLabTimerId);return;}
+    if(t<LabDownloadSeconds)chrome.downloadIcon.Update(true,(float)(t/LabDownloadSeconds),false,now,motion.ReducedMotion());
+    else{chrome.downloadIcon.Update(false,1,true,now,motion.ReducedMotion());labDownloadRunning=false;KillTimer(window,MotionLabTimerId);}
+    InvalidateDownloadIcon();ScheduleMotion(now);
+}
+std::wstring MotionLabReplay(NativeChrome::Tuning::Group group){
+    namespace T=NativeChrome::Tuning;auto now=NativeChrome::Motion::Now();const bool reduced=motion.ReducedMotion();
+    std::wstring done=reduced?L" (mouvement réduit actif : état final sans animation)":L"";
+    switch(group){
+    case T::Back:chrome.nav.back.Kick(-1,now,reduced,TravelParams(true));break;
+    case T::Forward:chrome.nav.forward.Kick(1,now,reduced,TravelParams(false));break;
+    case T::Refresh:{
+        if(chrome.navigationLoading)return L"Un vrai chargement est en cours : rejouer une fois la page chargée.";
+        chrome.lottie.RefreshBegin(now);const auto turnEnd=chrome.lottie.TurnEnd();
+        chrome.nav.stop.Preview(std::max(turnEnd,now)+std::chrono::milliseconds((long long)T::Current()[T::RefreshPreview]),turnEnd,now,reduced);break;}
+    case T::Copy:chrome.lottie.CopySucceeded(now);motion.CopySucceeded(now);break;
+    case T::Download:{
+        for(auto& item:downloads)if(item.state==DL::State::InProgress||item.state==DL::State::Paused)return L"Un vrai téléchargement est en cours : rejouer après.";
+        labDownloadStart=now;labDownloadRunning=true;chrome.downloadIcon.Update(true,0,false,now,reduced);
+        SetTimer(window,MotionLabTimerId,50,nullptr);InvalidateDownloadIcon();break;}
+    default:break;
+    }
+    InvalidateChrome();ScheduleMotion(now);
+    return std::wstring(L"Rejoué : ")+T::GroupName(group)+done;
 }
 void DownloadsChanged(){downloadPanel.Changed();downloadDrawer.Changed();}
 // Pull the operation's current state into its history row (UI thread, engine events).
@@ -1442,7 +1493,7 @@ bool ReducedMotionPreferred(){NativeChrome::Motion::SetAppReducedMotion(settings
 void ApplyReducedMotion(){
     const bool reduced=ReducedMotionPreferred();
     // Settles running interactions; a half-played copy Lottie must not resume later.
-    motion.SetReducedMotion(reduced);if(reduced)chrome.lottie.Clear();
+    motion.SetReducedMotion(reduced);if(reduced)ClearChromeMotion();
     downloadPanel.SetReducedMotion(reduced);downloadDrawer.SetReducedMotion(reduced);historyDrawer.SetReducedMotion(reduced);bookmarksDrawer.SetReducedMotion(reduced);
     SyncUpdateToastMotion();
     settingsDrawer.SetReducedMotion();
@@ -2476,7 +2527,7 @@ void SplitTestStep(){
     }
     ++splitStage;
 }
-void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect={S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
+void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();SyncStopMorph(NativeChrome::Motion::Now());BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect={S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
 namespace CM=NativeChrome::ContextMenu;
 void AnnounceCopied();
 // A keyboard-opened menu drops just below its control (DIP region -> device pixels), aligned to the
@@ -3435,7 +3486,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     button('T',0);button('m',0);button('M',0);button('X',0);
     Node bar;bar.key=AccessibleToolbar;bar.role=Role::ToolBar;bar.name=L"Navigation";bar.automationId=L"Toolbar";bar.focusable=false;
     bar.bounds=screen({6,chrome.bar.top,chrome.width-6,chrome.bar.bottom});nodes.push_back(bar);
-    button('B',AccessibleToolbar);button('F',AccessibleToolbar);
+    button('B',AccessibleToolbar);button('F',AccessibleToolbar);button('R',AccessibleToolbar);
     // Security indicator (left of the address, so read first): icon + label; invoking it
     // opens the address.
     if(auto* r=region('I')){Node n;n.key='I';n.parent=AccessibleToolbar;n.name=chrome.address.tip();n.automationId=L"SiteSecurity";n.bounds=screen(r->rect);n.focusable=false;nodes.push_back(std::move(n));}
@@ -3454,7 +3505,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
         const int n=(int)suggestions.Data().rows.size();
         for(int i=0;i<n;++i){Node item;item.key=AccessibleSuggestionKey(i);item.parent=AccessibleSuggestions;item.role=Role::ListItem;item.name=suggestions.Spoken(i);item.selected=i==suggestions.Active();item.position=i+1;item.count=n;item.focusable=false;item.bounds=suggestions.RowScreen(i);nodes.push_back(std::move(item));}
     }
-    for(int id:{'R','C'})button(id,AccessibleToolbar);
+    button('C',AccessibleToolbar);
     // The star: a toggle (On = this page is bookmarked) that also invokes.
     if(auto* r=region('K')){auto label=AccessibleButton('K');Node n;n.key='K';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('K');n.focusable=n.enabled;n.toggle=chrome.starred?2:1;nodes.push_back(std::move(n));}
     for(int id:{'Y','D','P','S'})button(id,AccessibleToolbar);
@@ -3563,7 +3614,7 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
     if(msg==WM_KEYDOWN&&w==VK_ESCAPE&&addressKeys.HandleKey(VK_ESCAPE)){if(EscapeSuggestions())return 0;editing=false;ShowWindow(h,SW_HIDE);FocusPage();Update();return 0;}
     if(msg==WM_KEYDOWN&&w==VK_RETURN&&addressKeys.HandleKey(VK_RETURN)&&suggestions.Visible()){OpenSuggestion(suggestions.Active());return 0;}
     if(msg==WM_KEYDOWN&&w==VK_RETURN&&addressKeys.returnHandled){int n=GetWindowTextLengthW(h);std::wstring s(n+1,0);GetWindowTextW(h,s.data(),n+1);s.resize(n);editing=false;ShowWindow(h,SW_HIDE);Navigate(Active(),Destination(s));FocusPage();return 0;}
-    if(msg==WM_KEYDOWN&&w==VK_TAB&&addressKeys.HandleKey(VK_TAB)){editing=false;ShowWindow(h,SW_HIDE);SetFocus(window);keyboardFocus='R';keyboardModality=true;InvalidateRect(window,nullptr,FALSE);SyncAccessibility();return 0;}
+    if(msg==WM_KEYDOWN&&w==VK_TAB&&addressKeys.HandleKey(VK_TAB)){editing=false;ShowWindow(h,SW_HIDE);SetFocus(window);keyboardFocus=chrome.Enabled('C')?'C':chrome.Enabled('K')?'K':'Y';keyboardModality=true;InvalidateRect(window,nullptr,FALSE);SyncAccessibility();return 0;}
     return DefSubclassProc(h,msg,w,l);
 }
 void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
@@ -3657,6 +3708,7 @@ case WM_TIMER:
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
     if(w==SleepTimerId){SleepTabs();return 0;}
+    if(w==MotionLabTimerId){MotionLabDownloadTick();return 0;}
     if(w==SplitTestTimer){SplitTestStep();return 0;}
     if(w==ExitClearTimerId){Log(L"SETTINGS clear on exit: timed out, closing");FinishExitClear();return 0;}
     if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
@@ -3710,11 +3762,11 @@ public:
     HRESULT STDMETHODCALLTYPE get_AreBrowserExtensionsEnabled(BOOL* v) override{if(!v)return E_POINTER;*v=extensions;return S_OK;}
     HRESULT STDMETHODCALLTYPE put_AreBrowserExtensionsEnabled(BOOL v) override{extensions=v;return S_OK;}
 };
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;smoke=smoke||splitTest;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;smoke=smoke||splitTest;motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
 #ifdef BROWSER_UPDATES
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
 #endif
-    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();contextMenu.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    Log(L"START browser");INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();contextMenu.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
@@ -3736,5 +3788,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});auto options=new EngineOptions();options->extensions=!smoke;HRESULT hr=create(nullptr,profileDir.c_str(),options,done);options->Release();done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }

@@ -67,8 +67,8 @@ int wmain(int argc, wchar_t** argv) {
         Check(chrome.indicator.right <= chrome.indicator.left, "no indicator region while editing");
         Check(SUCCEEDED(chrome.SavePng((out + L"\\address-editing" + suffix).c_str())), "editing snapshot");
 
-        // Suggestion list, field width (1180 - 82 - 133).
-        const float width = 1180 - 82 - 133;
+        // Suggestion list, field width (1180 - 121 - 133).
+        const float width = 1180 - 121 - 133;
         struct List { const wchar_t* name; std::wstring typed; bool inlineAllowed; int active, hover; std::wstring engine; };
         const List lists[] = {
             {L"git", L"git", true, 0, -1, L"DuckDuckGo"},

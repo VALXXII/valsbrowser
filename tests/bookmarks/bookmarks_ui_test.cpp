@@ -88,8 +88,9 @@ static void Geometry(){
     // Every point of the chrome reaches at most one region.
     bool unique=true;for(float y=2;y<chrome.ContentTop();y+=2)for(float x=1;x<chrome.width;x+=3){int n=0;for(auto& r:chrome.regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom&&r.id!='I'&&!NativeChrome::IsClose(r.id))++n;if(n>1){unique=false;break;}}
     Expect(unique,"no overlapping hit regions at 1180 DIP");
-    const D2D1_RECT_F* star=nullptr,*reload=nullptr;for(auto& r:chrome.regions){if(r.id=='K')star=&r.rect;if(r.id=='R')reload=&r.rect;}
-    Expect(star&&star->right<=chrome.bar.right-4+.1f&&reload&&chrome.edit.right<=reload->left-10+.1f,"star inside the field after Copy; text stops 10 DIP before Reload");
+    const D2D1_RECT_F* star=nullptr,*copy=nullptr,*reload=nullptr;for(auto& r:chrome.regions){if(r.id=='K')star=&r.rect;if(r.id=='C')copy=&r.rect;if(r.id=='R')reload=&r.rect;}
+    Expect(star&&star->right<=chrome.bar.right-4+.1f&&copy&&chrome.edit.right<=copy->left-10+.1f,"star inside the field after Copy; text stops 10 DIP before Copy");
+    Expect(reload&&reload->right<=chrome.bar.left,"Reload/Stop only outside the field, before the address");
     Resize(560);
     Expect(chrome.band.overflow&&chrome.band.visible<(int)chrome.bandItems.size()&&std::fabs(chrome.band.overflowLeft-(560-6-32))<.5f,"560 DIP: overflow button pinned at 522");
     bool floor=true;for(int i=0;i<chrome.band.visible;++i)if(chrome.band.width[i]+.5f<std::min(L::minItem,L::Natural(chrome.BandTitleWidth(chrome.bandItems[i]),chrome.bandItems[i].folder)))floor=false;

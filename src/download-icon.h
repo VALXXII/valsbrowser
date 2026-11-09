@@ -48,8 +48,11 @@ class Model {
     bool running_ = false, finishing_ = false, completed_ = false, rippling_ = false, queued_ = false, reduced_ = false;
     Motion::Time start_{}, finish_{}, ripple_{}, restart_{};
     float fraction_ = 0;
-    static double Frames(Motion::Time from, Motion::Time to) { return std::chrono::duration<double>(to - from).count() * Fps; }
-    static Motion::Time After(Motion::Time t, double frames) { return t + std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double>(frames / Fps)); }
+    // Motion lab tunables: playback speed (x Fps) captured per run, ripple length per ripple.
+    double speed_ = 1, tunedSpeed_ = 1;
+    Motion::Clock::duration rippleLength_ = Ripple::duration, tunedRipple_ = Ripple::duration;
+    double Frames(Motion::Time from, Motion::Time to) const { return std::chrono::duration<double>(to - from).count() * Fps * speed_; }
+    Motion::Time After(Motion::Time t, double frames) const { return t + std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double>(frames / (Fps * speed_))); }
     Motion::Time LoopOrigin() const { return reduced_ ? start_ : After(start_, Morph); }
     // Finishing waits for the arrow to be back at rest (a loop boundary).
     Motion::Time DoneStart() const {
@@ -59,9 +62,11 @@ class Model {
         return After(origin, std::ceil(Frames(origin, finish_) / Loop) * Loop);
     }
     Motion::Time DoneEnd() const { return reduced_ ? finish_ : After(DoneStart(), completed_ ? Out : Morph); }
-    bool Rippling(Motion::Time now) const { return rippling_ && now < ripple_ + Ripple::duration; }
-    void Begin(Motion::Time at, float fraction) { running_ = true; start_ = at; finishing_ = completed_ = queued_ = false; fraction_ = Motion::Clamp(fraction); }
+    bool Rippling(Motion::Time now) const { return rippling_ && now < ripple_ + rippleLength_; }
+    void Begin(Motion::Time at, float fraction) { speed_ = tunedSpeed_; running_ = true; start_ = at; finishing_ = completed_ = queued_ = false; fraction_ = Motion::Clamp(fraction); }
 public:
+    // speed: 0.25..4 x the authored 60 fps; ripple: its fade length. Applied at the next run / ripple.
+    void Tune(double speed, Motion::Milliseconds ripple) { tunedSpeed_ = std::clamp(speed, .25, 4.); tunedRipple_ = std::max(ripple, Motion::Milliseconds(50)); }
     void Settle(Motion::Time now) {
         if (!Rippling(now)) rippling_ = false;
         if (running_ && finishing_ && now >= DoneEnd()) {
@@ -83,12 +88,12 @@ public:
         }
         if (!finishing_) {
             finishing_ = true; finish_ = now;
-            if (completed_) { fraction_ = 1; if (!reduced) { rippling_ = true; ripple_ = now; } }
+            if (completed_) { fraction_ = 1; if (!reduced) { rippling_ = true; ripple_ = now; rippleLength_ = tunedRipple_; } }
         }
     }
     Pose At(Motion::Time now) const {
         Pose pose;
-        if (Rippling(now)) pose.ripple = static_cast<float>(std::chrono::duration<double>(now - ripple_).count() / std::chrono::duration<double>(Ripple::duration).count());
+        if (Rippling(now)) pose.ripple = static_cast<float>(std::chrono::duration<double>(now - ripple_).count() / std::chrono::duration<double>(rippleLength_).count());
         if (!running_) return pose;
         if (finishing_ && now >= DoneStart()) {
             if (now >= DoneEnd()) return pose;

@@ -10,6 +10,7 @@
 #include "native-lottie.h"
 #include "lottie-playback.h"
 #include "download-icon.h"
+#include "nav-motion.h"
 #include "loading.h"
 #include "address.h"
 #include "bookmarks-bar.h"
@@ -46,7 +47,7 @@ inline bool IsTab(int id){return id>=TabBase&&id<TabBase+128;}
 inline bool IsClose(int id){return id>=CloseBase&&id<CloseBase+128;}
 inline int TabIndex(int id){return IsClose(id)?id-CloseBase:IsTab(id)?id-TabBase:-1;}
 inline int SelectionAfterClose(int count,int active,int closed){if(count<=1)return -1;if(closed<active)return active-1;if(closed==active)return std::min(active,count-2);return active;}
-inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='R'||id=='C'||id=='K')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
+inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='C'||id=='K')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F'||id=='R')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
 inline float ControlSurface(int id,float amount){return Design::Resolve(VariantFor(id),{amount,0}).surface;}
 struct TextMeasure {float lineHeight=0,baseline=0,originY=0,inkTop=0,inkBottom=0;bool trimmed=false;};
 struct Region{int id;D2D1_RECT_F rect;const wchar_t* tip;bool focusable=true;};
@@ -153,6 +154,8 @@ public:
     // ---- Animated downloads icon (download-icon.h) ----
     // The host feeds the model; Paint draws its pose for the 'D' button.
     DownloadIcon::Model downloadIcon;
+    // Back/Forward travel and the Reload <-> Stop morph (nav-motion.h); fed by the host.
+    NavMotion::State nav;
     Lottie::Asset dlTrack,dlFill,dlArrow,dlCut;
     ID2D1Bitmap* dlBitmap=nullptr;unsigned dlSide=0;int dlRing=-1,dlArrowFrame=-1;bool dlFailed=false;std::vector<uint32_t> dlPixels;
     void DropDownloadIcon(){Drop(dlBitmap);dlRing=dlArrowFrame=-1;}
@@ -409,6 +412,30 @@ public:
     // True when focus last moved by keyboard (Tab, arrows, shortcuts); a pointer press clears it.
     bool keyboardModality=true;
     void FocusRing(D2D1_RECT_F box,float radius){const float inset=Design::Size::focusStroke/2;box.left+=inset;box.top+=inset;box.right-=inset;box.bottom-=inset;Color(Design::Focus::color,Design::Focus::Opacity(keyboardModality));target->DrawRoundedRectangle(D2D1::RoundedRect(box,radius,radius),brush,Design::Size::focusStroke);}
+    // Back/Forward pair (Paper): one segment, 6 DIP outer / 3 DIP inner corners, the 1 x 10
+    // hairline between the halves drawn with Back. Same Raised states as before (hover,
+    // press, disabled .32 glyph); the glyph rides the travel spring, the surface never moves.
+    void DrawNavButton(int id,const wchar_t* icon,D2D1_RECT_F box,Design::ButtonState state,Motion::Time now){
+        namespace T=Design::Toolbar;const bool back=id=='B';
+        auto style=Design::Resolve(Design::ButtonVariant::Raised,state);
+        const float rl=back?Design::Radius::control:T::innerRadius,rr=back?T::innerRadius:Design::Radius::control;
+        FillShape(box,rl,rr,style.surface);
+        if(style.focus)StrokeShape({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},rl-.5f,rr-.5f,Design::Size::focusStroke,Design::Focus::Opacity(keyboardModality));
+        if(back){const float x=T::separatorLeft,y=(box.top+box.bottom)/2;Color(1,T::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({x,y-T::separatorHeight/2,x+T::separatorWidth,y+T::separatorHeight/2},.5f,.5f),brush);}
+        const bool reduced=motion&&motion->ReducedMotion();
+        const float dx=reduced?0.f:(back?nav.back:nav.forward).Position(now);
+        Icon(icon,{box.left+dx,box.top,box.right+dx,box.bottom},style.iconSize*Motion::PressScale(state.press,reduced,!state.disabled),style.iconOpacity);
+    }
+    // Reload <-> Stop (nav-motion.h): both glyphs turn counter-clockwise about the slot
+    // centre while they cross-scale and cross-fade. At rest this is exactly one static icon.
+    void DrawStopMorph(D2D1_RECT_F box,float size,float opacity,Motion::Time now){
+        const auto layers=nav.stop.Layers(now);
+        D2D1_MATRIX_3X2_F base;target->GetTransform(&base);const D2D1_POINT_2F c{(box.left+box.right)/2,(box.top+box.bottom)/2};
+        auto layer=[&](const wchar_t* name,Motion::IconLayer l,float angle){if(l.opacity<=.001f)return;
+            if(angle!=0)target->SetTransform(D2D1::Matrix3x2F::Rotation(angle,c)*base);
+            Icon(name,box,size*l.scale,opacity*l.opacity);target->SetTransform(base);};
+        layer(L"reload",layers.reload,layers.reloadAngle);layer(L"tab-close",layers.stop,layers.stopAngle);
+    }
     void DrawButton(const wchar_t* icon,D2D1_RECT_F box,Design::ButtonVariant variant,Design::ButtonState state){
         auto style=Design::Resolve(variant,state);
         if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}
@@ -595,10 +622,11 @@ public:
         }
         float x=strip.NewTabLeft();regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
-        regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-133,76};edit={bar.left+Design::Address::textInset,44,bar.right-111,76};
+        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-133,76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
-        // Field actions, right to left 8 DIP apart (Paper): star, copy link, a hairline, reload.
-        regions.push_back({'L',{bar.left,44,bar.right-105,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-101,48,bar.right-101+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
+        // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
+        // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
+        regions.push_back({'L',{bar.left,44,bar.right-64,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
         regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
         BuildBand();
@@ -662,13 +690,14 @@ public:
                     bool painted=false;
                     if(!motion->ReducedMotion()){
                         if(id=='C'&&lottie.CopyActive(now))painted=DrawLottie(copyLottie,lottie.CopyProgress(now),box,size,style.iconOpacity);
-                        if(id=='R'&&!navigationLoading&&lottie.RefreshActive(now))painted=DrawLottie(refreshLottie,lottie.RefreshProgress(now),box,size,style.iconOpacity);
+                        if(id=='R'&&lottie.RefreshActive(now))painted=DrawLottie(refreshLottie,lottie.RefreshProgress(now),box,size,style.iconOpacity);
                     }
                     // Missing/invalid assets keep the native static Phosphor endpoint.
                     if(!painted&&id=='C'&&(motion->ReducedMotion()||copyLottie.Duration()==0)){
                         float a=motion->copy.Visual(now).opacity;
                         Icon(icon,box,size,(1-a)*style.iconOpacity);Icon(L"check",box,size,a*style.iconOpacity);
-                    }else if(!painted)Icon(icon,box,size,style.iconOpacity);
+                    }else if(!painted&&id=='R')DrawStopMorph(box,size,style.iconOpacity,now);
+                    else if(!painted)Icon(icon,box,size,style.iconOpacity);
                 }
                 else if(id=='D'&&(!downloadIcon.At(now).idle||downloadIcon.At(now).ripple>=0)){
                     auto pose=downloadIcon.At(now);auto style=Design::Resolve(variant,state);
@@ -678,12 +707,13 @@ public:
                     if(pose.idle||!DrawDownloadIcon(pose,box,size,style.iconOpacity))Icon(icon,box,size,style.iconOpacity);
                 }
                 else if(id=='X')DrawCloseWindow(box,state);
+                else if(id=='B'||id=='F')DrawNavButton(id,icon,box,state,now);
                 else DrawButton(icon,box,variant,state);}
 
         }
         if(strip.HiddenBefore())DrawFade(strip.ViewLeft(),strip.ViewLeft()+Design::TabStrip::fade);
         if(strip.HiddenAfter())DrawFade(strip.ViewRight(),strip.ViewRight()-Design::TabStrip::fade);
-        Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-69,55,bar.right-68,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
+        Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
         DrawAddress(editing,hover=='I');
         DrawBand(hover,focus,now);
         // Chrome's lower edge: a 1 DIP #FFFFFF05 hairline, then the page (Paper: no top padding).
