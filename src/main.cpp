@@ -31,6 +31,8 @@
 #include "settings-panel.h"
 #include "context-menu.h"
 #include "accessibility.h"
+#include "viewport-composition.h"
+#include "viewport-scrollbar.h"
 #include <shlobj.h>
 // Self-update host integration is compiled into identity-stamped builds only
 // (tools/release/build.py defines BROWSER_HAS_BUILD_INFO). Unstamped builds and the
@@ -47,6 +49,9 @@ template<class T> const wchar_t* GuidText();
 #define GUID_TEXT(T,S) template<> const wchar_t* GuidText<T>() { return L##S; }
 GUID_TEXT(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,"{4e8a3389-c9d8-4bd2-b6b5-124fee6cc14d}")
 GUID_TEXT(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,"{6c4819f3-c9b7-4260-8127-c9f5bde7f68c}")
+GUID_TEXT(ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler,"{02fab84b-1428-4fb7-ad45-1b2e64736184}")
+GUID_TEXT(ICoreWebView2CursorChangedEventHandler,"{9da43ccc-26e1-4dad-b56c-d8961c94c571}")
+GUID_TEXT(ICoreWebView2WebMessageReceivedEventHandler,"{57213f19-00e6-49fa-8e07-898ea01ecbd2}")
 GUID_TEXT(ICoreWebView2NavigationCompletedEventHandler,"{d33a35bf-1c49-4f98-93ab-006e0533fe1c}")
 GUID_TEXT(ICoreWebView2SourceChangedEventHandler,"{3c067f9f-5388-4772-8b48-79f7ef1ab37c}")
 GUID_TEXT(ICoreWebView2HistoryChangedEventHandler,"{c79a420c-efd9-4058-9295-3e8b4bcab645}")
@@ -85,9 +90,20 @@ template<class T> struct Com {
 };
 // Stable per-tab identity (never reused): accessibility keys survive closes and moves.
 inline unsigned NextTabSerial(){static unsigned serial=0;return ++serial;}
-struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false,certificateError=false; };
+// Visual hosting (CompositionController): the tab's WebView2 draws into `visual`
+// inside the viewport's antialiased clip; the host forwards pointer input, drops,
+// cursor and UI Automation to it. Windowed tabs (no DirectComposition) leave them empty.
+struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2CompositionController> composition; Com<IDCompositionVisual> visual; HCURSOR cursor=nullptr; bool ownCursor=false; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false,certificateError=false; NativeChrome::Scrollbar::Metrics scroll; };
 HWND window,tabs,address,back,forward,reload,add,closeTab,home;
 HFONT font; HBRUSH paper; HINSTANCE instance; HMODULE loader;
+// Native host for every tab's WebView2 (Paper V3 Outline > Viewbox). With
+// DirectComposition the tabs are visuals under an antialiased rounded clip
+// (viewport-composition.h); without it, windowed controllers and a window region.
+HWND viewport=nullptr;
+NativeViewport::Compositor compositor;
+void SendPageLeave();void ReleaseComposition(Tab& t);void RecoverComposition();
+// Overlay scrollbar of the active page (Paper V3 "Scrollbar minimale").
+void ScrollbarRefresh(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake ScrollbarWake(NativeChrome::Motion::Time now);void ScrollbarReset();void ScrollbarSettleHover();
 Com<ICoreWebView2Environment> environment;
 std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 struct ClosedTab { std::wstring uri,title; int index; };
@@ -125,6 +141,7 @@ std::shared_ptr<Tab> Active();
 // differs from what was last painted; any other motion (or the frame right after it
 // ends, so its endpoint is painted) repaints the whole header.
 void InvalidateMotion(NativeChrome::Motion::Time now){
+    ScrollbarRefresh(now); // composition only: never repaints the chrome
     downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay;
     if(full){InvalidateChrome();return;}
@@ -133,7 +150,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.lottie.NextWake(now,reduced));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -187,6 +204,26 @@ void FindInPage(){
     auto completed=Callback<ICoreWebView2FindStartCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{Check(hr,L"Find completed");return S_OK;});
     HRESULT hr=find->Start(options.p,completed);completed->Release();Check(hr,L"Find Start");
 }
+// Places the viewport host at the Paper V3 Viewbox (DIP -> px at the window's current
+// DPI) and rounds only its bottom corners. The controllers fill the host, so the
+// 2 DIP outline and the clipped corners show the #171717 canvas. Composition: the
+// clip is GPU-antialiased with the exact fractional radius (8 DIP = 10 px at 125%).
+// Windowed fallback: a window region whose round rect starts one corner above the
+// host, so the top edge stays square under the toolbar (aliased).
+void LayoutViewport(bool zoomed){if(!viewport)return;namespace View=NativeChrome::Design::Viewport;
+    // Inset from the client edges in whole pixels so the outline is equally thick on
+    // every side at fractional DPIs (125%: 3 px each side, never 3 left / 2 right).
+    RECT client{};GetClientRect(window,&client);const int inset=S(View::inset),top=S(View::top);
+    const RECT r{inset,top,std::max(inset,(int)client.right-inset),std::max(top,(int)client.bottom-inset)};
+    const int w=std::max(0,(int)(r.right-r.left)),h=std::max(0,(int)(r.bottom-r.top));
+    static RECT placed{};static int shaped=-1,shapedW=-1,shapedH=-1;
+    if(!EqualRect(&r,&placed)){SetWindowPos(viewport,nullptr,r.left,r.top,w,h,SWP_NOZORDER|SWP_NOACTIVATE);placed=r;}
+    RecoverComposition();
+    if(compositor.Ready())compositor.Shape((float)w,(float)h,View::Radius(zoomed)*GetDpiForWindow(window)/96.f);
+    else{const int corner=S(View::Radius(zoomed))*2;if(corner!=shaped||w!=shapedW||h!=shapedH){SetWindowRgn(viewport,corner>0?CreateRoundRectRgn(0,-corner,w+1,h+1,corner,corner):nullptr,TRUE);shaped=corner;shapedW=w;shapedH=h;}}
+    RECT bounds{0,0,w,h};for(auto& t:pages)if(t->controller.p&&!halted)Check(t->controller->put_Bounds(bounds),L"put_Bounds");
+    ScrollbarRefresh(NativeChrome::Motion::Now()); // size, DPI or corner changed
+}
 void Layout(){if(!window)return;chrome.Resize();BuildChrome();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
     auto placement=chrome.MeasureText(L"Ag",{r.left,44,r.right,76},16,false,false,-.16f);
@@ -194,8 +231,9 @@ void Layout(){if(!window)return;chrome.Resize();BuildChrome();auto r=chrome.edit
     MoveWindow(address,S(r.left),baseline-metrics.tmAscent,std::max(1,S(r.right-r.left)),editHeight,TRUE);
     RECT format{};SendMessageW(address,EM_GETRECT,0,(LPARAM)&format);
     SetWindowPos(address,nullptr,S(r.left),baseline-metrics.tmAscent-format.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
-    if(!IsZoomed(window)){RECT bounds;GetClientRect(window,&bounds);SetWindowRgn(window,CreateRoundRectRgn(0,0,bounds.right+1,bounds.bottom+1,S(20),S(20)),TRUE);}else SetWindowRgn(window,nullptr,TRUE);
-    RECT bounds{S(4),S(84),S(chrome.width-4),std::max(S(84),S(chrome.height-4))};for(auto& t:pages)if(t->controller.p&&!halted)Check(t->controller->put_Bounds(bounds),L"put_Bounds");
+    namespace View=NativeChrome::Design::Viewport;const bool zoomed=IsZoomed(window)!=FALSE;
+    if(!zoomed){RECT bounds;GetClientRect(window,&bounds);const int corner=S(View::windowRadius*2);SetWindowRgn(window,CreateRoundRectRgn(0,0,bounds.right+1,bounds.bottom+1,corner,corner),TRUE);}else SetWindowRgn(window,nullptr,TRUE);
+    LayoutViewport(zoomed);
     RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
 void Update(){
@@ -207,8 +245,10 @@ void Update(){
     }
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+L" — browser").c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
+    ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
 }
-void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());for(int i=0;i<(int)pages.size();++i)if(pages[i]->controller.p)Check(pages[i]->controller->put_IsVisible(i==n&&!pages[i]->home),L"put_IsVisible");Update();auto t=Active();if(t->controller.p&&!t->home)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
+void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;if(n!=current){SendPageLeave();ScrollbarReset();} // hover state and the handle stay with the tab being left
+    editing=false;ShowWindow(address,SW_HIDE);current=n;chrome.lottie.Clear();motion.SelectTab(n+1,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());for(int i=0;i<(int)pages.size();++i)if(pages[i]->controller.p)Check(pages[i]->controller->put_IsVisible(i==n&&!pages[i]->home),L"put_IsVisible");Update();auto t=Active();if(t->controller.p&&!t->home)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
 void MoveTab(int from,int to){
     if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
@@ -315,7 +355,7 @@ void CreateSuggestions(){
 }
 void CloseAt(int index){if(halted||index<0||index>=(int)pages.size())return;
     CancelTabDrag();const bool active=index==current;const int next=NativeChrome::SelectionAfterClose((int)pages.size(),current,index);
-    motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=pages[index];if(!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);
+    motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=pages[index];if(!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}t->closed=true;t->favicon.Close();if(index==current)SendPageLeave();ReleaseComposition(*t);if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);
     if(pages.empty()){current=-1;NewTab();}else if(active)Select(next);else{current=next;motion.SelectTab(current+1,NativeChrome::Motion::Now());Update();}
 }
 enum ShortcutCommand { FocusChrome=3000, FindPage, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
@@ -689,6 +729,7 @@ void ApplyReducedMotion(){
     downloadPanel.SetReducedMotion(reduced);downloadDrawer.SetReducedMotion(reduced);
     SyncUpdateToastMotion();
     settingsDrawer.SetReducedMotion();
+    if(reduced)ScrollbarSettleHover(); // the handle width snaps; its fades stay (opacity only)
     InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
 }
 // SETTINGS(data): "Effacer les données…" (modal confirmation first).
@@ -823,8 +864,253 @@ HRESULT ProcessFailed(const std::shared_ptr<Tab>& t,ICoreWebView2ProcessFailedEv
     return S_OK;
 }
 
+// ---- Visual hosting of the active tab in the viewport host -------------------------
+// The viewport host owns pointer input for the page (WebView2 visual hosting sends
+// no spatial input by itself): mouse, wheel, touch/pen, capture, cursor, drops and
+// UI Automation are forwarded to the active tab's CompositionController. Keyboard
+// input and focus stay with WebView2 (MoveFocus, AcceleratorKeyPressed).
+std::shared_ptr<Tab> ComposedTab(){auto t=Active();return t&&!t->closed&&t->composition.p&&t->controller.p&&!t->home&&!halted?t:nullptr;}
+void ReleaseComposition(Tab& t){
+    if(t.composition.p)t.composition->put_RootVisualTarget(nullptr);
+    if(t.visual.p){compositor.RemoveChild(t.visual.p);t.visual.set(nullptr);}
+    if(t.cursor&&t.ownCursor)DestroyCursor(t.cursor);t.cursor=nullptr;t.ownCursor=false;
+    t.composition.set(nullptr);
+}
+// A GPU device reset loses the mask surfaces: rebuild the tree and reconnect every
+// tab's WebView (its controller and page state are untouched).
+void RecoverComposition(){
+    if(!compositor.Lost())return;Log(L"VIEWPORT composition device lost: rebuilding the visual tree");
+    for(auto& t:pages)if(t->visual.p){if(t->composition.p)t->composition->put_RootVisualTarget(nullptr);t->visual.set(nullptr);}
+    if(!compositor.Create(viewport,BG)){Fail(L"Viewport composition recovery",E_FAIL);return;}
+    for(auto& t:pages)if(t->composition.p&&!t->closed){IDCompositionVisual* v=compositor.NewChild();if(!v)continue;t->visual.set(v);v->Release();Check(t->composition->put_RootVisualTarget(v),L"put_RootVisualTarget recovery");}
+    compositor.Commit();
+}
+bool PointerOverViewport(){POINT p;if(!viewport||!GetCursorPos(&p)||WindowFromPoint(p)!=viewport)return false;ScreenToClient(viewport,&p);return compositor.Contains((float)p.x,(float)p.y);}
+bool AttachComposition(const std::shared_ptr<Tab>& t,ICoreWebView2CompositionController* cc){
+    t->composition.set(cc);IDCompositionVisual* v=compositor.NewChild();if(!v)return false;t->visual.set(v);v->Release();
+    if(FAILED(cc->put_RootVisualTarget(t->visual.p)))return false;compositor.Commit();
+    std::weak_ptr<Tab> weak=t;EventRegistrationToken token{};
+    auto cursor=Callback<ICoreWebView2CursorChangedEventHandler,ICoreWebView2CompositionController*,IUnknown*>([weak](ICoreWebView2CompositionController* sender,IUnknown*)->HRESULT{
+        auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;HCURSOR c=nullptr;bool own=false;
+        // A system cursor (arrow, I-beam, hand...) is the shared system handle; a CSS
+        // cursor image may be freed by the engine after this call, so keep a copy.
+        UINT32 id=0;if(SUCCEEDED(sender->get_SystemCursorId(&id))&&id)c=LoadCursor(nullptr,MAKEINTRESOURCE(id));
+        if(!c&&SUCCEEDED(sender->get_Cursor(&c))&&c){c=(HCURSOR)CopyIcon((HICON)c);own=c!=nullptr;}
+        if(tab->cursor&&tab->ownCursor)DestroyCursor(tab->cursor);tab->cursor=c;tab->ownCursor=own;
+        if(tab==ComposedTab()&&(GetCapture()==viewport||PointerOverViewport()))SetCursor(c?c:LoadCursor(nullptr,IDC_ARROW));
+        return S_OK;});
+    HRESULT hr=cc->add_CursorChanged(cursor,&token);cursor->Release();return Check(hr,L"add_CursorChanged");
+}
+struct ViewportPointer { bool tracking=false,capturing=false; } viewportPointer;
+void TrackViewportLeave(){if(viewportPointer.tracking)return;TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,viewport,0};TrackMouseEvent(&track);viewportPointer.tracking=true;}
+void SendPageLeave(){
+    if(viewportPointer.tracking){viewportPointer.tracking=false;TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE|TME_CANCEL,viewport,0};TrackMouseEvent(&track);}
+    if(auto t=ComposedTab())t->composition->SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE,COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,0,POINT{0,0});
+}
+// A press in the page leaves the chrome: the address field stops editing and the
+// page takes keyboard focus, as a windowed WebView2 does when clicked.
+void FocusPageFromPointer(){HWND focus=GetFocus();if(!focus||focus==window||focus==address||focus==viewport)FocusPage();}
+bool ForwardMouse(UINT msg,WPARAM w,LPARAM l){
+    auto t=ComposedTab();if(!t)return false;
+    POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};UINT32 data=0;
+    const bool wheel=msg==WM_MOUSEWHEEL||msg==WM_MOUSEHWHEEL;
+    if(wheel){ScreenToClient(viewport,&p);data=(UINT32)(INT32)GET_WHEEL_DELTA_WPARAM(w);} // wheel points are in screen pixels
+    else if(msg==WM_XBUTTONDOWN||msg==WM_XBUTTONUP||msg==WM_XBUTTONDBLCLK)data=GET_XBUTTON_WPARAM(w);
+    // Outside the rounded shape (a clipped corner shows the canvas) the page gets a
+    // leave, unless a press that started in it still holds the capture.
+    if(!compositor.Contains((float)p.x,(float)p.y)&&!viewportPointer.capturing){if(viewportPointer.tracking)SendPageLeave();return !wheel;}
+    const bool down=msg==WM_LBUTTONDOWN||msg==WM_MBUTTONDOWN||msg==WM_RBUTTONDOWN||msg==WM_XBUTTONDOWN||msg==WM_LBUTTONDBLCLK||msg==WM_MBUTTONDBLCLK||msg==WM_RBUTTONDBLCLK||msg==WM_XBUTTONDBLCLK;
+    const bool up=msg==WM_LBUTTONUP||msg==WM_MBUTTONUP||msg==WM_RBUTTONUP||msg==WM_XBUTTONUP;
+    if(msg==WM_MOUSEMOVE)TrackViewportLeave();
+    if(down){FocusPageFromPointer();if(GetCapture()!=viewport)SetCapture(viewport);viewportPointer.capturing=true;}
+    // The capture spans the whole press (scrollbar or selection drags leaving the
+    // window); it ends once no button is held any more.
+    const WPARAM held=GET_KEYSTATE_WPARAM(w)&(MK_LBUTTON|MK_MBUTTON|MK_RBUTTON|MK_XBUTTON1|MK_XBUTTON2);
+    if(up&&!held){viewportPointer.capturing=false;if(GetCapture()==viewport)ReleaseCapture();}
+    Check(t->composition->SendMouseInput((COREWEBVIEW2_MOUSE_EVENT_KIND)msg,(COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS)GET_KEYSTATE_WPARAM(w),data,p),L"SendMouseInput");
+    return true;
+}
+// Touch and pen keep their pointer identity (panning, pressure, hover) instead of
+// being promoted to mouse messages.
+bool ForwardPointer(UINT msg,WPARAM w){
+    auto t=ComposedTab();if(!t)return false;const UINT32 id=GET_POINTERID_WPARAM(w);POINTER_INPUT_TYPE type=PT_POINTER;
+    if(!GetPointerType(id,&type)||(type!=PT_TOUCH&&type!=PT_PEN))return false;
+    Com<ICoreWebView2Environment3> env3;Com<ICoreWebView2PointerInfo> info;
+    if(FAILED(environment->QueryInterface(IID_ICoreWebView2Environment3,(void**)&env3.p))||!env3.p||FAILED(env3->CreateCoreWebView2PointerInfo(&info.p))||!info.p)return false;
+    POINTER_INFO base{};POINTER_PEN_INFO pen{};POINTER_TOUCH_INFO touch{};
+    if(type==PT_PEN){if(!GetPointerPenInfo(id,&pen))return false;base=pen.pointerInfo;}else{if(!GetPointerTouchInfo(id,&touch))return false;base=touch.pointerInfo;}
+    POINT p=base.ptPixelLocation,raw=base.ptPixelLocationRaw;ScreenToClient(viewport,&p);ScreenToClient(viewport,&raw);
+    if(msg==WM_POINTERDOWN){if(!compositor.Contains((float)p.x,(float)p.y))return false;FocusPageFromPointer();}
+    info->put_PointerKind(type);info->put_PointerId(base.pointerId);info->put_FrameId(base.frameId);info->put_PointerFlags(base.pointerFlags);
+    RECT device{},display{};GetPointerDeviceRects(base.sourceDevice,&device,&display);info->put_PointerDeviceRect(device);info->put_DisplayRect(display);
+    info->put_PixelLocation(p);info->put_HimetricLocation(base.ptHimetricLocation);info->put_PixelLocationRaw(raw);info->put_HimetricLocationRaw(base.ptHimetricLocationRaw);
+    info->put_Time(base.dwTime);info->put_HistoryCount(base.historyCount);info->put_InputData(base.InputData);info->put_KeyStates(base.dwKeyStates);
+    info->put_PerformanceCount(base.PerformanceCount);info->put_ButtonChangeKind(base.ButtonChangeType);
+    if(type==PT_PEN){info->put_PenFlags(pen.penFlags);info->put_PenMask(pen.penMask);info->put_PenPressure(pen.pressure);info->put_PenRotation(pen.rotation);info->put_PenTiltX(pen.tiltX);info->put_PenTiltY(pen.tiltY);}
+    else{RECT contact=touch.rcContact,contactRaw=touch.rcContactRaw;MapWindowPoints(nullptr,viewport,(POINT*)&contact,2);MapWindowPoints(nullptr,viewport,(POINT*)&contactRaw,2);
+        info->put_TouchFlags(touch.touchFlags);info->put_TouchMask(touch.touchMask);info->put_TouchContact(contact);info->put_TouchContactRaw(contactRaw);info->put_TouchOrientation(touch.orientation);info->put_TouchPressure(touch.pressure);}
+    return Check(t->composition->SendPointerInput((COREWEBVIEW2_POINTER_EVENT_KIND)msg,info.p),L"SendPointerInput");
+}
+// OLE drops onto the page (files, text, links) reach the WebView through the host.
+class ViewportDropTarget final:public IDropTarget{
+    LONG refs=1;Com<ICoreWebView2CompositionController3> target;
+    static POINT Local(POINTL s){POINT p{s.x,s.y};ScreenToClient(viewport,&p);return p;}
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** out)override{if(!out)return E_POINTER;*out=nullptr;if(id==IID_IUnknown||id==IID_IDropTarget){*out=static_cast<IDropTarget*>(this);AddRef();return S_OK;}return E_NOINTERFACE;}
+    ULONG STDMETHODCALLTYPE AddRef()override{return InterlockedIncrement(&refs);}
+    ULONG STDMETHODCALLTYPE Release()override{ULONG n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data,DWORD keys,POINTL at,DWORD* effect)override{
+        target.set(nullptr);auto t=ComposedTab();Com<ICoreWebView2CompositionController3> c3;
+        if(t&&SUCCEEDED(t->composition->QueryInterface(IID_ICoreWebView2CompositionController3,(void**)&c3.p))&&c3.p){target.set(c3.p);return target->DragEnter(data,keys,Local(at),effect);}
+        if(effect)*effect=DROPEFFECT_NONE;return S_OK;}
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD keys,POINTL at,DWORD* effect)override{if(target.p)return target->DragOver(keys,Local(at),effect);if(effect)*effect=DROPEFFECT_NONE;return S_OK;}
+    HRESULT STDMETHODCALLTYPE DragLeave()override{HRESULT hr=target.p?target->DragLeave():S_OK;target.set(nullptr);return hr;}
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data,DWORD keys,POINTL at,DWORD* effect)override{HRESULT hr=S_OK;if(target.p)hr=target->Drop(data,keys,Local(at),effect);else if(effect)*effect=DROPEFFECT_NONE;target.set(nullptr);return hr;}
+};
+bool viewportDropRegistered=false,viewportOle=false;
+// ---- Overlay scrollbar (Paper V3 "Scrollbar minimale", viewport-scrollbar.h) ---------
+// WebView2 has no API for the scrollbar's colour, width or timing (only
+// ScrollBarStyle DEFAULT / FLUENT_OVERLAY), so composed tabs get:
+//  - a document-creation script, top-level document only, that adopts one stylesheet
+//    hiding the page's *root* scrollbar (`:root{scrollbar-width:none!important}`, not
+//    inherited: nested scrollers and iframes keep theirs) and posts the root scroller's
+//    metrics (rAF-coalesced on scroll, resize, ResizeObserver, fullscreen);
+//  - a host-drawn handle (DirectComposition visual above the page) placed from those
+//    metrics; dragging it scrolls the page through ExecuteScript.
+// Wheel, keyboard, touch and pen scrolling stay native to the page; their scroll
+// events reveal the handle. Windowed tabs (no composition) keep the native scrollbar.
+constexpr wchar_t ScrollbarScript[]=LR"JS((()=>{try{if(window!==window.top)return;const w=window.chrome&&window.chrome.webview;if(!w||typeof w.postMessage!=='function')return;
+const sheet=new CSSStyleSheet();sheet.replaceSync(':root{scrollbar-width:none!important}');
+const adopt=()=>{const l=document.adoptedStyleSheets;if(l.indexOf(sheet)<0)document.adoptedStyleSheets=[...l,sheet];};
+let frame=0,scrolled=0;
+const send=()=>{frame=0;try{adopt();const e=document.scrollingElement,d=document.documentElement;if(!e||!d)return;
+const s=getComputedStyle(d),b=document.body;let ox=s.overflowX,oy=s.overflowY;
+if(b&&ox==='visible'&&oy==='visible'){const bs=getComputedStyle(b);ox=bs.overflowX;oy=bs.overflowY;}
+const fs=!!document.fullscreenElement,free=v=>!fs&&v!=='hidden'&&v!=='clip'?1:0;
+w.postMessage('lisiere-scrollbar '+[scrolled,e.scrollLeft,e.scrollTop,e.clientWidth,e.clientHeight,e.scrollWidth,e.scrollHeight,free(ox),free(oy),s.direction==='rtl'?1:0].join(' '));}catch(_){}scrolled=0;};
+const queue=k=>{if(k)scrolled=1;if(!frame)frame=requestAnimationFrame(send);};
+addEventListener('scroll',()=>queue(1),{passive:true});
+addEventListener('resize',()=>queue(0),{passive:true});
+addEventListener('load',()=>queue(0));
+document.addEventListener('fullscreenchange',()=>queue(0));
+const ro=new ResizeObserver(()=>queue(0));
+const watch=()=>{if(document.documentElement)ro.observe(document.documentElement);if(document.body)ro.observe(document.body);queue(0);};
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',watch,{once:true});else watch();
+adopt();queue(0);}catch(_){}})();)JS";
+constexpr wchar_t ScrollbarMessage[]=L"lisiere-scrollbar ";
+struct ViewportScrollbar {
+    NativeChrome::Scrollbar::Motion motion;NativeChrome::Scrollbar::Layout layout;
+    int hovered=-1,dragging=-1;bool onTrack=false,pageLeft=false;float grab=0;
+    struct Drawn { float outer=-1,scale=0,hover=-1,origin=0;int length=-1,pad=0;unsigned generation=0; } drawn[2];
+    bool scriptBusy=false;std::wstring scriptPending;
+} pageScrollbar;
+NativeChrome::Motion::Wake ScrollbarWake(NativeChrome::Motion::Time now){return compositor.Bars()?pageScrollbar.motion.NextWake(now):NativeChrome::Motion::Wake{};}
+void ScrollbarRefresh(NativeChrome::Motion::Time now){
+    namespace SB=NativeChrome::Scrollbar;auto& s=pageScrollbar;if(!compositor.Bars()||!window)return;
+    auto t=ComposedTab();const float scale=GetDpiForWindow(window)/96.f;
+    s.layout=t?SB::Compute(t->scroll,compositor.Width(),compositor.Height(),scale,std::max(0.f,compositor.Radius())/scale):SB::Layout{};
+    s.motion.Advance(now);const auto v=s.motion.Sample(now);
+    for(int k=0;k<2;++k){
+        const bool vertical=k==0;const SB::Axis& a=vertical?s.layout.v:s.layout.h;
+        if(!a.present||v.opacity<=0){compositor.HideBar(k);continue;}
+        const float outer=SB::Outer(s.layout,vertical);const int length=(int)std::lround(a.thumbLength);auto& d=s.drawn[k];
+        if(d.generation!=compositor.Generation()||d.outer!=outer||d.scale!=scale||d.length!=length||d.hover!=v.hover){
+            const auto tile=SB::Raster(outer,length,scale,v.hover,vertical);
+            if(!compositor.SetBarContent(k,tile.pixels.data(),vertical?tile.across:tile.along,vertical?tile.along:tile.across)){compositor.HideBar(k);d={};continue;}
+            d={outer,scale,v.hover,tile.originAcross,length,(tile.along-length)/2,compositor.Generation()};
+        }
+        // Whole-pixel position along the track, fractional width across it.
+        const float along=std::round(a.thumbStart)-d.pad;
+        if(vertical)compositor.PlaceBar(k,d.origin,along,v.opacity);else compositor.PlaceBar(k,along,d.origin,v.opacity);
+    }
+    compositor.Commit();
+}
+void EndScrollbarDrag(){auto& s=pageScrollbar;if(s.dragging<0)return;s.dragging=-1;if(GetCapture()==viewport)ReleaseCapture();
+    auto now=NativeChrome::Motion::Now();s.motion.Pointer(s.onTrack,s.hovered>=0,false,now,motion.ReducedMotion());ScrollbarRefresh(now);ScheduleMotion(now);}
+void ScrollbarSettleHover(){pageScrollbar.motion.SettleHover();ScrollbarRefresh(NativeChrome::Motion::Now());}
+void ScrollbarReset(){auto& s=pageScrollbar;EndScrollbarDrag();s.motion.Reset();s.hovered=-1;s.onTrack=false;s.pageLeft=false;s.scriptPending.clear();ScrollbarRefresh(NativeChrome::Motion::Now());}
+// Untrusted page text: ten finite numbers within sane bounds, else ignored.
+void ScrollbarMetrics(const std::shared_ptr<Tab>& t,const wchar_t* text){
+    int kind=0,nx=0,ny=0,rtl=0;float x=0,y=0,cw=0,ch=0,sw=0,sh=0;
+    if(swscanf(text,L"lisiere-scrollbar %d %f %f %f %f %f %f %d %d %d",&kind,&x,&y,&cw,&ch,&sw,&sh,&nx,&ny,&rtl)!=10)return;
+    for(float f:{x,y,cw,ch,sw,sh})if(!std::isfinite(f)||std::fabs(f)>1e8f)return;
+    if(cw<0||ch<0||sw<0||sh<0)return;
+    t->scroll={x,y,cw,ch,sw,sh,nx!=0,ny!=0,rtl!=0,true};
+    if(t!=ComposedTab())return;auto now=NativeChrome::Motion::Now();if(kind==1)pageScrollbar.motion.Scrolled(now);ScrollbarRefresh(now);ScheduleMotion(now);
+}
+// Drag: one script in flight, the latest target queued behind it.
+void RunScrollbarScript(){auto& s=pageScrollbar;auto t=ComposedTab();if(s.scriptBusy||s.scriptPending.empty()||!t||!t->view.p)return;
+    std::wstring js;js.swap(s.scriptPending);s.scriptBusy=true;
+    auto done=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT,LPCWSTR)->HRESULT{pageScrollbar.scriptBusy=false;if(!halted)RunScrollbarScript();return S_OK;});
+    if(FAILED(t->view->ExecuteScript(js.c_str(),done)))s.scriptBusy=false;done->Release();}
+void ScrollPageTo(int axis,float value){auto t=ComposedTab();if(!t)return;
+    if(axis==1&&t->scroll.rtl)value-=t->scroll.RangeX(); // RTL roots scroll 0 .. -range
+    wchar_t js[192];swprintf(js,192,L"(()=>{const e=document.scrollingElement;if(e)e.scrollTo({%ls:%.3f,behavior:'instant'})})()",axis==0?L"top":L"left",(double)value);
+    pageScrollbar.scriptPending=js;RunScrollbarScript();}
+// Pointer on the handle: hover (6 -> 8 DIP), press-drag; on its track strip: reveal.
+// Returns true when the message is the scrollbar's (not forwarded to the page).
+bool ScrollbarMouse(UINT msg,WPARAM,LPARAM l){
+    namespace SB=NativeChrome::Scrollbar;auto& s=pageScrollbar;
+    if(msg==WM_MOUSEWHEEL||msg==WM_MOUSEHWHEEL)return false;
+    auto t=ComposedTab();if(!t||!compositor.Bars()){if(s.dragging>=0)EndScrollbarDrag();return false;}
+    const float x=(float)GET_X_LPARAM(l),y=(float)GET_Y_LPARAM(l);const auto now=NativeChrome::Motion::Now();const bool reduced=motion.ReducedMotion();
+    if(s.dragging>=0){
+        if(msg==WM_MOUSEMOVE){const SB::Axis& a=s.dragging==0?s.layout.v:s.layout.h;ScrollPageTo(s.dragging,SB::ScrollFor(a,(s.dragging==0?y:x)-s.grab));}
+        else if(msg==WM_LBUTTONUP){const auto hit=SB::HitTest(s.layout,x,y);s.onTrack=hit.band>=0;s.hovered=hit.handle;EndScrollbarDrag();}
+        return true;
+    }
+    if(viewportPointer.capturing)return false; // a press in the page owns the pointer
+    const auto hit=SB::HitTest(s.layout,x,y);
+    if(msg==WM_MOUSEMOVE){
+        TrackViewportLeave();
+        if((hit.band>=0)!=s.onTrack||hit.handle!=s.hovered){s.onTrack=hit.band>=0;s.hovered=hit.handle;s.motion.Pointer(s.onTrack,s.hovered>=0,false,now,reduced);ScrollbarRefresh(now);ScheduleMotion(now);}
+        if(s.hovered>=0){if(!s.pageLeft){t->composition->SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE,COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,0,POINT{0,0});s.pageLeft=true;}return true;}
+        s.pageLeft=false;return false;
+    }
+    if(hit.handle<0||!s.motion.Shown(now))return false;
+    if(msg==WM_LBUTTONDOWN||msg==WM_LBUTTONDBLCLK){
+        FocusPageFromPointer();SetCapture(viewport);s.dragging=hit.handle;s.hovered=hit.handle;s.onTrack=true;
+        const SB::Axis& a=hit.handle==0?s.layout.v:s.layout.h;s.grab=(hit.handle==0?y:x)-a.thumbStart;
+        s.motion.Pointer(true,true,true,now,reduced);ScrollbarRefresh(now);ScheduleMotion(now);
+    }
+    return true; // other buttons on the handle do nothing (no page menu under it)
+}
+void ScrollbarPointerLeft(){auto& s=pageScrollbar;if(s.dragging>=0||(!s.onTrack&&s.hovered<0))return;s.onTrack=false;s.hovered=-1;s.pageLeft=false;
+    auto now=NativeChrome::Motion::Now();s.motion.Pointer(false,false,false,now,motion.ReducedMotion());ScrollbarRefresh(now);ScheduleMotion(now);}
+LRESULT CALLBACK ViewportProc(HWND h,UINT msg,WPARAM w,LPARAM l){switch(msg){
+case WM_MOUSEMOVE:case WM_LBUTTONDOWN:case WM_LBUTTONUP:case WM_LBUTTONDBLCLK:case WM_MBUTTONDOWN:case WM_MBUTTONUP:case WM_MBUTTONDBLCLK:
+case WM_RBUTTONDOWN:case WM_RBUTTONUP:case WM_RBUTTONDBLCLK:case WM_XBUTTONDOWN:case WM_XBUTTONUP:case WM_XBUTTONDBLCLK:case WM_MOUSEWHEEL:case WM_MOUSEHWHEEL:
+    if(ScrollbarMouse(msg,w,l)||ForwardMouse(msg,w,l))return msg==WM_XBUTTONDOWN||msg==WM_XBUTTONUP||msg==WM_XBUTTONDBLCLK?TRUE:0;break;
+case WM_MOUSELEAVE:viewportPointer.tracking=false;ScrollbarPointerLeft();if(auto t=ComposedTab())t->composition->SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE,COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE,0,POINT{0,0});return 0;
+case WM_CAPTURECHANGED:viewportPointer.capturing=false;if(pageScrollbar.dragging>=0&&(HWND)l!=h)EndScrollbarDrag();return 0;
+case WM_POINTERDOWN:case WM_POINTERUPDATE:case WM_POINTERUP:case WM_POINTERENTER:case WM_POINTERLEAVE:case WM_POINTERCAPTURECHANGED:
+    if(ForwardPointer(msg,w))return 0;break;
+case WM_SETCURSOR:if(LOWORD(l)==HTCLIENT){if(pageScrollbar.hovered>=0||pageScrollbar.dragging>=0){SetCursor(LoadCursor(nullptr,IDC_ARROW));return TRUE;}auto t=ComposedTab();POINT p;GetCursorPos(&p);ScreenToClient(h,&p);if(t&&compositor.Contains((float)p.x,(float)p.y)){SetCursor(t->cursor?t->cursor:LoadCursor(nullptr,IDC_ARROW));return TRUE;}}break;
+case WM_GETOBJECT:if((LONG)l==UiaRootObjectId){
+    // The page's accessibility tree: WebView2's own provider for the active tab.
+    auto t=ComposedTab();Com<ICoreWebView2CompositionController2> c2;Com<IUnknown> provider;Com<IRawElementProviderSimple> simple;
+    if(t&&SUCCEEDED(t->composition->QueryInterface(IID_ICoreWebView2CompositionController2,(void**)&c2.p))&&c2.p&&SUCCEEDED(c2->get_AutomationProvider(&provider.p))&&provider.p&&
+       SUCCEEDED(provider->QueryInterface(__uuidof(IRawElementProviderSimple),(void**)&simple.p))&&simple.p){
+        static const auto reply=reinterpret_cast<decltype(&::UiaReturnRawElementProvider)>(GetProcAddress(LoadLibraryExW(L"uiautomationcore.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32),"UiaReturnRawElementProvider"));
+        if(reply)return reply(h,w,l,simple.p);}
+    }break;
+case WM_DESTROY:if(viewportDropRegistered){RevokeDragDrop(h);viewportDropRegistered=false;}break;
+}return DefWindowProcW(h,msg,w,l);}
+HWND CreateViewportHost(HWND parent){
+    WNDCLASSW vc{};vc.style=CS_DBLCLKS;vc.hInstance=instance;vc.lpfnWndProc=ViewportProc;vc.lpszClassName=L"LisiereViewport";vc.hCursor=LoadCursor(nullptr,IDC_ARROW);vc.hbrBackground=paper;RegisterClassW(&vc);
+    HWND host=CreateWindowExW(0,vc.lpszClassName,L"",WS_CHILD|WS_VISIBLE|WS_CLIPCHILDREN|WS_CLIPSIBLINGS,0,0,0,0,parent,nullptr,instance,nullptr);if(!host)return nullptr;
+    if(compositor.Create(host,BG)){
+        Log(L"VIEWPORT composition: DirectComposition visual hosting, antialiased corner masks");
+        // RegisterDragDrop needs OLE on this (already COM STA) thread.
+        viewportOle=SUCCEEDED(OleInitialize(nullptr));
+        auto drop=new ViewportDropTarget();viewportDropRegistered=viewportOle&&SUCCEEDED(RegisterDragDrop(host,drop));drop->Release();
+        if(!viewportDropRegistered)Log(L"VIEWPORT RegisterDragDrop failed: drops onto pages unavailable");
+    }else Log(L"VIEWPORT composition unavailable: windowed hosting with a window region");
+    return host;
+}
+
 void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environment.p)return;if(pages.size()>=128){MessageBoxW(window,L"Limite de 128 onglets atteinte.",L"browser",MB_OK);return;}motion.selection.Reset();motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=std::make_shared<Tab>();t->uri=uri;t->home=uri.empty();t->title=std::move(title);if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());CancelTabDrag();pages.insert(pages.begin()+index,t);Select(index);std::weak_ptr<Tab> weak=t;
-    auto done=Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,HRESULT,ICoreWebView2Controller*>([weak,uri](HRESULT hr,ICoreWebView2Controller* c)->HRESULT{
+    auto setup=[weak,uri](HRESULT hr,ICoreWebView2Controller* c)->HRESULT{
         // A tab closed before its controller arrived (e.g. reopened then closed, or the
         // window closing) may complete with E_ABORT: that is not an engine failure.
         auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(!Check(hr,L"CreateController callback"))return S_OK;if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
@@ -833,6 +1119,16 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
            !Check(settings->QueryInterface(IID_ICoreWebView2Settings3,(void**)&settings3.p),L"QueryInterface Settings3")||
            !Check(settings3->put_AreBrowserAcceleratorKeysEnabled(TRUE),L"Enable browser accelerators"))return S_OK;
         EventRegistrationToken token{};
+        // Overlay scrollbar metrics (composed tabs only; windowed tabs keep the native bar).
+        if(t->composition.p&&compositor.Bars()){
+            auto message=Callback<ICoreWebView2WebMessageReceivedEventHandler,ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs* a)->HRESULT{
+                auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;LPWSTR text=nullptr;
+                if(SUCCEEDED(a->TryGetWebMessageAsString(&text))&&text){if(wcsncmp(text,ScrollbarMessage,wcslen(ScrollbarMessage))==0)ScrollbarMetrics(tab,text);CoTaskMemFree(text);}
+                return S_OK;});
+            HRESULT added=t->view->add_WebMessageReceived(message,&token);message->Release();
+            if(SUCCEEDED(added))Check(t->view->AddScriptToExecuteOnDocumentCreated(ScrollbarScript,nullptr),L"AddScriptToExecuteOnDocumentCreated scrollbar");
+            else Log(L"SCROLLBAR add_WebMessageReceived failed: native page scrollbar kept");
+        }
         IID faviconInterface;CLSIDFromString(L"{517B2D1D-7DAE-4A66-A4F4-10352FFB9518}",&faviconInterface);
         if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
         auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
@@ -858,8 +1154,22 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();}
         {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;Navigate(t,uri);return S_OK;
-    });
-    HRESULT hr=environment->CreateCoreWebView2Controller(window,done);done->Release();Check(hr,L"CreateCoreWebView2Controller");
+    };
+    // Visual hosting: the WebView joins the viewport's antialiased clipped visual
+    // tree; its ICoreWebView2Controller side then takes the same setup as a windowed tab.
+    Com<ICoreWebView2Environment3> env3;
+    if(compositor.Ready()&&viewport&&SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment3,(void**)&env3.p))&&env3.p){
+        auto done=Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler,HRESULT,ICoreWebView2CompositionController*>([weak,setup](HRESULT hr,ICoreWebView2CompositionController* cc)->HRESULT{
+            Com<ICoreWebView2Controller> c;if(cc&&FAILED(cc->QueryInterface(IID_ICoreWebView2Controller,(void**)&c.p)))c.p=nullptr;
+            auto t=weak.lock();if(!t||t->closed){if(c.p)c->Close();return S_OK;}
+            if(SUCCEEDED(hr)&&cc&&c.p&&!halted&&!AttachComposition(t,cc)){Fail(L"Viewport composition attach",E_FAIL);return S_OK;}
+            return setup(hr,c.p);
+        });
+        HRESULT hr=env3->CreateCoreWebView2CompositionController(viewport,done);done->Release();Check(hr,L"CreateCoreWebView2CompositionController");
+        return;
+    }
+    auto done=Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,HRESULT,ICoreWebView2Controller*>(setup);
+    HRESULT hr=environment->CreateCoreWebView2Controller(viewport?viewport:window,done);done->Release();Check(hr,L"CreateCoreWebView2Controller");
 }
 
 void SmokeCheck(){if(!smoke||halted)return;auto t=Active();if(!t||!t->view.p){Fail(L"Smoke active view missing",E_FAIL);return;}auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{if(!Check(hr,L"Smoke ExecuteScript callback"))return S_OK;std::wstring expected=testStage<2?L"Nouvel onglet|rgb(23, 23, 23)|":L"Example Domain";if(!json||std::wstring(json).find(expected)==std::wstring::npos){Fail(L"Smoke unexpected document title",E_FAIL);return S_OK;}Log(L"SMOKE document verified stage="+std::to_wstring(testStage)+L" title="+json);PostMessageW(window,WM_APP+3,0,0);return S_OK;});HRESULT hr=t->view->ExecuteScript(testStage<2?L"document.title + '|' + getComputedStyle(document.body).backgroundColor + '|' + document.body.textContent.trim()":L"document.title",cb);cb->Release();Check(hr,L"Smoke ExecuteScript");}
@@ -979,11 +1289,12 @@ HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenu
     ReadPageMenu(list.p,pending->items,pending->commands);if(pending->items.empty())return S_OK; // nothing to show: the engine keeps its own menu
     if(FAILED(args->GetDeferral(&pending->deferral.p))||!pending->deferral.p)return S_OK;
     args->put_Handled(TRUE);pending->args.set(args);pending->tab=tab;
-    // Location is relative to the WebView, in the same pixels as the controller bounds.
+    // Location is relative to the WebView, in the same pixels as the controller bounds
+    // (client pixels of the viewport host that parents every controller).
     POINT location{};args->get_Location(&location);RECT bounds{};if(tab->controller.p)tab->controller->get_Bounds(&bounds);
     // A mouse right click opens at the pointer; the Menu key or Shift+F10 at the engine's location.
     pending->keyboard=GetAsyncKeyState(VK_APPS)<0||(GetAsyncKeyState(VK_F10)<0&&GetAsyncKeyState(VK_SHIFT)<0);
-    if(pending->keyboard){pending->at={bounds.left+location.x,bounds.top+location.y};ClientToScreen(window,&pending->at);}else GetCursorPos(&pending->at);
+    if(pending->keyboard){pending->at={bounds.left+location.x,bounds.top+location.y};ClientToScreen(viewport?viewport:window,&pending->at);}else GetCursorPos(&pending->at);
     pendingPageMenu=pending;PostMessageW(window,PageMenuMessage,0,0);return S_OK;
 }
 void ShowPageMenu(){
@@ -1286,7 +1597,7 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 }
 void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;switch(msg){
-case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);return 0;
+case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);viewport=CreateViewportHost(h);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);return 0;
 case WM_NCHITTEST:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(y<44&&!id)return HTCAPTION;return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
 case WM_NCMOUSEMOVE:if(w==HTMAXBUTTON){UpdateInteraction('M',0);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE|TME_NONCLIENT,h,0};TrackMouseEvent(&track);return 0;}break;
@@ -1323,6 +1634,7 @@ case WM_LBUTTONDOWN:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),G
 case WM_LBUTTONUP:{bool dragged=tabDrag.active;CancelTabDrag();int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
 case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag();if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
+case WM_DISPLAYCHANGE:Layout();break; // also checks the composition device after a display/driver change
 case WM_SETTINGCHANGE:ApplyReducedMotion();return 0; // Windows' switch, OR'd with the app's own
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}return 0;}
 case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(GET_Y_LPARAM(l)<S(44))TabMenu(0);return 0;}
@@ -1364,7 +1676,7 @@ case WM_DESTROY:accessibility.Detach();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif
-    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();PostQuitMessage(0);return 0;
+    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();ReleaseComposition(*t);if(t->controller.p)t->controller->Close();}pages.clear();compositor.Destroy();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
 // Every message may move keyboard focus, the selection or the tab set: report the
 // change to UI Automation clients once the message is handled.
@@ -1386,5 +1698,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     using CreateEnvironment=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
     auto create=loader?reinterpret_cast<CreateEnvironment>(GetProcAddress(loader,"CreateCoreWebView2EnvironmentWithOptions")):nullptr;if(loader&&!create)Fail(L"GetProcAddress CreateEnvironment",HRESULT_FROM_WIN32(GetLastError()));
     if(create&&!halted){auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{if(!Check(hr,L"CreateEnvironment callback"))return S_OK;if(!env){Fail(L"Environment null",E_POINTER);return S_OK;}environment.set(env);LPWSTR version=nullptr;if(Check(env->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}RestoreSession();return S_OK;});HRESULT hr=create(nullptr,profileDir.c_str(),nullptr,done);done->Release();Check(hr,L"CreateEnvironment");}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();contextMenu.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();contextMenu.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);if(viewportOle)OleUninitialize();CoUninitialize();return halted?2:0;
 }
