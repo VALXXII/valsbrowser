@@ -652,7 +652,9 @@ void AskClearBrowsingData(bool demo,std::function<void(bool)> result){
 bool closeConfirmed=false;
 // WM_CLOSE: true = close now. Otherwise the modal asks and re-posts WM_CLOSE on « Fermer ».
 bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
-    if(!demo&&(closeConfirmed||smoke||halted||!settings.confirmCloseTabs))return true;
+    // Never asked for the updater's install handoff (closeWithoutPrompt) or a clear on exit
+    // already under way: a question there would block the install / the shutdown.
+    if(!demo&&(closeConfirmed||smoke||halted||closeWithoutPrompt||exitClear!=ExitClear::Idle||!settings.confirmCloseTabs))return true;
     const int n=(int)std::count_if(pages.begin(),pages.end(),[](const std::shared_ptr<Tab>& t){return t&&!t->closed;});
     if(!demo&&n<=1)return true;
     if(modalOpen&&!demo)return false; // one question at a time
