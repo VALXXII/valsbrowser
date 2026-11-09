@@ -1,5 +1,5 @@
 #pragma once
-#include <d2d1.h>
+#include <d2d1_1.h>
 #include <dwrite_1.h>
 #include <wincodec.h>
 #include <map>
@@ -77,7 +77,9 @@ public:
     bool navigationLoading=false;
     // DIP rectangle repainted for loading-only frames (URL surface incl. embedded buttons).
     // DIP rectangle repainted for download-icon-only frames (the 'D' button).
-    D2D1_RECT_F DownloadIconDirty()const{return {width-98,47,width-72,73};}
+    // The ripple grows well past the button (x4): the rectangle covers its reach,
+    // down to the chrome's lower edge (the page covers what lies below).
+    D2D1_RECT_F DownloadIconDirty()const{const float cx=width-85,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
     // Quantised on-screen identity of the loading fill: equal signatures render
     // identical pixels, so a loading-only frame with an unchanged signature is skipped.
@@ -180,14 +182,44 @@ public:
         const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
         target->DrawBitmap(dlBitmap,{x,y,x+size,y+size},opacity);return true;
     }
-    // Blue ring stroke that grows, blurs and fades (blur approximated by two
-    // softer, wider passes: at most 0.6 DIP, a true blur effect would not show).
+    // Blue ring stroke that grows, blurs and fades. The blur is a real Direct2D
+    // Gaussian blur of a small offscreen layer (allocated once, at the ripple's
+    // reach) and grows with the ring like the preview's; without the effect,
+    // two softer, wider passes stand in.
+    ID2D1DeviceContext* rippleDc=nullptr;ID2D1Effect* rippleBlur=nullptr;ID2D1BitmapRenderTarget* rippleLayer=nullptr;float rippleExtent=0;bool rippleNoEffect=false;
+    void DropRipple(){Drop(rippleLayer);Drop(rippleBlur);Drop(rippleDc);rippleExtent=0;rippleNoEffect=false;}
     void DrawDownloadRipple(float t,D2D1_RECT_F box,float size){
         if(t<0||t>=1)return;
         namespace R=DownloadIcon::Ripple;
         const float p=Motion::Eased(t,Motion::Curve::Icon),unit=size/256.f,scale=1+(R::grow-1)*p;
-        const float radius=R::radius*unit*scale,width=R::stroke*unit*scale,blur=R::blur*unit*p,alpha=R::opacity*(1-p);
-        const D2D1_ELLIPSE e=D2D1::Ellipse({(box.left+box.right)/2,(box.top+box.bottom)/2},radius,radius);
+        const float radius=R::radius*unit*scale,width=R::stroke*unit*scale,blur=R::blur*unit*scale*p,alpha=R::opacity*(1-p);
+        const D2D1_POINT_2F centre{(box.left+box.right)/2,(box.top+box.bottom)/2};
+        brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],alpha));
+        if(!rippleNoEffect&&!rippleDc){
+            static const CLSID gaussian={0x1feb6d69,0x2fe6,0x4ac9,{0x8c,0x58,0x1d,0x7f,0x93,0xe7,0xa6,0xa5}};
+            if(FAILED(target->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&rippleDc)))||FAILED(rippleDc->CreateEffect(gaussian,&rippleBlur))){Drop(rippleBlur);Drop(rippleDc);rippleNoEffect=true;}
+        }
+        if(rippleDc&&rippleBlur&&blur>.05f){
+            // Layer side: the furthest reach (ring + stroke + 3 sigma of the largest blur).
+            const float extent=2*(R::radius*R::grow+R::stroke*R::grow/2+3*R::blur*R::grow)*unit+2;
+            if(!rippleLayer||rippleExtent!=extent){Drop(rippleLayer);if(FAILED(target->CreateCompatibleRenderTarget(D2D1::SizeF(extent,extent),&rippleLayer))){rippleLayer=nullptr;rippleNoEffect=true;DropRipple();rippleNoEffect=true;}else rippleExtent=extent;}
+            if(rippleLayer){
+                rippleLayer->BeginDraw();rippleLayer->Clear(D2D1::ColorF(0,0,0,0));
+                rippleLayer->DrawEllipse(D2D1::Ellipse({extent/2,extent/2},radius,radius),brush,width);
+                ID2D1Bitmap* bitmap=nullptr;
+                if(SUCCEEDED(rippleLayer->EndDraw())&&SUCCEEDED(rippleLayer->GetBitmap(&bitmap))&&bitmap){
+                    rippleBlur->SetInput(0,bitmap);
+                    const float deviation=blur;const UINT32 soft=0; // D2D1_BORDER_MODE_SOFT
+                    rippleBlur->SetValue(0,D2D1_PROPERTY_TYPE_FLOAT,reinterpret_cast<const BYTE*>(&deviation),sizeof(deviation));
+                    rippleBlur->SetValue(2,D2D1_PROPERTY_TYPE_ENUM,reinterpret_cast<const BYTE*>(&soft),sizeof(soft));
+                    ID2D1Image* output=nullptr;rippleBlur->GetOutput(&output);
+                    if(output){const D2D1_POINT_2F at{centre.x-extent/2,centre.y-extent/2};rippleDc->DrawImage(output,&at,nullptr,D2D1_INTERPOLATION_MODE_LINEAR,D2D1_COMPOSITE_MODE_SOURCE_OVER);output->Release();}
+                    rippleBlur->SetInput(0,nullptr);bitmap->Release();return;
+                }
+                if(bitmap)bitmap->Release();
+            }
+        }
+        const D2D1_ELLIPSE e=D2D1::Ellipse(centre,radius,radius);
         auto pass=[&](float w,float a){brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],a));target->DrawEllipse(e,brush,w);};
         if(blur>.05f){pass(width+blur*2,alpha*.25f);pass(width+blur,alpha*.35f);}
         pass(width,alpha*(blur>.05f?.6f:1.f));
@@ -226,7 +258,7 @@ public:
     IDWriteFontCollection* FontCollection()const{return fonts;}
     IWICImagingFactory* Imaging()const{return wic;}
     ID2D1RenderTarget* SwapTarget(ID2D1RenderTarget* next){auto old=target;target=next;return old;}
-    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();DropRipple();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     float TextWidth(const std::wstring& value,float size,bool medium=false,bool tabular=false,float tracking=0){if(value.empty())return 0;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,{0,0,4096,32},size,tabular,medium,tracking,&layout,m)))return 0;DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);Drop(layout);return metrics.widthIncludingTrailingWhitespace;}
     // Toolbar button drawn in its hover state while the popover it opened is shown.
     int latched=0;
@@ -258,7 +290,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);DropDownloadIcon();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -644,7 +676,6 @@ public:
                     if(style.focus)FocusRing(box,style.radius);
                     const float size=style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled);
                     if(pose.idle||!DrawDownloadIcon(pose,box,size,style.iconOpacity))Icon(icon,box,size,style.iconOpacity);
-                    DrawDownloadRipple(pose.ripple,box,style.iconSize);
                 }
                 else if(id=='X')DrawCloseWindow(box,state);
                 else DrawButton(icon,box,variant,state);}
@@ -658,7 +689,12 @@ public:
         // Chrome's lower edge: a 1 DIP #FFFFFF05 hairline, then the page (Paper: no top padding).
         Color(1,5/255.f);target->FillRectangle(D2D1::RectF(0,ContentTop()-1,width,ContentTop()),brush);
         DrawSplit();
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();DropDownloadIcon();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        // Ripple last, over the neighbouring buttons it reaches, never over the page edge.
+        if(const auto ripple=downloadIcon.At(now).ripple;ripple>=0){
+            const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
+            if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
+        }
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();DropDownloadIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
 }

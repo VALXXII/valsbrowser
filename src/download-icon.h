@@ -24,10 +24,14 @@ constexpr int FillEnd = Morph + Steps, RingDone = FillEnd + Out, RingFrames = Ri
 constexpr int LoopEnd = Morph + Loop, ArrowDone = LoopEnd + Out, ArrowFrames = ArrowDone + 1;  // 120
 constexpr double Fps = 60;
 constexpr float Ink = .5f; // toolbar icon ink: white at 50%
-// Ripple, in the Lottie's 256-unit space: ring radius 88 grows to 1.9x, 20-unit
-// stroke, blurs to 10 units and fades over 600 ms on cubic-bezier(.2, 0, 0, 1).
+// Ripple, in the Lottie's 256-unit space: ring radius 88 grows to 4x, 20-unit
+// stroke, blurs to 10 units (scaled with the ring, like the preview) and fades
+// over 600 ms on cubic-bezier(.2, 0, 0, 1).
 namespace Ripple {
-constexpr float radius = 88, grow = 1.9f, stroke = 20, blur = 10, opacity = .9f;
+constexpr float radius = 88, grow = 4, stroke = 20, blur = 10, opacity = .9f;
+// Furthest the ripple reaches from the icon centre, in 256 units: the grown
+// ring, half its scaled stroke and 3 sigma of its blur, which grows with it.
+constexpr float reach = radius * grow + stroke * grow / 2 + 3 * blur * grow;
 constexpr Motion::Milliseconds duration{600};
 }
 constexpr float FillColor[3] = {0x3E / 255.f, 0x67 / 255.f, 0xFF / 255.f};
