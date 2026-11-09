@@ -1949,6 +1949,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::CustomSearch:break;
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
+    case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
     case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
     case Change::AdBlock:ApplyAdBlock();break;
     case Change::MemorySaver:ApplyMemorySaver();break;
@@ -3726,6 +3727,9 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
      // SETTINGS(media): autoplay policy, fixed for the engine's lifetime (LoadSettings ran above). Muted
      // autoplay stays allowed under user-gesture-required; a user-set policy is kept.
      if(value.find(L"--autoplay-policy=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(settings.autoplay==BrowserSettings::Autoplay::Allowed?L"--autoplay-policy=no-user-gesture-required":L"--autoplay-policy=user-gesture-required");
+     // SETTINGS(display): grayscale text antialiasing for page content, matching the chrome's
+     // D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE (Windows' equivalent of -webkit-font-smoothing: antialiased).
+     if(settings.grayscaleText&&value.find(L"--disable-lcd-text")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--disable-lcd-text");
      // SETTINGS(cookies): third-party cookies blocked for the engine's lifetime (see WithEnabledFeatures).
      if(settings.blockThirdPartyCookies)value=WithEnabledFeatures(value,{L"ForceThirdPartyCookieBlockingEnabled",L"ThirdPartyStoragePartitioning"});
      if(value!=given)SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.c_str());}
