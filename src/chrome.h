@@ -1,5 +1,6 @@
 #pragma once
 #include <d2d1_1.h>
+#include <d2d1effects.h>
 #include <dwrite_1.h>
 #include <wincodec.h>
 #include <map>
@@ -12,6 +13,7 @@
 #include "download-icon.h"
 #include "nav-motion.h"
 #include "loading.h"
+#include "tab-motion.h"
 #include "address.h"
 #include "bookmarks-bar.h"
 #include <set>
@@ -261,7 +263,7 @@ public:
     IDWriteFontCollection* FontCollection()const{return fonts;}
     IWICImagingFactory* Imaging()const{return wic;}
     ID2D1RenderTarget* SwapTarget(ID2D1RenderTarget* next){auto old=target;target=next;return old;}
-    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();DropRipple();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+    void RecreateTarget(){DropGhostLayer();DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();DropRipple();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     float TextWidth(const std::wstring& value,float size,bool medium=false,bool tabular=false,float tracking=0){if(value.empty())return 0;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,{0,0,4096,32},size,tabular,medium,tracking,&layout,m)))return 0;DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);Drop(layout);return metrics.widthIncludingTrailingWhitespace;}
     // Toolbar button drawn in its hover state while the popover it opened is shown.
     int latched=0;
@@ -271,6 +273,88 @@ public:
     bool Enabled(int id)const{return disabled.count(id)==0;}
     void SetEnabled(int id,bool enabled){if(enabled)disabled.erase(id);else disabled.insert(id);}
     int dragIndex=-1;float dragOffset=0;
+    // ---- Tab open/close motion (presentation only) -------------------------------
+    // The host sets `tabKeys` (stable, never-reused tab serials, in order) before
+    // Build/Paint. Without matching keys (fixtures) the strip is drawn statically.
+    // Hit regions follow the presented geometry of the last Build, so a click lands
+    // on what is on screen; selection, focus and the page change synchronously.
+    Motion::TabStripMotion tabMotion;
+    std::vector<unsigned> tabKeys;
+    bool animateTabLayout=false; // host: animate the next width/scroll reflow (e.g. width unlock)
+    bool tabMotionStarted=false; // set when a Build started motion; the host schedules frames
+    Motion::TabLayoutFrame tabFrame;
+    struct TabSnapshot{std::wstring title;std::shared_ptr<const FaviconImage> favicon;float fill=Design::Surface::canvas;bool selected=false;};
+    std::map<unsigned,TabSnapshot> tabSnapshots; // what a closing tab looked like, drawn while it blurs out
+    bool TabKeysValid(int count)const{return motion&&(int)tabKeys.size()==count;}
+    unsigned TabKey(int n)const{return n>=0&&n<(int)tabKeys.size()?tabKeys[n]:(unsigned)(n+1);}
+    bool TakeTabMotionStarted(){const bool started=tabMotionStarted;tabMotionStarted=false;return started;}
+    Design::Box ShownSurface(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll+Design::Space::tabGap*it.presence;return {x,Design::TabStrip::top,x+tabFrame.tab*it.presence,Design::TabStrip::bottom};}
+    // Content keeps the settled tab width (stable text layouts, no squashing) and is clipped to the surface.
+    Design::Box ShownContent(const Motion::TabItem& it)const{auto s=ShownSurface(it);s.right=s.left+strip.tab;return s;}
+    Design::Box ShownRegion(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll;return {x,Design::TabStrip::regionTop,x+it.presence*(tabFrame.tab+Design::Space::tabGap),Design::TabStrip::regionBottom};}
+    float ShownViewRight()const{return Design::TabStrip::left+tabFrame.view;}
+    // Presented surface of live tab n (split separators, menu outline, drag grab), falling back to the layout.
+    Design::Box ShownTab(int n)const{for(auto& it:tabFrame.items)if(it.index==n)return ShownSurface(it);return strip.Surface(n);}
+    float ShownTabLeft(int n)const{return ShownTab(n).left;}
+    void SyncTabMotion(int count,Motion::Time now){
+        if(!TabKeysValid(count)){
+            tabFrame={};tabFrame.tab=strip.tab;tabFrame.scroll=strip.scroll;tabFrame.view=strip.view;tabFrame.content=strip.Content();
+            for(int i=0;i<count;i++){Motion::TabItem it;it.key=TabKey(i);it.index=i;it.slot=strip.Pitch()*i;tabFrame.items.push_back(it);}
+            animateTabLayout=false;return;
+        }
+        if(tabMotion.ReducedMotion()!=motion->ReducedMotion())tabMotion.SetReducedMotion(motion->ReducedMotion());
+        if(tabMotion.Sync(tabKeys,{strip.tab,strip.scroll,strip.view,strip.Overflow()},Design::Space::tabGap,now,animateTabLayout))tabMotionStarted=true;
+        animateTabLayout=false;tabFrame=tabMotion.Sample(now);
+    }
+    // ---- Closing tab blur-out --------------------------------------------------------
+    // The ghost is drawn at full width in its old place into a transparent layer, then
+    // composited with a Gaussian blur (0 -> TabExitBlur DIP) and opacity (1 -> 0).
+    // Direct2D 1.1 (ID2D1DeviceContext) is required for the blur; without it the
+    // layer only fades. Resources are dropped with the render target.
+    ID2D1DeviceContext* blurContext=nullptr;ID2D1Effect* blurEffect=nullptr;bool blurProbed=false;
+    ID2D1BitmapRenderTarget* ghostLayer=nullptr;D2D1_SIZE_F ghostLayerSize{};
+    unsigned long long ghostBlurDraws=0,ghostFadeDraws=0; // fixture evidence of the path taken
+    void DropGhostLayer(){Drop(ghostLayer);ghostLayerSize={};Drop(blurEffect);Drop(blurContext);blurProbed=false;}
+    D2D1_RECT_F GhostRect(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll+Design::Space::tabGap;return {x,Design::TabStrip::top,x+tabFrame.tab,Design::TabStrip::bottom};}
+    bool BlurReady(){
+        if(!blurProbed){blurProbed=true;
+            // CLSID_D2D1GaussianBlur, defined here so no dxguid import library is needed.
+            static const GUID GaussianBlur={0x1feb6d69,0x2fe6,0x4ac9,{0x8c,0x58,0x1d,0x7f,0x93,0xe7,0xa6,0xa5}};
+            if(SUCCEEDED(target->QueryInterface(__uuidof(ID2D1DeviceContext),(void**)&blurContext))&&blurContext){
+                if(FAILED(blurContext->CreateEffect(GaussianBlur,&blurEffect)))Drop(blurEffect);}
+            if(!blurEffect)Drop(blurContext);}
+        return blurContext&&blurEffect;
+    }
+    void DrawGhost(const Motion::TabItem& item){
+        auto it=tabSnapshots.find(item.key);if(it==tabSnapshots.end())return;
+        const float alpha=1-std::clamp(item.exit,0.f,1.f);if(alpha<=.002f)return;
+        const auto& snap=it->second;const D2D1_RECT_F rect=GhostRect(item);
+        const float pad=3*Motion::TabExitBlur,w=rect.right-rect.left+2*pad,h=rect.bottom-rect.top+2*pad;
+        if(!ghostLayer||ghostLayerSize.width!=w||ghostLayerSize.height!=h){Drop(ghostLayer);ghostLayerSize={};
+            if(FAILED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w,h),&ghostLayer))||!ghostLayer){Drop(ghostLayer);return;}
+            ghostLayerSize={w,h};}
+        // Paint the tab as it last looked, with the main helpers redirected to the layer.
+        auto* main=SwapTarget(ghostLayer);ghostLayer->BeginDraw();ghostLayer->Clear(D2D1::ColorF(0,0,0,0));
+        const D2D1_RECT_F tab{pad,pad,pad+rect.right-rect.left,pad+rect.bottom-rect.top};const Design::Box box{tab.left,tab.top,tab.right,tab.bottom};
+        if(snap.fill!=Design::Surface::canvas){Color(snap.fill);target->FillRoundedRectangle(D2D1::RoundedRect(tab,Design::Radius::control,Design::Radius::control),brush);}
+        auto favicon=strip.FaviconIn(box);auto title=strip.TitleIn(box);const D2D1_RECT_F slot{favicon.left,favicon.top,favicon.right,favicon.bottom};
+        if(!DrawSiteImage(snap.favicon,slot))Icon(L"favicon",slot,16);
+        if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(snap.title,{title.left,title.top,title.right,title.bottom},Design::Type::label.size,snap.selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
+        HRESULT hr=ghostLayer->EndDraw();SwapTarget(main);if(FAILED(hr))return;
+        ID2D1Bitmap* bitmap=nullptr;if(FAILED(ghostLayer->GetBitmap(&bitmap))||!bitmap)return;
+        // Cut at the strip's left edge and its available room, not at the shrinking
+        // presented view: a closing last tab must blur out whole, not be sliced.
+        const float right=std::max(ShownViewRight(),std::min(rect.right+pad,Design::TabStrip::left+strip.room));
+        target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,right,Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);
+        const D2D1_POINT_2F origin{rect.left-pad,rect.top-pad};
+        if(BlurReady()){
+            const float sigma=Motion::TabExitBlur*std::clamp(item.exit,0.f,1.f);
+            blurEffect->SetInput(0,bitmap);blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,D2D1_PROPERTY_TYPE_FLOAT,(const BYTE*)&sigma,sizeof(sigma));
+            blurContext->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(),nullptr,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,D2D1::IdentityMatrix(),alpha),nullptr);
+            blurContext->DrawImage(blurEffect,origin);blurContext->PopLayer();blurEffect->SetInput(0,nullptr);++ghostBlurDraws;
+        }else{target->DrawBitmap(bitmap,D2D1::RectF(origin.x,origin.y,origin.x+w,origin.y+h),alpha);++ghostFadeDraws;}
+        target->PopAxisAlignedClip();Drop(bitmap);
+    }
     // Split view (src/split-view.h). `tabGroups` holds each tab's group (0 = none):
     // adjacent members are drawn joined. A tab lifted into the drag overlay leaves
     // an outlined slot. `split` is painted on the canvas around the page windows.
@@ -293,7 +377,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -603,24 +687,27 @@ public:
             if(addressFadeBrush){addressFadeBrush->SetStartPoint({right-A::fade,0});addressFadeBrush->SetEndPoint({right,0});target->FillRectangle(D2D1::RectF(right-A::fade,bar.top+1,right,bar.bottom-1),addressFadeBrush);}
         }
     }
-    void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr){regions.clear();tips.clear();
-        namespace TS=Design::TabStrip;strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;
+    void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();
+        namespace TS=Design::TabStrip;strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;SyncTabMotion(count,now);
         brandTip=L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
         auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},brandTip.c_str()});
         // Tooltips carry the full title: compact tabs truncate or hide it.
         tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back((title.empty()?L"Onglet":title)+L" - Ctrl+1...8 / Ctrl+9 (dernier) - Ctrl+Maj+PgPréc/PgSuiv pour déplacer - clic milieu pour fermer");}
-        for(int i=0;i<count;i++){if(!strip.Visible(i))continue;
-            auto close=strip.CloseIn(strip.Surface(i));auto region=strip.Region(i);
-            region.left=std::max(region.left,TS::left);region.right=std::min(region.right,strip.ViewRight());
+        const float viewRight=ShownViewRight();
+        for(auto& item:tabFrame.items){const int i=item.index;if(i<0||i>=count)continue;
+            auto surface=ShownSurface(item);if(surface.right-surface.left<.5f||surface.right<=strip.ViewLeft()||surface.left>=viewRight)continue;
+            auto close=strip.CloseIn(ShownContent(item));auto region=ShownRegion(item);
+            region.left=std::max(region.left,TS::left);region.right=std::min(region.right,viewRight);
             // Close first: its hit area wins over the containing tab, and IDs
             // never collide with tabs, keyboard commands or toolbar buttons.
             // Tabs under a fade stay clickable (selecting scrolls them clear) but
-            // expose no close target and take no keyboard focus.
+            // expose no close target and take no keyboard focus. A tab still
+            // opening exposes its close target once the glyph is fully revealed.
             const bool clear=strip.Clear(i);
-            if(clear&&strip.Closable(i,selected))regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
+            if(clear&&strip.Closable(i,selected)&&close.right<=surface.right+.01f)regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
             regions.push_back({TabBase+i,{region.left,region.top,region.right,region.bottom},tips[i].c_str(),clear});
         }
-        float x=strip.NewTabLeft();regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
+        float x=viewRight+Design::Space::tabGap;regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
         {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-133,76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
@@ -638,49 +725,81 @@ public:
     std::vector<int> BandOrder()const{std::vector<int> o;for(int i=0;i<band.visible;++i)o.push_back(BookmarkBase+i);if(band.overflow)o.push_back('O');return o;}
     int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
-    // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
-    std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
-        Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
-        // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
-        auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
-        auto paintRegions=regions;
+    // Tabs at their presented geometry. Exactly one surface per tab (no second
+    // close-button hover fill). While a tab opens its surface width follows
+    // `presence` and its content, laid out at the settled width, is clipped to it
+    // and fades with `opacity`; a closing tab is a ghost that blurs out beneath.
+    template<class Visible> void DrawTabs(const std::vector<std::wstring>& titles,int selected,int hover,int focus,Visible visible,Motion::Time now){
+        namespace TS=Design::TabStrip;const bool keyed=TabKeysValid((int)titles.size());
+        auto box2rect=[](Design::Box b){return D2D1::RectF(b.left,b.top,b.right,b.bottom);};
+        const D2D1_RECT_F viewport=D2D1::RectF(strip.ViewLeft(),TS::regionTop,ShownViewRight(),TS::regionBottom);
+        // Ghosts first: neighbours glide over a closing tab while it blurs out.
+        for(auto& item:tabFrame.items)if(item.index<0&&visible(GhostRect(item)))DrawGhost(item);
         // Split groups: a 2 x 10 separator (white 30 %) between adjacent members of one group.
-        if(!tabGroups.empty()){target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);
+        if(!tabGroups.empty()){target->PushAxisAlignedClip(viewport,D2D1_ANTIALIAS_MODE_ALIASED);
             for(int n=0;n+1<(int)tabGroups.size()&&n+1<strip.count;++n)if(tabGroups[n]&&tabGroups[n]==tabGroups[n+1]&&n!=liftedIndex&&n+1!=liftedIndex&&n!=dragIndex&&n+1!=dragIndex){
-                auto a=strip.Surface(n),b=strip.Surface(n+1);const float x=(a.right+b.left)/2,y=(a.top+a.bottom)/2;Color(1,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({x-1,y-5,x+1,y+5},1,1),brush);}
+                auto a=ShownTab(n),b=ShownTab(n+1);const float x=(a.right+b.left)/2,y=(a.top+a.bottom)/2;Color(1,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({x-1,y-5,x+1,y+5},1,1),brush);}
             // Designated target of the split menu: one tab outlined on its shape, a group around its members (2 DIP out, radius 8).
-            if(!menuTargets.empty()){D2D1_RECT_F u{1e9f,1e9f,-1e9f,-1e9f};for(int n:menuTargets)if(n>=0&&n<strip.count){auto r=strip.Surface(n);u={std::min(u.left,r.left),std::min(u.top,r.top),std::max(u.right,r.right),std::max(u.bottom,r.bottom)};}
+            if(!menuTargets.empty()){D2D1_RECT_F u{1e9f,1e9f,-1e9f,-1e9f};for(int n:menuTargets)if(n>=0&&n<strip.count){auto r=ShownTab(n);u={std::min(u.left,r.left),std::min(u.top,r.top),std::max(u.right,r.right),std::max(u.bottom,r.bottom)};}
                 if(u.right>u.left){const bool group=menuTargets.size()>1;if(group)u={u.left-2,u.top-2,u.right+2,u.bottom+2};const float rr=group?8.f:Design::Radius::control;
                     Color(1,Design::Focus::keyboardOpacity);target->DrawRoundedRectangle(D2D1::RoundedRect({u.left+.5f,u.top+.5f,u.right-.5f,u.bottom-.5f},rr-.5f,rr-.5f),brush,1);}}
             target->PopAxisAlignedClip();}
+        auto drawOne=[&](const Motion::TabItem& item){
+            const int n=item.index;
+            D2D1_RECT_F tab=box2rect(ShownSurface(item)),content=box2rect(ShownContent(item));
+            if(n==dragIndex){auto s=strip.Surface(n);s.left+=dragOffset;s.right+=dragOffset;tab=content={s.left,s.top,s.right,s.bottom};}
+            if(tab.right-tab.left<.25f||!visible(tab))return;
+            const bool partial=item.presence<1&&n!=dragIndex;
+            const float radius=std::min(Design::Radius::control,(tab.right-tab.left)/2);
+            // Partially scrolled tabs are cut at the strip viewport, then masked.
+            target->PushAxisAlignedClip(viewport,D2D1_ANTIALIAS_MODE_ALIASED);
+            if(n==liftedIndex){Color(1,.10f);target->DrawRoundedRectangle(D2D1::RoundedRect({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},5.5f,5.5f),brush,1);target->PopAxisAlignedClip();return;}
+            const Design::Box box{content.left,content.top,content.right,content.bottom};
+            auto close=strip.CloseIn(box);auto title=strip.TitleIn(box);auto favicon=strip.FaviconIn(box);
+            const bool closable=strip.Clear(n)&&strip.Closable(n,selected)&&n!=dragIndex;
+            bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
+            float emphasis=dragIndex<0&&motion&&animateSelection?motion->selection.Visual((int)TabKey(n),now):(n==selected?1.f:0.f);
+            const int group=n<(int)tabGroups.size()?tabGroups[n]:0;const bool member=group!=0;
+            // Split group (Paper 08): members share a neutral 1 DIP white-10 % border, outer
+            // corners 6 / inner corners 2, and a 2 x 10 separator between them. In the group
+            // on screen every member has a surface; the active one is the selected #292929.
+            float base=member&&group==visibleTabGroup?std::max(Design::Surface::tabHover,Design::TabSurface(false,tabHover)):Design::TabSurface(false,tabHover);
+            // Reduced motion: an opening tab cross-fades its opaque fill from the canvas.
+            const float fill=Design::Surface::canvas+(base+(Design::Surface::selected-base)*emphasis-Design::Surface::canvas)*item.fill;
+            bool filled=false;
+            if(member){const bool first=n==0||tabGroups[n-1]!=group,last=n+1>=(int)tabGroups.size()||tabGroups[n+1]!=group;
+                const float rl=std::min(first?Design::Radius::control:2.f,radius),rr=std::min(last?Design::Radius::control:2.f,radius);
+                if(emphasis>0||tabHover>0||n==dragIndex||group==visibleTabGroup){FillShape(tab,rl,rr,fill);filled=true;}
+                StrokeShape({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},std::max(0.f,rl-.5f),std::max(0.f,rr-.5f),1,Design::Focus::pointerOpacity);}
+            else if(emphasis>0||tabHover>0||n==dragIndex){Color(fill);target->FillRoundedRectangle(D2D1::RoundedRect(tab,radius,radius),brush);filled=true;}
+            // Sleeping (never the selected tab): favicon at 40%, title at 32% instead of muted.
+            const bool asleep=n!=selected&&n<(int)sleeping.size()&&sleeping[n];
+            if(keyed){auto& snap=tabSnapshots[item.key];if(n<(int)titles.size())snap.title=titles[n];snap.favicon=n<(int)favicons.size()?favicons[n]:nullptr;snap.fill=filled?fill:Design::Surface::canvas;snap.selected=n==selected;}
+            if(focus==TabBase+n)FocusRing(tab,radius);
+            if(partial)target->PushAxisAlignedClip(tab,D2D1_ANTIALIAS_MODE_ALIASED);
+            const float a=item.opacity;
+            // Narrow selected tab: the close glyph cross-fades in over the favicon it replaces.
+            const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
+            DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},(strip.SwapsClose(n,selected)?1-closeShown:1)*(asleep?.4f:1)*a);
+            if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,(n==selected?Design::Text::secondary:asleep?.32f:Design::Text::muted)*a,false,Design::Type::label.medium,Design::Type::label.tracking);
+            if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown*a);}
+            if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
+            if(partial)target->PopAxisAlignedClip();
+            target->PopAxisAlignedClip();
+        };
         // Paint the grabbed tab last so it stays above its neighbours.
-        if(dragIndex>=0){auto it=std::find_if(paintRegions.begin(),paintRegions.end(),[&](const Region& r){return r.id==TabBase+dragIndex;});if(it!=paintRegions.end()){auto r=*it;paintRegions.erase(it);paintRegions.push_back(r);}}
-        for(auto& r:paintRegions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=strip.Surface(n);if(n==dragIndex){surface.left+=dragOffset;surface.right+=dragOffset;}D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=strip.CloseIn(surface);auto title=strip.TitleIn(surface);auto favicon=strip.FaviconIn(surface);const bool closable=strip.Clear(n)&&strip.Closable(n,selected)&&n!=dragIndex;
-                // Partially scrolled tabs are cut at the strip viewport, then masked.
-                target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);if(n==liftedIndex){Color(1,.10f);target->DrawRoundedRectangle(D2D1::RoundedRect({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},5.5f,5.5f),brush,1);target->PopAxisAlignedClip();continue;}bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
-                // Exactly one opaque surface: no second close-button hover fill.
-                float emphasis=dragIndex<0&&motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
-                const int group=n<(int)tabGroups.size()?tabGroups[n]:0;const bool member=group!=0;
-                // Split group (Paper 08): members share a neutral 1 DIP white-10 % border, outer
-                // corners 6 / inner corners 2, and a 2 x 10 separator between them. In the group
-                // on screen every member has a surface; the active one is the selected #292929.
-                float base=member&&group==visibleTabGroup?std::max(Design::Surface::tabHover,Design::TabSurface(false,tabHover)):Design::TabSurface(false,tabHover);
-                if(member){const bool first=n==0||tabGroups[n-1]!=group,last=n+1>=(int)tabGroups.size()||tabGroups[n+1]!=group;
-                    const float rl=first?Design::Radius::control:2,rr=last?Design::Radius::control:2;
-                    if(emphasis>0||tabHover>0||n==dragIndex||group==visibleTabGroup)FillShape(tab,rl,rr,base+(Design::Surface::selected-base)*emphasis);
-                    StrokeShape({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},std::max(0.f,rl-.5f),std::max(0.f,rr-.5f),1,Design::Focus::pointerOpacity);}
-                else if(emphasis>0||tabHover>0||n==dragIndex){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
-                if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
-                // Narrow selected tab: the close glyph cross-fades in over the favicon it replaces.
-                const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
-                // Sleeping (never the selected tab): favicon at 40%, title at 32% instead of muted.
-                const bool asleep=n!=selected&&n<(int)sleeping.size()&&sleeping[n];
-                DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},(strip.SwapsClose(n,selected)?1-closeShown:1)*(asleep?.4f:1));
-                if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:asleep?.32f:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
-                if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown);}
-                if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
-                target->PopAxisAlignedClip();continue;}
+        for(auto& item:tabFrame.items)if(item.index>=0&&item.index!=dragIndex)drawOne(item);
+        for(auto& item:tabFrame.items)if(item.index>=0&&item.index==dragIndex)drawOne(item);
+        if(keyed)for(auto it=tabSnapshots.begin();it!=tabSnapshots.end();){if(std::none_of(tabFrame.items.begin(),tabFrame.items.end(),[&](const Motion::TabItem& i){return i.key==it->first;}))it=tabSnapshots.erase(it);else ++it;}
+    }
+    // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
+    std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+        Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
+        // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
+        auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
+        DrawTabs(titles,selected,hover,focus,visible,now);
+        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||IsTab(id)||!visible(box))continue;
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
@@ -711,8 +830,9 @@ public:
                 else DrawButton(icon,box,variant,state);}
 
         }
-        if(strip.HiddenBefore())DrawFade(strip.ViewLeft(),strip.ViewLeft()+Design::TabStrip::fade);
-        if(strip.HiddenAfter())DrawFade(strip.ViewRight(),strip.ViewRight()-Design::TabStrip::fade);
+        // Fades follow the presented strip (scroll/visible width may be gliding).
+        if(tabFrame.scroll>.5f)DrawFade(strip.ViewLeft(),strip.ViewLeft()+Design::TabStrip::fade);
+        if(tabFrame.scroll<tabFrame.content-tabFrame.view-.5f)DrawFade(ShownViewRight(),ShownViewRight()-Design::TabStrip::fade);
         Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
         DrawAddress(editing,hover=='I');
         DrawBand(hover,focus,now);
@@ -724,7 +844,7 @@ public:
             const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
             if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
         }
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();DropDownloadIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropGhostLayer();DropFade();DropDownloadIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
 }
