@@ -1,17 +1,24 @@
 # Icônes d'application : live et preview
 
-Sources : fichier Paper « Browser Design », page Icon, exportées telles quelles (shaders
-HalftoneDots d'origine, coins transparents, rayon 50 px), sans légende ni fond de canvas.
+Sources exportées telles quelles (coins transparents, rayon 50 px), sans légende ni fond de
+canvas, jamais retouchées ni régénérées :
 
-| Fichier | Artboard Paper | Usage |
+| Fichier | Origine | Usage |
 | --- | --- | --- |
-| `live-256.png`, `live-1024.png` | App Icon - Release / Live | version live officielle |
-| `preview-256.png`, `preview-1024.png` | App Icon - Beta / Build - Worktrees | builds de branches / worktrees |
+| `live-1080.png` | export utilisateur « App Icon - Release _ Live@1080p.png » (1080×1080 RGBA, 1 265 443 octets, sha256 `e799d5b82fd2b71f7753af156e07a3c4a6547aa58e338bf8dae48284af92640c`), copié à l'octet près | version live officielle |
+| `preview-256.png`, `preview-1024.png` | Paper « Browser Design », page Icon, artboard App Icon - Beta / Build - Worktrees (1x et 4x) | builds de branches / worktrees |
+
+`live-1080.png` remplace les anciens `live-256.png` / `live-1024.png` (Paper, artboard
+App Icon - Release / Live) ; c'est l'unique original live, aucune version réduite n'est
+versionnée comme source.
 
 `python tools/release/make_app_icons.py` (Pillow requis seulement ici) régénère
 `src/icons/browser-live.ico` et `src/icons/browser-preview.ico` : 16, 20, 24, 32, 40, 48,
-64, 128 et 256 px, alpha conservé. Le 256 px est l'export 1x tel quel ; les autres tailles
-sont une réduction par moyenne de surface de l'export 4x, sans retouche du dessin.
+64, 128 et 256 px, alpha 32 bits conservé, sortie déterministe. Toutes les tailles sont une
+réduction par moyenne de surface (box), sans retouche du dessin :
+
+- live : chaque taille, 256 compris, est réduite depuis le master 1080 px ;
+- preview : le 256 px est l'export 1x tel quel, les autres tailles viennent de l'export 4x.
 
 ## Politique
 
