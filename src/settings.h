@@ -179,6 +179,7 @@ struct State {
     bool memorySaver = true;       // background tabs ask the engine to trim memory
     bool muteBackground = false;   // only the active tab plays sound
     Autoplay autoplay = Autoplay::Muted;
+    bool grayscaleText = false;    // page text in grayscale antialiasing, like the chrome (engine flag)
     bool operator==(const State& o) const {
         return engine == o.engine && restoreTabs == o.restoreTabs && downloadFolder == o.downloadFolder &&
                askWhereToSave == o.askWhereToSave && reduceMotion == o.reduceMotion && searchSuggestions == o.searchSuggestions &&
@@ -187,7 +188,7 @@ struct State {
                newTabPage == o.newTabPage && homepage == o.homepage && tabPosition == o.tabPosition &&
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
-               muteBackground == o.muteBackground && autoplay == o.autoplay &&
+               muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
                bookmarksBar == o.bookmarksBar && accent == o.accent;
     }
 };
@@ -195,7 +196,7 @@ struct State {
 enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceMotion,
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
-                    AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar };
+                    AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText };
 
 inline void Write(std::ostream& out, const State& s) {
     out << "browser-settings 1\n"
@@ -223,6 +224,7 @@ inline void Write(std::ostream& out, const State& s) {
         << "memory-saver=" << (s.memorySaver ? 1 : 0) << '\n'
         << "mute-background=" << (s.muteBackground ? 1 : 0) << '\n'
         << "autoplay=" << Info(s.autoplay).key << '\n'
+        << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
         << "accent=" << AccentText(s.accent) << '\n';
 }
@@ -254,6 +256,7 @@ inline State Read(std::istream& in) {
         else if (key == "block-third-party-cookies") flag(value, s.blockThirdPartyCookies);
         else if (key == "memory-saver") flag(value, s.memorySaver);
         else if (key == "mute-background") flag(value, s.muteBackground);
+        else if (key == "grayscale-text") flag(value, s.grayscaleText);
         else if (key == "new-tab-page") { for (int i = 0; i < NewTabPageCount; ++i) if (value == Info(static_cast<NewTabPage>(i)).key) s.newTabPage = static_cast<NewTabPage>(i); }
         else if (key == "tab-position") { for (int i = 0; i < TabPositionCount; ++i) if (value == Info(static_cast<TabPosition>(i)).key) s.tabPosition = static_cast<TabPosition>(i); }
         else if (key == "autoplay") { for (int i = 0; i < AutoplayCount; ++i) if (value == Info(static_cast<Autoplay>(i)).key) s.autoplay = static_cast<Autoplay>(i); }

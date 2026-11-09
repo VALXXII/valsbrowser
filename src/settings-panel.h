@@ -45,7 +45,7 @@ enum Hit : int {
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
     ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43,
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
-    ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64,
+    ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
     CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
@@ -57,8 +57,9 @@ inline bool IsEngine(int hit) { return hit >= EngineBase && hit < EngineBase + B
 inline bool IsSite(int hit) { return hit >= SiteBase && hit < PermissionBase; }
 inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < PermissionBase + 100; }
 constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
-                              ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground};
-constexpr int SwitchCount = 14;
+                              ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground,
+                              GrayscaleText};
+constexpr int SwitchCount = 15;
 inline int SwitchIndex(int hit) { for (int i = 0; i < SwitchCount; ++i) if (SwitchHits[i] == hit) return i; return -1; }
 
 // ---- Geometry (DIP, panel-local; x = 0 is the drawer's leading edge) -----------
@@ -134,7 +135,7 @@ struct LayoutInput {
     std::vector<std::wstring> noSitesLines;                     // "Autorisations des sites" with nothing to manage
     float customReveal = 0, homeReveal = 0;                     // address fields unfolding (0..1)
     std::wstring folderName;                                     // the downloads folder's own name (root summary)
-    bool autoplayPending = false, cookiesPending = false;       // differ from what the engine started with
+    bool autoplayPending = false, cookiesPending = false, grayscalePending = false; // differ from what the engine started with
     const BrowserSettings::State* state = nullptr;
     const std::vector<BrowserSettings::Site>* sites = nullptr; bool sitesLoaded = false;
     int site = -1;                                             // Site view: index into sites
@@ -227,6 +228,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         add(Kind::Value, Zoom, row, L"Zoom des pages", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
         add(Kind::Value, BookmarksBarHit, row, L"Barre de favoris", st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
         twoLine(ReduceMotion, L"Réduire les animations");
+        { auto lines = pending(GrayscaleText, in.grayscalePending); auto* s = add(Kind::Switch, GrayscaleText, TwoLine(lines.size()), L"Texte lissé en niveaux de gris"); s->lines = std::move(lines); }
         endGroup();
         labelAt(L"Son et vidéo");
         {
@@ -286,6 +288,7 @@ inline const std::pair<int, const wchar_t*> Descriptions[] = {
     {AskWhere, L"Choisir le dossier à chaque téléchargement."},
     {ReduceMotion, L"S'ajoute au réglage d'animation de Windows."},
     {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
+    {GrayscaleText, L"Comme la barre du navigateur, sans reflets colorés sur les lettres."},
 };
 // Settings search: every row a query can reach, with where it lives and the words it answers to.
 struct Searchable { int hit; const wchar_t* title; const wchar_t* path; View view; const wchar_t* keywords; };
@@ -313,6 +316,7 @@ inline const Searchable SearchIndex[] = {
     {Zoom, L"Zoom des pages", L"Affichage et son › Pages", View::Display, L"taille agrandir"},
     {BookmarksBarHit, L"Barre de favoris", L"Affichage et son › Pages", View::Display, L"favoris marque-pages"},
     {ReduceMotion, L"Réduire les animations", L"Affichage et son › Pages", View::Display, L"mouvement accessibilite"},
+    {GrayscaleText, L"Texte lissé en niveaux de gris", L"Affichage et son › Pages", View::Display, L"police lissage antialiasing cleartype nettete"},
     {AutoplayHit, L"Lecture automatique", L"Affichage et son › Son et vidéo", View::Display, L"video son"},
     {MuteBackground, L"Couper le son en arrière-plan", L"Affichage et son › Son et vidéo", View::Display, L"muet son"},
 };
@@ -391,7 +395,7 @@ private:
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
     HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
     HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
-    BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false; // engine flags of this run
+    BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false, modal_ = false, animatingPainted_ = false, spinning_ = false;
     int appliedVisible_ = -1; RECT appliedOwner_{}, appliedWindow_{};
@@ -426,7 +430,8 @@ private:
         case Suggestions: return &state_->searchSuggestions; case Passwords: return &state_->passwords; case Autofill: return &state_->autofill;
         case ClearOnExit: return &state_->clearOnExit; case ConfirmClose: return &state_->confirmCloseTabs; case CloseWithLastTab: return &state_->closeWithLastTab;
         case AdBlock: return &state_->adBlock; case HttpsOnly: return &state_->httpsOnly; case ThirdPartyCookies: return &state_->blockThirdPartyCookies;
-        case MemorySaver: return &state_->memorySaver; case MuteBackground: return &state_->muteBackground; default: return nullptr;
+        case MemorySaver: return &state_->memorySaver; case MuteBackground: return &state_->muteBackground;
+        case GrayscaleText: return &state_->grayscaleText; default: return nullptr;
         }
     }
     static BrowserSettings::Change SwitchChange(int hit) {
@@ -436,7 +441,7 @@ private:
         case Suggestions: return C::SearchSuggestions; case Passwords: return C::Passwords; case Autofill: return C::Autofill;
         case ConfirmClose: return C::ConfirmCloseTabs; case CloseWithLastTab: return C::CloseWithLastTab; case AdBlock: return C::AdBlock;
         case HttpsOnly: return C::HttpsOnly; case ThirdPartyCookies: return C::ThirdPartyCookies; case MemorySaver: return C::MemorySaver;
-        case MuteBackground: return C::MuteBackground; default: return C::ClearOnExit;
+        case MuteBackground: return C::MuteBackground; case GrayscaleText: return C::GrayscaleText; default: return C::ClearOnExit;
         }
     }
     bool SwitchValue(int hit) const { auto* f = SwitchField(hit); return f && *f; }
@@ -457,6 +462,7 @@ private:
         in.customReveal = customRevealValue_; in.homeReveal = homeRevealValue_;
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
+        in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
         in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.site = site_; return in;
     }
     mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
@@ -1344,7 +1350,7 @@ public:
     ~Drawer() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, BrowserSettings::State* state, Hooks hooks) {
         owner_ = owner; state_ = state; hooks_ = std::move(hooks);
-        if (state_) { launchAutoplay_ = state_->autoplay; launchCookies_ = state_->blockThirdPartyCookies; } // engine flags in effect for this run
+        if (state_) { launchAutoplay_ = state_->autoplay; launchCookies_ = state_->blockThirdPartyCookies; launchGrayscale_ = state_->grayscaleText; } // engine flags in effect for this run
         motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 384;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereSettingsDrawer";
         RegisterClassW(&wc);
