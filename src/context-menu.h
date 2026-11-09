@@ -14,6 +14,7 @@
 #include <d2d1effects.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,6 +25,10 @@
 namespace NativeChrome {
 namespace ContextMenu {
 
+// Layout glyph drawn before a label (split view block, Paper p-7-0 "V2"): an 18 x 14
+// outline with the part the dragged site will take filled in.
+enum class Glyph { None, Blank, Right, Left, Top, Bottom, StartRow, EndRow, StartColumn, EndColumn };
+enum class Kind { Command, Header, Note };  // Header / Note: read-only rows, never focused
 struct Item {
     int id = 0;                       // returned by Track(); 0 is never returned for an item
     std::wstring description;         // optional second line (choice menus: what the option does)
@@ -34,11 +39,22 @@ struct Item {
     std::shared_ptr<const FaviconImage> image; // optional site icon in the same column (wins over `icon`)
     std::wstring help;                // UI Automation help text (e.g. a bookmark's address)
     std::vector<Item> children;       // non-empty: a submenu
+    Kind kind = Kind::Command;
+    Glyph glyph = Glyph::None;
+    std::wstring second;              // a quieter word (50 %) after the label (homonyms: "GitHub  Issues"); header: "· affiché"
+    std::vector<std::shared_ptr<const FaviconImage>> icons;  // site icons: one (16, header 14) or a group's three (12)
+    bool siteIcon = false;            // reserve the icon slot even without an image (generic globe)
+    std::wstring accessible;          // read by assistive tech when the row is highlighted ("À droite, Avec YouTube")
+    int tag = 0;                      // caller data for the highlight callback (e.g. which tab it designates)
 };
 // How a menu ended: the chosen id plus the gesture, so a bookmark row can open in a
 // new tab (Ctrl / Shift) or ask for its own context menu (right click, Menu key).
 struct Choice { int id = 0; bool ctrl = false, shift = false, context = false; };
 inline Item Separator() { Item item; item.separator = true; return item; }
+inline Item Header(std::wstring label, std::wstring second, std::vector<std::shared_ptr<const FaviconImage>> icons, int tag = 0) {
+    Item item; item.kind = Kind::Header; item.label = std::move(label); item.second = std::move(second); item.icons = std::move(icons); item.siteIcon = true; item.enabled = false; item.tag = tag; return item;
+}
+inline Item Note(std::wstring text, bool indent = true) { Item item; item.kind = Kind::Note; item.label = std::move(text); item.enabled = false; item.glyph = indent ? Glyph::Blank : Glyph::None; return item; }
 inline Item Command(int id, std::wstring label, std::wstring shortcut = L"", bool enabled = true, bool checked = false) {
     Item item; item.id = id; item.label = std::move(label); item.shortcut = std::move(shortcut); item.enabled = enabled; item.checked = checked; return item;
 }
@@ -66,6 +82,8 @@ inline constexpr float keyPadX = 6, keyHeight = 20, keyRadius = 4, keyGap = 2;
 inline constexpr float describedWidth = 288, describedTop = 7, describedBottom = 8, descriptionLine = 18;
 // Opening: fades in, slides 6 DIP away from its anchor and comes into focus (blur 3 DIP to 0), 180 ms ease-out.
 inline constexpr float enterSlide = 6, enterBlur = 3, enterMs = 180;
+// Split block (Paper "V2"): 28 DIP header and reason rows in 13 DIP text, glyph 18 x 14 then 10 DIP to the label.
+inline constexpr float header = 28, small = 13, glyphW = 18, glyphH = 14, glyphGap = 10, headerIcon = 14, miniIcon = 12, headerGap = 8;
 }
 // CLSID_D2D1GaussianBlur (d2d1effects.h declares it extern; dxguid is not linked).
 inline constexpr GUID BlurEffect{0x1feb6d69, 0x2fe6, 0x4ac9, {0x8c, 0x58, 0x1d, 0x7f, 0x93, 0xe7, 0xa6, 0xa5}};
@@ -88,6 +106,7 @@ class Menu {
         int announced = -2;               // last row reported as focused
     };
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_;
+    const Item* highlighted_ = nullptr;
     std::vector<std::unique_ptr<Level>> levels_; int depth_ = 0; // open levels
     int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_;
     std::function<void(int)> background_; // middle click on a row: open in the background, menu stays
@@ -95,7 +114,7 @@ class Menu {
     static constexpr UINT InvokeMessage = WM_APP + 40; // UIA actions are posted, never run inside the provider call
     static constexpr UINT_PTR FrameTimer = 1, SubmenuTimer = 2;
 
-    static bool Selectable(const Item& item) { return !item.separator && item.enabled; }
+    static bool Selectable(const Item& item) { return !item.separator && item.enabled && item.kind == Kind::Command; }
     Level* LevelOf(HWND hwnd) { for (int i = 0; i < depth_; ++i) if (levels_[i]->hwnd == hwnd) return levels_[i].get(); return nullptr; }
     int IndexOf(HWND hwnd) const { for (int i = 0; i < depth_; ++i) if (levels_[i]->hwnd == hwnd) return i; return -1; }
     float Scale(const Level& l) const { return l.dpi / 96.f; }
@@ -178,7 +197,10 @@ class Menu {
         float label = 0, shortcut = 0; bool glyph = false, described = false; l.icons = false;
         for (const auto& item : *l.items) {
             if (item.separator) continue;
-            label = std::max(label, l.chrome.TextWidth(Plain(item.label), Layout::text));
+            const float size = item.kind == Kind::Command ? Layout::text : Layout::small;
+            float w = l.chrome.TextWidth(Plain(item.label), size) + Lead(item);
+            if (!item.second.empty()) w += l.chrome.TextWidth(L"  " + item.second, Layout::small);
+            label = std::max(label, w);
             if (!item.shortcut.empty()) shortcut = std::max(shortcut, KeysWidth(l, item.shortcut));
             glyph = glyph || item.checked || !item.children.empty();
             described = described || !item.description.empty();
@@ -193,7 +215,7 @@ class Menu {
         l.tops.clear(); l.heights.clear(); l.descriptions.clear(); float y = Layout::pad + 1;
         for (const auto& item : *l.items) {
             auto lines = item.description.empty() ? std::vector<std::wstring>{} : Wrap(l, item.description, textWidth);
-            const float h = item.separator ? Layout::separator : lines.empty() ? Layout::row : Layout::describedTop + Layout::line + 1 + lines.size() * Layout::descriptionLine + Layout::describedBottom;
+            const float h = item.separator ? Layout::separator : item.kind != Kind::Command ? Layout::header : lines.empty() ? Layout::row : Layout::describedTop + Layout::line + 1 + lines.size() * Layout::descriptionLine + Layout::describedBottom;
             l.tops.push_back(y); l.heights.push_back(h); l.descriptions.push_back(std::move(lines)); y += h;
         }
         l.height = y + Layout::pad + 1;
@@ -229,6 +251,7 @@ class Menu {
         for (int i = index; i < depth_; ++i) { if (levels_[i]->uia.Listening()) levels_[i]->uia.Raise(MenuKey, UIA_MenuClosedEventId); KillTimer(levels_[i]->hwnd, FrameTimer); KillTimer(levels_[i]->hwnd, SubmenuTimer); ShowWindow(levels_[i]->hwnd, SW_HIDE); levels_[i]->entering = false; }
         if (index < depth_) depth_ = index;
         if (index > 0 && index - 1 < depth_) { levels_[index - 1]->child = -1; Invalidate(*levels_[index - 1]); }
+        Highlight();
     }
     void OpenChild(int index) {
         Level& l = *levels_[index]; const int i = l.hover;
@@ -253,7 +276,7 @@ class Menu {
     void SetHover(int index, int i, bool keyboard) {
         Level& l = *levels_[index]; l.keyboard = keyboard;
         if (l.hover == i) return;
-        l.hover = i; Interact(l);
+        l.hover = i; Interact(l); Highlight();
         if (keyboard && i >= 0 && l.uia.Listening() && l.announced != i) { l.announced = i; l.uia.Raise(RowKey(i), UIA_AutomationFocusChangedEventId); }
         // Hovering another row of a parent closes its open submenu after the same delay.
         KillTimer(l.hwnd, SubmenuTimer);
@@ -269,8 +292,52 @@ class Menu {
         for (int k = 0; k < n; ++k) { i = (i + step + n) % n; if (Selectable((*l.items)[i])) { SetHover(index, i, true); return; } }
     }
     int HitRow(const Level& l, float y) const {
-        for (size_t i = 0; i < l.tops.size(); ++i) if (y >= l.tops[i] && y < l.tops[i] + l.heights[i]) return (*l.items)[i].separator ? -1 : static_cast<int>(i);
+        for (size_t i = 0; i < l.tops.size(); ++i) if (y >= l.tops[i] && y < l.tops[i] + l.heights[i]) return (*l.items)[i].separator || (*l.items)[i].kind != Kind::Command ? -1 : static_cast<int>(i);
         return -1;
+    }
+    // Space before the label: a layout glyph, or a site icon (one, or a group's three).
+    static float Lead(const Item& item) {
+        if (item.kind == Kind::Header) return (item.icons.size() > 1 ? 3 * Layout::miniIcon + 4 : Layout::headerIcon) + Layout::headerGap;
+        if (item.glyph != Glyph::None) return Layout::glyphW + Layout::glyphGap;
+        if (item.icons.size() > 1) return 3 * Layout::miniIcon + 4 + Layout::glyphGap;
+        if (item.siteIcon || !item.icons.empty()) return Layout::icon + Layout::glyphGap;
+        return 0;
+    }
+    void DrawIcons(Level& l, const Item& item, float x, float cy, float single, float alpha) {
+        if (item.icons.size() > 1) {
+            for (size_t k = 0; k < item.icons.size() && k < 3; ++k) { const float left = x + k * (Layout::miniIcon + 2); const D2D1_RECT_F box{left, cy - Layout::miniIcon / 2, left + Layout::miniIcon, cy + Layout::miniIcon / 2};
+                if (!l.chrome.DrawSiteImage(item.icons[k], box, alpha)) l.chrome.Icon(L"favicon", box, 16, alpha); }
+            return;
+        }
+        const D2D1_RECT_F box{x, cy - single / 2, x + single, cy + single / 2};
+        if (item.icons.empty() || !l.chrome.DrawSiteImage(item.icons[0], box, alpha)) l.chrome.Icon(L"favicon", box, 16, alpha);
+    }
+    // 18 x 14, radius 2, 1.5 DIP inset outline, the destination half (or a 6 DIP end) filled.
+    void DrawGlyph(Level& l, Glyph g, float x, float cy, float alpha) {
+        if (g == Glyph::None || g == Glyph::Blank) return;
+        auto* t = l.chrome.RenderTarget(); auto* brush = l.chrome.SolidBrush(); brush->SetColor(D2D1::ColorF(1, 1, 1, alpha));
+        const D2D1_RECT_F box{x, cy - Layout::glyphH / 2, x + Layout::glyphW, cy + Layout::glyphH / 2};
+        t->DrawRoundedRectangle(D2D1::RoundedRect({box.left + .75f, box.top + .75f, box.right - .75f, box.bottom - .75f}, 1.25f, 1.25f), brush, 1.5f);
+        const float w = Layout::glyphW, h = Layout::glyphH; D2D1_RECT_F fill = box;
+        switch (g) {
+        case Glyph::Right: fill.left = box.right - w / 2; break;
+        case Glyph::Left: fill.right = box.left + w / 2; break;
+        case Glyph::Top: fill.bottom = box.top + h / 2; break;
+        case Glyph::Bottom: fill.top = box.bottom - h / 2; break;
+        case Glyph::StartRow: fill.right = box.left + 6; break;
+        case Glyph::EndRow: fill.left = box.right - 6; break;
+        case Glyph::StartColumn: fill.bottom = box.top + 5; break;
+        case Glyph::EndColumn: fill.top = box.bottom - 5; break;
+        default: break;
+        }
+        t->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        t->FillRoundedRectangle(D2D1::RoundedRect(fill, 2, 2), brush); t->PopAxisAlignedClip();
+    }
+    // The highlighted command (hover or keyboard) across every open level, for the owner.
+    void Highlight() {
+        const Item* now = nullptr;
+        for (int i = depth_ - 1; i >= 0 && !now; --i) { auto& l = *levels_[i]; if (l.hover >= 0 && l.hover < static_cast<int>(l.items->size()) && Selectable((*l.items)[l.hover])) now = &(*l.items)[l.hover]; }
+        if (now == highlighted_) return; highlighted_ = now; if (onHighlight) onHighlight(now);
     }
     void Invalidate(Level& l) {
         if (!l.hwnd) return; InvalidateRect(l.hwnd, nullptr, FALSE);
@@ -324,6 +391,15 @@ class Menu {
         for (size_t i = 0; i < l.items->size(); ++i) {
             const Item& item = (*l.items)[i]; const float top = l.tops[i];
             if (item.separator) { brush->SetColor(D2D1::ColorF(1, 1, 1, .06f)); const float y = top + Layout::separator / 2 - .5f; t->FillRectangle(D2D1::RectF(left + Layout::padLeft, y, right - Layout::padLeft, y + 1), brush); continue; }
+            if (item.kind != Kind::Command) {  // header (#FFFFFF99, its tail 35 %) or reason (#FFFFFFB3), 13 DIP, not focusable
+                const float cy = top + Layout::header / 2, y = top + (Layout::header - Layout::line) / 2; float x = left + Layout::padLeft;
+                if (item.kind == Kind::Header) { DrawIcons(l, item, x, cy, Layout::headerIcon, 1); x += Lead(item); }
+                else if (item.glyph != Glyph::None) x += Layout::glyphW + Layout::glyphGap;
+                const std::wstring text = Plain(item.label); const float alpha = item.kind == Kind::Header ? .6f : .7f;
+                l.chrome.Text(text, {x, y, right - Layout::padRight, y + Layout::line}, Layout::small, alpha);
+                if (!item.second.empty()) l.chrome.Text(L" " + item.second, {x + l.chrome.TextWidth(text, Layout::small), y, right - Layout::padRight, y + Layout::line}, Layout::small, .5f);  // 5.26:1
+                continue;
+            }
             const auto v = l.motion.Visual(static_cast<int>(i) + 1, now);
             // The open submenu's row keeps its fill while the pointer is in the submenu.
             const float h = item.enabled ? std::max(v.hover, static_cast<int>(i) == l.child ? 1.f : 0.f) : 0;
@@ -331,6 +407,11 @@ class Menu {
             const D2D1_RECT_F row{left, top, right, top + l.heights[i]};
             const float titleTop = described ? top + Layout::describedTop : top + (Layout::row - Layout::line) / 2; // glyphs align with the title line
             if (h > 0 || v.press > 0) { brush->SetColor(D2D1::ColorF(1, 1, 1, .08f * h + .04f * v.press)); t->FillRoundedRectangle(D2D1::RoundedRect(row, Layout::rowRadius, Layout::rowRadius), brush); }
+            // Keyboard focus: the same fill plus a 1 DIP inner ring at 50 %; the parent of an open submenu keeps the fill only.
+            if (l.keyboard && static_cast<int>(i) == l.hover && static_cast<int>(i) != l.child && item.enabled) {
+                brush->SetColor(D2D1::ColorF(1, 1, 1, Design::Focus::keyboardOpacity));
+                t->DrawRoundedRectangle(D2D1::RoundedRect({row.left + .5f, row.top + .5f, row.right - .5f, row.bottom - .5f}, Layout::rowRadius - .5f, Layout::rowRadius - .5f), brush, 1);
+            }
             const float dim = item.enabled ? 1.f : Design::Text::disabled;
             float tail = right - Layout::padRight;
             if (!item.children.empty()) {
@@ -344,7 +425,7 @@ class Menu {
                 l.chrome.Icon(L"check", box, 14, dim); l.chrome.Icon(L"check", box, 14, dim); tail -= Layout::trailing + Layout::shortcutGap;
             }
             if (!item.shortcut.empty()) tail = DrawKeys(l, item.shortcut, tail, titleTop + Layout::line / 2, dim) - Layout::shortcutGap;
-            float textLeft = left + Layout::padLeft;
+            float textLeft = left + Layout::padLeft; const float cy = titleTop + Layout::line / 2;
             if (l.icons) {
                 const D2D1_RECT_F box{textLeft, titleTop + (Layout::line - Layout::icon) / 2, textLeft + Layout::icon, titleTop + (Layout::line + Layout::icon) / 2};
                 if (!(item.image && l.chrome.DrawSiteImage(item.image, box, dim)) && !item.icon.empty()) {
@@ -353,11 +434,15 @@ class Menu {
                 }
                 textLeft += Layout::icon + Layout::iconGap;
             }
+            if (item.glyph != Glyph::None) { DrawGlyph(l, item.glyph, textLeft, cy, (.5f + .2f * h) * (item.enabled ? 1.f : .32f / .5f)); textLeft += Lead(item); }
+            else if (item.siteIcon || !item.icons.empty()) { DrawIcons(l, item, textLeft, cy, Layout::icon, dim); textLeft += Lead(item); }
             const float labelRight = std::max(textLeft + 8, std::min(tail + Layout::shortcutGap - 8, right - Layout::padRight));
             const bool danger = item.danger && item.enabled;
             if (danger) l.chrome.ink = D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, 1);
-            l.chrome.Text(Plain(item.label), {textLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, danger ? 1.f : (.9f + .1f * h) * dim);
+            const std::wstring plain = Plain(item.label);
+            l.chrome.Text(plain, {textLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, danger ? 1.f : (.9f + .1f * h) * dim);
             l.chrome.ink = D2D1::ColorF(1, 1, 1, 1);
+            if (!item.second.empty()) { const float x = textLeft + l.chrome.TextWidth(plain + L"  ", Layout::text); if (x < labelRight) l.chrome.Text(item.second, {x, titleTop, labelRight, titleTop + Layout::line}, Layout::small, (.5f + .1f * h) * dim); }  // 50 % (5.26:1), quieter than the 90-100 % name
             // Description: 50% at rest, a touch brighter on the hovered choice.
             for (size_t k = 0; k < lines.size(); ++k) {
                 const float y = titleTop + Layout::line + 1 + k * Layout::descriptionLine;
@@ -420,13 +505,13 @@ class Menu {
             if (w == SubmenuTimer) { KillTimer(h, SubmenuTimer); if (l->hover >= 0 && !(*l->items)[l->hover].children.empty()) OpenChild(index); else if (l->hover >= 0 && l->child >= 0 && l->hover != l->child) CloseFrom(index + 1); }
             return 0;
         case WM_MOUSEMOVE: {
-            if (!l) return 0;
+            if (!l || ignorePointer) return 0;
             TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0}; TrackMouseEvent(&track);
             const int row = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l));
             if (row >= 0 && !(*l->items)[row].enabled) { SetHover(index, -1, false); return 0; }
             SetHover(index, row, false); return 0;
         }
-        case WM_MOUSELEAVE: if (l && !l->keyboard && l->child < 0) SetHover(index, -1, false); return 0;
+        case WM_MOUSELEAVE: if (l && !ignorePointer && !l->keyboard && l->child < 0) SetHover(index, -1, false); return 0;
         case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); Interact(*l); } return 0;
         case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
             if (!l) return 0;
@@ -475,6 +560,9 @@ class Menu {
         return nodes;
     }
 public:
+    // Called when the highlighted command changes (hover or keyboard, any level); nullptr when none.
+    std::function<void(const Item*)> onHighlight;
+    bool ignorePointer = false;  // native QA: the real pointer, wherever it is, must not move the highlight
     ~Menu() { Dispose(); }
     void Init(HINSTANCE instance, HWND owner, std::wstring root) {
         instance_ = instance; owner_ = owner; root_ = std::move(root);
@@ -484,6 +572,15 @@ public:
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the windows.
     void Dispose() { for (auto& l : levels_) { l->uia.Detach(); if (l->blur) { l->blur->Release(); l->blur = nullptr; } l->chrome.Dispose(); } levels_.clear(); depth_ = 0; }
     bool Open() const { return depth_ > 0; }
+    // Native QA (--split-test): open levels, and highlighting a row by its label as the
+    // pointer (fill) or the keyboard (fill + ring) would. Disabled and read-only rows refuse.
+    int Depth() const { return depth_; }
+    HWND LevelWindow(int i) const { return i >= 0 && i < depth_ ? levels_[i]->hwnd : nullptr; }
+    bool TestHover(int level, const std::wstring& label, bool keyboard) {
+        if (level < 0 || level >= depth_) return false; auto& l = *levels_[level];
+        for (size_t i = 0; i < l.items->size(); ++i) if (Plain((*l.items)[i].label) == label && Selectable((*l.items)[i])) { SetHover(level, static_cast<int>(i), keyboard); return true; }
+        return false;
+    }
     // Modal: returns the chosen item's id, 0 when dismissed. `at` is a screen
     // point; `exclude` (keyboard-opened menus) is the control to drop below.
     // alignRight: a keyboard-opened menu ends at the control's right edge (gear-side controls).
@@ -498,8 +595,6 @@ public:
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
     std::vector<Accessibility::Node> AccessibleNodes(int index) const { return Nodes(index); }
-    HWND LevelWindow(int index) const { return index < depth_ ? levels_[index]->hwnd : nullptr; }
-    int Depth() const { return depth_; }
     int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false) {
         if (!owner_ || items.empty() || depth_) return 0;
         result_ = 0; done_ = false; reduced_ = reduced; choice_ = {};
@@ -520,7 +615,7 @@ public:
             TranslateMessage(&msg); DispatchMessageW(&msg);
             if (msg.message == WM_QUIT) { PostQuitMessage(static_cast<int>(msg.wParam)); break; }
         }
-        CloseFrom(0);
+        CloseFrom(0); if (highlighted_ && onHighlight) onHighlight(nullptr); highlighted_ = nullptr;
         return result_;
     }
 };

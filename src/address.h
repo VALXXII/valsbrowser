@@ -328,6 +328,31 @@ inline std::vector<PopularSite> ReadPopular(std::istream& in) {
     return sites;
 }
 
+// Visits per http(s) host (readable, without "www."), summing its pages; `url` is the
+// visited root page when there is one, else the host's root. Shared by the address
+// suggestions' host rows and the new tab page's most visited sites.
+struct HostTotal { std::wstring host, title, url; int visits = 0, pages = 0; std::int64_t last = 0; bool root = false; };
+inline std::vector<HostTotal> HostTotals(const History& history) {
+    std::vector<HostTotal> hosts;
+    for (auto& v : history.Items()) {
+        Parts p;
+        if (!Split(v.url, p) || (p.scheme != L"https" && p.scheme != L"http")) continue;
+        const std::wstring host = ReadableHost(p.host);
+        auto it = std::find_if(hosts.begin(), hosts.end(), [&](const HostTotal& h) { return h.host == host; });
+        if (it == hosts.end()) { hosts.push_back({host, L"", p.scheme + L"://" + p.host + L"/", 0, 0, false}); it = hosts.end() - 1; }
+        it->visits += v.visits; ++it->pages; it->last = std::max(it->last, v.last);
+        if (ReadableRest(p.rest).empty()) { it->root = true; it->title = v.title; it->url = v.url; }
+    }
+    return hosts;
+}
+// Most visited sites, best first (visits, then most recent): the new tab page's tiles.
+inline std::vector<HostTotal> TopSites(const History& history, size_t max) {
+    auto hosts = HostTotals(history);
+    std::stable_sort(hosts.begin(), hosts.end(), [](const HostTotal& a, const HostTotal& b) { return a.visits != b.visits ? a.visits > b.visits : a.last > b.last; });
+    if (hosts.size() > max) hosts.resize(max);
+    return hosts;
+}
+
 // `typed` is what the user typed (without any inline completion). `inlineAllowed`
 // is false right after a deletion, so Backspace can remove the completion.
 // `popular` (optional) ranks after the history: visited sites always come first.
@@ -351,18 +376,7 @@ inline Suggestions Suggest(const std::wstring& typed, const History& history, bo
     };
     // Host rows: one per visited host, summing its pages, so "git" offers github.com
     // even when only deep pages were visited (two or more). A visited root page becomes that row.
-    struct HostTotal { std::wstring host, title, url; int visits = 0, pages = 0; std::int64_t last = 0; bool root = false; };
-    std::vector<HostTotal> hosts;
-    for (auto& v : history.Items()) {
-        Parts p;
-        if (!Split(v.url, p) || (p.scheme != L"https" && p.scheme != L"http")) continue;
-        const std::wstring host = ReadableHost(p.host);
-        auto it = std::find_if(hosts.begin(), hosts.end(), [&](const HostTotal& h) { return h.host == host; });
-        if (it == hosts.end()) { hosts.push_back({host, L"", p.scheme + L"://" + p.host + L"/", 0, 0, false}); it = hosts.end() - 1; }
-        it->visits += v.visits; ++it->pages; it->last = std::max(it->last, v.last);
-        if (ReadableRest(p.rest).empty()) { it->root = true; it->title = v.title; it->url = v.url; }
-    }
-    for (auto& h : hosts) {
+    for (auto& h : HostTotals(history)) {
         if (!h.root && h.pages < 2) continue; // a single deep page is its own row
         Suggestion row; row.kind = Kind::Site; row.url = h.url; row.text = h.host; row.title = h.title; row.host = !h.root; row.site = SiteOf(h.url);
         consider(row, h.title, h.visits, h.last);

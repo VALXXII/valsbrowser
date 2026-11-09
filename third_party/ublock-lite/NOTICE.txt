@@ -1,0 +1,13 @@
+uBlock Origin Lite 2026.1103.1743 (Chromium build)
+Copyright (C) Raymond Hill and contributors.
+
+The browser's ad blocker is uBlock Origin Lite, shipped unmodified as a separate
+component in assets\extensions\ublock-lite. It is free software, licensed under the
+GNU General Public License version 3 (see uBOLite-LICENSE.txt, also inside the
+extension folder as LICENSE.txt).
+
+Corresponding source code:
+  https://github.com/uBlockOrigin/uBOL-home/releases/tag/2026.1103.1743
+  (uBOL ships its JavaScript unminified; upstream development: https://github.com/gorhill/uBlock, platform/mv3)
+Distributed archive: uBOLite_2026.1103.1743.chromium.zip
+SHA-256: 79236476535b63706749e088e0ce99bb31d3d2ff15fabb4d7e990be23d6e4613

@@ -16,11 +16,14 @@
 //    slides 30% the other way and dims (iOS navigation), and pops back the same way.
 //  - Value rows open the native menu as their list of choices (described
 //    options for anti-tracking, sleeping tabs and site permissions).
+//  - Address fields (custom search engine, custom home page) unfold under the
+//    choice that needs them; editing happens in a native EDIT laid over the field.
 // Reduced motion keeps every state change and drops the travel.
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <array>
+#include <map>
 #include <functional>
 #include <vector>
 #include "chrome.h"
@@ -38,15 +41,19 @@ enum Hit : int {
     None = 0, Close = 1, Back = 2, EngineBase = 10, More = 20,
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
     ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43,
-    Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, BookmarksBarHit = 54,
+    Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
+    ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64,
+    CustomSearchField = 70, HomepageField = 71,
     SiteBase = 100, PermissionBase = 400,
 };
+inline bool IsField(int hit) { return hit == CustomSearchField || hit == HomepageField; }
 inline int EngineHit(int index) { return EngineBase + index; }
 inline bool IsEngine(int hit) { return hit >= EngineBase && hit < EngineBase + BrowserSettings::EngineCount; }
 inline bool IsSite(int hit) { return hit >= SiteBase && hit < PermissionBase; }
 inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < PermissionBase + 100; }
-constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit};
-constexpr int SwitchCount = 7;
+constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
+                              ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground};
+constexpr int SwitchCount = 14;
 inline int SwitchIndex(int hit) { for (int i = 0; i < SwitchCount; ++i) if (SwitchHits[i] == hit) return i; return -1; }
 
 // ---- Geometry (DIP, panel-local; x = 0 is the drawer's leading edge) -----------
@@ -62,6 +69,9 @@ inline constexpr float padTop = 16, headerHeight = 24, padBottom = 16, groupGap 
 inline constexpr float viewTop = padTop + headerHeight + groupGap;                                 // 72: content scrolls under the header
 inline constexpr float label = 24, rowGap = 6, row = 32, pitch = row + rowGap;                    // label: 20 + 4 below
 inline constexpr float folderRow = 54, twoLinePad = 8, descriptionLine = 18, siteRow = 54;
+// Address field: a 32 DIP field, 6 DIP, one 18 DIP hint line.
+inline constexpr float field = 32, fieldHint = 6, fieldRow = field + fieldHint + descriptionLine;
+inline constexpr float TwoLine(size_t lines) { return 2 * twoLinePad + 20 + 2 + lines * descriptionLine; }
 // Footers. Main: hairline, 12, "Effacer les données…" (32), 8, version (24), 16.
 inline constexpr float footer = 1 + 12 + row + 8 + slot + padBottom;                              // 93
 inline constexpr float switchWidth = 28, switchHeight = 16, knob = 12, knobInset = 2, knobStretch = 3;
@@ -87,7 +97,7 @@ inline constexpr Motion::Milliseconds select = Settle(.26f), toggle = Settle(.2f
 
 enum class View { Main, Sites, Site };
 // One laid-out element of a view's scrolling list (content coordinates).
-enum class Kind { Label, Engine, More, Switch, Folder, Value, Nav, SiteRow, Note };
+enum class Kind { Label, Engine, More, Switch, Folder, Value, Nav, SiteRow, Note, Field };
 struct Slot {
     Kind kind = Kind::Label; int hit = 0, index = -1;
     float top = 0, height = Layout::row, opacity = 1;
@@ -98,8 +108,10 @@ struct Slot {
 // Per-frame inputs of the pure layout.
 struct LayoutInput {
     float more = 0;                                            // fold of the extra engines (1 = shown)
-    std::vector<std::wstring> passwordsLines, autofillLines;   // wrapped descriptions
+    const std::map<int, std::vector<std::wstring>>* lines = nullptr; // wrapped descriptions by hit
     std::vector<std::wstring> noSitesLines;                     // "Autorisations des sites" with nothing to manage
+    float customReveal = 0, homeReveal = 0;                     // address fields unfolding (0..1)
+    bool autoplayPending = false, cookiesPending = false;       // differ from what the engine started with
     const BrowserSettings::State* state = nullptr;
     const std::vector<BrowserSettings::Site>* sites = nullptr; bool sitesLoaded = false;
     int site = -1;                                             // Site view: index into sites
@@ -119,10 +131,23 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
     };
     auto endGroup = [&] { y += groupGap - rowGap; };
     const auto* st = in.state;
+    auto described = [&](int hit) -> std::vector<std::wstring> {
+        if (!in.lines) return {};
+        const auto it = in.lines->find(hit); return it == in.lines->end() ? std::vector<std::wstring>{} : it->second;
+    };
+    auto twoLine = [&](int hit, const wchar_t* label) { auto lines = described(hit); auto* s = add(Kind::Switch, hit, TwoLine(lines.size()), label); s->lines = std::move(lines); };
+    // An address field unfolding under its choice: clipped to its share of the reveal.
+    auto fieldAt = [&](int hit, float reveal, float clipTop = -1e6f, float clipBottom = 1e6f, float opacity = 1) {
+        const float r = Motion::Clamp(reveal); if (r <= .001f) return;
+        Slot s; s.kind = Kind::Field; s.hit = hit; s.top = y - (1 - r) * 8; s.height = fieldRow; s.opacity = r * opacity;
+        s.clipTop = std::max(clipTop, y); s.clipBottom = std::min(clipBottom, y + r * fieldRow);
+        slots.push_back(s); y += r * (fieldRow + rowGap);
+    };
     if (view == View::Main) {
         labelAt(L"Moteur de recherche");
         for (int i = 0; i < BrowserSettings::PrimaryEngines; ++i) { auto* s = add(Kind::Engine, EngineHit(i), row); s->index = i; }
-        const float m = Motion::Clamp(in.more), extra = (BrowserSettings::EngineCount - BrowserSettings::PrimaryEngines) * pitch;
+        const float m = Motion::Clamp(in.more), customField = Motion::Clamp(in.customReveal) * (fieldRow + rowGap);
+        const float extra = (BrowserSettings::EngineCount - BrowserSettings::PrimaryEngines) * pitch + customField;
         if (m > .001f) {
             const float clipTop = y, clipBottom = y + m * extra;
             for (int i = BrowserSettings::PrimaryEngines; i < BrowserSettings::EngineCount; ++i) {
@@ -130,6 +155,10 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
                 if (m < 1) { s.clipTop = clipTop; s.clipBottom = clipBottom; }
                 if (s.top < clipBottom) slots.push_back(s);
             }
+            // The custom engine's address sits right under its row, inside the fold.
+            const float keep = y; y += (BrowserSettings::EngineCount - BrowserSettings::PrimaryEngines) * pitch - (1 - m) * 8;
+            fieldAt(CustomSearchField, in.customReveal, m < 1 ? clipTop : -1e6f, m < 1 ? clipBottom : 1e6f, m);
+            y = keep;
         }
         y += m * extra;
         add(Kind::More, More, row);
@@ -137,6 +166,13 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         endGroup();
         labelAt(L"Démarrage");
         add(Kind::Switch, RestoreTabs, row, L"Restaurer les onglets");
+        add(Kind::Value, HomePageHit, row, L"Page d'accueil", st ? BrowserSettings::Info(st->newTabPage).label : L"");
+        fieldAt(HomepageField, in.homeReveal);
+        endGroup();
+        labelAt(L"Onglets");
+        add(Kind::Value, TabPositionHit, row, L"Nouveaux onglets", st ? BrowserSettings::Info(st->tabPosition).label : L"");
+        twoLine(ConfirmClose, L"Confirmer la fermeture");
+        twoLine(CloseWithLastTab, L"Fermer avec le dernier onglet");
         endGroup();
         labelAt(L"Téléchargements");
         add(Kind::Folder, Folder, folderRow);
@@ -144,16 +180,28 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         endGroup();
         labelAt(L"Confidentialité");
         add(Kind::Value, Tracking, row, L"Anti-pistage", st ? BrowserSettings::Info(st->tracking).label : L"");
-        { auto* s = add(Kind::Switch, Passwords, 2 * twoLinePad + 20 + 2 + in.passwordsLines.size() * descriptionLine, L"Mots de passe"); s->lines = in.passwordsLines; }
-        { auto* s = add(Kind::Switch, Autofill, 2 * twoLinePad + 20 + 2 + in.autofillLines.size() * descriptionLine, L"Saisie automatique"); s->lines = in.autofillLines; }
+        twoLine(AdBlock, L"Bloqueur de publicités");
+        twoLine(HttpsOnly, L"HTTPS uniquement");
+        { auto lines = described(ThirdPartyCookies); if (in.cookiesPending) lines.push_back(L"Au prochain démarrage.");
+          auto* s = add(Kind::Switch, ThirdPartyCookies, TwoLine(lines.size()), L"Bloquer les cookies tiers"); s->lines = std::move(lines); }
+        twoLine(Passwords, L"Mots de passe");
+        twoLine(Autofill, L"Saisie automatique");
         add(Kind::Switch, ClearOnExit, row, L"Effacer en quittant");
         if (in.sitesLoaded && in.sites && in.sites->empty()) {
             // Nothing to manage yet: an inert row says why instead of opening an empty view.
-            auto* s = add(Kind::Nav, None, 2 * twoLinePad + 20 + 2 + in.noSitesLines.size() * descriptionLine, L"Autorisations des sites"); s->lines = in.noSitesLines;
+            auto* s = add(Kind::Nav, None, TwoLine(in.noSitesLines.size()), L"Autorisations des sites"); s->lines = in.noSitesLines;
         } else add(Kind::Nav, Permissions, row, L"Autorisations des sites", in.sitesLoaded && in.sites ? std::to_wstring(in.sites->size()) : L"");
         endGroup();
         labelAt(L"Performances");
         add(Kind::Value, Sleep, row, L"Onglets en veille", st ? BrowserSettings::SleepLabel(st->sleepMinutes) : L"");
+        twoLine(MemorySaver, L"Économiseur de mémoire");
+        endGroup();
+        labelAt(L"Son et vidéo");
+        {
+            auto* s = add(Kind::Value, AutoplayHit, in.autoplayPending ? TwoLine(1) : row, L"Lecture automatique", st ? BrowserSettings::Info(st->autoplay).label : L"");
+            if (in.autoplayPending) s->lines = {L"Au prochain démarrage."};
+        }
+        twoLine(MuteBackground, L"Couper le son en arrière-plan");
         endGroup();
         labelAt(L"Affichage");
         add(Kind::Value, Zoom, row, L"Zoom des pages", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
@@ -195,8 +243,24 @@ inline std::wstring FolderText(const std::wstring& path) {
     if (slash <= 2) return p; // "C:\Users" stays readable
     return L"…\\" + p.substr(slash + 1);
 }
-inline constexpr const wchar_t* PasswordsDescription = L"Propose d'enregistrer vos identifiants, puis les remplit à la connexion.";
-inline constexpr const wchar_t* AutofillDescription = L"Remplit les formulaires avec votre nom, adresse et e-mail.";
+// Second lines of the two-line switches.
+inline const std::pair<int, const wchar_t*> Descriptions[] = {
+    {Passwords, L"Propose d'enregistrer vos identifiants, puis les remplit à la connexion."},
+    {Autofill, L"Remplit les formulaires avec votre nom, adresse et e-mail."},
+    {ConfirmClose, L"Avant de fermer une fenêtre avec plusieurs onglets."},
+    {CloseWithLastTab, L"Sinon, un onglet vide reste ouvert."},
+    {AdBlock, L"Masque les publicités et les traqueurs qu'elles chargent."},
+    {HttpsOnly, L"Passe les sites en connexion sécurisée et prévient quand c'est impossible."},
+    {ThirdPartyCookies, L"Certaines connexions intégrées à d'autres sites peuvent ne plus marcher."},
+    {MemorySaver, L"Allège les onglets en arrière-plan avant leur mise en veille."},
+    {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
+};
+// Address fields: placeholder, hint, error.
+struct FieldText { const wchar_t* placeholder; const wchar_t* hint; const wchar_t* error; };
+inline FieldText FieldTexts(int hit) {
+    if (hit == CustomSearchField) return {L"https://exemple.fr/?q=%s", L"%s est remplacé par votre recherche.", L"Ajoutez %s à l'endroit de la recherche."};
+    return {L"exemple.fr", L"S'ouvre dans chaque nouvel onglet.", L"Cette adresse n'est pas valide."};
+}
 inline constexpr const wchar_t* NoSitesDescription = L"Aucun site n'a encore demandé d'autorisation.";
 inline constexpr const wchar_t* SitesNote = L"Un site demande de nouveau l'accès la prochaine fois.";
 
@@ -229,7 +293,12 @@ private:
     std::array<Lane, SwitchCount> switches_, knobPress_;
     View views_[3] = {View::Main, View::Sites, View::Site}; int depth_ = 0; // navigation stack: depth 0..2
     std::vector<BrowserSettings::Site> sites_; bool sitesLoaded_ = false; int site_ = -1; unsigned loadTicket_ = 0;
-    std::vector<std::wstring> passwordsLines_, autofillLines_, noSitesLines_, sitesNoteLines_;
+    std::map<int, std::vector<std::wstring>> lines_; std::vector<std::wstring> noSitesLines_, sitesNoteLines_;
+    // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
+    Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
+    HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
+    HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
+    BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false, modal_ = false, animatingPainted_ = false, spinning_ = false;
     int appliedVisible_ = -1; RECT appliedOwner_{}, appliedWindow_{};
@@ -262,14 +331,19 @@ private:
         switch (hit) {
         case RestoreTabs: return &state_->restoreTabs; case AskWhere: return &state_->askWhereToSave; case ReduceMotion: return &state_->reduceMotion;
         case Suggestions: return &state_->searchSuggestions; case Passwords: return &state_->passwords; case Autofill: return &state_->autofill;
-        case ClearOnExit: return &state_->clearOnExit; default: return nullptr;
+        case ClearOnExit: return &state_->clearOnExit; case ConfirmClose: return &state_->confirmCloseTabs; case CloseWithLastTab: return &state_->closeWithLastTab;
+        case AdBlock: return &state_->adBlock; case HttpsOnly: return &state_->httpsOnly; case ThirdPartyCookies: return &state_->blockThirdPartyCookies;
+        case MemorySaver: return &state_->memorySaver; case MuteBackground: return &state_->muteBackground; default: return nullptr;
         }
     }
     static BrowserSettings::Change SwitchChange(int hit) {
         using C = BrowserSettings::Change;
         switch (hit) {
         case RestoreTabs: return C::RestoreTabs; case AskWhere: return C::AskWhereToSave; case ReduceMotion: return C::ReduceMotion;
-        case Suggestions: return C::SearchSuggestions; case Passwords: return C::Passwords; case Autofill: return C::Autofill; default: return C::ClearOnExit;
+        case Suggestions: return C::SearchSuggestions; case Passwords: return C::Passwords; case Autofill: return C::Autofill;
+        case ConfirmClose: return C::ConfirmCloseTabs; case CloseWithLastTab: return C::CloseWithLastTab; case AdBlock: return C::AdBlock;
+        case HttpsOnly: return C::HttpsOnly; case ThirdPartyCookies: return C::ThirdPartyCookies; case MemorySaver: return C::MemorySaver;
+        case MuteBackground: return C::MuteBackground; default: return C::ClearOnExit;
         }
     }
     bool SwitchValue(int hit) const { auto* f = SwitchField(hit); return f && *f; }
@@ -283,20 +357,29 @@ private:
     float FooterHeight(View v) const { return v == View::Main ? Layout::footer : v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : 1 + 12 + Layout::row + Layout::padBottom; }
     float ViewBottom(View v) const { return Height() - FooterHeight(v); }
     LayoutInput Input(float more) const {
-        LayoutInput in; in.more = more; in.passwordsLines = passwordsLines_; in.autofillLines = autofillLines_; in.noSitesLines = noSitesLines_;
+        LayoutInput in; in.more = more; in.lines = &lines_; in.noSitesLines = noSitesLines_;
+        in.customReveal = customRevealValue_; in.homeReveal = homeRevealValue_;
+        in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
+        in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
         in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.site = site_; return in;
     }
+    mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
+    void Reveals(Motion::Time now, bool target) const {
+        customRevealValue_ = target ? customReveal_.Target() : customReveal_.Value(now);
+        homeRevealValue_ = target ? homeReveal_.Target() : homeReveal_.Value(now);
+    }
     std::vector<Slot> Slots(View v, Motion::Time now, bool target = false) const {
-        const int d = v == View::Main ? 0 : v == View::Sites ? 1 : 2;
+        const int d = v == View::Main ? 0 : v == View::Sites ? 1 : 2; Reveals(now, target);
         return ContentSlots(v, Input(target ? more_.Target() : more_.Value(now)), target ? scrolls_[d].Target() : scrolls_[d].Value(now));
     }
     float MaxScroll(View v, Motion::Time now, bool target) const {
-        float bottom = 0; ContentSlots(v, Input(target ? more_.Target() : more_.Value(now)), 0, &bottom);
+        float bottom = 0; Reveals(now, target); ContentSlots(v, Input(target ? more_.Target() : more_.Value(now)), 0, &bottom);
         return std::max(0.f, bottom + Layout::groupGap - ViewBottom(v));
     }
     int SelectedIndex() const { return state_ ? static_cast<int>(state_->engine) : 0; }
     // Selection plate: content y of the selected row (animated), unscrolled.
     float EngineTop(int index, float more) const {
+        Reveals(Motion::Now(), true);
         for (const auto& s : ContentSlots(View::Main, Input(more), 0)) if (s.kind == Kind::Engine && s.index == index) return s.top;
         return Layout::viewTop + Layout::label + Layout::rowGap; // hidden engine: tucked under the first row
     }
@@ -337,8 +420,8 @@ private:
     }
     void MeasureDescriptions() {
         if (!chrome_.RenderTarget()) chrome_.Resize();
-        passwordsLines_ = Wrap(PasswordsDescription, Layout::descriptionWidth);
-        autofillLines_ = Wrap(AutofillDescription, Layout::descriptionWidth);
+        lines_.clear();
+        for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(text, Layout::descriptionWidth);
         noSitesLines_ = Wrap(NoSitesDescription, Layout::rowRight - 8 - Layout::textLeft);
         sitesNoteLines_ = Wrap(SitesNote, Layout::rowRight - Layout::textLeft - 4);
     }
@@ -374,6 +457,7 @@ private:
     // The engine's own favicon (assets\engines\<key>.png), dimmed like its name until selected.
     void EngineTile(int index, float y, float strength) {
         const auto box = Layout::Icon(y);
+        if (static_cast<Engine>(index) == Engine::Custom) { chrome_.TintedIcon(L"favicon-mask", R(box), 16, D2D1::ColorF(1, 1, 1, .6f + .3f * strength)); return; }
         const std::string key = BrowserSettings::Info(static_cast<Engine>(index)).key;
         if (auto* favicon = chrome_.AssetBitmap(L"engines\\" + std::wstring(key.begin(), key.end()) + L".png")) {
             chrome_.RenderTarget()->DrawBitmap(favicon, R(box), .75f + .25f * strength, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
@@ -421,13 +505,37 @@ private:
     }
     // Label + current value + chevron: opens its list of choices (native menu).
     void ValueRow(const Slot& s, Motion::Time now) {
-        RowFocus(Layout::Row(s.top), s.hit);
+        RowFocus(Layout::Row(s.top, s.height), s.hit);
         const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
         const float w = chrome_.TextWidth(s.value, 14, false, false, -.14f);
         Label16(s.text, Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
         chrome_.Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
         chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
+        // A pending note (engine policy applied at the next launch) under the label.
+        for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::textLeft, s.top + 6 + 22 + k * Layout::descriptionLine, Layout::rowRight - 8, .5f);
     }
+    // Address field: the value (or its placeholder) in a quiet well, a hint under it.
+    // While editing, a native EDIT sits on the text and this paints the frame around it.
+    void FieldRow(const Slot& s, Motion::Time now) {
+        const auto v = Interaction(s.hit, now); const bool editing = editing_ == s.hit, error = errors_[s.hit];
+        const Design::Box box{Layout::rowLeft, s.top, Layout::rowRight, s.top + Layout::field};
+        chrome_.Round(R(box), Design::Radius::control, Tint(FieldFill(v.hover, editing)));
+        auto* brush = chrome_.SolidBrush(); auto* t = chrome_.RenderTarget();
+        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
+        brush->SetColor(error ? D2D1::ColorF(1, .482f, .431f, .5f) : D2D1::ColorF(1, 1, 1, editing ? .2f : .06f + .04f * v.hover));
+        t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(box.left + px / 2, box.top + px / 2, box.right - px / 2, box.bottom - px / 2), Design::Radius::control, Design::Radius::control), brush, px);
+        if (focus_ == s.hit && !editing) chrome_.FocusRing(R(box), Design::Radius::control);
+        const auto texts = FieldTexts(s.hit);
+        if (!editing) {
+            const std::wstring value = FieldValue(s.hit);
+            if (value.empty()) Label14(texts.placeholder, Layout::textLeft, s.top + 7, Layout::rowRight - 8, .35f);
+            else chrome_.Text(value, {Layout::textLeft, s.top + 7, Layout::rowRight - 8, s.top + 25}, 14, .9f, false, false, -.14f);
+        }
+        const float hint = s.top + Layout::field + Layout::fieldHint;
+        if (error) { chrome_.ink = D2D1::ColorF(1, .482f, .431f, 1); Label14(texts.error, Layout::textLeft, hint, Layout::rowRight, 1); chrome_.ink = D2D1::ColorF(1, 1, 1, 1); }
+        else Label14(texts.hint, Layout::textLeft, hint, Layout::rowRight, .5f);
+    }
+    static float FieldFill(float hover, bool editing) { return editing ? .02f : .03f + .02f * hover; }
     // Label + count + right chevron: pushes a sub-view.
     void NavRow(const Slot& s, Motion::Time now) {
         if (!s.hit) { // inert: label + why, no chevron, no hover
@@ -523,7 +631,7 @@ private:
         const auto slots = Slots(view, now);
         // Three passes: row fills, then the selection plate over them, then row contents.
         auto pass = [&](bool surfaces) { for (const auto& s : slots) {
-            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note))) continue;
+            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note || s.kind == Kind::Field))) continue;
             const bool clipped = s.clipTop > -1e5f, fading = s.opacity < .998f;
             if (clipped) target->PushAxisAlignedClip(D2D1::RectF(0, std::max(s.clipTop, viewTop), Layout::width, std::min(s.clipBottom, viewBottom)), D2D1_ANTIALIAS_MODE_ALIASED);
             if (fading) PushOpacity(s.opacity);
@@ -538,6 +646,7 @@ private:
             case Kind::Value: ValueRow(s, now); break;
             case Kind::Nav: NavRow(s, now); break;
             case Kind::SiteRow: SiteRow(s, now); break;
+            case Kind::Field: FieldRow(s, now); break;
             }
             if (fading) target->PopLayer();
             if (clipped) target->PopAxisAlignedClip();
@@ -687,10 +796,14 @@ private:
         if (hit == Back) { Navigate(depth_ - 1, now); }
         else if (IsEngine(hit)) {
             const auto engine = static_cast<Engine>(hit - EngineBase);
-            if (state_->engine != engine) {
+            // The custom engine needs its address first: unfold the field and edit it.
+            if (engine == Engine::Custom && SearchTemplate(state_->customSearch).empty()) { customPending_ = true; SyncReveals(now); StartEdit(CustomSearchField); }
+            else if (state_->engine != engine) {
                 state_->engine = engine;
                 plate_.Set(EngineTop(static_cast<int>(engine), more_.Target()), now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
                 if (hooks_.changed) hooks_.changed(Change::Engine);
+                if (engine != Engine::Custom) customPending_ = false;
+                SyncReveals(now);
             }
         } else if (hit == More) {
             const float target = more_.Target() > .5f ? 0.f : 1.f;
@@ -719,7 +832,27 @@ private:
             for (int i = 0; i < SleepCount; ++i) { auto item = ContextMenu::Command(i + 1, SleepLabel(SleepChoices[i]), L"", true, state_->sleepMinutes == SleepChoices[i]); item.description = notes[i]; items.push_back(item); }
             const int chosen = Choose(items, hit, keyboard);
             if (chosen > 0 && SleepChoices[chosen - 1] != state_->sleepMinutes) { state_->sleepMinutes = SleepChoices[chosen - 1]; if (hooks_.changed) hooks_.changed(Change::Sleep); }
-        } else if (hit == Zoom) {
+        } else if (hit == HomePageHit) {
+            std::vector<ContextMenu::Item> items;
+            for (int i = 0; i < NewTabPageCount; ++i) { const auto p = static_cast<NewTabPage>(i); auto item = ContextMenu::Command(i + 1, Info(p).label, L"", true, state_->newTabPage == p); item.description = Info(p).description; items.push_back(item); }
+            const int chosen = Choose(items, hit, keyboard);
+            if (chosen > 0) {
+                const auto page = static_cast<NewTabPage>(chosen - 1);
+                if (page == NewTabPage::Custom && HomepageUrl(state_->homepage).empty()) { homePending_ = true; SyncReveals(Motion::Now()); StartEdit(HomepageField); }
+                else { homePending_ = false; if (page != state_->newTabPage) { state_->newTabPage = page; if (hooks_.changed) hooks_.changed(Change::NewTabPage); } SyncReveals(Motion::Now()); }
+            }
+        } else if (hit == TabPositionHit) {
+            std::vector<ContextMenu::Item> items;
+            for (int i = 0; i < TabPositionCount; ++i) { const auto p = static_cast<TabPosition>(i); auto item = ContextMenu::Command(i + 1, Info(p).label, L"", true, state_->tabPosition == p); item.description = Info(p).description; items.push_back(item); }
+            const int chosen = Choose(items, hit, keyboard);
+            if (chosen > 0 && static_cast<TabPosition>(chosen - 1) != state_->tabPosition) { state_->tabPosition = static_cast<TabPosition>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::TabPosition); }
+        } else if (hit == AutoplayHit) {
+            std::vector<ContextMenu::Item> items;
+            for (int i = 0; i < AutoplayCount; ++i) { const auto a = static_cast<BrowserSettings::Autoplay>(i); auto item = ContextMenu::Command(i + 1, Info(a).label, L"", true, state_->autoplay == a); item.description = Info(a).description; items.push_back(item); }
+            const int chosen = Choose(items, hit, keyboard);
+            if (chosen > 0 && static_cast<BrowserSettings::Autoplay>(chosen - 1) != state_->autoplay) { state_->autoplay = static_cast<BrowserSettings::Autoplay>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::Autoplay); }
+        } else if (IsField(hit)) { if (editing_ != hit) StartEdit(hit); return; }
+        else if (hit == Zoom) {
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < ZoomCount; ++i) items.push_back(ContextMenu::Command(i + 1, ZoomLabel(ZoomChoices[i]), L"", true, state_->zoomPercent == ZoomChoices[i]));
             const int chosen = Choose(items, hit, keyboard);
@@ -754,6 +887,126 @@ private:
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(); }); }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
+    }
+    // ---- Address fields -----------------------------------------------------------
+    std::wstring FieldValue(int hit) const {
+        const auto d = drafts_.find(hit); if (d != drafts_.end()) return d->second;
+        if (!state_) return L"";
+        return hit == CustomSearchField ? state_->customSearch : state_->homepage;
+    }
+    bool CustomVisible() const { return state_ && (state_->engine == Engine::Custom || customPending_); }
+    bool HomeVisible() const { return state_ && (state_->newTabPage == BrowserSettings::NewTabPage::Custom || homePending_); }
+    void SyncReveals(Motion::Time now, bool snap = false) {
+        const auto d = snap || Reduced() ? Motion::Milliseconds(0) : Downloads::DrawerMotion::fold;
+        if (snap) { customReveal_.Snap(CustomVisible() ? 1.f : 0.f); homeReveal_.Snap(HomeVisible() ? 1.f : 0.f); return; }
+        customReveal_.Set(CustomVisible() ? 1.f : 0.f, now, Motion::Milliseconds(0), d, Downloads::DrawerMotion::foldSpring);
+        homeReveal_.Set(HomeVisible() ? 1.f : 0.f, now, Motion::Milliseconds(0), d, Downloads::DrawerMotion::foldSpring);
+        plate_.Set(EngineTop(SelectedIndex(), more_.Target()), now, Motion::Milliseconds(0), d, Downloads::DrawerMotion::foldSpring);
+        Invalidate(); Schedule(now); // the lanes need frames even when no other motion runs
+    }
+    static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+        auto* self = reinterpret_cast<Drawer*>(data);
+        switch (msg) {
+        case WM_GETDLGCODE: return DLGC_WANTALLKEYS | DefSubclassProc(h, msg, w, l);
+        case WM_KEYDOWN:
+            if (w == VK_RETURN) { self->Commit(true); return 0; }
+            if (w == VK_ESCAPE) { self->cancelEdit_ = true; self->EndEdit(); return 0; }
+            if (w == VK_TAB) { self->Commit(false); return 0; }
+            break;
+        case WM_KILLFOCUS: if (self->editing_ && !self->cancelEdit_) self->Commit(false); break;
+        case WM_PAINT: {
+            // No comctl32 v6 (no cue banner): the placeholder is painted over the empty field, as when it rests.
+            const LRESULT r = DefSubclassProc(h, msg, w, l);
+            if (GetWindowTextLengthW(h) == 0 && self->editing_) {
+                HDC dc = GetDC(h); RECT rc; GetClientRect(h, &rc);
+                const auto old = SelectObject(dc, self->editFont_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, self->Gray(.35f * .9f));
+                DrawTextW(dc, FieldTexts(self->editing_).placeholder, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+                SelectObject(dc, old); ReleaseDC(h, dc);
+            }
+            return r;
+        }
+        case WM_CHAR: if (w == L'\r' || w == 27 || w == L'\t') return 0; [[fallthrough]];
+        case WM_CUT: case WM_PASTE: case WM_CLEAR: case WM_UNDO: case EM_REPLACESEL: {
+            // Placeholder and error follow the text as it is typed.
+            const LRESULT r = DefSubclassProc(h, msg, w, l);
+            if (self->errors_[self->editing_]) { self->errors_[self->editing_] = false; self->Invalidate(); }
+            InvalidateRect(h, nullptr, TRUE); return r;
+        }
+        case WM_NCDESTROY: RemoveWindowSubclass(h, EditProc, 0); break;
+        }
+        return DefSubclassProc(h, msg, w, l);
+    }
+    COLORREF Gray(float amount) const { const int v = static_cast<int>(std::lround(Tint(amount) * 255)); return RGB(v, v, v); }
+    void StartEdit(int hit) {
+        if (!hwnd_ || !state_) return;
+        if (!edit_) {
+            edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)), nullptr);
+            if (!edit_) return;
+            SendMessageW(edit_, EM_SETLIMITTEXT, 2048, 0);
+            SetWindowSubclass(edit_, EditProc, 0, reinterpret_cast<DWORD_PTR>(this));
+        }
+        const UINT dpi = GetDpiForWindow(hwnd_);
+        if (!editFont_ || editDpi_ != dpi) {
+            if (editFont_) DeleteObject(editFont_);
+            editFont_ = CreateFontW(-Px(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Inter Display"); editDpi_ = dpi;
+            SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(editFont_), FALSE);
+            SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+        }
+        editing_ = hit; cancelEdit_ = false; focus_ = hit;
+        const std::wstring value = FieldValue(hit);
+        SetWindowTextW(edit_, value.c_str());
+        SendMessageW(edit_, EM_SETSEL, 0, -1);
+        editRect_ = {}; editShown_ = false; PlaceEdit(Motion::Now());
+        SetFocus(edit_);
+        Reveal(hit); Invalidate(); Schedule(Motion::Now());
+    }
+    // Lays the EDIT on the field's text line (follows scroll and the unfolding).
+    void PlaceEdit(Motion::Time now) {
+        if (!edit_ || !editing_) return;
+        for (const auto& s : Slots(Current(), now)) {
+            if (s.hit != editing_) continue;
+            const float top = s.top + 6, bottom = s.top + 26;
+            const bool shown = depth_ == 0 && !page_.Moving(now) && top >= s.clipTop - .5f && bottom <= s.clipBottom + .5f &&
+                               top >= Layout::viewTop - Layout::groupGap / 2 && bottom <= ViewBottom(Current());
+            const RECT r{Px(Layout::textLeft), Px(top), Px(Layout::rowRight - 8), Px(bottom)};
+            if (EqualRect(&r, &editRect_) && shown == editShown_) return; // moving it repaints: only when it changes
+            editRect_ = r; editShown_ = shown;
+            SetWindowPos(edit_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+            return;
+        }
+        ShowWindow(edit_, SW_HIDE); editShown_ = false;
+    }
+    // Enter / Tab / focus loss: keep a valid address, flag an invalid one.
+    void Commit(bool stay) {
+        if (!editing_ || !state_) return;
+        const int hit = editing_; const auto now = Motion::Now(); using namespace BrowserSettings;
+        const int n = GetWindowTextLengthW(edit_); std::wstring text(static_cast<size_t>(n) + 1, L'\0'); GetWindowTextW(edit_, text.data(), n + 1); text.resize(static_cast<size_t>(n));
+        if (TrimText(text).empty()) { // emptied: drop a pending choice, keep the saved one
+            drafts_.erase(hit); errors_[hit] = false;
+            if (hit == CustomSearchField) customPending_ = false; else homePending_ = false;
+            EndEdit(); SyncReveals(now); return;
+        }
+        const std::wstring clean = hit == CustomSearchField ? SearchTemplate(text) : HomepageUrl(text);
+        if (clean.empty()) { drafts_[hit] = text; errors_[hit] = true; if (!stay) EndEdit(); Invalidate(); Schedule(now); return; }
+        drafts_.erase(hit); errors_[hit] = false;
+        if (hit == CustomSearchField) {
+            const bool changedText = clean != state_->customSearch; state_->customSearch = clean; customPending_ = false;
+            if (changedText && hooks_.changed) hooks_.changed(Change::CustomSearch);
+            if (state_->engine != Engine::Custom) { state_->engine = Engine::Custom; if (hooks_.changed) hooks_.changed(Change::Engine); }
+        } else {
+            const bool changedText = clean != state_->homepage; state_->homepage = clean; homePending_ = false;
+            if (changedText && hooks_.changed) hooks_.changed(Change::Homepage);
+            if (state_->newTabPage != NewTabPage::Custom) { state_->newTabPage = NewTabPage::Custom; if (hooks_.changed) hooks_.changed(Change::NewTabPage); }
+        }
+        EndEdit(); SyncReveals(now);
+    }
+    void EndEdit() {
+        if (!editing_) return;
+        const int hit = editing_; editing_ = 0;
+        if (cancelEdit_) { drafts_.erase(hit); errors_[hit] = false; if (hit == CustomSearchField) customPending_ = false; else homePending_ = false; SyncReveals(Motion::Now()); }
+        cancelEdit_ = false;
+        if (edit_) { ShowWindow(edit_, SW_HIDE); editShown_ = false; if (GetFocus() == edit_ && hwnd_) SetFocus(hwnd_); }
+        focus_ = keyboard_ ? hit : 0; Invalidate(); Schedule(Motion::Now());
     }
     void RefreshTips() {
         if (!tip_) return;
@@ -812,6 +1065,13 @@ private:
         const float scale = 96.f / Dpi();
         switch (msg) {
         case WM_ERASEBKGND: return 1;
+        case WM_CTLCOLOREDIT: {
+            // The EDIT blends into the field: its exact fill, text at 90% white.
+            HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(FieldFill(0, true));
+            SetTextColor(dc, Gray(.9f)); SetBkColor(dc, fill);
+            if (editBrush_) DeleteObject(editBrush_);
+            editBrush_ = CreateSolidBrush(fill); return reinterpret_cast<LRESULT>(editBrush_);
+        }
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
         case WM_DPICHANGED: ApplyGeometry(Motion::Now(), true); return 0;
@@ -824,7 +1084,7 @@ private:
             return 0;
         }
         case WM_MOUSELEAVE: tracking_ = false; Interact(0, 0); return 0;
-        case WM_LBUTTONDOWN: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); keyboard_ = false; if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
+        case WM_LBUTTONDOWN: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); keyboard_ = false; if (editing_ && hit != editing_) Commit(false); if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
         case WM_LBUTTONUP: {
             const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale), was = pressed_;
             if (GetCapture() == h) ReleaseCapture();
@@ -855,14 +1115,15 @@ private:
 public:
     // Recently closed by deactivation: the click that caused it must not reopen it.
     ULONGLONG hiddenAt = 0;
-    Drawer() { slide_.Snap(0); more_.Snap(0); page_.Snap(0); }
+    Drawer() { slide_.Snap(0); more_.Snap(0); page_.Snap(0); customReveal_.Snap(0); homeReveal_.Snap(0); }
     ~Drawer() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, BrowserSettings::State* state, Hooks hooks) {
         owner_ = owner; state_ = state; hooks_ = std::move(hooks);
+        if (state_) { launchAutoplay_ = state_->autoplay; launchCookies_ = state_->blockThirdPartyCookies; } // engine flags in effect for this run
         motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 384;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereSettingsDrawer";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Réglages", WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Réglages", WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
         const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square)); // DWMWCP_DONOTROUND: the region shapes it
@@ -870,7 +1131,11 @@ public:
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
-    void Dispose() { Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
+    void Dispose() {
+        if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
+        if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
+        edit_ = nullptr; editing_ = 0;
+        Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
     bool Closing() const { return closing_; }
@@ -884,6 +1149,7 @@ public:
         if (!visible_) {
             slide_.Snap(0); for (auto& lane : scrolls_) lane.Snap(0); focus_ = 0; keyboard_ = false; hover_ = pressed_ = 0; motion_.ClearInteractions();
             depth_ = 0; page_.Snap(0); site_ = -1;
+            customPending_ = homePending_ = false; drafts_.clear(); errors_.clear(); SyncReveals(now, true);
             MeasureDescriptions();
             // The selected engine is always on screen: unfold when it sits behind "Voir plus…".
             more_.Snap(BrowserSettings::Primary(state_->engine) ? 0.f : 1.f);
@@ -905,6 +1171,7 @@ public:
     void Hide(bool keyboard, bool animate) {
         if (!visible_ || closing_) { if (visible_ && !animate) Finish(); return; }
         hiddenAt = GetTickCount64();
+        if (editing_) Commit(false);
         if (GetCapture() == hwnd_) ReleaseCapture();
         motion_.ClearInteractions(); hover_ = pressed_ = 0; tracking_ = false;
         auto now = Motion::Now(); closing_ = true;
@@ -921,6 +1188,7 @@ public:
         const auto now = Motion::Now(); const bool reduced = Reduced();
         for (int i = 0; i < SwitchCount; ++i) switches_[i].Set(SwitchValue(SwitchHits[i]) ? 1.f : 0.f, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::toggle, Timing::switchSpring);
         if (!BrowserSettings::Primary(state_->engine) && more_.Target() < .5f) more_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Downloads::DrawerMotion::fold, Downloads::DrawerMotion::foldSpring);
+        SyncReveals(now);
         plate_.Set(EngineTop(SelectedIndex(), more_.Target()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
         SetChecking(hooks_.version && hooks_.version().checking, now);
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
@@ -928,7 +1196,7 @@ public:
     }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     bool Moving(Motion::Time now) const {
-        bool moving = slide_.Moving(now) || more_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now);
+        bool moving = slide_.Moving(now) || more_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now);
         for (auto& lane : scrolls_) moving = moving || lane.Moving(now);
         for (auto& lane : switches_) moving = moving || lane.Moving(now);
         for (auto& lane : knobPress_) moving = moving || lane.Moving(now);
@@ -943,6 +1211,7 @@ public:
         if (!visible_) return;
         ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
+        PlaceEdit(now);
         // A window keeps only what it is painted with while its region shows it:
         // the entering slide repaints as it uncovers; the exit moves finished pixels.
         const bool content = (Moving(now) && !(closing_ && !page_.Moving(now))) || motion_.NextWake(now).delay.has_value();

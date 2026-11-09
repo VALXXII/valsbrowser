@@ -48,6 +48,8 @@ L'ancien echec `Smoke download dialog did not open : 0x80004005` disparait avec 
 
 [Design system](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-2-0) : synchronisation partielle. Les tokens et la marque ont ete mis a jour avant que le quota MCP hebdomadaire bloque les composants et timelines restants. Voir [reprise precise](design/paper-sync-pending.md). Les anciens canvas utilisateur sont conserves.
 
+[Vue partagée — flow](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-3-0) : flow validé de la split view. Décisions, implémentation et preuves : [design/split-view.md](design/split-view.md).
+
 ## Progression dans la barre URL
 
 Fill blanc additionnel ?8%, sur toute la hauteur de la barre. Progression indicative par ?tapes de navigation, arriv?e ? pleine largeur puis fondu. Aucun timer pendant l?attente r?seau ou au repos. Voir [d?tails et validation](design/url-loading.md). Les six fixtures natives passent ; navigation r?elle non test?e sous le maintien de l?arr?t WebView2.
@@ -84,6 +86,8 @@ Le bouton Téléchargements ouvre un popover natif « Download history » sous l
 - « View all » ouvre un drawer de 268 DIP ancré au bord droit, sous la barre d'outils jusqu'en bas de la fenêtre : tout l'historique groupé par Today / Yesterday / Last week / Last month / Last year (jours calendaires locaux). Chaque section se replie avec son chevron (aligné sur la croix) : les lignes se rangent sous l'en-tête en fondu, le chevron tourne de -90°, la suite remonte, 280 ms. Depuis « View all », le popover se transforme en drawer (morph 360 ms, cubic-bezier(.32,.72,0,1)) : son rectangle s'étire jusqu'au bord droit et au bas de la fenêtre pendant que la liste glisse d'un bloc depuis les lignes du popover, les en-têtes de section sortant de sous le titre et le reste apparaissant en fondu ; « View all » s'efface dans les premiers 30 %. Coût : aucune fenêtre redimensionnée ni transparente, une image Direct2D et une région GDI par image d'écran pendant 360 ms, rien au repos. La croix, Échap ou le bouton Téléchargements le font repartir vers la droite (220 ms) : la fenêtre se déplace sous une région qui épouse le coin arrondi de la fenêtre principale, sans repeindre. Un drawer ouvert autrement glisse depuis le bord droit (320 ms). Défilement molette lissé (160 ms), fondus de bord (16 DIP en haut, 128 DIP en bas) seulement quand du contenu dépasse. Mouvement réduit : tout est instantané.
 - Les téléchargements terminés, échoués ou annulés (50 max) sont conservés dans `downloads`, à côté de `session`, avec leur date de début (format 2 ; une ligne sans date, héritée de l'ancien format, prend la date de création de son fichier, sinon celle du fichier d'historique, puis est réenregistrée).
 
+- Icône animée du bouton Téléchargements (Lottie natif ThorVG, `design/lottie/download-progress.py`) : au démarrage, le plateau se referme en anneau (233 ms) et la flèche y descend ; tant que des téléchargements sont actifs, la flèche fait un va-et-vient (1,3 s) pendant que l'anneau se remplit en #3E67FF selon la progression cumulée ; à la fin, une onde bleue (×1,9, flou, 600 ms) part de l'anneau, puis tout revient au plateau (450 ms) au repos de la flèche. Annulation : retour sans onde. Quatre calques (tracé, remplissage, flèche, découpe) composés nativement ; le gris utilise l'encre des autres icônes. Seul le bouton est repeint, rien au repos ; mouvement réduit : anneau statique avec la progression.
+
 Vérification : `test-downloads.ps1` (formatage, historique, timing du reveal, rendus PNG des états et des frames d'animation dans `build/downloads-qa`) et l'étape téléchargement du smoke `test.ps1`.
 
 ## Historique de navigation
@@ -105,9 +109,18 @@ Le bouton Réglages (engrenage) ouvre un drawer natif de 332 DIP ancré au bord 
 - Moteur de recherche : DuckDuckGo (par défaut), Google, Brave Search, puis Bing, Ecosia et Qwant derrière « Voir plus… » (dépliage comme une section de téléchargements ; déplié d'office si le moteur choisi s'y trouve). La sélection est une plaque qui glisse vers la ligne choisie avec sa coche (ressort 260 ms). La barre d'adresse cherche avec ce moteur. Chaque moteur montre son favicon, embarqué dans `assets/engines` (aucune requête réseau), atténué tant qu'il n'est pas choisi.
 - Démarrage : « Restaurer les onglets » (activé) ; désactivé, le navigateur démarre sur un onglet vide (la session reste enregistrée).
 - Téléchargements : « Enregistrer dans » (sélecteur de dossier Windows ; vide = dossier Téléchargements du système, transmis au profil WebView2) et « Demander où enregistrer » (boîte Enregistrer sous pour chaque téléchargement ; Annuler annule le téléchargement sans ligne d'historique).
+- Moteur personnalisé : « Personnalisé » (derrière « Voir plus… ») déplie un champ d'adresse sous sa ligne ; l'URL contient `%s` à la place de la recherche (`https://` ajouté s'il manque). Une adresse invalide reste dans le champ avec son message, sans être enregistrée. La saisie se fait dans un EDIT natif posé sur le champ (Entrée valide, Échap annule, le placeholder reste visible tant que le champ est vide).
+- Démarrage : « Page d'accueil » (Vide, Sites fréquents : jusqu'à 8 tuiles des sites les plus visités, sans réseau ni script ; Page personnalisée : champ d'adresse comme ci-dessus).
+- Onglets : « Nouveaux onglets » (à la fin ou à côté de l'onglet actif), « Confirmer la fermeture » (« Fermer N onglets ? » quand une fenêtre en a plusieurs), « Fermer avec le dernier onglet ».
 - Moteur : « Suggestions de recherche » (désactivé, la liste sous la barre d'adresse ne s'ouvre plus ; la complétion en ligne reste).
+- Bloqueur de publicités : uBlock Origin Lite (MV3, GPLv3, non modifié) installé comme extension WebView2 ; activable à chaud. Il est téléchargé à une version figée et vérifié (SHA-256) par `fetch-ublock-lite.py` au build, dans `assets/extensions/` (non versionné) ; licence et notice sont livrées avec le build (`third_party/ublock-lite/NOTICE.txt`).
+- HTTPS uniquement : les navigations `http://` passent en `https://` (hôtes locaux et privés exclus) ; si c'est impossible, une page « Ce site n'est pas sécurisé » propose Revenir ou Continuer quand même (autorisé pour la session).
+- Cookies tiers : bloqués via le flag Chromium `ForceThirdPartyCookieBlockingEnabled` (avec `ThirdPartyStoragePartitioning`), au prochain démarrage ; flag non documenté par Microsoft.
 - Confidentialité : « Anti-pistage » (Désactivé, Basique, Équilibré par défaut, Strict ; prévention du pistage du profil WebView2), « Mots de passe » et « Saisie automatique » (lignes à description, appliquées à chaque onglet), « Effacer en quittant » (à la fermeture : mêmes données que « Effacer les données… », sans confirmation, au plus 3 s d'attente), « Autorisations des sites ».
 - Autorisations des sites : sous-vue poussée depuis la droite (la vue d'origine recule de 30 % et s'assombrit ; Échap, Retour arrière ou le bouton Précédent de la souris reviennent). La liste des sites vient des autorisations du profil ; un site ouvre son détail, où chaque autorisation (caméra, micro, position, notifications, presse-papiers, autres) se règle sur Autoriser, Demander ou Bloquer. « Tout retirer » et « Retirer les autorisations » remettent les sites à « Demander ». Sans aucun site, la ligne est inerte et l'explique.
+- Économiseur de mémoire : les onglets en arrière-plan demandent au moteur un usage mémoire réduit (`MemoryUsageTargetLevel`), l'onglet actif revient à la normale.
+- Son et vidéo : « Lecture automatique » (Sans son par défaut, ou Autorisée ; argument du moteur, au prochain démarrage) et « Couper le son en arrière-plan » (seul l'onglet affiché joue du son).
+- Les réglages appliqués au démarrage du moteur affichent « Au prochain démarrage. » tant qu'ils diffèrent de la session en cours.
 - Performances : « Onglets en veille » (Jamais, après 30 min, 2 h par défaut, 6 h) : un onglet en arrière-plan depuis ce délai est suspendu (sauf s'il joue du son ou pendant un téléchargement), estompé dans la barre d'onglets et réveillé à la sélection.
 - Affichage : « Zoom des pages » (80 à 150 %, appliqué à tous les onglets) et « Réduire les animations », qui s'ajoute à l'interrupteur « Effets d'animation » de Windows et s'applique immédiatement à toute l'interface.
 - Pied : « Effacer les données… » (confirmation, puis historique, cookies, cache et données des sites du profil, onglets fermés et liste des téléchargements terminés ; les fichiers restent) et la version avec l'état des mises à jour ; le bouton lance une vérification, son icône tourne pendant la recherche.
@@ -136,3 +149,45 @@ python tools/release/package.py --app build/update-integration --out build/updat
 ```
 
 Version : `0.3.<git rev-list --count HEAD>`. Détails : [design/updates.md](design/updates.md).
+
+## Vue partagée (split view)
+
+Glisser un onglet sous la barre d'adresse le soulève. Le bord le plus proche décide :
+à gauche ou à droite pour placer les pages côte à côte, en haut ou en bas pour les
+empiler. Sur une vue partagée, le centre d'un panneau remplace ce site et ses bords
+insèrent un site de plus. Il n'y a pas de plafond : chaque site garde au moins 360 px
+CSS de large (256 de haut empilé), convertis selon le zoom de page. Sans place, la
+pastille « Pas de place pour un 4ᵉ site » refuse le dépôt ; l'aperçu, lui, ne porte que le nom court du site déplacé (« GitHub », pas le titre complet de la page). Quand la fenêtre rétrécit,
+le site le moins récent se replie en rail de 32 DIP, sans fermeture ni rechargement.
+
+- Les coins extérieurs du bas des pages sont arrondis à 6 DIP, comme la fenêtre, avec un
+  vrai masquage natif.
+- Le panneau actif porte l'adresse et les commandes. Un clic ou le focus dans une page
+  l'active, jamais le survol. Son contour est neutre : discret après un clic (blanc 10 %),
+  fort au clavier (blanc 50 %). L'accent #3E67FF reste réservé à l'aperçu de dépôt.
+  F6 / Maj+F6 parcourent les panneaux puis la barre.
+- Dans la barre, les onglets d'un groupe ont une bordure neutre, des coins extérieurs
+  arrondis et intérieurs droits, un petit séparateur entre eux ; l'actif se lit à sa
+  surface.
+- Séparateurs : au repos, un gap neutre de 4 DIP. La poignée sombre (8 × 36) n'apparaît
+  qu'au survol, au glisser ou au focus clavier (avec un anneau). La cible au pointeur
+  reste de 16 DIP. Dès que le glisser démarre (3 DIP), le séparateur passe en accent et
+  les deux pages voisines sont masquées par des surfaces #171717. Chacune porte au
+  centre le favicon, le nom court et le domaine nu du site. Les pages réapparaissent une
+  fois rendues à leur nouvelle taille. Glisser (aimants ⅓ ½ ⅔ à deux sites), double-clic
+  pour répartir
+  également, ou menu « Redimensionner les panneaux » au clavier (flèches, Tab, Entrée,
+  Échap).
+- Sans glisser, le menu d'onglet (clic droit, touche Menu, Maj+F10) nomme sa cible dans
+  un en-tête : « Avec YouTube · affiché », ou « Avec la vue partagée · 3 sites ».
+  Viennent ensuite « À droite / À gauche / Au-dessus / En dessous » (pour un groupe :
+  « Ajouter au début / à la fin », « Insérer entre › » et « Remplacer un site › »), puis
+  « Avec un autre site › » pour n'importe quel autre onglet ou groupe. Une action
+  indisponible garde sa raison écrite. Sur un groupe : « Inverser les panneaux »,
+  « Empiler les panneaux » ou « Placer côte à côte », « Quitter la vue partagée ».
+- Échap ou Alt+Tab pendant un glisser restaurent l'ordre des onglets. Fermer un panneau
+  passe la main à son voisin. Les groupes sont enregistrés dans la session (format 2).
+
+Vérification : `test-split-view.ps1` pour le modèle et le comportement, et
+`test-split-view.ps1 -Native` pour de vraies WebView2 sur des pages locales (sans
+réseau), avec les captures dans `build/split-dev/split-qa`.
