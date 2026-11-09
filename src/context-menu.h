@@ -3,8 +3,8 @@
 // WebView2's ContextMenuRequested, tabs, the tab list, the address field),
 // painted with Direct2D from the Paper frame "Clic droit menu — poli": 14 DIP
 // text, 32 DIP rows, 9 DIP separators, a 4 DIP inset shell rounded by DWM (antialiased,
-// 8 = the rows' 4 + 4, concentric; Paper's 10 = 6 + 4), a white 6% hairline and DWM's
-// standard shadow.
+// 8 = the rows' 4 + 4, concentric; Paper's 10 = 6 + 4) and a white 6% hairline. No shadow:
+// the shell is cut by NativeUI::ConfigureShadowlessPopup's window region (zero-shadow rule).
 //
 // Track() is modal like TrackPopupMenu: it runs its own message loop and
 // returns the chosen id (0 = dismissed). It opens instantly (a right click is a
@@ -51,7 +51,9 @@ struct Item {
 };
 // How a menu ended: the chosen id plus the gesture, so a bookmark row can open in a
 // new tab (Ctrl / Shift) or ask for its own context menu (right click, Menu key).
-struct Choice { int id = 0; bool ctrl = false, shift = false, context = false; };
+// `keyboard`: chosen with Entrée / Espace / a mnemonic / UIA Invoke (not a pointer): the focus ring
+// of whatever the choice opens follows it.
+struct Choice { int id = 0; bool ctrl = false, shift = false, context = false, keyboard = false; };
 inline Item Separator() { Item item; item.separator = true; return item; }
 inline Item Header(std::wstring label, std::wstring second, std::vector<std::shared_ptr<const FaviconImage>> icons, int tag = 0) {
     Item item; item.kind = Kind::Header; item.label = std::move(label); item.second = std::move(second); item.icons = std::move(icons); item.siteIcon = true; item.enabled = false; item.tag = tag; return item;
@@ -110,7 +112,7 @@ class Menu {
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_;
     const Item* highlighted_ = nullptr;
     std::vector<std::unique_ptr<Level>> levels_; int depth_ = 0; // open levels
-    int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_;
+    int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_; bool keyedChoice_ = false;   // the input that drives the current pick (keyboard vs pointer)
     std::function<void(int)> background_; // middle click on a row: open in the background, menu stays
     bool contextRows_ = false;            // right click on a row returns it with context = true
     static constexpr UINT InvokeMessage = WM_APP + 40; // UIA actions are posted, never run inside the provider call
@@ -128,7 +130,7 @@ class Menu {
             level->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, L"LisiereContextMenu", L"", WS_POPUP, 0, 0, 1, 1, owner_, nullptr, instance_, this);
             if (level->hwnd) {
                 SetLayeredWindowAttributes(level->hwnd, 0, 255, LWA_ALPHA); // whole-window alpha for the opening fade
-                NativeUI::RoundNatively(level->hwnd); // antialiased DWM corner, with its shadow
+                NativeUI::ConfigureShadowlessPopup(level->hwnd, Layout::radius); // region-rounded, no shadow
                 level->motion.EnablePolish(); level->chrome.SetMotion(&level->motion); level->chrome.textCacheLimit = 192;
                 level->chrome.Init(level->hwnd, root_);
                 Attach(*level, static_cast<int>(levels_.size()));
@@ -265,7 +267,7 @@ class Menu {
         Invalidate(l);
     }
     void Back(int index) { const int row = levels_[index - 1]->child; CloseFrom(index); if (row >= 0) SetHover(index - 1, row, true); }
-    void Finish(int id) { result_ = id; choice_.id = id; done_ = true; PostMessageW(owner_, WM_NULL, 0, 0); }
+    void Finish(int id) { result_ = id; choice_.id = id; choice_.keyboard = id && keyedChoice_; done_ = true; PostMessageW(owner_, WM_NULL, 0, 0); }
     void Activate(int index, int i, bool ctrl = false, bool shift = false, bool context = false) {
         Level& l = *levels_[index]; if (i < 0 || i >= static_cast<int>(l.items->size())) return;
         const Item& item = (*l.items)[i]; if (!Selectable(item)) return;
@@ -467,6 +469,7 @@ class Menu {
     }
     // Keyboard for the whole stack: the deepest open level owns it.
     bool Key(WPARAM key) {
+        keyedChoice_ = true;
         if (!depth_) return false;
         const int index = depth_ - 1; Level& l = *levels_[index];
         switch (key) {
@@ -502,7 +505,7 @@ class Menu {
         const int index = IndexOf(h); Level* l = index >= 0 ? levels_[index].get() : nullptr;
         switch (msg) {
         case WM_GETOBJECT: if (l) { LRESULT result; if (l->uia.OnGetObject(h, w, lp, result)) return result; } break;
-        case InvokeMessage: if (l && index < depth_ && static_cast<int>(w) < static_cast<int>(l->items->size())) { if (lp == 1) { l->hover = static_cast<int>(w); OpenChild(index); } else if (lp == 2) CloseFrom(index + 1); else Activate(index, static_cast<int>(w)); } return 0;
+        case InvokeMessage: keyedChoice_ = true; if (l && index < depth_ && static_cast<int>(w) < static_cast<int>(l->items->size())) { if (lp == 1) { l->hover = static_cast<int>(w); OpenChild(index); } else if (lp == 2) CloseFrom(index + 1); else Activate(index, static_cast<int>(w)); } return 0;
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); if (l) Paint(*l); EndPaint(h, &ps); return 0; }
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
@@ -531,7 +534,7 @@ class Menu {
             if (msg == WM_MBUTTONUP) { if (background_ && Selectable(item) && item.children.empty() && item.id) background_(item.id); return 0; }
             // Right click on a row of a bookmark menu asks for that row's own menu.
             if (msg == WM_RBUTTONUP && contextRows_ && item.id) { Activate(index, row, false, false, true); return 0; }
-            Activate(index, row, (w & MK_CONTROL) != 0, (w & MK_SHIFT) != 0);
+            keyedChoice_ = false; Activate(index, row, (w & MK_CONTROL) != 0, (w & MK_SHIFT) != 0);
             return 0;
         }
         }
@@ -579,8 +582,11 @@ public:
         RegisterClassW(&wc);
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the windows.
-    void Dispose() { for (auto& l : levels_) { l->uia.Detach(); if (l->blur) { l->blur->Release(); l->blur = nullptr; } l->chrome.Dispose(); } levels_.clear(); depth_ = 0; }
+    // The windows belong to the owner and may outlive this object: they forget it here.
+    void Dispose() { for (auto& l : levels_) { if (l->hwnd && IsWindow(l->hwnd)) SetWindowLongPtrW(l->hwnd, GWLP_USERDATA, 0); l->uia.Detach(); if (l->blur) { l->blur->Release(); l->blur = nullptr; } l->chrome.Dispose(); } levels_.clear(); depth_ = 0; }
     bool Open() const { return depth_ > 0; }
+    // Dismisses an open Track() from outside (its surface closed meanwhile): it returns 0.
+    void Cancel() { if (depth_ && !done_) Finish(0); }
     // Native QA (--split-test): open levels, and highlighting a row by its label as the
     // pointer (fill) or the keyboard (fill + ring) would. Disabled and read-only rows refuse.
     int Depth() const { return depth_; }
@@ -609,6 +615,7 @@ public:
     // alignRight: a keyboard-opened menu ends at the control's right edge (gear-side controls).
     // Bookmark menus: the whole gesture. `background` runs on a middle click without closing;
     // a right click (or the Menu key) on a row with an id returns {id, context = true}.
+    bool LastChoiceKeyboard() const { return choice_.keyboard; }   // after Track(): was the pick made from the keyboard?
     Choice TrackChoice(const std::vector<Item>& items, POINT at, const RECT* exclude, bool keyboard, bool reduced, bool alignRight, std::function<void(int)> background) {
         background_ = std::move(background); contextRows_ = true;
         const int id = Track(items, at, exclude, keyboard, reduced, alignRight);
@@ -618,15 +625,20 @@ public:
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
     std::vector<Accessibility::Node> AccessibleNodes(int index) const { return Nodes(index); }
-    int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false) {
+    // fromChecked: a keyboard-opened list (a select's options) starts on its checked row, not the first.
+    int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false, bool fromChecked = false) {
         if (!owner_ || items.empty() || depth_) return 0;
-        result_ = 0; done_ = false; reduced_ = reduced; choice_ = {};
+        result_ = 0; done_ = false; reduced_ = reduced; choice_ = {}; keyedChoice_ = keyboard;
         int flipX = at.x, flipY = at.y;
         const bool fromRight = exclude && alignRight;
         if (exclude) { at = {fromRight ? exclude->right : exclude->left, exclude->bottom}; flipX = fromRight ? exclude->right : exclude->right; flipY = exclude->top; }
         Open(0, items, at, flipX, flipY, true, fromRight);
         if (!depth_) return 0;
-        if (keyboard) Move(0, 1, true);
+        if (keyboard) {
+            int start = -1;
+            if (fromChecked) for (size_t i = 0; i < items.size(); ++i) if (items[i].checked && Selectable(items[i])) { start = static_cast<int>(i); break; }
+            if (start >= 0) SetHover(0, start, true); else Move(0, 1, true);
+        }
         MSG msg;
         while (!done_ && depth_ && GetMessageW(&msg, nullptr, 0, 0) > 0) {
             // A press outside every level dismisses the menu and is swallowed, like Windows menus.

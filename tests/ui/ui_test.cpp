@@ -1,4 +1,4 @@
-#ifndef UNICODE
+﻿#ifndef UNICODE
 #define UNICODE
 #endif
 #ifndef _UNICODE
@@ -89,6 +89,44 @@ int wmain(int argc,wchar_t** argv){
             for(auto& r:chrome.regions){Check(ids.insert(r.id).second,"hit IDs unique at overflow widths");if(IsClose(r.id)){Check(chrome.Hit((r.rect.left+r.rect.right)/2,(r.rect.top+r.rect.bottom)/2)==r.id,"close hit takes precedence over tab");Check(r.rect.right-r.rect.left==24&&r.rect.bottom-r.rect.top==24,"stable 24 DIP right close target");Check(TabIndex(r.id)>=0&&TabIndex(r.id)<128,"close target maps to correct underlying tab");}}
         }
         std::printf("DPI %u: line %.3f DIP; address baseline %dpx; glyph/ellipsis/close/frame checks passed\n",dpi,address.lineHeight,baseline);
+    }
+    // B01 request chip (Paper DJ4-0/DJ8-0): lock slot unchanged, chip 2 DIP after it, #3E3E3E plate,
+    // URL pushed past it; never while editing; after the « Non sécurisé » plate on HTTP. 96/144/192 DPI.
+    for(UINT dpi:{96u,144u,192u}){
+        Chrome r;Check(SUCCEEDED(r.InitOffscreen(root,dpi,1180,84)),"chip renderer");
+        r.address=AddressBar::Describe(L"https://meet.exemple.test/xmc-pqrt-bvn",false);
+        r.requestGlyphs={SiteRequest::Path::camera,SiteRequest::Path::microphone};r.requestTip=L"meet.exemple.test demande : Caméra et micro";
+        r.Paint({L"Meet"},0,L"",false,0,0);
+        const auto slot=r.AddressSlot();const auto q=r.request;
+        Check(q.left==slot.right+2&&q.right-q.left==42&&q.bottom-q.top==24,"chip: 2 DIP after the lock slot, 42 x 24 for two glyphs");
+        Check((r.SurfacePixel(q.left+2,q.top+12)&0xffffff)==0x3E3E3E,"chip: --color-browser-pressed plate");
+        bool ink=false;for(float x=q.left+5;x<q.left+19&&!ink;x+=.5f)for(float y=q.top+6;y<q.bottom-6&&!ink;y+=.5f)ink=(r.SurfacePixel(x,y)&0xff)>0xC0;
+        Check(ink,"chip: white camera glyph drawn");
+        bool hasRegion=false;for(auto& g:r.regions)if(g.id=='Q'&&g.tip&&std::wstring(g.tip)==r.requestTip)hasRegion=true;
+        Check(hasRegion&&r.Hit((q.left+q.right)/2,(q.top+q.bottom)/2)=='Q',"chip: own hit region with its tooltip");
+        Check((r.SurfacePixel(slot.right+1,q.top+12)&0xffffff)!=0x3E3E3E,"chip: never overlaps the security slot");
+        Check(SUCCEEDED(r.SavePng((output+L"\\request-chip-"+std::to_wstring(dpi)+L".png").c_str())),"chip sample exported");
+        r.addressEditing=true;r.Paint({L"Meet"},0,L"",true,0,0);
+        Check(r.request.right<=r.request.left&&r.Hit(q.left+4,q.top+12)!='Q',"chip: hidden while the address is edited");
+        r.addressEditing=false;r.address=AddressBar::Describe(L"http://meet.exemple.test/",false);r.requestGlyphs={SiteRequest::Path::position};
+        r.Paint({L"Meet"},0,L"",false,0,0);
+        Check(r.request.left==r.indicator.right+2&&r.request.right-r.request.left==24,"chip: after the « Non sécurisé » plate, one glyph 24 wide");
+        Check(SUCCEEDED(r.SavePng((output+L"\\request-chip-http-"+std::to_wstring(dpi)+L".png").c_str())),"chip http sample exported");
+        // B02 after the decision: granted (no plate), active (tint + blue dot), blocked (slash).
+        r.address=AddressBar::Describe(L"https://meet.exemple.test/xmc-pqrt-bvn",false);r.requestGlyphs={SiteRequest::Path::camera,SiteRequest::Path::microphone};
+        r.requestState=r.requestFrom=SiteRequest::State::Granted;r.Paint({L"Meet"},0,L"",false,0,0);
+        Check((r.SurfacePixel(r.request.left+2,r.request.top+12)&0xffffff)!=0x3E3E3E,"granted: no pending plate");
+        Check(SUCCEEDED(r.SavePng((output+L"\\request-chip-granted-"+std::to_wstring(dpi)+L".png").c_str())),"granted sample");
+        r.requestState=r.requestFrom=SiteRequest::State::Active;r.Paint({L"Meet"},0,L"",false,0,0);
+        {const auto px=r.SurfacePixel(r.request.left+5+3,(r.request.top+r.request.bottom)/2);const int b=px&0xff,rr=(px>>16)&0xff;
+         Check(b>rr+60,"active: blue dot (accent)");}
+        Check(r.request.right-r.request.left==5+6+6+14+6+14+5,"active: Paper E4Q-0 width");
+        Check(SUCCEEDED(r.SavePng((output+L"\\request-chip-active-"+std::to_wstring(dpi)+L".png").c_str())),"active sample");
+        r.requestState=r.requestFrom=SiteRequest::State::Blocked;r.requestGlyphs={SiteRequest::Path::camera};r.Paint({L"Meet"},0,L"",false,0,0);
+        Check(SUCCEEDED(r.SavePng((output+L"\\request-chip-blocked-"+std::to_wstring(dpi)+L".png").c_str())),"blocked sample");
+        r.requestState=r.requestFrom=SiteRequest::State::Pending;
+        r.requestGlyphs.clear();r.Paint({L"Meet"},0,L"",false,0,0);
+        Check(r.request.right<=r.request.left,"chip: gone with its request");
     }
     DestroyWindow(h);for(auto name:FontFiles)RemoveFontResourceExW((root+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();
     Check(!GetModuleHandleW(L"WebView2Loader.dll"),"native test completed without loading WebView2");

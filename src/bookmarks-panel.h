@@ -18,6 +18,7 @@
 #include <set>
 #include <vector>
 #include "chrome.h"
+#include "native-ui.h"
 #include "download-panel.h"
 #include "history.h"
 #include "bookmarks.h"
@@ -369,8 +370,7 @@ public:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Favoris", WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square));
-        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none));
+        NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { return Nodes(); };
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? Key(IsRowPart(focus_) ? focus_ : focus_) : 0; };

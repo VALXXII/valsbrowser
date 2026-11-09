@@ -613,6 +613,7 @@ protected:
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Download history", WS_POPUP, 0, 0, Px(width), Px(height), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
+        NativeUI::StripTooltipShadow(tip_);
         Configure();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
@@ -660,8 +661,8 @@ class Popover final : public Host {
     bool ActivateOther(int hit, bool) override { if (hit != ViewAllHit) return false; if (hooks_.viewAll) hooks_.viewAll(); return true; }
     const wchar_t* ClassName() const override { return L"LisiereDownloads"; }
     void Configure() override {
-        // DWM rounds the corners (antialiased, with its shadow); the hairline is painted (Decorate).
-        NativeUI::RoundNatively(hwnd_);
+        // A region rounds the corners (no DWM rounding: it always casts a shadow); the hairline is painted (Decorate).
+        NativeUI::ConfigureShadowlessPopup(hwnd_, Panel::radius);
     }
     void Place() {
         if (!hwnd_) return;
@@ -802,8 +803,7 @@ class Drawer final : public Host {
     }
     const wchar_t* ClassName() const override { return L"LisiereDownloadsDrawer"; }
     void Configure() override {
-        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square)); // DWMWCP_DONOTROUND: the region shapes it
-        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none));
+        NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
     }
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
