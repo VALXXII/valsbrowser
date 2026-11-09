@@ -86,6 +86,7 @@ int wmain(int argc,wchar_t** argv){
     for(auto uri:{L"https://example.com/a",L"https://example.org/b?q=canary"}){auto t=std::make_shared<Tab>();t->uri=uri;t->home=false;pages.push_back(t);}
     {auto t=std::make_shared<Tab>();t->home=true;pages.push_back(t);}
     current=1;sessionReady=true;
+    LoadBookmarks();
     LoadDownloads();const size_t historyBefore=downloads.size();Note("history rows loaded "+std::to_string(historyBefore));
     {DL::Item item;item.id=nextDownloadId++;item.path=dataDir+L"\\canary-download.bin";item.uri=L"https://example.com/canary-download.bin";
      item.state=DL::State::Completed;item.received=item.total=4096;item.started=1790000000000LL;downloads.insert(downloads.begin(),item);}

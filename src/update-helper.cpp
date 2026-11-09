@@ -328,7 +328,7 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
     bool ok = true;
     if (UP::IsDirectory(profile)) ok = CopyTree(profile, work + L"\\profile", deadline) || MigrationStepFailed("copy profile");
     // Plain data files next to the profile (session, download history). Transient *.tmp files are not copied.
-    for (const wchar_t* name : {L"session", L"downloads"}) {
+    for (const wchar_t* name : {L"session", L"downloads", L"bookmarks", L"bookmarks.bak"}) {
         std::wstring file = src + L"\\" + name;
         if (ok && UP::PathExists(file) && !UP::IsDirectory(file) && !UP::IsReparsePoint(file))
             ok = CopyWithRetry(file, work + L"\\" + name, deadline) || MigrationStepFailed("copy " + UP::Narrow(name));

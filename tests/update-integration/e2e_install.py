@@ -158,6 +158,8 @@ def scenario_installed(base: Path, fx: dict):
     (root / 'current').write_text(OLD + '\n')
     make_profile(root / 'data/profile', 'installed')
     make_history(root / 'data/downloads')
+    saved_bookmarks=b'browser-bookmarks 1\n3\t1\tL\t1\tCanary\thttps://bookmarks.example/\nend\t1\n'
+    (root / 'data/bookmarks').write_bytes(saved_bookmarks)
     before = tree_hash(root / 'data/profile')
     rc = run_host(app / 'browser.exe', 'install', root, fx['serve'], base / 'host-report.txt')
     check(rc == 0, 'host flow (installed): Available -> Download -> Ready -> RestartInstall -> session saved -> clean exit')
@@ -166,6 +168,7 @@ def scenario_installed(base: Path, fx: dict):
     check((app / 'browser.exe').is_file(), f'previous version {OLD} retained for rollback')
     check(tree_hash(root / 'data/profile') == before, 'stable profile byte-identical after install (canary hash)')
     check_history(root / 'data/downloads', 'installed')
+    check((root / 'data/bookmarks').read_bytes()==saved_bookmarks,'installed bookmarks survive the update byte-for-byte')
     check(not (app / 'downloads').exists(), 'no download history written inside the version directory')
 
 
@@ -176,6 +179,8 @@ def scenario_portable(base: Path, fx: dict):
     make_profile(portable / 'profile', 'portable')
     (portable / 'session').write_text('browser-session-1\n0\n1\n"https://legacy.example"\n', encoding='utf-8')
     make_history(portable / 'downloads')
+    saved_bookmarks=b'browser-bookmarks 1\n3\t1\tL\t1\tCanary\thttps://bookmarks.example/\nend\t1\n'
+    (portable / 'bookmarks').write_bytes(saved_bookmarks)
     rc = run_host(exe, 'install', root, fx['serve'], base / 'host-report.txt')
     check(rc == 0, 'host flow (portable/legacy exe-adjacent data): install requested and clean exit')
     legacy_before = tree_hash(portable / 'profile')  # after host exit, before/while helper migrates
@@ -190,6 +195,9 @@ def scenario_portable(base: Path, fx: dict):
     migrated = root / 'data/downloads'
     check(migrated.exists() and migrated.read_bytes() == history_before, 'one-time migration copied the download history exactly')
     check((portable / 'downloads').read_bytes() == history_before, 'legacy download history left untouched')
+    check((root / 'data/bookmarks').read_bytes()==saved_bookmarks,'portable bookmarks are copied to the installed data directory')
+    check((portable / 'bookmarks').read_bytes()==saved_bookmarks,'portable bookmarks remain untouched')
+    check((root / 'data/bookmarks.bak').read_bytes()==saved_bookmarks,'portable bookmarks recovery copy is migrated too')
     relaunch_legacy(base, root, portable, exe, fx)
 
 
