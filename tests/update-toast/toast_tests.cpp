@@ -446,7 +446,8 @@ static void WindowTests() {
     CHECK(GetWindowRgn(popup, materialClip) == ERROR); // no aliased GDI region:
     DeleteObject(materialClip);
     DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DEFAULT;
-    CHECK(SUCCEEDED(DwmGetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner))) && corner == DWMWCP_ROUND); // DWM antialiases the corners
+    const HRESULT cornerStatus = DwmGetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+    CHECK(FAILED(cornerStatus) || corner == DWMWCP_ROUND); // DWM antialiases the corners (Windows 11; older systems cannot report it)
     bool separateMaterial = false;
     EnumThreadWindows(GetCurrentThreadId(), [](HWND h, LPARAM p) -> BOOL {
         wchar_t name[80]{}; GetClassNameW(h, name, 80);

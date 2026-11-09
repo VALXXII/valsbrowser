@@ -252,8 +252,9 @@ static void Client(){
     OnUi([]{
         HWND toast=bookmarkToast.Window();
         HRGN outline=CreateRectRgn(0,0,0,0);const int shape=GetWindowRgn(toast,outline);DeleteObject(outline);
-        int corner=0;DwmGetWindowAttribute(toast,33,&corner,sizeof(corner));
-        Expect(shape==ERROR&&corner==2,"toast HWND is rounded by DWM (antialiased), never by an aliased GDI region");
+        // Windows 10 / Server 2022 (CI) cannot report the corner preference: only Windows 11 is checked for ROUND.
+        int corner=0;const bool reported=SUCCEEDED(DwmGetWindowAttribute(toast,33,&corner,sizeof(corner)));
+        Expect(shape==ERROR&&(!reported||corner==2),"toast HWND is rounded by DWM (antialiased), never by an aliased GDI region");
         Capture(toast,L"toast-undo");Capture(window,L"window-toast");UndoBookmark();
     });
     Expect(WaitFor([&]{return note.Has(L"Favori restauré");}),"undo announced « Favori restauré »");
