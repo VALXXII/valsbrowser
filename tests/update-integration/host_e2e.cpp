@@ -74,6 +74,10 @@ int wmain(int argc,wchar_t** argv){
         Note(failures?"RESULT FAIL":"RESULT PASS");Flush();CoUninitialize();return failures?1:0;
     }
 
+    // Non-install scenarios exercise unattended close/cancellation, not the close-tabs dialog.
+    // Keep confirmation enabled for install: the production install handoff must bypass it.
+    if(mode!=L"install")settings.confirmCloseTabs=false;
+
     WNDCLASSW wc{};wc.hInstance=instance;wc.lpfnWndProc=OwnerProc;wc.lpszClassName=L"HostE2EOwner";RegisterClassW(&wc);
     window=CreateWindowExW(0,wc.lpszClassName,L"host_e2e (native fixture, no WebView2)",WS_OVERLAPPEDWINDOW,-30000,-30000,900,600,nullptr,nullptr,instance,nullptr);
     if(!window)return 71;
