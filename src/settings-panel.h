@@ -228,7 +228,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         add(Kind::Value, Zoom, row, L"Zoom des pages", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
         add(Kind::Value, BookmarksBarHit, row, L"Barre de favoris", st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
         twoLine(ReduceMotion, L"Réduire les animations");
-        { auto lines = pending(GrayscaleText, in.grayscalePending); auto* s = add(Kind::Switch, GrayscaleText, TwoLine(lines.size()), L"Texte lissé en niveaux de gris"); s->lines = std::move(lines); }
+        { auto lines = pending(GrayscaleText, in.grayscalePending); auto* s = add(Kind::Switch, GrayscaleText, TwoLine(lines.size()), L"Affichage lissé"); s->lines = std::move(lines); }
         endGroup();
         labelAt(L"Son et vidéo");
         {
@@ -288,7 +288,7 @@ inline const std::pair<int, const wchar_t*> Descriptions[] = {
     {AskWhere, L"Choisir le dossier à chaque téléchargement."},
     {ReduceMotion, L"S'ajoute au réglage d'animation de Windows."},
     {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
-    {GrayscaleText, L"Comme la barre du navigateur, sans reflets colorés sur les lettres."},
+    {GrayscaleText, L"Adoucit l'affichage des pages, un peu comme sur Mac."},
 };
 // Settings search: every row a query can reach, with where it lives and the words it answers to.
 struct Searchable { int hit; const wchar_t* title; const wchar_t* path; View view; const wchar_t* keywords; };
@@ -316,7 +316,7 @@ inline const Searchable SearchIndex[] = {
     {Zoom, L"Zoom des pages", L"Affichage et son › Pages", View::Display, L"taille agrandir"},
     {BookmarksBarHit, L"Barre de favoris", L"Affichage et son › Pages", View::Display, L"favoris marque-pages"},
     {ReduceMotion, L"Réduire les animations", L"Affichage et son › Pages", View::Display, L"mouvement accessibilite"},
-    {GrayscaleText, L"Texte lissé en niveaux de gris", L"Affichage et son › Pages", View::Display, L"police lissage antialiasing cleartype nettete"},
+    {GrayscaleText, L"Affichage lissé", L"Affichage et son › Pages", View::Display, L"lisse doux mac police texte antialiasing cleartype nettete"},
     {AutoplayHit, L"Lecture automatique", L"Affichage et son › Son et vidéo", View::Display, L"video son"},
     {MuteBackground, L"Couper le son en arrière-plan", L"Affichage et son › Son et vidéo", View::Display, L"muet son"},
 };
