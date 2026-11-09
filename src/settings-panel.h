@@ -215,7 +215,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
             // Nothing to manage yet: an inert row says why instead of opening an empty view.
             auto* s = add(Kind::Nav, None, TwoLine(in.noSitesLines.size()), L"Autorisations des sites"); s->lines = in.noSitesLines;
         } else add(Kind::Nav, Permissions, row, L"Autorisations des sites", in.sitesLoaded && in.sites ? std::to_wstring(in.sites->size()) : L"");
-        add(Kind::Switch, ClearOnExit, row, L"Effacer en quittant");
+        twoLine(ClearOnExit, L"Effacer en quittant");
         add(Kind::Danger, ClearData, row, L"Effacer les données…");
         y -= rowGap;
     } else if (view == View::Downloads) {
@@ -282,6 +282,7 @@ inline const std::pair<int, const wchar_t*> Descriptions[] = {
     {ThirdPartyCookies, L"Certaines connexions intégrées peuvent ne plus marcher."},
     {Passwords, L"Propose de les enregistrer, puis les remplit."},
     {Autofill, L"Remplit nom, adresse et e-mail."},
+    {ClearOnExit, L"À la fermeture, supprime l'historique, les cookies et le cache."},
     {AskWhere, L"Choisir le dossier à chaque téléchargement."},
     {ReduceMotion, L"S'ajoute au réglage d'animation de Windows."},
     {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
