@@ -6,7 +6,7 @@ Scope: `src/design-system.h` tokens, `assets/lottie/*`, `tests/design-system/geo
 `tests/lottie-assets/*`. The renderer (`src/chrome.h`, `src/main.cpp`, `src/native-lottie.*`)
 belongs to the integration peer. This document is the adapter contract and the Paper sync source.
 
-Final integration status: the adapter actions below are implemented. Brand uses `Brand::Glyph()` / `.opacity`, refresh plays once for500ms, tab selection does not infer a new animation from loading state, DPI cache and brightness are corrected. All five native fixtures, geometry and rlottie asset validation pass; see [release-validation.md](release-validation.md). Historical peer findings below record the original handoff rather than outstanding defects. Paper remains partially blocked by quota.
+Final integration status: the adapter actions below are implemented. Brand uses `Brand::Glyph()` / `.opacity`, refresh plays once for500ms, tab selection does not infer a new animation from loading state, DPI cache and brightness are corrected. All five native fixtures, geometry and rlottie asset validation pass; see [release-validation.md](release-validation.md). Historical peer findings below record the original handoff rather than outstanding defects. Paper is synchronized (2026-11-09): board « 03 - Motion specifications » shows the copy morph and the single refresh turn from these JSON files.
 
 ## 1. Spacing, derived from the code (not from the screenshot)
 

@@ -46,7 +46,7 @@ L'ancien echec `Smoke download dialog did not open : 0x80004005` disparait avec 
 
 ## Paper
 
-[Design system](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-2-0) : synchronisation partielle. Les tokens et la marque ont ete mis a jour avant que le quota MCP hebdomadaire bloque les composants et timelines restants. Voir [reprise precise](design/paper-sync-pending.md). Les anciens canvas utilisateur sont conserves.
+[Design system](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-2-0) : synchronisé le 9 novembre 2026 avec `main` 58b782e / 0.3.113 (tokens, focus, onglets et fleur, étapes Lottie copier/actualiser, toasts opaques, accent et curseur). Le fichier a été rangé : une référence par composant ou flow, pistes abandonnées supprimées. Inventaire : [design/paper-sync-pending.md](design/paper-sync-pending.md).
 
 [Vue partagée — flow](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-3-0) : flow validé de la split view. Décisions, implémentation et preuves : [design/split-view.md](design/split-view.md).
 
@@ -104,9 +104,9 @@ Vérification : `test-history.ps1` (filtrage, ordre, périodes, libellés de dat
 
 ## Réglages
 
-Le bouton Réglages (engrenage) ouvre un drawer natif de 332 DIP ancré au bord droit sous la barre d'outils, d'après la frame Paper « Réglages — panneau » (`src/settings-panel.h`).
+Le bouton Réglages (engrenage) ouvre un drawer natif de 332 DIP ancré au bord droit sous la barre d'outils, d'après la page Paper « Réglages v4 — implémenté » (`src/settings-panel.h`).
 
-Organisation (page Paper « Réglages v4 ») : une racine courte et une sous-vue par catégorie.
+Organisation (page Paper « Réglages v4 — implémenté » ; champs, menus décrits et autorisations des sites sur la page « Réglages — états détaillés ») : une racine courte et une sous-vue par catégorie.
 - Racine : champ « Rechercher un réglage », Moteur de recherche (sous-vue) et Page d'accueil, puis Onglets, Confidentialité, Téléchargements et Affichage et son, chacun avec une icône et le résumé de son état (« Restaurés », « Équilibré », nom du dossier, zoom). La version reste en pied de chaque vue.
 - Sous-vues : Moteur de recherche (moteurs et suggestions), Onglets (Ouverture, Fermeture, Veille), Confidentialité (Protection, Formulaires, Données, dont « Effacer les données… » et Autorisations des sites), Téléchargements, Affichage et son (Pages, Son et vidéo). Elles s'empilent comme sur iOS (jusqu'à Confidentialité › Autorisations › site) ; Échap, Retour arrière ou le bouton Précédent de la souris reviennent, le focus retrouve la ligne d'origine.
 - Recherche : les résultats suivent la frappe (titres puis mots-clés, sans tenir compte des accents) dans une carte posée 6 DIP sous le champ, la racine estompée à 32 % derrière ; la partie trouvée du titre est en blanc et le chemin s'affiche dessous (« Confidentialité › Protection »). Un interrupteur se bascule depuis le résultat ; les autres ouvrent leur sous-vue sur la ligne. Entrée ouvre le premier résultat, ↓ entre dans la liste, Échap efface ; F3 ou Ctrl+F placent le curseur (accent #3E67FF) dans le champ. Il fonctionne comme le drawer des téléchargements, sans morph : il glisse depuis le bord droit (ressort critique, 320 ms) et repart par le même chemin (220 ms), la fenêtre se déplaçant sous une région qui épouse le coin de la fenêtre principale. Les deux drawers partagent le bord droit : en ouvrir un ferme l'autre. Un clic hors du drawer, Échap, la croix ou l'engrenage le referment ; les dialogues qu'il ouvre (dossier, confirmation) le laissent ouvert.

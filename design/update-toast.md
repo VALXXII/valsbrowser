@@ -1,8 +1,9 @@
 # Update toast — native design spec
 
-Source of truth: Paper file *Browser Design*, page 1. Boards **New update download** (Available),
-**New update downloading**, **New update install** (Ready), **New update install** (Installed), and the placement
-board *Lisière — prototype actuel V2*. Implementation: `src/update-toast.h`, `src/update-toast.cpp`,
+Source of truth: Paper file *Browser Design*, page **Design system — main 0.3.113**, board
+**04 - Updates / native states and motion** (Available, Downloading, Ready, Installed and the extension states;
+the original Page 1 cards were removed as duplicates on 2026-11-09), and the placement board
+*Lisière V2 — Tiroir téléchargements + toast MAJ* on the page *Chrome — prototype, adresse, menus, téléchargements*. Implementation: `src/update-toast.h`, `src/update-toast.cpp`,
 `src/update-toast-motion.h` (C++17, Direct2D/DirectWrite, Win32; no web UI, no new UI engine).
 Integration API: `build/coordination/update-toast-contract.md`.
 

@@ -12,12 +12,15 @@ droit d'onglet (le « dropover » de la demande).
 
 Paper, fichier *Browser Design* :
 
-- **Livrable principal** : page **Split View — menu clic droit onglet (variantes)**,
-  https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-7-0
-- Archive, **hors périmètre actuel** : page **Split View — archive dépôt (A/B/C hors
-  périmètre)**, https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-6-0. Elle
-  contient les explorations du geste de dépôt (cibles sur panneau, bords et
-  séparateurs, plan de disposition), conservées mais non retenues dans ce cadrage.
+- **Livrable principal** : page **Split View — menu d'onglet V2 (retenu)**,
+  https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-7-0. Depuis le nettoyage du
+  9 novembre 2026, elle ne contient plus que la planche V2 retenue.
+- Supprimés le 9 novembre 2026 (pistes non retenues) : les planches V1, V3, « R ·
+  Comparaison et recommandation » et « Bases de contexte » de cette page, ainsi que tout le
+  contenu de l'ancienne page **Split View — archive dépôt (A/B/C hors périmètre)** (cibles sur
+  panneau, bords et séparateurs, plan de disposition, recommandation geste). Les
+  descriptions ci-dessous restent l'archive écrite de ces pistes ; des exports PNG ont été
+  gardés hors dépôt (`build/design-system-cleanup/exports-before-delete/`).
 
 ## Point de départ
 
