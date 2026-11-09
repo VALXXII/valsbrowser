@@ -1,5 +1,13 @@
 # Favoris — preview native
 
+## Intégration dans main (9 novembre)
+
+La branche a été synchronisée avec Settings v3, la vue partagée et le correctif de scénario automatisé de `main` (`4f8b71a`). L'envoi de la branche et l'ouverture de la PR #42 ont attendu la publication vérifiée de `v0.3.81` (9 novembre, 00:14:03 UTC), conformément à la consigne utilisateur.
+
+Sur le code fusionné localement : `test-bookmarks-ui.ps1`, `test-split-view.ps1` et le smoke WebView2 passent. La suite complète `python tests/update-integration/run_all.py --app build/bookmarks-merged-preview --ci` termine par `ALL PASSED` (`build/merge-ci-suite.log`) : rendu, Lottie, clavier, navigation, drag, split, UIA, téléchargements, historique, moteur/toast de mise à jour et installation simulée. Elle inclut désormais les tests du modèle de favoris et de son UI native. Les tests d'installation vérifient la conservation des favoris installés, leur copie depuis la version portable et celle du fichier de récupération.
+
+La fusion inclut un test de frontière : la barre de favoris est du chrome, donc le déplacement d'un onglet au-dessus de cette barre ne déclenche pas un partage de vue. Les pages et panneaux partagés utilisent la même hauteur dynamique de chrome.
+
 Correctif du 9 novembre : le toast d'annulation désactive explicitement le backdrop système (DWMSBT_NONE) et le cadre non-client DWM. Sa fenêtre est découpée au rayon natif de la carte (10 DIP), recalculé lors des changements de taille/DPI ; les frames d'animation réutilisent ce masque. Le fond rectangulaire ne peut plus apparaître dans les coins. Régression vérifiée via GetWindowRgn/PtInRegion : les quatre coins sont exclus et le centre reste dans la fenêtre (`test-bookmarks-ui.ps1`, log `build/toast-radius-qa.log`).
 
 Build Windows x64 dev, version 0.3.71, branche Bookmarks. Changements locaux non fusionnés. La version est calculée sur HEAD ; le binaire inclut les modifications non commitées de cette branche.
