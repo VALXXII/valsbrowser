@@ -21,7 +21,7 @@ for (const [alias,source] of Object.entries(mapping)) {
   fs.writeFileSync(path.join(root,'close-mask.svg'),svg);
   for(const dpi of [96,120,144,168,192,240,288,384])fs.writeFileSync(path.join(root,`close-mask-${dpi}.png`),new Resvg(svg,{fitTo:{mode:'width',value:Math.round(14*dpi/96)}}).render().asPng());}
 // Mask-only 14 px glyphs (full opacity) for the settings header buttons: drawn at Paper's exact 70%.
-for(const [alias,source,size=14] of [['back','arrow-left'],['reload','arrow-counter-clockwise'],['favicon','globe-simple',16]]){const svg=fs.readFileSync(path.join(root,'phosphor-bold',source+'-bold.svg'),'utf8').replace('fill="currentColor"','fill="#FFFFFF"');
+for(const [alias,source,size=14] of [['back','arrow-left'],['reload','arrow-counter-clockwise'],['favicon','globe-simple',16],['search','magnifying-glass',14],['home','house',16],['tabs','cards',16],['shield','shield-check',16],['downloads','download-simple',16],['eye','eye',16]]){const svg=fs.readFileSync(path.join(root,'phosphor-bold',source+'-bold.svg'),'utf8').replace('fill="currentColor"','fill="#FFFFFF"');
   fs.writeFileSync(path.join(root,`${alias}-mask.svg`),svg);
   for(const dpi of [96,120,144,168,192,240,288,384])fs.writeFileSync(path.join(root,`${alias}-mask-${dpi}.png`),new Resvg(svg,{fitTo:{mode:'width',value:Math.round(size*dpi/96)}}).render().asPng());}
 // Bookmarks: the filled star is the saved state, drawn at full white like Paper (the outline keeps 50%).
