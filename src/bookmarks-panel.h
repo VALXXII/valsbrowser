@@ -264,7 +264,6 @@ private:
             if (r.level == 0 && r.folder) {
                 // Root sections: a label like the drawers' period headers, folding on the caret.
                 chrome_.Text(r.title, {tile.left, top + 4, Layout::width - 60, top + 24}, Panel::line, Design::Text::muted, false, true, -.16f);
-                chrome_.Text(r.detail, {tile.left, top + 20, Layout::width - 60, top + 36}, Panel::detailText, Design::Text::disabled, true, false, -.14f);
             } else {
                 chrome_.Round(tile, Design::Radius::control, Design::Surface::raised);
                 if (r.folder) chrome_.FolderGlyph(tile, Design::Size::icon, 1, r.open ? 1.f : 0.f, Reduced());
