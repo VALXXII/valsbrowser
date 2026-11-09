@@ -97,7 +97,7 @@ def clean_payload(out: Path) -> None:
         shutil.rmtree(assets)
 
 
-def build(out: Path, info: dict, repo: str) -> None:
+def build(out: Path, info: dict, repo: str, preview: bool = False) -> None:
     for tool in ('g++.exe', 'windres.exe', 'strip.exe'):
         if not (BIN / tool).exists():
             raise SystemExit(f'Missing {BIN / tool}: run setup.ps1 (pinned w64devkit) first.')
@@ -120,6 +120,8 @@ def build(out: Path, info: dict, repo: str) -> None:
     # No PE link timestamp and relative source paths: identical inputs give identical binaries.
     common = ['-std=c++17', '-O2', *WARNINGS, '-static', '-municode', '-Isrc', f'-I{obj / "gen"}',
               '-DBROWSER_HAS_BUILD_INFO', '-Wl,--no-insert-timestamp', f'-ffile-prefix-map={ROOT}=.']
+    if preview:  # design preview: updates and the hand-over to an installed copy are compiled out
+        common.append('-DBROWSER_PREVIEW')
     run([BIN / 'g++.exe', *common, '-mwindows', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
          f'-I{SDK / "include"}', *BROWSER_SOURCES, res, THORVG, '-o', out / 'browser.exe',
          *BROWSER_LIBS])
@@ -143,6 +145,8 @@ def main() -> int:
     p.add_argument('--channel', default='dev', choices=('dev', 'release'))
     p.add_argument('--build', type=int, help='override build number (default: git rev-list --count HEAD)')
     p.add_argument('--commit')
+    p.add_argument('--preview', action='store_true',
+                   help='design preview build: no self-update, never forwards to an installed copy')
     p.add_argument('--update-repo', default=DEFAULT_REPO,
                    help='owner/repo whose GitHub releases are the only trusted update feed')
     a = p.parse_args()
@@ -154,7 +158,7 @@ def main() -> int:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = version_mod.git('show', '-s', '--format=%ct', info['commit'])
     except subprocess.CalledProcessError:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = '0'
-    build(out, info, a.update_repo)
+    build(out, info, a.update_repo, a.preview)
     return 0
 
 

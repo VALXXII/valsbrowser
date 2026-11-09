@@ -1,5 +1,11 @@
 # browser - Windows natif
 
+## Preview « Éléments & popups » (sandbox des composants)
+
+Build portable : `build/design-elements-preview/browser.exe` (ZIP `build/browser-design-elements-preview.zip`). Profil, session et journal restent dans ce dossier ; aucune mise à jour automatique, jamais de renvoi vers la version installée (`build.py --preview`). Ouvrir la sandbox : `Ouvrir la sandbox.cmd`, `browser.exe --debug-sandbox`, `browser://debug` dans la barre d'adresse ou Ctrl+Maj+F12.
+
+Composants des maquettes Paper p-D-0 (A1–A9, B01–B09, C0–C9) : modales natives pour alert/confirm/prompt/beforeunload, effacer les données, fermer la fenêtre, À propos, navigation privée ; popovers d'autorisation, authentification HTTP, application externe ; Ctrl+F natif ; pages d'erreur réseau ; plein écran (F11, Échap) ; toasts ; info-bulles et panneau Ctrl+/. Aucune popup de l'app ne porte d'ombre portée. Inventaire réel / démonstration / natif conservé : [design/missing-elements-mapping.md](design/missing-elements-mapping.md). Tests : `test-elements-integration.ps1`, `test-sandbox.ps1`, `test-popups.ps1`.
+
 ## Preview favoris
 
 Build portable : `build/bookmarks-preview/browser.exe`. Le profil, les réglages et les favoris de cette preview restent dans ce dossier, séparés du navigateur installé. Le ZIP `build/browser-bookmarks-preview.zip` contient le programme, ses ressources et les instructions ; extraire le dossier entier avant de lancer `browser.exe`.

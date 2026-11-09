@@ -128,7 +128,7 @@ class Menu {
             level->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, L"LisiereContextMenu", L"", WS_POPUP, 0, 0, 1, 1, owner_, nullptr, instance_, this);
             if (level->hwnd) {
                 SetLayeredWindowAttributes(level->hwnd, 0, 255, LWA_ALPHA); // whole-window alpha for the opening fade
-                NativeUI::RoundNatively(level->hwnd); // antialiased DWM corner, with its shadow
+                NativeUI::ConfigureShadowlessPopup(level->hwnd, Layout::radius); // region-rounded, no shadow
                 level->motion.EnablePolish(); level->chrome.SetMotion(&level->motion); level->chrome.textCacheLimit = 192;
                 level->chrome.Init(level->hwnd, root_);
                 Attach(*level, static_cast<int>(levels_.size()));

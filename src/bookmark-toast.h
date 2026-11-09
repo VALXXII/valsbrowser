@@ -124,13 +124,13 @@ public:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE, wc.lpszClassName, L"Favoris", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        // Our Direct2D card owns the opaque surface and border; DWM only rounds the
-        // window (antialiased, RoundNatively). Never acrylic/Mica or its non-client frame.
+        // Our Direct2D card owns the opaque surface and border; a window region rounds it
+        // (ConfigureShadowlessPopup: no DWM rounding, no shadow). Never acrylic/Mica or its non-client frame.
         NativeUI::ConfigureFullClientFrame(hwnd_);
         const int noBackdrop = 1; // DWMSBT_NONE (Windows 11; harmless on Windows 10).
         DwmSetWindowAttribute(hwnd_, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &noBackdrop, sizeof(noBackdrop));
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
-        NativeUI::RoundNatively(hwnd_);
+        NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius);
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] {
             std::vector<Accessibility::Node> nodes; if (!visible_) return nodes;

@@ -252,9 +252,8 @@ static void Client(){
     OnUi([]{
         HWND toast=bookmarkToast.Window();
         HRGN outline=CreateRectRgn(0,0,0,0);const int shape=GetWindowRgn(toast,outline);DeleteObject(outline);
-        // Windows 10 / Server 2022 (CI) cannot report the corner preference: only Windows 11 is checked for ROUND.
-        int corner=0;const bool reported=SUCCEEDED(DwmGetWindowAttribute(toast,33,&corner,sizeof(corner)));
-        Expect(shape==ERROR&&(!reported||corner==2),"toast HWND is rounded by DWM (antialiased), never by an aliased GDI region");
+        // The DWM-rounded corner (and its shadow) was revoked: no popup of ours casts a drop shadow.
+        Expect(NativeUI::IsShadowless(toast)&&shape!=ERROR,"toast HWND is shadowless: region-rounded, never DWM-rounded (DWM rounding casts a shadow)");
         Capture(toast,L"toast-undo");Capture(window,L"window-toast");UndoBookmark();
     });
     Expect(WaitFor([&]{return note.Has(L"Favori restauré");}),"undo announced « Favori restauré »");

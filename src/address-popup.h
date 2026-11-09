@@ -17,6 +17,7 @@
 #include <string>
 #include "chrome.h"
 #include "address.h"
+#include "native-ui.h"
 
 namespace NativeChrome::AddressUI {
 namespace Layout {
@@ -79,11 +80,11 @@ public:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"Suggestions", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        const int round = 2; // DWMWCP_ROUND
-        const COLORREF edge = Design::NativeGray(Design::Surface::canvas + Layout::border * (1 - Design::Surface::canvas));
-        DwmSetWindowAttribute(hwnd_, 33, &round, sizeof(round));
-        DwmSetWindowAttribute(hwnd_, 34, &edge, sizeof(edge));
+        // No DWM rounding or DWM border (rounding always casts a shadow): a window region
+        // rounds it at Layout::radius and PaintRows draws the hairline DWM used to draw.
+        NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius);
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
+        NativeUI::StripTooltipShadow(tip_);
         chrome_.textCacheLimit = 256;
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
@@ -175,6 +176,10 @@ public:
                 c.Icon(L"detail-close", box, Design::Size::windowIcon * (pressRemove_ ? .96f : 1.f), .7f);
             }
         }
+        // Hairline (Paper border 2 % white over the canvas), on the region's rounded outline.
+        const auto size = target->GetSize(); const float px = size.width / std::max(1.f, static_cast<float>(target->GetPixelSize().width));
+        brush->SetColor(D2D1::ColorF(1, 1, 1, Layout::border));
+        target->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(px / 2, px / 2, size.width - px / 2, size.height - px / 2), Layout::radius, Layout::radius), brush, px);
     }
     // Native fixture: paint `data` into an offscreen chrome of the given width.
     void SetIconSource(std::function<std::shared_ptr<const FaviconImage>(const std::wstring&)> icon) { hooks_.icon = std::move(icon); }

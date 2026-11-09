@@ -433,7 +433,7 @@ struct Toast::Impl {
         return hwnd != nullptr;
     }
     void ConfigureWindow() {
-        NativeUI::RoundNatively(hwnd); // antialiased DWM corner (and shadow), no border
+        NativeUI::ConfigureShadowlessPopup(hwnd, Paper::radius); // region-rounded: DWM rounding always casts a shadow
         const DWM_SYSTEMBACKDROP_TYPE material = DWMSBT_NONE;
         DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &material, sizeof(material));
     }

@@ -566,8 +566,8 @@ public:
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Historique", WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square)); // DWMWCP_DONOTROUND: the region shapes it
-        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none));
+        NativeUI::StripTooltipShadow(tip_);
+        NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
