@@ -2,7 +2,7 @@
 
 Final integration: `main`, derived from `feat/design-system-polish`. Flower16/.32 centred(22,22), first tab x44 aligned with forward, rigid CCW refresh once500ms independent of network completion. Full native regression and packaging: [release validation](release-validation.md).
 
-Current source of truth: [Lottie and geometry contract](lottie-spec.md) and [native integration evidence](lottie-integration-validation.md). Focus is a 1 DIP white ring with two strengths: pointer focus 10%, keyboard focus 50% (issue #3); previous contrast measurements for the old stronger ring below are historical, not the current focus style. Copy uses authored Lottie segments (300 / 1500 / 300 ms); native tween specification remains a fallback. Paper synchronization is partially blocked by quota: [remaining work](paper-sync-pending.md).
+Current source of truth: [Lottie and geometry contract](lottie-spec.md) and [native integration evidence](lottie-integration-validation.md). Focus is a 1 DIP white ring with two strengths: pointer focus 10%, keyboard focus 50% (issue #3); previous contrast measurements for the old stronger ring below are historical, not the current focus style. Copy uses authored Lottie segments (300 / 1500 / 300 ms); native tween specification remains a fallback. Paper is synchronized with this contract (2026-11-09, `main` 58b782e): [sync record](paper-sync-pending.md).
 
 # Native design system foundation
 

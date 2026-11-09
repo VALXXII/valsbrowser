@@ -89,4 +89,4 @@ menu seulement).
   « YouTube ».
 - Pas de vérification sur rendu natif : QA par captures Paper uniquement.
 - Valeurs recoupées avec le premier agent après coup (voir « Décisions confirmées »).
-- Page des variantes (p-7-0) et archive (p-6-0) non modifiées.
+- Page des variantes (p-7-0) et archive (p-6-0) non modifiées lors de cette passe. Depuis le 9 novembre 2026, p-7-0 ne garde que la V2 retenue et l'archive est vidée (voir [split-view-drop-explorations.md](split-view-drop-explorations.md)).
