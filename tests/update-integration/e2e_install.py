@@ -101,6 +101,7 @@ def build_fixtures(work: Path) -> dict:
     shutil.copy2(fake, payload / 'browser.exe')
     shutil.copy2(helper, payload / 'update-helper.exe')
     shutil.copytree(ROOT / 'assets/fonts', payload / 'assets/fonts')
+    shutil.copy2(ROOT / 'src/icons/browser-live.ico', payload / 'assets/browser.ico')  # as build.py stamps it
     shutil.copy2(ROOT / 'third_party/thorvg/LICENSE', payload / 'ThorVG-LICENSE.txt')
     (payload / 'version.json').write_text(json.dumps({'version': NEW, 'arch': 'x64'}), encoding='utf-8')
     serve = work / 'serve'
@@ -142,6 +143,8 @@ def common_install_checks(root: Path, launches: str, session_file: Path):
     check((root / 'current').read_text().strip() == NEW, 'current points to the new version')
     check((root / 'versions' / NEW / 'browser.exe').is_file(), 'new version installed in versions\\' + NEW)
     check((root / 'browser.exe').is_file(), 'stable launcher installed at <root>\\browser.exe')
+    check((root / 'browser.ico').read_bytes() == (ROOT / 'src/icons/browser-live.ico').read_bytes(),
+          'stable <root>\\browser.ico refreshed from the installed version (shortcut icon follows updates)')
     check(not (root / 'versions' / NEW / 'profile').exists() and not (root / 'versions' / NEW / 'session').exists(),
           'no profile/session inside the version directory')
     if session_file.exists():

@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'tools/release'))
 import version as V  # noqa: E402
 import publish as P  # noqa: E402
 import package as K  # noqa: E402
+import build as B  # noqa: E402
 
 SHA = 'a' * 40
 
@@ -64,6 +65,54 @@ class Identity(unittest.TestCase):
             self.assertEqual(V.identity(repo=repo)['build'], counts[-1])
             with self.assertRaises(SystemExit):
                 V.identity(repo=shallow)
+
+
+class AppIconPolicy(unittest.TestCase):
+    def test_channel_selects_icon(self):
+        live, preview = V.app_icon('release'), V.app_icon('dev')
+        self.assertEqual((live.name, preview.name), ('browser-live.ico', 'browser-preview.ico'))
+        self.assertNotEqual(live.read_bytes(), preview.read_bytes())
+        with self.assertRaises(SystemExit):
+            V.app_icon('beta')
+
+    def test_icos_are_multi_size_with_alpha(self):
+        import struct
+        for channel in ('release', 'dev'):
+            data = V.app_icon(channel).read_bytes()
+            count = struct.unpack_from('<HHH', data)[2]
+            sizes = []
+            for i in range(count):
+                w, h, _, _, planes, bpp, size, offset = struct.unpack_from('<BBBBHHII', data, 6 + 16 * i)
+                self.assertEqual((planes, bpp), (1, 32))
+                self.assertLessEqual(offset + size, len(data))
+                sizes.append(w or 256)
+            self.assertEqual(sizes, [16, 20, 24, 32, 40, 48, 64, 128, 256])
+
+    def test_build_info_marks_only_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for channel, marked in (('release', True), ('dev', False)):
+                B.write_build_info(Path(tmp) / channel, V.identity(42, SHA, channel), 'o/r')
+                text = (Path(tmp) / channel / 'build-info.h').read_text(encoding='ascii')
+                self.assertEqual('BROWSER_CHANNEL_RELEASE' in text, marked)
+
+    def test_release_requires_a_commit_on_main(self):
+        if not shutil.which('git'):
+            self.skipTest('git unavailable')
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            def g(*a):
+                return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid',
+                                       '-c', 'commit.gpgsign=false', *a], cwd=repo, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            g('init', '-q', '-b', 'main')
+            g('commit', '-q', '--allow-empty', '-m', 'one')
+            on_main = g('rev-parse', 'HEAD')
+            g('checkout', '-q', '-b', 'worktree-feature')
+            g('commit', '-q', '--allow-empty', '-m', 'branch only')
+            branch = g('rev-parse', 'HEAD')
+            self.assertEqual(V.require_on_main(on_main, repo), 'main')
+            with self.assertRaises(SystemExit):
+                V.require_on_main(branch, repo)
 
 
 class PublishGuards(unittest.TestCase):

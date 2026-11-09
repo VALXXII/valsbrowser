@@ -1,10 +1,10 @@
 # Aperçu d'URL au survol — correspondance Paper ↔ code
 
-Page Paper : [Aperçu URL — composant](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-B-0)
+Page Paper : [Aperçu URL — implémenté](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-B-0)
 Source de vérité : la frame **« Aperçu URL — contexte bas gauche »** (design de
 l'utilisateur, calque « État · URL longue — largeur standard (1/3) » dans la
-Viewbox). La frame isolée « Aperçu URL — composant » est l'ancienne
-reconstitution de la bulle Chromium, elle n'est plus la référence.
+Viewbox). L'ancienne frame isolée « Aperçu URL — composant » (reconstitution de la bulle
+Chromium) a été supprimée le 9 novembre 2026 : la frame de contexte est la seule référence.
 
 ## Valeurs Paper retenues (get_jsx / get_computed_styles)
 

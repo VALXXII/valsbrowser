@@ -1,0 +1,9 @@
+// Application icon, chosen by the build identity (tools/release/version.py, APP_ICONS):
+// a release build of main gets the live icon, every other build (dev channel: local,
+// worktree, branch, portable preview) gets the preview icon. Included by browser.rc and
+// update-helper.rc so the browser and the stable launcher always match.
+#ifdef BROWSER_CHANNEL_RELEASE
+101 ICON "src/icons/browser-live.ico"
+#else
+101 ICON "src/icons/browser-preview.ico"
+#endif
