@@ -14,8 +14,8 @@ inline constexpr float primary=1, secondary=.5f, muted=128/255.f*.9f, disabled=.
 }
 namespace Space {
 inline constexpr float xs=4, sm=6, md=8, lg=16;
-// One inter-control gap for the whole chrome: back->forward is 38->44 (6 DIP),
-// so visible tab->tab and last tab->new-tab use the same 6 DIP.
+// One inter-control gap for the whole chrome (6 DIP): forward->field, brand->first tab,
+// tab->tab and last tab->new-tab. Back/Forward are one joined pair (see Toolbar).
 inline constexpr float controlGap=sm, tabGap=controlGap;
 }
 // `button` is the one corner for every rectangular button, taken from the toolbar
@@ -88,15 +88,27 @@ static_assert(Size::focusStroke==1,"focus stroke is the user-chosen 1 DIP");
 // Pure tab-strip geometry (DIPs). Renderers and hit testing call these so
 // visible gaps, hit areas and overflow capacity can never drift apart.
 struct Box { float left, top, right, bottom; };
-// Toolbar column edges (DIP) that the tab row aligns to: back {6,38}, forward {44,76}.
+// Toolbar navigation pair (Paper, Page 1 "Chrome", 2026-11-09 "Bouton avant arrière
+// retouché"): Back and Forward are one joined segment. Each half is 32 x 32 on the raised
+// surface with 6 DIP outer corners and 3 DIP inner corners; a 1 x 10 hairline (white at
+// --opacity-browser-focus 10 %) sits between them with 3 DIP on each side:
+// back {6,38}, hairline {41,42}, forward {45,77}. Then, 6 DIP apart, a standalone Reload
+// (32 x 32, #FFFFFF14 = the raised surface, radius 6) at {83,115}, and the field at 121.
+// It is the only Reload/Stop: the field's embedded Reload was removed (user request after
+// review), so the field holds Copy and the star only.
 namespace Toolbar {
-inline constexpr float backLeft=Space::sm, backCenterX=backLeft+Size::control/2;
-inline constexpr float forwardLeft=backLeft+Size::control+Space::controlGap;
+inline constexpr float backLeft=Space::sm, backCenterX=backLeft+Size::control/2, backRight=backLeft+Size::control;
+inline constexpr float pairGap=3, innerRadius=Radius::inset, separatorWidth=1, separatorHeight=10, separatorOpacity=.10f;
+inline constexpr float separatorLeft=backRight+pairGap;
+inline constexpr float forwardLeft=separatorLeft+separatorWidth+pairGap, forwardRight=forwardLeft+Size::control;
+inline constexpr float reloadLeft=forwardRight+Space::controlGap, reloadRight=reloadLeft+Size::control;
+inline constexpr float addressLeft=reloadRight+Space::controlGap;
 }
+static_assert(Toolbar::forwardLeft==45&&Toolbar::reloadLeft==83&&Toolbar::addressLeft==121,"Paper: back 6..38, hairline 41, forward 45..77, reload 83..115, field at 121");
 namespace TabStrip {
-// Region origin chosen so the first visible tab surface starts at forwardLeft (44):
-// left 38 + tabGap 6 = 44. The brand region owns 0..38.
-inline constexpr float left=Toolbar::forwardLeft-Space::tabGap;
+// Region origin chosen so the first visible tab surface starts one control gap after
+// the back button (44): left 38 + tabGap 6 = 44. The brand region owns 0..38.
+inline constexpr float left=Toolbar::backRight;
 inline constexpr float regionTop=2, regionBottom=40, top=6, bottom=38;
 inline constexpr float trailingReserve=118; // window controls, unchanged
 // Hit region: contiguous, gap belongs to the tab it precedes (no dead zone between tabs).
@@ -172,7 +184,7 @@ inline Strip Layout(float width,int count,int selected,float scroll,float locked
 }
 static_assert(Size::tabMin==2*Space::md+Size::icon,"favicon-only tab keeps the 8 DIP favicon inset on both sides");
 static_assert(Size::tabIconOnly<Size::tabCloseAll&&Size::tabCloseAll<=Size::tab,"tab compaction thresholds are ordered");
-static_assert(TabStrip::left==38&&TabStrip::Surface(0).left==Toolbar::forwardLeft,"first tab surface aligns with the forward button (44)");
+static_assert(TabStrip::left==38&&TabStrip::Surface(0).left==Toolbar::backRight+Space::tabGap,"first tab surface sits one control gap after the back button (44)");
 // Brand flower: optically placed on the toolbar column and tab row, not the
 // geometric centre of its 0..38 region (which would be x 19).
 namespace Brand {

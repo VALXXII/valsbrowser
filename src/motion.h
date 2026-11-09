@@ -3,6 +3,7 @@
 // Native-only, header-only C++17 motion model. All calls belong to the UI thread.
 // Pass the same steady-clock timestamp to model updates, sampling and scheduling.
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -97,6 +98,47 @@ public:
     }
     void Snap(float value) noexcept { from_ = target_ = Clamp(value); begin_ = end_ = Time{}; }
     void Settle() noexcept { Snap(target_); }
+};
+
+// Critically damped spring (damping ratio 1: no overshoot from rest, no bounce).
+// `response` is Apple's designer parameter in seconds (period of the undamped
+// oscillator), not a duration. Retargeting samples the presented value AND
+// velocity, so a reversal or a rapid repeat continues without a jump or a
+// velocity "brick wall". Unclamped: callers clamp where a range matters.
+// Settled values report the exact target, so a static layout is bit-exact.
+class Spring {
+    float target_ = 0, offset_ = 0, velocity_ = 0, omega_ = 0, epsilon_;
+    Time begin_{};
+    bool active_ = false;
+    void Evaluate(Time now, float& value, float& velocity) const noexcept {
+        if (!active_) { value = target_; velocity = 0; return; }
+        double t = std::chrono::duration<double>(now-begin_).count();
+        if (t < 0) t = 0;
+        const double c1 = offset_, c2 = velocity_+omega_*c1, e = std::exp(-omega_*t);
+        const double x = (c1+c2*t)*e, v = (c2-omega_*(c1+c2*t))*e;
+        if (std::fabs(x) < epsilon_ && std::fabs(v) < epsilon_*omega_) { value = target_; velocity = 0; return; }
+        value = static_cast<float>(target_+x); velocity = static_cast<float>(v);
+    }
+public:
+    explicit Spring(float epsilon = .001f) noexcept : epsilon_(epsilon) {}
+    float Target() const noexcept { return target_; }
+    float Value(Time now) const noexcept { float x, v; Evaluate(now, x, v); return x; }
+    float Velocity(Time now) const noexcept { float x, v; Evaluate(now, x, v); return v; }
+    bool Moving(Time now) const noexcept {
+        if (!active_) return false;
+        float x, v; Evaluate(now, x, v); return x != target_ || v != 0;
+    }
+    void Snap(float value) noexcept { target_ = value; offset_ = velocity_ = 0; active_ = false; }
+    void Settle() noexcept { Snap(target_); }
+    // Same target never restarts the clock (repaints and repeated input are free).
+    void Set(float target, Time now, float response, bool reduced = false) noexcept {
+        if (reduced || response <= 0) { Snap(target); return; }
+        if (target == target_) return;
+        float x, v; Evaluate(now, x, v);
+        target_ = target; offset_ = x-target; velocity_ = v; begin_ = now;
+        omega_ = static_cast<float>(6.283185307179586/response);
+        active_ = offset_ != 0 || velocity_ != 0;
+    }
 };
 
 struct InteractionVisual { float hover = 0, press = 0; };

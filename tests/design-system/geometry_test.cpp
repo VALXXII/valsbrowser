@@ -9,11 +9,17 @@ using namespace NativeChrome::Design;
 static void Require(bool ok,const char* what){if(!ok){std::fprintf(stderr,"FAIL: %s\n",what);std::exit(1);}}
 static bool Near(float a,float b){return std::fabs(a-b)<.001f;}
 int main(){
-    // Toolbar reference geometry, from the toolbar layout tokens (back {6,38}, forward {44,76}).
-    const float backLeft=Space::sm,backRight=backLeft+Size::control,forwardLeft=backRight+Space::controlGap;
-    const float toolbarGap=forwardLeft-backRight;
-    Require(Near(Toolbar::backLeft,backLeft)&&Near(Toolbar::forwardLeft,forwardLeft),"toolbar column tokens match the toolbar layout");
-    Require(Near(TabStrip::Surface(0).left,Toolbar::forwardLeft),"first tab surface starts on the forward button's left edge (44)");
+    // Toolbar reference geometry (Paper nav pair): back {6,38}, 1 DIP hairline at 41 with
+    // 3 DIP on each side, forward {45,77}, standalone Reload {83,115}, field at 121.
+    const float backLeft=Space::sm,backRight=backLeft+Size::control,forwardLeft=backRight+3+1+3;
+    const float toolbarGap=Space::controlGap;
+    Require(Near(Toolbar::backLeft,backLeft)&&Near(Toolbar::backRight,backRight)&&Near(Toolbar::forwardLeft,forwardLeft),"toolbar column tokens match the Paper nav pair");
+    Require(Near(Toolbar::separatorLeft,41)&&Near(Toolbar::separatorWidth,1)&&Near(Toolbar::separatorHeight,10)&&Near(Toolbar::separatorOpacity,.10f),"nav hairline 1 x 10 at x41, white 10%");
+    Require(Near(Toolbar::separatorLeft-backRight,3)&&Near(forwardLeft-(Toolbar::separatorLeft+1),3),"3 DIP on each side of the hairline");
+    Require(Near(Toolbar::innerRadius,3)&&Near(Radius::control,6),"pair corners: 6 outer, 3 inner");
+    Require(Near(Toolbar::forwardRight,77)&&Near(Toolbar::reloadLeft,Toolbar::forwardRight+toolbarGap)&&Near(Toolbar::reloadRight-Toolbar::reloadLeft,Size::control),"standalone Reload 32 DIP, one control gap after forward (83..115)");
+    Require(Near(Toolbar::addressLeft,Toolbar::reloadRight+toolbarGap)&&Near(Toolbar::addressLeft,121),"address field one control gap after Reload (121)");
+    Require(Near(TabStrip::Surface(0).left,backRight+toolbarGap),"first tab surface starts one control gap after back (44)");
     Require(Near(TabStrip::Region(0).left,Brand::Region().right),"brand region ends where the first tab hit region starts (38)");
     // Brand flower: 16 DIP, 32% opacity, centred on back-button centre X and tab-favicon centre Y.
     auto fav0=TabStrip::FaviconSlot(TabStrip::Surface(0));auto glyph=Brand::Glyph();
@@ -50,7 +56,7 @@ int main(){
             auto s=TabStrip::Layout(width,count,selected,1e6f*(selected%2));
             Require(s.tab>=Size::tabMin&&s.tab<=Size::tab&&Near(s.tab,std::floor(s.tab)),"tab width is a whole DIP between 32 and 128");
             Require(s.NewTabLeft()+Size::control<=width-TabStrip::trailingReserve+.001f,"new-tab never overlaps window controls");
-            Require(Near(s.Surface(0).left+s.scroll,Toolbar::forwardLeft),"first tab still starts at x44 before scrolling");
+            Require(Near(s.Surface(0).left+s.scroll,Toolbar::backRight+Space::tabGap),"first tab still starts at x44 before scrolling");
             for(int i=0;i+1<count&&i<4;++i){Require(Near(s.Surface(i+1).left-s.Surface(i).right,Space::tabGap),"6 DIP gap at every width");Require(Near(s.Region(i).right,s.Region(i+1).left),"contiguous regions at every width");}
             Require(s.Overflow()==(Near(s.tab,Size::tabMin)&&count*(Size::tabMin+Space::tabGap)>s.room),"overflow only once tabs are favicon-only");
             Require(s.Clear(selected),"selected tab is always fully clear of both fades");
@@ -89,6 +95,6 @@ int main(){
     Require(Near(Size::focusStroke,1)&&Near(Focus::stroke,1),"focus ring is exactly 1 DIP");
     Require(Near(Focus::color,1)&&Near(Focus::pointerOpacity,.10f)&&Near(Focus::Opacity(false),.10f),"pointer focus ring is white at 10% alpha");
     Require(Near(Focus::keyboardOpacity,.50f)&&Near(Focus::Opacity(true),.50f),"keyboard focus ring is white at 50% alpha");
-    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at forward left, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, adaptive 128-32 DIP tabs with masked peeking overflow, equal close insets, 1 DIP white focus tokens (pointer 10%, keyboard 50%).");
+    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at x44 (back + 6), nav pair 6|3|1|3 with forward at 45, Reload 83..115, field at 121, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, adaptive 128-32 DIP tabs with masked peeking overflow, equal close insets, 1 DIP white focus tokens (pointer 10%, keyboard 50%).");
     return 0;
 }

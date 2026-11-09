@@ -25,9 +25,12 @@ La recherche Windows **browser** utilise d?sormais **`build/v2/browser-display-p
 - Onglets : gap visible de 6 DIP, comme les boutons ; largeur 128, pas 134.
 - Croix d'onglet : cible 24 x 24, inset egal de 4 DIP, glyphe Phosphor Bold 16.
 - Focus : bordure blanche de 1 DIP ; opacite 10 % apres un clic souris (choix utilisateur), 50 % en navigation clavier (Tab, fleches, raccourcis) pour un contraste >= 3:1.
-- Fleur vectorielle 16 DIP ? 32 % d?opacit?, centr?e en (22,22), align?e sur le bouton pr?c?dent et le favicon. Le premier onglet commence ? x44, comme le bouton suivant. La fleur ouvre toujours la liste des onglets.
+- Fleur vectorielle 16 DIP ? 32 % d?opacit?, centr?e en (22,22), align?e sur le bouton pr?c?dent et le favicon. Le premier onglet commence ? x44 (un écart de 6 DIP après Précédent ; Suivant est à x45 depuis la paire Paper). La fleur ouvre toujours la liste des onglets.
 - Actualiser et copier : vraies animations Lottie vectorielles, moteur natif ThorVG 1.1.3 statique. Aucun moteur JavaScript ni WebView d'interface ajoute.
 - Copier : morph lien ? coche en 300 ms apr?s r?ussite du presse-papiers, maintien 1500 ms, retour en 300 ms. Actualiser : un seul tour antihoraire en 500 ms, sans modification de la longueur du trac?, sans boucle ni red?marrage pendant le tour. La dur?e du chargement ne change pas cette animation.
+- Actualiser ↔ Arrêter : après le tour d'Actualiser, si l'onglet charge toujours, la flèche continue d'un quart de tour antihoraire en s'effaçant pendant que la croix entre en tournant dans le même sens (240 ms) ; à la fin réelle du chargement (terminé, échoué ou arrêté), la croix redevient Actualiser par le chemin inverse. Un chargement fini pendant le tour n'affiche jamais la croix ; une navigation qui ne vient pas d'Actualiser (lien, adresse) passe directement à la croix. Aucun délai simulé, aucune image au repos ; mouvement réduit : simple échange immédiat. Détails : [design/nav-motion.md](design/nav-motion.md).
+- Précédent / Suivant (Paper, « Bouton avant arrière retouché ») : un seul segment, coins extérieurs 6 / intérieurs 3, filet 1 × 10 blanc 10 % entre les deux moitiés (3 DIP de chaque côté). Puis, à 6 DIP, un bouton Actualiser autonome 32 × 32 (#FFFFFF14, rayon 6) ; le champ d'adresse commence à x121 et ne contient plus que Copier et l'étoile (l'ancien Actualiser du champ a été retiré). Ce bouton est l'unique Actualiser / Arrêter de l'onglet ou du panneau actif (Ctrl+R, F5).
+- Labo d'animation (revue uniquement) : `browser.exe --motion-lab` ouvre une fenêtre native de réglages par icône (Précédent, Suivant, Actualiser / Arrêter, Copier, Téléchargements) avec « Rejouer » sans effet de bord, Réinitialiser / Enregistrer (`motion-tuning.ini` à côté de l'exécutable, jamais dans le profil) / Recharger / Exporter ; Ctrl+Alt+Maj+M l'affiche ou la masque. Sans ce drapeau, rien ne change. Détails : [design/nav-motion.md](design/nav-motion.md). Après un retour ou une avance réussis, la flèche glisse d'environ 3 DIP dans sa direction puis revient sur un ressort critique (réponse 0,4 s), interruptible et sans blocage de saisie.
 - Mode mouvement reduit : repli statique/fondu ; aucun timer d'animation permanent au repos.
 
 ## Compiler et verifier
@@ -52,7 +55,7 @@ L'ancien echec `Smoke download dialog did not open : 0x80004005` disparait avec 
 
 ## Paper
 
-[Design system](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-2-0) : synchronisation partielle. Les tokens et la marque ont ete mis a jour avant que le quota MCP hebdomadaire bloque les composants et timelines restants. Voir [reprise precise](design/paper-sync-pending.md). Les anciens canvas utilisateur sont conserves.
+[Design system](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-2-0) : synchronisé le 9 novembre 2026 avec `main` 58b782e / 0.3.113 (tokens, focus, onglets et fleur, étapes Lottie copier/actualiser, toasts opaques, accent et curseur). Le fichier a été rangé : une référence par composant ou flow, pistes abandonnées supprimées. Inventaire : [design/paper-sync-pending.md](design/paper-sync-pending.md).
 
 [Vue partagée — flow](https://app.paper.design/file/01M6Q7YT14ZKMGET54ASPNGQEC/p-3-0) : flow validé de la split view. Décisions, implémentation et preuves : [design/split-view.md](design/split-view.md).
 
@@ -110,9 +113,9 @@ Vérification : `test-history.ps1` (filtrage, ordre, périodes, libellés de dat
 
 ## Réglages
 
-Le bouton Réglages (engrenage) ouvre un drawer natif de 332 DIP ancré au bord droit sous la barre d'outils, d'après la frame Paper « Réglages — panneau » (`src/settings-panel.h`).
+Le bouton Réglages (engrenage) ouvre un drawer natif de 332 DIP ancré au bord droit sous la barre d'outils, d'après la page Paper « Réglages v4 — implémenté » (`src/settings-panel.h`).
 
-Organisation (page Paper « Réglages v4 ») : une racine courte et une sous-vue par catégorie.
+Organisation (page Paper « Réglages v4 — implémenté » ; champs, menus décrits et autorisations des sites sur la page « Réglages — états détaillés ») : une racine courte et une sous-vue par catégorie.
 - Racine : champ « Rechercher un réglage », Moteur de recherche (sous-vue) et Page d'accueil, puis Onglets, Confidentialité, Téléchargements et Affichage et son, chacun avec une icône et le résumé de son état (« Restaurés », « Équilibré », nom du dossier, zoom). La version reste en pied de chaque vue.
 - Sous-vues : Moteur de recherche (moteurs et suggestions), Onglets (Ouverture, Fermeture, Veille), Confidentialité (Protection, Formulaires, Données, dont « Effacer les données… » et Autorisations des sites), Téléchargements, Affichage et son (Pages, Son et vidéo). Elles s'empilent comme sur iOS (jusqu'à Confidentialité › Autorisations › site) ; Échap, Retour arrière ou le bouton Précédent de la souris reviennent, le focus retrouve la ligne d'origine.
 - Recherche : les résultats suivent la frappe (titres puis mots-clés, sans tenir compte des accents) dans une carte posée 6 DIP sous le champ, la racine estompée à 32 % derrière ; la partie trouvée du titre est en blanc et le chemin s'affiche dessous (« Confidentialité › Protection »). Un interrupteur se bascule depuis le résultat ; les autres ouvrent leur sous-vue sur la ligne. Entrée ouvre le premier résultat, ↓ entre dans la liste, Échap efface ; F3 ou Ctrl+F placent le curseur (accent #3E67FF) dans le champ. Il fonctionne comme le drawer des téléchargements, sans morph : il glisse depuis le bord droit (ressort critique, 320 ms) et repart par le même chemin (220 ms), la fenêtre se déplaçant sous une région qui épouse le coin de la fenêtre principale. Les deux drawers partagent le bord droit : en ouvrir un ferme l'autre. Un clic hors du drawer, Échap, la croix ou l'engrenage le referment ; les dialogues qu'il ouvre (dossier, confirmation) le laissent ouvert.
