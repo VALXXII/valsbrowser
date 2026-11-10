@@ -362,15 +362,21 @@ int main(){
                 Expect(asked&&modalOpen&&modalActive.spec.body==L"Les onglets d'une fenêtre privée ne peuvent pas être rouverts."&&modalActive.spec.bodyKeys.empty()&&modalActive.spec.checkLabel.empty(),"F4: private close: no history/Ctrl+Maj+T promise, no check");
                 finish(MD::CancelButton);privateWindow=false;pages=keep;
             }
-            // F3: bookmarks are read-only in a private window (transitional, until the interprocess store).
+            // D3 (final, through the interprocess store): a voluntary bookmark change from a private window
+            // is written by the normal transaction; no history, session or settings file comes with it.
             {
-                const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,L"Fixture",L"https://exemple.test/fixture",0);const size_t before=bookmarks.Root(BM::BarRoot).children.size();
-                privateWindow=true;
-                RemoveBookmark(id);ShiftBookmark(id,1);MoveBookmarkTo(id,BM::BarRoot);CommitBookmark(id,L"Renommé",L"https://exemple.test/x",0);
-                Expect(NewFolder(BM::BarRoot)==0&&DuplicateBookmark(id)==0,"F3: no folder or copy created in a private window");
-                const auto* n=bookmarks.Find(id);
-                Expect(n&&n->title==L"Fixture"&&n->url==L"https://exemple.test/fixture"&&bookmarks.Root(BM::BarRoot).children.size()==before,"F3: no bookmark mutation from a private window (no false success)");
-                privateWindow=false;RemoveBookmark(id);Expect(!bookmarks.Find(id),"control: a normal window still edits bookmarks");
+                const std::wstring dir=L"build/elements-integration/private-bookmarks";std::error_code ec;std::filesystem::remove_all(dir,ec);std::filesystem::create_directories(dir,ec);
+                const auto saved=std::make_tuple(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke);
+                dataDir=dir;sessionFile=dir+L"/session";downloadsFile=dir+L"/downloads";settingsFile=dir+L"/settings";logFile=dir+L"/log.txt";smoke=false;
+                bookmarks=BM::Store{};bookmarksBase=BM::Store{};privateWindow=true;
+                const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,L"Ajout volontaire",L"https://exemple.test/volontaire",0);SaveBookmarks();run();
+                BM::Store onDisk;{std::ifstream in(std::filesystem::path(dir+L"/bookmarks"),std::ios::binary);onDisk=BM::Store::Read(in);}
+                bool found=false;for(BM::Id x:onDisk.Root(BM::BarRoot).children)if(onDisk.Find(x)->title==L"Ajout volontaire")found=true;
+                Expect(found,"D3: a bookmark added in a private window persists through the transaction");
+                Expect(!std::filesystem::exists(dir+L"/history")&&!std::filesystem::exists(dir+L"/session")&&!std::filesystem::exists(dir+L"/settings")&&!std::filesystem::exists(dir+L"/log.txt"),"D3: no history, session, settings or log written with it");
+                RemoveBookmark(id);run();{std::ifstream in(std::filesystem::path(dir+L"/bookmarks"),std::ios::binary);onDisk=BM::Store::Read(in);}
+                Expect(onDisk.Size()==0,"D3: a removal from a private window is written too");
+                privateWindow=false;std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke)=saved;bookmarks=BM::Store{};bookmarksBase=BM::Store{};std::filesystem::remove_all(dir,ec);
             }
             // Point 8: a private window loads no history.
             {history=AddressBar::History{};privateWindow=true;LoadHistory();Expect(history.Items().empty(),"point 8: private window history stays empty");privateWindow=false;}

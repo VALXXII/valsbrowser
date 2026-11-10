@@ -54,6 +54,7 @@
 #include "update-core.h"
 #include "update-toast.h"
 #endif
+#include "profile-store.h"
 
 // COM callbacks use the official SDK interface IDs, independent of compiler UUID extensions.
 template<class T> const wchar_t* GuidText();
@@ -2916,6 +2917,9 @@ void ShowPageMenu(){
 // read cleanly is kept as bookmarks.bak. Smoke runs neither read nor write it.
 namespace BM=Bookmarks;
 BM::Store bookmarks; BM::Id lastFolder=BM::BarRoot; bool bookmarksSaveFailed=false;
+// What this process last read from or wrote to the shared file: the base of its next three-way
+// merge (src/profile-store.h). Another window's changes arrive with every commit and on activation.
+BM::Store bookmarksBase;
 int popoverReturn=0; bool bookmarksDismissClick=false;
 struct BandDrag { int index=-1; BM::Id id=0; POINT start{}; float grab=0; bool active=false; BM::Id parent=0; size_t from=0; } bandDrag;
 // Undo: each entry replays its steps backwards (16 entries, this session only).
@@ -2925,11 +2929,16 @@ std::vector<BookmarkUndo> bookmarkUndo;
 std::wstring BookmarksFile(){return dataDir+L"\\bookmarks";}
 void AnnounceBookmark(const std::wstring& text){Log(L"BOOKMARKS "+text);accessibility.Notify('K',text.c_str(),L"Bookmarks");}
 void SaveBookmarks(){
-    if(smoke||privateWindow)return;
-    const auto path=std::filesystem::path(BookmarksFile()),temp=std::filesystem::path(BookmarksFile()+L".tmp");
-    bool ok=true;{std::ofstream out(temp,std::ios::binary|std::ios::trunc);bookmarks.Write(out);out.close();ok=(bool)out;}
-    if(ok&&!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))ok=false;
+    if(smoke)return;
+    // Transaction under the profile lock: this window's changes (base → mine) replayed onto the file as
+    // it is now, written atomically; the result (with the other windows' changes) becomes the state.
+    std::map<BM::Id,BM::Id> remap;const BM::Store before=bookmarks;
+    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);});
+    const bool ok=r==ProfileStore::Result::Written||r==ProfileStore::Result::Unchanged;
+    if(!remap.empty()){bookmarkUndo.clear();Log(L"BOOKMARKS new ids remapped (another window used them)");}
+    if(ok&&bookmarks!=before){if(!bookmarks.Find(lastFolder))lastFolder=BM::BarRoot;Defer([]{BookmarksChanged();});Log(L"BOOKMARKS merged with another window's changes");}
     if(ok){if(bookmarksSaveFailed){bookmarksSaveFailed=false;Log(L"BOOKMARKS saved again");}return;}
+    if(r==ProfileStore::Result::Busy)Log(L"BOOKMARKS profile busy (lock timeout)");
     // The data stays in memory; a sticky toast offers to try again.
     Log(L"BOOKMARKS save failed");bookmarksSaveFailed=true;
     if(bookmarkToast.Window())bookmarkToast.Show(L"Favoris non enregistrés sur le disque",[]{SaveBookmarks();},motion.ReducedMotion(),L"Réessayer",true);
@@ -2939,11 +2948,13 @@ void LoadBookmarks(){
     if(smoke)return;
     namespace fs=std::filesystem;const fs::path path(BookmarksFile()),backup(BookmarksFile()+L".bak");std::error_code ec;
     if(!fs::exists(path,ec)){
+        bookmarksBase=BM::Store{}; // nothing on disk: everything in memory is new to the file
         // No file: first run, or a lost one; a clean backup wins over an empty start.
         if(fs::exists(backup,ec)){std::ifstream in(backup,std::ios::binary);bool damaged=false;auto restored=BM::Store::Read(in,&damaged);if(!damaged&&restored.Size()){bookmarks=std::move(restored);Log(L"BOOKMARKS restored from bookmarks.bak");SaveBookmarks();}}
         return;
     }
-    bool damaged=false;{std::ifstream in(path,std::ios::binary);bookmarks=BM::Store::Read(in,&damaged);}
+    bool damaged=false;{ProfileStore::Lock lock(dataDir);std::string bytes;ProfileStore::ReadAll(path.wstring(),bytes);std::istringstream in(bytes);bookmarks=BM::Store::Read(in,&damaged);} // read under the profile lock
+    bookmarksBase=bookmarks; // what is on disk now
     if(damaged){
         // Personal data, not a cache: keep the damaged file aside before anything rewrites it.
         const auto aside=fs::path(BookmarksFile()+L".damaged-"+TimeStamp());fs::copy_file(path,aside,fs::copy_options::overwrite_existing,ec);
@@ -2977,7 +2988,7 @@ bool SyncBookmarkChrome(){
         chrome.bandItems.push_back(std::move(item));}
     chrome.bandButtonForced=!bookmarks.Root(BM::OtherRoot).children.empty();
     auto t=Active();const bool page=t&&!t->home&&BM::Admissible(t->uri);
-    chrome.SetEnabled('K',page&&!privateWindow);chrome.starred=page&&!bookmarks.Matching(t->uri).empty();
+    chrome.SetEnabled('K',page);chrome.starred=page&&!bookmarks.Matching(t->uri).empty();
     if(chrome.bandRover>=(int)chrome.bandItems.size())chrome.bandRover=-1;
     return changed;
 }
@@ -2993,11 +3004,9 @@ std::wstring UniqueFolderName(BM::Id parent){
     for(bool clash=true;clash&&n<1000;){clash=false;for(BM::Id c:p->children){auto* x=bookmarks.Find(c);if(x&&x->kind==BM::Kind::Folder&&x->title==name){clash=true;name=L"Nouveau dossier "+std::to_wstring(++n);break;}}}
     return name;
 }
-// F3 (transitional until the interprocess store): a private window shows the bookmarks read-only.
-// Every mutation entry point refuses with an honest announcement; nothing pretends to be saved.
-constexpr const wchar_t* PrivateBookmarksText=L"Favoris en lecture seule dans une fenêtre privée";
-bool PrivateBookmarksLocked(){if(!privateWindow)return false;AnnounceBookmark(PrivateBookmarksText);return true;}
-BM::Id NewFolder(BM::Id parent,size_t index=BM::End){if(PrivateBookmarksLocked())return 0;
+// D3: a bookmark added or edited from a private window is a voluntary write: it goes through the same
+// interprocess transaction as a normal window (no history, session or usage trace comes with it).
+BM::Id NewFolder(BM::Id parent,size_t index=BM::End){
     const BM::Id id=bookmarks.AddFolder(parent,index,UniqueFolderName(parent),NativeChrome::DownloadsUI::UnixNowMs());
     if(!id){AnnounceBookmark(L"Trop de niveaux de dossiers");return 0;}
     PushUndo({{BookmarkStep::Created,id}},L"Dossier créé");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Dossier « "+bookmarks.Find(id)->title+L" » créé");return id;
@@ -3006,7 +3015,7 @@ void ShowBookmarkToast(const std::wstring& text){
     bookmarkToast.SetBottomReserve(UpdateToastHeight());
     bookmarkToast.Show(text,[]{PostMessageW(window,Shortcut,BookmarkUndoCommand,0);},motion.ReducedMotion());
 }
-void RemoveBookmark(BM::Id id){if(PrivateBookmarksLocked())return;
+void RemoveBookmark(BM::Id id){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;
     const bool folder=n->kind==BM::Kind::Folder;const std::wstring title=BM::DisplayTitle(*n);const size_t links=folder?bookmarks.CountLinks(id):0;
     auto removed=bookmarks.Remove(id);if(!removed)return;
@@ -3016,7 +3025,7 @@ void RemoveBookmark(BM::Id id){if(PrivateBookmarksLocked())return;
     ShowBookmarkToast(text);AnnounceBookmark(text+L". Ctrl+Z pour annuler");
 }
 // Replays the newest entry backwards. Restoring a subtree whose folder is gone lands in "Autres favoris".
-void UndoBookmark(){if(PrivateBookmarksLocked())return;
+void UndoBookmark(){
     if(bookmarkUndo.empty()){AnnounceBookmark(L"Rien à annuler");return;}
     auto entry=std::move(bookmarkUndo.back());bookmarkUndo.pop_back();std::wstring note=entry.done;
     for(auto it=entry.steps.rbegin();it!=entry.steps.rend();++it){auto& s=*it;
@@ -3040,7 +3049,7 @@ std::vector<std::tuple<unsigned,int,std::wstring>> FolderChoices(BM::Id exclude)
 RECT ClientScreen(){RECT r{};GetClientRect(window,&r);MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
 RECT RegionScreen(int id){for(auto& r:chrome.regions)if(r.id==id){RECT p{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;}return {};}
 // The popover under `anchor` (screen); `returnTo`: chrome region keeping the keyboard after Escape (0 = page).
-void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added=false,int returnTo=0){if(PrivateBookmarksLocked())return;
+void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added=false,int returnTo=0){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;
     NativeChrome::BookmarkPopover::Request r;r.id=id;r.folder=n->kind==BM::Kind::Folder;r.added=added;r.title=n->title;r.url=n->url;r.parent=n->parent;
     popoverReturn=returnTo;bookmarksDrawer.holding_=bookmarksDrawer.Visible();
@@ -3048,7 +3057,7 @@ void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added
 }
 // Ctrl+D / the star: save at once in the last folder used, then the popover; an
 // already saved page opens its most recent bookmark instead of a second one.
-void BookmarkStar(bool keyboard){if(PrivateBookmarksLocked())return;
+void BookmarkStar(bool keyboard){
     auto t=Active();if(!t||t->home||!BM::Admissible(t->uri))return;
     HideSuggestions();
     const auto matches=bookmarks.Matching(t->uri);const RECT star=RegionScreen('K');
@@ -3061,7 +3070,7 @@ void BookmarkStar(bool keyboard){if(PrivateBookmarksLocked())return;
     AnnounceBookmark(L"Favori ajouté à "+bookmarks.Find(lastFolder)->title);
     EditBookmark(id,RegionScreen('K'),true,keyboard,true,keyboard?'K':0);
 }
-void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& url,unsigned parent){if(PrivateBookmarksLocked())return;
+void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& url,unsigned parent){
     const auto* n=bookmarks.Find(id);if(!n)return;std::vector<BookmarkStep> steps;
     const std::wstring oldTitle=n->title,oldUrl=n->url;const BM::Id oldParent=n->parent;const size_t oldIndex=bookmarks.IndexOf(id);
     if(title!=oldTitle&&bookmarks.Rename(id,title))steps.push_back({BookmarkStep::Renamed,id,0,0,oldTitle});
@@ -3154,7 +3163,7 @@ void ToggleBookmarkBar(){
     settings.bookmarksBar=BandShown()?BrowserSettings::BookmarksBar::Never:BrowserSettings::BookmarksBar::Always;
     SettingChanged(BrowserSettings::Change::BookmarksBar);
 }
-BM::Id DuplicateBookmark(BM::Id id){if(PrivateBookmarksLocked())return 0;
+BM::Id DuplicateBookmark(BM::Id id){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return 0;
     const auto now=NativeChrome::DownloadsUI::UnixNowMs();const size_t at=bookmarks.IndexOf(id)+1;
     BM::Id copy=n->kind==BM::Kind::Folder?bookmarks.AddFolder(n->parent,at,n->title,now):bookmarks.Add(n->parent,at,n->title,n->url,now);
@@ -3167,13 +3176,13 @@ BM::Id DuplicateBookmark(BM::Id id){if(PrivateBookmarksLocked())return 0;
     }
     PushUndo({{BookmarkStep::Created,copy}},L"Copie annulée");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Copie insérée après l'original");return copy;
 }
-void MoveBookmarkTo(BM::Id id,BM::Id parent){if(PrivateBookmarksLocked())return;
+void MoveBookmarkTo(BM::Id id,BM::Id parent){
     const auto* n=bookmarks.Find(id);if(!n)return;const BM::Id oldParent=n->parent;const size_t oldIndex=bookmarks.IndexOf(id);
     if(!bookmarks.Move(id,parent,BM::End)){AnnounceBookmark(L"Impossible de déplacer ici");return;}
     PushUndo({{BookmarkStep::Moved,id,oldParent,oldIndex}},L"Déplacement annulé");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Déplacé dans "+bookmarks.Find(parent)->title);
 }
 // One step within its folder (Ctrl+Maj+←/→ on the band, Alt+↑/↓ in the drawer).
-void ShiftBookmark(BM::Id id,int delta){if(PrivateBookmarksLocked())return;
+void ShiftBookmark(BM::Id id,int delta){
     const auto* n=bookmarks.Find(id);if(!n)return;const BM::Id parent=n->parent;const size_t index=bookmarks.IndexOf(id);
     const size_t count=bookmarks.Find(parent)->children.size();const long long to=(long long)index+delta;if(to<0||to>=(long long)count)return;
     if(!bookmarks.Move(id,parent,(size_t)to))return;
@@ -3274,7 +3283,6 @@ void CreateBookmarkSurfaces(){
 // follows the pointer and the others reorder live; over a folder's middle it drops inside.
 void BandDragMove(POINT point){
     if(bandDrag.index<0||halted)return;
-    if(!bandDrag.active&&privateWindow)return; // F3: no reordering in a private window (click still opens)
     if(!bandDrag.active){if(std::abs(point.x-bandDrag.start.x)<=GetSystemMetrics(SM_CXDRAG)&&std::abs(point.y-bandDrag.start.y)<=GetSystemMetrics(SM_CYDRAG))return;bandDrag.active=true;Log(L"BOOKMARKS drag start");}
     const float x=point.x*96.f/GetDpiForWindow(window);
     const auto& bar=bookmarks.Root(BM::BarRoot).children;int index=(int)(std::find(bar.begin(),bar.end(),bandDrag.id)-bar.begin());if(index>=(int)bar.size()){bandDrag={};return;}
@@ -3588,7 +3596,7 @@ AccessibleLabel AccessibleButton(int id){
     case 'F':return {L"Suivant",L"Alt+Flèche droite",L"",L"Forward"};
     case 'R':return {chrome.navigationLoading?L"Arrêter le chargement":L"Actualiser",L"Ctrl+R",L"",L"Reload"};
     case 'C':return {L"Copier le lien",L"",L"",L"CopyLink"};
-    case 'K':return {chrome.starred?L"Modifier le favori":L"Ajouter aux favoris",L"Ctrl+D",privateWindow?PrivateBookmarksText:L"",L"Bookmark.Star"};
+    case 'K':return {chrome.starred?L"Modifier le favori":L"Ajouter aux favoris",L"Ctrl+D",L"",L"Bookmark.Star"};
     case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {L"Autres favoris ("+std::to_wstring(hidden+other)+L")",L"",L"Favoris masqués, Autres favoris et Gérer les favoris",L"Bookmarks.Overflow"};}
     case 'E':return {L"Ajouter cette page aux favoris",L"Ctrl+D",L"",L"Bookmarks.AddPage"};
     case 'D':return {L"Téléchargements",L"",L"",L"Downloads"};
@@ -3819,7 +3827,7 @@ case WM_LBUTTONUP:{if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDr
     if(!dragged&&original&&original==id&&NativeChrome::IsBookmark(id)){BandActivate(NativeChrome::BookmarkIndex(id),(w&MK_CONTROL)!=0,(w&MK_SHIFT)!=0,false);return 0;}
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
 case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelSeparator();CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
-case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
+case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();}); /* pick up the other windows' bookmark changes */return 0;
 case WM_SETTINGCHANGE:ApplyReducedMotion();return 0; // Windows' switch, OR'd with the app's own
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()&&!chrome.bandItems[i].folder)BandActivate(i,true,false,false);return 0;}
