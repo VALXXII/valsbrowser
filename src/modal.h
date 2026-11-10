@@ -316,7 +316,7 @@ enum class Role { Primary, Secondary, Danger, Quiet };
 enum class Scope { Page, Window, Anchor };
 inline constexpr int CancelButton = 0, AcceptButton = 1;
 inline constexpr int PrivateClearDataButton = 2;                        // A9 « Effacer les données… »
-inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4, AboutDownloadButton = 5;   // A8 status actions
+inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4, AboutDownloadButton = 5, AboutCancelButton = 7;   // A8 status actions (7: engine Cancel while downloading)
 inline constexpr int AboutNotesLink = 101, AboutLicensesLink = 102, AboutReportLink = 103;
 struct Button {
     int id = CancelButton; std::wstring label; Role role = Role::Secondary;
@@ -585,6 +585,14 @@ private:
         float buttons = 0; for (size_t i = 0; i < spec_.buttons.size(); ++i) buttons += (i ? P::buttonGap : 0) + ButtonWidth(spec_.buttons[i]);
         return CheckInActionsWidth() + 8 + buttons <= ContentWidth();
     }
+    float StatusButtonWidth() { return spec_.status.hasButton ? kit_.Width(spec_.status.button.label, DialogKit::Type::button) + 2 * P::buttonPad : 0; }
+    float StatusTextWidth() { return ContentWidth() - 34 - 4 - (spec_.status.hasButton ? StatusButtonWidth() + 8 : 0); }
+    float StatusTextHeight() {   // whole 18 DIP detail lines (the measured height can be a little short)
+        if (spec_.status.detail.empty()) return 20;
+        const float line = DialogKit::Type::detail.line, lines = std::max(1.f, std::ceil(kit_.Height(spec_.status.detail, DialogKit::Type::detail, StatusTextWidth()) / line - .2f));
+        return 20 + lines * line;
+    }
+    float StatusHeight() { const float t = StatusTextHeight(); return t <= 20 + DialogKit::Type::detail.line ? 48.f : t + 12; }   // title + one detail line fit 48; more lines: padding 6
     float HeadHeight() {
         const float cw = ContentWidth();
         if (spec_.appTile) return std::max(48.f, 2 + DialogKit::Type::aboutTitle.line + 4 + kit_.Height(spec_.body, DialogKit::Type::tabular, cw - 48 - 16 - 24 - 16));
@@ -673,8 +681,11 @@ private:
         }
         for (size_t i = 0; i < spec_.infos.size(); ++i) { next(B::Info, i, 32); actionsLift = false; }
         if (spec_.hasStatus) {
-            const auto r = next(B::Status, 0, 48);
-            if (spec_.status.hasButton) { const float w = kit_.Width(spec_.status.button.label, DialogKit::Type::button) + 2 * P::buttonPad; boxes_.push_back({StatusHit, {right - 4 - w, r.top + 8, right - 4, r.top + 40}}); }
+            // A8 contract: the row is 48 minimum and grows (padding 6) when the detail needs 2 lines;
+            // icon, text block and button stay vertically centred.
+            const float h = StatusHeight();
+            const auto r = next(B::Status, 0, h);
+            if (spec_.status.hasButton) { const float w = StatusButtonWidth(); const float by = r.top + (h - 32) / 2; boxes_.push_back({StatusHit, {right - 4 - w, by, right - 4, by + 32}}); }
         }
         if (!spec_.links.empty()) { const auto r = next(B::Links, 0, 32.f * spec_.links.size()); for (size_t i = 0; i < spec_.links.size(); ++i) boxes_.push_back({LinkHit(i), {left, r.top + 32 * i, right, r.top + 32 * (i + 1)}}); }
         if (spec_.appTile && !spec_.footnote.empty()) next(B::Footnote, 0, DialogKit::Type::body.line);
@@ -1311,7 +1322,8 @@ private:
             case B::Status: {
                 const float sy = b.r.top;
                 kit_.Fill(b.r, P::fieldRadius, DialogKit::White(P::infoFill));
-                const D2D1_RECT_F icon{left + 10, sy + 16, left + 26, sy + 32};
+                const float sh = b.r.bottom - b.r.top, iy = sy + (sh - 16) / 2;
+                const D2D1_RECT_F icon{left + 10, iy, left + 26, iy + 16};
                 switch (spec_.status.icon) {
                 case StatusIcon::Check: kit_.DrawGlyph(DialogKit::Glyph::checkCircle, icon, 16, DialogKit::White(.7f)); break;
                 case StatusIcon::Download: kit_.DrawGlyph(DialogKit::Glyph::download, icon, 16, DialogKit::White(.7f)); break;
@@ -1319,10 +1331,9 @@ private:
                 case StatusIcon::Busy: kit_.Spinner(icon, reduced_ ? .125f : SpinTurn(now)); break;
                 case StatusIcon::None: break;
                 }
-                const float bw = spec_.status.hasButton ? Find(StatusHit).right - Find(StatusHit).left + 8 : 0;
-                const float textH = spec_.status.detail.empty() ? 20 : 38;
-                kit_.Text(spec_.status.title, DialogKit::Type::body, left + 34, sy + (48 - textH) / 2, cw - 34 - 4 - bw, DialogKit::White(1));
-                if (!spec_.status.detail.empty()) kit_.Text(spec_.status.detail, DialogKit::Type::detail, left + 34, sy + (48 - textH) / 2 + 20, cw - 34 - 4 - bw, DialogKit::White(P::muted));
+                const float tw = StatusTextWidth(), textH = spec_.status.detail.empty() ? 20 : StatusTextHeight(), ty = sy + std::round((sh - textH) / 2);
+                kit_.Text(spec_.status.title, DialogKit::Type::body, left + 34, ty, tw, DialogKit::White(1));
+                if (!spec_.status.detail.empty()) kit_.Text(spec_.status.detail, DialogKit::Type::detail, left + 34, ty + 20, tw, DialogKit::White(P::muted), true);
                 if (spec_.status.hasButton) { const auto v = motion_.Visual(StatusHit, now); const auto& sb = spec_.status.button; kit_.Button(Find(StatusHit), sb.label, ToneOf(sb.role), v.hover, v.press, Focused(StatusHit), sb.disabled || busy_); }
                 break;
             }

@@ -3453,14 +3453,17 @@ NativeChrome::Modal::Status AboutStatusNow(){
     case P::Available:{auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::Download;st.title=L"Version "+v.version+L" disponible";st.detail=L"Téléchargement à votre demande";
         st.button=MD::Make(MD::AboutDownloadButton,L"Télécharger",MD::Role::Primary,false,false,false,L"AboutDownload");st.button.closes=false;return st;}
     case P::Downloading:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=L"Téléchargement de la version "+v.version+L"…";
-        st.detail=v.total?std::to_wstring(std::min<std::uint64_t>(100,v.received*100/v.total))+L" %":L"";st.hasButton=false;return st;} // no inert « Rechercher »
+        st.detail=v.total?std::to_wstring(std::min<std::uint64_t>(100,v.received*100/v.total))+L" %":L"";
+        // Annuler = the engine's own Action::Cancel (same as the toast); no inert « Rechercher ».
+        st.button=MD::Make(MD::AboutCancelButton,L"Annuler",MD::Role::Quiet,false,false,false,L"AboutCancel");st.button.closes=false;st.hasButton=true;return st;}
     case P::Ready:{auto st=MD::AboutStatus(MD::AboutReady,L"",v.version);st.button.closes=false;return st;}
     case P::Installing:case P::Installed:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=L"Installation…";st.hasButton=false;return st;} // no Annuler after the #60 handoff
     case P::Error:{ // E4: the failed step is named; the action is the engine's real retry
         using F=UpdateCore::Engine::Failure;const F f=updates.LastFailure();
         auto st=MD::AboutStatus(MD::AboutOffline,L"La recherche de mises à jour a échoué. Réessayez."); // check: cause unknown, never « Aucune connexion » by guess
-        if(f==F::Download){st.title=L"Le téléchargement a échoué";st.detail=v.error.empty()||v.error==L"Le téléchargement a échoué."?L"Le téléchargement de la mise à jour n'a pas abouti. Réessayez.":v.error;st.button.label=L"Réessayer";} // Retry = download again
-        else if(f==F::Install){st.title=L"La mise à jour a échoué";if(!v.error.empty())st.detail=v.error;st.button.label=L"Rechercher à nouveau";} // the engine's retry after an install failure is a check
+        // Download / install failures (contract KS4-0 / KT4-0): « Rechercher à nouveau » = a real Check.
+        if(f==F::Download){st.title=L"Échec du téléchargement";st.detail=v.version.empty()?L"Mise à jour non téléchargée":v.version+L" non téléchargée";st.button.label=L"Rechercher à nouveau";}
+        else if(f==F::Install){st.title=L"La mise à jour a échoué";st.detail=L"Version "+std::wstring(BROWSER_VERSION_WIDE)+L" conservée";st.button.label=L"Rechercher à nouveau";}
         return st;}
     default:{const auto last=updates.LastCheckResult();
         if(last==L::Failed)return MD::AboutStatus(MD::AboutOffline,L"La recherche de mises à jour a échoué. Réessayez.");
@@ -3471,7 +3474,11 @@ NativeChrome::Modal::Status AboutStatusNow(){
 }
 void AboutUpdateAction(int button){
     namespace MD=NativeChrome::Modal;
-    if(button==MD::AboutCheckButton){if(updates.View().phase==BrowserUpdate::Phase::Error)UpdateAction(BrowserUpdate::Action::Retry); /* the engine retries the failed step (download or check) */ else CheckForUpdates();return;}
+    if(button==MD::AboutCheckButton){
+        // Réessayer / Rechercher à nouveau: always a check. After a check or install failure the engine's
+        // Retry is a check; after a download failure it would re-download, which this label does not say.
+        if(updates.View().phase==BrowserUpdate::Phase::Error&&updates.LastFailure()!=UpdateCore::Engine::Failure::Download)UpdateAction(BrowserUpdate::Action::Retry);else CheckForUpdates();return;}
+    if(button==MD::AboutCancelButton){UpdateAction(BrowserUpdate::Action::Cancel);return;}
     if(button==MD::AboutDownloadButton){UpdateAction(BrowserUpdate::Action::Download);return;}
     if(button==MD::AboutRestartButton)UpdateAction(BrowserUpdate::Action::RestartInstall); // #60 handoff: closeWithoutPrompt, normal close
 }

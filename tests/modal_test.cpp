@@ -255,6 +255,25 @@ int wmain(int argc, wchar_t** argv) {
         Check(calls == 1 && button == Modal::AboutLicensesLink, "about: link closes with its id");
         d.FinishAnimationsForTest();
     }
+    {   // A8 status row: 48 minimum, grows (padding 6) for a 2-line detail; button and icon stay centred.
+        auto spec = Modal::AboutSpec(L"0.3.132", Modal::AboutUpToDate, L"Dernière vérification réussie");
+        d.Show(spec, Area(), [](const Modal::Result&) {});
+        const float h1 = d.HeightForTest(); const auto b1 = d.BoxForTest(D::StatusHit);
+        auto two = Modal::AboutStatus(Modal::AboutOffline, L"La recherche de mises à jour a échoué. Réessayez.");
+        d.SetStatus(two); d.PaintForTest();
+        const float h2 = d.HeightForTest(); const auto b2 = d.BoxForTest(D::StatusHit);
+        Check(h2 > h1 && std::fabs((h2 - h1) - 20) < .5f, "A8: a 2-line detail grows the row from 48 to 68 (20 + 36 + 2x6)");
+        Check(std::fabs((b2.top - b1.top) - 10) < .5f && b2.bottom - b2.top == 32, "A8: the status button stays centred in the taller row");
+        for (UINT dpi : {96u, 144u, 192u}) Check(d.RenderForTest(root + L"/build/popups/a8-status-2lines-" + std::to_wstring(dpi) + L".png", dpi), "A8 2-line render sample");
+        auto one = Modal::AboutStatus(Modal::AboutReady, L"", L"0.3.133"); d.SetStatus(one);
+        Check(std::fabs(d.HeightForTest() - h1) < .5f, "A8: a one-line detail keeps the 48 row");
+        auto none = Modal::AboutStatus(Modal::AboutChecking); none.title = L"Installation…"; none.hasButton = false; d.SetStatus(none); d.PaintForTest();        Check(std::fabs(d.HeightForTest() - h1) < .5f, "A8: no detail, no button: 48 row");
+        auto lng = Modal::AboutStatus(Modal::AboutChecking); lng.title = L"Téléchargement de la version 0.3.133-beta.2026.11.10+build.4567…"; lng.detail = L"42 %";
+        lng.button = Modal::Make(Modal::AboutCancelButton, L"Annuler", Modal::Role::Quiet, false, false, false, L"AboutCancel"); lng.button.closes = false; d.SetStatus(lng); d.PaintForTest();
+        Check(std::fabs(d.HeightForTest() - h1) < .5f && d.BoxForTest(D::StatusHit).right <= d.WidthForTest() - 16, "A8: long version title stays one line (ellipsis), Annuler inside");
+        Check(d.RenderForTest(root + L"/build/popups/a8-status-long-144.png", 144), "A8 long render sample");
+        d.Abort(); d.FinishAnimationsForTest();
+    }
     {   // Long JS message (several KB): the panel fits the area, message scrolls.
         std::wstring longText; for (int i = 0; i < 400; ++i) longText += L"Ligne de texte brut <b>sans</b> balisage & sans échappement. ";
         int calls = 0;
