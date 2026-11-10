@@ -464,7 +464,7 @@ private:
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     float thumbScale_ = 1; int sourceColumns_ = 2;   // B08 grid: shrinks thumbnails before overflowing
     Motion::Tween fade_; Motion::Time spinStart_{};
-    static constexpr long long GroupKey = 1;
+    static constexpr long long GroupKey = 1, DangerKey = 7500;   // DangerKey: B07 card group (UIA only, not a hit)
 
     UINT Dpi() const { return GetDpiForWindow(hwnd_ ? hwnd_ : owner_); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
@@ -1420,12 +1420,22 @@ private:
         if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation --------------------------------------------------------------------------
+    // B07 card for UIA (R1): file, real reason title and full text, from the spec (not the drawn, possibly
+    // ellipsised lines). Given as the dialog's description, the card group's name/help and each card
+    // button's help, so it is read on open and again on every keyboard stop.
+    std::wstring DangerSpoken() const {
+        std::wstring s = spec_.danger.title;
+        if (!spec_.danger.subtitle.empty()) s += (s.empty() ? L"" : L" — ") + spec_.danger.subtitle;
+        if (!spec_.danger.text.empty()) s += (s.empty() ? L"" : L". ") + spec_.danger.text;
+        return s;
+    }
     std::wstring AccessibleName() const { if (!spec_.title.empty()) return spec_.title; if (!spec_.origin.empty()) return spec_.origin; if (spec_.danger.shown) return spec_.danger.title; if (!spec_.accountsTitle.empty()) return spec_.accountsTitle; return L"Dialogue"; }
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!open_) return nodes;
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = AccessibleName();
         g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle;
         if (spec_.message.empty() && !spec_.body.empty() && !spec_.bodyKeys.empty()) { g.help += L" "; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) g.help += (i ? L" + " : L"") + spec_.bodyKeys[i]; g.help += L"."; } if (!error_.empty()) g.help = error_;
+        if (spec_.danger.shown && error_.empty()) g.help = DangerSpoken();   // R1: the full reason, never the ellipsised line
         g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
         auto add = [&](int key, const std::wstring& name, D2D1_RECT_F r, bool enabled, const std::wstring& id = L"") { Accessibility::Node n; n.key = key; n.parent = GroupKey; n.name = name; n.bounds = ScreenOf(r); n.enabled = enabled; n.automationId = id; nodes.push_back(n); return nodes.size() - 1; };
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].reveal) { const auto at = add(RevealHit(i), L"Afficher le mot de passe", Find(RevealHit(i)), !busy_); nodes[at].toggle = i < revealed_.size() && revealed_[i] ? 2 : 1; }
@@ -1446,7 +1456,8 @@ private:
         for (size_t i = 0; i < spec_.accounts.size(); ++i) { const auto at = add(AccountHit(i), spec_.accounts[i].user, Find(AccountHit(i)), !spec_.accounts[i].disabled); nodes[at].selected = spec_.accountsSelect && static_cast<int>(i) == spec_.accountSelected; nodes[at].help = spec_.accounts[i].masked; nodes[at].role = Accessibility::Role::ListItem; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(spec_.accounts.size()); }
         if (!spec_.manageLabel.empty()) add(ManageHit, spec_.manageLabel, Find(ManageHit), true);
         if (!spec_.checkLabel.empty()) { const auto at = add(SimpleCheckHit, spec_.checkLabel, Find(SimpleCheckHit), !busy_); nodes[at].toggle = spec_.checkValue ? 2 : 1; }
-        for (size_t i = 0; i < spec_.buttons.size(); ++i) add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId);
+        if (spec_.danger.shown) { Accessibility::Node c; c.key = DangerKey; c.parent = GroupKey; c.role = Accessibility::Role::Group; c.focusable = false; c.name = spec_.danger.title + (spec_.danger.subtitle.empty() ? L"" : L" — " + spec_.danger.subtitle); c.help = spec_.danger.text; c.automationId = L"DangerousDownloadCard"; for (const auto& bl : blocks_) if (bl.type == B::Danger) c.bounds = ScreenOf(bl.r); nodes.push_back(c); }
+        for (size_t i = 0; i < spec_.buttons.size(); ++i) { const auto at = add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId); if (spec_.danger.shown) nodes[at].help = DangerSpoken(); }
         if (spec_.closeButton) add(CloseHit, L"Fermer", Find(CloseHit), true, L"DialogClose");
         return nodes;
     }
@@ -1601,6 +1612,7 @@ public:
     std::wstring FieldForTest(size_t i) const { return i < edits_.size() ? edits_[i].Text() : L""; }
     HWND EditForTest(size_t i) const { return i < edits_.size() ? edits_[i].edit : nullptr; }
     D2D1_RECT_F BoxForTest(int hit) const { return Find(hit); }
+    std::vector<Accessibility::Node> NodesForTest() { return Nodes(); }
     const SourcePicker& SourcesForTest() const { return spec_.sources; }
     bool EnabledForTest(int hit) const { return Enabled(hit); }
     int ColumnsForTest() const { return sourceColumns_; }

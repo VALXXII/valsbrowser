@@ -945,6 +945,7 @@ OP::Spec DangerousDownloadSpec(const std::wstring& path,const std::wstring& uri,
     OP::Spec s;s.kind=OP::Kind::DangerousDownload;s.origin=OriginLabel(uri);s.detail=DL::FileName(path);if(s.detail.empty())s.detail=L"Fichier";
     s.reason=DangerText(reason);s.link=uri;
     // Header by the real reason: « dangereux » only for FILE_MALICIOUS (same words as the list row, E6).
+    s.reportable=reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS;
     s.blockedTitle=reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS?L"Fichier dangereux":reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED?L"Vérification de sécurité impossible":L"Téléchargement bloqué";s.keepAvailable=false;s.demo=false;return s;
 }
 void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){
@@ -967,7 +968,7 @@ void PromptDownloadCommand(OP::Prompt::Command c,const OP::Spec& s){
     auto t=promptActive.tab.lock();
     if(!s.demo){   // a real blocked download: real effects only
         if(c==OP::Prompt::CopyLink){const bool ok=!s.link.empty()&&CopyToClipboard(s.link);Log(std::wstring(L"DOWNLOAD blocked: link ")+(ok?L"copied":L"not copied"));}
-        else{Log(L"DOWNLOAD blocked: report page opened");Defer([]{NewTab(SmartScreenReportUrl,-1,L"");});}
+        else if(s.reportable){Log(L"DOWNLOAD blocked: report page opened");Defer([]{NewTab(SmartScreenReportUrl,-1,L"");});}
         return;
     }
     std::wstring line;

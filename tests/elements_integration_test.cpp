@@ -286,6 +286,30 @@ int main(){
                 Expect(DangerText(r).find(L"enregistré")==std::wstring::npos,"E5: no claim that the file was not saved");
             Expect(DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED).find(L"dangereux")==std::wstring::npos,"E5: security check failure is not called dangerous");
             {
+                // Decision 4: report only for a malware verdict; otherwise « Copier le lien » direct; Supprimer always.
+                auto actions=[](COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){const auto m=OP::Build(DangerousDownloadSpec(L"C:/x/a.zip",L"https://s.exemple.test/a.zip",r),true);return m.buttons;};
+                const auto mal=actions(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS),chk=actions(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED),pol=actions(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY);
+                Expect(mal.size()==2&&mal[0].label==L"Supprimer le fichier"&&mal[1].id==OP::Id::More&&mal[1].label==L"Plus d'options","B07 FILE_MALICIOUS: Supprimer + Plus d'options (Copier le lien, Signaler)");
+                Expect(chk.size()==2&&chk[0].label==L"Supprimer le fichier"&&chk[1].id==OP::Id::CopyLink&&chk[1].label==L"Copier le lien"&&!chk[1].closes,"B07 SECURITY_CHECK_FAILED: direct « Copier le lien », no report");
+                Expect(pol.size()==2&&pol[0].label==L"Supprimer le fichier"&&pol[1].id==OP::Id::CopyLink&&pol[1].label==L"Copier le lien","B07 BLOCKED_BY_POLICY: direct « Copier le lien », no report");
+                Expect(!DangerousDownloadSpec(L"a",L"b",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY).reportable&&DangerousDownloadSpec(L"a",L"b",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS).reportable,"B07: reportable only for FILE_MALICIOUS");
+                {const size_t before=pages.size();auto p=DangerousDownloadSpec(L"a",L"https://s.exemple.test/a",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED);PromptDownloadCommand(OP::Prompt::Report,p);run();Expect(pages.size()==before,"B07: a non-reportable reason never opens the report page");}
+                // R1: the full reason stays readable through UIA (dialog description, card group, every card
+                // button's help) whatever the drawn ellipsis at 268 DIP.
+                for(auto r:{COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY}){
+                    const std::wstring name=L"un-installateur-au-nom-particulierement-long-pour-forcer-l-ellipse-2026.exe";
+                    ElementsDangerousDownload(990001,L"C:/fixture/"+name,L"https://telechargements.exemple.test/"+name,r);run();
+                    const auto spec=DangerousDownloadSpec(L"C:/fixture/"+name,L"https://telechargements.exemple.test/"+name,r);
+                    const auto nodes=originPrompt.Surface().NodesForTest();
+                    bool group=false,card=false,buttons=true;int seen=0;
+                    for(const auto& n:nodes){
+                        if(n.key==1 /*GroupKey*/)group=n.help.find(spec.blockedTitle)!=std::wstring::npos&&n.help.find(spec.reason)!=std::wstring::npos&&n.help.find(name)!=std::wstring::npos;
+                        if(n.key==7500 /*DangerKey*/)card=!n.focusable&&n.name==name+L" — "+spec.blockedTitle&&n.help==spec.reason;
+                        if(n.key>=MD::Dialog::ButtonHit(0)&&n.key<MD::Dialog::ButtonHit(8)){++seen;buttons=buttons&&n.help.find(spec.reason)!=std::wstring::npos;}
+                    }
+                    Expect(promptOpen&&group&&card&&buttons&&seen==2,"R1: B07 full file, reason title and text exposed to UIA (description, card, keyboard stops)");
+                    originPrompt.Surface().KeyForTest(VK_ESCAPE);run();originPrompt.Surface().FinishAnimationsForTest();
+                }
                 auto head=[](COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){return OP::Build(DangerousDownloadSpec(L"C:/x/a.zip",L"https://s.exemple.test/a.zip",r),true).danger.subtitle;};
                 Expect(head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS)==L"Fichier dangereux"&&head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED)==L"Vérification de sécurité impossible"&&head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY)==L"Téléchargement bloqué"
                     &&DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS)==L"Ce fichier a été signalé comme dangereux. Le téléchargement a été bloqué."

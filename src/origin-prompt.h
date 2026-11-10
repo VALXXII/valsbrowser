@@ -50,6 +50,7 @@ struct Spec {
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
     std::wstring reason;                 // DangerousDownload: « Microsoft Defender SmartScreen le signale… »
     std::wstring blockedTitle;           // DangerousDownload card header by engine reason (empty: demo « fichier dangereux »)
+    bool reportable = true;              // DangerousDownload: « Signaler une erreur à Microsoft » applies (FILE_MALICIOUS only)
     bool insecure = false;               // BasicAuth over plain HTTP
     // DangerousDownload: « Conserver quand même… » only where keeping is real (the sandbox demo):
     // WebView2 has no API to override a SmartScreen / security verdict (no danger type, no keep).
@@ -116,7 +117,7 @@ inline const char* Glyph(int p) {
 }
 
 // Button ids inside the dialog (Modal::Dialog ids; mapped back to Action).
-namespace Id { inline constexpr int Cancel = Modal::CancelButton, Accept = Modal::AcceptButton, Never = 10, Later = 11, More = 12, Manage = 13; }
+namespace Id { inline constexpr int Cancel = Modal::CancelButton, Accept = Modal::AcceptButton, Never = 10, Later = 11, More = 12, Manage = 13, CopyLink = 14; }
 
 // The Modal::Spec for an origin prompt (pure: unit-testable without a window).
 inline Modal::Spec Build(const Spec& s, bool anchored) {
@@ -178,7 +179,11 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         m.danger = {s.detail, s.blockedTitle.empty() ? L"Bloqué : fichier dangereux" : s.blockedTitle, s.reason.empty() ? L"Microsoft Defender SmartScreen le signale comme malveillant. Il n'a pas été ouvert." : s.reason, true};
         m.stretchButtons = false;
         Button del = button(Id::Accept, L"Supprimer le fichier", Role::Danger, false, false, true, L"DownloadDelete");
-        Button more = button(Id::More, L"Plus d'options", Role::Quiet, false, false, false, L"DownloadMore"); more.closes = false;
+        // Decision 4: only a malware verdict can be contested at Microsoft; otherwise the one real extra
+        // action, « Copier le lien », is a direct Quiet button (Paper KV2-0 / KVQ-0), no one-row menu.
+        Button more = s.reportable ? button(Id::More, L"Plus d'options", Role::Quiet, false, false, false, L"DownloadMore")
+                                   : button(Id::CopyLink, L"Copier le lien", Role::Quiet, false, false, false, L"DownloadCopyLink");
+        more.closes = false;
         m.buttons = {del, more}; m.stretchButtons = true;
         break;
     }
@@ -337,7 +342,8 @@ private:
             if (id == Id::Cancel) { confirming_ = false; spec_ = parent_; dialog_.Update(Content(spec_)); dialog_.FocusControl(Modal::Dialog::ButtonHit(1)); }
             return;
         }
-        if (id != Id::More || spec_.kind != Kind::DangerousDownload) return;
+        if (id == Id::CopyLink && spec_.kind == Kind::DangerousDownload) { if (hooks_.download) hooks_.download(CopyLink, spec_); return; }
+        if (id != Id::More || spec_.kind != Kind::DangerousDownload || !spec_.reportable) return;
         const int chosen = dialog_.TrackMenu(MoreItems(spec_.keepAvailable), Modal::Dialog::ButtonHit(1), dialog_.KeyboardModality());
         if (chosen == CopyLink || chosen == Report) { if (hooks_.download) hooks_.download(static_cast<Command>(chosen), spec_); return; }
         if (chosen != KeepAnyway || !spec_.keepAvailable) return;   // Échap / click outside: the popover stays as it was
