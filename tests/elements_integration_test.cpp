@@ -199,6 +199,45 @@ int main(){
         deferredJobs.clear();pages={live};current=0;
         DestroyWindow(window);window=nullptr;
     }
+    // A9 window close with several tabs (« Confirmer avant de fermer plusieurs onglets » on), on
+    // the real modal surface: a user close asks and can be cancelled or confirmed; the updater's
+    // install handoff and a clear-on-exit already under way close without asking (a question
+    // there would block the install / the shutdown); the sandbox demo still only demonstrates.
+    {
+        instance=GetModuleHandleW(nullptr);
+        window=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"owner",WS_POPUP,0,0,1200,800,nullptr,nullptr,instance,nullptr);
+        wchar_t cwd[MAX_PATH]{};GetCurrentDirectoryW(MAX_PATH,cwd);
+        Expect(window&&modal.Create(instance,window,cwd,{}),"modal surface created");
+        auto run=[]{for(int i=0;i<6&&!deferredJobs.empty();++i){auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& j:jobs)j();}};
+        auto closePosted=[]{MSG m{};bool any=false;while(PeekMessageW(&m,window,WM_CLOSE,WM_CLOSE,PM_REMOVE))any=true;return any;};
+        auto a=std::make_shared<Tab>(),b=std::make_shared<Tab>(),c=std::make_shared<Tab>();
+        for(auto& t:{a,b,c}){t->uri=L"https://exemple.test/";t->home=false;}
+        pages={a,b,c};current=0;settings.confirmCloseTabs=true;closeConfirmed=false;closeWithoutPrompt=false;exitClear=ExitClear::Idle;
+        // User close: asks, « Annuler » keeps the window.
+        Expect(!CloseWindowAllowed()&&modalOpen&&modal.CurrentSpec().automationId==L"CloseWindow","user close with 3 tabs: asks first");
+        modal.Finish(MD::CancelButton);run();
+        Expect(!modalOpen&&!closeConfirmed&&!closePosted(),"user close cancelled: window kept");
+        // User close confirmed: closes (WM_CLOSE re-posted, then allowed).
+        Expect(!CloseWindowAllowed()&&modalOpen,"user close asks again");
+        modal.Finish(MD::AcceptButton);run();
+        Expect(!modalOpen&&closeConfirmed&&closePosted()&&CloseWindowAllowed(),"user close confirmed: window closes");
+        closeConfirmed=false;
+        // Updater install handoff (RestartInstall): never a question.
+        closeWithoutPrompt=true;
+        Expect(CloseWindowAllowed()&&!modalOpen,"install handoff closes with several tabs, no question");
+        // Sandbox demo: still demonstrates (asks, reports the answer, never closes) even then.
+        bool demoAnswered=false,demoOk=false;
+        Expect(!CloseWindowAllowed(true,[&](bool ok){demoAnswered=true;demoOk=ok;})&&modalOpen,"demo: shows the question");
+        modal.Finish(MD::AcceptButton);run();
+        Expect(demoAnswered&&demoOk&&!closeConfirmed&&!closePosted(),"demo confirmed: reported, window kept");
+        closeWithoutPrompt=false;
+        // Clear on exit already waiting for the engine: the repeated WM_CLOSE goes through.
+        exitClear=ExitClear::Waiting;
+        Expect(CloseWindowAllowed()&&!modalOpen,"clear on exit under way: close continues, no new question");
+        exitClear=ExitClear::Idle;
+        modal.Abort();run();deferredJobs.clear();pages={live};current=0;
+        DestroyWindow(window);window=nullptr;
+    }
     // Origin labels shown in dialogs.
     Expect(OriginLabel(L"https://www.exemple.test:8443/a?b")==L"exemple.test:8443"&&OriginLabel(L"about:blank")==L"Cette page"&&OriginLabel(L"https://user@site.test/")==L"site.test","origin label");
     pages.clear();

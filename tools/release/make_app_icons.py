@@ -1,17 +1,20 @@
-"""Regenerate the two Windows app icons from their original Paper exports.
+"""Regenerate the two Windows app icons from their original exports.
 
-Sources (Paper file "Browser Design", page Icon, exported unmodified, transparent corners):
-  design/app-icons/live-256.png, live-1024.png        artboard "App Icon - Release / Live"
-  design/app-icons/preview-256.png, preview-1024.png  artboard "App Icon - Beta / Build - Worktrees"
+Sources (exported unmodified, transparent corners; see design/app-icons/README.md):
+  design/app-icons/live-1080.png                      "App Icon - Release / Live", single 1080 px export
+  design/app-icons/preview-256.png, preview-1024.png  Paper artboard "App Icon - Beta / Build - Worktrees", 1x + 4x
 
 Outputs (committed, so builds and CI never need Pillow):
   src/icons/browser-live.ico, src/icons/browser-preview.ico
 
-Each ICO holds 16, 20, 24, 32, 40, 48, 64, 128 and 256 px. 256 is the 1x export
-verbatim (PNG entry); every smaller size is an area-average (box) downscale of the 4x export
-(premultiplied by Pillow, no ringing on the transparent corners) stored as a
-32-bit BGRA DIB with its AND mask, the format every Windows icon API accepts.
-Requires Pillow (`python -m pip install pillow`) only when regenerating.
+Each ICO holds 16, 20, 24, 32, 40, 48, 64, 128 and 256 px, 256 as a PNG entry and every
+smaller size as a 32-bit BGRA DIB with its AND mask, the format every Windows icon API accepts.
+Resampling is an area-average (box) downscale (premultiplied by Pillow, no ringing on the
+transparent corners), never a retouch of the artwork:
+  live     every size, 256 included, is downscaled from the 1080 px master;
+  preview  256 is the 1x export verbatim, smaller sizes are downscaled from the 4x export.
+Requires Pillow (`python -m pip install pillow`) only when regenerating; the output is
+deterministic (same sources + Pillow -> same bytes).
 """
 from __future__ import annotations
 import io, struct, sys
@@ -19,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
-VARIANTS = ('live', 'preview')
+ICONS = ROOT / 'design/app-icons'
 
 
 def dib_entry(img) -> bytes:
@@ -41,20 +44,40 @@ def dib_entry(img) -> bytes:
     return header + xor + b''.join(rows)
 
 
-def build_ico(src256: Path, src1024: Path) -> bytes:
+def load(path: Path, size: int):
     from PIL import Image
-    big = Image.open(src1024).convert('RGBA')
-    exact = Image.open(src256).convert('RGBA')
-    if big.size != (1024, 1024) or exact.size != (256, 256):
-        raise SystemExit(f'Unexpected source sizes: {big.size} {exact.size}')
+    img = Image.open(path).convert('RGBA')
+    if img.size != (size, size):
+        raise SystemExit(f'Unexpected size for {path.name}: {img.size}, want {size}x{size}')
+    corners = [img.getpixel(p)[3] for p in ((0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1))]
+    if any(corners):
+        raise SystemExit(f'{path.name}: corners must be transparent, alpha {corners}')
+    return img
+
+
+def live_images():
+    """Single high-resolution master: every size is a box downscale of it."""
+    from PIL import Image
+    master = load(ICONS / 'live-1080.png', 1080)
+    return {size: master.resize((size, size), Image.BOX) for size in SIZES}
+
+
+def preview_images():
+    """Paper 1x + 4x exports: 256 verbatim, smaller sizes downscaled from 4x."""
+    from PIL import Image
+    big, exact = load(ICONS / 'preview-1024.png', 1024), load(ICONS / 'preview-256.png', 256)
+    return {size: exact if size == 256 else big.resize((size, size), Image.BOX) for size in SIZES}
+
+
+def build_ico(images: dict) -> bytes:
     entries = []
     for size in SIZES:
         if size == 256:
             buf = io.BytesIO()
-            exact.save(buf, 'PNG', optimize=True)
+            images[size].save(buf, 'PNG', optimize=True)
             entries.append((size, buf.getvalue()))
         else:
-            entries.append((size, dib_entry(big.resize((size, size), Image.BOX))))
+            entries.append((size, dib_entry(images[size])))
     out = bytearray(struct.pack('<HHH', 0, 1, len(entries)))
     offset = 6 + 16 * len(entries)
     for size, data in entries:
@@ -66,9 +89,12 @@ def build_ico(src256: Path, src1024: Path) -> bytes:
     return bytes(out)
 
 
+VARIANTS = {'live': live_images, 'preview': preview_images}
+
+
 def main() -> int:
-    for name in VARIANTS:
-        ico = build_ico(ROOT / f'design/app-icons/{name}-256.png', ROOT / f'design/app-icons/{name}-1024.png')
+    for name, images in VARIANTS.items():
+        ico = build_ico(images())
         target = ROOT / f'src/icons/browser-{name}.ico'
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(ico)
