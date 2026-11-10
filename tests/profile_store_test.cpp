@@ -72,6 +72,18 @@ int wmain(int argc, wchar_t** argv) {
         Check(rescued, "an addition into a folder deleted elsewhere is kept in « Autres favoris », not lost");
     }
 
+    // ---- unit: history and settings merges ---------------------------------------------------
+    {
+        using H = AddressBar::History; H base; base.Record(L"https://a.test/", L"A", 1); base.Record(L"https://b.test/", L"B", 2);
+        H mine = base, theirs = base; mine.Record(L"https://a.test/", L"A", 10); theirs.Record(L"https://a.test/", L"A", 11); theirs.Record(L"https://c.test/", L"C", 12);
+        H r = H::Merge(base, mine, theirs); int a = 0; bool c = false; for (const auto& v : r.Items()) { if (v.url == L"https://a.test/") a = v.visits; if (v.url == L"https://c.test/") c = true; }
+        Check(a == 3 && c, "history: visits from both windows add up, the other window's page kept");
+        H gone = base; gone.Remove(L"https://b.test/"); bool back = false; for (const auto& v : H::Merge(base, base, gone).Items()) if (v.url == L"https://b.test/") back = true;
+        Check(!back, "history: a page removed in another window is not resurrected");
+        H cleared = base; cleared.Clear(); Check(H::Merge(base, cleared, theirs).Items().size() == 1, "history: « Effacer » here removes the pages it knew, keeps only the newer one from elsewhere");
+        const std::string b = "browser-settings 1\nzoom-percent=100\nad-block=1\n", m = "browser-settings 1\nzoom-percent=125\nad-block=1\n", t = "browser-settings 1\nzoom-percent=100\nad-block=0\n";
+        Check(ProfileStore::MergeKeyValues(b, m, t) == "browser-settings 1\nzoom-percent=125\nad-block=0\n", "settings: each window's own change kept, field by field");
+    }
     // ---- adversarial: real processes ---------------------------------------------------------
     wchar_t self[MAX_PATH]; GetModuleFileNameW(nullptr, self, MAX_PATH);
     const std::wstring dir = std::filesystem::absolute(L"build/profile-store/profile").wstring();

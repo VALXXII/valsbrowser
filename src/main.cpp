@@ -1098,11 +1098,15 @@ void SaveSession(){
 }
 // Visited sites for the address suggestions, beside `session` (UTF-8, atomic replace).
 std::wstring HistoryFile(){return dataDir+L"\\history";}
+// Interprocess transaction (src/profile-store.h): visits made here are added to the file's counts,
+// removals here are applied there, and another window's removals are never undone.
+AddressBar::History historyBase;
 void SaveHistory(){
     if(smoke||privateWindow)return;
-    const auto path=std::filesystem::path(HistoryFile()),temp=std::filesystem::path(HistoryFile()+L".tmp");
-    {std::ofstream out(temp,std::ios::binary|std::ios::trunc);history.Write(out);out.close();if(!out){Log(L"HISTORY save failed");return;}}
-    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"HISTORY replace failed");
+    const auto r=ProfileStore::CommitWith<AddressBar::History>(dataDir,HistoryFile(),historyBase,history,
+        [](std::istream& in,bool*){return AddressBar::History::Read(in);},[](std::ostream& out,const AddressBar::History& h){h.Write(out);},
+        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);});
+    if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"HISTORY save failed");
 }
 // Result pages of the search engines are not suggested back: typing "git" should
 // offer the sites visited, not every past search for it.
@@ -1152,7 +1156,7 @@ void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const Native
 void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.erase(site);siteIconsWritten.erase(site);siteIconsMissing.insert(site);if(smoke)return;if(!DeleteFileW(SiteIconFile(site).c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND)Log(L"FAVICONS delete failed "+site);}
 void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke)return;std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
 void LoadPopularSites(){std::ifstream in(std::filesystem::path(base+L"\\assets\\popular-sites.txt"),std::ios::binary);popularSites=AddressBar::ReadPopular(in);if(popularSites.empty())Log(L"ADDRESS popular sites unavailable");}
-void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::ifstream in(std::filesystem::path(HistoryFile()),std::ios::binary);history=AddressBar::History::Read(in);}
+void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(HistoryFile(),bytes);}std::istringstream in(bytes);history=AddressBar::History::Read(in);historyBase=history;}
 // ---- New tab page (SETTINGS newtab) ----------------------------------------------
 // "Sites fréquents": the home tab shows the most visited hosts (AddressBar::TopSites, the
 // ranking of the address bar's host rows) as plain http(s) links. Self-contained document
@@ -1507,13 +1511,18 @@ void CreateDownloadPanel(){
 // defaults and never write it. Each setting's behaviour lives in one function
 // below, called by SettingChanged() after the drawer changed the state.
 bool settingsDismissClick=false;
+// Interprocess transaction, field by field: a setting changed in this window takes this window's
+// value; every other setting keeps the value another window may have saved meanwhile.
+BrowserSettings::State settingsBase;
 void SaveSettings(){
     if(smoke||privateWindow)return;
-    const auto path=std::filesystem::path(settingsFile),temp=std::filesystem::path(settingsFile+L".tmp");
-    {std::ofstream out(temp,std::ios::binary|std::ios::trunc);BrowserSettings::Write(out,settings);out.close();if(!out){Log(L"SETTINGS save failed");return;}}
-    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"SETTINGS replace failed");
+    auto text=[](const BrowserSettings::State& s){std::ostringstream o;BrowserSettings::Write(o,s);return o.str();};
+    const auto r=ProfileStore::CommitWith<BrowserSettings::State>(dataDir,settingsFile,settingsBase,settings,
+        [](std::istream& in,bool*){return BrowserSettings::Read(in);},[](std::ostream& out,const BrowserSettings::State& s){BrowserSettings::Write(out,s);},
+        [&text](const BrowserSettings::State& b,const BrowserSettings::State& m,const BrowserSettings::State& t){std::istringstream in(ProfileStore::MergeKeyValues(text(b),text(m),text(t)));return BrowserSettings::Read(in);});
+    if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"SETTINGS save failed");
 }
-void LoadSettings(){if(smoke)return;std::ifstream in(std::filesystem::path(settingsFile),std::ios::binary);settings=BrowserSettings::Read(in);}
+void LoadSettings(){if(smoke)return;std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(settingsFile,bytes);}std::istringstream in(bytes);settings=BrowserSettings::Read(in);settingsBase=settings;}
 // Download folder: the chosen one, else the system Downloads folder.
 std::wstring SystemDownloadFolder(){PWSTR known=nullptr;std::wstring path;if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads,0,nullptr,&known))&&known)path=known;CoTaskMemFree(known);return path;}
 std::wstring EffectiveDownloadFolder(){return settings.downloadFolder.empty()?SystemDownloadFolder():settings.downloadFolder;}

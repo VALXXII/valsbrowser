@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <map>
+#include <vector>
 #include <sstream>
 #include <string>
 
@@ -87,21 +89,51 @@ enum class Result { Written, Unchanged, Busy, Failed };
 // One transaction on `path` for a model with `static M Read(std::istream&, bool*)`, `Write(std::ostream&)`
 // and `operator==`. `merge(base, mine, theirs)` returns the new state. On success `mine` and `base`
 // both become that state (the window now also shows the other windows' changes).
+// Same transaction with the model's reader and writer given explicitly (free functions, no damage flag…).
 template <class M>
-Result Commit(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
-              const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000) {
+Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
+                  const std::function<M(std::istream&, bool* damaged)>& read, const std::function<void(std::ostream&, const M&)>& write,
+                  const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000) {
     Lock lock(dataDir, timeoutMs);
     if (!lock.Held()) return Result::Busy;
     std::string bytes;
     if (!ReadAll(path, bytes)) return Result::Failed;
     std::istringstream in(bytes); bool damaged = false;
-    const M theirs = M::Read(in, &damaged);
+    const M theirs = read(in, &damaged);
     M merged = merge(base, mine, theirs);
     if (merged == theirs && !damaged) { base = merged; mine = std::move(merged); return Result::Unchanged; }
-    std::ostringstream out; merged.Write(out);
+    std::ostringstream out; write(out, merged);
     if (!WriteAtomic(path, out.str())) return Result::Failed;
     base = merged; mine = std::move(merged);
     return Result::Written;
+}
+template <class M>
+Result Commit(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
+              const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000) {
+    return CommitWith<M>(dataDir, path, base, mine, [](std::istream& in, bool* d) { return M::Read(in, d); }, [](std::ostream& out, const M& m) { m.Write(out); }, merge, timeoutMs);
+}
+// Field-by-field merge of "key=value" line files (settings): every key this window changed since
+// its base takes this window's value, every other key keeps the file's current value.
+inline std::string MergeKeyValues(const std::string& base, const std::string& mine, const std::string& theirs) {
+    auto parse = [](const std::string& text, std::vector<std::string>* order) {
+        std::map<std::string, std::string> kv; std::istringstream in(text); std::string line; bool first = true;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (first) { first = false; continue; }
+            const auto eq = line.find('='); if (eq == std::string::npos) continue;
+            const std::string k = line.substr(0, eq);
+            if (order && !kv.count(k)) order->push_back(k);
+            kv[k] = line.substr(eq + 1);
+        }
+        return kv;
+    };
+    std::vector<std::string> order; const auto b = parse(base, nullptr), m = parse(mine, &order); auto t = parse(theirs, nullptr);
+    for (const auto& [k, v] : m) { const auto bi = b.find(k); if (bi == b.end() || bi->second != v) t[k] = v; }
+    const std::string header = mine.substr(0, mine.find('\n'));
+    std::string out = header + "\n";
+    for (const auto& k : order) out += k + "=" + t[k] + "\n";
+    for (const auto& [k, v] : t) if (!m.count(k)) out += k + "=" + v + "\n";
+    return out;
 }
 
 } // namespace ProfileStore
