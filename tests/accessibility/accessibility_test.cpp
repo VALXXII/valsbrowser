@@ -102,7 +102,7 @@ static void Client(){
         {L"Navigation",UIA_ToolBarControlTypeId,L"<window>"},{L"Précédent",UIA_ButtonControlTypeId,L"Navigation"},
         {L"Suivant",UIA_ButtonControlTypeId,L"Navigation"},{L"Adresse ou recherche",UIA_EditControlTypeId,L"Navigation"},
         {L"Actualiser",UIA_ButtonControlTypeId,L"Navigation"},{L"Copier le lien",UIA_ButtonControlTypeId,L"Navigation"},
-        {L"Historique",UIA_ButtonControlTypeId,L"Navigation"},{L"Téléchargements",UIA_ButtonControlTypeId,L"Navigation"},{L"Navigation privée",UIA_ButtonControlTypeId,L"Navigation"},
+        {L"Historique",UIA_ButtonControlTypeId,L"Navigation"},{L"Téléchargements",UIA_ButtonControlTypeId,L"Navigation"},{L"Nouvelle fenêtre privée",UIA_ButtonControlTypeId,L"Navigation"},
         {L"Réglages",UIA_ButtonControlTypeId,L"Navigation"}};
     bool all=true;
     for(auto& e:expected){bool found=false;for(auto& i:items)if(i.name==e.name&&i.type==e.type&&i.parent==e.parent)found=true;
@@ -112,7 +112,7 @@ static void Client(){
     Expect(!unnamed,"no unnamed chrome control");
     // Toolbar order follows the screen.
     std::vector<std::wstring> toolbar;for(auto& i:items)if(i.parent==L"Navigation")toolbar.push_back(i.name);
-    Expect(toolbar==std::vector<std::wstring>{L"Précédent",L"Suivant",L"Actualiser",L"Connexion sécurisée",L"Adresse ou recherche",L"Copier le lien",L"Ajouter aux favoris",L"Historique",L"Téléchargements",L"Navigation privée",L"Réglages"},"toolbar reading order");
+    Expect(toolbar==std::vector<std::wstring>{L"Précédent",L"Suivant",L"Actualiser",L"Connexion sécurisée",L"Adresse ou recherche",L"Copier le lien",L"Ajouter aux favoris",L"Historique",L"Téléchargements",L"Nouvelle fenêtre privée",L"Réglages"},"toolbar reading order");
 
     // 2. States and shortcuts.
     auto* back=Find(items,L"Précédent");auto* reload=Find(items,L"Actualiser");auto* copy=Find(items,L"Copier le lien");

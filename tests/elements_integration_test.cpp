@@ -355,6 +355,19 @@ int main(){
     // A8 destinations: the public releases repository (notes of the running version, issues).
     Expect(ReleaseNotesUrl(L"0.3.132")==L"https://github.com/VALXXII/browser-releases/releases/tag/v0.3.132"&&ReleaseNotesUrl(L"dev")==L"https://github.com/VALXXII/browser-releases/releases","about: release notes of the running version");
     Expect(std::wstring(IssuesUrl)==L"https://github.com/VALXXII/browser-releases/issues/new","about: report a problem on the public issues");
+    // A9 private window: the app writes nothing at all (session, history, downloads, settings, bookmarks, log).
+    {
+        const std::wstring dir=L"build/elements-integration/private-fixture";std::error_code ec;std::filesystem::remove_all(dir,ec);std::filesystem::create_directories(dir,ec);
+        const auto saved=std::make_tuple(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady);
+        dataDir=dir;sessionFile=dir+L"/session";downloadsFile=dir+L"/downloads";settingsFile=dir+L"/settings";logFile=dir+L"/log.txt";smoke=false;sessionReady=true;privateWindow=true;
+        SaveSession();SaveHistory();SaveDownloads();SaveSettings();SaveBookmarks();Log(L"NAV https://secret.example/");
+        Expect(std::filesystem::is_empty(dir),"private window: no session, history, downloads, settings, bookmarks or log file written");
+        privateWindow=false;Log(L"control");
+        Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
+        std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
+        Expect(PrivateCommandLine(L"C:/b/browser.exe")==L"\"C:/b/browser.exe\" --private","private window: same executable, only --private passed");
+        Expect(std::wstring(PrivateProfileName)==L"browser-private","private window: dedicated InPrivate profile name, never the live profile");
+    }
     Expect(AboutStatusNow().title==L"Mises à jour indisponibles"&&!AboutStatusNow().hasButton,"about: build without the update engine says so, no fake check");
     // Origin labels shown in dialogs.
     Expect(OriginLabel(L"https://www.exemple.test:8443/a?b")==L"exemple.test:8443"&&OriginLabel(L"about:blank")==L"Cette page"&&OriginLabel(L"https://user@site.test/")==L"site.test","origin label");

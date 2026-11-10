@@ -252,6 +252,24 @@ void UpdateInteraction(int newHover,int newPressed){hover=newHover;pressed=newPr
 
 constexpr UINT Shortcut=WM_APP+1;
 bool smoke=false; int testStage=0; int chromePaints=0;
+// A9 private window: this process was started with --private. Its WebView2 controllers are InPrivate
+// (ephemeral engine profile, discarded with the last private controller) and the app itself writes
+// NOTHING to disk: no session, history, favicon cache, downloads list, settings, bookmarks or log.
+bool privateWindow=false;
+constexpr const wchar_t* PrivateProfileName=L"browser-private";
+// The command line of a new private window: this same executable, --private (nothing else is passed).
+std::wstring PrivateCommandLine(const std::wstring& exe){return L"\""+exe+L"\" --private";}
+void Log(const std::wstring& s);
+// « Navigation privée » (button, Ctrl+Maj+N): a separate process; its tabs never share the window,
+// the profile, the session or any file of this one.
+void OpenPrivateWindow(){
+    if(smoke)return;
+    std::wstring exe(32768,L'\0');const DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);if(exe.empty())return;
+    std::wstring cmd=PrivateCommandLine(exe);const std::wstring dir=std::filesystem::path(exe).parent_path().wstring();
+    STARTUPINFOW si{sizeof(si)};PROCESS_INFORMATION pi{};
+    if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,0,nullptr,dir.c_str(),&si,&pi)){Log(L"PRIVATE window launch failed");return;}
+    CloseHandle(pi.hThread);CloseHandle(pi.hProcess);Log(L"PRIVATE window launched");
+}
 // --split-test: native split-view verification on local pages (implies the isolated smoke profile).
 bool splitTest=false; constexpr UINT_PTR SplitTestTimer=4100; void SplitTestStep();
 bool splitOnScreen=false;  // unused: the screen is shared with the user's own windows, captures use PrintWindow
@@ -260,7 +278,7 @@ void SmokeCheck();
 void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
-void Log(const std::wstring& s){if(logFile.empty())return;std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
+void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return; /* a private window logs no URL */std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
 void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
@@ -274,7 +292,7 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // Stable tab serials let the strip animate opens/closes and the selection fade
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
-void BuildChrome(){SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void BuildChrome(){if(privateWindow&&!chrome.latched)chrome.latched='P'; /* the private button stays lit in a private window */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -326,7 +344,7 @@ void Update(){
            !Check(t->view->get_CanGoForward(&canGoForward),L"get_CanGoForward"))return;
     }
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
-    chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+L" — browser").c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
+    chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+(privateWindow?L" — browser (navigation privée)":L" — browser")).c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
 void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
@@ -1027,6 +1045,7 @@ int Key(UINT key){
         // Ctrl+Z undoes a bookmark change only from the chrome, the toast or the Favoris drawer, never in a text field or the page.
         if(!shift&&key=='Z'){HWND f=GetFocus();return f&&(f==window||f==bookmarkToast.Window()||f==bookmarksDrawer.Window())?BookmarkUndoCommand:0;}
         if(shift&&key=='T')return 'U';
+        if(shift&&key=='N')return 'P'; // Ctrl+Maj+N: nouvelle fenêtre privée
         if(!shift&&key>='1'&&key<='9')return SelectTabBase+key-'1';
         if(shift&&key==VK_PRIOR)return MoveTabLeft;
         if(shift&&key==VK_NEXT)return MoveTabRight;
@@ -1068,7 +1087,7 @@ void ApplySessionGroups(const std::vector<BrowserSession::Group>& groups){
     DissolveSmallGroups();
 }
 void SaveSession(){
-    if(smoke||!sessionReady||pages.empty())return;
+    if(smoke||privateWindow||!sessionReady||pages.empty())return;
     BrowserSession::State state;state.active=current;
     for(auto& tab:pages)state.urls.push_back(tab->home?"":Utf8(tab->uri));
     state.groups=SessionGroups();
@@ -1079,7 +1098,7 @@ void SaveSession(){
 // Visited sites for the address suggestions, beside `session` (UTF-8, atomic replace).
 std::wstring HistoryFile(){return dataDir+L"\\history";}
 void SaveHistory(){
-    if(smoke)return;
+    if(smoke||privateWindow)return;
     const auto path=std::filesystem::path(HistoryFile()),temp=std::filesystem::path(HistoryFile()+L".tmp");
     {std::ofstream out(temp,std::ios::binary|std::ios::trunc);history.Write(out);out.close();if(!out){Log(L"HISTORY save failed");return;}}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"HISTORY replace failed");
@@ -1118,7 +1137,7 @@ std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& s
 }
 void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const NativeChrome::FaviconImage>& image,IStream* stream){
     const auto site=AddressBar::SiteOf(uri);if(site.empty()||!image)return;
-    siteIcons[site]=image;siteIconsMissing.erase(site);if(smoke||!stream)return;
+    siteIcons[site]=image;siteIconsMissing.erase(site);if(smoke||privateWindow||!stream)return;
     STATSTG stat{};if(FAILED(stream->Stat(&stat,STATFLAG_NONAME))||stat.cbSize.QuadPart==0||stat.cbSize.QuadPart>256*1024)return;
     std::string bytes((size_t)stat.cbSize.QuadPart,'\0');LARGE_INTEGER zero{};ULONG read=0;
     if(FAILED(stream->Seek(zero,STREAM_SEEK_SET,nullptr))||FAILED(stream->Read(bytes.data(),(ULONG)bytes.size(),&read))||read!=bytes.size())return;
@@ -1189,6 +1208,7 @@ a:active .i{background:rgba(255,255,255,.06)}
         +L"</style><body><nav aria-label=\"Sites fréquents\"><ul>"+tiles+L"</ul></nav></body></html>";
 }
 void RestoreSession(){
+    if(privateWindow){NewTab(NewTabTarget());return;} // a private window starts empty and restores nothing
     BrowserSession::State state;
     // "Restaurer les onglets" off: start on a fresh tab (the session is still saved on exit).
     if(!smoke&&settings.restoreTabs){std::ifstream in(std::filesystem::path(sessionFile),std::ios::binary);state=BrowserSession::Read(in);}
@@ -1214,7 +1234,7 @@ std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
 bool downloadDismissClick=false;
 DL::Item* FindDownload(int id){for(auto& item:downloads)if(item.id==id)return &item;return nullptr;}
 void SaveDownloads(){
-    if(smoke)return;
+    if(smoke||privateWindow)return;
     const auto path=std::filesystem::path(downloadsFile),temp=std::filesystem::path(downloadsFile+L".tmp");
     {std::ofstream out(temp,std::ios::binary|std::ios::trunc);DL::WriteHistory(out,downloads);out.close();if(!out){Log(L"DOWNLOADS save failed");return;}}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"DOWNLOADS replace failed");
@@ -1484,7 +1504,7 @@ void CreateDownloadPanel(){
 // below, called by SettingChanged() after the drawer changed the state.
 bool settingsDismissClick=false;
 void SaveSettings(){
-    if(smoke)return;
+    if(smoke||privateWindow)return;
     const auto path=std::filesystem::path(settingsFile),temp=std::filesystem::path(settingsFile+L".tmp");
     {std::ofstream out(temp,std::ios::binary|std::ios::trunc);BrowserSettings::Write(out,settings);out.close();if(!out){Log(L"SETTINGS save failed");return;}}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"SETTINGS replace failed");
@@ -1985,6 +2005,7 @@ void AdBlockInstall(ICoreWebView2Profile7* profile){
     HRESULT hr=profile->AddBrowserExtension(folder.c_str(),done);done->Release();if(FAILED(hr)){Log(L"SETTINGS adblock AddBrowserExtension call failed");AdBlockDone();}
 }
 void ApplyAdBlock(){
+    if(privateWindow)return; // no extension install from a private window (it would write the profile)
     if(smoke||halted)return;if(adBlockBusy){adBlockAgain=true;return;}
     Com<ICoreWebView2Profile7> profile;
     if(!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){if(!adBlockNoProfileLogged){adBlockNoProfileLogged=true;Log(L"SETTINGS adblock: no ICoreWebView2Profile7 yet (no live tab or old runtime)");}return;}
@@ -2234,7 +2255,16 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;Navigate(t,uri);return S_OK;
     });
-    HRESULT hr=environment->CreateCoreWebView2Controller(window,done);done->Release();Check(hr,L"CreateCoreWebView2Controller");
+    HRESULT hr=E_FAIL;
+    if(privateWindow){
+        // InPrivate controller on a dedicated profile name: never the live profile under a private label.
+        Com<ICoreWebView2Environment10> env10;Com<ICoreWebView2ControllerOptions> options;
+        if(SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment10,(void**)&env10.p))&&env10.p&&SUCCEEDED(env10->CreateCoreWebView2ControllerOptions(&options.p))&&options.p
+           &&SUCCEEDED(options->put_IsInPrivateModeEnabled(TRUE))&&SUCCEEDED(options->put_ProfileName(PrivateProfileName)))
+            hr=env10->CreateCoreWebView2ControllerWithOptions(window,options.p,done);
+        else{Fail(L"InPrivate controller unavailable: no private window without it",E_NOINTERFACE);done->Release();return;}
+    }else hr=environment->CreateCoreWebView2Controller(window,done);
+    done->Release();Check(hr,L"CreateCoreWebView2Controller");
 }
 
 void SmokeCheck(){if(!smoke||halted)return;auto t=Active();if(!t||!t->view.p){Fail(L"Smoke active view missing",E_FAIL);return;}auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{if(!Check(hr,L"Smoke ExecuteScript callback"))return S_OK;std::wstring expected=testStage<2?L"Nouvel onglet|rgb(23, 23, 23)|":L"Example Domain";if(!json||std::wstring(json).find(expected)==std::wstring::npos){Fail(L"Smoke unexpected document title",E_FAIL);return S_OK;}Log(L"SMOKE document verified stage="+std::to_wstring(testStage)+L" title="+json);PostMessageW(window,WM_APP+3,0,0);return S_OK;});HRESULT hr=t->view->ExecuteScript(testStage<2?L"document.title + '|' + getComputedStyle(document.body).backgroundColor + '|' + document.body.textContent.trim()":L"document.title",cb);cb->Release();Check(hr,L"Smoke ExecuteScript");}
@@ -2892,7 +2922,7 @@ std::vector<BookmarkUndo> bookmarkUndo;
 std::wstring BookmarksFile(){return dataDir+L"\\bookmarks";}
 void AnnounceBookmark(const std::wstring& text){Log(L"BOOKMARKS "+text);accessibility.Notify('K',text.c_str(),L"Bookmarks");}
 void SaveBookmarks(){
-    if(smoke)return;
+    if(smoke||privateWindow)return;
     const auto path=std::filesystem::path(BookmarksFile()),temp=std::filesystem::path(BookmarksFile()+L".tmp");
     bool ok=true;{std::ofstream out(temp,std::ios::binary|std::ios::trunc);bookmarks.Write(out);out.close();ok=(bool)out;}
     if(ok&&!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))ok=false;
@@ -3345,7 +3375,7 @@ case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
 case 'X':PostMessageW(window,WM_CLOSE,0,0);break;
 case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);AnnounceCopied();}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
 case 'D':if(downloadDismissClick){downloadDismissClick=false;break;}ToggleDownloads();break;
-case 'P':ShowPrivateDialog();break;
+case 'P':OpenPrivateWindow();break;
 case 'S':if(settingsDismissClick){settingsDismissClick=false;break;}ToggleSettings();break;
 case 'A':ShowAboutDialog();break;
 case FindNextCommand:case FindPreviousCommand:FindStep(cmd==FindNextCommand);break;
@@ -3395,7 +3425,7 @@ void UpdateAction(BrowserUpdate::Action action){
 std::wstring ExePath(){std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return exe;}
 UpdateCore::Config UpdateConfig(){
     UpdateCore::Config config;config.currentVersion=BROWSER_UPDATE_VERSION;config.repository=BROWSER_UPDATE_REPO_WIDE;config.exePath=ExePath();
-    config.notifyWindow=window;config.notifyMessage=UpdateMessage;config.enabled=!smoke&&!config.exePath.empty();
+    config.notifyWindow=window;config.notifyMessage=UpdateMessage;config.enabled=!smoke&&!privateWindow&&!config.exePath.empty();
 #ifdef BROWSER_PREVIEW
     config.enabled=false; // design preview: no update feed, no install
 #endif
@@ -3537,7 +3567,7 @@ AccessibleLabel AccessibleButton(int id){
     case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {L"Autres favoris ("+std::to_wstring(hidden+other)+L")",L"",L"Favoris masqués, Autres favoris et Gérer les favoris",L"Bookmarks.Overflow"};}
     case 'E':return {L"Ajouter cette page aux favoris",L"Ctrl+D",L"",L"Bookmarks.AddPage"};
     case 'D':return {L"Téléchargements",L"",L"",L"Downloads"};
-    case 'P':return {L"Navigation privée",L"",L"Non disponible dans cette version",L"Private"};
+    case 'P':return {privateWindow?L"Nouvelle fenêtre privée (fenêtre privée)":L"Nouvelle fenêtre privée",L"Ctrl+Maj+N",privateWindow?L"Cette fenêtre est privée : rien n'est conservé à sa fermeture":L"S'ouvre dans une fenêtre séparée ; rien n'est conservé à sa fermeture",L"Private"};
     case 'S':return {L"Réglages",L"",L"",L"Settings"};
     default:return {L"",L"",L"",L""};
     }
@@ -3860,7 +3890,7 @@ public:
     HRESULT STDMETHODCALLTYPE get_AreBrowserExtensionsEnabled(BOOL* v) override{if(!v)return E_POINTER;*v=extensions;return S_OK;}
     HRESULT STDMETHODCALLTYPE put_AreBrowserExtensionsEnabled(BOOL v) override{extensions=v;return S_OK;}
 };
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;smoke=smoke||splitTest;motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;smoke=smoke||splitTest;motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
 #ifdef BROWSER_UPDATES
 #ifndef BROWSER_PREVIEW
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
