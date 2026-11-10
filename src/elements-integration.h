@@ -22,6 +22,7 @@
 #include "fullscreen-hint.h"
 #include "debug-sandbox.h"
 #include "shortcuts-panel.h"
+#include "update-toast-motion.h" // FormatSize: the one validated progress format (toast, A6)
 #include <deque>
 #include <shellapi.h>
 #include <netlistmgr.h>
@@ -723,7 +724,7 @@ bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
     const DL::Item* running=nullptr;for(const auto& d:downloads)if(d.state==DL::State::InProgress){running=&d;break;}
     if(!demo&&!running&&(n<=1||!settings.confirmCloseTabs))return true;
     if(modalOpen&&!demo)return false; // one question at a time
-    auto spec=running&&!demo?MD::CloseWindowSpec(std::max(n,1),DL::FileName(running->path),running->total>0?std::to_wstring(std::min<std::int64_t>(100,running->received*100/running->total))+L" %":std::wstring()):MD::CloseWindowSpec(std::max(n,2));
+    auto spec=running&&!demo?MD::CloseWindowSpec(std::max(n,1),DL::FileName(running->path),BrowserUpdate::ToastModel::FormatSize((std::uint64_t)std::max<std::int64_t>(running->received,0),(std::uint64_t)std::max<std::int64_t>(running->total,0)) /* E2: 1 decimal, total unknown = received only */):MD::CloseWindowSpec(std::max(n,2));
     if(running&&!demo&&n<=1)spec.title=L"Fermer la fenêtre ?";
     spec.demo=demo;
     AskModal(std::move(spec),nullptr,[demo,result](const MD::Result& r){
@@ -928,9 +929,11 @@ void ElementsFrame(NativeChrome::Motion::Time now){ChipFrame(now);modal.Frame(no
 void DownloadAction(int id,DL::Action action);
 std::wstring DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     switch(r){
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return L"Microsoft Defender l'a signalé comme malveillant. Il n'a pas été enregistré.";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"La vérification de sécurité de Windows l'a bloqué. Il n'a pas été enregistré.";
-    default:return L"Une stratégie de sécurité de cet appareil l'a bloqué. Il n'a pas été enregistré.";
+    // E5: the engine's reason only; never « not saved » (a residual file may exist) and a failed
+    // check is not a malware verdict.
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return L"Ce fichier a été signalé comme dangereux. Le téléchargement a été bloqué.";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"La vérification de sécurité de ce fichier n'a pas pu aboutir. Le téléchargement a été interrompu.";
+    default:return L"Une règle de sécurité de cet appareil a bloqué ce téléchargement.";
     }
 }
 OP::Spec DangerousDownloadSpec(const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){

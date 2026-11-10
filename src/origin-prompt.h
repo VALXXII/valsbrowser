@@ -193,8 +193,11 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         m.subtitle = s.origin + L" demande un certificat pour vous identifier.";
         m.accountsTitle = L"Certificats disponibles";
         for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, a.disabled});   // issuer line: plain text, no dot tracking; expired = disabled
-        m.softButtons = true;
-        m.buttons = {button(Id::Cancel, L"Ne pas envoyer", Role::Secondary, true, true, false, L"CertificateCancel")};
+        // E1 (planche validée): rows only select (radios); « Envoyer » alone transmits, disabled until a
+        // valid, non-expired certificate is selected; « Ne pas envoyer » / Échap continue without one.
+        m.accountsSelect = true; m.accountSelected = -1;
+        m.buttons = {button(Id::Cancel, L"Ne pas envoyer", Role::Secondary, false, true, false, L"CertificateCancel"), button(Id::Accept, L"Envoyer", Role::Primary, true, false, false, L"CertificateSend")};
+        m.buttons[1].disabled = true;
         break;
     }
     case Kind::ScreenShare: {   // B08 concept (Démonstration): the engine's picker cannot be replaced

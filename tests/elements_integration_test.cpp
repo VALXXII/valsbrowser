@@ -234,8 +234,16 @@ int main(){
             Expect(!promptActive.spec.accounts[0].disabled&&promptActive.spec.accounts[1].disabled&&promptActive.spec.accounts[1].hint.find(L"expiré le")!=std::wstring::npos,"certificate: expired one disabled and labelled");
             originPrompt.Surface().ActivateForTest(MD::Dialog::AccountHit(1));
             Expect(a.deferral.completed==0&&promptOpen,"certificate: an expired row cannot be chosen");
-            originPrompt.Surface().ActivateForTest(MD::Dialog::AccountHit(0));run();
-            Expect(a.deferral.completed==1&&a.selected==&good&&!a.cancel,"certificate: choice = SelectedCertificate, completed once");
+            auto& surface=originPrompt.Surface();auto send=[&]{return surface.CurrentSpec().buttons.size()==2?surface.CurrentSpec().buttons[1]:MD::Button{};};
+            Expect(send().label==L"Envoyer"&&send().disabled&&surface.CurrentSpec().buttons[0].label==L"Ne pas envoyer","E1: « Envoyer » present and disabled before any choice");
+            surface.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+            Expect(a.deferral.completed==0&&promptOpen,"E1: disabled « Envoyer » sends nothing");
+            surface.ActivateForTest(MD::Dialog::AccountHit(0));run();
+            Expect(a.deferral.completed==0&&promptOpen&&surface.CurrentSpec().accountSelected==0&&!send().disabled,"E1: clicking a row only selects it, « Envoyer » enabled");
+            surface.KeyForTest(VK_DOWN);run();
+            Expect(a.deferral.completed==0&&surface.CurrentSpec().accountSelected==0,"E1: arrows never send nor select an expired row");
+            surface.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+            Expect(a.deferral.completed==1&&a.selected==&good&&!a.cancel,"certificate: « Envoyer » transmits the selected certificate, completed once");
             originPrompt.Surface().FinishAnimationsForTest();
         }
         {
@@ -266,13 +274,24 @@ int main(){
             {std::ofstream f(std::filesystem::path(file),std::ios::binary);f<<"fixture";}
             ElementsDangerousDownload(424242,file,L"https://telechargements.exemple.test/blocked-fixture.exe",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS);run();
             Expect(promptOpen&&promptActive.spec.kind==OP::Kind::DangerousDownload&&!promptActive.spec.demo&&!promptActive.spec.keepAvailable,"blocked download: real B07, no demo badge, no keep");
-            Expect(promptActive.spec.detail==L"blocked-fixture.exe.tmp"&&promptActive.spec.origin==L"telechargements.exemple.test"&&promptActive.spec.reason.find(L"Defender")!=std::wstring::npos,"blocked download: real file, site and engine reason");
+            Expect(promptActive.spec.detail==L"blocked-fixture.exe.tmp"&&promptActive.spec.origin==L"telechargements.exemple.test"&&promptActive.spec.reason==DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS),"blocked download: real file, site and engine reason");
             Expect(OP::Prompt::MoreItems(false).size()==2&&OP::Prompt::MoreItems(true).size()==4,"blocked download: « Conserver quand même » only where it is real (demo)");
             originPrompt.Surface().Finish(OP::Id::Accept);run();
             Expect(!std::filesystem::exists(std::filesystem::path(file))&&!promptOpen,"blocked download: « Supprimer le fichier » removes the leftover file");
             originPrompt.Surface().FinishAnimationsForTest();
             const auto spec=DangerousDownloadSpec(L"C:\\x\\a.zip",L"https://s.exemple.test/a.zip",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY);
-            Expect(spec.reason.find(L"stratégie")!=std::wstring::npos&&spec.link==L"https://s.exemple.test/a.zip"&&spec.detail==L"a.zip","blocked by policy: own reason; link kept for « Copier le lien »");
+            Expect(spec.reason.find(L"règle de sécurité")!=std::wstring::npos&&spec.link==L"https://s.exemple.test/a.zip"&&spec.detail==L"a.zip","blocked by policy: own reason; link kept for « Copier le lien »");
+            // E5: never « not saved » (a residual file may exist); a failed check is no malware verdict.
+            for(auto r:{COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY})
+                Expect(DangerText(r).find(L"enregistré")==std::wstring::npos,"E5: no claim that the file was not saved");
+            Expect(DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED).find(L"dangereux")==std::wstring::npos,"E5: security check failure is not called dangerous");
+            // E6: three distinct French reasons on the list row, other failures unchanged.
+            Expect(DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS))==L"Bloqué · fichier dangereux"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · vérification de sécurité impossible"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))==L"Bloqué · règle de sécurité"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED))==L"Failed · Offline","E6: blocked rows in French, by reason");
+            // E2: the toast's progress format, no invented total.
+            Expect(BrowserUpdate::ToastModel::FormatSize(52848230,209715200)==L"50.4/200.0MB"&&BrowserUpdate::ToastModel::FormatSize(52848230,0)==L"50.4MB","E2: one decimal, unknown total = received only (no %)");
         }
         // A2/A4/A6 real variants on the production modal surface.
         {
@@ -298,9 +317,9 @@ int main(){
             finish(MD::CancelButton);live->refreshing=false;
             Expect(reload.deferral.completed==1&&reload.accepted==0,"« Rester sur la page »: unload refused, completed once");
             // Closing with a download running (one tab): always asked, destructive wording.
-            NativeChrome::Downloads::Item d;d.id=777001;d.path=L"C:\\fixture\\rapport.pdf";d.state=NativeChrome::Downloads::State::InProgress;d.received=42;d.total=100;downloads.insert(downloads.begin(),d);
+            NativeChrome::Downloads::Item d;d.id=777001;d.path=L"C:\\fixture\\rapport.pdf";d.state=NativeChrome::Downloads::State::InProgress;d.received=52848230;d.total=209715200;downloads.insert(downloads.begin(),d);
             const bool allowed=CloseWindowAllowed(false,nullptr);run();
-            Expect(!allowed&&modalOpen&&modalActive.spec.kind==MD::Kind::CloseWindow&&!modalActive.spec.infos.empty()&&modalActive.spec.infos[0].text==L"rapport.pdf"&&modalActive.spec.infos[0].trailing==L"42 %","close with a running download: A6 download variant with the real file");
+            Expect(!allowed&&modalOpen&&modalActive.spec.kind==MD::Kind::CloseWindow&&!modalActive.spec.infos.empty()&&modalActive.spec.infos[0].text==L"rapport.pdf"&&modalActive.spec.infos[0].trailing==L"50.4/200.0MB","close with a running download: A6 download variant with the real file");
             Expect(modalActive.spec.buttons[1].label==L"Fermer et annuler le téléchargement","close with a download: destructive action named");
             finish(MD::CancelButton);
             downloads.erase(downloads.begin());

@@ -137,7 +137,10 @@ inline std::int64_t ParseIsoTime(const std::wstring& text) {
     }
     return ms;
 }
-inline std::wstring FailureText(const std::wstring& reason) { return reason.empty() ? L"Failed" : L"Failed · " + reason; }
+inline std::wstring FailureText(const std::wstring& reason) {
+    if (reason.rfind(L"Bloqué", 0) == 0) return reason; // engine security blocks carry their own French wording (E6)
+    return reason.empty() ? L"Failed" : L"Failed · " + reason;
+}
 
 
 // ---- Periods (drawer sections) --------------------------------------------

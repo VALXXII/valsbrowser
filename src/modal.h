@@ -198,6 +198,13 @@ public:
         t->SetTransform(D2D1::Matrix3x2F::Translation(-viewMin, 0) * D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * old);
         b->SetColor(color); t->FillGeometry(g, b); t->SetTransform(old);
     }
+    // 16 px radio (B08 certificate rows): 1.5 px ring, filled 8 px dot when selected; `opacity` dims disabled rows.
+    void Radio(D2D1_RECT_F box, bool on, float opacity) {
+        auto* t = Target(); auto* b = Brush(); if (!t || !b) return;
+        const float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
+        b->SetColor(White((on ? .9f : .45f) * opacity)); t->DrawEllipse(D2D1::Ellipse({cx, cy}, 7.f, 7.f), b, 1.5f);
+        if (on) { b->SetColor(White(.9f * opacity)); t->FillEllipse(D2D1::Ellipse({cx, cy}, 4.f, 4.f), b); }
+    }
     // Paper 16 px spinner: r 6.5 track #FFFFFF26, quarter arc #FFFFFFB3, 1.5 px, round caps.
     void Spinner(D2D1_RECT_F box, float turn) {
         auto* t = Target(); auto* b = Brush(); if (!t || !b || !chrome_ || !chrome_->Factory()) return;
@@ -372,6 +379,9 @@ struct Spec {
     DangerCard danger;
     SourcePicker sources;
     bool accountsNavigate = false;                             // B05: account rows call onButton(Dialog::AccountHit(i)) and stay open
+    // B08 certificate (E1): rows are radios. A click/arrow/Espace only selects; the AcceptButton
+    // (« Envoyer ») stays disabled until a valid row is selected and alone transmits the choice.
+    bool accountsSelect = false; int accountSelected = -1;
     std::vector<Button> buttons; bool stretchButtons = false, softButtons = false;
     bool demo = false;                                         // badge « Démonstration »
     std::function<std::wstring(const std::vector<std::wstring>&)> validate; // inline error or ""
@@ -490,7 +500,14 @@ private:
         return SourceHit(v.front());
     }
     void SyncAccept() {
+        if (spec_.accountsSelect) { for (auto& b : spec_.buttons) if (b.id == AcceptButton) b.disabled = spec_.accountSelected < 0; return; }
         for (auto& b : spec_.buttons) if (b.id == spec_.sources.acceptId) b.disabled = spec_.sources.selected < 0;
+    }
+    void SelectAccount(size_t i, bool keyboard) {
+        if (!spec_.accountsSelect || i >= spec_.accounts.size() || spec_.accounts[i].disabled) return;
+        spec_.accountSelected = static_cast<int>(i); SyncAccept();
+        keyboard_ = keyboard; FocusStop(AccountHit(i)); InvalidateRect(hwnd_, nullptr, FALSE);
+        if (uia_.Listening()) { uia_.Raise(AccountHit(i), UIA_SelectionItem_ElementSelectedEventId); uia_.ChildrenChanged(GroupKey); }
     }
     void SetCategory(int c, bool keyboard) {
         auto& sp = spec_.sources; if (!sp.shown || sp.categories.empty()) return;
@@ -836,7 +853,7 @@ private:
     Result Collect(int button) const {
         Result r; r.button = button; r.values = Values(); r.checked = spec_.checkValue;
         for (auto& c : spec_.checks) r.checks.push_back(c.value);
-        r.select = spec_.sources.shown ? spec_.sources.selected : spec_.hasSelect ? spec_.select.index : -1;
+        r.select = spec_.accountsSelect ? spec_.accountSelected : spec_.sources.shown ? spec_.sources.selected : spec_.hasSelect ? spec_.select.index : -1;
         return r;
     }
     void Close(Result result) {
@@ -915,6 +932,12 @@ private:
         else if (hit == SelectHit) ChooseSelect(keyboard);
         else if (hit == StatusHit) { const Button b = spec_.status.button; if (b.closes) Close(Collect(b.id)); else if (spec_.onButton) spec_.onButton(b.id); }
         else if (hit >= 4000 && hit < 5000) Close(Collect(spec_.links[static_cast<size_t>(hit - 4000)].id));
+        else if (hit >= 6200 && hit < 6900 && spec_.accountsSelect) {
+            // Entrée on the selected row sends it (as the default button would); a click, ↑/↓ or Espace only select.
+            const size_t i = static_cast<size_t>(hit - 6200);
+            if (keyboard && static_cast<int>(i) == spec_.accountSelected && GetKeyState(VK_SPACE) >= 0) { for (size_t b = 0; b < spec_.buttons.size(); ++b) if (spec_.buttons[b].id == AcceptButton && !spec_.buttons[b].disabled) { Press(b); return; } }
+            SelectAccount(i, keyboard);
+        }
         else if (hit >= 6200 && hit < 6900) { if (spec_.accountsNavigate) { if (spec_.onButton) spec_.onButton(hit); } else { Result r = Collect(AcceptButton); r.select = hit - 6200; Close(r); } }
         else if (hit == ManageHit) Close(Collect(spec_.manageId));
         else if (hit >= 6900 && hit < 7000) ToggleReveal(static_cast<size_t>(hit - 6900));
@@ -949,6 +972,7 @@ private:
             if (!inEdit && ((focus_ >= 6200 && focus_ < 6900) || focus_ == ManageHit)) {   // B03: ↓ then Entrée
                 std::vector<int> list; for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) list.push_back(AccountHit(i)); if (!spec_.manageLabel.empty()) list.push_back(ManageHit);
                 auto it = std::find(list.begin(), list.end(), focus_); int i = static_cast<int>(it - list.begin()) + step; i = std::clamp(i, 0, static_cast<int>(list.size()) - 1);
+                if (spec_.accountsSelect && list[static_cast<size_t>(i)] != ManageHit) { SelectAccount(static_cast<size_t>(list[static_cast<size_t>(i)] - 6200), true); return true; }   // radio group: arrows move the selection, never send
                 keyboard_ = true; FocusStop(list[static_cast<size_t>(i)]); return true;
             }
             if (!inEdit) { Scroll(step * DialogKit::Type::message.line); return true; }
@@ -1294,7 +1318,8 @@ private:
                     kit_.Text(initial, letter, (avatar.left + avatar.right - lw) / 2, avatar.top + 6, lw + 1, DialogKit::White(P::secondaryText));
                     const float dim = spec_.accounts[i].disabled ? .32f : 1.f;   // Paper FW8-0: expired certificate at 32 %
                     kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(dim));
-                    kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - 50, DialogKit::White(P::muted * dim));
+                    kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - (spec_.accountsSelect ? 74 : 50), DialogKit::White(P::muted * dim));
+                    if (spec_.accountsSelect) kit_.Radio({r.right - 28, r.top + 16, r.right - 12, r.top + 32}, static_cast<int>(i) == spec_.accountSelected, dim);
                 }
                 if (!spec_.manageLabel.empty()) {
                     const auto r = Find(ManageHit); const auto v = motion_.Visual(ManageHit, now);
@@ -1374,7 +1399,7 @@ private:
         for (size_t i = 0; i < spec_.checks.size(); ++i) { const auto at = add(CheckHit(i), spec_.checks[i].label, Find(CheckHit(i)), !spec_.checks[i].disabled && !busy_); nodes[at].toggle = spec_.checks[i].value ? 2 : 1; nodes[at].help = spec_.checks[i].detail; }
         if (spec_.hasStatus && spec_.status.hasButton) { const auto at = add(StatusHit, spec_.status.button.label, Find(StatusHit), Enabled(StatusHit)); nodes[at].help = spec_.status.title + L" · " + spec_.status.detail; }
         for (size_t i = 0; i < spec_.links.size(); ++i) add(LinkHit(i), spec_.links[i].label, Find(LinkHit(i)), !busy_);
-        for (size_t i = 0; i < spec_.accounts.size(); ++i) { const auto at = add(AccountHit(i), spec_.accounts[i].user, Find(AccountHit(i)), true); nodes[at].role = Accessibility::Role::ListItem; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(spec_.accounts.size()); }
+        for (size_t i = 0; i < spec_.accounts.size(); ++i) { const auto at = add(AccountHit(i), spec_.accounts[i].user, Find(AccountHit(i)), !spec_.accounts[i].disabled); nodes[at].selected = spec_.accountsSelect && static_cast<int>(i) == spec_.accountSelected; nodes[at].help = spec_.accounts[i].masked; nodes[at].role = Accessibility::Role::ListItem; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(spec_.accounts.size()); }
         if (!spec_.manageLabel.empty()) add(ManageHit, spec_.manageLabel, Find(ManageHit), true);
         if (!spec_.checkLabel.empty()) { const auto at = add(SimpleCheckHit, spec_.checkLabel, Find(SimpleCheckHit), !busy_); nodes[at].toggle = spec_.checkValue ? 2 : 1; }
         for (size_t i = 0; i < spec_.buttons.size(); ++i) add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId);
