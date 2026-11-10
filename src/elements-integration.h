@@ -728,6 +728,9 @@ bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
     if(modalOpen&&!demo)return false; // one question at a time
     auto spec=running&&!demo?MD::CloseWindowSpec(std::max(n,1),DL::FileName(running->path),BrowserUpdate::ToastModel::FormatSize((std::uint64_t)std::max<std::int64_t>(running->received,0),(std::uint64_t)std::max<std::int64_t>(running->total,0)) /* E2: 1 decimal, total unknown = received only */):MD::CloseWindowSpec(std::max(n,2));
     if(running&&!demo&&n<=1)spec.title=L"Fermer la fenêtre ?";
+    // F4: a private window's tabs cannot be reopened (no history, no Ctrl+Maj+T) and « Ne plus demander »
+    // is not offered here (its settings write belongs to the normal windows' transaction).
+    if(privateWindow&&!demo&&!running){spec.body=L"Les onglets d'une fenêtre privée ne peuvent pas être rouverts.";spec.bodyKeys.clear();spec.checkLabel.clear();spec.checkInActions=false;}
     spec.demo=demo;
     AskModal(std::move(spec),nullptr,[demo,result](const MD::Result& r){
         const bool ok=r.button==MD::AcceptButton;if(result)result(ok);

@@ -141,7 +141,7 @@ int wmain(int argc,wchar_t** argv){
             if(quietMode&&!manualOffline){
                 Expect(updates.View().phase==BrowserUpdate::Phase::Hidden,mode==L"offline"?"offline startup check stays silent (Hidden)":"startup check without a published release stays silent (Hidden)");
                 Expect(transport->requests>0,"startup check actually ran");
-                {const auto quiet=SettingsVersion();const std::wstring want=mode==L"offline"?L" · Hors ligne":L" · À jour";
+                {const auto quiet=SettingsVersion();const std::wstring want=mode==L"offline"?L" · Vérif. impossible":L" · À jour";
                  Expect(quiet.text==AboutTitle()+want&&quiet.canCheck&&!quiet.checking,"settings footer reports the silent startup result");}
                 manualOffline=true;Command(CheckUpdatesCommand);
                 {const auto now=SettingsVersion();
@@ -196,7 +196,7 @@ int wmain(int argc,wchar_t** argv){
             }
         }else if(mode==L"offline"){
             if(manualOffline&&v.phase==P::Error){Expect(true,"manual check reports the failure (Error with Retry)");Expect(updates.LastFailure()==UpdateCore::Engine::Failure::Check&&AboutStatusNow().title==L"Vérification impossible"&&AboutStatusNow().detail==L"La recherche de mises à jour a échoué. Réessayez."&&AboutStatusNow().button.label==L"Réessayer","E4: a failed check is named as such in « À propos »");
-                Expect(SettingsVersion().text==AboutTitle()+L" · Hors ligne"&&SettingsVersion().canCheck,"settings footer shows the failed check and allows another");PostMessageW(window,WM_CLOSE,0,0);}
+                Expect(SettingsVersion().text==AboutTitle()+L" · Vérif. impossible"&&SettingsVersion().canCheck,"settings footer shows the failed check and allows another");PostMessageW(window,WM_CLOSE,0,0);}
         }else if(mode==L"norelease"){
             if(manualOffline&&v.phase==P::Checking)sawManualCheck=true;
             if(manualOffline&&sawManualCheck&&v.phase==P::Hidden&&!noReleaseDone){noReleaseDone=true;

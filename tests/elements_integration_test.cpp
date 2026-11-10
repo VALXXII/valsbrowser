@@ -331,6 +331,25 @@ int main(){
             finish(MD::CancelButton);
             downloads.erase(downloads.begin());
             {auto keep=pages;pages={live};Expect(CloseWindowAllowed(false,nullptr),"one tab, no download: closes without asking");pages=keep;}
+            // F4: a private window's close question promises no reopening and offers no « Ne plus demander ».
+            {
+                auto keep=pages;auto second=std::make_shared<Tab>();second->uri=L"https://exemple.test/b";pages={live,second};privateWindow=true;settings.confirmCloseTabs=true;
+                const bool asked=!CloseWindowAllowed(false,nullptr);run();
+                Expect(asked&&modalOpen&&modalActive.spec.body==L"Les onglets d'une fenêtre privée ne peuvent pas être rouverts."&&modalActive.spec.bodyKeys.empty()&&modalActive.spec.checkLabel.empty(),"F4: private close: no history/Ctrl+Maj+T promise, no check");
+                finish(MD::CancelButton);privateWindow=false;pages=keep;
+            }
+            // F3: bookmarks are read-only in a private window (transitional, until the interprocess store).
+            {
+                const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,L"Fixture",L"https://exemple.test/fixture",0);const size_t before=bookmarks.Root(BM::BarRoot).children.size();
+                privateWindow=true;
+                RemoveBookmark(id);ShiftBookmark(id,1);MoveBookmarkTo(id,BM::BarRoot);CommitBookmark(id,L"Renommé",L"https://exemple.test/x",0);
+                Expect(NewFolder(BM::BarRoot)==0&&DuplicateBookmark(id)==0,"F3: no folder or copy created in a private window");
+                const auto* n=bookmarks.Find(id);
+                Expect(n&&n->title==L"Fixture"&&n->url==L"https://exemple.test/fixture"&&bookmarks.Root(BM::BarRoot).children.size()==before,"F3: no bookmark mutation from a private window (no false success)");
+                privateWindow=false;RemoveBookmark(id);Expect(!bookmarks.Find(id),"control: a normal window still edits bookmarks");
+            }
+            // Point 8: a private window loads no history.
+            {history=AddressBar::History{};privateWindow=true;LoadHistory();Expect(history.Items().empty(),"point 8: private window history stays empty");privateWindow=false;}
         }
         // Shutdown with a pending request: denied once, nothing left.
         PermissionArgs last(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&last);run();

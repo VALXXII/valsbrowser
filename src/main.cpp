@@ -1151,7 +1151,7 @@ void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const Native
 void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.erase(site);siteIconsWritten.erase(site);siteIconsMissing.insert(site);if(smoke)return;if(!DeleteFileW(SiteIconFile(site).c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND)Log(L"FAVICONS delete failed "+site);}
 void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke)return;std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
 void LoadPopularSites(){std::ifstream in(std::filesystem::path(base+L"\\assets\\popular-sites.txt"),std::ios::binary);popularSites=AddressBar::ReadPopular(in);if(popularSites.empty())Log(L"ADDRESS popular sites unavailable");}
-void LoadHistory(){LoadPopularSites();if(smoke)return;std::ifstream in(std::filesystem::path(HistoryFile()),std::ios::binary);history=AddressBar::History::Read(in);}
+void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::ifstream in(std::filesystem::path(HistoryFile()),std::ios::binary);history=AddressBar::History::Read(in);}
 // ---- New tab page (SETTINGS newtab) ----------------------------------------------
 // "Sites fréquents": the home tab shows the most visited hosts (AddressBar::TopSites, the
 // ranking of the address bar's host rows) as plain http(s) links. Self-contained document
@@ -2977,7 +2977,7 @@ bool SyncBookmarkChrome(){
         chrome.bandItems.push_back(std::move(item));}
     chrome.bandButtonForced=!bookmarks.Root(BM::OtherRoot).children.empty();
     auto t=Active();const bool page=t&&!t->home&&BM::Admissible(t->uri);
-    chrome.SetEnabled('K',page);chrome.starred=page&&!bookmarks.Matching(t->uri).empty();
+    chrome.SetEnabled('K',page&&!privateWindow);chrome.starred=page&&!bookmarks.Matching(t->uri).empty();
     if(chrome.bandRover>=(int)chrome.bandItems.size())chrome.bandRover=-1;
     return changed;
 }
@@ -2993,7 +2993,11 @@ std::wstring UniqueFolderName(BM::Id parent){
     for(bool clash=true;clash&&n<1000;){clash=false;for(BM::Id c:p->children){auto* x=bookmarks.Find(c);if(x&&x->kind==BM::Kind::Folder&&x->title==name){clash=true;name=L"Nouveau dossier "+std::to_wstring(++n);break;}}}
     return name;
 }
-BM::Id NewFolder(BM::Id parent,size_t index=BM::End){
+// F3 (transitional until the interprocess store): a private window shows the bookmarks read-only.
+// Every mutation entry point refuses with an honest announcement; nothing pretends to be saved.
+constexpr const wchar_t* PrivateBookmarksText=L"Favoris en lecture seule dans une fenêtre privée";
+bool PrivateBookmarksLocked(){if(!privateWindow)return false;AnnounceBookmark(PrivateBookmarksText);return true;}
+BM::Id NewFolder(BM::Id parent,size_t index=BM::End){if(PrivateBookmarksLocked())return 0;
     const BM::Id id=bookmarks.AddFolder(parent,index,UniqueFolderName(parent),NativeChrome::DownloadsUI::UnixNowMs());
     if(!id){AnnounceBookmark(L"Trop de niveaux de dossiers");return 0;}
     PushUndo({{BookmarkStep::Created,id}},L"Dossier créé");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Dossier « "+bookmarks.Find(id)->title+L" » créé");return id;
@@ -3002,7 +3006,7 @@ void ShowBookmarkToast(const std::wstring& text){
     bookmarkToast.SetBottomReserve(UpdateToastHeight());
     bookmarkToast.Show(text,[]{PostMessageW(window,Shortcut,BookmarkUndoCommand,0);},motion.ReducedMotion());
 }
-void RemoveBookmark(BM::Id id){
+void RemoveBookmark(BM::Id id){if(PrivateBookmarksLocked())return;
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;
     const bool folder=n->kind==BM::Kind::Folder;const std::wstring title=BM::DisplayTitle(*n);const size_t links=folder?bookmarks.CountLinks(id):0;
     auto removed=bookmarks.Remove(id);if(!removed)return;
@@ -3012,7 +3016,7 @@ void RemoveBookmark(BM::Id id){
     ShowBookmarkToast(text);AnnounceBookmark(text+L". Ctrl+Z pour annuler");
 }
 // Replays the newest entry backwards. Restoring a subtree whose folder is gone lands in "Autres favoris".
-void UndoBookmark(){
+void UndoBookmark(){if(PrivateBookmarksLocked())return;
     if(bookmarkUndo.empty()){AnnounceBookmark(L"Rien à annuler");return;}
     auto entry=std::move(bookmarkUndo.back());bookmarkUndo.pop_back();std::wstring note=entry.done;
     for(auto it=entry.steps.rbegin();it!=entry.steps.rend();++it){auto& s=*it;
@@ -3036,7 +3040,7 @@ std::vector<std::tuple<unsigned,int,std::wstring>> FolderChoices(BM::Id exclude)
 RECT ClientScreen(){RECT r{};GetClientRect(window,&r);MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
 RECT RegionScreen(int id){for(auto& r:chrome.regions)if(r.id==id){RECT p{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;}return {};}
 // The popover under `anchor` (screen); `returnTo`: chrome region keeping the keyboard after Escape (0 = page).
-void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added=false,int returnTo=0){
+void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added=false,int returnTo=0){if(PrivateBookmarksLocked())return;
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;
     NativeChrome::BookmarkPopover::Request r;r.id=id;r.folder=n->kind==BM::Kind::Folder;r.added=added;r.title=n->title;r.url=n->url;r.parent=n->parent;
     popoverReturn=returnTo;bookmarksDrawer.holding_=bookmarksDrawer.Visible();
@@ -3044,7 +3048,7 @@ void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added
 }
 // Ctrl+D / the star: save at once in the last folder used, then the popover; an
 // already saved page opens its most recent bookmark instead of a second one.
-void BookmarkStar(bool keyboard){
+void BookmarkStar(bool keyboard){if(PrivateBookmarksLocked())return;
     auto t=Active();if(!t||t->home||!BM::Admissible(t->uri))return;
     HideSuggestions();
     const auto matches=bookmarks.Matching(t->uri);const RECT star=RegionScreen('K');
@@ -3057,7 +3061,7 @@ void BookmarkStar(bool keyboard){
     AnnounceBookmark(L"Favori ajouté à "+bookmarks.Find(lastFolder)->title);
     EditBookmark(id,RegionScreen('K'),true,keyboard,true,keyboard?'K':0);
 }
-void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& url,unsigned parent){
+void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& url,unsigned parent){if(PrivateBookmarksLocked())return;
     const auto* n=bookmarks.Find(id);if(!n)return;std::vector<BookmarkStep> steps;
     const std::wstring oldTitle=n->title,oldUrl=n->url;const BM::Id oldParent=n->parent;const size_t oldIndex=bookmarks.IndexOf(id);
     if(title!=oldTitle&&bookmarks.Rename(id,title))steps.push_back({BookmarkStep::Renamed,id,0,0,oldTitle});
@@ -3150,7 +3154,7 @@ void ToggleBookmarkBar(){
     settings.bookmarksBar=BandShown()?BrowserSettings::BookmarksBar::Never:BrowserSettings::BookmarksBar::Always;
     SettingChanged(BrowserSettings::Change::BookmarksBar);
 }
-BM::Id DuplicateBookmark(BM::Id id){
+BM::Id DuplicateBookmark(BM::Id id){if(PrivateBookmarksLocked())return 0;
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return 0;
     const auto now=NativeChrome::DownloadsUI::UnixNowMs();const size_t at=bookmarks.IndexOf(id)+1;
     BM::Id copy=n->kind==BM::Kind::Folder?bookmarks.AddFolder(n->parent,at,n->title,now):bookmarks.Add(n->parent,at,n->title,n->url,now);
@@ -3163,13 +3167,13 @@ BM::Id DuplicateBookmark(BM::Id id){
     }
     PushUndo({{BookmarkStep::Created,copy}},L"Copie annulée");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Copie insérée après l'original");return copy;
 }
-void MoveBookmarkTo(BM::Id id,BM::Id parent){
+void MoveBookmarkTo(BM::Id id,BM::Id parent){if(PrivateBookmarksLocked())return;
     const auto* n=bookmarks.Find(id);if(!n)return;const BM::Id oldParent=n->parent;const size_t oldIndex=bookmarks.IndexOf(id);
     if(!bookmarks.Move(id,parent,BM::End)){AnnounceBookmark(L"Impossible de déplacer ici");return;}
     PushUndo({{BookmarkStep::Moved,id,oldParent,oldIndex}},L"Déplacement annulé");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Déplacé dans "+bookmarks.Find(parent)->title);
 }
 // One step within its folder (Ctrl+Maj+←/→ on the band, Alt+↑/↓ in the drawer).
-void ShiftBookmark(BM::Id id,int delta){
+void ShiftBookmark(BM::Id id,int delta){if(PrivateBookmarksLocked())return;
     const auto* n=bookmarks.Find(id);if(!n)return;const BM::Id parent=n->parent;const size_t index=bookmarks.IndexOf(id);
     const size_t count=bookmarks.Find(parent)->children.size();const long long to=(long long)index+delta;if(to<0||to>=(long long)count)return;
     if(!bookmarks.Move(id,parent,(size_t)to))return;
@@ -3270,6 +3274,7 @@ void CreateBookmarkSurfaces(){
 // follows the pointer and the others reorder live; over a folder's middle it drops inside.
 void BandDragMove(POINT point){
     if(bandDrag.index<0||halted)return;
+    if(!bandDrag.active&&privateWindow)return; // F3: no reordering in a private window (click still opens)
     if(!bandDrag.active){if(std::abs(point.x-bandDrag.start.x)<=GetSystemMetrics(SM_CXDRAG)&&std::abs(point.y-bandDrag.start.y)<=GetSystemMetrics(SM_CYDRAG))return;bandDrag.active=true;Log(L"BOOKMARKS drag start");}
     const float x=point.x*96.f/GetDpiForWindow(window);
     const auto& bar=bookmarks.Root(BM::BarRoot).children;int index=(int)(std::find(bar.begin(),bar.end(),bandDrag.id)-bar.begin());if(index>=(int)bar.size()){bandDrag={};return;}
@@ -3462,8 +3467,11 @@ NativeChrome::Modal::Status AboutStatusNow(){
         using F=UpdateCore::Engine::Failure;const F f=updates.LastFailure();
         auto st=MD::AboutStatus(MD::AboutOffline,L"La recherche de mises à jour a échoué. Réessayez."); // check: cause unknown, never « Aucune connexion » by guess
         // Download / install failures (contract KS4-0 / KT4-0): « Rechercher à nouveau » = a real Check.
-        if(f==F::Download){st.title=L"Échec du téléchargement";st.detail=v.version.empty()?L"Mise à jour non téléchargée":v.version+L" non téléchargée";st.button.label=L"Rechercher à nouveau";}
-        else if(f==F::Install){st.title=L"La mise à jour a échoué";st.detail=L"Version "+std::wstring(BROWSER_VERSION_WIDE)+L" conservée";st.button.label=L"Rechercher à nouveau";}
+        // F1: after a download failure the engine's Retry downloads again (manifest kept): « Réessayer ».
+        if(f==F::Download){st.title=L"Échec du téléchargement";st.detail=!v.error.empty()&&v.error!=L"Le téléchargement a échoué."?v.error:v.version.empty()?L"La mise à jour n'a pas pu être téléchargée.":L"La version "+v.version+L" n'a pas pu être téléchargée.";st.button.label=L"Réessayer";}
+        // F6: install failure: the engine's own message (it says when the previous version was kept), else
+        // an install wording; Retry is then a check: « Rechercher à nouveau ».
+        else if(f==F::Install){st.title=L"La mise à jour a échoué";st.detail=v.error.empty()?L"L'installation de la mise à jour n'a pas abouti.":v.error;st.button.label=L"Rechercher à nouveau";}
         return st;}
     default:{const auto last=updates.LastCheckResult();
         if(last==L::Failed)return MD::AboutStatus(MD::AboutOffline,L"La recherche de mises à jour a échoué. Réessayez.");
@@ -3475,9 +3483,9 @@ NativeChrome::Modal::Status AboutStatusNow(){
 void AboutUpdateAction(int button){
     namespace MD=NativeChrome::Modal;
     if(button==MD::AboutCheckButton){
-        // Réessayer / Rechercher à nouveau: always a check. After a check or install failure the engine's
-        // Retry is a check; after a download failure it would re-download, which this label does not say.
-        if(updates.View().phase==BrowserUpdate::Phase::Error&&updates.LastFailure()!=UpdateCore::Engine::Failure::Download)UpdateAction(BrowserUpdate::Action::Retry);else CheckForUpdates();return;}
+        // In Error the engine's own Retry: download again after a download failure (« Réessayer »),
+        // a check after a check or install failure (« Réessayer » / « Rechercher à nouveau »).
+        if(updates.View().phase==BrowserUpdate::Phase::Error)UpdateAction(BrowserUpdate::Action::Retry);else CheckForUpdates();return;}
     if(button==MD::AboutCancelButton){UpdateAction(BrowserUpdate::Action::Cancel);return;}
     if(button==MD::AboutDownloadButton){UpdateAction(BrowserUpdate::Action::Download);return;}
     if(button==MD::AboutRestartButton)UpdateAction(BrowserUpdate::Action::RestartInstall); // #60 handoff: closeWithoutPrompt, normal close
@@ -3491,14 +3499,14 @@ NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){
     if(!updatesStarted||!updates.Enabled())return {AboutTitle(),false,false};
     const auto v=updates.View();std::wstring status;
     switch(v.phase){
-    case P::Hidden:{const auto last=updates.LastCheckResult();status=last==L::UpToDate?L"À jour":last==L::Available?L"Disponible":last==L::Failed?L"Hors ligne":L"";break;}
+    case P::Hidden:{const auto last=updates.LastCheckResult();status=last==L::UpToDate?L"À jour":last==L::Available?L"Disponible":last==L::Failed?L"Vérif. impossible":L"";break;} // F5: the cause is not known: never « Hors ligne »
     case P::Checking:status=L"Recherche…";break;
     case P::Available:status=L"Disponible";break;
     case P::Downloading:status=v.total?L"Téléch. "+std::to_wstring(std::min<std::uint64_t>(100,v.received*100/v.total))+L" %":std::wstring(L"Téléchargement…");break;
     case P::Ready:status=L"À installer";break;
     case P::Installing:status=L"Installation…";break;
     case P::Installed:status=L"Installée";break;
-    case P::Error:status=v.version.empty()?L"Hors ligne":L"Échec";break; // empty version = the check itself failed
+    case P::Error:status=v.version.empty()?L"Vérif. impossible":L"Échec";break; // empty version = the check itself failed (cause unknown)
     }
     const bool busy=v.phase==P::Checking||v.phase==P::Downloading||v.phase==P::Installing;
     return {status.empty()?AboutTitle():AboutTitle()+L" · "+status,v.phase==P::Checking,UpdateCheckAvailable()&&!busy};
@@ -3580,11 +3588,11 @@ AccessibleLabel AccessibleButton(int id){
     case 'F':return {L"Suivant",L"Alt+Flèche droite",L"",L"Forward"};
     case 'R':return {chrome.navigationLoading?L"Arrêter le chargement":L"Actualiser",L"Ctrl+R",L"",L"Reload"};
     case 'C':return {L"Copier le lien",L"",L"",L"CopyLink"};
-    case 'K':return {chrome.starred?L"Modifier le favori":L"Ajouter aux favoris",L"Ctrl+D",L"",L"Bookmark.Star"};
+    case 'K':return {chrome.starred?L"Modifier le favori":L"Ajouter aux favoris",L"Ctrl+D",privateWindow?PrivateBookmarksText:L"",L"Bookmark.Star"};
     case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {L"Autres favoris ("+std::to_wstring(hidden+other)+L")",L"",L"Favoris masqués, Autres favoris et Gérer les favoris",L"Bookmarks.Overflow"};}
     case 'E':return {L"Ajouter cette page aux favoris",L"Ctrl+D",L"",L"Bookmarks.AddPage"};
     case 'D':return {L"Téléchargements",L"",L"",L"Downloads"};
-    case 'P':return {privateWindow?L"Nouvelle fenêtre privée (fenêtre privée)":L"Nouvelle fenêtre privée",L"Ctrl+Maj+N",privateWindow?L"Cette fenêtre est privée : rien n'est conservé à sa fermeture":L"S'ouvre dans une fenêtre séparée ; rien n'est conservé à sa fermeture",L"Private"};
+    case 'P':return {privateWindow?L"Nouvelle fenêtre privée (fenêtre privée)":L"Nouvelle fenêtre privée",L"Ctrl+Maj+N",privateWindow?L"Cette fenêtre est privée : historique, cookies et session ne sont pas conservés":L"S'ouvre dans une fenêtre séparée ; historique, cookies et session n'y sont pas conservés",L"Private"};
     case 'S':return {L"Réglages",L"",L"",L"Settings"};
     default:return {L"",L"",L"",L""};
     }
