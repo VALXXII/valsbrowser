@@ -94,6 +94,7 @@ GUID_TEXT(ICoreWebView2WebMessageReceivedEventHandler,"{57213f19-00e6-49fa-8e07-
 GUID_TEXT(ICoreWebView2ScriptDialogOpeningEventHandler,"{ef381bf9-afa8-4e37-91c4-8ac48524bdfb}")
 GUID_TEXT(ICoreWebView2PermissionRequestedEventHandler,"{15e1c6a3-c72a-4df3-91d7-d097fbec6bfd}")
 GUID_TEXT(ICoreWebView2BasicAuthenticationRequestedEventHandler,"{58b4d6c2-18d4-497e-b39b-9a96533fa278}")
+GUID_TEXT(ICoreWebView2ClientCertificateRequestedEventHandler,"{d7175ba2-bcc3-11eb-8529-0242ac130003}")
 GUID_TEXT(ICoreWebView2LaunchingExternalUriSchemeEventHandler,"{74f712e0-8165-43a9-a13f-0cce597e75df}")
 GUID_TEXT(ICoreWebView2ContainsFullScreenElementChangedEventHandler,"{e45d98b1-afef-45be-8baf-6c7728867f73}")
 GUID_TEXT(ICoreWebView2FindActiveMatchIndexChangedEventHandler,"{0054f514-9a8e-5876-aed5-30b37f8c86a5}")

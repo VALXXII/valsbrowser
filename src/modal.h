@@ -338,7 +338,7 @@ struct Notice { const char* glyph = nullptr; std::wstring text; bool boxed = fal
 struct Row { const char* glyph = nullptr; std::wstring label, trailing; int toggle = -1; std::wstring detail; };
 // B03 fill list: `masked` is the password as dots (tracked 0.08em, Paper EK1-0) unless `plain`;
 // a plain second line (certificate issuer, FW8-0) is ordinary 14 px secondary text, tracking 0.
-struct Account { std::wstring user, masked; bool plain = false; };
+struct Account { std::wstring user, masked; bool plain = false, disabled = false; };   // disabled: shown at 32 %, not selectable (expired certificate)
 struct DangerCard { std::wstring title, subtitle, text; bool shown = false; };       // B07
 // B08 screen share picker (Démonstration): categories in a segmented control (Paper FX2-0), the
 // sources of the current one as thumbnails (FX9-0) drawn locally from `art` (fictitious content,
@@ -473,6 +473,7 @@ private:
         if (hit >= 1000 && hit < 2000) return !ButtonDisabled(spec_.buttons[static_cast<size_t>(hit - 1000)]);
         if (hit >= 2000 && hit < 2999) return !spec_.checks[static_cast<size_t>(hit - 2000)].disabled;
         if (hit == StatusHit) return spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled;
+        if (hit >= 6200 && hit < 6900) { const size_t i = static_cast<size_t>(hit - 6200); return i < spec_.accounts.size() && !spec_.accounts[i].disabled; }
         if (IsRow(hit)) { const size_t i = static_cast<size_t>(hit - 9000); return i < spec_.rows.size() && spec_.rows[i].toggle == 1; }
         if (IsSource(hit)) return spec_.sources.shown && static_cast<size_t>(hit - 8100) < spec_.sources.items.size() && spec_.sources.items[static_cast<size_t>(hit - 8100)].category == spec_.sources.category;
         return true;
@@ -795,7 +796,7 @@ private:
         for (size_t i = 0; i < spec_.checks.size(); ++i) if (!spec_.checks[i].disabled) o.push_back(CheckHit(i));
         if (spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled) o.push_back(StatusHit);
         for (size_t i = 0; i < spec_.links.size(); ++i) o.push_back(LinkHit(i));
-        for (size_t i = 0; i < spec_.accounts.size(); ++i) o.push_back(AccountHit(i));
+        for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) o.push_back(AccountHit(i));
         if (!spec_.manageLabel.empty()) o.push_back(ManageHit);
         if (!spec_.checkLabel.empty()) o.push_back(SimpleCheckHit);
         for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].leading && !ButtonDisabled(spec_.buttons[i])) o.push_back(ButtonHit(i));
@@ -821,7 +822,7 @@ private:
     }
     int InitialStop() const {
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].value.empty() || i + 1 == spec_.fields.size()) return FieldStop(i);
-        if (!spec_.accounts.empty()) return AccountHit(0);
+        for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) return AccountHit(i);
         for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle == 1) return RowHit(i);
         if (spec_.sources.shown) { if (const int s = SourceStop()) return s; if (!spec_.sources.categories.empty()) return CategoryHit(static_cast<size_t>(spec_.sources.category)); }
         for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].initialFocus && !ButtonDisabled(spec_.buttons[i])) return ButtonHit(i);
@@ -946,7 +947,7 @@ private:
             if (!inEdit && IsSource(focus_)) return MoveSource(step * sourceColumns_);
             if (!inEdit && focus_ == SelectHit) { Activate(SelectHit, true); return true; }   // ↑/↓ open the list, never change silently
             if (!inEdit && ((focus_ >= 6200 && focus_ < 6900) || focus_ == ManageHit)) {   // B03: ↓ then Entrée
-                std::vector<int> list; for (size_t i = 0; i < spec_.accounts.size(); ++i) list.push_back(AccountHit(i)); if (!spec_.manageLabel.empty()) list.push_back(ManageHit);
+                std::vector<int> list; for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) list.push_back(AccountHit(i)); if (!spec_.manageLabel.empty()) list.push_back(ManageHit);
                 auto it = std::find(list.begin(), list.end(), focus_); int i = static_cast<int>(it - list.begin()) + step; i = std::clamp(i, 0, static_cast<int>(list.size()) - 1);
                 keyboard_ = true; FocusStop(list[static_cast<size_t>(i)]); return true;
             }
@@ -1291,8 +1292,9 @@ private:
                     const DialogKit::Style letter{12, 12, true};
                     const float lw = kit_.Width(initial, letter);
                     kit_.Text(initial, letter, (avatar.left + avatar.right - lw) / 2, avatar.top + 6, lw + 1, DialogKit::White(P::secondaryText));
-                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(1));
-                    kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - 50, DialogKit::White(P::muted));
+                    const float dim = spec_.accounts[i].disabled ? .32f : 1.f;   // Paper FW8-0: expired certificate at 32 %
+                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(dim));
+                    kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - 50, DialogKit::White(P::muted * dim));
                 }
                 if (!spec_.manageLabel.empty()) {
                     const auto r = Find(ManageHit); const auto v = motion_.Visual(ManageHit, now);

@@ -314,8 +314,8 @@ void PromptTabChanged(){if(promptOpen){auto q=promptActive.tab.lock();if(q!=Acti
 // belonged to the document being left. Authentication and other prompts are left alone.
 void ElementsNavigationStarting(const std::shared_ptr<Tab>& t){
     if(!t)return;
-    for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if(it->spec.kind==OP::Kind::Permission&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
-    if(promptOpen&&(promptActive.spec.kind==OP::Kind::Permission||promptActive.spec.kind==OP::Kind::SiteStatus)){auto q=promptActive.tab.lock();if(!q||q==t){Log(L"PERMISSION navigation: popover closed");originPrompt.Abort();}}
+    for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if((it->spec.kind==OP::Kind::Permission||it->spec.kind==OP::Kind::ClientCertificate)&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
+    if(promptOpen&&(promptActive.spec.kind==OP::Kind::Permission||promptActive.spec.kind==OP::Kind::SiteStatus||promptActive.spec.kind==OP::Kind::ClientCertificate)){auto q=promptActive.tab.lock();if(!q||q==t){Log(L"PERMISSION navigation: popover closed");originPrompt.Abort();}}
     if(siteStates.erase(t->serial))Log(L"PERMISSION navigation: site state cleared");
     if(t==Active())RefreshRequestChip();
 }
@@ -388,6 +388,55 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
     return S_OK;
 }
 
+// ---------------------------------------------------------------------------------------
+// B08 client certificate: ICoreWebView2_5::ClientCertificateRequested. The list is the engine's
+// MutuallyTrustedCertificates for this server (never a server-certificate decision: TLS
+// validation stays the engine's). Choose = SelectedCertificate; « Ne pas envoyer » / Échap =
+// continue without a certificate (Handled, nothing selected); the tab closing, a navigation or
+// shutdown cancels the request (Cancel). The deferral completes exactly once.
+std::wstring CertificateDate(double seconds){
+    if(seconds<=0)return L"";const time_t t=(time_t)seconds;tm local{};if(localtime_s(&local,&t)!=0)return L"";
+    wchar_t b[16];swprintf(b,16,L"%02d/%02d/%04d",local.tm_mday,local.tm_mon+1,local.tm_year+1900);return b;
+}
+struct CertificateRow { std::wstring name,hint; bool expired=false; };
+CertificateRow DescribeCertificate(ICoreWebView2ClientCertificate* c,double now){
+    CertificateRow row;if(!c)return row;
+    row.name=TakeString([&]{LPWSTR s=nullptr;c->get_DisplayName(&s);return s;}());
+    if(row.name.empty())row.name=TakeString([&]{LPWSTR s=nullptr;c->get_Subject(&s);return s;}());
+    const std::wstring issuer=TakeString([&]{LPWSTR s=nullptr;c->get_Issuer(&s);return s;}());
+    double to=0;c->get_ValidTo(&to);row.expired=to>0&&to<now;
+    const std::wstring date=CertificateDate(to);
+    row.hint=(issuer.empty()?std::wstring():L"Émis par "+issuer)+(date.empty()?L"":(issuer.empty()?L"":L" · ")+std::wstring(row.expired?L"expiré le ":L"expire le ")+date);
+    return row;
+}
+HRESULT ClientCertificateRequested(const std::shared_ptr<Tab>& t,ICoreWebView2ClientCertificateRequestedEventArgs* a){
+    if(!a)return S_OK;
+    ICoreWebView2Deferral* raw=nullptr;if(FAILED(a->GetDeferral(&raw))||!raw)return S_OK;
+    auto deferral=std::make_shared<DeferralGuard>(raw);ComRef<ICoreWebView2ClientCertificateRequestedEventArgs> args(a);
+    a->put_Handled(TRUE); // our prompt replaces the engine's; every path below writes an explicit answer
+    if(halted||!t||t->closed){a->put_Cancel(TRUE);return S_OK;}
+    const std::wstring host=TakeString([&]{LPWSTR s=nullptr;a->get_Host(&s);return s;}());
+    int port=0;a->get_Port(&port);BOOL proxy=FALSE;a->get_IsProxy(&proxy);
+    Com<ICoreWebView2ClientCertificateCollection> list;UINT32 count=0;
+    if(SUCCEEDED(a->get_MutuallyTrustedCertificates(&list.p))&&list.p)list->get_Count(&count);
+    Log(L"CERTIFICATE requested "+host+L":"+std::to_wstring(port)+(proxy?L" (proxy)":L"")+L" candidates="+std::to_wstring(count));
+    if(!count)return S_OK; // nothing to offer: continue without a certificate (Handled, no selection)
+    OP::Spec spec;spec.kind=OP::Kind::ClientCertificate;
+    spec.origin=(proxy?L"Le proxy ":L"")+host+(port&&port!=443?L":"+std::to_wstring(port):L"");
+    const double now=(double)time(nullptr);
+    for(UINT32 i=0;i<count;++i){Com<ICoreWebView2ClientCertificate> c;if(FAILED(list->GetValueAtIndex(i,&c.p))||!c.p)continue;auto row=DescribeCertificate(c.p,now);spec.accounts.push_back({row.name,row.hint,row.expired});}
+    ComRef<ICoreWebView2ClientCertificateCollection> keep(list.p);
+    AskPrompt(std::move(spec),t,[args,deferral,keep](OP::Result& r){
+        if(r.action==OP::Action::Choose&&r.choice>=0){
+            Com<ICoreWebView2ClientCertificate> c;
+            if(SUCCEEDED(keep->GetValueAtIndex((UINT32)r.choice,&c.p))&&c.p)args->put_SelectedCertificate(c.p);
+            Log(L"CERTIFICATE chosen #"+std::to_wstring(r.choice));
+        }else if(r.action==OP::Action::Cancel)Log(L"CERTIFICATE not sent");
+        else{args->put_Cancel(TRUE);Log(L"CERTIFICATE request cancelled");}
+        deferral->Complete();
+    },L"cert:"+host+L":"+std::to_wstring(port));
+    return S_OK;
+}
 HRESULT BasicAuthenticationRequested(const std::shared_ptr<Tab>& t,ICoreWebView2BasicAuthenticationRequestedEventArgs* a){
     if(!a)return S_OK;
     ICoreWebView2Deferral* raw=nullptr;if(FAILED(a->GetDeferral(&raw))||!raw)return S_OK;
@@ -786,6 +835,9 @@ void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* 
     {Com<ICoreWebView2_10> v10;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_10,(void**)&v10.p))&&v10.p){
         auto h=Callback<ICoreWebView2BasicAuthenticationRequestedEventHandler,ICoreWebView2*,ICoreWebView2BasicAuthenticationRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2BasicAuthenticationRequestedEventArgs* a)->HRESULT{return BasicAuthenticationRequested(weak.lock(),a);});
         if(FAILED(v10->add_BasicAuthenticationRequested(h,&token)))Log(L"AUTH add_BasicAuthenticationRequested failed");h->Release();}else Log(L"AUTH ICoreWebView2_10 unavailable: engine dialog kept");}
+    {Com<ICoreWebView2_5> v5;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_5,(void**)&v5.p))&&v5.p){
+        auto h=Callback<ICoreWebView2ClientCertificateRequestedEventHandler,ICoreWebView2*,ICoreWebView2ClientCertificateRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ClientCertificateRequestedEventArgs* a)->HRESULT{return ClientCertificateRequested(weak.lock(),a);});
+        if(FAILED(v5->add_ClientCertificateRequested(h,&token)))Log(L"CERTIFICATE add_ClientCertificateRequested failed");h->Release();}else Log(L"CERTIFICATE ICoreWebView2_5 unavailable: engine dialog kept");}
     {Com<ICoreWebView2_18> v18;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_18,(void**)&v18.p))&&v18.p){
         auto h=Callback<ICoreWebView2LaunchingExternalUriSchemeEventHandler,ICoreWebView2*,ICoreWebView2LaunchingExternalUriSchemeEventArgs*>([weak](ICoreWebView2*,ICoreWebView2LaunchingExternalUriSchemeEventArgs* a)->HRESULT{return LaunchingExternalUriScheme(weak.lock(),a);});
         if(FAILED(v18->add_LaunchingExternalUriScheme(h,&token)))Log(L"EXTERNAL add_LaunchingExternalUriScheme failed");h->Release();}else Log(L"EXTERNAL ICoreWebView2_18 unavailable: engine dialog kept");}

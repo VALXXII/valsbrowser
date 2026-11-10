@@ -37,6 +37,39 @@ struct PermissionArgs : Fake<ICoreWebView2PermissionRequestedEventArgs> {
     HRESULT STDMETHODCALLTYPE put_State(COREWEBVIEW2_PERMISSION_STATE v) override{state=v;++writes;return S_OK;}
     HRESULT STDMETHODCALLTYPE GetDeferral(ICoreWebView2Deferral** d) override{*d=&deferral;return S_OK;}
 };
+struct FakeCert : Fake<ICoreWebView2ClientCertificate> {
+    std::wstring name, issuer; double to = 0;
+    FakeCert(std::wstring n, std::wstring i, double t) : name(std::move(n)), issuer(std::move(i)), to(t) {}
+    HRESULT STDMETHODCALLTYPE get_Subject(LPWSTR* v) override{*v=Dup((L"CN="+name).c_str());return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Issuer(LPWSTR* v) override{*v=Dup(issuer.c_str());return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_ValidFrom(double* v) override{*v=0;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_ValidTo(double* v) override{*v=to;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_DerEncodedSerialNumber(LPWSTR* v) override{*v=Dup(L"01");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_DisplayName(LPWSTR* v) override{*v=Dup(name.c_str());return S_OK;}
+    HRESULT STDMETHODCALLTYPE ToPemEncoding(LPWSTR* v) override{*v=Dup(L"");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_PemEncodedIssuerCertificateChain(ICoreWebView2StringCollection** v) override{*v=nullptr;return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE get_Kind(COREWEBVIEW2_CLIENT_CERTIFICATE_KIND* v) override{*v=COREWEBVIEW2_CLIENT_CERTIFICATE_KIND_OTHER;return S_OK;}
+};
+struct FakeCertList : Fake<ICoreWebView2ClientCertificateCollection> {
+    std::vector<FakeCert*> items;
+    HRESULT STDMETHODCALLTYPE get_Count(UINT32* v) override{*v=(UINT32)items.size();return S_OK;}
+    HRESULT STDMETHODCALLTYPE GetValueAtIndex(UINT32 i,ICoreWebView2ClientCertificate** v) override{if(i>=items.size())return E_INVALIDARG;*v=items[i];return S_OK;}
+};
+struct CertArgs : Fake<ICoreWebView2ClientCertificateRequestedEventArgs> {
+    Deferral deferral; FakeCertList list; ICoreWebView2ClientCertificate* selected=nullptr; BOOL cancel=FALSE,handled=FALSE; int port=443;
+    HRESULT STDMETHODCALLTYPE get_Host(LPWSTR* v) override{*v=Dup(L"intranet.exemple.test");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Port(int* v) override{*v=port;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_IsProxy(BOOL* v) override{*v=FALSE;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_AllowedCertificateAuthorities(ICoreWebView2StringCollection** v) override{*v=nullptr;return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE get_MutuallyTrustedCertificates(ICoreWebView2ClientCertificateCollection** v) override{*v=&list;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_SelectedCertificate(ICoreWebView2ClientCertificate** v) override{*v=selected;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_SelectedCertificate(ICoreWebView2ClientCertificate* v) override{selected=v;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Cancel(BOOL* v) override{*v=cancel;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_Cancel(BOOL v) override{cancel=v;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Handled(BOOL* v) override{*v=handled;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_Handled(BOOL v) override{handled=v;return S_OK;}
+    HRESULT STDMETHODCALLTYPE GetDeferral(ICoreWebView2Deferral** d) override{*d=&deferral;return S_OK;}
+};
 struct AuthArgs : Fake<ICoreWebView2BasicAuthenticationRequestedEventArgs> {
     Deferral deferral; BOOL cancel=FALSE;
     HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(L"https://intranet.exemple.test/");return S_OK;}
@@ -192,6 +225,41 @@ int main(){
         ElementsTabClosed(live);run();
         Expect(clip.deferral.completed==1&&clip.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&chip().empty()&&!promptOpen,"tab closed: request denied, chip gone");
         originPrompt.Surface().FinishAnimationsForTest();
+        // B08 client certificates: the engine's real candidates, one deferral, explicit answers.
+        {
+            FakeCert good(L"Camille Démo",L"Autorité Démo",(double)time(nullptr)+86400*365),old(L"Ancien poste",L"CA Démo",1000);
+            CertArgs a;a.list.items={&good,&old};ClientCertificateRequested(live,&a);run();
+            Expect(a.handled&&promptOpen&&promptActive.spec.kind==OP::Kind::ClientCertificate&&promptActive.spec.accounts.size()==2,"certificate: our prompt lists the engine's candidates (engine dialog suppressed)");
+            Expect(promptActive.spec.origin==L"intranet.exemple.test"&&promptActive.spec.accounts[0].user==L"Camille Démo"&&promptActive.spec.accounts[0].hint.find(L"Émis par Autorité Démo")==0,"certificate: host and issuer shown");
+            Expect(!promptActive.spec.accounts[0].disabled&&promptActive.spec.accounts[1].disabled&&promptActive.spec.accounts[1].hint.find(L"expiré le")!=std::wstring::npos,"certificate: expired one disabled and labelled");
+            originPrompt.Surface().ActivateForTest(MD::Dialog::AccountHit(1));
+            Expect(a.deferral.completed==0&&promptOpen,"certificate: an expired row cannot be chosen");
+            originPrompt.Surface().ActivateForTest(MD::Dialog::AccountHit(0));run();
+            Expect(a.deferral.completed==1&&a.selected==&good&&!a.cancel,"certificate: choice = SelectedCertificate, completed once");
+            originPrompt.Surface().FinishAnimationsForTest();
+        }
+        {
+            FakeCert good(L"Camille Démo",L"Autorité Démo",(double)time(nullptr)+86400);
+            CertArgs a;a.port=8443;a.list.items={&good};ClientCertificateRequested(live,&a);run();
+            Expect(promptActive.spec.origin==L"intranet.exemple.test:8443","certificate: non-default port shown");
+            originPrompt.Surface().KeyForTest(VK_ESCAPE);run();
+            Expect(a.deferral.completed==1&&!a.selected&&!a.cancel&&a.handled,"certificate: « Ne pas envoyer » / Échap = continue without a certificate");
+            originPrompt.Surface().FinishAnimationsForTest();
+        }
+        {
+            FakeCert good(L"Camille Démo",L"Autorité Démo",(double)time(nullptr)+86400);
+            CertArgs a;a.list.items={&good};ClientCertificateRequested(live,&a);run();
+            ElementsNavigationStarting(live);run();
+            Expect(a.deferral.completed==1&&a.cancel&&!a.selected,"certificate: navigation away cancels the request");
+            originPrompt.Surface().FinishAnimationsForTest();
+            CertArgs b;b.list.items={&good};ClientCertificateRequested(live,&b);run();ElementsTabClosed(live);run();
+            Expect(b.deferral.completed==1&&b.cancel,"certificate: tab closed cancels, completed once");
+            originPrompt.Surface().FinishAnimationsForTest();
+            CertArgs none;ClientCertificateRequested(live,&none);run();
+            Expect(none.deferral.completed==1&&none.handled&&!none.cancel&&!promptOpen,"certificate: no candidate = continue without one, no prompt");
+            CertArgs gone;gone.list.items={&good};ClientCertificateRequested(closed,&gone);
+            Expect(gone.deferral.completed==1&&gone.cancel,"certificate: request of a closed tab cancelled");
+        }
         // Shutdown with a pending request: denied once, nothing left.
         PermissionArgs last(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&last);run();
         DisposeElementSurfaces();

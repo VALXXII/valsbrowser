@@ -184,11 +184,11 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, true, true, true, L"KeepCancel"), button(Id::Accept, L"Conserver", Role::Danger, false, false, false, L"KeepConfirm")};
         break;
     }
-    case Kind::ClientCertificate: {   // B08 concept: WebView2 exposes ClientCertificateRequested, list as accounts
+    case Kind::ClientCertificate: {   // B08: ICoreWebView2_5::ClientCertificateRequested, the engine's mutually trusted certificates
         m.automationId = L"ClientCertificate"; m.scope = Scope::Page; m.title = L"Choisir un certificat";
         m.subtitle = s.origin + L" demande un certificat pour vous identifier.";
         m.accountsTitle = L"Certificats disponibles";
-        for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true});   // issuer line: plain text, no dot tracking
+        for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, a.disabled});   // issuer line: plain text, no dot tracking; expired = disabled
         m.softButtons = true;
         m.buttons = {button(Id::Cancel, L"Ne pas envoyer", Role::Secondary, true, true, false, L"CertificateCancel")};
         break;
@@ -266,7 +266,8 @@ inline Result Map(const Spec& s, const Modal::Result& r) {
     case Kind::DangerousDownload: out.action = r.button == Id::Accept ? Action::Delete : Action::Dismiss; break;
     case Kind::KeepFile: out.action = r.button == Id::Accept ? Action::Keep : Action::Cancel; break;
     case Kind::SiteStatus: out.action = r.button == Id::Manage ? Action::Manage : Action::Dismiss; break;
-    case Kind::ClientCertificate: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
+    // « Ne pas envoyer » / Échap (the cancel button) = continue without; an abort (tab closed, navigation) = Dismiss.
+    case Kind::ClientCertificate: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = r.button == Id::Cancel ? Action::Cancel : Action::Dismiss; break;
     case Kind::ScreenShare: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
     case Kind::PasswordSave: case Kind::PasswordUpdate:
         out.action = r.button == Id::Accept ? Action::Save : r.button == Id::Never ? Action::Never : r.button == Id::Later ? Action::Cancel : Action::Dismiss;
