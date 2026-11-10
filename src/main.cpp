@@ -175,6 +175,8 @@ void ExtraCommand(int cmd);
 // Paper « Éléments & popups » integration (src/elements-integration.h, included below).
 void ElementsTabChanged(); void ElementsTabClosed(const std::shared_ptr<Tab>& t); bool IsSandboxUri(const std::wstring& uri);
 // B01 address-bar request chip (elements-integration.h): derived from the open permission popover.
+// B07: a download the engine blocked (malicious / security check / policy).
+void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason);
 void SyncRequestChip(); void ElementsNavigationStarting(const std::shared_ptr<Tab>& t); void RequestChipActivated(); bool RequestChipOpen(); void ElementsNavigationCompleted(const std::shared_ptr<Tab>& t,bool ok);
 void OpenSandbox(std::shared_ptr<Tab> in=nullptr); void OpenFindBar(); bool InFullscreen(); void ToggleBrowserFullscreen(); void ShowTabLimitToast();
 void AskClearBrowsingData(bool demo=false,std::function<void(bool)> result=nullptr); bool CloseWindowAllowed(bool demo=false,std::function<void(bool)> result=nullptr);
@@ -1317,7 +1319,9 @@ void SyncDownload(int id){
         COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;op->get_InterruptReason(&reason);
         if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED)item->state=DL::State::Paused;
         else if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED)item->state=DL::State::Cancelled;
-        else{item->state=DL::State::Failed;item->reason=InterruptText(reason);}
+        else{item->state=DL::State::Failed;item->reason=InterruptText(reason);
+            if(before!=DL::State::Failed&&(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))
+                ElementsDangerousDownload(id,item->path,item->uri,reason);}
     }
     if(item->state!=before)Log(L"DOWNLOAD state="+std::to_wstring((int)item->state)+L" "+DL::FileName(item->path));
     // Terminal rows keep no engine reference; resumable failures keep it for Retry.

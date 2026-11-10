@@ -260,6 +260,20 @@ int main(){
             CertArgs gone;gone.list.items={&good};ClientCertificateRequested(closed,&gone);
             Expect(gone.deferral.completed==1&&gone.cancel,"certificate: request of a closed tab cancelled");
         }
+        // B07 real path: a download the engine blocked; real « Supprimer », no « Conserver ».
+        {
+            const std::wstring file=std::wstring(cwd)+L"\\build\\elements-integration\\blocked-fixture.exe.tmp";
+            {std::ofstream f(std::filesystem::path(file),std::ios::binary);f<<"fixture";}
+            ElementsDangerousDownload(424242,file,L"https://telechargements.exemple.test/blocked-fixture.exe",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS);run();
+            Expect(promptOpen&&promptActive.spec.kind==OP::Kind::DangerousDownload&&!promptActive.spec.demo&&!promptActive.spec.keepAvailable,"blocked download: real B07, no demo badge, no keep");
+            Expect(promptActive.spec.detail==L"blocked-fixture.exe.tmp"&&promptActive.spec.origin==L"telechargements.exemple.test"&&promptActive.spec.reason.find(L"Defender")!=std::wstring::npos,"blocked download: real file, site and engine reason");
+            Expect(OP::Prompt::MoreItems(false).size()==2&&OP::Prompt::MoreItems(true).size()==4,"blocked download: « Conserver quand même » only where it is real (demo)");
+            originPrompt.Surface().Finish(OP::Id::Accept);run();
+            Expect(!std::filesystem::exists(std::filesystem::path(file))&&!promptOpen,"blocked download: « Supprimer le fichier » removes the leftover file");
+            originPrompt.Surface().FinishAnimationsForTest();
+            const auto spec=DangerousDownloadSpec(L"C:\\x\\a.zip",L"https://s.exemple.test/a.zip",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY);
+            Expect(spec.reason.find(L"stratégie")!=std::wstring::npos&&spec.link==L"https://s.exemple.test/a.zip"&&spec.detail==L"a.zip","blocked by policy: own reason; link kept for « Copier le lien »");
+        }
         // Shutdown with a pending request: denied once, nothing left.
         PermissionArgs last(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&last);run();
         DisposeElementSurfaces();

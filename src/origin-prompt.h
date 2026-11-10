@@ -50,6 +50,10 @@ struct Spec {
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
     std::wstring reason;                 // DangerousDownload: « Microsoft Defender SmartScreen le signale… »
     bool insecure = false;               // BasicAuth over plain HTTP
+    // DangerousDownload: « Conserver quand même… » only where keeping is real (the sandbox demo):
+    // WebView2 has no API to override a SmartScreen / security verdict (no danger type, no keep).
+    bool keepAvailable = true;
+    std::wstring link;                   // DangerousDownload: the download's own URI (« Copier le lien du fichier »)
     std::vector<std::wstring> sources;   // ScreenShare: category names (« Onglets », « Fenêtres », « Écrans »)
     std::vector<Modal::Source> shareSources;   // ScreenShare: fictitious sources (title, category, thumbnail art)
     // SiteStatus (B02 « Clic sur la puce », EAC-0): what this page may use. `active` only from a
@@ -285,9 +289,10 @@ class Prompt {
 public:
     // B07 « Plus d'options » commands (Paper FYS-0): two plain rows, a separator, the danger row.
     enum Command { CopyLink = 1, Report = 2, KeepAnyway = 3 };
-    static std::vector<ContextMenu::Item> MoreItems() {
-        auto keep = ContextMenu::Command(KeepAnyway, L"Conserver quand même…"); keep.danger = true;
-        return {ContextMenu::Command(CopyLink, L"Copier le lien du fichier"), ContextMenu::Command(Report, L"Signaler une erreur à Microsoft"), ContextMenu::Separator(), keep};
+    static std::vector<ContextMenu::Item> MoreItems(bool keep = true) {
+        std::vector<ContextMenu::Item> items{ContextMenu::Command(CopyLink, L"Copier le lien du fichier"), ContextMenu::Command(Report, L"Signaler une erreur à Microsoft")};
+        if (keep) { auto k = ContextMenu::Command(KeepAnyway, L"Conserver quand même…"); k.danger = true; items.push_back(ContextMenu::Separator()); items.push_back(k); }
+        return items;
     }
     struct Hooks {
         std::function<void()> wake;
@@ -329,9 +334,9 @@ private:
             return;
         }
         if (id != Id::More || spec_.kind != Kind::DangerousDownload) return;
-        const int chosen = dialog_.TrackMenu(MoreItems(), Modal::Dialog::ButtonHit(1), dialog_.KeyboardModality());
+        const int chosen = dialog_.TrackMenu(MoreItems(spec_.keepAvailable), Modal::Dialog::ButtonHit(1), dialog_.KeyboardModality());
         if (chosen == CopyLink || chosen == Report) { if (hooks_.download) hooks_.download(static_cast<Command>(chosen), spec_); return; }
-        if (chosen != KeepAnyway) return;   // Échap / click outside: the popover stays as it was
+        if (chosen != KeepAnyway || !spec_.keepAvailable) return;   // Échap / click outside: the popover stays as it was
         // B08 « Confirmation dans le popover — Annuler par défaut »: Keep only after « Conserver ».
         parent_ = spec_; confirming_ = true;
         Spec keep = spec_; keep.kind = Kind::KeepFile; spec_ = keep;

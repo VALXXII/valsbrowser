@@ -274,6 +274,13 @@ void FinishPrompt(OP::Result& r){
     if(job.spec.kind==OP::Kind::Permission){Log(L"PERMISSION chip cleared");RefreshRequestChip();}
     Defer([]{PumpPrompt();});
 }
+RECT RegionScreen(int id);
+// Where an anchored prompt hangs: real blocked downloads under the downloads button (Paper B07),
+// everything else under the address bar's origin indicator.
+RECT PromptAnchor(const OP::Spec& s){
+    if(s.kind==OP::Kind::DangerousDownload&&!s.demo){RECT r=RegionScreen('D');if(r.right>r.left)return r;}
+    return OriginAnchorRect();
+}
 void PumpPrompt(){
     if(halted||promptOpen||promptQueue.empty()||!originPrompt.Window())return;
     for(auto it=promptQueue.begin();it!=promptQueue.end();++it){
@@ -285,7 +292,7 @@ void PumpPrompt(){
         if(it->spec.kind==OP::Kind::Permission&&editing)continue;
         promptActive=std::move(*it);promptQueue.erase(it);promptOpen=true;originPrompt.SetPageArea(PageScreenRect());
         const bool permission=promptActive.spec.kind==OP::Kind::Permission;
-        if(!originPrompt.Show(promptActive.spec,OriginAnchorRect(),[](OP::Result& r){FinishPrompt(r);})){
+        if(!originPrompt.Show(promptActive.spec,PromptAnchor(promptActive.spec),[](OP::Result& r){FinishPrompt(r);})){
             Log(L"PROMPT show failed");OP::Result none;FinishPrompt(none);
         }else if(permission){RefreshRequestChip();Log(L"PERMISSION chip shown glyphs="+std::to_wstring(chrome.requestGlyphs.size()));}
         return;
@@ -883,12 +890,46 @@ NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now){
     return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
 }
 void ElementsFrame(NativeChrome::Motion::Time now){ChipFrame(now);modal.Frame(now);originPrompt.Frame(now);passwordDemo.Frame(now);shortcutsPanel.Frame(now);sandboxTip.Frame(now);chromeTip.Frame(now);findBar.Frame(now);contextToast.Frame(now);fullscreenHint.Frame(now);}
+// ---------------------------------------------------------------------------------------
+// B07 real path: the engine interrupted a download for safety (ICoreWebView2DownloadOperation
+// InterruptReason FILE_MALICIOUS / FILE_SECURITY_CHECK_FAILED / FILE_BLOCKED_BY_POLICY; SmartScreen
+// and policies stay the engine's). « Supprimer le fichier » removes the row and any leftover
+// file; « Copier le lien » / « Signaler » are real; there is no « Conserver » (no SDK override).
+void DownloadAction(int id,DL::Action action);
+std::wstring DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
+    switch(r){
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return L"Microsoft Defender l'a signalé comme malveillant. Il n'a pas été enregistré.";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"La vérification de sécurité de Windows l'a bloqué. Il n'a pas été enregistré.";
+    default:return L"Une stratégie de sécurité de cet appareil l'a bloqué. Il n'a pas été enregistré.";
+    }
+}
+OP::Spec DangerousDownloadSpec(const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){
+    OP::Spec s;s.kind=OP::Kind::DangerousDownload;s.origin=OriginLabel(uri);s.detail=DL::FileName(path);if(s.detail.empty())s.detail=L"Fichier";
+    s.reason=DangerText(reason);s.link=uri;s.keepAvailable=false;s.demo=false;return s;
+}
+void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){
+    auto t=Active();if(halted||!t)return;
+    Log(L"DOWNLOAD blocked by the engine: "+DL::FileName(path)+L" reason="+std::to_wstring((int)reason));
+    AskPrompt(DangerousDownloadSpec(path,uri,reason),t,[id,path](OP::Result& r){
+        if(r.action!=OP::Action::Delete)return;
+        DownloadAction(id,DL::Action::Remove);
+        std::error_code ec;if(!path.empty()&&std::filesystem::exists(path,ec)){std::filesystem::remove(path,ec);Log(std::wstring(L"DOWNLOAD blocked file ")+(ec?L"could not be removed":L"removed"));}
+    },L"download:"+std::to_wstring(id));
+}
 // B07 « Plus d'options » non-terminal commands. Only the sandbox demonstration reaches them (real
 // dangerous downloads keep the engine's own UI and protections): the link is a fictitious
 // demo address, the report is simulated, and the result goes to the sandbox journal.
 bool CopyToClipboard(const std::wstring& text);
+void NewTab(std::wstring uri,int index,std::wstring title);
+// Microsoft's official page to report a file wrongly flagged by Defender SmartScreen.
+constexpr const wchar_t* SmartScreenReportUrl=L"https://www.microsoft.com/wdsi/filesubmission";
 void PromptDownloadCommand(OP::Prompt::Command c,const OP::Spec& s){
     auto t=promptActive.tab.lock();
+    if(!s.demo){   // a real blocked download: real effects only
+        if(c==OP::Prompt::CopyLink){const bool ok=!s.link.empty()&&CopyToClipboard(s.link);Log(std::wstring(L"DOWNLOAD blocked: link ")+(ok?L"copied":L"not copied"));}
+        else{Log(L"DOWNLOAD blocked: report page opened");Defer([]{NewTab(SmartScreenReportUrl,-1,L"");});}
+        return;
+    }
     std::wstring line;
     if(c==OP::Prompt::CopyLink){const std::wstring link=L"https://"+s.origin+L"/"+s.detail;line=CopyToClipboard(link)?L"prompt.dangerousDownload → lien copié (démonstration) : "+link:L"prompt.dangerousDownload → copie du lien impossible";}
     else line=L"prompt.dangerousDownload → signalement simulé (démonstration : rien n'est envoyé à Microsoft)";
