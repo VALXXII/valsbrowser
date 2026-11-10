@@ -309,7 +309,7 @@ enum class Role { Primary, Secondary, Danger, Quiet };
 enum class Scope { Page, Window, Anchor };
 inline constexpr int CancelButton = 0, AcceptButton = 1;
 inline constexpr int PrivateClearDataButton = 2;                        // A9 « Effacer les données… »
-inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4;      // A8 status actions
+inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4, AboutDownloadButton = 5;   // A8 status actions
 inline constexpr int AboutNotesLink = 101, AboutLicensesLink = 102, AboutReportLink = 103;
 struct Button {
     int id = CancelButton; std::wstring label; Role role = Role::Secondary;

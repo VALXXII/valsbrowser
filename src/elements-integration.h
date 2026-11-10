@@ -736,6 +736,19 @@ std::wstring RunningVersion(){
     return L"dev";
 #endif
 }
+// A8 live status: the update engine's real view (defined with the update host in main.cpp).
+MD::Status AboutStatusNow();
+void AboutUpdateAction(int button);
+// Public project destinations (the releases repository is public; the source repository is not).
+constexpr const wchar_t* ReleasesUrl=L"https://github.com/VALXXII/browser-releases/releases";
+constexpr const wchar_t* IssuesUrl=L"https://github.com/VALXXII/browser-releases/issues/new";
+std::wstring ReleaseNotesUrl(const std::wstring& version){
+    const bool numbered=!version.empty()&&iswdigit(version[0]);
+    return numbered?std::wstring(ReleasesUrl)+L"/tag/v"+version:std::wstring(ReleasesUrl);
+}
+bool AboutOpen(){return modalOpen&&modalActive.spec.kind==MD::Kind::About&&!modalActive.spec.demo;}
+// The update engine notified: an open « À propos » shows the new state at once.
+void RefreshAboutStatus(){if(AboutOpen())modal.SetStatus(AboutStatusNow());}
 void ShowAboutDialog(int demoState){
     auto spec=MD::AboutSpec(RunningVersion(),demoState<0?MD::AboutUpToDate:demoState);
     if(demoState>=0)spec.demo=true;
@@ -745,10 +758,15 @@ void ShowAboutDialog(int demoState){
 #endif
     if(demoState>=0){}
     else if(!live){spec.status.icon=MD::StatusIcon::None;spec.status.title=L"Mises à jour désactivées";spec.status.detail=L"Build de prévisualisation : aucune recherche automatique";spec.status.hasButton=false;}
-    else{spec.status.detail=L"Vérification automatique au démarrage";spec.status.button.closes=false;}
-    spec.onButton=[](int id){if(id==MD::AboutCheckButton){CheckForUpdates();modal.SetStatus(MD::AboutStatus(MD::AboutChecking));}};
-    AskModal(std::move(spec),nullptr,[](const MD::Result& r){
+    else spec.status=AboutStatusNow();
+    if(demoState>=0)spec.onButton=[](int id){if(id==MD::AboutCheckButton)modal.SetStatus(MD::AboutStatus(MD::AboutChecking));};   // sandbox: nothing is checked
+    else spec.onButton=[](int id){AboutUpdateAction(id);RefreshAboutStatus();};
+    const bool demo=demoState>=0;
+    AskModal(std::move(spec),nullptr,[demo](const MD::Result& r){
         if(r.button==MD::AboutLicensesLink){std::wstring dir=base;ShellExecuteW(window,L"open",dir.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}
+        else if(r.button==MD::AboutNotesLink){const auto url=ReleaseNotesUrl(RunningVersion());Log(L"ABOUT release notes "+url);Defer([url]{NewTab(url,-1,L"");});}
+        else if(r.button==MD::AboutReportLink){Log(L"ABOUT report a problem");Defer([]{NewTab(IssuesUrl,-1,L"");});}
+        else if(!demo&&r.button==MD::AboutRestartButton)AboutUpdateAction(MD::AboutRestartButton);
     });
 }
 void ShowAboutDialog(){ShowAboutDialog(-1);}

@@ -320,6 +320,10 @@ int main(){
         modal.Abort();run();deferredJobs.clear();pages={live};current=0;
         DestroyWindow(window);window=nullptr;
     }
+    // A8 destinations: the public releases repository (notes of the running version, issues).
+    Expect(ReleaseNotesUrl(L"0.3.132")==L"https://github.com/VALXXII/browser-releases/releases/tag/v0.3.132"&&ReleaseNotesUrl(L"dev")==L"https://github.com/VALXXII/browser-releases/releases","about: release notes of the running version");
+    Expect(std::wstring(IssuesUrl)==L"https://github.com/VALXXII/browser-releases/issues/new","about: report a problem on the public issues");
+    Expect(AboutStatusNow().title==L"Mises à jour indisponibles"&&!AboutStatusNow().hasButton,"about: build without the update engine says so, no fake check");
     // Origin labels shown in dialogs.
     Expect(OriginLabel(L"https://www.exemple.test:8443/a?b")==L"exemple.test:8443"&&OriginLabel(L"about:blank")==L"Cette page"&&OriginLabel(L"https://user@site.test/")==L"site.test","origin label");
     pages.clear();

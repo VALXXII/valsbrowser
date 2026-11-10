@@ -3357,6 +3357,8 @@ case ShortcutsCommand:OpenShortcutsPanel();break;
 #ifndef BROWSER_UPDATES
 void SyncUpdateToastReserve(){} void CheckForUpdates(){} void SetUpdateToastTop(float){} float UpdateToastHeight(){return 0;} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){return {AboutTitle(),false,false};}
+NativeChrome::Modal::Status AboutStatusNow(){namespace MD=NativeChrome::Modal;auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=L"Mises à jour indisponibles";st.detail=L"Build sans moteur de mise à jour";st.hasButton=false;return st;}
+void AboutUpdateAction(int){}
 void SyncUpdateToastMotion(){}
 #else
 // ---- Self-update host -------------------------------------------------------
@@ -3367,7 +3369,8 @@ void SyncUpdateToastMotion(){}
 constexpr UINT UpdateMessage=WM_APP+9; constexpr UINT_PTR UpdateTimerId=74;
 UpdateCore::Engine updates; BrowserUpdate::Toast updateToast; bool updatesStarted=false,closingForInstall=false;
 DWORD updateTimerDelayMs=0; // armed one-shot delay (0 = none); read by fixtures
-void ShowUpdateView(){if(updatesStarted)updateToast.SetView(updates.View());settingsDrawer.Changed();}
+void RefreshAboutStatus();
+void ShowUpdateView(){if(updatesStarted)updateToast.SetView(updates.View());settingsDrawer.Changed();RefreshAboutStatus();}
 // Periodic checks for a long-running browser: ONE one-shot timer, due-aware and re-armed after every
 // engine notification and every firing. Delay = time to the persisted next-check (6 h TTL / back-off),
 // never below 15 min nor above 6 h, so an idle browser wakes at most a few times per hour and usually
@@ -3407,6 +3410,31 @@ void StartUpdates(UpdateCore::Config config=UpdateConfig()){
     ShowUpdateView();ArmUpdateTimer();
 }
 bool UpdateCheckAvailable(){return updatesStarted&&!closingForInstall;}
+// A8 « À propos »: the engine's real state (same source as the toast and the Réglages footer).
+NativeChrome::Modal::Status AboutStatusNow(){
+    namespace MD=NativeChrome::Modal;using P=BrowserUpdate::Phase;using L=UpdateCore::Engine::LastCheck;
+    if(!UpdateCheckAvailable()){auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=L"Mises à jour indisponibles";st.detail=closingForInstall?L"Installation en cours":L"Recherche automatique désactivée pour ce build";st.hasButton=false;return st;}
+    const auto v=updates.View();
+    switch(v.phase){
+    case P::Checking:return MD::AboutStatus(MD::AboutChecking);
+    case P::Available:{auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::Download;st.title=L"Version "+v.version+L" disponible";st.detail=L"Téléchargement à votre demande";
+        st.button=MD::Make(MD::AboutDownloadButton,L"Télécharger",MD::Role::Primary,false,false,false,L"AboutDownload");st.button.closes=false;return st;}
+    case P::Downloading:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=L"Téléchargement de la version "+v.version+L"…";
+        st.detail=v.total?std::to_wstring(std::min<std::uint64_t>(100,v.received*100/v.total))+L" %":L"";st.button.label=L"Rechercher";return st;}
+    case P::Ready:{auto st=MD::AboutStatus(MD::AboutReady,L"",v.version);st.button.closes=false;return st;}
+    case P::Installing:case P::Installed:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=L"Installation…";return st;}
+    case P::Error:return MD::AboutStatus(MD::AboutOffline,v.version.empty()?L"":L"La mise à jour "+v.version+L" a échoué");
+    default:{const auto last=updates.LastCheckResult();
+        if(last==L::Failed)return MD::AboutStatus(MD::AboutOffline);
+        return MD::AboutStatus(MD::AboutUpToDate,last==L::UpToDate?L"Dernière vérification réussie":L"Vérification automatique au démarrage");}
+    }
+}
+void AboutUpdateAction(int button){
+    namespace MD=NativeChrome::Modal;
+    if(button==MD::AboutCheckButton){CheckForUpdates();return;}
+    if(button==MD::AboutDownloadButton){UpdateAction(BrowserUpdate::Action::Download);return;}
+    if(button==MD::AboutRestartButton)UpdateAction(BrowserUpdate::Action::RestartInstall); // #60 handoff: closeWithoutPrompt, normal close
+}
 void CheckForUpdates(){if(UpdateCheckAvailable()){updates.CheckNow();ShowUpdateView();}}
 // Settings footer: "browser <v> · <statut>", kept within ~200 DIP at 14 px (hence the terse wording).
 // A manual check from the drawer goes through the engine like the menu command, so the toast
