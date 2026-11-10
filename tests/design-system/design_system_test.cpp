@@ -64,6 +64,18 @@ int wmain(int argc,wchar_t** argv){
         Require(keyboardRing>pointerRing+40,"keyboard focus ring is markedly stronger than pointer focus ring");
         chrome.Paint({L"Google",L"Ggyp \u00c9\u00e7"},0,L"https://example.test",false,0,'R');
         Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/chrome-focus-"+std::to_wstring(dpi)+L".png").c_str())),"production chrome focus snapshot");
+        {   // Decision 7: « Privée » chip (Paper LRZ-0) before the tabs, measured label, tabs shifted by it.
+            const float normalFirst=chrome.strip.Surface(0).left;const int normalCapacity=Design::TabStrip::Capacity(1180);
+            chrome.privateChip=true;chrome.Paint({L"Google",L"Ggyp Éç"},0,L"https://example.test",false,0,0);
+            const auto c=chrome.PrivateChipRect();const float label=chrome.TextWidth(Design::PrivateChip::label,14,true);
+            Require(c.left==44&&c.top==10&&c.bottom==34&&c.right-c.left==6+16+6+std::ceil(label)+8,"private chip: x 44, y 10, h 24, width 6+16+6+label+8 from DirectWrite");
+            Require(std::abs(label-39)<3,"private chip: « Privée » measures about Paper's 39 DIP");
+            Require(chrome.strip.Surface(0).left==c.right+6&&normalFirst==44,"private chip: first tab one 6 DIP row gap after the chip");
+            Require(Design::TabStrip::Capacity(1180)<=normalCapacity&&Design::TabStrip::Capacity(500)>=1,"private chip: capacity accounts for it, still a tab at narrow widths");
+            Require(SUCCEEDED(chrome.SavePng((std::wstring(argv[2])+L"/chrome-private-"+std::to_wstring(dpi)+L".png").c_str())),"private chip snapshot");
+            chrome.privateChip=false;chrome.Paint({L"Google",L"Ggyp Éç"},0,L"https://example.test",false,0,0);
+            Require(chrome.strip.Surface(0).left==44&&Design::TabStrip::leading==0,"normal window: tabs back at x 44");
+        }
     }
     Chrome animated;Require(SUCCEEDED(animated.InitOffscreen(argv[1],96,1180,84)),"animated production fixture");
     Motion::State motion(false);motion.EnablePolish();animated.SetMotion(&motion);animated.animateSelection=true;

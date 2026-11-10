@@ -292,7 +292,7 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // Stable tab serials let the strip animate opens/closes and the selection fade
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
-void BuildChrome(){if(privateWindow&&!chrome.latched)chrome.latched='P'; /* the private button stays lit in a private window */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void BuildChrome(){chrome.privateChip=privateWindow; /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -366,7 +366,7 @@ void DragTab(POINT point){
     // Drop slot = the visible tab under the pointer on the adaptive, scrolled strip.
     const auto* strip=&chrome.strip;int from=(int)(it-pages.begin()),lo=0,hi=(int)pages.size()-1;
     while(lo<hi&&!strip->Visible(lo))++lo;while(hi>lo&&!strip->Visible(hi))--hi;
-    int slot=std::clamp((int)std::floor((x+strip->scroll-NativeChrome::Design::TabStrip::left)/strip->Pitch()),lo,hi);
+    int slot=std::clamp((int)std::floor((x+strip->scroll-NativeChrome::Design::TabStrip::Left())/strip->Pitch()),lo,hi);
     MoveTab(from,slot);
     it=std::find(pages.begin(),pages.end(),tabDrag.tab);chrome.dragIndex=(int)(it-pages.begin());
     auto surface=strip->Surface(chrome.dragIndex);
@@ -3555,7 +3555,7 @@ void ResolveBrowserPaths(const std::wstring& installRoot=L""){
 // or its close button (kind 2), so an element never silently becomes another tab
 // after a close or a move.
 Accessibility::Bridge accessibility;
-constexpr long long AccessibleStrip=0x10000,AccessibleToolbar=0x10001,AccessibleSuggestions=0x10002;
+constexpr long long AccessibleStrip=0x10000,AccessibleToolbar=0x10001,AccessibleSuggestions=0x10002,AccessiblePrivateChip=0x10009; // 0x10009: the private window chip (Text)
 static_assert(AccessibleToolbar==AccessibleToolbarKey,"early toolbar key matches the UIA tree");
 // Suggestion rows: kind 3, keyed by row index (the list is rebuilt per keystroke).
 long long AccessibleSuggestionKey(int i){return (3LL<<32)|(unsigned)i;}
@@ -3592,7 +3592,7 @@ AccessibleLabel AccessibleButton(int id){
     case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {L"Autres favoris ("+std::to_wstring(hidden+other)+L")",L"",L"Favoris masqués, Autres favoris et Gérer les favoris",L"Bookmarks.Overflow"};}
     case 'E':return {L"Ajouter cette page aux favoris",L"Ctrl+D",L"",L"Bookmarks.AddPage"};
     case 'D':return {L"Téléchargements",L"",L"",L"Downloads"};
-    case 'P':return {privateWindow?L"Nouvelle fenêtre privée (fenêtre privée)":L"Nouvelle fenêtre privée",L"Ctrl+Maj+N",privateWindow?L"Cette fenêtre est privée : historique, cookies et session ne sont pas conservés":L"S'ouvre dans une fenêtre séparée ; historique, cookies et session n'y sont pas conservés",L"Private"};
+    case 'P':return {L"Nouvelle fenêtre privée",L"Ctrl+Maj+N",privateWindow?L"Cette fenêtre est privée : historique, cookies et session ne sont pas conservés":L"S'ouvre dans une fenêtre séparée ; historique, cookies et session n'y sont pas conservés",L"Private"};
     case 'S':return {L"Réglages",L"",L"",L"Settings"};
     default:return {L"",L"",L"",L""};
     }
@@ -3659,6 +3659,8 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     // The star: a toggle (On = this page is bookmarked) that also invokes.
     if(auto* r=region('K')){auto label=AccessibleButton('K');Node n;n.key='K';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('K');n.focusable=n.enabled;n.toggle=chrome.starred?2:1;nodes.push_back(std::move(n));}
     for(int id:{'Y','D','P','S'})button(id,AccessibleToolbar);
+    // Decision 7: the private chip is plain text for UIA (not a button: no focus, no Invoke).
+    if(auto* r=region(NativeChrome::Chrome::PrivateChipId)){Node n;n.key=AccessiblePrivateChip;n.role=Role::Text;n.name=L"Fenêtre de navigation privée";n.automationId=L"PrivateWindowChip";n.focusable=false;n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     // "Barre de favoris": every item of the bar root, those behind » listed off screen (still invocable).
     if(chrome.bandShown){
         Node band;band.key=AccessibleBandKey;band.role=Role::ToolBar;band.name=L"Barre de favoris";band.automationId=L"BookmarksBar";band.focusable=false;
