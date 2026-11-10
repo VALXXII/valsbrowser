@@ -121,6 +121,9 @@ void ModalTabChanged(){
 // JavaScript dialogs (A2/A3/A4): ICoreWebView2::ScriptDialogOpening with the engine's
 // default dialogs disabled (Settings::put_AreDefaultScriptDialogsEnabled(FALSE)).
 std::set<unsigned> scriptDialogsBlocked; // tab serials whose page asked to stop dialogs (A2 checkbox)
+// Dialogs already shown by the current document of a tab: from the second one the A2 « Empêcher ce
+// site d'ouvrir d'autres dialogues » check is offered. Both reset when the tab navigates.
+std::map<unsigned,int> scriptDialogCount;
 HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDialogOpeningEventArgs* a){
     if(!a)return S_OK;
     ICoreWebView2Deferral* raw=nullptr;if(FAILED(a->GetDeferral(&raw))||!raw)return S_OK; // no deferral: engine answers "cancel"
@@ -132,11 +135,13 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
     const std::wstring defaultText=TakeString([&]{LPWSTR s=nullptr;a->get_DefaultText(&s);return s;}());
     if(kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&scriptDialogsBlocked.count(t->serial)){Log(L"DIALOG suppressed for "+OriginLabel(uri));return S_OK;}
     const std::wstring origin=OriginLabel(uri);MD::Spec spec;
+    const bool repeated=kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&++scriptDialogCount[t->serial]>1;
     switch(kind){
-    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT:spec=MD::AlertSpec(origin,message);break;
-    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM:spec=MD::ConfirmSpec(origin,message);break;
-    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT:spec=MD::PromptSpec(origin,message,defaultText);break;
-    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD:spec=MD::BeforeUnloadSpec(origin,false);break;
+    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT:spec=MD::AlertSpec(origin,message,repeated);break;
+    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM:spec=MD::ConfirmSpec(origin,message,repeated);break;
+    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT:spec=MD::PromptSpec(origin,message,defaultText,repeated);break;
+    // « Actualiser ce site ? » when our reload (button, Ctrl+R, F5) started the unload.
+    case COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD:spec=MD::BeforeUnloadSpec(origin,t->refreshing);break;
     }
     Log(L"DIALOG kind="+std::to_wstring(kind)+L" "+origin);
     spec.modality=MD::Spec::Modality::Pointer; // the page's own input is not visible here: ring on Tab / arrows only
@@ -324,6 +329,7 @@ void ElementsNavigationStarting(const std::shared_ptr<Tab>& t){
     for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if((it->spec.kind==OP::Kind::Permission||it->spec.kind==OP::Kind::ClientCertificate)&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
     if(promptOpen&&(promptActive.spec.kind==OP::Kind::Permission||promptActive.spec.kind==OP::Kind::SiteStatus||promptActive.spec.kind==OP::Kind::ClientCertificate)){auto q=promptActive.tab.lock();if(!q||q==t){Log(L"PERMISSION navigation: popover closed");originPrompt.Abort();}}
     if(siteStates.erase(t->serial))Log(L"PERMISSION navigation: site state cleared");
+    scriptDialogCount.erase(t->serial);if(scriptDialogsBlocked.erase(t->serial))Log(L"DIALOG block lifted by navigation");
     if(t==Active())RefreshRequestChip();
 }
 // After a successful top-level navigation: the engine's saved decisions for this origin (the same
@@ -710,15 +716,21 @@ bool closeConfirmed=false;
 bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
     // Never asked for the updater's install handoff (closeWithoutPrompt) or a clear on exit
     // already under way: a question there would block the install / the shutdown.
-    if(!demo&&(closeConfirmed||smoke||halted||closeWithoutPrompt||exitClear!=ExitClear::Idle||!settings.confirmCloseTabs))return true;
+    if(!demo&&(closeConfirmed||smoke||halted||closeWithoutPrompt||exitClear!=ExitClear::Idle))return true;
     const int n=(int)std::count_if(pages.begin(),pages.end(),[](const std::shared_ptr<Tab>& t){return t&&!t->closed;});
-    if(!demo&&n<=1)return true;
+    // A6 variant: a download still running is cancelled by closing: always asked (independent of
+    // « Ne plus demander », which is about tabs).
+    const DL::Item* running=nullptr;for(const auto& d:downloads)if(d.state==DL::State::InProgress){running=&d;break;}
+    if(!demo&&!running&&(n<=1||!settings.confirmCloseTabs))return true;
     if(modalOpen&&!demo)return false; // one question at a time
-    auto spec=MD::CloseWindowSpec(std::max(n,2));spec.demo=demo;
+    auto spec=running&&!demo?MD::CloseWindowSpec(std::max(n,1),DL::FileName(running->path),running->total>0?std::to_wstring(std::min<std::int64_t>(100,running->received*100/running->total))+L" %":std::wstring()):MD::CloseWindowSpec(std::max(n,2));
+    if(running&&!demo&&n<=1)spec.title=L"Fermer la fenêtre ?";
+    spec.demo=demo;
     AskModal(std::move(spec),nullptr,[demo,result](const MD::Result& r){
         const bool ok=r.button==MD::AcceptButton;if(result)result(ok);
         if(demo)return;
         if(!ok){Log(L"TABS window close cancelled");return;}
+        if(r.checked&&settings.confirmCloseTabs){settings.confirmCloseTabs=false;SaveSettings();Log(L"TABS « Ne plus demander » saved");}
         closeConfirmed=true;PostMessageW(window,WM_CLOSE,0,0);
     });
     return false;
@@ -879,7 +891,7 @@ void ElementsTabClosed(const std::shared_ptr<Tab>& t){
     AbortTabModals(t);AbortTabPrompts(t);
     if(findSession.tab.lock()==t){if(findBar.Visible())findBar.Hide();FindDetach();}
     if(t->pageFullscreen){t->pageFullscreen=false;if(fullscreen.page){const bool was=InFullscreen();fullscreen.page=false;ApplyFullscreen(was);}}
-    scriptDialogsBlocked.erase(t->serial);
+    scriptDialogsBlocked.erase(t->serial);scriptDialogCount.erase(t->serial);
     siteStates.erase(t->serial);
 }
 // Keys pressed while one of our dialogs, prompts or the find bar has focus: their fields keep

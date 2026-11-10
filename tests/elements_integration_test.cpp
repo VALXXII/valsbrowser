@@ -274,6 +274,38 @@ int main(){
             const auto spec=DangerousDownloadSpec(L"C:\\x\\a.zip",L"https://s.exemple.test/a.zip",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY);
             Expect(spec.reason.find(L"stratégie")!=std::wstring::npos&&spec.link==L"https://s.exemple.test/a.zip"&&spec.detail==L"a.zip","blocked by policy: own reason; link kept for « Copier le lien »");
         }
+        // A2/A4/A6 real variants on the production modal surface.
+        {
+            MD::Dialog::Hooks mh;Expect(modal.Create(instance,window,cwd,std::move(mh)),"modal surface created");
+            auto finish=[&](int button){modal.Finish(button);run();modal.FinishAnimationsForTest();};
+            DialogArgs first;ScriptDialogOpening(live,&first);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"first dialog of a document: no blocking check");
+            finish(MD::AcceptButton);
+            DialogArgs second;ScriptDialogOpening(live,&second);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel==L"Empêcher ce site d'ouvrir d'autres dialogues","second dialog: A2 « Empêcher… » offered in the real path");
+            modal.ActivateForTest(MD::Dialog::SimpleCheckHit);finish(MD::CancelButton);
+            DialogArgs third;ScriptDialogOpening(live,&third);run();
+            Expect(third.deferral.completed==1&&third.accepted==0&&!modalOpen,"checked: the site's next dialogs are suppressed (answered « cancel »)");
+            ElementsNavigationStarting(live);run();
+            DialogArgs fourth;ScriptDialogOpening(live,&fourth);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"navigation lifts the block and restarts the count");
+            finish(MD::AcceptButton);
+            DialogArgs leave;leave.kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD;ScriptDialogOpening(live,&leave);run();
+            Expect(modalActive.spec.title==L"Quitter ce site ?","beforeunload: « Quitter » by default");
+            finish(MD::CancelButton);
+            live->refreshing=true;DialogArgs reload;reload.kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD;ScriptDialogOpening(live,&reload);run();
+            Expect(modalActive.spec.title==L"Actualiser ce site ?"&&modalActive.spec.buttons[1].label==L"Actualiser","beforeunload during our reload: « Actualiser »");
+            finish(MD::CancelButton);live->refreshing=false;
+            Expect(reload.deferral.completed==1&&reload.accepted==0,"« Rester sur la page »: unload refused, completed once");
+            // Closing with a download running (one tab): always asked, destructive wording.
+            NativeChrome::Downloads::Item d;d.id=777001;d.path=L"C:\\fixture\\rapport.pdf";d.state=NativeChrome::Downloads::State::InProgress;d.received=42;d.total=100;downloads.insert(downloads.begin(),d);
+            const bool allowed=CloseWindowAllowed(false,nullptr);run();
+            Expect(!allowed&&modalOpen&&modalActive.spec.kind==MD::Kind::CloseWindow&&!modalActive.spec.infos.empty()&&modalActive.spec.infos[0].text==L"rapport.pdf"&&modalActive.spec.infos[0].trailing==L"42 %","close with a running download: A6 download variant with the real file");
+            Expect(modalActive.spec.buttons[1].label==L"Fermer et annuler le téléchargement","close with a download: destructive action named");
+            finish(MD::CancelButton);
+            downloads.erase(downloads.begin());
+            {auto keep=pages;pages={live};Expect(CloseWindowAllowed(false,nullptr),"one tab, no download: closes without asking");pages=keep;}
+        }
         // Shutdown with a pending request: denied once, nothing left.
         PermissionArgs last(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&last);run();
         DisposeElementSurfaces();
