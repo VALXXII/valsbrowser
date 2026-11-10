@@ -739,7 +739,7 @@ public:
         brandTip=L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
         auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},brandTip.c_str()});
         // Tooltips carry the full title: compact tabs truncate or hide it.
-        tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back((title.empty()?L"Onglet":title)+L" - Ctrl+1...8 / Ctrl+9 (dernier) - Ctrl+Maj+PgPréc/PgSuiv pour déplacer - clic milieu pour fermer");}
+        tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back(title.empty()?L"Onglet":title);}
         const float viewRight=ShownViewRight();
         for(auto& item:tabFrame.items){const int i=item.index;if(i<0||i>=count)continue;
             auto surface=ShownSurface(item);if(surface.right-surface.left<.5f||surface.right<=strip.ViewLeft()||surface.left>=viewRight)continue;
