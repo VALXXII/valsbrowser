@@ -636,7 +636,9 @@ void ApplyFullscreen(bool wasFull){
         const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER);}
     else if(!full&&wasFull){if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
     Layout();
-    if(full)fullscreenHint.Show(MonitorScreenRect(),fullscreen.page);else fullscreenHint.Hide();
+    // C7: the pill names the real origin of the page that took the screen (« Cette page » only
+    // without one). No keyboard-lock variant here: WebView2 exposes no keyboard-lock signal.
+    if(full){auto t=Active();fullscreenHint.Show(MonitorScreenRect(),fullscreen.page,fullscreen.page&&t?OriginLabel(t->uri):std::wstring());}else fullscreenHint.Hide();
     RequestElementFrame();
 }
 void SetPageFullscreen(const std::shared_ptr<Tab>& t,bool on){
@@ -932,13 +934,15 @@ std::wstring DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     // E5: the engine's reason only; never « not saved » (a residual file may exist) and a failed
     // check is not a malware verdict.
     case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return L"Ce fichier a été signalé comme dangereux. Le téléchargement a été bloqué.";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"La vérification de sécurité de ce fichier n'a pas pu aboutir. Le téléchargement a été interrompu.";
-    default:return L"Une règle de sécurité de cet appareil a bloqué ce téléchargement.";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"Le téléchargement a été bloqué, car sa sécurité n'a pas pu être vérifiée.";
+    default:return L"Une règle de sécurité bloque ce téléchargement.";
     }
 }
 OP::Spec DangerousDownloadSpec(const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){
     OP::Spec s;s.kind=OP::Kind::DangerousDownload;s.origin=OriginLabel(uri);s.detail=DL::FileName(path);if(s.detail.empty())s.detail=L"Fichier";
-    s.reason=DangerText(reason);s.link=uri;s.keepAvailable=false;s.demo=false;return s;
+    s.reason=DangerText(reason);s.link=uri;
+    // Header by the real reason: « dangereux » only for FILE_MALICIOUS (same words as the list row, E6).
+    s.blockedTitle=reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS?L"Fichier dangereux":reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED?L"Vérification de sécurité impossible":L"Téléchargement bloqué";s.keepAvailable=false;s.demo=false;return s;
 }
 void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){
     auto t=Active();if(halted||!t)return;

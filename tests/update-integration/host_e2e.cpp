@@ -158,7 +158,7 @@ int wmain(int argc,wchar_t** argv){
         if(v.phase!=last.phase){phases.push_back(PhaseName(v.phase));Note(std::string("phase ")+PhaseName(v.phase)+" "+Utf8(v.version)+(v.error.empty()?"":" error="+Utf8(v.error)));}
         if(v.phase==BrowserUpdate::Phase::Downloading&&v.received>0&&v.total>0){if(!sawProgress){Note("progress "+std::to_string(v.received)+"/"+std::to_string(v.total));
             const auto s=SettingsVersion();Expect(s.text.rfind(AboutTitle()+L" · Téléch. ",0)==0&&!s.canCheck,"settings footer shows download progress, no check meanwhile");
-            Expect(AboutStatusNow().title.rfind(L"Téléchargement de la version ",0)==0&&!AboutStatusNow().detail.empty(),"« À propos » shows the real download progress");}sawProgress=true;}
+            Expect(AboutStatusNow().title.rfind(L"Téléchargement de la version ",0)==0&&!AboutStatusNow().detail.empty()&&!AboutStatusNow().hasButton,"« À propos » shows the real download progress");}sawProgress=true;}
         last=v;
         using P=BrowserUpdate::Phase;
         if(mode==L"install"){
@@ -195,7 +195,7 @@ int wmain(int argc,wchar_t** argv){
                 PostMessageW(window,WM_CLOSE,0,0);rechecked=false;Note("closing during download t="+std::to_string(GetTickCount64()-t0));
             }
         }else if(mode==L"offline"){
-            if(manualOffline&&v.phase==P::Error){Expect(true,"manual check reports the failure (Error with Retry)");
+            if(manualOffline&&v.phase==P::Error){Expect(true,"manual check reports the failure (Error with Retry)");Expect(updates.LastFailure()==UpdateCore::Engine::Failure::Check&&AboutStatusNow().title==L"Vérification impossible"&&AboutStatusNow().detail==L"La recherche de mises à jour a échoué. Réessayez."&&AboutStatusNow().button.label==L"Réessayer","E4: a failed check is named as such in « À propos »");
                 Expect(SettingsVersion().text==AboutTitle()+L" · Hors ligne"&&SettingsVersion().canCheck,"settings footer shows the failed check and allows another");PostMessageW(window,WM_CLOSE,0,0);}
         }else if(mode==L"norelease"){
             if(manualOffline&&v.phase==P::Checking)sawManualCheck=true;

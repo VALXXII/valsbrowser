@@ -367,6 +367,10 @@ struct Spec {
     RECT anchor{}; bool anchorRight = false;                   // Scope::Anchor
     std::vector<Field> fields;
     std::wstring checkLabel; bool checkValue = false, originCheck = false; // single row check (A2/A6; B0x style)
+    // A6 420 (Paper EX1-0 / EY9-0, comment c-npdt3g): key caps after the body (KKC-0: padding-left 4,
+    // gap 4; cap KKD-0 #FFFFFF0F radius 4, padding 2/6, 14/16 tabular at 50 %), and the single check
+    // on the actions row, left (EYG-0 space-between) when it fits beside the buttons.
+    std::vector<std::wstring> bodyKeys; bool checkInActions = false;
     // B06 (user override of Paper FJ5-0): the check row shares the head's lanes — box centred in the
     // 32 DIP tile lane, label on the description's left edge, same 14/18 regular role, 70 % white.
     bool checkInHeadLane = false;
@@ -561,6 +565,26 @@ private:
     // With a 32 DIP tile and a regular (not large) title, the title's first line is centred on the tile.
     float TileTitleDrop() const { return spec_.tileGlyph && !spec_.largeTitle && !spec_.title.empty() ? (32 - TitleStyle().line) / 2 : 0; }
     DialogKit::Style TitleStyle() const { auto s = spec_.largeTitle ? DialogKit::Type::aboutTitle : DialogKit::Type::title; if (spec_.largeTitle) s.trackingEm = -.02f; return s; }
+    static constexpr DialogKit::Style KeyCapStyle{14, 16, false, 0, true};
+    float KeyCapWidth(const std::wstring& k) { return std::ceil(kit_.Width(k, KeyCapStyle)) + 12; }
+    float BodyKeysWidth() { if (spec_.bodyKeys.empty()) return 0; float w = 4; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) w += (i ? 4 : 0) + KeyCapWidth(spec_.bodyKeys[i]); return w; }
+    // The caps follow the body on its line when it is one line and they fit, else start the next line.
+    bool BodyKeysInline(float tw) { return kit_.Height(spec_.body, DialogKit::Type::body, tw) <= DialogKit::Type::body.line && std::ceil(kit_.Width(spec_.body, DialogKit::Type::body)) + BodyKeysWidth() <= tw; }
+    void DrawBodyKeys(float x, float y) {
+        x += 4;
+        for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) {
+            const float w = KeyCapWidth(spec_.bodyKeys[i]);
+            kit_.Fill({x, y, x + w, y + 20}, 4, DialogKit::White(0x0F / 255.f));
+            kit_.Text(spec_.bodyKeys[i], KeyCapStyle, x + 6, y + 2, w - 12 + 1, DialogKit::White(.5f));
+            x += w + 4;
+        }
+    }
+    float CheckInActionsWidth() { return 16 + 8 + std::ceil(kit_.Width(spec_.checkLabel, DialogKit::Type::detail)) + 8; }
+    bool CheckOnActionsRow() {
+        if (!spec_.checkInActions || spec_.checkLabel.empty() || spec_.buttons.empty() || spec_.stretchButtons || spec_.danger.shown) return false;
+        float buttons = 0; for (size_t i = 0; i < spec_.buttons.size(); ++i) buttons += (i ? P::buttonGap : 0) + ButtonWidth(spec_.buttons[i]);
+        return CheckInActionsWidth() + 8 + buttons <= ContentWidth();
+    }
     float HeadHeight() {
         const float cw = ContentWidth();
         if (spec_.appTile) return std::max(48.f, 2 + DialogKit::Type::aboutTitle.line + 4 + kit_.Height(spec_.body, DialogKit::Type::tabular, cw - 48 - 16 - 24 - 16));
@@ -569,6 +593,7 @@ private:
         if (!spec_.title.empty()) h += kit_.Height(spec_.title, TitleStyle(), tw);
         if (!spec_.subtitle.empty()) h += (h > 0 ? (spec_.largeTitle ? 8 : 4) : 0) + kit_.Height(spec_.subtitle, DialogKit::Type::detail, tw);
         if (!spec_.body.empty()) h += (h > 0 ? 4 : 0) + kit_.Height(spec_.body, DialogKit::Type::body, tw);
+        if (!spec_.bodyKeys.empty() && !BodyKeysInline(tw)) h += 4 + 20;
         if (!spec_.footnote.empty() && !spec_.appTile) h += 8 + kit_.Height(spec_.footnote, DialogKit::Type::body, tw);
         if (spec_.tileGlyph) h = std::max(h + TileTitleDrop(), 32.f);
         if (spec_.closeButton) h = std::max(h, 24.f);
@@ -665,7 +690,8 @@ private:
             if (manage) boxes_.push_back({ManageHit, {left, ry + 3, right, ry + 35}});
             actionsLift = false;
         }
-        if (!spec_.checkLabel.empty()) {
+        const bool checkOnActions = CheckOnActionsRow();
+        if (!spec_.checkLabel.empty() && !checkOnActions) {
             if (LaneCheck()) {
                 const float lane = SecondaryLane().text; const float h = std::max(DialogKit::Type::detail.line, kit_.Height(spec_.checkLabel, DialogKit::Type::detail, cw - lane));
                 const auto r = next(B::Check, 0, h);
@@ -691,8 +717,12 @@ private:
             if (!spec_.buttons.empty()) LayoutActions(r.bottom - 12 - P::button, r.left + 12, r.right - 12);
         } else if (!spec_.buttons.empty()) {
             const bool lift = actionsLift && !spec_.appTile && !Anchored() && !spec_.stretchButtons && !spec_.softButtons;
-            const auto r = next(B::Actions, 0, (lift ? P::actionsTop : 0) + P::button);
+            const auto r = next(B::Actions, 0, (lift && !checkOnActions ? P::actionsTop : 0) + P::button);
             LayoutActions(r.bottom - P::button, left, right);
+            if (checkOnActions) {   // EYG-0: the check sits left on the buttons' row (KK7-0 h 32, gap 8)
+                const D2D1_RECT_F c{left, r.bottom - P::button, left + CheckInActionsWidth(), r.bottom};
+                blocks_.push_back({B::Check, 0, c}); boxes_.push_back({SimpleCheckHit, c});
+            }
         }
         height_ = y + Pad();
     }
@@ -1087,7 +1117,9 @@ private:
             const float tx = HeadLeft(), tw = HeadTextWidth(); y += TileTitleDrop();
             if (!spec_.title.empty()) { kit_.Text(spec_.title, TitleStyle(), tx, y, tw, DialogKit::White(1), true); y += kit_.Height(spec_.title, TitleStyle(), tw); }
             if (!spec_.subtitle.empty()) { y += spec_.largeTitle ? 8 : 4; kit_.Text(spec_.subtitle, DialogKit::Type::detail, tx, y, tw, DialogKit::White(P::origin), true); y += kit_.Height(spec_.subtitle, DialogKit::Type::detail, tw); }
-            if (!spec_.body.empty()) { y += 4; kit_.Text(spec_.body, DialogKit::Type::body, tx, y, tw, DialogKit::White(P::body), true); y += kit_.Height(spec_.body, DialogKit::Type::body, tw); }
+            if (!spec_.body.empty()) { y += 4; kit_.Text(spec_.body, DialogKit::Type::body, tx, y, tw, DialogKit::White(P::body), true);
+                if (!spec_.bodyKeys.empty()) { if (BodyKeysInline(tw)) DrawBodyKeys(tx + std::ceil(kit_.Width(spec_.body, DialogKit::Type::body)), y); else DrawBodyKeys(tx - 4, y + kit_.Height(spec_.body, DialogKit::Type::body, tw) + 4); }
+                y += kit_.Height(spec_.body, DialogKit::Type::body, tw); if (!spec_.bodyKeys.empty() && !BodyKeysInline(tw)) y += 4 + 20; }
             if (!spec_.footnote.empty()) { y += 8; kit_.Text(spec_.footnote, DialogKit::Type::body, tx, y, tw, DialogKit::White(P::muted), true); }
         }
         if (spec_.closeButton) {
@@ -1381,7 +1413,8 @@ private:
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!open_) return nodes;
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = AccessibleName();
-        g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle; if (!error_.empty()) g.help = error_;
+        g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle;
+        if (spec_.message.empty() && !spec_.body.empty() && !spec_.bodyKeys.empty()) { g.help += L" "; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) g.help += (i ? L" + " : L"") + spec_.bodyKeys[i]; g.help += L"."; } if (!error_.empty()) g.help = error_;
         g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
         auto add = [&](int key, const std::wstring& name, D2D1_RECT_F r, bool enabled, const std::wstring& id = L"") { Accessibility::Node n; n.key = key; n.parent = GroupKey; n.name = name; n.bounds = ScreenOf(r); n.enabled = enabled; n.automationId = id; nodes.push_back(n); return nodes.size() - 1; };
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].reveal) { const auto at = add(RevealHit(i), L"Afficher le mot de passe", Find(RevealHit(i)), !busy_); nodes[at].toggle = i < revealed_.size() && revealed_[i] ? 2 : 1; }
@@ -1641,9 +1674,10 @@ inline Spec ClearDataSpec(std::vector<std::wstring> details = {}, int period = 1
 // the action turns destructive.
 inline Spec CloseWindowSpec(int tabs, const std::wstring& download = L"", const std::wstring& progress = L"") {
     Spec s; s.kind = Kind::CloseWindow; s.scope = Scope::Window; s.automationId = L"CloseWindow";
+    s.width = 420;   // Paper EY9-0 (comment c-npdt3g): this confirmation only; other dialogs keep 400
     s.title = L"Fermer " + std::to_wstring(tabs) + L" onglets ?";
     if (download.empty()) {
-        s.body = L"Rouvrez-les depuis l'historique ou avec Ctrl + Maj + T."; s.checkLabel = L"Ne plus demander";
+        s.body = L"Rouvrez-les depuis l'historique ou avec"; s.bodyKeys = {L"Ctrl", L"Maj", L"T"}; s.checkLabel = L"Ne plus demander"; s.checkInActions = true;
         s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, L"Fermer la fenêtre", Role::Primary, true, false, false, L"DialogCloseWindow")};
     } else {
         s.body = L"Un téléchargement est en cours et sera annulé."; s.infos.push_back({download, progress});

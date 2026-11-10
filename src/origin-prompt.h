@@ -49,6 +49,7 @@ struct Spec {
     std::wstring frame;                  // ExternalApp: third-party frame host (no remembering offered)
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
     std::wstring reason;                 // DangerousDownload: « Microsoft Defender SmartScreen le signale… »
+    std::wstring blockedTitle;           // DangerousDownload card header by engine reason (empty: demo « fichier dangereux »)
     bool insecure = false;               // BasicAuth over plain HTTP
     // DangerousDownload: « Conserver quand même… » only where keeping is real (the sandbox demo):
     // WebView2 has no API to override a SmartScreen / security verdict (no danger type, no keep).
@@ -174,7 +175,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     case Kind::DangerousDownload: {
         m.automationId = L"DangerousDownload"; m.scope = Scope::Anchor; m.anchorRight = true; m.width = 360; m.gap = 12;
         m.title = L"Téléchargements";
-        m.danger = {s.detail, L"Bloqué : fichier dangereux", s.reason.empty() ? L"Microsoft Defender SmartScreen le signale comme malveillant. Il n'a pas été ouvert." : s.reason, true};
+        m.danger = {s.detail, s.blockedTitle.empty() ? L"Bloqué : fichier dangereux" : s.blockedTitle, s.reason.empty() ? L"Microsoft Defender SmartScreen le signale comme malveillant. Il n'a pas été ouvert." : s.reason, true};
         m.stretchButtons = false;
         Button del = button(Id::Accept, L"Supprimer le fichier", Role::Danger, false, false, true, L"DownloadDelete");
         Button more = button(Id::More, L"Plus d'options", Role::Quiet, false, false, false, L"DownloadMore"); more.closes = false;

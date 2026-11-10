@@ -285,6 +285,13 @@ int main(){
             for(auto r:{COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY})
                 Expect(DangerText(r).find(L"enregistré")==std::wstring::npos,"E5: no claim that the file was not saved");
             Expect(DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED).find(L"dangereux")==std::wstring::npos,"E5: security check failure is not called dangerous");
+            {
+                auto head=[](COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){return OP::Build(DangerousDownloadSpec(L"C:/x/a.zip",L"https://s.exemple.test/a.zip",r),true).danger.subtitle;};
+                Expect(head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS)==L"Fichier dangereux"&&head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED)==L"Vérification de sécurité impossible"&&head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY)==L"Téléchargement bloqué"
+                    &&DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS)==L"Ce fichier a été signalé comme dangereux. Le téléchargement a été bloqué."
+                    &&DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED)==L"Le téléchargement a été bloqué, car sa sécurité n'a pas pu être vérifiée."
+                    &&DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY)==L"Une règle de sécurité bloque ce téléchargement.","B07: card header follows the real engine reason");
+            }
             // E6: three distinct French reasons on the list row, other failures unchanged.
             Expect(DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS))==L"Bloqué · fichier dangereux"
                 &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · vérification de sécurité impossible"

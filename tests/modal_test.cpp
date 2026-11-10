@@ -208,6 +208,35 @@ int wmain(int argc, wchar_t** argv) {
         Check(a.title == L"Fermer 12 onglets ?" && a.checkLabel == L"Ne plus demander" && a.buttons[1].role == Modal::Role::Primary, "close window: Paper text");
         auto b = Modal::CloseWindowSpec(3, L"orca-windows-setup.exe", L"50.4/200.0MB");
         Check(b.checkLabel.empty() && b.buttons[1].role == Modal::Role::Danger && b.infos.size() == 1, "close window + download: destructive, no check");
+        // A6 420 (Paper EY9-0, comment c-npdt3g): width, caps after the body, check on the actions row.
+        Check(a.width == 420 && b.width == 420 && Modal::ClearDataSpec().width == 0, "close window: 420 DIP for this confirmation only");
+        Check(a.body == L"Rouvrez-les depuis l'historique ou avec" && a.bodyKeys == std::vector<std::wstring>{L"Ctrl", L"Maj", L"T"} && a.checkInActions, "close window: Ctrl Maj T as key caps");
+        {
+            int calls = 0; Modal::Result got;
+            d.Show(a, Area(), [&](const Modal::Result& r) { ++calls; got = r; });
+            const auto box = d.BoxForTest(D::SimpleCheckHit), cancel = d.BoxForTest(D::ButtonHit(0)), close = d.BoxForTest(D::ButtonHit(1));
+            Check(d.WidthForTest() == 420, "close window: panel 420 DIP");
+            Check(box.top == cancel.top && box.bottom == cancel.bottom && box.bottom - box.top == 32 && box.left == 16 && box.right + 8 <= cancel.left && close.right == 420 - 16, "close window: check left on the buttons' row (EYG-0), buttons right");
+            Check(d.HeightForTest() <= 126 + 0.5f && d.HeightForTest() >= 124 - 0.5f, "close window: 420x126 like EY9-0 (one body line, caps inline)");
+            Check(d.FocusForTest() == D::ButtonHit(0), "close window: focus on Annuler");
+            for (UINT dpi : {96u, 144u, 192u}) Check(d.RenderForTest(root + L"/build/popups/a6-close-420-" + std::to_wstring(dpi) + L".png", dpi), "close window 420 render sample");
+            d.ActivateForTest(D::SimpleCheckHit); d.PaintForTest();
+            Check(d.Snapshot().checked && calls == 0, "close window: the check toggles in place");
+            d.ActivateForTest(D::ButtonHit(1));
+            Check(calls == 1 && got.button == Modal::AcceptButton && got.checked, "close window: « Fermer la fenêtre » with « Ne plus demander »");
+            d.FinishAnimationsForTest();
+            const std::wstring longName = L"un-fichier-au-nom-vraiment-tres-long-pour-verifier-le-retour-a-la-ligne-et-la-coupure-2026-11-10.exe";
+            d.Show(Modal::CloseWindowSpec(3, longName, L"50.4/200.0MB"), Area(), [](const Modal::Result&) {});
+            const auto keep = d.BoxForTest(D::ButtonHit(0)), destroy = d.BoxForTest(D::ButtonHit(1));
+            Check(d.WidthForTest() == 420 && keep.left >= 16 && destroy.right <= 420 - 16 && keep.right <= destroy.left, "close window + long file name: buttons fit, no clipping");
+            Check(d.RenderForTest(root + L"/build/popups/a6-close-420-download-long-144.png", 144), "close window + download render sample");
+            d.PaintForTest(); d.Abort(); d.FinishAnimationsForTest();
+            Modal::Spec one = Modal::CloseWindowSpec(2); one.checkLabel = L"Ne plus demander pour cette fenêtre ni pour les autres fenêtres de ce profil";
+            d.Show(one, Area(), [](const Modal::Result&) {});
+            const auto row = d.BoxForTest(D::SimpleCheckHit), btn = d.BoxForTest(D::ButtonHit(0));
+            Check(row.bottom <= btn.top, "close window: a check too long for the row falls back above the buttons");
+            d.PaintForTest(); d.Abort(); d.FinishAnimationsForTest();
+        }
         auto c = Modal::OpenManyTabsSpec(61, L"Archives 2025", 40, 88);
         Check(c.title == L"Ouvrir 40 des 61 favoris ?" && c.buttons[1].label == L"Ouvrir 40 onglets", "open many tabs: limit wording");
         for (auto& s : {Modal::AlertSpec(L"a", L"b"), Modal::ConfirmSpec(L"a", L"b"), Modal::PromptSpec(L"a", L"b", L"c"), Modal::BeforeUnloadSpec(L"a", false), Modal::ClearDataSpec(), a, b, c, Modal::DeleteBookmarksSpec(2), Modal::OpenManyTabsSpec(34, L"Veille design")}) {
