@@ -2405,6 +2405,8 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
             auto nav=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* a)->HRESULT{LPWSTR u=nullptr;if(SUCCEEDED(a->get_Uri(&u))&&u){std::wstring s(u);CoTaskMemFree(u);if(!E2EAllowedUri(s)){a->put_Cancel(TRUE);Log(L"E2E BOUND refused navigation "+s);}}else a->put_Cancel(TRUE);return S_OK;});
             guarded=guarded&&SUCCEEDED(t->view->add_NavigationStarting(nav,&tk))&&SUCCEEDED(t->view->add_FrameNavigationStarting(nav,&tk));nav->Release();
             guarded=guarded&&SUCCEEDED(t->view->AddWebResourceRequestedFilter(L"*",COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL));
+            {Com<ICoreWebView2_22> v22;guarded=guarded&&SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_22,(void**)&v22.p))&&v22.p   // review P-L2: service-worker and shared-worker requests too
+                &&SUCCEEDED(v22->AddWebResourceRequestedFilterWithRequestSourceKinds(L"*",COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL));}
             auto res=Callback<ICoreWebView2WebResourceRequestedEventHandler,ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs*>([](ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs* a)->HRESULT{
                 Com<ICoreWebView2WebResourceRequest> rq;LPWSTR u=nullptr;std::wstring s;if(SUCCEEDED(a->get_Request(&rq.p))&&rq.p&&SUCCEEDED(rq->get_Uri(&u))&&u){s=u;CoTaskMemFree(u);}
                 if(!E2EAllowedUri(s)){

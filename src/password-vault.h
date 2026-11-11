@@ -182,7 +182,8 @@ public:
         const std::string t = trailer.substr(4, trailer.size() - 5); const auto tab = t.find('\t');
         if (tab == std::string::npos) return fail();
         if (!Digits(t.substr(0, tab))) return fail();
-        const std::uint64_t count = std::stoull(t.substr(0, tab)); const std::string dg = Digest(body);
+        std::uint64_t count = 0; try { count = std::stoull(t.substr(0, tab)); } catch (...) { return fail(); }
+        const std::string dg = Digest(body);
         if (count > Limit || dg.empty() || t.substr(tab + 1) != dg) return fail();   // an empty digest (hash failure) never matches
         std::istringstream lines(body.substr(first + 1)); std::string line; bool bad = false;
         while (std::getline(lines, line)) {
@@ -192,7 +193,7 @@ public:
             Entry e; std::string o, u;
             // Strict fields (review low): exact hex/decimal, canonical base64, valid UTF-8 for a non-empty user.
             if (f.size() != 6 || !Hex(f[0]) || !Digits(f[1]) || !Digits(f[2]) || !StrictBase64(f[3]) || !StrictBase64(f[4]) || !StrictBase64(f[5])) { bad = true; continue; }
-            e.id = std::stoull(f[0], nullptr, 16); e.created = std::stoll(f[1]); e.updated = std::stoll(f[2]);
+            try { e.id = std::stoull(f[0], nullptr, 16); e.created = std::stoll(f[1]); e.updated = std::stoll(f[2]); } catch (...) { bad = true; continue; }   // review V2-L2: an out-of-range number is damage, never a crash
             if (!Unbase64(f[3], o) || !Unbase64(f[4], u) || !Unbase64(f[5], e.blob)) { bad = true; continue; }
             e.origin = Wide(o); e.user = Wide(u);
             if (!u.empty() && e.user.empty()) { bad = true; continue; }
@@ -238,7 +239,7 @@ private:
 namespace Vault {
 inline ProfileStore::Result Commit(const std::wstring& dataDir, const std::wstring& path, Store& base, Store& mine, DWORD timeoutMs = 5000) {
     return ProfileStore::Commit<Store>(dataDir, path, base, mine, [](const Store& b, const Store& m, const Store& t) { return Store::Merge(b, m, t); }, timeoutMs,
-                                       {Store::Header}, false, [](const Store& s) { return s.Entries().size() <= Store::Limit; });
+                                       {Store::Header}, false, [](const Store& s) { return s.Entries().size() <= Store::Limit && !Store::Digest(Store::Header).empty(); });   // V2-L4: no file without a digest
 }
 // ---- Fill bridge guards -------------------------------------------------------------------------
 // What our native UI captured when the user asked to fill (click on the vault control), and what

@@ -171,6 +171,7 @@ int main() {
         // Strict fields: a leading '+' or a non-canonical base64 is refused.
         { const std::string body = "browser-passwords 2\n1\t+1\t1\taHR0cHM6Ly9hLmV4ZW1wbGUudGVzdA==\teA==\tYWFhYQ==\n"; std::istringstream in(body + "end\t1\t" + Store::Digest(body) + "\n"); bool d = false; Store::Read(in, &d); Check(d, "v2: lenient numbers (leading +) are refused"); }
     }
+    { const std::string body = "browser-passwords 2\n1\t9999999999999999999\t1\taHR0cHM6Ly9hLmV4ZW1wbGUudGVzdA==\teA==\tYWFhYQ==\n"; std::istringstream in(body + "end\t1\t" + Store::Digest(body) + "\n"); bool d = false; Store::Read(in, &d); Check(d, "V2-L2: an out-of-range number is damage, never a crash"); }
     std::printf(failures ? "FAIL password vault: %d\n" : "PASS password vault: DPAPI per origin, file, merge, guards, escaping\n", failures);
     return failures ? 1 : 0;
 }

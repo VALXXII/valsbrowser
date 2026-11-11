@@ -49,22 +49,25 @@ try {
   # 3 client certificate (this run only)
   $m.status = 'creating'; Save-Manifest $m
   $cert = New-SelfSignedCertificate -CertStoreLocation Cert:\CurrentUser\My -Subject $subject -KeyExportPolicy NonExportable -KeyUsage DigitalSignature -KeyAlgorithm RSA -KeyLength 2048 -NotAfter (Get-Date).AddHours(2) -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2') -Provider 'Microsoft Software Key Storage Provider'
-  $m.thumbprint = $cert.Thumbprint; $m.status = 'created'
+  $m.thumbprint = $cert.Thumbprint; $m.status = 'created'; Save-Manifest $m   # review: recorded at once, before anything else can be interrupted
   $info = & certutil.exe -user -store My $cert.Thumbprint 2>$null   # this run's certificate only (exact thumbprint)
   $kc = ($info | Select-String 'Unique container name:\s*(.+)$').Matches | Select-Object -First 1
   if ($kc) { $m.keyContainer = $kc.Groups[1].Value.Trim() }
   Check ([bool]$m.keyContainer -and (Test-Path (Join-Path $env:APPDATA "Microsoft\Crypto\Keys\$($m.keyContainer)"))) 'the run''s key file is located exactly (for its verified removal)'
   Save-Manifest $m
-  Check ($cert.PrivateKey -eq $null -or $true) "client certificate created for this run only ($subject, key non-exportable)"
+  $pfx = Join-Path $pki 'export-attempt.pfx'; $exportable = $true
+  try { Export-PfxCertificate -Cert $cert -FilePath $pfx -Password (ConvertTo-SecureString 'x' -AsPlainText -Force) -ErrorAction Stop | Out-Null } catch { $exportable = $false }
+  Remove-Item $pfx -ErrorAction SilentlyContinue
+  Check (-not $exportable -and $cert.HasPrivateKey) "client certificate created for this run only ($subject); its private key cannot be exported"
   Export-Certificate -Cert $cert -FilePath "$pki\client.cer" -Type CERT | Out-Null
   & $o x509 -inform DER -in "$pki\client.cer" -out "$pki\ca.crt" 2>&1 | Out-Null
-  # The pin exists only in the test host: the dev/release build has no trace of it.
-  function Has-Marker([string]$f) { $b = [IO.File]::ReadAllBytes($f); $u = [Text.Encoding]::Unicode; return ($u.GetString($b).Contains('E2E FIXTURE PIN') -or $u.GetString($b, 1, $b.Length - 1).Contains('E2E FIXTURE PIN')) }
-  Check (-not (Has-Marker (Join-Path $root 'build/real-integration-check/browser.exe')) -and (Has-Marker (Join-Path $root 'build/e2e-mtls-host/browser.exe'))) 'the fixture pin exists only in the test host binary, not in the dev/release browser'
   # Review P-M1: the test host is (re)built here from the current sources, so the run proves this code.
   $hostDir = Join-Path $root 'build\e2e-mtls-host'; New-Item -ItemType Directory -Force $hostDir | Out-Null
   & (Join-Path $root 'tools\w64devkit\bin\g++.exe') -std=c++17 -O1 -w -static -municode -mwindows -DTVG_STATIC '-Ideps/thorvg-1.1.3/inc' -Isrc '-Ideps/webview2/build/native/include' tests/e2e/mtls_host.cpp src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o "$hostDir\browser.exe" -lole32 -luuid -lcomctl32 -lshlwapi -lgdi32 -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -lwinhttp -lbcrypt -lshell32 -luser32 -lkernel32 -ladvapi32 -lcrypt32 -loleaut32
   if ($LASTEXITCODE -ne 0) { throw 'mTLS test host build failed' }
+  # The pin exists only in the test host: the dev/release build has no trace of it.
+  function Has-Marker([string]$f) { $b = [IO.File]::ReadAllBytes($f); $u = [Text.Encoding]::Unicode; return ($u.GetString($b).Contains('E2E FIXTURE PIN') -or $u.GetString($b, 1, $b.Length - 1).Contains('E2E FIXTURE PIN')) }
+  Check (-not (Has-Marker (Join-Path $root 'build/real-integration-check/browser.exe')) -and (Has-Marker (Join-Path $root 'build/e2e-mtls-host/browser.exe'))) 'the fixture pin exists only in the test host binary, not in the dev/release browser'
   # 4 host + server
   $hostDir = Join-Path $root 'build\e2e-mtls-host'
   foreach ($n in 'WebView2Loader.dll') { Copy-Item (Join-Path $root "build\real-integration-check\$n") $hostDir -Force }
@@ -102,6 +105,7 @@ try {
   Fresh-Profile; Start-Process -FilePath $exe -WorkingDirectory $hostDir; Navigate
   $row = $null; for ($i = 0; $i -lt 40 -and !$row; $i++) { Start-Sleep -Milliseconds 500; $row = Find-InHost "browser-e2e-mtls-$runId" '' }
   $log = Get-Content (Join-Path $hostDir 'prototype.log') -Raw -ErrorAction SilentlyContinue
+  "     stage 4 host log: $((($log -split "`n") | Where-Object { $_ -match 'E2E|CERTIFICATE|WEBVIEW2|NAVIGATION' }) -join ' | ')"
   Check ($log -match 'E2E FIXTURE PIN allowed') 'the pinned fixture server certificate was allowed by the test host only'
   Check ($log -match "CERTIFICATE requested 127\.0\.0\.1:$port candidates=1") 'a real ClientCertificateRequested with exactly this run''s certificate'
   Check ([bool]$row) 'our B08 lists the run''s certificate (UIA)'

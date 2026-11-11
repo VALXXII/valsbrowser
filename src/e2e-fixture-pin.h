@@ -32,7 +32,9 @@ inline Manifest Load(const std::wstring& path) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         const auto eq = line.find('='); if (eq == std::string::npos) continue;
         const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-        if (k == "host") m.host.assign(v.begin(), v.end()); else if (k == "port") m.port = std::atoi(v.c_str()); else if (k == "sha256") m.sha256 = v;
+        if (k == "host") m.host.assign(v.begin(), v.end());
+        else if (k == "port") { if (v.empty() || v.size() > 5 || v[0] == '0') return Manifest{}; for (char c : v) if (c < '0' || c > '9') return Manifest{}; m.port = std::atoi(v.c_str()); }   // review P-L3: exact digits
+        else if (k == "sha256") { for (char c : v) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return Manifest{}; m.sha256 = v; }
     }
     m.loaded = m.host == L"127.0.0.1" && m.port > 1024 && m.port < 65536 && m.sha256.size() == 64;
     return m;
