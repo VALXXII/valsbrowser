@@ -1140,7 +1140,7 @@ void SaveHistory(){
     if(smoke||privateWindow)return;
     const auto r=ProfileStore::CommitWith<AddressBar::History>(dataDir,HistoryFile(),historyBase,history,
         [](std::istream& in,bool*){return AddressBar::History::Read(in);},[](std::ostream& out,const AddressBar::History& h){h.Write(out);},
-        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);});
+        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);},5000,{"browser-history 1"});
     if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"HISTORY save failed");
 }
 // Result pages of the search engines are not suggested back: typing "git" should
@@ -1283,6 +1283,7 @@ void SaveDownloads(){
     if(smoke||privateWindow)return;
     ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"DOWNLOADS profile busy");return;}
     std::string bytes;if(!ProfileStore::ReadAll(downloadsFile,bytes)){Log(L"DOWNLOADS save failed (read)");return;}
+    {const auto head=ProfileStore::FirstLine(bytes);if(!bytes.empty()&&head!="browser-downloads 2"&&head!="browser-downloads 1"){Log(L"DOWNLOADS unknown file format: not overwritten");return;}} // decision S3
     int ignored=0;std::istringstream in(bytes);const auto theirs=DL::ReadHistory(in,ignored);
     auto merged=DL::MergeHistory(downloadsBase,downloads,theirs,nextDownloadId);
     std::ostringstream out;DL::WriteHistory(out,merged);
@@ -1566,7 +1567,7 @@ void SaveSettings(){
     auto text=[](const BrowserSettings::State& s){std::ostringstream o;BrowserSettings::Write(o,s);return o.str();};
     const auto r=ProfileStore::CommitWith<BrowserSettings::State>(dataDir,settingsFile,settingsBase,settings,
         [](std::istream& in,bool*){return BrowserSettings::Read(in);},[](std::ostream& out,const BrowserSettings::State& s){BrowserSettings::Write(out,s);},
-        [&text](const BrowserSettings::State& b,const BrowserSettings::State& m,const BrowserSettings::State& t){std::istringstream in(ProfileStore::MergeKeyValues(text(b),text(m),text(t)));return BrowserSettings::Read(in);});
+        [&text](const BrowserSettings::State& b,const BrowserSettings::State& m,const BrowserSettings::State& t){std::istringstream in(ProfileStore::MergeKeyValues(text(b),text(m),text(t)));return BrowserSettings::Read(in);},5000,{"browser-settings 1"});
     if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"SETTINGS save failed");
 }
 void LoadSettings(){if(smoke)return;std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(settingsFile,bytes);}std::istringstream in(bytes);settings=BrowserSettings::Read(in);settingsBase=settings;}
@@ -3000,12 +3001,13 @@ void SaveBookmarks(){
     // Transaction under the profile lock: this window's changes (base → mine) replayed onto the file as
     // it is now, written atomically; the result (with the other windows' changes) becomes the state.
     std::map<BM::Id,BM::Id> remap;const BM::Store before=bookmarks;
-    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);});
+    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},5000,{"browser-bookmarks 1"});
     const bool ok=r==ProfileStore::Result::Written||r==ProfileStore::Result::Unchanged;
     if(!remap.empty()){bookmarkUndo.clear();Log(L"BOOKMARKS new ids remapped (another window used them)");}
     if(ok&&bookmarks!=before){if(!bookmarks.Find(lastFolder))lastFolder=BM::BarRoot;Defer([]{BookmarksChanged();});Log(L"BOOKMARKS merged with another window's changes");}
     if(ok){if(bookmarksSaveFailed){bookmarksSaveFailed=false;Log(L"BOOKMARKS saved again");}return;}
     if(r==ProfileStore::Result::Busy)Log(L"BOOKMARKS profile busy (lock timeout)");
+    if(r==ProfileStore::Result::UnknownFormat)Log(L"BOOKMARKS file of an unknown format: not overwritten");
     // The data stays in memory; a sticky toast offers to try again.
     Log(L"BOOKMARKS save failed");bookmarksSaveFailed=true;
     if(bookmarkToast.Window())bookmarkToast.Show(L"Favoris non enregistrés sur le disque",[]{SaveBookmarks();},motion.ReducedMotion(),L"Réessayer",true);
@@ -3943,7 +3945,7 @@ case WM_TIMER:
     if(w==ExitClearTimerId){Log(L"SETTINGS clear on exit: timed out, closing");FinishExitClear();return 0;}
     if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
-case WM_CLOSE:if(!CloseWindowAllowed())return 0;SaveSession();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
+case WM_CLOSE:if(!CloseWindowAllowed())return 0;SaveSession();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
 case WM_DESTROY:accessibility.Detach();DisposeElementSurfaces();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process

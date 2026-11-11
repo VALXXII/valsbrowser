@@ -67,28 +67,11 @@ inline std::wstring ReserveName(const std::wstring& dataDir, const std::wstring&
 inline bool Reserved(const std::wstring& dataDir, const std::wstring& id) {
     HANDLE h = OpenMutexW(SYNCHRONIZE, FALSE, ReserveName(dataDir, id).c_str()); if (!h) return false; CloseHandle(h); return true;
 }
-// Review S2: a window closing among others does not delete its session at once: it is renamed
-// « closed-<id> ». If the other windows close right after (taskbar « Fermer toutes les fenêtres »,
-// sign-out), the whole group comes back at the next start; a window closed long before the last one
-// stays closed (deleted then).
-constexpr int CloseTogetherSeconds = 10;
-inline void ReviveClosedTogether(const std::wstring& dataDir) {
-    std::error_code ec; std::filesystem::file_time_type last{}; bool any = false;
-    for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec)) {
-        const std::wstring id = e.path().filename().wstring();
-        if (id.rfind(L"closed-", 0) == 0 || !e.is_regular_file(ec)) continue;
-        if (!Live(dataDir, id)) { const auto t = e.last_write_time(ec); if (!any || t > last) last = t; any = true; }
-    }
-    if (!any)   // every window was closed « among others » (they all closed at once): the newest closing is the reference
-        for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec))
-            if (e.path().filename().wstring().rfind(L"closed-", 0) == 0) { const auto t = e.last_write_time(ec); if (!any || t > last) last = t; any = true; }
-    for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec)) {
-        const std::wstring name = e.path().filename().wstring();
-        if (name.rfind(L"closed-", 0) != 0) continue;
-        const auto t = e.last_write_time(ec);
-        if (any && t + std::chrono::seconds(CloseTogetherSeconds) >= last) MoveFileExW(e.path().c_str(), File(dataDir, name.substr(7)).c_str(), MOVEFILE_WRITE_THROUGH);
-        else DeleteFileW(e.path().c_str());
-    }
+// Leftovers of an earlier build that set closed windows aside as « closed-<id> »: never restored.
+inline void DropClosedLeftovers(const std::wstring& dataDir) {
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec))
+        if (e.path().filename().wstring().rfind(L"closed-", 0) == 0) DeleteFileW(e.path().c_str());
 }
 inline std::vector<std::wstring> Orphans(const std::wstring& dataDir) {
     std::vector<std::wstring> out; for (const auto& e : List(dataDir)) if (!Live(dataDir, e.id) && !Reserved(dataDir, e.id)) out.push_back(e.id);
@@ -116,7 +99,7 @@ inline Adoption Adopt(const std::wstring& dataDir, const std::wstring& legacyFil
     Adoption a; ProfileStore::Lock lock(dataDir, 10000);
     if (!lock.Held()) { while (!a.live) { a.id = NewId(); a.live = Claim(dataDir, a.id); } return a; }   // review S4: never adopt without the lock
     MigrateLegacy(dataDir, legacyFile);
-    ReviveClosedTogether(dataDir);
+    DropClosedLeftovers(dataDir);
     if (!requested.empty()) {
         if (ValidId(requested) && (a.live = Claim(dataDir, requested))) { a.id = requested; a.requested = true; }
     } else {
@@ -136,15 +119,17 @@ inline bool WriteHandover(const std::wstring& dataDir, const std::wstring& id, c
     std::error_code ec; std::filesystem::create_directories(Dir(dataDir), ec);
     return ProfileStore::WriteAtomic(File(dataDir, id), sessionText);
 }
-// A window closing: among other open windows its session goes (closed for good); the last one keeps it.
-inline bool Release(const std::wstring& dataDir, const std::wstring& id, bool keep) {
+// A window closing (decision S2, deterministic): under the profile lock it decides with an exact count
+// of the windows still open, then gives up its own « open » marker before releasing the lock. So of
+// windows closing at the same moment exactly one, the last to take the lock, keeps its session; every
+// window explicitly closed while another was open loses it, however short the gap. `keep` (#60 update
+// handoff) keeps the session. A crash never reaches this: its session stays an orphan, restored.
+inline bool Release(const std::wstring& dataDir, const std::wstring& id, bool keep, HANDLE& live) {
     ProfileStore::Lock lock(dataDir, 10000);
-    if (keep || !lock.Held() || !OthersOpen(dataDir, id)) return false;
-    const std::wstring closed = File(dataDir, L"closed-" + id);
-    if (!MoveFileExW(File(dataDir, id).c_str(), closed.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return false;
-    HANDLE f = CreateFileW(closed.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (f != INVALID_HANDLE_VALUE) { FILETIME now; GetSystemTimeAsFileTime(&now); SetFileTime(f, nullptr, nullptr, &now); CloseHandle(f); }
-    return true;
+    bool removed = false;
+    if (lock.Held() && !keep && OthersOpen(dataDir, id)) removed = DeleteFileW(File(dataDir, id).c_str()) != FALSE;
+    if (live) { CloseHandle(live); live = nullptr; }   // inside the lock: the next window to close sees it gone
+    return removed;
 }
 
 } // namespace WindowSessions

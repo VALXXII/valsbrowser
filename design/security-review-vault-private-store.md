@@ -142,12 +142,19 @@ A page can trigger the vault control (focus on a password field) right under the
 | V4 | **Corrigé** | plus de repli sur `document` ; champs cachés/désactivés ignorés | U |
 | V6 | **Corrigé** | une modification ici survit à une suppression ailleurs ; même compte enregistré dans deux fenêtres → le plus récent | U |
 | V8 | **Corrigé** | échec RNG → enregistrement refusé ; lecture au-delà de la limite = dommage | U |
-| S2 | **Corrigé** | fermeture parmi d'autres = renommage `closed-<id>` horodaté ; au démarrage les fenêtres fermées dans les 10 s de la dernière reviennent, les plus anciennes sont supprimées | E2E-store (fermeture groupée revient, fermée 1 h avant non) ; E2E-app (fermée > 10 s avant non ressuscitée) |
-| S3 | **Corrigé** | fichier endommagé/format inconnu : copie `.damaged-<horodatage>` et fusion avec base = ce qui a été lu (rien n'est pris pour « supprimé ailleurs ») | U store (suites existantes) — test dédié à ajouter |
+| S2 | **Corrigé, déterministe** (décision coordinateur, l'heuristique 10 s proposée par la revue est abandonnée) | sous le verrou profil la fenêtre qui se ferme compte exactement les autres fenêtres ouvertes puis libère son marqueur avant de rendre le verrou : une fenêtre fermée volontairement parmi d'autres ne revient jamais (0 s, 2 s, 9 s…), la dernière garde sa session ; crash = session conservée ; #60 = conservée | E2E-store : fermetures 0 s et 2 s → dernière seule (URL vérifiée), 2 vrais processus fermant simultanément (barrière) → exactement une session, crash avant release → restaurée ; E2E-app `windows_e2e.py` rejoué |
+| S3 | **Corrigé, fail closed** | en-tête/version inconnus (même famille future ou pas notre format) → `UnknownFormat`, aucune écriture, base/mine/octets inchangés ; format connu endommagé → copie `.damaged-<horodatage>` relue et comparée octet à octet AVANT toute écriture, échec de copie → `Failed` sans écriture ; ce qui est lisible sert aussi de base (illisible ≠ supprimé) ; absent = nouveau ; `Busy` ne change rien. Coffre, favoris, historique, réglages (en-têtes connus) et téléchargements (v1/v2) | tests dédiés `test-password-vault` (version future, en-tête illisible, ligne endommagée + sauvegarde exacte, sauvegarde impossible ⇒ zéro écriture, absent accepté, verrou occupé) et `test-profile-store` (favoris version future). Limite : une troncature pile en fin de ligne du coffre n'est pas détectable (pas de trailer) |
 | S4 | **Corrigé** | clé de verrou = chemin final (`GetFinalPathNameByHandleW`, GUID de volume) ; aucune adoption sans verrou | E2E-app (même hachage recalculé) |
 | P1 | **Corrigé** | fenêtre privée : `IsPasswordAutosaveEnabled` et `IsGeneralAutofillEnabled` à FALSE | revue de code ; vérif runtime à ajouter |
 | P2 | **Corrigé** | `ForgetSiteIcon`/`ClearSiteIcons` sans effet disque en privé | revue de code |
 | P3 | **Corrigé** | liste de téléchargements non chargée en privé | revue de code |
+| V6 (politique) | **À revoir au branchement B04** | la conservation d'une modification locale face à une suppression distante doit reposer sur un consentement explicite au vrai Save (B04), pas sur la fusion automatique | — |
+| P1 (preuve runtime) | **Ouvert** | vérifier sur la fixture que les fichiers moteur Login Data / Web Data du profil privé ne reçoivent rien | — |
 | V5, V7, S5 | **Ouvert** | V5 relève de l'UI de remplissage (non codée) ; V7 effacement mémoire partiel (SecureZeroMemory sur les copies maîtrisées, chaînes temporaires restantes) ; S5 propagation d'« Effacer » aux autres fenêtres | — |
 
 Le coffre reste **inactif**. Une revue indépendante **complète** du branchement B03/B04/B05 (frontières origine/cadre/document/consentement et stockage) est requise avant toute activation ou PR finale ; ce rapport ne la remplace pas.
+
+
+**Erratum de contexte.** S1 portait sur la branche feature `VALXXII/Design-missing-elements`, **non fusionnée** : le code n'a jamais été livré.
+Les résultats E2E de restauration antérieurs à `218fa39` ne valent pas preuve (ils ne vérifiaient que les marqueurs) ; les E2E ont été rejoués
+après correction, avec vérification du contenu (URL restaurée par fenêtre, fichiers réels).

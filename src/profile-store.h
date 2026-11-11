@@ -11,6 +11,7 @@
 // only a complete temp file is ever renamed over it. Re-reading alone (without the mutex) gives
 // no atomicity: two windows could still interleave read and write. Pure Win32 + C++17.
 #include <windows.h>
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -92,27 +93,41 @@ inline bool WriteAtomic(const std::wstring& path, const std::string& data) {
     return true;
 }
 
-enum class Result { Written, Unchanged, Busy, Failed };
+// Decision S3 (fail closed). Outcomes are distinct: Written / Unchanged; Busy (lock timeout);
+// Failed (read or write error, or the exact backup of a damaged file could not be made);
+// UnknownFormat (header of the same family but another version, or not a known header at all
+// while the file is not empty). In Busy, Failed and UnknownFormat NOTHING is written, and `base`
+// and `mine` are untouched: the caller keeps its changes and says so; a retry is explicit.
+enum class Result { Written, Unchanged, Busy, Failed, UnknownFormat };
+// Test hook only: fixes the « .damaged-<stamp> » suffix so a test can make the backup fail.
+inline std::wstring& DamagedStampForTest() { static std::wstring s; return s; }
+inline std::string FirstLine(const std::string& bytes) { std::string l = bytes.substr(0, bytes.find('\n')); if (!l.empty() && l.back() == '\r') l.pop_back(); return l; }
 
-// One transaction on `path` for a model with `static M Read(std::istream&, bool*)`, `Write(std::ostream&)`
-// and `operator==`. `merge(base, mine, theirs)` returns the new state. On success `mine` and `base`
-// both become that state (the window now also shows the other windows' changes).
-// Same transaction with the model's reader and writer given explicitly (free functions, no damage flag…).
+// `known`: the header lines this build reads (e.g. {"browser-bookmarks 1"}). Empty = no check.
+// A known format that is damaged (bad line, truncation) is copied aside BYTE FOR BYTE, the copy is
+// read back and compared BEFORE anything is written; if that fails, nothing is written. What could
+// be read is then also taken as the base, so nothing this window holds is mistaken for « deleted
+// elsewhere ». Unreadable is never treated as « deleted ».
 template <class M>
 Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
                   const std::function<M(std::istream&, bool* damaged)>& read, const std::function<void(std::ostream&, const M&)>& write,
-                  const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000) {
+                  const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000,
+                  const std::vector<std::string>& known = {}) {
     Lock lock(dataDir, timeoutMs);
     if (!lock.Held()) return Result::Busy;
     std::string bytes;
     if (!ReadAll(path, bytes)) return Result::Failed;
+    if (!bytes.empty() && !known.empty()) {
+        const std::string head = FirstLine(bytes);
+        if (std::find(known.begin(), known.end(), head) == known.end()) return Result::UnknownFormat;   // future version or not ours: never overwritten
+    }
     std::istringstream in(bytes); bool damaged = false;
     const M theirs = read(in, &damaged);
-    // Review S3: a damaged (or newer-format) file is kept aside, and what was read of it is taken as
-    // the base too, so nothing this window holds is mistaken for « deleted elsewhere » and dropped.
     if (damaged && !bytes.empty()) {
-        SYSTEMTIME t; GetLocalTime(&t); wchar_t stamp[32]; swprintf(stamp, 32, L"%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
-        WriteAtomic(path + L".damaged-" + stamp, bytes);
+        std::wstring stamp = DamagedStampForTest();
+        if (stamp.empty()) { SYSTEMTIME t; GetLocalTime(&t); wchar_t b[32]; swprintf(b, 32, L"%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond); stamp = b; }
+        const std::wstring aside = path + L".damaged-" + stamp; std::string check;
+        if (!WriteAtomic(aside, bytes) || !ReadAll(aside, check) || check != bytes) return Result::Failed;   // no exact backup: no write
     }
     M merged = damaged ? merge(theirs, mine, theirs) : merge(base, mine, theirs);
     if (merged == theirs && !damaged) { base = merged; mine = std::move(merged); return Result::Unchanged; }
@@ -123,8 +138,9 @@ Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base
 }
 template <class M>
 Result Commit(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
-              const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000) {
-    return CommitWith<M>(dataDir, path, base, mine, [](std::istream& in, bool* d) { return M::Read(in, d); }, [](std::ostream& out, const M& m) { m.Write(out); }, merge, timeoutMs);
+              const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000,
+              const std::vector<std::string>& known = {}) {
+    return CommitWith<M>(dataDir, path, base, mine, [](std::istream& in, bool* d) { return M::Read(in, d); }, [](std::ostream& out, const M& m) { m.Write(out); }, merge, timeoutMs, known);
 }
 // Field-by-field merge of "key=value" line files (settings): every key this window changed since
 // its base takes this window's value, every other key keeps the file's current value.

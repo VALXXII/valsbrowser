@@ -62,6 +62,49 @@ int main() {
     const auto res = ProfileStore::Commit<Store>(dir, dir + L"\\passwords", base, local, [](const Store& b, const Store& mm, const Store& t) { return Store::Merge(b, mm, t); });
     std::string bytes; ProfileStore::ReadAll(dir + L"\\passwords", bytes);
     Check(res == ProfileStore::Result::Written && bytes.find("Nouveau") == std::string::npos && local == s, "vault written through the profile transaction, ciphertext only");
+    // ---- Decision S3: fail closed on unknown formats, exact backup before writing a damaged file ----
+    {
+        const std::vector<std::string> known{"browser-passwords 1"};
+        const std::wstring f = dir + L"\\s3"; auto merge = [](const Store& b, const Store& mm, const Store& t) { return Store::Merge(b, mm, t); };
+        auto put = [&](const std::string& bytes) { ProfileStore::WriteAtomic(f, bytes); };
+        auto bytesOf = [&](const std::wstring& path) { std::string b; ProfileStore::ReadAll(path, b); return b; };
+        std::ostringstream one; s.Write(one);
+        // Future version of the same family: refused, file and memory untouched.
+        const std::string future = "browser-passwords 2\nnew-format-line\n"; put(future);
+        { Store b0 = s, m0 = s; Store b1 = b0, m1 = m0; m1.Save(L"https://autre.exemple.test", L"z", L"Fictif-z", 20);
+          const Store mBefore = m1; const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
+          Check(res == ProfileStore::Result::UnknownFormat && bytesOf(f) == future && b1 == b0 && m1 == mBefore, "S3: a future vault format is never overwritten; base and mine untouched"); }
+        // Not our header at all: refused the same way.
+        const std::string garbage("\x00\x01garbage\n", 11); put(garbage);
+        { Store b1, m1 = s; const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
+          Check(res == ProfileStore::Result::UnknownFormat && bytesOf(f) == garbage, "S3: an unreadable header is not taken as an empty vault"); }
+        // Known format, one damaged line: exact backup first, readable entries kept, nothing taken as deleted.
+        const std::string damaged = one.str() + "not\ta\tvalid\tline\n"; put(damaged);
+        ProfileStore::DamagedStampForTest() = L"s3test";
+        { Store b1 = s, m1 = s; m1.Save(origin, L"nouveau@exemple.test", L"Fictif-n", 30);
+          const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
+          std::istringstream in(bytesOf(f)); const Store after = Store::Read(in);
+          Check(res == ProfileStore::Result::Written && bytesOf(f + L".damaged-s3test") == damaged, "S3: a damaged known file is backed up byte for byte before any write");
+          Check(after.Entries().size() == 2, "S3: the readable entry is kept (not taken as deleted) and this window's addition joins"); }
+        // The exact backup cannot be made: nothing is written.
+        put(damaged); std::filesystem::remove(f + L".damaged-s3test", ec); std::filesystem::create_directories(f + L".damaged-s3test", ec);
+        { Store b1 = s, m1 = s; m1.Save(L"https://autre.exemple.test", L"y", L"Fictif-y", 40); const Store mBefore = m1, bBefore = b1;
+          const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
+          Check(res == ProfileStore::Result::Failed && bytesOf(f) == damaged && m1 == mBefore && b1 == bBefore, "S3: no exact backup, no write (file, base and mine unchanged)"); }
+        std::filesystem::remove_all(f + L".damaged-s3test", ec); ProfileStore::DamagedStampForTest().clear();
+        // Absent file: a new vault is accepted.
+        std::filesystem::remove(f, ec);
+        { Store b1, m1 = s; Check(ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known) == ProfileStore::Result::Written && !bytesOf(f).empty(), "S3: an absent file is a new vault (written)"); }
+        // Busy: another thread holds the profile lock; nothing changes.
+        { HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr), done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+          struct Ctx { std::wstring dir; HANDLE ready, done; } ctx{dir, ready, done};
+          HANDLE th = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD { auto* c = static_cast<Ctx*>(p); ProfileStore::Lock l(c->dir); SetEvent(c->ready); WaitForSingleObject(c->done, 10000); return 0; }, &ctx, 0, nullptr);
+          WaitForSingleObject(ready, 5000);
+          Store b1 = s, m1 = s; m1.Remove(m1.Entries()[0].id); const Store mBefore = m1, bBefore = b1; const std::string fileBefore = bytesOf(f);
+          const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 200, known);
+          Check(res == ProfileStore::Result::Busy && m1 == mBefore && b1 == bBefore && bytesOf(f) == fileBefore, "S3: lock busy, nothing written, base and mine untouched");
+          SetEvent(done); WaitForSingleObject(th, 5000); CloseHandle(th); CloseHandle(ready); CloseHandle(done); }
+    }
     std::printf(failures ? "FAIL password vault: %d\n" : "PASS password vault: DPAPI per origin, file, merge, guards, escaping\n", failures);
     return failures ? 1 : 0;
 }
