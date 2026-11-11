@@ -18,10 +18,12 @@
 //      must name MicrosoftEdgeUpdateSetup.exe. That proves « Microsoft Edge Update setup signed by
 //      Microsoft, served by the official link »; which product it installs is carried by a tag
 //      outside the Authenticode hash, so « WebView2 » itself is not proven by the signature.
-//   4. One installer per user at a time, across processes (InstallClaim): the setup is created
-//      SUSPENDED, the per-user marker (pid + creation time) is written under a named mutex, the
-//      cancel request is checked, and only then is it resumed. A process that was never resumed
-//      has run no code and is terminated; a resumed installer is never killed.
+//   4. One installer per user at a time, across processes and logon sessions: a per-user record
+//      (host identity, then setup pid/creation/thread, then `resumed`) guarded by an exclusive
+//      per-user lock file, reserved before the download; the setup is created SUSPENDED, recorded,
+//      the cancel request is checked, and only then is it resumed. If the launching browser dies
+//      anywhere in between, the next check resumes the recorded setup (a no-op if it already runs),
+//      so it is never left blocking, never killed and never doubled (see Settle).
 //      Command: "<file>" /silent /install — documented; no shell, no inherited handles, no
 //      elevation (an unelevated run installs per-user, distribution doc).
 //   5. The file and directory are removed afterwards; while the installer runs they stay, and the
@@ -38,6 +40,7 @@
 #include <wintrust.h>
 #include <softpub.h>
 #include <sddl.h>
+#include <tlhelp32.h>
 
 #include <atomic>
 #include <cstdint>
@@ -350,36 +353,63 @@ private:
 };
 
 // ---------------------------------------------------------------- one installer per user
-// Marker file "pid=<n>\ncreated=<FILETIME as u64>\ndir=<private folder>\n", read and written only
-// under a named mutex. A marker counts only if that PID is alive AND its creation time matches
-// (PID reuse cannot impersonate it); anything else (garbage, dead process, other creation time)
-// is stale and replaced. Nothing is ever killed on the strength of a marker.
+// Per-user record %LOCALAPPDATA%\browser\webview2-install.lock, read and written only while holding
+// the per-user lock file next to it (exclusive open, share 0: the OS releases it when its holder
+// dies; %LOCALAPPDATA% is the same for every logon session of the user, so the lock is per user,
+// not per session — a Local\ mutex was per session).
+//
+// Record: host (pid + creation time of the browser process that launches), pid/created/tid of the
+// setup once created, `resumed` once its main thread was resumed, and its private folder.
+// Life cycle, all under the lock:
+//   1. claim:   written BEFORE CreateProcess with the host identity only (pid = 0);
+//   2. created: the setup exists SUSPENDED; pid + creation time + main thread id recorded;
+//   3. resumed: after ResumeThread, `resumed=1`;
+//   4. release: when the setup has exited (or was never resumed and was terminated by its host).
+// Evaluation by any later check (Settle):
+//   - setup gone (pid dead or creation time differs: PID reuse) and host gone → stale, folder removed;
+//   - host alive → busy (the host manages its own launch, including cancellation);
+//   - host gone, setup alive → busy, and if `resumed` is not recorded the setup's main thread is
+//     resumed (ResumeThread). That is a no-op on a thread already running (suspend count 0) and
+//     otherwise starts the install the user asked for. The host may have died anywhere around its
+//     own ResumeThread: either way the setup ends up running exactly once, and nobody ever kills it
+//     or starts a second one. The setup is only touched if its image is exactly the recorded
+//     <private folder>\MicrosoftEdgeWebview2Setup.exe and its thread belongs to that PID;
+//   - host gone, pid not yet recorded (died between CreateProcess and step 2): the setup is found by
+//     that exact image path (a single thread ⇒ still at its start) and treated the same way.
+// Nothing is ever terminated on the strength of a record; only the host terminates its own
+// never-resumed process (cancel / refused claim), with the handle CreateProcess gave it.
 struct Coordination {
-    std::wstring marker;   // per-user file, independent of the data folder / worktree / mode
-    std::wstring mutex;    // named mutex (per user SID)
+    std::wstring marker;   // per-user record
+    std::wstring lock;     // per-user lock file (exclusive open)
 };
 inline Coordination DefaultCoordination() {
     Coordination c;
     wchar_t local[MAX_PATH]; const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-    if (n && n < MAX_PATH) c.marker = std::wstring(local, n) + L"\\browser\\webview2-install.lock";
-    std::wstring sid; UserSid(sid);
-    c.mutex = L"Local\\browser-webview2-install-" + sid;
+    if (n && n < MAX_PATH) { c.marker = std::wstring(local, n) + L"\\browser\\webview2-install.lock"; c.lock = c.marker + L".mutex"; }
     return c;
 }
-struct Marker { DWORD pid = 0; std::uint64_t created = 0; std::wstring dir; };
+struct Marker {
+    DWORD host = 0; std::uint64_t hostCreated = 0;   // launching browser process
+    DWORD pid = 0; std::uint64_t created = 0;        // setup process (0 until created)
+    DWORD tid = 0; bool resumed = false;             // its main thread; resumed once
+    std::wstring dir;                                // its private folder
+};
 inline std::uint64_t ProcessCreated(HANDLE process) {
     FILETIME c{}, e{}, k{}, u{};
     if (!GetProcessTimes(process, &c, &e, &k, &u)) return 0;
     return (std::uint64_t(c.dwHighDateTime) << 32) | c.dwLowDateTime;
 }
-inline bool MarkerAlive(const Marker& m) {
-    if (!m.pid || !m.created) return false;
-    HANDLE p = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, m.pid);
+inline bool ProcessAlive(DWORD pid, std::uint64_t created) {
+    if (!pid || !created) return false;
+    HANDLE p = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!p) return false;
-    const bool alive = ProcessCreated(p) == m.created && WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
+    const bool alive = ProcessCreated(p) == created && WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
     CloseHandle(p);
     return alive;
 }
+inline bool MarkerAlive(const Marker& m) { return ProcessAlive(m.pid, m.created); }
+inline Marker SelfHost() { Marker m; m.host = GetCurrentProcessId(); m.hostCreated = ProcessCreated(GetCurrentProcess()); return m; }
+inline bool SameHost(const Marker& a, const Marker& b) { return a.host && a.host == b.host && a.hostCreated == b.hostCreated; }
 inline bool ReadMarker(const std::wstring& path, Marker& out) {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
@@ -391,15 +421,25 @@ inline bool ReadMarker(const std::wstring& path, Marker& out) {
     std::string text(buffer);
     auto field = [&](const char* key) -> std::string {
         const std::string k = std::string(key) + "=";
-        const size_t at = text.find(k);
-        if (at == std::string::npos || (at && text[at - 1] != '\n')) return {};
+        size_t at = text.find(k);
+        while (at != std::string::npos && at && text[at - 1] != '\n') at = text.find(k, at + 1);
+        if (at == std::string::npos) return {};
         const size_t end = text.find('\n', at);
         return text.substr(at + k.size(), end == std::string::npos ? std::string::npos : end - at - k.size());
     };
-    const std::string pid = field("pid"), created = field("created"), dir = field("dir");
-    if (pid.empty() || created.empty() || pid.find_first_not_of("0123456789") != std::string::npos || created.find_first_not_of("0123456789") != std::string::npos) return false;
-    out.pid = static_cast<DWORD>(std::strtoul(pid.c_str(), nullptr, 10));
-    out.created = std::strtoull(created.c_str(), nullptr, 10);
+    auto number = [&](const char* key, std::uint64_t& v, bool required) {
+        const std::string s = field(key);
+        if (s.empty()) return !required;
+        if (s.size() > 20 || s.find_first_not_of("0123456789") != std::string::npos) return false;
+        v = std::strtoull(s.c_str(), nullptr, 10);
+        return true;
+    };
+    std::uint64_t host = 0, hostCreated = 0, pid = 0, created = 0, tid = 0, resumed = 0;
+    if (!number("host", host, false) || !number("hostCreated", hostCreated, false) || !number("pid", pid, true) ||
+        !number("created", created, true) || !number("tid", tid, false) || !number("resumed", resumed, false)) return false;
+    if (!host && !pid) return false;   // identifies nothing
+    out.host = DWORD(host); out.hostCreated = hostCreated; out.pid = DWORD(pid); out.created = created; out.tid = DWORD(tid); out.resumed = resumed != 0;
+    const std::string dir = field("dir");
     const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir.data(), int(dir.size()), nullptr, 0);
     out.dir.assign(n > 0 ? n : 0, L'\0');
     if (n > 0) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir.data(), int(dir.size()), out.dir.data(), n);
@@ -410,8 +450,10 @@ inline bool WriteMarker(const std::wstring& path, const Marker& m) {
     if (slash != std::wstring::npos) CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
     char dir[1024] = {};
     WideCharToMultiByte(CP_UTF8, 0, m.dir.c_str(), -1, dir, sizeof(dir) - 1, nullptr, nullptr);
-    char text[1200];
-    const int len = std::snprintf(text, sizeof(text), "pid=%lu\ncreated=%llu\ndir=%s\n", static_cast<unsigned long>(m.pid), static_cast<unsigned long long>(m.created), dir);
+    char text[1400];
+    const int len = std::snprintf(text, sizeof(text), "host=%lu\nhostCreated=%llu\npid=%lu\ncreated=%llu\ntid=%lu\nresumed=%d\ndir=%s\n",
+                                  static_cast<unsigned long>(m.host), static_cast<unsigned long long>(m.hostCreated), static_cast<unsigned long>(m.pid),
+                                  static_cast<unsigned long long>(m.created), static_cast<unsigned long>(m.tid), m.resumed ? 1 : 0, dir);
     const std::wstring temp = path + L".tmp";
     HANDLE f = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
@@ -424,53 +466,123 @@ inline bool WriteMarker(const std::wstring& path, const Marker& m) {
 class CoordinationLock {
 public:
     explicit CoordinationLock(const Coordination& c) {
-        handle_ = CreateMutexW(nullptr, FALSE, c.mutex.c_str());
-        if (!handle_) return;
-        const DWORD w = WaitForSingleObject(handle_, 5000);
-        held_ = w == WAIT_OBJECT_0 || w == WAIT_ABANDONED;   // abandoned: a crashed holder, the marker decides
+        if (c.lock.empty()) return;
+        const size_t slash = c.lock.find_last_of(L'\\');
+        if (slash != std::wstring::npos) CreateDirectoryW(c.lock.substr(0, slash).c_str(), nullptr);
+        const ULONGLONG until = GetTickCount64() + 5000;
+        for (;;) {
+            handle_ = CreateFileW(c.lock.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (handle_ != INVALID_HANDLE_VALUE) return;
+            if (GetLastError() != ERROR_SHARING_VIOLATION || GetTickCount64() > until) { handle_ = INVALID_HANDLE_VALUE; return; }
+            Sleep(15);
+        }
     }
-    ~CoordinationLock() { if (held_) ReleaseMutex(handle_); if (handle_) CloseHandle(handle_); }
-    bool Held() const { return held_; }
+    ~CoordinationLock() { if (Held()) CloseHandle(handle_); }
+    bool Held() const { return handle_ != INVALID_HANDLE_VALUE; }
 private:
-    HANDLE handle_ = nullptr;
-    bool held_ = false;
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
 };
-// A live installer launched by any browser process of this user, or 0. A stale marker is
-// removed together with the private folder it recorded (and only that folder).
-inline DWORD ActiveInstall(const Coordination& c) {
-    if (c.marker.empty()) return 0;
-    CoordinationLock lock(c);
-    if (!lock.Held()) return 0;
+// Exact image of the recorded setup?
+inline bool ImageIs(DWORD pid, const std::wstring& expected) {
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p) return false;
+    wchar_t image[MAX_PATH * 2]; DWORD size = MAX_PATH * 2;
+    const bool ok = QueryFullProcessImageNameW(p, 0, image, &size) && Lower(std::wstring(image, size)) == Lower(expected);
+    CloseHandle(p);
+    return ok;
+}
+// Finds a process of exactly this image path (the host died before recording its PID).
+inline bool FindByImage(const std::wstring& image, Marker& m) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W e{}; e.dwSize = sizeof(e);
+    bool found = false;
+    for (BOOL more = Process32FirstW(snap, &e); more && !found; more = Process32NextW(snap, &e)) {
+        if (Lower(e.szExeFile) != Lower(FileName()) || !ImageIs(e.th32ProcessID, image)) continue;
+        HANDLE p = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, e.th32ProcessID);
+        if (!p) continue;
+        m.pid = e.th32ProcessID; m.created = ProcessCreated(p); CloseHandle(p);
+        found = m.created != 0;
+    }
+    CloseHandle(snap);
+    if (!found) return false;
+    // Its main thread: the only thread of a process still at its start. More than one ⇒ it has run:
+    // no thread to resume (resumed = true, it is simply waited for).
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) { m.resumed = true; return true; }
+    THREADENTRY32 t{}; t.dwSize = sizeof(t); int threads = 0; DWORD tid = 0;
+    for (BOOL more = Thread32First(snap, &t); more; more = Thread32Next(snap, &t)) if (t.th32OwnerProcessID == m.pid) { ++threads; tid = t.th32ThreadID; }
+    CloseHandle(snap);
+    if (threads == 1) m.tid = tid; else m.resumed = true;
+    return true;
+}
+// Result of evaluating the record (lock held). `adopted` ⇒ a dead host's setup was resumed here
+// (previous suspend count in `previousSuspend`: 1 = it had never run, 0 = it was already running).
+struct Settled { DWORD busy = 0; bool adopted = false; DWORD previousSuspend = DWORD(-1); };
+inline Settled Settle(const Coordination& c, const Marker& self) {
+    Settled s;
     Marker m;
     if (!ReadMarker(c.marker, m)) {
         if (GetFileAttributesW(c.marker.c_str()) != INVALID_FILE_ATTRIBUTES) DeleteFileW(c.marker.c_str());   // garbage: not a claim
-        return 0;
+        return s;
     }
-    if (MarkerAlive(m)) return m.pid;
-    if (!m.dir.empty()) RemovePrivateDir(m.dir);
+    const bool selfHost = SameHost(m, self);
+    if (!selfHost && ProcessAlive(m.host, m.hostCreated)) { s.busy = m.pid ? m.pid : m.host; return s; }
+    const std::wstring image = m.dir.empty() ? L"" : m.dir + L"\\" + FileName();
+    if (!m.pid && !image.empty() && IsPrivateDirPath(m.dir) && !selfHost) FindByImage(image, m);
+    if (MarkerAlive(m)) {
+        s.busy = m.pid;
+        if (!m.resumed && m.tid && !selfHost && !image.empty() && ImageIs(m.pid, image)) {
+            HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION, FALSE, m.tid);
+            if (t && GetProcessIdOfThread(t) == m.pid) {
+                s.previousSuspend = ResumeThread(t);   // 0: already running (no-op); 1: it never ran, now it does
+                if (s.previousSuspend != DWORD(-1)) { s.adopted = true; m.resumed = true; WriteMarker(c.marker, m); }
+            }
+            if (t) CloseHandle(t);
+        }
+        return s;
+    }
+    if (!m.dir.empty()) RemovePrivateDir(m.dir);   // stale: its setup and host are gone
     DeleteFileW(c.marker.c_str());
-    return 0;
+    return s;
+}
+// A live installer launched by any browser process of this user (or being launched by a live
+// one), or 0. May adopt a dead host's setup (see Settle). `settled` receives the details.
+inline DWORD ActiveInstall(const Coordination& c, Settled* settled = nullptr) {
+    if (c.marker.empty()) return 0;
+    CoordinationLock lock(c);
+    if (!lock.Held()) return 0;
+    const Settled s = Settle(c, SelfHost());
+    if (settled) *settled = s;
+    return s.busy;
 }
 enum class Claim { Claimed, Busy, Failed };
-// Under the mutex: refuse while another live installer holds the marker, else record ours.
+// Step 1: reserve before CreateProcess (ours = SelfHost() + private folder).
 inline Claim ClaimInstall(const Coordination& c, const Marker& ours, DWORD& busyPid) {
     busyPid = 0;
     if (c.marker.empty()) return Claim::Failed;
     CoordinationLock lock(c);
     if (!lock.Held()) return Claim::Failed;
-    Marker m;
-    if (ReadMarker(c.marker, m)) {
-        if (MarkerAlive(m) && !(m.pid == ours.pid && m.created == ours.created)) { busyPid = m.pid; return Claim::Busy; }
-        if (!m.dir.empty() && m.dir != ours.dir) RemovePrivateDir(m.dir);   // stale: its installer is gone
-    }
+    const Settled s = Settle(c, ours);
+    if (s.busy) { busyPid = s.busy; return Claim::Busy; }
     return WriteMarker(c.marker, ours) ? Claim::Claimed : Claim::Failed;
 }
+// Steps 2 and 3: update our own record (fails if it is no longer ours).
+inline bool UpdateInstall(const Coordination& c, const Marker& ours) {
+    if (c.marker.empty()) return false;
+    CoordinationLock lock(c);
+    if (!lock.Held()) return false;
+    Marker m;
+    if (!ReadMarker(c.marker, m) || !SameHost(m, ours)) return false;
+    return WriteMarker(c.marker, ours);
+}
+// Step 4: only our own record.
 inline void ReleaseInstall(const Coordination& c, const Marker& ours) {
     if (c.marker.empty()) return;
     CoordinationLock lock(c);
     if (!lock.Held()) return;
     Marker m;
-    if (ReadMarker(c.marker, m) && m.pid == ours.pid && m.created == ours.created) DeleteFileW(c.marker.c_str());
+    if (ReadMarker(c.marker, m) && SameHost(m, ours) && m.pid == ours.pid) DeleteFileW(c.marker.c_str());
 }
 
 // ---------------------------------------------------------------- trust
@@ -622,16 +734,19 @@ struct LaunchResult {
         Timeout,     // started, still running after the wait limit
         Cancelled,   // cancel arrived BEFORE it ran: never resumed (no code executed) and terminated
         Detached,    // cancel arrived after it was resumed: it keeps running on its own
-        Busy         // another live installer holds the per-user claim: never resumed, terminated
+        Busy         // the per-user record is no longer ours: never resumed, terminated
     } status = Failed;
     DWORD code = 0;
     DWORD pid = 0;
     DWORD busyPid = 0;
 };
-// `claim(pid, created)` runs while the new process is still suspended; it must persist the
-// per-user marker and return Claimed before the process may run.
-using ClaimHook = std::function<Claim(DWORD pid, std::uint64_t created, DWORD& busyPid)>;
-inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeoutMs, const ClaimHook& claim = nullptr) {
+// `created(pid, created, tid)` runs while the new process is still suspended and must record it
+// (Claimed) before it may run; `resumed()` runs right after a successful ResumeThread.
+struct LaunchHooks {
+    std::function<Claim(DWORD pid, std::uint64_t created, DWORD tid, DWORD& busyPid)> created;
+    std::function<void()> resumed;
+};
+inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeoutMs, const LaunchHooks& hooks = {}) {
     LaunchResult r;
     auto cancelled = [&] { return cancel && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0; };
     if (cancelled()) { r.status = LaunchResult::Cancelled; return r; }
@@ -646,14 +761,15 @@ inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring&
     r.pid = pi.dwProcessId;
     // Never resumed ⇒ none of its code has run: terminating it here cannot interrupt an install.
     auto abandon = [&](LaunchResult::Status s) { TerminateProcess(pi.hProcess, ERROR_CANCELLED); WaitForSingleObject(pi.hProcess, 5000); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); r.status = s; return r; };
-    if (claim) {
-        const Claim c = claim(pi.dwProcessId, ProcessCreated(pi.hProcess), r.busyPid);
+    if (hooks.created) {
+        const Claim c = hooks.created(pi.dwProcessId, ProcessCreated(pi.hProcess), pi.dwThreadId, r.busyPid);
         if (c == Claim::Busy) return abandon(LaunchResult::Busy);
         if (c == Claim::Failed) { r.code = ERROR_LOCK_VIOLATION; return abandon(LaunchResult::Failed); }
     }
     if (cancelled()) return abandon(LaunchResult::Cancelled);   // last check, immediately before it may run
     if (ResumeThread(pi.hThread) == DWORD(-1)) { r.code = GetLastError(); return abandon(LaunchResult::Failed); }
     CloseHandle(pi.hThread);
+    if (hooks.resumed) hooks.resumed();
     HANDLE waits[2] = {pi.hProcess, cancel};
     const DWORD w = WaitForMultipleObjects(cancel ? 2 : 1, waits, FALSE, timeoutMs);
     if (w == WAIT_OBJECT_0) { r.status = LaunchResult::Exited; GetExitCodeProcess(pi.hProcess, &r.code); }
@@ -668,7 +784,7 @@ inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring&
 struct Effects {
     std::shared_ptr<Fetch> fetch;
     std::function<TrustResult(HANDLE, const std::wstring&)> verify;
-    std::function<LaunchResult(const std::wstring&, const std::wstring&, HANDLE, DWORD, const ClaimHook&)> launch;
+    std::function<LaunchResult(const std::wstring&, const std::wstring&, HANDLE, DWORD, const LaunchHooks&)> launch;
     Coordination coordination;   // empty marker ⇒ no launch (fail closed)
     std::wstring url;            // "" = BootstrapperUrl()
     std::wstring tempParent;     // "" = user temp folder
@@ -705,6 +821,20 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
     PrivateDir dir;
     if (DWORD err = dir.Create(e.tempParent)) { report.outcome = O::Storage; report.code = err; return report; }
     if (onDir) onDir(dir.Name());
+    // Step 1: reserve the per-user record (this host's identity + its private folder) before
+    // downloading, so another install waits for this one and a crash at any later point leaves a
+    // record that names exactly what to clean or to wait for.
+    Marker ours = SelfHost(); ours.dir = dir.Path();
+    {
+        DWORD busyPid = 0;
+        const Claim pre = ClaimInstall(e.coordination, ours, busyPid);
+        if (pre == Claim::Busy) { report.outcome = O::Busy; report.code = busyPid; return report; }
+        if (pre == Claim::Failed) { report.outcome = O::Launch; report.code = ERROR_LOCK_VIOLATION; return report; }   // no storage for the claim: never launched
+    }
+    struct Hold {   // step 4 on every exit, unless the setup still runs (then its record must stay)
+        const Coordination& c; Marker& m; bool keep = false;
+        ~Hold() { if (!keep) ReleaseInstall(c, m); }
+    } hold{e.coordination, ours};
     const std::wstring path = dir.Path() + L"\\" + FileName();
     {
         HANDLE out = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -746,14 +876,15 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
     }
     if (cancel.load()) { CloseHandle(locked); report.outcome = O::Cancelled; return report; }
     set(Stage::Launching);
-    Marker ours; ours.dir = dir.Path();
-    ClaimHook claim = [&](DWORD pid, std::uint64_t created, DWORD& busyPid) {
-        ours.pid = pid; ours.created = created;
-        return ClaimInstall(e.coordination, ours, busyPid);
+    LaunchHooks hooks;
+    hooks.created = [&](DWORD pid, std::uint64_t created, DWORD tid, DWORD& busyPid) {   // step 2, still suspended
+        ours.pid = pid; ours.created = created; ours.tid = tid; busyPid = 0;
+        return UpdateInstall(e.coordination, ours) ? Claim::Claimed : Claim::Failed;
     };
+    hooks.resumed = [&] { ours.resumed = true; UpdateInstall(e.coordination, ours); };   // step 3
     // Phase shown when it is about to run (the claim and the last cancel check come first).
     progress(WebView2Runtime::Phase::Installing, 0, 0);
-    LaunchResult l = e.launch ? e.launch(path, dir.Path(), cancelEvent, e.timeoutMs, claim) : LaunchResult{};
+    LaunchResult l = e.launch ? e.launch(path, dir.Path(), cancelEvent, e.timeoutMs, hooks) : LaunchResult{};
     CloseHandle(locked);
     report.pid = l.pid;
     switch (l.status) {
@@ -766,11 +897,11 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
     case LaunchResult::Busy: report.outcome = O::Busy; report.code = l.busyPid; break;
     }
     if (report.installerRunning) {
+        hold.keep = true;
         set(Stage::Running);
         report.residue = dir.Name();
         dir.Release();   // in use by the running installer; recorded in the marker, removed by the next claim after it exits
     } else {
-        if (ours.pid) ReleaseInstall(e.coordination, ours);   // only if the marker is still ours
         report.cleanupIncomplete = !dir.Remove();
         if (report.cleanupIncomplete) report.residue = ours.dir.substr(ours.dir.find_last_of(L'\\') + 1);
     }

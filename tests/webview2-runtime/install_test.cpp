@@ -9,6 +9,7 @@
 #include "../../src/webview2-install.h"
 
 #include <aclapi.h>
+#include <tlhelp32.h>
 
 #include <cstdio>
 #include <filesystem>
@@ -30,7 +31,7 @@ static int Entries(const std::wstring& dir, const wchar_t* pattern = L"browser-w
 }
 static WI::Coordination Coord(const std::wstring& work) {
     WI::Coordination c; c.marker = work + L"\\coord\\install.lock";
-    c.mutex = L"Local\\browser-webview2-install-test-" + std::to_wstring(std::hash<std::wstring>{}(work));
+    c.lock = c.marker + L".mutex";
     return c;
 }
 
@@ -73,7 +74,7 @@ struct Run {
             if (w != INVALID_HANDLE_VALUE) CloseHandle(w);
             return trust;
         };
-        e.launch = [this](const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeout, const WI::ClaimHook& claim) {
+        e.launch = [this](const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeout, const WI::LaunchHooks& claim) {
             ++launches; launchedExe = exe; launchedDir = dir;
             if (realLaunch) return WI::RunBootstrapper(exe, dir, cancel, timeout, claim);
             return launch;
@@ -128,13 +129,15 @@ static void CancelRaces(const std::wstring& work, const std::wstring& fakeSetup)
     //    without having run a single instruction of its own.
     ResetEvent(cancel);
     DWORD claimedPid = 0;
-    r = WI::RunBootstrapper(setup, work, cancel, 5000, [&](DWORD pid, std::uint64_t, DWORD&) { claimedPid = pid; SetEvent(cancel); return WI::Claim::Claimed; });
+    WI::LaunchHooks h2; h2.created = [&](DWORD pid, std::uint64_t, DWORD, DWORD&) { claimedPid = pid; SetEvent(cancel); return WI::Claim::Claimed; };
+    r = WI::RunBootstrapper(setup, work, cancel, 5000, h2);
     Sleep(800);
     std::printf("cancel while suspended: status=%d pid=%lu ran=%d\n", int(r.status), r.pid, Exists(out));
     CHECK(r.status == WI::LaunchResult::Cancelled && claimedPid && r.pid == claimedPid && !Exists(out) && WaitGone(claimedPid, 1000));
     // 3. Claim refused (another installer): never resumed.
     ResetEvent(cancel);
-    r = WI::RunBootstrapper(setup, work, cancel, 5000, [&](DWORD, std::uint64_t, DWORD& busy) { busy = 7; return WI::Claim::Busy; });
+    WI::LaunchHooks h3; h3.created = [&](DWORD, std::uint64_t, DWORD, DWORD& busy) { busy = 7; return WI::Claim::Busy; };
+    r = WI::RunBootstrapper(setup, work, cancel, 5000, h3);
     Sleep(800);
     CHECK(r.status == WI::LaunchResult::Busy && r.busyPid == 7 && !Exists(out));
     // 4. Cancel while it runs: Detached (not « cancelled »), it is not killed, its identity
@@ -143,7 +146,8 @@ static void CancelRaces(const std::wstring& work, const std::wstring& fakeSetup)
     SetupEnv(out, L"0", L"1200");
     WI::Marker seen;
     std::thread later([&] { Sleep(300); SetEvent(cancel); });
-    r = WI::RunBootstrapper(setup, work, cancel, 5000, [&](DWORD pid, std::uint64_t created, DWORD&) { seen.pid = pid; seen.created = created; return WI::Claim::Claimed; });
+    WI::LaunchHooks h4; h4.created = [&](DWORD pid, std::uint64_t created, DWORD, DWORD&) { seen.pid = pid; seen.created = created; return WI::Claim::Claimed; };
+    r = WI::RunBootstrapper(setup, work, cancel, 5000, h4);
     later.join();
     const bool aliveAfter = WI::MarkerAlive(seen);
     std::printf("cancel while running: status=%d alive=%d\n", int(r.status), aliveAfter);
@@ -251,22 +255,125 @@ static void Markers(const std::wstring& work) {
     HANDLE self = GetCurrentProcess();
     WI::Marker m; m.pid = GetCurrentProcessId(); m.created = WI::ProcessCreated(self) + 1;
     CHECK(WI::WriteMarker(c.marker, m) && WI::ActiveInstall(c) == 0 && !Exists(c.marker));
-    // Exact identity: busy; ClaimInstall refuses another claimant, accepts the same one.
+    // Exact identity of a live process (no host recorded): busy, never resumed nor killed.
     m.created = WI::ProcessCreated(self);
     CHECK(WI::WriteMarker(c.marker, m) && WI::ActiveInstall(c) == m.pid);
-    WI::Marker other; other.pid = 1; other.created = 2; DWORD busy = 0;
+    WI::Marker other; other.host = 1; other.hostCreated = 2; DWORD busy = 0;
     CHECK(WI::ClaimInstall(c, other, busy) == WI::Claim::Busy && busy == m.pid);
-    CHECK(WI::ClaimInstall(c, m, busy) == WI::Claim::Claimed);
+    DeleteFileW(c.marker.c_str());
+    // A record whose host is alive (here: this process, seen from a different claimant) is busy.
+    WI::Marker mine = WI::SelfHost();
+    CHECK(WI::ClaimInstall(c, mine, busy) == WI::Claim::Claimed);
+    CHECK(WI::ClaimInstall(c, other, busy) == WI::Claim::Busy && busy == mine.host);
+    CHECK(WI::ClaimInstall(c, mine, busy) == WI::Claim::Claimed);   // the same host re-claims its own pid-less record
+    CHECK(!WI::UpdateInstall(c, other));                            // only the owner updates it
     WI::ReleaseInstall(c, other);   // not ours: kept
     CHECK(Exists(c.marker));
-    WI::ReleaseInstall(c, m);
+    WI::ReleaseInstall(c, mine);
     CHECK(!Exists(c.marker));
+    // The lock is a file opened exclusively: held by one claimant, others wait then give up (fail closed).
+    {
+        HANDLE held = CreateFileW(c.lock.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, 0, nullptr);
+        CHECK(held != INVALID_HANDLE_VALUE);
+        const ULONGLONG t0 = GetTickCount64();
+        CHECK(WI::ClaimInstall(c, mine, busy) == WI::Claim::Failed && GetTickCount64() - t0 >= 4500);
+        CloseHandle(held);
+        CHECK(WI::ClaimInstall(c, mine, busy) == WI::Claim::Claimed);
+        WI::ReleaseInstall(c, mine);
+    }
     // A stale marker's recorded folder is removed only if it has the private-folder shape.
     const std::wstring foreign = work + L"\\markers\\keep-me";
     CreateDirectoryW(foreign.c_str(), nullptr);
     WI::Marker dead; dead.pid = 0xFFFFFFF0; dead.created = 1; dead.dir = foreign;
     CHECK(WI::WriteMarker(c.marker, dead) && WI::ActiveInstall(c) == 0 && Exists(foreign));
     RemoveDirectoryW(foreign.c_str());
+}
+
+// ---------------------------------------------------------------- host crash around the launch (R2-1)
+// A child « host » runs the real RunInstall + RunBootstrapper with the real per-user record, and is
+// killed (TerminateProcess on itself, like a crash or « Fin de tâche ») at one barrier:
+//   verify      before any claim (inside the trust step)
+//   claimed     record written (host only), before CreateProcess
+//   created     setup created SUSPENDED, before its PID is recorded
+//   recorded    PID/tid recorded, before the last cancel check and ResumeThread  (the reviewer's R2-1)
+//   resumed     right after ResumeThread, before `resumed=1` is recorded
+//   resumed-rec after `resumed=1` is recorded
+// The parent then plays the next browser start: it must never be blocked by a setup nobody will
+// resume, never kill a setup, and never start a second one while one lives.
+static int CrashHost(const std::wstring& work, const std::wstring& fakeSetup, const std::wstring& point) {
+    SetupEnv(work + L"\\crash-ran.txt", L"0", L"1500");
+    Run r(work); r.fetch->body = ReadAll(fakeSetup); r.trust.status = WI::TrustResult::Ok;
+    WI::Effects e = r.Effects();
+    auto die = [&](const wchar_t* at) { if (point == at) { std::printf("crash-host: dying at %ls\n", at); std::fflush(stdout); TerminateProcess(GetCurrentProcess(), 99); } };
+    e.verify = [&](HANDLE, const std::wstring&) { die(L"verify"); WI::TrustResult t; t.status = WI::TrustResult::Ok; return t; };
+    e.launch = [&](const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeout, const WI::LaunchHooks& hooks) {
+        die(L"claimed");
+        WI::LaunchHooks wrapped;
+        wrapped.created = [&](DWORD pid, std::uint64_t created, DWORD tid, DWORD& busy) {
+            die(L"created");
+            const WI::Claim c = hooks.created(pid, created, tid, busy);
+            die(L"recorded");
+            return c;
+        };
+        wrapped.resumed = [&] { die(L"resumed"); hooks.resumed(); die(L"resumed-rec"); };
+        return WI::RunBootstrapper(exe, dir, cancel, timeout, wrapped);
+    };
+    std::atomic<bool> cancel{false};
+    WI::RunInstall(e, cancel, nullptr, [](WR::Phase, std::uint64_t, std::uint64_t) {});
+    return 1;   // not reached
+}
+static DWORD SetupProcessOf(const std::wstring& work) {   // the fixture's own fake setup copy, if alive
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); PROCESSENTRY32W e{}; e.dwSize = sizeof(e); DWORD pid = 0;
+    for (BOOL more = Process32FirstW(snap, &e); more; more = Process32NextW(snap, &e)) {
+        if (WI::Lower(e.szExeFile) != WI::Lower(WI::FileName())) continue;
+        HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, e.th32ProcessID); if (!p) continue;
+        wchar_t image[MAX_PATH * 2]; DWORD n = MAX_PATH * 2;
+        if (QueryFullProcessImageNameW(p, 0, image, &n) && WI::Lower(std::wstring(image, n)).find(WI::Lower(work) + L"\\browser-wv2-") == 0) pid = e.th32ProcessID;
+        CloseHandle(p);
+    }
+    CloseHandle(snap); return pid;
+}
+static void CrashBarriers(const std::wstring& work, const std::wstring& self, const std::wstring& fakeSetup) {
+    const auto c = Coord(work);
+    const std::wstring ran = work + L"\\crash-ran.txt";
+    for (const wchar_t* point : {L"verify", L"claimed", L"created", L"recorded", L"resumed", L"resumed-rec"}) {
+        DeleteFileW(ran.c_str());
+        STARTUPINFOW si{}; si.cb = sizeof(si); PROCESS_INFORMATION pi{};
+        std::wstring cmd = L"\"" + self + L"\" --crash-host \"" + work + L"\" \"" + fakeSetup + L"\" " + point;
+        CHECK(CreateProcessW(self.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi));
+        WaitForSingleObject(pi.hProcess, 20000); DWORD code = 0; GetExitCodeProcess(pi.hProcess, &code); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        const DWORD orphan = SetupProcessOf(work);
+        WI::Marker before; const bool recorded = WI::ReadMarker(c.marker, before);
+        // Next browser start.
+        WI::Settled settled;
+        const DWORD busy = WI::ActiveInstall(c, &settled);
+        std::printf("[crash %ls] host exit=%lu setup=%lu recorded=%d resumed=%d -> busy=%lu adopted=%d previousSuspend=%ld\n", point, code, orphan, recorded,
+                    recorded && before.resumed, busy, settled.adopted, long(settled.previousSuspend));
+        CHECK(code == 99);
+        const bool launched = std::wstring(point) != L"verify" && std::wstring(point) != L"claimed";
+        if (!launched) {
+            CHECK(orphan == 0 && busy == 0 && !Exists(c.marker) && Entries(work) == 0);   // not blocked; its download folder removed exactly
+        } else {
+            CHECK(orphan != 0 && busy == orphan);   // one setup, the next start waits for it (no second one)
+            const std::wstring p = point;
+            if (p == L"created" || p == L"recorded") CHECK(settled.adopted && settled.previousSuspend == 1);   // it had never run: now it does
+            if (p == L"resumed") CHECK(settled.adopted && settled.previousSuspend == 0);                       // already running: ResumeThread was a no-op
+            if (p == L"resumed-rec") CHECK(!settled.adopted);                                                  // recorded as resumed: not touched
+            // A second claimant is refused while it lives, and repeated checks never resume it twice.
+            Run second(work); second.fetch->body = "MZ"; second.trust.status = WI::TrustResult::Ok;
+            auto rep = second.Go();
+            CHECK(rep.outcome == WR::InstallReport::Outcome::Busy && second.launches == 0);
+            WI::Settled again; CHECK(WI::ActiveInstall(c, &again) == orphan && !again.adopted);
+            // It is never killed: it runs to its end and writes its output.
+            CHECK(WaitGone(orphan, 8000) && Exists(ran));
+            // Then the record and the private folder are cleaned and a new install may start.
+            CHECK(WI::ActiveInstall(c) == 0 && !Exists(c.marker) && Entries(work) == 0);
+        }
+    }
+    // A pid-less record whose host is dead and whose setup is gone (or never existed): stale.
+    WI::Marker dead; dead.host = 0xFFFFFFF0; dead.hostCreated = 5; dead.dir = work + L"\\browser-wv2-00000000000000000000000a";
+    CHECK(WI::WriteMarker(c.marker, dead) && WI::ActiveInstall(c) == 0 && !Exists(c.marker));
+    DeleteFileW(ran.c_str());
 }
 
 // Two real processes: the first « host » starts an install whose (fake) installer keeps running,
@@ -320,7 +427,7 @@ static void Worker(const std::wstring& work) {
     // real outcome still reaches the final log.
     Run t(work); t.fetch->body = "MZ"; t.trust.status = WI::TrustResult::Ok;
     WI::Effects e = t.Effects();
-    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD, const WI::ClaimHook&) {
+    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD, const WI::LaunchHooks&) {
         WI::LaunchResult l; l.pid = 1234;
         l.status = WaitForSingleObject(cancel, 5000) == WAIT_OBJECT_0 ? WI::LaunchResult::Detached : WI::LaunchResult::Exited; return l;
     };
@@ -444,6 +551,7 @@ static void RealTrust(const std::wstring& work, const std::wstring& fakeSetup, c
 int wmain(int argc, wchar_t** argv) {
     auto full = [](const wchar_t* p) { wchar_t b[MAX_PATH]; DWORD n = GetFullPathNameW(p, MAX_PATH, b, nullptr); return n && n < MAX_PATH ? std::wstring(b, n) : std::wstring(p); };
     if (argc == 4 && std::wstring(argv[1]) == L"--first-host") return FirstHost(full(argv[2]), full(argv[3]));
+    if (argc == 5 && std::wstring(argv[1]) == L"--crash-host") return CrashHost(full(argv[2]), full(argv[3]), argv[4]);
     if (argc < 3) { std::printf("usage: install_test <work dir> <fake_setup.exe> [bootstrapper]\n"); return 2; }
     const std::wstring work = full(argv[1]), fakeSetup = full(argv[2]), bootstrapper = argc > 3 ? full(argv[3]) : L"";
     wchar_t self[MAX_PATH]; GetModuleFileNameW(nullptr, self, MAX_PATH);
@@ -453,6 +561,7 @@ int wmain(int argc, wchar_t** argv) {
     Pipeline(work, fakeSetup);
     Markers(work);
     SecondHost(work, self, fakeSetup);
+    CrashBarriers(work, self, fakeSetup);
     Worker(work);
     HttpFailClosed();
     RealTrust(work, fakeSetup, bootstrapper);

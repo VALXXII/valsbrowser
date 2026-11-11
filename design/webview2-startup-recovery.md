@@ -1,6 +1,6 @@
 # Récupération WebView2 au démarrage — diagnostic, spec, plan
 
-Statut : implémenté sur `VALXXII/webview2-startup-recovery` (base `origin/main` 599da56), corrigé après la revue indépendante 304775b (§7).
+Statut : implémenté sur `VALXXII/webview2-startup-recovery` (base `origin/main` 599da56), corrigé après la revue indépendante 304775b et le recontrôle 620572a (§7).
 
 ## 1. Symptôme
 
@@ -121,15 +121,32 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
      bootstrappers Edge Update (navigateur Edge, canaux, WebView2) ; le produit installé est porté
      par un *tag* hors du hash Authenticode. Le fait que ce soit **WebView2** repose sur le lien
      officiel servi en TLS strict par Microsoft, pas sur la signature ;
-   - **lancement suspendu puis revendication** : `CreateProcessW(chemin, "\"chemin\" /silent /install",
-     CREATE_NO_WINDOW | CREATE_SUSPENDED)`, pas d'héritage, pas d'élévation. Tant que le processus
-     est suspendu, aucune instruction ne s'y est exécutée. Sous un mutex nommé par utilisateur, le
-     marqueur `%LOCALAPPDATA%\browser\webview2-install.lock` (`pid`, date de création du
-     processus, dossier privé) est écrit ; s'il désigne déjà un installateur **vivant** (PID +
-     date de création identiques : un PID recyclé ne compte pas), la nouvelle instance est
-     terminée sans avoir tourné (« déjà en cours »). Si l'écriture échoue → terminé, rien lancé
-     (échec fermé). Puis **dernier contrôle d'annulation**, puis `ResumeThread`. Un installateur
-     repris n'est jamais tué ;
+   - **un seul installateur par utilisateur** : enregistrement `%LOCALAPPDATA%\browser\webview2-install.lock`
+     lu et écrit seulement sous un **verrou fichier exclusif par utilisateur**
+     (`webview2-install.lock.mutex`, ouvert avec partage 0 ; le système le libère si son détenteur
+     meurt ; `%LOCALAPPDATA%` est le même pour toutes les sessions de l'utilisateur, donc le verrou
+     est par utilisateur et non par session). Cycle :
+     1. **réservation** dès le dossier privé créé, avant le téléchargement : identité de l'hôte
+        (PID + date de création du processus navigateur) et dossier ;
+     2. `CreateProcessW(chemin, "\"chemin\" /silent /install", CREATE_NO_WINDOW | CREATE_SUSPENDED)`
+        (pas d'héritage, pas d'élévation) ; PID, date de création et thread principal enregistrés
+        **avant** de pouvoir tourner ;
+     3. **dernier contrôle d'annulation**, `ResumeThread`, puis `resumed=1` enregistré ;
+     4. libération à la sortie du setup (ou quand l'hôte a lui-même terminé son setup jamais repris).
+     **Évaluation par toute vérification ultérieure** : hôte vivant → « déjà en cours » (l'hôte gère
+     son lancement, annulation comprise) ; hôte mort et setup mort (ou date de création différente :
+     PID recyclé) → périmé, dossier enregistré supprimé ; **hôte mort et setup vivant** → « déjà en
+     cours » et, si `resumed` n'est pas enregistré, `ResumeThread` sur son thread principal (après
+     vérification que l'image est exactement `<dossier privé>\MicrosoftEdgeWebview2Setup.exe` et que
+     le thread appartient à ce PID). `ResumeThread` renvoie le compteur précédent : **1** = le setup
+     n'avait jamais tourné, il démarre maintenant (l'installation que l'utilisateur avait demandée) ;
+     **0** = il tournait déjà, l'appel ne fait rien. Si l'hôte est mort entre `CreateProcess` et
+     l'enregistrement du PID, le setup est retrouvé par ce chemin d'image exact (un seul thread =
+     encore à son début). Donc, quel que soit l'instant de la mort de l'hôte, le setup finit par
+     tourner exactement une fois ; personne ne le tue ni n'en lance un second. On ne déduit jamais
+     « rien exécuté » de l'absence d'un enregistrement : c'est le compteur de suspension rendu par
+     le système qui le dit. Seul l'hôte termine son propre setup jamais repris (annulation,
+     revendication perdue), avec le handle reçu de `CreateProcessW` ;
    - attente bornée à 10 min ; fermeture pendant l'exécution → issue *Detached* (« le programme
      Microsoft continue en arrière-plan »), distincte de *Cancelled* (« annulée avant que le
      programme Microsoft ne s'exécute : rien n'a été installé ») ;
@@ -185,7 +202,7 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
   avant `FreeLibrary(loader)`, puis `RunPendingRelaunch()` **après** la boucle (hook post-fermeture :
   une fenêtre privée qui l'utilisera devra transmettre son mode / id / session de fenêtre, jamais
   `launchArgs` + `--webview2-recovered` d'une session normale).
-- **Unicité de l'installation** : déjà inter-processus (marqueur par utilisateur + mutex), donc
+- **Unicité de l'installation** : déjà inter-processus et inter-sessions (enregistrement + verrou fichier par utilisateur), donc
   indépendante du dossier de données, du worktree et du mode privé. Rien à ajouter côté store.
 - **Textes** : « Votre profil et vos onglets sont conservés » vaut pour la fenêtre normale ; un
   processus privé devra passer un texte adapté (contrat à reprendre par l'intégrateur).
@@ -208,12 +225,14 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
 | P3-7 crochet de test dans le produit | **Corrigé** : sous `BROWSER_WEBVIEW2_TEST_HOOKS` (fixture seule) | Binaire estampillé : aucune chaîne de la fixture |
 | P3-8 doc RtlGenRandom / `Loader` | **Corrigé** (§4, §5) | — |
 | P3-9 UX | **Corrigé** : après « installé mais introuvable », plus de bouton Installer, corps honnête, « Ouvrir la page Microsoft » en principal ; pendant l'installation « Il continue même si vous quittez » ; texte privé = contrat d'intégration (§6) | Captures 2, 3, 6 |
+| **R2-1** (recontrôle 620572a) hôte mort entre revendication et reprise | **Corrigé** sans l'état `pending → running` proposé (il déplaçait la course : mort après `ResumeThread` et avant `running`). Réservation dès le téléchargement ; un hôte mort laisse un enregistrement qui nomme exactement le setup ; la vérification suivante le reprend (`ResumeThread`, sans effet s'il tourne déjà), attend sa fin, puis nettoie. Jamais de kill, jamais de second setup | Test du relecteur sur `d8e6291` : `REPRODUCED` (bloqué ×3). `install_test` : hôte de fixture tué à 6 barrières (`verify`, `claimed`, `created`, `recorded`, `resumed`, `resumed-rec`) : avant le lancement → rien ne bloque, dossier supprimé ; `created`/`recorded` → adopté, compteur précédent 1, le faux setup tourne et écrit sa sortie ; `resumed` → compteur 0 (no-op) ; `resumed-rec` → non touché ; dans tous les cas second claimant refusé, aucune reprise répétée, setup jamais tué, nettoyage puis nouvelle installation possible |
+| **R2-2** mutex `Local\` par session | **Corrigé** : verrou fichier exclusif dans `%LOCALAPPDATA%` (par utilisateur, toutes sessions) ; verrou tenu ⇒ attente ≤ 5 s puis refus (échec fermé) | `install_test` (verrou tenu : refus après ~5 s, puis revendication). Deux sessions réelles non testées (pas de session RDP créée) |
 | Loader sans export de sonde | Conservé et voulu : `0x80070002` de `CreateEnvironment` est documenté « Could not find Edge installation » ; chemin mort avec le loader livré | `runtime_test` |
 
 ## 8. Résultats (11 nov., tests simulés — distincts du réel)
 
 - `python -I tests/webview2-runtime/run_tests.py --bootstrapper <MicrosoftEdgeWebview2Setup.exe téléchargé, jamais exécuté>` :
-  `runtime_test` 153, `install_test` 91 (90 sans bootstrapper), `host_test` 7 scénarios (recover 16,
+  `runtime_test` 153, `install_test` 136 (135 sans bootstrapper ; dont les 6 barrières de crash d’hôte, vrais processus + faux setup), `host_test` 7 scénarios (recover 16,
   not-detected 16, loader-missing 8, denied 12, close-during-install 12, relaunch 18,
   install-running 14), 0 échec.
 - Confiance réelle : loader du SDK = Microsoft OK (refusé comme installateur : produit inattendu) ;
@@ -230,12 +249,21 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
 - Les tests simulent l'installation : ils ne prouvent ni une installation réelle, ni le
   comportement d'Edge Update sur un runtime partiel sans enregistrement, ni la cause de la
   disparition intermittente. L'installateur n'a **pas** été exécuté sur ce PC (état préservé).
-- Plantage du navigateur entre la création suspendue et la reprise : le processus suspendu n'a
-  rien exécuté et ne détient pas de marqueur valide ; il reste suspendu (inoffensif) jusqu'à la
-  fin de session. Plantage pendant que l'installateur tourne : le marqueur reste valide tant
-  qu'il vit, puis devient périmé et est nettoyé.
-- Mutex `Local\` : la coordination couvre les processus d'une même session Windows ; le marqueur
-  (par utilisateur) reste vérifié sous ce mutex.
+- Plantage du navigateur pendant le lancement : l'installation demandée **se poursuit** au
+  prochain démarrage du navigateur (ou à la prochaine vérification), au lieu d'être abandonnée ;
+  tant qu'aucun navigateur ne redémarre, un setup jamais repris reste suspendu, sans rien exécuter
+  ni bloquer personne d'autre. Le setup n'est repris qu'une fois (`resumed=1`) ; si le vérificateur
+  meurt entre sa reprise et cet enregistrement, une reprise répétée est un no-op sur un thread qui
+  tourne. Seul cas non couvert : un installateur qui suspendrait lui-même son thread principal dans
+  cet intervalle (non attendu d'un setup Microsoft).
+- Verrou par utilisateur : couvre toutes les sessions d'un même utilisateur sur cette machine ;
+  vérifié avec des processus d'une même session (pas de deuxième session RDP créée pour le test).
+- **Délégation d'Edge Update (non vérifiée, installateur jamais exécuté)** : le processus suivi est
+  le bootstrapper `MicrosoftEdgeWebview2Setup.exe`. S'il délègue à `MicrosoftEdgeUpdate.exe` et se
+  termine avant la fin réelle de l'installation, l'enregistrement est libéré à sa sortie ; un clic
+  « Installer » pendant ce reste pourrait lancer un second bootstrapper, qui rencontrerait alors
+  les propres verrous d'Edge Update (non vérifiés ici). Aucune réussite d'installation n'est
+  affirmée : seule la nouvelle sonde décide.
 - Une stratégie d'entreprise qui bloque l'installation est visible par le code de sortie ; aucun
   contournement. Pas de « réparation » non documentée, de désinstallation ni d'écriture registre.
 - Au plus 2 installations lancées par l'utilisateur par processus, aucune pendant qu'un

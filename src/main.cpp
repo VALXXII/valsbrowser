@@ -3951,7 +3951,10 @@ void StartEngine(){
         // Worker thread: the real outcome, logged even when the window is already gone.
         Log(std::wstring(L"WEBVIEW2 INSTALL WORKER outcome=")+WR::OutcomeName(r.outcome)+L" code="+WR::Hex(static_cast<HRESULT>(r.code))+(r.pid?L" pid="+std::to_wstring(r.pid):L"")+
             (r.installerRunning?L" microsoft-installer-still-running":L"")+(r.residue.empty()?L"":L" residue=%TEMP%\\"+r.residue));});};
-    hooks.installRunning=[]{return WI::ActiveInstall(EngineCoordination());};
+    hooks.installRunning=[]{WI::Settled settled;const DWORD pid=WI::ActiveInstall(EngineCoordination(),&settled);
+        // A browser that died while launching left its setup: it was resumed here (1 = it had never run; 0 = it already ran).
+        if(settled.adopted)Log(L"WEBVIEW2 INSTALL adopted the setup of a closed browser pid="+std::to_wstring(pid)+L" previous-suspend="+std::to_wstring(settled.previousSuspend));
+        return pid;};
     hooks.cancelInstall=[]{engineInstaller.Cancel();};hooks.show=ShowEngineView;hooks.ready=EngineReady;hooks.relaunch=RelaunchBrowser;
     hooks.log=[](const std::wstring& line){Log(line);};
     engineStart=std::make_unique<WR::Controller>(std::move(hooks),engineRelaunched);

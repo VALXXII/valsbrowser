@@ -45,13 +45,13 @@ public:
     }
 };
 static WI::Coordination FixtureCoordination() {
-    WI::Coordination c; c.marker = data + L"\\coord\\install.lock"; c.mutex = L"Local\\browser-webview2-host-test-" + std::to_wstring(std::hash<std::wstring>{}(data)); return c;
+    WI::Coordination c; c.marker = data + L"\\coord\\install.lock"; c.lock = c.marker + L".mutex"; return c;
 }
 static WI::Effects FakeEffects() {
     ++fake.starts;
     WI::Effects e; e.fetch = std::make_shared<OkFetch>(); e.tempParent = data; e.coordination = FixtureCoordination();
     e.verify = [](HANDLE, const std::wstring&) { WI::TrustResult t; t.status = WI::TrustResult::Ok; t.signer = L"Microsoft Corporation"; return t; };
-    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD, const WI::ClaimHook&) {
+    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD, const WI::LaunchHooks&) {
         WI::LaunchResult l;
         if (fake.waitForCancel) { l.status = WaitForSingleObject(cancel, 10000) == WAIT_OBJECT_0 ? WI::LaunchResult::Detached : WI::LaunchResult::Exited; return l; }
         Sleep(50);
