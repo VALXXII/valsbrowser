@@ -98,3 +98,18 @@ Coffre (DPAPI, origine/cadre/document, consentement, aucun secret via le pont ni
   magasin identique), `b07_download_e2e.txt` INCONCLUSIF, `unit_store_vault_pin.txt` PASS.
 - Rappel : les corrections M1-M3 (coffre v2) sont déclarées et testées par l'intégrateur après la revue (ea096a1) ; leur recontrôle indépendant
   fait partie de la revue finale.
+
+## Intégration du démarrage WebView2 (PR62, fusionnée dans main eb1a943)
+Adoptée par fusion (48cc300 = 63433bf avec résolution manuelle de `src/main.cpp`, puis 6b519fe = origin/main, sans doublon).
+- Conservé : `StartEngine()` après surfaces/updates, `EngineReady()` restaure la session une fois l'environnement prêt, `StopEngineStart()`
+  au `WM_DESTROY`, `RunPendingRelaunch()` après la boucle de messages (donc après fermeture et clear-on-exit), #60 inchangé.
+- Ajouté pour ce lot : une fenêtre jamais prête ne retire jamais sa session (relance ou démarrage suivant) ; la relance de récupération garde
+  `--private` et fait réadopter à une fenêtre normale SA session (`RelaunchArgs`, U) — le marqueur de fenêtre est rendu à la fermeture ;
+  journal sérialisé (PR62) et muet en privé ; « Effacer les données » efface les fichiers historique/téléchargements sous verrou (plus une
+  fusion), les autres fenêtres reprennent l'effacement à l'activation (S5).
+- Preuves : `tests/webview2-runtime/run_tests.py` (FAKE loader : 6 scénarios recover / not-detected / loader-missing / denied /
+  close-during-install / relaunch / install-running, install_test, runtime_test, loader_probe lecture seule) PASS ; U intégration (relance) ;
+  E2E windows / privé / TLS / mTLS rejoués sur le runtime Fixed Version PASS.
+- **Non vérifié** (réel) : installation Evergreen réelle, cause nécessitant un redémarrage, enfant EdgeUpdate, DPI élevé, seconde session
+  Windows. Fermeture : peut attendre `CreateProcessW` sous garde puis verrou de retrait ≤ 1 s et Shutdown 1500 ms — pas de promesse de 1,5 s au
+  total ; doubles échecs OS et résidu suspendu acceptés par la revue, sans garantie absolue. Aucun setup Microsoft exécuté.
