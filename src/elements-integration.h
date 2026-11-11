@@ -741,9 +741,24 @@ bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
     });
     return false;
 }
-void ShowTabLimitToast(){
+// A7: « Nouvelle fenêtre » really opens a normal window with the page that did not fit (D4: a
+// failed launch is shown with Réessayer and its URLs are kept).
+void OpenWindowWith(const std::vector<std::wstring>& urls);void RetryWindowLaunch(const std::wstring& id);
+void ShowTabLimitToast(const std::wstring& url){
     NativeChrome::ContextToast::Spec spec=NativeChrome::ContextToast::TabLimitSpec(128);
-    contextToast.Show(spec,PageScreenRect(),[](bool){});Log(L"TABS limit toast");
+    if(privateWindow)spec.action.clear(); // no handover from a private window: no inert action
+    contextToast.Show(spec,PageScreenRect(),[url](bool acted){if(acted)OpenWindowWith({url});});Log(L"TABS limit toast");
+}
+void ShowPartialRestoreToast(const std::vector<std::wstring>& urls){
+    auto spec=NativeChrome::ContextToast::PartialRestoreSpec((int)urls.size(),128);
+    contextToast.Show(spec,PageScreenRect(),[urls](bool acted){if(acted)OpenWindowWith(urls);});Log(L"TABS partial restore: "+std::to_wstring(urls.size())+L" not opened");
+}
+void ShowWindowLaunchFailed(const std::wstring& id){
+    NativeChrome::ContextToast::Spec s;s.automationId=L"WindowLaunchFailedToast";s.icon=NativeChrome::ContextToast::Icon::Error;s.error=true;s.durationMs=0;
+    s.message=L"Impossible d'ouvrir une nouvelle fenêtre";
+    s.detail=id.empty()?L"Les onglets n'ont pas pu être transmis.":L"Ses onglets sont conservés et rouvriront au prochain démarrage.";
+    if(!id.empty())s.action=L"Réessayer";
+    contextToast.Show(s,PageScreenRect(),[id](bool acted){if(acted)RetryWindowLaunch(id);});Log(L"WINDOW launch failed toast");
 }
 // A8. Without a live update engine (preview, portable without feed) the status says so
 // instead of claiming « à jour ».

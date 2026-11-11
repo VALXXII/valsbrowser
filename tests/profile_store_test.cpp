@@ -4,6 +4,8 @@
 // holding the lock, and a reader that must never see a half-written file.
 #include "../src/bookmarks.h"
 #include "../src/profile-store.h"
+#include "../src/window-sessions.h"
+#include <fstream>
 #include <cstdio>
 #include <filesystem>
 #include <set>
@@ -31,6 +33,19 @@ static int Writer(const std::wstring& dir, const std::wstring& tag, int n) {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc >= 5 && std::wstring(argv[1]) == L"writer") return Writer(argv[2], argv[3], _wtoi(argv[4]));
+    // Child: start like a window (Adopt), report what it took, keep it until `release` is signalled.
+    if (argc >= 6 && std::wstring(argv[1]) == L"adopt") {
+        const std::wstring dir = argv[2], requested = std::wstring(argv[3]) == L"-" ? L"" : argv[3];
+        HANDLE go = OpenEventW(SYNCHRONIZE, FALSE, argv[4]), release = OpenEventW(SYNCHRONIZE, FALSE, argv[5]);
+        if (go) WaitForSingleObject(go, 10000);
+        auto a = WindowSessions::Adopt(dir, L"", requested, true);
+        std::ofstream out(std::filesystem::path(dir).parent_path() / (L"result-" + std::to_wstring(GetCurrentProcessId())));
+        std::string line(a.id.begin(), a.id.end()); out << line << "\n";
+        for (auto& id : a.relaunch) out << std::string(id.begin(), id.end()) << "\n";
+        out.close();
+        if (release) WaitForSingleObject(release, 20000);
+        return a.requested ? 10 : a.adopted ? 11 : 12;
+    }
     if (argc >= 4 && std::wstring(argv[1]) == L"hold") {   // take the lock, say so, then wait to be killed
         ProfileStore::Lock lock(argv[2]); HANDLE ready = OpenEventW(EVENT_MODIFY_STATE, FALSE, argv[3]);
         if (!lock.Held() || !ready) return 3;
@@ -129,6 +144,61 @@ int wmain(int argc, wchar_t** argv) {
         bool damaged = true; { std::string bytes; ProfileStore::ReadAll(dir + L"\\bookmarks", bytes); std::istringstream in(bytes); BM::Store::Read(in, &damaged); }
         Check(!damaged, "after the crash the file is still complete");
         CloseHandle(keep);
+    }
+    // ---- window sessions: adoption, release, crash, handover --------------------------------------
+    {
+        const std::wstring sdata = std::filesystem::absolute(L"build/profile-store/sessions-profile").wstring();
+        std::filesystem::remove_all(std::filesystem::path(sdata).parent_path() / L"results", ec);
+        std::filesystem::remove_all(sdata, ec); std::filesystem::create_directories(WindowSessions::Dir(sdata), ec);
+        for (auto& e : std::filesystem::directory_iterator(std::filesystem::path(sdata).parent_path(), ec)) if (e.path().filename().wstring().rfind(L"result-", 0) == 0) std::filesystem::remove(e.path(), ec);
+        const std::vector<std::wstring> orphans{L"wa", L"wb", L"wc"};
+        for (auto& id : orphans) ProfileStore::WriteAtomic(WindowSessions::File(sdata, id), "browser-session 1\nhttps://exemple.test/" + std::string(id.begin(), id.end()) + "\n");
+        const std::wstring go = L"Local\\bps-go-" + std::to_wstring(GetCurrentProcessId()), rel = L"Local\\bps-rel-" + std::to_wstring(GetCurrentProcessId());
+        HANDLE goE = CreateEventW(nullptr, TRUE, FALSE, go.c_str()), relE = CreateEventW(nullptr, TRUE, FALSE, rel.c_str());
+        auto adopt = [&](const std::wstring& requested) { return spawn(L"adopt \"" + sdata + L"\" " + requested + L" " + go + L" " + rel); };
+        PROCESS_INFORMATION p1 = adopt(L"-"), p2 = adopt(L"-");
+        Sleep(300); SetEvent(goE);   // both start at the same moment
+        auto results = [&]() { std::vector<std::vector<std::wstring>> r; for (auto& e : std::filesystem::directory_iterator(std::filesystem::path(sdata).parent_path(), ec)) if (e.path().filename().wstring().rfind(L"result-", 0) == 0) { std::ifstream in(e.path()); std::string l; std::vector<std::wstring> v; while (std::getline(in, l)) if (!l.empty()) v.push_back(std::wstring(l.begin(), l.end())); r.push_back(v); } return r; };
+        for (int i = 0; i < 100 && results().size() < 2; ++i) Sleep(50);
+        const auto r = results(); std::multiset<std::wstring> adopted, relaunched;
+        for (auto& v : r) if (!v.empty()) { adopted.insert(v[0]); for (size_t k = 1; k < v.size(); ++k) relaunched.insert(v[k]); }
+        std::multiset<std::wstring> all; for (auto& id : adopted) if (std::find(orphans.begin(), orphans.end(), id) != orphans.end()) all.insert(id);
+        all.insert(relaunched.begin(), relaunched.end());
+        Check(r.size() == 2 && adopted.size() == 2 && *adopted.begin() != *adopted.rbegin(), "two simultaneous starts adopt two different sessions");
+        Check(all == std::multiset<std::wstring>(orphans.begin(), orphans.end()), "every orphan session is adopted or relaunched exactly once (no double adoption, no double relaunch)");
+        Check(WindowSessions::OthersOpen(sdata, L"nobody") && WindowSessions::Orphans(sdata).empty(), "sessions being relaunched are reserved: no third start can take them");
+        std::wstring firstId, secondId; for (auto& id : adopted) if (std::find(orphans.begin(), orphans.end(), id) != orphans.end()) firstId = secondId = id;
+        HANDLE mine = nullptr;   // this test plays a third, independent open window
+        Check(!WindowSessions::Release(sdata, firstId, true) && std::filesystem::exists(WindowSessions::File(sdata, firstId)), "update handoff (#60): the session is kept");
+        (void)mine;
+        // Crash: kill the adopter of `secondId` before any write: its session comes back as an orphan.
+        SetEvent(relE); WaitForSingleObject(p1.hProcess, 10000); WaitForSingleObject(p2.hProcess, 10000); CloseHandle(p1.hProcess); CloseHandle(p2.hProcess);
+        bool back = false; for (auto& id : WindowSessions::Orphans(sdata)) if (id == secondId) back = true;
+        Check(back, "a window gone without closing (crash) leaves its session to be restored");
+        // Handover (A7/D4): written before the launch; a launch that dies before claiming keeps it.
+        const std::wstring hand = WindowSessions::NewId();
+        Check(WindowSessions::WriteHandover(sdata, hand, "browser-session 1\nhttps://exemple.test/transmis\n"), "handover written durably before the launch");
+        ResetEvent(goE); ResetEvent(relE); SetEvent(goE);
+        PROCESS_INFORMATION h1 = adopt(hand);
+        for (int i = 0; i < 100 && !WindowSessions::Live(sdata, hand); ++i) Sleep(20);
+        PROCESS_INFORMATION h2 = adopt(hand);   // a retry while the first one is up
+        WaitForSingleObject(h2.hProcess, 0); Sleep(500);
+        DWORD c2 = 0; SetEvent(relE); WaitForSingleObject(h2.hProcess, 10000); GetExitCodeProcess(h2.hProcess, &c2);
+        Check(c2 == 12, "a duplicate launch for a session already open opens a fresh window, never a second one on that session");
+        TerminateProcess(h1.hProcess, 9); WaitForSingleObject(h1.hProcess, 5000); CloseHandle(h1.hProcess); CloseHandle(h2.hProcess);
+        std::string kept; ProfileStore::ReadAll(WindowSessions::File(sdata, hand), kept);
+        Check(kept.find("transmis") != std::string::npos && !WindowSessions::Live(sdata, hand), "a handed-over window killed before saving: its URLs are kept (orphan, restored next start)");
+        // Restoration off: the newest orphan is adopted (kept for later), the others are dropped.
+        auto off = WindowSessions::Adopt(sdata, L"", L"", false);
+        Check(off.adopted && off.relaunch.empty() && WindowSessions::Orphans(sdata).empty(), "restoration off: nothing relaunched, no orphan left to resurrect later");
+        CloseHandle(off.live); CloseHandle(goE); CloseHandle(relE);
+        // Release with another window open removes; the last window keeps.
+        HANDLE other = WindowSessions::Claim(sdata, L"wother"); ProfileStore::WriteAtomic(WindowSessions::File(sdata, L"wother"), "browser-session 1\n");
+        HANDLE self = WindowSessions::Claim(sdata, L"wself"); ProfileStore::WriteAtomic(WindowSessions::File(sdata, L"wself"), "browser-session 1\n");
+        Check(WindowSessions::Release(sdata, L"wself", false) && !std::filesystem::exists(WindowSessions::File(sdata, L"wself")), "a window closed among others: its session is removed (not resurrected at the next start)");
+        CloseHandle(self);
+        Check(!WindowSessions::Release(sdata, L"wother", false) && std::filesystem::exists(WindowSessions::File(sdata, L"wother")), "the last window closed keeps its session");
+        CloseHandle(other);
     }
     bool leftovers = false; for (auto& e : std::filesystem::directory_iterator(dir, ec)) if (e.path().wstring().find(L".tmp") != std::wstring::npos) leftovers = true;
     Check(!leftovers, "no temp file left behind");
