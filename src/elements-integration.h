@@ -583,7 +583,7 @@ const std::wstring& PageFont(bool medium){
 bool ErrorPageNavigationStarting(const std::shared_ptr<Tab>& t,const std::wstring& uri,UINT64 id){
     auto& e=t->errorPage;const bool blank=uri==L"about:blank"||uri.rfind(L"data:",0)==0;
     if(blank&&e.pending){e.pending=false;return false;}
-    e.starting=uri;e.startingId=id;
+    e.starting=uri;e.startingId=id;e.certStatus=-1;e.certUri.clear();e.certIssuer.clear(); // a new navigation invalidates a refused certificate
     e.shown.clear();e.pending=false;e.token.clear();return false;
 }
 // Only the failure of the tab's latest top-level http(s) navigation (not an external
@@ -593,15 +593,16 @@ bool ShowErrorPage(const std::shared_ptr<Tab>& t,COREWEBVIEW2_WEB_ERROR_STATUS e
     const std::wstring target=t->errorPage.starting;
     if(navigationId!=t->errorPage.startingId||(target.rfind(L"http://",0)!=0&&target.rfind(L"https://",0)!=0)||IsSandboxUri(target))return false;
     if(error==COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED||error==COREWEBVIEW2_WEB_ERROR_STATUS_VALID_AUTHENTICATION_CREDENTIALS_REQUIRED||error==COREWEBVIEW2_WEB_ERROR_STATUS_VALID_PROXY_AUTHENTICATION_REQUIRED)return false;
-    // Certificate failures keep the engine's interstitial (its « continue » flow and details).
-    switch(error){case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
-        case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:return false;default:break;}
+    // Certificate failures: our page only when WE refused this very top-level request (same URL as the
+    // navigation, recorded by ServerCertificateErrorDetected); anything else keeps the engine's failure.
+    if(NativeChrome::ErrorPages::IsCertificate((int)error)&&!NativeChrome::ErrorPages::CertificateMatches(t->errorPage.certStatus,t->errorPage.certUri,target))return false;
     GUID guid{};wchar_t token[40]{};if(FAILED(CoCreateGuid(&guid))||!StringFromGUID2(guid,token,40))return false;
     const bool online=error!=COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED&&NetworkOnline();
     auto& e=t->errorPage;
     const auto kind=e.forced>=0?(NativeChrome::ErrorPages::Kind)e.forced:NativeChrome::ErrorPages::Classify((int)error,online);
+    if(kind==NativeChrome::ErrorPages::Kind::Certificate)Log(L"CERTIFICATE refused page for "+target);
     NativeChrome::ErrorPages::Extras extras;extras.fontRegular=PageFont(false);extras.fontMedium=PageFont(true);extras.reducedMotion=motion.ReducedMotion();
-    extras.code=NativeChrome::ErrorPages::Code((int)error);extras.restored=e.forcedRestored;
+    extras.code=NativeChrome::ErrorPages::Code((int)error);extras.restored=e.forcedRestored;extras.certStatus=(int)error;extras.issuer=e.certIssuer;
     const bool retrying=e.forcedRetrying;e.forced=-1;e.forcedRetrying=e.forcedRestored=false;
     t->uri=target;t->home=false;e.shown=target;e.token=token;e.pending=true;e.kind=(int)kind;
     const std::wstring html=NativeChrome::ErrorPages::Html(kind,target,token,retrying,extras);

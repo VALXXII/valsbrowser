@@ -7,6 +7,7 @@ Usage: python mtls_server.py <dir with server.crt server.key ca.crt> <port>
 import http.server, os, ssl, sys
 
 d, port = sys.argv[1], int(sys.argv[2])
+client_auth = '--no-client-auth' not in sys.argv   # TLS-page E2E: plain HTTPS with an untrusted certificate
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -19,8 +20,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(os.path.join(d, 'server.crt'), os.path.join(d, 'server.key'))
-ctx.load_verify_locations(os.path.join(d, 'ca.crt'))
-ctx.verify_mode = ssl.CERT_REQUIRED
+if client_auth:
+    ctx.load_verify_locations(os.path.join(d, 'ca.crt'))
+    ctx.verify_mode = ssl.CERT_REQUIRED
 srv = http.server.HTTPServer(('127.0.0.1', port), Handler)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()

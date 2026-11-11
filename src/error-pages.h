@@ -107,7 +107,7 @@ inline std::wstring Js(const std::wstring& s) {
 }
 
 namespace ErrorPages {
-enum class Kind { Offline, NameNotResolved, Refused, TimedOut, Reset, Unreachable, Generic };
+enum class Kind { Offline, NameNotResolved, Refused, TimedOut, Reset, Unreachable, Generic, Certificate };
 enum class Action { Retry, Back, Details, Search, NetworkSettings, AutoRetry };
 // Optional richer content. Fonts are data: URIs (main's DataUri of assets\fonts\InterDisplay-*.ttf).
 struct Extras {
@@ -116,7 +116,43 @@ struct Extras {
     int attempt = 0;            // automatic retries already made (time-out: 8, 16, 32 s, then none)
     bool restored = false;      // offline page: the network came back, reloading
     bool reducedMotion = false;
+    std::wstring issuer;        // Certificate: the refused certificate's issuer (shown as text, bounded)
+    int certStatus = -1;        // Certificate: the engine's status (cause and code)
 };
+// Server certificate statuses (TLS refused by the engine, never bypassed).
+inline bool IsCertificate(int status) {
+    switch (status) {
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID: return true;
+    default: return false;
+    }
+}
+// The refused request is the navigation's own URL (scheme/host/port/path, case-insensitive scheme+host).
+inline bool CertificateMatches(int recordedStatus, const std::wstring& requestUri, const std::wstring& target) {
+    if (recordedStatus < 0 || requestUri.empty() || target.empty()) return false;
+    auto norm = [](std::wstring u) { const auto s = u.find(L"://"); if (s == std::wstring::npos) return u; auto end = u.find_first_of(L"/?#", s + 3); if (end == std::wstring::npos) { u += L"/"; end = u.size() - 1; } for (size_t i = 0; i < end; ++i) u[i] = static_cast<wchar_t>(towlower(u[i])); const auto h = u.find(L'#'); return h == std::wstring::npos ? u : u.substr(0, h); };
+    return norm(requestUri) == norm(target);
+}
+// Plain-language cause of a refused server certificate.
+inline std::wstring CertificateCause(int status) {
+    switch (status) {
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: return L"son certificat a été émis pour un autre site.";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return L"son certificat a expiré (ou l'horloge de cet ordinateur est inexacte).";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return L"son certificat a été révoqué.";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return L"le certificat présenté contient des erreurs.";
+    default: return L"son certificat n'est pas reconnu.";
+    }
+}
+inline const wchar_t* CertificateCode(int status) {
+    switch (status) {
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: return L"NET::ERR_CERT_COMMON_NAME_INVALID";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return L"NET::ERR_CERT_DATE_INVALID";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return L"NET::ERR_CERT_REVOKED";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return L"NET::ERR_BAD_SSL_CLIENT_AUTH_CERT";
+    default: return L"NET::ERR_CERT_AUTHORITY_INVALID ou certificat invalide";
+    }
+}
 inline constexpr int AutoRetryDelaysSeconds[] = {8, 16, 32};
 inline int AutoRetryDelay(Kind kind, int attempt) { return kind == Kind::TimedOut && attempt >= 0 && attempt < 3 ? AutoRetryDelaysSeconds[attempt] : 0; }
 
@@ -141,6 +177,9 @@ inline Kind Classify(int status, bool online) {
     case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT: return Kind::TimedOut;
     case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET: case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED: return Kind::Reset;
     case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE: return Kind::Unreachable;
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID: return Kind::Certificate;
     default: return Kind::Generic;
     }
 }
@@ -174,6 +213,8 @@ inline Copy CopyFor(Kind kind, const std::wstring& host) {
     case Kind::Refused: return {L"Le site a refusé la connexion", L"", L" ne répond pas. Le serveur est peut-être arrêté, ou un pare-feu bloque l'accès. Réessayez dans un instant.", L"Réessayer", L"Détails techniques"};
     case Kind::TimedOut: return {L"Le site met trop de temps à répondre", L"", L" est peut-être surchargé. Nous réessayons pour vous, ou vous pouvez relancer tout de suite.", L"Réessayer maintenant", L"Détails techniques"};
     case Kind::Reset: return {L"La connexion a été interrompue", L"La connexion à ", L" s'est coupée en cours de route. C'est souvent passager : réessayez.", L"Réessayer", L"Détails techniques"};
+    // TLS refused (never bypassed): no « continuer », no http; Retour or a real new attempt.
+    case Kind::Certificate: return {L"La connexion sécurisée n'a pas pu être établie", L"La connexion à ", L" a été bloquée : ", L"Réessayer", L"Retour", Action::Retry, Action::Back};
     case Kind::Unreachable: return {L"Le site est injoignable", L"Impossible de joindre ", L" : le serveur ne répond pas, ou le réseau en bloque l'accès.", L"Réessayer", L"Détails techniques"};
     default: return {L"Cette page ne s'est pas chargée", L"Une erreur a empêché l'ouverture de ", L". Réessayez dans un instant.", L"Réessayer", L"Détails techniques"};
     }
@@ -217,7 +258,8 @@ button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}
 .track{width:120px;height:2px;border-radius:1px;background:#FFFFFF14;overflow:hidden}.fill{height:2px;border-radius:1px;background:#FFFFFF80;width:0}
 )CSS";
     h += extras.reducedMotion ? L"" : L"main{animation:in 160ms ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}}@media (prefers-reduced-motion:reduce){main{animation:none}}";
-    h += L"</style><main role=\"main\"><h1>" + WebText::Html(c.title) + L"</h1><p>" + WebText::Html(c.before) + L"<b>" + WebText::Html(host) + L"</b>" + WebText::Html(c.after) + L"</p>";
+    const std::wstring after = kind == Kind::Certificate ? c.after + CertificateCause(extras.certStatus) : c.after;
+    h += L"</style><main role=\"main\"><h1>" + WebText::Html(c.title) + L"</h1><p>" + WebText::Html(c.before) + L"<b>" + WebText::Html(host) + L"</b>" + WebText::Html(after) + L"</p>";
     const std::wstring primaryLabel = retrying ? std::wstring(L"Rechargement…") : c.primary;
     // One row for every variant (user request 2026-11-09): the other action on the left,
     // « Réessayer » on the right, in DOM order so Tab follows what is seen. Labels never wrap
@@ -229,6 +271,10 @@ button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}
     if (details) {
         const std::wstring code = extras.code.empty() ? std::wstring(L"Code inconnu") : extras.code;
         h += L"<div id=\"details\" class=\"details\" hidden><b>" + WebText::Html(code) + L"</b>" + (extras.detail.empty() ? L"" : L"<span>" + WebText::Html(extras.detail) + L"</span>") + L"</div>";
+    }
+    if (kind == Kind::Certificate) {   // technical facts, escaped and bounded (never page-provided)
+        std::wstring issuer = extras.issuer; if (issuer.size() > 200) issuer = issuer.substr(0, 200) + L"…";
+        h += L"<div class=\"details\"><b>" + WebText::Html(CertificateCode(extras.certStatus)) + L"</b>" + (issuer.empty() ? L"" : L"<span>Émis par " + WebText::Html(issuer) + L"</span>") + L"</div>";
     }
     if (offline) h += std::wstring(L"<div class=\"status") + (extras.restored ? L" back" : L"") + L"\" role=\"status\" aria-live=\"polite\"><i></i><span>" + (extras.restored ? L"Connexion rétablie" : L"En attente du réseau…") + L"</span></div>";
     if (delay) h += L"<div class=\"retry\" role=\"status\" aria-live=\"polite\"><span id=\"count\">Nouvel essai dans " + std::to_wstring(delay) + L" s</span><div class=\"track\" aria-hidden=\"true\"><div class=\"fill\" id=\"fill\"></div></div></div>";
