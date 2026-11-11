@@ -18,6 +18,7 @@
 #include <set>
 #include <fstream>
 #include <filesystem>
+#include <mutex>
 #include "session.h"
 #include <cwctype>
 #include <cmath>
@@ -259,7 +260,8 @@ void SmokeCheck();
 void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
-void Log(const std::wstring& s){if(logFile.empty())return;std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
+// Serialized: the WebView2 install worker reports its real outcome from its own thread.
+void Log(const std::wstring& s){if(logFile.empty())return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
 void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
@@ -3837,12 +3839,19 @@ public:
 // startup failure opens the native recovery dialog instead of Fail(): Installer WebView2 (runtime
 // missing only), Réessayer, Quitter. The session is restored once, after an environment exists.
 namespace WR=WebView2Runtime; namespace WI=WebView2Install;
-constexpr int EngineInstallButton=10,EngineRetryButton=11,EngineRelaunchButton=12,EngineQuitButton=13,EngineManualLink=201;
+constexpr int EngineInstallButton=10,EngineRetryButton=11,EngineRelaunchButton=12,EngineQuitButton=13,EngineManualButton=14,EngineManualLink=201;
 std::unique_ptr<WR::Controller> engineStart; WI::Installer engineInstaller;
-bool engineRelaunched=false,engineDialogOpen=false; std::wstring launchArgs;
-// Test fixtures only (assigned in tests/webview2-runtime): fake download/trust/launch. Unset in the
-// browser, which always runs WI::ProductionEffects(); no flag or variable can set it.
-std::function<WI::Effects()> engineInstallEffects;
+bool engineRelaunched=false,engineDialogOpen=false,engineRelaunchPending=false; std::wstring launchArgs;
+#ifdef BROWSER_WEBVIEW2_TEST_HOOKS
+// Compiled into tests/webview2-runtime/host_test only: fake download/trust/launch and an isolated
+// per-user claim. The browser has no such entry point; it always runs WI::ProductionEffects().
+std::function<WI::Effects()> engineInstallEffects; std::function<WI::Coordination()> engineCoordination;
+WI::Effects EngineEffects(){return engineInstallEffects?engineInstallEffects():WI::ProductionEffects();}
+WI::Coordination EngineCoordination(){return engineCoordination?engineCoordination():WI::DefaultCoordination();}
+#else
+WI::Effects EngineEffects(){return WI::ProductionEffects();}
+WI::Coordination EngineCoordination(){return WI::DefaultCoordination();}
+#endif
 using CreateEnvironmentFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
 using ProbeRuntimeFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,ICoreWebView2EnvironmentOptions*,LPWSTR*);
 CreateEnvironmentFn engineCreate=nullptr; ProbeRuntimeFn engineProbe=nullptr;
@@ -3869,17 +3878,27 @@ void EngineReady(){
     LPWSTR version=nullptr;if(Check(environment->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}
     RestoreSession();if(debugSandboxAtStart&&!smoke)Defer([]{OpenSandbox();});
 }
-bool RelaunchBrowser(){
+// The new instance starts only after this one has closed: WM_CLOSE (saves, clear on exit — in
+// recovery there is no engine profile, so ClearLocalTraces runs synchronously) then WM_DESTROY,
+// then RunPendingRelaunch() after the message loop. It never reads history/downloads before the
+// old instance has erased them.
+bool StartRelaunchedInstance(){
     std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());if(!n||n>=exe.size())return false;exe.resize(n);
     std::wstring command=L"\""+exe+L"\" "+launchArgs+L" --webview2-recovered";STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
     if(!CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,base.c_str(),&si,&pi)){Log(L"WEBVIEW2 RECOVERY relaunch failed "+std::to_wstring(GetLastError()));return false;}
-    AllowSetForegroundWindow(pi.dwProcessId);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);return true;
+    AllowSetForegroundWindow(pi.dwProcessId);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);Log(L"WEBVIEW2 RECOVERY relaunched after close");return true;
+}
+bool RelaunchBrowser(){engineRelaunchPending=true;return true;}
+void RunPendingRelaunch(){
+    if(!engineRelaunchPending)return;engineRelaunchPending=false;
+    if(!StartRelaunchedInstance())MessageBoxW(nullptr,L"Le navigateur n'a pas pu redémarrer automatiquement. Rouvrez-le.",L"browser",MB_OK|MB_ICONINFORMATION);
 }
 void ShowEngineView(const WR::View& v);
 void OnEngineButton(int id){
     if(!engineStart)return;
     if(id==EngineInstallButton)engineStart->Install();
     else if(id==EngineRetryButton)engineStart->Attempt();
+    else if(id==EngineManualButton){if((INT_PTR)ShellExecuteW(window,L"open",WI::ManualPageUrl(),nullptr,nullptr,SW_SHOWNORMAL)<=32)Log(L"WEBVIEW2 RECOVERY manual page open failed");}
     else if(id==EngineRelaunchButton){engineStart->Relaunch();if(engineStart->phase()==WR::Phase::Closed){closeWithoutPrompt=true;PostMessageW(window,WM_CLOSE,0,0);}}
 }
 void EngineDialogDone(const MD::Result& r){
@@ -3894,13 +3913,14 @@ MD::Spec EngineSpec(const WR::View& v){
     MD::Spec s;s.kind=MD::Kind::Generic;s.scope=MD::Scope::Window;s.automationId=L"webview2.startup";
     s.title=v.diagnosis.title;s.body=v.diagnosis.body;if(!v.note.empty())s.body+=L"\n\n"+v.note;s.footnote=v.diagnosis.technical;
     const bool busy=WR::Busy(v.phase);
-    if(busy){s.status.icon=MD::StatusIcon::Busy;s.status.title=v.status;s.hasStatus=true;}
+    if(busy){s.status.icon=MD::StatusIcon::Busy;s.status.title=v.status;s.status.detail=v.statusDetail;s.hasStatus=true;}
     const auto cause=v.diagnosis.cause;
-    if(cause==WR::Cause::RuntimeMissing||cause==WR::Cause::RuntimeInconsistent||cause==WR::Cause::OverrideInvalid)s.links.push_back({EngineManualLink,L"Page Microsoft WebView2"});
+    if(!v.manualPrimary&&(cause==WR::Cause::RuntimeMissing||cause==WR::Cause::RuntimeInconsistent||cause==WR::Cause::OverrideInvalid))s.links.push_back({EngineManualLink,L"Page Microsoft WebView2"});
     auto button=[&](int id,const wchar_t* label,MD::Role role,bool enabled,bool closes){MD::Button b;b.id=id;b.label=label;b.role=role;b.disabled=!enabled;b.closes=closes;b.automationId=L"webview2.button."+std::to_wstring(id);s.buttons.push_back(b);};
     button(EngineQuitButton,L"Quitter",MD::Role::Secondary,true,true);
     button(EngineRetryButton,L"Réessayer",MD::Role::Secondary,!busy&&v.canRetry,false);
-    if(v.canRelaunch)button(EngineRelaunchButton,L"Redémarrer le navigateur",MD::Role::Primary,!busy,false);
+    if(v.manualPrimary)button(EngineManualButton,L"Ouvrir la page Microsoft",MD::Role::Primary,true,false);
+    else if(v.canRelaunch)button(EngineRelaunchButton,L"Redémarrer le navigateur",MD::Role::Primary,!busy,false);
     else if(v.diagnosis.offerInstall||busy)button(EngineInstallButton,busy?L"Installation…":L"Installer WebView2",MD::Role::Primary,!busy&&v.canInstall,false);
     for(auto& b:s.buttons)if(!b.disabled&&b.role==MD::Role::Primary){b.isDefault=true;b.initialFocus=true;}
     s.onButton=[](int id){OnEngineButton(id);};
@@ -3927,13 +3947,22 @@ void OnEngineInstallMessage(){
 void StartEngine(){
     WR::Hooks hooks;hooks.prepare=PrepareLoader;hooks.probe=ProbeRuntime;hooks.create=CreateEngine;
     hooks.overrides=[]{std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return WR::ReadOverrides(exe.substr(exe.find_last_of(L'\\')+1));};
-    hooks.startInstall=[]{return engineInstaller.Start(engineInstallEffects?engineInstallEffects():WI::ProductionEffects(),[]{PostMessageW(window,EngineInstallMessage,0,0);});};
+    hooks.startInstall=[]{return engineInstaller.Start(EngineEffects(),[]{PostMessageW(window,EngineInstallMessage,0,0);},[](const WR::InstallReport& r){
+        // Worker thread: the real outcome, logged even when the window is already gone.
+        Log(std::wstring(L"WEBVIEW2 INSTALL WORKER outcome=")+WR::OutcomeName(r.outcome)+L" code="+WR::Hex(static_cast<HRESULT>(r.code))+(r.pid?L" pid="+std::to_wstring(r.pid):L"")+
+            (r.installerRunning?L" microsoft-installer-still-running":L"")+(r.residue.empty()?L"":L" residue=%TEMP%\\"+r.residue));});};
+    hooks.installRunning=[]{return WI::ActiveInstall(EngineCoordination());};
     hooks.cancelInstall=[]{engineInstaller.Cancel();};hooks.show=ShowEngineView;hooks.ready=EngineReady;hooks.relaunch=RelaunchBrowser;
     hooks.log=[](const std::wstring& line){Log(line);};
     engineStart=std::make_unique<WR::Controller>(std::move(hooks),engineRelaunched);
     engineStart->Attempt();
 }
-void StopEngineStart(){if(engineStart)engineStart->Shutdown();engineInstaller.Shutdown(1500);}
+void StopEngineStart(){
+    if(engineStart)engineStart->Shutdown();
+    const auto state=engineInstaller.Shutdown(1500);
+    if(state.stage!=WI::Stage::Idle&&state.detached)Log(std::wstring(L"WEBVIEW2 INSTALL worker still ")+WI::StageName(state.stage)+L" at close: it cannot launch the installer any more (cancel is checked before resuming it)"+
+        (state.dir.empty()?L"":L"; its folder %TEMP%\\"+state.dir+L" may remain if the process ends first"));
+}
 int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
 #ifdef BROWSER_UPDATES
 #ifndef BROWSER_PREVIEW
@@ -3959,5 +3988,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
      if(settings.blockThirdPartyCookies)value=WithEnabledFeatures(value,{L"ForceThirdPartyCookieBlockingEnabled",L"ThirdPartyStoragePartitioning"});
      if(value!=given)SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.c_str());}
     StartEngine(); // loader, probe, environment; a failure opens the recovery dialog
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}StopEngineStart();engineStart.reset();environment.set(nullptr);if(loader)FreeLibrary(loader);suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}StopEngineStart();engineStart.reset();environment.set(nullptr);if(loader)FreeLibrary(loader);RunPendingRelaunch();suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }

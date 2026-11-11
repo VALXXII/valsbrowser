@@ -1,6 +1,6 @@
 # Récupération WebView2 au démarrage — diagnostic, spec, plan
 
-Statut : implémenté sur `VALXXII/webview2-startup-recovery` (base `origin/main` 599da56).
+Statut : implémenté sur `VALXXII/webview2-startup-recovery` (base `origin/main` 599da56), corrigé après la revue indépendante 304775b (§7).
 
 ## 1. Symptôme
 
@@ -86,114 +86,161 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
 3. **UI** : le `Modal::Dialog` natif existant (Direct2D, sans WebView2, portée fenêtre), en
    français : titre, explication, ligne technique (étape, code, version), lien « Page Microsoft
    WebView2 », boutons **Installer WebView2** / **Réessayer** / **Quitter**. Pas de nouvelle maquette.
-4. **Installation** (`src/webview2-install.h`) après clic seulement, une seule à la fois
-   (boutons verrouillés pendant l'opération, double clic ignoré par la machine d'état) :
-   - téléchargement WinHTTP (mêmes limites que le transport de l'updater : proxy système, délais
-     10/10/15/20 s, TLS 1.2/1.3 sans relâchement, ≤ 6 redirections manuelles, pas de cookies ni
-     d'authentification — mais un objet distinct : la politique GitHub de l'updater reste intacte) depuis
-     l'URL exacte ci-dessus ; redirections acceptées seulement en HTTPS:443, sans identifiants,
-     hôte `microsoft.com` ou `*.microsoft.com` ; taille ≤ 16 Mio ;
-   - fichier écrit dans un dossier neuf au nom aléatoire (BCryptGenRandom) sous `%TEMP%`, DACL
-     protégée (utilisateur courant + SYSTEM), `CREATE_NEW` ; rouvert en lecture avec partage
-     lecture seule pendant la vérification **et** l'exécution (pas d'échange de fichier possible) ;
+4. **Installation** (`src/webview2-install.h`) après clic seulement, une seule à la fois dans ce
+   processus (boutons verrouillés, double clic ignoré) **et entre processus du même utilisateur** :
+   - téléchargement WinHTTP (mêmes limites par opération que le transport de l'updater : proxy
+     système, délais 10/10/15/20 s, TLS 1.2/1.3 sans relâchement, ≤ 6 redirections manuelles —
+     mais un objet distinct : la politique GitHub de l'updater reste intacte) depuis l'URL exacte
+     ci-dessus ; redirections acceptées seulement en HTTPS:443, sans identifiants, hôte
+     `microsoft.com` ou `*.microsoft.com` ; taille ≤ 16 Mio ; **échéance totale 5 min** (contre
+     un serveur au compte-gouttes ; une lecture bloquée peut la dépasser d'au plus son délai de
+     20 s). Redirections automatiques, cookies et authentification sont coupés au niveau session
+     (`WINHTTP_OPTION_REDIRECT_POLICY = NEVER`) et requête (`WINHTTP_OPTION_DISABLE_FEATURE`) ;
+     **si l'une de ces options ne peut pas être posée, la requête n'est pas envoyée** (échec fermé) ;
+   - fichier écrit dans un dossier neuf au nom aléatoire (`RtlGenRandom` = `SystemFunction036`,
+     le CSPRNG de `rand_s`) sous `%TEMP%`, DACL protégée (utilisateur courant + SYSTEM),
+     `CREATE_NEW` ; rouvert en lecture avec partage lecture seule pendant la vérification **et**
+     l'exécution (pas d'échange de fichier possible) ;
    - `WinVerifyTrust` sur ce handle (`WINTRUST_ACTION_GENERIC_VERIFY_V2`, révocation de toute la
      chaîne ; seul le retour `0` vaut confiance), puis la chaîne du signataire
      (`WTHelperGetProvSignerFromChain`) doit satisfaire `CERT_CHAIN_POLICY_MICROSOFT_ROOT` **et** le
      certificat signataire doit être `CN=Microsoft Corporation`, `O=Microsoft Corporation` **et** la
-     ressource de version (signée) doit nommer `MicrosoftEdgeUpdateSetup.exe`. Le sujet seul ne vaut
-     jamais attestation : il n'est lu qu'après la validation cryptographique et la racine Microsoft.
+     ressource de version doit nommer `MicrosoftEdgeUpdateSetup.exe`. Cette ressource est lue
+     **depuis l'image verrouillée elle-même** (mappage en lecture seule du handle, parcours
+     PE → `RT_VERSION` → `OriginalFilename`), jamais par chemin : aucune redirection MUI
+     (`<langue>\<nom>.exe.mui`) ne peut la substituer, et la section ressource fait partie de
+     l'image hachée par Authenticode. Le sujet seul ne vaut jamais attestation : il n'est lu qu'après
+     la validation cryptographique et la racine Microsoft.
      **Mesure** : avec `dwFlags = 0`, la politique `MICROSOFT_ROOT` *refuse* la chaîne du vrai
      bootstrapper (racine « Microsoft Root Certificate Authority 2011 ») ; elle l'accepte avec
      `MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG`, que la doc décrit comme la
      vérification de « the Microsoft application root "Microsoft Root Certificate Authority 2011" ».
-     Le code essaie donc les deux (racines Microsoft historiques, puis racine applicative 2011) —
-     sans quoi l'installation officielle serait refusée ; aucune racine tierce n'est acceptée ;
-   - `CreateProcessW(chemin, "\"chemin\" /silent /install")`, `CREATE_NO_WINDOW`, pas d'héritage,
-     pas d'élévation ; attente annulable, bornée à 10 min ; code de sortie journalisé ;
-   - nettoyage du fichier et du dossier ciblés (meilleur effort, journalisé).
-5. **Après l'installateur** (quel que soit le code de sortie) : nouvelle sonde. Introuvable →
-   « Installation terminée mais WebView2 reste introuvable » (le code de sortie est montré), plus
-   de bouton Installer (pas de boucle), Réessayer + lien manuel. Trouvé → nouvelle
-   `CreateEnvironment` ; **seul son succès** annonce la récupération et lance `RestoreSession`
-   (une seule fois). Si la création échoue encore en « runtime absent » alors que la sonde le
-   voit : bouton **Redémarrer le navigateur** — relance du même exe avec les mêmes arguments plus
-   `--webview2-recovered`, puis fermeture de l'instance courante (qui n'a jamais restauré la
-   session : pas de doublon, pas d'écrasement de `session`). Une instance lancée avec ce drapeau
-   ne propose plus de relance (borne = 1).
+     Le code essaie donc les deux ; aucune racine tierce n'est acceptée.
+     **Ce que cela prouve, et pas plus** : « programme d'installation Microsoft Edge Update signé
+     par Microsoft, servi par le lien officiel ». `OriginalFilename` est commun à tous les
+     bootstrappers Edge Update (navigateur Edge, canaux, WebView2) ; le produit installé est porté
+     par un *tag* hors du hash Authenticode. Le fait que ce soit **WebView2** repose sur le lien
+     officiel servi en TLS strict par Microsoft, pas sur la signature ;
+   - **lancement suspendu puis revendication** : `CreateProcessW(chemin, "\"chemin\" /silent /install",
+     CREATE_NO_WINDOW | CREATE_SUSPENDED)`, pas d'héritage, pas d'élévation. Tant que le processus
+     est suspendu, aucune instruction ne s'y est exécutée. Sous un mutex nommé par utilisateur, le
+     marqueur `%LOCALAPPDATA%\browser\webview2-install.lock` (`pid`, date de création du
+     processus, dossier privé) est écrit ; s'il désigne déjà un installateur **vivant** (PID +
+     date de création identiques : un PID recyclé ne compte pas), la nouvelle instance est
+     terminée sans avoir tourné (« déjà en cours »). Si l'écriture échoue → terminé, rien lancé
+     (échec fermé). Puis **dernier contrôle d'annulation**, puis `ResumeThread`. Un installateur
+     repris n'est jamais tué ;
+   - attente bornée à 10 min ; fermeture pendant l'exécution → issue *Detached* (« le programme
+     Microsoft continue en arrière-plan »), distincte de *Cancelled* (« annulée avant que le
+     programme Microsoft ne s'exécute : rien n'a été installé ») ;
+   - nettoyage : fichier et dossier supprimés à la fin ; s'il tourne encore, le dossier est
+     enregistré dans le marqueur et supprimé (lui seul, s'il a la forme `browser-wv2-<24 hex>`)
+     par la prochaine vérification après sa sortie. Aucun balayage de `%TEMP%`.
+5. **Après l'installateur** (quel que soit le code de sortie) : nouvelle sonde. Introuvable alors
+   que l'installateur est allé au bout → corps « l'installation ne l'a pas rétabli », code de
+   sortie montré, **plus de bouton Installer** (pas de boucle) ; action principale **Ouvrir la page
+   Microsoft**, plus Réessayer et Quitter. Trouvé → nouvelle `CreateEnvironment` ; **seul son
+   succès** annonce la récupération et lance `RestoreSession` (une seule fois). Si la création
+   échoue encore alors que la sonde voit le runtime : **Redémarrer le navigateur** — la fenêtre
+   se ferme normalement (`WM_CLOSE` : sauvegardes, « effacer en quittant » ; en récupération il
+   n'y a pas de profil moteur, donc `ClearLocalTraces` s'exécute de façon synchrone), puis,
+   **après** la boucle de messages, `RunPendingRelaunch()` relance le même exe avec ses arguments +
+   `--webview2-recovered`. La nouvelle instance ne lit donc jamais d'historique pas encore effacé.
+   Une instance lancée avec ce drapeau ne propose plus de relance ; chaque relance exige un clic.
 6. **Courses** : chaque tentative de création porte une génération ; un rappel périmé ou arrivé
-   après la fermeture est ignoré (pas d'écriture vers un HWND détruit). Fermeture pendant le
-   téléchargement : annulation + abort WinHTTP ; pendant l'installateur : l'attente est abandonnée,
-   l'installateur Microsoft continue seul (le tuer en cours d'installation serait pire) ; le
-   prochain démarrage refait la sonde.
+   après la fermeture est ignoré (pas d'écriture vers un HWND détruit). La phase affichée par l'UI
+   peut retarder sur le worker (PostMessage) : le contrôleur ne journalise plus de supposition à la
+   fermeture ; le **worker journalise lui-même son issue réelle** (`WEBVIEW2 INSTALL WORKER
+   outcome=… pid=… microsoft-installer-still-running residue=…`, `Log` sérialisé) ; si le worker
+   est encore en vérification après 1,5 s, l'hôte journalise son étape et le dossier qui peut
+   rester. Le worker ne peut plus lancer l'installateur après la fermeture (annulation vérifiée
+   avant la reprise du processus suspendu).
 7. **Logs** : étapes, HRESULT, version, cause, source d'override (nom, pas de valeur complète),
-   octets, code de sortie, sujet du signataire. Jamais d'URL de navigation, de cookie, de contenu
-   de profil ni d'environnement complet.
-8. **Tests** : hooks uniquement par injection (`Effects`, `Hooks`) dans les binaires de test ;
-   aucune variable d'environnement ni drapeau de production n'affaiblit TLS/URL/signature.
+   code de sortie, PID, sujet du signataire, nom du dossier temporaire (`%TEMP%\browser-wv2-…`).
+   Jamais d'URL de navigation, de cookie, de contenu de profil ni d'environnement complet.
+8. **Tests** : injection par `Effects` (réseau, confiance, lancement, coordination) et par une
+   table d'API copiée (WinHTTP simulé sans socket) ; dans `main.cpp`, les points d'injection de
+   la fixture (`engineInstallEffects`, `engineCoordination`) n'existent que sous
+   `BROWSER_WEBVIEW2_TEST_HOOKS`, défini par `tests/webview2-runtime/host_test.cpp` seulement :
+   le binaire du navigateur n'a ni drapeau, ni variable, ni symbole pour remplacer la vérification.
 
 ## 5. Plan / fichiers
 
 | Fichier | Rôle |
 |---|---|
-| `src/webview2-runtime.h` | Classification, lecture des overrides, accès loader (`Loader`), contrôleur de récupération (machine d'état pure, générations, bornes) |
-| `src/webview2-install.h` | Politique d'URL, dossier privé, téléchargement, vérification Authenticode/éditeur/produit, lancement, worker annulable. Header-only ; winhttp/wintrust/crypt32/version résolus à l'exécution depuis System32 (`LOAD_LIBRARY_SEARCH_SYSTEM32`) : aucune nouvelle dépendance de link, compile dans les builds estampillés, preview et les fixtures non estampillées. `update-core` n'est **pas** modifié |
-| `src/main.cpp` | `wWinMain` → `StartEngine()` ; hôte du contrôleur (loader, sonde, création, vue Modal, relance) ; `WM_APP+41` du worker ; `StopEngineStart()` au `WM_DESTROY` ; `Fail` reste pour les erreurs après démarrage |
+| `src/webview2-runtime.h` | Classification, lecture des overrides, contrôleur de récupération (machine d'état pure, générations, bornes, textes). Le loader est chargé par `main.cpp` (`PrepareLoader`), pas par ce fichier |
+| `src/webview2-install.h` | Politique d'URL, WinHTTP fail-closed + échéance, dossier privé, revendication par utilisateur, vérification Authenticode/éditeur/produit, lancement suspendu, worker annulable. Header-only ; winhttp/wintrust/crypt32 résolus à l'exécution depuis System32 (`LOAD_LIBRARY_SEARCH_SYSTEM32`) : aucune nouvelle dépendance de link. `update-core` n'est **pas** modifié |
+| `src/main.cpp` | `wWinMain` → `StartEngine()` ; hôte du contrôleur ; `WM_APP+41` du worker ; `StopEngineStart()` au `WM_DESTROY` ; `RunPendingRelaunch()` après la boucle ; `Log` sérialisé ; `Fail` reste pour les erreurs après démarrage |
 | `tests/update-integration/run_all.py` | lance aussi `tests/webview2-runtime/run_tests.py` (aucun changement de `build.py`, du paquet ni du format de mise à jour) |
-| `tests/webview2-runtime/` | `run_tests.py`, logique/contrôleur, installeur (faux réseau, faux setup lancé pour de vrai, vraie confiance sur fichiers signés locaux et sur le vrai bootstrapper non exécuté), faux `WebView2Loader.dll` + fixture hôte sur le vrai `main.cpp` (6 scénarios, captures), sonde lecture seule du vrai loader |
+| `tests/webview2-runtime/` | logique/contrôleur ; installeur (faux réseau, WinHTTP simulé, faux setup lancé pour de vrai, deux processus réels, vraie confiance) ; faux `WebView2Loader.dll` + fixture hôte sur le vrai `main.cpp` (7 scénarios, captures) ; sonde lecture seule du vrai loader |
 
 ## 6. Points d'intégration pour le chantier fenêtres privées / processus séparés
 
 - **Init** : `StartEngine()` (appelé dans `wWinMain` après la fenêtre, les surfaces et `StartUpdates()`)
   remplace le bloc `LoadLibraryExW … CreateCoreWebView2EnvironmentWithOptions`. Tout autre
-  processus navigateur (fenêtre privée, processus séparé) doit appeler le même `StartEngine()` (ou
-  un `WebView2Runtime::Controller` avec les mêmes hooks : même `EngineOptions`, même profil) et
-  ne restaurer sa session que dans `EngineReady()` (hook `ready`, appelé une seule fois).
-- **Cleanup** : `StopEngineStart()` au `WM_DESTROY` (annule téléchargement/vérification ; un
-  installateur Microsoft déjà lancé n'est jamais tué), puis `engineStart.reset()` avant
-  `FreeLibrary(loader)` en fin de `wWinMain`.
-- **Handoff updater (#60)** : inchangé. `ForwardToInstalled()` reste avant toute fenêtre ; une
-  fermeture pour installation de mise à jour (`closeWithoutPrompt`) passe par le même `WM_CLOSE`.
-  La relance WebView2 (`RelaunchBrowser`) relance l'exécutable courant (déjà résolu par le
-  forwarding) avec ses arguments + `--webview2-recovered` ; un processus privé devra transmettre
-  son propre marqueur de mode, jamais celui d'une session normale.
-- Le contrôleur ne touche jamais au profil ni à la session ; les transactions du store
-  interprocessus n'ont rien à changer. Une instance en récupération n'écrit pas `session`
-  (`sessionReady` reste faux).
-- Si plusieurs processus partagent un dossier de données, une installation doit rester unique :
-  à coordonner (mutex nommé par utilisateur) lors de l'arrivée des processus séparés ; aujourd'hui
-  un seul processus navigateur par lancement.
+  processus navigateur doit appeler le même `StartEngine()` (ou un `WebView2Runtime::Controller`
+  avec les mêmes hooks : mêmes `EngineOptions`, **son propre** dossier de données/profil) et ne
+  restaurer sa session que dans `EngineReady()` (hook `ready`, appelé une seule fois).
+- **Cleanup** : `StopEngineStart()` au `WM_DESTROY` de chaque fenêtre hôte, `engineStart.reset()`
+  avant `FreeLibrary(loader)`, puis `RunPendingRelaunch()` **après** la boucle (hook post-fermeture :
+  une fenêtre privée qui l'utilisera devra transmettre son mode / id / session de fenêtre, jamais
+  `launchArgs` + `--webview2-recovered` d'une session normale).
+- **Unicité de l'installation** : déjà inter-processus (marqueur par utilisateur + mutex), donc
+  indépendante du dossier de données, du worktree et du mode privé. Rien à ajouter côté store.
+- **Textes** : « Votre profil et vos onglets sont conservés » vaut pour la fenêtre normale ; un
+  processus privé devra passer un texte adapté (contrat à reprendre par l'intégrateur).
+- **Handoff updater (#60)** : inchangé. `ForwardToInstalled()` reste avant toute fenêtre ;
+  `closeWithoutPrompt` est seulement réutilisé pour la relance. Une instance en récupération
+  n'écrit pas `session` (`sessionReady` reste faux).
 
-## 7. Résultats (11 nov.)
+## 7. Revue indépendante 304775b — disposition des constats
 
-- `python -I tests/webview2-runtime/run_tests.py --bootstrapper <MicrosoftEdgeWebview2Setup.exe téléchargé> --loader <loader livré 0.3.132>` :
-  `runtime_test` 141 vérifications, `install_test` 50, `host_test` 6 scénarios (recover 15,
-  not-detected 14, loader-missing 8, denied 12, close-during-install 10, relaunch 13), 0 échec.
+| Constat | Disposition | Preuve |
+|---|---|---|
+| P2-1 annulation / lancement | **Corrigé.** Annulation testée avant `CreateProcessW` ; processus créé suspendu, revendication, dernier test, puis `ResumeThread` ; jamais repris ⇒ terminé (aucun code exécuté) ; repris ⇒ jamais tué, issue *Detached* distincte ; textes et logs selon l'issue réelle du worker | Test du relecteur inchangé : avant `REPRODUCED` ×2, après `NOT REPRODUCED` ×2. `install_test` : annulation déjà posée, annulation pendant suspension, revendication refusée, annulation en cours d'exécution (vivant, identité vérifiable, termine seul) |
+| P2-2 deux bootstrappers entre processus | **Corrigé.** Marqueur par utilisateur (PID + date de création + dossier) écrit sous mutex **avant** la reprise ; refus si vivant ; marqueur illisible / processus mort / PID recyclé = périmé, remplacé ; jamais de kill sur la foi d'un marqueur. UI : « déjà en cours », Installer désactivé, Réessayer réévalue | `install_test` : deux vrais processus (le premier « quitte », son faux setup continue ; le second est refusé sans télécharger ; après sortie, nettoyage et nouvelle installation) ; délai dépassé ; marqueurs invalides / PID recyclé ; `host_test install-running` |
+| P3-1 `SetOption` non vérifié | **Corrigé** (échec fermé) + `REDIRECT_POLICY_NEVER` vérifié sur la session | WinHTTP simulé : option refusée ⇒ aucun `SendRequest` ; redirection hors Microsoft refusée avant lecture |
+| P3-2 ressource de version par chemin (MUI) | **Corrigé** : lecture depuis le mappage du handle verrouillé | Vrai bootstrapper : `MicrosoftEdgeUpdateSetup.exe` ; loader SDK : `WebView2Loader.dll` ; image tronquée : refus |
+| P3-3 identité produit partielle | **Documenté** (§4) : « Edge Update signé Microsoft via lien officiel », pas « prouvé WebView2 » | — |
+| P3-4 pas d'échéance globale | **Corrigé** : 5 min (injectable) ; statut de chaque phase dit ce que fait Quitter | WinHTTP simulé au compte-gouttes (300 ms injectés) et annulation en cours |
+| P3-5 nettoyage après worker détaché | **Corrigé dans la mesure du possible** : issue réelle et résidu journalisés ; dossier d'un installateur encore actif enregistré dans le marqueur et supprimé plus tard, lui seul ; pas de promesse si le processus se termine pendant une vérification longue (journalisé) ; aucun balayage de `%TEMP%` | `install_test` (résidu exact, nettoyage différé, dossier de forme étrangère jamais supprimé) |
+| P3-6 relance avant « effacer en quittant » | **Corrigé** : relance après la boucle de messages, donc après `WM_CLOSE`/nettoyage/`WM_DESTROY` | `host_test relaunch` avec `clearOnExit` : rien n'est lancé pendant la fermeture ; l'enfant trouve l'historique déjà effacé (`sentinel=0`) |
+| P3-7 crochet de test dans le produit | **Corrigé** : sous `BROWSER_WEBVIEW2_TEST_HOOKS` (fixture seule) | Binaire estampillé : aucune chaîne de la fixture |
+| P3-8 doc RtlGenRandom / `Loader` | **Corrigé** (§4, §5) | — |
+| P3-9 UX | **Corrigé** : après « installé mais introuvable », plus de bouton Installer, corps honnête, « Ouvrir la page Microsoft » en principal ; pendant l'installation « Il continue même si vous quittez » ; texte privé = contrat d'intégration (§6) | Captures 2, 3, 6 |
+| Loader sans export de sonde | Conservé et voulu : `0x80070002` de `CreateEnvironment` est documenté « Could not find Edge installation » ; chemin mort avec le loader livré | `runtime_test` |
+
+## 8. Résultats (11 nov., tests simulés — distincts du réel)
+
+- `python -I tests/webview2-runtime/run_tests.py --bootstrapper <MicrosoftEdgeWebview2Setup.exe téléchargé, jamais exécuté>` :
+  `runtime_test` 153, `install_test` 91 (90 sans bootstrapper), `host_test` 7 scénarios (recover 16,
+  not-detected 16, loader-missing 8, denied 12, close-during-install 12, relaunch 18,
+  install-running 14), 0 échec.
 - Confiance réelle : loader du SDK = Microsoft OK (refusé comme installateur : produit inattendu) ;
-  copie altérée d'un octet = `0x80096010` (TRUST_E_BAD_DIGEST) ; programme non signé =
-  `0x800B0100` (TRUST_E_NOSIGNATURE) ; `python.exe` (Python Software Foundation, signature
-  valide) = éditeur refusé ; vrai bootstrapper = accepté (racine applicative 2011).
-- Avant/après sur ce PC, en lecture seule : avant, `CreateEnvironment : 0x80070002` → boîte fatale ;
-  après, la sonde du loader livré 0.3.132 rend `0x80070002`, décision *runtime absent,
-  installation proposée* (`loader_probe`), dialogue natif au lieu de la boîte fatale
-  (captures `design/webview2-startup-recovery/*.png`, rendues par la fixture hôte).
-- Build estampillé complet (`tools/release/build.py`) et compilation non estampillée : OK, sans
-  nouvelle dépendance de link.
+  copie altérée d'un octet = `0x80096010` ; non signé = `0x800B0100` ; `python.exe` (Python
+  Software Foundation) = éditeur refusé ; vrai bootstrapper = accepté (racine applicative 2011).
+- Réel, lecture seule, sur ce PC : la sonde du loader livré 0.3.132 rend `0x80070002`, décision
+  *runtime absent, installation proposée* (`loader_probe`) — aucun environnement créé, aucun
+  installateur lancé.
+- Build estampillé (`tools/release/build.py`) OK ; fixtures existantes incluant `main.cpp`
+  (shortcuts, navigation_errors, tab_drag, split_ui, accessibility, bookmarks_ui) OK.
 
-## 8. Limites
+## 9. Limites
 
-- Les tests simulent l'installation : ils ne prouvent ni une installation réelle, ni la cause de
-  la disparition intermittente. L'installateur n'a **pas** été exécuté sur ce PC (état à préserver).
-- Si une stratégie d'entreprise bloque l'installation, le code de sortie est montré et le lien
-  manuel proposé ; aucun contournement.
-- Un registre incohérent que le bootstrapper refuse de corriger (sortie 0, runtime introuvable)
-  est signalé tel quel ; pas de « réparation » non documentée, pas de désinstallation, pas
-  d'écriture registre.
-- Au plus 2 installations lancées par l'utilisateur par processus ; aucune après un installateur
-  terminé sans runtime détecté, ni pendant qu'un installateur lancé tourne encore (délai de
-  10 min dépassé). Chaque tentative exige un clic.
-- Le lien « Page Microsoft WebView2 » s'ouvre dans le navigateur par défaut ; si c'est ce
-  navigateur, sa nouvelle instance affichera le même dialogue (pas d'autre canal sans WebView2).
-- La révocation est vérifiée sur toute la chaîne : si le proxy bloque l'accès aux CRL/OCSP de
-  Microsoft, la signature est refusée (code affiché) plutôt que de relâcher la vérification.
-- Le bootstrapper télécharge lui-même le runtime ; ses propres échecs (stratégie, réseau) ne sont
-  connus que par son code de sortie, affiché tel quel.
+- Les tests simulent l'installation : ils ne prouvent ni une installation réelle, ni le
+  comportement d'Edge Update sur un runtime partiel sans enregistrement, ni la cause de la
+  disparition intermittente. L'installateur n'a **pas** été exécuté sur ce PC (état préservé).
+- Plantage du navigateur entre la création suspendue et la reprise : le processus suspendu n'a
+  rien exécuté et ne détient pas de marqueur valide ; il reste suspendu (inoffensif) jusqu'à la
+  fin de session. Plantage pendant que l'installateur tourne : le marqueur reste valide tant
+  qu'il vit, puis devient périmé et est nettoyé.
+- Mutex `Local\` : la coordination couvre les processus d'une même session Windows ; le marqueur
+  (par utilisateur) reste vérifié sous ce mutex.
+- Une stratégie d'entreprise qui bloque l'installation est visible par le code de sortie ; aucun
+  contournement. Pas de « réparation » non documentée, de désinstallation ni d'écriture registre.
+- Au plus 2 installations lancées par l'utilisateur par processus, aucune pendant qu'un
+  installateur vit (même lancé par une autre instance), aucune après un installateur allé au bout
+  sans runtime détecté. Chaque tentative exige un clic.
+- Le lien Microsoft s'ouvre dans le navigateur par défaut ; si c'est ce navigateur, sa nouvelle
+  instance affiche le même dialogue.
+- Révocation vérifiée sur toute la chaîne : un proxy qui bloque CRL/OCSP fait refuser la signature.

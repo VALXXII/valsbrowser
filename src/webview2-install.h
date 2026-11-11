@@ -4,24 +4,34 @@
 //
 //   1. GET https://go.microsoft.com/fwlink/p/?LinkId=2124703 — the « Get the Link » address of
 //      https://developer.microsoft.com/microsoft-edge/webview2/ (Evergreen Bootstrapper). HTTPS
-//      only (TLS 1.2/1.3, system certificate validation untouched), redirects followed manually
-//      and only to https://microsoft.com or https://*.microsoft.com on port 443, ≤ 16 MiB.
+//      only (TLS 1.2/1.3, system certificate validation untouched); WinHTTP's own redirects,
+//      cookies and authentication are switched off and checked (fail closed); redirects are
+//      followed manually and only to https://microsoft.com or https://*.microsoft.com on port 443;
+//      ≤ 16 MiB and ≤ 5 min in total.
 //   2. Written into a fresh directory with a random name under the user's temp folder, DACL
 //      protected (current user + SYSTEM); re-opened read-only, deny-write/deny-delete, and that
 //      handle stays open through verification and execution.
 //   3. WinVerifyTrust (WINTRUST_ACTION_GENERIC_VERIFY_V2, whole-chain revocation) on that handle,
 //      then the signer chain must end in a Microsoft root (CertVerifyCertificateChainPolicy,
 //      CERT_CHAIN_POLICY_MICROSOFT_ROOT) AND the signing certificate must be CN/O « Microsoft
-//      Corporation », AND the signed version resource must name MicrosoftEdgeUpdateSetup.exe.
-//   4. CreateProcessW(<file>, "\"<file>\" /silent /install") — the documented command; no shell,
-//      no inherited handles, no elevation (an unelevated run installs per-user, distribution doc).
-//   5. The file and directory are removed afterwards (best effort, logged by the host).
+//      Corporation », AND the version resource read from that same locked image (no MUI file)
+//      must name MicrosoftEdgeUpdateSetup.exe. That proves « Microsoft Edge Update setup signed by
+//      Microsoft, served by the official link »; which product it installs is carried by a tag
+//      outside the Authenticode hash, so « WebView2 » itself is not proven by the signature.
+//   4. One installer per user at a time, across processes (InstallClaim): the setup is created
+//      SUSPENDED, the per-user marker (pid + creation time) is written under a named mutex, the
+//      cancel request is checked, and only then is it resumed. A process that was never resumed
+//      has run no code and is terminated; a resumed installer is never killed.
+//      Command: "<file>" /silent /install — documented; no shell, no inherited handles, no
+//      elevation (an unelevated run installs per-user, distribution doc).
+//   5. The file and directory are removed afterwards; while the installer runs they stay, and the
+//      next claim after its exit removes exactly the folder recorded in the marker.
 //
-// Link-free: winhttp/wintrust/crypt32/version are resolved at run time from System32 only, so this
-// header compiles into every build of main.cpp (stamped, preview, unstamped fixtures) without new
-// link flags, and the updater's GitHub transport (update-core) is not touched.
-// Tests replace the network, trust and process steps through `Effects`; nothing in production
-// reads a variable or flag that could relax the URL, TLS or signature checks.
+// Link-free: winhttp/wintrust/crypt32 are resolved at run time from System32 only, so this header
+// compiles into every build of main.cpp (stamped, preview, unstamped fixtures) without new link
+// flags, and the updater's GitHub transport (update-core) is not touched.
+// Tests replace the network, trust and process steps through `Effects` and the API table; nothing
+// in production reads a variable or flag that could relax the URL, TLS or signature checks.
 #include <windows.h>
 #include <winhttp.h>
 #include <wincrypt.h>
@@ -51,6 +61,7 @@ inline const wchar_t* ExpectedOriginalName() { return L"MicrosoftEdgeUpdateSetup
 inline const wchar_t* FileName() { return L"MicrosoftEdgeWebview2Setup.exe"; }
 inline constexpr std::uint64_t MaxBytes = 16ull << 20;
 inline constexpr DWORD InstallTimeoutMs = 10 * 60 * 1000;
+inline constexpr DWORD DownloadDeadlineMs = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------- URL policy
 inline std::wstring Lower(std::wstring s) { for (auto& c : s) if (c >= L'A' && c <= L'Z') c = wchar_t(c - L'A' + L'a'); return s; }
@@ -91,10 +102,11 @@ template <class T> inline bool Resolve(HMODULE m, const char* name, T& out) {
     out = m ? reinterpret_cast<T>(reinterpret_cast<void (*)()>(GetProcAddress(m, name))) : nullptr;
     return out != nullptr;
 }
+// Function table. Get() is the System32 one; tests copy it and replace entries (no network).
 class Api {
 public:
-    static Api& Get() { static Api api; return api; }
-    bool http = false, trust = false, version = false;
+    static const Api& Get() { static const Api api = Load(); return api; }
+    bool http = false, trust = false;
     decltype(&::WinHttpOpen) Open = nullptr; decltype(&::WinHttpSetTimeouts) SetTimeouts = nullptr;
     decltype(&::WinHttpSetOption) SetOption = nullptr; decltype(&::WinHttpConnect) Connect = nullptr;
     decltype(&::WinHttpOpenRequest) OpenRequest = nullptr; decltype(&::WinHttpSendRequest) SendRequest = nullptr;
@@ -103,26 +115,24 @@ public:
     decltype(&::WinVerifyTrust) VerifyTrust = nullptr; decltype(&::WTHelperProvDataFromStateData) ProvData = nullptr;
     decltype(&::WTHelperGetProvSignerFromChain) ProvSigner = nullptr;
     decltype(&::CertVerifyCertificateChainPolicy) ChainPolicy = nullptr; decltype(&::CertGetNameStringW) NameString = nullptr;
-    decltype(&::GetFileVersionInfoSizeW) VersionSize = nullptr; decltype(&::GetFileVersionInfoW) VersionInfo = nullptr;
-    decltype(&::VerQueryValueW) VersionQuery = nullptr;
-private:
-    Api() {
+    static Api Load() {
+        Api a;
         auto load = [](const wchar_t* dll) { return LoadLibraryExW(dll, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32); };
-        HMODULE h = load(L"winhttp.dll"), t = load(L"wintrust.dll"), c = load(L"crypt32.dll"), v = load(L"version.dll");
-        http = Resolve(h, "WinHttpOpen", Open) & Resolve(h, "WinHttpSetTimeouts", SetTimeouts) & Resolve(h, "WinHttpSetOption", SetOption) &
-               Resolve(h, "WinHttpConnect", Connect) & Resolve(h, "WinHttpOpenRequest", OpenRequest) & Resolve(h, "WinHttpSendRequest", SendRequest) &
-               Resolve(h, "WinHttpReceiveResponse", ReceiveResponse) & Resolve(h, "WinHttpQueryHeaders", QueryHeaders) &
-               Resolve(h, "WinHttpReadData", ReadData) & Resolve(h, "WinHttpCloseHandle", CloseHandle);
-        trust = Resolve(t, "WinVerifyTrust", VerifyTrust) & Resolve(t, "WTHelperProvDataFromStateData", ProvData) &
-                Resolve(t, "WTHelperGetProvSignerFromChain", ProvSigner) & Resolve(c, "CertVerifyCertificateChainPolicy", ChainPolicy) &
-                Resolve(c, "CertGetNameStringW", NameString);
-        version = Resolve(v, "GetFileVersionInfoSizeW", VersionSize) & Resolve(v, "GetFileVersionInfoW", VersionInfo) & Resolve(v, "VerQueryValueW", VersionQuery);
+        HMODULE h = load(L"winhttp.dll"), t = load(L"wintrust.dll"), c = load(L"crypt32.dll");
+        a.http = Resolve(h, "WinHttpOpen", a.Open) & Resolve(h, "WinHttpSetTimeouts", a.SetTimeouts) & Resolve(h, "WinHttpSetOption", a.SetOption) &
+                 Resolve(h, "WinHttpConnect", a.Connect) & Resolve(h, "WinHttpOpenRequest", a.OpenRequest) & Resolve(h, "WinHttpSendRequest", a.SendRequest) &
+                 Resolve(h, "WinHttpReceiveResponse", a.ReceiveResponse) & Resolve(h, "WinHttpQueryHeaders", a.QueryHeaders) &
+                 Resolve(h, "WinHttpReadData", a.ReadData) & Resolve(h, "WinHttpCloseHandle", a.CloseHandle);
+        a.trust = Resolve(t, "WinVerifyTrust", a.VerifyTrust) & Resolve(t, "WTHelperProvDataFromStateData", a.ProvData) &
+                  Resolve(t, "WTHelperGetProvSignerFromChain", a.ProvSigner) & Resolve(c, "CertVerifyCertificateChainPolicy", a.ChainPolicy) &
+                  Resolve(c, "CertGetNameStringW", a.NameString);
+        return a;
     }
 };
 
 // ---------------------------------------------------------------- fetch
 struct FetchResult {
-    enum Status { Ok, Network, Http, Rejected, TooLarge, Cancelled } status = Network;
+    enum Status { Ok, Network, Http, Rejected, TooLarge, Cancelled, TimedOut } status = Network;
     DWORD code = 0;   // HTTP status or Win32 error
 };
 class Fetch {
@@ -135,71 +145,83 @@ public:
 };
 
 // WinHTTP with the same limits as the updater's transport (update-core.cpp): system proxy,
-// 10/10/15/20 s timeouts, TLS 1.2 (+1.3), no cookies, no authentication, ≤ 6 manual redirects.
+// 10/10/15/20 s per-operation timeouts, TLS 1.2 (+1.3), ≤ 6 manual redirects — plus a total
+// deadline. Automatic redirects, cookies and authentication are disabled at session level
+// (redirect policy NEVER) and per request (DISABLE_FEATURE); if either cannot be set, the
+// request is refused before it is sent (fail closed).
 class WinHttpFetch : public Fetch {
 public:
-    WinHttpFetch() {
-        auto& api = Api::Get();
-        if (!api.http) return;
-        session_ = api.Open(L"browser-webview2-setup/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!session_) session_ = api.Open(L"browser-webview2-setup/1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!session_) return;
-        api.SetTimeouts(session_, 10000, 10000, 15000, 20000);
+    explicit WinHttpFetch(const Api& api = Api::Get(), DWORD deadlineMs = DownloadDeadlineMs) : api_(api), deadlineMs_(deadlineMs) {
+        if (!api_.http) { error_ = ERROR_PROC_NOT_FOUND; return; }
+        session_ = api_.Open(L"browser-webview2-setup/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session_) session_ = api_.Open(L"browser-webview2-setup/1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session_) { error_ = GetLastError(); return; }
+        api_.SetTimeouts(session_, 10000, 10000, 15000, 20000);
         DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
 #ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
         protocols |= WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
 #endif
-        if (!api.SetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
+        if (!api_.SetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
             protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-            api.SetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
+            api_.SetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
+        }
+        DWORD never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        if (!api_.SetOption(session_, WINHTTP_OPTION_REDIRECT_POLICY, &never, sizeof(never))) {
+            error_ = GetLastError(); api_.CloseHandle(session_); session_ = nullptr;   // fail closed
         }
     }
-    ~WinHttpFetch() override { if (session_) Api::Get().CloseHandle(session_); }
+    ~WinHttpFetch() override { if (session_) api_.CloseHandle(session_); }
     void Abort() override {
         std::lock_guard<std::mutex> lock(mutex_);
         aborted_ = true;
-        if (request_) { Api::Get().CloseHandle(request_); request_ = nullptr; }
+        if (request_) { api_.CloseHandle(request_); request_ = nullptr; }
     }
     FetchResult Get(const std::wstring& startUrl, std::uint64_t maxBytes, const std::function<bool(const void*, std::size_t)>& sink,
                     const std::function<void(std::uint64_t, std::uint64_t)>& progress, const std::atomic<bool>& cancel) override {
-        auto& api = Api::Get();
         FetchResult r;
-        if (!session_) { r.code = ERROR_PROC_NOT_FOUND; return r; }
+        if (!session_) { r.status = FetchResult::Rejected; r.code = error_ ? error_ : ERROR_INVALID_HANDLE; return r; }
+        const ULONGLONG deadline = GetTickCount64() + deadlineMs_;
+        auto late = [&] { return GetTickCount64() > deadline; };
         std::wstring url = startUrl;
         for (int hop = 0; hop < 6; ++hop) {
             if (cancel.load()) return r.status = FetchResult::Cancelled, r;
+            if (late()) return r.status = FetchResult::TimedOut, r.code = ERROR_TIMEOUT, r;
             HttpsUrl u;
             if (!ParseHttpsUrl(url, u) || !IsMicrosoftHost(u.host)) return r.status = FetchResult::Rejected, r;
-            HINTERNET connect = api.Connect(session_, u.host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+            HINTERNET connect = api_.Connect(session_, u.host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
             if (!connect) return r.code = GetLastError(), r;
-            HINTERNET request = api.OpenRequest(connect, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-            if (!request) { r.code = GetLastError(); api.CloseHandle(connect); return r; }
+            HINTERNET request = api_.OpenRequest(connect, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+            if (!request) { r.code = GetLastError(); api_.CloseHandle(connect); return r; }
             DWORD disable = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
-            api.SetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable));
+            if (!api_.SetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable))) {
+                r.status = FetchResult::Rejected; r.code = GetLastError();   // never send a request that could follow redirects itself
+                api_.CloseHandle(request); api_.CloseHandle(connect);
+                return r;
+            }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if (aborted_ || cancel.load()) { api.CloseHandle(request); api.CloseHandle(connect); return r.status = FetchResult::Cancelled, r; }
+                if (aborted_ || cancel.load()) { api_.CloseHandle(request); api_.CloseHandle(connect); return r.status = FetchResult::Cancelled, r; }
                 request_ = request;
             }
             auto finish = [&](FetchResult res) {
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    if (request_) api.CloseHandle(request_);
+                    if (request_) api_.CloseHandle(request_);
                     request_ = nullptr;
                     if (aborted_ || cancel.load()) res.status = FetchResult::Cancelled;
                 }
-                api.CloseHandle(connect);
+                api_.CloseHandle(connect);
                 return res;
             };
-            if (!api.SendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !api.ReceiveResponse(request, nullptr)) {
+            if (!api_.SendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !api_.ReceiveResponse(request, nullptr)) {
                 r.code = GetLastError();   // includes ERROR_WINHTTP_SECURE_FAILURE: TLS is never relaxed
                 return finish(r);
             }
             DWORD status = 0, size = sizeof(status);
-            api.QueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
+            api_.QueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
             if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
                 wchar_t location[4096]; DWORD bytes = sizeof(location);
-                if (!api.QueryHeaders(request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, location, &bytes, WINHTTP_NO_HEADER_INDEX)) {
+                if (!api_.QueryHeaders(request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, location, &bytes, WINHTTP_NO_HEADER_INDEX)) {
                     r.status = FetchResult::Http; r.code = status; return finish(r);
                 }
                 std::wstring next(location, bytes / sizeof(wchar_t));
@@ -210,15 +232,16 @@ public:
             }
             if (status != 200) { r.status = FetchResult::Http; r.code = status; return finish(r); }
             std::uint64_t length = 0; wchar_t text[32]; DWORD textBytes = sizeof(text);
-            if (api.QueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, text, &textBytes, WINHTTP_NO_HEADER_INDEX))
+            if (api_.QueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, text, &textBytes, WINHTTP_NO_HEADER_INDEX))
                 length = std::wcstoull(text, nullptr, 10);
             if (length > maxBytes) { r.status = FetchResult::TooLarge; return finish(r); }
             std::vector<char> buffer(64 * 1024);
             std::uint64_t total = 0;
             for (;;) {
                 if (cancel.load()) { r.status = FetchResult::Cancelled; return finish(r); }
+                if (late()) { r.status = FetchResult::TimedOut; r.code = ERROR_TIMEOUT; return finish(r); }   // a trickling server
                 DWORD got = 0;
-                if (!api.ReadData(request, buffer.data(), DWORD(buffer.size()), &got)) { r.code = GetLastError(); return finish(r); }
+                if (!api_.ReadData(request, buffer.data(), DWORD(buffer.size()), &got)) { r.code = GetLastError(); return finish(r); }
                 if (!got) break;
                 total += got;
                 if (total > maxBytes) { r.status = FetchResult::TooLarge; return finish(r); }
@@ -233,11 +256,52 @@ public:
         return r;
     }
 private:
+    Api api_;
+    DWORD deadlineMs_;
+    DWORD error_ = 0;
     HINTERNET session_ = nullptr;
     std::mutex mutex_;
     HINTERNET request_ = nullptr;
     bool aborted_ = false;
 };
+
+// ---------------------------------------------------------------- identity helpers
+// RtlGenRandom (advapi32 SystemFunction036), the CSPRNG behind rand_s.
+inline bool Random(void* out, ULONG size) {
+    using Gen = BOOLEAN(WINAPI*)(PVOID, ULONG);
+    static Gen gen = [] { Gen g = nullptr; Resolve(LoadLibraryExW(L"advapi32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32), "SystemFunction036", g); return g; }();
+    return gen && gen(out, size);
+}
+inline DWORD UserSid(std::wstring& out) {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return GetLastError();
+    DWORD size = 0; GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+    std::vector<BYTE> buffer(size ? size : 1);
+    DWORD error = ERROR_SUCCESS;
+    if (!GetTokenInformation(token, TokenUser, buffer.data(), size, &size)) error = GetLastError();
+    else {
+        LPWSTR text = nullptr;
+        if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, &text)) error = GetLastError();
+        else { out = text; LocalFree(text); }
+    }
+    CloseHandle(token);
+    return error;
+}
+// A folder this installer could have created: <anything>\browser-wv2-<24 lowercase hex>.
+inline bool IsPrivateDirPath(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L'\\');
+    if (slash == std::wstring::npos || slash == 0) return false;
+    const std::wstring name = path.substr(slash + 1), prefix = L"browser-wv2-";
+    if (name.size() != prefix.size() + 24 || name.compare(0, prefix.size(), prefix) != 0) return false;
+    for (size_t i = prefix.size(); i < name.size(); ++i) if (!((name[i] >= L'0' && name[i] <= L'9') || (name[i] >= L'a' && name[i] <= L'f'))) return false;
+    return true;
+}
+// Removes only the setup this installer wrote (by name), then the folder if it is then empty.
+inline bool RemovePrivateDir(const std::wstring& path) {
+    if (!IsPrivateDirPath(path)) return false;
+    DeleteFileW((path + L"\\" + FileName()).c_str());
+    return RemoveDirectoryW(path.c_str()) != FALSE || GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
+}
 
 // ---------------------------------------------------------------- private directory
 // Random name (RtlGenRandom), protected DACL: the current user and SYSTEM only.
@@ -273,39 +337,141 @@ public:
         return result;
     }
     const std::wstring& Path() const { return path_; }
-    // Removes only the files this installer wrote (by name) and the directory itself.
+    std::wstring Name() const { const size_t s = path_.find_last_of(L'\\'); return s == std::wstring::npos ? path_ : path_.substr(s + 1); }
     bool Remove() {
         if (path_.empty()) return true;
-        DeleteFileW((path_ + L"\\" + FileName()).c_str());
-        const bool ok = RemoveDirectoryW(path_.c_str()) != FALSE;
+        const bool ok = RemovePrivateDir(path_);
         if (ok) path_.clear();
         return ok;
     }
-    void Release() { path_.clear(); }   // leave it (installer still running)
+    void Release() { path_.clear(); }   // left to the running installer (recorded in the claim marker)
 private:
-    // RtlGenRandom (advapi32 SystemFunction036), the CSPRNG behind rand_s.
-    static bool Random(void* out, ULONG size) {
-        using Gen = BOOLEAN(WINAPI*)(PVOID, ULONG);
-        static Gen gen = [] { Gen g = nullptr; Resolve(LoadLibraryExW(L"advapi32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32), "SystemFunction036", g); return g; }();
-        return gen && gen(out, size);
-    }
-    static DWORD UserSid(std::wstring& out) {
-        HANDLE token = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return GetLastError();
-        DWORD size = 0; GetTokenInformation(token, TokenUser, nullptr, 0, &size);
-        std::vector<BYTE> buffer(size ? size : 1);
-        DWORD error = ERROR_SUCCESS;
-        if (!GetTokenInformation(token, TokenUser, buffer.data(), size, &size)) error = GetLastError();
-        else {
-            LPWSTR text = nullptr;
-            if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, &text)) error = GetLastError();
-            else { out = text; LocalFree(text); }
-        }
-        CloseHandle(token);
-        return error;
-    }
     std::wstring path_;
 };
+
+// ---------------------------------------------------------------- one installer per user
+// Marker file "pid=<n>\ncreated=<FILETIME as u64>\ndir=<private folder>\n", read and written only
+// under a named mutex. A marker counts only if that PID is alive AND its creation time matches
+// (PID reuse cannot impersonate it); anything else (garbage, dead process, other creation time)
+// is stale and replaced. Nothing is ever killed on the strength of a marker.
+struct Coordination {
+    std::wstring marker;   // per-user file, independent of the data folder / worktree / mode
+    std::wstring mutex;    // named mutex (per user SID)
+};
+inline Coordination DefaultCoordination() {
+    Coordination c;
+    wchar_t local[MAX_PATH]; const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (n && n < MAX_PATH) c.marker = std::wstring(local, n) + L"\\browser\\webview2-install.lock";
+    std::wstring sid; UserSid(sid);
+    c.mutex = L"Local\\browser-webview2-install-" + sid;
+    return c;
+}
+struct Marker { DWORD pid = 0; std::uint64_t created = 0; std::wstring dir; };
+inline std::uint64_t ProcessCreated(HANDLE process) {
+    FILETIME c{}, e{}, k{}, u{};
+    if (!GetProcessTimes(process, &c, &e, &k, &u)) return 0;
+    return (std::uint64_t(c.dwHighDateTime) << 32) | c.dwLowDateTime;
+}
+inline bool MarkerAlive(const Marker& m) {
+    if (!m.pid || !m.created) return false;
+    HANDLE p = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, m.pid);
+    if (!p) return false;
+    const bool alive = ProcessCreated(p) == m.created && WaitForSingleObject(p, 0) == WAIT_TIMEOUT;
+    CloseHandle(p);
+    return alive;
+}
+inline bool ReadMarker(const std::wstring& path, Marker& out) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    char buffer[2048]; DWORD got = 0;
+    const BOOL ok = ReadFile(f, buffer, sizeof(buffer) - 1, &got, nullptr);
+    CloseHandle(f);
+    if (!ok) return false;
+    buffer[got] = 0;
+    std::string text(buffer);
+    auto field = [&](const char* key) -> std::string {
+        const std::string k = std::string(key) + "=";
+        const size_t at = text.find(k);
+        if (at == std::string::npos || (at && text[at - 1] != '\n')) return {};
+        const size_t end = text.find('\n', at);
+        return text.substr(at + k.size(), end == std::string::npos ? std::string::npos : end - at - k.size());
+    };
+    const std::string pid = field("pid"), created = field("created"), dir = field("dir");
+    if (pid.empty() || created.empty() || pid.find_first_not_of("0123456789") != std::string::npos || created.find_first_not_of("0123456789") != std::string::npos) return false;
+    out.pid = static_cast<DWORD>(std::strtoul(pid.c_str(), nullptr, 10));
+    out.created = std::strtoull(created.c_str(), nullptr, 10);
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir.data(), int(dir.size()), nullptr, 0);
+    out.dir.assign(n > 0 ? n : 0, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir.data(), int(dir.size()), out.dir.data(), n);
+    return true;
+}
+inline bool WriteMarker(const std::wstring& path, const Marker& m) {
+    const size_t slash = path.find_last_of(L'\\');
+    if (slash != std::wstring::npos) CreateDirectoryW(path.substr(0, slash).c_str(), nullptr);
+    char dir[1024] = {};
+    WideCharToMultiByte(CP_UTF8, 0, m.dir.c_str(), -1, dir, sizeof(dir) - 1, nullptr, nullptr);
+    char text[1200];
+    const int len = std::snprintf(text, sizeof(text), "pid=%lu\ncreated=%llu\ndir=%s\n", static_cast<unsigned long>(m.pid), static_cast<unsigned long long>(m.created), dir);
+    const std::wstring temp = path + L".tmp";
+    HANDLE f = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const bool ok = len > 0 && WriteFile(f, text, DWORD(len), &written, nullptr) && written == DWORD(len) && FlushFileBuffers(f);
+    CloseHandle(f);
+    if (!ok || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { DeleteFileW(temp.c_str()); return false; }
+    return true;
+}
+class CoordinationLock {
+public:
+    explicit CoordinationLock(const Coordination& c) {
+        handle_ = CreateMutexW(nullptr, FALSE, c.mutex.c_str());
+        if (!handle_) return;
+        const DWORD w = WaitForSingleObject(handle_, 5000);
+        held_ = w == WAIT_OBJECT_0 || w == WAIT_ABANDONED;   // abandoned: a crashed holder, the marker decides
+    }
+    ~CoordinationLock() { if (held_) ReleaseMutex(handle_); if (handle_) CloseHandle(handle_); }
+    bool Held() const { return held_; }
+private:
+    HANDLE handle_ = nullptr;
+    bool held_ = false;
+};
+// A live installer launched by any browser process of this user, or 0. A stale marker is
+// removed together with the private folder it recorded (and only that folder).
+inline DWORD ActiveInstall(const Coordination& c) {
+    if (c.marker.empty()) return 0;
+    CoordinationLock lock(c);
+    if (!lock.Held()) return 0;
+    Marker m;
+    if (!ReadMarker(c.marker, m)) {
+        if (GetFileAttributesW(c.marker.c_str()) != INVALID_FILE_ATTRIBUTES) DeleteFileW(c.marker.c_str());   // garbage: not a claim
+        return 0;
+    }
+    if (MarkerAlive(m)) return m.pid;
+    if (!m.dir.empty()) RemovePrivateDir(m.dir);
+    DeleteFileW(c.marker.c_str());
+    return 0;
+}
+enum class Claim { Claimed, Busy, Failed };
+// Under the mutex: refuse while another live installer holds the marker, else record ours.
+inline Claim ClaimInstall(const Coordination& c, const Marker& ours, DWORD& busyPid) {
+    busyPid = 0;
+    if (c.marker.empty()) return Claim::Failed;
+    CoordinationLock lock(c);
+    if (!lock.Held()) return Claim::Failed;
+    Marker m;
+    if (ReadMarker(c.marker, m)) {
+        if (MarkerAlive(m) && !(m.pid == ours.pid && m.created == ours.created)) { busyPid = m.pid; return Claim::Busy; }
+        if (!m.dir.empty() && m.dir != ours.dir) RemovePrivateDir(m.dir);   // stale: its installer is gone
+    }
+    return WriteMarker(c.marker, ours) ? Claim::Claimed : Claim::Failed;
+}
+inline void ReleaseInstall(const Coordination& c, const Marker& ours) {
+    if (c.marker.empty()) return;
+    CoordinationLock lock(c);
+    if (!lock.Held()) return;
+    Marker m;
+    if (ReadMarker(c.marker, m) && m.pid == ours.pid && m.created == ours.created) DeleteFileW(c.marker.c_str());
+}
 
 // ---------------------------------------------------------------- trust
 struct TrustResult {
@@ -320,25 +486,94 @@ inline std::wstring CertAttr(PCCERT_CONTEXT cert, const char* oid) {
     api.NameString(cert, CERT_NAME_ATTR_TYPE, 0, const_cast<char*>(oid), buffer, 256);
     return buffer;
 }
-// The signed version resource of the verified file must be Microsoft Edge Update's setup.
-inline bool ExpectedProduct(const std::wstring& path) {
-    auto& api = Api::Get();
-    if (!api.version) return false;
-    DWORD ignored = 0, size = api.VersionSize(path.c_str(), &ignored);
-    if (!size) return false;
-    std::vector<BYTE> data(size);
-    if (!api.VersionInfo(path.c_str(), 0, size, data.data())) return false;
-    struct Lang { WORD language, codepage; }* langs = nullptr; UINT langBytes = 0;
-    if (!api.VersionQuery(data.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void**>(&langs), &langBytes) || !langBytes) return false;
-    for (UINT i = 0; i < langBytes / sizeof(Lang); ++i) {
-        wchar_t key[64]; swprintf(key, 64, L"\\StringFileInfo\\%04x%04x\\OriginalFilename", langs[i].language, langs[i].codepage);
-        wchar_t* value = nullptr; UINT chars = 0;
-        if (api.VersionQuery(data.data(), key, reinterpret_cast<void**>(&value), &chars) && value && Lower(value) == Lower(ExpectedOriginalName())) return true;
-    }
-    return false;
+// OriginalFilename from the RT_VERSION resource of the image behind `file` (the locked handle),
+// parsed from a read-only mapping: no path lookup, so no MUI satellite can substitute it. The
+// resource section is part of the Authenticode-hashed image.
+inline bool ReadOriginalFilename(HANDLE file, std::wstring& out) {
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 512 || size.QuadPart > LONGLONG(MaxBytes)) return false;
+    HANDLE map = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!map) return false;
+    const BYTE* base = static_cast<const BYTE*>(MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0));
+    CloseHandle(map);
+    if (!base) return false;
+    const size_t n = size_t(size.QuadPart);
+    bool found = false;
+    auto in = [&](size_t off, size_t len) { return off <= n && len <= n - off; };
+    do {
+        auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 || !in(size_t(dos->e_lfanew), sizeof(IMAGE_NT_HEADERS32))) break;
+        auto nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) break;
+        const IMAGE_DATA_DIRECTORY* dirs = nullptr;
+        if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+            if (nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_RESOURCE) break;
+            dirs = nt->OptionalHeader.DataDirectory;
+        } else if (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+            if (!in(size_t(dos->e_lfanew), sizeof(IMAGE_NT_HEADERS64))) break;
+            auto nt64 = reinterpret_cast<const IMAGE_NT_HEADERS64*>(nt);
+            if (nt64->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_RESOURCE) break;
+            dirs = nt64->OptionalHeader.DataDirectory;
+        } else break;
+        const DWORD resRva = dirs[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+        if (!resRva) break;
+        const size_t secOff = size_t(dos->e_lfanew) + offsetof(IMAGE_NT_HEADERS32, OptionalHeader) + nt->FileHeader.SizeOfOptionalHeader;
+        const WORD sections = nt->FileHeader.NumberOfSections;
+        if (!in(secOff, size_t(sections) * sizeof(IMAGE_SECTION_HEADER))) break;
+        auto sec = reinterpret_cast<const IMAGE_SECTION_HEADER*>(base + secOff);
+        auto rvaToOff = [&](DWORD rva, size_t& off) {
+            for (WORD i = 0; i < sections; ++i) {
+                const DWORD va = sec[i].VirtualAddress, raw = sec[i].SizeOfRawData;
+                if (rva >= va && rva - va < raw) { off = size_t(sec[i].PointerToRawData) + (rva - va); return in(off, 1); }
+            }
+            return false;
+        };
+        size_t root = 0;
+        if (!rvaToOff(resRva, root)) break;
+        // Resource tree: type RT_VERSION → first name → first language → data entry.
+        auto child = [&](size_t dirOff, int wantId, size_t& next, bool& isDir) {
+            if (!in(dirOff, sizeof(IMAGE_RESOURCE_DIRECTORY))) return false;
+            auto d = reinterpret_cast<const IMAGE_RESOURCE_DIRECTORY*>(base + dirOff);
+            const size_t count = size_t(d->NumberOfNamedEntries) + d->NumberOfIdEntries;
+            const size_t first = dirOff + sizeof(IMAGE_RESOURCE_DIRECTORY);
+            if (!in(first, count * sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY))) return false;
+            auto e = reinterpret_cast<const IMAGE_RESOURCE_DIRECTORY_ENTRY*>(base + first);
+            for (size_t i = 0; i < count; ++i) {
+                if (wantId >= 0 && (e[i].NameIsString || e[i].Id != wantId)) continue;
+                isDir = e[i].DataIsDirectory; next = root + e[i].OffsetToDirectory;
+                return in(next, 1);
+            }
+            return false;
+        };
+        size_t names = 0, langs = 0, dataEntry = 0; bool isDir = false;
+        if (!child(root, int(reinterpret_cast<ULONG_PTR>(RT_VERSION)), names, isDir) || !isDir) break;
+        if (!child(names, -1, langs, isDir) || !isDir) break;
+        if (!child(langs, -1, dataEntry, isDir) || isDir || !in(dataEntry, sizeof(IMAGE_RESOURCE_DATA_ENTRY))) break;
+        auto data = reinterpret_cast<const IMAGE_RESOURCE_DATA_ENTRY*>(base + dataEntry);
+        size_t vOff = 0;
+        if (!rvaToOff(data->OffsetToData, vOff) || !in(vOff, data->Size)) break;
+        // VS_VERSIONINFO: UTF-16 blocks { wLength, wValueLength, wType, szKey, pad, value, pad, children }.
+        // Search the StringFileInfo string named OriginalFilename (any language table).
+        const wchar_t* key = L"OriginalFilename";
+        const size_t keyBytes = (wcslen(key) + 1) * sizeof(wchar_t);
+        const BYTE* v = base + vOff; const size_t vLen = data->Size;
+        for (size_t at = 0; at + 6 + keyBytes <= vLen; at += 2) {
+            if (memcmp(v + at + 6, key, keyBytes) != 0) continue;
+            WORD blockLen = 0, valueLen = 0; memcpy(&blockLen, v + at, 2); memcpy(&valueLen, v + at + 2, 2);
+            size_t value = (at + 6 + keyBytes + 3) & ~size_t(3);
+            if (!valueLen || blockLen < 6 || at + blockLen > vLen || value + size_t(valueLen) * 2 > vLen) continue;
+            std::wstring s(reinterpret_cast<const wchar_t*>(v + value), valueLen);
+            while (!s.empty() && s.back() == L'\0') s.pop_back();
+            out = s; found = true;
+            break;
+        }
+    } while (false);
+    UnmapViewOfFile(base);
+    return found;
 }
 // `file` is the open, deny-write handle of `path`. Requires: Authenticode valid (whole-chain
-// revocation), chain ending in a Microsoft root, signer CN and O = Microsoft Corporation.
+// revocation), chain ending in a Microsoft root, signer CN and O = Microsoft Corporation, and
+// (requireBootstrapper) the Edge Update setup's version resource from that same image.
 inline TrustResult VerifyMicrosoftSignature(HANDLE file, const std::wstring& path, bool requireBootstrapper = true) {
     auto& api = Api::Get();
     TrustResult result;
@@ -357,6 +592,8 @@ inline TrustResult VerifyMicrosoftSignature(HANDLE file, const std::wstring& pat
             result.code = static_cast<DWORD>(TRUST_E_NOSIGNATURE);
         } else {
             bool microsoftRoot = false;
+            // dwFlags = 0 alone REJECTS the real bootstrapper (root « Microsoft Root Certificate
+            // Authority 2011 »); the documented application-root flag accepts it. Both are Microsoft roots only.
             for (DWORD flags : {DWORD(0), DWORD(MICROSOFT_ROOT_CERT_CHAIN_POLICY_CHECK_APPLICATION_ROOT_FLAG)}) {
                 CERT_CHAIN_POLICY_PARA para{}; para.cbSize = sizeof(para); para.dwFlags = flags;
                 CERT_CHAIN_POLICY_STATUS policy{}; policy.cbSize = sizeof(policy);
@@ -365,8 +602,9 @@ inline TrustResult VerifyMicrosoftSignature(HANDLE file, const std::wstring& pat
             PCCERT_CONTEXT leaf = signer->pasCertChain[0].pCert;
             result.signer = CertAttr(leaf, szOID_COMMON_NAME);
             const bool microsoftSubject = result.signer == L"Microsoft Corporation" && CertAttr(leaf, szOID_ORGANIZATION_NAME) == L"Microsoft Corporation";
+            std::wstring original;
             if (!microsoftRoot || !microsoftSubject) { result.status = TrustResult::Publisher; result.code = static_cast<DWORD>(CERT_E_UNTRUSTEDROOT); }
-            else if (requireBootstrapper && !ExpectedProduct(path)) result.status = TrustResult::Unexpected;
+            else if (requireBootstrapper && !(ReadOriginalFilename(file, original) && Lower(original) == Lower(ExpectedOriginalName()))) result.status = TrustResult::Unexpected;
             else result.status = TrustResult::Ok;
         }
     }
@@ -377,26 +615,51 @@ inline TrustResult VerifyMicrosoftSignature(HANDLE file, const std::wstring& pat
 
 // ---------------------------------------------------------------- launch
 struct LaunchResult {
-    enum Status { Exited, Failed, Elevation, Timeout, Cancelled } status = Failed;
-    DWORD code = 0;   // exit code or Win32 error
+    enum Status {
+        Exited,      // ran to its end: `code` is its exit code
+        Failed,      // not started (`code` = Win32 error)
+        Elevation,   // the program requires elevation: never requested
+        Timeout,     // started, still running after the wait limit
+        Cancelled,   // cancel arrived BEFORE it ran: never resumed (no code executed) and terminated
+        Detached,    // cancel arrived after it was resumed: it keeps running on its own
+        Busy         // another live installer holds the per-user claim: never resumed, terminated
+    } status = Failed;
+    DWORD code = 0;
+    DWORD pid = 0;
+    DWORD busyPid = 0;
 };
-inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeoutMs) {
+// `claim(pid, created)` runs while the new process is still suspended; it must persist the
+// per-user marker and return Claimed before the process may run.
+using ClaimHook = std::function<Claim(DWORD pid, std::uint64_t created, DWORD& busyPid)>;
+inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeoutMs, const ClaimHook& claim = nullptr) {
     LaunchResult r;
+    auto cancelled = [&] { return cancel && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0; };
+    if (cancelled()) { r.status = LaunchResult::Cancelled; return r; }
     std::wstring command = L"\"" + exe + L"\" /silent /install";
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi)) {
+    if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, dir.c_str(), &si, &pi)) {
         r.code = GetLastError();
         r.status = r.code == ERROR_ELEVATION_REQUIRED ? LaunchResult::Elevation : LaunchResult::Failed;
         return r;
     }
+    r.pid = pi.dwProcessId;
+    // Never resumed ⇒ none of its code has run: terminating it here cannot interrupt an install.
+    auto abandon = [&](LaunchResult::Status s) { TerminateProcess(pi.hProcess, ERROR_CANCELLED); WaitForSingleObject(pi.hProcess, 5000); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); r.status = s; return r; };
+    if (claim) {
+        const Claim c = claim(pi.dwProcessId, ProcessCreated(pi.hProcess), r.busyPid);
+        if (c == Claim::Busy) return abandon(LaunchResult::Busy);
+        if (c == Claim::Failed) { r.code = ERROR_LOCK_VIOLATION; return abandon(LaunchResult::Failed); }
+    }
+    if (cancelled()) return abandon(LaunchResult::Cancelled);   // last check, immediately before it may run
+    if (ResumeThread(pi.hThread) == DWORD(-1)) { r.code = GetLastError(); return abandon(LaunchResult::Failed); }
     CloseHandle(pi.hThread);
     HANDLE waits[2] = {pi.hProcess, cancel};
     const DWORD w = WaitForMultipleObjects(cancel ? 2 : 1, waits, FALSE, timeoutMs);
     if (w == WAIT_OBJECT_0) { r.status = LaunchResult::Exited; GetExitCodeProcess(pi.hProcess, &r.code); }
-    else if (w == WAIT_OBJECT_0 + 1) r.status = LaunchResult::Cancelled;   // the installer keeps running on its own
+    else if (w == WAIT_OBJECT_0 + 1) r.status = LaunchResult::Detached;   // the installer keeps running
     else if (w == WAIT_TIMEOUT) r.status = LaunchResult::Timeout;
-    else { r.status = LaunchResult::Failed; r.code = GetLastError(); }
+    else { r.status = LaunchResult::Detached; r.code = GetLastError(); }
     CloseHandle(pi.hProcess);
     return r;
 }
@@ -405,9 +668,10 @@ inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring&
 struct Effects {
     std::shared_ptr<Fetch> fetch;
     std::function<TrustResult(HANDLE, const std::wstring&)> verify;
-    std::function<LaunchResult(const std::wstring&, const std::wstring&, HANDLE, DWORD)> launch;
-    std::wstring url;          // "" = BootstrapperUrl()
-    std::wstring tempParent;   // "" = user temp folder
+    std::function<LaunchResult(const std::wstring&, const std::wstring&, HANDLE, DWORD, const ClaimHook&)> launch;
+    Coordination coordination;   // empty marker ⇒ no launch (fail closed)
+    std::wstring url;            // "" = BootstrapperUrl()
+    std::wstring tempParent;     // "" = user temp folder
     DWORD timeoutMs = InstallTimeoutMs;
 };
 inline Effects ProductionEffects() {
@@ -415,17 +679,32 @@ inline Effects ProductionEffects() {
     e.fetch = std::make_shared<WinHttpFetch>();
     e.verify = [](HANDLE f, const std::wstring& p) { return VerifyMicrosoftSignature(f, p, true); };
     e.launch = RunBootstrapper;
+    e.coordination = DefaultCoordination();
     return e;
 }
 
 // ---------------------------------------------------------------- one install, on a worker
 using WebView2Runtime::InstallReport;
+// What the worker is really doing (the UI's phase arrives later through PostMessage).
+enum class Stage { Idle, Downloading, Verifying, Launching, Running, Done };
+inline const wchar_t* StageName(Stage s) {
+    switch (s) {
+    case Stage::Idle: return L"idle"; case Stage::Downloading: return L"downloading"; case Stage::Verifying: return L"verifying";
+    case Stage::Launching: return L"launching"; case Stage::Running: return L"installer-running"; case Stage::Done: return L"done";
+    }
+    return L"?";
+}
 inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cancel, HANDLE cancelEvent,
-                                const std::function<void(WebView2Runtime::Phase, std::uint64_t, std::uint64_t)>& progress) {
+                                const std::function<void(WebView2Runtime::Phase, std::uint64_t, std::uint64_t)>& progress,
+                                std::atomic<int>* stage = nullptr, const std::function<void(const std::wstring&)>& onDir = nullptr) {
     using O = InstallReport::Outcome;
+    auto set = [&](Stage s) { if (stage) stage->store(int(s)); };
     InstallReport report;
+    if (DWORD busy = ActiveInstall(e.coordination)) { report.outcome = O::Busy; report.code = busy; return report; }
+    set(Stage::Downloading);
     PrivateDir dir;
     if (DWORD err = dir.Create(e.tempParent)) { report.outcome = O::Storage; report.code = err; return report; }
+    if (onDir) onDir(dir.Name());
     const std::wstring path = dir.Path() + L"\\" + FileName();
     {
         HANDLE out = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -445,8 +724,9 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
         case FetchResult::Ok: break;
         case FetchResult::Cancelled: report.outcome = O::Cancelled; return report;
         case FetchResult::Http: report.outcome = O::Http; report.code = f.code; return report;
-        case FetchResult::Rejected: report.outcome = O::Rejected; return report;
+        case FetchResult::Rejected: report.outcome = O::Rejected; report.code = f.code; return report;
         case FetchResult::TooLarge: report.outcome = O::TooLarge; return report;
+        case FetchResult::TimedOut: report.outcome = O::DownloadTimeout; report.code = f.code; return report;
         case FetchResult::Network: report.outcome = O::Network; report.code = f.code; return report;
         }
     }
@@ -454,6 +734,7 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
     // Deny write and delete to everyone else until the installer has exited.
     HANDLE locked = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (locked == INVALID_HANDLE_VALUE) { report.outcome = O::Storage; report.code = GetLastError(); return report; }
+    set(Stage::Verifying);
     progress(WebView2Runtime::Phase::Verifying, 0, 0);
     TrustResult t = e.verify ? e.verify(locked, path) : TrustResult{};
     report.signer = t.signer;
@@ -464,32 +745,52 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
         return report;
     }
     if (cancel.load()) { CloseHandle(locked); report.outcome = O::Cancelled; return report; }
+    set(Stage::Launching);
+    Marker ours; ours.dir = dir.Path();
+    ClaimHook claim = [&](DWORD pid, std::uint64_t created, DWORD& busyPid) {
+        ours.pid = pid; ours.created = created;
+        return ClaimInstall(e.coordination, ours, busyPid);
+    };
+    // Phase shown when it is about to run (the claim and the last cancel check come first).
     progress(WebView2Runtime::Phase::Installing, 0, 0);
-    LaunchResult l = e.launch ? e.launch(path, dir.Path(), cancelEvent, e.timeoutMs) : LaunchResult{};
+    LaunchResult l = e.launch ? e.launch(path, dir.Path(), cancelEvent, e.timeoutMs, claim) : LaunchResult{};
     CloseHandle(locked);
+    report.pid = l.pid;
     switch (l.status) {
     case LaunchResult::Exited: report.outcome = O::Finished; report.code = l.code; break;
     case LaunchResult::Elevation: report.outcome = O::Elevation; report.code = l.code; break;
     case LaunchResult::Failed: report.outcome = O::Launch; report.code = l.code; break;
     case LaunchResult::Timeout: report.outcome = O::Timeout; report.installerRunning = true; break;
-    case LaunchResult::Cancelled: report.outcome = O::Cancelled; report.installerRunning = true; break;
+    case LaunchResult::Cancelled: report.outcome = O::Cancelled; break;
+    case LaunchResult::Detached: report.outcome = O::Detached; report.installerRunning = true; break;
+    case LaunchResult::Busy: report.outcome = O::Busy; report.code = l.busyPid; break;
     }
-    if (report.installerRunning) dir.Release();   // in use by the running installer: left in place
-    else report.cleanupIncomplete = !dir.Remove();
+    if (report.installerRunning) {
+        set(Stage::Running);
+        report.residue = dir.Name();
+        dir.Release();   // in use by the running installer; recorded in the marker, removed by the next claim after it exits
+    } else {
+        if (ours.pid) ReleaseInstall(e.coordination, ours);   // only if the marker is still ours
+        report.cleanupIncomplete = !dir.Remove();
+        if (report.cleanupIncomplete) report.residue = ours.dir.substr(ours.dir.find_last_of(L'\\') + 1);
+    }
+    set(Stage::Done);
     return report;
 }
 
-// Single-flight worker. Events are drained on the UI thread after `notify` (a PostMessage).
+// Single-flight worker. Events are drained on the UI thread after `notify` (a PostMessage);
+// `final` (thread-safe log) receives the real outcome even after Shutdown stopped the UI.
 class Installer {
 public:
     struct Event { bool done = false; WebView2Runtime::Phase phase = WebView2Runtime::Phase::Downloading; std::uint64_t bytes = 0, total = 0; InstallReport report; };
+    struct ShutdownState { Stage stage = Stage::Idle; bool detached = false; std::wstring dir; };
     Installer() = default;
     Installer(const Installer&) = delete;
     Installer& operator=(const Installer&) = delete;
     ~Installer() { Shutdown(0); }
 
     bool Running() const { return state_ && !state_->finished.load(); }
-    bool Start(Effects effects, std::function<void()> notify) {
+    bool Start(Effects effects, std::function<void()> notify, std::function<void(const InstallReport&)> final = nullptr) {
         if (Running()) return false;
         if (thread_.joinable()) thread_.join();
         auto s = std::make_shared<State>();
@@ -499,7 +800,7 @@ public:
         s->notify = std::move(notify);
         state_ = s;
         try {
-            thread_ = std::thread([s, effects = std::move(effects)] {
+            thread_ = std::thread([s, effects = std::move(effects), final = std::move(final)] {
                 std::uint64_t lastPercent = ~0ull;
                 auto push = [&](Event ev) {
                     std::function<void()> notify;
@@ -515,7 +816,9 @@ public:
                     Event ev; ev.phase = phase; ev.bytes = bytes; ev.total = total; push(ev);
                 };
                 Event done; done.done = true;
-                done.report = RunInstall(effects, s->cancel, s->cancelEvent, progress);
+                done.report = RunInstall(effects, s->cancel, s->cancelEvent, progress, &s->stage,
+                                         [&](const std::wstring& d) { std::lock_guard<std::mutex> lock(s->mutex); s->dir = d; });
+                if (final) final(done.report);
                 s->finished = true;
                 push(done);
             });
@@ -531,32 +834,40 @@ public:
         std::vector<Event> out; out.swap(state_->events);
         return out;
     }
+    Stage CurrentStage() const { return state_ ? Stage(state_->stage.load()) : Stage::Idle; }
     void Cancel() {
         if (!state_) return;
         state_->cancel = true;
         SetEvent(state_->cancelEvent);
         if (state_->fetch) state_->fetch->Abort();
     }
-    // Closing: cancel, wait up to `waitMs`, then let the worker finish on its own (it owns its state
-    // and only posts to a window that may be gone — PostMessage to a destroyed HWND fails harmlessly).
-    void Shutdown(DWORD waitMs) {
-        if (!state_) return;
+    // Closing: cancel, wait up to `waitMs`, then let the worker finish on its own (it owns its
+    // state; PostMessage to a destroyed HWND fails harmlessly). Returns what was really going on.
+    ShutdownState Shutdown(DWORD waitMs) {
+        ShutdownState out;
+        if (!state_) return out;
         auto s = state_;
         { std::lock_guard<std::mutex> lock(s->mutex); s->notify = nullptr; }
+        out.stage = Stage(s->stage.load());
         Cancel();
         const ULONGLONG until = GetTickCount64() + waitMs;
         while (!s->finished.load() && GetTickCount64() < until) Sleep(10);
-        if (thread_.joinable()) { if (s->finished.load()) thread_.join(); else thread_.detach(); }
+        if (thread_.joinable()) { if (s->finished.load()) thread_.join(); else { thread_.detach(); out.detached = true; } }
+        { std::lock_guard<std::mutex> lock(s->mutex); out.dir = s->dir; }
+        if (!out.detached) out.stage = Stage(s->stage.load());
         state_.reset();
+        return out;
     }
 private:
     struct State {
         std::atomic<bool> cancel{false}, finished{false};
+        std::atomic<int> stage{int(Stage::Idle)};
         HANDLE cancelEvent = nullptr;
         std::shared_ptr<Fetch> fetch;
         std::function<void()> notify;
         std::mutex mutex;
         std::vector<Event> events;
+        std::wstring dir;
         ~State() { if (cancelEvent) CloseHandle(cancelEvent); }
     };
     std::shared_ptr<State> state_;

@@ -2,7 +2,9 @@
 // worker, session restore, close) against a FAKE WebView2Loader.dll (fake_loader.cpp) and FAKE
 // install effects. No real runtime, no network, no installer, no user profile.
 //   host_test.exe <base dir with fake loader + assets> <data dir> <scenario>
-// Scenarios: recover, loader-missing, denied, close-during-install, relaunch, not-detected.
+// Scenarios: recover, loader-missing, denied, close-during-install, relaunch, not-detected, install-running.
+// BROWSER_WEBVIEW2_TEST_HOOKS compiles the fixture-only injection points of main.cpp (absent from the browser).
+#define BROWSER_WEBVIEW2_TEST_HOOKS 1
 #define wWinMain BrowserEntryNeverCalled
 #include "../../src/main.cpp"
 #undef wWinMain
@@ -42,13 +44,16 @@ public:
         WI::FetchResult r; r.status = WI::FetchResult::Ok; r.code = 200; return r;
     }
 };
+static WI::Coordination FixtureCoordination() {
+    WI::Coordination c; c.marker = data + L"\\coord\\install.lock"; c.mutex = L"Local\\browser-webview2-host-test-" + std::to_wstring(std::hash<std::wstring>{}(data)); return c;
+}
 static WI::Effects FakeEffects() {
     ++fake.starts;
-    WI::Effects e; e.fetch = std::make_shared<OkFetch>(); e.tempParent = data;
+    WI::Effects e; e.fetch = std::make_shared<OkFetch>(); e.tempParent = data; e.coordination = FixtureCoordination();
     e.verify = [](HANDLE, const std::wstring&) { WI::TrustResult t; t.status = WI::TrustResult::Ok; t.signer = L"Microsoft Corporation"; return t; };
-    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD) {
+    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD, const WI::ClaimHook&) {
         WI::LaunchResult l;
-        if (fake.waitForCancel) { l.status = WaitForSingleObject(cancel, 10000) == WAIT_OBJECT_0 ? WI::LaunchResult::Cancelled : WI::LaunchResult::Exited; return l; }
+        if (fake.waitForCancel) { l.status = WaitForSingleObject(cancel, 10000) == WAIT_OBJECT_0 ? WI::LaunchResult::Detached : WI::LaunchResult::Exited; return l; }
         Sleep(50);
         if (fake.onLaunch) fake.onLaunch();
         l.status = WI::LaunchResult::Exited; l.code = 0; return l;
@@ -76,10 +81,14 @@ static bool WindowAlive() { return window && IsWindow(window); }
 static WR::Phase Phase() { return engineStart ? engineStart->phase() : WR::Phase::Closed; }
 
 int wmain(int argc, wchar_t** argv) {
-    if (wcsstr(GetCommandLineW(), L"--webview2-recovered")) {   // the relaunched instance: just prove it started
-        if (argc > 2) std::ofstream(std::filesystem::path(std::wstring(argv[2]) + L"\\relaunched.txt")) << "relaunched";
+    if (wcsstr(GetCommandLineW(), L"--webview2-recovered")) {   // the relaunched instance: what did it find at its start?
+        if (argc > 2) {
+            std::ifstream h{std::filesystem::path(std::wstring(argv[2]) + L"\\history")}; std::stringstream text; text << h.rdbuf();
+            std::ofstream(std::filesystem::path(std::wstring(argv[2]) + L"\\relaunched.txt")) << "relaunched sentinel=" << (text.str().find("SENTINEL") != std::string::npos);
+        }
         return 0;
     }
+    if (argc == 2 && std::wstring(argv[1]) == L"--sleep") { Sleep(2500); return 0; }   // a live « installer » for install-running
     if (argc != 4) { std::printf("usage: host_test <base> <data> <scenario>\n"); return 2; }
     const std::wstring scenario = argv[3];
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -92,7 +101,7 @@ int wmain(int argc, wchar_t** argv) {
     // A saved session that must survive every failed start untouched.
     { BrowserSession::State s; s.urls = {"https://example.com/", "https://example.org/a"}; s.active = 1; std::ofstream out(std::filesystem::path(sessionFile), std::ios::binary); BrowserSession::Write(out, s); }
     const std::string sessionBefore = SessionBytes();
-    engineInstallEffects = FakeEffects;
+    engineInstallEffects = FakeEffects; engineCoordination = FixtureCoordination;
 
     INITCOMMONCONTROLSEX cc{sizeof(cc), ICC_STANDARD_CLASSES | ICC_TAB_CLASSES}; InitCommonControlsEx(&cc);
     for (auto name : NativeChrome::FontFiles) AddFontResourceExW((base + L"\\assets\\fonts\\" + name).c_str(), FR_PRIVATE, nullptr);
@@ -109,7 +118,20 @@ int wmain(int argc, wchar_t** argv) {
     chrome.SetMotion(&motion); motion.SetReducedMotion(true); UpdateFont(); Layout();
     ShowWindow(window, SW_SHOWNOACTIVATE); UpdateWindow(window);
 
-    if (scenario == L"recover" || scenario == L"close-during-install" || scenario == L"relaunch" || scenario == L"not-detected") Mode("missing");
+    PROCESS_INFORMATION other{};
+    if (scenario == L"install-running") {
+        // Another browser process's installer is alive: its claim marker names a live PID + creation time.
+        wchar_t self[MAX_PATH]; GetModuleFileNameW(nullptr, self, MAX_PATH);
+        std::wstring cmd = L"\"" + std::wstring(self) + L"\" --sleep"; STARTUPINFOW si{}; si.cb = sizeof(si);
+        CHECK(CreateProcessW(self, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &other));
+        WI::Marker m; m.pid = other.dwProcessId; m.created = WI::ProcessCreated(other.hProcess);
+        CHECK(WI::WriteMarker(FixtureCoordination().marker, m));
+    }
+    if (scenario == L"relaunch") {
+        settings.clearOnExit = true;   // the old instance must erase local traces before the new one starts
+        std::ofstream(std::filesystem::path(data + L"\\history")) << "SENTINEL-HISTORY";
+    }
+    if (scenario == L"recover" || scenario == L"close-during-install" || scenario == L"relaunch" || scenario == L"not-detected" || scenario == L"install-running") Mode("missing");
     else if (scenario == L"denied") Mode("denied");
     else if (scenario == L"loader-missing") DeleteFileW((base + L"\\WebView2Loader.dll").c_str());
     else { std::printf("unknown scenario\n"); return 2; }
@@ -146,7 +168,10 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(Pump([] { return Phase() == WR::Phase::Problem && fake.starts == 1 && !engineInstaller.Running(); }, 8000));
         Pump([] { return false; }, 200);
         const auto& w = engineStart->Current();
-        CHECK(!w.canInstall && w.note.find(L"introuvable") != std::wstring::npos && modal.Visible() && Calls("create") == 0);
+        CHECK(!w.canInstall && w.manualPrimary && w.diagnosis.body.find(L"reste introuvable") != std::wstring::npos && modal.Visible() && Calls("create") == 0);
+        bool installShown = false, manualShown = false;
+        for (auto& b : EngineSpec(w).buttons) { installShown |= b.id == EngineInstallButton; manualShown |= b.id == EngineManualButton && b.role == MD::Role::Primary && !b.disabled; }
+        CHECK(!installShown && manualShown);
         Shot(L"3-installed-not-detected");
         OnEngineButton(EngineInstallButton);   // refused: no loop
         Pump([] { return false; }, 200);
@@ -182,6 +207,19 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("[close-during-install] closed in %llu ms phase=%d\n", GetTickCount64() - t0, int(Phase()));
         CHECK(!WindowAlive() && GetTickCount64() - t0 < 3000 && Phase() == WR::Phase::Closed && !engineInstaller.Running());
         CHECK(SessionBytes() == sessionBefore && !sessionReady);
+        Pump([] { return false; }, 300);
+    } else if (scenario == L"install-running") {
+        CHECK(v.diagnosis.cause == WR::Cause::RuntimeMissing && !v.canInstall && v.note.find(L"déjà en cours") != std::wstring::npos);
+        Shot(L"6-install-running");
+        OnEngineButton(EngineInstallButton);
+        Pump([] { return false; }, 200);
+        CHECK(fake.starts == 0);
+        WaitForSingleObject(other.hProcess, 6000); CloseHandle(other.hThread); CloseHandle(other.hProcess);
+        OnEngineButton(EngineRetryButton);   // it finished: the install is offered again, stale marker removed
+        Pump([] { return false; }, 200);
+        CHECK(engineStart->Current().canInstall && !Exists(FixtureCoordination().marker));
+        modal.Finish(EngineQuitButton);
+        Pump([] { return !WindowAlive(); }, 3000);
     } else if (scenario == L"relaunch") {
         fake.onLaunch = [] { Mode("uninstalled"); };   // found by the probe, but creation says uninstalled
         DeleteFileW((data + L"\\relaunched.txt").c_str());
@@ -193,11 +231,22 @@ int wmain(int argc, wchar_t** argv) {
         Shot(L"5-relaunch");
         OnEngineButton(EngineRelaunchButton);
         Pump([] { return !WindowAlive(); }, 3000);
+        Pump([] { return false; }, 500);
+        // Nothing started while the old instance was closing; its traces are already erased.
+        CHECK(!WindowAlive() && !Exists(data + L"\\relaunched.txt") && engineRelaunchPending);
+        { std::ifstream h{std::filesystem::path(data + L"\\history")}; std::stringstream text; text << h.rdbuf();
+          CHECK(text.str().find("SENTINEL") == std::string::npos); }
+        RunPendingRelaunch();   // what wWinMain does after its message loop
         Pump([] { return false; }, 1500);
-        CHECK(!WindowAlive() && Exists(data + L"\\relaunched.txt") && SessionBytes() == sessionBefore);
+        std::ifstream r{std::filesystem::path(data + L"\\relaunched.txt")}; std::string got; std::getline(r, got);
+        std::printf("[relaunch] child saw: %s\n", got.c_str());
+        CHECK(got == "relaunched sentinel=0" && SessionBytes() == sessionBefore);
     }
     std::ifstream log{std::filesystem::path(logFile)}; std::string line; int lines = 0;
-    while (std::getline(log, line)) { if (line.find("WEBVIEW2") != std::string::npos) { std::printf("  log: %s\n", line.c_str()); ++lines; } CHECK(line.find("example.") == std::string::npos); }
+    bool workerLogged = false;
+    while (std::getline(log, line)) { if (line.find("WEBVIEW2") != std::string::npos) { std::printf("  log: %s\n", line.c_str()); ++lines; } CHECK(line.find("example.") == std::string::npos);
+        workerLogged |= line.find("WEBVIEW2 INSTALL WORKER outcome=detached") != std::string::npos && line.find("microsoft-installer-still-running") != std::string::npos; }
+    if (scenario == L"close-during-install") CHECK(workerLogged);
     CHECK(lines > 0);
     if (WindowAlive()) DestroyWindow(window);
     std::printf("host_test %ls: %d checks, %d failures\n", scenario.c_str(), checks, failures);

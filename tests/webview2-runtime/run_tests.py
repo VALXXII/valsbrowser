@@ -27,11 +27,11 @@ OUT = ROOT / 'build' / 'webview2-runtime'
 GXX = str(ROOT / 'tools' / 'w64devkit' / 'bin' / 'g++.exe')
 WV2 = '-Ideps/webview2/build/native/include'
 STRICT = ['-std=c++17', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-static']
-HOST = ['-std=c++17', '-O1', '-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-type', '-Wno-misleading-indentation',
+HOST = ['-DBROWSER_WEBVIEW2_TEST_HOOKS', '-std=c++17', '-O1', '-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-type', '-Wno-misleading-indentation',
         '-Wno-missing-field-initializers', '-static', '-municode', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc', WV2]
 UI_LIBS = ['-lole32', '-luuid', '-lcomctl32', '-lshlwapi', '-lgdi32', '-ld2d1', '-ldwrite', '-lwindowscodecs', '-ldwmapi']
 THORVG = ROOT / 'build' / 'lottie-backend' / 'src' / 'libthorvg-1.a'
-SCENARIOS = ['recover', 'not-detected', 'loader-missing', 'denied', 'close-during-install', 'relaunch']
+SCENARIOS = ['recover', 'not-detected', 'loader-missing', 'denied', 'close-during-install', 'relaunch', 'install-running']
 failures = []
 
 

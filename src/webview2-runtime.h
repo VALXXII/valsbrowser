@@ -213,12 +213,17 @@ inline Diagnosis Diagnose(Stage stage, HRESULT hr, const Probe& probe, const Ove
 // Filled by the installer (webview2-install.h); interpreted here so the controller stays testable.
 struct InstallReport {
     enum class Outcome { Finished, Cancelled, Network, Http, Rejected, TooLarge, Storage, Trust, Publisher, Unexpected,
-                         Launch, Elevation, Timeout };
+                         Launch, Elevation, Timeout,
+                         Detached,          // launched, then the browser stopped waiting: the installer keeps running
+                         Busy,              // another installer of this user is running (code = its PID)
+                         DownloadTimeout }; // the download exceeded its total deadline
     Outcome outcome = Outcome::Network;
     DWORD code = 0;               // exit code (Finished), HTTP status, WinVerifyTrust / Win32 error
     bool installerRunning = false; // the Microsoft installer process was left running (timeout / shutdown)
     bool cleanupIncomplete = false; // the downloaded file or its directory could not be removed
     std::wstring signer;           // signing certificate CN when the signature was checked
+    DWORD pid = 0;                 // installer process, when one was created
+    std::wstring residue;          // private folder name (not path) left in %TEMP%, if any
 };
 inline std::wstring InstallMessage(const InstallReport& r) {
     using O = InstallReport::Outcome;
@@ -226,7 +231,10 @@ inline std::wstring InstallMessage(const InstallReport& r) {
     switch (r.outcome) {
     case O::Finished: return r.code == 0 ? L"Le programme d'installation Microsoft a terminé (code 0)."
                                          : std::wstring(L"Le programme d'installation Microsoft a terminé avec le code ") + code + L".";
-    case O::Cancelled: return L"Installation interrompue avant le lancement du programme Microsoft.";
+    case O::Cancelled: return L"Installation annulée avant que le programme Microsoft ne s'exécute : rien n'a été installé.";
+    case O::Detached: return L"Le programme d'installation Microsoft a été lancé et continue en arrière-plan.";
+    case O::Busy: return L"Une installation Microsoft de WebView2 lancée par ce navigateur est déjà en cours. Attendez qu'elle se termine, puis Réessayer.";
+    case O::DownloadTimeout: return L"Le téléchargement depuis Microsoft a dépassé 5 minutes : il a été abandonné. Vérifiez la connexion, puis réessayez.";
     case O::Network: return L"Téléchargement impossible : vérifiez la connexion à Internet (ou le proxy), puis réessayez.";
     case O::Http: return L"Le serveur de Microsoft a refusé le téléchargement (HTTP " + std::to_wstring(r.code) + L").";
     case O::Rejected: return L"Le téléchargement a été redirigé vers une adresse non Microsoft : il a été refusé.";
@@ -249,7 +257,8 @@ inline const wchar_t* OutcomeName(InstallReport::Outcome o) {
     case O::Http: return L"http"; case O::Rejected: return L"rejected"; case O::TooLarge: return L"too-large";
     case O::Storage: return L"storage"; case O::Trust: return L"trust"; case O::Publisher: return L"publisher";
     case O::Unexpected: return L"unexpected"; case O::Launch: return L"launch"; case O::Elevation: return L"elevation";
-    case O::Timeout: return L"timeout";
+    case O::Timeout: return L"timeout"; case O::Detached: return L"detached"; case O::Busy: return L"busy";
+    case O::DownloadTimeout: return L"download-timeout";
     }
     return L"?";
 }
@@ -264,6 +273,8 @@ struct View {
     Diagnosis diagnosis;
     bool canInstall = false, canRetry = false, canRelaunch = false;
     std::wstring status;   // progress line while busy
+    std::wstring statusDetail;   // what Quitter does in this phase
+    bool manualPrimary = false;  // the install is exhausted: the Microsoft page is the main action
     std::wstring note;     // result of the last install attempt ("" = none)
     std::uint64_t bytes = 0, total = 0;
 };
@@ -277,6 +288,7 @@ struct Hooks {
     std::function<HRESULT(std::uint64_t generation)> create;
     std::function<Overrides()> overrides;
     std::function<bool()> startInstall;     // async; false = could not start (reported as Launch)
+    std::function<DWORD()> installRunning;  // PID of a live installer launched by any browser process of this user, or 0
     std::function<void()> cancelInstall;
     std::function<void(const View&)> show;  // problem/progress UI (also called with Phase::Recovered to hide it)
     std::function<void()> ready;            // environment created: restore the session (called once)
@@ -332,6 +344,7 @@ public:
         ++installs_;
         view_.phase = Phase::Downloading; view_.canInstall = view_.canRetry = view_.canRelaunch = false;
         view_.status = L"Téléchargement depuis Microsoft…"; view_.bytes = view_.total = 0; view_.note.clear();
+        view_.statusDetail = L"Quitter annule le téléchargement.";
         Log(L"WEBVIEW2 RECOVERY install requested attempt=" + std::to_wstring(installs_));
         Show();
         if (!h_.startInstall || !h_.startInstall()) {
@@ -350,6 +363,9 @@ public:
             if (total) view_.status += L" " + std::to_wstring(static_cast<unsigned>(bytes * 100 / total)) + L" %";
         } else if (phase == Phase::Verifying) view_.status = L"Vérification de la signature Microsoft…";
         else view_.status = L"Installation par Microsoft… (quelques minutes)";
+        view_.statusDetail = phase == Phase::Installing
+            ? L"Il continue même si vous quittez."
+            : L"Quitter annule le téléchargement.";
         Show();
     }
     void InstallFinished(const InstallReport& r) {
@@ -369,13 +385,9 @@ public:
         if (p.Found()) { StartCreate(p); return; }
         // The Microsoft installer ran to its end and the runtime is still not found: report it as is
         // and stop offering the install (no repair loop).
-        if (r.installerRunning) noMoreInstall_ = true;   // never a second installer next to a running one
+        if (r.installerRunning) noMoreInstall_ = true;   // never a second installer next to a running one (also enforced across processes)
         const bool notDetected = r.outcome == InstallReport::Outcome::Finished;
-        if (notDetected) {
-            noMoreInstall_ = true;
-            view_.note += L" WebView2 reste pourtant introuvable : l'installation n'a pas rétabli le runtime. "
-                          L"Utilisez la page Microsoft WebView2, puis Réessayer.";
-        }
+        if (notDetected) { noMoreInstall_ = true; exhausted_ = true; }
         Problem(Stage::Probe, p.attempted ? p.hr : HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), p);
     }
     void Relaunch() {
@@ -388,12 +400,11 @@ public:
     void Shutdown() {
         if (view_.phase == Phase::Closed) return;
         const bool installing = view_.phase == Phase::Downloading || view_.phase == Phase::Verifying || view_.phase == Phase::Installing;
-        const bool wasInstalling = view_.phase == Phase::Installing;
         view_.phase = Phase::Closed;
         if (!installing) return;
-        // Download or verification: cancelled. Once launched, the Microsoft installer is a separate
-        // process that is never killed: it finishes on its own and the next start probes again.
-        Log(std::wstring(L"WEBVIEW2 RECOVERY closed during ") + (wasInstalling ? L"the Microsoft installer run (left running)" : L"download/verification (cancelled)"));
+        // The UI phase can lag the worker (PostMessage): the host logs what the worker really did.
+        // A resumed Microsoft installer is never killed; one that never ran is never resumed.
+        Log(L"WEBVIEW2 RECOVERY window closed during the install request");
         if (h_.cancelInstall) h_.cancelInstall();
     }
 
@@ -408,12 +419,24 @@ private:
     void Problem(Stage stage, HRESULT hr, const Probe& p) {
         Overrides o = h_.overrides ? h_.overrides() : Overrides{};
         view_.diagnosis = Diagnose(stage, hr, p, o);
-        view_.phase = Phase::Problem; view_.status.clear();
+        view_.phase = Phase::Problem; view_.status.clear(); view_.statusDetail.clear();
         view_.canRetry = true;
+        const DWORD running = view_.diagnosis.offerInstall && h_.installRunning ? h_.installRunning() : 0;
         // A runtime that the probe sees but this process cannot open after an install: one restart
         // (instead of a second install).
         view_.canRelaunch = !relaunched_ && installerRan_ && p.Found() && view_.diagnosis.cause == Cause::RuntimeInconsistent;
-        view_.canInstall = view_.diagnosis.offerInstall && installs_ < MaxInstalls && !noMoreInstall_ && !view_.canRelaunch;
+        view_.canInstall = view_.diagnosis.offerInstall && installs_ < MaxInstalls && !noMoreInstall_ && !view_.canRelaunch && !running;
+        if (running) {
+            view_.note = InstallMessage(InstallReport{InstallReport::Outcome::Busy, running});
+            Log(L"WEBVIEW2 RECOVERY installer already running pid=" + std::to_wstring(running));
+        }
+        // Installer done, runtime still not found: no install button any more; the honest next steps.
+        view_.manualPrimary = exhausted_ && view_.diagnosis.offerInstall;
+        if (view_.manualPrimary) {
+            view_.diagnosis.body = L"Le programme d'installation Microsoft a terminé, mais Microsoft Edge WebView2 Runtime reste introuvable : "
+                                   L"cette installation ne l'a pas rétabli. Installez-le depuis la page Microsoft WebView2 (ou demandez à votre "
+                                   L"administrateur), puis Réessayer. Votre profil et vos onglets sont conservés.";
+        }
         if (view_.canRelaunch) view_.note += (view_.note.empty() ? L"" : L" ") + std::wstring(L"Redémarrez le navigateur pour qu'il ouvre le runtime installé.");
         Log(std::wstring(L"WEBVIEW2 STARTUP FAILED stage=") + StageName(stage) + L" code=" + Hex(hr) + L" cause=" + CauseName(view_.diagnosis.cause) +
             L" install=" + (view_.canInstall ? L"offered" : L"no") + (o.Any() ? L" overrides=" + o.Describe() : L""));
@@ -428,6 +451,7 @@ private:
     Probe lastProbe_;
     std::uint64_t generation_ = 0;
     int installs_ = 0;
+    bool exhausted_ = false;
     bool relaunched_ = false, readyFired_ = false, installerRan_ = false, noMoreInstall_ = false, problemShown_ = false;
 };
 

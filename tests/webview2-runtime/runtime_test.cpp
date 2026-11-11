@@ -179,7 +179,10 @@ static void ControllerInstalledButNotDetected() {
     c.Progress(WR::Phase::Installing);
     c.InstallFinished(Finished(0));   // « success » but still missing
     CHECK(c.phase() == WR::Phase::Problem && f.creates == 0 && !f.last.canInstall && f.last.canRetry);
-    CHECK(f.last.note.find(L"reste pourtant introuvable") != std::wstring::npos);
+    // No disabled install button left behind: the Microsoft page becomes the main action, and the
+    // body no longer invites to install from here.
+    CHECK(f.last.manualPrimary && f.last.diagnosis.body.find(L"reste introuvable") != std::wstring::npos);
+    CHECK(f.last.diagnosis.body.find(L"Vous pouvez l'installer") == std::wstring::npos && f.last.note.find(L"code 0") != std::wstring::npos);
     CHECK(!c.Install() && f.installs == 1);   // no repair loop
     // An « already installed » non-zero exit with nothing found: shown as is, no loop either.
     Fake g; g.probe = Missing();
@@ -323,16 +326,63 @@ static void LogsStayFactual() {
     WR::Controller d(g.Hooks());
     d.Attempt(); d.Install(); d.Progress(WR::Phase::Installing); d.InstallFinished(Finished(0));
     CHECK(g.logs.back().find(L"install=no") != std::wstring::npos);
-    // Closing during the installer run says the installer is left running (not « cancelled »).
+    // Closing during the install request: the controller no longer claims what the worker did
+    // (its UI phase can lag); it cancels and the host logs the worker's real outcome.
     Fake h; h.probe = Missing();
     WR::Controller e(h.Hooks());
     e.Attempt(); e.Install(); e.Progress(WR::Phase::Installing); e.Shutdown();
-    CHECK(h.logs.back().find(L"left running") != std::wstring::npos && h.cancels == 1);
+    CHECK(h.logs.back().find(L"closed during the install request") != std::wstring::npos && h.cancels == 1);
     for (auto& l : f.logs) {
         if (l.find(L"WEBVIEW2 STARTUP FAILED") == 0 && l.find(L"0x80070002") != std::wstring::npos && l.find(L"runtime-missing") != std::wstring::npos) sawFailure = true;
         CHECK(l.find(L"http") == std::wstring::npos && l.find(L"\\") == std::wstring::npos);   // no URL, no path
     }
     CHECK(sawFailure);
+}
+
+static void ControllerInstallRunningElsewhere() {
+    // Another browser process (or a previous one that quit) has a live installer: no second one.
+    Fake f; f.probe = Missing();
+    DWORD running = 4242;
+    WR::Hooks h = f.Hooks(); h.installRunning = [&] { return running; };
+    WR::Controller c(h);
+    c.Attempt();
+    CHECK(c.phase() == WR::Phase::Problem && !f.last.canInstall && f.last.canRetry && f.last.note.find(L"déjà en cours") != std::wstring::npos);
+    CHECK(!c.Install() && f.installs == 0);
+    running = 0;   // it finished: Réessayer re-evaluates
+    c.Attempt();
+    CHECK(f.last.canInstall && c.Install() && f.installs == 1);
+    // The worker's own claim found one (race with another process): reported, no loop.
+    WR::InstallReport busy; busy.outcome = WR::InstallReport::Outcome::Busy; busy.code = 99;
+    running = 99;
+    c.InstallFinished(busy);
+    CHECK(c.phase() == WR::Phase::Problem && !f.last.canInstall && f.last.note.find(L"déjà en cours") != std::wstring::npos);
+    // Never queried for non-runtime errors.
+    Fake g; g.createImmediate = E_ACCESSDENIED; int asked = 0;
+    WR::Hooks gh = g.Hooks(); gh.installRunning = [&] { ++asked; return DWORD(1); };
+    WR::Controller d(gh);
+    d.Attempt();
+    CHECK(asked == 0 && !g.last.canInstall);
+}
+
+static void Messages() {
+    using O = WR::InstallReport::Outcome;
+    WR::InstallReport r; r.outcome = O::Cancelled;
+    CHECK(WR::InstallMessage(r).find(L"rien n'a été installé") != std::wstring::npos);
+    r.outcome = O::Detached; r.installerRunning = true;
+    CHECK(WR::InstallMessage(r).find(L"continue en arrière-plan") != std::wstring::npos);
+    r.outcome = O::DownloadTimeout;
+    CHECK(WR::InstallMessage(r).find(L"5 minutes") != std::wstring::npos);
+    // The status line says what Quitter really does in each phase.
+    Fake f; f.probe = Missing();
+    WR::Controller c(f.Hooks());
+    c.Attempt(); c.Install();
+    CHECK(f.last.statusDetail.find(L"annule le téléchargement") != std::wstring::npos);
+    c.Progress(WR::Phase::Installing);
+    CHECK(f.last.statusDetail.find(L"continue même si vous quittez") != std::wstring::npos);
+    // Detached/timeout: never a second installer from this process either.
+    r.outcome = O::Detached;
+    c.InstallFinished(r);
+    CHECK(!f.last.canInstall);
 }
 
 int main() {
@@ -347,6 +397,8 @@ int main() {
     ControllerLoaderAndOverride();
     ControllerRelaunchBound();
     LogsStayFactual();
+    ControllerInstallRunningElsewhere();
+    Messages();
     std::printf("runtime_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
