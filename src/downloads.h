@@ -181,6 +181,7 @@ inline std::string ToUtf8(const std::wstring& s) {
     for (size_t i = 0; i < s.size(); ++i) {
         std::uint32_t c = s[i];
         if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.size() && s[i + 1] >= 0xDC00 && s[i + 1] <= 0xDFFF) { c = 0x10000 + ((c - 0xD800) << 10) + (s[i + 1] - 0xDC00); ++i; }
+        else if (c >= 0xD800 && c <= 0xDFFF) c = 0xFFFD;   // review F2: a lone surrogate (any page title) is never written as bytes the reader rejects
         if (c == L'\t' || c == L'\n' || c == L'\r') c = L' ';
         if (c < 0x80) out += static_cast<char>(c);
         else if (c < 0x800) { out += static_cast<char>(0xC0 | (c >> 6)); out += static_cast<char>(0x80 | (c & 0x3F)); }

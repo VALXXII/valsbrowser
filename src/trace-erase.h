@@ -7,6 +7,7 @@
 // Outcomes are honest: Busy (lock), UnknownFormat (not a file this build can filter: nothing written),
 // Failed (read/write); only Done means the selection is gone from disk.
 #include <cstdint>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -19,7 +20,13 @@ namespace TraceErase {
 enum class Outcome { Done, Busy, Failed, UnknownFormat };
 
 // History: visits whose last time is >= since (since <= 0: all) are erased.
-inline Outcome History(const std::wstring& dataDir, const std::wstring& path, std::int64_t since, AddressBar::History& mine, AddressBar::History& base, DWORD timeoutMs = 5000) {
+// Review F7: an explicit erase also removes the exact backups of damaged copies of that file (they hold
+// the same browsing traces); the S3 backups exist to protect data, never to outlive the user's « Effacer ».
+inline void DropDamagedBackups(const std::wstring& path) {
+    std::error_code ec; const std::filesystem::path p(path); const std::wstring stem = p.filename().wstring() + L".damaged-";
+    for (const auto& e : std::filesystem::directory_iterator(p.parent_path(), ec)) if (e.path().filename().wstring().rfind(stem, 0) == 0) std::filesystem::remove(e.path(), ec);
+}
+inline Outcome History(const std::wstring& dataDir, const std::wstring& path, std::int64_t since, AddressBar::History& mine, AddressBar::History& base, DWORD timeoutMs = 5000, std::vector<std::wstring>* erased = nullptr) {
     ProfileStore::Lock lock(dataDir, timeoutMs);
     if (!lock.Held()) return Outcome::Busy;
     std::string bytes; if (!ProfileStore::ReadAll(path, bytes)) return Outcome::Failed;
@@ -31,6 +38,8 @@ inline Outcome History(const std::wstring& dataDir, const std::wstring& path, st
     for (const auto& u : gone) merged.Remove(u);
     std::ostringstream out; merged.Write(out);
     if (!ProfileStore::WriteAtomic(path, out.str())) return Outcome::Failed;
+    DropDamagedBackups(path);
+    if (erased) *erased = gone;
     mine = merged; base = merged;
     return Outcome::Done;
 }
@@ -50,6 +59,7 @@ inline Outcome Downloads(const std::wstring& dataDir, const std::wstring& path, 
     merged.erase(std::remove_if(merged.begin(), merged.end(), [since](const DL::Item& d) { return DL::Persistent(d) && (since <= 0 || d.started >= since || d.started == 0); }), merged.end());
     std::ostringstream out; DL::WriteHistory(out, merged);
     if (!ProfileStore::WriteAtomic(path, out.str())) return Outcome::Failed;
+    DropDamagedBackups(path);
     mine = merged; base.clear(); for (const auto& d : merged) if (DL::Persistent(d)) base.push_back(d);
     return Outcome::Done;
 }

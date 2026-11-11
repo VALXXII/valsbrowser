@@ -1674,8 +1674,8 @@ bool WipeLocalTraceFiles(){
     if(smoke||privateWindow)return true;
     ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"CLEAR profile busy: files not wiped");return false;}
     bool ok=true;
-    {std::ostringstream o;AddressBar::History{}.Write(o);if(ProfileStore::WriteAtomic(HistoryFile(),o.str()))historyBase=AddressBar::History{};else{ok=false;Log(L"CLEAR history wipe failed");}}
-    {std::vector<DL::Item> keep;for(const auto& d:downloads)if(!DL::Persistent(d))keep.push_back(d);std::ostringstream o;DL::WriteHistory(o,keep);if(ProfileStore::WriteAtomic(downloadsFile,o.str()))downloadsBase.clear();else{ok=false;Log(L"CLEAR downloads wipe failed");}}
+    {std::ostringstream o;AddressBar::History{}.Write(o);if(ProfileStore::WriteAtomic(HistoryFile(),o.str())){historyBase=AddressBar::History{};TraceErase::DropDamagedBackups(HistoryFile());}else{ok=false;Log(L"CLEAR history wipe failed");}}
+    {std::vector<DL::Item> keep;for(const auto& d:downloads)if(!DL::Persistent(d))keep.push_back(d);std::ostringstream o;DL::WriteHistory(o,keep);if(ProfileStore::WriteAtomic(downloadsFile,o.str())){downloadsBase.clear();TraceErase::DropDamagedBackups(downloadsFile);}else{ok=false;Log(L"CLEAR downloads wipe failed");}}
     return ok;
 }
 void ClearLocalTraces(){

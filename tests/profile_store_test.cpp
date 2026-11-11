@@ -313,6 +313,15 @@ int wmain(int argc, wchar_t** argv) {
           std::string t4; ProfileStore::ReadAll(hp, t4); std::string bk; ProfileStore::ReadAll(hp + L".damaged-histtest", bk);
           Check(rs == ProfileStore::Result::Failed && t4 == damagedLine && bk == damagedLine, "history save: a damaged file is backed up exactly and never rewritten");
           ProfileStore::DamagedStampForTest().clear(); std::filesystem::remove(hp + L".damaged-histtest", ec); std::filesystem::remove(hp + L".damaged-last", ec); }
+        // Review F2: a lone surrogate in a page title is written readable; the file stays writable and erasable.
+        { H lone; lone.Record(L"https://titre.test/", std::wstring(L"x") + wchar_t(0xD800) + L"y", 10); std::ostringstream o; lone.Write(o); ProfileStore::WriteAtomic(hp, o.str());
+          std::string b; ProfileStore::ReadAll(hp, b); std::istringstream in(b); const H back = H::Read(in);
+          Check(back.Items().size() == 1 && ProfileStore::RecordLines(b) == 1 && back.Items()[0].title == std::wstring(L"x") + wchar_t(0xFFFD) + L"y", "F2: a lone surrogate title is stored as U+FFFD, never as a damaging line");
+          H m = back, b0 = back; Check(TraceErase::History(dir, hp, 0, m, b0) == TraceErase::Outcome::Done, "F2: that history can still be erased"); }
+        // Review F7: an erase removes the exact backups of damaged copies of the file.
+        { ProfileStore::WriteAtomic(hp + L".damaged-20261112-000000", "browser-history 1\n1\t1\thttps://secret.test/\tS\nbad\n"); ProfileStore::WriteAtomic(hp + L".damaged-last", "x");
+          H m = aMine, b0 = aBase; H empty; { std::ostringstream o; empty.Write(o); ProfileStore::WriteAtomic(hp, o.str()); }
+          Check(TraceErase::History(dir, hp, 0, m, b0) == TraceErase::Outcome::Done && !std::filesystem::exists(hp + L".damaged-20261112-000000") && !std::filesystem::exists(hp + L".damaged-last"), "F7: an erase leaves no backup copy of the history"); }
         // Downloads: a row added elsewhere in the period goes, rows outside stay, live rows stay.
         namespace DL = NativeChrome::Downloads; const std::wstring dp = hdir + L"\\downloads";
         auto row = [](int id, const wchar_t* path, std::int64_t started) { DL::Item i; i.id = id; i.path = path; i.uri = L"https://d.test/f"; i.state = DL::State::Completed; i.total = 10; i.started = started; return i; };

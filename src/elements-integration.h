@@ -677,7 +677,9 @@ HRESULT ClearLocalTracesSelected(const std::vector<bool>& c,std::int64_t since){
     if(on(0)){
         closedTabs.clear();if(since<=0)ClearSiteIcons();
         if(smoke||privateWindow){std::vector<std::wstring> urls;for(auto& v:history.Items())if(since<=0||v.last>=since)urls.push_back(v.url);for(auto& u:urls)history.Remove(u);}
-        else report(TraceErase::History(dataDir,HistoryFile(),since,history,historyBase),L"history");
+        else{std::vector<std::wstring> gone;report(TraceErase::History(dataDir,HistoryFile(),since,history,historyBase,5000,&gone),L"history");
+            // Review F8: a period erase also forgets the favicons of sites no longer in the history.
+            std::set<std::wstring> sites;for(const auto& u:gone)sites.insert(AddressBar::SiteOf(u));for(const auto& site:sites)if(!site.empty()&&!history.HasSite(site))ForgetSiteIcon(site);}
         historyDrawer.Changed();
     }
     if(on(3)){
