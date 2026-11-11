@@ -940,6 +940,34 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     },L"vault:"+std::to_wstring(serial));
     return true;
 }
+// B03 (vault inactive; the visible native trigger awaits the review of proposal 11): the user picks an
+// account in the real B03 prompt; the target (top-level document, its navigation stamp, its origin) is
+// captured when the user acts and checked again just before injecting (Vault::CanFill); the secret is
+// decrypted only then, sent to the top-level document by FillScript (which re-checks its own origin and
+// ancestors), and the host's copies of the secret and of the script are wiped (V7). No vault access is
+// ever started by a page message.
+void ShowVaultManager(bool keyboard);
+Vault::Target VaultTargetNow(const std::shared_ptr<Tab>& t,bool userAction){Vault::Target v;v.frameSource=t->uri;v.topSource=t->uri;v.frameId=0;v.navigation=t->navStamp;v.userAction=userAction;return v;}
+void OfferVaultFill(const std::shared_ptr<Tab>& t){
+    if(!Vault::Active()||privateWindow||!t||t->closed||!t->view.p||!LoadVault())return;
+    const Vault::Target atAction=VaultTargetNow(t,true);const std::wstring origin=Vault::CanonicalOrigin(t->uri);
+    if(origin.empty()){Log(std::wstring(L"VAULT fill unavailable: ")+Vault::RefusalText(Vault::Refusal::NotHttps));return;}   // D2: short state on explicit request only
+    const auto accounts=vault.For(origin);
+    OP::Spec s;s.kind=OP::Kind::PasswordFill;s.demo=false;s.origin=origin;for(const auto& e:accounts)s.accounts.push_back({e.user,L"••••••••"});
+    std::vector<std::uint64_t> ids;for(const auto& e:accounts)ids.push_back(e.id);
+    std::weak_ptr<Tab> weak=t;
+    AskPrompt(std::move(s),t,[weak,ids,atAction,origin](OP::Result& r){
+        if(r.action==OP::Action::Manage){ShowVaultManager(false);return;}
+        auto t=weak.lock();if(r.action!=OP::Action::Fill||!t||t->closed||!t->view.p||r.choice<0||r.choice>=(int)ids.size())return;
+        const auto refusal=Vault::CanFill(atAction,VaultTargetNow(t,false),origin);
+        if(refusal!=Vault::Refusal::None){Log(std::wstring(L"VAULT fill refused: ")+Vault::RefusalText(refusal));return;}
+        const Vault::Entry* e=vault.Find(ids[(size_t)r.choice]);if(!e)return;
+        std::wstring secret;if(!vault.Reveal(e->id,origin,secret))return;
+        std::wstring script=Vault::FillScript(origin,e->user,secret);Wipe(secret);
+        t->view->ExecuteScript(script.c_str(),nullptr);Wipe(script);   // nothing comes back through the bridge
+        Log(L"VAULT filled (user action, same document)");
+    },L"vaultfill:"+std::to_wstring(t->serial));
+}
 // E8 / B05: the vault manager, real mode of the B05 surface (no decrypted secret, no reveal; removal
 // through Vault::Commit, a failure is said and the row stays). Only while the vault is active.
 std::wstring VaultModified(std::int64_t ms){if(ms<=0)return L"";FILETIME ft;ULARGE_INTEGER u;u.QuadPart=(ULONGLONG)(ms+11644473600000LL)*10000ULL;ft.dwLowDateTime=u.LowPart;ft.dwHighDateTime=u.HighPart;SYSTEMTIME st,lt;FileTimeToSystemTime(&ft,&st);SystemTimeToTzSpecificLocalTime(nullptr,&st,&lt);

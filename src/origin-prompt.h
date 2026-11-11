@@ -267,7 +267,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         break;
     }
     case Kind::PasswordFill: {   // B03/B04, Démonstration: fictitious accounts held in memory
-        m.automationId = L"PasswordFill"; m.scope = Scope::Anchor; m.width = 360; m.padding = 6; m.gap = 2; m.demo = true;
+        m.automationId = L"PasswordFill"; m.scope = Scope::Anchor; m.width = 360; m.padding = 6; m.gap = 2; m.demo = s.demo;   // real: the vault's accounts for the EFFECTIVE origin, no secret here
         m.accountsTitle = s.accounts.empty() ? L"Aucun compte enregistré pour " + s.origin : L"Comptes enregistrés pour " + s.origin;
         for (auto& a : s.accounts) m.accounts.push_back({a.user, std::wstring(std::max<size_t>(8, std::min<size_t>(14, a.hint.size())), L'\x2022')});
         m.manageLabel = L"Gérer les mots de passe"; m.manageId = Id::Manage;
