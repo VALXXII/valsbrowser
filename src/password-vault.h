@@ -67,26 +67,40 @@ inline std::wstring CanonicalOrigin(const std::wstring& url) {
     return L"https://" + host + (port.empty() ? L"" : L":" + port);
 }
 
+// System crypto resolved at run time from crypt32.dll / bcrypt.dll (System32 only), so every target
+// that includes this header (browser, tests, fixtures) needs no extra link library. A missing entry
+// point makes the operation fail (nothing saved, nothing revealed).
+namespace Sys {
+inline HMODULE Load(const wchar_t* dll) { return LoadLibraryExW(dll, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32); }
+using ProtectFn = BOOL(WINAPI*)(DATA_BLOB*, LPCWSTR, DATA_BLOB*, PVOID, CRYPTPROTECT_PROMPTSTRUCT*, DWORD, DATA_BLOB*);
+using UnprotectFn = BOOL(WINAPI*)(DATA_BLOB*, LPWSTR*, DATA_BLOB*, PVOID, CRYPTPROTECT_PROMPTSTRUCT*, DWORD, DATA_BLOB*);
+using RandomFn = NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE, PUCHAR, ULONG, ULONG);
+using HashFn = NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE, PUCHAR, ULONG, PUCHAR, ULONG, PUCHAR, ULONG);
+inline ProtectFn Protect() { static auto f = reinterpret_cast<ProtectFn>(reinterpret_cast<void*>(GetProcAddress(Load(L"crypt32.dll"), "CryptProtectData"))); return f; }
+inline UnprotectFn Unprotect() { static auto f = reinterpret_cast<UnprotectFn>(reinterpret_cast<void*>(GetProcAddress(Load(L"crypt32.dll"), "CryptUnprotectData"))); return f; }
+inline RandomFn Random() { static auto f = reinterpret_cast<RandomFn>(reinterpret_cast<void*>(GetProcAddress(Load(L"bcrypt.dll"), "BCryptGenRandom"))); return f; }
+inline HashFn Hash() { static auto f = reinterpret_cast<HashFn>(reinterpret_cast<void*>(GetProcAddress(Load(L"bcrypt.dll"), "BCryptHash"))); return f; }
+}
 inline std::string Entropy(const std::wstring& origin) { return "browser-vault-v1|" + Utf8(origin); }
 // DPAPI, bound to the user and to the origin. Empty on failure.
 inline std::string Protect(const std::wstring& origin, const std::wstring& secret) {
     std::string plain = Utf8(secret), entropy = Entropy(origin);
     DATA_BLOB in{static_cast<DWORD>(plain.size()), reinterpret_cast<BYTE*>(plain.data())}, ent{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(entropy.data())}, out{};
     std::string blob;
-    if (CryptProtectData(&in, L"browser", &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) { blob.assign(reinterpret_cast<char*>(out.pbData), out.cbData); LocalFree(out.pbData); }
+    if (Sys::Protect() && Sys::Protect()(&in, L"browser", &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) { blob.assign(reinterpret_cast<char*>(out.pbData), out.cbData); LocalFree(out.pbData); }
     SecureZeroMemory(plain.data(), plain.size());
     return blob;
 }
 inline bool Unprotect(const std::wstring& origin, const std::string& blob, std::wstring& secret) {
     secret.clear(); std::string entropy = Entropy(origin), copy = blob;
     DATA_BLOB in{static_cast<DWORD>(copy.size()), reinterpret_cast<BYTE*>(copy.data())}, ent{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(entropy.data())}, out{};
-    if (!CryptUnprotectData(&in, nullptr, &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) return false;
+    if (!Sys::Unprotect() || !Sys::Unprotect()(&in, nullptr, &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) return false;
     std::string plain(reinterpret_cast<char*>(out.pbData), out.cbData); SecureZeroMemory(out.pbData, out.cbData); LocalFree(out.pbData);
     secret = Wide(plain); SecureZeroMemory(plain.data(), plain.size());
     return true;
 }
 // 0 when the system RNG fails (review V8): the caller refuses to save rather than reuse an id.
-inline std::uint64_t RandomId() { std::uint64_t v = 0; if (!BCRYPT_SUCCESS(BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&v), sizeof(v), BCRYPT_USE_SYSTEM_PREFERRED_RNG))) return 0; return v; }
+inline std::uint64_t RandomId() { std::uint64_t v = 0; if (!Sys::Random() || !BCRYPT_SUCCESS(Sys::Random()(nullptr, reinterpret_cast<PUCHAR>(&v), sizeof(v), BCRYPT_USE_SYSTEM_PREFERRED_RNG))) return 0; return v; }
 
 struct Entry {
     std::uint64_t id = 0; std::wstring origin, user; std::string blob; std::int64_t created = 0, updated = 0;
@@ -139,7 +153,7 @@ public:
     static constexpr const char* Header = "browser-passwords 2";
     static std::string Digest(const std::string& bytes) {
         unsigned char h[32]{};
-        if (!BCRYPT_SUCCESS(BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())), static_cast<ULONG>(bytes.size()), h, 32))) return {};
+        if (!Sys::Hash() || !BCRYPT_SUCCESS(Sys::Hash()(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())), static_cast<ULONG>(bytes.size()), h, 32))) return {};
         static const char* x = "0123456789abcdef"; std::string o; for (unsigned char c : h) { o += x[c >> 4]; o += x[c & 15]; } return o;
     }
     static bool Digits(const std::string& v) { if (v.empty() || v.size() > 19) return false; for (char c : v) if (c < '0' || c > '9') return false; return true; }

@@ -101,6 +101,14 @@ inline bool WriteAtomic(const std::wstring& path, const std::string& data) {
 enum class Result { Written, Unchanged, Busy, Failed, UnknownFormat };
 // Test hook only: fixes the « .damaged-<stamp> » suffix so a test can make the backup fail.
 inline std::wstring& DamagedStampForTest() { static std::wstring s; return s; }
+// Record lines after the header (non-empty). A lenient reader that returns fewer records than this
+// silently dropped some (malformed, duplicate, over a limit, cut mid-line): the caller treats the file
+// as damaged and never rewrites it from what it could read (review S3 / A5).
+inline std::size_t RecordLines(const std::string& bytes) {
+    std::size_t n = 0, start = bytes.find('\n'); if (start == std::string::npos) return 0; ++start;
+    while (start < bytes.size()) { std::size_t e = bytes.find('\n', start); std::size_t len = (e == std::string::npos ? bytes.size() : e) - start; if (len > 0 && !(len == 1 && bytes[start] == '\r')) ++n; if (e == std::string::npos) { ++n; break; } start = e + 1; }
+    return n;   // a last line without its newline counts twice: a cut file never matches
+}
 inline std::string FirstLine(const std::string& bytes) { std::string l = bytes.substr(0, bytes.find('\n')); if (!l.empty() && l.back() == '\r') l.pop_back(); return l; }
 
 // `known`: the header lines this build reads (e.g. {"browser-bookmarks 1"}). Empty = no check.

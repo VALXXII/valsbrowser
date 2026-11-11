@@ -60,6 +60,7 @@
 #include "profile-store.h"
 #include "window-sessions.h"
 #include "trace-erase.h"
+#include "password-vault.h"
 #ifdef BROWSER_E2E_FIXTURE_HOOK
 // TEST HOST ONLY (tests/e2e/mtls_host.cpp): the fixture pin. The release and dev browser never define
 // BROWSER_E2E_FIXTURE_HOOK, so none of this exists in them (checked by tests/e2e/mtls_e2e.ps1).
@@ -1152,8 +1153,8 @@ AddressBar::History historyBase;
 void SaveHistory(){
     if(smoke||privateWindow)return;
     const auto r=ProfileStore::CommitWith<AddressBar::History>(dataDir,HistoryFile(),historyBase,history,
-        [](std::istream& in,bool*){return AddressBar::History::Read(in);},[](std::ostream& out,const AddressBar::History& h){h.Write(out);},
-        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);},5000,{"browser-history 1"});
+        [](std::istream& in,bool* damaged){std::string b((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());std::istringstream i2(b);auto h=AddressBar::History::Read(i2);if(damaged)*damaged=!b.empty()&&ProfileStore::RecordLines(b)!=h.Items().size();return h;},[](std::ostream& out,const AddressBar::History& h){h.Write(out);},
+        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);},5000,{"browser-history 1"},false); /* damaged: backed up, never rewritten */
     if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"HISTORY save failed");
 }
 // Result pages of the search engines are not suggested back: typing "git" should
@@ -1298,6 +1299,7 @@ void SaveDownloads(){
     std::string bytes;if(!ProfileStore::ReadAll(downloadsFile,bytes)){Log(L"DOWNLOADS save failed (read)");return;}
     {const auto head=ProfileStore::FirstLine(bytes);if(!bytes.empty()&&head!="browser-downloads 2"&&head!="browser-downloads 1"){Log(L"DOWNLOADS unknown file format: not overwritten");return;}} // decision S3
     int ignored=0;std::istringstream in(bytes);const auto theirs=DL::ReadHistory(in,ignored);
+    if(!bytes.empty()&&ProfileStore::RecordLines(bytes)!=theirs.size()){Log(L"DOWNLOADS file damaged: not rewritten");return;} // S3: never rewrite from a partial read
     auto merged=DL::MergeHistory(downloadsBase,downloads,theirs,nextDownloadId);
     std::ostringstream out;DL::WriteHistory(out,merged);
     if(out.str()!=bytes&&!ProfileStore::WriteAtomic(downloadsFile,out.str())){Log(L"DOWNLOADS save failed");return;}
@@ -1721,7 +1723,7 @@ void ApplyPrivacySettings(){
             if(!formsLogged){Log(L"SETTINGS ICoreWebView2Settings4 unavailable: password and autofill switches ignored");formsLogged=true;}continue;}
         // Review P1: a private window's engine never saves passwords or form data (Chromium would keep
         // them in the on-disk private profile).
-        HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords&&!privateWindow?TRUE:FALSE);if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(settings.autofill&&!privateWindow?TRUE:FALSE);
+        HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords&&!privateWindow&&!Vault::Active()?TRUE:FALSE); /* new saves go to our vault only once it is active (decision 1); older engine passwords keep filling */if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(settings.autofill&&!privateWindow?TRUE:FALSE);
         if(FAILED(hr)&&!formsLogged){Log(L"SETTINGS password/autofill settings failed "+HrText(hr));formsLogged=true;}
     }
     if(!any)return;

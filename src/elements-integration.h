@@ -702,7 +702,10 @@ void StartClearSelected(const std::vector<bool>& c,int period,std::function<void
     if(on(4))kinds|=COREWEBVIEW2_BROWSING_DATA_KINDS_SETTINGS;
     Log(L"SETTINGS clear selected kinds="+std::to_wstring(kinds)+L" period="+std::to_wstring(period));
     Com<ICoreWebView2Profile2> profile;
-    if(!kinds||!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){if(kinds)Log(L"SETTINGS clear data: no ICoreWebView2Profile2; local traces only");if(done)done(S_OK);return;}
+    // Engine categories selected but no profile to clear them (no live tab, older runtime): a real
+    // failure for those categories, never « effacé » (the local part may have succeeded).
+    if(!kinds){if(done)done(S_OK);return;}
+    if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){Log(L"SETTINGS clear data: no ICoreWebView2Profile2: engine data NOT cleared");if(done)done(E_NOINTERFACE);return;}
     auto handler=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([done](HRESULT hr)->HRESULT{
         if(SUCCEEDED(hr))Log(L"SETTINGS browsing data cleared");else Log(L"SETTINGS clear data failed "+HrText(hr));if(done)done(hr);return S_OK;});
     const double end=NativeChrome::DownloadsUI::UnixNowMs()/1000.0+60,start=since<=0?0.0:since/1000.0;
@@ -879,6 +882,64 @@ bool SandboxMessage(const std::shared_ptr<Tab>& t,const std::wstring& source,con
 
 // Every top-level web message of a tab: interstitial, error page, then sandbox.
 HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a);
+// ---- Password vault, B04 capture → consent → save (decision 1 A). INACTIVE until the independent
+// review: nothing below runs while Vault::Active() is false (no script, no message accepted).
+// The page only reports a submitted login of ITS OWN top-level document; the origin is the one the
+// ENGINE reports for the message (never a value from the page); the vault is written only after the
+// user's explicit « Enregistrer » / « Mettre à jour » (B04), through Vault::Commit (fail closed).
+// A private window never captures (D3). Secret copies held by the host are wiped after use (V7).
+Vault::Store vault,vaultBase;bool vaultLoaded=false;std::set<unsigned> vaultPromptOpen;
+std::wstring VaultFile(){return dataDir+L"\\passwords";}
+constexpr const wchar_t* VaultCaptureScript=
+    L"(function(){if(window.top!==window||!window.chrome||!chrome.webview)return;"
+    L"document.addEventListener('submit',function(e){var f=e.target;if(!f||!f.querySelector)return;"
+    L"var pw=f.querySelector('input[type=password]');if(!pw||!pw.value)return;"
+    L"var u=f.querySelector('input[autocomplete=username],input[type=email],input[type=text]');"
+    L"chrome.webview.postMessage({browserVault:'capture',user:u?u.value:'',password:pw.value});},true);})();";
+void Wipe(std::wstring& s){if(!s.empty())SecureZeroMemory(s.data(),s.size()*sizeof(wchar_t));s.clear();}
+bool LoadVault(){
+    if(vaultLoaded)return true;std::string bytes;{ProfileStore::Lock lock(dataDir);if(!lock.Held())return false;ProfileStore::ReadAll(VaultFile(),bytes);}
+    if(!bytes.empty()&&ProfileStore::FirstLine(bytes)!=Vault::Store::Header){Log(L"VAULT unknown file format: not opened");return false;}
+    std::istringstream in(bytes);bool damaged=false;vault=Vault::Store::Read(in,&damaged);if(damaged){Log(L"VAULT file damaged: not opened");vault=Vault::Store{};return false;}
+    vaultBase=vault;vaultLoaded=true;return true;
+}
+// Minimal JSON string field reader for the capture message (the engine gives the message as JSON).
+bool JsonField(const std::wstring& json,const std::wstring& key,std::wstring& out){
+    out.clear();const std::wstring k=L"\""+key+L"\":\"";auto at=json.find(k);if(at==std::wstring::npos)return false;at+=k.size();
+    for(size_t i=at;i<json.size();++i){wchar_t c=json[i];
+        if(c==L'"')return true;
+        if(c==L'\\'&&i+1<json.size()){wchar_t e=json[++i];
+            if(e==L'u'&&i+4<json.size()){out+=static_cast<wchar_t>(std::wcstoul(json.substr(i+1,4).c_str(),nullptr,16));i+=4;}
+            else out+=e==L'n'?L'\n':e==L't'?L'\t':e==L'r'?L'\r':e==L'b'?L'\b':e==L'f'?L'\f':e;}
+        else out+=c;}
+    return false;
+}
+bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::wstring message){
+    if(message.find(L"\"browserVault\":\"capture\"")==std::wstring::npos)return false;
+    struct WipeOnExit{std::wstring& m;~WipeOnExit(){Wipe(m);}} wipeMessage{message};
+    if(!Vault::Active()||privateWindow||smoke)return true;   // inactive / private: swallowed, nothing kept
+    const std::wstring origin=Vault::CanonicalOrigin(source);
+    if(origin.empty()||vaultPromptOpen.count(t->serial)||!LoadVault())return true;   // http / already asking / vault unavailable: no prompt by itself (D2)
+    std::wstring user,secret;if(!JsonField(message,L"user",user)||!JsonField(message,L"password",secret)||secret.empty()){Wipe(secret);return true;}
+    auto accounts=vault.For(origin);
+    OP::Spec s;s.demo=false;s.origin=origin;s.user=user;s.secret=secret;Wipe(secret);
+    const bool known=std::any_of(accounts.begin(),accounts.end(),[&](const Vault::Entry& e){return e.user==user;});
+    if(known||(user.empty()&&!accounts.empty())){s.kind=OP::Kind::PasswordUpdate;
+        if(user.empty()&&accounts.size()==1)s.user=accounts[0].user;   // one account: shown, confirmed by the user
+        else if(user.empty())for(auto& e:accounts)s.accounts.push_back({e.user,L""});}   // several: explicit choice (D1)
+    else s.kind=OP::Kind::PasswordSave;
+    vaultPromptOpen.insert(t->serial);const unsigned serial=t->serial;
+    AskPrompt(std::move(s),t,[origin,serial](OP::Result& r){
+        vaultPromptOpen.erase(serial);
+        if(r.action==OP::Action::Save&&!r.password.empty()){
+            const auto saved=vault.Save(origin,r.user,r.password,NativeChrome::DownloadsUI::UnixNowMs());
+            const auto res=saved==Vault::Store::Saved::Refused?ProfileStore::Result::Failed:Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
+            Log(std::wstring(L"VAULT ")+(res==ProfileStore::Result::Written||res==ProfileStore::Result::Unchanged?L"saved":L"NOT saved (refused, busy, damaged or unknown file)"));
+        }
+        Wipe(r.password);
+    },L"vault:"+std::to_wstring(serial));
+    return true;
+}
 HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){
     if(halted||!t||t->closed||!a)return S_OK;
     if(!t->https.shown.empty())return InterstitialMessage(t,a);
@@ -886,7 +947,8 @@ HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceive
     LPWSTR raw=nullptr;std::wstring message;
     if(SUCCEEDED(a->TryGetWebMessageAsString(&raw))&&raw)message=TakeString(raw);
     else{CoTaskMemFree(raw);raw=nullptr;if(SUCCEEDED(a->get_WebMessageAsJson(&raw))&&raw)message=TakeString(raw);}
-    if(message.size()>4096)return S_OK;
+    if(message.size()>4096){Wipe(message);return S_OK;}
+    if(VaultCapture(t,source,message))return S_OK;
     if(ErrorPageMessage(t,source,message))return S_OK;
     SandboxMessage(t,source,message);
     return S_OK;
@@ -897,6 +959,7 @@ HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceive
 void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* settings){
     std::weak_ptr<Tab> weak=t;EventRegistrationToken token{};
     if(settings&&FAILED(settings->put_AreDefaultScriptDialogsEnabled(FALSE)))Log(L"DIALOG default dialogs could not be disabled");
+    if(Vault::Active()&&!privateWindow&&FAILED(t->view->AddScriptToExecuteOnDocumentCreated(VaultCaptureScript,nullptr)))Log(L"VAULT capture script not installed");
     {auto h=Callback<ICoreWebView2ScriptDialogOpeningEventHandler,ICoreWebView2*,ICoreWebView2ScriptDialogOpeningEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ScriptDialogOpeningEventArgs* a)->HRESULT{return ScriptDialogOpening(weak.lock(),a);});
      if(FAILED(t->view->add_ScriptDialogOpening(h,&token)))Log(L"DIALOG add_ScriptDialogOpening failed");h->Release();}
     {auto h=Callback<ICoreWebView2PermissionRequestedEventHandler,ICoreWebView2*,ICoreWebView2PermissionRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2PermissionRequestedEventArgs* a)->HRESULT{return PermissionRequested(weak.lock(),a);});

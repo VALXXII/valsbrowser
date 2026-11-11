@@ -113,3 +113,23 @@ Adoptée par fusion (48cc300 = 63433bf avec résolution manuelle de `src/main.cp
 - **Non vérifié** (réel) : installation Evergreen réelle, cause nécessitant un redémarrage, enfant EdgeUpdate, DPI élevé, seconde session
   Windows. Fermeture : peut attendre `CreateProcessW` sous garde puis verrou de retrait ≤ 1 s et Shutdown 1500 ms — pas de promesse de 1,5 s au
   total ; doubles échecs OS et résidu suspendu acceptés par la revue, sans garantie absolue. Aucun setup Microsoft exécuté.
+
+## Coffre — état du branchement (coffre INACTIF, `Vault::Active()` = faux)
+- **B04** chemin réel : **U seulement** (`modal_test` : secret soumis pré-rempli masqué, pas de « Jamais » sans liste réelle, D1 choix explicite du
+  compte avec « Mettre à jour » désactivé tant que non choisi, compte + mot de passe retournés). Capture (script de document du cadre principal,
+  origine lue par le moteur, jamais en privé, un prompt à la fois par onglet) + enregistrement après consentement via `Vault::Commit` (fail closed)
+  : **code présent, non exécuté** tant que le coffre est inactif ; aucune preuve E2E. Crypto système chargée dynamiquement (crypt32/bcrypt de
+  System32).
+- **B03** remplissage (déclencheur natif, ancre, D2) et **B05/E8** gestionnaire réel : **à faire** ; V5/V7 (partiel : copies hôte du secret
+  effacées dans le chemin B04) ouverts ; V6 = consentement au vrai Save (B04).
+- Recontrôle indépendant **complet** requis après B03/B04/B05 (frontières origine/cadre/document/consentement + stockage, et recontrôle des
+  corrections M1-M3 et des gardes de l'hôte mTLS) avant toute activation ou PR finale.
+
+## A5 « Effacer les données » — état
+- Partie locale : delta de suppression sous verrou sur le fichier courant (`src/trace-erase.h`), échec réel remonté (Busy / format inconnu / fichier
+  endommagé / écriture). Un fichier de format connu mais endommagé (ligne invalide, coupure en cours de ligne) n'est **jamais réécrit** (octets
+  préservés) ; la sauvegarde normale de l'historique non plus (copie exacte de côté). Limite : l'historique et les téléchargements n'ont pas de preuve
+  de complétude (pas de trailer) : une coupure pile en fin de ligne n'est pas détectable (seul le coffre v2 en a une).
+- Catégories moteur (cookies, cache, réglages) sans profil moteur (aucun onglet vivant, runtime ancien) : **échec** remonté, jamais « effacé ».
+- Preuves : E2E-store `test-profile-store` (fenêtre B = vrai processus, période, hors période, B ne ressuscite rien, Busy, format inconnu, ligne
+  endommagée, coupure, échec d'écriture réel) ; U `elements_integration` (profil absent ⇒ échec).

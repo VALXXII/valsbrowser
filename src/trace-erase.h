@@ -25,6 +25,7 @@ inline Outcome History(const std::wstring& dataDir, const std::wstring& path, st
     std::string bytes; if (!ProfileStore::ReadAll(path, bytes)) return Outcome::Failed;
     if (!bytes.empty() && ProfileStore::FirstLine(bytes) != "browser-history 1") return Outcome::UnknownFormat;
     std::istringstream in(bytes); const AddressBar::History theirs = AddressBar::History::Read(in);
+    if (!bytes.empty() && ProfileStore::RecordLines(bytes) != theirs.Items().size()) return Outcome::Failed;   // damaged: never rewritten from a partial read
     AddressBar::History merged = AddressBar::History::Merge(base, mine, theirs);
     std::vector<std::wstring> gone; for (const auto& v : merged.Items()) if (since <= 0 || v.last >= since) gone.push_back(v.url);
     for (const auto& u : gone) merged.Remove(u);
@@ -44,6 +45,7 @@ inline Outcome Downloads(const std::wstring& dataDir, const std::wstring& path, 
     const std::string head = ProfileStore::FirstLine(bytes);
     if (!bytes.empty() && head != "browser-downloads 2" && head != "browser-downloads 1") return Outcome::UnknownFormat;
     int ignored = 0; std::istringstream in(bytes); const auto theirs = DL::ReadHistory(in, ignored);
+    if (!bytes.empty() && ProfileStore::RecordLines(bytes) != theirs.size()) return Outcome::Failed;   // damaged: never rewritten from a partial read
     auto merged = DL::MergeHistory(base, mine, theirs, nextId);
     merged.erase(std::remove_if(merged.begin(), merged.end(), [since](const DL::Item& d) { return DL::Persistent(d) && (since <= 0 || d.started >= since || d.started == 0); }), merged.end());
     std::ostringstream out; DL::WriteHistory(out, merged);

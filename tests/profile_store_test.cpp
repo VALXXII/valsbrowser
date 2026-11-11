@@ -294,6 +294,25 @@ int wmain(int argc, wchar_t** argv) {
           SetEvent(done); WaitForSingleObject(th, 5000); CloseHandle(th); CloseHandle(ready); CloseHandle(done); }
         ProfileStore::WriteAtomic(hp, "browser-history 9\nfuture\n");
         { H m = aMine, b0 = aBase; Check(TraceErase::History(dir, hp, 0, m, b0) == TraceErase::Outcome::UnknownFormat && m == aMine, "A5: an unknown history format is not erased silently (reported, untouched)"); std::string t; ProfileStore::ReadAll(hp, t); Check(t == "browser-history 9\nfuture\n", "A5: the unknown file is byte-identical"); }
+        // Known format but damaged (a malformed line outside the period; a cut last line): never rewritten
+        // from what could be read, bytes preserved (review S3 / A5).
+        { H good; good.Record(L"https://hors-periode.test/", L"o", 50); good.Record(L"https://dans-periode.test/", L"i", 900); std::ostringstream o; good.Write(o);
+          const std::string damagedLine = o.str() + "pas\tune\tligne\n"; ProfileStore::WriteAtomic(hp, damagedLine);
+          H m = aMine, b0 = aBase; Check(TraceErase::History(dir, hp, 500, m, b0) == TraceErase::Outcome::Failed && m == aMine, "A5: a damaged line in a known history format fails, nothing erased from memory");
+          std::string t; ProfileStore::ReadAll(hp, t); Check(t == damagedLine, "A5: the damaged file is byte-identical (no data outside the period lost)");
+          const std::string cut = o.str().substr(0, o.str().size() - 3); ProfileStore::WriteAtomic(hp, cut);
+          H m2 = aMine, b2 = aBase; Check(TraceErase::History(dir, hp, 500, m2, b2) == TraceErase::Outcome::Failed, "A5: a file cut mid-line fails"); std::string t2; ProfileStore::ReadAll(hp, t2); Check(t2 == cut, "A5: the cut file is byte-identical");
+          // A real write failure: the temp name is occupied by a directory.
+          ProfileStore::WriteAtomic(hp, o.str()); const std::wstring tmp = hp + L".tmp" + std::to_wstring(GetCurrentProcessId()); std::filesystem::create_directories(tmp, ec);
+          H m3 = aMine, b3 = aBase; Check(TraceErase::History(dir, hp, 500, m3, b3) == TraceErase::Outcome::Failed && m3 == aMine, "A5: a real write failure is reported, memory unchanged");
+          std::string t3; ProfileStore::ReadAll(hp, t3); Check(t3 == o.str(), "A5: after the failed write the file is intact"); std::filesystem::remove_all(tmp, ec);
+          // The regular history save never rewrites a damaged file either.
+          ProfileStore::WriteAtomic(hp, damagedLine); ProfileStore::DamagedStampForTest() = L"histtest";
+          H hb = aBase, hm = aMine; hm.Record(L"https://nouveau.test/", L"n", 5000);
+          const auto rs = ProfileStore::CommitWith<H>(dir, hp, hb, hm, [](std::istream& i, bool* dmg) { std::string b((std::istreambuf_iterator<char>(i)), std::istreambuf_iterator<char>()); std::istringstream i2(b); auto h = H::Read(i2); if (dmg) *dmg = !b.empty() && ProfileStore::RecordLines(b) != h.Items().size(); return h; }, [](std::ostream& w, const H& h) { h.Write(w); }, [](const H& x, const H& y, const H& z) { return H::Merge(x, y, z); }, 5000, {"browser-history 1"}, false);
+          std::string t4; ProfileStore::ReadAll(hp, t4); std::string bk; ProfileStore::ReadAll(hp + L".damaged-histtest", bk);
+          Check(rs == ProfileStore::Result::Failed && t4 == damagedLine && bk == damagedLine, "history save: a damaged file is backed up exactly and never rewritten");
+          ProfileStore::DamagedStampForTest().clear(); std::filesystem::remove(hp + L".damaged-histtest", ec); std::filesystem::remove(hp + L".damaged-last", ec); }
         // Downloads: a row added elsewhere in the period goes, rows outside stay, live rows stay.
         namespace DL = NativeChrome::Downloads; const std::wstring dp = hdir + L"\\downloads";
         auto row = [](int id, const wchar_t* path, std::int64_t started) { DL::Item i; i.id = id; i.path = path; i.uri = L"https://d.test/f"; i.state = DL::State::Completed; i.total = 10; i.started = started; return i; };
