@@ -11,6 +11,12 @@ client_auth = '--no-client-auth' not in sys.argv   # TLS-page E2E: plain HTTPS w
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # Bound scenario helpers (test host must refuse any other port): a redirect and a sub-resource.
+        if self.path.startswith('/redir?p='):
+            self.send_response(302); self.send_header('Location', 'https://127.0.0.1:%s/r' % self.path.split('=')[1]); self.send_header('Content-Length', '0'); self.end_headers(); return
+        if self.path.startswith('/with-img?p='):
+            body = ('<title>with img</title><img src="https://127.0.0.1:%s/img.png">' % self.path.split('=')[1]).encode('utf-8')
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
         cert = self.connection.getpeercert() or {}
         subject = ', '.join('='.join(x) for rdn in cert.get('subject', ()) for x in rdn)
         with open(os.path.join(d, 'observed.txt'), 'a', encoding='utf-8') as f: f.write(subject + '\n')

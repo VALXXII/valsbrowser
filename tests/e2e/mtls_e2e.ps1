@@ -113,6 +113,20 @@ try {
     $seen = if (Test-Path $observed) { Get-Content $observed -Raw } else { '' }
     Check ($seen -match "browser-e2e-mtls-$runId") 'mTLS handshake: the SERVER observed this run''s client identity after « Envoyer »'
   }
+  # 4b Review P-L2: the SAME certificate on a SECOND port, after the allow decision is cached: the test
+  #    host refuses navigation, redirect and sub-resource before any request reaches that server.
+  $pki2 = Join-Path $work 'pki2'; Remove-Item $pki2 -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory $pki2 | Out-Null
+  Copy-Item "$pki\server.crt", "$pki\server.key" $pki2; $port2 = $port + 1
+  $server2 = Start-Process python -ArgumentList 'tests/e2e/mtls_server.py', $pki2, "$port2", '--no-client-auth' -PassThru -WindowStyle Hidden; Start-Sleep 1
+  function Nav-To([string]$url) { $t = (Invoke-RestMethod 'http://127.0.0.1:9391/json') | ForEach-Object { $_ } | Where-Object { $_.type -eq 'page' } | Select-Object -First 1; $ws = New-Object System.Net.WebSockets.ClientWebSocket; $ws.ConnectAsync([Uri]$t.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait(); $b = [Text.Encoding]::UTF8.GetBytes("{`"id`":2,`"method`":`"Page.navigate`",`"params`":{`"url`":`"$url`"}}"); $ws.SendAsync([ArraySegment[byte]]::new($b), 'Text', $true, [Threading.CancellationToken]::None).Wait(); Start-Sleep 3; $ws.Dispose() }
+  Nav-To "https://127.0.0.1:$port2/second"
+  Nav-To "https://127.0.0.1:$port/redir?p=$port2"
+  Nav-To "https://127.0.0.1:$port/with-img?p=$port2"
+  $logB = Get-Content (Join-Path $hostDir 'prototype.log') -Raw -ErrorAction SilentlyContinue
+  Check (-not (Test-Path "$pki2\observed.txt")) 'second port with the same certificate: no request ever reached it (navigation, redirect, sub-resource)'
+  Check ($logB -match "E2E BOUND refused navigation https://127\.0\.0\.1:$port2/second" -and $logB -match "E2E BOUND refused (navigation|request) https://127\.0\.0\.1:$port2/r" -and $logB -match "E2E BOUND refused request https://127\.0\.0\.1:$port2/img\.png") 'the test host refused each second-port destination before sending'
+  Check ($logB -match 'E2E BOUND certificate decisions cleared') 'certificate decisions cleared at the host''s start (ClearServerCertificateErrorActions)'
+  if ($server2 -and !$server2.HasExited) { Stop-Process -Id $server2.Id -Force }
   # 5 Cancel path on a fresh profile
   Remove-Item $observed -ErrorAction SilentlyContinue
   Fresh-Profile; Start-Process -FilePath $exe -WorkingDirectory $hostDir; Navigate

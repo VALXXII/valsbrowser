@@ -107,6 +107,9 @@ GUID_TEXT(ICoreWebView2ContainsFullScreenElementChangedEventHandler,"{e45d98b1-a
 GUID_TEXT(ICoreWebView2FindActiveMatchIndexChangedEventHandler,"{0054f514-9a8e-5876-aed5-30b37f8c86a5}")
 GUID_TEXT(ICoreWebView2FindMatchCountChangedEventHandler,"{da0d6827-4254-5b10-a6d9-412076afc9f3}")
 GUID_TEXT(ICoreWebView2WebResourceRequestedEventHandler,"{ab00b74c-15f1-4646-80e8-e76341d25d71}")
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+GUID_TEXT(ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,"{3b40aac6-acfe-4ffd-8211-f607b96e2d5b}")
+#endif
 template<class I, class... A> class Handler final : public I {
     LONG refs=1; IID iid{}; std::function<HRESULT(A...)> fn;
 public:
@@ -2231,6 +2234,17 @@ void RequestFavicon(const std::shared_ptr<Tab>& tab){
 // Network failures stay inside the WebView: its built-in error page provides
 // details and retry, while the address bar, other tabs and commands remain usable.
 #ifdef BROWSER_E2E_FIXTURE_HOOK
+// Review P-L2 (coordinator msg_0114e68f7b35): the TEST HOST talks only to the manifest's exact origin.
+// Every top-level/frame navigation (redirects included) and every network request elsewhere is refused
+// BEFORE it is sent; only the initial local documents (about:, data:) are allowed. A guard that cannot be
+// installed halts the host (fail closed).
+bool E2EAllowedUri(const std::wstring& u){
+    if(u.rfind(L"about:",0)==0||u.rfind(L"data:",0)==0)return true;
+    wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
+    const auto m=E2EFixturePin::Load(path);if(!m.loaded)return false;
+    const std::wstring o=L"https://"+m.host+L":"+std::to_wstring(m.port);
+    return u==o||u.rfind(o+L"/",0)==0||u.rfind(o+L"?",0)==0||u.rfind(o+L"#",0)==0;
+}
 bool E2EFixtureAllows(ICoreWebView2ServerCertificateErrorDetectedEventArgs* args){
     wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
     const auto m=E2EFixturePin::Load(path);
@@ -2349,6 +2363,22 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
                 Com<ICoreWebView2Certificate> c;LPWSTR issuer=nullptr;tab->errorPage.certIssuer.clear();if(SUCCEEDED(args->get_ServerCertificate(&c.p))&&c.p&&SUCCEEDED(c->get_Issuer(&issuer))&&issuer){tab->errorPage.certIssuer=issuer;CoTaskMemFree(issuer);}}if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}
         {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();ApplyTabSettings();ApplyMemorySaver();if(!adBlockSynced)ApplyAdBlock();}
         {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+        {   // test host only: bound every destination to the manifest's exact origin, fail closed
+            bool guarded=true;EventRegistrationToken tk{};
+            auto nav=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* a)->HRESULT{LPWSTR u=nullptr;if(SUCCEEDED(a->get_Uri(&u))&&u){std::wstring s(u);CoTaskMemFree(u);if(!E2EAllowedUri(s)){a->put_Cancel(TRUE);Log(L"E2E BOUND refused navigation "+s);}}else a->put_Cancel(TRUE);return S_OK;});
+            guarded=guarded&&SUCCEEDED(t->view->add_NavigationStarting(nav,&tk))&&SUCCEEDED(t->view->add_FrameNavigationStarting(nav,&tk));nav->Release();
+            guarded=guarded&&SUCCEEDED(t->view->AddWebResourceRequestedFilter(L"*",COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL));
+            auto res=Callback<ICoreWebView2WebResourceRequestedEventHandler,ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs*>([](ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs* a)->HRESULT{
+                Com<ICoreWebView2WebResourceRequest> rq;LPWSTR u=nullptr;std::wstring s;if(SUCCEEDED(a->get_Request(&rq.p))&&rq.p&&SUCCEEDED(rq->get_Uri(&u))&&u){s=u;CoTaskMemFree(u);}
+                if(!E2EAllowedUri(s)){Com<ICoreWebView2WebResourceResponse> r;if(SUCCEEDED(environment->CreateWebResourceResponse(nullptr,403,L"E2E bound",L"",&r.p))&&r.p)a->put_Response(r.p);Log(L"E2E BOUND refused request "+s);}
+                return S_OK;});
+            guarded=guarded&&SUCCEEDED(t->view->add_WebResourceRequested(res,&tk));res->Release();
+            Com<ICoreWebView2_14> v14;guarded=guarded&&SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&v14.p))&&v14.p;
+            if(guarded){auto cleared=Callback<ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{Log(SUCCEEDED(hr)?L"E2E BOUND certificate decisions cleared":L"E2E BOUND clear failed");return S_OK;});guarded=SUCCEEDED(v14->ClearServerCertificateErrorActions(cleared));cleared->Release();}
+            if(!guarded){Fail(L"E2E test host: destination guards unavailable (fail closed)",E_FAIL);return S_OK;}
+        }
+#endif
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;Navigate(t,uri);return S_OK;
     });
     HRESULT hr=E_FAIL;
