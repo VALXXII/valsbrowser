@@ -362,6 +362,14 @@ int wmain(int argc, wchar_t** argv) {
         Modal::Result pick; pick.button = OriginPrompt::Id::Accept; pick.select = 1; pick.values = {L"Fictif-nouveau-2026"};
         const auto out = OriginPrompt::Map(r, pick);
         Check(out.action == OriginPrompt::Action::Save && out.user == L"travail@exemple.test" && out.password == L"Fictif-nouveau-2026", "B04 real: the chosen account and the (possibly edited) password come back for the vault");
+        // Review F3/V5: credential prompts are armed (500 ms, foreground) and an update has no default Entrée.
+        Check(m.armMs == 500 && !m.buttons.back().isDefault, "B04 real update: armed 500 ms, no default Entrée");
+        { OriginPrompt::Spec sv = r; sv.kind = OriginPrompt::Kind::PasswordSave; sv.user = L"camille@exemple.test"; sv.accounts.clear();
+          const auto ms = OriginPrompt::Build(sv, true); Modal::Dialog dd; dd.Create(hi, owner, root, {}); int closed = 0;
+          dd.Show(ms, Area(), [&](const Modal::Result&) { ++closed; });
+          dd.ActivateForTest(Modal::Dialog::ButtonHit(1));
+          Check(!dd.ArmedForTest() && closed == 0 && dd.Visible(), "B04 real: a click right after the prompt appears does nothing (armed after 500 ms)");
+          dd.Abort(); dd.FinishAnimationsForTest(); dd.Dispose(); }
         Modal::Result none; none.button = OriginPrompt::Id::Accept; none.select = -1; none.values = {L"x"};
         Check(OriginPrompt::Map(r, none).action != OriginPrompt::Action::Save, "B04 real: no account chosen => nothing saved (never the last one silently)");
     }
@@ -369,7 +377,7 @@ int wmain(int argc, wchar_t** argv) {
         NativeChrome::PasswordDemo::Window w; Check(w.Create(hi, owner, root), "B05 real: surface created");
         int removeCalls = 0; std::wstring said; NativeChrome::PasswordDemo::Window w2; NativeChrome::PasswordDemo::Demo::Hooks hk; hk.announce = [&](const std::wstring& t0) { said = t0; };
         Check(w2.Create(hi, owner, root, hk), "B05 real: surface with announce");
-        w2.SetReal({{L"compte.exemple.test", L"camille@exemple.test", L"NE-DOIT-PAS-APPARAITRE", L"", L"Modifié le 12 novembre 2026"}}, [&](size_t) { ++removeCalls; return false; });
+        w2.SetReal({{L"compte.exemple.test", L"camille@exemple.test", L"NE-DOIT-PAS-APPARAITRE", L"", L"Modifié le 12 novembre 2026", 7}}, [&](std::uint64_t) { ++removeCalls; return false; });
         Check(w2.Real() && w2.Accounts().size() == 1 && w2.Accounts()[0].password.empty(), "B05 real: accounts carry no secret");
         Check(w2.Show({0, 0, 900, 700}), "B05 real: shown");
         Check(!w2.Surface().CurrentSpec().demo && w2.Surface().CurrentSpec().subtitle.find(L"restent proposés par le moteur") != std::wstring::npos, "B05 real: no demo badge, cohabitation note");
@@ -380,6 +388,14 @@ int wmain(int argc, wchar_t** argv) {
         Check(removeCalls == 1 && w2.Accounts().size() == 1 && said.find(L"n'a pas pu être supprimé") != std::wstring::npos, "B05 real: a removal the vault did not write is said, the row stays");
         w2.Hide(); w2.Surface().FinishAnimationsForTest();
         w2.SetReal({}, nullptr); Check(w2.Show({0, 0, 900, 700}) && w2.Surface().CurrentSpec().accountsTitle == L"Aucun mot de passe enregistré par browser", "B05 real: empty state"); w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        {   // Review F1: removals act on each row's own vault id, whatever the rows' order after earlier removals.
+            std::vector<std::uint64_t> removed; w2.SetReal({{L"a.test", L"A", L"", L"", L"", 11}, {L"b.test", L"B", L"", L"", L"", 22}, {L"c.test", L"C", L"", L"", L"", 33}}, [&](std::uint64_t id) { removed.push_back(id); return true; });
+            w2.Show({0, 0, 900, 700}); w2.Surface().ArmNowForTest();
+            auto removeRow = [&](int row) { w2.Surface().ActivateForTest(Modal::Dialog::AccountHit(row)); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0)); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1)); };
+            removeRow(0); removeRow(1);   // A, then the row now second: C
+            Check(removed == std::vector<std::uint64_t>{11, 33} && w2.Accounts().size() == 1 && w2.Accounts()[0].user == L"B", "F1: removing A then C deletes exactly A and C (ids), B stays");
+            w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        }
         w2.SetDemo(); Check(!w2.Real() && w2.Accounts().size() == NativeChrome::PasswordDemo::SampleAccounts().size(), "B05: back to the fictitious demonstration for the sandbox");
         w.Dispose(); w2.Dispose();
     }

@@ -388,6 +388,9 @@ struct Spec {
     bool accountsSelect = false; int accountSelected = -1;
     std::vector<Button> buttons; bool stretchButtons = false, softButtons = false;
     bool demo = false;                                         // badge « Démonstration »
+    // Review F3/V5: no button acts before the dialog has been shown, still and in a foreground window, for
+    // `armMs` (credential prompts: 500). A page cannot make a click or Entrée land on it by surprise.
+    int armMs = 0;
     std::function<std::wstring(const std::vector<std::wstring>&)> validate; // inline error or ""
     std::function<void(int)> onButton;                         // buttons with closes = false
     // Input that opened the dialog. Focus always lands on the initial control (Entrée / Échap work);
@@ -891,6 +894,16 @@ private:
         return 0;
     }
     // ---- actions --------------------------------------------------------------------------------
+    ULONGLONG armedFrom_ = 0;
+    bool Armed() const {
+        if (spec_.armMs <= 0) return true;
+        if (GetTickCount64() < armedFrom_) return false;
+        HWND fg = GetForegroundWindow(); return fg == hwnd_ || fg == owner_ || (owner_ && GetAncestor(fg, GA_ROOTOWNER) == owner_);
+    }
+public:
+    void ArmNowForTest() { armedFrom_ = 0; }
+    bool ArmedForTest() const { return Armed(); }
+private:
     Result Collect(int button) const {
         Result r; r.button = button; r.values = Values(); r.checked = spec_.checkValue;
         for (auto& c : spec_.checks) r.checks.push_back(c.value);
@@ -902,8 +915,9 @@ private:
         if (choosing_) { if (hostMenu_) { if (hooks_.dismiss) hooks_.dismiss(); } else if (menu_) menu_->Cancel(); }
         open_ = false; busy_ = false; choosing_ = false;
         auto done = std::move(done_); done_ = nullptr;
-        // Secrets never outlive the answer: the EDIT buffers are overwritten now.
+        // Secrets never outlive the answer: the EDIT buffers and the spec's password values are overwritten now (F6).
         for (size_t i = 0; i < edits_.size(); ++i) if (spec_.fields[i].password) edits_[i].Wipe();
+        for (auto& f : spec_.fields) if (f.password && !f.value.empty()) { SecureZeroMemory(f.value.data(), f.value.size() * sizeof(wchar_t)); f.value.clear(); }
         if (uia_.Listening()) uia_.Raise(GroupKey, UIA_Window_WindowClosedEventId);
         closing_ = true; fade_.Set(0, Motion::Now(), Motion::Milliseconds(static_cast<int>(P::exitMs)), false, Motion::Curve::EaseOut);
         EnableWindow(hwnd_, FALSE);
@@ -923,6 +937,7 @@ private:
     }
     void Press(size_t index) {
         if (index >= spec_.buttons.size()) return;
+        if (!Armed()) return;
         const Button b = spec_.buttons[index];
         if (ButtonDisabled(b)) return;
         if (b.isDefault && (spec_.validate || !spec_.fields.empty())) {
@@ -1509,7 +1524,7 @@ public:
         if (closing_) FinishClosing();
         spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
         busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
-        keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now();
+        keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs);
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
         SetWindowTextW(hwnd_, AccessibleName().c_str());
         EnableWindow(hwnd_, TRUE);

@@ -21,7 +21,7 @@
 
 namespace NativeChrome {
 namespace PasswordDemo {
-struct Account { std::wstring site, user, password /* fictitious */, page, modified; };
+struct Account { std::wstring site, user, password /* fictitious */, page, modified; std::uint64_t id = 0; /* real mode: the vault entry (review F1) */ };
 // Paper B05 sample rows, with every identifier and secret fictitious. (Paper's ameli.fr row
 // shows a number shaped like a real social security number: replaced by an obvious fake.)
 inline std::vector<Account> SampleAccounts() {
@@ -42,7 +42,7 @@ private:
     Modal::Dialog dialog_; Hooks hooks_; std::vector<Account> accounts_ = SampleAccounts();
     // B05 REAL mode (E8, vault): the vault's accounts WITHOUT any decrypted secret (no reveal), removal
     // through `remove_` (the vault transaction; false = not removed, said so). No « Démonstration » badge.
-    bool real_ = false; std::function<bool(size_t)> remove_;
+    bool real_ = false; std::function<bool(std::uint64_t)> remove_;
     std::function<void()> closed_; View view_ = View::List; size_t current_ = 0;
     Modal::Spec Base() const {
         Modal::Spec s; s.kind = Modal::Kind::Passwords; s.scope = Modal::Scope::Window; s.width = 332; s.demo = !real_; s.closeButton = true;
@@ -86,7 +86,7 @@ private:
         case ConfirmButton: {
             if (current_ < accounts_.size()) {
                 const std::wstring what = accounts_[current_].user + L" sur " + accounts_[current_].site;
-                if (real_ && !(remove_ && remove_(current_))) { if (hooks_.announce) hooks_.announce(L"Le mot de passe n'a pas pu être supprimé : " + what); Go(View::Detail); break; }
+                if (real_ && !(remove_ && remove_(accounts_[current_].id))) { if (hooks_.announce) hooks_.announce(L"Le mot de passe n'a pas pu être supprimé : " + what); Go(View::Detail); break; }
                 SecureZeroMemory(accounts_[current_].password.data(), accounts_[current_].password.size() * sizeof(wchar_t));
                 accounts_.erase(accounts_.begin() + static_cast<std::ptrdiff_t>(current_));
                 if (hooks_.announce) hooks_.announce(real_ ? L"Mot de passe supprimé : " + what : L"Mot de passe supprimé (démonstration) : " + what);
@@ -114,7 +114,7 @@ public:
     View CurrentView() const { return view_; }
     const std::vector<Account>& Accounts() const { return accounts_; }
     // Real mode: `accounts` carry no secret (password empty); `remove(i)` removes the i-th from the vault.
-    void SetReal(std::vector<Account> accounts, std::function<bool(size_t)> remove) { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = std::move(accounts); for (auto& a : accounts_) a.password.clear(); remove_ = std::move(remove); real_ = true; }
+    void SetReal(std::vector<Account> accounts, std::function<bool(std::uint64_t)> remove) { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = std::move(accounts); for (auto& a : accounts_) a.password.clear(); remove_ = std::move(remove); real_ = true; }
     bool Real() const { return real_; }
     // Back to the fictitious demonstration (the sandbox): never shows real accounts.
     void SetDemo() { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = SampleAccounts(); remove_ = nullptr; real_ = false; }

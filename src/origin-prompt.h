@@ -259,7 +259,10 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         m.softButtons = true;
         Button never = button(Id::Never, L"Jamais pour ce site", Role::Quiet, false, false, false, L"PasswordNever"); never.leading = true;
         if (!s.demo) {   // real path: no « Jamais pour ce site » until a real exclusion list exists (no inert action)
-            m.buttons = {button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, true, false, false, L"PasswordSaveConfirm")};
+            // Review F3: armed (500 ms, foreground) and, for an update, no default Entrée: replacing a stored
+            // password always takes a deliberate click or Tab + Espace on « Mettre à jour ».
+            m.armMs = 500;
+            m.buttons = {button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
             if (m.accountsSelect) m.buttons[1].disabled = true;
             break;
         }
@@ -268,6 +271,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     }
     case Kind::PasswordFill: {   // B03/B04, Démonstration: fictitious accounts held in memory
         m.automationId = L"PasswordFill"; m.scope = Scope::Anchor; m.width = 360; m.padding = 6; m.gap = 2; m.demo = s.demo;   // real: the vault's accounts for the EFFECTIVE origin, no secret here
+        if (!s.demo) m.armMs = 500;   // V5: a row cannot be chosen by a click the page arranged
         m.accountsTitle = s.accounts.empty() ? L"Aucun compte enregistré pour " + s.origin : L"Comptes enregistrés pour " + s.origin;
         for (auto& a : s.accounts) m.accounts.push_back({a.user, std::wstring(std::max<size_t>(8, std::min<size_t>(14, a.hint.size())), L'\x2022')});
         m.manageLabel = L"Gérer les mots de passe"; m.manageId = Id::Manage;
@@ -390,6 +394,8 @@ public:
         return dialog_.Show(std::move(m), area, [this](const Modal::Result& r) {
             auto done = std::move(done_); done_ = nullptr; confirming_ = false;
             Result out = Map(spec_, r);
+            if (!spec_.secret.empty()) { SecureZeroMemory(spec_.secret.data(), spec_.secret.size() * sizeof(wchar_t)); spec_.secret.clear(); }   // F6
+            for (auto& v : const_cast<Modal::Result&>(r).values) if (!v.empty()) SecureZeroMemory(v.data(), v.size() * sizeof(wchar_t));   // F6: the modal's copies
             if (done) done(out);
             SecureZeroMemory(out.password.data(), out.password.size() * sizeof(wchar_t)); out.password.clear();
         });

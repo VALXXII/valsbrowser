@@ -212,7 +212,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         labelAt(L"Formulaires");
         twoLine(Passwords, L"Mots de passe");
         // E8: the vault's manager, a separate entry from the switch (shown only while the vault is active).
-        if (in.vaultManager) add(Kind::Nav, ManagePasswords, row, L"Gérer les mots de passe", std::to_wstring(in.vaultCount));
+        if (in.vaultManager) add(Kind::Nav, ManagePasswords, row, L"Gérer les mots de passe", in.vaultCount == SIZE_MAX ? std::wstring(L"Illisible") : std::to_wstring(in.vaultCount));
         twoLine(Autofill, L"Saisie automatique");
         endGroup();
         labelAt(L"Données");
