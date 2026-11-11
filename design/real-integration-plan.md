@@ -19,7 +19,7 @@ contre une fixture réelle. Aucune ligne U n'est présentée comme un E2E.
 ## Matrice composant → événement réel → effet → état → preuve
 | # | Composant (Paper) | API / événement réel (Learn) | Effet observable | État (SHA) | Preuve |
 |---|---|---|---|---|---|
-| 3 | B08 certificat client | [`ICoreWebView2_5::add_ClientCertificateRequested`](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_5?view=webview2-1.0.4314.35#add_clientcertificaterequested), [`…RequestedEventArgs`](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2clientcertificaterequestedeventargs?view=webview2-1.0.4314.35) | Vrais candidats (émetteur, expiration ; expirés désactivés). **E1** : la ligne/flèche/Espace sélectionne seulement, « Envoyer » (désactivé sans choix valide) transmet ; « Ne pas envoyer »/Échap = sans certificat ; navigation/onglet = Cancel ; deferral 1× | FAIT (9cdb63a, cb4bf44) | U `elements_integration_test` (faux args). **E2E mTLS : BLOQUÉ** (certificat serveur local non approuvé avant la demande client, voir § E2E web) |
+| 3 | B08 certificat client | [`ICoreWebView2_5::add_ClientCertificateRequested`](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_5?view=webview2-1.0.4314.35#add_clientcertificaterequested), [`…RequestedEventArgs`](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2clientcertificaterequestedeventargs?view=webview2-1.0.4314.35) | Vrais candidats (émetteur, expiration ; expirés désactivés). **E1** : la ligne/flèche/Espace sélectionne seulement, « Envoyer » (désactivé sans choix valide) transmet ; « Ne pas envoyer »/Échap = sans certificat ; navigation/onglet = Cancel ; deferral 1× | FAIT (9cdb63a, cb4bf44) | U `elements_integration_test` (faux args) ; **E2E-web mTLS PASS** `tests/e2e/mtls_e2e.ps1` (3/3) : PKI fixture épinglée dans l'hôte de test seulement, vrai `ClientCertificateRequested` (1 candidat = certificat du run), « Envoyer » désactivé avant choix, sélection n'envoie rien, **identité observée par le serveur** après « Envoyer », « Ne pas envoyer » = aucune identité, certificat + clé du run supprimés et vérifiés, `CurrentUser\My` identique à avant |
 | 2 | B07 téléchargement bloqué | [`ICoreWebView2DownloadOperation::get_InterruptReason`](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2downloadoperation?view=webview2-1.0.4314.35#get_interruptreason) FILE_MALICIOUS / FILE_SECURITY_CHECK_FAILED / FILE_BLOCKED_BY_POLICY | Titre de carte + texte **par raison** (copies validées) ; actions par raison (décision 4) : MALICIOUS = Plus d'options (Copier le lien, Signaler → vraie page `microsoft.com/wdsi/filesubmission` sur clic) ; CHECK_FAILED / POLICY = « Copier le lien » direct ; Supprimer pour les 3 ; **R1** raison complète en UIA (description, groupe carte, aide des boutons) | FAIT (c145ba8, 5ccc916, 1ad6ea6) | U (copie, actions, aucune page de signalement hors MALICIOUS, nœuds UIA) ; E2E : à faire (fichier de test bloqué par politique locale) |
 | 2 | Ligne de liste bloquée (E6) | idem | « Bloqué · fichier dangereux / vérification de sécurité impossible / règle de sécurité » | FAIT (cb4bf44) | U |
 | 2 | B08 « Conserver quand même » | — | — | LIMITE API : ni type de danger ni override dans `ICoreWebView2DownloadOperation` | SANDBOX seulement |
@@ -59,7 +59,7 @@ donné aux processus de test par `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` (environne
 ne vaut pas validation de l'installation Evergreen. Commandes : `curl -L -o build/webview2-fixed/<cab> <URL>` ; `Get-AuthenticodeSignature`
 (Valid, CN=Microsoft Corporation) ; `Get-FileHash -Algorithm SHA256` ; `expand.exe <cab> -F:* build/webview2-fixed/157.0.4341.46`. Nettoyage :
 supprimer `build/webview2-fixed` et `build/e2e-windows` (fixtures), les scripts ne tuent que les `browser.exe` dont l'image est dans la fixture. Résultats : isolation privée **PASS** ; B07 réel **INCONCLUSIF** (le moteur démarre le
-fichier de démonstration SmartScreen officiel sans l'interrompre en 90 s ; aucune API de réputation dans le SDK) ; mTLS **BLOQUÉ** : sonde réelle
+fichier de démonstration SmartScreen officiel sans l'interrompre en 90 s ; aucune API de réputation dans le SDK) ; mTLS : première sonde (17e0892) bloquée avant la demande client ; puis, avec l'autorisation ciblée, **PASS** via un épinglage test-only (voir ci-dessous). Sonde initiale
 (serveur local `tests/e2e/mtls_server.py`, certificat serveur jetable, CertificateRequest limité à la CA du run, runtime Fixed Version) : le
 moteur rejette le certificat serveur non approuvé (`CERTIFICATE error`, `NAVIGATION FAILED WebErrorStatus=5`) **avant** toute demande de
 certificat client ; `ClientCertificateRequested` n'est donc jamais atteint. Le débloquer exigerait d'approuver ce certificat serveur
@@ -72,3 +72,17 @@ certificat client ; `ClientCertificateRequested` n'est donc jamais atteint. Le d
 ## Revue indépendante obligatoire avant activation du coffre / PR finale
 Coffre (DPAPI, origine/cadre/document, consentement, aucun secret via le pont ni dans les logs) et fenêtres/privé
 (isolation, transactions interprocessus). Aucun merge, aucune publication.
+
+## mTLS E2E (autorisation ciblée du coordinateur) — épinglage fixture test-only
+- Hook `src/e2e-fixture-pin.h`, compilé **uniquement** dans `tests/e2e/mtls_host.cpp` (`BROWSER_E2E_FIXTURE_HOOK`) ; absent du binaire dev/release
+  (vérifié par recherche du marqueur dans `build/real-integration-check/browser.exe`). `ALWAYS_ALLOW` via l'API supportée
+  `ServerCertificateErrorDetected` seulement pour `https://127.0.0.1:<port fixture>`, statut « autorité non approuvée », certificat valide,
+  SAN = IP 127.0.0.1 exactement, SHA-256 du DER = manifeste du harness. Matrice négative U `test-e2e-pin.ps1` (13 cas). Ceci épingle une PKI
+  de fixture : ce n'est ni une validation de PKI de production ni de l'installation Evergreen.
+- Cache `ALWAYS_ALLOW` (hôte+certificat, session du processus moteur) : borné par profil neuf par étape, un seul port, et attente de la fin
+  des processus moteur du runtime fixture entre étapes (un processus moteur resté vivant gardait aussi la décision de certificat client).
+- Certificat client : `CurrentUser\My` seulement, sujet `CN=browser-e2e-mtls-<run>`, EKU ClientAuth, clé CNG non exportable ;
+  manifeste de propriété durable écrit avant création (`build/e2e-mtls/ownership.json`), reprise au lancement suivant, suppression par
+  empreinte exacte + `-DeleteKey`, vérification par le fichier de clé exact du run (aucune énumération des clés). Incident documenté : une
+  version antérieure du script vérifiait via `certutil -key`, qui a listé le nom d'une clé d'une autre application (nom seulement, sans lecture
+  ni usage) ; remplacé par le test ciblé.
