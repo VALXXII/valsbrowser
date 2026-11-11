@@ -141,16 +141,18 @@ inline std::wstring CertificateCause(int status) {
     case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return L"son certificat a expiré (ou l'horloge de cet ordinateur est inexacte).";
     case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return L"son certificat a été révoqué.";
     case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return L"le certificat présenté contient des erreurs.";
-    default: return L"son certificat n'est pas reconnu.";
+    default: return L"son certificat n'est pas valide ou n'est pas reconnu.";   // CERTIFICATE_IS_INVALID is generic: no finer cause claimed
     }
 }
+// The engine's own status name (COREWEBVIEW2_WEB_ERROR_STATUS_*): exactly what WebView2 reports,
+// never a guessed Chromium NET:: code (the SDK does not expose it).
 inline const wchar_t* CertificateCode(int status) {
     switch (status) {
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: return L"NET::ERR_CERT_COMMON_NAME_INVALID";
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return L"NET::ERR_CERT_DATE_INVALID";
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return L"NET::ERR_CERT_REVOKED";
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return L"NET::ERR_BAD_SSL_CLIENT_AUTH_CERT";
-    default: return L"NET::ERR_CERT_AUTHORITY_INVALID ou certificat invalide";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: return L"WebView2 : CERTIFICATE_COMMON_NAME_IS_INCORRECT";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return L"WebView2 : CERTIFICATE_EXPIRED";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return L"WebView2 : CERTIFICATE_REVOKED";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return L"WebView2 : CLIENT_CERTIFICATE_CONTAINS_ERRORS";
+    default: return L"WebView2 : CERTIFICATE_IS_INVALID";
     }
 }
 inline constexpr int AutoRetryDelaysSeconds[] = {8, 16, 32};

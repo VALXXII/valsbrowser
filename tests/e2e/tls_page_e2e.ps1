@@ -41,7 +41,7 @@ try {
   $title = Eval $ws 'document.title'; $body = Eval $ws 'document.body ? document.body.innerText : ""'
   "     title: $title"
   Check ($title -like 'La connexion s*curis*e n*a pas pu *tre *tablie') 'top-level navigation: our certificate page (not the engine interstitial)'
-  Check ($body -like '*127.0.0.1*' -and $body -like '*reconnu*' -and $body -like '*NET::ERR_CERT*') 'real destination, cause and code shown'
+  Check ($body -like '*127.0.0.1*' -and $body -like '*pas valide*' -and $body -like '*CERTIFICATE_IS_INVALID*' -and -not ($body -like '*NET::*')) 'real destination, cause and code shown'
   Check (-not ($body -like '*Continuer*')) 'no « continue » action'
   Check (-not (Test-Path "$pki/observed.txt")) 'the refused server never served the page (no request reached it)'
   [void](Send $ws 'Page.navigate' @{ url = 'http://127.0.0.1:18766/host.html' }); Start-Sleep 4

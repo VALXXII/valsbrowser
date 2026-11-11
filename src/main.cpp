@@ -56,6 +56,11 @@
 #endif
 #include "profile-store.h"
 #include "window-sessions.h"
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+// TEST HOST ONLY (tests/e2e/mtls_host.cpp): the fixture pin. The release and dev browser never define
+// BROWSER_E2E_FIXTURE_HOOK, so none of this exists in them (checked by tests/e2e/mtls_e2e.ps1).
+#include "e2e-fixture-pin.h"
+#endif
 
 // COM callbacks use the official SDK interface IDs, independent of compiler UUID extensions.
 template<class T> const wchar_t* GuidText();
@@ -2225,6 +2230,22 @@ void RequestFavicon(const std::shared_ptr<Tab>& tab){
 
 // Network failures stay inside the WebView: its built-in error page provides
 // details and retry, while the address bar, other tabs and commands remain usable.
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+bool E2EFixtureAllows(ICoreWebView2ServerCertificateErrorDetectedEventArgs* args){
+    wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
+    const auto m=E2EFixturePin::Load(path);
+    COREWEBVIEW2_WEB_ERROR_STATUS st{};LPWSTR uri=nullptr;std::wstring u;
+    if(FAILED(args->get_ErrorStatus(&st))||FAILED(args->get_RequestUri(&uri))||!uri)return false;u=uri;CoTaskMemFree(uri);
+    Com<ICoreWebView2Certificate> c;if(FAILED(args->get_ServerCertificate(&c.p))||!c.p)return false;
+    LPWSTR pem=nullptr;double from=0,to=0;if(FAILED(c->ToPemEncoding(&pem))||!pem)return false;std::wstring p(pem);CoTaskMemFree(pem);
+    if(FAILED(c->get_ValidFrom(&from))||FAILED(c->get_ValidTo(&to)))return false;
+    std::string der;if(!E2EFixturePin::DerFromPem(p,der))return false;
+    FILETIME ft;GetSystemTimeAsFileTime(&ft);const double now=((((ULONGLONG)ft.dwHighDateTime)<<32|ft.dwLowDateTime)/10000000.0)-11644473600.0;
+    std::wstring why;const bool ok=E2EFixturePin::Decide(m,u,(int)st,der,from,to,now,&why)==E2EFixturePin::Verdict::Allow;
+    if(!ok)Log(L"E2E FIXTURE PIN refused: "+why);
+    return ok;
+}
+#endif
 HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2NavigationCompletedEventArgs* a){
     if(halted||!t||t->closed)return S_OK;
     BOOL ok=FALSE;a->get_IsSuccess(&ok);
@@ -2320,6 +2341,9 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         {Com<ICoreWebView2_14> view14;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&view14.p))&&view14.p){auto cert=Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler,ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=true;Log(L"CERTIFICATE error "+tab->uri);
             // Never ALWAYS_ALLOW (no bypass): CANCEL refuses the connection; our page replaces the engine's
             // interstitial only for the top-level navigation (ShowErrorPage checks the navigation id and URL).
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+            if(args&&E2EFixtureAllows(args)){args->put_Action(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW);Log(L"E2E FIXTURE PIN allowed (test host only)");return S_OK;}
+#endif
             if(args){args->put_Action(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);COREWEBVIEW2_WEB_ERROR_STATUS st{};LPWSTR u=nullptr;
                 if(SUCCEEDED(args->get_ErrorStatus(&st)))tab->errorPage.certStatus=(int)st;if(SUCCEEDED(args->get_RequestUri(&u))&&u){tab->errorPage.certUri=u;CoTaskMemFree(u);}
                 Com<ICoreWebView2Certificate> c;LPWSTR issuer=nullptr;tab->errorPage.certIssuer.clear();if(SUCCEEDED(args->get_ServerCertificate(&c.p))&&c.p&&SUCCEEDED(c->get_Issuer(&issuer))&&issuer){tab->errorPage.certIssuer=issuer;CoTaskMemFree(issuer);}}if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}

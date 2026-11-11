@@ -112,7 +112,7 @@ template <class M>
 Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
                   const std::function<M(std::istream&, bool* damaged)>& read, const std::function<void(std::ostream&, const M&)>& write,
                   const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000,
-                  const std::vector<std::string>& known = {}) {
+                  const std::vector<std::string>& known = {}, bool writeOverDamaged = true) {
     Lock lock(dataDir, timeoutMs);
     if (!lock.Held()) return Result::Busy;
     std::string bytes;
@@ -128,6 +128,7 @@ Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base
         if (stamp.empty()) { SYSTEMTIME t; GetLocalTime(&t); wchar_t b[32]; swprintf(b, 32, L"%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond); stamp = b; }
         const std::wstring aside = path + L".damaged-" + stamp; std::string check;
         if (!WriteAtomic(aside, bytes) || !ReadAll(aside, check) || check != bytes) return Result::Failed;   // no exact backup: no write
+        if (!writeOverDamaged) return Result::Failed;   // e.g. the vault: backed up, never rewritten without an explicit recovery
     }
     M merged = damaged ? merge(theirs, mine, theirs) : merge(base, mine, theirs);
     if (merged == theirs && !damaged) { base = merged; mine = std::move(merged); return Result::Unchanged; }
@@ -139,8 +140,8 @@ Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base
 template <class M>
 Result Commit(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
               const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000,
-              const std::vector<std::string>& known = {}) {
-    return CommitWith<M>(dataDir, path, base, mine, [](std::istream& in, bool* d) { return M::Read(in, d); }, [](std::ostream& out, const M& m) { m.Write(out); }, merge, timeoutMs, known);
+              const std::vector<std::string>& known = {}, bool writeOverDamaged = true) {
+    return CommitWith<M>(dataDir, path, base, mine, [](std::istream& in, bool* d) { return M::Read(in, d); }, [](std::ostream& out, const M& m) { m.Write(out); }, merge, timeoutMs, known, writeOverDamaged);
 }
 // Field-by-field merge of "key=value" line files (settings): every key this window changed since
 // its base takes this window's value, every other key keeps the file's current value.

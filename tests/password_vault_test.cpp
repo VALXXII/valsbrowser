@@ -28,7 +28,7 @@ int main() {
     Check(s.Save(origin, L"camille@exemple.test", secret, 2) == Store::Saved::Unchanged, "save again, same secret: unchanged");
     Check(s.Save(origin, L"camille@exemple.test", L"Nouveau-fictif", 3) == Store::Saved::Updated, "same account, new secret: updated");
     Check(s.Save(L"http://exemple.test", L"x", L"y", 4) == Store::Saved::Refused && s.Save(L"", L"x", L"y", 4) == Store::Saved::Refused, "an http or empty origin is refused (review V3)");
-    { std::istringstream bad("browser-passwords 1\n1\t1\t1\t\tx\tAAAA\n"); bool dmg = false; Check(Store::Read(bad, &dmg).Entries().empty() && dmg, "a stored empty origin is dropped as damage"); }
+    { std::istringstream bad("browser-passwords 2\n1\t1\t1\t\tx\tAAAA\n"); bool dmg = false; Check(Store::Read(bad, &dmg).Entries().empty() && dmg, "a stored empty origin is dropped as damage"); }
     std::ostringstream out; s.Write(out);
     Check(out.str().find("Fictif") == std::string::npos && out.str().find("Nouveau") == std::string::npos && out.str().find("camille") == std::string::npos, "the file holds no secret and no plain username");
     std::istringstream in(out.str()); bool damaged = true; Store r = Store::Read(in, &damaged);
@@ -64,16 +64,20 @@ int main() {
     Check(res == ProfileStore::Result::Written && bytes.find("Nouveau") == std::string::npos && local == s, "vault written through the profile transaction, ciphertext only");
     // ---- Decision S3: fail closed on unknown formats, exact backup before writing a damaged file ----
     {
-        const std::vector<std::string> known{"browser-passwords 1"};
+        const std::vector<std::string> known{"browser-passwords 2"};
         const std::wstring f = dir + L"\\s3"; auto merge = [](const Store& b, const Store& mm, const Store& t) { return Store::Merge(b, mm, t); };
         auto put = [&](const std::string& bytes) { ProfileStore::WriteAtomic(f, bytes); };
         auto bytesOf = [&](const std::wstring& path) { std::string b; ProfileStore::ReadAll(path, b); return b; };
         std::ostringstream one; s.Write(one);
         // Future version of the same family: refused, file and memory untouched.
-        const std::string future = "browser-passwords 2\nnew-format-line\n"; put(future);
+        const std::string future = "browser-passwords 3\nnew-format-line\n"; put(future);
         { Store b0 = s, m0 = s; Store b1 = b0, m1 = m0; m1.Save(L"https://autre.exemple.test", L"z", L"Fictif-z", 20);
           const Store mBefore = m1; const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
           Check(res == ProfileStore::Result::UnknownFormat && bytesOf(f) == future && b1 == b0 && m1 == mBefore, "S3: a future vault format is never overwritten; base and mine untouched"); }
+        // The v1 format of this (never activated) lot: refused, not migrated.
+        const std::string v1 = "browser-passwords 1\nabc\t1\t1\tYQ==\tYg==\tYw==\n"; put(v1);
+        { Store b1, m1 = s; const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
+          Check(res == ProfileStore::Result::UnknownFormat && bytesOf(f) == v1, "S3: the v1 file of this inactive lot is refused, never migrated or overwritten"); }
         // Not our header at all: refused the same way.
         const std::string garbage("\x00\x01garbage\n", 11); put(garbage);
         { Store b1, m1 = s; const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
@@ -81,15 +85,14 @@ int main() {
         // Known format, one damaged line: exact backup first, readable entries kept, nothing taken as deleted.
         const std::string damaged = one.str() + "not\ta\tvalid\tline\n"; put(damaged);
         ProfileStore::DamagedStampForTest() = L"s3test";
-        { Store b1 = s, m1 = s; m1.Save(origin, L"nouveau@exemple.test", L"Fictif-n", 30);
-          const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
-          std::istringstream in(bytesOf(f)); const Store after = Store::Read(in);
-          Check(res == ProfileStore::Result::Written && bytesOf(f + L".damaged-s3test") == damaged, "S3: a damaged known file is backed up byte for byte before any write");
-          Check(after.Entries().size() == 2, "S3: the readable entry is kept (not taken as deleted) and this window's addition joins"); }
+        { Store b1 = s, m1 = s; m1.Save(origin, L"nouveau@exemple.test", L"Fictif-n", 30); const Store mBefore = m1, bBefore = b1;
+          const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known, false);
+          Check(res == ProfileStore::Result::Failed && bytesOf(f + L".damaged-s3test") == damaged, "S3: a damaged vault is backed up byte for byte");
+          Check(bytesOf(f) == damaged && m1 == mBefore && b1 == bBefore, "S3: a damaged vault is never rewritten (fail closed): file, base and mine untouched"); }
         // The exact backup cannot be made: nothing is written.
         put(damaged); std::filesystem::remove(f + L".damaged-s3test", ec); std::filesystem::create_directories(f + L".damaged-s3test", ec);
         { Store b1 = s, m1 = s; m1.Save(L"https://autre.exemple.test", L"y", L"Fictif-y", 40); const Store mBefore = m1, bBefore = b1;
-          const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known);
+          const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 5000, known, false);
           Check(res == ProfileStore::Result::Failed && bytesOf(f) == damaged && m1 == mBefore && b1 == bBefore, "S3: no exact backup, no write (file, base and mine unchanged)"); }
         std::filesystem::remove_all(f + L".damaged-s3test", ec); ProfileStore::DamagedStampForTest().clear();
         // Absent file: a new vault is accepted.
@@ -104,6 +107,30 @@ int main() {
           const auto res = ProfileStore::Commit<Store>(dir, f, b1, m1, merge, 200, known);
           Check(res == ProfileStore::Result::Busy && m1 == mBefore && b1 == bBefore && bytesOf(f) == fileBefore, "S3: lock busy, nothing written, base and mine untouched");
           SetEvent(done); WaitForSingleObject(th, 5000); CloseHandle(th); CloseHandle(ready); CloseHandle(done); }
+    }
+    // ---- v2 completeness proof: every boundary cut, lost entry, trailer, stray bytes, count ----------
+    {
+        Store three; three.Save(L"https://a.exemple.test", L"a", L"Fictif-a", 1); three.Save(L"https://b.exemple.test", L"b", L"Fictif-b", 2); three.Save(L"https://c.exemple.test", L"c", L"Fictif-c", 3);
+        std::ostringstream o; three.Write(o); const std::string full = o.str();
+        auto read = [](const std::string& t, bool& dmg) { std::istringstream in(t); return Store::Read(in, &dmg); };
+        { bool d = true; const Store r = read(full, d); Check(!d && r == three, "v2: a complete file reads back identical"); }
+        { Store empty; std::ostringstream e; empty.Write(e); bool d = true; const Store r = read(e.str(), d); Check(!d && r.Entries().empty() && e.str().find("end\t0\t") != std::string::npos, "v2: a legitimately empty vault is explicit and not damage"); }
+        { bool d = true; read("", d); Check(!d, "v2: an absent (zero-byte) file is a new vault, not damage"); }
+        // Cut at EVERY line boundary (after the header, after each record, before and inside the trailer).
+        bool allCut = true; int cuts = 0;
+        for (std::size_t pos = 0; pos < full.size(); ++pos) if (full[pos] == '\n' && pos + 1 < full.size()) { bool d = false; read(full.substr(0, pos + 1), d); allCut = allCut && d; ++cuts; }
+        Check(allCut && cuts >= 4, "v2: a file cut at any record boundary (or before/inside the trailer) is detected");
+        { bool d = false; read(full.substr(0, full.size() - 1), d); Check(d, "v2: the trailer's final newline missing is detected"); }
+        { const auto a = full.find('\n') + 1, b = full.find('\n', a) + 1; std::string lost = full.substr(0, a) + full.substr(b); bool d = false; read(lost, d); Check(d, "v2: one whole entry removed is detected (count and digest)"); }
+        { std::string wrongCount = full; const auto t = wrongCount.rfind("end\t3\t"); wrongCount.replace(t, 6, "end\t2\t"); bool d = false; read(wrongCount, d); Check(d, "v2: a wrong count is detected"); }
+        { std::string wrongDigest = full; wrongDigest[wrongDigest.size() - 2] = wrongDigest[wrongDigest.size() - 2] == 'a' ? 'b' : 'a'; bool d = false; read(wrongDigest, d); Check(d, "v2: a wrong digest is detected"); }
+        { bool d = false; read(full + "x", d); bool d2 = false; read(full + "end\t0\tabc\n", d2); Check(d && d2, "v2: bytes after the trailer are detected"); }
+        { const std::string noTrailer = full.substr(0, full.rfind("end\t")); bool d = false; read(noTrailer, d); Check(d, "v2: a missing trailer is detected"); }
+        { std::string over = "browser-passwords 2\n"; const std::string tr = "end\t5001\t" + Store::Digest(over) + "\n"; bool d = false; read(over + tr, d); Check(d, "v2: a count over the limit is detected"); }
+        // A voluntary deletion stays a deletion through a valid file.
+        Store base3 = three, mine3 = three; mine3.Remove(three.Entries()[1].id);
+        std::ostringstream w; Store::Merge(base3, mine3, three).Write(w); bool d = true; const Store back = read(w.str(), d);
+        Check(!d && back.Entries().size() == 2 && !back.Find(three.Entries()[1].id), "v2: a voluntary deletion is written as a valid, complete file and not resurrected");
     }
     std::printf(failures ? "FAIL password vault: %d\n" : "PASS password vault: DPAPI per origin, file, merge, guards, escaping\n", failures);
     return failures ? 1 : 0;

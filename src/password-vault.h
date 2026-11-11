@@ -20,6 +20,7 @@
 #include <bcrypt.h>
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <string>
@@ -126,21 +127,49 @@ public:
         const Entry* e = Find(id); secret.clear();
         return e && e->origin == origin && Unprotect(origin, e->blob, secret);
     }
-    void Write(std::ostream& out) const {
-        out << "browser-passwords 1\n";
-        for (const auto& e : entries_) out << std::hex << e.id << std::dec << '\t' << e.created << '\t' << e.updated << '\t' << Base64(Utf8(e.origin)) << '\t' << Base64(Utf8(e.user)) << '\t' << Base64(e.blob) << '\n';
+    // ---- File format v2 (completeness proof; decision before activation) -------------------------
+    //   browser-passwords 2
+    //   <id hex>\t<created>\t<updated>\t<b64 origin>\t<b64 user>\t<b64 DPAPI blob>     one line per account
+    //   end\t<count>\t<sha256 hex of every byte above this line>
+    // Nothing may follow the trailer. An empty vault is the header and « end\t0\t<digest> ». The digest
+    // only detects ACCIDENTAL damage (truncation at any record boundary, a lost line, stray bytes): it
+    // is not secret and protects nothing against a process of the same user, which could recompute it.
+    // Secrets stay protected by DPAPI; origin/frame/document/consent guards stay separate.
+    // Version 1 (this lot, never activated) and any other header are refused, never migrated.
+    static constexpr const char* Header = "browser-passwords 2";
+    static std::string Digest(const std::string& bytes) {
+        unsigned char h[32]{};
+        if (!BCRYPT_SUCCESS(BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())), static_cast<ULONG>(bytes.size()), h, 32))) return {};
+        static const char* x = "0123456789abcdef"; std::string o; for (unsigned char c : h) { o += x[c >> 4]; o += x[c & 15]; } return o;
     }
+    void Write(std::ostream& out) const {
+        std::ostringstream body; body << Header << '\n';
+        for (const auto& e : entries_) body << std::hex << e.id << std::dec << '\t' << e.created << '\t' << e.updated << '\t' << Base64(Utf8(e.origin)) << '\t' << Base64(Utf8(e.user)) << '\t' << Base64(e.blob) << '\n';
+        const std::string b = body.str();
+        out << b << "end\t" << entries_.size() << '\t' << Digest(b) << '\n';
+    }
+    // `damaged`: anything but a complete, consistent v2 file (missing or wrong trailer, count, digest,
+    // bytes after the trailer, a bad or duplicate line, too many entries). The caller never writes over
+    // a damaged vault (fail closed); what could be read is returned for display only.
     static Store Read(std::istream& in, bool* damaged = nullptr) {
-        Store s; std::string line; bool bad = false;
-        if (damaged) *damaged = false;
-        if (!std::getline(in, line)) return s;
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line != "browser-passwords 1") { if (damaged) *damaged = true; return s; }
-        while (std::getline(in, line)) {
-            if (s.entries_.size() >= Limit) { bad = true; break; }   // review V8: a truncated read is reported
-            if (!line.empty() && line.back() == '\r') line.pop_back();
+        Store s; if (damaged) *damaged = false;
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (text.empty()) return s;   // absent: a new vault (not damage)
+        auto fail = [&]() { if (damaged) *damaged = true; return s; };
+        const auto first = text.find('\n');
+        if (first == std::string::npos || text.substr(0, first) != Header) return fail();
+        const auto endPos = text.rfind("\nend\t");
+        if (endPos == std::string::npos) return fail();   // no trailer: truncated
+        const std::string body = text.substr(0, endPos + 1), trailer = text.substr(endPos + 1);
+        if (trailer.empty() || trailer.back() != '\n' || trailer.find('\n') != trailer.size() - 1) return fail();   // trailer must be the very last line
+        const std::string t = trailer.substr(4, trailer.size() - 5); const auto tab = t.find('\t');
+        if (tab == std::string::npos) return fail();
+        std::uint64_t count = 0; try { std::size_t used = 0; count = std::stoull(t.substr(0, tab), &used); if (used != tab) return fail(); } catch (...) { return fail(); }
+        if (count > Limit || t.substr(tab + 1) != Digest(body)) return fail();
+        std::istringstream lines(body.substr(first + 1)); std::string line; bool bad = false;
+        while (std::getline(lines, line)) {
             std::vector<std::string> f; std::size_t start = 0;
-            for (std::size_t tab; (tab = line.find('\t', start)) != std::string::npos; start = tab + 1) f.push_back(line.substr(start, tab - start));
+            for (std::size_t tb; (tb = line.find('\t', start)) != std::string::npos; start = tb + 1) f.push_back(line.substr(start, tb - start));
             f.push_back(line.substr(start));
             Entry e; std::string o, u;
             try { if (f.size() != 6) throw 0; e.id = std::stoull(f[0], nullptr, 16); e.created = std::stoll(f[1]); e.updated = std::stoll(f[2]); } catch (...) { bad = true; continue; }
@@ -149,7 +178,7 @@ public:
             if (!e.id || e.origin.empty() || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || s.Find(e.id)) { bad = true; continue; }
             s.entries_.push_back(std::move(e));
         }
-        if (damaged) *damaged = bad;
+        if (bad || s.entries_.size() != count) { if (damaged) *damaged = true; }
         return s;
     }
     bool operator==(const Store& o) const { return entries_ == o.entries_; }
