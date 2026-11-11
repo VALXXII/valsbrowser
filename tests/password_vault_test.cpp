@@ -27,7 +27,8 @@ int main() {
     Store s; Check(s.Save(origin, L"camille@exemple.test", secret, 1) == Store::Saved::Added, "save: added");
     Check(s.Save(origin, L"camille@exemple.test", secret, 2) == Store::Saved::Unchanged, "save again, same secret: unchanged");
     Check(s.Save(origin, L"camille@exemple.test", L"Nouveau-fictif", 3) == Store::Saved::Updated, "same account, new secret: updated");
-    Check(s.Save(L"http://exemple.test", L"x", L"y", 4) == Store::Saved::Refused, "an http origin is refused");
+    Check(s.Save(L"http://exemple.test", L"x", L"y", 4) == Store::Saved::Refused && s.Save(L"", L"x", L"y", 4) == Store::Saved::Refused, "an http or empty origin is refused (review V3)");
+    { std::istringstream bad("browser-passwords 1\n1\t1\t1\t\tx\tAAAA\n"); bool dmg = false; Check(Store::Read(bad, &dmg).Entries().empty() && dmg, "a stored empty origin is dropped as damage"); }
     std::ostringstream out; s.Write(out);
     Check(out.str().find("Fictif") == std::string::npos && out.str().find("Nouveau") == std::string::npos && out.str().find("camille") == std::string::npos, "the file holds no secret and no plain username");
     std::istringstream in(out.str()); bool damaged = true; Store r = Store::Read(in, &damaged);
@@ -38,6 +39,8 @@ int main() {
     Store m = Store::Merge(s, mine, theirs);
     Check(m.Entries().size() == 1 && m.Entries()[0].origin == L"https://autre.exemple.test", "merge: removal here applied, the other window's addition kept");
     Store gone = s; gone.Remove(id); Check(Store::Merge(s, s, gone).Entries().empty(), "merge: a removal in another window is never undone");
+    { Store edited = s; edited.Save(origin, L"camille@exemple.test", L"Plus-recent-fictif", 9); Check(Store::Merge(s, edited, gone).Entries().size() == 1, "merge: a password changed here outlives its deletion elsewhere (review V6)"); }
+    { Store a2 = Store{}, b2 = Store{}; a2.Save(origin, L"u", L"un-fictif", 10); b2.Save(origin, L"u", L"deux-fictif", 11); const Store mm = Store::Merge(Store{}, a2, b2); std::wstring v; Check(mm.Entries().size() == 1 && mm.Reveal(mm.Entries()[0].id, origin, v) && v == L"deux-fictif", "merge: the same account saved in two windows keeps the newest (review V6)"); }
     // Fill guards.
     Target act{L"https://compte.exemple.test/login", L"https://compte.exemple.test/login", 7, 42, true};
     Check(CanFill(act, act, origin) == Refusal::None, "fill: same frame, same document, same origin after a user action");
@@ -48,7 +51,9 @@ int main() {
     Target http = act; http.frameSource = http.topSource = L"http://compte.exemple.test/"; Check(CanFill(http, http, origin) == Refusal::NotHttps, "fill: refused over http");
     Check(CanFill(act, act, L"https://autre.exemple.test") == Refusal::OtherOrigin, "fill: an account of another origin is refused");
     // Script escaping.
-    const std::wstring script = FillScript(L"a\"b", L"x</script><img src=x onerror=alert(1)>\\\n\x2028");
+    const std::wstring script = FillScript(origin, L"a\"b", L"x</script><img src=x onerror=alert(1)>\\\n\x2028");
+    Check(script.find(L"location.origin!==o") != std::wstring::npos && script.find(L"ancestorOrigins") != std::wstring::npos && script.find(L"isSecureContext") != std::wstring::npos && script.find(L"self.origin!==o") != std::wstring::npos, "fill script re-checks origin, opaque origin, secure context and ancestors when it runs (review V1/V2)");
+    Check(script.find(L"a.form?a.form:document") == std::wstring::npos && script.find(L"offsetParent") != std::wstring::npos, "fill script: no whole-document fallback, no hidden field (review V4)");
     Check(script.find(L"</script>") == std::wstring::npos && script.find(L"\\u003c/script\\u003e") != std::wstring::npos && script.find(L"\\u2028") != std::wstring::npos && script.find(L"a\\\"b") != std::wstring::npos, "fill script: values are JSON-escaped (quotes, markup, line separators)");
     Check(script.rfind(L"void 0;") == script.size() - 7, "fill script returns nothing (no secret comes back through the bridge)");
     // Profile transaction.

@@ -84,7 +84,8 @@ inline bool Unprotect(const std::wstring& origin, const std::string& blob, std::
     secret = Wide(plain); SecureZeroMemory(plain.data(), plain.size());
     return true;
 }
-inline std::uint64_t RandomId() { std::uint64_t v = 0; BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&v), sizeof(v), BCRYPT_USE_SYSTEM_PREFERRED_RNG); return v ? v : 1; }
+// 0 when the system RNG fails (review V8): the caller refuses to save rather than reuse an id.
+inline std::uint64_t RandomId() { std::uint64_t v = 0; if (!BCRYPT_SUCCESS(BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&v), sizeof(v), BCRYPT_USE_SYSTEM_PREFERRED_RNG))) return 0; return v; }
 
 struct Entry {
     std::uint64_t id = 0; std::wstring origin, user; std::string blob; std::int64_t created = 0, updated = 0;
@@ -106,14 +107,16 @@ public:
     // B04 after consent. Same origin + same username = an update (D1 resolves which account when the
     // form has no username before calling this: never the last one silently).
     Saved Save(const std::wstring& origin, const std::wstring& user, const std::wstring& secret, std::int64_t now) {
-        if (CanonicalOrigin(origin) != origin || secret.empty() || entries_.size() >= Limit) return Saved::Refused;
+        if (origin.empty() || CanonicalOrigin(origin) != origin || secret.empty() || entries_.size() >= Limit) return Saved::Refused;   // review V3: "" is not an origin
         for (auto& e : entries_) if (e.origin == origin && e.user == user) {
             std::wstring old; if (Unprotect(origin, e.blob, old) && old == secret) { SecureZeroMemory(old.data(), old.size() * sizeof(wchar_t)); return Saved::Unchanged; }
             SecureZeroMemory(old.data(), old.size() * sizeof(wchar_t));
             const std::string blob = Protect(origin, secret); if (blob.empty()) return Saved::Refused;
             e.blob = blob; e.updated = now; return Saved::Updated;
         }
-        Entry e; e.id = RandomId(); e.origin = origin; e.user = user; e.blob = Protect(origin, secret); e.created = e.updated = now;
+        Entry e; e.id = RandomId(); e.origin = origin; e.user = user; e.created = e.updated = now;
+        if (!e.id) return Saved::Refused;
+        e.blob = Protect(origin, secret);
         if (e.blob.empty()) return Saved::Refused;
         entries_.push_back(std::move(e)); return Saved::Added;
     }
@@ -133,7 +136,8 @@ public:
         if (!std::getline(in, line)) return s;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line != "browser-passwords 1") { if (damaged) *damaged = true; return s; }
-        while (std::getline(in, line) && s.entries_.size() < Limit) {
+        while (std::getline(in, line)) {
+            if (s.entries_.size() >= Limit) { bad = true; break; }   // review V8: a truncated read is reported
             if (!line.empty() && line.back() == '\r') line.pop_back();
             std::vector<std::string> f; std::size_t start = 0;
             for (std::size_t tab; (tab = line.find('\t', start)) != std::string::npos; start = tab + 1) f.push_back(line.substr(start, tab - start));
@@ -142,7 +146,7 @@ public:
             try { if (f.size() != 6) throw 0; e.id = std::stoull(f[0], nullptr, 16); e.created = std::stoll(f[1]); e.updated = std::stoll(f[2]); } catch (...) { bad = true; continue; }
             if (!Unbase64(f[3], o) || !Unbase64(f[4], u) || !Unbase64(f[5], e.blob)) { bad = true; continue; }
             e.origin = Wide(o); e.user = Wide(u);
-            if (!e.id || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || s.Find(e.id)) { bad = true; continue; }
+            if (!e.id || e.origin.empty() || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || s.Find(e.id)) { bad = true; continue; }
             s.entries_.push_back(std::move(e));
         }
         if (damaged) *damaged = bad;
@@ -159,7 +163,19 @@ public:
             if (m && (!b || !(*b == *m))) { r.entries_.push_back(*m); continue; }
             r.entries_.push_back(t);
         }
-        for (const auto& m : mine.entries_) if (!theirs.Find(m.id) && !base.Find(m.id)) r.entries_.push_back(m);
+        for (const auto& m : mine.entries_) {
+            const Entry* b = base.Find(m.id);
+            if (theirs.Find(m.id)) continue;
+            if (!b || !(*b == m)) r.entries_.push_back(m);   // new here, or changed here (an edit outlives a deletion elsewhere, review V6)
+        }
+        // The same account saved in two windows: keep the most recent one only (review V6).
+        std::vector<Entry> out;
+        for (const auto& e : r.entries_) {
+            auto it = std::find_if(out.begin(), out.end(), [&](const Entry& o) { return o.origin == e.origin && o.user == e.user; });
+            if (it == out.end()) out.push_back(e); else if (e.updated > it->updated) *it = e;
+        }
+        if (out.size() > Limit) out.resize(Limit);
+        r.entries_ = std::move(out);
         return r;
     }
 private:
@@ -201,12 +217,19 @@ inline std::wstring JsonString(const std::wstring& s) {
 }
 // Script run in the target frame only (ExecuteScript of that frame): fills the focused field's form
 // (username + password inputs) and returns nothing to the bridge (no secret comes back).
-inline std::wstring FillScript(const std::wstring& user, const std::wstring& secret) {
-    return L"(function(u,p){var a=document.activeElement;var f=a&&a.form?a.form:document;"
-           L"var pw=f.querySelector('input[type=password]');if(!pw)return;"
-           L"var id=f.querySelector('input[autocomplete=username],input[type=email],input[type=text]');"
+// The script re-checks, at the moment it runs, everything the host checked before injecting (review
+// V1/V2): this document's origin and its own (non-opaque) origin equal the account's, a secure
+// context, and every ancestor frame of the same origin. It fills only the form holding the focused
+// field (no whole-document fallback, review V4) and never a hidden field.
+inline std::wstring FillScript(const std::wstring& origin, const std::wstring& user, const std::wstring& secret) {
+    return L"(function(o,u,p){if(location.origin!==o||self.origin!==o||!window.isSecureContext)return;"
+           L"var an=location.ancestorOrigins;if(an)for(var i=0;i<an.length;i++)if(an[i]!==o)return;"
+           L"var a=document.activeElement;var f=a&&a.form;if(!f)return;"
+           L"function shown(e){return e&&e.type!=='hidden'&&e.offsetParent!==null&&!e.disabled;}"
+           L"var pw=Array.prototype.find.call(f.querySelectorAll('input[type=password]'),shown);if(!pw)return;"
+           L"var id=Array.prototype.find.call(f.querySelectorAll('input[autocomplete=username],input[type=email],input[type=text]'),shown);"
            L"function set(e,v){var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}"
-           L"if(id&&u)set(id,u);set(pw,p);})(" + JsonString(user) + L"," + JsonString(secret) + L");void 0;";
+           L"if(id&&u)set(id,u);set(pw,p);})(" + JsonString(origin) + L"," + JsonString(user) + L"," + JsonString(secret) + L");void 0;";
 }
 
 } // namespace Vault

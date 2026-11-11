@@ -26,6 +26,14 @@ inline std::wstring MutexName(const std::wstring& dataDir) {
     std::wstring key = dataDir;
     wchar_t full[MAX_PATH * 2]{};
     if (GetFullPathNameW(dataDir.c_str(), static_cast<DWORD>(std::size(full)), full, nullptr)) key = full;
+    // Review S4: one profile reached through an 8.3 name, a junction or subst gets ONE lock.
+    HANDLE dir = CreateFileW(key.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (dir != INVALID_HANDLE_VALUE) {
+        wchar_t final[MAX_PATH * 2]{};
+        const DWORD n = GetFinalPathNameByHandleW(dir, final, static_cast<DWORD>(std::size(final)), FILE_NAME_NORMALIZED | VOLUME_NAME_GUID);
+        if (n > 0 && n < std::size(final)) key = final;
+        CloseHandle(dir);
+    }
     while (!key.empty() && (key.back() == L'\\' || key.back() == L'/')) key.pop_back();
     std::uint64_t h = 1469598103934665603ull;
     for (wchar_t c : key) { c = static_cast<wchar_t>(towlower(c == L'/' ? L'\\' : c)); h ^= static_cast<std::uint64_t>(c); h *= 1099511628211ull; }
@@ -100,7 +108,13 @@ Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base
     if (!ReadAll(path, bytes)) return Result::Failed;
     std::istringstream in(bytes); bool damaged = false;
     const M theirs = read(in, &damaged);
-    M merged = merge(base, mine, theirs);
+    // Review S3: a damaged (or newer-format) file is kept aside, and what was read of it is taken as
+    // the base too, so nothing this window holds is mistaken for « deleted elsewhere » and dropped.
+    if (damaged && !bytes.empty()) {
+        SYSTEMTIME t; GetLocalTime(&t); wchar_t stamp[32]; swprintf(stamp, 32, L"%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        WriteAtomic(path + L".damaged-" + stamp, bytes);
+    }
+    M merged = damaged ? merge(theirs, mine, theirs) : merge(base, mine, theirs);
     if (merged == theirs && !damaged) { base = merged; mine = std::move(merged); return Result::Unchanged; }
     std::ostringstream out; write(out, merged);
     if (!WriteAtomic(path, out.str())) return Result::Failed;

@@ -6,6 +6,7 @@
 #include "../src/profile-store.h"
 #include "../src/window-sessions.h"
 #include <fstream>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <set>
@@ -203,12 +204,28 @@ int wmain(int argc, wchar_t** argv) {
         Check(off.adopted && off.relaunch.empty() && WindowSessions::Orphans(sdata).empty(), "restoration off: nothing relaunched, no orphan left to resurrect later");
         CloseHandle(off.live); CloseHandle(goE); CloseHandle(relE);
         // Release with another window open removes; the last window keeps.
+        for (auto& e : std::filesystem::directory_iterator(WindowSessions::Dir(sdata), ec)) std::filesystem::remove(e.path(), ec);
         HANDLE other = WindowSessions::Claim(sdata, L"wother"); ProfileStore::WriteAtomic(WindowSessions::File(sdata, L"wother"), "browser-session 1\n");
         HANDLE self = WindowSessions::Claim(sdata, L"wself"); ProfileStore::WriteAtomic(WindowSessions::File(sdata, L"wself"), "browser-session 1\n");
-        Check(WindowSessions::Release(sdata, L"wself", false) && !std::filesystem::exists(WindowSessions::File(sdata, L"wself")), "a window closed among others: its session is removed (not resurrected at the next start)");
+        Check(WindowSessions::Release(sdata, L"wself", false) && !std::filesystem::exists(WindowSessions::File(sdata, L"wself")) && std::filesystem::exists(WindowSessions::File(sdata, L"closed-wself")), "a window closed among others: its session is set aside as closed");
         CloseHandle(self);
         Check(!WindowSessions::Release(sdata, L"wother", false) && std::filesystem::exists(WindowSessions::File(sdata, L"wother")), "the last window closed keeps its session");
         CloseHandle(other);
+        // Closed long before the last window: not restored (dropped at the next start).
+        std::filesystem::last_write_time(WindowSessions::File(sdata, L"closed-wself"), std::filesystem::file_time_type::clock::now() - std::chrono::hours(1), ec);
+        std::filesystem::last_write_time(WindowSessions::File(sdata, L"wother"), std::filesystem::file_time_type::clock::now(), ec);
+        { auto a = WindowSessions::Adopt(sdata, L"", L"", true);
+          Check(a.id == L"wother" && a.relaunch.empty() && !std::filesystem::exists(WindowSessions::File(sdata, L"closed-wself")) && !std::filesystem::exists(WindowSessions::File(sdata, L"wself")), "a window closed long before the last one is not resurrected");
+          CloseHandle(a.live); for (auto h : a.reservations) CloseHandle(h); }
+        // Review S2: windows closed together (each still saw the other open) all come back.
+        for (auto& e : std::filesystem::directory_iterator(WindowSessions::Dir(sdata), ec)) std::filesystem::remove(e.path(), ec);
+        HANDLE x = WindowSessions::Claim(sdata, L"wx"), y = WindowSessions::Claim(sdata, L"wy");
+        ProfileStore::WriteAtomic(WindowSessions::File(sdata, L"wx"), "browser-session 1\n"); ProfileStore::WriteAtomic(WindowSessions::File(sdata, L"wy"), "browser-session 1\n");
+        Check(WindowSessions::Release(sdata, L"wx", false) && !WindowSessions::Release(sdata, L"wy", false), "closing at once: the first is set aside, the last keeps its file");
+        CloseHandle(x); CloseHandle(y);
+        { auto a = WindowSessions::Adopt(sdata, L"", L"", true); std::set<std::wstring> back{a.id}; back.insert(a.relaunch.begin(), a.relaunch.end());
+          Check(back == std::set<std::wstring>{L"wx", L"wy"}, "windows closed together all come back at the next start (review S2)");
+          CloseHandle(a.live); for (auto h : a.reservations) CloseHandle(h); }
     }
     bool leftovers = false; for (auto& e : std::filesystem::directory_iterator(dir, ec)) if (e.path().wstring().find(L".tmp") != std::wstring::npos) leftovers = true;
     Check(!leftovers, "no temp file left behind");

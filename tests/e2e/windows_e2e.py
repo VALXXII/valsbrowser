@@ -25,8 +25,16 @@ def check(ok, what):
     print(('ok   ' if ok else 'FAIL ') + what, flush=True)
     if not ok: failures += 1
 
+def final_path(path):
+    """Same canonical key as ProfileStore::MutexName: GetFinalPathNameByHandleW(VOLUME_NAME_GUID)."""
+    k32.CreateFileW.restype = wt.HANDLE
+    h = k32.CreateFileW(path, 0, 7, None, 3, 0x02000000, None)
+    if not h or h == ctypes.c_void_p(-1).value: return path
+    buf = ctypes.create_unicode_buffer(1024); n = k32.GetFinalPathNameByHandleW(wt.HANDLE(h), buf, 1024, 1); k32.CloseHandle(wt.HANDLE(h))
+    return buf.value if 0 < n < 1024 else path
+
 def profile_hash(data_dir):
-    key = os.path.abspath(data_dir).rstrip('\\/')
+    key = final_path(os.path.abspath(data_dir)).rstrip('\\/')
     h = 1469598103934665603
     for ch in key.replace('/', '\\').lower():
         h ^= ord(ch); h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
@@ -116,19 +124,23 @@ def main():
     for pid, hwnd in ours():
         u32.PostMessageW(hwnd, 0x0010, 0, 0); pid_a = pid; break
     closed = wait(lambda: pid_a not in [p for p, _ in ours()], 20)
-    remaining = sorted(os.listdir(sessions))
+    live_files = lambda: sorted(f for f in os.listdir(sessions) if not f.startswith('closed-'))
+    remaining = live_files()
     check(closed and len(remaining) == 1, 'closing one window among others removes its session (%s left)' % remaining)
     if remaining:
         text = open(os.path.join(sessions, remaining[0]), encoding='utf-8', errors='replace').read()
         check('exemple.invalid/' in text, 'the remaining window saved its own tabs into its session file')
-    # Close the last window: it keeps its session.
+    # Close the last window well after the first (> 10 s: not « closed together »): it keeps its session.
+    time.sleep(12)
     for pid, hwnd in ours(): u32.PostMessageW(hwnd, 0x0010, 0, 0)
-    check(wait(lambda: not ours(), 20) and os.listdir(sessions) == remaining, 'the last window closed keeps its session')
+    check(wait(lambda: not ours(), 20) and live_files() == remaining, 'the last window closed keeps its session')
     # Next start restores it; a killed window's session survives for the next start.
     subprocess.Popen([exe], cwd=FIX, env=ENV)
     check(wait(lambda: live(remaining[0]), 45), 'the next start restores the last window')
+    time.sleep(3)
+    check(len(ours()) == 1 and not any(f.startswith('closed-') for f in os.listdir(sessions)), 'the window closed long before is not resurrected')
     kill_all()
-    check(wait(lambda: not fixture_pids(), 10) and os.listdir(sessions) == remaining, 'a killed window leaves its session (crash)')
+    check(wait(lambda: not fixture_pids(), 10) and live_files() == remaining, 'a killed window leaves its session (crash)')
     subprocess.Popen([exe], cwd=FIX, env=ENV)
     check(wait(lambda: live(remaining[0]), 45), 'after the crash, the next start restores it')
     for pid, hwnd in ours(): u32.PostMessageW(hwnd, 0x0010, 0, 0)
@@ -142,7 +154,7 @@ def main():
     if ours():
         buf = ctypes.create_unicode_buffer(512); time.sleep(3); u32.GetWindowTextW(ours()[0][1], buf, 512); title = buf.value
     check(title.endswith('(navigation privée)'), 'private window title says so: %r' % title)
-    check(os.listdir(sessions) == remaining, 'a private window claims and writes no session')
+    check(live_files() == remaining, 'a private window claims and writes no session')
     for pid, hwnd in ours(): u32.PostMessageW(hwnd, 0x0010, 0, 0)
     wait(lambda: not ours(), 20); kill_all()
     after = snapshot()

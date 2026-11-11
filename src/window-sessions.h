@@ -14,6 +14,7 @@
 // The pre-sessions file <data>\session is migrated once into the folder. Pure Win32 + C++17.
 #include <windows.h>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -54,7 +55,7 @@ inline std::vector<Entry> List(const std::wstring& dataDir) {
     std::vector<Entry> out; std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec)) {
         const std::wstring id = e.path().filename().wstring();
-        if (!e.is_regular_file(ec) || !ValidId(id)) continue;
+        if (!e.is_regular_file(ec) || !ValidId(id) || id.rfind(L"closed-", 0) == 0) continue;   // closed windows are not sessions
         out.push_back({id, e.last_write_time(ec)});
     }
     std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) { return a.written > b.written; });
@@ -65,6 +66,29 @@ inline std::vector<Entry> List(const std::wstring& dataDir) {
 inline std::wstring ReserveName(const std::wstring& dataDir, const std::wstring& id) { return LiveName(dataDir, id) + L"-reserved"; }
 inline bool Reserved(const std::wstring& dataDir, const std::wstring& id) {
     HANDLE h = OpenMutexW(SYNCHRONIZE, FALSE, ReserveName(dataDir, id).c_str()); if (!h) return false; CloseHandle(h); return true;
+}
+// Review S2: a window closing among others does not delete its session at once: it is renamed
+// « closed-<id> ». If the other windows close right after (taskbar « Fermer toutes les fenêtres »,
+// sign-out), the whole group comes back at the next start; a window closed long before the last one
+// stays closed (deleted then).
+constexpr int CloseTogetherSeconds = 10;
+inline void ReviveClosedTogether(const std::wstring& dataDir) {
+    std::error_code ec; std::filesystem::file_time_type last{}; bool any = false;
+    for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec)) {
+        const std::wstring id = e.path().filename().wstring();
+        if (id.rfind(L"closed-", 0) == 0 || !e.is_regular_file(ec)) continue;
+        if (!Live(dataDir, id)) { const auto t = e.last_write_time(ec); if (!any || t > last) last = t; any = true; }
+    }
+    if (!any)   // every window was closed « among others » (they all closed at once): the newest closing is the reference
+        for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec))
+            if (e.path().filename().wstring().rfind(L"closed-", 0) == 0) { const auto t = e.last_write_time(ec); if (!any || t > last) last = t; any = true; }
+    for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec)) {
+        const std::wstring name = e.path().filename().wstring();
+        if (name.rfind(L"closed-", 0) != 0) continue;
+        const auto t = e.last_write_time(ec);
+        if (any && t + std::chrono::seconds(CloseTogetherSeconds) >= last) MoveFileExW(e.path().c_str(), File(dataDir, name.substr(7)).c_str(), MOVEFILE_WRITE_THROUGH);
+        else DeleteFileW(e.path().c_str());
+    }
 }
 inline std::vector<std::wstring> Orphans(const std::wstring& dataDir) {
     std::vector<std::wstring> out; for (const auto& e : List(dataDir)) if (!Live(dataDir, e.id) && !Reserved(dataDir, e.id)) out.push_back(e.id);
@@ -90,7 +114,9 @@ inline void MigrateLegacy(const std::wstring& dataDir, const std::wstring& legac
 struct Adoption { std::wstring id; HANDLE live = nullptr; bool requested = false, adopted = false; std::vector<std::wstring> relaunch; std::vector<HANDLE> reservations; };
 inline Adoption Adopt(const std::wstring& dataDir, const std::wstring& legacyFile, const std::wstring& requested, bool restoreTabs) {
     Adoption a; ProfileStore::Lock lock(dataDir, 10000);
+    if (!lock.Held()) { while (!a.live) { a.id = NewId(); a.live = Claim(dataDir, a.id); } return a; }   // review S4: never adopt without the lock
     MigrateLegacy(dataDir, legacyFile);
+    ReviveClosedTogether(dataDir);
     if (!requested.empty()) {
         if (ValidId(requested) && (a.live = Claim(dataDir, requested))) { a.id = requested; a.requested = true; }
     } else {
@@ -114,7 +140,11 @@ inline bool WriteHandover(const std::wstring& dataDir, const std::wstring& id, c
 inline bool Release(const std::wstring& dataDir, const std::wstring& id, bool keep) {
     ProfileStore::Lock lock(dataDir, 10000);
     if (keep || !lock.Held() || !OthersOpen(dataDir, id)) return false;
-    return DeleteFileW(File(dataDir, id).c_str()) != FALSE;
+    const std::wstring closed = File(dataDir, L"closed-" + id);
+    if (!MoveFileExW(File(dataDir, id).c_str(), closed.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return false;
+    HANDLE f = CreateFileW(closed.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f != INVALID_HANDLE_VALUE) { FILETIME now; GetSystemTimeAsFileTime(&now); SetFileTime(f, nullptr, nullptr, &now); CloseHandle(f); }
+    return true;
 }
 
 } // namespace WindowSessions

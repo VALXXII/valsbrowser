@@ -1185,8 +1185,8 @@ void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const Native
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING))Log(L"FAVICONS replace failed "+site);
 }
 // A site's icon lives as long as the site has a page in the history.
-void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.erase(site);siteIconsWritten.erase(site);siteIconsMissing.insert(site);if(smoke)return;if(!DeleteFileW(SiteIconFile(site).c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND)Log(L"FAVICONS delete failed "+site);}
-void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke)return;std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
+void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.erase(site);siteIconsWritten.erase(site);siteIconsMissing.insert(site);if(smoke||privateWindow)return; /* review P2 */if(!DeleteFileW(SiteIconFile(site).c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND)Log(L"FAVICONS delete failed "+site);}
+void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke||privateWindow)return; /* review P2 */std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
 void LoadPopularSites(){std::ifstream in(std::filesystem::path(base+L"\\assets\\popular-sites.txt"),std::ios::binary);popularSites=AddressBar::ReadPopular(in);if(popularSites.empty())Log(L"ADDRESS popular sites unavailable");}
 void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(HistoryFile(),bytes);}std::istringstream in(bytes);history=AddressBar::History::Read(in);historyBase=history;}
 // ---- New tab page (SETTINGS newtab) ----------------------------------------------
@@ -1293,7 +1293,7 @@ void SaveDownloads(){
 // file itself, then save so the date sticks.
 std::int64_t FileTimeUnixMs(const FILETIME& t){return NativeChrome::DownloadsUI::FileTimeMs(t)-11644473600000LL;}
 void LoadDownloads(){
-    if(smoke)return;
+    if(smoke||privateWindow)return; // review P3: a private window lists only its own downloads
     const auto path=std::filesystem::path(downloadsFile);
     {std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(downloadsFile,bytes);}std::istringstream in(bytes);downloads=DL::ReadHistory(in,nextDownloadId);downloadsBase=downloads;}
     WIN32_FILE_ATTRIBUTE_DATA history{};const bool known=GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&history)!=0;
@@ -1688,7 +1688,9 @@ void ApplyPrivacySettings(){
         Com<ICoreWebView2Settings> base;Com<ICoreWebView2Settings4> s4;
         if(FAILED(t->view->get_Settings(&base.p))||!base.p||FAILED(base->QueryInterface(IID_ICoreWebView2Settings4,(void**)&s4.p))||!s4.p){
             if(!formsLogged){Log(L"SETTINGS ICoreWebView2Settings4 unavailable: password and autofill switches ignored");formsLogged=true;}continue;}
-        HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords?TRUE:FALSE);if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(settings.autofill?TRUE:FALSE);
+        // Review P1: a private window's engine never saves passwords or form data (Chromium would keep
+        // them in the on-disk private profile).
+        HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords&&!privateWindow?TRUE:FALSE);if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(settings.autofill&&!privateWindow?TRUE:FALSE);
         if(FAILED(hr)&&!formsLogged){Log(L"SETTINGS password/autofill settings failed "+HrText(hr));formsLogged=true;}
     }
     if(!any)return;
