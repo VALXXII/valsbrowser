@@ -43,7 +43,7 @@ using BrowserSettings::Engine;
 enum Hit : int {
     None = 0, Close = 1, Back = 2, EngineBase = 10, More = 20,
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
-    ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43,
+    ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43, ManagePasswords = 44,
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
@@ -139,6 +139,7 @@ struct LayoutInput {
     const BrowserSettings::State* state = nullptr;
     const std::vector<BrowserSettings::Site>* sites = nullptr; bool sitesLoaded = false;
     bool sitesQuiet = false;   // first load still within its grace period: no « Chargement… » flash
+    bool vaultManager = false; std::size_t vaultCount = 0;   // E8: the vault is active (entry shown) and its account count
     int site = -1;                                             // Site view: index into sites
 };
 inline std::wstring Host(const std::wstring& origin) {
@@ -210,6 +211,8 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         endGroup();
         labelAt(L"Formulaires");
         twoLine(Passwords, L"Mots de passe");
+        // E8: the vault's manager, a separate entry from the switch (shown only while the vault is active).
+        if (in.vaultManager) add(Kind::Nav, ManagePasswords, row, L"Gérer les mots de passe", std::to_wstring(in.vaultCount));
         twoLine(Autofill, L"Saisie automatique");
         endGroup();
         labelAt(L"Données");
@@ -367,6 +370,8 @@ public:
         std::function<void(bool)> closed;                           // true when closed from the keyboard
         std::function<void(BrowserSettings::Change)> changed;       // the state changed: apply + save
         std::function<void()> pickFolder;                           // modal folder picker (may change the state)
+        std::function<void(bool keyboard)> managePasswords;          // E8: the vault manager (B05)
+        std::function<std::pair<bool, std::size_t>()> vaultInfo;     // E8: {vault active here, account count}
         std::function<void(bool keyboard)> clearData;               // modal confirmation + clear; `keyboard`: how the row was activated (focus ring)
         std::function<void()> checkUpdates;
         std::function<Version()> version;                           // "browser 0.3.x · À jour"
@@ -467,7 +472,7 @@ private:
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
         in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
-        in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_; return in;
+        in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_; if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
     }
     mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
     void Reveals(Motion::Time now, bool target) const {
@@ -1101,6 +1106,7 @@ private:
         } else if (hit == ResetAll && !sites_.empty()) { if (hooks_.resetSites) hooks_.resetSites(L""); sites_.clear(); LoadSites(); }
         else if (hit == Folder) { if (hooks_.pickFolder) Modal([&] { hooks_.pickFolder(); }); }
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
+        else if (hit == ManagePasswords) { if (hooks_.managePasswords) Modal([&] { hooks_.managePasswords(keyboard); }); }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }

@@ -2184,6 +2184,7 @@ void CreateSettingsPanel(){
     // The drawer knows how « Effacer les données… » was activated (click vs Entrée / Espace / UIA):
     // that is the host's last input for the confirmation's focus ring, whatever the chrome saw before.
     hooks.clearData=[](bool keyboard){keyboardModality=keyboard;ClearBrowsingData();};
+    hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};hooks.vaultInfo=[]{return VaultInfo();};
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
     hooks.downloadFolder=EffectiveDownloadFolder;

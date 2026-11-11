@@ -940,6 +940,23 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     },L"vault:"+std::to_wstring(serial));
     return true;
 }
+// E8 / B05: the vault manager, real mode of the B05 surface (no decrypted secret, no reveal; removal
+// through Vault::Commit, a failure is said and the row stays). Only while the vault is active.
+std::wstring VaultModified(std::int64_t ms){if(ms<=0)return L"";FILETIME ft;ULARGE_INTEGER u;u.QuadPart=(ULONGLONG)(ms+11644473600000LL)*10000ULL;ft.dwLowDateTime=u.LowPart;ft.dwHighDateTime=u.HighPart;SYSTEMTIME st,lt;FileTimeToSystemTime(&ft,&st);SystemTimeToTzSpecificLocalTime(nullptr,&st,&lt);
+    static const wchar_t* months[]={L"janvier",L"février",L"mars",L"avril",L"mai",L"juin",L"juillet",L"août",L"septembre",L"octobre",L"novembre",L"décembre"};
+    return L"Modifié le "+std::to_wstring(lt.wDay)+L" "+months[(lt.wMonth+11)%12]+L" "+std::to_wstring(lt.wYear);}
+std::pair<bool,std::size_t> VaultInfo(){if(!Vault::Active()||privateWindow)return {false,0};LoadVault();return {true,vault.Entries().size()};}
+void ShowVaultManager(bool keyboard){
+    if(!Vault::Active()||privateWindow||!LoadVault())return;
+    keyboardModality=keyboard;std::vector<NativeChrome::PasswordDemo::Account> rows;std::vector<std::uint64_t> ids;
+    for(const auto& e:vault.Entries()){std::wstring host=e.origin.substr(e.origin.find(L"://")+3);rows.push_back({host,e.user,L"",L"",VaultModified(e.updated)});ids.push_back(e.id);}
+    passwordDemo.SetReal(std::move(rows),[ids](size_t i)->bool{
+        if(i>=ids.size()||!vault.Remove(ids[i]))return false;
+        const auto r=Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
+        if(r!=ProfileStore::Result::Written&&r!=ProfileStore::Result::Unchanged){Log(L"VAULT removal NOT written");vault=vaultBase;return false;}   // back to what the file holds
+        return true;});
+    passwordDemo.Show(PageScreenRect());
+}
 HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){
     if(halted||!t||t->closed||!a)return S_OK;
     if(!t->https.shown.empty())return InterstitialMessage(t,a);
@@ -1142,6 +1159,7 @@ void SandboxPromptVariant(OP::Spec& s,const std::wstring& v){
 bool SandboxPasswordManager(const std::wstring& v,std::function<void(const std::wstring&)> log){
     if(!passwordDemo.Window())return false;
     if(passwordDemo.Visible())passwordDemo.Hide();
+    passwordDemo.SetDemo();   // the sandbox always shows the fictitious demonstration
     if(!passwordDemo.Show(PageScreenRect(),[log]{log(L"password.manager → fermé");}))return false;
     log(L"password.manager · "+v+L" → ouvert (comptes fictifs en mémoire)");return true;
 }

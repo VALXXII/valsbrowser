@@ -365,6 +365,24 @@ int wmain(int argc, wchar_t** argv) {
         Modal::Result none; none.button = OriginPrompt::Id::Accept; none.select = -1; none.values = {L"x"};
         Check(OriginPrompt::Map(r, none).action != OriginPrompt::Action::Save, "B04 real: no account chosen => nothing saved (never the last one silently)");
     }
+    {   // B05 real mode (E8): no decrypted secret, no reveal, real empty state, honest removal failure; back to demo for the sandbox.
+        NativeChrome::PasswordDemo::Window w; Check(w.Create(hi, owner, root), "B05 real: surface created");
+        int removeCalls = 0; std::wstring said; NativeChrome::PasswordDemo::Window w2; NativeChrome::PasswordDemo::Demo::Hooks hk; hk.announce = [&](const std::wstring& t0) { said = t0; };
+        Check(w2.Create(hi, owner, root, hk), "B05 real: surface with announce");
+        w2.SetReal({{L"compte.exemple.test", L"camille@exemple.test", L"NE-DOIT-PAS-APPARAITRE", L"", L"Modifié le 12 novembre 2026"}}, [&](size_t) { ++removeCalls; return false; });
+        Check(w2.Real() && w2.Accounts().size() == 1 && w2.Accounts()[0].password.empty(), "B05 real: accounts carry no secret");
+        Check(w2.Show({0, 0, 900, 700}), "B05 real: shown");
+        Check(!w2.Surface().CurrentSpec().demo && w2.Surface().CurrentSpec().subtitle.find(L"restent proposés par le moteur") != std::wstring::npos, "B05 real: no demo badge, cohabitation note");
+        w2.Surface().ActivateForTest(Modal::Dialog::AccountHit(0));
+        bool reveal = false; std::wstring shown; for (auto& f : w2.Surface().CurrentSpec().fields) if (f.password) { reveal = f.reveal; shown = f.value; }
+        Check(!reveal && shown.find(L"NE-DOIT") == std::wstring::npos, "B05 real: detail never shows or reveals a secret");
+        w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0)); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(removeCalls == 1 && w2.Accounts().size() == 1 && said.find(L"n'a pas pu être supprimé") != std::wstring::npos, "B05 real: a removal the vault did not write is said, the row stays");
+        w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        w2.SetReal({}, nullptr); Check(w2.Show({0, 0, 900, 700}) && w2.Surface().CurrentSpec().accountsTitle == L"Aucun mot de passe enregistré par browser", "B05 real: empty state"); w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        w2.SetDemo(); Check(!w2.Real() && w2.Accounts().size() == NativeChrome::PasswordDemo::SampleAccounts().size(), "B05: back to the fictitious demonstration for the sandbox");
+        w.Dispose(); w2.Dispose();
+    }
     {   // B04 save (DEMONSTRATION surface): identifier required; « Jamais pour ce site ».
         OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::PasswordSave; s.origin = L"github.com"; s.user = L""; s.demo = true;
         int calls = 0; OriginPrompt::Result got;
