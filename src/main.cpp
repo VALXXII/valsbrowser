@@ -1103,7 +1103,7 @@ bool LaunchWindow(const std::wstring& id){
 void ClaimWindowSession(){
     if(smoke||privateWindow)return;
     auto a=WindowSessions::Adopt(dataDir,sessionFile,windowRequested,settings.restoreTabs);
-    windowId=a.id;windowLive=a.live;windowForced=a.requested;windowReservations=a.reservations; // held for this process's lifesessionFile=WindowSessions::File(dataDir,windowId);
+    windowId=a.id;windowLive=a.live;windowForced=a.requested;windowReservations=a.reservations; /* held for this process life */sessionFile=WindowSessions::File(dataDir,windowId);
     Log(L"WINDOW session "+windowId+(a.requested?L" (handed over)":a.adopted?L" (adopted)":L" (new)"));
     for(const auto& id:a.relaunch)LaunchWindow(id); // a failed relaunch stays an orphan: restored next time
 }

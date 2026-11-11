@@ -106,6 +106,11 @@ def main():
     check(wait(lambda: len(ours()) == 2, 20), 'two browser windows of the fixture are open')
     log = open(os.path.join(FIX, 'prototype.log'), encoding='utf-8', errors='replace').read() if os.path.exists(os.path.join(FIX, 'prototype.log')) else ''
     check('(adopted)' in log and '(handed over)' in log, 'log: one window adopted its session, the relaunched one took its own')
+    if RUNTIME:
+        wait(lambda: all(('exemple.invalid/' + w) in open(os.path.join(FIX, 'prototype.log'), encoding='utf-8', errors='replace').read() for w in ('wfixturea', 'wfixtureb')), 20)
+        log = open(os.path.join(FIX, 'prototype.log'), encoding='utf-8', errors='replace').read()
+        check(all(('exemple.invalid/' + w) in log for w in ('wfixturea', 'wfixtureb')), 'each window navigated to ITS OWN restored URL (content, not only the session marker)')
+    check(not os.path.exists(os.path.join(FIX, 'session')), 'no window writes the legacy single session file')
     # Close one window among others: its session goes.
     pid_a = None
     for pid, hwnd in ours():
@@ -113,6 +118,9 @@ def main():
     closed = wait(lambda: pid_a not in [p for p, _ in ours()], 20)
     remaining = sorted(os.listdir(sessions))
     check(closed and len(remaining) == 1, 'closing one window among others removes its session (%s left)' % remaining)
+    if remaining:
+        text = open(os.path.join(sessions, remaining[0]), encoding='utf-8', errors='replace').read()
+        check('exemple.invalid/' in text, 'the remaining window saved its own tabs into its session file')
     # Close the last window: it keeps its session.
     for pid, hwnd in ours(): u32.PostMessageW(hwnd, 0x0010, 0, 0)
     check(wait(lambda: not ours(), 20) and os.listdir(sessions) == remaining, 'the last window closed keeps its session')
