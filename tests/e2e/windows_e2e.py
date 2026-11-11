@@ -13,6 +13,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'build', 'real-integration-check'))
 FIX = os.path.join(ROOT, 'build', 'e2e-windows')
 k32, u32 = ctypes.windll.kernel32, ctypes.windll.user32
+# Optional Microsoft Fixed Version runtime for OUR test processes only (process-scoped environment,
+# nothing installed or registered): python windows_e2e.py <build> <fixed runtime folder>
+RUNTIME = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else ''
+ENV = dict(os.environ, WEBVIEW2_BROWSER_EXECUTABLE_FOLDER=RUNTIME) if RUNTIME else None
 k32.OpenMutexW.restype = wt.HANDLE
 failures = 0
 
@@ -96,7 +100,7 @@ def main():
         with open(os.path.join(sessions, wid), 'w', newline='\n') as f: f.write(session('https://exemple.invalid/' + wid))
         time.sleep(0.05)
     exe = os.path.join(FIX, 'browser.exe')
-    subprocess.Popen([exe], cwd=FIX)
+    subprocess.Popen([exe], cwd=FIX, env=ENV)
     both = wait(lambda: live('wfixturea') and live('wfixtureb'), 45)
     check(both, 'one start brings both windows back (one adopted, one relaunched)')
     check(wait(lambda: len(ours()) == 2, 20), 'two browser windows of the fixture are open')
@@ -113,18 +117,18 @@ def main():
     for pid, hwnd in ours(): u32.PostMessageW(hwnd, 0x0010, 0, 0)
     check(wait(lambda: not ours(), 20) and os.listdir(sessions) == remaining, 'the last window closed keeps its session')
     # Next start restores it; a killed window's session survives for the next start.
-    subprocess.Popen([exe], cwd=FIX)
+    subprocess.Popen([exe], cwd=FIX, env=ENV)
     check(wait(lambda: live(remaining[0]), 45), 'the next start restores the last window')
     kill_all()
     check(wait(lambda: not fixture_pids(), 10) and os.listdir(sessions) == remaining, 'a killed window leaves its session (crash)')
-    subprocess.Popen([exe], cwd=FIX)
+    subprocess.Popen([exe], cwd=FIX, env=ENV)
     check(wait(lambda: live(remaining[0]), 45), 'after the crash, the next start restores it')
     for pid, hwnd in ours(): u32.PostMessageW(hwnd, 0x0010, 0, 0)
     wait(lambda: not fixture_pids(), 20); kill_all(); time.sleep(1)
     # Private window (A9): a real --private process writes no app file and claims no session.
     snapshot = lambda: sorted((os.path.relpath(os.path.join(d, f), FIX), os.path.getsize(os.path.join(d, f))) for d, _, fs in os.walk(FIX) if 'profile' not in os.path.relpath(d, FIX).split(os.sep)[0:1] for f in fs)
     before = snapshot()
-    subprocess.Popen([exe, '--private'], cwd=FIX)
+    subprocess.Popen([exe, '--private'], cwd=FIX, env=ENV)
     check(wait(lambda: len(ours()) == 1, 45), 'a private window opens')
     title = ''
     if ours():
