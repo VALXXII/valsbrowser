@@ -120,8 +120,20 @@ Adoptée par fusion (48cc300 = 63433bf avec résolution manuelle de `src/main.cp
   origine lue par le moteur, jamais en privé, un prompt à la fois par onglet) + enregistrement après consentement via `Vault::Commit` (fail closed)
   : **code présent, non exécuté** tant que le coffre est inactif ; aucune preuve E2E. Crypto système chargée dynamiquement (crypt32/bcrypt de
   System32).
-- **B03** remplissage (déclencheur natif, ancre, D2) et **B05/E8** gestionnaire réel : **à faire** ; V5/V7 (partiel : copies hôte du secret
-  effacées dans le chemin B04) ouverts ; V6 = consentement au vrai Save (B04).
+- **B03** remplissage : code hôte présent (7a344e4 : prompt B03 réel, cible capturée à l'action et revérifiée par `CanFill` avant déchiffrement,
+  `FillScript` au document principal, copies du secret et du script effacées) — **U seulement, inactif, aucun déclencheur visible** : la commande
+  native visible (déclencheur/ancre/temporisation V5) doit être fixée par la revue (base proposition 11) puis implémentée et recontrôlée ; aucune
+  commande fictive, variantes D2 conditionnelles. **Ce n'est pas un parcours complet.**
+- **B05/E8** gestionnaire réel : code présent (54b0348 : comptes sans secret, pas d'affichage, état vide + cohabitation, suppression via
+  `Vault::Commit`, entrée Réglages distincte visible seulement coffre actif) — **U seulement (modal_test), inactif, aucune E2E**.
+- V5 ouvert ; V7 partiel (copies hôte du secret/script effacées dans B03/B04 ; chaînes WebView2/allocations temporaires non maîtrisées) ; V6 =
+  consentement au vrai Save (B04).
+- **Écart D3 (privé) à résorber** : le contrat autorise en fenêtre privée la LECTURE et le REMPLISSAGE explicite d'un compte existant (sans
+  sauvegarde auto ni métadonnée d'usage) ; le code actuel refuse globalement `privateWindow` dans `OfferVaultFill` et `ShowVaultManager` —
+  **non livré**. Proposition : en privé, B03 et B05 en lecture seule (aucun Save/Remove/Commit, aucune capture), même gardes et effacement des
+  copies. Réglages modifiés en privé : toujours **TRANSITOIRES** (non persistés).
+- E2E coffre prévu ensuite uniquement dans l'hôte de test dédié, profil et secrets SYNTHÉTIQUES ; jamais d'activation de production ni de
+  lecture/export de secrets personnels.
 - Recontrôle indépendant **complet** requis après B03/B04/B05 (frontières origine/cadre/document/consentement + stockage, et recontrôle des
   corrections M1-M3 et des gardes de l'hôte mTLS) avant toute activation ou PR finale.
 
