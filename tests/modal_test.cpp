@@ -352,8 +352,21 @@ int wmain(int argc, wchar_t** argv) {
         p.Surface().FinishAnimationsForTest();
         Check(OriginPrompt::Build(s, true).demo, "password fill: Démonstration badge");
     }
-    {   // B04 save: identifier required; « Jamais pour ce site ».
-        OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::PasswordSave; s.origin = L"github.com"; s.user = L"";
+    {   // B04 REAL path (vault inactive until review): the submitted secret pre-filled, no « Jamais » without a real list,
+        // and D1: several accounts and no identifier => explicit choice, « Mettre à jour » disabled until then.
+        OriginPrompt::Spec r; r.kind = OriginPrompt::Kind::PasswordUpdate; r.origin = L"compte.exemple.test"; r.user = L""; r.secret = L"Fictif-nouveau-2026";
+        r.accounts = {{L"camille@exemple.test", L""}, {L"travail@exemple.test", L""}};
+        const auto m = OriginPrompt::Build(r, true);
+        bool never = false; for (auto& b0 : m.buttons) never = never || b0.label == L"Jamais pour ce site";
+        Check(!m.demo && !never && m.accountsSelect && m.accounts.size() == 2 && m.buttons.back().disabled && m.fields.size() == 1 && m.fields[0].value == L"Fictif-nouveau-2026", "B04 real: D1 choice required, secret pre-filled, no inert « Jamais »");
+        Modal::Result pick; pick.button = OriginPrompt::Id::Accept; pick.select = 1; pick.values = {L"Fictif-nouveau-2026"};
+        const auto out = OriginPrompt::Map(r, pick);
+        Check(out.action == OriginPrompt::Action::Save && out.user == L"travail@exemple.test" && out.password == L"Fictif-nouveau-2026", "B04 real: the chosen account and the (possibly edited) password come back for the vault");
+        Modal::Result none; none.button = OriginPrompt::Id::Accept; none.select = -1; none.values = {L"x"};
+        Check(OriginPrompt::Map(r, none).action != OriginPrompt::Action::Save, "B04 real: no account chosen => nothing saved (never the last one silently)");
+    }
+    {   // B04 save (DEMONSTRATION surface): identifier required; « Jamais pour ce site ».
+        OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::PasswordSave; s.origin = L"github.com"; s.user = L""; s.demo = true;
         int calls = 0; OriginPrompt::Result got;
         p.Show(s, {200, 150, 224, 174}, [&](OriginPrompt::Result& r) { ++calls; got = r; });
         p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(2));

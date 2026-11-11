@@ -216,7 +216,7 @@ inline Copy CopyFor(Kind kind, const std::wstring& host) {
     case Kind::TimedOut: return {L"Le site met trop de temps à répondre", L"", L" est peut-être surchargé. Nous réessayons pour vous, ou vous pouvez relancer tout de suite.", L"Réessayer maintenant", L"Détails techniques"};
     case Kind::Reset: return {L"La connexion a été interrompue", L"La connexion à ", L" s'est coupée en cours de route. C'est souvent passager : réessayez.", L"Réessayer", L"Détails techniques"};
     // TLS refused (never bypassed): no « continuer », no http; Retour or a real new attempt.
-    case Kind::Certificate: return {L"La connexion sécurisée n'a pas pu être établie", L"La connexion à ", L" a été bloquée : ", L"Réessayer", L"Retour", Action::Retry, Action::Back};
+    case Kind::Certificate: return {L"La connexion sécurisée n'a pas pu être établie", L"La connexion à ", L" a été bloquée : ", L"Réessayer", L"Retour", Action::Retry, Action::Back};
     case Kind::Unreachable: return {L"Le site est injoignable", L"Impossible de joindre ", L" : le serveur ne répond pas, ou le réseau en bloque l'accès.", L"Réessayer", L"Détails techniques"};
     default: return {L"Cette page ne s'est pas chargée", L"Une erreur a empêché l'ouverture de ", L". Réessayez dans un instant.", L"Réessayer", L"Détails techniques"};
     }

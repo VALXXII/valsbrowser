@@ -45,6 +45,7 @@ struct Spec {
     bool userInitiated = true, demo = false;
     std::vector<DemoAccount> accounts;   // PasswordFill (fictitious), ClientCertificate (name + issuer)
     std::wstring user;                   // BasicAuth / PasswordSave|Update: pre-filled identifier
+    std::wstring secret;                 // PasswordSave|Update, real path only: the password just submitted (wiped by the host after)
     // Extras (all optional):
     std::wstring frame;                  // ExternalApp: third-party frame host (no remembering offered)
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
@@ -240,16 +241,28 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     }
     case Kind::PasswordSave: case Kind::PasswordUpdate: {   // B04, Démonstration: nothing is stored
         const bool update = s.kind == Kind::PasswordUpdate;
-        m.automationId = update ? L"PasswordUpdate" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = true;
+        m.automationId = update ? L"PasswordUpdate" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
         m.title = update ? L"Mettre à jour le mot de passe ?" : L"Enregistrer le mot de passe ?";
-        m.subtitle = L"Pour " + s.origin + L". Démonstration : rien n'est enregistré.";
+        m.subtitle = s.demo ? L"Pour " + s.origin + L". Démonstration : rien n'est enregistré." : L"Pour " + s.origin + L". Enregistré dans browser, chiffré pour votre session Windows.";
         Field user; user.label = L"Identifiant"; user.value = s.user; user.automationId = L"PasswordUser"; user.required = true;
         Field pass; pass.label = L"Mot de passe"; pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
-        pass.value = s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // fictitious only
+        pass.value = !s.demo ? s.secret : s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // real: the submitted password; demo: fictitious
         m.fields = {user, pass};
+        // D1: an update from a form without an identifier, with several accounts for this origin: the
+        // user picks which one (radio rows, « Mettre à jour » disabled until then); never the last one silently.
+        if (!s.demo && update && s.user.empty() && s.accounts.size() > 1) {
+            m.fields = {pass}; m.validate = nullptr; m.accountsTitle = L"Quel compte mettre à jour ?";
+            for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, false});
+            m.accountsSelect = true; m.accountSelected = -1;
+        }
         m.validate = [](const std::vector<std::wstring>& v) { return v.empty() || v[0].empty() ? std::wstring(L"Saisissez un identifiant.") : std::wstring(); };
         m.softButtons = true;
         Button never = button(Id::Never, L"Jamais pour ce site", Role::Quiet, false, false, false, L"PasswordNever"); never.leading = true;
+        if (!s.demo) {   // real path: no « Jamais pour ce site » until a real exclusion list exists (no inert action)
+            m.buttons = {button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, true, false, false, L"PasswordSaveConfirm")};
+            if (m.accountsSelect) m.buttons[1].disabled = true;
+            break;
+        }
         m.buttons = {never, button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, true, false, false, L"PasswordSave")};
         break;
     }
@@ -284,7 +297,11 @@ inline Result Map(const Spec& s, const Modal::Result& r) {
     case Kind::ScreenShare: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
     case Kind::PasswordSave: case Kind::PasswordUpdate:
         out.action = r.button == Id::Accept ? Action::Save : r.button == Id::Never ? Action::Never : r.button == Id::Later ? Action::Cancel : Action::Dismiss;
-        if (r.button == Id::Accept && !r.values.empty()) out.user = r.values[0];   // the (fictitious) password is never returned
+        if (r.button == Id::Accept && !r.values.empty()) {
+            if (s.demo) out.user = r.values[0];   // the (fictitious) password is never returned
+            else if (!s.accounts.empty() && s.user.empty() && s.kind == Kind::PasswordUpdate && s.accounts.size() > 1) { if (r.select >= 0 && r.select < static_cast<int>(s.accounts.size())) { out.user = s.accounts[static_cast<size_t>(r.select)].user; out.password = r.values[0]; out.choice = r.select; } else out.action = Action::Dismiss; }
+            else { out.user = r.values[0]; if (r.values.size() > 1) out.password = r.values[1]; }
+        }
         break;
     case Kind::PasswordFill:
         if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Fill; out.choice = r.select; if (r.select < static_cast<int>(s.accounts.size())) out.user = s.accounts[static_cast<size_t>(r.select)].user; }

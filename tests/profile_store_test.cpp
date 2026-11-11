@@ -5,6 +5,7 @@
 #include "../src/bookmarks.h"
 #include "../src/profile-store.h"
 #include "../src/window-sessions.h"
+#include "../src/trace-erase.h"
 #include <fstream>
 #include <chrono>
 #include <cstdio>
@@ -58,6 +59,13 @@ int wmain(int argc, wchar_t** argv) {
         HANDLE live = WindowSessions::Claim(argv[2], argv[3]); (void)live;
         ProfileStore::WriteAtomic(WindowSessions::File(argv[2], argv[3]), "browser-session-2\n0\n1\n\"https://exemple.test/c\"\n0\n");
         Sleep(INFINITE); return 0;
+    }
+    // Child « window B »: loads the history file, records one visit, commits through the store.
+    if (argc >= 5 && std::wstring(argv[1]) == L"add-visit") {
+        const std::wstring dir = argv[2], path = dir + L"\\history"; std::string bytes; ProfileStore::ReadAll(path, bytes); std::istringstream in(bytes);
+        AddressBar::History base = AddressBar::History::Read(in), mine = base; mine.Record(argv[3], L"B", _wtoi64(argv[4]));
+        return ProfileStore::CommitWith<AddressBar::History>(dir, path, base, mine, [](std::istream& i, bool*) { return AddressBar::History::Read(i); }, [](std::ostream& o, const AddressBar::History& h) { h.Write(o); },
+            [](const AddressBar::History& b0, const AddressBar::History& m0, const AddressBar::History& t0) { return AddressBar::History::Merge(b0, m0, t0); }) == ProfileStore::Result::Written ? 0 : 1;
     }
     if (argc >= 4 && std::wstring(argv[1]) == L"hold") {   // take the lock, say so, then wait to be killed
         ProfileStore::Lock lock(argv[2]); HANDLE ready = OpenEventW(EVENT_MODIFY_STATE, FALSE, argv[3]);
@@ -257,6 +265,46 @@ int wmain(int argc, wchar_t** argv) {
         std::string after; ProfileStore::ReadAll(f, after);
         Check(res == ProfileStore::Result::UnknownFormat && after == future && m0 == mBefore && b0 == BM::Store{}, "S3 bookmarks: a future format is refused, bytes and memory untouched");
         std::filesystem::remove(f, ec);
+    }
+    {   // A5 across windows (review S5): window A erases a period while window B (a real process) added a visit A never saw.
+        using H = AddressBar::History; const std::wstring hdir = dir + L"\\a5"; std::filesystem::create_directories(hdir, ec); const std::wstring hp = hdir + L"\\history";
+        H seed; seed.Record(L"https://ancien.test/", L"old", 100); seed.Record(L"https://recent.test/", L"recent", 1000);
+        { std::ostringstream o; seed.Write(o); ProfileStore::WriteAtomic(hp, o.str()); }
+        auto load = [&]() { std::string b; ProfileStore::ReadAll(hp, b); std::istringstream in(b); return H::Read(in); };
+        auto has = [](const H& h, const wchar_t* u) { for (const auto& v : h.Items()) if (v.url == u) return true; return false; };
+        H aBase = load(), aMine = aBase;   // window A loaded before B's visit
+        H bBase = load(), bMine = bBase;   // window B (in memory) also open
+        PROCESS_INFORMATION child = spawn(L"add-visit \"" + hdir + L"\" https://b-nouveau.test/ 2000"); WaitForSingleObject(child.hProcess, 10000); DWORD cc = 9; GetExitCodeProcess(child.hProcess, &cc); CloseHandle(child.hProcess);
+        Check(cc == 0 && has(load(), L"https://b-nouveau.test/"), "fixture: window B (real process) recorded a visit after A loaded");
+        const auto out = TraceErase::History(dir, hp, 500, aMine, aBase);
+        const H disk = load();
+        Check(out == TraceErase::Outcome::Done && !has(disk, L"https://recent.test/") && !has(disk, L"https://b-nouveau.test/") && has(disk, L"https://ancien.test/"), "A5: the period is erased on disk, including B's visit A never saw; outside the period kept");
+        Check(!has(aMine, L"https://b-nouveau.test/") && has(aMine, L"https://ancien.test/"), "A5: window A's suggestions match the disk");
+        // Window B saves/activates later: nothing erased comes back.
+        bMine.Record(L"https://ancien.test/", L"old", 3000);   // B keeps browsing outside the erase
+        ProfileStore::CommitWith<H>(dir, hp, bBase, bMine, [](std::istream& i, bool*) { return H::Read(i); }, [](std::ostream& o, const H& h) { h.Write(o); }, [](const H& b0, const H& m0, const H& t0) { return H::Merge(b0, m0, t0); });
+        const H after = load();
+        Check(!has(after, L"https://recent.test/") && !has(after, L"https://b-nouveau.test/") && has(after, L"https://ancien.test/") && !has(bMine, L"https://recent.test/"), "A5: window B's next save resurrects nothing and its memory drops the erased entries");
+        // Busy and unknown format: honest outcomes, nothing changed.
+        { HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr), done = CreateEventW(nullptr, TRUE, FALSE, nullptr); struct Ctx { std::wstring d; HANDLE r, x; } ctx{dir, ready, done};
+          HANDLE th = CreateThread(nullptr, 0, [](LPVOID q) -> DWORD { auto* c = static_cast<Ctx*>(q); ProfileStore::Lock l(c->d); SetEvent(c->r); WaitForSingleObject(c->x, 10000); return 0; }, &ctx, 0, nullptr);
+          WaitForSingleObject(ready, 5000); std::string before; ProfileStore::ReadAll(hp, before); H m = aMine, b0 = aBase;
+          const auto busy = TraceErase::History(dir, hp, 0, m, b0, 200); std::string now2; ProfileStore::ReadAll(hp, now2);
+          Check(busy == TraceErase::Outcome::Busy && now2 == before && m == aMine, "A5: lock busy reported, disk and memory unchanged");
+          SetEvent(done); WaitForSingleObject(th, 5000); CloseHandle(th); CloseHandle(ready); CloseHandle(done); }
+        ProfileStore::WriteAtomic(hp, "browser-history 9\nfuture\n");
+        { H m = aMine, b0 = aBase; Check(TraceErase::History(dir, hp, 0, m, b0) == TraceErase::Outcome::UnknownFormat && m == aMine, "A5: an unknown history format is not erased silently (reported, untouched)"); std::string t; ProfileStore::ReadAll(hp, t); Check(t == "browser-history 9\nfuture\n", "A5: the unknown file is byte-identical"); }
+        // Downloads: a row added elsewhere in the period goes, rows outside stay, live rows stay.
+        namespace DL = NativeChrome::Downloads; const std::wstring dp = hdir + L"\\downloads";
+        auto row = [](int id, const wchar_t* path, std::int64_t started) { DL::Item i; i.id = id; i.path = path; i.uri = L"https://d.test/f"; i.state = DL::State::Completed; i.total = 10; i.started = started; return i; };
+        std::vector<DL::Item> fileRows{row(1, L"C:/d/vieux", 100), row(2, L"C:/d/recent", 1000)};
+        auto writeRows = [&](const std::vector<DL::Item>& r) { std::ostringstream o; DL::WriteHistory(o, r); ProfileStore::WriteAtomic(dp, o.str()); };
+        writeRows(fileRows); std::vector<DL::Item> base = fileRows, mine = fileRows; DL::Item live = row(9, L"C:/d/encours", 3000); live.state = DL::State::InProgress; mine.insert(mine.begin(), live);
+        fileRows.push_back(row(3, L"C:/d/ailleurs", 2000)); writeRows(fileRows);   // another window's row A never saw
+        int next = 100; const auto o2 = TraceErase::Downloads(dir, dp, 500, mine, base, next);
+        std::string db; ProfileStore::ReadAll(dp, db); std::istringstream din(db); int ig = 0; const auto onDisk = DL::ReadHistory(din, ig);
+        bool vieux = false, other = false; for (auto& d : onDisk) { if (d.path == L"C:/d/vieux") vieux = true; if (d.path == L"C:/d/ailleurs" || d.path == L"C:/d/recent") other = true; }
+        Check(o2 == TraceErase::Outcome::Done && vieux && !other && !mine.empty() && mine.front().path == L"C:/d/encours", "A5 downloads: the period erased on disk (another window's row too), older kept, live row untouched");
     }
     bool leftovers = false; for (auto& e : std::filesystem::directory_iterator(dir, ec)) if (e.path().wstring().find(L".tmp") != std::wstring::npos) leftovers = true;
     Check(!leftovers, "no temp file left behind");

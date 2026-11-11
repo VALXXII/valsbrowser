@@ -667,23 +667,33 @@ std::int64_t ClearPeriodStartMs(int period){
     const std::int64_t now=NativeChrome::DownloadsUI::UnixNowMs();
     switch(period){case 0:return now-3600000LL;case 1:return now-86400000LL;case 2:return now-7*86400000LL;case 3:return now-28*86400000LL;default:return 0;}
 }
-void ClearLocalTracesSelected(const std::vector<bool>& c,std::int64_t since){
+// A5 local part: a deletion delta applied under the profile lock to the CURRENT files (src/trace-erase.h),
+// so entries another window added in the period are erased too and nothing outside it is touched.
+// Returns S_OK only if every selected category really is erased on disk.
+HRESULT ClearLocalTracesSelected(const std::vector<bool>& c,std::int64_t since){
     auto on=[&](size_t i){return i<c.size()&&c[i];};
+    HRESULT result=S_OK;
+    auto report=[&](TraceErase::Outcome o,const wchar_t* what){if(o==TraceErase::Outcome::Done)return;result=o==TraceErase::Outcome::Busy?HRESULT_FROM_WIN32(ERROR_LOCK_VIOLATION):E_FAIL;Log(std::wstring(L"CLEAR ")+what+(o==TraceErase::Outcome::Busy?L": profile busy, NOT erased":o==TraceErase::Outcome::UnknownFormat?L": unknown file format, NOT erased (left untouched)":L": write failed, NOT erased"));};
     if(on(0)){
-        if(since<=0){closedTabs.clear();history.Clear();ClearSiteIcons();}
-        else{std::vector<std::wstring> urls;for(auto& v:history.Items())if(v.last>=since)urls.push_back(v.url);for(auto& u:urls)history.Remove(u);closedTabs.clear();}
-        SaveHistory();historyDrawer.Changed();
+        closedTabs.clear();if(since<=0)ClearSiteIcons();
+        if(smoke||privateWindow){std::vector<std::wstring> urls;for(auto& v:history.Items())if(since<=0||v.last>=since)urls.push_back(v.url);for(auto& u:urls)history.Remove(u);}
+        else report(TraceErase::History(dataDir,HistoryFile(),since,history,historyBase),L"history");
+        historyDrawer.Changed();
     }
     if(on(3)){
-        downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[since](const DL::Item& d){return d.state!=DL::State::InProgress&&d.state!=DL::State::Paused&&(since<=0||d.started>=since||d.started==0);}),downloads.end());
+        if(smoke||privateWindow)downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[since](const DL::Item& d){return DL::Persistent(d)&&(since<=0||d.started>=since||d.started==0);}),downloads.end());
+        else report(TraceErase::Downloads(dataDir,downloadsFile,since,downloads,downloadsBase,nextDownloadId),L"downloads");
         for(auto it=downloadOps.begin();it!=downloadOps.end();)it=FindDownload(it->first)?std::next(it):downloadOps.erase(it);
-        SaveDownloads();DownloadsChanged();
+        DownloadsChanged();
     }
+    return result;
 }
 void StartClearSelected(const std::vector<bool>& c,int period,std::function<void(HRESULT)> done){
     auto on=[&](size_t i){return i<c.size()&&c[i];};
     const std::int64_t since=ClearPeriodStartMs(period);
-    ClearLocalTracesSelected(c,since);
+    const HRESULT local=ClearLocalTracesSelected(c,since);
+    // A local part that was not erased is reported to the A5 flow as a failure (never « effacé »).
+    if(FAILED(local)){auto original=done;done=[original,local](HRESULT hr){if(original)original(FAILED(hr)?hr:local);};}
     int kinds=0;
     if(on(0))kinds|=COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY;
     if(on(1))kinds|=COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_SITE;

@@ -108,6 +108,7 @@ int main() {
         ErrorPages::Extras x; x.certStatus = COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED; x.issuer = L"<script>alert(1)</script> CA";
         const std::wstring h = ErrorPages::Html(Kind::Certificate, L"https://exemple.test:8443/compte", L"tok", false, x);
         Require(h.find(L"La connexion sécurisée n") != std::wstring::npos && h.find(L"pas pu être établie") != std::wstring::npos && h.find(L"a expiré") != std::wstring::npos && h.find(L"CERTIFICATE_EXPIRED") != std::wstring::npos && h.find(L"NET::") == std::wstring::npos, "certificate page: title, real cause and code");
+        Require(h.find(L"bloquée : ") != std::wstring::npos && h.find(L"bloquée :") == std::wstring::npos, "certificate page: narrow no-break space before the colon (never a lone « : » at a line start)");
         Require(h.find(L"<script>alert(1)") == std::wstring::npos && h.find(L"&lt;script&gt;") != std::wstring::npos, "certificate page: issuer escaped");
         Require(h.find(L"Continuer") == std::wstring::npos && h.find(L"http://") == std::wstring::npos && h.find(L"rien n&#39;a été envoyé") == std::wstring::npos && h.find(L"rien n'a été envoyé") == std::wstring::npos, "certificate page: no continue, no http, no absolute promise");
         Require(h.find(L"data-action=\"back\"") != std::wstring::npos && h.find(L"data-action=\"retry\"") != std::wstring::npos, "certificate page: Retour and a real Réessayer only");

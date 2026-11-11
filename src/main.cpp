@@ -59,6 +59,7 @@
 #endif
 #include "profile-store.h"
 #include "window-sessions.h"
+#include "trace-erase.h"
 #ifdef BROWSER_E2E_FIXTURE_HOOK
 // TEST HOST ONLY (tests/e2e/mtls_host.cpp): the fixture pin. The release and dev browser never define
 // BROWSER_E2E_FIXTURE_HOOK, so none of this exists in them (checked by tests/e2e/mtls_e2e.ps1).
@@ -1666,17 +1667,20 @@ std::wstring HrText(HRESULT hr){wchar_t code[16];swprintf(code,16,L"0x%08lX",(un
 // entries or an unreadable file), so nothing cleared survives on disk. The other windows pick the
 // wipe up at their next activation or save (review S5): their old entries never come back, since a
 // merge only re-adds visits made after their base.
-void WipeLocalTraceFiles(){
-    if(smoke||privateWindow)return;
-    ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"CLEAR profile busy: files not wiped");return;}
-    {std::ostringstream o;AddressBar::History{}.Write(o);if(ProfileStore::WriteAtomic(HistoryFile(),o.str()))historyBase=AddressBar::History{};else Log(L"CLEAR history wipe failed");}
-    {std::vector<DL::Item> keep;for(const auto& d:downloads)if(!DL::Persistent(d))keep.push_back(d);std::ostringstream o;DL::WriteHistory(o,keep);if(ProfileStore::WriteAtomic(downloadsFile,o.str()))downloadsBase.clear();else Log(L"CLEAR downloads wipe failed");}
+// Returns true only when both files really are wiped (a busy lock or a failed write is reported).
+bool WipeLocalTraceFiles(){
+    if(smoke||privateWindow)return true;
+    ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"CLEAR profile busy: files not wiped");return false;}
+    bool ok=true;
+    {std::ostringstream o;AddressBar::History{}.Write(o);if(ProfileStore::WriteAtomic(HistoryFile(),o.str()))historyBase=AddressBar::History{};else{ok=false;Log(L"CLEAR history wipe failed");}}
+    {std::vector<DL::Item> keep;for(const auto& d:downloads)if(!DL::Persistent(d))keep.push_back(d);std::ostringstream o;DL::WriteHistory(o,keep);if(ProfileStore::WriteAtomic(downloadsFile,o.str()))downloadsBase.clear();else{ok=false;Log(L"CLEAR downloads wipe failed");}}
+    return ok;
 }
 void ClearLocalTraces(){
     closedTabs.clear();history.Clear();ClearSiteIcons();historyDrawer.Changed();
     downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[](const DL::Item& d){return d.state!=DL::State::InProgress&&d.state!=DL::State::Paused;}),downloads.end());
     for(auto it=downloadOps.begin();it!=downloadOps.end();)it=FindDownload(it->first)?std::next(it):downloadOps.erase(it);
-    WipeLocalTraceFiles();DownloadsChanged();
+    if(!WipeLocalTraceFiles())Log(L"CLEAR local traces: NOT fully erased on disk");DownloadsChanged();
 }
 // Engine data lives in the shared profile: any live tab's webview reaches it. `out`
 // receives the profile as `iid` (false: no live tab, or a runtime without it).
