@@ -68,6 +68,10 @@ try {
   Check ($null -eq (Eval $p "localStorage.getItem('e2e')")) 'private window does not see the normal localStorage'
   [void](Eval $p "document.cookie='e2e=prive; max-age=3600; path=/'; localStorage.setItem('e2e','prive'); 1")
   Check (-not ((Eval $n 'document.cookie') -like '*e2e=prive*')) 'normal window does not see the private cookie'
+  # Review P1 (runtime): a login form submitted in the private window must not reach any engine password or form store.
+  [IO.File]::WriteAllText((Join-Path $fix 'assets\e2e-login.html'), '<title>login</title><form method="get" action="e2e-login.html"><input name="u" autocomplete="username"><input name="p" type="password" autocomplete="current-password"><button>go</button></form>')
+  [void](Cdp-Send $p 'Page.navigate' @{ url = ($origin + 'e2e-login.html') }); Start-Sleep 2
+  [void](Eval $p "document.querySelector('[name=u]').value='e2e-fictif-prive-user';document.querySelector('[name=p]').value='e2e-fictif-mdp-0000';document.querySelector('form').submit();1"); Start-Sleep 3
   $p.Dispose()
   $privatePid = Fixture-Pids | Where-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$_").CommandLine -like '*--private*' }
   foreach ($pp in $privatePid) { $h = (Get-Process -Id $pp).MainWindowHandle; Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessageW(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);' -ErrorAction SilentlyContinue; [void][W.U]::PostMessageW($h, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
@@ -79,9 +83,13 @@ try {
   Check (-not ((Eval $p2 'document.cookie') -like '*e2e=prive*') -and $null -eq (Eval $p2 "localStorage.getItem('e2e')")) 'a new private window starts empty (the previous private data is gone)'
   Check ((Eval $n 'document.cookie') -like '*e2e=normal*') 'the normal window kept its own cookie throughout'
   $p2.Dispose(); $n.Dispose()
+  Stop-Fixture; Start-Sleep 2
+  $hits = @(Get-ChildItem (Join-Path $fix 'profile') -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Login Data*' -or $_.Name -like 'Web Data*' } | Where-Object { $b = [IO.File]::ReadAllBytes($_.FullName); [Text.Encoding]::ASCII.GetString($b).Contains('e2e-fictif-prive-user') -or [Text.Encoding]::Unicode.GetString($b).Contains('e2e-fictif-prive-user') })
+  Check ($hits.Count -eq 0) ("P1 runtime: a login submitted in a private window is in no engine Login Data / Web Data file" + $(if ($hits.Count) { ': ' + ($hits.FullName -join ', ') } else { '' }))
 } finally {
   Stop-Fixture
   if ($server -and !$server.HasExited) { Stop-Process -Id $server.Id -Force }
+  Remove-Item (Join-Path $fix 'assets\e2e-login.html') -ErrorAction SilentlyContinue
   Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -ErrorAction SilentlyContinue; Remove-Item Env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER -ErrorAction SilentlyContinue
 }
 if ($script:fails) { "FAIL private isolation e2e: $script:fails"; exit 1 } else { 'PASS private isolation e2e (web, real WebView2 Fixed Version runtime): cookies and localStorage isolated, private data gone after close' }

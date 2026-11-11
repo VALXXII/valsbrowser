@@ -2238,8 +2238,22 @@ void RequestFavicon(const std::shared_ptr<Tab>& tab){
 // Every top-level/frame navigation (redirects included) and every network request elsewhere is refused
 // BEFORE it is sent; only the initial local documents (about:, data:) are allowed. A guard that cannot be
 // installed halts the host (fail closed).
+// Fail closed (coordinator msg_9e6cd0db778d): the host stops at once (every controller closed, process
+// exits with code 41) rather than ever announcing a refusal it could not enforce. The fixture origin is
+// reachable only after ClearServerCertificateErrorActions COMPLETED successfully.
+bool e2eCleared=false;
+bool E2EInjected(const wchar_t* name){wchar_t v[8]{};return GetEnvironmentVariableW(name,v,8)&&v[0]==L'1';} // test host only: failure injection
+[[noreturn]] void E2EHostAbort(const std::wstring& why){
+    Log(L"E2E BOUND ABORT "+why);
+    // Terminate at once from inside the engine callback: the callback never returns, so the paused
+    // request is never released to the network; the engine closes the orphaned webview. (Closing the
+    // controller re-entrantly from the callback is not safe.)
+    TerminateProcess(GetCurrentProcess(),41);
+    for(;;)Sleep(INFINITE);
+}
 bool E2EAllowedUri(const std::wstring& u){
     if(u.rfind(L"about:",0)==0||u.rfind(L"data:",0)==0)return true;
+    if(!e2eCleared)return false;   // nothing reaches the fixture before the cache clear completed
     wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
     const auto m=E2EFixturePin::Load(path);if(!m.loaded)return false;
     const std::wstring o=L"https://"+m.host+L":"+std::to_wstring(m.port);
@@ -2371,12 +2385,20 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
             guarded=guarded&&SUCCEEDED(t->view->AddWebResourceRequestedFilter(L"*",COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL));
             auto res=Callback<ICoreWebView2WebResourceRequestedEventHandler,ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs*>([](ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs* a)->HRESULT{
                 Com<ICoreWebView2WebResourceRequest> rq;LPWSTR u=nullptr;std::wstring s;if(SUCCEEDED(a->get_Request(&rq.p))&&rq.p&&SUCCEEDED(rq->get_Uri(&u))&&u){s=u;CoTaskMemFree(u);}
-                if(!E2EAllowedUri(s)){Com<ICoreWebView2WebResourceResponse> r;if(SUCCEEDED(environment->CreateWebResourceResponse(nullptr,403,L"E2E bound",L"",&r.p))&&r.p)a->put_Response(r.p);Log(L"E2E BOUND refused request "+s);}
+                if(!E2EAllowedUri(s)){
+                    Com<ICoreWebView2WebResourceResponse> r;HRESULT hr=E2EInjected(L"BROWSER_E2E_INJECT_RESPONSE_FAILURE")?E_FAIL:environment->CreateWebResourceResponse(nullptr,403,L"E2E bound",L"",&r.p);
+                    if(SUCCEEDED(hr)&&r.p)hr=a->put_Response(r.p);else if(SUCCEEDED(hr))hr=E_POINTER;
+                    if(FAILED(hr))E2EHostAbort(L"refusal response not installed for "+s);   // never claims a refusal that is not in place
+                    Log(L"E2E BOUND refused request "+s);}
                 return S_OK;});
             guarded=guarded&&SUCCEEDED(t->view->add_WebResourceRequested(res,&tk));res->Release();
             Com<ICoreWebView2_14> v14;guarded=guarded&&SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&v14.p))&&v14.p;
-            if(guarded){auto cleared=Callback<ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{Log(SUCCEEDED(hr)?L"E2E BOUND certificate decisions cleared":L"E2E BOUND clear failed");return S_OK;});guarded=SUCCEEDED(v14->ClearServerCertificateErrorActions(cleared));cleared->Release();}
-            if(!guarded){Fail(L"E2E test host: destination guards unavailable (fail closed)",E_FAIL);return S_OK;}
+            if(guarded){auto cleared=Callback<ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{
+                    if(E2EInjected(L"BROWSER_E2E_INJECT_CLEAR_FAILURE"))hr=E_FAIL;
+                    if(FAILED(hr))E2EHostAbort(L"certificate decisions not cleared");
+                    e2eCleared=true;Log(L"E2E BOUND certificate decisions cleared");return S_OK;});
+                guarded=SUCCEEDED(v14->ClearServerCertificateErrorActions(cleared));cleared->Release();}
+            if(!guarded)E2EHostAbort(L"destination guards unavailable");
         }
 #endif
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;Navigate(t,uri);return S_OK;

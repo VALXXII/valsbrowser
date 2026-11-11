@@ -91,7 +91,9 @@ try {
     return $null
   }
   function Invoke-El($e) { $p = $null; if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$p)) { $p.Invoke(); return $true }; if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$p)) { $p.Select(); return $true }; return $false }
+  function Wait-Cleared { for ($i = 0; $i -lt 60; $i++) { $l = Get-Content (Join-Path $hostDir 'prototype.log') -Raw -ErrorAction SilentlyContinue; if ($l -match 'E2E BOUND certificate decisions cleared') { return $true }; Start-Sleep -Milliseconds 250 }; return $false }
   function Navigate {
+    if (-not (Wait-Cleared)) { throw 'the test host never confirmed the certificate-decision clear' }
     for ($i = 0; $i -lt 60 -and !$t; $i++) { try { $t = (Invoke-RestMethod 'http://127.0.0.1:9391/json') | ForEach-Object { $_ } | Where-Object { $_.type -eq 'page' } | Select-Object -First 1 } catch {}; Start-Sleep -Milliseconds 500 }
     $ws = New-Object System.Net.WebSockets.ClientWebSocket; $ws.ConnectAsync([Uri]$t.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
     $b = [Text.Encoding]::UTF8.GetBytes("{`"id`":1,`"method`":`"Page.navigate`",`"params`":{`"url`":`"https://127.0.0.1:$port/compte`"}}"); $ws.SendAsync([ArraySegment[byte]]::new($b), 'Text', $true, [Threading.CancellationToken]::None).Wait(); $ws.Dispose()
@@ -127,6 +129,20 @@ try {
   Check ($logB -match "E2E BOUND refused navigation https://127\.0\.0\.1:$port2/second" -and $logB -match "E2E BOUND refused (navigation|request) https://127\.0\.0\.1:$port2/r" -and $logB -match "E2E BOUND refused request https://127\.0\.0\.1:$port2/img\.png") 'the test host refused each second-port destination before sending'
   Check ($logB -match 'E2E BOUND certificate decisions cleared') 'certificate decisions cleared at the host''s start (ClearServerCertificateErrorActions)'
   if ($server2 -and !$server2.HasExited) { Stop-Process -Id $server2.Id -Force }
+  # 4c Fail-closed branches of the host guards (failure injection, test host only).
+  $hostExit = { param($envName, $url) Fresh-Profile; Remove-Item "$pki2\observed.txt" -ErrorAction SilentlyContinue
+    $server2b = Start-Process python -ArgumentList 'tests/e2e/mtls_server.py', $pki2, "$port2", '--no-client-auth' -PassThru -WindowStyle Hidden; Start-Sleep 1
+    Set-Item "Env:$envName" '1'; $h = Start-Process -FilePath $exe -WorkingDirectory $hostDir -PassThru; Remove-Item "Env:$envName"
+    if ($url) { try { if (Wait-Cleared) { Nav-To $url } } catch {} }
+    $exited = $h.WaitForExit(20000); $code = if ($exited) { $h.ExitCode } else { -1 }; if (!$exited) { Stop-Process -Id $h.Id -Force }
+    if ($server2b -and !$server2b.HasExited) { Stop-Process -Id $server2b.Id -Force }
+    return @($code, (Test-Path "$pki2\observed.txt"), (Get-Content (Join-Path $hostDir 'prototype.log') -Raw -ErrorAction SilentlyContinue)) }
+  $r1 = & $hostExit 'BROWSER_E2E_INJECT_CLEAR_FAILURE' $null
+  "     clear-failure run: exit=$($r1[0]) log=$((($r1[2] -split "`n") | Where-Object { $_ -match 'E2E|WEBVIEW2|START' }) -join ' | ')"
+  Check ($r1[0] -eq 41 -and $r1[2] -match 'E2E BOUND ABORT certificate decisions not cleared' -and $r1[2] -notmatch 'E2E BOUND certificate decisions cleared') 'clear failure: the host aborts before any fixture navigation (exit 41)'
+  $r2 = & $hostExit 'BROWSER_E2E_INJECT_RESPONSE_FAILURE' "data:text/html,<img src='https://127.0.0.1:$port2/i.png'>"
+  "     response-failure run: exit=$($r2[0]) second-port-reached=$($r2[1]) log=$((($r2[2] -split "`n") | Where-Object { $_ -match 'E2E|WEBVIEW2' }) -join ' | ')"
+  Check ($r2[0] -eq 41 -and -not $r2[1] -and $r2[2] -match 'E2E BOUND ABORT refusal response not installed' -and $r2[2] -notmatch "E2E BOUND refused request https://127\.0\.0\.1:$port2") 'refusal response not installable: the host aborts, no refusal is claimed, the second port receives nothing'
   # 5 Cancel path on a fresh profile
   Remove-Item $observed -ErrorAction SilentlyContinue
   Fresh-Profile; Start-Process -FilePath $exe -WorkingDirectory $hostDir; Navigate
