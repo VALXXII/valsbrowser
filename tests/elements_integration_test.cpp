@@ -441,6 +441,10 @@ int main(){
         Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
         std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
         Expect(PrivateCommandLine(L"C:/b/browser.exe")==L"\"C:/b/browser.exe\" --private","private window: same executable, only --private passed");
+        // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.
+        Expect(RelaunchArgs(L"--private",true,L"wabc")==L"--private","recovery relaunch of a private window stays private, claims no session");
+        Expect(RelaunchArgs(L"",false,L"wabc")==L"--restore-window wabc","recovery relaunch of a normal window adopts its own session again");
+        Expect(RelaunchArgs(L"--restore-window wold --debug-sandbox",false,L"wnew")==L" --debug-sandbox --restore-window wnew"||RelaunchArgs(L"--restore-window wold --debug-sandbox",false,L"wnew")==L"--debug-sandbox --restore-window wnew","recovery relaunch replaces an older --restore-window by this window's id");
         Expect(std::wstring(PrivateProfileName)==L"browser-private","private window: dedicated InPrivate profile name, never the live profile");
     }
     Expect(AboutStatusNow().title==L"Mises à jour indisponibles"&&!AboutStatusNow().hasButton,"about: build without the update engine says so, no fake check");
