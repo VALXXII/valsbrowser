@@ -95,7 +95,8 @@ def existing_fixtures() -> None:
 def peer_suites() -> None:
     core = ROOT / 'tests/update-core/run_tests.py'
     toast = ROOT / 'tests/update-toast/run.py'
-    for label, script in (('update-core tests', core), ('update-toast tests', toast)):
+    webview2 = ROOT / 'tests/webview2-runtime/run_tests.py'   # startup recovery (fakes only, read-only loader probe)
+    for label, script in (('update-core tests', core), ('update-toast tests', toast), ('webview2 startup recovery tests', webview2)):
         if not script.exists():
             print(f'FAILED: {label}: runner {script.relative_to(ROOT)} missing')
             sys.exit(3)

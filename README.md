@@ -84,6 +84,10 @@ La barre du haut est dessinée en Direct2D ; `src/accessibility.h` la décrit au
 
 `uiautomationcore.dll` est chargé à l'exécution : aucune dépendance de lien en plus, et le navigateur démarre aussi sur les Windows sans notifications UIA (avant Windows 10 1709). Vérification : `test-accessibility.ps1` (vrai client UI Automation, également dans `run_all.py`) ; à la main, Narrateur (Ctrl+Win+Entrée) puis Tab dans la barre du haut, ou Accessibility Insights for Windows.
 
+## WebView2 absent au démarrage
+
+Le navigateur dépend de Microsoft Edge WebView2 Runtime (Evergreen, mis à jour par Microsoft). Au démarrage, il le détecte (`GetAvailableCoreWebView2BrowserVersionStringWithOptions`, mêmes options que l'environnement) avant de créer l'environnement. S'il manque, un dialogue natif (sans WebView2) l'explique et propose **Installer WebView2** (bootstrapper officiel téléchargé en HTTPS depuis Microsoft, signature Authenticode Microsoft vérifiée, `/silent /install` sans élévation), **Réessayer** et **Quitter** ; la session n'est restaurée qu'une fois l'environnement réellement créé. Une erreur de loader, de profil ou d'options n'ouvre jamais l'installation. Détails, sources et limites : [design/webview2-startup-recovery.md](design/webview2-startup-recovery.md). Tests : `python -I tests/webview2-runtime/run_tests.py` (aussi dans `run_all.py`).
+
 ## Historique des téléchargements
 
 Le bouton Téléchargements ouvre un popover natif « Download history » sous la barre d'outils, d'après la frame Paper : 268 DIP de large, en-tête 24, lignes de 48 (tuile 32 avec l'icône Windows du fichier, nom 16 medium, détail 14). Le flyout WebView2 par défaut est remplacé (`DownloadStarting` marqué `Handled`) et le popover s'ouvre au début de chaque téléchargement.
