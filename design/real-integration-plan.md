@@ -49,12 +49,16 @@ contre une fixture réelle. Aucune ligne U n'est présentée comme un E2E.
 
 ## E2E web : runtime Microsoft Fixed Version (fixture uniquement)
 Le runtime système échoue (`CreateEnvironment` 0x80070002, lot startup séparé, non touché). Pour NOS tests seulement :
-`Microsoft.WebView2.FixedVersionRuntime.157.0.4341.46.x64.cab`, source officielle (lien de developer.microsoft.com/microsoft-edge/webview2 →
-`msedge.sf.dl.delivery.mp.microsoft.com/.../edb19202-9173-4dd1-ab87-c45c2d80aaec/...`), SHA-256 `0AC7317A08C3F3BEEBBB9B6D90F5B77352569F0A33A54A15EF6AAABC82899B7C`,
+`Microsoft.WebView2.FixedVersionRuntime.157.0.4341.46.x64.cab`, URL complète publiée par https://developer.microsoft.com/en-us/microsoft-edge/webview2/ (section Fixed Version) :
+`https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/edb19202-9173-4dd1-ab87-c45c2d80aaec/Microsoft.WebView2.FixedVersionRuntime.157.0.4341.46.x64.cab`
+(310 997 156 octets), SHA-256 `0AC7317A08C3F3BEEBBB9B6D90F5B77352569F0A33A54A15EF6AAABC82899B7C`,
 Authenticode valide « Microsoft Corporation » (CAB et `msedgewebview2.exe`), extrait par `expand -F:*` dans `build/webview2-fixed/` (ignoré),
-ACL documentées Microsoft (`ALL APPLICATION PACKAGES` S-1-15-2-1 et `ALL RESTRICTED APPLICATION PACKAGES` S-1-15-2-2, RX) sur ce seul dossier,
+ACL documentées par Microsoft pour le mode Fixed Version ([Distribute your app and the WebView2 Runtime › Fixed Version](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution#details-about-the-fixed-version-runtime-distribution-mode) :
+`icacls <dossier> /grant *S-1-15-2-2:(OI)(CI)(RX)` et `*S-1-15-2-1:(OI)(CI)(RX)`) sur ce seul dossier (`/T`, aucun parent modifié),
 donné aux processus de test par `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` (environnement du seul script). Rien d'installé, enregistré ni embarqué ;
-ne vaut pas validation de l'installation Evergreen. Résultats : isolation privée **PASS** ; B07 réel **INCONCLUSIF** (le moteur démarre le
+ne vaut pas validation de l'installation Evergreen. Commandes : `curl -L -o build/webview2-fixed/<cab> <URL>` ; `Get-AuthenticodeSignature`
+(Valid, CN=Microsoft Corporation) ; `Get-FileHash -Algorithm SHA256` ; `expand.exe <cab> -F:* build/webview2-fixed/157.0.4341.46`. Nettoyage :
+supprimer `build/webview2-fixed` et `build/e2e-windows` (fixtures), les scripts ne tuent que les `browser.exe` dont l'image est dans la fixture. Résultats : isolation privée **PASS** ; B07 réel **INCONCLUSIF** (le moteur démarre le
 fichier de démonstration SmartScreen officiel sans l'interrompre en 90 s ; aucune API de réputation dans le SDK) ; mTLS **BLOQUÉ** (nécessite
 un certificat client de test dans le magasin de l'utilisateur : modification système non autorisée).
 
