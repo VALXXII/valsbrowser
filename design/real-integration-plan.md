@@ -145,3 +145,14 @@ Adoptée par fusion (48cc300 = 63433bf avec résolution manuelle de `src/main.cp
 - Catégories moteur (cookies, cache, réglages) sans profil moteur (aucun onglet vivant, runtime ancien) : **échec** remonté, jamais « effacé ».
 - Preuves : E2E-store `test-profile-store` (fenêtre B = vrai processus, période, hors période, B ne ressuscite rien, Busy, format inconnu, ligne
   endommagée, coupure, échec d'écriture réel) ; U `elements_integration` (profil absent ⇒ échec).
+
+## Runtime système — chronologie (preuves datées, non réécrites)
+- Jusqu'au 2026-11-12 : le runtime WebView2 Evergreen de la machine échouait (`CreateEnvironment` 0x80070002) ; tous les E2E web de ce lot ont
+  été faits sur le runtime **Fixed Version** de fixture (voir ci-dessus). « Aucun installateur Microsoft exécuté » est vrai pour ce lot jusqu'à
+  cette date.
+- 2026-11-12 : le coordinateur, dans une tâche utilisateur distincte, a rétabli Evergreen par le bootstrapper officiel Microsoft signé (non
+  élevé, `/silent /install`) ; runtime 157.0.4341.46, probe 0x00000000. **Ce n'est pas un E2E du bouton « Installer » de notre dialogue** et ne
+  valide ni redémarrage ni parcours de récupération UI. Les fixtures et l'override Fixed Version restent isolés et reproductibles ; aucune
+  réparation/réinstallation par ce lot ; l'instance Stable et le profil utilisateur ne sont pas touchés.
+- Nettoyage : une fixture `build/smoke-v2/browser.exe --smoke-test` de ce worktree (PID 29160, créée 00:13 par une exécution de `test.ps1`
+  pendant que le runtime système échouait, restée bloquée) a été identifiée par chemin d'image + arguments, puis arrêtée.
