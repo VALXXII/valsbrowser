@@ -23,7 +23,10 @@
 //      per-user lock file, reserved before the download; the setup is created SUSPENDED, recorded,
 //      the cancel request is checked, and only then is it resumed. If the launching browser dies
 //      anywhere in between, the next check resumes the recorded setup (a no-op if it already runs),
-//      so it is never left blocking, never killed and never doubled (see Settle).
+//      so it is never left blocking, never killed and never doubled (see Settle) — unless the user
+//      withdrew the request: a « Quitter » is decided atomically with the launch (LaunchGate: the
+//      never-resumed setup is terminated by its host), recorded as `cancelled=1`, and a withdrawn
+//      request is never resumed.
 //      Command: "<file>" /silent /install — documented; no shell, no inherited handles, no
 //      elevation (an unelevated run installs per-user, distribution doc).
 //   5. The file and directory are removed afterwards; while the installer runs they stay, and the
@@ -392,6 +395,7 @@ struct Marker {
     DWORD host = 0; std::uint64_t hostCreated = 0;   // launching browser process
     DWORD pid = 0; std::uint64_t created = 0;        // setup process (0 until created)
     DWORD tid = 0; bool resumed = false;             // its main thread; resumed once
+    bool cancelled = false;                          // the user withdrew the request before it was resumed
     std::wstring dir;                                // its private folder
 };
 inline std::uint64_t ProcessCreated(HANDLE process) {
@@ -434,11 +438,12 @@ inline bool ReadMarker(const std::wstring& path, Marker& out) {
         v = std::strtoull(s.c_str(), nullptr, 10);
         return true;
     };
-    std::uint64_t host = 0, hostCreated = 0, pid = 0, created = 0, tid = 0, resumed = 0;
+    std::uint64_t host = 0, hostCreated = 0, pid = 0, created = 0, tid = 0, resumed = 0, cancelled = 0;
     if (!number("host", host, false) || !number("hostCreated", hostCreated, false) || !number("pid", pid, true) ||
-        !number("created", created, true) || !number("tid", tid, false) || !number("resumed", resumed, false)) return false;
+        !number("created", created, true) || !number("tid", tid, false) || !number("resumed", resumed, false) ||
+        !number("cancelled", cancelled, false)) return false;
     if (!host && !pid) return false;   // identifies nothing
-    out.host = DWORD(host); out.hostCreated = hostCreated; out.pid = DWORD(pid); out.created = created; out.tid = DWORD(tid); out.resumed = resumed != 0;
+    out.host = DWORD(host); out.hostCreated = hostCreated; out.pid = DWORD(pid); out.created = created; out.tid = DWORD(tid); out.resumed = resumed != 0; out.cancelled = cancelled != 0;
     const std::string dir = field("dir");
     const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir.data(), int(dir.size()), nullptr, 0);
     out.dir.assign(n > 0 ? n : 0, L'\0');
@@ -451,9 +456,9 @@ inline bool WriteMarker(const std::wstring& path, const Marker& m) {
     char dir[1024] = {};
     WideCharToMultiByte(CP_UTF8, 0, m.dir.c_str(), -1, dir, sizeof(dir) - 1, nullptr, nullptr);
     char text[1400];
-    const int len = std::snprintf(text, sizeof(text), "host=%lu\nhostCreated=%llu\npid=%lu\ncreated=%llu\ntid=%lu\nresumed=%d\ndir=%s\n",
+    const int len = std::snprintf(text, sizeof(text), "host=%lu\nhostCreated=%llu\npid=%lu\ncreated=%llu\ntid=%lu\nresumed=%d\ncancelled=%d\ndir=%s\n",
                                   static_cast<unsigned long>(m.host), static_cast<unsigned long long>(m.hostCreated), static_cast<unsigned long>(m.pid),
-                                  static_cast<unsigned long long>(m.created), static_cast<unsigned long>(m.tid), m.resumed ? 1 : 0, dir);
+                                  static_cast<unsigned long long>(m.created), static_cast<unsigned long>(m.tid), m.resumed ? 1 : 0, m.cancelled ? 1 : 0, dir);
     const std::wstring temp = path + L".tmp";
     HANDLE f = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
@@ -465,11 +470,11 @@ inline bool WriteMarker(const std::wstring& path, const Marker& m) {
 }
 class CoordinationLock {
 public:
-    explicit CoordinationLock(const Coordination& c) {
+    explicit CoordinationLock(const Coordination& c, DWORD waitMs = 5000) {
         if (c.lock.empty()) return;
         const size_t slash = c.lock.find_last_of(L'\\');
         if (slash != std::wstring::npos) CreateDirectoryW(c.lock.substr(0, slash).c_str(), nullptr);
-        const ULONGLONG until = GetTickCount64() + 5000;
+        const ULONGLONG until = GetTickCount64() + waitMs;
         for (;;) {
             handle_ = CreateFileW(c.lock.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (handle_ != INVALID_HANDLE_VALUE) return;
@@ -516,9 +521,14 @@ inline bool FindByImage(const std::wstring& image, Marker& m) {
     if (threads == 1) m.tid = tid; else m.resumed = true;
     return true;
 }
-// Result of evaluating the record (lock held). `adopted` ⇒ a dead host's setup was resumed here
-// (previous suspend count in `previousSuspend`: 1 = it had never run, 0 = it was already running).
-struct Settled { DWORD busy = 0; bool adopted = false; DWORD previousSuspend = DWORD(-1); };
+// Result of evaluating the record (lock held). `adopted` ⇒ a dead host's setup was resumed here;
+// `previousSuspend` is what ResumeThread returned (1: the thread was still suspended — with our
+// invariant, created SUSPENDED by its host and resumed only through this protocol, that means it
+// had not been started; 0: it was already running and the call did nothing). A suspend count alone
+// is not a universal proof that no code ran: a program can suspend itself (documented limit).
+// `cancelledResidue` ⇒ a withdrawn (cancelled, never resumed) setup is still present, suspended:
+// it is never resumed, never counted as an active install, and not killed from here.
+struct Settled { DWORD busy = 0; bool adopted = false; DWORD previousSuspend = DWORD(-1); DWORD cancelledResidue = 0; };
 inline Settled Settle(const Coordination& c, const Marker& self) {
     Settled s;
     Marker m;
@@ -530,12 +540,20 @@ inline Settled Settle(const Coordination& c, const Marker& self) {
     if (!selfHost && ProcessAlive(m.host, m.hostCreated)) { s.busy = m.pid ? m.pid : m.host; return s; }
     const std::wstring image = m.dir.empty() ? L"" : m.dir + L"\\" + FileName();
     if (!m.pid && !image.empty() && IsPrivateDirPath(m.dir) && !selfHost) FindByImage(image, m);
+    if (m.cancelled && !m.resumed) {
+        // Withdrawn by the user before it was resumed (the host decided it under its launch gate:
+        // nothing resumes it any more). Never adopted, never an active install.
+        if (MarkerAlive(m)) s.cancelledResidue = m.pid;
+        if (!m.dir.empty()) RemovePrivateDir(m.dir);   // fails harmlessly while a residue still maps the image
+        DeleteFileW(c.marker.c_str());
+        return s;
+    }
     if (MarkerAlive(m)) {
         s.busy = m.pid;
         if (!m.resumed && m.tid && !selfHost && !image.empty() && ImageIs(m.pid, image)) {
             HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION, FALSE, m.tid);
             if (t && GetProcessIdOfThread(t) == m.pid) {
-                s.previousSuspend = ResumeThread(t);   // 0: already running (no-op); 1: it never ran, now it does
+                s.previousSuspend = ResumeThread(t);   // 0: already running (no-op); 1: still suspended since its creation, now it runs
                 if (s.previousSuspend != DWORD(-1)) { s.adopted = true; m.resumed = true; WriteMarker(c.marker, m); }
             }
             if (t) CloseHandle(t);
@@ -574,7 +592,21 @@ inline bool UpdateInstall(const Coordination& c, const Marker& ours) {
     if (!lock.Held()) return false;
     Marker m;
     if (!ReadMarker(c.marker, m) || !SameHost(m, ours)) return false;
-    return WriteMarker(c.marker, ours);
+    Marker merged = ours;
+    merged.resumed = ours.resumed || m.resumed;
+    merged.cancelled = ours.cancelled || m.cancelled;   // a withdrawal is never undone by a later update
+    return WriteMarker(c.marker, merged);
+}
+// The live host records that the user withdrew its request (only if not resumed). False: no
+// record of ours, already resumed, or the lock / write failed (the caller logs it).
+inline bool MarkCancelled(const Coordination& c) {
+    if (c.marker.empty()) return false;
+    CoordinationLock lock(c, 1000);   // at close: bounded; the gate has already decided the outcome
+    if (!lock.Held()) return false;
+    Marker m;
+    if (!ReadMarker(c.marker, m) || !SameHost(m, SelfHost()) || m.resumed) return false;
+    m.cancelled = true;
+    return WriteMarker(c.marker, m);
 }
 // Step 4: only our own record.
 inline void ReleaseInstall(const Coordination& c, const Marker& ours) {
@@ -742,14 +774,38 @@ struct LaunchResult {
 };
 // `created(pid, created, tid)` runs while the new process is still suspended and must record it
 // (Claimed) before it may run; `resumed()` runs right after a successful ResumeThread.
+// In-process gate between the worker that launches and the host that may cancel: process creation
+// and the « last cancel check + ResumeThread » both happen under `mutex`, and so does the host's
+// Cancel(). Either the cancel comes first (nothing is created, or the suspended setup is terminated
+// with the handle CreateProcessW returned), or the resume does (the setup runs and is never killed).
+// No wait, timeout or lock file is involved, so a stalled worker cannot lose a « Quitter ».
+struct LaunchGate {
+    std::mutex mutex;
+    bool cancelled = false, resumed = false, terminated = false;
+    HANDLE process = nullptr;   // the suspended setup, owned by the worker, published while not resumed
+    DWORD pid = 0;
+    // Host side. Returns true when a setup had already been resumed (it keeps running).
+    bool Cancel() {
+        std::lock_guard<std::mutex> lock(mutex);
+        cancelled = true;
+        if (process && !resumed && !terminated) {   // created by us, suspended, never resumed: it ran no code of its own
+            terminated = TerminateProcess(process, ERROR_CANCELLED) != FALSE;
+        }
+        return resumed;
+    }
+};
 struct LaunchHooks {
     std::function<Claim(DWORD pid, std::uint64_t created, DWORD tid, DWORD& busyPid)> created;
     std::function<void()> resumed;
+    std::shared_ptr<LaunchGate> gate;   // null: no host-side cancel (direct calls in tests)
 };
 inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeoutMs, const LaunchHooks& hooks = {}) {
     LaunchResult r;
     auto cancelled = [&] { return cancel && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0; };
-    if (cancelled()) { r.status = LaunchResult::Cancelled; return r; }
+    LaunchGate* gate = hooks.gate.get();
+    std::unique_lock<std::mutex> held;
+    if (gate) held = std::unique_lock<std::mutex>(gate->mutex);
+    if (cancelled() || (gate && gate->cancelled)) { r.status = LaunchResult::Cancelled; return r; }
     std::wstring command = L"\"" + exe + L"\" /silent /install";
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -759,15 +815,26 @@ inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring&
         return r;
     }
     r.pid = pi.dwProcessId;
-    // Never resumed ⇒ none of its code has run: terminating it here cannot interrupt an install.
-    auto abandon = [&](LaunchResult::Status s) { TerminateProcess(pi.hProcess, ERROR_CANCELLED); WaitForSingleObject(pi.hProcess, 5000); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); r.status = s; return r; };
+    if (gate) { gate->process = pi.hProcess; gate->pid = pi.dwProcessId; held.unlock(); }
+    // Created SUSPENDED and not resumed ⇒ it has run no code of its own: terminating it cannot interrupt an install.
+    auto abandon = [&](LaunchResult::Status s) {
+        if (gate) { std::lock_guard<std::mutex> lock(gate->mutex); gate->process = nullptr; }
+        TerminateProcess(pi.hProcess, ERROR_CANCELLED); WaitForSingleObject(pi.hProcess, 5000); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        r.status = s; return r;
+    };
     if (hooks.created) {
         const Claim c = hooks.created(pi.dwProcessId, ProcessCreated(pi.hProcess), pi.dwThreadId, r.busyPid);
         if (c == Claim::Busy) return abandon(LaunchResult::Busy);
         if (c == Claim::Failed) { r.code = ERROR_LOCK_VIOLATION; return abandon(LaunchResult::Failed); }
     }
-    if (cancelled()) return abandon(LaunchResult::Cancelled);   // last check, immediately before it may run
-    if (ResumeThread(pi.hThread) == DWORD(-1)) { r.code = GetLastError(); return abandon(LaunchResult::Failed); }
+    {
+        // Last check and resume, atomic with the host's Cancel().
+        std::unique_lock<std::mutex> gateLock;
+        if (gate) gateLock = std::unique_lock<std::mutex>(gate->mutex);
+        if (cancelled() || (gate && gate->cancelled)) { if (gateLock.owns_lock()) gateLock.unlock(); return abandon(LaunchResult::Cancelled); }
+        if (ResumeThread(pi.hThread) == DWORD(-1)) { r.code = GetLastError(); if (gateLock.owns_lock()) gateLock.unlock(); return abandon(LaunchResult::Failed); }
+        if (gate) { gate->resumed = true; gate->process = nullptr; }
+    }
     CloseHandle(pi.hThread);
     if (hooks.resumed) hooks.resumed();
     HANDLE waits[2] = {pi.hProcess, cancel};
@@ -786,6 +853,7 @@ struct Effects {
     std::function<TrustResult(HANDLE, const std::wstring&)> verify;
     std::function<LaunchResult(const std::wstring&, const std::wstring&, HANDLE, DWORD, const LaunchHooks&)> launch;
     Coordination coordination;   // empty marker ⇒ no launch (fail closed)
+    std::shared_ptr<LaunchGate> gate;   // set by Installer: the host's Cancel() decides atomically with the resume
     std::wstring url;            // "" = BootstrapperUrl()
     std::wstring tempParent;     // "" = user temp folder
     DWORD timeoutMs = InstallTimeoutMs;
@@ -877,11 +945,12 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
     if (cancel.load()) { CloseHandle(locked); report.outcome = O::Cancelled; return report; }
     set(Stage::Launching);
     LaunchHooks hooks;
+    hooks.gate = e.gate;
     hooks.created = [&](DWORD pid, std::uint64_t created, DWORD tid, DWORD& busyPid) {   // step 2, still suspended
         ours.pid = pid; ours.created = created; ours.tid = tid; busyPid = 0;
         return UpdateInstall(e.coordination, ours) ? Claim::Claimed : Claim::Failed;
     };
-    hooks.resumed = [&] { ours.resumed = true; UpdateInstall(e.coordination, ours); };   // step 3
+    hooks.resumed = [&] { ours.resumed = true; UpdateInstall(e.coordination, ours); };   // step 3 (flags on disk are merged, never cleared)
     // Phase shown when it is about to run (the claim and the last cancel check come first).
     progress(WebView2Runtime::Phase::Installing, 0, 0);
     LaunchResult l = e.launch ? e.launch(path, dir.Path(), cancelEvent, e.timeoutMs, hooks) : LaunchResult{};
@@ -914,7 +983,12 @@ inline InstallReport RunInstall(const Effects& e, const std::atomic<bool>& cance
 class Installer {
 public:
     struct Event { bool done = false; WebView2Runtime::Phase phase = WebView2Runtime::Phase::Downloading; std::uint64_t bytes = 0, total = 0; InstallReport report; };
-    struct ShutdownState { Stage stage = Stage::Idle; bool detached = false; std::wstring dir; };
+    struct ShutdownState {
+        Stage stage = Stage::Idle; bool detached = false; std::wstring dir;
+        bool alreadyResumed = false;    // the setup was resumed before the cancel: it keeps running (never killed)
+        bool terminatedSuspended = false;   // a created, never-resumed setup was terminated by the cancel
+        bool withdrawalRecorded = false;    // `cancelled=1` written to our record (no record / resumed: false)
+    };
     Installer() = default;
     Installer(const Installer&) = delete;
     Installer& operator=(const Installer&) = delete;
@@ -928,6 +1002,9 @@ public:
         s->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!s->cancelEvent) return false;
         s->fetch = effects.fetch;
+        s->gate = std::make_shared<LaunchGate>();
+        effects.gate = s->gate;
+        s->coordination = effects.coordination;
         s->notify = std::move(notify);
         state_ = s;
         try {
@@ -969,6 +1046,7 @@ public:
     void Cancel() {
         if (!state_) return;
         state_->cancel = true;
+        if (state_->gate) state_->gate->Cancel();
         SetEvent(state_->cancelEvent);
         if (state_->fetch) state_->fetch->Abort();
     }
@@ -981,11 +1059,19 @@ public:
         { std::lock_guard<std::mutex> lock(s->mutex); s->notify = nullptr; }
         out.stage = Stage(s->stage.load());
         Cancel();
+        // The withdrawal is decided (gate) and, while this host lives, recorded: no later check may
+        // resume this request, whatever the worker does after this process has gone.
+        if (s->gate) {
+            std::lock_guard<std::mutex> lock(s->gate->mutex);
+            out.alreadyResumed = s->gate->resumed;
+            out.terminatedSuspended = s->gate->terminated;
+        }
+        if (!out.alreadyResumed && out.stage != Stage::Idle && out.stage != Stage::Done) out.withdrawalRecorded = MarkCancelled(s->coordination);
         const ULONGLONG until = GetTickCount64() + waitMs;
         while (!s->finished.load() && GetTickCount64() < until) Sleep(10);
         if (thread_.joinable()) { if (s->finished.load()) thread_.join(); else { thread_.detach(); out.detached = true; } }
         { std::lock_guard<std::mutex> lock(s->mutex); out.dir = s->dir; }
-        if (!out.detached) out.stage = Stage(s->stage.load());
+        // out.stage stays the stage at the moment of the close (what the user interrupted).
         state_.reset();
         return out;
     }
@@ -995,6 +1081,8 @@ private:
         std::atomic<int> stage{int(Stage::Idle)};
         HANDLE cancelEvent = nullptr;
         std::shared_ptr<Fetch> fetch;
+        std::shared_ptr<LaunchGate> gate;
+        Coordination coordination;
         std::function<void()> notify;
         std::mutex mutex;
         std::vector<Event> events;

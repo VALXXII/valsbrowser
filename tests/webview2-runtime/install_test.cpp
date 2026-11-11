@@ -376,6 +376,136 @@ static void CrashBarriers(const std::wstring& work, const std::wstring& self, co
     DeleteFileW(ran.c_str());
 }
 
+// ---------------------------------------------------------------- Quitter while the worker stalls (R3-1)
+// The reviewer's case: a child host runs the real Installer + RunInstall; a barrier stalls the
+// worker right after the setup was created and recorded (before its last cancel check), the user
+// quits — Installer::Shutdown(1500) exactly like StopEngineStart — and the process exits while the
+// worker is still stalled. Variants: `resumed` (barrier after ResumeThread, before `resumed=1` is
+// recorded: the installer had started and must keep running), `locked` (as `created`, but the parent
+// holds the per-user lock so the withdrawal cannot be recorded).
+static int QuitHost(const std::wstring& work, const std::wstring& fakeSetup, const std::wstring& point) {
+    Run r(work); r.fetch->body = ReadAll(fakeSetup); r.trust.status = WI::TrustResult::Ok;
+    WI::Effects e = r.Effects();
+    const std::wstring signal = work + L"\\at-barrier.txt";
+    auto barrier = [&] { std::ofstream(std::filesystem::path(signal)) << "x"; Sleep(4000); };
+    e.launch = [&](const std::wstring& exe, const std::wstring& dir, HANDLE cancel, DWORD timeout, const WI::LaunchHooks& hooks) {
+        WI::LaunchHooks h = hooks;
+        h.created = [&](DWORD pid, std::uint64_t created, DWORD tid, DWORD& busy) {
+            const WI::Claim c = hooks.created(pid, created, tid, busy);
+            if (point != L"resumed") barrier();
+            return c;
+        };
+        h.resumed = [&] { if (point == L"resumed") barrier(); hooks.resumed(); };
+        return WI::RunBootstrapper(exe, dir, cancel, timeout, h);
+    };
+    WI::Installer installer;
+    installer.Start(e, [] {});
+    const ULONGLONG until = GetTickCount64() + 15000;
+    while (GetFileAttributesW(signal.c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < until) Sleep(5);
+    Sleep(300);
+    if (point == L"locked") { while (GetFileAttributesW((work + L"\\lock-held.txt").c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < until) Sleep(5); }
+    const auto st = installer.Shutdown(1500);   // « Quitter », as StopEngineStart
+    std::printf("quit-host %ls: stage=%ls detached=%d alreadyResumed=%d terminatedSuspended=%d withdrawalRecorded=%d\n", point.c_str(),
+                WI::StageName(st.stage), st.detached, st.alreadyResumed, st.terminatedSuspended, st.withdrawalRecorded);
+    std::fflush(stdout);
+    const int code = (st.alreadyResumed ? 1 : 0) | (st.terminatedSuspended ? 2 : 0) | (st.withdrawalRecorded ? 4 : 0) | (st.detached ? 8 : 0);
+    ExitProcess(UINT(code));   // end of wWinMain, worker still stalled
+}
+static void QuitBarriers(const std::wstring& work, const std::wstring& self, const std::wstring& fakeSetup) {
+    const auto c = Coord(work);
+    const std::wstring ran = work + L"\\quit-ran.txt", signal = work + L"\\at-barrier.txt", held = work + L"\\lock-held.txt";
+    for (const wchar_t* point : {L"created", L"locked", L"resumed"}) {
+        DeleteFileW(ran.c_str()); DeleteFileW(signal.c_str()); DeleteFileW(held.c_str());
+        SetupEnv(ran, L"0", L"7000");   // long enough to still run when the next check comes
+        STARTUPINFOW si{}; si.cb = sizeof(si); PROCESS_INFORMATION pi{};
+        std::wstring cmd = L"\"" + self + L"\" --quit-host \"" + work + L"\" \"" + fakeSetup + L"\" " + point;
+        CHECK(CreateProcessW(self.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi));
+        HANDLE lockHandle = INVALID_HANDLE_VALUE;
+        if (std::wstring(point) == L"locked") {   // hold the per-user lock while the child quits
+            const ULONGLONG until = GetTickCount64() + 15000;
+            while (GetFileAttributesW(signal.c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < until) Sleep(5);
+            while (lockHandle == INVALID_HANDLE_VALUE && GetTickCount64() < until) { lockHandle = CreateFileW(c.lock.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, 0, nullptr); if (lockHandle == INVALID_HANDLE_VALUE) Sleep(5); }
+            std::ofstream(std::filesystem::path(held)) << "x";
+        }
+        WaitForSingleObject(pi.hProcess, 30000); DWORD code = 0; GetExitCodeProcess(pi.hProcess, &code); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        if (lockHandle != INVALID_HANDLE_VALUE) CloseHandle(lockHandle);
+        Sleep(800);
+        const bool ranBefore = Exists(ran);
+        WI::Settled s1; const DWORD b1 = WI::ActiveInstall(c, &s1);
+        Sleep(2500);
+        const bool ranAfter = Exists(ran);
+        const DWORD live = SetupProcessOf(work);
+        std::printf("[quit %ls] host code=%lu ranBefore=%d check: busy=%lu adopted=%d previousSuspend=%ld residue=%lu ranAfter=%d liveSetup=%lu\n", point, code,
+                    ranBefore, b1, s1.adopted, long(s1.previousSuspend), s1.cancelledResidue, ranAfter, live);
+        if (std::wstring(point) == L"resumed") {
+            // Resumed before the cancel: it had started, keeps running, is tracked (busy) and never killed.
+            CHECK((code & 1) && !(code & 2) && !(code & 4));
+            CHECK(s1.adopted && s1.previousSuspend == 0);   // record lacked resumed=1: ResumeThread was a no-op
+            CHECK(b1 != 0 && ranAfter);
+            Run second(work); second.fetch->body = "MZ"; second.trust.status = WI::TrustResult::Ok;
+            CHECK(second.Go().outcome == WR::InstallReport::Outcome::Busy && second.launches == 0);
+            CHECK(WaitGone(b1, 12000) && WI::ActiveInstall(c) == 0 && Entries(work) == 0);
+        } else {
+            // Quitter before the resume: the gate terminated the never-resumed setup; nothing ever runs it.
+            CHECK(!(code & 1) && (code & 2) && (code & 8));
+            if (std::wstring(point) == L"created") CHECK(code & 4);   // withdrawal recorded
+            else CHECK(!(code & 4));                                  // lock held: not recorded, and still safe
+            CHECK(!s1.adopted && b1 == 0 && !ranBefore && !ranAfter && live == 0 && s1.cancelledResidue == 0);
+            CHECK(!Exists(c.marker) && Entries(work) == 0);
+        }
+    }
+    DeleteFileW(ran.c_str()); DeleteFileW(signal.c_str()); DeleteFileW(held.c_str());
+}
+// A record withdrawn before resume, whose suspended setup survived (termination impossible): never
+// adopted, never an active install; a withdrawn-but-resumed record is impossible by construction
+// and, if seen, is tracked as running (never killed).
+static void CancelledRecords(const std::wstring& work, const std::wstring& fakeSetup) {
+    const auto c = Coord(work);
+    const std::wstring dir = work + L"\\browser-wv2-0000000000000000000000cc", image = dir + L"\\" + WI::FileName(), ran = work + L"\\cancelled-ran.txt";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    CHECK(CopyFileW(fakeSetup.c_str(), image.c_str(), FALSE));
+    SetupEnv(ran, L"0", nullptr);
+    std::wstring cmd = L"\"" + image + L"\""; STARTUPINFOW si{}; si.cb = sizeof(si); PROCESS_INFORMATION pi{};
+    CHECK(CreateProcessW(image.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi));
+    WI::Marker m; m.host = 0xFFFFFFF0; m.hostCreated = 9; m.pid = pi.dwProcessId; m.created = WI::ProcessCreated(pi.hProcess); m.tid = pi.dwThreadId; m.dir = dir; m.cancelled = true;
+    CHECK(WI::WriteMarker(c.marker, m));
+    WI::Settled st; const DWORD busy = WI::ActiveInstall(c, &st);
+    Sleep(600);
+    CHECK(busy == 0 && !st.adopted && st.cancelledResidue == pi.dwProcessId && !Exists(ran) && !Exists(c.marker));
+    TerminateProcess(pi.hProcess, 1); WaitForSingleObject(pi.hProcess, 5000);   // our own fixture process
+    CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    WI::RemovePrivateDir(dir);
+    // cancelled + resumed (cannot be produced by the protocol): tracked as a running install.
+    WI::Marker r2; r2.pid = GetCurrentProcessId(); r2.created = WI::ProcessCreated(GetCurrentProcess()); r2.resumed = true; r2.cancelled = true;
+    CHECK(WI::WriteMarker(c.marker, r2) && WI::ActiveInstall(c) == r2.pid);
+    DeleteFileW(c.marker.c_str());
+    // UpdateInstall never clears a recorded withdrawal.
+    WI::Marker mine = WI::SelfHost(); DWORD b = 0;
+    CHECK(WI::ClaimInstall(c, mine, b) == WI::Claim::Claimed && WI::MarkCancelled(c));
+    mine.resumed = false; CHECK(WI::UpdateInstall(c, mine));
+    WI::Marker back; CHECK(WI::ReadMarker(c.marker, back) && back.cancelled);
+    WI::ReleaseInstall(c, mine);
+    CHECK(!Exists(c.marker));
+    DeleteFileW(ran.c_str());
+}
+// Cancel before creation: a stalled verification, Shutdown, then the worker reaches the launch.
+static void CancelBeforeCreate(const std::wstring& work, const std::wstring& fakeSetup) {
+    const std::wstring ran = work + L"\\early-ran.txt";
+    SetupEnv(ran, L"0", nullptr);
+    Run r(work); r.fetch->body = ReadAll(fakeSetup); r.trust.status = WI::TrustResult::Ok; r.realLaunch = true;
+    WI::Effects e = r.Effects();
+    e.verify = [](HANDLE, const std::wstring&) { Sleep(800); WI::TrustResult t; t.status = WI::TrustResult::Ok; return t; };
+    WI::Installer installer;
+    WR::InstallReport finalReport; std::mutex m;
+    CHECK(installer.Start(e, [] {}, [&](const WR::InstallReport& rep) { std::lock_guard<std::mutex> g(m); finalReport = rep; }));
+    Sleep(300);
+    const auto st = installer.Shutdown(100);
+    CHECK(st.detached && !st.alreadyResumed && !st.terminatedSuspended);
+    Sleep(2000);
+    { std::lock_guard<std::mutex> g(m); CHECK(finalReport.outcome == WR::InstallReport::Outcome::Cancelled && finalReport.pid == 0); }
+    CHECK(r.launches == 0 && !Exists(ran) && SetupProcessOf(work) == 0 && Entries(work) == 0 && !Exists(Coord(work).marker));
+}
+
 // Two real processes: the first « host » starts an install whose (fake) installer keeps running,
 // then quits; this process must not launch a second one until it is gone.
 static int FirstHost(const std::wstring& work, const std::wstring& fakeSetup) {
@@ -552,6 +682,7 @@ int wmain(int argc, wchar_t** argv) {
     auto full = [](const wchar_t* p) { wchar_t b[MAX_PATH]; DWORD n = GetFullPathNameW(p, MAX_PATH, b, nullptr); return n && n < MAX_PATH ? std::wstring(b, n) : std::wstring(p); };
     if (argc == 4 && std::wstring(argv[1]) == L"--first-host") return FirstHost(full(argv[2]), full(argv[3]));
     if (argc == 5 && std::wstring(argv[1]) == L"--crash-host") return CrashHost(full(argv[2]), full(argv[3]), argv[4]);
+    if (argc == 5 && std::wstring(argv[1]) == L"--quit-host") return QuitHost(full(argv[2]), full(argv[3]), argv[4]);
     if (argc < 3) { std::printf("usage: install_test <work dir> <fake_setup.exe> [bootstrapper]\n"); return 2; }
     const std::wstring work = full(argv[1]), fakeSetup = full(argv[2]), bootstrapper = argc > 3 ? full(argv[3]) : L"";
     wchar_t self[MAX_PATH]; GetModuleFileNameW(nullptr, self, MAX_PATH);
@@ -562,6 +693,9 @@ int wmain(int argc, wchar_t** argv) {
     Markers(work);
     SecondHost(work, self, fakeSetup);
     CrashBarriers(work, self, fakeSetup);
+    QuitBarriers(work, self, fakeSetup);
+    CancelledRecords(work, fakeSetup);
+    CancelBeforeCreate(work, fakeSetup);
     Worker(work);
     HttpFailClosed();
     RealTrust(work, fakeSetup, bootstrapper);

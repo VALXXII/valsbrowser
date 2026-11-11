@@ -3952,7 +3952,7 @@ void StartEngine(){
         Log(std::wstring(L"WEBVIEW2 INSTALL WORKER outcome=")+WR::OutcomeName(r.outcome)+L" code="+WR::Hex(static_cast<HRESULT>(r.code))+(r.pid?L" pid="+std::to_wstring(r.pid):L"")+
             (r.installerRunning?L" microsoft-installer-still-running":L"")+(r.residue.empty()?L"":L" residue=%TEMP%\\"+r.residue));});};
     hooks.installRunning=[]{WI::Settled settled;const DWORD pid=WI::ActiveInstall(EngineCoordination(),&settled);
-        // A browser that died while launching left its setup: it was resumed here (1 = it had never run; 0 = it already ran).
+        // A browser that died while launching left its setup: it was resumed here (1 = still suspended since its creation, so not started under our invariant; 0 = it was already running).
         if(settled.adopted)Log(L"WEBVIEW2 INSTALL adopted the setup of a closed browser pid="+std::to_wstring(pid)+L" previous-suspend="+std::to_wstring(settled.previousSuspend));
         return pid;};
     hooks.cancelInstall=[]{engineInstaller.Cancel();};hooks.show=ShowEngineView;hooks.ready=EngineReady;hooks.relaunch=RelaunchBrowser;
@@ -3963,8 +3963,16 @@ void StartEngine(){
 void StopEngineStart(){
     if(engineStart)engineStart->Shutdown();
     const auto state=engineInstaller.Shutdown(1500);
-    if(state.stage!=WI::Stage::Idle&&state.detached)Log(std::wstring(L"WEBVIEW2 INSTALL worker still ")+WI::StageName(state.stage)+L" at close: it cannot launch the installer any more (cancel is checked before resuming it)"+
-        (state.dir.empty()?L"":L"; its folder %TEMP%\\"+state.dir+L" may remain if the process ends first"));
+    if(state.stage==WI::Stage::Idle||(state.stage==WI::Stage::Done&&!state.detached))return; // nothing was in flight
+    // What really happened to the request at close (the gate decides atomically with the resume).
+    std::wstring line=std::wstring(L"WEBVIEW2 INSTALL close during ")+WI::StageName(state.stage)+L": ";
+    if(state.alreadyResumed)line+=L"the Microsoft installer had already started and keeps running (never killed)";
+    else{
+        line+=state.terminatedSuspended?L"the created setup was terminated before it ever ran":L"no installer was started";
+        line+=state.withdrawalRecorded?L"; withdrawal recorded (no later check will resume it)":L"; withdrawal NOT recorded (no record of ours or lock/write failure)";
+    }
+    if(state.detached)line+=L"; worker still busy"+(state.dir.empty()?std::wstring():L", its folder %TEMP%\\"+state.dir+L" may remain if the process ends first");
+    Log(line);
 }
 int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
 #ifdef BROWSER_UPDATES

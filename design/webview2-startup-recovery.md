@@ -1,6 +1,6 @@
 # Récupération WebView2 au démarrage — diagnostic, spec, plan
 
-Statut : implémenté sur `VALXXII/webview2-startup-recovery` (base `origin/main` 599da56), corrigé après la revue indépendante 304775b et le recontrôle 620572a (§7).
+Statut : implémenté sur `VALXXII/webview2-startup-recovery` (base `origin/main` 599da56), corrigé après la revue indépendante 304775b et les recontrôles 620572a et ff3dfe0 (§7).
 
 ## 1. Symptôme
 
@@ -138,15 +138,33 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
      PID recyclé) → périmé, dossier enregistré supprimé ; **hôte mort et setup vivant** → « déjà en
      cours » et, si `resumed` n'est pas enregistré, `ResumeThread` sur son thread principal (après
      vérification que l'image est exactement `<dossier privé>\MicrosoftEdgeWebview2Setup.exe` et que
-     le thread appartient à ce PID). `ResumeThread` renvoie le compteur précédent : **1** = le setup
-     n'avait jamais tourné, il démarre maintenant (l'installation que l'utilisateur avait demandée) ;
-     **0** = il tournait déjà, l'appel ne fait rien. Si l'hôte est mort entre `CreateProcess` et
+     le thread appartient à ce PID). `ResumeThread` renvoie le compteur précédent : **1** = le thread
+     était encore suspendu ; avec notre invariant (création `CREATE_SUSPENDED` par l'hôte, reprise
+     seulement par ce protocole), il n'avait donc pas été démarré, et il démarre maintenant
+     l'installation que l'utilisateur avait demandée ; **0** = il tournait déjà, l'appel ne fait
+     rien. Un compteur de suspension seul ne prouve pas en général qu'aucun code n'a tourné (un
+     programme peut se suspendre lui-même : limite §9) ; c'est l'invariant de création et la
+     propriété vérifiée du processus et du thread qui fondent la conclusion.
+     **Jamais pour une demande retirée** : un enregistrement `cancelled=1` (sans `resumed`) n'est
+     jamais repris ni compté comme installation en cours (voir le point « Annulation » ci-dessous). Si l'hôte est mort entre `CreateProcess` et
      l'enregistrement du PID, le setup est retrouvé par ce chemin d'image exact (un seul thread =
      encore à son début). Donc, quel que soit l'instant de la mort de l'hôte, le setup finit par
      tourner exactement une fois ; personne ne le tue ni n'en lance un second. On ne déduit jamais
      « rien exécuté » de l'absence d'un enregistrement : c'est le compteur de suspension rendu par
-     le système qui le dit. Seul l'hôte termine son propre setup jamais repris (annulation,
-     revendication perdue), avec le handle reçu de `CreateProcessW` ;
+     le système qui le dit, dans le cadre de cet invariant. Seul l'hôte termine son propre setup
+     jamais repris (annulation, revendication perdue), avec le handle reçu de `CreateProcessW` ;
+   - **Annulation (« Quitter ») atomique avec le lancement** : un portillon en mémoire (`LaunchGate`)
+     partagé par le worker et l'hôte, sous un même mutex, couvre la création suspendue (test
+     d'annulation puis `CreateProcessW`, handle publié) et le couple « dernier test d'annulation +
+     `ResumeThread` ». À la fermeture, l'hôte prend ce mutex, positionne l'annulation et, si le setup
+     existe sans avoir été repris, le termine avec ce handle (il n'a exécuté aucun code propre).
+     Il n'y a ni attente ni verrou fichier : un worker bloqué (verrou, machine saturée) au-delà des
+     1,5 s de `Shutdown` ne peut plus faire perdre un Quitter. L'hôte écrit ensuite, s'il le peut
+     (verrou ≤ 1 s), `cancelled=1` dans **son** enregistrement ; `UpdateInstall` fusionne les drapeaux
+     et n'efface jamais un retrait. Si l'écriture échoue, c'est journalisé (« withdrawal NOT
+     recorded ») ; le setup a déjà été terminé par le portillon, l'enregistrement désigne donc un
+     processus mort, périmé au contrôle suivant. Si le setup avait été repris avant le Quitter, il
+     continue, reste suivi (« déjà en cours ») et n'est jamais tué ; aucun `cancelled` n'est écrit ;
    - attente bornée à 10 min ; fermeture pendant l'exécution → issue *Detached* (« le programme
      Microsoft continue en arrière-plan »), distincte de *Cancelled* (« annulée avant que le
      programme Microsoft ne s'exécute : rien n'a été installé ») ;
@@ -170,8 +188,10 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
    fermeture ; le **worker journalise lui-même son issue réelle** (`WEBVIEW2 INSTALL WORKER
    outcome=… pid=… microsoft-installer-still-running residue=…`, `Log` sérialisé) ; si le worker
    est encore en vérification après 1,5 s, l'hôte journalise son étape et le dossier qui peut
-   rester. Le worker ne peut plus lancer l'installateur après la fermeture (annulation vérifiée
-   avant la reprise du processus suspendu).
+   rester. Le worker ne peut plus lancer l'installateur après la fermeture : la décision est prise
+   sous le portillon au moment du Quitter (`WEBVIEW2 INSTALL close during … : the created setup was
+   terminated before it ever ran | the Microsoft installer had already started and keeps running`,
+   puis `withdrawal recorded | NOT recorded`).
 7. **Logs** : étapes, HRESULT, version, cause, source d'override (nom, pas de valeur complète),
    code de sortie, PID, sujet du signataire, nom du dossier temporaire (`%TEMP%\browser-wv2-…`).
    Jamais d'URL de navigation, de cookie, de contenu de profil ni d'environnement complet.
@@ -226,13 +246,14 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
 | P3-8 doc RtlGenRandom / `Loader` | **Corrigé** (§4, §5) | — |
 | P3-9 UX | **Corrigé** : après « installé mais introuvable », plus de bouton Installer, corps honnête, « Ouvrir la page Microsoft » en principal ; pendant l'installation « Il continue même si vous quittez » ; texte privé = contrat d'intégration (§6) | Captures 2, 3, 6 |
 | **R2-1** (recontrôle 620572a) hôte mort entre revendication et reprise | **Corrigé** sans l'état `pending → running` proposé (il déplaçait la course : mort après `ResumeThread` et avant `running`). Réservation dès le téléchargement ; un hôte mort laisse un enregistrement qui nomme exactement le setup ; la vérification suivante le reprend (`ResumeThread`, sans effet s'il tourne déjà), attend sa fin, puis nettoie. Jamais de kill, jamais de second setup | Test du relecteur sur `d8e6291` : `REPRODUCED` (bloqué ×3). `install_test` : hôte de fixture tué à 6 barrières (`verify`, `claimed`, `created`, `recorded`, `resumed`, `resumed-rec`) : avant le lancement → rien ne bloque, dossier supprimé ; `created`/`recorded` → adopté, compteur précédent 1, le faux setup tourne et écrit sa sortie ; `resumed` → compteur 0 (no-op) ; `resumed-rec` → non touché ; dans tous les cas second claimant refusé, aucune reprise répétée, setup jamais tué, nettoyage puis nouvelle installation possible |
+| **R3-1** (recontrôle ff3dfe0) Quitter perdu si le worker reste bloqué > 1,5 s, puis reprise du setup annulé | **Corrigé** : portillon en mémoire atomique avec la création et la reprise ; au Quitter, le setup créé non repris est terminé par l'hôte lui-même ; `cancelled=1` persisté par l'hôte vivant ; `Settle` ne reprend jamais une demande retirée et ne la compte pas comme active ; un setup déjà repris continue et reste suivi | `adopt_test.cpp` du relecteur inchangé : B `NOT REPRODUCED` (rien n'est exécuté), A `OK`. `install_test` : vrai `Installer` + barrière de 4 s après création/enregistrement, `Shutdown(1500)` puis sortie : setup terminé, aucun faux setup exécuté, contrôle suivant non occupé ; même chose avec le verrou tenu (retrait non enregistré, toujours sûr) ; barrière après `ResumeThread` : le faux setup continue, suivi, jamais tué, second refusé ; annulation avant création ; enregistrement retiré avec résidu suspendu : ni repris ni actif ; un retrait n'est jamais effacé par une mise à jour |
 | **R2-2** mutex `Local\` par session | **Corrigé** : verrou fichier exclusif dans `%LOCALAPPDATA%` (par utilisateur, toutes sessions) ; verrou tenu ⇒ attente ≤ 5 s puis refus (échec fermé) | `install_test` (verrou tenu : refus après ~5 s, puis revendication). Deux sessions réelles non testées (pas de session RDP créée) |
 | Loader sans export de sonde | Conservé et voulu : `0x80070002` de `CreateEnvironment` est documenté « Could not find Edge installation » ; chemin mort avec le loader livré | `runtime_test` |
 
 ## 8. Résultats (11 nov., tests simulés — distincts du réel)
 
 - `python -I tests/webview2-runtime/run_tests.py --bootstrapper <MicrosoftEdgeWebview2Setup.exe téléchargé, jamais exécuté>` :
-  `runtime_test` 153, `install_test` 136 (135 sans bootstrapper ; dont les 6 barrières de crash d’hôte, vrais processus + faux setup), `host_test` 7 scénarios (recover 16,
+  `runtime_test` 153, `install_test` 165 (164 sans bootstrapper ; dont les 6 barrières de crash d’hôte, vrais processus + faux setup), `host_test` 7 scénarios (recover 16,
   not-detected 16, loader-missing 8, denied 12, close-during-install 12, relaunch 18,
   install-running 14), 0 échec.
 - Confiance réelle : loader du SDK = Microsoft OK (refusé comme installateur : produit inattendu) ;
@@ -256,6 +277,12 @@ qui est le remède documenté ; ce correctif ne prétend pas réparer le PC sans
   meurt entre sa reprise et cet enregistrement, une reprise répétée est un no-op sur un thread qui
   tourne. Seul cas non couvert : un installateur qui suspendrait lui-même son thread principal dans
   cet intervalle (non attendu d'un setup Microsoft).
+- Retrait non enregistré ET setup non terminable (cas non observé : le portillon termine avec le
+  handle de `CreateProcessW`) : l'enregistrement resterait sans `cancelled` et une vérification
+  suivante pourrait reprendre ce setup. Journalisé (« withdrawal NOT recorded ») ; non masqué.
+- Résidu suspendu d'une demande retirée (si sa terminaison échouait) : jamais repris, jamais compté
+  comme installation en cours ; il reste suspendu sans rien exécuter jusqu'à la fin de session, et
+  son dossier ne peut être supprimé tant que l'image est mappée.
 - Verrou par utilisateur : couvre toutes les sessions d'un même utilisateur sur cette machine ;
   vérifié avec des processus d'une même session (pas de deuxième session RDP créée pour le test).
 - **Délégation d'Edge Update (non vérifiée, installateur jamais exécuté)** : le processus suivi est

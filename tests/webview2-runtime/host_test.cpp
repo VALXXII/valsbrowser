@@ -51,9 +51,11 @@ static WI::Effects FakeEffects() {
     ++fake.starts;
     WI::Effects e; e.fetch = std::make_shared<OkFetch>(); e.tempParent = data; e.coordination = FixtureCoordination();
     e.verify = [](HANDLE, const std::wstring&) { WI::TrustResult t; t.status = WI::TrustResult::Ok; t.signer = L"Microsoft Corporation"; return t; };
-    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD, const WI::LaunchHooks&) {
+    e.launch = [](const std::wstring&, const std::wstring&, HANDLE cancel, DWORD, const WI::LaunchHooks& hooks) {
         WI::LaunchResult l;
-        if (fake.waitForCancel) { l.status = WaitForSingleObject(cancel, 10000) == WAIT_OBJECT_0 ? WI::LaunchResult::Detached : WI::LaunchResult::Exited; return l; }
+        if (fake.waitForCancel) {
+            // Simulates a setup already resumed through the gate (as RunBootstrapper does), then waits.
+            if (hooks.gate) { std::lock_guard<std::mutex> g(hooks.gate->mutex); hooks.gate->resumed = true; } l.status = WaitForSingleObject(cancel, 10000) == WAIT_OBJECT_0 ? WI::LaunchResult::Detached : WI::LaunchResult::Exited; return l; }
         Sleep(50);
         if (fake.onLaunch) fake.onLaunch();
         l.status = WI::LaunchResult::Exited; l.code = 0; return l;
@@ -243,10 +245,12 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(got == "relaunched sentinel=0" && SessionBytes() == sessionBefore);
     }
     std::ifstream log{std::filesystem::path(logFile)}; std::string line; int lines = 0;
-    bool workerLogged = false;
+    bool workerLogged = false, closeLogged = false;
     while (std::getline(log, line)) { if (line.find("WEBVIEW2") != std::string::npos) { std::printf("  log: %s\n", line.c_str()); ++lines; } CHECK(line.find("example.") == std::string::npos);
-        workerLogged |= line.find("WEBVIEW2 INSTALL WORKER outcome=detached") != std::string::npos && line.find("microsoft-installer-still-running") != std::string::npos; }
-    if (scenario == L"close-during-install") CHECK(workerLogged);
+        workerLogged |= line.find("WEBVIEW2 INSTALL WORKER outcome=detached") != std::string::npos && line.find("microsoft-installer-still-running") != std::string::npos;
+        closeLogged |= line.find("had already started and keeps running") != std::string::npos;
+        CHECK(line.find("close during done") == std::string::npos); }
+    if (scenario == L"close-during-install") CHECK(workerLogged && closeLogged);
     CHECK(lines > 0);
     if (WindowAlive()) DestroyWindow(window);
     std::printf("host_test %ls: %d checks, %d failures\n", scenario.c_str(), checks, failures);
