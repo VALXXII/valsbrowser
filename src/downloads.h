@@ -9,6 +9,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <istream>
+#include <map>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -218,6 +219,36 @@ inline void WriteHistory(std::ostream& out, const std::vector<Item>& items) {
         out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason) << '\n';
         ++written;
     }
+}
+// Interprocess three-way merge of the finished-downloads list (decision 2). A row is the same row
+// with the same file, start time and source. Rows this window removed are removed from the file,
+// rows another window removed are never brought back, rows finished or changed here replace or
+// join the file's. In-progress rows (not persisted) of this window stay as they are; rows coming
+// from the file get fresh ids. Result: this window's live rows, then the finished ones, newest first.
+inline std::string HistoryKey(const Item& i) { return ToUtf8(i.path) + "\t" + std::to_string(i.started) + "\t" + ToUtf8(i.uri); }
+inline bool SameRow(const Item& a, const Item& b) {
+    return a.state == b.state && a.reason == b.reason && (a.total > 0 ? a.total : a.received) == (b.total > 0 ? b.total : b.received);
+}
+inline std::vector<Item> MergeHistory(const std::vector<Item>& base, const std::vector<Item>& mine, const std::vector<Item>& theirs, int& nextId) {
+    std::map<std::string, const Item*> b, m;
+    for (const auto& i : base) if (Persistent(i)) b[HistoryKey(i)] = &i;
+    for (const auto& i : mine) if (Persistent(i)) m[HistoryKey(i)] = &i;
+    std::vector<Item> live, done;
+    for (const auto& i : mine) if (!Persistent(i)) live.push_back(i);
+    std::map<std::string, bool> taken;
+    for (const auto& t : theirs) {
+        const std::string k = HistoryKey(t);
+        if (b.count(k) && !m.count(k)) continue;                       // removed here
+        const auto mi = m.find(k);
+        if (mi != m.end() && (!b.count(k) || !SameRow(*b[k], *mi->second))) { done.push_back(*mi->second); taken[k] = true; continue; }   // changed here
+        if (mi != m.end()) { Item keep = t; keep.id = mi->second->id; keep.missing = mi->second->missing; done.push_back(keep); taken[k] = true; continue; }
+        Item other = t; other.id = nextId++; done.push_back(other);     // another window's row
+    }
+    for (const auto& [k, i] : m) if (!taken.count(k) && !b.count(k)) done.push_back(*i);   // new here
+    std::stable_sort(done.begin(), done.end(), [](const Item& x, const Item& y) { return x.started > y.started; });
+    if (done.size() > HistoryLimit) done.resize(HistoryLimit);
+    live.insert(live.end(), done.begin(), done.end());
+    return live;
 }
 // Unknown versions or malformed lines are skipped, never fatal. Version 1
 // (no start time) still loads; its rows land in the oldest group.

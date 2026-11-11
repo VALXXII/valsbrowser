@@ -1273,11 +1273,20 @@ struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaus
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
 bool downloadDismissClick=false;
 DL::Item* FindDownload(int id){for(auto& item:downloads)if(item.id==id)return &item;return nullptr;}
+// Interprocess transaction (src/profile-store.h + DL::MergeHistory): another window's finished
+// downloads and removals are kept; this window's live rows are untouched.
+std::vector<DL::Item> downloadsBase;
 void SaveDownloads(){
     if(smoke||privateWindow)return;
-    const auto path=std::filesystem::path(downloadsFile),temp=std::filesystem::path(downloadsFile+L".tmp");
-    {std::ofstream out(temp,std::ios::binary|std::ios::trunc);DL::WriteHistory(out,downloads);out.close();if(!out){Log(L"DOWNLOADS save failed");return;}}
-    if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"DOWNLOADS replace failed");
+    ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"DOWNLOADS profile busy");return;}
+    std::string bytes;if(!ProfileStore::ReadAll(downloadsFile,bytes)){Log(L"DOWNLOADS save failed (read)");return;}
+    int ignored=0;std::istringstream in(bytes);const auto theirs=DL::ReadHistory(in,ignored);
+    auto merged=DL::MergeHistory(downloadsBase,downloads,theirs,nextDownloadId);
+    std::ostringstream out;DL::WriteHistory(out,merged);
+    if(out.str()!=bytes&&!ProfileStore::WriteAtomic(downloadsFile,out.str())){Log(L"DOWNLOADS save failed");return;}
+    const bool others=merged.size()!=downloads.size();
+    downloads=std::move(merged);downloadsBase.clear();for(const auto& d:downloads)if(DL::Persistent(d))downloadsBase.push_back(d);
+    if(others)Log(L"DOWNLOADS merged with another window's list");
 }
 // History written before start times existed: date each row from its file's
 // creation time (when the download began writing it), else from the history
@@ -1286,7 +1295,7 @@ std::int64_t FileTimeUnixMs(const FILETIME& t){return NativeChrome::DownloadsUI:
 void LoadDownloads(){
     if(smoke)return;
     const auto path=std::filesystem::path(downloadsFile);
-    {std::ifstream in(path,std::ios::binary);downloads=DL::ReadHistory(in,nextDownloadId);}
+    {std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(downloadsFile,bytes);}std::istringstream in(bytes);downloads=DL::ReadHistory(in,nextDownloadId);downloadsBase=downloads;}
     WIN32_FILE_ATTRIBUTE_DATA history{};const bool known=GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&history)!=0;
     bool migrated=false;
     for(auto& item:downloads){

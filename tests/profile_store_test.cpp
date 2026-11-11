@@ -99,6 +99,16 @@ int wmain(int argc, wchar_t** argv) {
         const std::string b = "browser-settings 1\nzoom-percent=100\nad-block=1\n", m = "browser-settings 1\nzoom-percent=125\nad-block=1\n", t = "browser-settings 1\nzoom-percent=100\nad-block=0\n";
         Check(ProfileStore::MergeKeyValues(b, m, t) == "browser-settings 1\nzoom-percent=125\nad-block=0\n", "settings: each window's own change kept, field by field");
     }
+    {   // Downloads list: live rows stay, removals and other windows' rows respected.
+        namespace DL = NativeChrome::Downloads;
+        auto row = [](int id, const wchar_t* path, std::int64_t started) { DL::Item i; i.id = id; i.path = path; i.uri = L"https://d.test/f"; i.state = DL::State::Completed; i.total = 10; i.started = started; return i; };
+        std::vector<DL::Item> base{row(1, L"C:/d/a", 100), row(2, L"C:/d/b", 90)}, mine = base, theirs = base;
+        mine.erase(mine.begin() + 1); DL::Item live = row(9, L"C:/d/live", 300); live.state = DL::State::InProgress; mine.insert(mine.begin(), live);
+        theirs.erase(theirs.begin()); theirs.insert(theirs.begin(), row(5, L"C:/d/c", 200));
+        int next = 50; const auto r = DL::MergeHistory(base, mine, theirs, next);
+        std::vector<std::wstring> paths; for (auto& i : r) paths.push_back(i.path);
+        Check(paths == std::vector<std::wstring>{L"C:/d/live", L"C:/d/c"} && r[1].id == 50, "downloads: this window's live row kept, both removals respected, the other window's row joins with a fresh id");
+    }
     // ---- adversarial: real processes ---------------------------------------------------------
     wchar_t self[MAX_PATH]; GetModuleFileNameW(nullptr, self, MAX_PATH);
     const std::wstring dir = std::filesystem::absolute(L"build/profile-store/profile").wstring();
