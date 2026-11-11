@@ -112,11 +112,15 @@ template <class M>
 Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
                   const std::function<M(std::istream&, bool* damaged)>& read, const std::function<void(std::ostream&, const M&)>& write,
                   const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000,
-                  const std::vector<std::string>& known = {}, bool writeOverDamaged = true) {
+                  const std::vector<std::string>& known = {}, bool writeOverDamaged = true,
+                  const std::function<bool(const M&)>& acceptable = {}) {
     Lock lock(dataDir, timeoutMs);
     if (!lock.Held()) return Result::Busy;
     std::string bytes;
     if (!ReadAll(path, bytes)) return Result::Failed;
+    // Review V2-M1: a file that EXISTS with zero bytes is not « absent »: with a known format it is damage.
+    const bool exists = GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (exists && bytes.empty() && !known.empty() && !writeOverDamaged) return Result::Failed;
     if (!bytes.empty() && !known.empty()) {
         const std::string head = FirstLine(bytes);
         if (std::find(known.begin(), known.end(), head) == known.end()) return Result::UnknownFormat;   // future version or not ours: never overwritten
@@ -127,10 +131,14 @@ Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base
         std::wstring stamp = DamagedStampForTest();
         if (stamp.empty()) { SYSTEMTIME t; GetLocalTime(&t); wchar_t b[32]; swprintf(b, 32, L"%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond); stamp = b; }
         const std::wstring aside = path + L".damaged-" + stamp; std::string check;
-        if (!WriteAtomic(aside, bytes) || !ReadAll(aside, check) || check != bytes) return Result::Failed;   // no exact backup: no write
+        // One backup per distinct damaged content (a retry does not pile up copies, review low).
+        std::string previous; const std::wstring last = path + L".damaged-last";
+        const bool already = ReadAll(last, previous) && previous == bytes;
+        if (!already && (!WriteAtomic(aside, bytes) || !ReadAll(aside, check) || check != bytes || !WriteAtomic(last, bytes))) return Result::Failed;   // no exact backup: no write
         if (!writeOverDamaged) return Result::Failed;   // e.g. the vault: backed up, never rewritten without an explicit recovery
     }
     M merged = damaged ? merge(theirs, mine, theirs) : merge(base, mine, theirs);
+    if (acceptable && !acceptable(merged)) return Result::Failed;   // e.g. over a limit: nothing written, nothing dropped (review V2-M2)
     if (merged == theirs && !damaged) { base = merged; mine = std::move(merged); return Result::Unchanged; }
     std::ostringstream out; write(out, merged);
     if (!WriteAtomic(path, out.str())) return Result::Failed;
@@ -140,8 +148,8 @@ Result CommitWith(const std::wstring& dataDir, const std::wstring& path, M& base
 template <class M>
 Result Commit(const std::wstring& dataDir, const std::wstring& path, M& base, M& mine,
               const std::function<M(const M& base, const M& mine, const M& theirs)>& merge, DWORD timeoutMs = 5000,
-              const std::vector<std::string>& known = {}, bool writeOverDamaged = true) {
-    return CommitWith<M>(dataDir, path, base, mine, [](std::istream& in, bool* d) { return M::Read(in, d); }, [](std::ostream& out, const M& m) { m.Write(out); }, merge, timeoutMs, known, writeOverDamaged);
+              const std::vector<std::string>& known = {}, bool writeOverDamaged = true, const std::function<bool(const M&)>& acceptable = {}) {
+    return CommitWith<M>(dataDir, path, base, mine, [](std::istream& in, bool* d) { return M::Read(in, d); }, [](std::ostream& out, const M& m) { m.Write(out); }, merge, timeoutMs, known, writeOverDamaged, acceptable);
 }
 // Field-by-field merge of "key=value" line files (settings): every key this window changed since
 // its base takes this window's value, every other key keeps the file's current value.

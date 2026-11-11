@@ -61,6 +61,10 @@ try {
   # The pin exists only in the test host: the dev/release build has no trace of it.
   function Has-Marker([string]$f) { $b = [IO.File]::ReadAllBytes($f); $u = [Text.Encoding]::Unicode; return ($u.GetString($b).Contains('E2E FIXTURE PIN') -or $u.GetString($b, 1, $b.Length - 1).Contains('E2E FIXTURE PIN')) }
   Check (-not (Has-Marker (Join-Path $root 'build/real-integration-check/browser.exe')) -and (Has-Marker (Join-Path $root 'build/e2e-mtls-host/browser.exe'))) 'the fixture pin exists only in the test host binary, not in the dev/release browser'
+  # Review P-M1: the test host is (re)built here from the current sources, so the run proves this code.
+  $hostDir = Join-Path $root 'build\e2e-mtls-host'; New-Item -ItemType Directory -Force $hostDir | Out-Null
+  & (Join-Path $root 'tools\w64devkit\bin\g++.exe') -std=c++17 -O1 -w -static -municode -mwindows -DTVG_STATIC '-Ideps/thorvg-1.1.3/inc' -Isrc '-Ideps/webview2/build/native/include' tests/e2e/mtls_host.cpp src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o "$hostDir\browser.exe" -lole32 -luuid -lcomctl32 -lshlwapi -lgdi32 -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -lwinhttp -lbcrypt -lshell32 -luser32 -lkernel32 -ladvapi32 -lcrypt32 -loleaut32
+  if ($LASTEXITCODE -ne 0) { throw 'mTLS test host build failed' }
   # 4 host + server
   $hostDir = Join-Path $root 'build\e2e-mtls-host'
   foreach ($n in 'WebView2Loader.dll') { Copy-Item (Join-Path $root "build\real-integration-check\$n") $hostDir -Force }
@@ -68,8 +72,11 @@ try {
   $exe = Join-Path $hostDir 'browser.exe'
   function Host-Pids { Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.ExecutablePath -ieq $exe } | ForEach-Object ProcessId }
   function Fresh-Profile { foreach ($p in Host-Pids) { Stop-Process -Id $p -Force }
+    # Review P-L2: the profile must really be gone and the fixture engine processes ended, else the stage stops.
     for ($i = 0; $i -lt 40 -and (Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.ExecutablePath -like '*\build\webview2-fixed\*' }); $i++) { Start-Sleep -Milliseconds 250 }   # the fixture runtime's engine processes end with the host
-    Start-Sleep 1; foreach ($d in 'profile', 'sessions') { Remove-Item (Join-Path $hostDir $d) -Recurse -Force -ErrorAction SilentlyContinue }; Remove-Item (Join-Path $hostDir 'prototype.log') -ErrorAction SilentlyContinue }
+    Start-Sleep 1; foreach ($d in 'profile', 'sessions') { Remove-Item (Join-Path $hostDir $d) -Recurse -Force -ErrorAction SilentlyContinue }; Remove-Item (Join-Path $hostDir 'prototype.log') -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $hostDir 'profile')) { throw 'fresh profile: the previous profile could not be removed' }
+    if (Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.ExecutablePath -like '*\build\webview2-fixed\*' }) { throw 'fresh profile: fixture engine processes still running' } }
   $server = Start-Process python -ArgumentList 'tests/e2e/mtls_server.py', $pki, "$port" -PassThru -WindowStyle Hidden
   $env:BROWSER_E2E_PIN_MANIFEST = "$pki\pin.txt"; $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9391'
   if ($Runtime) { $env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER = (Resolve-Path $Runtime).Path }

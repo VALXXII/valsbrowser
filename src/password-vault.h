@@ -142,6 +142,9 @@ public:
         if (!BCRYPT_SUCCESS(BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())), static_cast<ULONG>(bytes.size()), h, 32))) return {};
         static const char* x = "0123456789abcdef"; std::string o; for (unsigned char c : h) { o += x[c >> 4]; o += x[c & 15]; } return o;
     }
+    static bool Digits(const std::string& v) { if (v.empty() || v.size() > 19) return false; for (char c : v) if (c < '0' || c > '9') return false; return true; }
+    static bool Hex(const std::string& v) { if (v.empty() || v.size() > 16) return false; for (char c : v) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false; return true; }
+    static bool StrictBase64(const std::string& v) { if (v.size() % 4) return false; for (std::size_t i = 0; i < v.size(); ++i) { const char c = v[i]; if (!(isalnum(static_cast<unsigned char>(c)) || c == '+' || c == '/' || (c == '=' && i >= v.size() - 2))) return false; } return true; }
     void Write(std::ostream& out) const {
         std::ostringstream body; body << Header << '\n';
         for (const auto& e : entries_) body << std::hex << e.id << std::dec << '\t' << e.created << '\t' << e.updated << '\t' << Base64(Utf8(e.origin)) << '\t' << Base64(Utf8(e.user)) << '\t' << Base64(e.blob) << '\n';
@@ -164,17 +167,21 @@ public:
         if (trailer.empty() || trailer.back() != '\n' || trailer.find('\n') != trailer.size() - 1) return fail();   // trailer must be the very last line
         const std::string t = trailer.substr(4, trailer.size() - 5); const auto tab = t.find('\t');
         if (tab == std::string::npos) return fail();
-        std::uint64_t count = 0; try { std::size_t used = 0; count = std::stoull(t.substr(0, tab), &used); if (used != tab) return fail(); } catch (...) { return fail(); }
-        if (count > Limit || t.substr(tab + 1) != Digest(body)) return fail();
+        if (!Digits(t.substr(0, tab))) return fail();
+        const std::uint64_t count = std::stoull(t.substr(0, tab)); const std::string dg = Digest(body);
+        if (count > Limit || dg.empty() || t.substr(tab + 1) != dg) return fail();   // an empty digest (hash failure) never matches
         std::istringstream lines(body.substr(first + 1)); std::string line; bool bad = false;
         while (std::getline(lines, line)) {
             std::vector<std::string> f; std::size_t start = 0;
             for (std::size_t tb; (tb = line.find('\t', start)) != std::string::npos; start = tb + 1) f.push_back(line.substr(start, tb - start));
             f.push_back(line.substr(start));
             Entry e; std::string o, u;
-            try { if (f.size() != 6) throw 0; e.id = std::stoull(f[0], nullptr, 16); e.created = std::stoll(f[1]); e.updated = std::stoll(f[2]); } catch (...) { bad = true; continue; }
+            // Strict fields (review low): exact hex/decimal, canonical base64, valid UTF-8 for a non-empty user.
+            if (f.size() != 6 || !Hex(f[0]) || !Digits(f[1]) || !Digits(f[2]) || !StrictBase64(f[3]) || !StrictBase64(f[4]) || !StrictBase64(f[5])) { bad = true; continue; }
+            e.id = std::stoull(f[0], nullptr, 16); e.created = std::stoll(f[1]); e.updated = std::stoll(f[2]);
             if (!Unbase64(f[3], o) || !Unbase64(f[4], u) || !Unbase64(f[5], e.blob)) { bad = true; continue; }
             e.origin = Wide(o); e.user = Wide(u);
+            if (!u.empty() && e.user.empty()) { bad = true; continue; }
             if (!e.id || e.origin.empty() || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || s.Find(e.id)) { bad = true; continue; }
             s.entries_.push_back(std::move(e));
         }
@@ -203,14 +210,22 @@ public:
             auto it = std::find_if(out.begin(), out.end(), [&](const Entry& o) { return o.origin == e.origin && o.user == e.user; });
             if (it == out.end()) out.push_back(e); else if (e.updated > it->updated) *it = e;
         }
-        if (out.size() > Limit) out.resize(Limit);
-        r.entries_ = std::move(out);
+        r.entries_ = std::move(out);   // never cut to the limit here (review V2-M2): the commit refuses instead
         return r;
     }
 private:
     std::vector<Entry> entries_;
 };
 
+// The ONLY way the browser writes the vault (review V2-M3): v2 header only, a damaged or unknown
+// file is never rewritten, nothing over the limit is ever written or dropped.
+} // namespace Vault
+#include "profile-store.h"
+namespace Vault {
+inline ProfileStore::Result Commit(const std::wstring& dataDir, const std::wstring& path, Store& base, Store& mine, DWORD timeoutMs = 5000) {
+    return ProfileStore::Commit<Store>(dataDir, path, base, mine, [](const Store& b, const Store& m, const Store& t) { return Store::Merge(b, m, t); }, timeoutMs,
+                                       {Store::Header}, false, [](const Store& s) { return s.Entries().size() <= Store::Limit; });
+}
 // ---- Fill bridge guards -------------------------------------------------------------------------
 // What our native UI captured when the user asked to fill (click on the vault control), and what
 // the engine reports just before injecting. Coordinates sent by a page are only a placement hint.

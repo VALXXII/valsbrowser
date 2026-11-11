@@ -13,7 +13,7 @@ static std::string Der(const std::wstring& path) { std::ifstream in(path.c_str()
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) return 2;
     const std::wstring d = argv[1];
-    const std::string good = Der(d + L"\\good.der"), other = Der(d + L"\\other.der"), dns = Der(d + L"\\dns.der"), two = Der(d + L"\\two.der");
+    const std::string good = Der(d + L"\\good.der"), other = Der(d + L"\\other.der"), dns = Der(d + L"\\dns.der"), two = Der(d + L"\\two.der"), nosan = Der(d + L"\\nosan.der");
     E2EFixturePin::Manifest m; m.host = L"127.0.0.1"; m.port = 18445; m.sha256 = E2EFixturePin::Sha256Hex(good); m.loaded = true;
     const double now = 2000000000, from = now - 3600, to = now + 3600; const int untrusted = COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID;
     using E2EFixturePin::Decide; using V = E2EFixturePin::Verdict;
@@ -31,6 +31,10 @@ int wmain(int argc, wchar_t** argv) {
     Check(Decide(md, L"https://127.0.0.1:18445/", untrusted, dns, from, to, now) == V::Refuse, "SAN DNS:localhost (even pinned): refused");
     E2EFixturePin::Manifest mt = m; mt.sha256 = E2EFixturePin::Sha256Hex(two);
     Check(Decide(mt, L"https://127.0.0.1:18445/", untrusted, two, from, to, now) == V::Refuse, "SAN with an extra entry (even pinned): refused");
+    E2EFixturePin::Manifest mn = m; mn.sha256 = E2EFixturePin::Sha256Hex(nosan);
+    Check(!nosan.empty() && Decide(mn, L"https://127.0.0.1:18445/", untrusted, nosan, from, to, now) == V::Refuse, "no SAN (subject CN=127.0.0.1 only, even pinned): refused");
+    for (const wchar_t* u : {L"HTTPS://127.0.0.1:18445/", L"https://127.0.0.1.:18445/", L"https://[::ffff:127.0.0.1]:18445/", L"https://127.0.0.1:018445/", L"https://127%2e0.0.1:18445/", L"https://127.0.0.1\\@x:18445/", L"https://0x7f.0.0.1:18445/"})
+        Check(Decide(m, u, untrusted, good, from, to, now) == V::Refuse, "URI edge form refused (case, trailing dot, IPv6-mapped, leading zero, percent, backslash, hex)");
     E2EFixturePin::Manifest none; Check(Decide(none, L"https://127.0.0.1:18445/", untrusted, good, from, to, now) == V::Refuse, "no harness manifest: refused");
     std::printf(failures ? "FAIL e2e pin: %d\n" : "PASS e2e pin: negative matrix (fingerprint, host, port, scheme, status, validity, SAN, manifest)\n", failures);
     return failures ? 1 : 0;

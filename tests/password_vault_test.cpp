@@ -28,7 +28,8 @@ int main() {
     Check(s.Save(origin, L"camille@exemple.test", secret, 2) == Store::Saved::Unchanged, "save again, same secret: unchanged");
     Check(s.Save(origin, L"camille@exemple.test", L"Nouveau-fictif", 3) == Store::Saved::Updated, "same account, new secret: updated");
     Check(s.Save(L"http://exemple.test", L"x", L"y", 4) == Store::Saved::Refused && s.Save(L"", L"x", L"y", 4) == Store::Saved::Refused, "an http or empty origin is refused (review V3)");
-    { std::istringstream bad("browser-passwords 2\n1\t1\t1\t\tx\tAAAA\n"); bool dmg = false; Check(Store::Read(bad, &dmg).Entries().empty() && dmg, "a stored empty origin is dropped as damage"); }
+    { const std::string body = "browser-passwords 2\n1\t1\t1\t\teA==\tYWFhYQ==\n"; std::istringstream bad(body + "end\t1\t" + Store::Digest(body) + "\n"); bool dmg = false;
+      Check(Store::Read(bad, &dmg).Entries().empty() && dmg, "a stored empty origin is dropped as damage (complete v2 file, isolated)"); }
     std::ostringstream out; s.Write(out);
     Check(out.str().find("Fictif") == std::string::npos && out.str().find("Nouveau") == std::string::npos && out.str().find("camille") == std::string::npos, "the file holds no secret and no plain username");
     std::istringstream in(out.str()); bool damaged = true; Store r = Store::Read(in, &damaged);
@@ -131,6 +132,44 @@ int main() {
         Store base3 = three, mine3 = three; mine3.Remove(three.Entries()[1].id);
         std::ostringstream w; Store::Merge(base3, mine3, three).Write(w); bool d = true; const Store back = read(w.str(), d);
         Check(!d && back.Entries().size() == 2 && !back.Find(three.Entries()[1].id), "v2: a voluntary deletion is written as a valid, complete file and not resurrected");
+    }
+    // ---- Review fixes V2-M1/M2/M3 and isolated checks -------------------------------------------
+    {
+        auto bytesOf = [&](const std::wstring& path) { std::string b; ProfileStore::ReadAll(path, b); return b; };
+        const std::wstring f = dir + L"\\v2fix";
+        // V2-M1: an EXISTING zero-byte vault is damage, never an empty vault that « deletes » this window's accounts.
+        ProfileStore::WriteAtomic(f, "");
+        { Store b1 = s, m1 = s; const Store mBefore = m1; const auto res = Vault::Commit(dir, f, b1, m1);
+          Check(res == ProfileStore::Result::Failed && bytesOf(f).empty() && m1 == mBefore && std::filesystem::exists(f), "V2-M1: a zero-byte existing vault is refused (no account lost)"); }
+        std::filesystem::remove(f, ec);
+        // V2-M3: the browser's only entry point is fail closed by default (v1 refused, damaged never rewritten).
+        ProfileStore::WriteAtomic(f, "browser-passwords 1\n");
+        { Store b1, m1 = s; Check(Vault::Commit(dir, f, b1, m1) == ProfileStore::Result::UnknownFormat && bytesOf(f) == "browser-passwords 1\n", "V2-M3: Vault::Commit refuses v1 without any option"); }
+        std::ostringstream ok1; s.Write(ok1); const std::string dmg = ok1.str() + "x"; ProfileStore::WriteAtomic(f, dmg);
+        { Store b1 = s, m1 = s; m1.Save(L"https://n.exemple.test", L"n", L"Fictif-n", 50); Check(Vault::Commit(dir, f, b1, m1) == ProfileStore::Result::Failed && bytesOf(f) == dmg, "V2-M3: Vault::Commit never rewrites a damaged vault"); }
+        std::filesystem::remove(f, ec);
+        // V2-M2: over the limit nothing is written and nothing is dropped.
+        Store big; for (std::size_t k = 0; k < Store::Limit; ++k) big.Save(L"https://l" + std::to_wstring(k) + L".exemple.test", L"u", L"F", 1);
+        Check(big.Entries().size() == Store::Limit, "fixture: a vault at the limit");
+        { Store b1, m1 = big; Check(Vault::Commit(dir, f, b1, m1) == ProfileStore::Result::Written, "a vault at the limit is written");
+          Store other = big; Store mine2 = big; Store theirs; { std::istringstream in(bytesOf(f)); theirs = Store::Read(in); }
+          other.Save(L"https://autre-fenetre.exemple.test", L"x", L"F", 2);   // the file grows elsewhere past... (simulated below)
+          Store base2 = theirs, m2 = theirs; m2.Entries();
+          // Simulate: another window added one entry beyond this window's view: merged size = Limit + 1.
+          Store over = theirs; Store extra; extra.Save(L"https://extra.exemple.test", L"e", L"F", 3);
+          std::ostringstream w; { Store tmp = theirs; } (void)w; (void)other; (void)mine2; (void)base2; (void)over;
+          Store m3 = theirs; Store b3 = theirs;   // mine adds one entry to a full vault: Save refuses at the limit
+          Check(m3.Save(L"https://plus.exemple.test", L"p", L"F", 4) == Store::Saved::Refused, "V2-M2: a save past the limit is refused explicitly (nothing silently dropped)");
+          Store merged = Store::Merge(Store{}, extra, theirs); Check(merged.Entries().size() == Store::Limit + 1, "V2-M2: Merge never truncates");
+          Store bb, mm = merged; const std::string before = bytesOf(f);
+          Check(Vault::Commit(dir, f, bb, mm) == ProfileStore::Result::Failed && bytesOf(f) == before && mm.Entries().size() == Store::Limit + 1, "V2-M2: over the limit the commit fails: file untouched, nothing dropped from memory"); }
+        std::filesystem::remove(f, ec);
+        // Isolated: a count over the limit with a CORRECT digest and matching entries is refused by the limit check itself.
+        { std::string body = "browser-passwords 2\n"; std::ostringstream tr; tr << "end\t" << (Store::Limit + 1) << "\t" << Store::Digest(body) << "\n"; bool d = false; std::istringstream in(body + tr.str()); Store::Read(in, &d); Check(d, "v2: the limit check alone rejects a count over the limit"); }
+        // Isolated: a bad entry line inside a COMPLETE v2 file (correct count/digest) is damage.
+        { const std::string body = "browser-passwords 2\nnot\ta\tvalid\tline\tat\tall\n"; std::istringstream in(body + "end\t1\t" + Store::Digest(body) + "\n"); bool d = false; Store::Read(in, &d); Check(d, "v2: a malformed line inside a complete file is damage (isolated)"); }
+        // Strict fields: a leading '+' or a non-canonical base64 is refused.
+        { const std::string body = "browser-passwords 2\n1\t+1\t1\taHR0cHM6Ly9hLmV4ZW1wbGUudGVzdA==\teA==\tYWFhYQ==\n"; std::istringstream in(body + "end\t1\t" + Store::Digest(body) + "\n"); bool d = false; Store::Read(in, &d); Check(d, "v2: lenient numbers (leading +) are refused"); }
     }
     std::printf(failures ? "FAIL password vault: %d\n" : "PASS password vault: DPAPI per origin, file, merge, guards, escaping\n", failures);
     return failures ? 1 : 0;

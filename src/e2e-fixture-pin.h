@@ -5,8 +5,9 @@
 //
 // It lets the fixture's ONE local test server certificate through WebView2's supported API
 // (ICoreWebView2_14 ServerCertificateErrorDetected → ALWAYS_ALLOW) and nothing else: https only,
-// host exactly the numeric 127.0.0.1, the exact fixture port, engine status « authority not trusted »
-// only (never expired, revoked, wrong name, client-cert errors), certificate currently valid, its
+// host exactly the numeric 127.0.0.1, the exact fixture port, engine status CERTIFICATE_IS_INVALID only
+// (WebView2's generic « invalid » status, which covers an untrusted authority among other causes; never
+// expired, revoked, wrong name, client-cert errors; the pin, SAN and validity are the real bound), certificate currently valid, its
 // SAN exactly IP 127.0.0.1, and the SHA-256 of the leaf DER equal to the pin written by the harness
 // in its own manifest. Subject matching alone never counts. The page or the bridge never provide a pin.
 // This pins a fixture PKI; it is not a validation of any production PKI.
