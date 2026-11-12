@@ -435,6 +435,8 @@ int wmain(int argc, wchar_t** argv) {
           dd.Show(ms, Area(), [&](const Modal::Result&) { ++closed; });
           dd.ActivateForTest(Modal::Dialog::ButtonHit(1));
           Check(!dd.ArmedForTest() && closed == 0 && dd.Visible(), "B04 real: a click right after the prompt appears does nothing (armed after 500 ms)");
+          dd.ArmNowForTest(true); dd.FieldKeyMessageForTest(1, VK_RETURN, true);
+          Check(closed == 0 && dd.Visible(), "B04 real: a held Entrée in a field (auto-repeat) never saves (review R4)");
           dd.Abort(); dd.FinishAnimationsForTest(); dd.Dispose(); }
         { // Review N2: « Mettre à jour » (not the default button) still validates: an emptied identifier is refused.
           OriginPrompt::Spec su = r; su.user = L"camille@exemple.test"; su.accounts = {{L"camille@exemple.test", L""}};

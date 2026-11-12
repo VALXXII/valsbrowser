@@ -978,8 +978,12 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     const std::wstring origin=Vault::CanonicalOrigin(source);
     if(origin.empty()||!VaultOfferStillValid(t,origin))return true;   // http, or the tab is already elsewhere: no prompt (D2, N13)
     std::wstring user,secret;if(!JsonField(message,L"user",user)||!JsonField(message,L"password",secret)||secret.empty()){Wipe(secret);return true;}   // N7: content first
+    {static std::map<unsigned,ULONGLONG> last;const ULONGLONG now=GetTickCount64();auto& at=last[t->serial];   // review R1: at most one capture per tab per second
+     if(at&&now-at<1000){Wipe(secret);return true;}at=now;}
     if(vaultCaptureFailed&&VaultStampNow()==vaultCaptureFailedAt){Wipe(secret);return true;}   // N7: still the same unreadable file, already said
-    if(ReadVault(1000)!=VaultLoad::Ok){vaultCaptureFailed=true;vaultCaptureFailedAt=VaultStampNow();Wipe(secret);VaultNotice(L"Mot de passe non enregistré",VaultUnavailableText(VaultLoad::Unavailable));return true;}   // F5/F11
+    {const auto load=ReadVault(1000);
+     if(load!=VaultLoad::Ok){if(load==VaultLoad::Unavailable){vaultCaptureFailed=true;vaultCaptureFailedAt=VaultStampNow();}   // review R2: only a really unreadable file is remembered; busy is retried
+      Wipe(secret);VaultNotice(L"Mot de passe non enregistré",VaultUnavailableText(load));return true;}}   // F5/F11
     vaultCaptureFailed=false;
     // Review N3: a newer capture of the tab replaces the pending one (and its secret).
     if(vaultPromptOpen.count(t->serial)||vaultCapture.count(t->serial)){VaultCaptureDrop(t);vaultPromptOpen.erase(t->serial);}

@@ -1062,7 +1062,8 @@ private:
         switch (msg) {
         case WM_NCDESTROY: RemoveWindowSubclass(h, EditProc, 0x4D44); break;
         case WM_GETDLGCODE: return DefSubclassProc(h, msg, w, l) | DLGC_WANTALLKEYS;
-        case WM_KEYDOWN: if ((w == VK_ESCAPE || w == VK_TAB || w == VK_RETURN) && self->Key(w)) return 0; break;
+        case WM_KEYDOWN: if (w == VK_RETURN && (l & (1 << 30))) return 0;   // review R4: a held Entrée (e.g. from the page's submit) never answers from a field
+            if ((w == VK_ESCAPE || w == VK_TAB || w == VK_RETURN) && self->Key(w)) return 0; break;
         case WM_CHAR: if (w == L'\t' || w == L'\r' || w == 27) return 0; break;
         case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->focus_ = 0; self->RefreshCaret(); InvalidateRect(self->hwnd_, nullptr, FALSE); return r; }
         case WM_KILLFOCUS: InvalidateRect(self->hwnd_, nullptr, FALSE); break;
@@ -1625,6 +1626,7 @@ public:
     float TitleDropForTest() const { return TileTitleDrop(); }
     void KeyForTest(WPARAM key) { Key(key); }
     void KeyMessageForTest(WPARAM key, bool repeat) { SendMessageW(hwnd_, WM_KEYDOWN, key, repeat ? (1 << 30) : 0); }
+    void FieldKeyMessageForTest(size_t i, WPARAM key, bool repeat) { if (i < edits_.size() && edits_[i].edit) SendMessageW(edits_[i].edit, WM_KEYDOWN, key, repeat ? (1 << 30) : 0); }
     void AltKeyForTest(WPARAM key) { AltKey(key); }
     bool ChoosingForTest() const { return choosing_; }
     ContextMenu::Menu* MenuForTest() const { return menu_.get(); }
