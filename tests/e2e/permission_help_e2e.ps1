@@ -1,4 +1,4 @@
-param([string]$Build = 'build/v2', [string]$Fixture = 'build/e2e-permission', [string]$Runtime = '')
+﻿param([string]$Build = 'build/v2', [string]$Fixture = 'build/e2e-permission', [string]$Runtime = '')
 # Real engine E2E of « Plus d'infos » (design/origin-prompt-help.md): a throwaway copy of the build
 # with a fresh profile, a temporary local server (killed at the end) and our own fixture page. It asks
 # for persistent storage (kind 13) and notifications (kind 4) through the real WebView2 runtime, then
