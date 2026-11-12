@@ -359,11 +359,11 @@ public:
     bool TabKeysValid(int count)const{return motion&&(int)tabKeys.size()==count;}
     unsigned TabKey(int n)const{return n>=0&&n<(int)tabKeys.size()?tabKeys[n]:(unsigned)(n+1);}
     bool TakeTabMotionStarted(){const bool started=tabMotionStarted;tabMotionStarted=false;return started;}
-    Design::Box ShownSurface(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll+Design::Space::tabGap*it.presence;return {x,Design::TabStrip::top,x+tabFrame.tab*it.presence,Design::TabStrip::bottom};}
+    Design::Box ShownSurface(const Motion::TabItem& it)const{const float x=Design::TabStrip::Left()+it.slot-tabFrame.scroll+Design::Space::tabGap*it.presence;return {x,Design::TabStrip::top,x+tabFrame.tab*it.presence,Design::TabStrip::bottom};}
     // Content keeps the settled tab width (stable text layouts, no squashing) and is clipped to the surface.
     Design::Box ShownContent(const Motion::TabItem& it)const{auto s=ShownSurface(it);s.right=s.left+strip.tab;return s;}
-    Design::Box ShownRegion(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll;return {x,Design::TabStrip::regionTop,x+it.presence*(tabFrame.tab+Design::Space::tabGap),Design::TabStrip::regionBottom};}
-    float ShownViewRight()const{return Design::TabStrip::left+tabFrame.view;}
+    Design::Box ShownRegion(const Motion::TabItem& it)const{const float x=Design::TabStrip::Left()+it.slot-tabFrame.scroll;return {x,Design::TabStrip::regionTop,x+it.presence*(tabFrame.tab+Design::Space::tabGap),Design::TabStrip::regionBottom};}
+    float ShownViewRight()const{return Design::TabStrip::Left()+tabFrame.view;}
     // Presented surface of live tab n (split separators, menu outline, drag grab), falling back to the layout.
     Design::Box ShownTab(int n)const{for(auto& it:tabFrame.items)if(it.index==n)return ShownSurface(it);return strip.Surface(n);}
     float ShownTabLeft(int n)const{return ShownTab(n).left;}
@@ -386,7 +386,7 @@ public:
     ID2D1BitmapRenderTarget* ghostLayer=nullptr;D2D1_SIZE_F ghostLayerSize{};
     unsigned long long ghostBlurDraws=0,ghostFadeDraws=0; // fixture evidence of the path taken
     void DropGhostLayer(){Drop(ghostLayer);ghostLayerSize={};Drop(blurEffect);Drop(blurContext);blurProbed=false;}
-    D2D1_RECT_F GhostRect(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll+Design::Space::tabGap;return {x,Design::TabStrip::top,x+tabFrame.tab,Design::TabStrip::bottom};}
+    D2D1_RECT_F GhostRect(const Motion::TabItem& it)const{const float x=Design::TabStrip::Left()+it.slot-tabFrame.scroll+Design::Space::tabGap;return {x,Design::TabStrip::top,x+tabFrame.tab,Design::TabStrip::bottom};}
     bool BlurReady(){
         if(!blurProbed){blurProbed=true;
             // CLSID_D2D1GaussianBlur, defined here so no dxguid import library is needed.
@@ -415,7 +415,7 @@ public:
         ID2D1Bitmap* bitmap=nullptr;if(FAILED(ghostLayer->GetBitmap(&bitmap))||!bitmap)return;
         // Cut at the strip's left edge and its available room, not at the shrinking
         // presented view: a closing last tab must blur out whole, not be sliced.
-        const float right=std::max(ShownViewRight(),std::min(rect.right+pad,Design::TabStrip::left+strip.room));
+        const float right=std::max(ShownViewRight(),std::min(rect.right+pad,Design::TabStrip::Left()+strip.room));
         target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,right,Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);
         const D2D1_POINT_2F origin{rect.left-pad,rect.top-pad};
         if(BlurReady()){
@@ -448,7 +448,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();audioMeter.Clear();audioSide=0;DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
+    void Dispose(){ClearTextCache();if(eyeSlash){eyeSlash->Release();eyeSlash=nullptr;}DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();audioMeter.Clear();audioSide=0;DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -756,6 +756,25 @@ public:
         if(m<1&&requestFrom!=requestState)DrawChipState(requestFrom,box,a*(1-m));
         DrawChipState(requestState,box,a*(requestFrom!=requestState?m:1.f));}
     D2D1_COLOR_F DangerColor(float a=1)const{return D2D1::ColorF(Design::Danger::r,Design::Danger::g,Design::Danger::b,a);}
+    // B03 native key control (no icon asset yet: a drawn key; final glyph from the Paper writer). Ghost button.
+    bool vaultKey=false;static constexpr int VaultKeyId=906;   // not a character id: 'W' is Ctrl+W (close tab)
+    void DrawVaultKey(D2D1_RECT_F box,float hover,bool focused){
+        if(hover>0)FillBox(box,Design::Radius::button,D2D1::ColorF(1,1,1,.06f*std::clamp(hover,0.f,1.f)));
+        if(focused)FocusRing(box,Design::Radius::button);
+        const float cx=(box.left+box.right)/2,cy=(box.top+box.bottom)/2;brush->SetColor(D2D1::ColorF(1,1,1,.8f));
+        target->DrawEllipse(D2D1::Ellipse({cx-3.5f,cy},3.5f,3.5f),brush,1.5f);
+        target->DrawLine({cx,cy},{cx+7,cy},brush,1.5f);target->DrawLine({cx+5,cy},{cx+5,cy+3},brush,1.5f);target->DrawLine({cx+7,cy},{cx+7,cy+2.5f},brush,1.5f);
+    }
+    // A9 « Privée » chip: drawn only, never hovered/focused/clicked (region kept for UIA bounds).
+    static constexpr int PrivateChipId=905; bool privateChip=false; ID2D1PathGeometry* eyeSlash=nullptr;
+    Design::Box PrivateChipRect(){return Design::PrivateChip::Rect(TextWidth(Design::PrivateChip::label,14,true));}
+    void DrawPrivateChip(){namespace PC=Design::PrivateChip;const auto c=PrivateChipRect();
+        FillBox({c.left,c.top,c.right,c.bottom},PC::radius,D2D1::ColorF(PC::tintR,PC::tintG,PC::tintB,PC::tintA));
+        const float gx=c.left+PC::padLeft,gy=c.top+(PC::height-PC::glyph)/2;
+        if(!eyeSlash&&factory)eyeSlash=DialogKit::SvgGeometry(factory,PC::eyeSlash);
+        if(eyeSlash){D2D1_MATRIX_3X2_F old;target->GetTransform(&old);target->SetTransform(D2D1::Matrix3x2F::Scale(PC::glyph/256,PC::glyph/256)*D2D1::Matrix3x2F::Translation(gx,gy)*old);brush->SetColor(D2D1::ColorF(1,1,1,1));target->FillGeometry(eyeSlash,brush);target->SetTransform(old);}
+        const float tx=gx+PC::glyph+PC::gap;Text(PC::label,{tx,c.top,c.right,c.bottom},14,1,false,true,0);
+    }
     void FillBox(D2D1_RECT_F r,float radius,D2D1_COLOR_F c){brush->SetColor(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     void DrawAddress(bool editing,bool indicatorHover){
         namespace A=Design::Address;using AddressBar::Security;using AddressBar::Tone;
@@ -804,16 +823,21 @@ public:
         }
     }
     void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();
-        namespace TS=Design::TabStrip;strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;SyncTabMotion(count,now);
+        namespace TS=Design::TabStrip;
+        // Private window: reserve the chip and its 6 DIP row gap before any tab computation (capacity,
+        // scroll, drag, hit tests and focus all go through TS::Left()).
+        TS::leading=privateChip?Design::PrivateChip::Width(TextWidth(Design::PrivateChip::label,14,true))+Design::Space::tabGap:0;
+        strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;SyncTabMotion(count,now);
         brandTip=L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
         auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},brandTip.c_str()});
+        if(privateChip){const auto c=PrivateChipRect();regions.push_back({PrivateChipId,{c.left,c.top,c.right,c.bottom},nullptr});}
         // Tooltips carry the full title: compact tabs truncate or hide it.
-        tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back((title.empty()?L"Onglet":title)+L" - Ctrl+1...8 / Ctrl+9 (dernier) - Ctrl+Maj+PgPréc/PgSuiv pour déplacer - clic milieu pour fermer");}
+        tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back(title.empty()?L"Onglet":title);}
         const float viewRight=ShownViewRight();
         for(auto& item:tabFrame.items){const int i=item.index;if(i<0||i>=count)continue;
             auto surface=ShownSurface(item);if(surface.right-surface.left<.5f||surface.right<=strip.ViewLeft()||surface.left>=viewRight)continue;
             auto close=strip.CloseIn(ShownContent(item));auto region=ShownRegion(item);
-            region.left=std::max(region.left,TS::left);region.right=std::min(region.right,viewRight);
+            region.left=std::max(region.left,TS::Left());region.right=std::min(region.right,viewRight);
             // Close first: its hit area wins over the containing tab, and IDs
             // never collide with tabs, keyboard commands or toolbar buttons.
             // Tabs under a fade stay clickable (selecting scrolls them clear) but
@@ -830,10 +854,13 @@ public:
         request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
         // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
-        regions.push_back({'L',{bar.left,44,bar.right-64,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
+        // B03 (vault, review §5): « Remplir un mot de passe enregistré », left of Copy, only when the host says so.
+        regions.push_back({'L',{bar.left,44,bar.right-(vaultKey?96.f:64.f),76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});
+        if(vaultKey){regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},L"Remplir un mot de passe enregistré"});}
+        regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
         if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},audioTip.c_str()});
-        regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
+        regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Nouvelle fenêtre privée (Ctrl+Maj+N)"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
         BuildBand();
     }
     std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(IsBookmark(region.id)||region.id=='O'){if(region.id!=BandStop())continue;}if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
@@ -918,6 +945,8 @@ public:
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
         DrawTabs(titles,selected,hover,focus,visible,now);
         for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||IsTab(id)||!visible(box))continue;
+            if(id==PrivateChipId){DrawPrivateChip();continue;}
+            if(id==VaultKeyId){DrawVaultKey(box,motion?motion->Visual(id,now).hover:(hover==id?1.f:0.f),focus==VaultKeyId);continue;}
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
             if(id=='V'){DrawAudioButton(box,{interaction.hover,interaction.press,false,focus==id},now);continue;}

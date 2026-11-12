@@ -15,6 +15,14 @@ static std::wstring Msg(const std::wstring& token, const std::wstring& action) {
 int main() {
     // Classify: WebView2 status → Paper variant; offline wins over everything.
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED, true) == Kind::NameNotResolved, "DNS");
+    // A site's own HTTP error page (403 challenge, 404, 429, 503) is kept; transport failures are not.
+    for (int code : {400, 403, 404, 429, 500, 503, 599}) Require(ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, code), "HTTP 4xx/5xx with UNKNOWN keeps the server's page");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 0), "UNKNOWN without any response (refused, cut before headers) stays an error page");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 200), "a cut 200 response stays an error page");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 302) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 600), "only 400-599");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID, 403) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, 503) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, 404), "certificate / reset / timeout are never hidden by a status code");
+    Require(!ErrorPages::KeepsServerPage(true, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 404), "a successful navigation is not this case");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 399) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED, 404), "399 and a cancelled navigation are not kept");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT, true) == Kind::Refused, "refused");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, true) == Kind::TimedOut, "timeout");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, true) == Kind::Reset, "reset");
@@ -103,6 +111,19 @@ int main() {
     Require(!ErrorPages::ParseMessage(token + L":retry", token), "legacy token:action form rejected");
     Require(!ErrorPages::ParseMessage(L"{\"token\":\"" + token + L"\",\"action\":\"" + std::wstring(600, L'a') + L"\"}", token), "length bounded");
     Require(!ErrorPages::ParseMessage(L"", token) && !ErrorPages::ParseMessage(L"null", token) && !ErrorPages::ParseMessage(L"[]", token), "non-objects rejected");
+    {   // TLS refused by the engine (CANCEL, never bypassed): our page, real cause, no « continue ».
+        Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID, true) == Kind::Certificate && ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED, true) == Kind::Certificate, "certificate statuses classify as Certificate");
+        ErrorPages::Extras x; x.certStatus = COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED; x.issuer = L"<script>alert(1)</script> CA";
+        const std::wstring h = ErrorPages::Html(Kind::Certificate, L"https://exemple.test:8443/compte", L"tok", false, x);
+        Require(h.find(L"La connexion sécurisée n") != std::wstring::npos && h.find(L"pas pu être établie") != std::wstring::npos && h.find(L"a expiré") != std::wstring::npos && h.find(L"CERTIFICATE_EXPIRED") != std::wstring::npos && h.find(L"NET::") == std::wstring::npos, "certificate page: title, real cause and code");
+        Require(h.find(L"bloquée : ") != std::wstring::npos && h.find(L"bloquée :") == std::wstring::npos, "certificate page: narrow no-break space before the colon (never a lone « : » at a line start)");
+        Require(h.find(L"<script>alert(1)") == std::wstring::npos && h.find(L"&lt;script&gt;") != std::wstring::npos, "certificate page: issuer escaped");
+        Require(h.find(L"Continuer") == std::wstring::npos && h.find(L"http://") == std::wstring::npos && h.find(L"rien n&#39;a été envoyé") == std::wstring::npos && h.find(L"rien n'a été envoyé") == std::wstring::npos, "certificate page: no continue, no http, no absolute promise");
+        Require(h.find(L"data-action=\"back\"") != std::wstring::npos && h.find(L"data-action=\"retry\"") != std::wstring::npos, "certificate page: Retour and a real Réessayer only");
+        Require(ErrorPages::CertificateMatches(COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID, L"HTTPS://Exemple.test/a#x", L"https://exemple.test/a"), "certificate: the refused request is the navigation's URL");
+        Require(!ErrorPages::CertificateMatches(COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID, L"https://cdn.exemple.test/lib.js", L"https://exemple.test/a"), "certificate: a sub-resource's refusal never replaces the page");
+        Require(!ErrorPages::CertificateMatches(-1, L"https://exemple.test/a", L"https://exemple.test/a"), "certificate: nothing recorded, no page");
+    }
     std::printf("PASS error pages: %d checks (classification, copy, escaping, token, allowlist)\n", checks);
     return 0;
 }

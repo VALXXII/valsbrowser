@@ -7,6 +7,9 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <wincodec.h>
+#include <algorithm>
+#include <vector>
 #include "../src/chrome.h"
 #include "../src/modal.h"
 #include "../src/origin-prompt.h"
@@ -208,6 +211,35 @@ int wmain(int argc, wchar_t** argv) {
         Check(a.title == L"Fermer 12 onglets ?" && a.checkLabel == L"Ne plus demander" && a.buttons[1].role == Modal::Role::Primary, "close window: Paper text");
         auto b = Modal::CloseWindowSpec(3, L"orca-windows-setup.exe", L"50.4/200.0MB");
         Check(b.checkLabel.empty() && b.buttons[1].role == Modal::Role::Danger && b.infos.size() == 1, "close window + download: destructive, no check");
+        // A6 420 (Paper EY9-0, comment c-npdt3g): width, caps after the body, check on the actions row.
+        Check(a.width == 420 && b.width == 420 && Modal::ClearDataSpec().width == 0, "close window: 420 DIP for this confirmation only");
+        Check(a.body == L"Rouvrez-les depuis l'historique ou avec" && a.bodyKeys == std::vector<std::wstring>{L"Ctrl", L"Maj", L"T"} && a.checkInActions, "close window: Ctrl Maj T as key caps");
+        {
+            int calls = 0; Modal::Result got;
+            d.Show(a, Area(), [&](const Modal::Result& r) { ++calls; got = r; });
+            const auto box = d.BoxForTest(D::SimpleCheckHit), cancel = d.BoxForTest(D::ButtonHit(0)), close = d.BoxForTest(D::ButtonHit(1));
+            Check(d.WidthForTest() == 420, "close window: panel 420 DIP");
+            Check(box.top == cancel.top && box.bottom == cancel.bottom && box.bottom - box.top == 32 && box.left == 16 && box.right + 8 <= cancel.left && close.right == 420 - 16, "close window: check left on the buttons' row (EYG-0), buttons right");
+            Check(d.HeightForTest() <= 126 + 0.5f && d.HeightForTest() >= 124 - 0.5f, "close window: 420x126 like EY9-0 (one body line, caps inline)");
+            Check(d.FocusForTest() == D::ButtonHit(0), "close window: focus on Annuler");
+            for (UINT dpi : {96u, 144u, 192u}) Check(d.RenderForTest(root + L"/build/popups/a6-close-420-" + std::to_wstring(dpi) + L".png", dpi), "close window 420 render sample");
+            d.ActivateForTest(D::SimpleCheckHit); d.PaintForTest();
+            Check(d.Snapshot().checked && calls == 0, "close window: the check toggles in place");
+            d.ActivateForTest(D::ButtonHit(1));
+            Check(calls == 1 && got.button == Modal::AcceptButton && got.checked, "close window: « Fermer la fenêtre » with « Ne plus demander »");
+            d.FinishAnimationsForTest();
+            const std::wstring longName = L"un-fichier-au-nom-vraiment-tres-long-pour-verifier-le-retour-a-la-ligne-et-la-coupure-2026-11-10.exe";
+            d.Show(Modal::CloseWindowSpec(3, longName, L"50.4/200.0MB"), Area(), [](const Modal::Result&) {});
+            const auto keep = d.BoxForTest(D::ButtonHit(0)), destroy = d.BoxForTest(D::ButtonHit(1));
+            Check(d.WidthForTest() == 420 && keep.left >= 16 && destroy.right <= 420 - 16 && keep.right <= destroy.left, "close window + long file name: buttons fit, no clipping");
+            Check(d.RenderForTest(root + L"/build/popups/a6-close-420-download-long-144.png", 144), "close window + download render sample");
+            d.PaintForTest(); d.Abort(); d.FinishAnimationsForTest();
+            Modal::Spec one = Modal::CloseWindowSpec(2); one.checkLabel = L"Ne plus demander pour cette fenêtre ni pour les autres fenêtres de ce profil";
+            d.Show(one, Area(), [](const Modal::Result&) {});
+            const auto row = d.BoxForTest(D::SimpleCheckHit), btn = d.BoxForTest(D::ButtonHit(0));
+            Check(row.bottom <= btn.top, "close window: a check too long for the row falls back above the buttons");
+            d.PaintForTest(); d.Abort(); d.FinishAnimationsForTest();
+        }
         auto c = Modal::OpenManyTabsSpec(61, L"Archives 2025", 40, 88);
         Check(c.title == L"Ouvrir 40 des 61 favoris ?" && c.buttons[1].label == L"Ouvrir 40 onglets", "open many tabs: limit wording");
         for (auto& s : {Modal::AlertSpec(L"a", L"b"), Modal::ConfirmSpec(L"a", L"b"), Modal::PromptSpec(L"a", L"b", L"c"), Modal::BeforeUnloadSpec(L"a", false), Modal::ClearDataSpec(), a, b, c, Modal::DeleteBookmarksSpec(2), Modal::OpenManyTabsSpec(34, L"Veille design")}) {
@@ -225,6 +257,25 @@ int wmain(int argc, wchar_t** argv) {
         d.ActivateForTest(D::LinkHit(1));
         Check(calls == 1 && button == Modal::AboutLicensesLink, "about: link closes with its id");
         d.FinishAnimationsForTest();
+    }
+    {   // A8 status row: 48 minimum, grows (padding 6) for a 2-line detail; button and icon stay centred.
+        auto spec = Modal::AboutSpec(L"0.3.132", Modal::AboutUpToDate, L"Dernière vérification réussie");
+        d.Show(spec, Area(), [](const Modal::Result&) {});
+        const float h1 = d.HeightForTest(); const auto b1 = d.BoxForTest(D::StatusHit);
+        auto two = Modal::AboutStatus(Modal::AboutOffline, L"La recherche de mises à jour a échoué. Réessayez.");
+        d.SetStatus(two); d.PaintForTest();
+        const float h2 = d.HeightForTest(); const auto b2 = d.BoxForTest(D::StatusHit);
+        Check(h2 > h1 && std::fabs((h2 - h1) - 20) < .5f, "A8: a 2-line detail grows the row from 48 to 68 (20 + 36 + 2x6)");
+        Check(std::fabs((b2.top - b1.top) - 10) < .5f && b2.bottom - b2.top == 32, "A8: the status button stays centred in the taller row");
+        for (UINT dpi : {96u, 144u, 192u}) Check(d.RenderForTest(root + L"/build/popups/a8-status-2lines-" + std::to_wstring(dpi) + L".png", dpi), "A8 2-line render sample");
+        auto one = Modal::AboutStatus(Modal::AboutReady, L"", L"0.3.133"); d.SetStatus(one);
+        Check(std::fabs(d.HeightForTest() - h1) < .5f, "A8: a one-line detail keeps the 48 row");
+        auto none = Modal::AboutStatus(Modal::AboutChecking); none.title = L"Installation…"; none.hasButton = false; d.SetStatus(none); d.PaintForTest();        Check(std::fabs(d.HeightForTest() - h1) < .5f, "A8: no detail, no button: 48 row");
+        auto lng = Modal::AboutStatus(Modal::AboutChecking); lng.title = L"Téléchargement de la version 0.3.133-beta.2026.11.10+build.4567…"; lng.detail = L"42 %";
+        lng.button = Modal::Make(Modal::AboutCancelButton, L"Annuler", Modal::Role::Quiet, false, false, false, L"AboutCancel"); lng.button.closes = false; d.SetStatus(lng); d.PaintForTest();
+        Check(std::fabs(d.HeightForTest() - h1) < .5f && d.BoxForTest(D::StatusHit).right <= d.WidthForTest() - 16, "A8: long version title stays one line (ellipsis), Annuler inside");
+        Check(d.RenderForTest(root + L"/build/popups/a8-status-long-144.png", 144), "A8 long render sample");
+        d.Abort(); d.FinishAnimationsForTest();
     }
     {   // Long JS message (several KB): the panel fits the area, message scrolls.
         std::wstring longText; for (int i = 0; i < 400; ++i) longText += L"Ligne de texte brut <b>sans</b> balisage & sans échappement. ";
@@ -263,6 +314,69 @@ int wmain(int argc, wchar_t** argv) {
         p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0));
         Check(calls == 3 && got.action == OriginPrompt::Action::Block && got.remember, "permission: notifications choice always remembered (B02)");
         p.Surface().FinishAnimationsForTest();
+    }
+    {   // Permission popovers as drawn in Paper B02 (user edit 2026-11-12): head (glyph, title, subtitle), the
+        // remember check by kind, Bloquer / Autoriser, Fermer. No collapsible help, no extra note.
+        using OriginPrompt::Permission::Notifications; namespace OPP = OriginPrompt::Permission; using D = Modal::Dialog;
+        auto spec = [](std::vector<int> kinds, std::wstring origin = L"x.com") {
+            OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::Permission; s.origin = origin; s.permissions = std::move(kinds); return s; };
+        auto has = [](const std::wstring& text, const wchar_t* part) { return text.find(part) != std::wstring::npos; };
+        // Kind 13 is the SDK's COREWEBVIEW2_PERMISSION_KIND_PERSISTENT_STORAGE (the x.com capture), never « notifications ».
+        Check(OPP::PersistentStorage == 13 && SiteRequest::Kind::PersistentStorage == 13, "permission kinds: 13 = persistent storage (SDK 1.0.4314.35)");
+        auto st = OriginPrompt::Build(spec({OPP::PersistentStorage}), true);
+        Check(st.title == L"x.com veut conserver ses données sur cet appareil" && st.headGlyph == DialogKit::Glyph::storage && SiteRequest::GlyphOf(13) == SiteRequest::Path::storage, "permission kinds: 13 has its own title and storage glyph");
+        Check(st.subtitle == L"Sinon, le navigateur peut les effacer s'il manque d'espace." && !has(st.title, L"notification") && !has(st.subtitle, L"otification"), "permission kinds: 13 never described as notifications");
+        Check(st.checkLabel == L"Mémoriser pour ce site" && st.notices.empty(), "permission kinds: 13 keeps the remember check (policy unchanged)");
+        auto unknown = OriginPrompt::Build(spec({OPP::Unknown}, L"exemple.fr"), true);
+        Check(unknown.title == L"exemple.fr demande une autorisation" && unknown.subtitle == L"Le moteur ne précise pas de quoi il s'agit." && unknown.headGlyph == DialogKit::Glyph::info, "permission kinds: 0 says the engine gave no type");
+        auto future = OriginPrompt::Build(spec({14}), true);
+        Check(future.title == L"x.com demande une autorisation" && future.subtitle == L"Type non reconnu par ce navigateur (code moteur 14).", "permission kinds: a future kind is named by its engine code, not guessed");
+        auto notif = OriginPrompt::Build(spec({Notifications}, L"lemonde.fr"), true);
+        Check(notif.title == L"lemonde.fr veut vous envoyer des notifications" && notif.subtitle == L"Le site pourra afficher des alertes en dehors de la page." && !has(notif.subtitle, L"onglet fermé"), "notifications: Paper title and subtitle, no unproven promise");
+        Check(notif.notices.empty() && notif.checkLabel.empty(), "notifications: no note and no check (Paper B02)");
+        for (int k = 0; k <= 14; ++k) { if (OriginPrompt::Build(spec({k}), true).subtitle.empty()) { Check(false, "permission kinds: every kind has a subtitle"); break; } if (k == 14) Check(true, "permission kinds: every kind has a subtitle"); }
+
+        // What the window exposes: no « Plus d'infos » button, no text block, nothing that scrolls.
+        RECT anchor{200, 150, 224, 174}; int calls = 0; OriginPrompt::Result got; auto& S = p.Surface();
+        auto exposed = [&](std::vector<std::wstring>& names, bool& extra) {
+            names.clear(); extra = false;
+            for (auto& n : S.NodesForTest()) { if (n.key == 1) continue; names.push_back(n.name); if (n.role == Accessibility::Role::Text || n.expand != 0 || has(n.name, L"Plus d'infos") || has(n.automationId, L"More")) extra = true; }
+        };
+        std::vector<std::wstring> names; bool extra = false;
+        p.Show(spec({OPP::PersistentStorage}), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        exposed(names, extra);
+        Check(!extra && names == std::vector<std::wstring>{L"Mémoriser pour ce site", L"Bloquer", L"Autoriser", L"Fermer"}, "storage popover: check, Bloquer, Autoriser, Fermer; no collapsible help");
+        Check(S.FocusForTest() == D::ButtonHit(0), "storage popover: initial focus on Bloquer (unchanged)");
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::ButtonHit(1), "storage popover: Tab → Autoriser");
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::CloseHit, "storage popover: Tab → Fermer");
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::SimpleCheckHit, "storage popover: Tab → Mémoriser (wraps)");
+        { const float before = S.HeightForTest(); SendMessageW(p.Window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), 0); S.KeyForTest(VK_DOWN); Check(S.HeightForTest() == before && calls == 0, "storage popover: wheel / ↓ change nothing, nothing answered"); }
+        for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/perm-storage-" + std::to_wstring(dpi) + L".png", dpi), "storage popover render");
+        S.KeyForTest(VK_ESCAPE); Check(calls == 1 && got.action == OriginPrompt::Action::Dismiss && !got.remember, "storage popover: Échap = Dismiss once, nothing remembered");
+        S.KeyForTest(VK_ESCAPE); S.FinishAnimationsForTest(); Check(calls == 1, "storage popover: no second answer");
+
+        p.Show(spec({Notifications}, L"lemonde.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        exposed(names, extra);
+        Check(!extra && names == std::vector<std::wstring>{L"Bloquer", L"Autoriser", L"Fermer"}, "notifications popover: title + subtitle + buttons only (Paper B02)");
+        {   std::wstring help; for (auto& n : S.NodesForTest()) if (n.key == 1) help = n.help;
+            Check(help == L"Le site pourra afficher des alertes en dehors de la page.", "notifications popover: UIA group help is the subtitle"); }
+        { const auto block = S.BoxForTest(D::ButtonHit(0)); Check(S.HeightForTest() - block.bottom == 16, "notifications popover: buttons end the popover"); }
+        for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/perm-notifications-" + std::to_wstring(dpi) + L".png", dpi), "notifications popover render");
+        S.ActivateForTest(D::ButtonHit(0)); Check(calls == 2 && got.action == OriginPrompt::Action::Block && got.remember, "notifications popover: Bloquer still always remembered");
+        S.FinishAnimationsForTest();
+
+        p.Show(spec({OPP::Camera, OPP::Microphone, OPP::Geolocation}, L"rendez-vous.doctolib.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        exposed(names, extra);
+        Check(!extra && names == std::vector<std::wstring>{L"Mémoriser pour ce site", L"Bloquer", L"Autoriser", L"Fermer"}, "grouped popover: kind rows, check, buttons; no collapsible help");
+        Check(S.RenderForTest(root + L"/build/popups/perm-grouped-144.png", 144), "grouped popover render");
+        p.Abort(); S.FinishAnimationsForTest(); Check(calls == 3 && got.action == OriginPrompt::Action::Dismiss, "grouped popover: Abort answers once");
+
+        p.Show(spec({OPP::PersistentStorage}, L"un-sous-domaine-vraiment-tres-long.exemple-de-domaine-public-pour-tester.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        Check(S.RenderForTest(root + L"/build/popups/perm-storage-long-192.png", 192), "long origin render (title wraps, nothing cut)");
+        p.Abort(); S.FinishAnimationsForTest();
+        p.Show(spec({OPP::Unknown}, L"exemple.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        Check(S.RenderForTest(root + L"/build/popups/perm-unknown-144.png", 144), "unknown kind render");
+        p.Abort(); S.FinishAnimationsForTest(); Check(calls == 5, "every request answered exactly once");
     }
     {   // B06 HTTP auth: Submit returns the credentials once; the EDIT buffer is wiped; refusal.
         OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::BasicAuth; s.origin = L"imprimante-bureau"; s.user = L"admin"; s.insecure = true;
@@ -304,8 +418,75 @@ int wmain(int argc, wchar_t** argv) {
         p.Surface().FinishAnimationsForTest();
         Check(OriginPrompt::Build(s, true).demo, "password fill: Démonstration badge");
     }
-    {   // B04 save: identifier required; « Jamais pour ce site ».
-        OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::PasswordSave; s.origin = L"github.com"; s.user = L"";
+    {   // B04 REAL path (vault inactive until review): the submitted secret pre-filled, no « Jamais » without a real list,
+        // and D1: several accounts and no identifier => explicit choice, « Mettre à jour » disabled until then.
+        OriginPrompt::Spec r; r.kind = OriginPrompt::Kind::PasswordUpdate; r.origin = L"compte.exemple.test"; r.user = L""; r.secret = L"Fictif-nouveau-2026";
+        r.accounts = {{L"camille@exemple.test", L""}, {L"travail@exemple.test", L""}};
+        const auto m = OriginPrompt::Build(r, true);
+        bool never = false; for (auto& b0 : m.buttons) never = never || b0.label == L"Jamais pour ce site";
+        Check(!m.demo && !never && m.accountsSelect && m.accounts.size() == 2 && m.buttons.back().disabled && m.fields.size() == 1 && m.fields[0].value == L"Fictif-nouveau-2026", "B04 real: D1 choice required, secret pre-filled, no inert « Jamais »");
+        Modal::Result pick; pick.button = OriginPrompt::Id::Accept; pick.select = 1; pick.values = {L"Fictif-nouveau-2026"};
+        const auto out = OriginPrompt::Map(r, pick);
+        Check(out.action == OriginPrompt::Action::Save && out.user == L"travail@exemple.test" && out.password == L"Fictif-nouveau-2026", "B04 real: the chosen account and the (possibly edited) password come back for the vault");
+        // Review F3/V5: credential prompts are armed (500 ms, foreground) and an update has no default Entrée.
+        Check(m.armMs == 500 && !m.buttons.back().isDefault, "B04 real update: armed 500 ms, no default Entrée");
+        { OriginPrompt::Spec sv = r; sv.kind = OriginPrompt::Kind::PasswordSave; sv.user = L"camille@exemple.test"; sv.accounts.clear();
+          const auto ms = OriginPrompt::Build(sv, true); Modal::Dialog dd; dd.Create(hi, owner, root, {}); int closed = 0;
+          dd.Show(ms, Area(), [&](const Modal::Result&) { ++closed; });
+          dd.ActivateForTest(Modal::Dialog::ButtonHit(1));
+          Check(!dd.ArmedForTest() && closed == 0 && dd.Visible(), "B04 real: a click right after the prompt appears does nothing (armed after 500 ms)");
+          dd.ArmNowForTest(true); dd.FieldKeyMessageForTest(1, VK_RETURN, true);
+          Check(closed == 0 && dd.Visible(), "B04 real: a held Entrée in a field (auto-repeat) never saves (review R4)");
+          dd.Abort(); dd.FinishAnimationsForTest(); dd.Dispose(); }
+        { // Review N2: « Mettre à jour » (not the default button) still validates: an emptied identifier is refused.
+          OriginPrompt::Spec su = r; su.user = L"camille@exemple.test"; su.accounts = {{L"camille@exemple.test", L""}};
+          const auto mu = OriginPrompt::Build(su, true); Modal::Dialog dd; dd.Create(hi, owner, root, {}); int closed = 0;
+          dd.Show(mu, Area(), [&](const Modal::Result&) { ++closed; }); dd.ArmNowForTest(true);
+          dd.SetFieldForTest(0, L""); dd.ActivateForTest(Modal::Dialog::ButtonHit(1));
+          Check(dd.ArmedForTest() && closed == 0 && dd.Visible(), "B04 real update: an emptied identifier is refused by « Mettre à jour » (no entry without identifier)");
+          dd.Abort(); dd.FinishAnimationsForTest(); dd.Dispose(); }
+        { // Review N1: the B03 rows and « Gérer » answer only once armed; a held Entrée never picks an account.
+          OriginPrompt::Spec f; f.kind = OriginPrompt::Kind::PasswordFill; f.origin = L"compte.exemple.test"; f.accounts = {{L"camille@exemple.test", L"x"}, {L"travail@exemple.test", L"x"}};
+          const auto mf = OriginPrompt::Build(f, true); Modal::Dialog dd; dd.Create(hi, owner, root, {}); int closed = 0;
+          dd.Show(mf, Area(), [&](const Modal::Result&) { ++closed; });
+          dd.ActivateForTest(Modal::Dialog::AccountHit(0)); dd.ActivateForTest(Modal::Dialog::ManageHit);
+          Check(mf.armMs == 500 && closed == 0 && dd.Visible(), "B03 real: choosing a row or « Gérer » right after the popover appears does nothing");
+          dd.ArmNowForTest(true); dd.KeyMessageForTest(VK_RETURN, true);
+          Check(closed == 0 && dd.Visible(), "B03 real: an auto-repeated Entrée (key held from the trigger) never picks an account");
+          dd.ActivateForTest(Modal::Dialog::AccountHit(1));
+          Check(closed == 1, "B03 real: once armed, an explicit choice answers");
+          dd.FinishAnimationsForTest(); dd.Dispose(); }
+        Modal::Result none; none.button = OriginPrompt::Id::Accept; none.select = -1; none.values = {L"x"};
+        Check(OriginPrompt::Map(r, none).action != OriginPrompt::Action::Save, "B04 real: no account chosen => nothing saved (never the last one silently)");
+    }
+    {   // B05 real mode (E8): no decrypted secret, no reveal, real empty state, honest removal failure; back to demo for the sandbox.
+        NativeChrome::PasswordDemo::Window w; Check(w.Create(hi, owner, root), "B05 real: surface created");
+        int removeCalls = 0; std::wstring said; NativeChrome::PasswordDemo::Window w2; NativeChrome::PasswordDemo::Demo::Hooks hk; hk.announce = [&](const std::wstring& t0) { said = t0; };
+        Check(w2.Create(hi, owner, root, hk), "B05 real: surface with announce");
+        w2.SetReal({{L"compte.exemple.test", L"camille@exemple.test", L"NE-DOIT-PAS-APPARAITRE", L"", L"Modifié le 12 novembre 2026", 7}}, [&](std::uint64_t) { ++removeCalls; return false; });
+        Check(w2.Real() && w2.Accounts().size() == 1 && w2.Accounts()[0].password.empty(), "B05 real: accounts carry no secret");
+        Check(w2.Show({0, 0, 900, 700}), "B05 real: shown");
+        Check(!w2.Surface().CurrentSpec().demo && w2.Surface().CurrentSpec().subtitle.find(L"restent proposés par le moteur") != std::wstring::npos, "B05 real: no demo badge, cohabitation note");
+        w2.Surface().ActivateForTest(Modal::Dialog::AccountHit(0));
+        bool reveal = false; std::wstring shown; for (auto& f : w2.Surface().CurrentSpec().fields) if (f.password) { reveal = f.reveal; shown = f.value; }
+        Check(!reveal && shown.find(L"NE-DOIT") == std::wstring::npos, "B05 real: detail never shows or reveals a secret");
+        w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0)); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(removeCalls == 1 && w2.Accounts().size() == 1 && said.find(L"n'a pas pu être supprimé") != std::wstring::npos, "B05 real: a removal the vault did not write is said, the row stays");
+        w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        w2.SetReal({}, nullptr); Check(w2.Show({0, 0, 900, 700}) && w2.Surface().CurrentSpec().accountsTitle == L"Aucun mot de passe enregistré par browser", "B05 real: empty state"); w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        {   // Review F1: removals act on each row's own vault id, whatever the rows' order after earlier removals.
+            std::vector<std::uint64_t> removed; w2.SetReal({{L"a.test", L"A", L"", L"", L"", 11}, {L"b.test", L"B", L"", L"", L"", 22}, {L"c.test", L"C", L"", L"", L"", 33}}, [&](std::uint64_t id) { removed.push_back(id); return true; });
+            w2.Show({0, 0, 900, 700}); w2.Surface().ArmNowForTest();
+            auto removeRow = [&](int row) { w2.Surface().ActivateForTest(Modal::Dialog::AccountHit(row)); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0)); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1)); };
+            removeRow(0); removeRow(1);   // A, then the row now second: C
+            Check(removed == std::vector<std::uint64_t>{11, 33} && w2.Accounts().size() == 1 && w2.Accounts()[0].user == L"B", "F1: removing A then C deletes exactly A and C (ids), B stays");
+            w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        }
+        w2.SetDemo(); Check(!w2.Real() && w2.Accounts().size() == NativeChrome::PasswordDemo::SampleAccounts().size(), "B05: back to the fictitious demonstration for the sandbox");
+        w.Dispose(); w2.Dispose();
+    }
+    {   // B04 save (DEMONSTRATION surface): identifier required; « Jamais pour ce site ».
+        OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::PasswordSave; s.origin = L"github.com"; s.user = L""; s.demo = true;
         int calls = 0; OriginPrompt::Result got;
         p.Show(s, {200, 150, 224, 174}, [&](OriginPrompt::Result& r) { ++calls; got = r; });
         p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(2));

@@ -32,7 +32,7 @@ Valeurs détaillées, nœuds lus et écarts : [lot A](missing-elements-A.md) (A1
 | A6 fermer la fenêtre, ouvrir beaucoup de favoris | `WM_CLOSE` (≥ 2 onglets, réglage existant) asynchrone ; « Ouvrir tout » > 20 favoris |
 | A7 limite de 128 onglets | `NewTab` à 128 → toast (remplace la MessageBox) |
 | A8 À propos | menu → modale ; en preview l'état dit « Mises à jour désactivées » (pas de faux « à jour ») |
-| A9 navigation privée (actuel) | menu → modale « indisponible » (remplace la MessageBox) ; « Effacer les données… » ouvre A5 |
+| A9 navigation privée | vraie fenêtre privée (`IsInPrivateModeEnabled`, profil `browser-private`, même exécutable `--private`), puce privée ; rien d'écrit sauf actions volontaires D3 (favoris, réglages) ; voir [real-integration-plan](real-integration-plan.md) |
 | B01/B02 autorisations | `add_PermissionRequested` + `Args2::put_Handled` + `Args3::put_SavesInProfile` ; caméra + micro d'une même origine fusionnés ; rien d'accordé sans réponse (refus non mémorisé) |
 | B06 auth HTTP Basic | `ICoreWebView2_10::add_BasicAuthenticationRequested` ; mot de passe effacé (`SecureZeroMemory`) après usage, jamais journalisé |
 | B06 application externe | `ICoreWebView2_18::add_LaunchingExternalUriScheme` ; lancement moteur annulé, `ShellExecute` seulement sur « Ouvrir » ; liste de schémas refusés (file, javascript, ms-msdt, search-ms…) |
@@ -41,20 +41,25 @@ Valeurs détaillées, nœuds lus et écarts : [lot A](missing-elements-A.md) (A1
 | C5 info-bulles | barre d'outils principale (libellé + raccourci) ; panneau Ctrl+/ |
 | C6/C7 plein écran | `add_ContainsFullScreenElementChanged` + F11 ; fenêtre au moniteur, chrome masqué, indication Paper ; Échap/F11 quittent |
 
-### Démonstration (composant de production, données fictives, rien d'enregistré)
+### Raccordés depuis (lot « real integration », état et preuves : [real-integration-plan](real-integration-plan.md))
 
-A1 variantes (danger, désactivé, erreur, occupé) · A6 supprimer des favoris / quitter avec téléchargement ·
-A7 restauration partielle · A8 états vérification/disponible/hors ligne · A9 concept fenêtre privée ·
-B03/B04 remplir / enregistrer / mettre à jour un mot de passe · B05 gestion des mots de passe ·
-B07 téléchargement dangereux · B08 certificat client, partage d'écran, conserver le fichier ·
-C8/C9 toasts d'état et « Page enregistrée » (pas de fonction d'enregistrement de page dans ce navigateur).
-Les mots de passe ne sont **pas** un gestionnaire sécurisé : aucun pont JS de collecte, aucun stockage ;
-le moteur garde son propre comportement (réglage existant).
+A7 limite de 128 onglets → nouvelle fenêtre réelle, sessions par fenêtre · A8 états réels du moteur de mise à jour ·
+A9 fenêtre privée réelle · B07 téléchargement bloqué (raison moteur réelle ; E2E non concluant) · B08 certificat client
+réel (`ClientCertificateRequested`, E2E mTLS) · page TLS native pour un certificat serveur refusé (CANCEL, aucun contournement) ·
+B03/B04/B05 coffre DPAPI **présent mais INACTIF en dev/release** (`Vault::Active()` faux ; actif seulement dans l'hôte de
+test E2E synthétique) : tant qu'il est inactif, le moteur garde son propre comportement d'enregistrement.
+
+### Démonstration (sandbox, données fictives, rien d'enregistré)
+
+A1 variantes (danger, désactivé, erreur, occupé) · A3 InputSpec · A6 supprimer des favoris · A9 concept ·
+B03/B04/B05 démo (la sandbox ; le chemin réel est inactif) · B08 « Conserver quand même » (limite API) · B08 partage
+d'écran (sélecteur du moteur conservé) · voyant caméra/micro « en cours » (aucun signal d'usage) · C8/C9 toasts d'état et
+« Page enregistrée » (pas de fonction d'enregistrement de page).
 
 ### Natif conservé
 
 Sélecteurs de fichiers, aperçu d'impression, Windows Hello / identifiants système, centre de
-notifications, partage Windows, interstitiel de certificat serveur du moteur, `Fail()` (erreur fatale
+notifications, partage Windows, sélecteur de partage d'écran du moteur, suggestions identifiant/passkey du moteur (aucune API), `Fail()` (erreur fatale
 WebView2, MessageBox système volontairement conservée). Leurs ombres ne sont pas les nôtres.
 
 ## Zéro ombre — compromis mesuré

@@ -26,9 +26,10 @@ constexpr UINT_PTR AudioTimerId=97,AudioSaveTimerId=98; constexpr UINT AudioArtM
 std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> audioArt;std::set<std::wstring> audioArtPending,audioArtFailed;std::vector<std::wstring> audioArtOrder;
 
 std::wstring AudioFile(){return dataDir+L"\\site-volumes";}
-void LoadAudioVolumes(){if(smoke)return;std::ifstream in(std::filesystem::path(AudioFile()),std::ios::binary);audioVolumes.Read(in);}
+void LoadAudioVolumes(){if(smoke)return;ProfileStore::Lock lock(dataDir);std::ifstream in(std::filesystem::path(AudioFile()),std::ios::binary);audioVolumes.Read(in);}
 void SaveAudioVolumes(){
-    if(smoke)return;
+    if(smoke||privateWindow)return; // a private window keeps its volumes in memory only
+    ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"AUDIO volumes save skipped: profile busy");return;} // never write without the lock
     const auto path=std::filesystem::path(AudioFile()),temp=std::filesystem::path(AudioFile()+L".tmp");
     {std::ofstream out(temp,std::ios::binary|std::ios::trunc);audioVolumes.Write(out);out.close();if(!out){Log(L"AUDIO volumes save failed");return;}}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"AUDIO volumes replace failed");

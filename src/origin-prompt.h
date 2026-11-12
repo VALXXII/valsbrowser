@@ -33,7 +33,7 @@ enum class Action { Dismiss, Allow, AllowOnce, Block, Submit, Cancel, Open, Keep
 // COREWEBVIEW2_PERMISSION_KIND values (no WebView2 header needed here).
 namespace Permission {
 inline constexpr int Unknown = 0, Microphone = 1, Camera = 2, Geolocation = 3, Notifications = 4, OtherSensors = 5, ClipboardRead = 6,
-    MultipleDownloads = 7, FileReadWrite = 8, Autoplay = 9, LocalFonts = 10, Midi = 11, WindowManagement = 12;
+    MultipleDownloads = 7, FileReadWrite = 8, Autoplay = 9, LocalFonts = 10, Midi = 11, WindowManagement = 12, PersistentStorage = 13;
 }
 struct DemoAccount { std::wstring user, hint; bool disabled = false; };
 struct Spec {
@@ -45,11 +45,18 @@ struct Spec {
     bool userInitiated = true, demo = false;
     std::vector<DemoAccount> accounts;   // PasswordFill (fictitious), ClientCertificate (name + issuer)
     std::wstring user;                   // BasicAuth / PasswordSave|Update: pre-filled identifier
+    std::wstring secret;                 // PasswordSave|Update, real path only: the password just submitted (wiped by the host after)
     // Extras (all optional):
     std::wstring frame;                  // ExternalApp: third-party frame host (no remembering offered)
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
     std::wstring reason;                 // DangerousDownload: « Microsoft Defender SmartScreen le signale… »
+    std::wstring blockedTitle;           // DangerousDownload card header by engine reason (empty: demo « fichier dangereux »)
+    bool reportable = true;              // DangerousDownload: « Signaler une erreur à Microsoft » applies (FILE_MALICIOUS only)
     bool insecure = false;               // BasicAuth over plain HTTP
+    // DangerousDownload: « Conserver quand même… » only where keeping is real (the sandbox demo):
+    // WebView2 has no API to override a SmartScreen / security verdict (no danger type, no keep).
+    bool keepAvailable = true;
+    std::wstring link;                   // DangerousDownload: the download's own URI (« Copier le lien du fichier »)
     std::vector<std::wstring> sources;   // ScreenShare: category names (« Onglets », « Fenêtres », « Écrans »)
     std::vector<Modal::Source> shareSources;   // ScreenShare: fictitious sources (title, category, thumbnail art)
     // SiteStatus (B02 « Clic sur la puce », EAC-0): what this page may use. `active` only from a
@@ -67,7 +74,7 @@ inline std::wstring Noun(int p) {
     case Permission::Notifications: return L"Notifications"; case Permission::ClipboardRead: return L"Presse-papiers"; case Permission::Midi: return L"Appareils MIDI";
     case Permission::MultipleDownloads: return L"Téléchargements multiples"; case Permission::OtherSensors: return L"Capteurs de mouvement";
     case Permission::FileReadWrite: return L"Fichiers"; case Permission::Autoplay: return L"Lecture automatique"; case Permission::LocalFonts: return L"Polices installées";
-    case Permission::WindowManagement: return L"Gestion des fenêtres"; default: return L"Autorisation";
+    case Permission::WindowManagement: return L"Gestion des fenêtres"; case Permission::PersistentStorage: return L"Stockage persistant"; default: return L"Autorisation";
     }
 }
 // Single-permission titles. Paper exports: position, notifications, clipboard (B02); the others
@@ -86,17 +93,27 @@ inline std::wstring Title(const std::wstring& o, int p) {
     case Permission::Autoplay: return o + L" veut lire du son automatiquement";
     case Permission::LocalFonts: return o + L" veut utiliser les polices installées";
     case Permission::WindowManagement: return o + L" veut gérer les fenêtres sur vos écrans";
+    case Permission::PersistentStorage: return o + L" veut conserver ses données sur cet appareil";
     default: return o + L" demande une autorisation";
     }
 }
 inline std::wstring Subtitle(int p) {
     switch (p) {
     case Permission::Geolocation: return L"Position fournie par Windows, à quelques centaines de mètres près.";
-    case Permission::Notifications: return L"Elles s'affichent dans Windows, même onglet fermé.";
+    case Permission::Notifications: return L"Le site pourra afficher des alertes en dehors de la page.";   // no proof for « même onglet fermé » (design/origin-prompt-help.md §2)
     case Permission::ClipboardRead: return L"Le site verra le texte et les images que vous avez copiés.";
     case Permission::MultipleDownloads: return L"Le site pourra enregistrer plusieurs fichiers à la suite.";
     case Permission::Midi: return L"Le site pourra envoyer des messages système à vos instruments.";
-    default: return L"";
+    case Permission::Camera: return L"Le site pourra filmer avec votre caméra.";
+    case Permission::Microphone: return L"Le site pourra enregistrer le son de votre micro.";
+    case Permission::OtherSensors: return L"Accéléromètre, gyroscope et autres capteurs de l'appareil.";
+    case Permission::FileReadWrite: return L"Lecture et écriture de fichiers ou de dossiers de cet appareil.";
+    case Permission::Autoplay: return L"Le son et la vidéo pourront démarrer sans clic de votre part.";
+    case Permission::LocalFonts: return L"Le site verra les polices installées sur cet appareil.";
+    case Permission::WindowManagement: return L"Le site pourra ouvrir et placer des fenêtres sur vos écrans.";
+    case Permission::PersistentStorage: return L"Sinon, le navigateur peut les effacer s'il manque d'espace.";
+    case Permission::Unknown: return L"Le moteur ne précise pas de quoi il s'agit.";
+    default: return L"Type non reconnu par ce navigateur (code moteur " + std::to_wstring(p) + L").";   // a newer engine kind: never guessed
     }
 }
 inline const char* Glyph(int p) {
@@ -105,13 +122,14 @@ inline const char* Glyph(int p) {
     case Permission::Geolocation: return DialogKit::Glyph::position; case Permission::Notifications: return DialogKit::Glyph::bell;
     case Permission::ClipboardRead: return DialogKit::Glyph::clipboard; case Permission::MultipleDownloads: return DialogKit::Glyph::download;
     case Permission::FileReadWrite: return DialogKit::Glyph::file; case Permission::WindowManagement: return DialogKit::Glyph::screen;
+    case Permission::PersistentStorage: return DialogKit::Glyph::storage;
     default: return DialogKit::Glyph::info;
     }
 }
 }
 
 // Button ids inside the dialog (Modal::Dialog ids; mapped back to Action).
-namespace Id { inline constexpr int Cancel = Modal::CancelButton, Accept = Modal::AcceptButton, Never = 10, Later = 11, More = 12, Manage = 13; }
+namespace Id { inline constexpr int Cancel = Modal::CancelButton, Accept = Modal::AcceptButton, Never = 10, Later = 11, More = 12, Manage = 13, CopyLink = 14; }
 
 // The Modal::Spec for an origin prompt (pure: unit-testable without a window).
 inline Modal::Spec Build(const Spec& s, bool anchored) {
@@ -128,8 +146,8 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
             for (int q : s.permissions) m.rows.push_back({Text::Glyph(q), Text::Noun(q), q == Permission::Geolocation ? L"Approximative" : L""});
         } else { m.title = Text::Title(s.origin, p); m.subtitle = Text::Subtitle(p); m.headGlyph = Text::Glyph(p); }
         const bool always = !many && p == Permission::Notifications;   // B02: notifications are always remembered
-        if (always) m.notices.push_back({DialogKit::Glyph::info, L"Choix toujours mémorisé. Modifiable dans Réglages › Autorisations des sites.", false});
-        else { m.checkLabel = L"Mémoriser pour ce site"; m.originCheck = true; }
+        // Paper B02 (user edit 2026-11-12): notifications = title, subtitle, buttons; no note, no check (always remembered).
+        if (!always) { m.checkLabel = L"Mémoriser pour ce site"; m.originCheck = true; }
         m.stretchButtons = true; m.softButtons = true;
         m.buttons = {button(Id::Cancel, L"Bloquer", Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, L"Autoriser", Role::Primary, true, false, false, L"PermissionAllow")};
         m.checkValue = always;
@@ -170,10 +188,14 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     case Kind::DangerousDownload: {
         m.automationId = L"DangerousDownload"; m.scope = Scope::Anchor; m.anchorRight = true; m.width = 360; m.gap = 12;
         m.title = L"Téléchargements";
-        m.danger = {s.detail, L"Bloqué : fichier dangereux", s.reason.empty() ? L"Microsoft Defender SmartScreen le signale comme malveillant. Il n'a pas été ouvert." : s.reason, true};
+        m.danger = {s.detail, s.blockedTitle.empty() ? L"Bloqué : fichier dangereux" : s.blockedTitle, s.reason.empty() ? L"Microsoft Defender SmartScreen le signale comme malveillant. Il n'a pas été ouvert." : s.reason, true};
         m.stretchButtons = false;
         Button del = button(Id::Accept, L"Supprimer le fichier", Role::Danger, false, false, true, L"DownloadDelete");
-        Button more = button(Id::More, L"Plus d'options", Role::Quiet, false, false, false, L"DownloadMore"); more.closes = false;
+        // Decision 4: only a malware verdict can be contested at Microsoft; otherwise the one real extra
+        // action, « Copier le lien », is a direct Quiet button (Paper KV2-0 / KVQ-0), no one-row menu.
+        Button more = s.reportable ? button(Id::More, L"Plus d'options", Role::Quiet, false, false, false, L"DownloadMore")
+                                   : button(Id::CopyLink, L"Copier le lien", Role::Quiet, false, false, false, L"DownloadCopyLink");
+        more.closes = false;
         m.buttons = {del, more}; m.stretchButtons = true;
         break;
     }
@@ -184,13 +206,16 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, true, true, true, L"KeepCancel"), button(Id::Accept, L"Conserver", Role::Danger, false, false, false, L"KeepConfirm")};
         break;
     }
-    case Kind::ClientCertificate: {   // B08 concept: WebView2 exposes ClientCertificateRequested, list as accounts
+    case Kind::ClientCertificate: {   // B08: ICoreWebView2_5::ClientCertificateRequested, the engine's mutually trusted certificates
         m.automationId = L"ClientCertificate"; m.scope = Scope::Page; m.title = L"Choisir un certificat";
         m.subtitle = s.origin + L" demande un certificat pour vous identifier.";
         m.accountsTitle = L"Certificats disponibles";
-        for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true});   // issuer line: plain text, no dot tracking
-        m.softButtons = true;
-        m.buttons = {button(Id::Cancel, L"Ne pas envoyer", Role::Secondary, true, true, false, L"CertificateCancel")};
+        for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, a.disabled});   // issuer line: plain text, no dot tracking; expired = disabled
+        // E1 (planche validée): rows only select (radios); « Envoyer » alone transmits, disabled until a
+        // valid, non-expired certificate is selected; « Ne pas envoyer » / Échap continue without one.
+        m.accountsSelect = true; m.accountSelected = -1;
+        m.buttons = {button(Id::Cancel, L"Ne pas envoyer", Role::Secondary, false, true, false, L"CertificateCancel"), button(Id::Accept, L"Envoyer", Role::Primary, true, false, false, L"CertificateSend")};
+        m.buttons[1].disabled = true;
         break;
     }
     case Kind::ScreenShare: {   // B08 concept (Démonstration): the engine's picker cannot be replaced
@@ -227,21 +252,37 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     }
     case Kind::PasswordSave: case Kind::PasswordUpdate: {   // B04, Démonstration: nothing is stored
         const bool update = s.kind == Kind::PasswordUpdate;
-        m.automationId = update ? L"PasswordUpdate" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = true;
+        m.automationId = update ? L"PasswordUpdate" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
         m.title = update ? L"Mettre à jour le mot de passe ?" : L"Enregistrer le mot de passe ?";
-        m.subtitle = L"Pour " + s.origin + L". Démonstration : rien n'est enregistré.";
+        m.subtitle = s.demo ? L"Pour " + s.origin + L". Démonstration : rien n'est enregistré." : L"Pour " + s.origin + L". Enregistré dans browser, chiffré pour votre session Windows.";
         Field user; user.label = L"Identifiant"; user.value = s.user; user.automationId = L"PasswordUser"; user.required = true;
         Field pass; pass.label = L"Mot de passe"; pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
-        pass.value = s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // fictitious only
+        pass.value = !s.demo ? s.secret : s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // real: the submitted password; demo: fictitious
         m.fields = {user, pass};
         m.validate = [](const std::vector<std::wstring>& v) { return v.empty() || v[0].empty() ? std::wstring(L"Saisissez un identifiant.") : std::wstring(); };
+        // D1: an update from a form without an identifier, with several accounts for this origin: the
+        // user picks which one (radio rows, « Mettre à jour » disabled until then); never the last one silently.
+        if (!s.demo && update && s.user.empty() && s.accounts.size() > 1) {
+            m.fields = {pass}; m.validate = nullptr; m.accountsTitle = L"Quel compte mettre à jour ?";
+            for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, false});
+            m.accountsSelect = true; m.accountSelected = -1;
+        }
         m.softButtons = true;
         Button never = button(Id::Never, L"Jamais pour ce site", Role::Quiet, false, false, false, L"PasswordNever"); never.leading = true;
+        if (!s.demo) {   // real path: no « Jamais pour ce site » until a real exclusion list exists (no inert action)
+            // Review F3: armed (500 ms, foreground) and, for an update, no default Entrée: replacing a stored
+            // password always takes a deliberate click or Tab + Espace on « Mettre à jour ».
+            m.armMs = 500;
+            m.buttons = {button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
+            if (m.accountsSelect) m.buttons[1].disabled = true;
+            break;
+        }
         m.buttons = {never, button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, true, false, false, L"PasswordSave")};
         break;
     }
     case Kind::PasswordFill: {   // B03/B04, Démonstration: fictitious accounts held in memory
-        m.automationId = L"PasswordFill"; m.scope = Scope::Anchor; m.width = 360; m.padding = 6; m.gap = 2; m.demo = true;
+        m.automationId = L"PasswordFill"; m.scope = Scope::Anchor; m.width = 360; m.padding = 6; m.gap = 2; m.demo = s.demo;   // real: the vault's accounts for the EFFECTIVE origin, no secret here
+        if (!s.demo) m.armMs = 500;   // V5: a row cannot be chosen by a click the page arranged
         m.accountsTitle = s.accounts.empty() ? L"Aucun compte enregistré pour " + s.origin : L"Comptes enregistrés pour " + s.origin;
         for (auto& a : s.accounts) m.accounts.push_back({a.user, std::wstring(std::max<size_t>(8, std::min<size_t>(14, a.hint.size())), L'\x2022')});
         m.manageLabel = L"Gérer les mots de passe"; m.manageId = Id::Manage;
@@ -266,11 +307,16 @@ inline Result Map(const Spec& s, const Modal::Result& r) {
     case Kind::DangerousDownload: out.action = r.button == Id::Accept ? Action::Delete : Action::Dismiss; break;
     case Kind::KeepFile: out.action = r.button == Id::Accept ? Action::Keep : Action::Cancel; break;
     case Kind::SiteStatus: out.action = r.button == Id::Manage ? Action::Manage : Action::Dismiss; break;
-    case Kind::ClientCertificate: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
+    // « Ne pas envoyer » / Échap (the cancel button) = continue without; an abort (tab closed, navigation) = Dismiss.
+    case Kind::ClientCertificate: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = r.button == Id::Cancel ? Action::Cancel : Action::Dismiss; break;
     case Kind::ScreenShare: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
     case Kind::PasswordSave: case Kind::PasswordUpdate:
         out.action = r.button == Id::Accept ? Action::Save : r.button == Id::Never ? Action::Never : r.button == Id::Later ? Action::Cancel : Action::Dismiss;
-        if (r.button == Id::Accept && !r.values.empty()) out.user = r.values[0];   // the (fictitious) password is never returned
+        if (r.button == Id::Accept && !r.values.empty()) {
+            if (s.demo) out.user = r.values[0];   // the (fictitious) password is never returned
+            else if (!s.accounts.empty() && s.user.empty() && s.kind == Kind::PasswordUpdate && s.accounts.size() > 1) { if (r.select >= 0 && r.select < static_cast<int>(s.accounts.size())) { out.user = s.accounts[static_cast<size_t>(r.select)].user; out.password = r.values[0]; out.choice = r.select; } else out.action = Action::Dismiss; }
+            else { out.user = r.values[0]; if (r.values.size() > 1) out.password = r.values[1]; }
+        }
         break;
     case Kind::PasswordFill:
         if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Fill; out.choice = r.select; if (r.select < static_cast<int>(s.accounts.size())) out.user = s.accounts[static_cast<size_t>(r.select)].user; }
@@ -284,9 +330,10 @@ class Prompt {
 public:
     // B07 « Plus d'options » commands (Paper FYS-0): two plain rows, a separator, the danger row.
     enum Command { CopyLink = 1, Report = 2, KeepAnyway = 3 };
-    static std::vector<ContextMenu::Item> MoreItems() {
-        auto keep = ContextMenu::Command(KeepAnyway, L"Conserver quand même…"); keep.danger = true;
-        return {ContextMenu::Command(CopyLink, L"Copier le lien du fichier"), ContextMenu::Command(Report, L"Signaler une erreur à Microsoft"), ContextMenu::Separator(), keep};
+    static std::vector<ContextMenu::Item> MoreItems(bool keep = true) {
+        std::vector<ContextMenu::Item> items{ContextMenu::Command(CopyLink, L"Copier le lien du fichier"), ContextMenu::Command(Report, L"Signaler une erreur à Microsoft")};
+        if (keep) { auto k = ContextMenu::Command(KeepAnyway, L"Conserver quand même…"); k.danger = true; items.push_back(ContextMenu::Separator()); items.push_back(k); }
+        return items;
     }
     struct Hooks {
         std::function<void()> wake;
@@ -327,10 +374,11 @@ private:
             if (id == Id::Cancel) { confirming_ = false; spec_ = parent_; dialog_.Update(Content(spec_)); dialog_.FocusControl(Modal::Dialog::ButtonHit(1)); }
             return;
         }
-        if (id != Id::More || spec_.kind != Kind::DangerousDownload) return;
-        const int chosen = dialog_.TrackMenu(MoreItems(), Modal::Dialog::ButtonHit(1), dialog_.KeyboardModality());
+        if (id == Id::CopyLink && spec_.kind == Kind::DangerousDownload) { if (hooks_.download) hooks_.download(CopyLink, spec_); return; }
+        if (id != Id::More || spec_.kind != Kind::DangerousDownload || !spec_.reportable) return;
+        const int chosen = dialog_.TrackMenu(MoreItems(spec_.keepAvailable), Modal::Dialog::ButtonHit(1), dialog_.KeyboardModality());
         if (chosen == CopyLink || chosen == Report) { if (hooks_.download) hooks_.download(static_cast<Command>(chosen), spec_); return; }
-        if (chosen != KeepAnyway) return;   // Échap / click outside: the popover stays as it was
+        if (chosen != KeepAnyway || !spec_.keepAvailable) return;   // Échap / click outside: the popover stays as it was
         // B08 « Confirmation dans le popover — Annuler par défaut »: Keep only after « Conserver ».
         parent_ = spec_; confirming_ = true;
         Spec keep = spec_; keep.kind = Kind::KeepFile; spec_ = keep;
@@ -357,6 +405,8 @@ public:
         return dialog_.Show(std::move(m), area, [this](const Modal::Result& r) {
             auto done = std::move(done_); done_ = nullptr; confirming_ = false;
             Result out = Map(spec_, r);
+            if (!spec_.secret.empty()) { SecureZeroMemory(spec_.secret.data(), spec_.secret.size() * sizeof(wchar_t)); spec_.secret.clear(); }   // F6
+            for (auto& v : const_cast<Modal::Result&>(r).values) if (!v.empty()) SecureZeroMemory(v.data(), v.size() * sizeof(wchar_t));   // F6: the modal's copies
             if (done) done(out);
             SecureZeroMemory(out.password.data(), out.password.size() * sizeof(wchar_t)); out.password.clear();
         });
