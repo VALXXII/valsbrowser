@@ -214,22 +214,20 @@ int main(){
         Expect(chip()==std::vector<const char*>{SiteRequest::Path::camera},"back on the tab: its grant shows again");
         siteStates.erase(live->serial);SyncRequestChip();ChipFrame(NativeChrome::Motion::Now()+NativeChrome::Motion::Milliseconds(400));
         originPrompt.Surface().FinishAnimationsForTest();
-        // « Plus d'infos » (simulated engine args): kind 13 routed as persistent storage with the engine's requester;
-        // toggling the panel never touches the deferral; a navigation then denies once. Kinds 0 / 4 / 14 keep their own copy.
+        // Simulated engine args: kind 13 routed as persistent storage; kinds 4 / 0 / 14 keep their own copy;
+        // no collapsible help on the popover; each request answered once.
         {
             PermissionArgs store((COREWEBVIEW2_PERMISSION_KIND)13);PermissionRequested(live,&store);run();
-            Expect(promptOpen&&promptActive.spec.permissions==std::vector<int>{13}&&promptActive.spec.requester==OriginOf(L"https://meet.exemple.test/")&&chip()==std::vector<const char*>{SiteRequest::Path::storage},"kind 13: routed as persistent storage, engine requester kept, storage chip");
+            Expect(promptOpen&&promptActive.spec.permissions==std::vector<int>{13}&&chip()==std::vector<const char*>{SiteRequest::Path::storage},"kind 13: routed as persistent storage, storage chip");
             const auto& m=originPrompt.Surface().CurrentSpec();
-            Expect(m.title==L"meet.exemple.test veut conserver ses données sur cet appareil"&&m.more.text.find(L"Concerne "+OriginOf(L"https://meet.exemple.test/")+L" uniquement.")!=std::wstring::npos&&m.more.text.find(L"otification")==std::wstring::npos,"kind 13: own title, panel names the requester, never « notifications »");
-            originPrompt.Surface().ActivateForTest(MD::Dialog::MoreHit);run();
-            Expect(originPrompt.Surface().MoreOpenForTest()&&store.deferral.completed==0&&store.writes==0&&promptOpen,"Plus d'infos open: no answer, deferral pending");
-            originPrompt.Surface().ActivateForTest(MD::Dialog::MoreHit);run();
-            Expect(!originPrompt.Surface().MoreOpenForTest()&&store.deferral.completed==0&&store.writes==0,"Plus d'infos closed again: still no answer");
-            originPrompt.Surface().ActivateForTest(MD::Dialog::MoreHit);ElementsNavigationStarting(live);run();
-            Expect(store.deferral.completed==1&&store.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&store.writes==1&&!promptOpen,"panel open + navigation: denied once, not saved");
+            Expect(m.title==L"meet.exemple.test veut conserver ses données sur cet appareil"&&m.subtitle.find(L"otification")==std::wstring::npos,"kind 13: own title, never « notifications »");
+            bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.role==Accessibility::Role::Text||n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;
+            Expect(!help&&store.deferral.completed==0&&store.writes==0,"kind 13: no collapsible help exposed, request pending");
+            ElementsNavigationStarting(live);run();
+            Expect(store.deferral.completed==1&&store.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&store.writes==1&&!promptOpen,"kind 13 + navigation: denied once, not saved");
             originPrompt.Surface().FinishAnimationsForTest();
             PermissionArgs bell2(COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS);PermissionRequested(live,&bell2);run();
-            Expect(originPrompt.Surface().CurrentSpec().title==L"meet.exemple.test veut vous envoyer des notifications"&&originPrompt.Surface().CurrentSpec().notices.empty()&&originPrompt.Surface().CurrentSpec().more.text.find(L"Choix toujours mémorisé")!=std::wstring::npos,"kind 4: notifications copy, note only in the panel");
+            Expect(originPrompt.Surface().CurrentSpec().title==L"meet.exemple.test veut vous envoyer des notifications"&&originPrompt.Surface().CurrentSpec().notices.empty()&&originPrompt.Surface().CurrentSpec().checkLabel.empty(),"kind 4: notifications title, no note, no check");
             originPrompt.Surface().Finish(OP::Id::Cancel);run();
             Expect(bell2.deferral.completed==1&&bell2.state==COREWEBVIEW2_PERMISSION_STATE_DENY,"kind 4: Bloquer denies once (remember policy unchanged)");
             ElementsNavigationStarting(live);run();originPrompt.Surface().FinishAnimationsForTest();
