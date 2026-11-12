@@ -1578,8 +1578,10 @@ bool settingsDismissClick=false;
 // Interprocess transaction, field by field: a setting changed in this window takes this window's
 // value; every other setting keeps the value another window may have saved meanwhile.
 BrowserSettings::State settingsBase;
+// Called only for a VOLUNTARY change (Réglages, « Ne plus demander »): D3, a private window keeps it too, through
+// the same interprocess transaction (it is a choice, not a trace of browsing; nothing else is written in private).
 void SaveSettings(){
-    if(smoke||privateWindow)return;
+    if(smoke)return;
     auto text=[](const BrowserSettings::State& s){std::ostringstream o;BrowserSettings::Write(o,s);return o.str();};
     const auto r=ProfileStore::CommitWith<BrowserSettings::State>(dataDir,settingsFile,settingsBase,settings,
         [](std::istream& in,bool*){return BrowserSettings::Read(in);},[](std::ostream& out,const BrowserSettings::State& s){BrowserSettings::Write(out,s);},

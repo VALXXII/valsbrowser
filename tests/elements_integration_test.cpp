@@ -463,6 +463,10 @@ int main(){
         dataDir=dir;sessionFile=dir+L"/session";downloadsFile=dir+L"/downloads";settingsFile=dir+L"/settings";logFile=dir+L"/log.txt";smoke=false;sessionReady=true;privateWindow=true;
         SaveSession();SaveHistory();SaveDownloads();SaveSettings();SaveBookmarks();Log(L"NAV https://secret.example/");
         Expect(std::filesystem::is_empty(dir),"private window: no session, history, downloads, settings, bookmarks or log file written");
+        settings.confirmCloseTabs=!settings.confirmCloseTabs;SaveSettings();settings.confirmCloseTabs=!settings.confirmCloseTabs;
+        {std::size_t n=0;bool onlySettings=true;for(auto& e:std::filesystem::directory_iterator(dir)){++n;if(e.path().filename()!=L"settings")onlySettings=false;}
+         Expect(n==1&&onlySettings,"D3: a setting changed on purpose in a private window is kept (settings file only, normal transaction)");}
+        std::filesystem::remove(dir+L"/settings",ec);
         privateWindow=false;Log(L"control");
         Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
         std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
