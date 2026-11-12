@@ -171,6 +171,15 @@ inline bool Handles(int status) {
     default: return true;
     }
 }
+// A failed navigation whose document IS the server's own answer: WebView2 reports IsSuccess FALSE for an
+// HTTP 4xx/5xx response (ICoreWebView2NavigationCompletedEventArgs::IsSuccess: « HTTP server responds with
+// 4xx »), with WebErrorStatus UNKNOWN, and its document is the page the site sent (a 403 challenge, a 404, a
+// 503 maintenance page...). HttpStatusCode (args2) is 0 when no response was received (DNS, refused,
+// reset...) and a success code for a cut response: those stay transport failures. Only UNKNOWN + a real
+// 4xx/5xx keeps the site's page; any other status (certificate, reset, aborted, timeout...) is unchanged.
+inline bool KeepsServerPage(bool success, int webErrorStatus, int httpStatusCode) {
+    return !success && webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN && httpStatusCode >= 400 && httpStatusCode <= 599;
+}
 inline Kind Classify(int status, bool online) {
     if (!online || status == COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED) return Kind::Offline;
     switch (status) {

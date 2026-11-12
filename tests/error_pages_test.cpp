@@ -15,6 +15,14 @@ static std::wstring Msg(const std::wstring& token, const std::wstring& action) {
 int main() {
     // Classify: WebView2 status → Paper variant; offline wins over everything.
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED, true) == Kind::NameNotResolved, "DNS");
+    // A site's own HTTP error page (403 challenge, 404, 429, 503) is kept; transport failures are not.
+    for (int code : {400, 403, 404, 429, 500, 503, 599}) Require(ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, code), "HTTP 4xx/5xx with UNKNOWN keeps the server's page");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 0), "UNKNOWN without any response (refused, cut before headers) stays an error page");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 200), "a cut 200 response stays an error page");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 302) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 600), "only 400-599");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID, 403) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, 503) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, 404), "certificate / reset / timeout are never hidden by a status code");
+    Require(!ErrorPages::KeepsServerPage(true, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 404), "a successful navigation is not this case");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 399) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED, 404), "399 and a cancelled navigation are not kept");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT, true) == Kind::Refused, "refused");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, true) == Kind::TimedOut, "timeout");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, true) == Kind::Reset, "reset");

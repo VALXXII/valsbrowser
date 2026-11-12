@@ -2311,12 +2311,40 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
     if(t==Active()){chrome.lottie.RefreshEnd();RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
     if(!ok){
         COREWEBVIEW2_WEB_ERROR_STATUS error;a->get_WebErrorStatus(&error);
+
         // Our CANCEL of a refused server certificate may surface as « cancelled »: the recorded status wins.
         // (WebView2 reports the cancelled request as « connection aborted/reset » or « cancelled »), only for
         // this navigation and only when the refused request is the navigation's own URL.
         if(t->errorPage.certStatus>=0&&navigationId==t->errorPage.startingId&&NativeChrome::ErrorPages::CertificateMatches(t->errorPage.certStatus,t->errorPage.certUri,t->errorPage.starting))error=(COREWEBVIEW2_WEB_ERROR_STATUS)t->errorPage.certStatus;
         if(error==COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)return S_OK;
         if(HttpsUpgradeFailed(t,navigationId,error))return S_OK;
+        int httpStatus=0;{Com<ICoreWebView2NavigationCompletedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationCompletedEventArgs2,(void**)&a2.p))&&a2.p&&FAILED(a2->get_HttpStatusCode(&httpStatus)))httpStatus=0;}   // 0: older runtime / no response
+        Log(L"NAVIGATION FAILED engine WebErrorStatus="+std::to_wstring(error)+L" HttpStatusCode="+std::to_wstring(httpStatus)+(navigationId==t->errorPage.startingId?L" latest":L" older"));   // engine facts only (no URL, no body)
+        // An HTTP 4xx/5xx answer (e.g. a 403 challenge page) IS the site's page: shown as received, never replaced.
+        // Only for the tab's latest top-level navigation, never when WE refused this page's own certificate
+        // (a refused sub-resource certificate does not count), no forced error page.
+        const bool ownCertificateRefused=t->errorPage.certStatus>=0&&NativeChrome::ErrorPages::CertificateMatches(t->errorPage.certStatus,t->errorPage.certUri,t->errorPage.starting);
+        if(navigationId==t->errorPage.startingId&&!ownCertificateRefused&&t->errorPage.forced<0&&NativeChrome::ErrorPages::KeepsServerPage(false,(int)error,httpStatus)){
+            Log(L"NAVIGATION HTTP "+std::to_wstring(httpStatus)+L" (the site's own page) "+t->errorPage.starting);
+            // A 4xx/5xx with NO body shows the engine's own error document (chrome-error:, which no site page can
+            // be); a 4xx/5xx CUT after its headers reports the very same engine values (UNKNOWN + 403) but leaves
+            // no document at all (no documentElement, still « loading »; measured, observe_cut_facts_*.txt). Both
+            // are replaced by our error page as before, still only for this very navigation. A complete answer
+            // always has its document when NavigationCompleted fires.
+            {std::weak_ptr<Tab> weak=t;const auto failed=error;
+             auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([weak,navigationId,failed](HRESULT hr,LPCWSTR json)->HRESULT{
+                auto tab=weak.lock();if(halted||!tab||tab->closed)return S_OK;
+                if(FAILED(hr)||!json){Log(L"NAVIGATION HTTP error: page check failed hr="+std::to_wstring((long)hr)+L" (the received page stays)");return S_OK;}   // review: a late failure is said
+                const std::wstring verdict=json;if(verdict!=L"\"engine-error\""&&verdict!=L"\"no-document\"")return S_OK;
+                if(tab->errorPage.startingId!=navigationId||!tab->errorPage.shown.empty())return S_OK;
+                Log(L"NAVIGATION HTTP error without a page of its own ("+verdict+L"): our error page");
+                if(ShowErrorPage(tab,failed,navigationId)){tab->revealed=true;ApplyPages();if(tab==Active())Update();}
+                return S_OK;});
+             if(FAILED(t->view->ExecuteScript(L"location.protocol==='chrome-error:'?'engine-error':(document.documentElement?'page':'no-document')",cb)))Log(L"NAVIGATION HTTP error: page check unavailable");cb->Release();}
+            RequestFavicon(t);if(halted)return S_OK;
+            t->revealed=true;ApplyPages();if(t==Active())Update();
+            return S_OK;
+        }
         if(ShowErrorPage(t,error,navigationId)){t->revealed=true;ApplyPages();if(t==Active())Update();return S_OK;}
         Log(L"NAVIGATION FAILED WebErrorStatus="+std::to_wstring(error)+L" "+t->uri);
         // A new controller starts hidden until its first navigation completes.
