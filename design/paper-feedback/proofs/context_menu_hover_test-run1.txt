@@ -1,0 +1,22 @@
+﻿exit=0
+ok   hovering the branch opens its submenu after the delay
+ok   the pointer left while the submenu was still entering
+ok   the submenu stays open for the trajectory (no early close)
+ok   30 ms after leaving: the branch fill is already fading, the new row filling
+ok   120 ms fade: branch row empty, new row full, submenu or not
+ok   the submenu closes after the hover delay on another row
+ok   row to row: interrupted fade, no wait
+ok   pointer in the submenu: its row fills, the branch row does not
+ok   back on the branch row: fill returns, submenu kept
+ok   a second-level branch opens
+ok   second level: leaving the branch row fades it while its submenu is open
+ok   outside every menu: no fill anywhere
+ok   Right opens the submenu
+ok   Left closes it and the keyboard focus is back on its row
+ok   closing while the submenu is still entering
+ok   Escape during the cascade closes every level, nothing chosen
+ok   no stale submenu timer reopens anything after the close
+ok   reduced motion: the submenu arrives without an entrance
+ok   reduced motion: the fill follows the pointer instantly
+PASS: submenu row hover follows the pointer mid-entrance; cascade, keyboard, close and reduced motion intact
+

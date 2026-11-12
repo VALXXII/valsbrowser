@@ -1,0 +1,40 @@
+--- 
++++ 
+@@ -136,2 +136,2 @@
+-            <div id="VNT-0" style={{ boxSizing: 'border-box', color: '#5B84FF', fontFamily: 'system-ui, sans-serif', fontSize: '14px', lineHeight: '20px', whiteSpace: 'pre' }}>
+-              <span style={{ fontWeight: 500 }}>Mode Design - Annotation</span> 
++            <div id="VNT-0" style={{ boxSizing: 'border-box', color: '#5B84FF', fontFamily: 'var(--font-browser-inter)', fontSize: '14px', fontWeight: 'var(--font-weight-browser-500)', lineHeight: '20px', whiteSpace: 'pre' }}>
++              Mode Design - Annotation 
+@@ -142 +142 @@
+-            <div id="VNW-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', fontFamily: 'system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
++            <div id="VNW-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', fontFamily: 'var(--font-browser-inter)', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+@@ -146 +146 @@
+-              <div id="VNY-0" style={{ boxSizing: 'border-box', color: '#FFFFFFB3', fontFamily: 'system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
++              <div id="VNY-0" style={{ boxSizing: 'border-box', color: '#FFFFFFB3', fontFamily: 'var(--font-browser-inter)', fontSize: '11px', lineHeight: '14px' }}>
+@@ -243 +243 @@
+-              <div id="VP3-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', flexShrink: 0, fontFamily: 'system-ui, sans-serif', fontSize: '14px', lineHeight: '18px', width: 'max-content' }}>
++              <div id="VP3-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', flexShrink: 0, fontFamily: 'var(--font-browser-inter)', fontSize: '14px', lineHeight: '18px', width: 'max-content' }}>
+@@ -246 +246 @@
+-              <div id="VP4-0" style={{ boxSizing: 'border-box', color: '#FFFFFF66', display: '-webkit-box', flex: 1, fontFamily: 'system-ui, sans-serif', fontSize: '12px', lineHeight: '16px', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: '
++              <div id="VP4-0" style={{ boxSizing: 'border-box', color: '#FFFFFF66', display: '-webkit-box', flex: 1, fontFamily: 'var(--font-browser-inter)', fontSize: '12px', lineHeight: '16px', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClam
+@@ -255 +255 @@
+-              <div id="VP9-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', flexShrink: 0, fontFamily: 'system-ui, sans-serif', fontSize: '14px', lineHeight: '18px', width: 'max-content' }}>
++              <div id="VP9-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', flexShrink: 0, fontFamily: 'var(--font-browser-inter)', fontSize: '14px', lineHeight: '18px', width: 'max-content' }}>
+@@ -258 +258 @@
+-              <div id="VPA-0" style={{ boxSizing: 'border-box', color: '#FFFFFF66', display: '-webkit-box', flex: 1, fontFamily: 'system-ui, sans-serif', fontSize: '12px', lineHeight: '16px', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: '
++              <div id="VPA-0" style={{ boxSizing: 'border-box', color: '#FFFFFF66', display: '-webkit-box', flex: 1, fontFamily: 'var(--font-browser-inter)', fontSize: '12px', lineHeight: '16px', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClam
+@@ -269 +269 @@
+-                <div id="VPG-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', flexShrink: 0, fontFamily: 'system-ui, sans-serif', fontSize: 'var(--text-browser-14)', fontWeight: 500, lineHeight: '18px', width: 'max-content' }}>
++                <div id="VPG-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', flexShrink: 0, fontFamily: 'var(--font-browser-inter)', fontSize: 'var(--text-browser-14)', fontWeight: 500, lineHeight: '18px', width: 'max-content' }}>
+@@ -314 +314 @@
+-                  <div id="VQ2-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', fontFamily: 'system-ui, sans-serif', fontSize: '13px', lineHeight: '18px' }}>
++                  <div id="VQ2-0" style={{ boxSizing: 'border-box', color: '#FFFFFFE6', fontFamily: 'var(--font-browser-inter)', fontSize: '13px', lineHeight: '18px' }}>
+@@ -318 +318 @@
+-                <div id="VQ3-0" style={{ boxSizing: 'border-box', color: '#FFFFFF80', fontFamily: 'system-ui, sans-serif', fontSize: '12px', lineHeight: '16px' }}>
++                <div id="VQ3-0" style={{ boxSizing: 'border-box', color: '#FFFFFF80', fontFamily: 'var(--font-browser-inter)', fontSize: '12px', lineHeight: '16px' }}>
+@@ -327 +327 @@
+-                <div id="VQ7-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', fontFamily: '"InterDisplay-Medium", "Inter Display", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, letterSpacing: '-0.01em', lineHeight: '18px' }}>
++                <div id="VQ7-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', fontFamily: 'var(--font-browser-inter)', fontSize: '14px', fontWeight: 500, letterSpacing: '-0.01em', lineHeight: '18px' }}>
+@@ -332 +332 @@
+-                <div id="VQ9-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', fontFamily: '"InterDisplay-Medium", "Inter Display", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, letterSpacing: '-0.01em', lineHeight: '18px' }}>
++                <div id="VQ9-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', fontFamily: 'var(--font-browser-inter)', fontSize: '14px', fontWeight: 500, letterSpacing: '-0.01em', lineHeight: '18px' }}>

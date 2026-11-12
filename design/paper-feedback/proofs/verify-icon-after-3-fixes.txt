@@ -1,0 +1,1 @@
+Icon identical to baseline (30 nodes + root, 14 root children)

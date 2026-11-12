@@ -1,0 +1,326 @@
+{
+  "commentThreads": [
+    {
+      "commentThreadId": "c-wvnu0v",
+      "pageId": "p-1-0",
+      "pageName": "Browser — référence unifiée",
+      "nodeId": "2W7-0",
+      "node": {
+        "id": "2W7-0",
+        "name": "Chrome",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794193137893,
+      "updatedAt": 1794473314895,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-y91fp8",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Bouton avant arrière retouché, fais un test dessus stp",
+        "truncated": false,
+        "createdAt": 1794193137893,
+        "updatedAt": 1794193146701
+      }
+    },
+    {
+      "commentThreadId": "c-npdt3g",
+      "pageId": "p-1-0",
+      "pageName": "Browser — référence unifiée",
+      "nodeId": "EX1-0",
+      "node": {
+        "id": "EX1-0",
+        "name": "Grille",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794277736228,
+      "updatedAt": 1794473311170,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-88y6ml",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Update la confirm de Fermer la fenêtre avec ce nouveau design en 420px width",
+        "truncated": false,
+        "createdAt": 1794277736228,
+        "updatedAt": 1794277736228
+      }
+    },
+    {
+      "commentThreadId": "c-qdlkgz",
+      "pageId": "p-1-0",
+      "pageName": "Browser — référence unifiée",
+      "nodeId": "ST8-0",
+      "node": {
+        "id": "ST8-0",
+        "name": "Section — Plus d'infos",
+        "component": "Frame"
+      },
+      "status": "open",
+      "createdAt": 1794473179410,
+      "updatedAt": 1794473179410,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-d86fv8",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "J'ai eu ça à un moment quand je venais de me connecter sur X. Est-ce que ça veut dire par garder les données garder les identifiants pour se connecter ? Parce que si c'est le cas ou non, il faudrait faire des variantes pour q... [truncated]",
+        "truncated": true,
+        "createdAt": 1794473179410,
+        "updatedAt": 1794473179410
+      }
+    },
+    {
+      "commentThreadId": "c-l6gvbn",
+      "pageId": "p-1-0",
+      "pageName": "Browser — référence unifiée",
+      "nodeId": "K9L-0",
+      "node": {
+        "id": "K9L-0",
+        "name": "Contenu",
+        "component": "Frame"
+      },
+      "status": "open",
+      "createdAt": 1794473307762,
+      "updatedAt": 1794473307762,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-tmwf6t",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Tu peux le créer et le merge, juste ne pas oublier que si c'est un site dark mode d'inverser pour que l'on puisse voir quand même le handle et pas qu'il soit complètement invisible",
+        "truncated": false,
+        "createdAt": 1794473307762,
+        "updatedAt": 1794473307762
+      }
+    },
+    {
+      "commentThreadId": "c-bu5dzt",
+      "pageId": "p-1-0",
+      "pageName": "Browser — référence unifiée",
+      "nodeId": "9Z2-0",
+      "node": {
+        "id": "9Z2-0",
+        "name": "Menu V2",
+        "component": "Frame"
+      },
+      "status": "open",
+      "createdAt": 1794473432590,
+      "updatedAt": 1794473432590,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-7rrohp",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "J'ai clean les icônes pour éviter le clipping des opacités si tu peux fix",
+        "truncated": false,
+        "createdAt": 1794473432590,
+        "updatedAt": 1794473432590
+      }
+    },
+    {
+      "commentThreadId": "c-wsk4r6",
+      "pageId": "p-1-0",
+      "pageName": "Browser — référence unifiée",
+      "nodeId": "GNK-0",
+      "node": null,
+      "status": "open",
+      "createdAt": 1794476563370,
+      "updatedAt": 1794476563370,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-qjn52t",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Peut être quand on est en mode design de pouvoir voir aussi le padding ainsi que les gaps etc. ce serait pas mal pour qu'on puisse avoir une vue d'ensemble plus simple",
+        "truncated": false,
+        "createdAt": 1794476563370,
+        "updatedAt": 1794476563370
+      }
+    },
+    {
+      "commentThreadId": "c-qdholr",
+      "pageId": "p-8-0",
+      "pageName": null,
+      "nodeId": "BRG-0",
+      "node": {
+        "id": "BRG-0",
+        "name": "Popover · Modifier le favori",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794165309251,
+      "updatedAt": 1794169000371,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-31kzgz",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Quand le lien est en erreur, de le mettre en ce rouge jusqu'à que le lien soit valide",
+        "truncated": false,
+        "createdAt": 1794165309251,
+        "updatedAt": 1794165309251
+      }
+    },
+    {
+      "commentThreadId": "c-99tvvr",
+      "pageId": "p-8-0",
+      "pageName": null,
+      "nodeId": "BD2-0",
+      "node": {
+        "id": "BD2-0",
+        "name": "10 · Débordement et fenêtre étroite",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794165351611,
+      "updatedAt": 1794169001096,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-7qqxzk",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Il y'a toujours cet espace vide à gauche, je trouve ça bizarre personnellement... à la limite vaudrait pas mieux enlever le folder juste au dessus ou ajouter une icône ici ?",
+        "truncated": false,
+        "createdAt": 1794165351611,
+        "updatedAt": 1794165351611
+      }
+    },
+    {
+      "commentThreadId": "c-ov8ao9",
+      "pageId": "p-8-0",
+      "pageName": null,
+      "nodeId": "AVX-0",
+      "node": {
+        "id": "AVX-0",
+        "name": "Fenêtre",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794165463191,
+      "updatedAt": 1794169001831,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-99bglx",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "J'ai modifié un peu le design, pour la croix peux tu clean une fois dans le code ?",
+        "truncated": false,
+        "createdAt": 1794165463191,
+        "updatedAt": 1794165463191
+      }
+    },
+    {
+      "commentThreadId": "c-s207a4",
+      "pageId": "p-8-0",
+      "pageName": null,
+      "nodeId": "APT-0",
+      "node": {
+        "id": "APT-0",
+        "name": "Fenêtre",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794165527513,
+      "updatedAt": 1794169002704,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-bv81a8",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "J'ai modifié l'ordre",
+        "truncated": false,
+        "createdAt": 1794165527513,
+        "updatedAt": 1794165527513
+      }
+    },
+    {
+      "commentThreadId": "c-mzly9w",
+      "pageId": "p-8-0",
+      "pageName": null,
+      "nodeId": "AF3-0",
+      "node": {
+        "id": "AF3-0",
+        "name": "Saisie du nom",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794165571611,
+      "updatedAt": 1794169003674,
+      "messageCount": 2,
+      "replyCount": 1,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-i8bg6h",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Le text cursor est bleu et le reste à part si le mot et pas valide (dans ce cas là il devient rouge comme dans le screen d'erreur où le cursor est aussi rouge)",
+        "truncated": false,
+        "createdAt": 1794165571611,
+        "updatedAt": 1794165571611
+      }
+    },
+    {
+      "commentThreadId": "c-v7q0dg",
+      "pageId": "p-8-0",
+      "pageName": null,
+      "nodeId": "A18-0",
+      "node": {
+        "id": "A18-0",
+        "name": "Fenêtre",
+        "component": "Frame"
+      },
+      "status": "resolved",
+      "createdAt": 1794165692391,
+      "updatedAt": 1794169004413,
+      "messageCount": 1,
+      "replyCount": 0,
+      "authorUserId": "user_redacted",
+      "authorDisplayName": "Val.S",
+      "firstMessagePreview": {
+        "messageId": "cm-sz1f7c",
+        "authorUserId": "user_redacted",
+        "authorDisplayName": "Val.S",
+        "text": "Attention, au padding vertical vers le haut il est pas censé avoir 4px de padding, fix aussi ça dans le code dans ta branch pour que une fois merge ça soit fix dans main",
+        "truncated": false,
+        "createdAt": 1794165692391,
+        "updatedAt": 1794165692391
+      }
+    }
+  ],
+  "count": 12,
+  "offset": 0
+}

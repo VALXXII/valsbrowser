@@ -1,0 +1,38 @@
+ok   ink is Paper's #8A8A8A (9Z2-0 outline and fill)
+ok   96 dpi: the former drawing is brighter where the fill covers the outline (197 > 139), reproduced
+ok   96 dpi: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   96 dpi highlighted row: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   96 dpi glyph 2: brightest pixel 138 (ink 138), 142 pixels at full ink
+ok   96 dpi glyph 3: brightest pixel 138 (ink 138), 142 pixels at full ink
+ok   96 dpi glyph 4: brightest pixel 138 (ink 138), 142 pixels at full ink
+ok   96 dpi glyph 5: brightest pixel 138 (ink 138), 142 pixels at full ink
+ok   96 dpi glyph 6: brightest pixel 138 (ink 138), 106 pixels at full ink
+ok   96 dpi glyph 7: brightest pixel 138 (ink 138), 106 pixels at full ink
+ok   96 dpi glyph 8: brightest pixel 138 (ink 138), 110 pixels at full ink
+ok   96 dpi glyph 9: brightest pixel 138 (ink 138), 110 pixels at full ink
+ok   96 dpi: disabled glyph keeps the former 32 % level (fill 97, outline 97)
+ok   120 dpi: the former drawing is brighter where the fill covers the outline (197 > 139), reproduced
+ok   120 dpi: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   120 dpi highlighted row: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   120 dpi glyph 2: brightest pixel 138 (ink 138), 194 pixels at full ink
+ok   120 dpi glyph 3: brightest pixel 138 (ink 138), 208 pixels at full ink
+ok   120 dpi glyph 4: brightest pixel 138 (ink 138), 205 pixels at full ink
+ok   120 dpi glyph 5: brightest pixel 138 (ink 138), 205 pixels at full ink
+ok   120 dpi glyph 6: brightest pixel 138 (ink 138), 152 pixels at full ink
+ok   120 dpi glyph 7: brightest pixel 138 (ink 138), 150 pixels at full ink
+ok   120 dpi glyph 8: brightest pixel 138 (ink 138), 148 pixels at full ink
+ok   120 dpi glyph 9: brightest pixel 138 (ink 138), 148 pixels at full ink
+ok   120 dpi: disabled glyph keeps the former 32 % level (fill 97, outline 97)
+ok   144 dpi: the former drawing is brighter where the fill covers the outline (197 > 139), reproduced
+ok   144 dpi: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   144 dpi highlighted row: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   144 dpi glyph 2: brightest pixel 138 (ink 138), 312 pixels at full ink
+ok   144 dpi glyph 3: brightest pixel 138 (ink 138), 312 pixels at full ink
+ok   144 dpi glyph 4: brightest pixel 138 (ink 138), 319 pixels at full ink
+ok   144 dpi glyph 5: brightest pixel 138 (ink 138), 319 pixels at full ink
+ok   144 dpi glyph 6: brightest pixel 138 (ink 138), 236 pixels at full ink
+ok   144 dpi glyph 7: brightest pixel 138 (ink 138), 236 pixels at full ink
+ok   144 dpi glyph 8: brightest pixel 138 (ink 138), 250 pixels at full ink
+ok   144 dpi glyph 9: brightest pixel 138 (ink 138), 250 pixels at full ink
+ok   144 dpi: disabled glyph keeps the former 32 % level (fill 97, outline 97)
+all menu glyph checks passed

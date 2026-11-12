@@ -1,0 +1,34 @@
+JSX diff lines: 31
+   -          <div id="VSS-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: 0, gap: '20px', width: '520px' }}>
+   -            <div id="VST-0" style={{ boxSizing: 'border-box', color: '#1C1C1C', fontFamily: 'system-ui, sans-serif', fontSize: '28px', fontWeight: 600, letterSpacing: '-
+   +          <div id="VSS-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: 0, gap: '20px', position: 'relative', width: '520px' }}
+   +            <div id="VYF-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-browser-split-tint)', boxSizing: 'border-box', display: 'flex', height: '20px', 
+   +              <div id="VYG-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-browser-accent)', borderRadius: '3px', boxSizing: 'border-box', display: 'flex
+   +                <div id="VYH-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', fontFamily: '"JetBrains Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: 
+   +                  20
+   +                </div>
+   +              </div>
+   +            </div>
+   +            <div id="VYJ-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-browser-split-tint)', boxSizing: 'border-box', display: 'flex', height: '20px', 
+   +              <div id="VYK-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-browser-accent)', borderRadius: '3px', boxSizing: 'border-box', display: 'flex
+   +                <div id="VYL-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', fontFamily: '"JetBrains Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: 
+   +                  20
+   +                </div>
+   +              </div>
+   +            </div>
+   +            <div id="VYN-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-browser-split-tint)', boxSizing: 'border-box', display: 'flex', height: '20px', 
+   +              <div id="VYO-0" style={{ alignItems: 'center', backgroundColor: 'var(--color-browser-accent)', borderRadius: '3px', boxSizing: 'border-box', display: 'flex
+   +                <div id="VYP-0" style={{ boxSizing: 'border-box', color: '#FFFFFF', fontFamily: '"JetBrains Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: 
+   +                  20
+   +                </div>
+   +              </div>
+   +            </div>
+   +            <div id="VST-0" style={{ boxSizing: 'border-box', color: '#1C1C1C', fontFamily: 'system-ui, sans-serif', fontSize: '28px', fontWeight: 600, letterSpacing: '-
+   -            <div id="VSU-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+   +            <div id="VSU-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }}>
+   -            <div id="VSY-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+   +            <div id="VSY-0" style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }}>
+   -                  button.btn-primary · 240×44
+   +                  button.btn-primary · 240×44 · padding 0
+styles changed on existing nodes: ['VSS-0', 'VST-0', 'VSU-0', 'VSY-0']
+nodes added: ['VYF-0', 'VYG-0', 'VYH-0', 'VYJ-0', 'VYK-0', 'VYL-0', 'VYN-0', 'VYO-0', 'VYP-0']

@@ -1,0 +1,282 @@
+﻿exit=0
+headers: native-ui.h, modal.h, origin-prompt.h, password-demo.h compile alone and with chrome.h, no warning
+ok   Dialog::Create
+ok   alert: Show
+ok   alert: second Show refused while open
+ok   alert: initial focus on OK
+ok   alert: Entrée -> AcceptButton, exactly once
+ok   alert: closed
+ok   alert: focus restored to the owner's control
+ok   alert repeated: check returned, Échap answers OK
+ok   confirm: focus on OK (default)
+ok   confirm: Tab reaches Annuler
+ok   confirm: Échap -> CancelButton once
+ok   prompt: default value
+ok   prompt: focus in the field
+ok   prompt: empty answer accepted (site receives an empty string)
+ok   input: invalid submit shows the inline error, dialog stays
+ok   input: Entrée does nothing while invalid
+ok   input: error cleared on the next keystroke
+ok   input: valid submit answers once
+ok   beforeunload: focus on « Rester sur la page »
+ok   beforeunload: Entrée stays on the page
+ok   beforeunload: reload title
+ok   clear data: focus on Annuler
+ok   clear data: Entrée never triggers the destructive action
+ok   clear data: hold -> busy, dialog open
+ok   clear data: Snapshot reports categories and period
+ok   clear data: Échap ignored while busy
+ok   clear data: failure re-enables the controls
+ok   clear data: Finish answers once
+     list 580,335-830,548 under field bottom 335 right 830
+ok   période: the list is a shadowless popup (no DWM rounding, no CS_DROPSHADOW)
+ok   période: the list drops under the field, right edges aligned
+ok   période: five options, the current one marked « Sélectionné »
+ok   période: Échap closes the list, value unchanged, nothing cleared
+ok   période: focus back on the field after Échap
+ok   période: Entrée opens, ↓ + Entrée choose « 7 derniers jours », no clearing
+ok   période: focus back on the field after a choice
+     option 0 via alt -> 0 (Derni�re heure)
+     option 1 via space -> 1 (Derni�res 24 heures)
+     option 2 via down -> 2 (7 derniers jours)
+     option 3 via f4 -> 3 (4 derni�res semaines)
+     option 4 via pointer -> 4 (Depuis toujours)
+ok   période: each of the 5 options can be chosen (Alt+↓, Espace, ↓, F4, pointer), dialog stays open
+ok   période: ↑ opens the list instead of cycling; Échap keeps « Depuis toujours »
+ok   période: click outside cancels, value unchanged
+ok   période: Abort while the list is open closes both, done once, nothing cleared
+ok   host hook: Create
+ok   host hook: called once with keyboard, current and the field's screen rect
+ok   host hook: ↑ + Entrée from the checked row -> « Dernière heure », no own menu created
+ok   abort: done(-1) once
+ok   owner destroyed: done(-1) once
+ok   owner destroyed: Dispose does not answer again
+ok   dispose while open: done once
+ok   close window: Paper text
+ok   close window + download: destructive, no check
+ok   close window: 420 DIP for this confirmation only
+ok   close window: Ctrl Maj T as key caps
+ok   close window: panel 420 DIP
+ok   close window: check left on the buttons' row (EYG-0), buttons right
+ok   close window: 420x126 like EY9-0 (one body line, caps inline)
+ok   close window: focus on Annuler
+ok   close window 420 render sample
+ok   close window 420 render sample
+ok   close window 420 render sample
+ok   close window: the check toggles in place
+ok   close window: « Fermer la fenêtre » with « Ne plus demander »
+ok   close window + long file name: buttons fit, no clipping
+ok   close window + download render sample
+ok   close window: a check too long for the row falls back above the buttons
+ok   open many tabs: limit wording
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   preset: accepting action is AcceptButton
+ok   about: version line
+ok   about: Rechercher keeps the dialog open
+ok   about: link closes with its id
+ok   A8: a 2-line detail grows the row from 48 to 68 (20 + 36 + 2x6)
+ok   A8: the status button stays centred in the taller row
+ok   A8 2-line render sample
+ok   A8 2-line render sample
+ok   A8 2-line render sample
+ok   A8: a one-line detail keeps the 48 row
+ok   A8: no detail, no button: 48 row
+ok   A8: long version title stays one line (ellipsis), Annuler inside
+ok   A8 long render sample
+ok   long message: panel fits the page area
+ok   presets paint without error
+ok   Prompt::Create
+ok   permission: grouped request (B02)
+ok   permission: 4 DIP left of the indicator, 16 DIP under it (B01)
+ok   permission: Autoriser + Mémoriser
+ok   permission: Échap = Dismiss, nothing remembered
+ok   permission: notifications choice always remembered (B02)
+ok   permission kinds: 13 = persistent storage (SDK 1.0.4314.35)
+ok   permission kinds: 13 has its own title and storage glyph
+ok   permission kinds: 13 never described as notifications
+ok   permission kinds: 13 keeps the remember check (policy unchanged)
+ok   permission kinds: 0 says the engine gave no type
+ok   permission kinds: a future kind is named by its engine code, not guessed
+ok   notifications: Paper title and subtitle, no unproven promise
+ok   notifications: no note and no check (Paper B02)
+ok   permission kinds: every kind has a subtitle
+ok   storage popover: check, Bloquer, Autoriser, Fermer; no collapsible help
+ok   storage popover: initial focus on Bloquer (unchanged)
+ok   storage popover: Tab → Autoriser
+ok   storage popover: Tab → Fermer
+ok   storage popover: Tab → Mémoriser (wraps)
+ok   storage popover: wheel / ↓ change nothing, nothing answered
+ok   storage popover render
+ok   storage popover render
+ok   storage popover render
+ok   storage popover: Échap = Dismiss once, nothing remembered
+ok   storage popover: no second answer
+ok   notifications popover: title + subtitle + buttons only (Paper B02)
+ok   notifications popover: UIA group help is the subtitle
+ok   notifications popover: buttons end the popover
+ok   notifications popover render
+ok   notifications popover render
+ok   notifications popover render
+ok   notifications popover: Bloquer still always remembered
+ok   grouped popover: kind rows, check, buttons; no collapsible help
+ok   grouped popover render
+ok   grouped popover: Abort answers once
+ok   long origin render (title wraps, nothing cut)
+ok   unknown kind render
+ok   every request answered exactly once
+ok   auth: focus on the password (identifier pre-filled)
+ok   auth: password field is ES_PASSWORD
+ok   auth: refusal keeps the window with the error
+ok   auth: Submit with identifier and password
+ok   auth: password EDIT wiped on close
+ok   external app (third party): Annuler default, no remember
+ok   external app (known): Paper text
+ok   external app: Entrée opens
+ok   password fill: ↓ Entrée, no secret returned
+ok   password fill: Démonstration badge
+ok   B04 real: D1 choice required, secret pre-filled, no inert « Jamais »
+ok   B04 real: the chosen account and the (possibly edited) password come back for the vault
+ok   B04 real update: armed 500 ms, no default Entrée
+ok   B04 real: a click right after the prompt appears does nothing (armed after 500 ms)
+ok   B04 real: a held Entrée in a field (auto-repeat) never saves (review R4)
+ok   B04 real update: an emptied identifier is refused by « Mettre à jour » (no entry without identifier)
+ok   B03 real: choosing a row or « Gérer » right after the popover appears does nothing
+ok   B03 real: an auto-repeated Entrée (key held from the trigger) never picks an account
+ok   B03 real: once armed, an explicit choice answers
+ok   B04 real: no account chosen => nothing saved (never the last one silently)
+ok   B05 real: surface created
+ok   B05 real: surface with announce
+ok   B05 real: accounts carry no secret
+ok   B05 real: shown
+ok   B05 real: no demo badge, cohabitation note
+ok   B05 real: detail never shows or reveals a secret
+ok   B05 real: a removal the vault did not write is said, the row stays
+ok   B05 real: empty state
+ok   F1: removing A then C deletes exactly A and C (ids), B stays
+ok   B05: back to the fictitious demonstration for the sandbox
+ok   password save: missing identifier is invalid (B04)
+ok   password save: Jamais pour ce site
+ok   dangerous download: More alone maps to no decision
+ok   certificate: issuer line not letter-spaced
+ok   password fill: dots keep 0.08em
+ok   B07 prompt with host menu
+ok   B07: More opens the Paper FYS-0 menu (2 rows, separator, danger row)
+ok   B07: menu anchored to the « Plus d'options » button
+ok   B07: Échap / click outside the menu keeps the popover, no answer
+ok   B07: Copier le lien / Signaler run and keep the popover open
+ok   B08: Conserver quand même… opens the confirmation in the popover
+ok   B08: « Annuler » is the default focus
+ok   B08: Annuler returns to the blocked download, nothing kept
+ok   B08: Échap in the confirmation never keeps the file
+ok   B08: only « Conserver » keeps (simulated result)
+ok   B07: popover aborted while its menu is open: menu dismissed, the late choice dropped
+ok   B08 share prompt
+ok   share: larger picker (640 DIP, 3 columns) on a wide page
+ok   share: « Partager » disabled until a source is selected
+ok   share: focus starts on the first thumbnail
+ok   share: thumbnails side by side, 8 apart
+ok   share: Entrée selects (does not share yet)
+ok   share: → moves the selection
+ok   share: another category clears the choice
+ok   share: only the category's sources are shown
+ok   share: Partager returns the selected source (demo)
+ok   share: Échap cancels
+ok   share: no source: Partager disabled, focus on the categories
+ok   share: disabled Partager does nothing
+ok   share: narrow/short page: 2 columns, smaller thumbnails, fits
+ok   chip: camera before microphone (B01)
+ok   chip: position / notifications / clipboard glyphs
+ok   chip: one glyph per kind, at most 3
+ok   chip: Paper DJ8-0 width, URL shift
+ok   chip: same glyphs as the popover
+ok   state: granted after Autoriser, not in use
+ok   state: in use only for a granted kind
+ok   state: verified use = Active
+ok   state: use stopped, grant kept
+ok   state: a later block replaces the grant
+ok   state: only refusals left = Blocked
+ok   chip: Paper E4Q-0 active width (dot + 6 gaps)
+ok   status: granted rows with toggles, blocked row without
+ok   status (real): says in-use is not reported; site settings link
+ok   status (demo): in use, badge Démonstration
+ok   status: link = Manage, Échap = nothing
+ok   status prompt
+ok   status: focus on the first toggle
+ok   status: Espace switches the toggle off = revoke, popover stays
+ok   status: revoked row off and inert
+ok   status: an off toggle cannot re-grant
+ok   status: Échap closes, nothing else revoked
+ok   modality dialog
+ok   pointer-opened: focus on the initial control, no ring
+ok   Tab: ring shown on the focused control
+ok   pointer again: ring hidden, focus kept
+ok   Échap still cancels with the ring hidden
+ok   keyboard-opened (Entrée / Espace / UIA): ring at once
+ok   host modality pointer: no ring
+ok   host modality keyboard (shortcut): ring
+ok   modality prompt
+ok   permission after a click: Bloquer focused, no ring
+ok   permission: Tab shows the ring
+ok   permission opened from the keyboard: ring
+ok   B06: regular title, lane check row
+ok   B06: title line centred on the 32 DIP tile, text lane at 44
+ok   B06: whole check row clickable (box lane + label lane)
+ok   B06 render sample
+ok   B06 render sample
+ok   B06 render sample
+ok   B06 checked sample
+ok   B06: long scheme wraps (two lines), still one hit row
+ok   B06 long sample
+ok   B06 iframe: no remembering, notice kept
+ok   B06 iframe sample
+ok   B06: external glyph ink is centred in its 256 box (so in the tile)
+ok   alignment prompt
+ok   permission (single): check box centred in the 24 DIP glyph lane, label on the title/description column (32)
+ok   permission: title 16/20 Medium
+ok   permission (grouped): box in the rows' glyph lane (4 + 24), label on the rows' text column (36)
+ok   notifications: notice instead of a check
+ok   notifications: notice text on the description column
+ok   Basic auth: 16/20 title (was 20/24), form check unchanged
+ok   popover glyphs: ink centred (<= 0.5 DIP) and inside the 256 box (never clipped)
+ok   certificate: 16/20 title (was 20/24)
+ok   screen share: 16/20 title (was 20/24)
+ok   B06 iframe: notice text on the description column under the tile (44, was 32)
+ok   B06: unchanged (box 8, text 44)
+ok   password save: 16/20, form layout kept
+ok   menu: Entrée picks the item, choice marked keyboard
+ok   menu: dismissed, no keyboard choice
+ok   clear-data dialog
+ok   drawer created
+ok   cold open: every entrance frame paints Sites only (no Main page)
+ok   cold open: the drawer slides, the page does not
+ok   slow load: no « Chargement… » within 250 ms, shown after
+ok   loaded: list / empty state, no note
+ok   already on Sites: nothing moves
+ok   plain open: Main (Retour path intact)
+ok   open on Main: a normal push to Sites
+ok   re-opened while closing: straight onto Sites, no ghost page
+ok   fades: top none at rest, bottom full while content remains
+ok   fades: the bottom fade shrinks to nothing as the end is reached (no half-dimmed band)
+ok   fades: reach changes continuously with scroll
+ok   chrome keyboard then click « Effacer les données… »: no focus ring
+ok   same row from the keyboard (Entrée / Espace / UIA): ring
+ok   pointer again: no ring
+ok   PasswordDemo::Create
+ok   demo: 5 fictitious accounts, list view
+ok   demo: row opens the detail
+ok   demo: fictitious password in a masked field
+ok   demo: inline delete confirmation
+ok   demo: deleted in memory, back to the list
+ok   demo: Échap closes, closed() once
+ok   demo: Dispose does not call closed() again
+271 checks, 0 failures
+popup_shadow_test: SKIPPED (-SkipPixels): pixel evidence not verified in this run
+

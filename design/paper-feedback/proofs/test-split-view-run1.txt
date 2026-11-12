@@ -1,0 +1,6 @@
+﻿exit=0
+PASS: units, capacity without cap, arrangement, rails on shrink, diagonal zones + hysteresis, refusal, insert/replace/swap/move, resize bounds, snapping, springs
+PASS: compact site names (GitHub long/localised, YouTube variants, title segment, domain, local file, fallbacks)
+PASS: reorder vs lift, split right, Escape restore, insert, refusal, replace keeps tabs, rails on shrink + reopen, keyboard and pointer resize, close hand-over, menu stacking, reverse, F6 panels, session groups, single tab, menu V2 (target header, other sites, homonyms, full group reason, replace, off-screen group), rounded page corners
+Split view tests passed.
+
