@@ -114,28 +114,25 @@ Adoptée par fusion (48cc300 = 63433bf avec résolution manuelle de `src/main.cp
   Windows. Fermeture : peut attendre `CreateProcessW` sous garde puis verrou de retrait ≤ 1 s et Shutdown 1500 ms — pas de promesse de 1,5 s au
   total ; doubles échecs OS et résidu suspendu acceptés par la revue, sans garantie absolue. Aucun setup Microsoft exécuté.
 
-## Coffre — état du branchement (coffre INACTIF, `Vault::Active()` = faux)
-- **B04** chemin réel : **U seulement** (`modal_test` : secret soumis pré-rempli masqué, pas de « Jamais » sans liste réelle, D1 choix explicite du
-  compte avec « Mettre à jour » désactivé tant que non choisi, compte + mot de passe retournés). Capture (script de document du cadre principal,
-  origine lue par le moteur, jamais en privé, un prompt à la fois par onglet) + enregistrement après consentement via `Vault::Commit` (fail closed)
-  : **code présent, non exécuté** tant que le coffre est inactif ; aucune preuve E2E. Crypto système chargée dynamiquement (crypt32/bcrypt de
-  System32).
-- **B03** remplissage : code hôte présent (7a344e4 : prompt B03 réel, cible capturée à l'action et revérifiée par `CanFill` avant déchiffrement,
-  `FillScript` au document principal, copies du secret et du script effacées) — **U seulement, inactif, aucun déclencheur visible** : la commande
-  native visible (déclencheur/ancre/temporisation V5) doit être fixée par la revue (base proposition 11) puis implémentée et recontrôlée ; aucune
-  commande fictive, variantes D2 conditionnelles. **Ce n'est pas un parcours complet.**
-- **B05/E8** gestionnaire réel : code présent (54b0348 : comptes sans secret, pas d'affichage, état vide + cohabitation, suppression via
-  `Vault::Commit`, entrée Réglages distincte visible seulement coffre actif) — **U seulement (modal_test), inactif, aucune E2E**.
-- V5 ouvert ; V7 partiel (copies hôte du secret/script effacées dans B03/B04 ; chaînes WebView2/allocations temporaires non maîtrisées) ; V6 =
-  consentement au vrai Save (B04).
-- **Écart D3 (privé) à résorber** : le contrat autorise en fenêtre privée la LECTURE et le REMPLISSAGE explicite d'un compte existant (sans
-  sauvegarde auto ni métadonnée d'usage) ; le code actuel refuse globalement `privateWindow` dans `OfferVaultFill` et `ShowVaultManager` —
-  **non livré**. Proposition : en privé, B03 et B05 en lecture seule (aucun Save/Remove/Commit, aucune capture), même gardes et effacement des
-  copies. Réglages modifiés en privé : toujours **TRANSITOIRES** (non persistés).
-- E2E coffre prévu ensuite uniquement dans l'hôte de test dédié, profil et secrets SYNTHÉTIQUES ; jamais d'activation de production ni de
-  lecture/export de secrets personnels.
-- Recontrôle indépendant **complet** requis après B03/B04/B05 (frontières origine/cadre/document/consentement + stockage, et recontrôle des
-  corrections M1-M3 et des gardes de l'hôte mTLS) avant toute activation ou PR finale.
+## Coffre — état du branchement (coffre INACTIF en dev/release, `Vault::Active()` = faux)
+Deux niveaux distincts :
+- **Contrat revu** : revue indépendante `design/review-final-integration.md` sur **7a344e4** (verdict « pas encore activable », contrat §5
+  déclencheur visible, §6 privé lecture seule).
+- **Corrections / intégration NON ENCORE revues** (à couvrir par le recontrôle du SHA intégré) : fe270aa (F2 F7 F8), 8237c2a (F1 F3 F4 F5 F6),
+  c86bbcf (V2-L2/L4, P-L2/L3, script mTLS), dde6765 (§5 contrôle natif visible id 906, §6 privé lecture seule), d906ed9 (capture **sans
+  stockage web**, F11 lecture), c3c3f79 (résultat de remplissage confirmé), b34be45 (P-I1), fusions PR64 f97e04a puis retrait « Plus d'infos »
+  8eee59c (décision utilisateur).
+
+| Élément | Code | Preuves (niveau, SHA) | Limites |
+|---|---|---|---|
+| B04 capture → consentement → enregistrement | message unique au submit, **rien en sessionStorage/localStorage** (885d322 en gardait une copie avant consentement : retiré d906ed9) ; secret seulement en mémoire hôte, lié onglet/origine moteur/document, effacé à la réponse, fermeture d'onglet, navigation suivante (> 2 s après la capture, redirections exclues), nouvelle capture ; `PromptJob` efface ses copies | U (`modal_test`, `elements_integration` : déplacement sans copie, navigation propre gardée, redirection gardée, navigation suivante et fermeture effacent) ; **E2E-app synthétique** hôte de test (`vault_e2e`) : enregistrement explicite, v2 sans clair, aucune copie web après enregistrement / refus / sans navigation / navigation inter-origine refusée / crash, scan complet du profil fixture (UTF-8/UTF-16, contrôle positif) | heuristique 2 s (le moteur ne dit pas quelle navigation vient du formulaire) ; V7 partiel (copies internes WebView2/STL) |
+| F11 lecture du fichier | absent = vide ; 0 octet, erreur lecture/partage, format inconnu, endommagé = **indisponible** (refus affiché, jamais « vide ») ; occupé = refus explicite (1 s max) ; contrôles d'interface sans attente (verrou 0 ms, 2 s), relecture fraîche à chaque action explicite et au vrai choix (compte supprimé ailleurs, normal et privé) | U `elements_integration` (absent, 0 octet, format inconnu, violation de partage, verrou tenu par un autre fil < 500 ms, suppression ailleurs) | — |
+| B03 remplissage | contrôle natif visible « Remplir un mot de passe enregistré » (id 906, conditions de visibilité, armé 500 ms, réarmé onglet/navigation, premier plan), source moteur revérifiée au clic et au choix, `CanFill` ; la page répond un **mot fixe** (`filled`/`origin`/`noform`/`nofield`), « rempli » seulement si confirmé, sinon avis honnête | U (armement, `ParseFillResult`) ; E2E-app synthétique : choix explicite → formulaire rempli, confirmé par la page | **hôte de test seulement** : condition premier plan levée (`BROWSER_E2E_VAULT_HOST`), armement 500 ms conservé ; clic immédiat sur le contrôle **non prouvé en E2E** (prouvé en U) ; 1 échec intermittent « formulaire rempli » sur f97e04a conservé (`e2e-runs/f97e04a/vault_e2e_run2_FAIL_B03fill.txt`), cause non établie (vérification à 1 s fixe, sans journal) — instrumentation ajoutée (attente DOM ≤ 3 s + confirmation page + journaux) |
+| B05/E8 gestionnaire | suppression par id, échec dit, lecture seule en privé | U | aucune E2E de suppression |
+| Privé (§6/D3) | lecture + remplissage explicites, jamais de capture ni d'écriture (`Vault::WritesForbidden`) | E2E-app synthétique : remplissage lecture seule, aucune invite, fichier inchangé | réglages modifiés en privé toujours transitoires |
+| P-I1 binaire produit | pin et code hôte de test absents ; « VAULT state: inactive » au lancement | `product_markers` sur build/v2 reconstruit au SHA courant (mêmes drapeaux que release) | le canal release est refusé hors main par conception ; seules diffèrent la chaîne de canal et l'icône |
+
+- Activation : **non** — attend le recontrôle indépendant du SHA intégré (incluant PR64 + retrait, d906ed9, F11, c3c3f79).
 
 ## A5 « Effacer les données » — état
 - Partie locale : delta de suppression sous verrou sur le fichier courant (`src/trace-erase.h`), échec réel remonté (Busy / format inconnu / fichier
