@@ -54,6 +54,8 @@ try {
     @{ name = '302-404'; url = "http://127.0.0.1:$port/r/404"; body = $true; title = 'sentinel-404' },   # redirect, then the site's 404 page
     @{ name = 'empty-404'; url = "http://127.0.0.1:$port/e/404"; body = $false },  # 4xx with no body: the engine's chrome-error page is replaced by ours (review M1)
     @{ name = 'empty-500'; url = "http://127.0.0.1:$port/e/500"; body = $false },
+    @{ name = 'cut403'; url = "http://127.0.0.1:$port/cutc/403"; body = $false },  # 403 cut after headers + partial body: engine says UNKNOWN+403 like a complete one; no document -> our page
+    @{ name = 'cut500'; url = "http://127.0.0.1:$port/cutc/500"; body = $false },
     @{ name = 'cut'; url = "http://127.0.0.1:$port/cut"; body = $false },       # response cut after its 200 headers: our error page (HttpStatusCode 200)
     @{ name = 'empty'; url = "http://127.0.0.1:$port/empty"; body = $false },   # no response at all: our error page
     @{ name = 'rst'; url = "http://127.0.0.1:$port/rst"; body = $false },       # reset: our error page
@@ -71,9 +73,12 @@ try {
     $want = if ($c.title) { $c.title } else { "sentinel-$($c.name)" }; $js = 'js-' + $want.Substring(9)
     $own = $title -eq $want -and $sentinel -eq $js
     $errorPage = $lines -match 'ERROR PAGE'
+    if ($c.name -like 'cut*' -or $c.name -like 'empty-*') { $facts = Read-Page $ws "JSON.stringify({protocol:location.protocol,ready:document.readyState,root:!!document.documentElement})"; "     document facts: $facts" }
     if ($c.body -eq $true) { Check ($own -and -not $errorPage) "HTTP $($c.name): the server's own body and script are shown (not replaced by our error page)" }
     elseif ($c.body -eq $false) { Check ($errorPage -and -not $own -and $href -notlike 'chrome-error:*') "$($c.name): our error page (transport failure, or an HTTP error without a page of its own), never the engine's" }
-    else { "     ($($c.name): recorded only)" }
+    else { "     ($($c.name): recorded only)"
+      $facts = Read-Page $ws "(function(){var n=performance.getEntriesByType('navigation')[0]||{};return JSON.stringify({html:document.documentElement?document.documentElement.outerHTML.length:-1,body:document.body?document.body.innerHTML.length:-1,ready:document.readyState,protocol:location.protocol,responseStatus:n.responseStatus,encoded:n.encodedBodySize,decoded:n.decodedBodySize,transfer:n.transferSize});})()"
+      "     document facts: $facts" }
   }
   $ws.Dispose()
 } finally {
