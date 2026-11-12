@@ -70,7 +70,7 @@ private:
     }
 };
 
-enum class Role { Button, Tab, TabItem, Edit, ToolBar, List, ListItem, Menu, MenuItem, Group };
+enum class Role { Button, Tab, TabItem, Edit, ToolBar, List, ListItem, Menu, MenuItem, Group, Text };
 // One accessible control. `parent` 0 is the window (fragment root). Nodes are listed
 // in depth-first reading order: a parent precedes its children.
 struct Node {
@@ -126,6 +126,7 @@ inline int ControlType(Role role){
     case Role::Menu:return UIA_MenuControlTypeId;
     case Role::MenuItem:return UIA_MenuItemControlTypeId;
     case Role::Group:return UIA_GroupControlTypeId;
+    case Role::Text:return UIA_TextControlTypeId;
     default:return UIA_ButtonControlTypeId;
     }
 }

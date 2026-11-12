@@ -490,7 +490,7 @@ bool Engine::Start(const Config& config) {
     if (startup.phase != Phase::Hidden) {
         std::lock_guard<std::mutex> lock(mutex_);
         view_ = startup;
-        if (startup.phase == Phase::Error) failedOp_ = Op::Check;
+        if (startup.phase == Phase::Error) { failedOp_ = Op::Check; failure_ = Failure::Install; }  // last-result: install failed
     }
     if (startup.phase != Phase::Hidden) Post();
     if (!enabled_) return true;
@@ -518,6 +518,10 @@ BrowserUpdate::View Engine::View() const {
 Engine::LastCheck Engine::LastCheckResult() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return lastCheck_;
+}
+Engine::Failure Engine::LastFailure() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return failure_;
 }
 
 bool Engine::Publish(std::uint64_t gen, const BrowserUpdate::View& view) {
@@ -691,6 +695,7 @@ void Engine::RunCheck(std::uint64_t gen, bool manual, bool startup) {
             if (gen != generation_) return;
             lastCheck_ = LastCheck::Failed;
             failedOp_ = Op::Check;
+            failure_ = Failure::Check;
         }
         if (manual) Publish(gen, Make(Phase::Error, "", L"Impossible de vérifier les mises à jour."));
         return;
@@ -728,6 +733,7 @@ void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (gen != generation_) return;
             failedOp_ = Op::Download;
+            failure_ = Failure::Download;
         }
         BrowserUpdate::View v = Make(Phase::Error, m.version, message);
         v.total = m.size;
@@ -901,6 +907,7 @@ ActionResult Engine::Perform(Action action) {
         SetView(Make(Phase::Error, version, message));
         std::lock_guard<std::mutex> lock(mutex_);
         failedOp_ = Op::Check;
+        failure_ = Failure::Install;
         stagedVersion_.clear();
         return ActionResult::Handled;
     };

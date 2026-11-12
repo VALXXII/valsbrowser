@@ -104,6 +104,9 @@ public:
     DWORD AutoCheckDelayMs() const;
     static constexpr DWORD AutoCheckMinMs = 15 * 60 * 1000, AutoCheckMaxMs = 6 * 3600 * 1000;
     LastCheck LastCheckResult() const;
+    // Which step the current Error view comes from (read-only, for wording: A8 E4). Retry is unchanged.
+    enum class Failure { None, Check, Download, Install };
+    Failure LastFailure() const;
     bool Enabled() const { return enabled_; }
 
 private:
@@ -146,6 +149,7 @@ private:
     std::atomic<bool> notifyPending_{false}, cancel_{false}, shutdown_{false}, busy_{false};
     std::thread worker_;
     Op failedOp_ = Op::None;
+    Failure failure_ = Failure::None;
     LastCheck lastCheck_ = LastCheck::None;
     bool haveManifest_ = false;
     UpdatePackage::Manifest manifest_;

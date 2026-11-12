@@ -198,6 +198,13 @@ public:
         t->SetTransform(D2D1::Matrix3x2F::Translation(-viewMin, 0) * D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * old);
         b->SetColor(color); t->FillGeometry(g, b); t->SetTransform(old);
     }
+    // 16 px radio (B08 certificate rows): 1.5 px ring, filled 8 px dot when selected; `opacity` dims disabled rows.
+    void Radio(D2D1_RECT_F box, bool on, float opacity) {
+        auto* t = Target(); auto* b = Brush(); if (!t || !b) return;
+        const float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
+        b->SetColor(White((on ? .9f : .45f) * opacity)); t->DrawEllipse(D2D1::Ellipse({cx, cy}, 7.f, 7.f), b, 1.5f);
+        if (on) { b->SetColor(White(.9f * opacity)); t->FillEllipse(D2D1::Ellipse({cx, cy}, 4.f, 4.f), b); }
+    }
     // Paper 16 px spinner: r 6.5 track #FFFFFF26, quarter arc #FFFFFFB3, 1.5 px, round caps.
     void Spinner(D2D1_RECT_F box, float turn) {
         auto* t = Target(); auto* b = Brush(); if (!t || !b || !chrome_ || !chrome_->Factory()) return;
@@ -310,7 +317,7 @@ enum class Role { Primary, Secondary, Danger, Quiet };
 enum class Scope { Page, Window, Anchor };
 inline constexpr int CancelButton = 0, AcceptButton = 1;
 inline constexpr int PrivateClearDataButton = 2;                        // A9 « Effacer les données… »
-inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4;      // A8 status actions
+inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4, AboutDownloadButton = 5, AboutCancelButton = 7;   // A8 status actions (7: engine Cancel while downloading)
 inline constexpr int AboutNotesLink = 101, AboutLicensesLink = 102, AboutReportLink = 103;
 struct Button {
     int id = CancelButton; std::wstring label; Role role = Role::Secondary;
@@ -339,7 +346,7 @@ struct Notice { const char* glyph = nullptr; std::wstring text; bool boxed = fal
 struct Row { const char* glyph = nullptr; std::wstring label, trailing; int toggle = -1; std::wstring detail; };
 // B03 fill list: `masked` is the password as dots (tracked 0.08em, Paper EK1-0) unless `plain`;
 // a plain second line (certificate issuer, FW8-0) is ordinary 14 px secondary text, tracking 0.
-struct Account { std::wstring user, masked; bool plain = false; };
+struct Account { std::wstring user, masked; bool plain = false, disabled = false; };   // disabled: shown at 32 %, not selectable (expired certificate)
 struct DangerCard { std::wstring title, subtitle, text; bool shown = false; };       // B07
 // B08 screen share picker (Démonstration): categories in a segmented control (Paper FX2-0), the
 // sources of the current one as thumbnails (FX9-0) drawn locally from `art` (fictitious content,
@@ -361,6 +368,10 @@ struct Spec {
     RECT anchor{}; bool anchorRight = false;                   // Scope::Anchor
     std::vector<Field> fields;
     std::wstring checkLabel; bool checkValue = false, originCheck = false; // single row check (A2/A6; B0x style)
+    // A6 420 (Paper EX1-0 / EY9-0, comment c-npdt3g): key caps after the body (KKC-0: padding-left 4,
+    // gap 4; cap KKD-0 #FFFFFF0F radius 4, padding 2/6, 14/16 tabular at 50 %), and the single check
+    // on the actions row, left (EYG-0 space-between) when it fits beside the buttons.
+    std::vector<std::wstring> bodyKeys; bool checkInActions = false;
     // B06 (user override of Paper FJ5-0): the check row shares the head's lanes — box centred in the
     // 32 DIP tile lane, label on the description's left edge, same 14/18 regular role, 70 % white.
     bool checkInHeadLane = false;
@@ -373,8 +384,14 @@ struct Spec {
     DangerCard danger;
     SourcePicker sources;
     bool accountsNavigate = false;                             // B05: account rows call onButton(Dialog::AccountHit(i)) and stay open
+    // B08 certificate (E1): rows are radios. A click/arrow/Espace only selects; the AcceptButton
+    // (« Envoyer ») stays disabled until a valid row is selected and alone transmits the choice.
+    bool accountsSelect = false; int accountSelected = -1;
     std::vector<Button> buttons; bool stretchButtons = false, softButtons = false;
     bool demo = false;                                         // badge « Démonstration »
+    // Review F3/V5: no button acts before the dialog has been shown, still and in a foreground window, for
+    // `armMs` (credential prompts: 500). A page cannot make a click or Entrée land on it by surprise.
+    int armMs = 0;
     std::function<std::wstring(const std::vector<std::wstring>&)> validate; // inline error or ""
     std::function<void(int)> onButton;                         // buttons with closes = false
     // Input that opened the dialog. Focus always lands on the initial control (Entrée / Échap work);
@@ -451,7 +468,7 @@ private:
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     float thumbScale_ = 1; int sourceColumns_ = 2;   // B08 grid: shrinks thumbnails before overflowing
     Motion::Tween fade_; Motion::Time spinStart_{};
-    static constexpr long long GroupKey = 1;
+    static constexpr long long GroupKey = 1, DangerKey = 7500;   // DangerKey: B07 card group (UIA only, not a hit)
 
     UINT Dpi() const { return GetDpiForWindow(hwnd_ ? hwnd_ : owner_); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
@@ -474,6 +491,7 @@ private:
         if (hit >= 1000 && hit < 2000) return !ButtonDisabled(spec_.buttons[static_cast<size_t>(hit - 1000)]);
         if (hit >= 2000 && hit < 2999) return !spec_.checks[static_cast<size_t>(hit - 2000)].disabled;
         if (hit == StatusHit) return spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled;
+        if (hit >= 6200 && hit < 6900) { const size_t i = static_cast<size_t>(hit - 6200); return i < spec_.accounts.size() && !spec_.accounts[i].disabled; }
         if (IsRow(hit)) { const size_t i = static_cast<size_t>(hit - 9000); return i < spec_.rows.size() && spec_.rows[i].toggle == 1; }
         if (IsSource(hit)) return spec_.sources.shown && static_cast<size_t>(hit - 8100) < spec_.sources.items.size() && spec_.sources.items[static_cast<size_t>(hit - 8100)].category == spec_.sources.category;
         return true;
@@ -490,7 +508,14 @@ private:
         return SourceHit(v.front());
     }
     void SyncAccept() {
+        if (spec_.accountsSelect) { for (auto& b : spec_.buttons) if (b.id == AcceptButton) b.disabled = spec_.accountSelected < 0; return; }
         for (auto& b : spec_.buttons) if (b.id == spec_.sources.acceptId) b.disabled = spec_.sources.selected < 0;
+    }
+    void SelectAccount(size_t i, bool keyboard) {
+        if (!spec_.accountsSelect || i >= spec_.accounts.size() || spec_.accounts[i].disabled) return;
+        spec_.accountSelected = static_cast<int>(i); SyncAccept();
+        keyboard_ = keyboard; FocusStop(AccountHit(i)); InvalidateRect(hwnd_, nullptr, FALSE);
+        if (uia_.Listening()) { uia_.Raise(AccountHit(i), UIA_SelectionItem_ElementSelectedEventId); uia_.ChildrenChanged(GroupKey); }
     }
     void SetCategory(int c, bool keyboard) {
         auto& sp = spec_.sources; if (!sp.shown || sp.categories.empty()) return;
@@ -544,6 +569,34 @@ private:
     // With a 32 DIP tile and a regular (not large) title, the title's first line is centred on the tile.
     float TileTitleDrop() const { return spec_.tileGlyph && !spec_.largeTitle && !spec_.title.empty() ? (32 - TitleStyle().line) / 2 : 0; }
     DialogKit::Style TitleStyle() const { auto s = spec_.largeTitle ? DialogKit::Type::aboutTitle : DialogKit::Type::title; if (spec_.largeTitle) s.trackingEm = -.02f; return s; }
+    static constexpr DialogKit::Style KeyCapStyle{14, 16, false, 0, true};
+    float KeyCapWidth(const std::wstring& k) { return std::ceil(kit_.Width(k, KeyCapStyle)) + 12; }
+    float BodyKeysWidth() { if (spec_.bodyKeys.empty()) return 0; float w = 4; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) w += (i ? 4 : 0) + KeyCapWidth(spec_.bodyKeys[i]); return w; }
+    // The caps follow the body on its line when it is one line and they fit, else start the next line.
+    bool BodyKeysInline(float tw) { return kit_.Height(spec_.body, DialogKit::Type::body, tw) <= DialogKit::Type::body.line && std::ceil(kit_.Width(spec_.body, DialogKit::Type::body)) + BodyKeysWidth() <= tw; }
+    void DrawBodyKeys(float x, float y) {
+        x += 4;
+        for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) {
+            const float w = KeyCapWidth(spec_.bodyKeys[i]);
+            kit_.Fill({x, y, x + w, y + 20}, 4, DialogKit::White(0x0F / 255.f));
+            kit_.Text(spec_.bodyKeys[i], KeyCapStyle, x + 6, y + 2, w - 12 + 1, DialogKit::White(.5f));
+            x += w + 4;
+        }
+    }
+    float CheckInActionsWidth() { return 16 + 8 + std::ceil(kit_.Width(spec_.checkLabel, DialogKit::Type::detail)) + 8; }
+    bool CheckOnActionsRow() {
+        if (!spec_.checkInActions || spec_.checkLabel.empty() || spec_.buttons.empty() || spec_.stretchButtons || spec_.danger.shown) return false;
+        float buttons = 0; for (size_t i = 0; i < spec_.buttons.size(); ++i) buttons += (i ? P::buttonGap : 0) + ButtonWidth(spec_.buttons[i]);
+        return CheckInActionsWidth() + 8 + buttons <= ContentWidth();
+    }
+    float StatusButtonWidth() { return spec_.status.hasButton ? kit_.Width(spec_.status.button.label, DialogKit::Type::button) + 2 * P::buttonPad : 0; }
+    float StatusTextWidth() { return ContentWidth() - 34 - 4 - (spec_.status.hasButton ? StatusButtonWidth() + 8 : 0); }
+    float StatusTextHeight() {   // whole 18 DIP detail lines (the measured height can be a little short)
+        if (spec_.status.detail.empty()) return 20;
+        const float line = DialogKit::Type::detail.line, lines = std::max(1.f, std::ceil(kit_.Height(spec_.status.detail, DialogKit::Type::detail, StatusTextWidth()) / line - .2f));
+        return 20 + lines * line;
+    }
+    float StatusHeight() { const float t = StatusTextHeight(); return t <= 20 + DialogKit::Type::detail.line ? 48.f : t + 12; }   // title + one detail line fit 48; more lines: padding 6
     float HeadHeight() {
         const float cw = ContentWidth();
         if (spec_.appTile) return std::max(48.f, 2 + DialogKit::Type::aboutTitle.line + 4 + kit_.Height(spec_.body, DialogKit::Type::tabular, cw - 48 - 16 - 24 - 16));
@@ -552,6 +605,7 @@ private:
         if (!spec_.title.empty()) h += kit_.Height(spec_.title, TitleStyle(), tw);
         if (!spec_.subtitle.empty()) h += (h > 0 ? (spec_.largeTitle ? 8 : 4) : 0) + kit_.Height(spec_.subtitle, DialogKit::Type::detail, tw);
         if (!spec_.body.empty()) h += (h > 0 ? 4 : 0) + kit_.Height(spec_.body, DialogKit::Type::body, tw);
+        if (!spec_.bodyKeys.empty() && !BodyKeysInline(tw)) h += 4 + 20;
         if (!spec_.footnote.empty() && !spec_.appTile) h += 8 + kit_.Height(spec_.footnote, DialogKit::Type::body, tw);
         if (spec_.tileGlyph) h = std::max(h + TileTitleDrop(), 32.f);
         if (spec_.closeButton) h = std::max(h, 24.f);
@@ -631,8 +685,11 @@ private:
         }
         for (size_t i = 0; i < spec_.infos.size(); ++i) { next(B::Info, i, 32); actionsLift = false; }
         if (spec_.hasStatus) {
-            const auto r = next(B::Status, 0, 48);
-            if (spec_.status.hasButton) { const float w = kit_.Width(spec_.status.button.label, DialogKit::Type::button) + 2 * P::buttonPad; boxes_.push_back({StatusHit, {right - 4 - w, r.top + 8, right - 4, r.top + 40}}); }
+            // A8 contract: the row is 48 minimum and grows (padding 6) when the detail needs 2 lines;
+            // icon, text block and button stay vertically centred.
+            const float h = StatusHeight();
+            const auto r = next(B::Status, 0, h);
+            if (spec_.status.hasButton) { const float w = StatusButtonWidth(); const float by = r.top + (h - 32) / 2; boxes_.push_back({StatusHit, {right - 4 - w, by, right - 4, by + 32}}); }
         }
         if (!spec_.links.empty()) { const auto r = next(B::Links, 0, 32.f * spec_.links.size()); for (size_t i = 0; i < spec_.links.size(); ++i) boxes_.push_back({LinkHit(i), {left, r.top + 32 * i, right, r.top + 32 * (i + 1)}}); }
         if (spec_.appTile && !spec_.footnote.empty()) next(B::Footnote, 0, DialogKit::Type::body.line);
@@ -648,7 +705,8 @@ private:
             if (manage) boxes_.push_back({ManageHit, {left, ry + 3, right, ry + 35}});
             actionsLift = false;
         }
-        if (!spec_.checkLabel.empty()) {
+        const bool checkOnActions = CheckOnActionsRow();
+        if (!spec_.checkLabel.empty() && !checkOnActions) {
             if (LaneCheck()) {
                 const float lane = SecondaryLane().text; const float h = std::max(DialogKit::Type::detail.line, kit_.Height(spec_.checkLabel, DialogKit::Type::detail, cw - lane));
                 const auto r = next(B::Check, 0, h);
@@ -674,8 +732,12 @@ private:
             if (!spec_.buttons.empty()) LayoutActions(r.bottom - 12 - P::button, r.left + 12, r.right - 12);
         } else if (!spec_.buttons.empty()) {
             const bool lift = actionsLift && !spec_.appTile && !Anchored() && !spec_.stretchButtons && !spec_.softButtons;
-            const auto r = next(B::Actions, 0, (lift ? P::actionsTop : 0) + P::button);
+            const auto r = next(B::Actions, 0, (lift && !checkOnActions ? P::actionsTop : 0) + P::button);
             LayoutActions(r.bottom - P::button, left, right);
+            if (checkOnActions) {   // EYG-0: the check sits left on the buttons' row (KK7-0 h 32, gap 8)
+                const D2D1_RECT_F c{left, r.bottom - P::button, left + CheckInActionsWidth(), r.bottom};
+                blocks_.push_back({B::Check, 0, c}); boxes_.push_back({SimpleCheckHit, c});
+            }
         }
         height_ = y + Pad();
     }
@@ -796,7 +858,7 @@ private:
         for (size_t i = 0; i < spec_.checks.size(); ++i) if (!spec_.checks[i].disabled) o.push_back(CheckHit(i));
         if (spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled) o.push_back(StatusHit);
         for (size_t i = 0; i < spec_.links.size(); ++i) o.push_back(LinkHit(i));
-        for (size_t i = 0; i < spec_.accounts.size(); ++i) o.push_back(AccountHit(i));
+        for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) o.push_back(AccountHit(i));
         if (!spec_.manageLabel.empty()) o.push_back(ManageHit);
         if (!spec_.checkLabel.empty()) o.push_back(SimpleCheckHit);
         for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].leading && !ButtonDisabled(spec_.buttons[i])) o.push_back(ButtonHit(i));
@@ -822,7 +884,7 @@ private:
     }
     int InitialStop() const {
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].value.empty() || i + 1 == spec_.fields.size()) return FieldStop(i);
-        if (!spec_.accounts.empty()) return AccountHit(0);
+        for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) return AccountHit(i);
         for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle == 1) return RowHit(i);
         if (spec_.sources.shown) { if (const int s = SourceStop()) return s; if (!spec_.sources.categories.empty()) return CategoryHit(static_cast<size_t>(spec_.sources.category)); }
         for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].initialFocus && !ButtonDisabled(spec_.buttons[i])) return ButtonHit(i);
@@ -833,10 +895,24 @@ private:
         return 0;
     }
     // ---- actions --------------------------------------------------------------------------------
+    ULONGLONG armedFrom_ = 0; bool foregroundForTest_ = false;   // set only by unit tests (ArmNowForTest)
+    bool Armed() const {
+        if (spec_.armMs <= 0) return true;
+        if (GetTickCount64() < armedFrom_) return false;
+#ifdef BROWSER_E2E_VAULT_HOST
+        return true;   // TEST HOST ONLY: automation cannot bring a window forward without SendInput; the 500 ms arming still applies
+#endif
+        if (foregroundForTest_) return true;
+        HWND fg = GetForegroundWindow(); return fg == hwnd_ || fg == owner_ || (owner_ && GetAncestor(fg, GA_ROOTOWNER) == owner_);
+    }
+public:
+    void ArmNowForTest(bool asForeground = false) { armedFrom_ = 0; foregroundForTest_ = asForeground; }
+    bool ArmedForTest() const { return Armed(); }
+private:
     Result Collect(int button) const {
         Result r; r.button = button; r.values = Values(); r.checked = spec_.checkValue;
         for (auto& c : spec_.checks) r.checks.push_back(c.value);
-        r.select = spec_.sources.shown ? spec_.sources.selected : spec_.hasSelect ? spec_.select.index : -1;
+        r.select = spec_.accountsSelect ? spec_.accountSelected : spec_.sources.shown ? spec_.sources.selected : spec_.hasSelect ? spec_.select.index : -1;
         return r;
     }
     void Close(Result result) {
@@ -844,8 +920,9 @@ private:
         if (choosing_) { if (hostMenu_) { if (hooks_.dismiss) hooks_.dismiss(); } else if (menu_) menu_->Cancel(); }
         open_ = false; busy_ = false; choosing_ = false;
         auto done = std::move(done_); done_ = nullptr;
-        // Secrets never outlive the answer: the EDIT buffers are overwritten now.
+        // Secrets never outlive the answer: the EDIT buffers and the spec's password values are overwritten now (F6).
         for (size_t i = 0; i < edits_.size(); ++i) if (spec_.fields[i].password) edits_[i].Wipe();
+        for (auto& f : spec_.fields) if (f.password && !f.value.empty()) { SecureZeroMemory(f.value.data(), f.value.size() * sizeof(wchar_t)); f.value.clear(); }
         if (uia_.Listening()) uia_.Raise(GroupKey, UIA_Window_WindowClosedEventId);
         closing_ = true; fade_.Set(0, Motion::Now(), Motion::Milliseconds(static_cast<int>(P::exitMs)), false, Motion::Curve::EaseOut);
         EnableWindow(hwnd_, FALSE);
@@ -865,9 +942,10 @@ private:
     }
     void Press(size_t index) {
         if (index >= spec_.buttons.size()) return;
+        if (!Armed()) return;
         const Button b = spec_.buttons[index];
         if (ButtonDisabled(b)) return;
-        if (b.isDefault && (spec_.validate || !spec_.fields.empty())) {
+        if ((b.isDefault || b.id == AcceptButton) && (spec_.validate || !spec_.fields.empty())) {   // review N2: « Mettre à jour » (not default) is validated too
             submitted_ = true;
             if (spec_.validate) { fieldError_ = spec_.validate(Values()); if (!fieldError_.empty()) { Relayout(); FocusStop(FieldStop(0)); RefreshCaret(); return; } }
             if (Invalid()) { Relayout(); return; }
@@ -915,8 +993,14 @@ private:
         else if (hit == SelectHit) ChooseSelect(keyboard);
         else if (hit == StatusHit) { const Button b = spec_.status.button; if (b.closes) Close(Collect(b.id)); else if (spec_.onButton) spec_.onButton(b.id); }
         else if (hit >= 4000 && hit < 5000) Close(Collect(spec_.links[static_cast<size_t>(hit - 4000)].id));
-        else if (hit >= 6200 && hit < 6900) { if (spec_.accountsNavigate) { if (spec_.onButton) spec_.onButton(hit); } else { Result r = Collect(AcceptButton); r.select = hit - 6200; Close(r); } }
-        else if (hit == ManageHit) Close(Collect(spec_.manageId));
+        else if (hit >= 6200 && hit < 6900 && spec_.accountsSelect) {
+            // Entrée on the selected row sends it (as the default button would); a click, ↑/↓ or Espace only select.
+            const size_t i = static_cast<size_t>(hit - 6200);
+            if (keyboard && static_cast<int>(i) == spec_.accountSelected && GetKeyState(VK_SPACE) >= 0) { for (size_t b = 0; b < spec_.buttons.size(); ++b) if (spec_.buttons[b].id == AcceptButton && !spec_.buttons[b].disabled) { Press(b); return; } }
+            SelectAccount(i, keyboard);
+        }
+        else if (hit >= 6200 && hit < 6900) { if (spec_.accountsNavigate) { if (spec_.onButton) spec_.onButton(hit); } else { if (!Armed()) return; Result r = Collect(AcceptButton); r.select = hit - 6200; Close(r); } }   // review N1: a row that answers is armed like a button
+        else if (hit == ManageHit) { if (!Armed()) return; Close(Collect(spec_.manageId)); }
         else if (hit >= 6900 && hit < 7000) ToggleReveal(static_cast<size_t>(hit - 6900));
         else if (hit == CloseHit) Cancel();
         else if (IsRow(hit)) { if (spec_.onButton) spec_.onButton(hit); }
@@ -947,8 +1031,9 @@ private:
             if (!inEdit && IsSource(focus_)) return MoveSource(step * sourceColumns_);
             if (!inEdit && focus_ == SelectHit) { Activate(SelectHit, true); return true; }   // ↑/↓ open the list, never change silently
             if (!inEdit && ((focus_ >= 6200 && focus_ < 6900) || focus_ == ManageHit)) {   // B03: ↓ then Entrée
-                std::vector<int> list; for (size_t i = 0; i < spec_.accounts.size(); ++i) list.push_back(AccountHit(i)); if (!spec_.manageLabel.empty()) list.push_back(ManageHit);
+                std::vector<int> list; for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) list.push_back(AccountHit(i)); if (!spec_.manageLabel.empty()) list.push_back(ManageHit);
                 auto it = std::find(list.begin(), list.end(), focus_); int i = static_cast<int>(it - list.begin()) + step; i = std::clamp(i, 0, static_cast<int>(list.size()) - 1);
+                if (spec_.accountsSelect && list[static_cast<size_t>(i)] != ManageHit) { SelectAccount(static_cast<size_t>(list[static_cast<size_t>(i)] - 6200), true); return true; }   // radio group: arrows move the selection, never send
                 keyboard_ = true; FocusStop(list[static_cast<size_t>(i)]); return true;
             }
             if (!inEdit) { Scroll(step * DialogKit::Type::message.line); return true; }
@@ -977,7 +1062,8 @@ private:
         switch (msg) {
         case WM_NCDESTROY: RemoveWindowSubclass(h, EditProc, 0x4D44); break;
         case WM_GETDLGCODE: return DefSubclassProc(h, msg, w, l) | DLGC_WANTALLKEYS;
-        case WM_KEYDOWN: if ((w == VK_ESCAPE || w == VK_TAB || w == VK_RETURN) && self->Key(w)) return 0; break;
+        case WM_KEYDOWN: if (w == VK_RETURN && (l & (1 << 30))) return 0;   // review R4: a held Entrée (e.g. from the page's submit) never answers from a field
+            if ((w == VK_ESCAPE || w == VK_TAB || w == VK_RETURN) && self->Key(w)) return 0; break;
         case WM_CHAR: if (w == L'\t' || w == L'\r' || w == 27) return 0; break;
         case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->focus_ = 0; self->RefreshCaret(); InvalidateRect(self->hwnd_, nullptr, FALSE); return r; }
         case WM_KILLFOCUS: InvalidateRect(self->hwnd_, nullptr, FALSE); break;
@@ -1030,7 +1116,7 @@ private:
         case WM_LBUTTONDOWN: { keyboard_ = false; int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; pressed_ = hit; if (hit) SetCapture(h); Interact(); return 0; }
         case WM_LBUTTONUP: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); const int was = pressed_; pressed_ = 0; if (GetCapture() == h) ReleaseCapture(); Interact(); if (was && was == hit) Activate(hit, false); return 0; }
         case WM_MOUSEWHEEL: Scroll(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3 * DialogKit::Type::message.line); return 0;
-        case WM_KEYDOWN: if (Key(w)) return 0; break;
+        case WM_KEYDOWN: if ((l & (1 << 30)) && (w == VK_RETURN || w == VK_SPACE)) return 0; if (Key(w)) return 0; break;   // review N1: auto-repeat of Entrée / Espace never activates
         case WM_SYSKEYDOWN: if (AltKey(w)) return 0; break;
         case WM_SETFOCUS: InvalidateRect(h, nullptr, FALSE); return 0;
         case WM_DPICHANGED: if (open_) { MakeFont(); Place(false); } return 0;
@@ -1063,7 +1149,9 @@ private:
             const float tx = HeadLeft(), tw = HeadTextWidth(); y += TileTitleDrop();
             if (!spec_.title.empty()) { kit_.Text(spec_.title, TitleStyle(), tx, y, tw, DialogKit::White(1), true); y += kit_.Height(spec_.title, TitleStyle(), tw); }
             if (!spec_.subtitle.empty()) { y += spec_.largeTitle ? 8 : 4; kit_.Text(spec_.subtitle, DialogKit::Type::detail, tx, y, tw, DialogKit::White(P::origin), true); y += kit_.Height(spec_.subtitle, DialogKit::Type::detail, tw); }
-            if (!spec_.body.empty()) { y += 4; kit_.Text(spec_.body, DialogKit::Type::body, tx, y, tw, DialogKit::White(P::body), true); y += kit_.Height(spec_.body, DialogKit::Type::body, tw); }
+            if (!spec_.body.empty()) { y += 4; kit_.Text(spec_.body, DialogKit::Type::body, tx, y, tw, DialogKit::White(P::body), true);
+                if (!spec_.bodyKeys.empty()) { if (BodyKeysInline(tw)) DrawBodyKeys(tx + std::ceil(kit_.Width(spec_.body, DialogKit::Type::body)), y); else DrawBodyKeys(tx - 4, y + kit_.Height(spec_.body, DialogKit::Type::body, tw) + 4); }
+                y += kit_.Height(spec_.body, DialogKit::Type::body, tw); if (!spec_.bodyKeys.empty() && !BodyKeysInline(tw)) y += 4 + 20; }
             if (!spec_.footnote.empty()) { y += 8; kit_.Text(spec_.footnote, DialogKit::Type::body, tx, y, tw, DialogKit::White(P::muted), true); }
         }
         if (spec_.closeButton) {
@@ -1255,7 +1343,8 @@ private:
             case B::Status: {
                 const float sy = b.r.top;
                 kit_.Fill(b.r, P::fieldRadius, DialogKit::White(P::infoFill));
-                const D2D1_RECT_F icon{left + 10, sy + 16, left + 26, sy + 32};
+                const float sh = b.r.bottom - b.r.top, iy = sy + (sh - 16) / 2;
+                const D2D1_RECT_F icon{left + 10, iy, left + 26, iy + 16};
                 switch (spec_.status.icon) {
                 case StatusIcon::Check: kit_.DrawGlyph(DialogKit::Glyph::checkCircle, icon, 16, DialogKit::White(.7f)); break;
                 case StatusIcon::Download: kit_.DrawGlyph(DialogKit::Glyph::download, icon, 16, DialogKit::White(.7f)); break;
@@ -1263,10 +1352,9 @@ private:
                 case StatusIcon::Busy: kit_.Spinner(icon, reduced_ ? .125f : SpinTurn(now)); break;
                 case StatusIcon::None: break;
                 }
-                const float bw = spec_.status.hasButton ? Find(StatusHit).right - Find(StatusHit).left + 8 : 0;
-                const float textH = spec_.status.detail.empty() ? 20 : 38;
-                kit_.Text(spec_.status.title, DialogKit::Type::body, left + 34, sy + (48 - textH) / 2, cw - 34 - 4 - bw, DialogKit::White(1));
-                if (!spec_.status.detail.empty()) kit_.Text(spec_.status.detail, DialogKit::Type::detail, left + 34, sy + (48 - textH) / 2 + 20, cw - 34 - 4 - bw, DialogKit::White(P::muted));
+                const float tw = StatusTextWidth(), textH = spec_.status.detail.empty() ? 20 : StatusTextHeight(), ty = sy + std::round((sh - textH) / 2);
+                kit_.Text(spec_.status.title, DialogKit::Type::body, left + 34, ty, tw, DialogKit::White(1));
+                if (!spec_.status.detail.empty()) kit_.Text(spec_.status.detail, DialogKit::Type::detail, left + 34, ty + 20, tw, DialogKit::White(P::muted), true);
                 if (spec_.status.hasButton) { const auto v = motion_.Visual(StatusHit, now); const auto& sb = spec_.status.button; kit_.Button(Find(StatusHit), sb.label, ToneOf(sb.role), v.hover, v.press, Focused(StatusHit), sb.disabled || busy_); }
                 break;
             }
@@ -1292,8 +1380,10 @@ private:
                     const DialogKit::Style letter{12, 12, true};
                     const float lw = kit_.Width(initial, letter);
                     kit_.Text(initial, letter, (avatar.left + avatar.right - lw) / 2, avatar.top + 6, lw + 1, DialogKit::White(P::secondaryText));
-                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(1));
-                    kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - 50, DialogKit::White(P::muted));
+                    const float dim = spec_.accounts[i].disabled ? .32f : 1.f;   // Paper FW8-0: expired certificate at 32 %
+                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(dim));
+                    kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - (spec_.accountsSelect ? 74 : 50), DialogKit::White(P::muted * dim));
+                    if (spec_.accountsSelect) kit_.Radio({r.right - 28, r.top + 16, r.right - 12, r.top + 32}, static_cast<int>(i) == spec_.accountSelected, dim);
                 }
                 if (!spec_.manageLabel.empty()) {
                     const auto r = Find(ManageHit); const auto v = motion_.Visual(ManageHit, now);
@@ -1351,11 +1441,22 @@ private:
         if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation --------------------------------------------------------------------------
+    // B07 card for UIA (R1): file, real reason title and full text, from the spec (not the drawn, possibly
+    // ellipsised lines). Given as the dialog's description, the card group's name/help and each card
+    // button's help, so it is read on open and again on every keyboard stop.
+    std::wstring DangerSpoken() const {
+        std::wstring s = spec_.danger.title;
+        if (!spec_.danger.subtitle.empty()) s += (s.empty() ? L"" : L" — ") + spec_.danger.subtitle;
+        if (!spec_.danger.text.empty()) s += (s.empty() ? L"" : L". ") + spec_.danger.text;
+        return s;
+    }
     std::wstring AccessibleName() const { if (!spec_.title.empty()) return spec_.title; if (!spec_.origin.empty()) return spec_.origin; if (spec_.danger.shown) return spec_.danger.title; if (!spec_.accountsTitle.empty()) return spec_.accountsTitle; return L"Dialogue"; }
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!open_) return nodes;
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = AccessibleName();
-        g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle; if (!error_.empty()) g.help = error_;
+        g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle;
+        if (spec_.message.empty() && !spec_.body.empty() && !spec_.bodyKeys.empty()) { g.help += L" "; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) g.help += (i ? L" + " : L"") + spec_.bodyKeys[i]; g.help += L"."; } if (!error_.empty()) g.help = error_;
+        if (spec_.danger.shown && error_.empty()) g.help = DangerSpoken();   // R1: the full reason, never the ellipsised line
         g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
         auto add = [&](int key, const std::wstring& name, D2D1_RECT_F r, bool enabled, const std::wstring& id = L"") { Accessibility::Node n; n.key = key; n.parent = GroupKey; n.name = name; n.bounds = ScreenOf(r); n.enabled = enabled; n.automationId = id; nodes.push_back(n); return nodes.size() - 1; };
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].reveal) { const auto at = add(RevealHit(i), L"Afficher le mot de passe", Find(RevealHit(i)), !busy_); nodes[at].toggle = i < revealed_.size() && revealed_[i] ? 2 : 1; }
@@ -1373,10 +1474,11 @@ private:
         for (size_t i = 0; i < spec_.checks.size(); ++i) { const auto at = add(CheckHit(i), spec_.checks[i].label, Find(CheckHit(i)), !spec_.checks[i].disabled && !busy_); nodes[at].toggle = spec_.checks[i].value ? 2 : 1; nodes[at].help = spec_.checks[i].detail; }
         if (spec_.hasStatus && spec_.status.hasButton) { const auto at = add(StatusHit, spec_.status.button.label, Find(StatusHit), Enabled(StatusHit)); nodes[at].help = spec_.status.title + L" · " + spec_.status.detail; }
         for (size_t i = 0; i < spec_.links.size(); ++i) add(LinkHit(i), spec_.links[i].label, Find(LinkHit(i)), !busy_);
-        for (size_t i = 0; i < spec_.accounts.size(); ++i) { const auto at = add(AccountHit(i), spec_.accounts[i].user, Find(AccountHit(i)), true); nodes[at].role = Accessibility::Role::ListItem; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(spec_.accounts.size()); }
+        for (size_t i = 0; i < spec_.accounts.size(); ++i) { const auto at = add(AccountHit(i), spec_.accounts[i].user, Find(AccountHit(i)), !spec_.accounts[i].disabled); nodes[at].selected = spec_.accountsSelect && static_cast<int>(i) == spec_.accountSelected; nodes[at].help = spec_.accounts[i].masked; nodes[at].role = Accessibility::Role::ListItem; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(spec_.accounts.size()); }
         if (!spec_.manageLabel.empty()) add(ManageHit, spec_.manageLabel, Find(ManageHit), true);
         if (!spec_.checkLabel.empty()) { const auto at = add(SimpleCheckHit, spec_.checkLabel, Find(SimpleCheckHit), !busy_); nodes[at].toggle = spec_.checkValue ? 2 : 1; }
-        for (size_t i = 0; i < spec_.buttons.size(); ++i) add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId);
+        if (spec_.danger.shown) { Accessibility::Node c; c.key = DangerKey; c.parent = GroupKey; c.role = Accessibility::Role::Group; c.focusable = false; c.name = spec_.danger.title + (spec_.danger.subtitle.empty() ? L"" : L" — " + spec_.danger.subtitle); c.help = spec_.danger.text; c.automationId = L"DangerousDownloadCard"; for (const auto& bl : blocks_) if (bl.type == B::Danger) c.bounds = ScreenOf(bl.r); nodes.push_back(c); }
+        for (size_t i = 0; i < spec_.buttons.size(); ++i) { const auto at = add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId); if (spec_.danger.shown) nodes[at].help = DangerSpoken(); }
         if (spec_.closeButton) add(CloseHit, L"Fermer", Find(CloseHit), true, L"DialogClose");
         return nodes;
     }
@@ -1428,7 +1530,7 @@ public:
         if (closing_) FinishClosing();
         spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
         busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
-        keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now();
+        keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs); foregroundForTest_ = false;
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
         SetWindowTextW(hwnd_, AccessibleName().c_str());
         EnableWindow(hwnd_, TRUE);
@@ -1523,6 +1625,8 @@ public:
     DialogKit::Style TitleStyleForTest() const { return TitleStyle(); }
     float TitleDropForTest() const { return TileTitleDrop(); }
     void KeyForTest(WPARAM key) { Key(key); }
+    void KeyMessageForTest(WPARAM key, bool repeat) { SendMessageW(hwnd_, WM_KEYDOWN, key, repeat ? (1 << 30) : 0); }
+    void FieldKeyMessageForTest(size_t i, WPARAM key, bool repeat) { if (i < edits_.size() && edits_[i].edit) SendMessageW(edits_[i].edit, WM_KEYDOWN, key, repeat ? (1 << 30) : 0); }
     void AltKeyForTest(WPARAM key) { AltKey(key); }
     bool ChoosingForTest() const { return choosing_; }
     ContextMenu::Menu* MenuForTest() const { return menu_.get(); }
@@ -1616,9 +1720,10 @@ inline Spec ClearDataSpec(std::vector<std::wstring> details = {}, int period = 1
 // the action turns destructive.
 inline Spec CloseWindowSpec(int tabs, const std::wstring& download = L"", const std::wstring& progress = L"") {
     Spec s; s.kind = Kind::CloseWindow; s.scope = Scope::Window; s.automationId = L"CloseWindow";
+    s.width = 420;   // Paper EY9-0 (comment c-npdt3g): this confirmation only; other dialogs keep 400
     s.title = L"Fermer " + std::to_wstring(tabs) + L" onglets ?";
     if (download.empty()) {
-        s.body = L"Rouvrez-les depuis l'historique ou avec Ctrl + Maj + T."; s.checkLabel = L"Ne plus demander";
+        s.body = L"Rouvrez-les depuis l'historique ou avec"; s.bodyKeys = {L"Ctrl", L"Maj", L"T"}; s.checkLabel = L"Ne plus demander"; s.checkInActions = true;
         s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, L"Fermer la fenêtre", Role::Primary, true, false, false, L"DialogCloseWindow")};
     } else {
         s.body = L"Un téléchargement est en cours et sera annulé."; s.infos.push_back({download, progress});

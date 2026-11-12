@@ -37,6 +37,39 @@ struct PermissionArgs : Fake<ICoreWebView2PermissionRequestedEventArgs> {
     HRESULT STDMETHODCALLTYPE put_State(COREWEBVIEW2_PERMISSION_STATE v) override{state=v;++writes;return S_OK;}
     HRESULT STDMETHODCALLTYPE GetDeferral(ICoreWebView2Deferral** d) override{*d=&deferral;return S_OK;}
 };
+struct FakeCert : Fake<ICoreWebView2ClientCertificate> {
+    std::wstring name, issuer; double to = 0;
+    FakeCert(std::wstring n, std::wstring i, double t) : name(std::move(n)), issuer(std::move(i)), to(t) {}
+    HRESULT STDMETHODCALLTYPE get_Subject(LPWSTR* v) override{*v=Dup((L"CN="+name).c_str());return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Issuer(LPWSTR* v) override{*v=Dup(issuer.c_str());return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_ValidFrom(double* v) override{*v=0;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_ValidTo(double* v) override{*v=to;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_DerEncodedSerialNumber(LPWSTR* v) override{*v=Dup(L"01");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_DisplayName(LPWSTR* v) override{*v=Dup(name.c_str());return S_OK;}
+    HRESULT STDMETHODCALLTYPE ToPemEncoding(LPWSTR* v) override{*v=Dup(L"");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_PemEncodedIssuerCertificateChain(ICoreWebView2StringCollection** v) override{*v=nullptr;return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE get_Kind(COREWEBVIEW2_CLIENT_CERTIFICATE_KIND* v) override{*v=COREWEBVIEW2_CLIENT_CERTIFICATE_KIND_OTHER;return S_OK;}
+};
+struct FakeCertList : Fake<ICoreWebView2ClientCertificateCollection> {
+    std::vector<FakeCert*> items;
+    HRESULT STDMETHODCALLTYPE get_Count(UINT32* v) override{*v=(UINT32)items.size();return S_OK;}
+    HRESULT STDMETHODCALLTYPE GetValueAtIndex(UINT32 i,ICoreWebView2ClientCertificate** v) override{if(i>=items.size())return E_INVALIDARG;*v=items[i];return S_OK;}
+};
+struct CertArgs : Fake<ICoreWebView2ClientCertificateRequestedEventArgs> {
+    Deferral deferral; FakeCertList list; ICoreWebView2ClientCertificate* selected=nullptr; BOOL cancel=FALSE,handled=FALSE; int port=443;
+    HRESULT STDMETHODCALLTYPE get_Host(LPWSTR* v) override{*v=Dup(L"intranet.exemple.test");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Port(int* v) override{*v=port;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_IsProxy(BOOL* v) override{*v=FALSE;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_AllowedCertificateAuthorities(ICoreWebView2StringCollection** v) override{*v=nullptr;return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE get_MutuallyTrustedCertificates(ICoreWebView2ClientCertificateCollection** v) override{*v=&list;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_SelectedCertificate(ICoreWebView2ClientCertificate** v) override{*v=selected;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_SelectedCertificate(ICoreWebView2ClientCertificate* v) override{selected=v;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Cancel(BOOL* v) override{*v=cancel;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_Cancel(BOOL v) override{cancel=v;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Handled(BOOL* v) override{*v=handled;return S_OK;}
+    HRESULT STDMETHODCALLTYPE put_Handled(BOOL v) override{handled=v;return S_OK;}
+    HRESULT STDMETHODCALLTYPE GetDeferral(ICoreWebView2Deferral** d) override{*d=&deferral;return S_OK;}
+};
 struct AuthArgs : Fake<ICoreWebView2BasicAuthenticationRequestedEventArgs> {
     Deferral deferral; BOOL cancel=FALSE;
     HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(L"https://intranet.exemple.test/");return S_OK;}
@@ -188,7 +221,7 @@ int main(){
             Expect(promptOpen&&promptActive.spec.permissions==std::vector<int>{13}&&chip()==std::vector<const char*>{SiteRequest::Path::storage},"kind 13: routed as persistent storage, storage chip");
             const auto& m=originPrompt.Surface().CurrentSpec();
             Expect(m.title==L"meet.exemple.test veut conserver ses données sur cet appareil"&&m.subtitle.find(L"otification")==std::wstring::npos,"kind 13: own title, never « notifications »");
-            bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;
+            bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.role==Accessibility::Role::Text||n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;
             Expect(!help&&store.deferral.completed==0&&store.writes==0,"kind 13: no collapsible help exposed, request pending");
             ElementsNavigationStarting(live);run();
             Expect(store.deferral.completed==1&&store.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&store.writes==1&&!promptOpen,"kind 13 + navigation: denied once, not saved");
@@ -218,6 +251,162 @@ int main(){
         ElementsTabClosed(live);run();
         Expect(clip.deferral.completed==1&&clip.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&chip().empty()&&!promptOpen,"tab closed: request denied, chip gone");
         originPrompt.Surface().FinishAnimationsForTest();
+        // B08 client certificates: the engine's real candidates, one deferral, explicit answers.
+        {
+            FakeCert good(L"Camille Démo",L"Autorité Démo",(double)time(nullptr)+86400*365),old(L"Ancien poste",L"CA Démo",1000);
+            CertArgs a;a.list.items={&good,&old};ClientCertificateRequested(live,&a);run();
+            Expect(a.handled&&promptOpen&&promptActive.spec.kind==OP::Kind::ClientCertificate&&promptActive.spec.accounts.size()==2,"certificate: our prompt lists the engine's candidates (engine dialog suppressed)");
+            Expect(promptActive.spec.origin==L"intranet.exemple.test"&&promptActive.spec.accounts[0].user==L"Camille Démo"&&promptActive.spec.accounts[0].hint.find(L"Émis par Autorité Démo")==0,"certificate: host and issuer shown");
+            Expect(!promptActive.spec.accounts[0].disabled&&promptActive.spec.accounts[1].disabled&&promptActive.spec.accounts[1].hint.find(L"expiré le")!=std::wstring::npos,"certificate: expired one disabled and labelled");
+            originPrompt.Surface().ActivateForTest(MD::Dialog::AccountHit(1));
+            Expect(a.deferral.completed==0&&promptOpen,"certificate: an expired row cannot be chosen");
+            auto& surface=originPrompt.Surface();auto send=[&]{return surface.CurrentSpec().buttons.size()==2?surface.CurrentSpec().buttons[1]:MD::Button{};};
+            Expect(send().label==L"Envoyer"&&send().disabled&&surface.CurrentSpec().buttons[0].label==L"Ne pas envoyer","E1: « Envoyer » present and disabled before any choice");
+            surface.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+            Expect(a.deferral.completed==0&&promptOpen,"E1: disabled « Envoyer » sends nothing");
+            surface.ActivateForTest(MD::Dialog::AccountHit(0));run();
+            Expect(a.deferral.completed==0&&promptOpen&&surface.CurrentSpec().accountSelected==0&&!send().disabled,"E1: clicking a row only selects it, « Envoyer » enabled");
+            surface.KeyForTest(VK_DOWN);run();
+            Expect(a.deferral.completed==0&&surface.CurrentSpec().accountSelected==0,"E1: arrows never send nor select an expired row");
+            surface.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+            Expect(a.deferral.completed==1&&a.selected==&good&&!a.cancel,"certificate: « Envoyer » transmits the selected certificate, completed once");
+            originPrompt.Surface().FinishAnimationsForTest();
+        }
+        {
+            FakeCert good(L"Camille Démo",L"Autorité Démo",(double)time(nullptr)+86400);
+            CertArgs a;a.port=8443;a.list.items={&good};ClientCertificateRequested(live,&a);run();
+            Expect(promptActive.spec.origin==L"intranet.exemple.test:8443","certificate: non-default port shown");
+            originPrompt.Surface().KeyForTest(VK_ESCAPE);run();
+            Expect(a.deferral.completed==1&&!a.selected&&!a.cancel&&a.handled,"certificate: « Ne pas envoyer » / Échap = continue without a certificate");
+            originPrompt.Surface().FinishAnimationsForTest();
+        }
+        {
+            FakeCert good(L"Camille Démo",L"Autorité Démo",(double)time(nullptr)+86400);
+            CertArgs a;a.list.items={&good};ClientCertificateRequested(live,&a);run();
+            ElementsNavigationStarting(live);run();
+            Expect(a.deferral.completed==1&&a.cancel&&!a.selected,"certificate: navigation away cancels the request");
+            originPrompt.Surface().FinishAnimationsForTest();
+            CertArgs b;b.list.items={&good};ClientCertificateRequested(live,&b);run();ElementsTabClosed(live);run();
+            Expect(b.deferral.completed==1&&b.cancel,"certificate: tab closed cancels, completed once");
+            originPrompt.Surface().FinishAnimationsForTest();
+            CertArgs none;ClientCertificateRequested(live,&none);run();
+            Expect(none.deferral.completed==1&&none.handled&&!none.cancel&&!promptOpen,"certificate: no candidate = continue without one, no prompt");
+            CertArgs gone;gone.list.items={&good};ClientCertificateRequested(closed,&gone);
+            Expect(gone.deferral.completed==1&&gone.cancel,"certificate: request of a closed tab cancelled");
+        }
+        // B07 real path: a download the engine blocked; real « Supprimer », no « Conserver ».
+        {
+            const std::wstring file=std::wstring(cwd)+L"\\build\\elements-integration\\blocked-fixture.exe.tmp";
+            {std::ofstream f(std::filesystem::path(file),std::ios::binary);f<<"fixture";}
+            ElementsDangerousDownload(424242,file,L"https://telechargements.exemple.test/blocked-fixture.exe",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS);run();
+            Expect(promptOpen&&promptActive.spec.kind==OP::Kind::DangerousDownload&&!promptActive.spec.demo&&!promptActive.spec.keepAvailable,"blocked download: real B07, no demo badge, no keep");
+            Expect(promptActive.spec.detail==L"blocked-fixture.exe.tmp"&&promptActive.spec.origin==L"telechargements.exemple.test"&&promptActive.spec.reason==DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS),"blocked download: real file, site and engine reason");
+            Expect(OP::Prompt::MoreItems(false).size()==2&&OP::Prompt::MoreItems(true).size()==4,"blocked download: « Conserver quand même » only where it is real (demo)");
+            originPrompt.Surface().Finish(OP::Id::Accept);run();
+            Expect(!std::filesystem::exists(std::filesystem::path(file))&&!promptOpen,"blocked download: « Supprimer le fichier » removes the leftover file");
+            originPrompt.Surface().FinishAnimationsForTest();
+            const auto spec=DangerousDownloadSpec(L"C:\\x\\a.zip",L"https://s.exemple.test/a.zip",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY);
+            Expect(spec.reason.find(L"règle de sécurité")!=std::wstring::npos&&spec.link==L"https://s.exemple.test/a.zip"&&spec.detail==L"a.zip","blocked by policy: own reason; link kept for « Copier le lien »");
+            // E5: never « not saved » (a residual file may exist); a failed check is no malware verdict.
+            for(auto r:{COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY})
+                Expect(DangerText(r).find(L"enregistré")==std::wstring::npos,"E5: no claim that the file was not saved");
+            Expect(DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED).find(L"dangereux")==std::wstring::npos,"E5: security check failure is not called dangerous");
+            {
+                // Decision 4: report only for a malware verdict; otherwise « Copier le lien » direct; Supprimer always.
+                auto actions=[](COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){const auto m=OP::Build(DangerousDownloadSpec(L"C:/x/a.zip",L"https://s.exemple.test/a.zip",r),true);return m.buttons;};
+                const auto mal=actions(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS),chk=actions(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED),pol=actions(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY);
+                Expect(mal.size()==2&&mal[0].label==L"Supprimer le fichier"&&mal[1].id==OP::Id::More&&mal[1].label==L"Plus d'options","B07 FILE_MALICIOUS: Supprimer + Plus d'options (Copier le lien, Signaler)");
+                Expect(chk.size()==2&&chk[0].label==L"Supprimer le fichier"&&chk[1].id==OP::Id::CopyLink&&chk[1].label==L"Copier le lien"&&!chk[1].closes,"B07 SECURITY_CHECK_FAILED: direct « Copier le lien », no report");
+                Expect(pol.size()==2&&pol[0].label==L"Supprimer le fichier"&&pol[1].id==OP::Id::CopyLink&&pol[1].label==L"Copier le lien","B07 BLOCKED_BY_POLICY: direct « Copier le lien », no report");
+                Expect(!DangerousDownloadSpec(L"a",L"b",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY).reportable&&DangerousDownloadSpec(L"a",L"b",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS).reportable,"B07: reportable only for FILE_MALICIOUS");
+                {const size_t before=pages.size();auto p=DangerousDownloadSpec(L"a",L"https://s.exemple.test/a",COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED);PromptDownloadCommand(OP::Prompt::Report,p);run();Expect(pages.size()==before,"B07: a non-reportable reason never opens the report page");}
+                // R1: the full reason stays readable through UIA (dialog description, card group, every card
+                // button's help) whatever the drawn ellipsis at 268 DIP.
+                for(auto r:{COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY}){
+                    const std::wstring name=L"un-installateur-au-nom-particulierement-long-pour-forcer-l-ellipse-2026.exe";
+                    ElementsDangerousDownload(990001,L"C:/fixture/"+name,L"https://telechargements.exemple.test/"+name,r);run();
+                    const auto spec=DangerousDownloadSpec(L"C:/fixture/"+name,L"https://telechargements.exemple.test/"+name,r);
+                    const auto nodes=originPrompt.Surface().NodesForTest();
+                    bool group=false,card=false,buttons=true;int seen=0;
+                    for(const auto& n:nodes){
+                        if(n.key==1 /*GroupKey*/)group=n.help.find(spec.blockedTitle)!=std::wstring::npos&&n.help.find(spec.reason)!=std::wstring::npos&&n.help.find(name)!=std::wstring::npos;
+                        if(n.key==7500 /*DangerKey*/)card=!n.focusable&&n.name==name+L" — "+spec.blockedTitle&&n.help==spec.reason;
+                        if(n.key>=MD::Dialog::ButtonHit(0)&&n.key<MD::Dialog::ButtonHit(8)){++seen;buttons=buttons&&n.help.find(spec.reason)!=std::wstring::npos;}
+                    }
+                    Expect(promptOpen&&group&&card&&buttons&&seen==2,"R1: B07 full file, reason title and text exposed to UIA (description, card, keyboard stops)");
+                    originPrompt.Surface().KeyForTest(VK_ESCAPE);run();originPrompt.Surface().FinishAnimationsForTest();
+                }
+                auto head=[](COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){return OP::Build(DangerousDownloadSpec(L"C:/x/a.zip",L"https://s.exemple.test/a.zip",r),true).danger.subtitle;};
+                Expect(head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS)==L"Fichier dangereux"&&head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED)==L"Vérification de sécurité impossible"&&head(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY)==L"Téléchargement bloqué"
+                    &&DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS)==L"Ce fichier a été signalé comme dangereux. Le téléchargement a été bloqué."
+                    &&DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED)==L"Le téléchargement a été bloqué, car sa sécurité n'a pas pu être vérifiée."
+                    &&DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY)==L"Une règle de sécurité bloque ce téléchargement.","B07: card header follows the real engine reason");
+            }
+            // E6: three distinct French reasons on the list row, other failures unchanged.
+            Expect(DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS))==L"Bloqué · fichier dangereux"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · vérification de sécurité impossible"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))==L"Bloqué · règle de sécurité"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED))==L"Failed · Offline","E6: blocked rows in French, by reason");
+            // E2: the toast's progress format, no invented total.
+            Expect(BrowserUpdate::ToastModel::FormatSize(52848230,209715200)==L"50.4/200.0MB"&&BrowserUpdate::ToastModel::FormatSize(52848230,0)==L"50.4MB","E2: one decimal, unknown total = received only (no %)");
+        }
+        // A2/A4/A6 real variants on the production modal surface.
+        {
+            MD::Dialog::Hooks mh;Expect(modal.Create(instance,window,cwd,std::move(mh)),"modal surface created");
+            auto finish=[&](int button){modal.Finish(button);run();modal.FinishAnimationsForTest();};
+            DialogArgs first;ScriptDialogOpening(live,&first);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"first dialog of a document: no blocking check");
+            finish(MD::AcceptButton);
+            DialogArgs second;ScriptDialogOpening(live,&second);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel==L"Empêcher ce site d'ouvrir d'autres dialogues","second dialog: A2 « Empêcher… » offered in the real path");
+            modal.ActivateForTest(MD::Dialog::SimpleCheckHit);finish(MD::CancelButton);
+            DialogArgs third;ScriptDialogOpening(live,&third);run();
+            Expect(third.deferral.completed==1&&third.accepted==0&&!modalOpen,"checked: the site's next dialogs are suppressed (answered « cancel »)");
+            ElementsNavigationStarting(live);run();
+            DialogArgs fourth;ScriptDialogOpening(live,&fourth);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"navigation lifts the block and restarts the count");
+            finish(MD::AcceptButton);
+            DialogArgs leave;leave.kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD;ScriptDialogOpening(live,&leave);run();
+            Expect(modalActive.spec.title==L"Quitter ce site ?","beforeunload: « Quitter » by default");
+            finish(MD::CancelButton);
+            live->refreshing=true;DialogArgs reload;reload.kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD;ScriptDialogOpening(live,&reload);run();
+            Expect(modalActive.spec.title==L"Actualiser ce site ?"&&modalActive.spec.buttons[1].label==L"Actualiser","beforeunload during our reload: « Actualiser »");
+            finish(MD::CancelButton);live->refreshing=false;
+            Expect(reload.deferral.completed==1&&reload.accepted==0,"« Rester sur la page »: unload refused, completed once");
+            // Closing with a download running (one tab): always asked, destructive wording.
+            NativeChrome::Downloads::Item d;d.id=777001;d.path=L"C:\\fixture\\rapport.pdf";d.state=NativeChrome::Downloads::State::InProgress;d.received=52848230;d.total=209715200;downloads.insert(downloads.begin(),d);
+            const bool allowed=CloseWindowAllowed(false,nullptr);run();
+            Expect(!allowed&&modalOpen&&modalActive.spec.kind==MD::Kind::CloseWindow&&!modalActive.spec.infos.empty()&&modalActive.spec.infos[0].text==L"rapport.pdf"&&modalActive.spec.infos[0].trailing==L"50.4/200.0MB","close with a running download: A6 download variant with the real file");
+            Expect(modalActive.spec.buttons[1].label==L"Fermer et annuler le téléchargement","close with a download: destructive action named");
+            finish(MD::CancelButton);
+            downloads.erase(downloads.begin());
+            {auto keep=pages;pages={live};Expect(CloseWindowAllowed(false,nullptr),"one tab, no download: closes without asking");pages=keep;}
+            // F4: a private window's close question promises no reopening and offers no « Ne plus demander ».
+            {
+                auto keep=pages;auto second=std::make_shared<Tab>();second->uri=L"https://exemple.test/b";pages={live,second};privateWindow=true;settings.confirmCloseTabs=true;
+                const bool asked=!CloseWindowAllowed(false,nullptr);run();
+                Expect(asked&&modalOpen&&modalActive.spec.body==L"Les onglets d'une fenêtre privée ne peuvent pas être rouverts."&&modalActive.spec.bodyKeys.empty()&&modalActive.spec.checkLabel.empty(),"F4: private close: no history/Ctrl+Maj+T promise, no check");
+                finish(MD::CancelButton);privateWindow=false;pages=keep;
+            }
+            // D3 (final, through the interprocess store): a voluntary bookmark change from a private window
+            // is written by the normal transaction; no history, session or settings file comes with it.
+            {
+                const std::wstring dir=L"build/elements-integration/private-bookmarks";std::error_code ec;std::filesystem::remove_all(dir,ec);std::filesystem::create_directories(dir,ec);
+                const auto saved=std::make_tuple(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke);
+                dataDir=dir;sessionFile=dir+L"/session";downloadsFile=dir+L"/downloads";settingsFile=dir+L"/settings";logFile=dir+L"/log.txt";smoke=false;
+                bookmarks=BM::Store{};bookmarksBase=BM::Store{};privateWindow=true;
+                const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,L"Ajout volontaire",L"https://exemple.test/volontaire",0);SaveBookmarks();run();
+                BM::Store onDisk;{std::ifstream in(std::filesystem::path(dir+L"/bookmarks"),std::ios::binary);onDisk=BM::Store::Read(in);}
+                bool found=false;for(BM::Id x:onDisk.Root(BM::BarRoot).children)if(onDisk.Find(x)->title==L"Ajout volontaire")found=true;
+                Expect(found,"D3: a bookmark added in a private window persists through the transaction");
+                Expect(!std::filesystem::exists(dir+L"/history")&&!std::filesystem::exists(dir+L"/session")&&!std::filesystem::exists(dir+L"/settings")&&!std::filesystem::exists(dir+L"/log.txt"),"D3: no history, session, settings or log written with it");
+                RemoveBookmark(id);run();{std::ifstream in(std::filesystem::path(dir+L"/bookmarks"),std::ios::binary);onDisk=BM::Store::Read(in);}
+                Expect(onDisk.Size()==0,"D3: a removal from a private window is written too");
+                privateWindow=false;std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke)=saved;bookmarks=BM::Store{};bookmarksBase=BM::Store{};std::filesystem::remove_all(dir,ec);
+            }
+            // Point 8: a private window loads no history.
+            {history=AddressBar::History{};privateWindow=true;LoadHistory();Expect(history.Items().empty(),"point 8: private window history stays empty");privateWindow=false;}
+        }
         // Shutdown with a pending request: denied once, nothing left.
         PermissionArgs last(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&last);run();
         DisposeElementSurfaces();
@@ -264,6 +453,78 @@ int main(){
         modal.Abort();run();deferredJobs.clear();pages={live};current=0;
         DestroyWindow(window);window=nullptr;
     }
+    // A8 destinations: the public releases repository (notes of the running version, issues).
+    Expect(ReleaseNotesUrl(L"0.3.132")==L"https://github.com/VALXXII/browser-releases/releases/tag/v0.3.132"&&ReleaseNotesUrl(L"dev")==L"https://github.com/VALXXII/browser-releases/releases","about: release notes of the running version");
+    Expect(std::wstring(IssuesUrl)==L"https://github.com/VALXXII/browser-releases/issues/new","about: report a problem on the public issues");
+    // A9 private window: the app writes nothing at all (session, history, downloads, settings, bookmarks, log).
+    {
+        const std::wstring dir=L"build/elements-integration/private-fixture";std::error_code ec;std::filesystem::remove_all(dir,ec);std::filesystem::create_directories(dir,ec);
+        const auto saved=std::make_tuple(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady);
+        dataDir=dir;sessionFile=dir+L"/session";downloadsFile=dir+L"/downloads";settingsFile=dir+L"/settings";logFile=dir+L"/log.txt";smoke=false;sessionReady=true;privateWindow=true;
+        SaveSession();SaveHistory();SaveDownloads();SaveSettings();SaveBookmarks();Log(L"NAV https://secret.example/");
+        Expect(std::filesystem::is_empty(dir),"private window: no session, history, downloads, settings, bookmarks or log file written");
+        settings.confirmCloseTabs=!settings.confirmCloseTabs;SaveSettings();settings.confirmCloseTabs=!settings.confirmCloseTabs;
+        {std::size_t n=0;bool onlySettings=true;for(auto& e:std::filesystem::directory_iterator(dir)){++n;if(e.path().filename()!=L"settings")onlySettings=false;}
+         Expect(n==1&&onlySettings,"D3: a setting changed on purpose in a private window is kept (settings file only, normal transaction)");}
+        std::filesystem::remove(dir+L"/settings",ec);
+        privateWindow=false;Log(L"control");
+        Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
+        std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
+        Expect(PrivateCommandLine(L"C:/b/browser.exe")==L"\"C:/b/browser.exe\" --private","private window: same executable, only --private passed");
+        // V5: the native fill control is not armed right after it appeared (500 ms, same tab and navigation).
+        { chrome.vaultKey=true;vaultKeySerial=live->serial;vaultKeyNav=live->navStamp;vaultKeyShownAt=GetTickCount64();
+          Expect(!VaultKeyArmed(),"V5: the fill control ignores an activation before 500 ms");
+          vaultKeyShownAt=GetTickCount64()-600;vaultKeyNav=live->navStamp+1;Expect(!VaultKeyArmed(),"V5: a navigation since it appeared re-arms it");
+          chrome.vaultKey=false; }
+        // Review 885d322 #2 / F11: the vault file's state is never mistaken for an empty vault.
+        { const std::wstring vdir=L"build/elements-integration/vault-fixture";std::error_code vec;std::filesystem::remove_all(vdir,vec);std::filesystem::create_directories(vdir,vec);
+          const std::wstring savedDir=dataDir;dataDir=vdir;
+          Expect(ReadVault(0)==VaultLoad::Ok&&vaultLoaded&&vault.Entries().empty(),"F11: an absent vault file is an empty vault");
+          {std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);}
+          Expect(ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded,"F11: a vault file of 0 bytes is unavailable, never an empty vault");
+          {std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);f<<"browser-passwords 9\n";}
+          Expect(ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded,"F11: an unknown vault format is unavailable");
+          {Vault::Store st;st.Save(L"https://a.test",L"synth",L"Synth-0000!",1);std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);st.Write(f);}
+          Expect(ReadVault(0)==VaultLoad::Ok&&vault.Entries().size()==1,"F11: a valid vault file is read");
+          {HANDLE h=CreateFileW(VaultFile().c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+           Expect(h!=INVALID_HANDLE_VALUE&&ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded&&vault.Entries().empty(),"F11: a sharing violation is unavailable, never an empty vault");
+           if(h!=INVALID_HANDLE_VALUE)CloseHandle(h);}
+          Expect(ReadVault(0)==VaultLoad::Ok&&vault.Entries().size()==1,"F11: readable again once the file is released");
+          {struct Hold{std::wstring dir;HANDLE ready,done;};Hold hold{dataDir,CreateEventW(nullptr,TRUE,FALSE,nullptr),CreateEventW(nullptr,TRUE,FALSE,nullptr)};
+           HANDLE th=CreateThread(nullptr,0,[](LPVOID p)->DWORD{auto* h=static_cast<Hold*>(p);ProfileStore::Lock l(h->dir);SetEvent(h->ready);WaitForSingleObject(h->done,10000);return 0;},&hold,0,nullptr);
+           WaitForSingleObject(hold.ready,5000);
+           const ULONGLONG t0=GetTickCount64();const auto r=ReadVault(0);
+           Expect(r==VaultLoad::Busy&&GetTickCount64()-t0<500&&vaultLoaded&&vault.Entries().size()==1,"F9/F10: a busy profile never blocks the UI check and keeps the last known state");
+           SetEvent(hold.done);WaitForSingleObject(th,5000);CloseHandle(th);CloseHandle(hold.ready);CloseHandle(hold.done);}
+          {Vault::Store st;std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);st.Write(f);}   // the account removed in another window
+          Expect(ReadVault(1000)==VaultLoad::Ok&&vault.Entries().empty(),"F11: a fresh read honours a removal made elsewhere");
+          dataDir=savedDir;vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;std::filesystem::remove_all(vdir,vec); }
+        // Review 885d322 #1: a pending capture (its secret) is bound to the tab's document and wiped.
+        { PromptJob a;a.spec.secret=L"Synth-capture-0000!-long-enough";PromptJob b=std::move(a);
+          Expect(a.spec.secret.empty()&&b.spec.secret==L"Synth-capture-0000!-long-enough","capture: a moved job leaves no copy of the secret behind");
+          int answered=0;auto queue=[&]{PromptJob j;j.spec.kind=OP::Kind::PasswordSave;j.spec.demo=false;j.spec.secret=L"Synth-capture-0000!";j.tab=live;j.answers.push_back([&](OP::Result&){++answered;});promptQueue.push_back(std::move(j));};
+          const std::wstring o=L"https://compte.exemple.test";
+          queue();vaultCapture[live->serial].Start(o,0);VaultNavigationStarting(live,11,o+L"/landing");VaultNavigationStarting(live,11,o+L"/after-redirect");
+          Expect(answered==0&&promptQueue.size()==1,"capture: the submission and its same-origin redirect keep the save offer (host wiring)");
+          VaultNavigationStarting(live,12,o+L"/other");
+          Expect(answered==1&&promptQueue.empty()&&!vaultCapture.count(live->serial),"capture: the tab's next navigation drops the offer and its secret");
+          queue();vaultCapture[live->serial].Start(o,0);VaultNavigationStarting(live,13,L"https://banque.exemple.test/");
+          Expect(answered==2&&promptQueue.empty(),"capture: an immediate navigation to another origin drops the offer");
+          queue();vaultCapture[live->serial].Start(o,0);VaultNavigationStarting(live,14,o+L"/landing");VaultNavigationCompleted(live,14,false);
+          Expect(answered==3&&promptQueue.empty(),"capture: a failed submission drops the offer");
+          queue();vaultCapture[live->serial].Start(o,0);AbortTabPrompts(live);
+          Expect(answered==4&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
+          Expect(!VaultOfferStillValid(live,o)&&!VaultOfferStillValid(nullptr,o),"capture: the show/answer guard refuses a tab whose engine source is not the capture origin (PumpPrompt and the answer use it; shown path covered by vault_e2e)");
+          vaultCapture.clear(); }
+        // A5 with engine categories but no engine profile (no live tab / older runtime): a real failure, never « effacé ».
+        { HRESULT got=S_FALSE;StartClearSelected({false,true,true,false,false},1,[&](HRESULT hr){got=hr;});Expect(FAILED(got),"A5: cookies/cache selected without an engine profile is reported as a failure"); }
+        // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.
+        Expect(RelaunchArgs(L"--private",true,L"wabc")==L"--private","recovery relaunch of a private window stays private, claims no session");
+        Expect(RelaunchArgs(L"",false,L"wabc")==L"--restore-window wabc","recovery relaunch of a normal window adopts its own session again");
+        Expect(RelaunchArgs(L"--restore-window wold --debug-sandbox",false,L"wnew")==L" --debug-sandbox --restore-window wnew"||RelaunchArgs(L"--restore-window wold --debug-sandbox",false,L"wnew")==L"--debug-sandbox --restore-window wnew","recovery relaunch replaces an older --restore-window by this window's id");
+        Expect(std::wstring(PrivateProfileName)==L"browser-private","private window: dedicated InPrivate profile name, never the live profile");
+    }
+    Expect(AboutStatusNow().title==L"Mises à jour indisponibles"&&!AboutStatusNow().hasButton,"about: build without the update engine says so, no fake check");
     // Origin labels shown in dialogs.
     Expect(OriginLabel(L"https://www.exemple.test:8443/a?b")==L"exemple.test:8443"&&OriginLabel(L"about:blank")==L"Cette page"&&OriginLabel(L"https://user@site.test/")==L"site.test","origin label");
     pages.clear();
