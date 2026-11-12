@@ -1,155 +1,60 @@
-# Aide contextuelle des demandes de site — inventaire, contrat, plan
+# Demandes d'autorisation — contrat final (sans aide repliable)
 
-Base code : `8237c2a` (VALXXII/Design-missing-elements, PR63, committé ; aucun fichier WIP lu comme contrat).
-Base main : `eb1a943` (0.3.137). Lot UI/copie uniquement : aucune politique de sécurité, de mémorisation
-ou d'activation n'est changée.
+Historique : PR64 (adoptée dans Design-missing-elements en `f97e04a`) avait ajouté une rangée « Plus d'infos »
+repliable aux popovers de permission. **Direction utilisateur du 2026-11-12** : « J'ai modifié en enlevant
+les modals plus d'infos et tout ça. » La référence est désormais la planche Paper **B02** « Démonstration ·
+B02 · Permissions — variantes et états » telle que l'utilisateur l'a modifiée (capture suivie :
+`design/origin-prompt-help-evidence/paper-reference/B02-DQ5-0-user-2026-11-12.png`). Ce correctif de suivi
+retire la rangée du code. Il garde le reste de PR64 : type 13, sous-titres et repli honnête. Politiques de
+mémorisation, deferral, origine et fenêtre privée inchangées.
 
-## 1. Cause vérifiée de la capture x.com
+## 1. Cause vérifiée de la capture x.com (inchangée)
 
-Capture : popover « x.com demande une autorisation », icône info, case « Mémoriser pour ce site ».
+* Journal 0.3.137, lignes `PERMISSION` seulement : `PERMISSION request kind=13 https://x.com`, puis
+  `PERMISSION kind=13 action=0`.
+* SDK 1.0.4314.35 : `13 = COREWEBVIEW2_PERMISSION_KIND_PERSISTENT_STORAGE` (« permission to persist storage
+  created by the Storage APIs, service workers, etc. »). Ce n'était pas une notification.
 
-* Journal local de la 0.3.137 (`%LOCALAPPDATA%\browser\data\browser.log`, filtré sur les seules lignes
-  `PERMISSION request kind=` / `PERMISSION kind=`, rien d'autre lu) :
-  `PERMISSION request kind=13 https://x.com` puis `PERMISSION kind=13 action=0` (fermé, rien enregistré).
-* SDK local 1.0.4314.35 (`WebView2.h` l. 2724-2737) : `13 = COREWEBVIEW2_PERMISSION_KIND_PERSISTENT_STORAGE`.
-  Microsoft : « Indicates permission to persist storage created by the Storage APIs, service workers, etc. »
-* `OriginPrompt::Permission` ne connaît que 0-12 : `Title()` tombe dans `default` (« demande une
-  autorisation »), `Subtitle()` vide, `Glyph()` info, et la case générique s'affiche.
+## 2. Contrat visuel (Paper B02, état utilisateur)
 
-**Ce n'était donc pas une notification** (le chemin Notifications, avec son titre propre et sa note
-« toujours mémorisé », n'est pas celui de la capture). C'est `navigator.storage.persist()` : la page demande
-que ses données locales ne soient plus effaçables automatiquement par le navigateur (WHATWG Storage
-Standard : stockage « best effort » évictable sous pression, « persistent » effacé seulement par l'utilisateur).
+| Popover | Contenu, dans l'ordre |
+|---|---|
+| Un type avec case (position, presse-papiers, stockage persistant…) | glyphe 16 + titre 16/20 + sous-titre 14/18 ; case « Mémoriser pour ce site » ; Bloquer / Autoriser ; Fermer (×) |
+| Notifications | glyphe cloche + titre + sous-titre « Le site pourra afficher des alertes en dehors de la page. » ; Bloquer / Autoriser ; Fermer. **Ni note, ni case** (toujours mémorisé : politique inchangée) |
+| Demande groupée | titre « <site> veut utiliser » ; rangées par type ; case ; Bloquer / Autoriser ; Fermer |
 
-## 2. Faits moteur retenus (sources primaires)
+Aucune rangée « Plus d'infos », aucun paragraphe repliable, aucun indicateur de défilement.
 
-| Fait | Source | Effet sur la copie |
-|---|---|---|
-| `SavesInProfile` TRUE : l'état « persists across sessions and becomes the new default » ; FALSE : « not persist the state beyond the current request » | `ICoreWebView2PermissionRequestedEventArgs3` | « Mémoriser » coché = enregistré dans ce profil ; décoché = cette demande seulement |
-| Fermer/Échap = `deny(false)` | `elements-integration.h` `PermissionRequested` | « Fermer refuse cette fois, sans rien enregistrer » |
-| Notifications : `remember` forcé (politique existante, inchangée) | `OriginPrompt::Map` | note « Choix toujours mémorisé » conservée |
-| Notifications non gérées par l'hôte (`NotificationReceived` non abonné) : WebView2 « will display the default notification UI » ; l'événement couvre les notifications « non-persistent » | `ICoreWebView2_24`, `…NotificationReceivedEventArgs` | **retrait de « même onglet fermé »** : aucune preuve moteur/lifecycle (push/service worker non documentés pour WebView2) |
-| InPrivate : profil dédié, durée de conservation des autorisations non documentée | `ICoreWebView2ControllerOptions` | aucune promesse de durée ; « dans le profil de cette fenêtre » reste vrai dans les deux cas |
-| Réglages › Autorisations des sites relit `GetNonDefaultPermissionSettings` (types hors liste regroupés « Autre ») | `main.cpp` `QueryPermissions` / `SetSitePermission` | « Modifiable dans Réglages › Autorisations des sites » vrai pour tous les types |
-
-## 3. Matrice des demandes réelles (8237c2a)
-
-| Dialogue | Réel ? | Nature / origine / conséquence visibles | Manque | Décision |
-|---|---|---|---|---|
-| Permission 1 type connu (caméra, micro, position, presse-papiers, MIDI, téléchargements) | oui | titre « <site> veut … », sous-titre pour 4/12 | portée (origine exacte), effet de « Mémoriser », effet de la fermeture, révocation | **Lot 1** : sous-titre court partout + « Plus d'infos » |
-| Permission notifications | oui | titre spécifique + note « toujours mémorisé » | « même onglet fermé » non prouvé | **Lot 1** : copie corrigée + « Plus d'infos » |
-| Permission 13 stockage persistant | oui (x.com) | **générique, faux silence** | nature absente | **Lot 1** : titre/sous-titre/glyphe propres |
-| Permission 0 inconnue / >13 futur | oui | générique | ne dit pas que le type est inconnu | **Lot 1** : « type non précisé par le moteur » / « non reconnu (code n) » |
-| Permission caméra + micro groupés | oui | rangées par type | portée/mémorisation | **Lot 1** : même « Plus d'infos » (groupement inchangé) |
-| SiteStatus (puce) | oui | rangées + détail par rangée | — | aucun changement |
-| Authentification HTTP | oui | origine, realm cité, note HTTP | — (nature claire, rien mémorisé) | aucun changement |
-| Application externe (site / cadre tiers) | oui | origine, schéma, note cadre tiers | — | aucun changement |
-| Téléchargement dangereux / KeepFile | oui | carte danger, raison moteur | — (contrat B07/décision 4 récent) | aucun changement |
-| Certificat client | oui (E1) | origine, liste, Envoyer/Ne pas envoyer | — | aucun changement (contrat E1 récent) |
-| Mots de passe (coffre) | **inactif** | — | contrat non stabilisé (revue F1-F6) | **attente** : inventaire seulement |
-| Partage d'écran | démonstration | badge Démonstration | — | aucun changement |
-| Dialogues JS, fermeture, effacer données, privé | oui | texte du site / conséquence en corps | — | aucun changement |
-
-L'audit actuel n'a trouvé d'information manquante que dans les demandes de permission (nature absente pour
-13/0, portée, effet de « Mémoriser » et de la fermeture invisibles). Les autres dialogues réels disent déjà
-nature, origine et conséquence (suppression, confirmation, envoi) ; leur ajouter « Plus d'infos » serait
-mécanique. Le coffre sera revu une fois son contrat stabilisé.
-
-## 4. Contrat visuel « Plus d'infos » (popover ancré B01/B02, 340 DIP)
-
-Principe repris des rangées utilisateur A10 (`QL8/QKI/QJW`, rangée `QKP-0`), pas leurs paragraphes :
-
-* ordre : tête (glyphe 16 + titre 16/20 Medium + sous-titre 14/20 70 %) → rangée « Plus d'infos » →
-  [paragraphe si ouvert] → case « Mémoriser » (sauf notifications) → Bloquer / Autoriser ; demande groupée :
-  la rangée vient sous les rangées de types ;
-* **notifications (demande utilisateur 2026-11-12)** : plus de note « Choix toujours mémorisé… » sur le
-  popover ; cette phrase exacte termine le paragraphe ouvert (juste au-dessus des boutons), sans répétition ;
-* rangée : h 32, rayon 6, écart 8, libellé 14/20 Regular `#FFFFFFE6` (flex 1) puis icône plus 14 à 50 % à droite ;
-  **repos** gauche 0 / droite 4 (`QLE-0`) ; **survol** fond `color-mix(#FFF var(--opacity-browser-focus))`,
-  inline 8 (`QKP-0`, resserrement voulu) ; **ouvert** gauche 8 / droite 4, icône tournée 45° (`QK3-0`) ;
-  **focus clavier** anneau standard du dialogue ;
-* icône : chemin `QK5-0` (viewBox 112), **blanc 50 %** (`color-mix(#FFFFFF var(--opacity-browser-secondary))`,
-  natif `DialogKit::White(.5f)` explicite, vérifié par pixel dans `modal_test`) ;
-* paragraphe ouvert : 14/20 `#FFFFFFB3`, inset 8, collé sous la rangée (`QL7-0`), hauteur selon le texte ; le
-  popover grandit et reste ancré ; si l'espace sous l'ancre manque (bas d'écran, 200 %), le paragraphe défile
-  (molette, ↑/↓ sur la rangée, min. 3 lignes) pour que les boutons restent à l'écran ; le texte complet reste
-  exposé à l'UIA ;
-* fermé par défaut à chaque demande ; l'état ne survit pas à la demande.
-
-## 5. Contrat de comportement
-
-* « Plus d'infos » n'accorde ni ne refuse rien : bascule seulement, `done` n'est pas appelé, la
-  deferral reste en attente ; Échap ferme la demande (Dismiss) comme avant, même ouvert.
-* Entrée / Espace sur la rangée basculent ; Tab : rangée → case → Bloquer → Autoriser → Fermer.
-  Le focus initial ne change pas (Bloquer/Autoriser restent sans défaut forcé, comme 8237c2a).
-* UIA : bouton « Plus d'infos », motif ExpandCollapse (Collapsed/Expanded), `AutomationId`
-  `PermissionMore` ; ouvert, un nœud Texte porte le paragraphe ; le groupe garde le sous-titre en aide.
-* Aucun changement : deferral exactly once, origine moteur du demandeur, navigation/fermeture/onglet,
-  groupement caméra+micro, mémorisation (case, notifications forcées), privé.
-
-## 6. Copies (FR)
-
-Sous-titres (une phrase, visible) :
+## 3. Copies conservées (code)
 
 | Type | Titre | Sous-titre |
 |---|---|---|
-| Caméra | « <o> veut utiliser votre caméra » | Le site pourra filmer avec votre caméra. |
-| Micro | « <o> veut utiliser votre micro » | Le site pourra enregistrer le son de votre micro. |
-| Position | inchangé | inchangé |
-| Notifications | inchangé | Le site pourra afficher des alertes en dehors de la page. |
-| Capteurs | inchangé | Accéléromètre, gyroscope et autres capteurs de l'appareil. |
-| Presse-papiers, téléchargements multiples, MIDI | inchangés | inchangés |
-| Fichiers | inchangé | Lecture et écriture de fichiers ou de dossiers de cet appareil. |
-| Lecture automatique | inchangé | Le son et la vidéo pourront démarrer sans clic de votre part. |
-| Polices | inchangé | Le site verra les polices installées sur cet appareil. |
-| Fenêtres | inchangé | Le site pourra ouvrir et placer des fenêtres sur vos écrans. |
-| **13 Stockage persistant** | « <o> veut conserver ses données sur cet appareil » | Sinon, le navigateur peut les effacer s'il manque d'espace. |
+| 13 Stockage persistant | « <o> veut conserver ses données sur cet appareil » (glyphe base de données) | Sinon, le navigateur peut les effacer s'il manque d'espace. |
+| 4 Notifications | inchangé | Le site pourra afficher des alertes en dehors de la page. (« même onglet fermé » retiré : non prouvé) |
+| Caméra / Micro / Capteurs / Fichiers / Lecture auto / Polices / Fenêtres | inchangés | une phrase courte par type (PR64) |
 | 0 inconnu | « <o> demande une autorisation » | Le moteur ne précise pas de quoi il s'agit. |
 | > 13 | « <o> demande une autorisation » | Type non reconnu par ce navigateur (code moteur n). |
 
-Paragraphe « Plus d'infos » = détail du type (si utile) + portée commune :
+## 4. Comportement
 
-* Notifications : « Elles peuvent apparaître en dehors de cette page. Leur réception dépend du site et du
-  navigateur : rien ne garantit qu'elles arrivent onglet ou navigateur fermé. » (preuves techniques :
-  §2 et rapport, pas dans la copie).
-* Stockage persistant : « Autoriser protège les données que le site enregistre ici contre l'effacement
-  automatique quand l'appareil manque d'espace. Vous pouvez toujours les effacer vous‑même ; Bloquer ne
-  supprime rien. » (pas de promesse contre une politique, l'OS ou un effacement volontaire ; l'autorisation
-  est réglable dans Réglages › Autorisations des sites, ligne « Autre » — vérifié `SetSitePermission` /
-  `PermissionName` ; l'effet d'un retrait sur des données déjà stockées n'est pas documenté, donc non promis).
-* Portée commune (livrée) : « Concerne <origine moteur> uniquement. » + (types avec case) « Sans
-  « Mémoriser », ce choix ne vaut que pour cette demande ; coché, il est enregistré dans ce profil
-  (Réglages › Autorisations des sites). » + « Fermer refuse cette fois, sans rien enregistrer. » +
-  (notifications seulement, en dernière ligne) « Choix toujours mémorisé. Modifiable dans Réglages ›
-  Autorisations des sites. »
+* Focus initial sur Bloquer ; Tab : [Mémoriser] → Bloquer → Autoriser → Fermer → [Mémoriser].
+* UIA : groupe `PermissionPrompt` (nom = titre, aide = sous-titre), case, `PermissionBlock`,
+  `PermissionAllow`, `DialogClose` ; pas de nœud ExpandCollapse ni Texte.
+* Échap, Fermer, navigation, changement d'onglet = Dismiss une seule fois, rien enregistré. Notifications :
+  Bloquer et Autoriser toujours mémorisés.
 
-## 6 bis. Paper livré (fichier Browser Design)
+## 5. Code retiré (consommateurs vérifiés sur `f97e04a`)
 
-* Canonique `p-1-0` : planche dédiée « B02 · Permissions — Plus d'infos (portée, mémorisation) » (8240 ;
-  21926.6, 1440 × 1116, bande Dialogues, sans chevauchement) : Notifications repos / survol / ouvert,
-  Stockage persistant ouvert (x.com) / focus clavier, Type non précisé repos. Planche B02 « Démonstration ·
-  variantes et états » : rangée repos ajoutée aux 6 popovers existants, note Notifications retirée, sous-titre
-  Notifications corrigé (aucun autre changement ; 1380 de haut, bas 29232 < exploration 29630).
-* Copie de lecture `p-F-0` : même planche à (4680 ; 4331), sous « 11 Dialogues ». Originaux utilisateur
-  `QL8/QKI/QJW/QA2/QGT` et A10 `PUX/S0Y` non touchés.
-* Cause de l'icône noire (corrigée) : `write_html` a enregistré l'attribut `fill="color-mix(…var(…))"`
-  comme `#000000` ; remplissage réappliqué par `update_styles`, contrôle `find_nodes fill=#000000` = 0.
+`Modal::Spec::more` n'était renseigné que par `OriginPrompt::Build` (permission) ; l'intégrateur confirme que
+le coffre n'en dépend pas, et l'aide A10 n'est pas raccordée au code. Retirés : `Disclosure`, `Spec::more`,
+`B::More`, `MoreHit`/`MoreTextKey`, mise en page/rendu/clavier/molette/UIA (`WM_APP + 4`), indicateur de
+défilement, glyphe `plus`, paramètre `degrees` de `DrawGlyph`, accesseurs `*ForTest` associés,
+`OriginPrompt::Text::More`, `Spec::requester` et sa ligne dans `elements-integration.h`. `modal.h` redevient
+identique à `dde6765` (avant PR64), plus le seul alias `DialogKit::Glyph::storage`.
 
-## 7. Fichiers prévus (patch ciblé, aucun reformatage)
+## 6. Paper non modifié par ce correctif
 
-* `src/origin-prompt.h` : `Permission::PersistentStorage = 13`, `Text::Title/Subtitle/Glyph/Noun`,
-  `Text::More()`, `Spec::requester` (origine complète) ; `Build` remplit `m.more`.
-* `src/modal.h` : `Spec::more {label, text, open}`, `B::More`, `MoreHit`, layout/paint/hit/clavier/UIA,
-  `MoreOpenForTest()`. Aucun autre bloc modifié.
-* `src/site-request.h` : glyphe stockage (chip), `Kind::PersistentStorage`.
-* `src/elements-integration.h` : `spec.requester = OriginOf(uri)` (une ligne) ; journal inchangé.
-* tests : `tests/modal_test.cpp` / `origin_prompt` existants étendus.
-
-## 8. Plan
-
-1. Paper (`p-1-0` section permissions B01/B02 + copie lecture `p-F-0`) : variantes repos/survol/ouvert/focus
-   notifications, stockage persistant ouvert, fallback inconnu. Icon/tokens/fils vérifiés avant/après.
-2. Code selon §4-7, tests unitaires (mapping 0/4/13/14, copies, bascule sans résolution, clavier, UIA,
-   hauteur DPI/texte long), build estampillé, fixture locale isolée (`navigator.storage.persist()`,
-   `Notification.requestPermission()`) sur profil jetable.
-3. Commit(s) UI distincts, PR vers `VALXXII/Design-missing-elements` (adoption par l'intégrateur), sans merge.
+L'utilisateur a modifié B02. Ces planches montrent encore l'ancienne rangée : B01 contexte `DEZ-0`, la
+planche « B02 · Permissions — Plus d'infos » sur `p-1-0` et sa copie sur `p-F-0`. Elles ne sont plus le
+contrat. Je ne les ai ni modifiées ni supprimées (aucune mutation Paper demandée) ; leur nettoyage revient à
+l'utilisateur ou au coordinateur.

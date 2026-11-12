@@ -39,7 +39,6 @@ struct DemoAccount { std::wstring user, hint; bool disabled = false; };
 struct Spec {
     Kind kind = Kind::Permission;
     std::wstring origin;                 // host of the requesting top-level site
-    std::wstring requester;              // Permission: the engine's requesting origin (« https://x.com »), named in « Plus d'infos »
     std::wstring detail;                 // BasicAuth: server challenge (realm); ExternalApp: target URI;
                                          // DangerousDownload/KeepFile: file name; ScreenShare: unused
     std::vector<int> permissions;        // Permission values, merged per origin by the host
@@ -86,7 +85,7 @@ inline std::wstring Title(const std::wstring& o, int p) {
     case Permission::Microphone: return o + L" veut utiliser votre micro";
     case Permission::Geolocation: return o + L" veut connaître votre position";
     case Permission::Notifications: return o + L" veut vous envoyer des notifications";
-    case Permission::ClipboardRead: return o + L" veut lire votre presse\u2011papiers";
+    case Permission::ClipboardRead: return o + L" veut lire votre presse‑papiers";
     case Permission::Midi: return o + L" veut contrôler vos appareils MIDI";
     case Permission::MultipleDownloads: return o + L" veut télécharger plusieurs fichiers";
     case Permission::OtherSensors: return o + L" veut utiliser les capteurs de mouvement";
@@ -116,20 +115,6 @@ inline std::wstring Subtitle(int p) {
     case Permission::Unknown: return L"Le moteur ne précise pas de quoi il s'agit.";
     default: return L"Type non reconnu par ce navigateur (code moteur " + std::to_wstring(p) + L").";   // a newer engine kind: never guessed
     }
-}
-// « Plus d'infos » (Paper SYJ-0): what the choice covers. Facts only (design/origin-prompt-help.md §2):
-// SavesInProfile FALSE = this request only; Fermer / Échap = refused once, nothing saved.
-inline std::wstring More(const std::vector<int>& kinds, const std::wstring& requester, bool always) {
-    std::wstring s;
-    if (kinds.size() == 1 && kinds[0] == Permission::Notifications)
-        s = L"Elles peuvent apparaître en dehors de cette page. Leur réception dépend du site et du navigateur\u00A0: rien ne garantit qu'elles arrivent onglet ou navigateur fermé.\n";
-    else if (kinds.size() == 1 && kinds[0] == Permission::PersistentStorage)
-        s = L"Autoriser protège les données que le site enregistre ici contre l'effacement automatique quand l'appareil manque d'espace. Vous pouvez toujours les effacer vous\u2011même\u00A0; Bloquer ne supprime rien.\n";
-    s += L"Concerne " + requester + L" uniquement. ";
-    if (!always) s += L"Sans «\u00A0Mémoriser\u00A0», ce choix ne vaut que pour cette demande\u00A0; coché, il est enregistré dans ce profil (Réglages\u00A0› Autorisations des sites). ";
-    s += L"Fermer refuse cette fois, sans rien enregistrer.";
-    if (always) s += L"\nChoix toujours mémorisé. Modifiable dans Réglages\u00A0› Autorisations des sites.";   // B02 note, moved into the panel
-    return s;
 }
 inline const char* Glyph(int p) {
     switch (p) {
@@ -161,9 +146,8 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
             for (int q : s.permissions) m.rows.push_back({Text::Glyph(q), Text::Noun(q), q == Permission::Geolocation ? L"Approximative" : L""});
         } else { m.title = Text::Title(s.origin, p); m.subtitle = Text::Subtitle(p); m.headGlyph = Text::Glyph(p); }
         const bool always = !many && p == Permission::Notifications;   // B02: notifications are always remembered
-        // User request 2026-11-12: the « toujours mémorisé » note lives in « Plus d'infos », not on the popover.
+        // Paper B02 (user edit 2026-11-12): notifications = title, subtitle, buttons; no note, no check (always remembered).
         if (!always) { m.checkLabel = L"Mémoriser pour ce site"; m.originCheck = true; }
-        m.more.text = Text::More(s.permissions, s.requester.empty() ? s.origin : s.requester, always); m.more.automationId = L"PermissionMore";
         m.stretchButtons = true; m.softButtons = true;
         m.buttons = {button(Id::Cancel, L"Bloquer", Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, L"Autoriser", Role::Primary, true, false, false, L"PermissionAllow")};
         m.checkValue = always;

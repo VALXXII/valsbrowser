@@ -1,8 +1,8 @@
 ﻿param([string]$Build = 'build/v2', [string]$Fixture = 'build/e2e-permission', [string]$Runtime = '')
-# Real engine E2E of « Plus d'infos » (design/origin-prompt-help.md): a throwaway copy of the build
+# Real engine E2E of the permission popovers (design/origin-prompt-help.md): a throwaway copy of the build
 # with a fresh profile, a temporary local server (killed at the end) and our own fixture page. It asks
 # for persistent storage (kind 13) and notifications (kind 4) through the real WebView2 runtime, then
-# drives the popover through UI Automation only: expand / collapse « Plus d'infos », close. Nothing
+# reads the popover through UI Automation only (title, subtitle, actions, no collapsible help), closes it. Nothing
 # is ever allowed; no real site and no personal profile are touched. Only fixture processes are stopped.
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
@@ -38,18 +38,18 @@ function Fixture-Pids { Get-CimInstance Win32_Process -Filter "Name='browser.exe
 function Log-Text { $f = Get-ChildItem $fix -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($f) { [IO.File]::ReadAllText($f.FullName) } else { '' } }
 function Wait-Log([string]$pattern, [int]$seconds = 15) { for ($i = 0; $i -lt $seconds * 4; $i++) { if ((Log-Text) -match $pattern) { return $true }; Start-Sleep -Milliseconds 250 }; return $false }
 $UIA = [Windows.Automation.AutomationElement]
+function Count-Name([string]$name) { $n = 0; foreach ($fp in @(Fixture-Pids)) { $cond = New-Object Windows.Automation.AndCondition((New-Object Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, [int]$fp)), (New-Object Windows.Automation.PropertyCondition($UIA::NameProperty, $name))); $n += $UIA::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants, $cond).Count }; return $n }
 function Find-Id([string]$id, [int]$seconds = 10) {
   $pids = @(Fixture-Pids)
   for ($i = 0; $i -lt $seconds * 4; $i++) {
     foreach ($p in $pids) {
       $cond = New-Object Windows.Automation.AndCondition((New-Object Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, [int]$p)), (New-Object Windows.Automation.PropertyCondition($UIA::AutomationIdProperty, $id)))
-      $e = $UIA::RootElement.FindFirst([Windows.Automation.TreeScope]::Descendants, $cond); if ($e) { return $e }
+      try { $e = $UIA::RootElement.FindFirst([Windows.Automation.TreeScope]::Descendants, $cond) } catch { $e = $null }; if ($e) { return $e }
     }
     Start-Sleep -Milliseconds 250
   }
   return $null
 }
-function Expand-State($e) { $e.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Current.ExpandCollapseState }
 
 foreach ($p in Fixture-Pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
 $server = Start-Process -FilePath python -ArgumentList '-m', 'http.server', '18767', '--bind', '127.0.0.1' -WorkingDirectory $site -PassThru -WindowStyle Hidden
@@ -64,44 +64,33 @@ try {
   $rt = (Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*9367*' } | Select-Object -First 1).ExecutablePath
   "runtime: $rt"
 
-  # 1. Persistent storage (kind 13): the real engine request, « Plus d'infos » never answers it.
+  # 1. Persistent storage (kind 13): the real engine request; the popover has no collapsible help (Paper B02).
   [void](Eval $ws "window.__persist='pending'; navigator.storage.persist().then(v=>window.__persist=String(v)); 1" $true)
   $asked = Wait-Log 'PERMISSION request kind=13 http://127\.0\.0\.1:18767'
   Check $asked 'engine raised PermissionRequested kind=13 (persistent storage) for the fixture origin'
   if ($asked) {
-    $more = Find-Id 'PermissionMore'
-    Check ($null -ne $more) 'popover exposes the « Plus d''infos » button (UIA)'
-    if ($more) {
-      Check ($more.Current.Name -eq "Plus d'infos") 'UIA name « Plus d''infos »'
-      Check ((Expand-State $more) -eq 'Collapsed') 'UIA ExpandCollapse: collapsed at first'
-      $group = Find-Id 'PermissionPrompt'; Check ($group -and $group.Current.Name -like '127.0.0.1*conserver ses données*') "popover title names persistent storage: $($group.Current.Name)"
-      $more.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand(); Start-Sleep -Milliseconds 400
-      Check ((Expand-State (Find-Id 'PermissionMore')) -eq 'Expanded') 'UIA Expand opens the panel'
-      $text = Find-Id 'PermissionMoreText'; Check ($text -and $text.Current.Name -like '*Concerne http://127.0.0.1:18767 uniquement*') 'panel text names the engine requester'
-      Check ((Eval $ws 'window.__persist') -eq 'pending') 'request still pending while the panel is open'
-      (Find-Id 'PermissionMore').GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse(); Start-Sleep -Milliseconds 400
-      Check ((Expand-State (Find-Id 'PermissionMore')) -eq 'Collapsed' -and (Eval $ws 'window.__persist') -eq 'pending') 'UIA Collapse closes it, still pending'
-      Check (-not ((Log-Text) -match 'PERMISSION kind=13 action=')) 'no answer logged before the user decides'
-    }
+    $group = Find-Id 'PermissionPrompt'; Check ($group -and $group.Current.Name -like '127.0.0.1*conserver ses données*') "popover title names persistent storage: $($group.Current.Name)"
+    Check ($group -and $group.Current.HelpText -eq "Sinon, le navigateur peut les effacer s'il manque d'espace.") 'popover subtitle (UIA help) explains persistent storage'
+    Check ($null -eq (Find-Id 'PermissionMore' 2)) 'no « Plus d''infos » row on the popover (UIA)'
+    Check ($null -ne (Find-Id 'PermissionBlock') -and $null -ne (Find-Id 'PermissionAllow') -and $null -ne (Find-Id 'DialogClose')) 'Bloquer, Autoriser and Fermer exposed'
+    Check ((Count-Name 'Mémoriser pour ce site') -eq 1) 'remember check exposed for persistent storage (control for the notifications check)'
+    Check ((Eval $ws 'window.__persist') -eq 'pending' -and -not ((Log-Text) -match 'PERMISSION kind=13 action=')) 'request pending until the user decides'
     [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'other.html' }); Start-Sleep 2
     Check (Wait-Log 'PERMISSION kind=13 action=0') 'navigation: the request is dismissed (action 0, not saved)'
     Check (([regex]::Matches((Log-Text), 'PERMISSION kind=13 action=')).Count -eq 1) 'answered exactly once'
   }
 
-  # 2. Notifications (kind 4): note only in the panel, closed with the close button (Dismiss).
+  # 2. Notifications (kind 4): title, subtitle and buttons only; closed with the close button (Dismiss).
   [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'index.html' }); Start-Sleep 2
   [void](Eval $ws "window.__notif='pending'; Notification.requestPermission().then(v=>window.__notif=v); 1" $true)
   $asked = Wait-Log 'PERMISSION request kind=4 http://127\.0\.0\.1:18767'
   Check $asked 'engine raised PermissionRequested kind=4 (notifications) for the fixture origin'
   if ($asked) {
     $group = Find-Id 'PermissionPrompt'; Check ($group -and $group.Current.Name -like '*veut vous envoyer des notifications') "notifications title: $($group.Current.Name)"
-    $more = Find-Id 'PermissionMore'
-    if ($more) {
-      $more.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke(); Start-Sleep -Milliseconds 400
-      $text = Find-Id 'PermissionMoreText'
-      Check ($text -and $text.Current.Name -like '*Choix toujours mémorisé*' -and $text.Current.Name -notlike '*même onglet fermé*') 'notifications: remembered note inside the panel, no unproven claim'
-      Check ((Eval $ws 'window.__notif') -eq 'pending') 'notifications: still pending with the panel open'
-    } else { Check $false 'notifications: « Plus d''infos » found' }
+    Check ($group -and $group.Current.HelpText -eq 'Le site pourra afficher des alertes en dehors de la page.') 'notifications subtitle, no unproven promise'
+    Check ($null -eq (Find-Id 'PermissionMore' 2)) 'notifications: no « Plus d''infos » row (UIA)'
+    Check ((Count-Name 'Mémoriser pour ce site') -eq 0) 'notifications: no remember check (always remembered, policy unchanged)'
+    Check ((Eval $ws 'window.__notif') -eq 'pending') 'notifications: pending until the user decides'
     $close = Find-Id 'DialogClose'; if ($close) { $close.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke() }
     Check (Wait-Log 'PERMISSION kind=4 action=0') 'close button: dismissed (action 0)'
     Start-Sleep 1; "page sees: Notification.requestPermission() -> $(Eval $ws 'window.__notif')"

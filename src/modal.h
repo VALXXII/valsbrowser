@@ -98,9 +98,6 @@ inline constexpr const char* check = "M232.49,80.49l-128,128a12,12,0,0,1-17,0l-5
 inline constexpr const char* warning = "M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,192a84,84,0,1,1,84-84A84.09,84.09,0,0,1,128,212Zm-12-80V80a12,12,0,0,1,24,0v52a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,172Z";
 inline constexpr const char* caretDown = "M216.49,104.49l-80,80a12,12,0,0,1-17,0l-80-80a12,12,0,0,1,17-17L128,159l71.51-71.52a12,12,0,0,1,17,17Z";
 inline constexpr const char* caretRight = "M184.49,136.49l-80,80a12,12,0,0,1-17-17L159,128,87.51,56.49a12,12,0,1,1,17-17l80,80A12,12,0,0,1,184.49,136.49Z";
-// « Plus d'infos » (Paper QK5-0, viewBox 0 0 112 112): drawn at 14 DIP, turned 45° (a cross) when open.
-inline constexpr const char* plus = "M99.75 56a5.25 5.25 0 0 1-5.25 5.25H61.25v33.25a5.25 5.25 0 0 1-10.5 0V61.25H17.5a5.25 5.25 0 0 1 0-10.5h33.25V17.5a5.25 5.25 0 0 1 10.5 0v33.25h33.25A5.25 5.25 0 0 1 99.75 56Z";
-inline constexpr float plusView = 112;
 inline constexpr const char* close = "M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z";
 inline constexpr const char* download = SiteRequest::Path::download;
 inline constexpr const char* checkCircle = "M176.49,95.51a12,12,0,0,1,0,17l-56,56a12,12,0,0,1-17,0l-24-24a12,12,0,1,1,17-17L112,143l47.51-47.52A12,12,0,0,1,176.49,95.51ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z";
@@ -193,12 +190,12 @@ public:
         t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + px / 2, r.top + px / 2, r.right - px / 2, r.bottom - px / 2}, std::max(0.f, radius - px / 2), std::max(0.f, radius - px / 2)), b, px);
     }
     float Pixel() const { auto* t = Target(); if (!t) return 1; return t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width)); }
-    void DrawGlyph(const char* d, D2D1_RECT_F box, float size, D2D1_COLOR_F color, float viewMin = 0, float viewSize = 256, float degrees = 0) {
+    void DrawGlyph(const char* d, D2D1_RECT_F box, float size, D2D1_COLOR_F color, float viewMin = 0, float viewSize = 256) {
         auto* t = Target(); auto* b = Brush(); if (!t || !b || !chrome_ || !chrome_->Factory()) return;
         auto& g = glyphs_[d]; if (!g) g = SvgGeometry(chrome_->Factory(), d); if (!g) return;
         D2D1_MATRIX_3X2_F old; t->GetTransform(&old);
         const float k = size / viewSize, x = (box.left + box.right - size) / 2, y = (box.top + box.bottom - size) / 2;
-        t->SetTransform(D2D1::Matrix3x2F::Translation(-viewMin, 0) * D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * D2D1::Matrix3x2F::Rotation(degrees, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * old);
+        t->SetTransform(D2D1::Matrix3x2F::Translation(-viewMin, 0) * D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * old);
         b->SetColor(color); t->FillGeometry(g, b); t->SetTransform(old);
     }
     // 16 px radio (B08 certificate rows): 1.5 px ring, filled 8 px dot when selected; `opacity` dims disabled rows.
@@ -347,9 +344,6 @@ struct Notice { const char* glyph = nullptr; std::wstring text; bool boxed = fal
 // only ever switches off from here (revoking); an off toggle is inert, re-granting needs the site
 // to ask again. Its row calls Spec::onButton(Dialog::RowHit(i)) and the dialog stays open.
 struct Row { const char* glyph = nullptr; std::wstring label, trailing; int toggle = -1; std::wstring detail; };
-// « Plus d'infos » (B02 permission popovers, Paper SYJ-0; rows of the A10 user mock-ups QLE/QKP/QK3):
-// a 32 DIP row that shows or hides a paragraph. Toggling never answers the dialog; closed on every Show.
-struct Disclosure { std::wstring label = L"Plus d'infos", text, automationId; bool open = false; };
 // B03 fill list: `masked` is the password as dots (tracked 0.08em, Paper EK1-0) unless `plain`;
 // a plain second line (certificate issuer, FW8-0) is ordinary 14 px secondary text, tracking 0.
 struct Account { std::wstring user, masked; bool plain = false, disabled = false; };   // disabled: shown at 32 %, not selectable (expired certificate)
@@ -384,7 +378,6 @@ struct Spec {
     std::vector<Check> checks;                                 // detailed list (A5)
     Select select; bool hasSelect = false;
     std::vector<Notice> notices; std::vector<Row> rows; std::vector<Info> infos;
-    Disclosure more;                                           // empty text: no row
     Status status; bool hasStatus = false;
     std::vector<Link> links;                                   // links close with done(link.id)
     std::wstring accountsTitle; std::vector<Account> accounts; std::wstring manageLabel; int manageId = -1; // B03
@@ -442,7 +435,7 @@ public:
     // Focus/hit ids (stable; exposed for tests and UIA).
     static int ButtonHit(size_t i) { return 1000 + static_cast<int>(i); }
     static int CheckHit(size_t i) { return 2000 + static_cast<int>(i); }
-    static constexpr int SimpleCheckHit = 2999, SelectHit = 3000, StatusHit = 5000, CloseHit = 6000, ManageHit = 6100, MoreHit = 6150, MoreTextKey = 6160;
+    static constexpr int SimpleCheckHit = 2999, SelectHit = 3000, StatusHit = 5000, CloseHit = 6000, ManageHit = 6100;
     static int LinkHit(size_t i) { return 4000 + static_cast<int>(i); }
     static int AccountHit(size_t i) { return 6200 + static_cast<int>(i); }
     static int RevealHit(size_t i) { return 6900 + static_cast<int>(i); }
@@ -455,7 +448,7 @@ public:
     static bool IsSource(int hit) { return hit >= 8100 && hit < 8900; }
 private:
     using Kit = DialogKit::Kit;
-    enum class B { Badge, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions, More };
+    enum class B { Badge, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions };
     struct Block { B type; size_t index; D2D1_RECT_F r; };
     struct Box { int hit = 0; D2D1_RECT_F r{}; };
     HWND hwnd_ = nullptr, scrim_ = nullptr, owner_ = nullptr, restore_ = nullptr; HINSTANCE instance_ = nullptr;
@@ -470,13 +463,11 @@ private:
     std::vector<Block> blocks_; std::vector<Box> boxes_; std::vector<float> fieldTops_;
     float width_ = P::width, height_ = 0;
     float messageHeight_ = 0, messageFull_ = 0, scroll_ = 0; int messageLines_ = P::messageLines;
-    float moreFull_ = 0, moreHeight_ = 0, moreScroll_ = 0; int moreLines_ = 1 << 20;   // « Plus d'infos » paragraph viewport
     bool open_ = false, closing_ = false, keyboard_ = true, busy_ = false, submitted_ = false, reduced_ = false, choosing_ = false;
     std::wstring busyLabel_, error_, fieldError_;
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     float thumbScale_ = 1; int sourceColumns_ = 2;   // B08 grid: shrinks thumbnails before overflowing
     Motion::Tween fade_; Motion::Time spinStart_{};
-    static constexpr float MoreFill = .10f, MoreGlyph = .50f;   // --opacity-browser-focus, --opacity-browser-secondary (white)
     static constexpr long long GroupKey = 1, DangerKey = 7500;   // DangerKey: B07 card group (UIA only, not a hit)
 
     UINT Dpi() const { return GetDpiForWindow(hwnd_ ? hwnd_ : owner_); }
@@ -633,20 +624,10 @@ private:
         for (size_t i = 0; i < spec_.buttons.size(); ++i) { if (!spec_.buttons[i].leading) continue; const float w = kit_.Width(spec_.buttons[i].label, DialogKit::Type::button) + 8; boxes_.push_back({ButtonHit(i), {l, top, l + w, top + P::button}}); l += w + P::buttonGap; }
     }
     void Build() {
-        blocks_.clear(); boxes_.clear(); fieldTops_.assign(spec_.fields.size(), 0); messageHeight_ = messageFull_ = 0; moreFull_ = moreHeight_ = 0;
+        blocks_.clear(); boxes_.clear(); fieldTops_.assign(spec_.fields.size(), 0); messageHeight_ = messageFull_ = 0;
         const float left = Pad(), cw = ContentWidth(), right = left + cw;
         float y = Pad(); bool first = true; bool actionsLift = true;
         auto next = [&](B type, size_t index, float h, float gap = -1) { if (!first) y += gap >= 0 ? gap : Gap(); first = false; blocks_.push_back({type, index, {left, y, right, y + h}}); y += h; return blocks_.back().r; };
-        // « Plus d'infos »: under the head (single permission) or under the rows (grouped request).
-        auto more = [&] {
-            if (spec_.more.text.empty()) return;
-            if (spec_.more.open) {
-                moreFull_ = kit_.Height(spec_.more.text, DialogKit::Type::body, cw - 16);
-                moreHeight_ = std::min(moreFull_, moreLines_ * DialogKit::Type::body.line);
-            }
-            const auto r = next(B::More, 0, 32 + moreHeight_);
-            boxes_.push_back({MoreHit, {left, r.top, right, r.top + 32}});
-        };
         if (spec_.demo) next(B::Badge, 0, P::badge);
         if (spec_.appTile || !spec_.origin.empty() || !spec_.title.empty() || !spec_.subtitle.empty() || !spec_.body.empty()) {
             const auto r = next(B::Head, 0, HeadHeight());
@@ -657,7 +638,6 @@ private:
                 next(B::Message, 0, messageHeight_);
             }
         }
-        if (spec_.rows.empty()) more();
         for (size_t i = 0; i < spec_.notices.size(); ++i) {
             const auto& n = spec_.notices[i];
             const float h = n.boxed ? 16 + kit_.Height(n.text, DialogKit::Type::detail, cw - 20 - 22) : kit_.Height(n.text, DialogKit::Type::detail, cw - SecondaryLane().text);
@@ -666,7 +646,6 @@ private:
         if (!spec_.rows.empty()) {
             const auto r = next(B::Rows, 0, 32 * spec_.rows.size() + 4 * (spec_.rows.size() - 1));
             for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle >= 0) boxes_.push_back({RowHit(i), {left, r.top + 36.f * i, right, r.top + 36.f * i + 32}});
-            more();
         }
         if (spec_.hasSelect) { const auto r = next(B::Select, 0, P::field); boxes_.push_back({SelectHit, {right - 184, r.top, right, r.bottom}}); }
         if (spec_.sources.shown) {
@@ -764,12 +743,9 @@ private:
     }
     // Fit into the available height: the message viewport shrinks first (min 3 lines).
     void Fit(float available) {
-        messageLines_ = P::messageLines; thumbScale_ = 1; moreLines_ = 1 << 20; Build();
+        messageLines_ = P::messageLines; thumbScale_ = 1; Build();
         while (height_ > available && spec_.sources.shown && thumbScale_ > .5f) { thumbScale_ -= .1f; Build(); }
         while (height_ > available && messageLines_ > 3 && messageFull_ > messageLines_ * DialogKit::Type::message.line - 1) { --messageLines_; Build(); }
-        // An open « Plus d'infos » taller than the screen scrolls (min 3 lines) so the actions stay reachable.
-        if (height_ > available && moreFull_ > 0) { moreLines_ = static_cast<int>(moreFull_ / DialogKit::Type::body.line); while (height_ > available && moreLines_ > 3) { --moreLines_; Build(); } }
-        moreScroll_ = std::clamp(moreScroll_, 0.f, std::max(0.f, moreFull_ - moreHeight_));
         scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, messageFull_ - messageHeight_));
     }
     RECT OwnerClient() const { RECT r{}; if (owner_) { GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); } return r; }
@@ -878,7 +854,6 @@ private:
         for (size_t i = 0; i < spec_.fields.size(); ++i) { o.push_back(FieldStop(i)); if (spec_.fields[i].reveal) o.push_back(RevealHit(i)); }
         if (spec_.hasSelect) o.push_back(SelectHit);
         for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle == 1) o.push_back(RowHit(i));
-        if (!spec_.more.text.empty()) o.push_back(MoreHit);
         if (spec_.sources.shown) { if (!spec_.sources.categories.empty()) o.push_back(CategoryHit(static_cast<size_t>(spec_.sources.category))); if (const int s = SourceStop()) o.push_back(s); }
         for (size_t i = 0; i < spec_.checks.size(); ++i) if (!spec_.checks[i].disabled) o.push_back(CheckHit(i));
         if (spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled) o.push_back(StatusHit);
@@ -1027,7 +1002,6 @@ private:
         else if (hit == ManageHit) Close(Collect(spec_.manageId));
         else if (hit >= 6900 && hit < 7000) ToggleReveal(static_cast<size_t>(hit - 6900));
         else if (hit == CloseHit) Cancel();
-        else if (hit == MoreHit) SetMore(!spec_.more.open, keyboard);
         else if (IsRow(hit)) { if (spec_.onButton) spec_.onButton(hit); }
         else if (IsCategory(hit)) SetCategory(hit - 8000, keyboard);
         else if (IsSource(hit)) {
@@ -1036,27 +1010,6 @@ private:
             if (keyboard && static_cast<int>(i) == spec_.sources.selected) { for (size_t b = 0; b < spec_.buttons.size(); ++b) if (spec_.buttons[b].id == spec_.sources.acceptId) { Press(b); return; } }
             SelectSource(i, keyboard);
         }
-    }
-    // Shows / hides the « Plus d'infos » paragraph. Never answers: no done(), the request stays pending.
-    void SetMore(bool show, bool keyboard) {
-        if (!open_ || spec_.more.text.empty()) return;
-        keyboard_ = keyboard; focus_ = MoreHit; if (GetFocus() != hwnd_) SetFocus(hwnd_);
-        if (show != spec_.more.open) { spec_.more.open = show; moreScroll_ = 0; Relayout(); }
-        else InvalidateRect(hwnd_, nullptr, FALSE);
-    }
-    // Overflowing paragraph only: the A2 message's discreet scroll position, in the right padding (never
-    // over the text or the row's focus ring). Empty when the whole paragraph shows.
-    D2D1_RECT_F MoreThumb() const {
-        if (!spec_.more.open || moreFull_ <= moreHeight_ + .5f) return {};
-        const auto* bl = BlockOf(B::More); if (!bl) return {};
-        const float top = bl->r.top + 32, track = moreHeight_, thumb = std::max(16.f, track * moreHeight_ / moreFull_);
-        const float at = (track - thumb) * moreScroll_ / std::max(1.f, moreFull_ - moreHeight_);
-        return {bl->r.right + 6, top + at, bl->r.right + 8, top + at + thumb};
-    }
-    bool ScrollMore(float dy) {
-        const float max = std::max(0.f, moreFull_ - moreHeight_); if (!spec_.more.open || max <= 0) return false;
-        const float v = std::clamp(moreScroll_ + dy, 0.f, max); if (v != moreScroll_) { moreScroll_ = v; InvalidateRect(hwnd_, nullptr, FALSE); }
-        return true;
     }
     bool Key(WPARAM key) {
         if (!open_) return false;
@@ -1075,7 +1028,6 @@ private:
         case VK_DOWN: case VK_UP: {
             const int step = key == VK_DOWN ? 1 : -1;
             if (!inEdit && IsSource(focus_)) return MoveSource(step * sourceColumns_);
-            if (!inEdit && focus_ == MoreHit && ScrollMore(step * DialogKit::Type::body.line)) return true;
             if (!inEdit && focus_ == SelectHit) { Activate(SelectHit, true); return true; }   // ↑/↓ open the list, never change silently
             if (!inEdit && ((focus_ >= 6200 && focus_ < 6900) || focus_ == ManageHit)) {   // B03: ↓ then Entrée
                 std::vector<int> list; for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) list.push_back(AccountHit(i)); if (!spec_.manageLabel.empty()) list.push_back(ManageHit);
@@ -1161,13 +1113,12 @@ private:
         case WM_MOUSELEAVE: hover_ = 0; Interact(); return 0;
         case WM_LBUTTONDOWN: { keyboard_ = false; int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; pressed_ = hit; if (hit) SetCapture(h); Interact(); return 0; }
         case WM_LBUTTONUP: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); const int was = pressed_; pressed_ = 0; if (GetCapture() == h) ReleaseCapture(); Interact(); if (was && was == hit) Activate(hit, false); return 0; }
-        case WM_MOUSEWHEEL: { const float dy = -static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3; if (!ScrollMore(dy * DialogKit::Type::body.line)) Scroll(dy * DialogKit::Type::message.line); return 0; }
+        case WM_MOUSEWHEEL: Scroll(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3 * DialogKit::Type::message.line); return 0;
         case WM_KEYDOWN: if (Key(w)) return 0; break;
         case WM_SYSKEYDOWN: if (AltKey(w)) return 0; break;
         case WM_SETFOCUS: InvalidateRect(h, nullptr, FALSE); return 0;
         case WM_DPICHANGED: if (open_) { MakeFont(); Place(false); } return 0;
         case WM_APP + 1: Activate(static_cast<int>(w), true); return 0;
-        case WM_APP + 4: if (open_ && !busy_) SetMore(w != 0, true); return 0;   // UIA Expand / Collapse of « Plus d'infos »
         case WM_APP + 3: { const int k = static_cast<int>(w); if (IsCategory(k)) SetCategory(k - 8000, true); else if (IsSource(k)) SelectSource(static_cast<size_t>(k - 8100), true); return 0; }   // UIA Select: never shares
         case WM_DESTROY: if (open_) { open_ = false; auto done = std::move(done_); done_ = nullptr; if (done) done(Result{}); } uia_.Detach(); return 0;
         }
@@ -1405,23 +1356,6 @@ private:
                 if (spec_.status.hasButton) { const auto v = motion_.Visual(StatusHit, now); const auto& sb = spec_.status.button; kit_.Button(Find(StatusHit), sb.label, ToneOf(sb.role), v.hover, v.press, Focused(StatusHit), sb.disabled || busy_); }
                 break;
             }
-            case B::More: {
-                // Paper SYJ-0 (rows of QLE/QKP/QK3): rest text on the content edge, right 4; hover / focus /
-                // open move it 8 in (the wanted inset); hover fills 10 % white, right 8. Glyph: white 50 %.
-                const auto r = Find(MoreHit); const auto v = motion_.Visual(MoreHit, now); const bool f = Focused(MoreHit), on = spec_.more.open;
-                const float hover = std::max(v.hover, v.press);
-                if (hover > 0) kit_.Fill(r, P::buttonRadius, DialogKit::White(MoreFill * hover));
-                if (f) kit_.Ring(r, P::buttonRadius, DialogKit::White(P::ring));
-                const float inset = 8 * std::max({hover, on ? 1.f : 0.f, f ? 1.f : 0.f}), trail = 4 + 4 * hover;
-                kit_.Text(spec_.more.label, DialogKit::Type::body, r.left + inset, r.top + 6, cw - inset - trail - 14 - 8, DialogKit::White(P::link));
-                kit_.DrawGlyph(DialogKit::Glyph::plus, {r.right - trail - 14, r.top + 9, r.right - trail, r.top + 23}, 14, DialogKit::White(MoreGlyph), 0, DialogKit::Glyph::plusView, on ? 45.f : 0.f);
-                if (on && moreHeight_ > 0) {
-                    const D2D1_RECT_F clip{r.left, r.bottom, r.right, b.r.bottom};
-                    kit_.Text(spec_.more.text, DialogKit::Type::body, r.left + 8, r.bottom - moreScroll_, cw - 16, DialogKit::White(P::body), true, &clip);
-                    const auto thumb = MoreThumb(); if (thumb.bottom > thumb.top) kit_.Fill(thumb, 1, DialogKit::White(.2f));
-                }
-                break;
-            }
             case B::Links:
                 for (size_t i = 0; i < spec_.links.size(); ++i) {
                     const auto r = Find(LinkHit(i)); const auto v = motion_.Visual(LinkHit(i), now);
@@ -1534,12 +1468,6 @@ private:
             const auto at = add(RowHit(i), spec_.rows[i].label, Find(RowHit(i)), spec_.rows[i].toggle == 1 && !busy_, L"SitePermissionToggle");
             nodes[at].toggle = spec_.rows[i].toggle == 1 ? 2 : 1; nodes[at].help = spec_.rows[i].trailing.empty() ? spec_.rows[i].detail : spec_.rows[i].trailing + L" · " + spec_.rows[i].detail;
         }
-        if (!spec_.more.text.empty()) {
-            const auto at = add(MoreHit, spec_.more.label, Find(MoreHit), !busy_, spec_.more.automationId); nodes[at].expand = spec_.more.open ? 2 : 1;
-            if (spec_.more.open) { Accessibility::Node t; t.key = MoreTextKey; t.parent = GroupKey; t.role = Accessibility::Role::Text; t.focusable = false; t.name = spec_.more.text; t.automationId = spec_.more.automationId + L"Text";
-                for (const auto& bl : blocks_) if (bl.type == B::More) t.bounds = ScreenOf({bl.r.left, bl.r.top + 32, bl.r.right, bl.r.bottom});
-                nodes.push_back(t); }
-        }
         if (spec_.hasSelect) { const auto at = add(SelectHit, spec_.select.label, Find(SelectHit), !busy_); nodes[at].expand = 1; if (spec_.select.index >= 0 && spec_.select.index < static_cast<int>(spec_.select.options.size())) nodes[at].help = spec_.select.options[static_cast<size_t>(spec_.select.index)]; }
         for (size_t i = 0; i < spec_.checks.size(); ++i) { const auto at = add(CheckHit(i), spec_.checks[i].label, Find(CheckHit(i)), !spec_.checks[i].disabled && !busy_); nodes[at].toggle = spec_.checks[i].value ? 2 : 1; nodes[at].help = spec_.checks[i].detail; }
         if (spec_.hasStatus && spec_.status.hasButton) { const auto at = add(StatusHit, spec_.status.button.label, Find(StatusHit), Enabled(StatusHit)); nodes[at].help = spec_.status.title + L" · " + spec_.status.detail; }
@@ -1571,7 +1499,7 @@ public:
         host.invoke = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
         host.toggle = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
         host.select = [this](long long key) { if (IsCategory(static_cast<int>(key)) || IsSource(static_cast<int>(key))) PostMessageW(hwnd_, WM_APP + 3, static_cast<WPARAM>(key), 0); };
-        host.expand = [this](long long key, bool on) { if (key == MoreHit) PostMessageW(hwnd_, WM_APP + 4, on ? 1 : 0, 0); else PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
+        host.expand = [this](long long key, bool) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
         host.label = [this](HWND child, Accessibility::Node& n) {
             const int i = EditIndex(child); if (i < 0) return false;
             const auto& f = spec_.fields[static_cast<size_t>(i)];
@@ -1599,7 +1527,7 @@ public:
         if (!hwnd_ || open_) return false;
         if (closing_) FinishClosing();
         spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
-        busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; moreScroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
+        busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
         keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs);
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
         SetWindowTextW(hwnd_, AccessibleName().c_str());
@@ -1708,13 +1636,6 @@ public:
     bool EnabledForTest(int hit) const { return Enabled(hit); }
     int ColumnsForTest() const { return sourceColumns_; }
     float HeightForTest() const { return height_; }
-    bool MoreOpenForTest() const { return spec_.more.open; }
-    float MoreViewportForTest() const { return moreHeight_; }
-    float MoreFullForTest() const { return moreFull_; }
-    void WheelForTest(int delta) { SendMessageW(hwnd_, WM_MOUSEWHEEL, MAKEWPARAM(0, delta), 0); }
-    void ExpandForTest(bool on) { SendMessageW(hwnd_, WM_APP + 4, on ? 1 : 0, 0); }
-    float MoreScrollForTest() const { return moreScroll_; }
-    D2D1_RECT_F MoreThumbForTest() const { return MoreThumb(); }
     float WidthForTest() const { return width_; }
     bool BusyForTest() const { return busy_; }
     bool ClosingForTest() const { return closing_; }
