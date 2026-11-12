@@ -283,15 +283,34 @@ inline std::wstring JsonString(const std::wstring& s) {
 // V1/V2): this document's origin and its own (non-opaque) origin equal the account's, a secure
 // context, and every ancestor frame of the same origin. It fills only the form holding the focused
 // field (no whole-document fallback, review V4) and never a hidden field.
+// The script answers ONE fixed status word, never a value of the page or the secret (review 885d322):
+// "filled", "origin" (not this exact secure top-level origin), "noform" (the focused element is in no
+// form), "nofield" (no visible password field in it). The host says « rempli » only on "filled".
 inline std::wstring FillScript(const std::wstring& origin, const std::wstring& user, const std::wstring& secret) {
-    return L"(function(o,u,p){if(location.origin!==o||self.origin!==o||!window.isSecureContext)return;"
-           L"var an=location.ancestorOrigins;if(an)for(var i=0;i<an.length;i++)if(an[i]!==o)return;"
-           L"var a=document.activeElement;var f=a&&a.form;if(!f)return;"
+    return L"(function(o,u,p){if(location.origin!==o||self.origin!==o||!window.isSecureContext)return 'origin';"
+           L"var an=location.ancestorOrigins;if(an)for(var i=0;i<an.length;i++)if(an[i]!==o)return 'origin';"
+           L"var a=document.activeElement;var f=a&&a.form;if(!f)return 'noform';"
            L"function shown(e){return e&&e.type!=='hidden'&&e.offsetParent!==null&&!e.disabled;}"
-           L"var pw=Array.prototype.find.call(f.querySelectorAll('input[type=password]'),shown);if(!pw)return;"
+           L"var pw=Array.prototype.find.call(f.querySelectorAll('input[type=password]'),shown);if(!pw)return 'nofield';"
            L"var id=Array.prototype.find.call(f.querySelectorAll('input[autocomplete=username],input[type=email],input[type=text]'),shown);"
            L"function set(e,v){var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}"
-           L"if(id&&u)set(id,u);set(pw,p);})(" + JsonString(origin) + L"," + JsonString(user) + L"," + JsonString(secret) + L");void 0;";
+           L"if(id&&u)set(id,u);set(pw,p);return 'filled';})(" + JsonString(origin) + L"," + JsonString(user) + L"," + JsonString(secret) + L");";
+}
+// What the host may say about the script's answer (the JSON the engine returns): only the fixed words.
+enum class FillOutcome { Filled, Origin, NoForm, NoField, Failed };
+inline FillOutcome ParseFillResult(long hr, const wchar_t* json) {
+    if (hr < 0 || !json) return FillOutcome::Failed;
+    const std::wstring j = json;
+    return j == L"\"filled\"" ? FillOutcome::Filled : j == L"\"origin\"" ? FillOutcome::Origin : j == L"\"noform\"" ? FillOutcome::NoForm : j == L"\"nofield\"" ? FillOutcome::NoField : FillOutcome::Failed;
+}
+inline const wchar_t* FillOutcomeText(FillOutcome o) {
+    switch (o) {
+    case FillOutcome::Filled: return L"";
+    case FillOutcome::Origin: return L"La page n'est plus celle de ce site.";
+    case FillOutcome::NoForm: return L"Placez d'abord le curseur dans le formulaire de connexion.";
+    case FillOutcome::NoField: return L"Aucun champ de mot de passe visible dans ce formulaire.";
+    default: return L"Le remplissage n'a pas pu être exécuté dans la page.";
+    }
 }
 
 } // namespace Vault

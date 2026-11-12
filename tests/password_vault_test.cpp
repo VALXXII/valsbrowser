@@ -56,7 +56,9 @@ int main() {
     Check(script.find(L"location.origin!==o") != std::wstring::npos && script.find(L"ancestorOrigins") != std::wstring::npos && script.find(L"isSecureContext") != std::wstring::npos && script.find(L"self.origin!==o") != std::wstring::npos, "fill script re-checks origin, opaque origin, secure context and ancestors when it runs (review V1/V2)");
     Check(script.find(L"a.form?a.form:document") == std::wstring::npos && script.find(L"offsetParent") != std::wstring::npos, "fill script: no whole-document fallback, no hidden field (review V4)");
     Check(script.find(L"</script>") == std::wstring::npos && script.find(L"\\u003c/script\\u003e") != std::wstring::npos && script.find(L"\\u2028") != std::wstring::npos && script.find(L"a\\\"b") != std::wstring::npos, "fill script: values are JSON-escaped (quotes, markup, line separators)");
-    Check(script.rfind(L"void 0;") == script.size() - 7, "fill script returns nothing (no secret comes back through the bridge)");
+    Check(script.find(L"return p") == std::wstring::npos && script.find(L"return u") == std::wstring::npos && script.find(L"return 'filled';") != std::wstring::npos, "fill script answers only a fixed status word (no secret comes back through the bridge)");
+    Check(ParseFillResult(0, L"\"filled\"") == FillOutcome::Filled && ParseFillResult(0, L"\"noform\"") == FillOutcome::NoForm && ParseFillResult(0, L"\"origin\"") == FillOutcome::Origin && ParseFillResult(0, L"\"nofield\"") == FillOutcome::NoField, "fill result: the fixed words");
+    Check(ParseFillResult(0, L"null") == FillOutcome::Failed && ParseFillResult(0, L"\"x\"") == FillOutcome::Failed && ParseFillResult(-1, L"\"filled\"") == FillOutcome::Failed && ParseFillResult(0, nullptr) == FillOutcome::Failed, "fill result: anything else, or an engine error, is a failure, never « rempli »");
     // Profile transaction.
     const std::wstring dir = std::filesystem::absolute(L"build/password-vault/profile").wstring(); std::error_code ec; std::filesystem::remove_all(dir, ec); std::filesystem::create_directories(dir, ec);
     Store base, local = s;

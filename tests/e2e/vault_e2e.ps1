@@ -97,7 +97,7 @@ try {
     Check ([bool]$row) 'B03: the account list shows the synthetic account (no secret)'
     if ($row) { Start-Sleep -Milliseconds 700; [void](Invoke-El $row)
       $filled = $false; for ($i = 0; $i -lt 15 -and !$filled; $i++) { Start-Sleep -Milliseconds 200; $filled = (Eval $ws "document.getElementById('p').value") -eq $secret -and (Eval $ws "document.getElementById('u').value") -eq $user }
-      Check $filled 'B03: the focused form is filled after the explicit choice'
+      Check ($filled -and (WaitLog 'VAULT filled \(user action, same document, confirmed by the page\)' 3000)) 'B03: the focused form is filled after the explicit choice (confirmed by the page, waited on the DOM up to 3 s)'
       if (!$filled) { Get-Content $log | Where-Object { $_ -match 'VAULT|PROMPT' } | Select-Object -Last 12 | ForEach-Object { "     log: $_" } } }
   }
   # Crash with an offer open: the secret lived only in the killed process.

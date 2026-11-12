@@ -1061,8 +1061,13 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
         if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(L"Remplissage annulé",L"Ce compte n'est plus enregistré (il a été supprimé, peut-être dans une autre fenêtre).");return;}
         std::wstring secret;if(!vault.Reveal(e->id,origin,secret))return;
         std::wstring script=Vault::FillScript(origin,e->user,secret);Wipe(secret);
-        t->view->ExecuteScript(script.c_str(),nullptr);Wipe(script);   // nothing comes back through the bridge
-        Log(L"VAULT filled (user action, same document)");
+        // Only a fixed status word comes back (never a page value or the secret); « rempli » only when the page says so.
+        auto done=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{
+            const auto o=Vault::ParseFillResult(hr,json);
+            if(o==Vault::FillOutcome::Filled){Log(L"VAULT filled (user action, same document, confirmed by the page)");return S_OK;}
+            Log(L"VAULT fill not done: outcome="+std::to_wstring((int)o)+L" hr="+std::to_wstring((long)hr));VaultNotice(L"Remplissage non effectué",Vault::FillOutcomeText(o));return S_OK;});
+        const HRESULT hr=t->view->ExecuteScript(script.c_str(),done);done->Release();Wipe(script);
+        if(FAILED(hr)){Log(L"VAULT fill not done: ExecuteScript hr="+std::to_wstring((long)hr));VaultNotice(L"Remplissage non effectué",Vault::FillOutcomeText(Vault::FillOutcome::Failed));}
     },L"vaultfill:"+std::to_wstring(t->serial));
 }
 // E8 / B05: the vault manager, real mode of the B05 surface (no decrypted secret, no reveal; removal
