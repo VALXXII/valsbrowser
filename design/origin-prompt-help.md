@@ -50,9 +50,10 @@ Standard : stockage « best effort » évictable sous pression, « persistent »
 | Partage d'écran | démonstration | badge Démonstration | — | aucun changement |
 | Dialogues JS, fermeture, effacer données, privé | oui | texte du site / conséquence en corps | — | aucun changement |
 
-Seules les demandes de permission ont une conséquence durable (mémorisation profil) invisible au moment du
-choix : c'est là qu'une aide repliable est utile. Les autres dialogues disent déjà nature, origine et
-conséquence ; leur ajouter « Plus d'infos » serait mécanique.
+L'audit actuel n'a trouvé d'information manquante que dans les demandes de permission (nature absente pour
+13/0, portée, effet de « Mémoriser » et de la fermeture invisibles). Les autres dialogues réels disent déjà
+nature, origine et conséquence (suppression, confirmation, envoi) ; leur ajouter « Plus d'infos » serait
+mécanique. Le coffre sera revu une fois son contrat stabilisé.
 
 ## 4. Contrat visuel « Plus d'infos » (popover ancré B01/B02, 340 DIP)
 
@@ -60,10 +61,11 @@ Principe repris des rangées utilisateur A10 (`QL8/QKI/QJW`, rangée `QKP-0`), p
 
 * ordre : tête (glyphe 16 + titre 16/20 Medium + sous-titre 14/20 70 %) → rangée « Plus d'infos » →
   [paragraphe si ouvert] → case « Mémoriser » ou note → Bloquer / Autoriser ;
-* rangée : h 32, rayon 6, écart 8, libellé 14/20 « Plus d'infos » `#FFFFFFB3` puis icône plus 14 à 50 % ;
-  **repos** inset 0 (texte sur le bord de contenu) ; **survol** fond `color-mix(#FFF var(--opacity-browser-focus))`,
-  inset 8 (resserrement voulu) ; **ouvert** inset 8, icône tournée 45° ; **focus clavier** anneau standard ;
-* paragraphe ouvert : 14/20 `#FFFFFFB3`, inset 8, écart 6 sous la rangée, hauteur selon le texte (jamais
+* rangée : h 32, rayon 6, écart 8, libellé 14/20 Regular `#FFFFFFE6` (flex 1) puis icône plus 14 à 50 % à droite ;
+  **repos** gauche 0 / droite 4 (`QLE-0`) ; **survol** fond `color-mix(#FFF var(--opacity-browser-focus))`,
+  inline 8 (`QKP-0`, resserrement voulu) ; **ouvert** gauche 8 / droite 4, icône tournée 45° (`QK3-0`) ;
+  **focus clavier** anneau standard du dialogue ;
+* paragraphe ouvert : 14/20 `#FFFFFFB3`, inset 8, collé sous la rangée (`QL7-0`), hauteur selon le texte (jamais
   rogné ; le popover grandit, l'ancrage ne bouge pas) ;
 * fermé par défaut à chaque demande ; l'état ne survit pas à la demande.
 
@@ -100,10 +102,14 @@ Sous-titres (une phrase, visible) :
 
 Paragraphe « Plus d'infos » = détail du type (si utile) + portée commune :
 
-* Notifications : « WebView2 les affiche avec son interface par défaut. Leur réception n'est pas garantie
-  quand l'onglet ou le navigateur est fermé. »
-* Stockage persistant : « Autoriser : les données que le site enregistre ici ne seront plus effacées
-  automatiquement ; vous pourrez toujours les effacer vous‑même. Bloquer ne supprime rien. »
+* Notifications : « Elles peuvent apparaître en dehors de cette page. Leur réception dépend du site et du
+  navigateur : rien ne garantit qu'elles arrivent onglet ou navigateur fermé. » (preuves techniques :
+  §2 et rapport, pas dans la copie).
+* Stockage persistant : « Autoriser protège les données que le site enregistre ici contre l'effacement
+  automatique quand l'appareil manque d'espace. Vous pouvez toujours les effacer vous‑même ; Bloquer ne
+  supprime rien. » (pas de promesse contre une politique, l'OS ou un effacement volontaire ; l'autorisation
+  est réglable dans Réglages › Autorisations des sites, ligne « Autre » — vérifié `SetSitePermission` /
+  `PermissionName` ; l'effet d'un retrait sur des données déjà stockées n'est pas documenté, donc non promis).
 * Portée commune : « Concerne <origine complète> uniquement. » + (case) « Sans « Mémoriser », votre choix
   ne vaut que pour cette demande ; coché, il est enregistré dans le profil de cette fenêtre. » ou
   (notifications) « Votre choix est enregistré dans le profil de cette fenêtre. » + « Modifiable dans
