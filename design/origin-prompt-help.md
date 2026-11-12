@@ -60,13 +60,20 @@ mécanique. Le coffre sera revu une fois son contrat stabilisé.
 Principe repris des rangées utilisateur A10 (`QL8/QKI/QJW`, rangée `QKP-0`), pas leurs paragraphes :
 
 * ordre : tête (glyphe 16 + titre 16/20 Medium + sous-titre 14/20 70 %) → rangée « Plus d'infos » →
-  [paragraphe si ouvert] → case « Mémoriser » ou note → Bloquer / Autoriser ;
+  [paragraphe si ouvert] → case « Mémoriser » (sauf notifications) → Bloquer / Autoriser ; demande groupée :
+  la rangée vient sous les rangées de types ;
+* **notifications (demande utilisateur 2026-11-12)** : plus de note « Choix toujours mémorisé… » sur le
+  popover ; cette phrase exacte termine le paragraphe ouvert (juste au-dessus des boutons), sans répétition ;
 * rangée : h 32, rayon 6, écart 8, libellé 14/20 Regular `#FFFFFFE6` (flex 1) puis icône plus 14 à 50 % à droite ;
   **repos** gauche 0 / droite 4 (`QLE-0`) ; **survol** fond `color-mix(#FFF var(--opacity-browser-focus))`,
   inline 8 (`QKP-0`, resserrement voulu) ; **ouvert** gauche 8 / droite 4, icône tournée 45° (`QK3-0`) ;
   **focus clavier** anneau standard du dialogue ;
-* paragraphe ouvert : 14/20 `#FFFFFFB3`, inset 8, collé sous la rangée (`QL7-0`), hauteur selon le texte (jamais
-  rogné ; le popover grandit, l'ancrage ne bouge pas) ;
+* icône : chemin `QK5-0` (viewBox 112), **blanc 50 %** (`color-mix(#FFFFFF var(--opacity-browser-secondary))`,
+  natif `DialogKit::White(.5f)` explicite, vérifié par pixel dans `modal_test`) ;
+* paragraphe ouvert : 14/20 `#FFFFFFB3`, inset 8, collé sous la rangée (`QL7-0`), hauteur selon le texte ; le
+  popover grandit et reste ancré ; si l'espace sous l'ancre manque (bas d'écran, 200 %), le paragraphe défile
+  (molette, ↑/↓ sur la rangée, min. 3 lignes) pour que les boutons restent à l'écran ; le texte complet reste
+  exposé à l'UIA ;
 * fermé par défaut à chaque demande ; l'état ne survit pas à la demande.
 
 ## 5. Contrat de comportement
@@ -110,10 +117,23 @@ Paragraphe « Plus d'infos » = détail du type (si utile) + portée commune :
   supprime rien. » (pas de promesse contre une politique, l'OS ou un effacement volontaire ; l'autorisation
   est réglable dans Réglages › Autorisations des sites, ligne « Autre » — vérifié `SetSitePermission` /
   `PermissionName` ; l'effet d'un retrait sur des données déjà stockées n'est pas documenté, donc non promis).
-* Portée commune : « Concerne <origine complète> uniquement. » + (case) « Sans « Mémoriser », votre choix
-  ne vaut que pour cette demande ; coché, il est enregistré dans le profil de cette fenêtre. » ou
-  (notifications) « Votre choix est enregistré dans le profil de cette fenêtre. » + « Modifiable dans
-  Réglages › Autorisations des sites. Fermer refuse cette fois, sans rien enregistrer. »
+* Portée commune (livrée) : « Concerne <origine moteur> uniquement. » + (types avec case) « Sans
+  « Mémoriser », ce choix ne vaut que pour cette demande ; coché, il est enregistré dans ce profil
+  (Réglages › Autorisations des sites). » + « Fermer refuse cette fois, sans rien enregistrer. » +
+  (notifications seulement, en dernière ligne) « Choix toujours mémorisé. Modifiable dans Réglages ›
+  Autorisations des sites. »
+
+## 6 bis. Paper livré (fichier Browser Design)
+
+* Canonique `p-1-0` : planche dédiée « B02 · Permissions — Plus d'infos (portée, mémorisation) » (8240 ;
+  21926.6, 1440 × 1116, bande Dialogues, sans chevauchement) : Notifications repos / survol / ouvert,
+  Stockage persistant ouvert (x.com) / focus clavier, Type non précisé repos. Planche B02 « Démonstration ·
+  variantes et états » : rangée repos ajoutée aux 6 popovers existants, note Notifications retirée, sous-titre
+  Notifications corrigé (aucun autre changement ; 1380 de haut, bas 29232 < exploration 29630).
+* Copie de lecture `p-F-0` : même planche à (4680 ; 4331), sous « 11 Dialogues ». Originaux utilisateur
+  `QL8/QKI/QJW/QA2/QGT` et A10 `PUX/S0Y` non touchés.
+* Cause de l'icône noire (corrigée) : `write_html` a enregistré l'attribut `fill="color-mix(…var(…))"`
+  comme `#000000` ; remplissage réappliqué par `update_styles`, contrôle `find_nodes fill=#000000` = 0.
 
 ## 7. Fichiers prévus (patch ciblé, aucun reformatage)
 
