@@ -37,6 +37,7 @@ struct Api {
     decltype(&::UiaRaiseAutomationEvent) raiseEvent=nullptr;
     decltype(&::UiaRaiseStructureChangedEvent) raiseStructure=nullptr;
     decltype(&::UiaRaiseNotificationEvent) raiseNotification=nullptr; // Windows 10 1709+
+    decltype(&::UiaRaiseAutomationPropertyChangedEvent) raiseProperty=nullptr;
     decltype(&::UiaClientsAreListening) listening=nullptr;
     decltype(&::UiaDisconnectProvider) disconnect=nullptr;
     decltype(&::SysAllocString) allocString=nullptr;
@@ -60,6 +61,7 @@ private:
         Bind(api.raiseEvent,uia,"UiaRaiseAutomationEvent");
         Bind(api.raiseStructure,uia,"UiaRaiseStructureChangedEvent");
         Bind(api.raiseNotification,uia,"UiaRaiseNotificationEvent");
+        Bind(api.raiseProperty,uia,"UiaRaiseAutomationPropertyChangedEvent");
         Bind(api.listening,uia,"UiaClientsAreListening");
         Bind(api.disconnect,uia,"UiaDisconnectProvider");
         Bind(api.allocString,ole,"SysAllocString");
@@ -70,7 +72,7 @@ private:
     }
 };
 
-enum class Role { Button, Tab, TabItem, Edit, ToolBar, List, ListItem, Menu, MenuItem, Group };
+enum class Role { Button, Tab, TabItem, Edit, ToolBar, List, ListItem, Menu, MenuItem, Group, Slider };
 // One accessible control. `parent` 0 is the window (fragment root). Nodes are listed
 // in depth-first reading order: a parent precedes its children.
 struct Node {
@@ -85,6 +87,8 @@ struct Node {
     // Toggle (the bookmark star): 0 none, 1 off, 2 on.
     int toggle=0;
     int level=0;              // tree depth for list items (drawer folders), 0 = none
+    // RangeValue (Role::Slider): current value, bounds and keyboard steps.
+    double rangeValue=0,rangeMin=0,rangeMax=100,smallChange=1,largeChange=10;
 };
 // Callbacks run on the window's UI thread (providers use COM threading in its STA).
 // Actions must not block: invoke/select/setValue are expected to post their work.
@@ -97,6 +101,7 @@ struct Host {
     std::function<void(long long,const std::wstring&)> setValue;
     std::function<void(long long,bool)> expand;     // true = expand, false = collapse
     std::function<void(long long)> toggle;
+    std::function<void(long long,double)> setRange; // Role::Slider: value already clamped to its bounds
 };
 
 class Root;
@@ -126,13 +131,14 @@ inline int ControlType(Role role){
     case Role::Menu:return UIA_MenuControlTypeId;
     case Role::MenuItem:return UIA_MenuItemControlTypeId;
     case Role::Group:return UIA_GroupControlTypeId;
+    case Role::Slider:return UIA_SliderControlTypeId;
     default:return UIA_ButtonControlTypeId;
     }
 }
 constexpr ProviderOptions Options=ProviderOptions(ProviderOptions_ServerSideProvider|ProviderOptions_UseComThreading);
 
 class Element final:public IRawElementProviderSimple,public IRawElementProviderFragment,public IInvokeProvider,
-    public ISelectionProvider,public ISelectionItemProvider,public IValueProvider,public IExpandCollapseProvider,public IToggleProvider {
+    public ISelectionProvider,public ISelectionItemProvider,public IValueProvider,public IExpandCollapseProvider,public IToggleProvider,public IRangeValueProvider {
     LONG refs=1;Context* context;long long key;
 public:
     Element(Context* c,long long k):context(c),key(k){context->AddRef();}
@@ -149,6 +155,7 @@ public:
         else if(iid==__uuidof(IValueProvider))*out=static_cast<IValueProvider*>(this);
         else if(iid==__uuidof(IExpandCollapseProvider))*out=static_cast<IExpandCollapseProvider*>(this);
         else if(iid==__uuidof(IToggleProvider))*out=static_cast<IToggleProvider*>(this);
+        else if(iid==__uuidof(IRangeValueProvider))*out=static_cast<IRangeValueProvider*>(this);
         else return E_NOINTERFACE;
         AddRef();return S_OK;
     }
@@ -163,7 +170,7 @@ public:
             (pattern==UIA_ExpandCollapsePatternId&&n.expand)||(pattern==UIA_TogglePatternId&&n.toggle)||
             (pattern==UIA_SelectionPatternId&&(n.role==Role::Tab||n.role==Role::List))||
             (pattern==UIA_SelectionItemPatternId&&(n.role==Role::TabItem||n.role==Role::ListItem))||
-            (pattern==UIA_ValuePatternId&&n.role==Role::Edit);
+            (pattern==UIA_ValuePatternId&&n.role==Role::Edit)||(pattern==UIA_RangeValuePatternId&&n.role==Role::Slider);
         if(supported){*out=static_cast<IRawElementProviderSimple*>(this);AddRef();}
         return S_OK;
     }
@@ -260,6 +267,21 @@ public:
     // IToggleProvider (the bookmark star: On = this page is bookmarked)
     HRESULT STDMETHODCALLTYPE Toggle()override{Node n;if(!context->Find(key,n))return NotAvailable;if(!n.enabled)return NotEnabled;if(context->host.toggle)context->host.toggle(key);else if(context->host.invoke)context->host.invoke(key);return S_OK;}
     HRESULT STDMETHODCALLTYPE get_ToggleState(ToggleState* out)override{if(!out)return E_POINTER;*out=ToggleState_Off;Node n;if(!context->Find(key,n))return NotAvailable;*out=n.toggle==2?ToggleState_On:ToggleState_Off;return S_OK;}
+    // IRangeValueProvider (sliders: per-site volume). get_IsReadOnly is shared with IValueProvider.
+    HRESULT STDMETHODCALLTYPE SetValue(double value)override{
+        Node n;
+        if(!context->Find(key,n))return NotAvailable;
+        if(!n.enabled)return NotEnabled;
+        if(n.role!=Role::Slider)return InvalidOperation;
+        if(!(value>=n.rangeMin&&value<=n.rangeMax))return E_INVALIDARG;
+        if(context->host.setRange)context->host.setRange(key,value);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE get_Value(double* out)override{if(!out)return E_POINTER;*out=0;Node n;if(!context->Find(key,n))return NotAvailable;*out=n.rangeValue;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Maximum(double* out)override{if(!out)return E_POINTER;*out=0;Node n;if(!context->Find(key,n))return NotAvailable;*out=n.rangeMax;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Minimum(double* out)override{if(!out)return E_POINTER;*out=0;Node n;if(!context->Find(key,n))return NotAvailable;*out=n.rangeMin;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_LargeChange(double* out)override{if(!out)return E_POINTER;*out=0;Node n;if(!context->Find(key,n))return NotAvailable;*out=n.largeChange;return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_SmallChange(double* out)override{if(!out)return E_POINTER;*out=0;Node n;if(!context->Find(key,n))return NotAvailable;*out=n.smallChange;return S_OK;}
 };
 
 // Properties only, merged over a child HWND's own providers (its patterns and its
@@ -420,6 +442,11 @@ public:
         if(!api().raiseStructure||!Listening())return;
         WithElement(key,[&](Element* e){int ids[]={UiaAppendRuntimeId,(int)(key>>32),(int)(key&0xffffffff)};
             api().raiseStructure(static_cast<IRawElementProviderSimple*>(e),StructureChangeType_ChildrenInvalidated,ids,3);});
+    }
+    // A slider's value moved (keyboard, pointer or automation): screen readers read the new value.
+    void RangeChanged(long long key,double before,double after){
+        if(!api().raiseProperty||!Listening())return;
+        WithElement(key,[&](Element* e){VARIANT a,b;a.vt=b.vt=VT_R8;a.dblVal=before;b.dblVal=after;api().raiseProperty(static_cast<IRawElementProviderSimple*>(e),UIA_RangeValueValuePropertyId,a,b);});
     }
     // Spoken confirmation of an action that changes no focus (e.g. "Lien copié").
     void Notify(long long key,const wchar_t* text,const wchar_t* activity){

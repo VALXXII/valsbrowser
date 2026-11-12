@@ -1,0 +1,8 @@
+<!doctype html><meta charset="utf-8"><title>sfx</title>
+<body style="background:#222;color:#ccc;font:14px sans-serif">
+<p>Per-site volume live test: a 150 ms, very faint blip (Web Audio, gain 0.002) every 3 s.</p>
+<script>
+const ctx=new AudioContext();
+function blip(){const o=ctx.createOscillator(),g=ctx.createGain();g.gain.value=0.002;o.frequency.value=660;o.connect(g).connect(ctx.destination);o.start();o.stop(ctx.currentTime+0.15);}
+ctx.resume().then(()=>{blip();setInterval(blip,3000);document.title='sfx '+ctx.state;});
+</script>

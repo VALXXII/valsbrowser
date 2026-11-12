@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Son des sites — preview</title>
+<!--
+  PREVIEW SIMULÉE (HTML) du composant natif « Son des sites ».
+  Mêmes valeurs que src/audio-panel.h, src/chrome.h (DrawAudioButton) et src/audio-mixer.h
+  (géométrie, couleurs, crans, pas clavier, tooltip, durées). L'icône de la barre joue le
+  vrai fichier assets/lottie/audio-meter.json. La référence pixel reste le rendu natif
+  (Direct2D) affiché en bas de page, produit par tests/audio/audio_test.cpp.
+  Servir la racine du dépôt :  python -m http.server 8777 --bind 127.0.0.1
+  puis ouvrir http://127.0.0.1:8777/design/audio-preview/
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+@font-face { font-family: "Inter Display"; src: url("../../assets/fonts/InterDisplay-Regular.ttf"); font-weight: 400; }
+@font-face { font-family: "Inter Display"; src: url("../../assets/fonts/InterDisplay-Medium.ttf"); font-weight: 500; }
+:root {
+  --canvas: #171717; --raised: #292929; --hover: #333333; --pressed: #3E3E3E;
+  --accent: #3E67FF; --tint: rgb(62 103 255 / 16%); --text: #FFFFFF; --secondary: rgb(255 255 255 / 50%);
+  --rule: rgb(221 221 221 / 10%); --dim: rgb(221 221 221 / 10%); --focus-key: rgb(255 255 255 / 50%); --focus-ptr: rgb(255 255 255 / 10%);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #0E0E0E; color: var(--text); font: 14px/20px "Inter Display", system-ui, sans-serif; }
+.wrap { max-width: 1212px; margin: 0 auto; padding: 16px; }
+.banner { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; padding: 10px 14px; border-radius: 8px; background: #1F2533; border: 1px solid rgb(62 103 255 / 35%); margin-bottom: 16px; }
+.banner b { font-weight: 500; }
+.banner span { color: rgb(255 255 255 / 70%); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; margin-bottom: 14px; color: rgb(255 255 255 / 80%); }
+.controls fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: 6px; align-items: center; }
+.controls legend { float: left; padding-right: 8px; color: rgb(255 255 255 / 55%); }
+.seg { display: inline-flex; background: var(--raised); border-radius: 6px; padding: 2px; }
+.seg label { padding: 4px 10px; border-radius: 4px; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg input:checked + span { color: #fff; }
+.seg label:has(input:checked) { background: var(--pressed); }
+.seg label:has(input:focus-visible) { outline: 1px solid var(--focus-key); }
+.controls .check { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+
+/* ---- Window (1180 DIP like the Paper artboards) ---- */
+.scroller { overflow-x: auto; border-radius: 8px; }
+.window { position: relative; width: 1180px; height: 600px; background: var(--canvas); border-radius: 8px; overflow: hidden; user-select: none; }
+.tabs { display: flex; gap: 6px; height: 44px; padding: 6px 6px 0 44px; }
+.tab { display: flex; gap: 8px; align-items: center; width: 128px; height: 32px; padding: 0 8px; border-radius: 6px; font-size: 14px; letter-spacing: -0.02em; color: var(--secondary); }
+.tab.active { background: var(--raised); color: #fff; font-weight: 500; }
+.tab i { width: 16px; height: 16px; border-radius: 4px; flex: none; }
+.toolbar { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 6px; }
+.nav { width: 71px; height: 32px; border-radius: 6px; background: var(--raised); flex: none; }
+.nav.r { width: 32px; }
+.address { flex: 1; display: flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 6px; background: var(--raised); font-size: 16px; letter-spacing: -0.01em; }
+.address span + span { color: var(--secondary); }
+.tb { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; flex: none; border: 0; padding: 0; background: transparent; color: inherit; }
+.tb svg { width: 16px; height: 16px; }
+.tb.ghost svg path { fill: rgb(255 255 255 / 50%); }
+.sep { width: 1px; height: 10px; background: rgb(255 255 255 / 10%); margin: 0 3px; }
+.page { position: absolute; left: 4px; right: 4px; top: 81px; bottom: 4px; border-radius: 0 0 6px 6px; background: #20242B; display: grid; place-items: center; color: rgb(255 255 255 / 25%); font-size: 13px; }
+
+/* Audio button: ghost; music = accent icon, hover/open = accent 16 % (Paper TO2-0 / UCD-0). */
+#audioBtn { position: relative; cursor: default; transition: background-color 120ms ease-out, opacity 150ms ease-out; }
+#audioBtn[hidden] { display: none; }
+#audioBtn.quiet:hover, #audioBtn.quiet.open { background: var(--hover); }
+#audioBtn.music:hover, #audioBtn.music.open { background: var(--tint); }
+#audioBtn:focus-visible { outline: 1px solid var(--focus-key); outline-offset: -1px; }
+#audioBtn .static path { fill: rgb(255 255 255 / 38%); }
+#audioBtn.music .static path { fill: var(--accent); }
+#audioBtn .lottie { position: absolute; inset: 4px; width: 16px; height: 16px; }
+#audioBtn .lottie svg path { fill: var(--accent) !important; stroke: var(--accent) !important; }
+#audioBtn.music.animating .static { visibility: hidden; }
+#audioBtn:not(.animating) .lottie { visibility: hidden; }
+#audioBtn:active svg { transform: scale(.96); }
+
+/* ---- Popover / drawer (src/audio-panel.h Layout) ---- */
+.panel { position: absolute; width: 320px; background: var(--canvas); display: flex; flex-direction: column; gap: 16px; font-size: 12px; line-height: 16px; }
+.panel.popover { right: calc(1180px - 1047px); top: 84px; padding: 16px; border: 1px solid rgb(255 255 255 / 6%); border-radius: 8px; transition: opacity 180ms cubic-bezier(.2,0,0,1), transform 180ms cubic-bezier(.2,0,0,1); }
+.panel.drawer { right: 0; top: 81px; bottom: 0; padding: 0; border-left: 1px solid rgb(255 255 255 / 2%); overflow: hidden; transition: opacity 220ms cubic-bezier(.2,0,0,1), transform 220ms cubic-bezier(.2,0,0,1); }
+.panel.hidden { opacity: 0; pointer-events: none; }
+.panel.popover.hidden { transform: translateY(-6px); }
+.panel.drawer.hidden { transform: translateX(12px); transition-duration: 150ms; }
+.reduced .panel { transition: opacity 120ms linear !important; transform: none !important; }
+.close { position: absolute; width: 24px; height: 24px; border-radius: 6px; border: 0; background: transparent; display: grid; place-items: center; padding: 0; }
+.popover .close { right: 11px; top: 10px; }
+.drawer .close { right: 14px; top: 14px; z-index: 2; }
+.drawer .scroll { position: absolute; inset: 0; padding: 16px 16px 16px 16px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.close:hover { background: var(--hover); }
+.close:focus-visible, .mute:focus-visible, .viewall:focus-visible, .rowhit:focus-visible { outline: 1px solid var(--focus-key); outline-offset: -1px; }
+.close svg { width: 14px; height: 14px; } .drawer .close svg { width: 16px; height: 16px; }
+.close path { fill: rgb(255 255 255 / 50%); }
+.rule { height: 1px; background: var(--rule); border-radius: 1px; flex: none; }
+.row { display: flex; flex-direction: column; gap: 8px; position: relative; }
+.head { display: flex; gap: 12px; align-items: center; height: 40px; pointer-events: none; }
+.rowhit { position: absolute; inset: -4px -4px auto -4px; height: 48px; border-radius: 8px; border: 0; background: transparent; padding: 0; }
+.tile { width: 40px; height: 40px; border-radius: 6px; flex: none; background: var(--raised); display: grid; place-items: center; position: relative; }
+.tile.art { background: linear-gradient(in oklab 135deg, #F2A65A 0%, #C8406B 55%, #3B2A6B 100%); border: 1px solid rgb(255 255 255 / 10%); }
+.tile i { width: 16px; height: 16px; border-radius: 4px; background: #5C8D4E; }
+.texts { display: flex; flex-direction: column; min-width: 0; position: relative; pointer-events: none; }
+.title { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 214px; }
+.detail { font-size: 13px; letter-spacing: -0.006em; line-height: 20px; color: var(--secondary); display: flex; gap: 4px; align-items: center; }
+.info { width: 14px; height: 14px; border: 0; padding: 0; background: transparent; border-radius: 4px; pointer-events: auto; display: grid; place-items: center; }
+.info path { fill: rgb(255 255 255 / 50%); transition: fill 150ms ease-out; }
+.info:hover path, .info:focus-visible path { fill: rgb(255 255 255 / 90%); }
+.info:focus-visible { outline: 1px solid var(--focus-key); outline-offset: 2px; }
+.controls-row { display: flex; align-items: center; justify-content: space-between; height: 24px; position: relative; }
+.mute { width: 24px; height: 24px; border-radius: 6px; border: 0; padding: 0; background: transparent; display: grid; place-items: center; flex: none; }
+.mute:hover { background: var(--hover); }
+.mute.full:hover { background: var(--tint); } /* 100 %: accent tint, like the toolbar button */
+.mute svg { width: 16px; height: 16px; }
+.mute path { fill: rgb(255 255 255 / 50%); }
+.mute.full path { fill: var(--accent); } /* 100 %: accent; muted / 0 % keeps the 50 % ink */
+.tick { width: 2px; height: 12px; border-radius: 1px; flex: none; background: var(--dim); }
+.value { width: 36px; text-align: center; font-size: 13px; font-weight: 500; line-height: 16px; color: var(--secondary); font-variant-numeric: tabular-nums; flex: none; }
+.lane { position: absolute; left: 26px; right: 38px; top: 0; bottom: 0; border-radius: 6px; cursor: ew-resize; outline: none; }
+.lane:focus-visible { box-shadow: inset 0 0 0 1px var(--focus-key); }
+.viewall { height: 32px; border: 0; border-radius: 6px; background: var(--raised); color: rgb(255 255 255 / 50%); font: 500 14px/14px "Inter Display", system-ui; letter-spacing: -0.01em; transition: background-color 120ms ease-out; }
+.viewall:hover { background: var(--hover); } .viewall:active { background: var(--pressed); }
+.tooltip { position: absolute; max-width: 320px; padding: 6px 8px; background: var(--canvas); border: 1px solid rgb(255 255 255 / 6%); border-radius: 6px; color: rgb(255 255 255 / 90%); font-size: 14px; line-height: 20px; letter-spacing: -0.01em; text-wrap: balance; opacity: 0; transition: opacity 120ms linear; pointer-events: none; z-index: 5; }
+.tooltip.shown { opacity: 1; }
+.empty { color: rgb(255 255 255 / 46%); font-size: 14px; line-height: 20px; }
+
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 24px; margin: 18px 0; color: rgb(255 255 255 / 75%); font-size: 13px; line-height: 20px; }
+.notes h3 { margin: 0 0 4px; font: 500 12px/16px "Inter Display", system-ui; letter-spacing: .04em; text-transform: uppercase; color: rgb(255 255 255 / 50%); }
+.readout { font-variant-numeric: tabular-nums; color: rgb(255 255 255 / 85%); }
+.native { margin-top: 24px; }
+.native h2 { font: 500 16px/24px "Inter Display", system-ui; margin: 0 0 4px; }
+.native p { margin: 0 0 12px; color: rgb(255 255 255 / 60%); font-size: 13px; }
+.gallery { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.gallery figure { margin: 0; } .gallery figcaption { font-size: 12px; color: rgb(255 255 255 / 55%); margin-top: 4px; }
+.gallery img { display: block; border-radius: 4px; background: #000; }
+.debug { margin: 0 0 14px; border: 1px solid rgb(255 255 255 / 8%); border-radius: 8px; background: #141414; }
+.debug summary { cursor: pointer; padding: 8px 12px; color: rgb(255 255 255 / 80%); font-weight: 500; list-style: none; display: flex; gap: 8px; align-items: center; }
+.debug summary::-webkit-details-marker { display: none; }
+.debug summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 150ms ease-out; }
+.debug[open] summary::before { transform: rotate(45deg); }
+.debug summary:focus-visible { outline: 1px solid var(--focus-key); border-radius: 8px; }
+.debug .body { display: flex; gap: 24px; flex-wrap: wrap; padding: 4px 12px 14px; align-items: flex-start; }
+.debug .big { width: 96px; height: 96px; border-radius: 12px; background: var(--canvas); display: grid; place-items: center; flex: none; position: relative; }
+.debug .big .lottie-big { width: 64px; height: 64px; }
+.debug .big .lottie-big svg path { fill: var(--accent) !important; stroke: var(--accent) !important; }
+.debug .big small { position: absolute; bottom: -18px; left: 0; right: 0; text-align: center; color: rgb(255 255 255 / 45%); font-size: 11px; }
+.debug .sliders { display: grid; grid-template-columns: max-content 220px 64px; gap: 6px 12px; align-items: center; font-size: 13px; color: rgb(255 255 255 / 80%); }
+.debug .sliders output { font-variant-numeric: tabular-nums; color: #fff; }
+.debug .sliders .hint { grid-column: 1 / -1; color: rgb(255 255 255 / 45%); font-size: 12px; margin-top: -4px; }
+.debug input[type=range] { accent-color: var(--accent); width: 220px; }
+.debug .actions { display: flex; flex-direction: column; gap: 6px; max-width: 280px; }
+.debug button.act { height: 28px; padding: 0 12px; border: 0; border-radius: 6px; background: var(--raised); color: rgb(255 255 255 / 85%); font: 500 13px/28px "Inter Display", system-ui; text-align: left; }
+.debug button.act:hover { background: var(--hover); } .debug button.act:focus-visible { outline: 1px solid var(--focus-key); }
+.debug .status { font-size: 12px; color: rgb(255 255 255 / 55%); min-height: 16px; }
+.debug textarea { width: 100%; min-height: 96px; background: #0E0E0E; color: rgb(255 255 255 / 80%); border: 1px solid rgb(255 255 255 / 10%); border-radius: 6px; font: 12px/16px ui-monospace, monospace; }
+.debug .parity { font-size: 12px; color: rgb(255 255 255 / 55%); }
+@media (prefers-reduced-motion: reduce) { .panel, .tooltip, #audioBtn { transition-duration: 1ms !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="banner" role="note"><b>Preview simulée (HTML)</b><span>Le composant réel est natif (Win32 + Direct2D). Cette page reprend ses valeurs exactes (src/audio-panel.h) pour essayer survol, ouverture, crans, tooltip et animations ; la référence pixel est le rendu natif en bas de page.</span></div>
+
+  <div class="controls">
+    <fieldset><legend>Situation</legend>
+      <span class="seg" id="scenario">
+        <label><input type="radio" name="sc" value="music" checked><span>Musique en cours</span></label>
+        <label><input type="radio" name="sc" value="sfx"><span>Sons courts</span></label>
+        <label><input type="radio" name="sc" value="silence"><span>Silence</span></label>
+        <label><input type="radio" name="sc" value="none"><span>Aucun son</span></label>
+      </span></fieldset>
+    <fieldset><legend>Sites</legend>
+      <span class="seg"><label><input type="radio" name="n" value="2" checked><span>2</span></label><label><input type="radio" name="n" value="7"><span>7</span></label></span></fieldset>
+    <label class="check"><input type="checkbox" id="reduced"> Mouvement réduit</label>
+    <span class="readout" id="readout" aria-live="polite"></span>
+  </div>
+
+  <details class="debug" id="debug">
+    <summary>Mode debug — animation de l'icône</summary>
+    <div class="body">
+      <div class="big" aria-hidden="true"><div class="lottie-big" id="lottieBig"></div><small>aperçu ×4</small></div>
+      <div class="sliders">
+        <label for="dLoop">Vitesse — durée d'une boucle</label><input type="range" id="dLoop" min="800" max="5000" step="100"><output for="dLoop" id="oLoop"></output>
+        <span class="hint">Plus long = plus lent. Natif : Audio::Icon::LoopMs.</span>
+        <label for="dAmp">Amplitude des barres</label><input type="range" id="dAmp" min="0" max="1.2" step="0.05"><output for="dAmp" id="oAmp"></output>
+        <span class="hint">Écart des barres autour de leur repos (100 % = première version).</span>
+        <label for="dBeats">Battements par boucle</label><input type="range" id="dBeats" min="1" max="6" step="1"><output for="dBeats" id="oBeats"></output>
+        <span class="hint">Moins de battements = mouvement plus calme.</span>
+        <label for="dOffset">Décalage entre les barres</label><input type="range" id="dOffset" min="0" max="1" step="0.05"><output for="dOffset" id="oOffset"></output>
+        <span class="hint">Retard de la barre extérieure, en part d'un demi-battement.</span>
+        <label for="dEase">Lissage des virages</label><input type="range" id="dEase" min="0.2" max="0.9" step="0.05"><output for="dEase" id="oEase"></output>
+        <span class="hint">Plus haut = départs et arrivées plus doux.</span>
+      </div>
+      <div class="actions">
+        <button class="act" id="dPlay" type="button">Pause</button>
+        <button class="act" id="dReset" type="button">Réinitialiser (défaut natif)</button>
+        <button class="act" id="dCopy" type="button">Copier les valeurs</button>
+        <button class="act" id="dExport" type="button">Exporter (.json)</button>
+        <label class="check"><input type="checkbox" id="dForce"> Animer malgré « mouvement réduit »</label>
+        <div class="status" id="dStatus" role="status"></div>
+        <div class="parity" id="dParity"></div>
+      </div>
+      <textarea id="dOut" readonly aria-label="Valeurs à reprendre"></textarea>
+    </div>
+  </details>
+
+  <div class="scroller"><div class="window" id="win">
+    <div class="tabs"><div class="tab active"><i style="background:#E8483F"></i>Radio Nova</div><div class="tab"><i style="background:#5C8D4E"></i>Puzzle du jour</div></div>
+    <div class="toolbar">
+      <div class="nav"></div><div class="nav r"></div>
+      <div class="address"><span>nova.fr</span><span>/radio-nova</span></div>
+      <button class="tb music" id="audioBtn" aria-haspopup="dialog" aria-expanded="false" aria-label="Son des sites">
+        <svg class="static" viewBox="0 0 256 256" aria-hidden="true"><path id="staticPath" d=""/></svg>
+        <div class="lottie" id="lottie" aria-hidden="true"></div>
+      </button>
+      <span class="tb ghost" aria-hidden="true"><svg viewBox="0 0 256 256"><path d="M136,80v43.47l36.12,21.67a8,8,0,0,1-8.24,13.72l-40-24A8,8,0,0,1,120,128V80a8,8,0,0,1,16,0Zm-8-48A95.44,95.44,0,0,0,60.08,60.15C52.81,67.51,46.35,74.59,40,82V64a8,8,0,0,0-16,0v40a8,8,0,0,0,8,8H72a8,8,0,0,0,0-16H49c7.15-8.42,14.27-16.35,22.39-24.57a80,80,0,1,1,1.66,114.75,8,8,0,1,0-11,11.64A96,96,0,1,0,128,32Z"/></svg></span>
+      <span class="tb ghost" aria-hidden="true"><svg viewBox="0 0 256 256"><path d="M224,144v64a8,8,0,0,1-8,8H40a8,8,0,0,1-8-8V144a8,8,0,0,1,16,0v56H208V144a8,8,0,0,1,16,0Zm-101.66,5.66a8,8,0,0,0,11.32,0l40-40a8,8,0,0,0-11.32-11.32L136,124.69V32a8,8,0,0,0-16,0v92.69L93.66,98.34a8,8,0,0,0-11.32,11.32Z"/></svg></span>
+      <span class="sep"></span>
+      <span class="tb ghost" aria-hidden="true"><svg viewBox="0 0 256 256"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"/></svg></span>
+    </div>
+    <div class="page">Page du site</div>
+    <section class="panel popover hidden" id="popover" role="dialog" aria-label="Son des sites"></section>
+    <section class="panel drawer hidden" id="drawer" role="dialog" aria-label="Son des sites"></section>
+    <div class="tooltip" id="tip" role="tooltip"></div>
+  </div></div>
+
+  <div class="notes">
+    <div><h3>Crans = image</h3>Le volume est continu (1 %, ex. 72 %). Les 16 crans n'en sont qu'une image : le cran le plus proche s'allume (72 % → cran 11/15) sans jamais arrondir la vraie valeur ni le pourcentage affiché.</div>
+    <div><h3>Pointeur et clavier</h3>Glisser n'importe où sur la rangée de crans, molette 5 %. Clavier : ←/→ 1 %, Pg↑/Pg↓ 10 %, Début/Fin. Tab : ligne → info → couper → curseur. Échap ferme.</div>
+    <div><h3>Icône</h3>Musique : vumètre Lottie bleu accent (fond accent 16 % au survol / ouvert). Sons courts et silence : haut-parleur statique atténué, jamais animé.</div>
+    <div><h3>Mouvement</h3>Popover : fondu 180 ms + 6 DIP. Panneau latéral : 220 ms / 150 ms, 12 DIP depuis la droite. Les crans glissent vers leur nouvelle position (τ 40 ms). Mouvement réduit : immédiat.</div>
+  </div>
+
+  <section class="native" aria-labelledby="nativeTitle">
+    <h2 id="nativeTitle">Rendu natif (référence)</h2>
+    <p>Images produites par le code natif (tests/audio/audio_test.cpp, Direct2D, 150 %). Régénérées à chaque passage de test-audio.ps1.</p>
+    <div class="gallery">
+      <figure><img src="../../build/audio-qa/panel-view-all.png" width="320" alt="Popover natif : deux sites et Voir tout (7)"><figcaption>Popover, 7 sites</figcaption></figure>
+      <figure><img src="../../build/audio-qa/panel-150.png" width="320" alt="Popover natif : deux sites"><figcaption>Popover</figcaption></figure>
+      <figure><img src="../../build/audio-qa/panel-focus-slider.png" width="320" alt="Focus clavier sur le curseur"><figcaption>Focus clavier, curseur</figcaption></figure>
+      <figure><img src="../../build/audio-qa/drawer.png" width="320" alt="Panneau latéral natif"><figcaption>Panneau latéral</figcaption></figure>
+      <figure><img src="../../build/audio-qa/toolbar-focus.png" width="1180" alt="Barre d'outils : bouton Son des sites en musique, focus clavier"><figcaption>Barre : musique (accent), focus clavier</figcaption></figure>
+      <figure><img src="../../build/audio-qa/toolbar-sfx.png" width="1180" alt="Barre d'outils : sons courts, icône atténuée"><figcaption>Barre : sons courts (atténué)</figcaption></figure>
+      <figure><img src="../../build/audio-qa/meter-frames.png" width="560" alt="Images du vumètre Lottie"><figcaption>Vumètre : images 0 → 96</figcaption></figure>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie_light.min.js"></script>
+<script>
+'use strict';
+// ---- Same constants as src/audio-panel.h / src/audio-mixer.h ----
+const TICKS = 16, STEP = 1, PAGE = 10, WHEEL = 5, POPOVER_ROWS = 2;
+const LOOP = 72, OUT = 24, FRAMES = 97, OUT_MS = 400;
+// Defaults = the native ones (Audio::Icon::LoopMs and design/lottie/audio-meter.py DEFAULTS).
+const METER_DEFAULTS = { loopMs: 5000, amplitude: 0.3, beats: 5, offset: 0.7, ease: 0.4 };
+const nearestTick = p => Math.round(Math.min(100, Math.max(0, p)) * (TICKS - 1) / 100);
+const TIP = 'Ce site peut jouer des sons ou de la musique, mais rien ne joue pour l’instant.';
+const G = {
+  simpleHigh: 'M165.27,21.22a12,12,0,0,0-12.64,1.31L83.88,76H40A20,20,0,0,0,20,96v64a20,20,0,0,0,20,20H83.88l68.75,53.47A12,12,0,0,0,172,224V32A12,12,0,0,0,165.27,21.22ZM148,199.47,95.37,158.53A12,12,0,0,0,88,156H44V100H88a12,12,0,0,0,7.37-2.53L148,56.54ZM212,104v48a12,12,0,0,1-24,0V104a12,12,0,0,1,24,0Zm36-16v80a12,12,0,0,1-24,0V88a12,12,0,0,1,24,0Z',
+  simpleLow: 'M165.27,21.22a12,12,0,0,0-12.64,1.31L83.88,76H40A20,20,0,0,0,20,96v64a20,20,0,0,0,20,20H83.88l68.75,53.47A12,12,0,0,0,172,224V32A12,12,0,0,0,165.27,21.22ZM148,199.46,95.37,158.53A12,12,0,0,0,88,156H44V100H88a12,12,0,0,0,7.37-2.53L148,56.54ZM212,104v48a12,12,0,0,1-24,0V104a12,12,0,0,1,24,0Z',
+  high: 'M157.27,21.22a12,12,0,0,0-12.64,1.31L75.88,76H32A20,20,0,0,0,12,96v64a20,20,0,0,0,20,20H75.88l68.75,53.47A12,12,0,0,0,164,224V32A12,12,0,0,0,157.27,21.22ZM36,100H68v56H36Zm104,99.46L92,162.13V93.87l48-37.33ZM212,128a44,44,0,0,1-11,29.11,12,12,0,1,1-18-15.88,20,20,0,0,0,0-26.43,12,12,0,0,1,18-15.86A43.94,43.94,0,0,1,212,128Zm40,0a83.87,83.87,0,0,1-21.39,56,12,12,0,0,1-17.89-16,60,60,0,0,0,0-80,12,12,0,1,1,17.88-16A83.87,83.87,0,0,1,252,128Z',
+  low: 'M157.27,21.22a12,12,0,0,0-12.64,1.31L75.88,76H32A20,20,0,0,0,12,96v64a20,20,0,0,0,20,20H75.88l68.75,53.47A12,12,0,0,0,164,224V32A12,12,0,0,0,157.27,21.22ZM36,100H68v56H36Zm104,99.46L92,162.13V93.87l48-37.33ZM212,128a44,44,0,0,1-11,29.11,12,12,0,0,1-18-15.88,20,20,0,0,0,0-26.44,12,12,0,0,1,18-15.85A43.94,43.94,0,0,1,212,128Z',
+  off: 'M157.27,21.22a12,12,0,0,0-12.64,1.31L75.88,76H32A20,20,0,0,0,12,96v64a20,20,0,0,0,20,20H75.88l68.75,53.47A12,12,0,0,0,164,224V32A12,12,0,0,0,157.27,21.22ZM36,100H68v56H36Zm104,99.47L92,162.12V93.88l48-37.34Zm108.49-55.95a12,12,0,0,1-17,17L216,145l-15.51,15.52a12,12,0,0,1-17-17L199,128l-15.52-15.51a12,12,0,0,1,17-17L216,111l15.51-15.51a12,12,0,0,1,17,17L233,128Z',
+  close: 'M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z',
+  info: 'M108,84a16,16,0,1,1,16,16A16,16,0,0,1,108,84Zm128,44A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Zm-72,36.68V132a20,20,0,0,0-20-20,12,12,0,0,0-4,23.32V168a20,20,0,0,0,20,20,12,12,0,0,0,4-23.32Z'
+};
+const svg = (d, cls = '') => `<svg viewBox="0 0 256 256" aria-hidden="true" class="${cls}"><path d="${d}"/></svg>`;
+const forPercent = p => p <= 0 ? G.off : p < 50 ? G.low : G.high;
+
+// ---- State ----
+const $ = s => document.querySelector(s);
+const win = $('#win'), btn = $('#audioBtn'), popover = $('#popover'), drawer = $('#drawer'), tip = $('#tip'), readout = $('#readout');
+let scenario = 'music', siteCount = 2, reduced = matchMedia('(prefers-reduced-motion: reduce)').matches, mode = 'closed';
+const remembered = {};
+function sites() {
+  const base = [
+    { site: 'nova.fr', title: 'Pink Moon', artist: 'Nick Drake', music: scenario === 'music', art: true, percent: 72 },
+    { site: 'jeux.example', title: 'Puzzle du jour', artist: '', music: false, art: false, percent: 72 }
+  ];
+  for (let i = 2; i < siteCount; i++) base.push({ site: `site${i}.example`, title: 'Puzzle du jour', artist: '', music: false, art: false, percent: 72 });
+  return base;
+}
+let rows = sites();
+const presented = new Map(); // site -> gliding tick position (picture only)
+
+// ---- Toolbar icon (same model as Audio::IconModel: intro 96->72, loop 0..72, finish cycle, outro 72->96) ----
+// The meter is the real Lottie (assets/lottie/audio-meter.json). Its bars are rebuilt live by
+// the same rule as design/lottie/audio-meter.py (loop_keys), so the debug values give exactly
+// the file the generator would write; the shipped file is checked against the defaults below.
+const STORE = 'audio-preview-meter-v1';
+let meter = Object.assign({}, METER_DEFAULTS);
+try { const saved = JSON.parse(localStorage.getItem(STORE) || 'null'); if (saved) for (const k in METER_DEFAULTS) if (typeof saved[k] === 'number') meter[k] = saved[k]; } catch (e) {}
+let baseDoc = null, anim = null, animBig = null, forceMotion = false, paused = false, pausedAt = 0, pausedTotal = 0;
+const clock = () => paused ? pausedAt : performance.now() - pausedTotal;
+const animating = () => (!reduced || forceMotion) && !!anim;
+const pyRound = (x, d = 0) => { const m = Math.pow(10, d), v = x * m, f = Math.floor(v), r = v - f; const n = r > .5 + 1e-9 ? f + 1 : r < .5 - 1e-9 ? f : (f % 2 === 0 ? f : f + 1); return n / m; }; // Python's round()
+function loopKeys(amplitude, beats, offset) {
+  const MAG1 = [28, 24, 16, 16, 24], MAG2 = [32, 32, 16, 44, 24], pitch = LOOP / (beats + 1), lag = offset * pitch / 2;
+  const b1 = [[0, 48]], b2 = [[0, 80]];
+  for (let k = 0; k < beats; k++) { const sign = k % 2 === 0 ? -1 : 1, t = pyRound((k + 1) * pitch);
+    b1.push([t, pyRound(48 + sign * MAG1[k % 5] * amplitude, 3)]);
+    b2.push([Math.min(LOOP - 4, pyRound((k + 1) * pitch + lag)), pyRound(80 - sign * MAG2[k % 5] * amplitude, 3)]); }
+  return [b1, b2];
+}
+function barKeys(x, lengths, ease) {
+  const line = l => ({ c: false, v: [[x, 128 - l / 2], [x, 128 + l / 2]], i: [[0, 0], [0, 0]], o: [[0, 0], [0, 0]] });
+  const sine = { o: { x: [ease], y: [0] }, i: { x: [1 - ease], y: [1] } }, settle = { o: { x: [0.2], y: [0] }, i: { x: [0], y: [1] } };
+  return lengths.map(([t, l], n) => Object.assign({ t, s: [line(l)] }, n < lengths.length - 1 ? (t < LOOP ? sine : settle) : {}));
+}
+function meterDoc(p) {
+  const doc = JSON.parse(JSON.stringify(baseDoc)); const [l1, l2] = loopKeys(p.amplitude, p.beats, p.offset);
+  const shapes = doc.layers[0].shapes;
+  shapes[0].it[0].ks.k = barKeys(236, l2.concat([[LOOP, 80], [LOOP + 18, 0], [FRAMES - 1, 0]]), p.ease);
+  shapes[1].it[0].ks.k = barKeys(200, l1.concat([[LOOP, 48], [FRAMES - 1, 48]]), p.ease);
+  doc.meta = { g: 'design/lottie/audio-meter.py', amplitude: p.amplitude, beats: p.beats, offset: p.offset, ease: p.ease };
+  return doc;
+}
+function loadMeter() {
+  if (!baseDoc || !window.lottie) return;
+  const data = meterDoc(meter);
+  try { if (anim) anim.destroy(); if (animBig) animBig.destroy(); } catch (e) {}
+  anim = lottie.loadAnimation({ container: $('#lottie'), renderer: 'svg', loop: false, autoplay: false, animationData: data });
+  animBig = lottie.loadAnimation({ container: $('#lottieBig'), renderer: 'svg', loop: false, autoplay: false, animationData: JSON.parse(JSON.stringify(data)) });
+  drawIcon(clock());
+}
+let iconMode = 'rest', loopStart = 0, morph = { from: 1, to: 1, start: 0 }, finishAt = 0, raf = 0;
+const loopFrame = now => Math.floor((((now - loopStart) % meter.loopMs) + meter.loopMs) % meter.loopMs * LOOP / meter.loopMs); // native: ms * Loop / LoopMs
+function setMusic(on) {
+  const now = clock();
+  if (!animating()) { iconMode = 'rest'; drawIcon(now); return; }
+  if (on) { if (iconMode === 'finish') iconMode = 'loop'; else if (iconMode !== 'loop') { morph = { from: morphAt(now), to: 0, start: now }; iconMode = 'morph'; } }
+  else { if (iconMode === 'loop') { iconMode = 'finish'; finishAt = loopStart + Math.ceil((now - loopStart) / meter.loopMs) * meter.loopMs; } else if (iconMode === 'morph') { morph = { from: morphAt(now), to: 1, start: now }; } }
+  tickIcon();
+}
+function morphAt(now) { if (iconMode !== 'morph') return iconMode === 'rest' ? 1 : 0; const d = (now - morph.start) / OUT_MS; return morph.to ? Math.min(1, morph.from + d) : Math.max(0, morph.from - d); }
+function drawIcon(now) {
+  const music = scenario === 'music';
+  btn.classList.toggle('music', music); btn.classList.toggle('quiet', !music);
+  let frame = -1;
+  if (animating()) {
+    if (iconMode === 'morph') { const u = morphAt(now); frame = LOOP + Math.round(u * OUT); if ((morph.to && u >= 1)) { iconMode = 'rest'; frame = -1; } else if (!morph.to && u <= 0) { iconMode = 'loop'; loopStart = now; frame = 0; } }
+    else if (iconMode === 'loop') frame = loopFrame(now);
+    else if (iconMode === 'finish') { if (now < finishAt) frame = loopFrame(now); else { const u = Math.min(1, (now - finishAt) / OUT_MS); frame = u >= 1 ? -1 : LOOP + Math.round(u * OUT); if (u >= 1) iconMode = 'rest'; } }
+  }
+  btn.classList.toggle('animating', frame >= 0);
+  if (frame >= 0) anim.goToAndStop(frame, true);
+  if (animBig) { animBig.goToAndStop(frame >= 0 ? frame : (music ? 0 : FRAMES - 1), true); $('#lottieBig').style.opacity = music ? 1 : .5; }
+  $('#staticPath').setAttribute('d', music ? G.simpleHigh : G.simpleLow);
+}
+function tickIcon() { cancelAnimationFrame(raf); const loop = () => { drawIcon(clock()); if (iconMode !== 'rest' && !paused) raf = requestAnimationFrame(loop); }; loop(); }
+
+// ---- Panel rendering ----
+function rowHTML(r, i, drawerMode) {
+  const showsArtist = r.music || r.artist;
+  const detail = showsArtist ? `<div class="detail">${r.artist || r.site}</div>`
+    : `<div class="detail">Sons et musiques<button class="info" data-i="${i}" aria-label="À propos de « Sons et musiques »" aria-describedby="tip">${svg(G.info)}</button></div>`;
+  let ticks = ''; for (let k = 0; k < TICKS; k++) ticks += `<div class="tick" data-k="${k}"></div>`;
+  return `<div class="row" data-i="${i}">
+    <button class="rowhit" aria-label="Afficher l'onglet : ${r.title}" tabindex="0"></button>
+    <div class="head"><div class="tile ${r.art ? 'art' : ''}">${r.art ? '' : '<i></i>'}</div><div class="texts"><div class="title">${r.title}</div>${detail}</div></div>
+    <div class="controls-row"><button class="mute ${r.percent === 0 ? 'off' : ''} ${r.percent >= 100 ? 'full' : ''}" aria-label="Couper le son de ${r.site}" aria-pressed="${r.percent === 0}">${svg(forPercent(r.percent))}</button>${ticks}
+      <div class="value">${r.percent} %</div>
+      <div class="lane" role="slider" tabindex="0" aria-label="Volume de ${r.site}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${r.percent}" aria-valuetext="${r.percent} %"></div></div>
+  </div>`;
+}
+function render(target, drawerMode) {
+  const shown = drawerMode ? rows.length : Math.min(rows.length, POPOVER_ROWS);
+  let html = `<button class="close" aria-label="Fermer">${svg(G.close)}</button>`;
+  if (!rows.length) html += '<div class="empty">Aucun site n’a émis de son récemment.</div>';
+  let list = '';
+  for (let i = 0; i < shown; i++) { if (i) list += '<div class="rule"></div>'; list += rowHTML(rows[i], i, drawerMode); }
+  html += drawerMode ? `<div class="scroll">${list}</div>` : list;
+  if (!drawerMode && rows.length > POPOVER_ROWS) html += `<button class="viewall">Voir tout (${rows.length})</button>`;
+  target.innerHTML = html;
+  target.querySelectorAll('.row').forEach(el => paintTicks(+el.dataset.i, el));
+  wire(target, drawerMode);
+}
+function paintTicks(i, el) {
+  const r = rows[i]; if (!r || !el) return;
+  const pos = presented.has(r.site) ? presented.get(r.site) : nearestTick(r.percent);
+  const silent = r.percent <= 0;
+  el.querySelectorAll('.tick').forEach(t => {
+    const k = +t.dataset.k, current = Math.max(0, 1 - Math.abs(k - pos)), on = silent ? current : Math.max(current, Math.min(1, Math.max(0, pos - k)));
+    t.style.height = (12 + 4 * current) + 'px';
+    t.style.background = silent ? `color-mix(in srgb, rgb(255 255 255 / 32%) ${on * 100}%, rgb(221 221 221 / 10%))` : `color-mix(in srgb, #3E67FF ${on * 100}%, rgb(221 221 221 / 10%))`;
+    t.style.boxShadow = !silent && current > .01 ? `0 0 6px 2px rgb(62 103 255 / ${50 * current}%)` : 'none';
+  });
+  el.querySelector('.value').textContent = r.percent + ' %';
+  const lane = el.querySelector('.lane'); lane.setAttribute('aria-valuenow', r.percent); lane.setAttribute('aria-valuetext', r.percent + ' %');
+  const mute = el.querySelector('.mute'); mute.classList.toggle('off', r.percent === 0); mute.classList.toggle('full', r.percent >= 100); mute.setAttribute('aria-pressed', r.percent === 0); mute.innerHTML = svg(forPercent(r.percent));
+}
+// Ticks glide toward the nearest tick (exponential, 40 ms), like Popover::StepTicks.
+let glide = 0, last = 0;
+function stepTicks(t) {
+  const dt = last ? Math.min(.1, (t - last) / 1000) : 0; last = t; let moving = false;
+  const k = reduced ? 1 : 1 - Math.exp(-dt / .04);
+  rows.forEach((r, i) => {
+    const target = nearestTick(r.percent); let p = presented.has(r.site) ? presented.get(r.site) : target;
+    if (Math.abs(target - p) < .01) p = target; else { p += (target - p) * k; moving = true; }
+    presented.set(r.site, p);
+    document.querySelectorAll(`.row[data-i="${i}"]`).forEach(el => paintTicks(i, el));
+  });
+  glide = moving ? requestAnimationFrame(stepTicks) : (last = 0, 0);
+}
+function setPercent(i, value) {
+  const r = rows[i]; const v = Math.max(0, Math.min(100, Math.round(value)));
+  if (v === r.percent) return;
+  if (v > 0) remembered[r.site] = v; else if (r.percent > 0) remembered[r.site] = r.percent;
+  r.percent = v; // the real, continuous value: never snapped to a tick
+  readout.textContent = `${r.site} : ${v} % (cran affiché ${nearestTick(v)}/15)`;
+  if (!glide) glide = requestAnimationFrame(stepTicks);
+}
+
+// ---- Interaction wiring (pointer 1:1 with grab offset, keyboard, wheel, tooltip) ----
+function laneGeometry(rowEl) { const ts = rowEl.querySelectorAll('.tick'); const a = ts[0].getBoundingClientRect(), b = ts[TICKS - 1].getBoundingClientRect(); return { x0: a.left + a.width / 2, x1: b.left + b.width / 2 }; }
+const percentAt = (g, x) => Math.max(0, Math.min(100, (x - g.x0) / (g.x1 - g.x0) * 100));
+const xAt = (g, p) => g.x0 + p / 100 * (g.x1 - g.x0);
+let tipTimer = 0, tipShownAt = 0;
+function showTip(anchor, now) {
+  clearTimeout(tipTimer);
+  const go = () => { const w = win.getBoundingClientRect(), a = anchor.getBoundingClientRect(); tip.textContent = TIP; tip.style.width = '300px'; tip.style.left = Math.max(6, Math.min(a.left - w.left, w.width - 6 - 300)) + 'px'; tip.style.top = (a.bottom - w.top + 6) + 'px'; tip.classList.add('shown'); tipShownAt = performance.now(); };
+  if (now || performance.now() - tipShownAt < 300) go(); else tipTimer = setTimeout(go, 600);
+}
+function hideTip() { clearTimeout(tipTimer); tip.classList.remove('shown'); }
+function wire(root, drawerMode) {
+  root.querySelector('.close').onclick = () => closePanel(false);
+  const va = root.querySelector('.viewall'); if (va) va.onclick = () => openDrawer();
+  root.querySelectorAll('.row').forEach(rowEl => {
+    const i = +rowEl.dataset.i, lane = rowEl.querySelector('.lane');
+    rowEl.querySelector('.mute').onclick = () => { const r = rows[i]; setPercent(i, r.percent > 0 ? 0 : (remembered[r.site] || 100)); };
+    rowEl.querySelector('.rowhit').onclick = () => { readout.textContent = `Afficher l'onglet : ${rows[i].title}`; if (!drawerMode) closePanel(false); };
+    lane.addEventListener('pointerdown', e => {
+      lane.setPointerCapture(e.pointerId); lane.focus({ preventScroll: true });
+      const g = laneGeometry(rowEl), here = xAt(g, rows[i].percent);
+      const grab = Math.abs(e.clientX - here) <= 5 ? e.clientX - here : 0; // on the value: keep the grab offset
+      const move = ev => setPercent(i, percentAt(g, ev.clientX - grab));
+      move(e); lane.onpointermove = move;
+      lane.onpointerup = lane.onpointercancel = () => { lane.onpointermove = null; };
+    });
+    lane.addEventListener('keydown', e => {
+      const p = rows[i].percent; const m = { ArrowLeft: -STEP, ArrowDown: -STEP, ArrowRight: STEP, ArrowUp: STEP, PageDown: -PAGE, PageUp: PAGE };
+      if (e.key in m) setPercent(i, p + m[e.key]); else if (e.key === 'Home') setPercent(i, 0); else if (e.key === 'End') setPercent(i, 100); else return;
+      e.preventDefault();
+    });
+    lane.addEventListener('wheel', e => { e.preventDefault(); setPercent(i, rows[i].percent + (e.deltaY < 0 ? WHEEL : -WHEEL)); }, { passive: false });
+    const info = rowEl.querySelector('.info');
+    if (info) { info.onmouseenter = () => showTip(info, false); info.onmouseleave = hideTip; info.onfocus = () => { if (info.matches(':focus-visible')) showTip(info, true); }; info.onblur = hideTip; info.onclick = () => showTip(info, true); }
+  });
+}
+
+// ---- Open / close (popover light-dismisses; the drawer stays docked) ----
+function openPopover() { if (scenario === 'none') return; render(popover, false); popover.classList.remove('hidden'); mode = 'popover'; btn.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
+function openDrawer() { hideTip(); popover.classList.add('hidden'); render(drawer, true); drawer.classList.remove('hidden'); mode = 'drawer'; btn.classList.add('open'); drawer.querySelector('.lane')?.focus({ preventScroll: true }); }
+function closePanel(keyboard) { hideTip(); popover.classList.add('hidden'); drawer.classList.add('hidden'); mode = 'closed'; btn.classList.remove('open'); btn.setAttribute('aria-expanded', 'false'); if (keyboard) btn.focus(); }
+btn.addEventListener('click', () => mode === 'closed' ? (openPopover(), popover.querySelector('.lane')?.focus({ preventScroll: true })) : closePanel(false));
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && mode !== 'closed') { if (tip.classList.contains('shown')) hideTip(); else closePanel(true); } });
+document.addEventListener('pointerdown', e => { if (mode === 'popover' && !popover.contains(e.target) && !btn.contains(e.target)) closePanel(false); });
+
+// ---- Controls ----
+function applyScenario() {
+  rows = sites(); presented.clear();
+  btn.hidden = scenario === 'none';
+  if (scenario === 'none') closePanel(false);
+  if (mode === 'popover') render(popover, false); if (mode === 'drawer') render(drawer, true);
+  btn.setAttribute('aria-label', scenario === 'music' ? 'Son des sites : Pink Moon (nova.fr)' : scenario === 'none' ? 'Son des sites' : `Son des sites : ${scenario === 'sfx' ? '2 sites émettent des sons courts' : '2 sites récents, silencieux'}`);
+  setMusic(scenario === 'music');
+}
+document.querySelectorAll('input[name=sc]').forEach(r => r.onchange = () => { scenario = r.value; applyScenario(); });
+document.querySelectorAll('input[name=n]').forEach(r => r.onchange = () => { siteCount = +r.value; applyScenario(); });
+const rm = $('#reduced'); rm.checked = reduced; rm.onchange = () => { reduced = rm.checked; document.body.classList.toggle('reduced', reduced); iconMode = 'rest'; setMusic(scenario === 'music'); syncDebug(); };
+document.body.classList.toggle('reduced', reduced);
+// ---- Debug mode (icon animation): live, persisted, exportable ----
+const D = { dLoop: 'loopMs', dAmp: 'amplitude', dBeats: 'beats', dOffset: 'offset', dEase: 'ease' };
+const fmt = { loopMs: v => (v / 1000).toFixed(1).replace('.', ',') + ' s', amplitude: v => Math.round(v * 100) + ' %', beats: v => String(v), offset: v => Math.round(v * 100) + ' %', ease: v => v.toFixed(2).replace('.', ',') };
+function exportText() {
+  const m = meter;
+  return JSON.stringify({ loopMs: m.loopMs, amplitude: m.amplitude, beats: m.beats, offset: m.offset, ease: m.ease }, null, 2)
+    + '\n\n# Asset : python design/lottie/audio-meter.py --amplitude ' + m.amplitude + ' --beats ' + m.beats + ' --offset ' + m.offset + ' --ease ' + m.ease
+    + '\n# Lecture native : src/audio-mixer.h  Audio::Icon::LoopMs = ' + m.loopMs;
+}
+function syncDebug() {
+  for (const id in D) { const k = D[id]; $('#' + id).value = meter[k]; $('#o' + id.slice(1)).textContent = fmt[k](meter[k]); }
+  $('#dOut').value = exportText();
+  const isDefault = Object.keys(METER_DEFAULTS).every(k => Math.abs(meter[k] - METER_DEFAULTS[k]) < 1e-9);
+  $('#dPlay').textContent = paused ? 'Lecture' : 'Pause';
+  $('#dForce').checked = forceMotion;
+  $('#dStatus').textContent = (reduced && !forceMotion ? 'Mouvement réduit : icône statique. ' : '') + (scenario !== 'music' ? 'L\u2019icône n\u2019anime qu\u2019en « Musique en cours ». ' : '') + (isDefault ? 'Valeurs par défaut (natif).' : 'Valeurs modifiées, enregistrées dans ce navigateur.');
+}
+function setMeter(k, v, rebuild) {
+  if (k === 'loopMs') { const now = clock(), frac = (((now - loopStart) % meter.loopMs) + meter.loopMs) % meter.loopMs / meter.loopMs; meter.loopMs = v; loopStart = now - frac * v; } // keep the phase
+  else meter[k] = v;
+  try { localStorage.setItem(STORE, JSON.stringify(meter)); } catch (e) {}
+  if (rebuild) loadMeter(); else drawIcon(clock());
+  syncDebug();
+}
+for (const id in D) $('#' + id).addEventListener('input', e => setMeter(D[id], +e.target.value, D[id] !== 'loopMs'));
+$('#dPlay').onclick = () => {
+  if (paused) { pausedTotal = performance.now() - pausedAt; paused = false; tickIcon(); }
+  else { pausedAt = clock(); paused = true; }
+  syncDebug();
+};
+$('#dReset').onclick = () => { meter = Object.assign({}, METER_DEFAULTS); try { localStorage.removeItem(STORE); } catch (e) {} loadMeter(); syncDebug(); $('#dStatus').textContent = 'Réinitialisé aux valeurs natives.'; };
+$('#dCopy').onclick = async () => { const t = exportText(); try { await navigator.clipboard.writeText(t); $('#dStatus').textContent = 'Valeurs copiées dans le presse-papiers.'; } catch (e) { const a = $('#dOut'); a.focus(); a.select(); $('#dStatus').textContent = 'Copie automatique refusée : texte sélectionné, Ctrl+C pour copier.'; } };
+$('#dExport').onclick = () => { const url = URL.createObjectURL(new Blob([exportText()], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'audio-meter-reglages.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); $('#dStatus').textContent = 'Fichier audio-meter-reglages.json exporté.'; };
+$('#dForce').onchange = e => { forceMotion = e.target.checked; iconMode = 'rest'; setMusic(scenario === 'music'); syncDebug(); };
+const dbg = $('#debug'); try { dbg.open = localStorage.getItem(STORE + '-open') === '1'; } catch (e) {}
+dbg.addEventListener('toggle', () => { try { localStorage.setItem(STORE + '-open', dbg.open ? '1' : '0'); } catch (e) {} });
+document.querySelectorAll('input[name=sc]').forEach(r => r.addEventListener('change', syncDebug));
+
+applyScenario(); syncDebug();
+fetch('../../assets/lottie/audio-meter.json', { cache: 'no-store' }).then(r => r.json()).then(doc => {
+  baseDoc = doc;
+  // Parity: the default rule must rebuild the shipped asset exactly.
+  const same = JSON.stringify(doc.layers) === JSON.stringify(meterDoc(METER_DEFAULTS).layers);
+  $('#dParity').textContent = same ? 'Parité : les valeurs par défaut reproduisent exactement assets/lottie/audio-meter.json.' : 'Écart : le fichier livré diffère des valeurs par défaut.';
+  $('#dParity').dataset.same = same ? '1' : '0';
+  loadMeter(); applyScenario();
+}).catch(() => { $('#dParity').textContent = 'Lottie indisponible : icône statique.'; });
+</script>
+</body>
+</html>

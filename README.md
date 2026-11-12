@@ -67,6 +67,10 @@ Fill blanc additionnel ?8%, sur toute la hauteur de la barre. Progression indica
 
 La preview native a ete approuvee. Le build installe utilise le compositor clock a la demande, avec cache de texte et invalidation limitee a la barre URL quand elle seule bouge. Zero reveil de frame au repos/minimise dans les tests. Cadence verifiee dans le harness natif a120Hz;240Hz et navigation WebView2 non mesures. Les anciennes estimations CPU sont retirees. Details: [display-pacing.md](design/display-pacing.md). Le raccourci browser ouvre build/v2/browser-display-paced.exe avec le profil existant.
 
+## Son des sites (volume par site)
+
+Dès qu'un site émet un son, un bouton apparaît à gauche de l'Historique. Musique ou vidéo (élément long ou en direct, titre Media Session, ou 5 s de son continu) : les deux barres du haut-parleur bougent (Lottie). Sons courts (clics, notifications) : icône statique atténuée, jamais animée, qui reste disponible ensuite. Le panneau liste les sites (titre, artiste, pochette) avec un curseur de volume propre à chaque site, indépendant du curseur du site (gain appliqué dans la page : éléments audio/vidéo et Web Audio, cadres compris ; 0–100 %, mémorisé dans `site-volumes`). Clavier, lecteurs d'écran (curseur UIA), mouvement réduit. Détails et limites : [design/audio-mixer.md](design/audio-mixer.md). Tests : `test-audio.ps1` (`-Live` : vrai WebView2).
+
 ## Restauration des onglets
 
 Ctrl+Maj+T rouvre le dernier onglet fermé à sa position initiale (25 entrées, hors accueil). L’action figure aussi dans le menu principal et le menu contextuel des onglets.

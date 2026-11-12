@@ -11,6 +11,7 @@
 #include "native-lottie.h"
 #include "lottie-playback.h"
 #include "download-icon.h"
+#include "audio-mixer.h"
 #include "nav-motion.h"
 #include "loading.h"
 #include "tab-motion.h"
@@ -85,6 +86,11 @@ public:
     // The ripple grows well past the button (x4): the rectangle covers its reach,
     // down to the chrome's lower edge (the page covers what lies below).
     D2D1_RECT_F DownloadIconDirty()const{const float cx=width-85,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
+    // Audio button (left of History, only while a site has made sound): icon-only frames.
+    static constexpr float AudioRight=133,AudioLeft=157;   // from the window's right edge; the field ends 6 DIP before
+    bool audioShown=false;std::wstring audioTip=L"Son des sites";
+    Audio::IconModel audioIcon;
+    D2D1_RECT_F AudioIconDirty()const{return {width-AudioLeft-1,47,width-AudioRight+1,73};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
     // Quantised on-screen identity of the loading fill: equal signatures render
     // identical pixels, so a loading-only frame with an unchanged signature is skipped.
@@ -189,6 +195,69 @@ public:
         const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
         target->DrawBitmap(dlBitmap,{x,y,x+size,y+size},opacity);return true;
     }
+    // ---- Audio button (audio-mixer.h Audio::IconModel, design/lottie/audio-meter.py) ----
+    Lottie::Asset audioMeter;ID2D1Bitmap* audioBitmap=nullptr;unsigned audioSide=0;int audioFrame=-1;bool audioFailed=false;
+    void DropAudioIcon(){Drop(audioBitmap);audioFrame=-1;}
+    // `color` tints the white Lottie (premultiplied: each pixel's alpha x the colour), so the
+    // music meter can be the accent (Paper TO2-0 / UCD-0) without a second asset.
+    std::vector<uint32_t> audioPixels;uint32_t audioTint=0;
+    bool DrawAudioFrame(int frame,D2D1_RECT_F box,float size,D2D1_COLOR_F color){
+        const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(size*dpi/96)),1u,64u);
+        if(audioSide!=side){DropAudioIcon();audioSide=side;audioFailed=!audioMeter.Load(assets+L"lottie\\audio-meter.json")||audioMeter.FrameCount()!=Audio::Icon::Frames;}
+        if(audioFailed)return false;
+        const uint32_t tint=(uint32_t(std::lround(color.r*255))<<16)|(uint32_t(std::lround(color.g*255))<<8)|uint32_t(std::lround(color.b*255));
+        if(!audioBitmap||frame!=audioFrame||tint!=audioTint){
+            const auto* f=audioMeter.Sample(double(frame)/(Audio::Icon::Frames-1),side);if(!f)return false;
+            audioPixels.resize(f->bgra.size());
+            for(size_t i=0;i<f->bgra.size();++i){const uint32_t a=f->bgra[i]>>24;audioPixels[i]=(a<<24)|((a*((tint>>16)&255)/255)<<16)|((a*((tint>>8)&255)/255)<<8)|(a*(tint&255)/255);}
+            HRESULT hr=S_OK;
+            if(!audioBitmap)hr=target->CreateBitmap(D2D1::SizeU(side,side),audioPixels.data(),side*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED)),&audioBitmap);
+            else hr=audioBitmap->CopyFromMemory(nullptr,audioPixels.data(),side*4);
+            if(FAILED(hr)||!audioBitmap){DropAudioIcon();return false;}
+            audioFrame=frame;audioTint=tint;
+        }
+        const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->DrawBitmap(audioBitmap,{x,y,x+size,y+size},color.a);return true;
+    }
+    // Ghost button like History/Downloads. Quiet (short sounds, idle): white at 50 % x the
+    // pose's subdued emphasis (38 %). Music (Paper TO2-0 / UCD-0): the meter turns the accent,
+    // and hover / an open panel lays the accent at 16 % (--color-browser-split-tint) under it.
+    // The two blend with the emphasis, so the intro/outro also carry the colour change.
+    void DrawAudioButton(D2D1_RECT_F box,Design::ButtonState state,Motion::Time now){
+        const auto pose=audioIcon.At(now);
+        const float music=Motion::Clamp((pose.emphasis-Audio::Icon::Subdued)/(1-Audio::Icon::Subdued));
+        auto style=Design::Resolve(Design::ButtonVariant::Ghost,state);
+        const auto accent=Design::Accent::Get();
+        if(music>0&&(state.hover>0||state.press>0)){
+            if(style.fill)Round(box,style.radius,style.surface*(1-music)+Design::Surface::canvas*music);
+            FillBox(box,style.radius,D2D1::ColorF(accent.r,accent.g,accent.b,(.16f*state.hover+.08f*state.press)*music));
+        }else if(style.fill)Round(box,style.radius,style.surface);
+        if(style.focus)FocusRing(box,style.radius);
+        const float size=style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled);
+        const float white=.5f*style.iconOpacity*pose.emphasis;
+        const D2D1_COLOR_F ink=D2D1::ColorF(1+(accent.r-1)*music,1+(accent.g-1)*music,1+(accent.b-1)*music,(white+(1-white)*music)*pose.presence);
+        if(pose.frame>=0&&DrawAudioFrame(pose.frame,box,size,ink))return;
+        static constexpr char high[]="M165.27,21.22a12,12,0,0,0-12.64,1.31L83.88,76H40A20,20,0,0,0,20,96v64a20,20,0,0,0,20,20H83.88l68.75,53.47A12,12,0,0,0,172,224V32A12,12,0,0,0,165.27,21.22ZM148,199.47,95.37,158.53A12,12,0,0,0,88,156H44V100H88a12,12,0,0,0,7.37-2.53L148,56.54ZM212,104v48a12,12,0,0,1-24,0V104a12,12,0,0,1,24,0Zm36-16v80a12,12,0,0,1-24,0V88a12,12,0,0,1,24,0Z";
+        static constexpr char low[]="M165.27,21.22a12,12,0,0,0-12.64,1.31L83.88,76H40A20,20,0,0,0,20,96v64a20,20,0,0,0,20,20H83.88l68.75,53.47A12,12,0,0,0,172,224V32A12,12,0,0,0,165.27,21.22ZM148,199.46,95.37,158.53A12,12,0,0,0,88,156H44V100H88a12,12,0,0,0,7.37-2.53L148,56.54ZM212,104v48a12,12,0,0,1-24,0V104a12,12,0,0,1,24,0Z";
+        // A failed frame of the loop still shows music (high), the outro its end (low).
+        const bool high_=pose.frame>=0?pose.frame<Audio::Icon::Loop+Audio::Icon::Out/2:pose.high;
+        PathGlyph(high_?high:low,box,size,ink);
+    }
+    // Media artwork: `image` cropped to fill `box` (cover), corners rounded, with a 1 DIP
+    // white 10 % inner outline so dark art keeps its edge on the dark canvas.
+    bool DrawCover(const std::shared_ptr<const FaviconImage>& image,D2D1_RECT_F box,float radius){
+        if(!image||!image->width||!image->height||!target||!factory)return false;
+        auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
+        const float bw=box.right-box.left,bh=box.bottom-box.top,iw=float(image->width),ih=float(image->height);
+        const float k=std::max(bw/iw,bh/ih),sw=bw/k,sh=bh/k;const D2D1_RECT_F src{(iw-sw)/2,(ih-sh)/2,(iw+sw)/2,(ih+sh)/2};
+        ID2D1RoundedRectangleGeometry* clip=nullptr;if(FAILED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box,radius,radius),&clip)))return false;
+        ID2D1Layer* layer=nullptr;if(FAILED(target->CreateLayer(nullptr,&layer))){Drop(clip);return false;}
+        target->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),clip,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE),layer);
+        target->DrawBitmap(bitmap,box,1,D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,src);
+        target->PopLayer();Drop(layer);Drop(clip);
+        Color(1,.1f);target->DrawRoundedRectangle(D2D1::RoundedRect({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},radius-.5f,radius-.5f),brush,1);
+        return true;
+    }
     // Blue ring stroke that grows, blurs and fades. The blur is a real Direct2D
     // Gaussian blur of a small offscreen layer (allocated once, at the ripple's
     // reach) and grows with the ring like the preview's; without the effect,
@@ -265,7 +334,7 @@ public:
     IDWriteFontCollection* FontCollection()const{return fonts;}
     IWICImagingFactory* Imaging()const{return wic;}
     ID2D1RenderTarget* SwapTarget(ID2D1RenderTarget* next){auto old=target;target=next;return old;}
-    void RecreateTarget(){DropGhostLayer();DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();DropRipple();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+    void RecreateTarget(){DropGhostLayer();DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();DropRipple();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     float TextWidth(const std::wstring& value,float size,bool medium=false,bool tabular=false,float tracking=0){if(value.empty())return 0;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,{0,0,4096,32},size,tabular,medium,tracking,&layout,m)))return 0;DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);Drop(layout);return metrics.widthIncludingTrailingWhitespace;}
     // Toolbar button drawn in its hover state while the popover it opened is shown.
     int latched=0;
@@ -379,7 +448,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
+    void Dispose(){ClearTextCache();DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();audioMeter.Clear();audioSide=0;DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -756,13 +825,14 @@ public:
         }
         float x=viewRight+Design::Space::tabGap;regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
-        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-133,76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
+        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-(audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
         request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
         // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
         regions.push_back({'L',{bar.left,44,bar.right-64,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
+        if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},audioTip.c_str()});
         regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
         BuildBand();
     }
@@ -850,6 +920,7 @@ public:
         for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||IsTab(id)||!visible(box))continue;
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
+            if(id=='V'){DrawAudioButton(box,{interaction.hover,interaction.press,false,focus==id},now);continue;}
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){
                     auto style=Design::Resolve(variant,state);if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}if(style.focus)FocusRing(box,style.radius);
@@ -892,7 +963,7 @@ public:
             const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
             if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
         }
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropGhostLayer();DropFade();DropDownloadIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropGhostLayer();DropFade();DropDownloadIcon();DropAudioIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
 }
