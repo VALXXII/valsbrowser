@@ -406,8 +406,19 @@ int wmain(int argc, wchar_t** argv) {
             RECT w{}; GetWindowRect(p.Window(), &w);
             Check(w.bottom <= work.bottom && w.top >= work.top, "more: open popover stays inside the work area");
             Check(S.MoreViewportForTest() < S.MoreFullForTest() && S.MoreViewportForTest() >= 3 * 20, "more: paragraph scrolls instead of pushing the actions off screen");
-            S.WheelForTest(-WHEEL_DELTA); Check(S.MoreScrollForTest() > 0, "more: wheel scrolls the paragraph");
-            S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); Check(S.MoreScrollForTest() == 0, "more: ↑ on the row scrolls back");
+            {   const auto t0 = S.MoreThumbForTest(), row = S.BoxForTest(D::MoreHit);
+                Check(t0.bottom > t0.top && t0.left >= row.right + 6 && t0.right <= S.WidthForTest() - 8 && t0.top >= row.bottom, "more: overflow shows the A2 scroll position in the right padding (not over text or ring)");
+                for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/more-storage-long-low-thumb-" + std::to_wstring(dpi) + L".png", dpi), "more: overflow + indicator render");
+                S.WheelForTest(-WHEEL_DELTA); const auto t1 = S.MoreThumbForTest();
+                Check(S.MoreScrollForTest() > 0 && t1.top > t0.top, "more: wheel scrolls the paragraph, the indicator follows");
+                S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN);
+                const auto t2 = S.MoreThumbForTest();
+                Check(S.MoreScrollForTest() == S.MoreFullForTest() - S.MoreViewportForTest() && t2.bottom >= row.bottom + S.MoreViewportForTest() - .5f, "more: ↓ on the row reaches the end, indicator at the bottom");
+                Check(S.RenderForTest(root + L"/build/popups/more-storage-long-low-end-144.png", 144), "more: scrolled to the end render");
+                {   auto nodes = S.NodesForTest(); std::wstring text; for (auto& n : nodes) if (n.key == D::MoreTextKey) text = n.name;
+                    Check(text.find(L"Fermer refuse cette fois") != std::wstring::npos, "more: UIA text node keeps the whole paragraph while it scrolls"); }
+                S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP);
+                Check(S.MoreScrollForTest() == 0 && S.MoreThumbForTest().top == t0.top, "more: ↑ on the row scrolls back to the top"); }
             Check(S.RenderForTest(root + L"/build/popups/more-storage-long-low-144.png", 144), "more: long origin, low anchor render");
             Check(calls == 4, "more: still nothing answered");
             p.Abort(); S.FinishAnimationsForTest(); Check(calls == 5 && got.action == OriginPrompt::Action::Dismiss, "more: abort answers once");
@@ -416,6 +427,7 @@ int wmain(int argc, wchar_t** argv) {
         p.Show(spec({OPP::PersistentStorage}, L"un-sous-domaine-vraiment-tres-long.exemple-de-domaine-public-pour-tester.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
         S.ActivateForTest(D::MoreHit); S.FinishAnimationsForTest();
         Check(S.MoreViewportForTest() == S.MoreFullForTest(), "more: roomy screen shows the whole paragraph");
+        {   const auto t = S.MoreThumbForTest(); Check(!(t.bottom > t.top), "more: no overflow, no scroll indicator"); }
         for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/more-storage-open-long-" + std::to_wstring(dpi) + L".png", dpi), "more: storage open long-origin render");
         p.Abort(); S.FinishAnimationsForTest();
         // Grouped camera + microphone: the row sits under the kind rows.

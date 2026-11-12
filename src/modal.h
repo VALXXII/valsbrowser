@@ -1041,6 +1041,15 @@ private:
         if (show != spec_.more.open) { spec_.more.open = show; moreScroll_ = 0; Relayout(); }
         else InvalidateRect(hwnd_, nullptr, FALSE);
     }
+    // Overflowing paragraph only: the A2 message's discreet scroll position, in the right padding (never
+    // over the text or the row's focus ring). Empty when the whole paragraph shows.
+    D2D1_RECT_F MoreThumb() const {
+        if (!spec_.more.open || moreFull_ <= moreHeight_ + .5f) return {};
+        const auto* bl = BlockOf(B::More); if (!bl) return {};
+        const float top = bl->r.top + 32, track = moreHeight_, thumb = std::max(16.f, track * moreHeight_ / moreFull_);
+        const float at = (track - thumb) * moreScroll_ / std::max(1.f, moreFull_ - moreHeight_);
+        return {bl->r.right + 6, top + at, bl->r.right + 8, top + at + thumb};
+    }
     bool ScrollMore(float dy) {
         const float max = std::max(0.f, moreFull_ - moreHeight_); if (!spec_.more.open || max <= 0) return false;
         const float v = std::clamp(moreScroll_ + dy, 0.f, max); if (v != moreScroll_) { moreScroll_ = v; InvalidateRect(hwnd_, nullptr, FALSE); }
@@ -1406,6 +1415,7 @@ private:
                 if (on && moreHeight_ > 0) {
                     const D2D1_RECT_F clip{r.left, r.bottom, r.right, b.r.bottom};
                     kit_.Text(spec_.more.text, DialogKit::Type::body, r.left + 8, r.bottom - moreScroll_, cw - 16, DialogKit::White(P::body), true, &clip);
+                    const auto thumb = MoreThumb(); if (thumb.bottom > thumb.top) kit_.Fill(thumb, 1, DialogKit::White(.2f));
                 }
                 break;
             }
@@ -1701,6 +1711,7 @@ public:
     void WheelForTest(int delta) { SendMessageW(hwnd_, WM_MOUSEWHEEL, MAKEWPARAM(0, delta), 0); }
     void ExpandForTest(bool on) { SendMessageW(hwnd_, WM_APP + 4, on ? 1 : 0, 0); }
     float MoreScrollForTest() const { return moreScroll_; }
+    D2D1_RECT_F MoreThumbForTest() const { return MoreThumb(); }
     float WidthForTest() const { return width_; }
     bool BusyForTest() const { return busy_; }
     bool ClosingForTest() const { return closing_; }
