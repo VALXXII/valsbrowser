@@ -48,7 +48,7 @@ int main() {
     assert(pages[0] == yt && pages[1] == paper && pages[2] == luma);      // the pair sits together, Youtube first
     assert(Active() == paper && yt->shown && paper->shown && !luma->shown && Shown() == 2);
     assert(chrome.split.shown && chrome.split.ring && chrome.split.handles.size() == 1);
-    assert(chrome.split.active.left >= 590 && chrome.split.active.right == 1176);  // Paper on the right
+    assert(chrome.split.active.left >= 590 && chrome.split.active.right == 1178);  // Paper on the right (Paper V3: 2 DIP outer outline)
     // the separator grip: 16 DIP centred on the 4 DIP gap (6 DIP over each page edge); z-order above the
     // real pages is checked by the native --split-test, where WebView2 children exist
     { auto sv = CurrentSplit(); auto g = sv.a.SeparatorBox(sv.a.separators[0]); assert(std::fabs(g.right - g.left - 4) < .01f);

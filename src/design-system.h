@@ -88,6 +88,19 @@ static_assert(Size::focusStroke==1,"focus stroke is the user-chosen 1 DIP");
 // Pure tab-strip geometry (DIPs). Renderers and hit testing call these so
 // visible gaps, hit areas and overflow capacity can never drift apart.
 struct Box { float left, top, right, bottom; };
+// Web viewport, the native frame that hosts the WebView2 site (Paper "Lisière —
+// prototype actuel V3": Outline > Viewbox). The site sits flush under the chrome
+// (square top corners; Vertical::ContentTop: 81 DIP, 121 with the bookmarks band) inside
+// a 2 DIP canvas outline on its left, right and bottom edges, with 8 DIP bottom corners
+// concentric with Paper's 10 DIP window corner (8+2). Maximised, the window corner is
+// square, so the viewport corner is too. (Ported from the composition viewport onto the
+// windowed pages: the window itself keeps DWM's native rounding, see RoundNatively.)
+namespace Viewport {
+inline constexpr float top=Vertical::top, inset=2, radius=8, windowRadius=radius+inset;
+inline constexpr Box Bounds(float width,float height,bool band=false){return {inset,Vertical::ContentTop(band),std::max(inset,width-inset),std::max(Vertical::ContentTop(band),height-inset)};}
+inline constexpr float Radius(bool maximized){return maximized?0:radius;}
+}
+static_assert(Viewport::windowRadius==10,"viewport corner stays concentric with the 10 DIP window corner");
 // Toolbar navigation pair (Paper, Page 1 "Chrome", 2026-11-09 "Bouton avant arrière
 // retouché"): Back and Forward are one joined segment. Each half is 32 x 32 on the raised
 // surface with 6 DIP outer corners and 3 DIP inner corners; a 1 x 10 hairline (white at

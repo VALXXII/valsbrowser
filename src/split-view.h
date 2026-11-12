@@ -30,7 +30,7 @@ inline constexpr float minHeightCss = 256; // WCAG 1.4.10 reflow height
 inline constexpr float hysteresis = 24;    // zone boundaries
 inline constexpr float liftY = 84;         // pointer below the address row: lift the tab
 inline constexpr float reattachY = 64;     // back above this: reorder again (20 DIP hysteresis)
-inline constexpr float pageRadius = 6;     // outer bottom page corners (Paper 08: 6, concentric with Paper's 10 DIP window over the 4 DIP inset; DWM now rounds the window at 8)
+inline constexpr float pageRadius = 8;     // outer bottom page corners: Paper V3 viewport (8 DIP over the 2 DIP outline, concentric with the 10 DIP window; was 6 over 4)
 inline constexpr float handleTarget = 16;  // separator hit target: the 4 DIP gap + 6 DIP over each page edge
 
 inline float Extent(const Box& b, Orientation o) { return o == Orientation::Row ? b.W() : b.H(); }

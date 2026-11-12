@@ -11,3 +11,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Design system fixture failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Hover/favicon regression fixture compilation failed.' }
 & "$PSScriptRoot/$out/hover_favicon_test.exe" $PSScriptRoot "$PSScriptRoot/$out"
 if ($LASTEXITCODE -ne 0) { throw 'Hover/favicon regression fixture failed.' }
+# Overlay scrollbar (Paper V3 "Scrollbar minimale"): values, geometry, raster, motion.
+& tools/w64devkit/bin/g++.exe -std=c++17 -Wall -Wextra -Werror -pedantic -static tests/design-system/scrollbar_test.cpp -o "$out/scrollbar_test.exe" -luser32
+if ($LASTEXITCODE -ne 0) { throw 'Scrollbar fixture compilation failed.' }
+& "$PSScriptRoot/$out/scrollbar_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Scrollbar fixture failed.' }

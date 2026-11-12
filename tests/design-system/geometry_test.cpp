@@ -95,6 +95,15 @@ int main(){
     Require(Near(Size::focusStroke,1)&&Near(Focus::stroke,1),"focus ring is exactly 1 DIP");
     Require(Near(Focus::color,1)&&Near(Focus::pointerOpacity,.10f)&&Near(Focus::Opacity(false),.10f),"pointer focus ring is white at 10% alpha");
     Require(Near(Focus::keyboardOpacity,.50f)&&Near(Focus::Opacity(true),.50f),"keyboard focus ring is white at 50% alpha");
-    std::puts("PASS: brand 16/.32 at back-centre X & favicon-centre Y, first tab at x44 (back + 6), nav pair 6|3|1|3 with forward at 45, Reload 83..115, field at 121, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, adaptive 128-32 DIP tabs with masked peeking overflow, equal close insets, 1 DIP white focus tokens (pointer 10%, keyboard 50%).");
+    // Web viewport (Paper V3 Outline > Viewbox): 2 DIP outline left/right/bottom, flush
+    // under the chrome (81 DIP, 121 with the bookmarks band), 8 DIP bottom corners
+    // concentric with the 10 DIP window.
+    {auto v=Viewport::Bounds(1180,815);
+     Require(Near(v.left,2)&&Near(v.top,81)&&Near(v.right,1178)&&Near(v.bottom,813),"viewport is the Paper Viewbox {2,81,1178,813} at 1180x815, under the chrome");
+     auto b=Viewport::Bounds(1180,815,true);Require(Near(b.top,121)&&Near(b.bottom,813),"with the bookmarks band the viewport starts at 121");
+     Require(Near(Viewport::Radius(false),8)&&Near(Viewport::Radius(false)+Viewport::inset,Viewport::windowRadius),"restored viewport corner 8 DIP = window 10 - outline 2");
+     Require(Near(Viewport::Radius(true),0),"maximised viewport corner is square like the window");
+     auto tiny=Viewport::Bounds(3,50);Require(tiny.right>=tiny.left&&tiny.bottom>=tiny.top,"viewport never inverts when the client collapses");}
+    std::puts("PASS: viewport 2 DIP outline under the chrome, 8/0 DIP corners; brand 16/.32 at back-centre X & favicon-centre Y, first tab at x44 (back + 6), nav pair 6|3|1|3 with forward at 45, Reload 83..115, field at 121, 6 DIP tab/toolbar gap, contiguous hit regions, overflow capacity, adaptive 128-32 DIP tabs with masked peeking overflow, equal close insets, 1 DIP white focus tokens (pointer 10%, keyboard 50%).");
     return 0;
 }

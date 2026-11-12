@@ -25,6 +25,27 @@ int wmain(int argc,wchar_t** argv){
     NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base)))return 3;chrome.SetMotion(&motion);motion.SetReducedMotion(true);UpdateFont();
     auto first=std::make_shared<Tab>();first->title=L"Google";pages.push_back(first);auto second=std::make_shared<Tab>();second->title=L"Second tab";pages.push_back(second);current=0;
     Layout();ShowWindow(window,SW_SHOW);UpdateWindow(window);PumpNativeMessages();
+    // Viewport (Paper V3 Outline > Viewbox) on windowed pages: the content box sits 2 DIP
+    // inside left/right/bottom, flush under the chrome; the outer bottom corners are
+    // masked (8 DIP) while restored and square when maximised.
+    auto viewportShape=[&](const char* label,bool maximized){
+        const auto c=ContentBox();first->shown=true;const auto corners=PageCorners();
+        const bool placed=std::fabs(c.left-2)<.01f&&std::fabs(c.top-chrome.ContentTop())<.01f&&std::fabs(c.right-(chrome.width-2))<.01f&&std::fabs(c.bottom-(chrome.height-2))<.01f;
+        const bool rounded=maximized?corners.empty():corners.size()==2;
+        std::printf("VIEWPORT %s dpi=%u box=(%.1f,%.1f,%.1f,%.1f) chrome=%.0fx%.0f corners=%zu radius=%.0f\n",label,GetDpiForWindow(window),c.left,c.top,c.right,c.bottom,chrome.width,chrome.height,corners.size(),SV::pageRadius);
+        return placed&&rounded&&SV::pageRadius==8;};
+    if(!viewportShape("restored",false)){std::printf("FAIL viewport restored\n");return 4;}
+    ShowWindow(window,SW_MAXIMIZE);PumpNativeMessages();if(!viewportShape("maximized",true)){std::printf("FAIL viewport maximized\n");return 4;}
+    ShowWindow(window,SW_RESTORE);PumpNativeMessages();if(!viewportShape("resized",false)){std::printf("FAIL viewport resized\n");return 4;}
+    // Overlay scrollbar (Paper V3 "Scrollbar minimale") on a windowed page: a metrics report
+    // shows the vertical handle as a layered child window at the page's right edge.
+    {const float sc=GetDpiForWindow(window)/96.f;first->home=false;first->shown=true;first->placedVisible=1;first->placed={S(2),S(chrome.ContentTop()),S(chrome.width-2),S(chrome.height-2)};
+     const bool taken=ScrollbarMessageFrom(first,L"lisiere-scrollbar 1 0 0 800 400 800 2400 1 1 0");
+     auto& bar=pageScrollbars[first->serial];PlaceScrollbars(first->serial,bar,NativeChrome::Motion::Now()+std::chrono::milliseconds(150)); /* past the 100 ms fade-in */RECT r{};if(bar.bars[0])GetWindowRect(bar.bars[0],&r);MapWindowPoints(nullptr,window,(POINT*)&r,2);
+     const bool shown=bar.bars[0]&&(GetWindowLongW(bar.bars[0],GWL_STYLE)&WS_VISIBLE)&&r.right<=first->placed.right&&r.right>=first->placed.right-(int)std::ceil(12*sc)&&r.top>=first->placed.top;
+     std::printf("SCROLLBAR handle taken=%d shown=%d window=(%ld,%ld,%ld,%ld) page=(%ld,%ld,%ld,%ld)\n",taken,shown,r.left,r.top,r.right,r.bottom,first->placed.left,first->placed.top,first->placed.right,first->placed.bottom);
+     if(!taken||!shown){std::printf("FAIL scrollbar handle\n");return 4;}
+     first->home=true;first->placedVisible=-1;first->placed={};ScrollbarRefresh(NativeChrome::Motion::Now());}
     SetWindowSubclass(address,TraceEdit,99,0);FocusAddress();SetWindowTextW(address,L"https://example.com/");PumpNativeMessages();
     wchar_t face[128]{};HDC dc=GetDC(address);auto old=SelectObject(dc,font);GetTextFaceW(dc,128,face);TEXTMETRICW tm{};GetTextMetricsW(dc,&tm);SelectObject(dc,old);ReleaseDC(address,dc);RECT format{};SendMessageW(address,EM_GETRECT,0,(LPARAM)&format);RECT bounds{};GetWindowRect(address,&bounds);MapWindowPoints(nullptr,window,(POINT*)&bounds,2);
     std::printf("REAL EDIT: face=%s dpi=%u fontHeight=%ld ascent=%ld window=(%ld,%ld,%ld,%ld) format=(%ld,%ld,%ld,%ld)\n",Utf8(face).c_str(),GetDpiForWindow(window),tm.tmHeight,tm.tmAscent,bounds.left,bounds.top,bounds.right,bounds.bottom,format.left,format.top,format.right,format.bottom);

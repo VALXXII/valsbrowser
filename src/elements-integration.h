@@ -769,6 +769,7 @@ HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceive
     if(SUCCEEDED(a->TryGetWebMessageAsString(&raw))&&raw)message=TakeString(raw);
     else{CoTaskMemFree(raw);raw=nullptr;if(SUCCEEDED(a->get_WebMessageAsJson(&raw))&&raw)message=TakeString(raw);}
     if(AudioPageMessage(t,message))return S_OK; // per-site audio reports (audio-integration.h)
+    if(ScrollbarMessageFrom(t,message))return S_OK; // overlay scrollbar metrics (viewport-scrollbar-host.h)
     if(message.size()>4096)return S_OK;
     if(ErrorPageMessage(t,source,message))return S_OK;
     SandboxMessage(t,source,message);

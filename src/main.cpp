@@ -47,6 +47,7 @@
 #include "webview2-runtime.h"
 #include "webview2-install.h"
 #include <wrl/client.h>
+#include "viewport-scrollbar.h"
 #include <shlobj.h>
 // Self-update host integration is compiled into identity-stamped builds only
 // (tools/release/build.py defines BROWSER_HAS_BUILD_INFO). Unstamped builds and the
@@ -139,6 +140,8 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     // Resize preview: `navStamp` changes with every navigation (a snapshot never outlives it);
     // `frozen`: bounds held while the preview stands in for the page.
     std::uint64_t navStamp=0; bool frozen=false;
+    // Overlay scrollbar (Paper V3 "Scrollbar minimale"): root scroll metrics posted by the page.
+    NativeChrome::Scrollbar::Metrics scroll;
     // Link preview: the engine's status text (hovered link), drawn by our own bubble.
     std::wstring status;
     // Paper p-D-0 surfaces: network error page, debug sandbox (opened by the user in this tab),
@@ -151,6 +154,8 @@ bool PageShown(const Tab& t){return !t.home||homeTiles.Has(t);}
 void TabShown(const std::shared_ptr<Tab>& tab);
 HWND window,tabs,address,back,forward,reload,add,closeTab,home;
 HFONT font; HBRUSH paper; HINSTANCE instance; HMODULE loader;
+// Overlay scrollbar of every shown page (Paper V3 "Scrollbar minimale", see ScrollbarRefresh).
+void ScrollbarRefresh(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake ScrollbarWake(NativeChrome::Motion::Time now);void ScrollbarReset();void ScrollbarSettleHover();void ScrollbarDestroy();void SyncScrollbars();
 Com<ICoreWebView2Environment> environment;
 std::vector<std::shared_ptr<Tab>> pages; int current=-1; bool halted=false;
 struct ClosedTab { std::wstring uri,title; int index; };
@@ -231,6 +236,7 @@ void SyncStopMorph(NativeChrome::Motion::Time now){chrome.nav.stop.Sync(chrome.n
 // ends, so its endpoint is painted) repaints the whole header.
 void CloseAudioDrawer();void InvalidateDownloadIcon();void AudioFrame(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake AudioNextWake(NativeChrome::Motion::Time now);void RefreshAudio();
 void InvalidateMotion(NativeChrome::Motion::Time now){
+    ScrollbarRefresh(now); // overlay handles only: never repaints the chrome
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
     chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);AudioFrame(now);
@@ -242,7 +248,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.tabMotion.NextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -330,6 +336,7 @@ void Update(){
     }
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+L" — browser").c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
+    ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
 }
 void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
@@ -383,7 +390,7 @@ void DissolveSmallGroups(){
 int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->group)&&Members(t->group).size()>=2?t->group:0;}
 // Same box as a single page: under the chrome, 81 DIP or 121 with the bookmarks band
 // (SV::Content assumes the former fixed 84 DIP top).
-SV::Box ContentBox(){auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
+SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();c.left=View::inset;c.right=std::max(c.left,chrome.width-View::inset);c.bottom=chrome.height-View::inset;if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
     SplitView v;v.group=VisibleGroup();if(!v.group)return v;v.members=Members(v.group);const auto o=splitGroups[v.group];
@@ -435,7 +442,7 @@ RECT PixelRect(const SV::Box& b){return {S(b.left),S(b.top),S(b.right),S(b.botto
 void ApplyPages(){
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
-    const float top=chrome.ContentTop();RECT full{S(4),S(top),S(chrome.width-4),std::max(S(top),S(chrome.height-4))};const ULONGLONG now=GetTickCount64();
+    const float top=chrome.ContentTop();namespace View=NativeChrome::Design::Viewport;RECT full{S(View::inset),S(top),S(chrome.width-View::inset),std::max(S(top),S(chrome.height-View::inset))}; /* Paper V3 Viewbox: 2 DIP outline */const ULONGLONG now=GetTickCount64();
     // A page that grows shows the parent's surface wherever Chromium has not rendered
     // the new size yet. With WS_CLIPCHILDREN the parent never paints under its pages,
     // so that surface held stale handles/rings or never-painted black (the trails seen
@@ -460,7 +467,7 @@ void ApplyPages(){
         }
     }
     if(under)ReleaseDC(window,under);
-    SyncGrips(v);SyncCornerMasks();SyncSplitDecor();SyncStatusBubble();InvalidateRect(window,nullptr,FALSE);
+    SyncGrips(v);SyncCornerMasks();SyncSplitDecor();SyncStatusBubble();SyncScrollbars();InvalidateRect(window,nullptr,FALSE);
 }
 // Separator grips. Pages are child windows of another process: over them the main
 // window gets no mouse input, so the 4 DIP gap alone would be the target. A layered
@@ -559,7 +566,8 @@ void GripFrame(NativeChrome::Motion::Time now){
 // bottom one). Top corners meet the toolbar and stay square, as in Paper.
 struct PageCorner{SV::Box page;bool right=false;};
 std::vector<PageCorner> PageCorners(){
-    std::vector<PageCorner> out;const auto c=ContentBox();auto v=CurrentSplit();std::vector<SV::Box> boxes;
+    std::vector<PageCorner> out;if(IsZoomed(window)||InFullscreen())return out; // square like the window (Paper V3)
+    const auto c=ContentBox();auto v=CurrentSplit();std::vector<SV::Box> boxes;
     if(v.group){for(auto& s:v.a.slots)if(!s.rail)boxes.push_back(s.box);}else{auto t=Active();if(t&&t->shown)boxes.push_back(c);}
     for(auto& b:boxes){if(std::fabs(b.bottom-c.bottom)>.5f)continue;if(std::fabs(b.left-c.left)<.5f)out.push_back({b,false});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true});}
     return out;
@@ -1542,6 +1550,7 @@ void ApplyReducedMotion(){
     downloadPanel.SetReducedMotion(reduced);downloadDrawer.SetReducedMotion(reduced);historyDrawer.SetReducedMotion(reduced);bookmarksDrawer.SetReducedMotion(reduced);
     SyncUpdateToastMotion();
     settingsDrawer.SetReducedMotion();ElementsReducedMotion(reduced);
+    if(reduced)ScrollbarSettleHover();
     InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
 }
 // SETTINGS(data): "Effacer les données…" (modal confirmation first).
@@ -1937,10 +1946,11 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
     }
     return S_OK;
 }
-bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message);
+bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message);bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text);
 #include "elements-integration.h"
 void SyncLatch();
 #include "audio-integration.h"
+#include "viewport-scrollbar-host.h"
 // SETTINGS(cookies): third-party cookie blocking is Chromium's ForceThirdPartyCookieBlockingEnabled
 // feature (net::cookie_util::IsForceThirdPartyCookieBlockingEnabled also needs
 // ThirdPartyStoragePartitioning), an engine argument set in wWinMain: applies at the next launch.
@@ -2207,6 +2217,9 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
             else Log(L"STATUS add_StatusBarTextChanged failed: engine bubble kept");status->Release();}
          else Log(L"STATUS ICoreWebView2_12 unavailable: engine bubble kept");}
         EventRegistrationToken token{};
+        // Overlay scrollbar (Paper V3): the page script hides the root scrollbar and posts its
+        // metrics; PageMessage hands them to ScrollbarMessageFrom.
+        Check(t->view->AddScriptToExecuteOnDocumentCreated(ScrollbarScript,nullptr),L"AddScriptToExecuteOnDocumentCreated scrollbar");
         IID faviconInterface;CLSIDFromString(L"{517B2D1D-7DAE-4A66-A4F4-10352FFB9518}",&faviconInterface);
         if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
         auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
@@ -3743,6 +3756,7 @@ case WM_LBUTTONUP:{if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDr
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}return 0;}
 case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelSeparator();CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_ACTIVATE:if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}return 0;
+case WM_DISPLAYCHANGE:Layout();break;
 case WM_SETTINGCHANGE:ApplyReducedMotion();return 0; // Windows' switch, OR'd with the app's own
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()&&!chrome.bandItems[i].folder)BandActivate(i,true,false,false);return 0;}
@@ -3800,7 +3814,7 @@ case WM_DESTROY:StopEngineStart();accessibility.Detach();DisposeElementSurfaces(
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif
-    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();PostQuitMessage(0);return 0;
+    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();ScrollbarDestroy();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
 // Every message may move keyboard focus, the selection or the tab set: report the
 // change to UI Automation clients once the message is handled.
