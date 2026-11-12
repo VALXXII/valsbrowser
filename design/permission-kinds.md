@@ -13,8 +13,13 @@ Le popover « x.com demande une autorisation » n'était pas une notification. L
 * Notifications : titre, « Le site pourra afficher des alertes en dehors de la page. », Bloquer / Autoriser,
   Fermer. Ni note ni case : le choix reste toujours mémorisé (politique inchangée). « Même onglet fermé » est
   retiré, faute de preuve dans la documentation Microsoft.
-* Type 13 : « <site> veut conserver ses données sur cet appareil » et « Sinon, le navigateur peut les effacer
-  s'il manque d'espace. », avec un glyphe base de données (popover et puce).
+* Type 13 : « <site> veut protéger son stockage local » et « Protège les données locales du site quand le
+  navigateur libère de l'espace. Les mots de passe sont gérés séparément. », avec un glyphe base de données
+  (popover et puce). Ancienne copie « veut conserver ses données sur cet appareil » remplacée (Paper
+  c-qdlkgz) : elle se lisait comme « garder mes identifiants ». Le type 13 (PERSISTENT_STORAGE) demande
+  seulement que le stockage du site ne soit pas évincé quand le navigateur libère de l'espace ; ce n'est
+  ni une notification ni un enregistrement de mot de passe (le coffre reste désactivé). La copie ne promet
+  pas que le site ne stocke aucun élément de session : elle décrit la portée de l'autorisation, rien de plus.
 * Type 0 : « Le moteur ne précise pas de quoi il s'agit. » ; type supérieur à 13 : « Type non reconnu par ce
   navigateur (code moteur n). » Le type n'est jamais deviné.
 * Pas d'aide repliable : l'utilisateur l'a retirée de Paper.

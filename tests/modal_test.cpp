@@ -324,8 +324,8 @@ int wmain(int argc, wchar_t** argv) {
         // Kind 13 is the SDK's COREWEBVIEW2_PERMISSION_KIND_PERSISTENT_STORAGE (the x.com capture), never « notifications ».
         Check(OPP::PersistentStorage == 13 && SiteRequest::Kind::PersistentStorage == 13, "permission kinds: 13 = persistent storage (SDK 1.0.4314.35)");
         auto st = OriginPrompt::Build(spec({OPP::PersistentStorage}), true);
-        Check(st.title == L"x.com veut conserver ses données sur cet appareil" && st.headGlyph == DialogKit::Glyph::storage && SiteRequest::GlyphOf(13) == SiteRequest::Path::storage, "permission kinds: 13 has its own title and storage glyph");
-        Check(st.subtitle == L"Sinon, le navigateur peut les effacer s'il manque d'espace." && !has(st.title, L"notification") && !has(st.subtitle, L"otification"), "permission kinds: 13 never described as notifications");
+        Check(st.title == L"x.com veut protéger son stockage local" && st.headGlyph == DialogKit::Glyph::storage && SiteRequest::GlyphOf(13) == SiteRequest::Path::storage, "permission kinds: 13 has its own title and storage glyph");
+        Check(st.subtitle == L"Protège les données locales du site quand le navigateur libère de l'espace. Les mots de passe sont gérés séparément." && !has(st.title, L"notification") && !has(st.subtitle, L"otification"), "permission kinds: 13 never described as notifications");
         Check(st.checkLabel == L"Mémoriser pour ce site" && st.notices.empty(), "permission kinds: 13 keeps the remember check (policy unchanged)");
         auto unknown = OriginPrompt::Build(spec({OPP::Unknown}, L"exemple.fr"), true);
         Check(unknown.title == L"exemple.fr demande une autorisation" && unknown.subtitle == L"Le moteur ne précise pas de quoi il s'agit." && unknown.headGlyph == DialogKit::Glyph::info, "permission kinds: 0 says the engine gave no type");

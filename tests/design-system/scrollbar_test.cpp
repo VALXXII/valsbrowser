@@ -100,6 +100,39 @@ int main(){
      Require(m.Sample(T(50)).opacity>0&&m.Sample(T(50)).opacity<1,"reduced motion: opacity still fades");
      m.Reset();Require(m.Sample(T(60)).opacity==0&&m.Sample(T(60)).hover==0,"tab switch hides at once");}
     {Motion m;m.Pointer(true,true,true,T(0),false);m.Advance(T(10000));Require(m.Sample(T(10000)).opacity==1&&m.Sample(T(10000)).hover==1,"dragging keeps the handle wide and visible");}
-    std::printf("PASS: %d overlay scrollbar checks (Paper values, real-metric geometry at 100/125/175 %%, hit bands, AA raster with outer ring, 100/800/200/120 ms motion, reduced motion).\n",checks);
+    // Dark sites (comment c-l6gvbn, Paper S16 « D — site sombre »): the swapped handle.
+    Require(darkFillRgb==0xFFFFFF&&darkRingRgb==0x171717,"dark-site handle: colours swapped, same alphas");
+    Require(Over(0x000000,128,0xFFFFFF)==0x7F7F7F&&Over(0xFFFFFF,128,0x000000)==0x808080,"source-over: black 50 % on white, white 50 % on black");
+    Require(Over(0x000000,64,Over(0x000000,128,0xFFFFFF))==0x5F5F5F,"source-over: nested translucent layers compose");
+    // The light-page handle on a dark page was the reported defect: almost no contrast.
+    Require(Contrast(Over(fillRgb,fillAlpha,0x121212),0x121212)<1.2,"defect reproduced: #171717 56 % on #121212 is near-invisible");
+    Require(Contrast(Over(darkFillRgb,fillAlpha,0x121212),0x121212)>3,"swapped handle reads on #121212 (WCAG 1.4.11, 3:1)");
+    Require(Contrast(Over(fillRgb,fillAlpha,0xFFFFFF),0xFFFFFF)>3,"light-page handle still reads on white (WCAG 1.4.11, 3:1)");
+    for(int dark:{0x121212,0x171717,0x0D1117,0x1E1E1E,0x202124,0x000000,0x3A3A3A})Require(DarkSurface(dark),"dark surfaces (canvas, Paper, GitHub, editors, black) take the swapped handle");
+    for(int light:{0xFFFFFF,0xF5F5F5,0xFAFAF7,0xE8EAED,0xC0C0C0})Require(!DarkSurface(light),"light surfaces keep the validated handle");
+    Require(!DarkSurface(-1)&&!DarkSurface(0x1000000)&&!DarkSurface(-2),"unknown or invalid surface keeps the default handle");
+    // Mid greys: whichever handle has the higher contrast, so the choice never makes it worse.
+    for(int g=0;g<=255;g+=5){const int bg=(g<<16)|(g<<8)|g;
+        const double chosen=Contrast(Over(DarkSurface(bg)?darkFillRgb:fillRgb,fillAlpha,(uint32_t)bg),(uint32_t)bg);
+        const double other=Contrast(Over(DarkSurface(bg)?fillRgb:darkFillRgb,fillAlpha,(uint32_t)bg),(uint32_t)bg);
+        Require(chosen>=other,"the chosen handle is the more visible one at every grey");}
+    // Raster: same geometry and alphas, colours swapped.
+    {const float scale=1.25f;const float outer=100*scale;const int len=(int)(80*scale);
+     for(float t:{0.f,1.f}){auto a=Raster(outer,len,scale,t,true),b=Raster(outer,len,scale,t,true,true);
+        Require(a.across==b.across&&a.along==b.along&&a.originAcross==b.originAcross&&a.pixels.size()==b.pixels.size(),"dark raster: same tile");
+        bool sameAlpha=true;for(size_t i=0;i<a.pixels.size();++i)if((a.pixels[i]>>24)!=(b.pixels[i]>>24))sameAlpha=false;Require(sameAlpha,"dark raster: same coverage and alpha per pixel");
+        const uint32_t mid=b.pixels[(size_t)(b.along/2)*b.across+(size_t)((outer-Thick(t)*scale/2)-b.originAcross)];
+        const int al=mid>>24,r=(mid>>16)&255;Require(al>0&&std::abs(r-al)<=1,"dark raster: body is white (premultiplied r == alpha)");
+        const uint32_t lightMid=a.pixels[(size_t)(a.along/2)*a.across+(size_t)((outer-Thick(t)*scale/2)-a.originAcross)];
+        Require(((lightMid>>16)&255)<((mid>>16)&255),"light raster body stays #171717");}}
+    // Page message: ten fields (older script) or twelve (with the two track surfaces), strictly.
+    {Metrics m;bool sc=false;
+     Require(ParseMessage(L"lisiere-scrollbar 1 0 10 800 400 800 2400 1 1 0",m,sc)&&sc&&m.valid&&m.surfaceV==-1&&m.surfaceH==-1&&m.y==10&&m.contentH==2400,"ten fields: accepted, surfaces unknown");
+     Require(ParseMessage(L"lisiere-scrollbar 0 0 0 800 400 1600 2400 1 1 0 1184274 16777215",m,sc)&&!sc&&m.surfaceV==0x121212&&m.surfaceH==0xFFFFFF&&m.contentW==1600,"twelve fields: surfaces per track");
+     Require(!ParseMessage(L"lisiere-scrollbar 0 0 0 800 400 800 2400 1 1 0 5",m,sc),"eleven fields rejected");
+     Require(!ParseMessage(L"lisiere-scrollbar 0 0 0 800 400 800 2400 1 1 0 1 2 3",m,sc),"thirteen fields rejected");
+     Require(!ParseMessage(L"lisiere-scrollbar 0 0 0 800 400 800 2400 1 1 0 x",m,sc)&&!ParseMessage(L"lisiere-scrollbar 0 0 0 800 400 800 2400 1 1 0 16777216 0",m,sc)&&!ParseMessage(L"lisiere-scrollbar 0 0 0 800 400 800 2400 1 1 0 -2 0",m,sc),"junk or out-of-range surfaces rejected");
+     Require(!ParseMessage(L"lisiere-scrollbar 0 nan 0 800 400 800 2400 1 1 0",m,sc)&&!ParseMessage(L"lisiere-scrollbar 0 0 0 -1 400 800 2400 1 1 0",m,sc)&&!ParseMessage(L"lisiere-scrollbar 0 0 0 800 400 800 1e9 1 1 0",m,sc),"non-finite, negative or huge metrics rejected");}
+    std::printf("PASS: %d overlay scrollbar checks (Paper values, real-metric geometry at 100/125/175 %%, hit bands, AA raster with outer ring, 100/800/200/120 ms motion, reduced motion, dark-site palette by contrast, strict 10/12-field message).\n",checks);
     return 0;
 }

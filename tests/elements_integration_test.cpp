@@ -220,7 +220,7 @@ int main(){
             PermissionArgs store((COREWEBVIEW2_PERMISSION_KIND)13);PermissionRequested(live,&store);run();
             Expect(promptOpen&&promptActive.spec.permissions==std::vector<int>{13}&&chip()==std::vector<const char*>{SiteRequest::Path::storage},"kind 13: routed as persistent storage, storage chip");
             const auto& m=originPrompt.Surface().CurrentSpec();
-            Expect(m.title==L"meet.exemple.test veut conserver ses données sur cet appareil"&&m.subtitle.find(L"otification")==std::wstring::npos,"kind 13: own title, never « notifications »");
+            Expect(m.title==L"meet.exemple.test veut protéger son stockage local"&&m.subtitle.find(L"otification")==std::wstring::npos,"kind 13: own title, never « notifications »");
             bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.role==Accessibility::Role::Text||n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;
             Expect(!help&&store.deferral.completed==0&&store.writes==0,"kind 13: no collapsible help exposed, request pending");
             ElementsNavigationStarting(live);run();

@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cwchar>
+#include <string>
 #include <vector>
 #include "motion.h"
 
@@ -25,6 +27,9 @@ inline constexpr float thickness=6,hoverThickness=8;   // widened to the left, o
 inline constexpr float radius=thickness/2,hoverRadius=hoverThickness/2; // 3 / 4
 inline constexpr float ring=1;                         // box-shadow: 0 0 0 1px (outside the handle)
 inline constexpr uint32_t fillRgb=0x171717,ringRgb=0xFFFFFF;
+// Dark sites (Paper S16 « D — site sombre », comment c-l6gvbn): the same handle with its two
+// colours swapped, same alphas, so it stays visible on a dark page instead of vanishing.
+inline constexpr uint32_t darkFillRgb=0xFFFFFF,darkRingRgb=0x171717;
 inline constexpr int fillAlpha=0x8F,hoverFillAlpha=0xCC;  // #1717178F (56 %) / #171717CC (80 %)
 inline constexpr int ringAlpha=0x29,hoverRingAlpha=0x3D;  // #FFFFFF29 (16 %) / #FFFFFF3D (24 %)
 inline constexpr float endInset=4;                     // minimum inset at both track ends
@@ -43,6 +48,9 @@ static_assert(crossReserve==12&&hitBand==12,"track reserve and pointer band");
 struct Metrics {
     float x=0,y=0,viewW=0,viewH=0,contentW=0,contentH=0;
     bool canX=false,canY=false,rtl=false,valid=false;
+    // Colour the page really paints under each track (0xRRGGBB, the page's background layers
+    // composed source-over down to its canvas), or -1 when unknown (older script, no report).
+    int surfaceV=-1,surfaceH=-1;
     float RangeX()const{return std::max(0.f,contentW-viewW);}
     float RangeY()const{return std::max(0.f,contentH-viewH);}
     // Horizontal position from the left edge (RTL roots scroll 0 .. -range).
@@ -99,6 +107,42 @@ inline Hit HitTest(const Layout& l,float x,float y){
     return hit;
 }
 
+// ---- Page message ----------------------------------------------------------------------
+// « lisiere-scrollbar kind x y viewW viewH contentW contentH canX canY rtl [surfaceV surfaceH] »
+// from the page script (untrusted): ten fields (older script: surfaces unknown) or twelve, the
+// surfaces being 0xRRGGBB integers or -1. Anything else (extra text, non-finite or out-of-range
+// numbers) is rejected. `scrolled` is the kind flag (1 = the page scrolled).
+inline bool ParseMessage(const std::wstring& text,Metrics& out,bool& scrolled){
+    int kind=0,nx=0,ny=0,rtl=0,sv=-1,sh=-1,used=0,tail=0;float x=0,y=0,cw=0,ch=0,w=0,h=0;
+    const int n=swscanf(text.c_str(),L"lisiere-scrollbar %d %f %f %f %f %f %f %d %d %d%n %d %d%n",&kind,&x,&y,&cw,&ch,&w,&h,&nx,&ny,&rtl,&tail,&sv,&sh,&used);
+    if(n==10){if((size_t)tail!=text.size())return false;sv=sh=-1;}
+    else if(n!=12||(size_t)used!=text.size())return false;
+    for(float f:{x,y,cw,ch,w,h})if(!std::isfinite(f)||std::fabs(f)>1e8f)return false;
+    if(cw<0||ch<0||w<0||h<0)return false;
+    if(sv<-1||sv>0xFFFFFF||sh<-1||sh>0xFFFFFF)return false;
+    out=Metrics{};out.x=x;out.y=y;out.viewW=cw;out.viewH=ch;out.contentW=w;out.contentH=h;
+    out.canX=nx!=0;out.canY=ny!=0;out.rtl=rtl!=0;out.valid=true;out.surfaceV=sv;out.surfaceH=sh;scrolled=kind==1;return true;
+}
+
+// ---- Palette ----------------------------------------------------------------------
+// Which of the two handles reads better on the surface under the track: the one whose resting
+// fill, composed over that surface, differs most from it (WCAG contrast ratio). Unknown
+// surfaces keep the light-page handle, the validated default.
+inline double Channel(uint32_t v){const double c=v/255.0;return c<=.04045?c/12.92:std::pow((c+.055)/1.055,2.4);}
+inline double Luminance(uint32_t rgb){return .2126*Channel((rgb>>16)&255)+.7152*Channel((rgb>>8)&255)+.0722*Channel(rgb&255);}
+inline double Contrast(uint32_t a,uint32_t b){const double x=Luminance(a),y=Luminance(b);return (std::max(x,y)+.05)/(std::min(x,y)+.05);}
+// rgb at alpha (0..255) source-over an opaque bg.
+inline uint32_t Over(uint32_t rgb,int alpha,uint32_t bg){
+    const double a=std::clamp(alpha,0,255)/255.0;
+    auto mix=[a](uint32_t f,uint32_t b){return (uint32_t)std::lround(f*a+b*(1-a));};
+    return (mix((rgb>>16)&255,(bg>>16)&255)<<16)|(mix((rgb>>8)&255,(bg>>8)&255)<<8)|mix(rgb&255,bg&255);
+}
+inline bool DarkSurface(int surface){
+    if(surface<0||surface>0xFFFFFF)return false;
+    const uint32_t bg=(uint32_t)surface;
+    return Contrast(Over(darkFillRgb,fillAlpha,bg),bg)>Contrast(Over(fillRgb,fillAlpha,bg),bg);
+}
+
 // ---- Raster ------------------------------------------------------------------------
 // Premultiplied BGRA bitmap of one handle, `across` x `along` px (transposed for the
 // horizontal handle), antialiased by signed distance. The handle sits with its outer
@@ -117,13 +161,14 @@ inline uint32_t Premultiply(float alpha,uint32_t rgb){
 }
 // outer: handle outer edge (px, host coordinates on the cross axis); length: handle
 // length in whole px; t: hover mix; vertical selects the tile orientation.
-inline Tile Raster(float outer,int length,float scale,float t,bool vertical){
+inline Tile Raster(float outer,int length,float scale,float t,bool vertical,bool dark=false){
     Tile tile;const float th=Thick(t)*scale,rg=ring*scale,r=std::min(th,(float)length)/2;
     const float inner=outer-th;tile.originAcross=std::floor(inner-rg-1);
     tile.across=(int)std::ceil(outer+rg+1)-(int)tile.originAcross;
     const int pad=(int)std::ceil(rg)+1;tile.along=length+2*pad;
     if(tile.across<=0||length<=0){tile.across=tile.along=0;return tile;}
     const float fa=(fillAlpha+(hoverFillAlpha-fillAlpha)*t)/255.f,ra=(ringAlpha+(hoverRingAlpha-ringAlpha)*t)/255.f;
+    const uint32_t fillRgb=dark?darkFillRgb:Scrollbar::fillRgb,ringRgb=dark?darkRingRgb:Scrollbar::ringRgb;
     const float cx=(inner+outer)/2-tile.originAcross,hx=th/2,cy=tile.along/2.f,hy=length/2.f;
     const int w=vertical?tile.across:tile.along,h=vertical?tile.along:tile.across;
     tile.pixels.assign((size_t)w*h,0);

@@ -93,7 +93,7 @@ inline std::wstring Title(const std::wstring& o, int p) {
     case Permission::Autoplay: return o + L" veut lire du son automatiquement";
     case Permission::LocalFonts: return o + L" veut utiliser les polices installées";
     case Permission::WindowManagement: return o + L" veut gérer les fenêtres sur vos écrans";
-    case Permission::PersistentStorage: return o + L" veut conserver ses données sur cet appareil";
+    case Permission::PersistentStorage: return o + L" veut protéger son stockage local";
     default: return o + L" demande une autorisation";
     }
 }
@@ -111,7 +111,7 @@ inline std::wstring Subtitle(int p) {
     case Permission::Autoplay: return L"Le son et la vidéo pourront démarrer sans clic de votre part.";
     case Permission::LocalFonts: return L"Le site verra les polices installées sur cet appareil.";
     case Permission::WindowManagement: return L"Le site pourra ouvrir et placer des fenêtres sur vos écrans.";
-    case Permission::PersistentStorage: return L"Sinon, le navigateur peut les effacer s'il manque d'espace.";
+    case Permission::PersistentStorage: return L"Protège les données locales du site quand le navigateur libère de l'espace. Les mots de passe sont gérés séparément.";
     case Permission::Unknown: return L"Le moteur ne précise pas de quoi il s'agit.";
     default: return L"Type non reconnu par ce navigateur (code moteur " + std::to_wstring(p) + L").";   // a newer engine kind: never guessed
     }
