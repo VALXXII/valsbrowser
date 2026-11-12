@@ -22,7 +22,7 @@ les preuves.
 | c-l6gvbn (S16) | Poignée de scrollbar visible sur un site sombre, « créer et merge » | Code et variante Paper D | Prêt, à fusionner. Le fil se résout après adoption dans main. |
 | c-bu5dzt (Menu V2) | « J'ai clean les icônes pour éviter le clipping des opacités si tu peux fix » | Code (rendu natif) | Prêt, à fusionner |
 | c-qdlkgz (SYJ) | « Garder les données » se lit comme « garder les identifiants » | Copie dans le code, les tests et DQ5 | Prêt, à fusionner |
-| c-wsk4r6 (B1) | Voir paddings et gaps en mode Design | Démonstration Paper sur VQC-0 uniquement, exception explicite | Design livré dans Paper. Aucun code, la fonctionnalité n'existe pas encore. |
+| c-wsk4r6 (B1) | Voir paddings et gaps en mode Design | Démonstration Paper sur VQC-0 uniquement, exception explicite | **Résolu par root** après son contrôle visuel. C'était du design seul : aucune implémentation MCP n'est promise. |
 
 ## 1. Scrollbar sur site sombre (c-l6gvbn)
 
@@ -210,7 +210,7 @@ inspecteur, pour l'élément sélectionné, le panneau afficherait :
 Ces valeurs viendraient du moteur au moment de l'inspection. Rien de cela n'existe
 aujourd'hui, et rien n'est promis : le plan d'annotations MCP reste au stade de plan.
 
-**Fil.** Non résolu. Le coordinateur contrôle la capture et décide du statut.
+**Fil.** Résolu par root après son contrôle visuel de la capture actuelle (design seul). Les trois autres fils restent ouverts jusqu'à l'adoption du code.
 
 ## Protections et changements extérieurs
 
@@ -241,3 +241,42 @@ aujourd'hui, et rien n'est promis : le plan d'annotations MCP reste au stade de 
 
   La chaîne d'outils (`tools/w64devkit`), `deps/` et `build/lottie-backend/src` sont
   utilisés en lecture seule depuis le checkout parent, par des jonctions ignorées par git.
+
+## Revue indépendante de la PR #68 (cc231a6) : deux réserves reproduites et corrigées
+
+Le reviewer a travaillé au SHA cc231a6 épinglé. J'ai reproduit ses deux constats avec le script inchangé
+(`proofs/scrollbar_surface_e2e-run6-repro-review.txt`, 7 cas en échec), puis je les ai corrigés dans
+`surface()` et `darkScheme()` de `src/viewport-scrollbar-host.h`.
+
+1. **Propagation du fond du body au canevas.**
+   - Cas du reviewer : `body{background:#121212}`, marge par défaut de 8 px, `html` transparent, OS clair.
+   - Défaut : la piste verticale tombe dans la marge, donc sur `html`, et le script annonçait #FFFFFF.
+     Or le canevas est #121212, parce que le fond du body se propage au canevas (CSS Backgrounds 3,
+     §2.11.2).
+   - Correction :
+     - le fond du canevas est celui de la racine ;
+     - si la racine n'a ni couleur ni image de fond, c'est celui du body HTML, et ce body n'est alors plus
+       compté dans la chaîne (pas de double composition d'un fond translucide) ;
+     - une racine qui a son propre fond, même translucide ou seulement une image, reste le canevas, et le
+       body ne peint que sa boîte.
+2. **Les ancêtres ne peignent que dans leur propre boîte.**
+   - Défaut trouvé en reproduisant le premier : un enfant qui déborde dans la marge faisait compter le
+     fond du body hors de sa boîte.
+   - Correction : chaque ancêtre est composé seulement si le point est dans son `getBoundingClientRect`.
+3. **Précédence color-scheme CSS / meta.**
+   - Défaut : le script concaténait la propriété CSS et la balise meta. Par exemple, CSS `light` + meta
+     `dark` sous un OS sombre donnait #121212.
+   - Correction : la valeur calculée `color-scheme` de la racine prime ; la balise meta ne compte que si
+     le CSS vaut `normal`. Pour `light dark`, la préférence de l'OS départage.
+
+**Tests ajoutés (moteur réel, `tests/e2e/scrollbar_surface_e2e.py`) :** 19 nouveaux cas.
+- Les cas exacts du reviewer.
+- La marge par défaut, avec un contenu seulement haut ou aussi large que la page.
+- Un body translucide, avec et sans marge : pas de double composition.
+- Un `html` avec un fond explicite, translucide, ou seulement une image.
+- Les conflits CSS/meta, `only light`, et la balise meta `light dark` sous un OS clair ou sombre.
+
+**Résultats :**
+- Run 7 : 36 cas sur 36, les 17 anciens compris (`proofs/scrollbar_surface_e2e-run7-after-review-fix.txt`).
+- Le build complet et `test-design-system.ps1` restent verts (`proofs/*after-review-fix.txt`).
+- Aucune modification Paper n'était nécessaire pour ce défaut de script.

@@ -25,6 +25,7 @@ def page(style, body, extra="", on_first=""):
     return f"<!doctype html><html><head><meta charset=utf-8>{extra}<style>{style}</style>{hook}{STUB}<script>{script}</script></head><body>{body}</body></html>"
 
 TALL = "<div style='height:3000px;width:3000px'></div>"
+NARROW = "<div style='height:3000px'></div>"  # content no wider than the body: the default margin stays bare
 FULL = "position:fixed;inset:0;"
 # name: (html, expected vertical, expected horizontal, OS preference, reports to wait for)
 # Expected None = « dark » only (oklch: exact sRGB depends on gamut mapping).
@@ -45,6 +46,30 @@ CASES = {
     "unstyled-page-in-dark-os": (page("", TALL), 0xFFFFFF, 0xFFFFFF, "dark", 1),
     "theme-switch-class": (page("html{background:#fff}html.dark{background:#181818}", TALL, on_first="document.documentElement.classList.add('dark')"), 0x181818, 0x181818, "light", 2),
     "theme-switch-body-style": (page("body{margin:0}", TALL, on_first="document.body.style.background='#222'"), 0x222222, 0x222222, "light", 2),
+    # CSS root/body background propagation (review of PR68): html transparent, so the body background
+    # paints the whole canvas, including the default 8 px margin under the right-hand track.
+    "body-dark-default-margin": (page("body{background:#121212}", TALL), 0x121212, 0x121212, "light", 1),
+    "body-dark-default-margin-dark-os": (page("body{background:#121212}", TALL), 0x121212, 0x121212, "dark", 1),
+    "body-translucent-default-margin": (page("body{background:rgba(0,0,0,.5)}", TALL), 0x808080, 0x808080, "light", 1),
+    "body-translucent-margin0": (page("body{background:rgba(0,0,0,.5);margin:0}", TALL), 0x808080, 0x808080, "light", 1),
+    # html has its own background: it is the canvas, the body paints only its own box (margin shows html).
+    "html-white-body-dark-default-margin": (page("html{background:#fff}body{background:#121212}", TALL), 0xFFFFFF, 0x121212, "light", 1),
+    "html-translucent-body-dark": (page("html{background:rgba(0,0,0,.5)}body{background:#121212}", TALL), 0x808080, 0x121212, "light", 1),
+    "body-image-only-html-transparent": (page("body{background:#121212 linear-gradient(#fff,#fff) no-repeat 0 0/4px 4px}", TALL), 0x121212, 0x121212, "light", 1),
+    # Review PR68 #1, exact case: html transparent, body dark, default 8 px margin, light OS, content only tall.
+    "review-body-dark-default-margin-narrow": (page("body{background:#121212}", NARROW), 0x121212, 0x121212, "light", 1),
+    "body-dark-margin0-narrow": (page("body{background:#121212;margin:0}", NARROW), 0x121212, 0x121212, "light", 1),
+    "body-translucent-default-margin-narrow": (page("body{background:rgba(0,0,0,.5)}", NARROW), 0x808080, 0x808080, "light", 1),
+    "html-white-body-dark-narrow": (page("html{background:#fff}body{background:#121212}", NARROW), 0xFFFFFF, 0x121212, "light", 1),
+    "html-translucent-body-dark-narrow": (page("html{background:rgba(0,0,0,.5)}body{background:#121212}", NARROW), 0x808080, 0x121212, "light", 1),
+    "html-image-only-body-dark-narrow": (page("html{background-image:linear-gradient(#fff,#fff);background-size:1px 1px;background-repeat:no-repeat}body{background:#121212}", NARROW), 0xFFFFFF, 0x121212, "light", 1),
+    # Review PR68 #2: the CSS color-scheme of the root wins over the meta tag (meta only when CSS is normal).
+    "review-css-light-meta-dark-dark-os": (page(":root{color-scheme:light}", NARROW, "<meta name=color-scheme content=dark>"), 0xFFFFFF, 0xFFFFFF, "dark", 1),
+    "review-css-dark-meta-light-light-os": (page(":root{color-scheme:dark}", NARROW, "<meta name=color-scheme content=light>"), 0x121212, 0x121212, "light", 1),
+    "css-light-meta-light-dark-dark-os": (page(":root{color-scheme:light}", NARROW, "<meta name=color-scheme content='light dark'>"), 0xFFFFFF, 0xFFFFFF, "dark", 1),
+    "meta-light-dark-dark-os": (page("", NARROW, "<meta name=color-scheme content='light dark'>"), 0x121212, 0x121212, "dark", 1),
+    "meta-light-dark-light-os": (page("", NARROW, "<meta name=color-scheme content='light dark'>"), 0xFFFFFF, 0xFFFFFF, "light", 1),
+    "css-only-light-dark-os": (page(":root{color-scheme:only light}", NARROW), 0xFFFFFF, 0xFFFFFF, "dark", 1),
     "background-image-falls-back-to-color": (page("html{background:#1a1a1a linear-gradient(#fff,#fff) no-repeat 0 0/10px 10px}", TALL), 0x1A1A1A, 0x1A1A1A, "light", 1),
 }
 

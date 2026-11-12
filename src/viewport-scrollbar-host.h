@@ -24,10 +24,14 @@ const adopt=()=>{const l=document.adoptedStyleSheets;if(l.indexOf(sheet)<0)docum
 let frame=0,scrolled=0,nearEdge=0;
 const probe=document.createElement('canvas');probe.width=probe.height=1;const pc=probe.getContext('2d',{willReadFrequently:true}),rgba=new Map();
 const parse=v=>{if(!v||v==='transparent'||v==='rgba(0, 0, 0, 0)')return null;let c=rgba.get(v);if(c===undefined){c=null;try{pc.clearRect(0,0,1,1);pc.fillStyle='#000';pc.fillStyle=v;pc.fillRect(0,0,1,1);const d=pc.getImageData(0,0,1,1).data;c=d[3]?[d[0],d[1],d[2],d[3]/255]:null;}catch(_){}if(rgba.size>64)rgba.clear();rgba.set(v,c);}return c;};
-const darkScheme=()=>{const m=document.querySelector('meta[name="color-scheme"]');const v=((getComputedStyle(document.documentElement).colorScheme||'')+' '+(m&&m.content||'')).toLowerCase();if(!/\bdark\b/.test(v))return false;return !/\blight\b/.test(v)||matchMedia('(prefers-color-scheme: dark)').matches;};
-const surface=(x,y)=>{let rgb=darkScheme()?[18,18,18]:[255,255,255];const layers=[];
-for(let el=document.elementFromPoint(x,y);el;el=el.parentElement){const cs=getComputedStyle(el),c=parse(cs.backgroundColor);if(c)layers.push(c);}
-for(let i=layers.length-1;i>=0;--i){const c=layers[i];rgb=rgb.map((b,k)=>c[k]*c[3]+b*(1-c[3]));}
+const darkScheme=()=>{let v=(getComputedStyle(document.documentElement).colorScheme||'normal').trim().toLowerCase();if(v==='normal'){const m=document.querySelector('meta[name="color-scheme"]');v=(m&&m.content||'').toLowerCase();}
+const d=/\bdark\b/.test(v),l=/\blight\b/.test(v);return d&&(!l||matchMedia('(prefers-color-scheme: dark)').matches);};
+const over=(c,b)=>b.map((v,k)=>c[k]*c[3]+v*(1-c[3]));
+const surface=(x,y)=>{const r=document.documentElement,body=document.body;let rgb=darkScheme()?[18,18,18]:[255,255,255];
+const rs=getComputedStyle(r),rc=parse(rs.backgroundColor),skip=new Set([r]);
+if(rc||rs.backgroundImage!=='none'){if(rc)rgb=over(rc,rgb);}else if(body&&body.localName==='body'){const bc=parse(getComputedStyle(body).backgroundColor);if(bc)rgb=over(bc,rgb);skip.add(body);}
+const layers=[];for(let el=document.elementFromPoint(x,y);el;el=el.parentElement){if(skip.has(el))continue;const q=el.getBoundingClientRect();if(x<q.left||x>=q.right||y<q.top||y>=q.bottom)continue;const c=parse(getComputedStyle(el).backgroundColor);if(c)layers.push(c);}
+for(let i=layers.length-1;i>=0;--i)rgb=over(layers[i],rgb);
 return (Math.round(rgb[0])<<16)|(Math.round(rgb[1])<<8)|Math.round(rgb[2]);};
 const send=()=>{frame=0;try{adopt();const e=document.scrollingElement,d=document.documentElement;if(!e||!d)return;
 const s=getComputedStyle(d),b=document.body;let ox=s.overflowX,oy=s.overflowY;
