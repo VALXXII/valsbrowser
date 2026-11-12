@@ -248,6 +248,26 @@ public:
     // Whether any remembered page still belongs to `site` (see SiteOf).
     bool HasSite(const std::wstring& site) const { for (auto& v : items_) if (SiteOf(v.url) == site) return true; return false; }
     void Clear() { items_.clear(); }
+    bool operator==(const History& o) const {
+        if (items_.size() != o.items_.size()) return false;
+        for (size_t i = 0; i < items_.size(); ++i) { const auto& a = items_[i]; const auto& b = o.items_[i]; if (a.url != b.url || a.title != b.title || a.visits != b.visits || a.last != b.last) return false; }
+        return true;
+    }
+    // Three-way merge for the interprocess store (src/profile-store.h): visits counted here since
+    // `base` are added to the file's counts; a page removed here is removed there; a page removed in
+    // another window comes back only with visits made after its removal (never its old count).
+    static History Merge(const History& base, const History& mine, const History& theirs) {
+        History r = theirs;
+        for (const auto& b : base.items_) if (!const_cast<History&>(mine).Find(b.url)) r.Remove(b.url);
+        for (const auto& m : mine.items_) {
+            const Visit* b = const_cast<History&>(base).Find(m.url);
+            const int fresh = b ? std::max(0, m.visits - b->visits) : m.visits;
+            Visit* v = r.Find(m.url);
+            if (v) { v->visits += fresh; if (m.last > v->last) { v->last = m.last; if (!m.title.empty()) v->title = m.title; } else if (b && m.title != b->title && !m.title.empty()) v->title = m.title; }
+            else if (fresh > 0) { if (r.items_.size() >= Limit) r.Evict(); r.items_.push_back({m.url, m.title, fresh, m.last}); }
+        }
+        return r;
+    }
     void Write(std::ostream& out) const {
         out << "browser-history 1\n";
         for (auto& v : items_) out << v.visits << '\t' << v.last << '\t' << NativeChrome::Downloads::ToUtf8(v.url) << '\t' << NativeChrome::Downloads::ToUtf8(Clean(v.title)) << '\n';

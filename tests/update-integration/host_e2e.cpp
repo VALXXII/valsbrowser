@@ -141,11 +141,12 @@ int wmain(int argc,wchar_t** argv){
             if(quietMode&&!manualOffline){
                 Expect(updates.View().phase==BrowserUpdate::Phase::Hidden,mode==L"offline"?"offline startup check stays silent (Hidden)":"startup check without a published release stays silent (Hidden)");
                 Expect(transport->requests>0,"startup check actually ran");
-                {const auto quiet=SettingsVersion();const std::wstring want=mode==L"offline"?L" · Hors ligne":L" · À jour";
+                {const auto quiet=SettingsVersion();const std::wstring want=mode==L"offline"?L" · Vérif. impossible":L" · À jour";
                  Expect(quiet.text==AboutTitle()+want&&quiet.canCheck&&!quiet.checking,"settings footer reports the silent startup result");}
                 manualOffline=true;Command(CheckUpdatesCommand);
                 {const auto now=SettingsVersion();
-                 Expect(updates.View().phase==BrowserUpdate::Phase::Checking&&now.checking&&!now.canCheck&&now.text==AboutTitle()+L" · Recherche…","manual check reads as Checking at once (settings footer spins, button disabled)");}
+                 Expect(updates.View().phase==BrowserUpdate::Phase::Checking&&now.checking&&!now.canCheck&&now.text==AboutTitle()+L" · Recherche…","manual check reads as Checking at once (settings footer spins, button disabled)");
+                 Expect(AboutStatusNow().title==L"Recherche de mises à jour…"&&AboutStatusNow().button.disabled,"« À propos » follows the engine: Checking");}
                 SetTimer(window,99,15000,nullptr);continue;
             }
             Expect(false,"watchdog: flow did not finish in time");PostMessageW(window,WM_CLOSE,0,0);continue;
@@ -156,11 +157,13 @@ int wmain(int argc,wchar_t** argv){
         if(updateToast.Shown()&&v.phase!=BrowserUpdate::Phase::Hidden)toastSeen=true;
         if(v.phase!=last.phase){phases.push_back(PhaseName(v.phase));Note(std::string("phase ")+PhaseName(v.phase)+" "+Utf8(v.version)+(v.error.empty()?"":" error="+Utf8(v.error)));}
         if(v.phase==BrowserUpdate::Phase::Downloading&&v.received>0&&v.total>0){if(!sawProgress){Note("progress "+std::to_string(v.received)+"/"+std::to_string(v.total));
-            const auto s=SettingsVersion();Expect(s.text.rfind(AboutTitle()+L" · Téléch. ",0)==0&&!s.canCheck,"settings footer shows download progress, no check meanwhile");}sawProgress=true;}
+            const auto s=SettingsVersion();Expect(s.text.rfind(AboutTitle()+L" · Téléch. ",0)==0&&!s.canCheck,"settings footer shows download progress, no check meanwhile");
+            Expect(AboutStatusNow().title.rfind(L"Téléchargement de la version ",0)==0&&!AboutStatusNow().detail.empty()&&AboutStatusNow().hasButton&&AboutStatusNow().button.id==NativeChrome::Modal::AboutCancelButton&&AboutStatusNow().button.label==L"Annuler","« À propos » shows the real download progress");}sawProgress=true;}
         last=v;
         using P=BrowserUpdate::Phase;
         if(mode==L"install"){
             if(v.phase==P::Available&&!drawerChecked&&updateToast.Shown()&&downloadDrawer.Window()){drawerChecked=true;
+                Expect(AboutStatusNow().button.id==NativeChrome::Modal::AboutDownloadButton&&AboutStatusNow().title.find(v.version)!=std::wstring::npos,"« À propos » offers Télécharger for the real available version");
                 ShowDownloadDrawer();coexist=true;}
             else if(coexist&&!downloaded&&updateToast.Shown()&&downloadDrawer.Visible()&&IsWindowVisible(downloadDrawer.Window())){
                 RECT toast{},drawer{},overlap{};GetWindowRect(updateToast.Window(),&toast);GetWindowRect(downloadDrawer.Window(),&drawer);
@@ -169,7 +172,10 @@ int wmain(int argc,wchar_t** argv){
                 Expect(GetWindow(updateToast.Window(),GW_OWNER)==window&&GetWindow(downloadDrawer.Window(),GW_OWNER)==window,"drawer and toast share the browser window as owner");
                 CloseDownloadSurfaces(false);Expect(!downloadDrawer.Visible(),"drawer closed, toast still offered");
                 downloaded=true;Expect(true,"Available card presented on screen by the toast before acting");UpdateAction(BrowserUpdate::Action::Download);}
-            else if(v.phase==P::Ready&&!installAsked&&updateToast.Shown()){installAsked=true;UpdateAction(BrowserUpdate::Action::RestartInstall);
+            else if(v.phase==P::Ready&&!installAsked&&updateToast.Shown()){installAsked=true;
+                Expect(AboutStatusNow().button.id==NativeChrome::Modal::AboutRestartButton&&!AboutStatusNow().button.closes,"« À propos » offers Redémarrer when the update is ready");
+                AboutUpdateAction(NativeChrome::Modal::AboutRestartButton); // same handoff as the toast (#60: closeWithoutPrompt)
+                Expect(closeWithoutPrompt,"« À propos » Redémarrer goes through the #60 handoff");
                 Expect(closingForInstall,"RestartInstall accepted: helper launched, host closing");
                 Expect(!UpdateCheckAvailable(),"manual check disabled while closing for install");}
             else if(v.phase==P::Error){Expect(false,"unexpected Error");PostMessageW(window,WM_CLOSE,0,0);}
@@ -189,8 +195,8 @@ int wmain(int argc,wchar_t** argv){
                 PostMessageW(window,WM_CLOSE,0,0);rechecked=false;Note("closing during download t="+std::to_string(GetTickCount64()-t0));
             }
         }else if(mode==L"offline"){
-            if(manualOffline&&v.phase==P::Error){Expect(true,"manual check reports the failure (Error with Retry)");
-                Expect(SettingsVersion().text==AboutTitle()+L" · Hors ligne"&&SettingsVersion().canCheck,"settings footer shows the failed check and allows another");PostMessageW(window,WM_CLOSE,0,0);}
+            if(manualOffline&&v.phase==P::Error){Expect(true,"manual check reports the failure (Error with Retry)");Expect(updates.LastFailure()==UpdateCore::Engine::Failure::Check&&AboutStatusNow().title==L"Vérification impossible"&&AboutStatusNow().detail==L"La recherche de mises à jour a échoué. Réessayez."&&AboutStatusNow().button.label==L"Réessayer","E4: a failed check is named as such in « À propos »");
+                Expect(SettingsVersion().text==AboutTitle()+L" · Vérif. impossible"&&SettingsVersion().canCheck,"settings footer shows the failed check and allows another");PostMessageW(window,WM_CLOSE,0,0);}
         }else if(mode==L"norelease"){
             if(manualOffline&&v.phase==P::Checking)sawManualCheck=true;
             if(manualOffline&&sawManualCheck&&v.phase==P::Hidden&&!noReleaseDone){noReleaseDone=true;

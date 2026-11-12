@@ -124,6 +124,10 @@ namespace TabStrip {
 inline constexpr float left=Toolbar::backRight;
 inline constexpr float regionTop=2, regionBottom=40, top=6, bottom=38;
 inline constexpr float trailingReserve=118; // window controls, unchanged
+// Width reserved before the first tab (private window: the « Privée » chip + the 6 DIP row gap);
+// 0 in a normal window, which keeps every position below unchanged.
+inline float leading=0;
+inline float Left(){return left+leading;}
 // Hit region: contiguous, gap belongs to the tab it precedes (no dead zone between tabs).
 inline constexpr Box Region(int slot){return {left+Size::tabPitch*slot,regionTop,left+Size::tabPitch*(slot+1),regionBottom};}
 // Visible surface: 6 DIP leading gap inside the region, then 128 DIP.
@@ -134,13 +138,13 @@ inline constexpr Box FaviconSlot(Box tab){return {tab.left+Space::md,tab.top+Spa
 inline constexpr Box TitleSlot(Box tab){return {tab.left+32,tab.top,CloseSlot(tab).left-Space::xs,tab.bottom};}
 // New-tab button keeps the same 6 DIP visible gap after the last tab.
 inline constexpr float NewTabLeft(int shown){return left+Size::tabPitch*shown+Space::tabGap;}
-inline int Capacity(float width){const float room=width-trailingReserve-left-Space::tabGap-Size::control;return std::max(1,static_cast<int>(room/Size::tabPitch));}
+inline int Capacity(float width){const float room=width-trailingReserve-Left()-Space::tabGap-Size::control;return std::max(1,static_cast<int>(room/Size::tabPitch));}
 // Edge mask width: hidden tabs keep a peeking sliver under a canvas-coloured
 // linear gradient on the side where they are, so overflow is never silent.
 inline constexpr float fade=24, peek=Size::tabMin/2;
 inline constexpr Box IconSlot(Box tab){const float x=(tab.left+tab.right-Size::icon)/2;return {x,tab.top+Space::md,x+Size::icon,tab.top+Space::md+Size::icon};}
 // Region width available to tab pitches before the new-tab button.
-inline float Room(float width){return std::max(Size::tabMin+Space::tabGap,width-trailingReserve-left-Space::tabGap-Size::control);}
+inline float Room(float width){return std::max(Size::tabMin+Space::tabGap,width-trailingReserve-Left()-Space::tabGap-Size::control);}
 // Adaptive width: tabs share the room evenly between 128 and 32 DIP, whole DIPs.
 inline float TabWidth(float width,int count){if(count<=0)return Size::tab;return std::clamp(std::floor(Room(width)/count-Space::tabGap),Size::tabMin,Size::tab);}
 // A laid-out, horizontally scrolled strip. Same invariants as the slot helpers
@@ -152,14 +156,14 @@ struct Strip {
     float Content()const{return count*Pitch();}
     float MaxScroll()const{return std::max(0.f,Content()-view);}
     bool Overflow()const{return Content()>room;}
-    float ViewLeft()const{return left+Space::tabGap;}
-    float ViewRight()const{return left+view;}
+    float ViewLeft()const{return Left()+Space::tabGap;}
+    float ViewRight()const{return Left()+view;}
     bool HiddenBefore()const{return scroll>.5f;}
     bool HiddenAfter()const{return scroll<MaxScroll()-.5f;}
     float ClearLeft()const{return ViewLeft()+(HiddenBefore()?fade:0);}
     float ClearRight()const{return ViewRight()-(HiddenAfter()?fade:0);}
-    Box Region(int i)const{return {left+Pitch()*i-scroll,regionTop,left+Pitch()*(i+1)-scroll,regionBottom};}
-    Box Surface(int i)const{const float x=left+Pitch()*i-scroll+Space::tabGap;return {x,top,x+tab,bottom};}
+    Box Region(int i)const{return {Left()+Pitch()*i-scroll,regionTop,Left()+Pitch()*(i+1)-scroll,regionBottom};}
+    Box Surface(int i)const{const float x=Left()+Pitch()*i-scroll+Space::tabGap;return {x,top,x+tab,bottom};}
     // Fully outside the fades: drawn unmasked, keyboard-focusable, closable.
     bool Clear(int i)const{auto s=Surface(i);return s.left>=ClearLeft()-.01f&&s.right<=ClearRight()+.01f;}
     bool Visible(int i)const{auto s=Surface(i);return s.right>ViewLeft()&&s.left<ViewRight();}
@@ -208,6 +212,20 @@ inline constexpr Box Region(){return {0,TabStrip::regionTop,TabStrip::left,TabSt
 inline constexpr Box Glyph(){return {centerX-size/2,centerY-size/2,centerX+size/2,centerY+size/2};} // {14,14,30,30}
 }
 static_assert(Brand::centerX==22&&Brand::centerY==22,"brand flower centred at 22,22");
+// Private window chip (Paper LRZ-0 / LZZ-0, concept G84-0): after the brand, before the tabs, h 24
+// bottom-aligned 4 above the tab row bottom, padding 6 / 8, gap 6, radius 6, split tint 16 %,
+// eye-slash bold 16 white, « Privée » Inter Display Medium 14/18 white. The label width is measured
+// (DirectWrite), never a constant; the chip is not interactive.
+namespace PrivateChip {
+inline constexpr float height=24, padLeft=6, padRight=8, gap=6, radius=6, glyph=Size::icon, bottom=TabStrip::bottom-4, top=bottom-height;
+inline constexpr float left=TabStrip::left+Space::tabGap;   // 44, the first tab's place in a normal window
+inline constexpr float tintR=62/255.f, tintG=103/255.f, tintB=1, tintA=.16f;
+inline constexpr const wchar_t* label=L"Privée";
+inline constexpr const char* eyeSlash="M56.88,31.93A12,12,0,1,0,39.12,48.07l16,17.65C20.67,88.66,5.72,121.58,5,123.13a12.08,12.08,0,0,0,0,9.75c.37.82,9.13,20.26,28.49,39.61C59.37,198.34,92,212,128,212a131.34,131.34,0,0,0,51-10l20.09,22.1a12,12,0,0,0,17.76-16.14ZM128,188c-29.59,0-55.47-10.73-76.91-31.88A130.69,130.69,0,0,1,29.52,128c5.27-9.31,18.79-29.9,42.84-44.29l90,99A109.33,109.33,0,0,1,128,188Zm123-55.12c-.36.81-9,20-28,39.16a12,12,0,1,1-17-16.9A130.48,130.48,0,0,0,226.48,128a130.36,130.36,0,0,0-21.57-28.12C183.46,78.73,157.59,68,128,68c-3.35,0-6.7.14-10,.42a12,12,0,1,1-2-23.91c3.93-.34,8-.51,12-.51,36,0,68.63,13.67,94.49,39.52,19.35,19.35,28.11,38.8,28.48,39.61A12.08,12.08,0,0,1,251,132.88Z";
+inline float Width(float labelWidth){return padLeft+glyph+gap+std::ceil(labelWidth)+padRight;}
+inline Box Rect(float labelWidth){return {left,top,left+Width(labelWidth),bottom};}
+}
+static_assert(PrivateChip::top==10&&PrivateChip::left==44,"Paper LRZ-0: chip at x 44, y 10");
 static_assert(Brand::centerY*2==TabStrip::FaviconSlot(TabStrip::Surface(0)).top+TabStrip::FaviconSlot(TabStrip::Surface(0)).bottom,"brand shares the favicon centre line");
 inline constexpr unsigned long NativeGray(float value){auto byte=static_cast<unsigned long>(value*255+.5f);return byte|(byte<<8)|(byte<<16);}
 struct TypeRole { float size; bool medium; float tracking; };

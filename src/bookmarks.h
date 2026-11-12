@@ -336,6 +336,65 @@ public:
         return s;
     }
 
+    // ---- Interprocess merge (one process per window, decision 2) ----------------------
+    // Three-way merge run under the profile lock: `theirs` is the file as it is now, `base` what this
+    // process last read or wrote, `mine` its current tree. The changes base→mine are replayed onto
+    // theirs, so another window's additions, edits and deletions are kept and a deletion is never
+    // resurrected. A node is the same node only with the same id, kind and `added` time: an edit or a
+    // removal never lands on a different node that reused an id. New ids taken elsewhere are remapped
+    // (`remap`: old → new). Moves keep the position after the previous sibling.
+    static Store Merge(const Store& base, const Store& mine, const Store& theirs, std::map<Id, Id>* remap = nullptr) {
+        Store r = theirs;
+        auto same = [](const Node* a, const Node* b) { return a && b && a->kind == b->kind && a->added == b->added; };
+        for (const auto& [id, bn] : base.nodes_) {   // 1. removals
+            if (IsRoot(id) || mine.Find(id)) continue;
+            if (same(r.Find(id), &bn)) r.Remove(id);
+        }
+        std::map<Id, Id> map; Id fresh = std::max(r.next_, mine.next_);
+        for (const auto& [id, mn] : mine.nodes_) {   // 2. ids of the nodes new in mine
+            if (IsRoot(id) || same(base.Find(id), &mn)) continue;
+            if (r.Find(id)) { while (r.Find(fresh) || mine.Find(fresh)) ++fresh; map[id] = fresh++; }
+        }
+        auto mapped = [&](Id id) { const auto it = map.find(id); return it == map.end() ? id : it->second; };
+        auto previous = [](const Store& s, Id id) -> Id {
+            const Node* n = s.Find(id); if (!n) return NoId;
+            const auto& sib = s.nodes_.at(n->parent).children; const auto it = std::find(sib.begin(), sib.end(), id);
+            return it == sib.begin() || it == sib.end() ? NoId : *(it - 1);
+        };
+        for (Id root : {BarRoot, OtherRoot}) for (Id top : mine.nodes_.at(root).children) for (Id id : mine.Subtree(top)) {   // 3. pre-order
+            const Node& mn = mine.nodes_.at(id); const Node* bn = base.Find(id);
+            const bool existing = same(bn, &mn);
+            Id parent = mapped(mn.parent);
+            if (!r.CanHold(parent)) parent = OtherRoot;   // its folder was deleted in another window
+            auto position = [&]() -> std::size_t {   // just after the nearest previous sibling present there
+                const auto& sib = mine.nodes_.at(mn.parent).children; auto it = std::find(sib.begin(), sib.end(), id);
+                while (it != sib.begin()) { --it; const Node* q = r.Find(mapped(*it)); if (q && q->parent == parent) return r.IndexOf(q->id) + 1; }
+                return 0;
+            };
+            if (existing) {
+                Node* rn = r.Mutable(id);
+                if (!same(rn, bn)) continue;   // deleted or replaced elsewhere: this edit has nothing to apply to
+                if (mn.title != bn->title) rn->title = mn.title;
+                if (mn.url != bn->url) rn->url = mn.url;
+                if (mn.parent != bn->parent || previous(mine, id) != previous(base, id)) {
+                    std::size_t at = position();
+                    if (r.Find(id)->parent == parent && r.IndexOf(id) < at) --at;
+                    r.Move(id, parent, at);
+                }
+            } else {
+                if (r.Size() >= Limit) continue;
+                if (mn.kind == Kind::Folder && static_cast<std::size_t>(r.Depth(parent)) + 1 > MaxDepth) parent = OtherRoot;
+                const Id nid = mapped(id); const std::size_t at = position();
+                r.nodes_[nid] = Node{nid, parent, mn.kind, mn.title, mn.url, mn.added, {}};
+                r.Attach(parent, at, nid);
+                if (nid >= r.next_) r.next_ = nid + 1;
+            }
+        }
+        r.next_ = std::max({r.next_, mine.next_, fresh});
+        if (remap) *remap = map;
+        return r;
+    }
+
     bool operator==(const Store& o) const { return nodes_ == o.nodes_; }
     bool operator!=(const Store& o) const { return !(*this == o); }
 
