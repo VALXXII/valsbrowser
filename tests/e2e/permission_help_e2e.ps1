@@ -34,8 +34,11 @@ function Cdp-Send($ws, [string]$method, $params) {
   }
 }
 function Eval($ws, [string]$expr, [bool]$gesture = $false) { (Cdp-Send $ws 'Runtime.evaluate' @{ expression = $expr; returnByValue = $true; userGesture = $gesture }).result.result.value }
+# READ-ONLY page state: a missing CDP answer (no response / no value) is retried a few times and logged; a REAL value is
+# returned as-is (a wrong state still fails). Never used for expressions with side effects.
+function Read-Page($ws, [string]$expr) { for ($i = 0; $i -lt 3; $i++) { $r = Cdp-Send $ws 'Runtime.evaluate' @{ expression = $expr; returnByValue = $true }; if ($r -and $r.result -and $r.result.result -and $null -ne $r.result.result.value) { return $r.result.result.value }; "     cdp: no value for a read (attempt $($i + 1))" | Out-Host; Start-Sleep -Milliseconds 300 }; return $null }
 function Fixture-Pids { Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq $exe) } | ForEach-Object { $_.ProcessId } }
-function Log-Text { $f = Get-ChildItem $fix -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($f) { [IO.File]::ReadAllText($f.FullName) } else { '' } }
+function Log-Text { $f = Get-ChildItem $fix -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($f) { $st = [IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite, Delete'); try { (New-Object IO.StreamReader($st)).ReadToEnd() } finally { $st.Dispose() } } else { '' } }   # shared read: the browser may be writing it
 function Wait-Log([string]$pattern, [int]$seconds = 15) { for ($i = 0; $i -lt $seconds * 4; $i++) { if ((Log-Text) -match $pattern) { return $true }; Start-Sleep -Milliseconds 250 }; return $false }
 $UIA = [Windows.Automation.AutomationElement]
 function Count-Name([string]$name) { $n = 0; foreach ($fp in @(Fixture-Pids)) { $cond = New-Object Windows.Automation.AndCondition((New-Object Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, [int]$fp)), (New-Object Windows.Automation.PropertyCondition($UIA::NameProperty, $name))); $n += $UIA::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants, $cond).Count }; return $n }
@@ -74,7 +77,7 @@ try {
     Check ($null -eq (Find-Id 'PermissionMore' 2)) 'no « Plus d''infos » row on the popover (UIA)'
     Check ($null -ne (Find-Id 'PermissionBlock') -and $null -ne (Find-Id 'PermissionAllow') -and $null -ne (Find-Id 'DialogClose')) 'Bloquer, Autoriser and Fermer exposed'
     Check ((Count-Name 'Mémoriser pour ce site') -eq 1) 'remember check exposed for persistent storage (control for the notifications check)'
-    Check ((Eval $ws 'window.__persist') -eq 'pending' -and -not ((Log-Text) -match 'PERMISSION kind=13 action=')) 'request pending until the user decides'
+    Check ((Read-Page $ws 'window.__persist') -eq 'pending' -and -not ((Log-Text) -match 'PERMISSION kind=13 action=')) 'request pending until the user decides'
     [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'other.html' }); Start-Sleep 2
     Check (Wait-Log 'PERMISSION kind=13 action=0') 'navigation: the request is dismissed (action 0, not saved)'
     Check (([regex]::Matches((Log-Text), 'PERMISSION kind=13 action=')).Count -eq 1) 'answered exactly once'
@@ -90,10 +93,10 @@ try {
     Check ($group -and $group.Current.HelpText -eq 'Le site pourra afficher des alertes en dehors de la page.') 'notifications subtitle, no unproven promise'
     Check ($null -eq (Find-Id 'PermissionMore' 2)) 'notifications: no « Plus d''infos » row (UIA)'
     Check ((Count-Name 'Mémoriser pour ce site') -eq 0) 'notifications: no remember check (always remembered, policy unchanged)'
-    Check ((Eval $ws 'window.__notif') -eq 'pending') 'notifications: pending until the user decides'
+    Check ((Read-Page $ws 'window.__notif') -eq 'pending') 'notifications: pending until the user decides'
     $close = Find-Id 'DialogClose'; if ($close) { $close.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke() }
     Check (Wait-Log 'PERMISSION kind=4 action=0') 'close button: dismissed (action 0)'
-    Start-Sleep 1; "page sees: Notification.requestPermission() -> $(Eval $ws 'window.__notif')"
+    Start-Sleep 1; "page sees: Notification.requestPermission() -> $(Read-Page $ws 'window.__notif')"
   }
   $lines = ([regex]::Matches((Log-Text), 'PERMISSION[^\r\n]*') | ForEach-Object { $_.Value }) -join "`n"
   "---- fixture log (PERMISSION lines only) ----`n$lines"

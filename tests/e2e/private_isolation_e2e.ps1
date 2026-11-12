@@ -82,6 +82,17 @@ try {
   [void](Cdp-Send $p2 'Page.navigate' @{ url = $origin }); Start-Sleep 2
   Check (-not ((Eval $p2 'document.cookie') -like '*e2e=prive*') -and $null -eq (Eval $p2 "localStorage.getItem('e2e')")) 'a new private window starts empty (the previous private data is gone)'
   Check ((Eval $n 'document.cookie') -like '*e2e=normal*') 'the normal window kept its own cookie throughout'
+  # D3 (app level): a bookmark added ON PURPOSE in a private window goes through the normal transaction (UIA Invoke of
+  # the star, no input injection); nothing else of the private window is written.
+  Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+  $bmFile = Join-Path $fix 'bookmarks'; $bmBefore = if (Test-Path $bmFile) { [IO.File]::ReadAllText($bmFile) } else { '' }
+  $pv = Fixture-Pids | Where-Object { (Get-CimInstance Win32_Process -Filter "ProcessId=$_").CommandLine -like '*--private*' } | Select-Object -First 1
+  $star = $null; for ($i = 0; $i -lt 50 -and !$star; $i++) { $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$pv)
+    foreach ($w in [System.Windows.Automation.AutomationElement]::RootElement.FindAll('Children', $cond)) { $e = $w.FindFirst('Descendants', (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'Bookmark.Star'))); if ($e) { $star = $e } }
+    if (!$star) { Start-Sleep -Milliseconds 200 } }
+  $ip = $null; if ($star -and $star.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$ip)) { $ip.Invoke() }
+  $saved = $false; for ($i = 0; $i -lt 25 -and !$saved; $i++) { Start-Sleep -Milliseconds 200; $saved = (Test-Path $bmFile) -and ([IO.File]::ReadAllText($bmFile) -ne $bmBefore) -and ([IO.File]::ReadAllText($bmFile) -like '*127.0.0.1:18765*') }
+  Check ([bool]$star -and $saved) 'D3: a bookmark added on purpose in a private window is written through the normal transaction (app, UIA)'
   $p2.Dispose(); $n.Dispose()
   Stop-Fixture; Start-Sleep 2
   $hits = @(Get-ChildItem (Join-Path $fix 'profile') -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Login Data*' -or $_.Name -like 'Web Data*' } | Where-Object { $b = [IO.File]::ReadAllBytes($_.FullName); [Text.Encoding]::ASCII.GetString($b).Contains('e2e-fictif-prive-user') -or [Text.Encoding]::Unicode.GetString($b).Contains('e2e-fictif-prive-user') })

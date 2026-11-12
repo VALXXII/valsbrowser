@@ -57,7 +57,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc >= 4 && std::wstring(argv[1]) == L"release-hold") {
         HANDLE live = WindowSessions::Claim(argv[2], argv[3]); (void)live;
-        ProfileStore::WriteAtomic(WindowSessions::File(argv[2], argv[3]), "browser-session-2\n0\n1\n\"https://exemple.test/c\"\n0\n");
+        const bool write = !(argc >= 5 && std::wstring(argv[4]) == L"-");   // "-": crash before the first session write
+        if (write) ProfileStore::WriteAtomic(WindowSessions::File(argv[2], argv[3]), "browser-session-2\n0\n1\n\"https://exemple.test/c\"\n0\n");
+        if (argc >= 6) { HANDLE ready = OpenEventW(EVENT_MODIFY_STATE, FALSE, argv[5]); if (ready) { SetEvent(ready); CloseHandle(ready); } }   // barrier: claimed (and written)
         Sleep(INFINITE); return 0;
     }
     // Child « window B »: loads the history file, records one visit, commits through the store.
@@ -250,12 +252,22 @@ int wmain(int argc, wchar_t** argv) {
             Check(ca + cb == 1 && l.size() == 1, "two processes closing at once: exactly one session kept, never both lost, never both kept");
         }
         {   // Crash before release: the session stays (restored); crash after release of another: last one kept.
-            reset(); PROCESS_INFORMATION h = spawn(L"release-hold \"" + sdata + L"\" wcrash");
-            for (int i = 0; i < 100 && !WindowSessions::Live(sdata, L"wcrash"); ++i) Sleep(20);
-            TerminateProcess(h.hProcess, 9); WaitForSingleObject(h.hProcess, 5000); CloseHandle(h.hProcess);
+            // Deterministic barrier (2026-11-12 diagnosis of an intermittent failure): the child signals AFTER its claim
+            // and its session write; waiting for Live alone could kill it between the two (a harness race: a window
+            // killed before its first write has no session to restore — covered separately below).
+            auto hold = [&](const std::wstring& id, bool write) {
+                const std::wstring ev = L"Local\\bps-hold-" + std::to_wstring(GetCurrentProcessId()) + L"-" + id; HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, ev.c_str());
+                PROCESS_INFORMATION h = spawn(L"release-hold \"" + sdata + L"\" " + id + (write ? L" w " : L" - ") + ev);
+                const bool ok = WaitForSingleObject(ready, 10000) == WAIT_OBJECT_0; CloseHandle(ready);
+                TerminateProcess(h.hProcess, 9); WaitForSingleObject(h.hProcess, 5000); CloseHandle(h.hProcess); return ok; };
+            reset(); const bool held = hold(L"wcrash", true);
             auto a = WindowSessions::Adopt(sdata, L"", L"", true);
-            Check(a.id == L"wcrash", "a window that crashed (no release) is restored");
+            Check(held && a.id == L"wcrash", "a window that crashed (no release) is restored (deterministic barrier after claim + write)");
             CloseHandle(a.live);
+            reset(); const bool held2 = hold(L"wearly", false);
+            auto b = WindowSessions::Adopt(sdata, L"", L"", true);
+            Check(held2 && b.id != L"wearly" && b.live && WindowSessions::List(sdata).empty(), "a window killed before its first session write: nothing to restore, a new window starts, no empty session adopted");
+            CloseHandle(b.live);
         }
     }
     {   // Decision S3 on bookmarks: a future format is never overwritten (same rule as the vault).

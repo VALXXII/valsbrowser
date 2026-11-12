@@ -476,3 +476,54 @@ Les deux points bloquants N1 et N13 sont corrigés dans le code. Ce qui reste n'
 - B07 non concluant ;
 - le clic immédiat sur la clé, prouvé en U seulement ;
 - P-I1 vérifié sur `build/v2`.
+
+---
+
+## Recontrôle 395705e / f2f9e50 (HEAD 487fb85)
+
+Lecture seule, sans build, test ni E2E. J'ai lu `git diff 937a2d8 395705e -- src tests` et `git diff 395705e f2f9e50`.
+
+### Résidus R1 à R4 (395705e)
+
+| # | État | Vérification dans le code |
+|---|---|---|
+| R1 | **Corrigé** | `VaultCapture` garde au plus une capture par onglet et par seconde (`static std::map<unsigned,ULONGLONG>`). Le contrôle vient après la validité de l'offre et l'analyse du contenu, et **avant** toute lecture du coffre : une rafale ne prend plus le verrou ni ne relit le fichier. Une capture rejetée est effacée (`Wipe(secret)`) et ne remplace pas l'offre en cours. La table n'est jamais purgée (quelques octets par onglet ouvert dans la vie du processus) : sans importance. Une vraie seconde soumission en moins d'une seconde serait ignorée, cas irréaliste |
+| R2 | **Corrigé** | Seul `VaultLoad::Unavailable` est mémorisé avec l'empreinte du fichier. `Busy` est retenté à la capture suivante et l'avis passe la vraie raison (`VaultUnavailableText(load)` → « Le profil est occupé… »). Pas de relâchement : l'échec reste dit, et le secret est effacé dans les deux cas |
+| R3 | **Corrigé** | `WM_LBUTTONUP` remet `vaultKeyPress=-1` après chaque relâchement, sur tous les chemins qui suivent le traitement normal. Les sorties anticipées (fin de glissement du séparateur ; favori pressé et relâché sur lui-même) ne peuvent pas commencer sur la clé, et `WM_LBUTTONDOWN` réécrit de toute façon la valeur. L'appui armé reste exigé (N6) |
+| R4 | **Corrigé** | `EditProc` ignore Entrée répétée (bit 30), qui n'atteint plus `Key` ni `Press`. `WM_CHAR '\r'` était déjà absorbé. Test U `FieldKeyMessageForTest` : une Entrée maintenue dans un champ B04 n'enregistre pas. L'Entrée non répétée dans un champ et l'armement de 500 ms sont inchangés |
+
+Rien n'a été relâché par ces changements :
+- l'armement, `VaultOfferStillValid`, `CaptureBinding`, les gardes de choix B03 et `FillScript` sont intacts ;
+- le chemin d'écriture (`Vault::Commit`, `WritesForbidden`) est intact ;
+- le code des hôtes de test n'a pas bougé.
+
+### Fusion origin/main cd7d9fb, PR65 (f2f9e50)
+
+| Point | État |
+|---|---|
+| Effet sur `src/` et `tests/` | `git diff 395705e f2f9e50 -- src tests` est **vide**. La fusion n'ajoute que `design/permission-kinds.md`. Les conflits de tests ont été résolus du côté de la branche, qui est le plus strict. Le code de PR65 était déjà présent à l'identique sur la branche |
+| Kind 13 et textes PR65 | Présents dans `origin-prompt.h` : `PersistentStorage = 13` avec son nom, son titre, son sous-titre et son glyphe `storage`. Le repli « Type non reconnu par ce navigateur (code moteur N) » est en place, et « Le moteur ne précise pas… » couvre `Unknown`. Le code des permissions est identique entre cd7d9fb et f2f9e50 : les écarts restants concernent le coffre, B07 et B08, issus de la branche |
+| Notifications | Ni note ni case « Mémoriser » (`if (!always)`), `checkValue=always` |
+| « Plus d'infos » | Aucun reste : `MoreHit`, `WM_APP+4` et « Plus d'infos » sont absents de `src/`, à cd7d9fb comme à f2f9e50. Les seules mentions sont des **assertions négatives** dans les tests (`elements_integration_test.cpp:224`, `modal_test.cpp:339-343`, qui rejettent aussi les nœuds `Role::Text`). `Id::More` est celui de B07 « Plus d'options », légitime |
+| `NodesForTest` | Une seule définition (`modal.h:1638`) |
+| Coffre, armement, gardes, A5, TLS | Non touchés par la fusion, puisque le diff est vide sur `src/` |
+
+### Résidu honnête maintenu
+**V7 partiel.** Des copies du secret restent hors de notre contrôle :
+- chaînes internes de WebView2 : IPC du message, mémoire du moteur de rendu, `ExecuteScript` ;
+- résidus SSO de la STL (au plus 7 caractères dans les chaînes déplacées) ;
+- quelques temporaires hôte du dialogue : `Build` (`Field` local et `initializer_list`) et `Values()` dans la validation.
+
+Ces copies sont libérées sans effacement. Elles ne sont lisibles que par un accès à la mémoire du processus ou à un
+vidage sur incident. Aucune copie n'est faite sur disque ni en stockage web.
+
+S'ajoutent : B07 non concluant ; clic immédiat sur la clé prouvé en U seulement ; P-I1 vérifié sur `build/v2` ; N9 à N12
+(LOW ou Info).
+
+### Verdict 395705e / f2f9e50
+**Activable** sur le plan technique, sous la seule réserve des résultats verts sur ce SHA, que je n'ai pas exécutés :
+- les tests U `password_vault`, `modal` et `elements_integration` ;
+- l'E2E `vault_e2e` ;
+- `product_markers`, qui doit montrer « VAULT state: inactive » jusqu'à la bascule de `Vault::ActiveFlag`.
+
+L'activation elle-même reste une décision du produit.
