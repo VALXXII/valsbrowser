@@ -446,6 +446,42 @@ int main(){
           Expect(!VaultKeyArmed(),"V5: the fill control ignores an activation before 500 ms");
           vaultKeyShownAt=GetTickCount64()-600;vaultKeyNav=live->navStamp+1;Expect(!VaultKeyArmed(),"V5: a navigation since it appeared re-arms it");
           chrome.vaultKey=false; }
+        // Review 885d322 #2 / F11: the vault file's state is never mistaken for an empty vault.
+        { const std::wstring vdir=L"build/elements-integration/vault-fixture";std::error_code vec;std::filesystem::remove_all(vdir,vec);std::filesystem::create_directories(vdir,vec);
+          const std::wstring savedDir=dataDir;dataDir=vdir;
+          Expect(ReadVault(0)==VaultLoad::Ok&&vaultLoaded&&vault.Entries().empty(),"F11: an absent vault file is an empty vault");
+          {std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);}
+          Expect(ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded,"F11: a vault file of 0 bytes is unavailable, never an empty vault");
+          {std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);f<<"browser-passwords 9\n";}
+          Expect(ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded,"F11: an unknown vault format is unavailable");
+          {Vault::Store st;st.Save(L"https://a.test",L"synth",L"Synth-0000!",1);std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);st.Write(f);}
+          Expect(ReadVault(0)==VaultLoad::Ok&&vault.Entries().size()==1,"F11: a valid vault file is read");
+          {HANDLE h=CreateFileW(VaultFile().c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+           Expect(h!=INVALID_HANDLE_VALUE&&ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded&&vault.Entries().empty(),"F11: a sharing violation is unavailable, never an empty vault");
+           if(h!=INVALID_HANDLE_VALUE)CloseHandle(h);}
+          Expect(ReadVault(0)==VaultLoad::Ok&&vault.Entries().size()==1,"F11: readable again once the file is released");
+          {struct Hold{std::wstring dir;HANDLE ready,done;};Hold hold{dataDir,CreateEventW(nullptr,TRUE,FALSE,nullptr),CreateEventW(nullptr,TRUE,FALSE,nullptr)};
+           HANDLE th=CreateThread(nullptr,0,[](LPVOID p)->DWORD{auto* h=static_cast<Hold*>(p);ProfileStore::Lock l(h->dir);SetEvent(h->ready);WaitForSingleObject(h->done,10000);return 0;},&hold,0,nullptr);
+           WaitForSingleObject(hold.ready,5000);
+           const ULONGLONG t0=GetTickCount64();const auto r=ReadVault(0);
+           Expect(r==VaultLoad::Busy&&GetTickCount64()-t0<500&&vaultLoaded&&vault.Entries().size()==1,"F9/F10: a busy profile never blocks the UI check and keeps the last known state");
+           SetEvent(hold.done);WaitForSingleObject(th,5000);CloseHandle(th);CloseHandle(hold.ready);CloseHandle(hold.done);}
+          {Vault::Store st;std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);st.Write(f);}   // the account removed in another window
+          Expect(ReadVault(1000)==VaultLoad::Ok&&vault.Entries().empty(),"F11: a fresh read honours a removal made elsewhere");
+          dataDir=savedDir;vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;std::filesystem::remove_all(vdir,vec); }
+        // Review 885d322 #1: a pending capture (its secret) is bound to the tab's document and wiped.
+        { PromptJob a;a.spec.secret=L"Synth-capture-0000!-long-enough";PromptJob b=std::move(a);
+          Expect(a.spec.secret.empty()&&b.spec.secret==L"Synth-capture-0000!-long-enough","capture: a moved job leaves no copy of the secret behind");
+          int answered=0;auto queue=[&]{PromptJob j;j.spec.kind=OP::Kind::PasswordSave;j.spec.demo=false;j.spec.secret=L"Synth-capture-0000!";j.tab=live;j.answers.push_back([&](OP::Result&){++answered;});promptQueue.push_back(std::move(j));};
+          queue();vaultCaptureAt[live->serial]=GetTickCount64();VaultNavigationStarting(live,false);
+          Expect(answered==0&&promptQueue.size()==1,"capture: the submit's own navigation keeps the save offer");
+          vaultCaptureAt[live->serial]=GetTickCount64()-3000;VaultNavigationStarting(live,true);
+          Expect(answered==0&&promptQueue.size()==1,"capture: a redirect of the submit keeps the save offer");
+          VaultNavigationStarting(live,false);
+          Expect(answered==1&&promptQueue.empty()&&!vaultCaptureAt.count(live->serial),"capture: the tab's next navigation drops the offer and its secret");
+          queue();vaultCaptureAt[live->serial]=GetTickCount64();AbortTabPrompts(live);
+          Expect(answered==2&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
+          vaultCaptureAt.clear(); }
         // A5 with engine categories but no engine profile (no live tab / older runtime): a real failure, never « effacé ».
         { HRESULT got=S_FALSE;StartClearSelected({false,true,true,false,false},1,[&](HRESULT hr){got=hr;});Expect(FAILED(got),"A5: cookies/cache selected without an engine profile is reported as a failure"); }
         // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.

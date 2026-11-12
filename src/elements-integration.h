@@ -160,9 +160,16 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
 // ---------------------------------------------------------------------------------------
 // Origin prompts (B01/B02 permissions, B06 HTTP auth + external application).
 // Requests from one tab and origin arriving together (camera + microphone) share a prompt.
+// A password just submitted (B04, real path) may sit in a queued or active job: every copy is wiped when
+// the job is replaced, dropped or destroyed (review 885d322 #1), never left to the allocator.
+inline void WipeSpecSecret(OP::Spec& s){if(s.secret.capacity())SecureZeroMemory(s.secret.data(),s.secret.capacity()*sizeof(wchar_t));s.secret.clear();}
 struct PromptJob {
     OP::Spec spec; std::weak_ptr<Tab> tab; std::wstring origin;
     std::vector<std::function<void(OP::Result&)>> answers; // one per merged request
+    PromptJob()=default; PromptJob(const PromptJob&)=delete; PromptJob& operator=(const PromptJob&)=delete;
+    PromptJob(PromptJob&& o) noexcept:spec(std::move(o.spec)),tab(std::move(o.tab)),origin(std::move(o.origin)),answers(std::move(o.answers)){WipeSpecSecret(o.spec);}
+    PromptJob& operator=(PromptJob&& o) noexcept{if(this!=&o){WipeSpecSecret(spec);spec=std::move(o.spec);tab=std::move(o.tab);origin=std::move(o.origin);answers=std::move(o.answers);WipeSpecSecret(o.spec);}return *this;}
+    ~PromptJob(){WipeSpecSecret(spec);}
 };
 std::deque<PromptJob> promptQueue; PromptJob promptActive; bool promptOpen=false;
 void PumpPrompt();
@@ -298,7 +305,9 @@ void PumpPrompt(){
         if(it->spec.kind==OP::Kind::Permission&&editing)continue;
         promptActive=std::move(*it);promptQueue.erase(it);promptOpen=true;originPrompt.SetPageArea(PageScreenRect());
         const bool permission=promptActive.spec.kind==OP::Kind::Permission;
-        if(!originPrompt.Show(promptActive.spec,PromptAnchor(promptActive.spec),[](OP::Result& r){FinishPrompt(r);})){
+        const bool shown=originPrompt.Show(promptActive.spec,PromptAnchor(promptActive.spec),[](OP::Result& r){FinishPrompt(r);});
+        WipeSpecSecret(promptActive.spec);   // the prompt holds its own copy now (wiped when it closes)
+        if(!shown){
             Log(L"PROMPT show failed");OP::Result none;FinishPrompt(none);
         }else if(permission){RefreshRequestChip();Log(L"PERMISSION chip shown glyphs="+std::to_wstring(chrome.requestGlyphs.size()));}
         return;
@@ -890,26 +899,48 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
 // ENGINE reports for the message (never a value from the page); the vault is written only after the
 // user's explicit « Enregistrer » / « Mettre à jour » (B04), through Vault::Commit (fail closed).
 // A private window never captures (D3). Secret copies held by the host are wiped after use (V7).
-Vault::Store vault,vaultBase;bool vaultLoaded=false;std::set<unsigned> vaultPromptOpen;std::map<unsigned,std::wstring> vaultCaptureSeen;   // last capture id handled per tab
+Vault::Store vault,vaultBase;bool vaultLoaded=false;std::set<unsigned> vaultPromptOpen;std::map<unsigned,ULONGLONG> vaultCaptureAt;   // tab serial -> when its pending capture arrived
 std::wstring VaultFile(){return dataDir+L"\\passwords";}
-// The submit usually navigates at once and the message of the leaving document can be dropped: the
-// capture is also kept in the SAME origin's sessionStorage (the page already holds this password) and
-// re-sent by the next document of that origin, then removed. Each capture has an id; the host acts on
-// an id once per tab. Another origin never sees it (sessionStorage is per origin).
+// Capture (review 885d322 #1): the page posts the submitted login ONCE, directly, and keeps nothing:
+// no web storage, no resend by a later document. The secret then lives only in the host's memory, bound
+// to this tab, this origin (the engine's) and this capture, until « Enregistrer » / « Pas maintenant »,
+// the tab's next navigation, the tab's or the window's close, or a newer capture; every copy is wiped
+// (VaultCaptureDrop, PromptJob). A message the engine drops while the document leaves is simply lost:
+// no save is offered rather than a secret kept by the browser.
 constexpr const wchar_t* VaultCaptureScript=
-    L"(function(){if(window.top!==window||!window.chrome||!chrome.webview)return;var K='__browserVaultPending';"
-    L"try{var p=sessionStorage.getItem(K);if(p){sessionStorage.removeItem(K);chrome.webview.postMessage(JSON.parse(p));}}catch(e){}"
+    L"(function(){if(window.top!==window||!window.chrome||!chrome.webview)return;"
     L"document.addEventListener('submit',function(e){var f=e.target;if(!f||!f.querySelector)return;"
     L"var pw=f.querySelector('input[type=password]');if(!pw||!pw.value)return;"
     L"var u=f.querySelector('input[autocomplete=username],input[type=email],input[type=text]');"
-    L"var m={browserVault:'capture',id:String(Date.now())+String(Math.random()).slice(2),user:u?u.value:'',password:pw.value};"
-    L"try{sessionStorage.setItem(K,JSON.stringify(m));}catch(e){}chrome.webview.postMessage(m);},true);})();";
+    L"chrome.webview.postMessage({browserVault:'capture',user:u?u.value:'',password:pw.value});},true);})();";
 void Wipe(std::wstring& s){if(!s.empty())SecureZeroMemory(s.data(),s.size()*sizeof(wchar_t));s.clear();}
-bool LoadVault(){
-    if(vaultLoaded)return true;std::string bytes;{ProfileStore::Lock lock(dataDir);if(!lock.Held())return false;ProfileStore::ReadAll(VaultFile(),bytes);}
-    if(!bytes.empty()&&ProfileStore::FirstLine(bytes)!=Vault::Store::Header){Log(L"VAULT unknown file format: not opened");return false;}
-    std::istringstream in(bytes);bool damaged=false;vault=Vault::Store::Read(in,&damaged);if(damaged){Log(L"VAULT file damaged: not opened");vault=Vault::Store{};return false;}
-    vaultBase=vault;vaultLoaded=true;return true;
+// Review F11 (885d322 #2): what the file holds, or WHY it cannot be used. Only an ABSENT file is an empty
+// vault; a file that exists with 0 bytes, a read or sharing error, an unknown format or damage is
+// « unavailable » and is never taken as empty. `lockMs` 0 = never wait on the UI (periodic checks).
+void VaultNotice(const std::wstring& message,const std::wstring& detail);
+enum class VaultLoad { Ok, Busy, Unavailable };
+VaultLoad ReadVault(DWORD lockMs){
+    std::string bytes;bool exists=false,read=false;
+    {ProfileStore::Lock lock(dataDir,lockMs);if(!lock.Held())return VaultLoad::Busy;   // the cache, if any, is left as it was
+     exists=GetFileAttributesW(VaultFile().c_str())!=INVALID_FILE_ATTRIBUTES;read=ProfileStore::ReadAll(VaultFile(),bytes);}
+    auto unavailable=[](const wchar_t* why){Log(why);vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;return VaultLoad::Unavailable;};
+    if(!read)return unavailable(L"VAULT file could not be read (sharing or I/O error): unavailable, not empty");
+    if(exists&&bytes.empty())return unavailable(L"VAULT file exists with 0 bytes: damaged, not opened");
+    if(!bytes.empty()&&ProfileStore::FirstLine(bytes)!=Vault::Store::Header)return unavailable(L"VAULT unknown file format: not opened");
+    std::istringstream in(bytes);bool damaged=false;Vault::Store read2=Vault::Store::Read(in,&damaged);
+    if(damaged)return unavailable(L"VAULT file damaged: not opened");
+    vault=std::move(read2);vaultBase=vault;vaultLoaded=true;return VaultLoad::Ok;
+}
+std::wstring VaultUnavailableText(VaultLoad r){return r==VaultLoad::Busy?L"Le profil est occupé par une autre fenêtre ; réessayez.":L"Le fichier des mots de passe est illisible, inaccessible ou d'une autre version ; il n'a pas été modifié.";}
+// Explicit user actions (capture answer, fill, choice, manager): always a FRESH read (a removal made in
+// another window is honoured, normal or private), bounded wait, a refusal is said.
+bool LoadVault(const wchar_t* title){const auto r=ReadVault(1000);if(r==VaultLoad::Ok)return true;VaultNotice(title,VaultUnavailableText(r));return false;}
+// Periodic UI checks (control visibility, Settings count): at most one non-blocking re-read every 2 s;
+// a busy profile keeps the last known state. {usable, count}.
+std::pair<bool,std::size_t> VaultCached(){
+    static ULONGLONG last=0;const ULONGLONG now=GetTickCount64();
+    if(last==0||now-last>2000){last=now?now:1;ReadVault(0);}
+    return {vaultLoaded,vaultLoaded?vault.Entries().size():0};
 }
 // Minimal JSON string field reader for the capture message (the engine gives the message as JSON).
 bool JsonField(const std::wstring& json,const std::wstring& key,std::wstring& out){
@@ -929,11 +960,9 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     if(!Vault::Active()||privateWindow||smoke||!settings.passwords)return true;   // inactive / private / « Mots de passe » off (F4): swallowed, nothing kept
     const std::wstring origin=Vault::CanonicalOrigin(source);
     if(origin.empty()||vaultPromptOpen.count(t->serial))return true;   // http / already asking: no prompt by itself (D2)
-    if(!LoadVault()){VaultNotice(L"Mot de passe non enregistré",L"Le fichier des mots de passe est illisible ou d'une autre version ; il n'a pas été modifié.");return true;}   // F5
-    std::wstring captureId;JsonField(message,L"id",captureId);
-    if(!captureId.empty()&&vaultCaptureSeen[t->serial]==captureId)return true;   // the same submit re-sent by the next document: once only
+    if(!LoadVault(L"Mot de passe non enregistré"))return true;   // F5/F11
     std::wstring user,secret;if(!JsonField(message,L"user",user)||!JsonField(message,L"password",secret)||secret.empty()){Wipe(secret);return true;}
-    if(!captureId.empty())vaultCaptureSeen[t->serial]=captureId;
+    vaultCaptureAt[t->serial]=GetTickCount64();
     auto accounts=vault.For(origin);
     OP::Spec s;s.demo=false;s.origin=origin;s.user=user;s.secret=secret;Wipe(secret);
     const bool known=std::any_of(accounts.begin(),accounts.end(),[&](const Vault::Entry& e){return e.user==user;});
@@ -944,8 +973,8 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     vaultPromptOpen.insert(t->serial);const unsigned serial=t->serial;
     Log(L"VAULT capture: B04 prompt for "+origin);
     AskPrompt(std::move(s),t,[origin,serial](OP::Result& r){
-        vaultPromptOpen.erase(serial);Log(L"VAULT B04 answer action="+std::to_wstring((int)r.action)+(r.password.empty()?L" (no password)":L""));
-        if(r.action==OP::Action::Save&&!r.password.empty()){
+        vaultPromptOpen.erase(serial);vaultCaptureAt.erase(serial);Log(L"VAULT B04 answer action="+std::to_wstring((int)r.action)+(r.password.empty()?L" (no password)":L""));
+        if(r.action==OP::Action::Save&&!r.password.empty()&&LoadVault(L"Mot de passe non enregistré")){   // F11: fresh file at the answer
             const auto saved=vault.Save(origin,r.user,r.password,NativeChrome::DownloadsUI::UnixNowMs());
             const auto res=saved==Vault::Store::Saved::Refused?ProfileStore::Result::Failed:Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
             const bool ok=res==ProfileStore::Result::Written||res==ProfileStore::Result::Unchanged;
@@ -955,6 +984,21 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
         Wipe(r.password);
     },L"vault:"+std::to_wstring(serial));
     return true;
+}
+// The pending capture (queued or open B04 and every copy of its secret) is dropped for this tab.
+void VaultCaptureDrop(const std::shared_ptr<Tab>& t){
+    auto isCapture=[](const OP::Spec& s){return !s.demo&&(s.kind==OP::Kind::PasswordSave||s.kind==OP::Kind::PasswordUpdate);};
+    for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if(isCapture(it->spec)&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
+    if(promptOpen&&isCapture(promptActive.spec)){auto q=promptActive.tab.lock();if(!q||q==t)originPrompt.Abort();}
+    if(t)vaultCaptureAt.erase(t->serial);
+}
+// The capture belongs to the document that submitted it: the tab's NEXT navigation drops it (redirects
+// of the submit itself excepted). The submit's own navigation starts with the capture: one started
+// within 2 s of it is that one (the engine does not tell which navigation a form started).
+void VaultNavigationStarting(const std::shared_ptr<Tab>& t,bool redirected){
+    if(!t||redirected)return;auto it=vaultCaptureAt.find(t->serial);if(it==vaultCaptureAt.end())return;
+    if(GetTickCount64()-it->second<2000)return;
+    Log(L"VAULT capture dropped: the tab navigated on");VaultCaptureDrop(t);
 }
 // B03 (vault inactive; the visible native trigger awaits the review of proposal 11): the user picks an
 // account in the real B03 prompt; the target (top-level document, its navigation stamp, its origin) is
@@ -971,9 +1015,8 @@ std::wstring EngineSource(const std::shared_ptr<Tab>& t){LPWSTR s=nullptr;if(!t|
 bool VaultKeyVisible(){
     auto t=Active();if(!Vault::Active()||halted||!t||t->closed||t->home||!t->view.p||!t->errorPage.shown.empty()||!t->https.shown.empty()||IsSandboxUri(t->uri))return false;
     const std::wstring origin=Vault::CanonicalOrigin(t->uri);if(origin.empty())return false;
-    // §6: a private window re-reads the file (at most every 2 s for this visibility check; an explicit open always re-reads).
-    static ULONGLONG lastPrivateRead=0;if(privateWindow&&GetTickCount64()-lastPrivateRead>2000){vaultLoaded=false;lastPrivateRead=GetTickCount64();}
-    return LoadVault()&&!vault.For(origin).empty();
+    // §6/F9/F10: re-read at most every 2 s without waiting on the profile lock (normal and private); an explicit open always re-reads.
+    return VaultCached().first&&!vault.For(origin).empty();
 }
 void SyncVaultKey(){
     auto t=Active();const bool show=VaultKeyVisible();
@@ -993,8 +1036,7 @@ void VaultKeyActivated(){
 Vault::Target VaultTargetNow(const std::shared_ptr<Tab>& t,bool userAction){const std::wstring src=EngineSource(t);Vault::Target v;v.frameSource=src;v.topSource=src;v.frameId=0;v.navigation=t->navStamp;v.userAction=userAction;return v;}
 void OfferVaultFill(const std::shared_ptr<Tab>& t){
     if(!Vault::Active()||!t||t->closed||!t->view.p)return;
-    if(privateWindow)vaultLoaded=false;   // §6: fresh read in a private window (a removal elsewhere is honoured)
-    if(!LoadVault()){VaultNotice(L"Mots de passe indisponibles",L"Le fichier des mots de passe est illisible ou d'une autre version.");return;}
+    if(!LoadVault(L"Mots de passe indisponibles"))return;   // F11: fresh read (normal and private)
     const Vault::Target atAction=VaultTargetNow(t,true);const std::wstring origin=Vault::CanonicalOrigin(atAction.topSource);
     if(atAction.topSource!=t->uri){Log(L"VAULT fill: engine source differs from the tab");VaultNotice(L"Remplissage annulé",Vault::RefusalText(Vault::Refusal::Stale));return;}
     Log(L"VAULT fill: B03 prompt");
@@ -1014,7 +1056,9 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
         if(t!=Active()||!foreground||!t->errorPage.shown.empty()||!t->https.shown.empty()){VaultNotice(L"Remplissage annulé",Vault::RefusalText(Vault::Refusal::Stale));return;}
         const auto refusal=Vault::CanFill(atAction,VaultTargetNow(t,false),origin);
         if(refusal!=Vault::Refusal::None){Log(std::wstring(L"VAULT fill refused: ")+Vault::RefusalText(refusal));VaultNotice(L"Remplissage annulé",Vault::RefusalText(refusal));return;}   // F5: said, not only logged
-        const Vault::Entry* e=vault.Find(ids[(size_t)r.choice]);if(!e)return;
+        if(!LoadVault(L"Remplissage annulé"))return;   // F11: fresh read at the real choice
+        const Vault::Entry* e=vault.Find(ids[(size_t)r.choice]);
+        if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(L"Remplissage annulé",L"Ce compte n'est plus enregistré (il a été supprimé, peut-être dans une autre fenêtre).");return;}
         std::wstring secret;if(!vault.Reveal(e->id,origin,secret))return;
         std::wstring script=Vault::FillScript(origin,e->user,secret);Wipe(secret);
         t->view->ExecuteScript(script.c_str(),nullptr);Wipe(script);   // nothing comes back through the bridge
@@ -1027,11 +1071,10 @@ std::wstring VaultModified(std::int64_t ms){if(ms<=0)return L"";FILETIME ft;ULAR
     static const wchar_t* months[]={L"janvier",L"février",L"mars",L"avril",L"mai",L"juin",L"juillet",L"août",L"septembre",L"octobre",L"novembre",L"décembre"};
     return L"Modifié le "+std::to_wstring(lt.wDay)+L" "+months[(lt.wMonth+11)%12]+L" "+std::to_wstring(lt.wYear);}
 // {shown, count}; count SIZE_MAX = the vault file could not be read (Settings says so instead of « 0 », F5).
-std::pair<bool,std::size_t> VaultInfo(){if(!Vault::Active())return {false,0};if(privateWindow)vaultLoaded=false;if(!LoadVault())return {true,SIZE_MAX};return {true,vault.Entries().size()};}
+std::pair<bool,std::size_t> VaultInfo(){if(!Vault::Active())return {false,0};const auto c=VaultCached();return {true,c.first?c.second:SIZE_MAX};}   // drawn often: never blocks
 void ShowVaultManager(bool keyboard){
     if(!Vault::Active())return;
-    if(privateWindow)vaultLoaded=false;   // §6: fresh read, read-only
-    if(!LoadVault()){VaultNotice(L"Mots de passe indisponibles",L"Le fichier des mots de passe est illisible ou d'une autre version.");return;}
+    if(!LoadVault(L"Mots de passe indisponibles"))return;   // F11: fresh read, read-only in private
     keyboardModality=keyboard;std::vector<NativeChrome::PasswordDemo::Account> rows;std::vector<std::uint64_t> ids;
     for(const auto& e:vault.Entries()){std::wstring host=e.origin.substr(e.origin.find(L"://")+3);NativeChrome::PasswordDemo::Account a{host,e.user,L"",L"",VaultModified(e.updated)};a.id=e.id;rows.push_back(a);ids.push_back(e.id);}
     passwordDemo.SetReal(std::move(rows),[](std::uint64_t id)->bool{   // review F1: the row's own vault id, never a shifting index
