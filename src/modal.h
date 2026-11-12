@@ -289,6 +289,7 @@ inline constexpr const char* microphone = SiteRequest::Path::microphone;
 inline constexpr const char* position = SiteRequest::Path::position;
 inline constexpr const char* bell = SiteRequest::Path::bell;
 inline constexpr const char* clipboard = SiteRequest::Path::clipboard;
+inline constexpr const char* storage = SiteRequest::Path::storage;
 inline constexpr const char* info = SiteRequest::Path::info;
 inline constexpr const char* lockOpen = "M208,76H100V56a28,28,0,0,1,28-28c13.51,0,25.65,9.62,28.24,22.39a12,12,0,1,0,23.52-4.78C174.87,21.5,153.1,4,128,4A52.06,52.06,0,0,0,76,56V76H48A20,20,0,0,0,28,96V208a20,20,0,0,0,20,20H208a20,20,0,0,0,20-20V96A20,20,0,0,0,208,76Zm-4,128H52V100H204Z";
 inline constexpr const char* external = "M228,104a12,12,0,0,1-24,0V69l-59.51,59.51a12,12,0,0,1-17-17L187,52H152a12,12,0,0,1,0-24h64a12,12,0,0,1,12,12Zm-44,24a12,12,0,0,0-12,12v64H52V84h64a12,12,0,0,0,0-24H48A20,20,0,0,0,28,80V208a20,20,0,0,0,20,20H176a20,20,0,0,0,20-20V140A12,12,0,0,0,184,128Z";
@@ -1530,6 +1531,7 @@ public:
     std::wstring FieldForTest(size_t i) const { return i < edits_.size() ? edits_[i].Text() : L""; }
     HWND EditForTest(size_t i) const { return i < edits_.size() ? edits_[i].edit : nullptr; }
     D2D1_RECT_F BoxForTest(int hit) const { return Find(hit); }
+    std::vector<Accessibility::Node> NodesForTest() { return Nodes(); }
     const SourcePicker& SourcesForTest() const { return spec_.sources; }
     bool EnabledForTest(int hit) const { return Enabled(hit); }
     int ColumnsForTest() const { return sourceColumns_; }
