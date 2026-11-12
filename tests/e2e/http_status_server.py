@@ -5,6 +5,7 @@
 /empty     : the connection is closed without any response (empty reply).
 /rst       : the connection is reset (RST) without any response.
 /e/<code>  : HTTP status <code> with an empty body.
+/cutm/<code>: HTTP status <code>, 16384 bytes announced, ~8 KB of the page (already parsed) then the connection closes.
 /cutc/<code>: HTTP status <code>, 4096 bytes announced, a partial body (title + JS sentinel) then the connection closes.
 /r/<code>  : a 302 redirect to /s/<code>.
 Usage: python http_status_server.py <port>
@@ -27,6 +28,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(int(self.path[3:6])); self.send_header('Content-Length', '0'); self.send_header('Cache-Control', 'no-store'); self.end_headers(); return
         if self.path.startswith('/r/'):   # 302 to /s/<code>
             self.send_response(302); self.send_header('Location', '/s/' + self.path[3:6]); self.send_header('Content-Length', '0'); self.end_headers(); return
+        if self.path.startswith('/cutm/'):   # status <code>, 16384 announced, ~8 KB of a real page (title + sentinel + text) then close MID-BODY
+            code = int(self.path[6:9])
+            head = ('<!doctype html><title>sentinel-cutm%d</title><script>window.__sentinel="js-cutm%d";</script><body><p>' % (code, code)).encode('utf-8')
+            part = head + b'x' * (8192 - len(head))
+            self.send_response(code); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.send_header('Content-Length', '16384'); self.end_headers()
+            self.wfile.write(part); self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_RDWR); self.close_connection = True; return
         if self.path.startswith('/cutc/'):   # status <code>, headers announce 4096 bytes, a PARTIAL body (title + sentinel script) then close
             code = int(self.path[6:9])
             part = ('<!doctype html><title>sentinel-cut%d</title><script>window.__sentinel="js-cut%d";</script><p>partiel' % (code, code)).encode('utf-8')

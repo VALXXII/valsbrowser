@@ -2333,7 +2333,8 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
             // always has its document when NavigationCompleted fires.
             {std::weak_ptr<Tab> weak=t;const auto failed=error;
              auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([weak,navigationId,failed](HRESULT hr,LPCWSTR json)->HRESULT{
-                auto tab=weak.lock();if(halted||!tab||tab->closed||FAILED(hr)||!json)return S_OK;
+                auto tab=weak.lock();if(halted||!tab||tab->closed)return S_OK;
+                if(FAILED(hr)||!json){Log(L"NAVIGATION HTTP error: page check failed hr="+std::to_wstring((long)hr)+L" (the received page stays)");return S_OK;}   // review: a late failure is said
                 const std::wstring verdict=json;if(verdict!=L"\"engine-error\""&&verdict!=L"\"no-document\"")return S_OK;
                 if(tab->errorPage.startingId!=navigationId||!tab->errorPage.shown.empty())return S_OK;
                 Log(L"NAVIGATION HTTP error without a page of its own ("+verdict+L"): our error page");

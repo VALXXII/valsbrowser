@@ -56,6 +56,7 @@ try {
     @{ name = 'empty-500'; url = "http://127.0.0.1:$port/e/500"; body = $false },
     @{ name = 'cut403'; url = "http://127.0.0.1:$port/cutc/403"; body = $false },  # 403 cut after headers + partial body: engine says UNKNOWN+403 like a complete one; no document -> our page
     @{ name = 'cut500'; url = "http://127.0.0.1:$port/cutc/500"; body = $false },
+    @{ name = 'cutm403'; url = "http://127.0.0.1:$port/cutm/403"; body = $false },  # 403 cut MID-BODY after ~8 KB sent: measured, the engine keeps no document -> our page
     @{ name = 'cut'; url = "http://127.0.0.1:$port/cut"; body = $false },       # response cut after its 200 headers: our error page (HttpStatusCode 200)
     @{ name = 'empty'; url = "http://127.0.0.1:$port/empty"; body = $false },   # no response at all: our error page
     @{ name = 'rst'; url = "http://127.0.0.1:$port/rst"; body = $false },       # reset: our error page
