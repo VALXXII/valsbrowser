@@ -62,7 +62,7 @@ Branche `VALXXII/notification-permission`, basée sur `8237c2a` (PR63, committé
 | Moteur réel isolé (E2E) | `tests/e2e/permission_help_e2e.ps1` | 17/17 : runtime 157.0.4341.46, copie jetable, profil neuf, serveur local temporaire |
 | Build estampillé | `tools/release/build.py` | 0.3.191, commit `b04b249` |
 
-Journaux de ces exécutions, suivis dans git : `design/origin-prompt-help-evidence/logs/`.
+Sorties de ces exécutions, suivies dans git en `.txt` (les `*.log` sont ignorés) : `design/origin-prompt-help-evidence/logs/{test-popups,test-elements-integration,e2e-permission-help}.txt` ; seul changement après capture : le préfixe du chemin du runtime remplacé par `%LOCALAPPDATA%`.
 
 L'E2E réel montre que `navigator.storage.persist()` lève bien `PermissionRequested` avec `kind=13` et
 `Notification.requestPermission()` avec `kind=4`. Le panneau s'ouvre et se ferme par UIA sans réponse
