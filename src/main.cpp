@@ -2323,6 +2323,16 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
         // Only for the tab's latest top-level navigation, no refused certificate recorded, no forced error page.
         if(navigationId==t->errorPage.startingId&&t->errorPage.certStatus<0&&t->errorPage.forced<0&&NativeChrome::ErrorPages::KeepsServerPage(false,(int)error,httpStatus)){
             Log(L"NAVIGATION HTTP "+std::to_wstring(httpStatus)+L" (the site's own page) "+t->errorPage.starting);
+            // A 4xx/5xx with NO body shows the engine's own error document (chrome-error:, which no site page can
+            // be): that one is replaced by our error page as before, still only for this very navigation.
+            {std::weak_ptr<Tab> weak=t;const auto failed=error;
+             auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([weak,navigationId,failed](HRESULT hr,LPCWSTR json)->HRESULT{
+                auto tab=weak.lock();if(halted||!tab||tab->closed||FAILED(hr)||!json||std::wstring(json)!=L"\"chrome-error:\"")return S_OK;
+                if(tab->errorPage.startingId!=navigationId||!tab->errorPage.shown.empty())return S_OK;
+                Log(L"NAVIGATION HTTP error without a page of its own: our error page");
+                if(ShowErrorPage(tab,failed,navigationId)){tab->revealed=true;ApplyPages();if(tab==Active())Update();}
+                return S_OK;});
+             if(FAILED(t->view->ExecuteScript(L"location.protocol",cb)))Log(L"NAVIGATION HTTP error: page check unavailable");cb->Release();}
             RequestFavicon(t);if(halted)return S_OK;
             t->revealed=true;ApplyPages();if(t==Active())Update();
             return S_OK;
