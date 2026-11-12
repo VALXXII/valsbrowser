@@ -67,7 +67,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'mTLS test host build failed' }
   # The pin exists only in the test host: the dev/release build has no trace of it.
   function Has-Marker([string]$f) { $b = [IO.File]::ReadAllBytes($f); $u = [Text.Encoding]::Unicode; return ($u.GetString($b).Contains('E2E FIXTURE PIN') -or $u.GetString($b, 1, $b.Length - 1).Contains('E2E FIXTURE PIN')) }
-  Check (-not (Has-Marker (Join-Path $root 'build/real-integration-check/browser.exe')) -and (Has-Marker (Join-Path $root 'build/e2e-mtls-host/browser.exe'))) 'the fixture pin exists only in the test host binary, not in the dev/release browser'
+  Check (-not (Has-Marker (Join-Path $root 'build/v2/browser.exe')) -and (Has-Marker (Join-Path $root 'build/e2e-mtls-host/browser.exe'))) 'the fixture pin exists only in the test host binary, not in the dev/release browser'
   # 4 host + server
   $hostDir = Join-Path $root 'build\e2e-mtls-host'
   foreach ($n in 'WebView2Loader.dll') { Copy-Item (Join-Path $root "build\real-integration-check\$n") $hostDir -Force }
