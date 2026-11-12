@@ -2320,8 +2320,10 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
         if(HttpsUpgradeFailed(t,navigationId,error))return S_OK;
         int httpStatus=0;{Com<ICoreWebView2NavigationCompletedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationCompletedEventArgs2,(void**)&a2.p))&&a2.p&&FAILED(a2->get_HttpStatusCode(&httpStatus)))httpStatus=0;}   // 0: older runtime / no response
         // An HTTP 4xx/5xx answer (e.g. a 403 challenge page) IS the site's page: shown as received, never replaced.
-        // Only for the tab's latest top-level navigation, no refused certificate recorded, no forced error page.
-        if(navigationId==t->errorPage.startingId&&t->errorPage.certStatus<0&&t->errorPage.forced<0&&NativeChrome::ErrorPages::KeepsServerPage(false,(int)error,httpStatus)){
+        // Only for the tab's latest top-level navigation, never when WE refused this page's own certificate
+        // (a refused sub-resource certificate does not count), no forced error page.
+        const bool ownCertificateRefused=t->errorPage.certStatus>=0&&NativeChrome::ErrorPages::CertificateMatches(t->errorPage.certStatus,t->errorPage.certUri,t->errorPage.starting);
+        if(navigationId==t->errorPage.startingId&&!ownCertificateRefused&&t->errorPage.forced<0&&NativeChrome::ErrorPages::KeepsServerPage(false,(int)error,httpStatus)){
             Log(L"NAVIGATION HTTP "+std::to_wstring(httpStatus)+L" (the site's own page) "+t->errorPage.starting);
             // A 4xx/5xx with NO body shows the engine's own error document (chrome-error:, which no site page can
             // be): that one is replaced by our error page as before, still only for this very navigation.
