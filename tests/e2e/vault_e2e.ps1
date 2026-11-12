@@ -62,6 +62,27 @@ try {
     Check ($bytes.StartsWith("browser-passwords 2`n") -and $bytes -match "`nend`t1`t[0-9a-f]{64}`n$") 'vault v2 written after explicit consent (one account, completeness trailer)'
     Check (-not $bytes.Contains($secret) -and -not $bytes.Contains($user)) 'no plaintext secret or username on disk'
   }
+  # Review 885d322 #1: the browser keeps no copy of a submitted password in web storage, whatever happens next.
+  function WebCopy([string]$s) { $w = Page; $v = Eval $w "(function(){try{return JSON.stringify(sessionStorage)+JSON.stringify(localStorage)}catch(e){return ''}})()"; $w.Dispose(); return ([string]$v).Contains($s) }
+  function Submit([string]$path, [string]$u, [string]$p) { $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port$path" }); Start-Sleep 3; $w.Dispose(); $w = Page
+    [void](Eval $w "document.getElementById('u').value='$u';document.getElementById('p').value='$p';document.getElementById('go').click();1"); $w.Dispose() }
+  Check (-not (WebCopy $secret)) 'saved: no copy of the password in the landing page storage'
+  $hash0 = (Get-FileHash $vaultFile).Hash
+  $s2 = 'E2e-Refus-1111!'; Submit '/login' 'e2e-synth-refus' $s2
+  $later = WaitFind $hp 'PasswordLater' ''
+  Check ([bool]$later) 'refusal: the save offer appears'
+  if ($later) { Start-Sleep -Milliseconds 700; [void](Invoke-El (Find $hp 'PasswordLater' '')); Start-Sleep 1 }
+  Check (-not (WebCopy $s2) -and (Get-FileHash $vaultFile).Hash -eq $hash0) 'refusal: nothing written, no copy in web storage'
+  $s3 = 'E2e-Stay-2222!'; Submit '/login?stay' 'e2e-synth-stay' $s3
+  Check ([bool](WaitFind $hp 'PasswordSaveConfirm' '')) 'no navigation: the offer appears (one direct message)'
+  Check (-not (WebCopy $s3)) 'no navigation: no copy in web storage'
+  Start-Sleep -Milliseconds 2300; $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); $w.Dispose()
+  Check ((WaitLog 'VAULT capture dropped: the tab navigated on') -and -not (Find $hp 'PasswordSaveConfirm' '')) 'no navigation: the next navigation drops the offer and its secret'
+  $s4 = 'E2e-Away-3333!'; Submit '/login?away' 'e2e-synth-away' $s4
+  Check (WaitLog 'E2E BOUND refused navigation https://localhost') 'cross-origin submit: the navigation fails (refused by the test host)'
+  Check (-not (WebCopy $s4)) 'cross-origin / failed navigation: no copy in web storage'
+  $l = Find $hp 'PasswordLater' ''; if ($l) { Start-Sleep -Milliseconds 700; [void](Invoke-El $l); Start-Sleep 1 }
+  Check ((Get-FileHash $vaultFile).Hash -eq $hash0) 'nothing written without « Enregistrer »'
   # B03: native key control, arming, explicit choice, fill of the focused form
   $ws.Dispose(); $ws = Page; [void](Send $ws 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); Start-Sleep 3; $ws.Dispose(); $ws = Page
   [void](Eval $ws "document.getElementById('p').focus();1")
@@ -74,10 +95,16 @@ try {
     if (-not $b03open) { Start-Sleep -Milliseconds 700; [void](Invoke-El (Find $hp 'VaultFill' '')) }
     $row = WaitFind $hp '' $user
     Check ([bool]$row) 'B03: the account list shows the synthetic account (no secret)'
-    if ($row) { Start-Sleep -Milliseconds 700; [void](Invoke-El $row); Start-Sleep 1
-      Check ((Eval $ws "document.getElementById('p').value") -eq $secret -and (Eval $ws "document.getElementById('u').value") -eq $user) 'B03: the focused form is filled after the explicit choice' }
+    if ($row) { Start-Sleep -Milliseconds 700; [void](Invoke-El $row)
+      $filled = $false; for ($i = 0; $i -lt 15 -and !$filled; $i++) { Start-Sleep -Milliseconds 200; $filled = (Eval $ws "document.getElementById('p').value") -eq $secret -and (Eval $ws "document.getElementById('u').value") -eq $user }
+      Check $filled 'B03: the focused form is filled after the explicit choice'
+      if (!$filled) { Get-Content $log | Where-Object { $_ -match 'VAULT|PROMPT' } | Select-Object -Last 12 | ForEach-Object { "     log: $_" } } }
   }
+  # Crash with an offer open: the secret lived only in the killed process.
+  $s5 = 'E2e-Crash-4444!'; Submit '/login' 'e2e-synth-crash' $s5
+  Check ([bool](WaitFind $hp 'PasswordSaveConfirm' '')) 'crash: the offer is open when the host is killed'
   $ws.Dispose(); foreach ($p in Pids '') { Stop-Process -Id $p -Force }; Start-Sleep 2
+  Check ((Get-FileHash $vaultFile).Hash -eq $hash0) 'crash: nothing written'
   # Private window: read-only fill, no capture, no write
   $before = (Get-FileHash $vaultFile).Hash
   Start-Process -FilePath $exe -ArgumentList '--private' -WorkingDirectory $hostDir; $pp = 0; for ($i = 0; $i -lt 40 -and !$pp; $i++) { Start-Sleep -Milliseconds 250; $pp = Pids '--private' | Select-Object -First 1 }
@@ -89,10 +116,20 @@ try {
   [void](Eval $ws "document.getElementById('u').value='autre';document.getElementById('p').value='Autre-0000!';document.getElementById('go').click();1"); Start-Sleep 2
   Check (-not (Find $pp 'PasswordSaveConfirm' '') -and (Get-FileHash $vaultFile).Hash -eq $before) 'private window: no capture prompt and the vault file is unchanged'
   $ws.Dispose()
+  # Whole fixture profile (engine user data, log, vault): no synthetic secret in clear, UTF-8 or UTF-16, once every process is gone.
+  foreach ($p in Pids '') { Stop-Process -Id $p -Force }
+  for ($i = 0; $i -lt 60; $i++) { $left = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$hostDir*" }); if (!$left.Count) { break }; Start-Sleep -Milliseconds 500 }
+  Check (-not $left.Count) 'profile scan: every engine process of the fixture has exited'
+  $scan = Join-Path (Split-Path $pki) 'scan.py'
+  [IO.File]::WriteAllText($scan, "import os,sys`nroot=sys.argv[1];n=[]`nfor s in sys.argv[2:]: n+=[s.encode('utf-8'),s.encode('utf-16-le')]`nhits=[];bad=0;count=0`nfor d,_,fs in os.walk(root):`n  for f in fs:`n    p=os.path.join(d,f);count+=1`n    try: b=open(p,'rb').read()`n    except Exception: bad+=1;continue`n    if any(x in b for x in n): hits.append(os.path.relpath(p,root))`nprint('files=%d unreadable=%d hits=%s'%(count,bad,';'.join(hits)))`n")
+  $ctl = 'E2e-Control-9999!'; [IO.File]::WriteAllText((Join-Path $hostDir 'sessions\scan-control.bin'), $ctl, [Text.Encoding]::Unicode)   # positive control (UTF-16)
+  $r = & python -I $scan $hostDir $secret $s2 $s3 $s4 $s5 $ctl
+  "     $r"
+  Check ($r -match 'unreadable=0 hits=sessions.scan-control\.bin$') 'profile scan: no synthetic password in clear anywhere in the fixture profile (all files read; the planted control is found)'
 } finally {
   foreach ($p in (Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.ExecutablePath -ieq $exe })) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
   if ($server -and !$server.HasExited) { Stop-Process -Id $server.Id -Force }
   Remove-Item Env:BROWSER_E2E_PIN_MANIFEST, Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER -ErrorAction SilentlyContinue
   Remove-Item (Split-Path $pki) -Recurse -Force -ErrorAction SilentlyContinue
 }
-if ($script:fails) { "FAIL vault e2e: $script:fails"; exit 1 } else { 'PASS vault e2e (synthetic profile, test host only): armed save, v2 without plaintext, armed native fill after explicit choice, private read-only fill without capture or write' }
+if ($script:fails) { "FAIL vault e2e: $script:fails"; exit 1 } else { 'PASS vault e2e (synthetic profile, test host only; foreground condition lifted in the test host only, 500 ms arming kept; immediate click on the control not proven E2E, arming proven in U): armed save, v2 without plaintext, no web-storage copy after save/refusal/no navigation/failed cross-origin navigation/crash, armed native fill after explicit choice, private read-only fill without capture or write, profile scan clean' }
