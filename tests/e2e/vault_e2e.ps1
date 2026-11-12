@@ -76,12 +76,20 @@ try {
   $s3 = 'E2e-Stay-2222!'; Submit '/login?stay' 'e2e-synth-stay' $s3
   Check ([bool](WaitFind $hp 'PasswordSaveConfirm' '')) 'no navigation: the offer appears (one direct message)'
   Check (-not (WebCopy $s3)) 'no navigation: no copy in web storage'
-  Start-Sleep -Milliseconds 2300; $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); $w.Dispose()
-  Check ((WaitLog 'VAULT capture dropped: the tab navigated on') -and -not (Find $hp 'PasswordSaveConfirm' '')) 'no navigation: the next navigation drops the offer and its secret'
+  # Review N13: one same-origin navigation may be the submission; the next one drops the offer.
+  $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login?n=1" }); $w.Dispose(); Start-Sleep 2
+  $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login?n=2" }); $w.Dispose()
+  Check ((WaitLog 'VAULT capture dropped: the tab navigated elsewhere') -and -not (Find $hp 'PasswordSaveConfirm' '')) 'no navigation: a second navigation drops the offer and its secret'
   $s4 = 'E2e-Away-3333!'; Submit '/login?away' 'e2e-synth-away' $s4
   Check (WaitLog 'E2E BOUND refused navigation https://localhost') 'cross-origin submit: the navigation fails (refused by the test host)'
+  Start-Sleep 2; Check (-not (Find $hp 'PasswordSaveConfirm' '') -and -not (Find $hp 'PasswordLater' '')) 'cross-origin submit: no offer (the submission targets another origin; SSO side effect, fail safe)'
   Check (-not (WebCopy $s4)) 'cross-origin / failed navigation: no copy in web storage'
   $l = Find $hp 'PasswordLater' ''; if ($l) { Start-Sleep -Milliseconds 700; [void](Invoke-El $l); Start-Sleep 1 }
+  # Review N13: submit, then an immediate navigation to another origin: no trusted prompt above another page.
+  $s6 = 'E2e-Leave-5555!'; $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); Start-Sleep 3; $w.Dispose(); $w = Page
+  [void](Eval $w "document.getElementById('u').value='e2e-synth-leave';document.getElementById('p').value='$s6';document.getElementById('go').click();setTimeout(function(){location.href='https://localhost:$port/elsewhere'},0);1"); $w.Dispose()
+  Start-Sleep 3; Check (-not (Find $hp 'PasswordSaveConfirm' '') -and -not (Find $hp 'PasswordLater' '')) 'submit then immediate navigation to another origin: no offer shown'
+  Check (-not (WebCopy $s6)) 'submit then immediate navigation elsewhere: no copy in web storage'
   Check ((Get-FileHash $vaultFile).Hash -eq $hash0) 'nothing written without « Enregistrer »'
   # B03: native key control, arming, explicit choice, fill of the focused form
   $ws.Dispose(); $ws = Page; [void](Send $ws 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); Start-Sleep 3; $ws.Dispose(); $ws = Page
@@ -123,7 +131,7 @@ try {
   $scan = Join-Path (Split-Path $pki) 'scan.py'
   [IO.File]::WriteAllText($scan, "import os,sys`nroot=sys.argv[1];n=[]`nfor s in sys.argv[2:]: n+=[s.encode('utf-8'),s.encode('utf-16-le')]`nhits=[];bad=0;count=0`nfor d,_,fs in os.walk(root):`n  for f in fs:`n    p=os.path.join(d,f);count+=1`n    try: b=open(p,'rb').read()`n    except Exception: bad+=1;continue`n    if any(x in b for x in n): hits.append(os.path.relpath(p,root))`nprint('files=%d unreadable=%d hits=%s'%(count,bad,';'.join(hits)))`n")
   $ctl = 'E2e-Control-9999!'; [IO.File]::WriteAllText((Join-Path $hostDir 'sessions\scan-control.bin'), $ctl, [Text.Encoding]::Unicode)   # positive control (UTF-16)
-  $r = & python -I $scan $hostDir $secret $s2 $s3 $s4 $s5 $ctl
+  $r = & python -I $scan $hostDir $secret $s2 $s3 $s4 $s5 $s6 $ctl
   "     $r"
   Check ($r -match 'unreadable=0 hits=sessions.scan-control\.bin$') 'profile scan: no synthetic password in clear anywhere in the fixture profile (all files read; the planted control is found)'
 } finally {

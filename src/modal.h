@@ -895,17 +895,18 @@ private:
         return 0;
     }
     // ---- actions --------------------------------------------------------------------------------
-    ULONGLONG armedFrom_ = 0;
+    ULONGLONG armedFrom_ = 0; bool foregroundForTest_ = false;   // set only by unit tests (ArmNowForTest)
     bool Armed() const {
         if (spec_.armMs <= 0) return true;
         if (GetTickCount64() < armedFrom_) return false;
 #ifdef BROWSER_E2E_VAULT_HOST
         return true;   // TEST HOST ONLY: automation cannot bring a window forward without SendInput; the 500 ms arming still applies
 #endif
+        if (foregroundForTest_) return true;
         HWND fg = GetForegroundWindow(); return fg == hwnd_ || fg == owner_ || (owner_ && GetAncestor(fg, GA_ROOTOWNER) == owner_);
     }
 public:
-    void ArmNowForTest() { armedFrom_ = 0; }
+    void ArmNowForTest(bool asForeground = false) { armedFrom_ = 0; foregroundForTest_ = asForeground; }
     bool ArmedForTest() const { return Armed(); }
 private:
     Result Collect(int button) const {
@@ -944,7 +945,7 @@ private:
         if (!Armed()) return;
         const Button b = spec_.buttons[index];
         if (ButtonDisabled(b)) return;
-        if (b.isDefault && (spec_.validate || !spec_.fields.empty())) {
+        if ((b.isDefault || b.id == AcceptButton) && (spec_.validate || !spec_.fields.empty())) {   // review N2: « Mettre à jour » (not default) is validated too
             submitted_ = true;
             if (spec_.validate) { fieldError_ = spec_.validate(Values()); if (!fieldError_.empty()) { Relayout(); FocusStop(FieldStop(0)); RefreshCaret(); return; } }
             if (Invalid()) { Relayout(); return; }
@@ -998,8 +999,8 @@ private:
             if (keyboard && static_cast<int>(i) == spec_.accountSelected && GetKeyState(VK_SPACE) >= 0) { for (size_t b = 0; b < spec_.buttons.size(); ++b) if (spec_.buttons[b].id == AcceptButton && !spec_.buttons[b].disabled) { Press(b); return; } }
             SelectAccount(i, keyboard);
         }
-        else if (hit >= 6200 && hit < 6900) { if (spec_.accountsNavigate) { if (spec_.onButton) spec_.onButton(hit); } else { Result r = Collect(AcceptButton); r.select = hit - 6200; Close(r); } }
-        else if (hit == ManageHit) Close(Collect(spec_.manageId));
+        else if (hit >= 6200 && hit < 6900) { if (spec_.accountsNavigate) { if (spec_.onButton) spec_.onButton(hit); } else { if (!Armed()) return; Result r = Collect(AcceptButton); r.select = hit - 6200; Close(r); } }   // review N1: a row that answers is armed like a button
+        else if (hit == ManageHit) { if (!Armed()) return; Close(Collect(spec_.manageId)); }
         else if (hit >= 6900 && hit < 7000) ToggleReveal(static_cast<size_t>(hit - 6900));
         else if (hit == CloseHit) Cancel();
         else if (IsRow(hit)) { if (spec_.onButton) spec_.onButton(hit); }
@@ -1114,7 +1115,7 @@ private:
         case WM_LBUTTONDOWN: { keyboard_ = false; int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; pressed_ = hit; if (hit) SetCapture(h); Interact(); return 0; }
         case WM_LBUTTONUP: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); const int was = pressed_; pressed_ = 0; if (GetCapture() == h) ReleaseCapture(); Interact(); if (was && was == hit) Activate(hit, false); return 0; }
         case WM_MOUSEWHEEL: Scroll(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3 * DialogKit::Type::message.line); return 0;
-        case WM_KEYDOWN: if (Key(w)) return 0; break;
+        case WM_KEYDOWN: if ((l & (1 << 30)) && (w == VK_RETURN || w == VK_SPACE)) return 0; if (Key(w)) return 0; break;   // review N1: auto-repeat of Entrée / Espace never activates
         case WM_SYSKEYDOWN: if (AltKey(w)) return 0; break;
         case WM_SETFOCUS: InvalidateRect(h, nullptr, FALSE); return 0;
         case WM_DPICHANGED: if (open_) { MakeFont(); Place(false); } return 0;
@@ -1528,7 +1529,7 @@ public:
         if (closing_) FinishClosing();
         spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
         busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
-        keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs);
+        keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs); foregroundForTest_ = false;
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
         SetWindowTextW(hwnd_, AccessibleName().c_str());
         EnableWindow(hwnd_, TRUE);
@@ -1623,6 +1624,7 @@ public:
     DialogKit::Style TitleStyleForTest() const { return TitleStyle(); }
     float TitleDropForTest() const { return TileTitleDrop(); }
     void KeyForTest(WPARAM key) { Key(key); }
+    void KeyMessageForTest(WPARAM key, bool repeat) { SendMessageW(hwnd_, WM_KEYDOWN, key, repeat ? (1 << 30) : 0); }
     void AltKeyForTest(WPARAM key) { AltKey(key); }
     bool ChoosingForTest() const { return choosing_; }
     ContextMenu::Menu* MenuForTest() const { return menu_.get(); }

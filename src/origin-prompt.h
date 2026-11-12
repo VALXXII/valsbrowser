@@ -259,6 +259,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         Field pass; pass.label = L"Mot de passe"; pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
         pass.value = !s.demo ? s.secret : s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // real: the submitted password; demo: fictitious
         m.fields = {user, pass};
+        m.validate = [](const std::vector<std::wstring>& v) { return v.empty() || v[0].empty() ? std::wstring(L"Saisissez un identifiant.") : std::wstring(); };
         // D1: an update from a form without an identifier, with several accounts for this origin: the
         // user picks which one (radio rows, « Mettre à jour » disabled until then); never the last one silently.
         if (!s.demo && update && s.user.empty() && s.accounts.size() > 1) {
@@ -266,7 +267,6 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
             for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, false});
             m.accountsSelect = true; m.accountSelected = -1;
         }
-        m.validate = [](const std::vector<std::wstring>& v) { return v.empty() || v[0].empty() ? std::wstring(L"Saisissez un identifiant.") : std::wstring(); };
         m.softButtons = true;
         Button never = button(Id::Never, L"Jamais pour ce site", Role::Quiet, false, false, false, L"PasswordNever"); never.leading = true;
         if (!s.demo) {   // real path: no « Jamais pour ce site » until a real exclusion list exists (no inert action)

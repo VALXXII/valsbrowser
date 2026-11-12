@@ -42,6 +42,17 @@ int main() {
     Store gone = s; gone.Remove(id); Check(Store::Merge(s, s, gone).Entries().empty(), "merge: a removal in another window is never undone");
     { Store edited = s; edited.Save(origin, L"camille@exemple.test", L"Plus-recent-fictif", 9); Check(Store::Merge(s, edited, gone).Entries().size() == 1, "merge: a password changed here outlives its deletion elsewhere (review V6)"); }
     { Store a2 = Store{}, b2 = Store{}; a2.Save(origin, L"u", L"un-fictif", 10); b2.Save(origin, L"u", L"deux-fictif", 11); const Store mm = Store::Merge(Store{}, a2, b2); std::wstring v; Check(mm.Entries().size() == 1 && mm.Reveal(mm.Entries()[0].id, origin, v) && v == L"deux-fictif", "merge: the same account saved in two windows keeps the newest (review V6)"); }
+    // Review N13: the capture survives only its own submission.
+    { const std::wstring o = L"https://compte.exemple.test";
+      CaptureBinding b; b.Start(o, 0);
+      Check(b.NavigationStarting(5, o) && b.NavigationStarting(5, o) && b.NavigationCompleted(5, true), "capture: the submission (first navigation after it, same origin) and its same-origin redirect keep the offer");
+      Check(!b.NavigationStarting(6, o) && !b.Active(), "capture: a second navigation, even of the same origin, drops the offer");
+      CaptureBinding c; c.Start(o, 0); Check(!c.NavigationStarting(5, L"https://banque.exemple.test"), "capture: an independent navigation to another origin, even immediate, drops the offer");
+      CaptureBinding d; d.Start(o, 0); d.NavigationStarting(5, o); Check(!d.NavigationStarting(5, L"https://autre.exemple.test"), "capture: a redirect of the submission to another origin drops the offer");
+      CaptureBinding e; e.Start(o, 0); e.NavigationStarting(5, o); Check(!e.NavigationCompleted(5, false) && !e.Active(), "capture: a failed submission drops the offer");
+      CaptureBinding f; f.Start(o, 9); Check(f.NavigationStarting(9, o) && !f.NavigationStarting(10, o), "capture: message after the submission started: the in-flight navigation is the submission, the next one drops");
+      CaptureBinding g; g.Start(o, 0); Check(!g.NavigationStarting(5, L""), "capture: an empty target origin (data:, http) counts as another origin");
+      CaptureBinding h; Check(!h.NavigationStarting(1, o), "capture: no binding, nothing kept"); }
     // Fill guards.
     Target act{L"https://compte.exemple.test/login", L"https://compte.exemple.test/login", 7, 42, true};
     Check(CanFill(act, act, origin) == Refusal::None, "fill: same frame, same document, same origin after a user action");

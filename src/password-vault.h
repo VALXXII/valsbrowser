@@ -312,5 +312,31 @@ inline const wchar_t* FillOutcomeText(FillOutcome o) {
     default: return L"Le remplissage n'a pas pu être exécuté dans la page.";
     }
 }
+// Review N13: which navigations a pending capture (B04 offer + its secret) survives. Only the SUBMISSION
+// itself: the navigation in flight when the capture arrived, else the first one that starts after it, and
+// its redirects (same navigation id) while they stay on the capture's origin. Anything else drops the offer:
+// another navigation, a redirect or target of another origin (an empty origin, e.g. data: or http, counts as
+// another), a failure of the submission. Fail safe: a form posting to another origin (SSO) loses the offer.
+class CaptureBinding {
+public:
+    void Start(const std::wstring& origin, std::uint64_t inFlight) { origin_ = origin; active_ = true; submit_ = inFlight; known_ = inFlight != 0; }
+    bool Active() const { return active_; }
+    const std::wstring& Origin() const { return origin_; }
+    // true: keep the offer; false: drop it (and the binding ends).
+    bool NavigationStarting(std::uint64_t id, const std::wstring& targetOrigin) {
+        if (!active_) return false;
+        if (targetOrigin.empty() || targetOrigin != origin_) return End();
+        if (known_) return id == submit_ ? true : End();
+        known_ = true; submit_ = id; return true;   // the submission, started after its message arrived
+    }
+    bool NavigationCompleted(std::uint64_t id, bool ok) {
+        if (!active_) return false;
+        if (known_ && id == submit_ && !ok) return End();
+        return true;
+    }
+private:
+    bool End() { active_ = false; return false; }
+    std::wstring origin_; std::uint64_t submit_ = 0; bool known_ = false, active_ = false;
+};
 
 } // namespace Vault

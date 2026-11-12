@@ -503,15 +503,19 @@ int main(){
         { PromptJob a;a.spec.secret=L"Synth-capture-0000!-long-enough";PromptJob b=std::move(a);
           Expect(a.spec.secret.empty()&&b.spec.secret==L"Synth-capture-0000!-long-enough","capture: a moved job leaves no copy of the secret behind");
           int answered=0;auto queue=[&]{PromptJob j;j.spec.kind=OP::Kind::PasswordSave;j.spec.demo=false;j.spec.secret=L"Synth-capture-0000!";j.tab=live;j.answers.push_back([&](OP::Result&){++answered;});promptQueue.push_back(std::move(j));};
-          queue();vaultCaptureAt[live->serial]=GetTickCount64();VaultNavigationStarting(live,false);
-          Expect(answered==0&&promptQueue.size()==1,"capture: the submit's own navigation keeps the save offer");
-          vaultCaptureAt[live->serial]=GetTickCount64()-3000;VaultNavigationStarting(live,true);
-          Expect(answered==0&&promptQueue.size()==1,"capture: a redirect of the submit keeps the save offer");
-          VaultNavigationStarting(live,false);
-          Expect(answered==1&&promptQueue.empty()&&!vaultCaptureAt.count(live->serial),"capture: the tab's next navigation drops the offer and its secret");
-          queue();vaultCaptureAt[live->serial]=GetTickCount64();AbortTabPrompts(live);
-          Expect(answered==2&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
-          vaultCaptureAt.clear(); }
+          const std::wstring o=L"https://compte.exemple.test";
+          queue();vaultCapture[live->serial].Start(o,0);VaultNavigationStarting(live,11,o+L"/landing");VaultNavigationStarting(live,11,o+L"/after-redirect");
+          Expect(answered==0&&promptQueue.size()==1,"capture: the submission and its same-origin redirect keep the save offer (host wiring)");
+          VaultNavigationStarting(live,12,o+L"/other");
+          Expect(answered==1&&promptQueue.empty()&&!vaultCapture.count(live->serial),"capture: the tab's next navigation drops the offer and its secret");
+          queue();vaultCapture[live->serial].Start(o,0);VaultNavigationStarting(live,13,L"https://banque.exemple.test/");
+          Expect(answered==2&&promptQueue.empty(),"capture: an immediate navigation to another origin drops the offer");
+          queue();vaultCapture[live->serial].Start(o,0);VaultNavigationStarting(live,14,o+L"/landing");VaultNavigationCompleted(live,14,false);
+          Expect(answered==3&&promptQueue.empty(),"capture: a failed submission drops the offer");
+          queue();vaultCapture[live->serial].Start(o,0);AbortTabPrompts(live);
+          Expect(answered==4&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
+          Expect(!VaultOfferStillValid(live,o)&&!VaultOfferStillValid(nullptr,o),"capture: the show/answer guard refuses a tab whose engine source is not the capture origin (PumpPrompt and the answer use it; shown path covered by vault_e2e)");
+          vaultCapture.clear(); }
         // A5 with engine categories but no engine profile (no live tab / older runtime): a real failure, never « effacé ».
         { HRESULT got=S_FALSE;StartClearSelected({false,true,true,false,false},1,[&](HRESULT hr){got=hr;});Expect(FAILED(got),"A5: cookies/cache selected without an engine profile is reported as a failure"); }
         // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.

@@ -436,6 +436,24 @@ int wmain(int argc, wchar_t** argv) {
           dd.ActivateForTest(Modal::Dialog::ButtonHit(1));
           Check(!dd.ArmedForTest() && closed == 0 && dd.Visible(), "B04 real: a click right after the prompt appears does nothing (armed after 500 ms)");
           dd.Abort(); dd.FinishAnimationsForTest(); dd.Dispose(); }
+        { // Review N2: « Mettre à jour » (not the default button) still validates: an emptied identifier is refused.
+          OriginPrompt::Spec su = r; su.user = L"camille@exemple.test"; su.accounts = {{L"camille@exemple.test", L""}};
+          const auto mu = OriginPrompt::Build(su, true); Modal::Dialog dd; dd.Create(hi, owner, root, {}); int closed = 0;
+          dd.Show(mu, Area(), [&](const Modal::Result&) { ++closed; }); dd.ArmNowForTest(true);
+          dd.SetFieldForTest(0, L""); dd.ActivateForTest(Modal::Dialog::ButtonHit(1));
+          Check(dd.ArmedForTest() && closed == 0 && dd.Visible(), "B04 real update: an emptied identifier is refused by « Mettre à jour » (no entry without identifier)");
+          dd.Abort(); dd.FinishAnimationsForTest(); dd.Dispose(); }
+        { // Review N1: the B03 rows and « Gérer » answer only once armed; a held Entrée never picks an account.
+          OriginPrompt::Spec f; f.kind = OriginPrompt::Kind::PasswordFill; f.origin = L"compte.exemple.test"; f.accounts = {{L"camille@exemple.test", L"x"}, {L"travail@exemple.test", L"x"}};
+          const auto mf = OriginPrompt::Build(f, true); Modal::Dialog dd; dd.Create(hi, owner, root, {}); int closed = 0;
+          dd.Show(mf, Area(), [&](const Modal::Result&) { ++closed; });
+          dd.ActivateForTest(Modal::Dialog::AccountHit(0)); dd.ActivateForTest(Modal::Dialog::ManageHit);
+          Check(mf.armMs == 500 && closed == 0 && dd.Visible(), "B03 real: choosing a row or « Gérer » right after the popover appears does nothing");
+          dd.ArmNowForTest(true); dd.KeyMessageForTest(VK_RETURN, true);
+          Check(closed == 0 && dd.Visible(), "B03 real: an auto-repeated Entrée (key held from the trigger) never picks an account");
+          dd.ActivateForTest(Modal::Dialog::AccountHit(1));
+          Check(closed == 1, "B03 real: once armed, an explicit choice answers");
+          dd.FinishAnimationsForTest(); dd.Dispose(); }
         Modal::Result none; none.button = OriginPrompt::Id::Accept; none.select = -1; none.values = {L"x"};
         Check(OriginPrompt::Map(r, none).action != OriginPrompt::Action::Save, "B04 real: no account chosen => nothing saved (never the last one silently)");
     }
