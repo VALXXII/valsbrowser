@@ -121,6 +121,7 @@ Niveaux de revue :
   lignes B03, N13 capture liée au temps seulement) ; corrigé **937a2d8** ; section « Recontrôle 937a2d8 » : **activable** sous réserve des
   tests verts sur ce SHA (verts : `design/e2e-runs/937a2d8/`). Résidus R1–R4 du recontrôle corrigés ensuite en 395705e (non revus, U verts).
 - Intégration main (PR65 cd7d9fb) : fusion f2f9e50 ; tests rejoués sur ce SHA (`design/e2e-runs/f2f9e50/`).
+- **SHA final 5cc8bcf** (harnais crash-restore déterministe, harnais aide permissions fiabilisé, E2E-app D3 favori privé) : batterie complète exécutée une fois, **tout PASS au premier passage** (`design/e2e-runs/5cc8bcf/NOTES.txt`) ; recontrôle ciblé 395705e/f2f9e50 « activable technique » ; build dev révisable (coffre inactif) `build/review/browser-dev-5cc8bcf.zip`.
 - **Activation : NON autorisée** (décision coordinateur/utilisateur) ; le verdict technique « activable » ne l'autorise pas.
 
 | Élément | Code | Preuves (niveau, SHA) | Limites |
