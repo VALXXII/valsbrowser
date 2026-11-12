@@ -382,7 +382,7 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
     COREWEBVIEW2_PERMISSION_KIND kind=COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;a->get_PermissionKind(&kind);
     BOOL user=FALSE;a->get_IsUserInitiated(&user);
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
-    OP::Spec spec;spec.kind=OP::Kind::Permission;spec.origin=OriginLabel(uri);spec.permissions={(int)kind};spec.userInitiated=user!=FALSE;
+    OP::Spec spec;spec.kind=OP::Kind::Permission;spec.origin=OriginLabel(uri);spec.requester=OriginOf(uri);spec.permissions={(int)kind};spec.userInitiated=user!=FALSE;
     const std::wstring key=OriginOf(uri);Log(L"PERMISSION request kind="+std::to_wstring(kind)+L" "+key);
     std::weak_ptr<Tab> weakTab=t;
     AskPrompt(std::move(spec),t,[args,deferral,deny,kind,weakTab,key](OP::Result& r){
