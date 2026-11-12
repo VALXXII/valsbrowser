@@ -15,7 +15,7 @@ OUT = os.path.join(ROOT, 'build', 'update-toast')
 GXX = os.path.join(ROOT, 'tools', 'w64devkit', 'bin', 'g++.exe')
 FLAGS = ['-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unknown-pragmas', '-Wno-cast-function-type',
          '-Wno-missing-field-initializers', '-static', '-municode', '-Isrc']
-LIBS = ['-ld2d1', '-ldwrite', '-ldwmapi', '-lgdi32', '-luser32', '-lole32', '-luuid']
+LIBS = ['-ld2d1', '-ldwrite', '-ldwmapi', '-lgdi32', '-luser32', '-lole32', '-luuid', '-lcomctl32']  # comctl32: native-ui.h window subclassing
 
 TARGETS = {
     'toast-tests.exe': (['tests/update-toast/toast_tests.cpp'], ['-mconsole'], LIBS + ['-lwindowscodecs']),

@@ -27,7 +27,7 @@ int wmain(int argc,wchar_t** argv){
     Chrome chrome;Require(SUCCEEDED(chrome.InitOffscreen(root,96,1180,84)),"native offscreen renderer");
     for(int id:{'R','C'}){
         Motion::State state(false);state.SetInteraction(id,0,T(0));chrome.SetMotion(&state);int previous=41;
-        const float x=id=='R'?980.f:1021.f; // field ends at 1180-133 (History button beside Downloads)
+        const float x=id=='R'?99.f:989.f; // standalone Reload {83,115} on the canvas; Copy then the star inside the field (ends at 1180-133)
         for(int ms:{0,1,60,120}){chrome.Paint({L"Google"},0,L"https://example.test",false,id,0,nullptr,T(ms));int color=Gray(chrome.SurfacePixel(x,60));Require(color>=41&&color>=previous,"address hover cannot flash darker than its parent");previous=color;std::printf("%c enter t=%d fill=%d\n",id,ms,color);}
         Require(previous==51,"address hover exact shared target");state.SetInteraction(0,0,T(120));previous=51;
         for(int ms:{121,180,240}){chrome.Paint({L"Google"},0,L"https://example.test",false,0,0,nullptr,T(ms));int color=Gray(chrome.SurfacePixel(x,60));Require(color>=41&&color<=previous,"address leave monotonic toward parent without dark flash");previous=color;std::printf("%c leave t=%d fill=%d\n",id,ms,color);}

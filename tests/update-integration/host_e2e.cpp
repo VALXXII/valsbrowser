@@ -74,6 +74,10 @@ int wmain(int argc,wchar_t** argv){
         Note(failures?"RESULT FAIL":"RESULT PASS");Flush();CoUninitialize();return failures?1:0;
     }
 
+    // Non-install scenarios exercise unattended close/cancellation, not the close-tabs dialog.
+    // Keep confirmation enabled for install: the production install handoff must bypass it.
+    if(mode!=L"install")settings.confirmCloseTabs=false;
+
     WNDCLASSW wc{};wc.hInstance=instance;wc.lpfnWndProc=OwnerProc;wc.lpszClassName=L"HostE2EOwner";RegisterClassW(&wc);
     window=CreateWindowExW(0,wc.lpszClassName,L"host_e2e (native fixture, no WebView2)",WS_OVERLAPPEDWINDOW,-30000,-30000,900,600,nullptr,nullptr,instance,nullptr);
     if(!window)return 71;
@@ -82,6 +86,7 @@ int wmain(int argc,wchar_t** argv){
     for(auto uri:{L"https://example.com/a",L"https://example.org/b?q=canary"}){auto t=std::make_shared<Tab>();t->uri=uri;t->home=false;pages.push_back(t);}
     {auto t=std::make_shared<Tab>();t->home=true;pages.push_back(t);}
     current=1;sessionReady=true;
+    LoadBookmarks();
     LoadDownloads();const size_t historyBefore=downloads.size();Note("history rows loaded "+std::to_string(historyBefore));
     {DL::Item item;item.id=nextDownloadId++;item.path=dataDir+L"\\canary-download.bin";item.uri=L"https://example.com/canary-download.bin";
      item.state=DL::State::Completed;item.received=item.total=4096;item.started=1790000000000LL;downloads.insert(downloads.begin(),item);}

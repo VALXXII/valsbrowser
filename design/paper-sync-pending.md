@@ -1,37 +1,50 @@
-# Paper synchronization ? incomplete due to MCP quota
+# Paper synchronization — done (2026-11-09)
 
-File `01M6Q7YT14ZKMGET54ASPNGQEC`, page `p-2-0` (browser - Design system). On 7 November 2026, MCP returned: **Weekly MCP limit reached. It resets in 9 hours.** Stop mutation requests until reset or user account upgrade; do not route around quota. `finish_working_on_nodes` succeeded after this error.
+File `01M6Q7YT14ZKMGET54ASPNGQEC` (*Browser Design*). Reference: `main` 58b782e, release 0.3.113.
+The quota block of 7 November is over; every item that was pending here has been applied through
+the Paper MCP tools and checked with screenshots. Nothing remains pending. The page **Icon** was not
+touched (no node, position, token dependency or render change).
 
-## Applied before quota
+## Design system page (`p-2-0`, now « Design system — main 0.3.113 »)
 
-- `--color-browser-focus` changed to rgba(255,255,255,.1).
-- New tokens tab-gap6, tab-pitch134, close-inset4, focus-stroke1, focus-opacity.1.
-- Foundations text: focus white10%/1px, type description now mentions flower, pitch140 ->134, tab subtitle now gap6/close inset4.
-- Foundations old Brand/8 text row replaced by actual editable `assets/icons/brand-flower.svg`, 16x16.
+- **01 Foundations**: header points at `main` 58b782e / 0.3.113; focus is 1 px white, 10 % after a
+  pointer press and 50 % from the keyboard; spacing 4/6/8/16/24/32, button radius 6, inner radius 3;
+  windows, menus and popups take the native DWM corner (8 DIP, standard Windows shadow). New
+  section 04: accent `#3E67FF`, danger `#FF7B6E`, 1 px rounded caret at accent 90 % on every valid
+  field, danger on an invalid bookmark URL until fixed, opaque popups (no acrylic, no blur).
+- **02 Components**: the keyboard-focus column uses the 1 px inset white 50 % ring (the old 2 px
+  `#BEBEBE` ring is gone). Tab samples use the exact `TabStrip` geometry: favicon at (8,8) 16 × 16,
+  title slot x 32..96 × 32, close slot 24 × 24 at (100,4) with its 16 px glyph centred. New
+  specimen: flower 16 at .32 with glyph `{14,14,30,30}`, first tab surface x 44, second x 178 (6 gap),
+  new-tab 32 × 32 at x 312. Address text/placeholder at 50 %; loading veil white 8 % full height.
+- **03 Motion**: static, editable stages generated from `assets/lottie/copy-link.json` and
+  `refresh.json` (Phosphor Bold paths, stroke 24/256, ink composited at 50 %). Copy: 0 / 150 (real
+  per-vertex morph at frame 4.5) / 300 / 1800 (hold, frame 10) / 2100 ms. Refresh: one rigid CCW turn
+  in 500 ms, stages 0°, −97° (133 ms), −275° (233 ms), −340° (333 ms), rest at frame 14 = 0°, static
+  paths, never restarted mid-turn, independent of navigation completion. Reduced motion: no Lottie,
+  copy shows the check during the dwell then the link, refresh stays at rest. Menus: 180 ms entry,
+  row hover follows the pointer even during the entry or with a submenu open; keyboard unchanged.
+  Frames are display-paced (compositor clock), no idle ticks.
+- **04 Updates**: single reference for the toast. Fully opaque `#171717` card (no acrylic, no blur),
+  Paper radius 10 → native DWM 8 DIP; counter `50.4/200.0MB` with one decimal, size slot measured on
+  `000.0/000.0MB`, 4 DIP before the timer.
+- Tokens: removed unused `--text-browser-8` and `--font-browser-brand` (Gelasio, legacy 8 px brand
+  role); `--color-browser-split-accent` is now an alias of `--color-browser-accent`.
 
-These changes were acknowledged by MCP; post-change screenshots were blocked, so final layout not yet visually verified.
+## File cleanup
 
-## Remaining changes (preserve existing user nodes)
+Pages now: Chrome — prototype, adresse, menus, téléchargements (ex Page 1) · Icon · Design system ·
+Split View — flow (implémenté) · Split View — menu d'onglet V2 (retenu) · Favoris — flow (implémenté) ·
+Réglages v4 — implémenté · Réglages — états détaillés (champs, menus, autorisations) · Aperçu URL —
+implémenté.
 
-Read current page and token hash before writing. Original board IDs: foundations96-0, components97-0, motion98-0. Do not create duplicates of applied tokens or brand row.
+Removed as abandoned or duplicated: split-view menu variants V1, V3, comparison and clone bases; the
+whole split-view drop archive (A/B/C, M, R); Lisière V1 and two outdated V2 frames plus one exact
+duplicate; the four original update cards (now only on board 04); an orphan frame; the old address
+suggestion list; the tab menu without Print/PDF; Réglages panel v1 and v3; the non-described
+anti-tracking menu; the old isolated URL-preview reconstruction. PNG exports of every removed frame
+are kept outside the repo in `build/design-system-cleanup/exports-before-delete/`.
 
-1. Components focus samples (original BV-0/CN-0/DF-0/E7-0/EZ-0): replace old inset2px #bebebe shadow with inset1px rgba(255,255,255,.1). Use exact source FocusRing geometry; no secondary perimeter.
-2. Tab sample surfaces FE-0/FM-0/FW-0: position relative; favicon FF-0/FN-0/FX-0 absolute left8 top8 16x16; title FG-0/FO-0/FY-0 absolute left32 top0 width64 height32 with centered baseline; close FI-0/FQ-0/G0-0 absolute left100 top4 width24 height24. Preserve actual child text/SVG. Exact coordinates derive from TabStrip helpers, no guessing screenshots.
-3. Add adjacent-tabs/flower specimen: brand hitbox38x36 at y2, flower16 at opacity.32 centered(22,22), glyph{14,14,30,30}; first tab surface x44,y6,w128,h32; second x178; plus x312. Visible gaps6. Close glyph16 centered in24slot with4px equal inset.
-4. Components address opacity now.5, same as source. Update any old .452 sample.
-5. Motion board: replace old crossfade-only illustrations with actual Lottie path morph stages from assets/lottie/copy-link.json and refresh.json. Copy host timeline0/150/300/1800/2100ms, holds frame10 for1500ms and returns frames10..19 over300ms. Refresh is one rigid CCW turn in500ms per activation, static paths/no trim, no mid-turn restart, independent of navigation completion. Frame14 equals rest pixel-for-pixel. Native renderer composites JSON white at.5 * icon state opacity. Use SVG/path editable stages if possible; clearly label static specification vs playable prototype.
-6. Reduced motion note: static Phosphor/fade fallback, no Lottie ticks. Downloads remain dormant. Retain branch name and source links. Review screenshots after each section and call finish_working_on_nodes.
-
-Quota rechecked during final integration: get_children still returns Weekly MCP limit reached, resets in8hours. No further mutations attempted.
-
-Actual production render artifacts: build/lottie-polish/evidence/keyframe-*.png (visual verification only); exact source values are in src/design-system.h, src/chrome.h, src/lottie-playback.h, design/lottie-spec.md. JSON assets are the motion source, not a newly invented path.
-
-## URL loading fill (new)
-
-Add AddressLoading.opacity=.08: white overlay over the existing URL surface, full32-DIP height, same6-DIP radius, width following navigation milestones15% start /65% source commit /100% completed. Fractions are indicative, never presented as measured byte percentages. Width CSS ease-out cubic-bezier(0,0,.58,1) over360ms; completion fills over360ms then fades200ms. Reduced motion jumps to each target with opacity-only completion. Separate per-tab state, redirect retention and stale-completion guard; no frame wakes while waiting. Actual native specimen: build/url-loading/loading-half.png. Download components remain untouched. This item has not been applied to Paper while its MCP quota is exhausted.
-
-## Display pacing (runtime only)
-
-No Paper token or spec change required: loading fill .08, CSS ease-out 360ms, completion fade 200ms and all other motion durations/curves are unchanged. Native frames are now paced by the Windows compositor clock instead of a 16ms SetTimer (see design/display-pacing.md). If the Paper motion page documents frame cadence, note "display-paced, one paint per compositor tick while moving; idle has no ticks". Not applied to Paper while MCP quota is exhausted.
-
-Final user-approved pacing: on-demand native compositor clock; verified paint cadence120Hz in the native harness, no ongoing idle/minimised frame wakes. CPU percentages and240Hz cost projections withdrawn; no measured240Hz claim. Width360ms ease-out and fade200ms remain unchanged.
+Kept on purpose: « Réglages — panneau v2 (défilé) » on the Chrome page (it carries an open user
+thread about the retouched back/forward buttons), Lisière V3 (split-view clone source), the
+scrollbar states, external reference images and the grain-gradient experiment (status unknown).

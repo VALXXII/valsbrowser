@@ -42,6 +42,9 @@ LICENSES = {  # destination name -> source
     'WebView2-NOTICE.txt': 'deps/webview2/NOTICE.txt',
     'ThorVG-LICENSE.txt': 'third_party/thorvg/LICENSE',
     'RapidJSON-LICENSE.txt': 'third_party/thorvg/RapidJSON-LICENSE',
+    # Ad blocker: unmodified uBlock Origin Lite (GPLv3) in assets/extensions/ublock-lite.
+    'uBOLite-LICENSE.txt': 'assets/extensions/ublock-lite/LICENSE.txt',
+    'uBOLite-NOTICE.txt': 'third_party/ublock-lite/NOTICE.txt',
 }
 
 
@@ -73,7 +76,9 @@ def write_build_info(gen: Path, info: dict, repo: str) -> None:
         f'#define BROWSER_CHANNEL_TEXT {c_string(v["channel"])}\n'
         f'#define BROWSER_UPDATE_REPO_WIDE L{c_string(repo)}\n'
         '#define BROWSER_UPDATE_VERSION BROWSER_VERSION_WIDE\n'
-        f'#define BROWSER_FILEVERSION {v["major"]},{v["minor"]},{v["build"]},0\n',
+        f'#define BROWSER_FILEVERSION {v["major"]},{v["minor"]},{v["build"]},0\n'
+        # src/app-icon.rc: live icon for release builds, preview icon otherwise.
+        + ('#define BROWSER_CHANNEL_RELEASE 1\n' if v['channel'] == 'release' else ''),
         encoding='ascii', newline='\n')
 
 
@@ -94,7 +99,7 @@ def clean_payload(out: Path) -> None:
         shutil.rmtree(assets)
 
 
-def build(out: Path, info: dict, repo: str) -> None:
+def build(out: Path, info: dict, repo: str, preview: bool = False) -> None:
     for tool in ('g++.exe', 'windres.exe', 'strip.exe'):
         if not (BIN / tool).exists():
             raise SystemExit(f'Missing {BIN / tool}: run setup.ps1 (pinned w64devkit) first.')
@@ -102,6 +107,7 @@ def build(out: Path, info: dict, repo: str) -> None:
         raise SystemExit('Missing WebView2 SDK: run setup.ps1 first.')
     if not THORVG.exists():
         run([sys.executable, ROOT / 'build-lottie.py'])
+    run([sys.executable, ROOT / 'fetch-ublock-lite.py'])  # pinned ad blocker; no-op when present
     if '/' not in repo or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._/' for c in repo):
         raise SystemExit(f'Invalid update repository: {repo!r}')
     obj = out.parent / (out.name + '-obj')
@@ -110,22 +116,30 @@ def build(out: Path, info: dict, repo: str) -> None:
         shutil.rmtree(obj)
     out.mkdir(parents=True, exist_ok=True)
     write_build_info(obj / 'gen', info, repo)
-    res = obj / 'browser-res.o'
-    run([BIN / 'windres.exe', '-I.', f'-I{obj / "gen"}', '-DBROWSER_HAS_BUILD_INFO',
-         'src/browser.rc', '-O', 'coff', '-o', res])
+    res, helper_res = obj / 'browser-res.o', obj / 'update-helper-res.o'
+    # Both executables embed the channel's app icon (src/app-icon.rc): the helper is also the
+    # stable launcher <root>\browser.exe that the Start Menu shortcut targets.
+    for rc, o in (('src/browser.rc', res), ('src/update-helper.rc', helper_res)):
+        run([BIN / 'windres.exe', '-I.', '-Isrc', f'-I{obj / "gen"}', '-DBROWSER_HAS_BUILD_INFO',
+             rc, '-O', 'coff', '-o', o])
     # No PE link timestamp and relative source paths: identical inputs give identical binaries.
     common = ['-std=c++17', '-O2', *WARNINGS, '-static', '-municode', '-Isrc', f'-I{obj / "gen"}',
               '-DBROWSER_HAS_BUILD_INFO', '-Wl,--no-insert-timestamp', f'-ffile-prefix-map={ROOT}=.']
+    if preview:  # design preview: updates and the hand-over to an installed copy are compiled out
+        common.append('-DBROWSER_PREVIEW')
     run([BIN / 'g++.exe', *common, '-mwindows', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
          f'-I{SDK / "include"}', *BROWSER_SOURCES, res, THORVG, '-o', out / 'browser.exe',
          *BROWSER_LIBS])
-    run([BIN / 'g++.exe', *common, '-mwindows', *HELPER_SOURCES, '-o', out / HELPER_NAME, *HELPER_LIBS])
+    run([BIN / 'g++.exe', *common, '-mwindows', *HELPER_SOURCES, helper_res, '-o', out / HELPER_NAME,
+         *HELPER_LIBS])
     for exe in ('browser.exe', HELPER_NAME):
         run([BIN / 'strip.exe', '--strip-debug', out / exe])
     shutil.copy2(SDK / 'x64/WebView2Loader.dll', out / 'WebView2Loader.dll')
     for name, source in LICENSES.items():
         shutil.copy2(ROOT / source, out / name)
     shutil.copytree(ROOT / 'assets', out / 'assets')
+    # Same icon as a loose file: the updater refreshes <root>\browser.ico from it for shortcuts.
+    shutil.copy2(version_mod.app_icon(info['channel']), out / 'assets/browser.ico')
     (out / 'version.json').write_text(json.dumps({
         'product': 'browser', 'version': info['version'], 'build': info['build'],
         'commit': info['commit'], 'channel': info['channel'], 'arch': 'x64',
@@ -139,6 +153,8 @@ def main() -> int:
     p.add_argument('--channel', default='dev', choices=('dev', 'release'))
     p.add_argument('--build', type=int, help='override build number (default: git rev-list --count HEAD)')
     p.add_argument('--commit')
+    p.add_argument('--preview', action='store_true',
+                   help='design preview build: no self-update, never forwards to an installed copy')
     p.add_argument('--update-repo', default=DEFAULT_REPO,
                    help='owner/repo whose GitHub releases are the only trusted update feed')
     a = p.parse_args()
@@ -146,11 +162,13 @@ def main() -> int:
     if ROOT.resolve() not in out.parents:
         raise SystemExit(f'Refusing output directory outside the repository: {out}')
     info = version_mod.identity(a.build, a.commit, a.channel)
+    if info['channel'] == 'release':
+        version_mod.require_on_main(info['commit'])
     try:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = version_mod.git('show', '-s', '--format=%ct', info['commit'])
     except subprocess.CalledProcessError:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = '0'
-    build(out, info, a.update_repo)
+    build(out, info, a.update_repo, a.preview)
     return 0
 
 

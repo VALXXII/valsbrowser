@@ -7,6 +7,7 @@
 // The root is derived only from this executable's own location.
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include <cstdio>
 #include <string>
@@ -328,7 +329,7 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
     bool ok = true;
     if (UP::IsDirectory(profile)) ok = CopyTree(profile, work + L"\\profile", deadline) || MigrationStepFailed("copy profile");
     // Plain data files next to the profile (session, download history). Transient *.tmp files are not copied.
-    for (const wchar_t* name : {L"session", L"downloads"}) {
+    for (const wchar_t* name : {L"session", L"downloads", L"bookmarks", L"bookmarks.bak"}) {
         std::wstring file = src + L"\\" + name;
         if (ok && UP::PathExists(file) && !UP::IsDirectory(file) && !UP::IsReparsePoint(file))
             ok = CopyWithRetry(file, work + L"\\" + name, deadline) || MigrationStepFailed("copy " + UP::Narrow(name));
@@ -456,6 +457,14 @@ int RunInstall(const std::string& nonce) {
     if (CopyFileW((target + L"\\update-helper.exe").c_str(), launcherTemp.c_str(), FALSE) &&
         !MoveFileExW(launcherTemp.c_str(), (root + L"\\browser.exe").c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         DeleteFileW(launcherTemp.c_str());
+    // Stable app icon file (best effort) for shortcuts whose IconLocation is <root>\browser.ico, then tell the shell
+    // that exactly these two items changed so it re-reads their icons (no global icon-cache purge, no Explorer restart).
+    std::wstring iconTemp = root + L"\\browser.ico.new-" + UP::Widen(nonce);
+    if (CopyFileW((target + L"\\assets\\browser.ico").c_str(), iconTemp.c_str(), FALSE) &&
+        !MoveFileExW(iconTemp.c_str(), (root + L"\\browser.ico").c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        DeleteFileW(iconTemp.c_str());
+    for (const wchar_t* name : {L"\\browser.exe", L"\\browser.ico"})
+        SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, (root + name).c_str(), nullptr);
     std::wstring pending = updates + L"\\pending", ack = updates + L"\\ack-" + UP::Widen(nonce);
     DeleteFileW(ack.c_str());
     if (!UP::AtomicWriteFile(pending, "browser-pending 1\nnonce " + nonce + "\nversion " + p.version + "\n")) {

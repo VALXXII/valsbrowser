@@ -5,6 +5,7 @@
 #include "frame-clock.h"
 #include "motion-presentation.h"
 #include "design-system.h"
+#include "native-ui.h"
 #include <d2d1.h>
 #include <dwrite_1.h>
 #include <dwmapi.h>
@@ -378,7 +379,6 @@ struct Toast::Impl {
     static constexpr UINT FrameMessage = WM_APP + 0x51, ActionMessage = WM_APP + 0x52;
     static constexpr UINT_PTR DwellTimer = 1, FallbackTimer = 2;
     HWND owner = nullptr, hwnd = nullptr;
-    int clipW = 0, clipH = 0, clipRadius = 0;
     Options options;
     ActionHandler onAction;
     std::function<void()> onRelease;
@@ -433,10 +433,7 @@ struct Toast::Impl {
         return hwnd != nullptr;
     }
     void ConfigureWindow() {
-        const DWM_WINDOW_CORNER_PREFERENCE square = DWMWCP_DONOTROUND;
-        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &square, sizeof(square));
-        const COLORREF noBorder = DWMWA_COLOR_NONE;
-        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &noBorder, sizeof(noBorder));
+        NativeUI::ConfigureShadowlessPopup(hwnd, Paper::radius); // region-rounded: DWM rounding always casts a shadow
         const DWM_SYSTEMBACKDROP_TYPE material = DWMSBT_NONE;
         DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &material, sizeof(material));
     }
@@ -444,16 +441,6 @@ struct Toast::Impl {
         RECT previous{}; GetWindowRect(hwnd, &previous);
         if (!EqualRect(&previous, &card) &&
             !SetWindowPos(hwnd, nullptr, card.left, card.top, w, h, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW)) return false;
-        const int radius = (int)std::lround(Paper::radius * scale);
-        // Clip after sizing, with one rounded outline for the whole card.
-        if (w != clipW || h != clipH || radius != clipRadius) {
-            HRGN clip = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
-            if (!clip || !SetWindowRgn(hwnd, clip, FALSE)) {
-                if (clip) DeleteObject(clip);
-                return false;
-            }
-            clipW = w; clipH = h; clipRadius = radius;
-        }
         return true;
     }
     // ---- geometry ------------------------------------------------------------
@@ -735,6 +722,7 @@ void Toast::SetOwnerVisible(bool visible) {
 }
 void Toast::SyncReducedMotion() { if (impl_) { impl_->presenter.SetReduced(impl_->Reduced(), NativeChrome::Motion::Now()); impl_->Request(); } }
 void Toast::SetReservedRight(float dip) { if (impl_) { impl_->reservedRight = std::max(0.f, dip); Layout(); } }
+void Toast::SetTopReserve(float dip) { if (impl_ && impl_->options.topReserve != dip) { impl_->options.topReserve = std::max(0.f, dip); Layout(); } }
 bool Toast::Focus() {
     if (!impl_ || !impl_->hwnd || !impl_->windowShown || !impl_->presenter.Interactive()) return false;
     impl_->keyboard = true;

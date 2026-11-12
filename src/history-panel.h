@@ -98,7 +98,8 @@ class View {
         }
         if (s.caret && focused) { // static caret: no blink timer at rest
             const float x = std::round(text.left + std::min(s.query.empty() ? 0.f : chrome_.TextWidth(s.query, Panel::line, false, false, -.16f), text.right - text.left - 2)) + .5f;
-            chrome_.Color(1, .9f); target->DrawLine({x, text.top - 1}, {x, text.bottom + 1}, chrome_.SolidBrush(), 1);
+            const auto a = Design::Accent::Get(); chrome_.SolidBrush()->SetColor(D2D1::ColorF(a.r, a.g, a.b, Design::Accent::caretOpacity));
+            target->DrawLine({x, text.top - 1}, {x, text.bottom + 1}, chrome_.SolidBrush(), 1);
         }
         if (clear) {
             const auto c = Interaction(s, ClearHit);
@@ -565,8 +566,8 @@ public:
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Historique", WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        const int square = 1; DwmSetWindowAttribute(hwnd_, 33, &square, sizeof(square)); // DWMWCP_DONOTROUND: the region shapes it
-        const COLORREF none = 0xFFFFFFFE; DwmSetWindowAttribute(hwnd_, 34, &none, sizeof(none));
+        NativeUI::StripTooltipShadow(tip_);
+        NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.

@@ -1,0 +1,76 @@
+{
+  "_source": "Paper file 01M6Q7YT14ZKMGET54ASPNGQEC, page p-8-0 « Favoris — flow », get_computed_styles after design fixes, 2026-11-08",
+  "_tokens": {
+    "--color-browser-accent": "#3E67FF  (NEW — user-customisable accent; caret + focus. Today equal to --color-browser-split-accent)",
+    "--color-browser-danger": "#FF7B6E",
+    "--color-browser-canvas": "#171717",
+    "--opacity-browser-focus": "10%"
+  },
+  "chrome_without_bookmarks_bar (artboard 01, Chrome)": {
+    "display": "flex", "flexDirection": "column", "paddingTop": "2px", "paddingBottom": "4px", "gap": "6px",
+    "borderBottomWidth": "1px", "borderBottomStyle": "solid", "borderBottomColor": "#FFFFFF05",
+    "_children": "tab strip 36 + gap 6 + nav row 32",
+    "_total_height": "2 + 36 + 6 + 32 + 4 + 1 = 81"
+  },
+  "content_without_bookmarks_bar (artboard 01, Contenu · YouTube)": {
+    "display": "flex", "flexGrow": "1", "paddingTop": "0px", "paddingBottom": "4px", "paddingInline": "4px",
+    "_note": "page/webview top edge = 81 (flush under chrome border). NO top padding (comment c-v7q0dg)."
+  },
+  "chrome_with_bookmarks_bar (artboard 07, Chrome)": {
+    "display": "flex", "flexDirection": "column", "paddingTop": "2px", "paddingBottom": "4px", "gap": "6px",
+    "borderBottomWidth": "1px", "borderBottomStyle": "solid", "borderBottomColor": "#FFFFFF05",
+    "_children": "tab strip 36 + gap 6 + nav row 32 + gap 6 + bookmarks bar 34",
+    "_total_height": "2 + 36 + 6 + 32 + 6 + 34 + 4 + 1 = 121"
+  },
+  "bookmarks_bar (artboard 07, Barre des favoris)": {
+    "display": "flex", "alignItems": "end", "height": "34px", "paddingInline": "6px", "gap": "2px"
+  },
+  "content_with_bookmarks_bar (artboard 07, Contenu · YouTube)": {
+    "display": "flex", "flexGrow": "1", "paddingTop": "0px", "paddingBottom": "4px", "paddingInline": "4px",
+    "_note": "was padding 4px on all sides before this fix; top now 0 on every artboard of the page"
+  },
+  "content_page_surface (Frame inside Contenu)": {
+    "display": "flex", "flexDirection": "column", "flexGrow": "1", "paddingBlock": "12px", "paddingInline": "16px", "gap": "16px", "backgroundColor": "#0F0F0F"
+  },
+  "edit_popover (artboard 07)": {
+    "position": "absolute", "left": "543px", "top": "120px", "width": "320px",
+    "display": "flex", "flexDirection": "column", "padding": "16px", "gap": "16px", "borderRadius": "8px",
+    "boxShadow": "#00000066 0px 8px 24px", "backgroundColor": "#171717",
+    "borderWidth": "1px", "borderStyle": "solid", "borderColor": "#FFFFFF0F"
+  },
+  "edit_popover_close_hitbox": {
+    "position": "absolute", "top": "8px", "right": "8px", "width": "24px", "height": "24px",
+    "display": "flex", "alignItems": "center", "justifyContent": "center", "borderRadius": "6px"
+  },
+  "edit_popover_close_glyph": { "width": "14px", "height": "14px", "opacity": "0.5", "fill": "#FFFFFF" },
+  "address_field_focused_valid": {
+    "display": "flex", "alignItems": "center", "height": "32px", "paddingInline": "10px", "borderRadius": "6px", "overflow": "clip",
+    "boxShadow": "color-mix(#FFFFFF var(--opacity-browser-focus), transparent) 0px 0px 0px 1px inset  (= #FFFFFF1A)",
+    "backgroundColor": "#FFFFFF14"
+  },
+  "address_text_valid": { "fontSize": "16px", "letterSpacing": "-0.01em", "lineHeight": "20px", "fontFamily": "Inter Display Regular", "color": "#FFFFFF" },
+  "caret_popover_valid": { "width": "1px", "height": "18px", "borderRadius": "full", "backgroundColor": "color-mix(var(--color-browser-accent) 90%, transparent)  (= #3E67FFE6)" },
+  "address_field_invalid": {
+    "display": "flex", "alignItems": "center", "height": "32px", "paddingInline": "10px", "borderRadius": "6px", "overflow": "clip",
+    "boxShadow": "#FF7B6E80 0px 0px 0px 1px inset",
+    "backgroundColor": "#FFFFFF14"
+  },
+  "address_text_invalid": { "fontSize": "16px", "letterSpacing": "-0.01em", "lineHeight": "20px", "fontFamily": "Inter Display Regular", "color": "var(--color-browser-danger)  (= #FF7B6E)" },
+  "caret_invalid": { "width": "1px", "height": "18px", "borderRadius": "full", "backgroundColor": "color-mix(var(--color-browser-danger) 90%, transparent)  (= #FF7B6EE6)" },
+  "invalid_hint_row": { "display": "flex", "alignItems": "start", "gap": "6px", "_glyph": "warning 14px, white 70%, marginTop 2px" },
+  "invalid_hint_text": { "fontSize": "14px", "lineHeight": "18px", "fontFamily": "Inter Display Regular", "whiteSpace": "pre-wrap", "color": "#FFFFFFB3" },
+  "inline_rename_field (artboard 03, Saisie du nom)": {
+    "display": "flex", "alignItems": "center", "height": "24px", "borderRadius": "4px", "paddingRight": "6px", "flexGrow": "1"
+  },
+  "caret_inline_rename": { "width": "1px", "height": "16px", "borderRadius": "full", "backgroundColor": "color-mix(var(--color-browser-accent) 90%, transparent)  (= #3E67FFE6)" },
+  "context_menu_bookmark (artboard 06)": {
+    "position": "absolute", "left": "460px", "top": "112px", "width": "320px",
+    "display": "flex", "flexDirection": "column", "padding": "4px", "borderRadius": "10px",
+    "boxShadow": "#00000066 0px 8px 24px", "backgroundColor": "#171717",
+    "borderWidth": "1px", "borderStyle": "solid", "borderColor": "#FFFFFF0F"
+  },
+  "menu_row_with_icon (overflow « Gérer les favoris », folder « Ouvrir les N favoris »)": {
+    "display": "flex", "alignItems": "center", "height": "32px", "paddingLeft": "8px", "paddingRight": "10px", "gap": "8px", "borderRadius": "6px"
+  },
+  "menu_row_icon": { "width": "16px", "height": "16px", "opacity": "0.7", "flexShrink": "0", "fill": "#FFFFFF" }
+}

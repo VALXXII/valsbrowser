@@ -12,6 +12,10 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+#include <map>
+#include <shlwapi.h>
 #include "../../src/address-popup.h"
 
 using namespace NativeChrome;
@@ -63,8 +67,8 @@ int wmain(int argc, wchar_t** argv) {
         Check(chrome.indicator.right <= chrome.indicator.left, "no indicator region while editing");
         Check(SUCCEEDED(chrome.SavePng((out + L"\\address-editing" + suffix).c_str())), "editing snapshot");
 
-        // Suggestion list, field width (1180 - 82 - 133).
-        const float width = 1180 - 82 - 133;
+        // Suggestion list, field width (1180 - 121 - 133).
+        const float width = 1180 - 121 - 133;
         struct List { const wchar_t* name; std::wstring typed; bool inlineAllowed; int active, hover; std::wstring engine; };
         const List lists[] = {
             {L"git", L"git", true, 0, -1, L"DuckDuckGo"},
@@ -97,6 +101,43 @@ int wmain(int argc, wchar_t** argv) {
             }
             if (l.hover >= 0) { const float hy = AddressUI::Layout::pad + AddressUI::Layout::row * (l.hover + .5f); Check((popup.SurfacePixel(width - 4 - 4 - 12, hy) & 0xff) > (popup.SurfacePixel(width - 4 - 40, hy) & 0xff), "hovered site row shows its remove button"); }
         }
+    }
+    // Bundled popular sites: "yout" with the shipped icons, and a sheet of every icon.
+    {
+        std::ifstream in(std::filesystem::path(root + L"/assets/popular-sites.txt"), std::ios::binary);
+        const auto popular = AddressBar::ReadPopular(in);
+        Check(popular.size() >= 100, "shipped popular list parses");
+        Chrome decoder; Check(SUCCEEDED(decoder.InitOffscreen(root, 144, 16, 16)), "decoder");
+        std::map<std::wstring, std::shared_ptr<const FaviconImage>> cache;
+        auto bundled = [&](const std::wstring& site) {
+            auto found = cache.find(site); if (found != cache.end()) return found->second;
+            std::shared_ptr<const FaviconImage> image;
+            for (const wchar_t* ext : {L".png", L".ico"}) {
+                IStream* stream = nullptr;
+                if (!image && SUCCEEDED(SHCreateStreamOnFileEx((root + L"/assets/sites/" + site + ext).c_str(), STGM_READ, FILE_ATTRIBUTE_NORMAL, FALSE, nullptr, &stream)) && stream) { image = decoder.DecodeFavicon(stream); stream->Release(); }
+            }
+            return cache[site] = image;
+        };
+        int decoded = 0; for (auto& p : popular) if (bundled(AddressBar::SiteOf(L"https://" + p.host + L"/"))) ++decoded;
+        Check(decoded == static_cast<int>(popular.size()), "every bundled icon decodes");
+        for (const wchar_t* typed : {L"yout", L"gma", L"le"}) {
+            auto data = AddressBar::Suggest(typed, AddressBar::History{}, true, &popular);
+            const float width = 1180 - 82 - 103, height = AddressUI::Layout::Height(data.rows.size());
+            Chrome popup; Check(SUCCEEDED(popup.InitOffscreen(root, 144, width, height)), "popular popup");
+            AddressUI::Suggestions view; view.SetIconSource(bundled);
+            popup.RenderTarget()->BeginDraw(); view.Preview(popup, data, 0, -1, L"DuckDuckGo", width); Check(SUCCEEDED(popup.RenderTarget()->EndDraw()), "popular draw");
+            Check(SUCCEEDED(popup.SavePng((out + L"/popular-" + typed + L"-144.png").c_str())), "popular snapshot");
+        }
+        const int columns = 16; const float cell = 28;
+        const int rows = (static_cast<int>(popular.size()) + columns - 1) / columns;
+        Chrome sheet; Check(SUCCEEDED(sheet.InitOffscreen(root, 192, columns * cell, rows * cell)), "icon sheet");
+        sheet.RenderTarget()->BeginDraw(); sheet.RenderTarget()->Clear(D2D1::ColorF(Design::Surface::canvas, Design::Surface::canvas, Design::Surface::canvas));
+        for (int i = 0; i < static_cast<int>(popular.size()); ++i) {
+            const float x = (i % columns) * cell, y = (i / columns) * cell;
+            sheet.DrawSiteImage(bundled(AddressBar::SiteOf(L"https://" + popular[i].host + L"/")), {x, y, x + cell, y + cell});
+        }
+        Check(SUCCEEDED(sheet.RenderTarget()->EndDraw()), "sheet draw");
+        Check(SUCCEEDED(sheet.SavePng((out + L"/popular-icons-192.png").c_str())), "sheet snapshot");
     }
     CoUninitialize();
     std::printf("address render checks passed: %d\n", checks);

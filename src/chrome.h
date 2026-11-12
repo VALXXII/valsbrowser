@@ -1,5 +1,6 @@
 #pragma once
-#include <d2d1.h>
+#include <d2d1_1.h>
+#include <d2d1effects.h>
 #include <dwrite_1.h>
 #include <wincodec.h>
 #include <map>
@@ -9,8 +10,15 @@
 #include "motion-presentation.h"
 #include "native-lottie.h"
 #include "lottie-playback.h"
+#include "download-icon.h"
+#include "audio-mixer.h"
+#include "nav-motion.h"
 #include "loading.h"
+#include "tab-motion.h"
 #include "address.h"
+#include "bookmarks-bar.h"
+#include "svg-path.h"
+#include "site-request.h"
 #include <set>
 #include <tuple>
 #include <cstring>
@@ -36,11 +44,15 @@ struct FontLoader final:IDWriteFontCollectionLoader {
     HRESULT STDMETHODCALLTYPE CreateEnumeratorFromKey(IDWriteFactory* f,const void*,UINT32,IDWriteFontFileEnumerator** out)override{*out=new FontEnumerator(f,folder);return S_OK;}
 };
 constexpr int TabBase=1000, CloseBase=2000;
+// Bookmarks band items: BookmarkBase + visible index (no collision with tabs, closes or the 3000+ keyboard commands).
+constexpr int BookmarkBase=4000, BookmarkLimit=1000;
+inline bool IsBookmark(int id){return id>=BookmarkBase&&id<BookmarkBase+BookmarkLimit;}
+inline int BookmarkIndex(int id){return IsBookmark(id)?id-BookmarkBase:-1;}
 inline bool IsTab(int id){return id>=TabBase&&id<TabBase+128;}
 inline bool IsClose(int id){return id>=CloseBase&&id<CloseBase+128;}
 inline int TabIndex(int id){return IsClose(id)?id-CloseBase:IsTab(id)?id-TabBase:-1;}
 inline int SelectionAfterClose(int count,int active,int closed){if(count<=1)return -1;if(closed<active)return active-1;if(closed==active)return std::min(active,count-2);return active;}
-inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='R'||id=='C')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
+inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='C'||id=='K')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F'||id=='R')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
 inline float ControlSurface(int id,float amount){return Design::Resolve(VariantFor(id),{amount,0}).surface;}
 struct TextMeasure {float lineHeight=0,baseline=0,originY=0,inkTop=0,inkBottom=0;bool trimmed=false;};
 struct Region{int id;D2D1_RECT_F rect;const wchar_t* tip;bool focusable=true;};
@@ -70,6 +82,15 @@ public:
     Loading::Visual loading;
     bool navigationLoading=false;
     // DIP rectangle repainted for loading-only frames (URL surface incl. embedded buttons).
+    // DIP rectangle repainted for download-icon-only frames (the 'D' button).
+    // The ripple grows well past the button (x4): the rectangle covers its reach,
+    // down to the chrome's lower edge (the page covers what lies below).
+    D2D1_RECT_F DownloadIconDirty()const{const float cx=width-85,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
+    // Audio button (left of History, only while a site has made sound): icon-only frames.
+    static constexpr float AudioRight=133,AudioLeft=157;   // from the window's right edge; the field ends 6 DIP before
+    bool audioShown=false;std::wstring audioTip=L"Son des sites";
+    Audio::IconModel audioIcon;
+    D2D1_RECT_F AudioIconDirty()const{return {width-AudioLeft-1,47,width-AudioRight+1,73};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
     // Quantised on-screen identity of the loading fill: equal signatures render
     // identical pixels, so a loading-only frame with an unchanged signature is skipped.
@@ -85,6 +106,47 @@ public:
         uint32_t bits=0;const float opacity=std::min(v.opacity,1.f);memcpy(&bits,&opacity,sizeof(bits));
         return ((lo*2+(hi-lo))<<32)|bits;
     }
+    // Split view canvas: rails (collapsed sites), the active panel's accent ring drawn
+    // 1 DIP off the page (2 DIP stroke, inside the 4 DIP half-gap) and the separator handles.
+    void DrawSplit(){
+        if(!split.shown)return;
+        for(size_t i=0;i<split.rails.size();++i){auto r=split.rails[i];Round(r,Design::Radius::control,Design::Surface::tabHover);
+            const float cx=(r.left+r.right)/2;const int tab=i<split.railTabs.size()?split.railTabs[i]:-1;
+            const bool vertical=r.bottom-r.top>r.right-r.left;const float top=vertical?r.top+12:(r.top+r.bottom)/2-8;const float left=vertical?cx-8:r.left+12;
+            if(tab>=0)DrawFavicon(tab,{left,top,left+16,top+16});}
+        // Active panel ring (Paper 08): neutral, 1 DIP off the page, 2 DIP. After a click it is
+        // discreet (white 10 %); reached by keyboard (F6, menu) it is the focus ring's 50 % (5.26:1).
+        // The accent is kept for drop previews and manipulation, never a permanent frame.
+        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line).
+        if(split.ring){auto a=split.active;Color(1,keyboardModality?Design::Focus::keyboardOpacity:Design::Focus::pointerOpacity);
+            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},2,2,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
+        // Separator (Paper 08): at rest only the 4 DIP canvas gap, a thin neutral line. The
+        // handle, 8 x 36 #2F2F2F fully rounded, appears while hovered, dragged or keyboard-focused
+        // and overlaps both page edges by 2 DIP. Pages are child windows that cover the canvas,
+        // so it is normally drawn by the grip window above them; this path is the fallback
+        // without grips (no layered children), where only the gap part shows.
+        if(split.paintHandles)for(int i=0;i<(int)split.handles.size();++i){if(i!=split.hotHandle&&i!=split.focusedHandle)continue;auto h=split.handles[i];
+            const bool row=h.bottom-h.top>h.right-h.left;const float cx=(h.left+h.right)/2,cy=(h.top+h.bottom)/2;
+            D2D1_RECT_F pill=row?D2D1_RECT_F{cx-4,cy-18,cx+4,cy+18}:D2D1_RECT_F{cx-18,cy-4,cx+18,cy+4};
+            Color(47/255.f);target->FillRoundedRectangle(D2D1::RoundedRect(pill,4,4),brush);
+            if(i==split.focusedHandle){Color(1,Design::Focus::keyboardOpacity);target->DrawRoundedRectangle(D2D1::RoundedRect({pill.left-2,pill.top-2,pill.right+2,pill.bottom+2},6,6),brush,2);}}
+    }
+    // Rectangle with a radius per corner (top-left, top-right, bottom-right, bottom-left).
+    ID2D1PathGeometry* CornerBox(D2D1_RECT_F r,float tl,float tr,float br,float bl){
+        ID2D1PathGeometry* g=nullptr;if(!factory||FAILED(factory->CreatePathGeometry(&g)))return nullptr;ID2D1GeometrySink* s=nullptr;if(FAILED(g->Open(&s))){g->Release();return nullptr;}
+        auto arc=[&](D2D1_POINT_2F to,float radius){if(radius>0)s->AddArc(D2D1::ArcSegment(to,{radius,radius},0,D2D1_SWEEP_DIRECTION_CLOCKWISE,D2D1_ARC_SIZE_SMALL));else s->AddLine(to);};
+        s->BeginFigure({r.left+tl,r.top},D2D1_FIGURE_BEGIN_HOLLOW);s->AddLine({r.right-tr,r.top});arc({r.right,r.top+tr},tr);s->AddLine({r.right,r.bottom-br});arc({r.right-br,r.bottom},br);
+        s->AddLine({r.left+bl,r.bottom});arc({r.left,r.bottom-bl},bl);s->AddLine({r.left,r.top+tl});arc({r.left+tl,r.top},tl);s->EndFigure(D2D1_FIGURE_END_CLOSED);s->Close();s->Release();return g;
+    }
+    // Tab outline with different left/right corner radii (split group members).
+    ID2D1PathGeometry* TabShape(D2D1_RECT_F r,float rl,float rr){
+        ID2D1PathGeometry* g=nullptr;if(!factory||FAILED(factory->CreatePathGeometry(&g)))return nullptr;ID2D1GeometrySink* s=nullptr;if(FAILED(g->Open(&s))){g->Release();return nullptr;}
+        auto arc=[&](D2D1_POINT_2F to,float radius){if(radius>0)s->AddArc(D2D1::ArcSegment(to,{radius,radius},0,D2D1_SWEEP_DIRECTION_CLOCKWISE,D2D1_ARC_SIZE_SMALL));else s->AddLine(to);};
+        s->BeginFigure({r.left+rl,r.top},D2D1_FIGURE_BEGIN_FILLED);s->AddLine({r.right-rr,r.top});arc({r.right,r.top+rr},rr);s->AddLine({r.right,r.bottom-rr});arc({r.right-rr,r.bottom},rr);
+        s->AddLine({r.left+rl,r.bottom});arc({r.left,r.bottom-rl},rl);s->AddLine({r.left,r.top+rl});arc({r.left+rl,r.top},rl);s->EndFigure(D2D1_FIGURE_END_CLOSED);s->Close();s->Release();return g;
+    }
+    void FillShape(D2D1_RECT_F r,float rl,float rr,float c){if(auto g=TabShape(r,rl,rr)){Color(c);target->FillGeometry(g,brush);g->Release();}}
+    void StrokeShape(D2D1_RECT_F r,float rl,float rr,float width,float alpha){if(auto g=TabShape(r,rl,rr)){Color(1,alpha);target->DrawGeometry(g,brush,width);g->Release();}}
     void DrawLoading(D2D1_RECT_F clip){
         if(loading.fraction<=0||loading.opacity<=0)return;
         clip.left=std::max(clip.left,bar.left);clip.top=std::max(clip.top,bar.top);
@@ -99,6 +161,145 @@ public:
     ID2D1Bitmap* lottieBitmap=nullptr;
     unsigned lottieSide=0;
     void InitLottie(){copyLottie.Load(assets+L"lottie\\copy-link.json");refreshLottie.Load(assets+L"lottie\\refresh.json");lottie.Configure(copyLottie.Duration(),refreshLottie.Duration(),copyLottie.FrameCount());}
+    // ---- Animated downloads icon (download-icon.h) ----
+    // The host feeds the model; Paint draws its pose for the 'D' button.
+    DownloadIcon::Model downloadIcon;
+    // Back/Forward travel and the Reload <-> Stop morph (nav-motion.h); fed by the host.
+    NavMotion::State nav;
+    Lottie::Asset dlTrack,dlFill,dlArrow,dlCut;
+    ID2D1Bitmap* dlBitmap=nullptr;unsigned dlSide=0;int dlRing=-1,dlArrowFrame=-1;bool dlFailed=false;std::vector<uint32_t> dlPixels;
+    void DropDownloadIcon(){Drop(dlBitmap);dlRing=dlArrowFrame=-1;}
+    // One Asset serves one pixel size (the player cannot re-target): reload on a DPI change.
+    bool LoadDownloadIcon(unsigned side){
+        if(dlSide==side)return !dlFailed;
+        DropDownloadIcon();dlSide=side;
+        dlFailed=!(dlTrack.Load(assets+L"lottie\\download-ring-track.json")&&dlFill.Load(assets+L"lottie\\download-ring-fill.json")&&dlArrow.Load(assets+L"lottie\\download-arrow.json")&&dlCut.Load(assets+L"lottie\\download-arrow-cutout.json"))
+            ||dlTrack.FrameCount()!=DownloadIcon::RingFrames||dlFill.FrameCount()!=DownloadIcon::RingFrames||dlArrow.FrameCount()!=DownloadIcon::ArrowFrames||dlCut.FrameCount()!=DownloadIcon::ArrowFrames;
+        return !dlFailed;
+    }
+    bool DrawDownloadIcon(DownloadIcon::Pose pose,D2D1_RECT_F box,float size,float opacity){
+        const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(size*dpi/96)),1u,64u);
+        if(!LoadDownloadIcon(side))return false;
+        if(!dlBitmap||pose.ring!=dlRing||pose.arrow!=dlArrowFrame){
+            auto at=[](Lottie::Asset& a,int frame,int frames,unsigned px){return a.Sample(double(frame)/(frames-1),px);};
+            auto t=at(dlTrack,pose.ring,DownloadIcon::RingFrames,side),f=at(dlFill,pose.ring,DownloadIcon::RingFrames,side);
+            auto a=at(dlArrow,pose.arrow,DownloadIcon::ArrowFrames,side),c=at(dlCut,pose.arrow,DownloadIcon::ArrowFrames,side);
+            if(!t||!f||!a||!c)return false;
+            DownloadIcon::Compose(t->bgra.data(),f->bgra.data(),c->bgra.data(),a->bgra.data(),side*side,dlPixels);
+            HRESULT hr=S_OK;
+            if(!dlBitmap)hr=target->CreateBitmap(D2D1::SizeU(side,side),dlPixels.data(),side*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED)),&dlBitmap);
+            else hr=dlBitmap->CopyFromMemory(nullptr,dlPixels.data(),side*4);
+            if(FAILED(hr)||!dlBitmap){DropDownloadIcon();return false;}
+            dlRing=pose.ring;dlArrowFrame=pose.arrow;
+        }
+        const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->DrawBitmap(dlBitmap,{x,y,x+size,y+size},opacity);return true;
+    }
+    // ---- Audio button (audio-mixer.h Audio::IconModel, design/lottie/audio-meter.py) ----
+    Lottie::Asset audioMeter;ID2D1Bitmap* audioBitmap=nullptr;unsigned audioSide=0;int audioFrame=-1;bool audioFailed=false;
+    void DropAudioIcon(){Drop(audioBitmap);audioFrame=-1;}
+    // `color` tints the white Lottie (premultiplied: each pixel's alpha x the colour), so the
+    // music meter can be the accent (Paper TO2-0 / UCD-0) without a second asset.
+    std::vector<uint32_t> audioPixels;uint32_t audioTint=0;
+    bool DrawAudioFrame(int frame,D2D1_RECT_F box,float size,D2D1_COLOR_F color){
+        const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(size*dpi/96)),1u,64u);
+        if(audioSide!=side){DropAudioIcon();audioSide=side;audioFailed=!audioMeter.Load(assets+L"lottie\\audio-meter.json")||audioMeter.FrameCount()!=Audio::Icon::Frames;}
+        if(audioFailed)return false;
+        const uint32_t tint=(uint32_t(std::lround(color.r*255))<<16)|(uint32_t(std::lround(color.g*255))<<8)|uint32_t(std::lround(color.b*255));
+        if(!audioBitmap||frame!=audioFrame||tint!=audioTint){
+            const auto* f=audioMeter.Sample(double(frame)/(Audio::Icon::Frames-1),side);if(!f)return false;
+            audioPixels.resize(f->bgra.size());
+            for(size_t i=0;i<f->bgra.size();++i){const uint32_t a=f->bgra[i]>>24;audioPixels[i]=(a<<24)|((a*((tint>>16)&255)/255)<<16)|((a*((tint>>8)&255)/255)<<8)|(a*(tint&255)/255);}
+            HRESULT hr=S_OK;
+            if(!audioBitmap)hr=target->CreateBitmap(D2D1::SizeU(side,side),audioPixels.data(),side*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED)),&audioBitmap);
+            else hr=audioBitmap->CopyFromMemory(nullptr,audioPixels.data(),side*4);
+            if(FAILED(hr)||!audioBitmap){DropAudioIcon();return false;}
+            audioFrame=frame;audioTint=tint;
+        }
+        const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->DrawBitmap(audioBitmap,{x,y,x+size,y+size},color.a);return true;
+    }
+    // Ghost button like History/Downloads. Quiet (short sounds, idle): white at 50 % x the
+    // pose's subdued emphasis (38 %). Music (Paper TO2-0 / UCD-0): the meter turns the accent,
+    // and hover / an open panel lays the accent at 16 % (--color-browser-split-tint) under it.
+    // The two blend with the emphasis, so the intro/outro also carry the colour change.
+    void DrawAudioButton(D2D1_RECT_F box,Design::ButtonState state,Motion::Time now){
+        const auto pose=audioIcon.At(now);
+        const float music=Motion::Clamp((pose.emphasis-Audio::Icon::Subdued)/(1-Audio::Icon::Subdued));
+        auto style=Design::Resolve(Design::ButtonVariant::Ghost,state);
+        const auto accent=Design::Accent::Get();
+        if(music>0&&(state.hover>0||state.press>0)){
+            if(style.fill)Round(box,style.radius,style.surface*(1-music)+Design::Surface::canvas*music);
+            FillBox(box,style.radius,D2D1::ColorF(accent.r,accent.g,accent.b,(.16f*state.hover+.08f*state.press)*music));
+        }else if(style.fill)Round(box,style.radius,style.surface);
+        if(style.focus)FocusRing(box,style.radius);
+        const float size=style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled);
+        const float white=.5f*style.iconOpacity*pose.emphasis;
+        const D2D1_COLOR_F ink=D2D1::ColorF(1+(accent.r-1)*music,1+(accent.g-1)*music,1+(accent.b-1)*music,(white+(1-white)*music)*pose.presence);
+        if(pose.frame>=0&&DrawAudioFrame(pose.frame,box,size,ink))return;
+        static constexpr char high[]="M165.27,21.22a12,12,0,0,0-12.64,1.31L83.88,76H40A20,20,0,0,0,20,96v64a20,20,0,0,0,20,20H83.88l68.75,53.47A12,12,0,0,0,172,224V32A12,12,0,0,0,165.27,21.22ZM148,199.47,95.37,158.53A12,12,0,0,0,88,156H44V100H88a12,12,0,0,0,7.37-2.53L148,56.54ZM212,104v48a12,12,0,0,1-24,0V104a12,12,0,0,1,24,0Zm36-16v80a12,12,0,0,1-24,0V88a12,12,0,0,1,24,0Z";
+        static constexpr char low[]="M165.27,21.22a12,12,0,0,0-12.64,1.31L83.88,76H40A20,20,0,0,0,20,96v64a20,20,0,0,0,20,20H83.88l68.75,53.47A12,12,0,0,0,172,224V32A12,12,0,0,0,165.27,21.22ZM148,199.46,95.37,158.53A12,12,0,0,0,88,156H44V100H88a12,12,0,0,0,7.37-2.53L148,56.54ZM212,104v48a12,12,0,0,1-24,0V104a12,12,0,0,1,24,0Z";
+        // A failed frame of the loop still shows music (high), the outro its end (low).
+        const bool high_=pose.frame>=0?pose.frame<Audio::Icon::Loop+Audio::Icon::Out/2:pose.high;
+        PathGlyph(high_?high:low,box,size,ink);
+    }
+    // Media artwork: `image` cropped to fill `box` (cover), corners rounded, with a 1 DIP
+    // white 10 % inner outline so dark art keeps its edge on the dark canvas.
+    bool DrawCover(const std::shared_ptr<const FaviconImage>& image,D2D1_RECT_F box,float radius){
+        if(!image||!image->width||!image->height||!target||!factory)return false;
+        auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
+        const float bw=box.right-box.left,bh=box.bottom-box.top,iw=float(image->width),ih=float(image->height);
+        const float k=std::max(bw/iw,bh/ih),sw=bw/k,sh=bh/k;const D2D1_RECT_F src{(iw-sw)/2,(ih-sh)/2,(iw+sw)/2,(ih+sh)/2};
+        ID2D1RoundedRectangleGeometry* clip=nullptr;if(FAILED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box,radius,radius),&clip)))return false;
+        ID2D1Layer* layer=nullptr;if(FAILED(target->CreateLayer(nullptr,&layer))){Drop(clip);return false;}
+        target->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),clip,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE),layer);
+        target->DrawBitmap(bitmap,box,1,D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,src);
+        target->PopLayer();Drop(layer);Drop(clip);
+        Color(1,.1f);target->DrawRoundedRectangle(D2D1::RoundedRect({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},radius-.5f,radius-.5f),brush,1);
+        return true;
+    }
+    // Blue ring stroke that grows, blurs and fades. The blur is a real Direct2D
+    // Gaussian blur of a small offscreen layer (allocated once, at the ripple's
+    // reach) and grows with the ring like the preview's; without the effect,
+    // two softer, wider passes stand in.
+    ID2D1DeviceContext* rippleDc=nullptr;ID2D1Effect* rippleBlur=nullptr;ID2D1BitmapRenderTarget* rippleLayer=nullptr;float rippleExtent=0;bool rippleNoEffect=false;
+    void DropRipple(){Drop(rippleLayer);Drop(rippleBlur);Drop(rippleDc);rippleExtent=0;rippleNoEffect=false;}
+    void DrawDownloadRipple(float t,D2D1_RECT_F box,float size){
+        if(t<0||t>=1)return;
+        namespace R=DownloadIcon::Ripple;
+        const float p=Motion::Eased(t,Motion::Curve::Icon),unit=size/256.f,scale=1+(R::grow-1)*p;
+        const float radius=R::radius*unit*scale,width=R::stroke*unit*scale,blur=R::blur*unit*scale*p,alpha=R::opacity*(1-p);
+        const D2D1_POINT_2F centre{(box.left+box.right)/2,(box.top+box.bottom)/2};
+        brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],alpha));
+        if(!rippleNoEffect&&!rippleDc){
+            static const CLSID gaussian={0x1feb6d69,0x2fe6,0x4ac9,{0x8c,0x58,0x1d,0x7f,0x93,0xe7,0xa6,0xa5}};
+            if(FAILED(target->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&rippleDc)))||FAILED(rippleDc->CreateEffect(gaussian,&rippleBlur))){Drop(rippleBlur);Drop(rippleDc);rippleNoEffect=true;}
+        }
+        if(rippleDc&&rippleBlur&&blur>.05f){
+            // Layer side: the furthest reach (ring + stroke + 3 sigma of the largest blur).
+            const float extent=2*(R::radius*R::grow+R::stroke*R::grow/2+3*R::blur*R::grow)*unit+2;
+            if(!rippleLayer||rippleExtent!=extent){Drop(rippleLayer);if(FAILED(target->CreateCompatibleRenderTarget(D2D1::SizeF(extent,extent),&rippleLayer))){rippleLayer=nullptr;rippleNoEffect=true;DropRipple();rippleNoEffect=true;}else rippleExtent=extent;}
+            if(rippleLayer){
+                rippleLayer->BeginDraw();rippleLayer->Clear(D2D1::ColorF(0,0,0,0));
+                rippleLayer->DrawEllipse(D2D1::Ellipse({extent/2,extent/2},radius,radius),brush,width);
+                ID2D1Bitmap* bitmap=nullptr;
+                if(SUCCEEDED(rippleLayer->EndDraw())&&SUCCEEDED(rippleLayer->GetBitmap(&bitmap))&&bitmap){
+                    rippleBlur->SetInput(0,bitmap);
+                    const float deviation=blur;const UINT32 soft=0; // D2D1_BORDER_MODE_SOFT
+                    rippleBlur->SetValue(0,D2D1_PROPERTY_TYPE_FLOAT,reinterpret_cast<const BYTE*>(&deviation),sizeof(deviation));
+                    rippleBlur->SetValue(2,D2D1_PROPERTY_TYPE_ENUM,reinterpret_cast<const BYTE*>(&soft),sizeof(soft));
+                    ID2D1Image* output=nullptr;rippleBlur->GetOutput(&output);
+                    if(output){const D2D1_POINT_2F at{centre.x-extent/2,centre.y-extent/2};rippleDc->DrawImage(output,&at,nullptr,D2D1_INTERPOLATION_MODE_LINEAR,D2D1_COMPOSITE_MODE_SOURCE_OVER);output->Release();}
+                    rippleBlur->SetInput(0,nullptr);bitmap->Release();return;
+                }
+                if(bitmap)bitmap->Release();
+            }
+        }
+        const D2D1_ELLIPSE e=D2D1::Ellipse(centre,radius,radius);
+        auto pass=[&](float w,float a){brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],a));target->DrawEllipse(e,brush,w);};
+        if(blur>.05f){pass(width+blur*2,alpha*.25f);pass(width+blur,alpha*.35f);}
+        pass(width,alpha*(blur>.05f?.6f:1.f));
+    }
     bool DrawLottie(Lottie::Asset& asset,double progress,D2D1_RECT_F box,float size,float opacity){
         const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(16.f*dpi/96)),1u,64u);
         auto frame=asset.Sample(progress,side);if(!frame)return false;
@@ -129,9 +330,11 @@ public:
     void Redirect(ID2D1RenderTarget* t){target=t;}
     ID2D1SolidColorBrush* SolidBrush()const{return brush;}
     ID2D1Factory* Factory()const{return factory;}
+    IDWriteFactory* WriteFactory()const{return write;}
+    IDWriteFontCollection* FontCollection()const{return fonts;}
     IWICImagingFactory* Imaging()const{return wic;}
     ID2D1RenderTarget* SwapTarget(ID2D1RenderTarget* next){auto old=target;target=next;return old;}
-    void RecreateTarget(){DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+    void RecreateTarget(){DropGhostLayer();DropFade();ClearFaviconBitmaps();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();DropRipple();lottieSide=0;for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     float TextWidth(const std::wstring& value,float size,bool medium=false,bool tabular=false,float tracking=0){if(value.empty())return 0;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,{0,0,4096,32},size,tabular,medium,tracking,&layout,m)))return 0;DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);Drop(layout);return metrics.widthIncludingTrailingWhitespace;}
     // Toolbar button drawn in its hover state while the popover it opened is shown.
     int latched=0;
@@ -141,6 +344,94 @@ public:
     bool Enabled(int id)const{return disabled.count(id)==0;}
     void SetEnabled(int id,bool enabled){if(enabled)disabled.erase(id);else disabled.insert(id);}
     int dragIndex=-1;float dragOffset=0;
+    // ---- Tab open/close motion (presentation only) -------------------------------
+    // The host sets `tabKeys` (stable, never-reused tab serials, in order) before
+    // Build/Paint. Without matching keys (fixtures) the strip is drawn statically.
+    // Hit regions follow the presented geometry of the last Build, so a click lands
+    // on what is on screen; selection, focus and the page change synchronously.
+    Motion::TabStripMotion tabMotion;
+    std::vector<unsigned> tabKeys;
+    bool animateTabLayout=false; // host: animate the next width/scroll reflow (e.g. width unlock)
+    bool tabMotionStarted=false; // set when a Build started motion; the host schedules frames
+    Motion::TabLayoutFrame tabFrame;
+    struct TabSnapshot{std::wstring title;std::shared_ptr<const FaviconImage> favicon;float fill=Design::Surface::canvas;bool selected=false;};
+    std::map<unsigned,TabSnapshot> tabSnapshots; // what a closing tab looked like, drawn while it blurs out
+    bool TabKeysValid(int count)const{return motion&&(int)tabKeys.size()==count;}
+    unsigned TabKey(int n)const{return n>=0&&n<(int)tabKeys.size()?tabKeys[n]:(unsigned)(n+1);}
+    bool TakeTabMotionStarted(){const bool started=tabMotionStarted;tabMotionStarted=false;return started;}
+    Design::Box ShownSurface(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll+Design::Space::tabGap*it.presence;return {x,Design::TabStrip::top,x+tabFrame.tab*it.presence,Design::TabStrip::bottom};}
+    // Content keeps the settled tab width (stable text layouts, no squashing) and is clipped to the surface.
+    Design::Box ShownContent(const Motion::TabItem& it)const{auto s=ShownSurface(it);s.right=s.left+strip.tab;return s;}
+    Design::Box ShownRegion(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll;return {x,Design::TabStrip::regionTop,x+it.presence*(tabFrame.tab+Design::Space::tabGap),Design::TabStrip::regionBottom};}
+    float ShownViewRight()const{return Design::TabStrip::left+tabFrame.view;}
+    // Presented surface of live tab n (split separators, menu outline, drag grab), falling back to the layout.
+    Design::Box ShownTab(int n)const{for(auto& it:tabFrame.items)if(it.index==n)return ShownSurface(it);return strip.Surface(n);}
+    float ShownTabLeft(int n)const{return ShownTab(n).left;}
+    void SyncTabMotion(int count,Motion::Time now){
+        if(!TabKeysValid(count)){
+            tabFrame={};tabFrame.tab=strip.tab;tabFrame.scroll=strip.scroll;tabFrame.view=strip.view;tabFrame.content=strip.Content();
+            for(int i=0;i<count;i++){Motion::TabItem it;it.key=TabKey(i);it.index=i;it.slot=strip.Pitch()*i;tabFrame.items.push_back(it);}
+            animateTabLayout=false;return;
+        }
+        if(tabMotion.ReducedMotion()!=motion->ReducedMotion())tabMotion.SetReducedMotion(motion->ReducedMotion());
+        if(tabMotion.Sync(tabKeys,{strip.tab,strip.scroll,strip.view,strip.Overflow()},Design::Space::tabGap,now,animateTabLayout))tabMotionStarted=true;
+        animateTabLayout=false;tabFrame=tabMotion.Sample(now);
+    }
+    // ---- Closing tab blur-out --------------------------------------------------------
+    // The ghost is drawn at full width in its old place into a transparent layer, then
+    // composited with a Gaussian blur (0 -> TabExitBlur DIP) and opacity (1 -> 0).
+    // Direct2D 1.1 (ID2D1DeviceContext) is required for the blur; without it the
+    // layer only fades. Resources are dropped with the render target.
+    ID2D1DeviceContext* blurContext=nullptr;ID2D1Effect* blurEffect=nullptr;bool blurProbed=false;
+    ID2D1BitmapRenderTarget* ghostLayer=nullptr;D2D1_SIZE_F ghostLayerSize{};
+    unsigned long long ghostBlurDraws=0,ghostFadeDraws=0; // fixture evidence of the path taken
+    void DropGhostLayer(){Drop(ghostLayer);ghostLayerSize={};Drop(blurEffect);Drop(blurContext);blurProbed=false;}
+    D2D1_RECT_F GhostRect(const Motion::TabItem& it)const{const float x=Design::TabStrip::left+it.slot-tabFrame.scroll+Design::Space::tabGap;return {x,Design::TabStrip::top,x+tabFrame.tab,Design::TabStrip::bottom};}
+    bool BlurReady(){
+        if(!blurProbed){blurProbed=true;
+            // CLSID_D2D1GaussianBlur, defined here so no dxguid import library is needed.
+            static const GUID GaussianBlur={0x1feb6d69,0x2fe6,0x4ac9,{0x8c,0x58,0x1d,0x7f,0x93,0xe7,0xa6,0xa5}};
+            if(SUCCEEDED(target->QueryInterface(__uuidof(ID2D1DeviceContext),(void**)&blurContext))&&blurContext){
+                if(FAILED(blurContext->CreateEffect(GaussianBlur,&blurEffect)))Drop(blurEffect);}
+            if(!blurEffect)Drop(blurContext);}
+        return blurContext&&blurEffect;
+    }
+    void DrawGhost(const Motion::TabItem& item){
+        auto it=tabSnapshots.find(item.key);if(it==tabSnapshots.end())return;
+        const float alpha=1-std::clamp(item.exit,0.f,1.f);if(alpha<=.002f)return;
+        const auto& snap=it->second;const D2D1_RECT_F rect=GhostRect(item);
+        const float pad=3*Motion::TabExitBlur,w=rect.right-rect.left+2*pad,h=rect.bottom-rect.top+2*pad;
+        if(!ghostLayer||ghostLayerSize.width!=w||ghostLayerSize.height!=h){Drop(ghostLayer);ghostLayerSize={};
+            if(FAILED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w,h),&ghostLayer))||!ghostLayer){Drop(ghostLayer);return;}
+            ghostLayerSize={w,h};}
+        // Paint the tab as it last looked, with the main helpers redirected to the layer.
+        auto* main=SwapTarget(ghostLayer);ghostLayer->BeginDraw();ghostLayer->Clear(D2D1::ColorF(0,0,0,0));
+        const D2D1_RECT_F tab{pad,pad,pad+rect.right-rect.left,pad+rect.bottom-rect.top};const Design::Box box{tab.left,tab.top,tab.right,tab.bottom};
+        if(snap.fill!=Design::Surface::canvas){Color(snap.fill);target->FillRoundedRectangle(D2D1::RoundedRect(tab,Design::Radius::control,Design::Radius::control),brush);}
+        auto favicon=strip.FaviconIn(box);auto title=strip.TitleIn(box);const D2D1_RECT_F slot{favicon.left,favicon.top,favicon.right,favicon.bottom};
+        if(!DrawSiteImage(snap.favicon,slot))Icon(L"favicon",slot,16);
+        if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(snap.title,{title.left,title.top,title.right,title.bottom},Design::Type::label.size,snap.selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
+        HRESULT hr=ghostLayer->EndDraw();SwapTarget(main);if(FAILED(hr))return;
+        ID2D1Bitmap* bitmap=nullptr;if(FAILED(ghostLayer->GetBitmap(&bitmap))||!bitmap)return;
+        // Cut at the strip's left edge and its available room, not at the shrinking
+        // presented view: a closing last tab must blur out whole, not be sliced.
+        const float right=std::max(ShownViewRight(),std::min(rect.right+pad,Design::TabStrip::left+strip.room));
+        target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,right,Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);
+        const D2D1_POINT_2F origin{rect.left-pad,rect.top-pad};
+        if(BlurReady()){
+            const float sigma=Motion::TabExitBlur*std::clamp(item.exit,0.f,1.f);
+            blurEffect->SetInput(0,bitmap);blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,D2D1_PROPERTY_TYPE_FLOAT,(const BYTE*)&sigma,sizeof(sigma));
+            blurContext->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(),nullptr,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,D2D1::IdentityMatrix(),alpha),nullptr);
+            blurContext->DrawImage(blurEffect,origin);blurContext->PopLayer();blurEffect->SetInput(0,nullptr);++ghostBlurDraws;
+        }else{target->DrawBitmap(bitmap,D2D1::RectF(origin.x,origin.y,origin.x+w,origin.y+h),alpha);++ghostFadeDraws;}
+        target->PopAxisAlignedClip();Drop(bitmap);
+    }
+    // Split view (src/split-view.h). `tabGroups` holds each tab's group (0 = none):
+    // adjacent members are drawn joined. A tab lifted into the drag overlay leaves
+    // an outlined slot. `split` is painted on the canvas around the page windows.
+    std::vector<int> tabGroups;int liftedIndex=-1,visibleTabGroup=0;
+    std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
+    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     // Tab strip: adaptive width + horizontal scroll (DIP). `lockedTab` (0 = off) is set by
     // the host after a pointer close and cleared when the pointer leaves the strip.
@@ -157,7 +448,7 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();DropFade();Drop(lottieBitmap);lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);Drop(factory);}
+    void Dispose(){ClearTextCache();DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();audioMeter.Clear();audioSide=0;DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
@@ -276,6 +567,30 @@ public:
     // True when focus last moved by keyboard (Tab, arrows, shortcuts); a pointer press clears it.
     bool keyboardModality=true;
     void FocusRing(D2D1_RECT_F box,float radius){const float inset=Design::Size::focusStroke/2;box.left+=inset;box.top+=inset;box.right-=inset;box.bottom-=inset;Color(Design::Focus::color,Design::Focus::Opacity(keyboardModality));target->DrawRoundedRectangle(D2D1::RoundedRect(box,radius,radius),brush,Design::Size::focusStroke);}
+    // Back/Forward pair (Paper): one segment, 6 DIP outer / 3 DIP inner corners, the 1 x 10
+    // hairline between the halves drawn with Back. Same Raised states as before (hover,
+    // press, disabled .32 glyph); the glyph rides the travel spring, the surface never moves.
+    void DrawNavButton(int id,const wchar_t* icon,D2D1_RECT_F box,Design::ButtonState state,Motion::Time now){
+        namespace T=Design::Toolbar;const bool back=id=='B';
+        auto style=Design::Resolve(Design::ButtonVariant::Raised,state);
+        const float rl=back?Design::Radius::control:T::innerRadius,rr=back?T::innerRadius:Design::Radius::control;
+        FillShape(box,rl,rr,style.surface);
+        if(style.focus)StrokeShape({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},rl-.5f,rr-.5f,Design::Size::focusStroke,Design::Focus::Opacity(keyboardModality));
+        if(back){const float x=T::separatorLeft,y=(box.top+box.bottom)/2;Color(1,T::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({x,y-T::separatorHeight/2,x+T::separatorWidth,y+T::separatorHeight/2},.5f,.5f),brush);}
+        const bool reduced=motion&&motion->ReducedMotion();
+        const float dx=reduced?0.f:(back?nav.back:nav.forward).Position(now);
+        Icon(icon,{box.left+dx,box.top,box.right+dx,box.bottom},style.iconSize*Motion::PressScale(state.press,reduced,!state.disabled),style.iconOpacity);
+    }
+    // Reload <-> Stop (nav-motion.h): both glyphs turn counter-clockwise about the slot
+    // centre while they cross-scale and cross-fade. At rest this is exactly one static icon.
+    void DrawStopMorph(D2D1_RECT_F box,float size,float opacity,Motion::Time now){
+        const auto layers=nav.stop.Layers(now);
+        D2D1_MATRIX_3X2_F base;target->GetTransform(&base);const D2D1_POINT_2F c{(box.left+box.right)/2,(box.top+box.bottom)/2};
+        auto layer=[&](const wchar_t* name,Motion::IconLayer l,float angle){if(l.opacity<=.001f)return;
+            if(angle!=0)target->SetTransform(D2D1::Matrix3x2F::Rotation(angle,c)*base);
+            Icon(name,box,size*l.scale,opacity*l.opacity);target->SetTransform(base);};
+        layer(L"reload",layers.reload,layers.reloadAngle);layer(L"tab-close",layers.stop,layers.stopAngle);
+    }
     void DrawButton(const wchar_t* icon,D2D1_RECT_F box,Design::ButtonVariant variant,Design::ButtonState state){
         auto style=Design::Resolve(variant,state);
         if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}
@@ -301,6 +616,88 @@ public:
         Text(L"Production Direct2D + DirectWrite / Phosphor Bold / no WebView2",{24,496,900,528},14,.7f);
         return target->EndDraw();
     }
+    // ---- Bookmarks (star in the field, optional band under the toolbar) -------------
+    // Set by the host before Build/Paint. `bandShown` false keeps the 81 DIP chrome.
+    struct BandItem { unsigned id=0; std::wstring title,tip; bool folder=false,local=false; std::shared_ptr<const FaviconImage> image; };
+    std::vector<BandItem> bandItems; bool bandShown=false,bandButtonForced=false;
+    bool starred=false;            // the active page is bookmarked: filled star
+    int bandOpen=0;                // region whose menu is open: keeps its hover fill, chevron points up
+    int bandRover=-1;              // band item that takes the band's single Tab stop (roving focus)
+    int bandDrag=-1;float bandDragOffset=0; // item being dragged (visible index) and its pointer offset
+    int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
+    BookmarksBar::Result band;     // last layout (Build)
+    float ContentTop()const{return Design::Vertical::ContentTop(bandShown);}
+    D2D1_RECT_F BandRect(int i)const{return {band.left[i],BookmarksBar::Layout::top,band.left[i]+band.width[i],BookmarksBar::Layout::bottom};}
+    float BandTitleWidth(const BandItem& item){return item.title.empty()?0:TextWidth(item.title,Design::Type::label.size,Design::Type::label.medium,false,Design::Type::label.tracking);}
+    void BuildBand(){
+        band={};if(!bandShown)return;
+        std::vector<BookmarksBar::Item> items;items.reserve(bandItems.size());
+        for(auto& item:bandItems)items.push_back({BookmarksBar::Layout::Natural(BandTitleWidth(item),item.folder)});
+        band=BookmarksBar::Arrange(width,items,bandButtonForced);
+        for(int i=0;i<band.visible&&i<BookmarkLimit;++i)regions.push_back({BookmarkBase+i,BandRect(i),bandItems[i].tip.c_str(),i==bandRover||(bandRover<0&&i==0)});
+        if(band.overflow)regions.push_back({'O',{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom},L"Autres favoris et favoris masqués",bandRover<0&&band.visible==0});
+        if(bandItems.empty()&&!band.overflow)regions.push_back({'E',{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom},L"Ajouter cette page aux favoris (Ctrl+D)"});
+    }
+    float EmptyBandWidth(){return 8+Design::Size::icon+6+TextWidth(L"Ajouter cette page",Design::Type::label.size,true,false,Design::Type::label.tracking)+16+KeyCapsWidth()+8;}
+    float KeyCapsWidth(){return 2*12+TextWidth(L"Ctrl",14,false,true)+TextWidth(L"D",14,false,true)+2;}
+    // Fill of a band item's own surface (for the title's fade mask).
+    float BandSurface(float hover,float press){return Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).fill?Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).surface:Design::Surface::canvas;}
+    void DrawBandItem(int i,const BandItem& item,int hover,int focus,Motion::Time now){
+        namespace L=BookmarksBar::Layout;const int id=BookmarkBase+i;
+        D2D1_RECT_F box=BandRect(i);const bool dragged=i==bandDrag;
+        if(dragged){box.left+=bandDragOffset;box.right+=bandDragOffset;}
+        auto v=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
+        if(id==bandOpen||i==bandDropInto)v.hover=1;
+        const float surface=dragged?Design::Surface::raised:BandSurface(v.hover,v.press);
+        if(dragged||v.hover>0||v.press>0)Round(box,Design::Radius::control,surface);
+        if(focus==id)FocusRing(box,Design::Radius::control);
+        const float cy=(box.top+box.bottom)/2;const D2D1_RECT_F icon{box.left+L::itemPad,cy-8,box.left+L::itemPad+16,cy+8};
+        if(item.folder)Icon(L"folder-closed",icon,16,1);
+        else if(!DrawSiteImage(item.image,icon))Icon(item.local?L"file":L"favicon",icon,16,1);
+        const float emphasis=std::max(v.hover,id==bandOpen?1.f:0.f);
+        float right=box.right-L::itemPad;
+        if(item.folder){
+            // Discreet chevron: 12 DIP at 32% (secondary on hover), pointing up while its menu is open.
+            const D2D1_RECT_F caret{right-L::chevron,cy-L::chevron/2,right,cy+L::chevron/2};
+            D2D1_MATRIX_3X2_F base;target->GetTransform(&base);
+            if(id==bandOpen)target->SetTransform(D2D1::Matrix3x2F::Rotation(180,{(caret.left+caret.right)/2,(caret.top+caret.bottom)/2})*base);
+            Icon(L"caret",caret,L::chevron,id==bandOpen?1.f:.64f+.36f*v.hover);
+            target->SetTransform(base);right=caret.left-L::chevronGap;
+        }
+        if(item.title.empty())return;
+        const float left=icon.right+L::iconGap;if(right<=left+1)return;
+        const float textWidth=BandTitleWidth(item);
+        target->PushAxisAlignedClip(D2D1::RectF(left,box.top,right,box.bottom),D2D1_ANTIALIAS_MODE_ALIASED);
+        Text(item.title,{left,box.top,left+textWidth+2,box.bottom},Design::Type::label.size,Design::Text::secondary+(Design::Text::primary-Design::Text::secondary)*emphasis,false,Design::Type::label.medium,Design::Type::label.tracking);
+        target->PopAxisAlignedClip();
+        // Truncated titles dissolve into the item's surface (never an ellipsis), like the address.
+        if(left+textWidth>right+.5f){
+            const float c=surface,fade=std::min(16.f,right-left);ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;
+            D2D1_GRADIENT_STOP g[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
+            if(SUCCEEDED(target->CreateGradientStopCollection(g,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({right-fade,0},{right,0}),stops,&gradient)))target->FillRectangle(D2D1::RectF(right-fade,box.top+1,right,box.bottom-1),gradient);
+            Drop(gradient);Drop(stops);
+        }
+    }
+    void DrawBand(int hover,int focus,Motion::Time now){
+        if(!bandShown)return;
+        for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now);
+        if(bandDrag>=0&&bandDrag<band.visible&&bandDrag<(int)bandItems.size())DrawBandItem(bandDrag,bandItems[bandDrag],hover,focus,now);
+        if(band.overflow){const D2D1_RECT_F box{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom};
+            auto v=motion?motion->Visual('O',now):Motion::InteractionVisual{hover=='O'?1.f:0.f,0};if(bandOpen=='O')v.hover=1;
+            DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});}
+        if(bandItems.empty()&&!band.overflow){
+            // "Toujours" with no bookmark yet: one quiet way in, never an empty strip.
+            const D2D1_RECT_F box{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom};
+            auto v=motion?motion->Visual('E',now):Motion::InteractionVisual{hover=='E'?1.f:0.f,0};
+            const auto style=Design::Resolve(Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='E'});
+            if(style.fill)Round(box,style.radius,style.surface);
+            if(style.focus)FocusRing(box,style.radius);
+            const float cy=(box.top+box.bottom)/2;Icon(L"star",{box.left+8,cy-8,box.left+24,cy+8},16,1);
+            const float tw=TextWidth(L"Ajouter cette page",Design::Type::label.size,true,false,Design::Type::label.tracking);
+            Text(L"Ajouter cette page",{box.left+30,box.top,box.left+30+tw+2,box.bottom},Design::Type::label.size,Design::Text::secondary+.5f*v.hover,false,true,Design::Type::label.tracking);
+            float x=box.left+30+tw+16;for(const wchar_t* key:{L"Ctrl",L"D"}){const float w=TextWidth(key,14,false,true)+12;FillBox({x,cy-10,x+w,cy+10},4,D2D1::ColorF(1,1,1,.06f));keycap=true;Text(key,{x+5,cy-10,x+w,cy+10},14,Design::Text::disabled,true);keycap=false;x+=w+2;}
+        }
+    }
     // ---- Address field (issue #20) -------------------------------------------------
     // Set by the host before Build/Paint: what the bar reads outside editing, and the
     // leading glyph while the EDIT is open (null: the security icon).
@@ -316,6 +713,48 @@ public:
     float ChipWidth(const wchar_t* label){namespace A=Design::Address;return A::chipPadLeft+Design::Size::icon+Design::Space::xs+TextWidth(label,Design::Type::label.size,true,false,Design::Type::label.tracking)+A::chipPadRight;}
     // Hit/tooltip box of the indicator: the icon slot, or the whole chip. None while editing.
     D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};auto box=AddressSlot();const wchar_t* chip=address.chip();if(*chip)box.right=box.left+ChipWidth(chip);return box;}
+    // Pending permission request (Paper B01 « Puce permission »): set by the host while the
+    // request's popover is open for the active tab, cleared with it. Glyphs are SiteRequest::Path
+    // strings (the popover's own), the tip names the request for the tooltip and UI Automation.
+    std::vector<const char*> requestGlyphs; std::wstring requestTip;
+    // State and motion set by the host each frame: `requestFrom` -> `requestState` cross-fade
+    // (`requestMix` 0..1), chip opacity, the URL's animated offset (-1: follow the chip), and
+    // whether the chip takes clicks (not while it fades out).
+    SiteRequest::State requestState=SiteRequest::State::Pending,requestFrom=SiteRequest::State::Pending;
+    float requestMix=1,requestAlpha=1,requestShift=-1;bool requestLive=true;
+    D2D1_RECT_F request{};
+    // Chip box: 2 DIP after the security slot (or its « Non sécurisé » plate). None while editing.
+    D2D1_RECT_F RequestBox(){if(requestGlyphs.empty())return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};namespace L=SiteRequest::Layout;const float c=AddressCenter(),l=i.right+L::lead;return {l,c-L::height/2,l+SiteRequest::ChipWidth(requestGlyphs.size(),requestState),c+L::height/2};}
+    std::map<const char*,ID2D1PathGeometry*> pathGlyphs; // factory resources: survive target loss
+    void DropPathGlyphs(){for(auto& g:pathGlyphs)if(g.second)g.second->Release();pathGlyphs.clear();}
+    void PathGlyph(const char* d,D2D1_RECT_F box,float size,D2D1_COLOR_F color){
+        if(!target||!brush||!factory||!d)return;
+        auto& g=pathGlyphs[d];
+        if(!g)g=DialogKit::SvgGeometry(factory,d);
+        if(!g)return;
+        D2D1_MATRIX_3X2_F old;target->GetTransform(&old);const float k=size/256,x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->SetTransform(D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);brush->SetColor(color);target->FillGeometry(g,brush);target->SetTransform(old);}
+    // One state of the chip at opacity `a`, left-aligned in `box` (its own width).
+    void DrawChipState(SiteRequest::State st,D2D1_RECT_F box,float a){
+        namespace L=SiteRequest::Layout;using SiteRequest::State;if(a<=0)return;
+        box.right=box.left+SiteRequest::ChipWidth(requestGlyphs.size(),st);
+        const auto accent=Design::Accent::Get();
+        if(st==State::Pending){const float p=((L::plate>>16)&0xFF)/255.f;FillBox(box,L::radius,D2D1::ColorF(p,p,p,a));}
+        else if(st==State::Active)FillBox(box,L::radius,D2D1::ColorF(accent.r,accent.g,accent.b,L::tint*a));
+        float gx=box.left+L::padX;const float cy=(box.top+box.bottom)/2;
+        if(st==State::Active){brush->SetColor(D2D1::ColorF(accent.r,accent.g,accent.b,a));target->FillEllipse(D2D1::Ellipse({gx+L::dot/2,cy},L::dot/2,L::dot/2),brush);gx+=L::dot+L::activeGap;}
+        const float glyphAlpha=(st==State::Granted||st==State::Blocked?L::dimmed:1.f)*a;const float step=L::icon+(st==State::Active?L::activeGap:L::gap);
+        for(auto* g:requestGlyphs){const D2D1_RECT_F gb{gx,box.top,gx+L::icon,box.bottom};PathGlyph(g,gb,L::icon,D2D1::ColorF(1,1,1,glyphAlpha));
+            if(st==State::Blocked){ // Paper E5Z-0: a slash cut out in the field colour, then drawn at 70 %
+                const float k=L::icon/256,x0=gb.left,y0=cy-L::icon/2;const D2D1_POINT_2F p0{x0+28*k,y0+20*k},p1{x0+236*k,y0+236*k};
+                ID2D1StrokeStyle* round=nullptr;D2D1_STROKE_STYLE_PROPERTIES sp{};sp.startCap=sp.endCap=D2D1_CAP_STYLE_ROUND;factory->CreateStrokeStyle(sp,nullptr,0,&round);
+                const float f=Design::Surface::raised;brush->SetColor(D2D1::ColorF(f,f,f,a));target->DrawLine(p0,p1,brush,44*k,round);
+                brush->SetColor(D2D1::ColorF(1,1,1,glyphAlpha));target->DrawLine(p0,p1,brush,22*k,round);if(round)round->Release();}
+            gx+=step;}}
+    void DrawRequestChip(D2D1_RECT_F box){
+        const float a=std::clamp(requestAlpha,0.f,1.f),m=std::clamp(requestMix,0.f,1.f);
+        if(m<1&&requestFrom!=requestState)DrawChipState(requestFrom,box,a*(1-m));
+        DrawChipState(requestState,box,a*(requestFrom!=requestState?m:1.f));}
     D2D1_COLOR_F DangerColor(float a=1)const{return D2D1::ColorF(Design::Danger::r,Design::Danger::g,Design::Danger::b,a);}
     void FillBox(D2D1_RECT_F r,float radius,D2D1_COLOR_F c){brush->SetColor(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     void DrawAddress(bool editing,bool indicatorHover){
@@ -336,11 +775,14 @@ public:
             if(danger)ink=DangerColor();
             Text(chip,{glyph.right+Design::Space::xs,line.top,plate.right,line.bottom},Design::Type::label.size,danger?1.f:A::secondary,false,true,Design::Type::label.tracking);
             ink=D2D1::ColorF(1,1,1,1);
-            const float d=plate.right+A::divider;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
+            float edge=plate.right;if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
+            const float d=edge+A::divider;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
             x=d+1+A::divider;
         }else{
             if(indicatorHover)FillBox(slot,A::chipRadius,D2D1::ColorF(1,1,1,A::chipPlate));
             Icon(address.icon(),slot,Design::Size::icon,A::secondary);
+            // B01: lock (50 %) stays in its slot; the request chip follows, the URL moves past it.
+            if(request.right>request.left){DrawRequestChip(request);x=requestShift>=0?bar.left+A::textInset+requestShift:request.right+SiteRequest::Layout::trail+Design::Space::xs;}
         }
         // Runs share one baseline; the overflowing tail is clipped under a fade, never ellipsised.
         target->PushAxisAlignedClip(D2D1::RectF(x,line.top,right,line.bottom),D2D1_ANTIALIAS_MODE_ALIASED);
@@ -361,85 +803,167 @@ public:
             if(addressFadeBrush){addressFadeBrush->SetStartPoint({right-A::fade,0});addressFadeBrush->SetEndPoint({right,0});target->FillRectangle(D2D1::RectF(right-A::fade,bar.top+1,right,bar.bottom-1),addressFadeBrush);}
         }
     }
-    void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr){regions.clear();tips.clear();
-        namespace TS=Design::TabStrip;strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;
+    void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();
+        namespace TS=Design::TabStrip;strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;SyncTabMotion(count,now);
         brandTip=L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
         auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},brandTip.c_str()});
         // Tooltips carry the full title: compact tabs truncate or hide it.
         tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back((title.empty()?L"Onglet":title)+L" - Ctrl+1...8 / Ctrl+9 (dernier) - Ctrl+Maj+PgPréc/PgSuiv pour déplacer - clic milieu pour fermer");}
-        for(int i=0;i<count;i++){if(!strip.Visible(i))continue;
-            auto close=strip.CloseIn(strip.Surface(i));auto region=strip.Region(i);
-            region.left=std::max(region.left,TS::left);region.right=std::min(region.right,strip.ViewRight());
+        const float viewRight=ShownViewRight();
+        for(auto& item:tabFrame.items){const int i=item.index;if(i<0||i>=count)continue;
+            auto surface=ShownSurface(item);if(surface.right-surface.left<.5f||surface.right<=strip.ViewLeft()||surface.left>=viewRight)continue;
+            auto close=strip.CloseIn(ShownContent(item));auto region=ShownRegion(item);
+            region.left=std::max(region.left,TS::left);region.right=std::min(region.right,viewRight);
             // Close first: its hit area wins over the containing tab, and IDs
             // never collide with tabs, keyboard commands or toolbar buttons.
             // Tabs under a fade stay clickable (selecting scrolls them clear) but
-            // expose no close target and take no keyboard focus.
+            // expose no close target and take no keyboard focus. A tab still
+            // opening exposes its close target once the glyph is fully revealed.
             const bool clear=strip.Clear(i);
-            if(clear&&strip.Closable(i,selected))regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
+            if(clear&&strip.Closable(i,selected)&&close.right<=surface.right+.01f)regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
             regions.push_back({TabBase+i,{region.left,region.top,region.right,region.bottom},tips[i].c_str(),clear});
         }
-        float x=strip.NewTabLeft();regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
+        float x=viewRight+Design::Space::tabGap;regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
-        regions.push_back({'B',{6,44,38,76},L"Précédent (Alt+←)"});regions.push_back({'F',{44,44,76,76},L"Suivant (Alt+→)"});bar={82,44,width-133,76};edit={bar.left+Design::Address::textInset,44,bar.right-79,76};
+        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-(audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
-        regions.push_back({'L',{bar.left,44,bar.right-73,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'R',{bar.right-69,48,bar.right-69+Design::Size::compact,72},navigationLoading?L"Arr\u00eater le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});regions.push_back({'C',{bar.right-28,48,bar.right-4,72},L"Copier le lien"});
+        request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
+        // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
+        // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
+        regions.push_back({'L',{bar.left,44,bar.right-64,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
+        regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
+        if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},audioTip.c_str()});
         regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Navigation privée : disponibilité"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
+        BuildBand();
     }
-    std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
+    std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(IsBookmark(region.id)||region.id=='O'){if(region.id!=BandStop())continue;}if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
+    // The band's single Tab stop: the last focused item, else the first (or the » button alone).
+    int BandStop()const{if(!bandShown)return 0;if(bandRover>=0&&bandRover<band.visible)return BookmarkBase+bandRover;if(bandRover==-2&&band.overflow)return 'O';if(band.visible>0)return BookmarkBase;return band.overflow?'O':0;}
+    // Band order for arrows: visible items, then the » button.
+    std::vector<int> BandOrder()const{std::vector<int> o;for(int i=0;i<band.visible;++i)o.push_back(BookmarkBase+i);if(band.overflow)o.push_back('O');return o;}
     int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
+    // Tabs at their presented geometry. Exactly one surface per tab (no second
+    // close-button hover fill). While a tab opens its surface width follows
+    // `presence` and its content, laid out at the settled width, is clipped to it
+    // and fades with `opacity`; a closing tab is a ghost that blurs out beneath.
+    template<class Visible> void DrawTabs(const std::vector<std::wstring>& titles,int selected,int hover,int focus,Visible visible,Motion::Time now){
+        namespace TS=Design::TabStrip;const bool keyed=TabKeysValid((int)titles.size());
+        auto box2rect=[](Design::Box b){return D2D1::RectF(b.left,b.top,b.right,b.bottom);};
+        const D2D1_RECT_F viewport=D2D1::RectF(strip.ViewLeft(),TS::regionTop,ShownViewRight(),TS::regionBottom);
+        // Ghosts first: neighbours glide over a closing tab while it blurs out.
+        for(auto& item:tabFrame.items)if(item.index<0&&visible(GhostRect(item)))DrawGhost(item);
+        // Split groups: a 2 x 10 separator (white 30 %) between adjacent members of one group.
+        if(!tabGroups.empty()){target->PushAxisAlignedClip(viewport,D2D1_ANTIALIAS_MODE_ALIASED);
+            for(int n=0;n+1<(int)tabGroups.size()&&n+1<strip.count;++n)if(tabGroups[n]&&tabGroups[n]==tabGroups[n+1]&&n!=liftedIndex&&n+1!=liftedIndex&&n!=dragIndex&&n+1!=dragIndex){
+                auto a=ShownTab(n),b=ShownTab(n+1);const float x=(a.right+b.left)/2,y=(a.top+a.bottom)/2;Color(1,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({x-1,y-5,x+1,y+5},1,1),brush);}
+            // Designated target of the split menu: one tab outlined on its shape, a group around its members (2 DIP out, radius 8).
+            if(!menuTargets.empty()){D2D1_RECT_F u{1e9f,1e9f,-1e9f,-1e9f};for(int n:menuTargets)if(n>=0&&n<strip.count){auto r=ShownTab(n);u={std::min(u.left,r.left),std::min(u.top,r.top),std::max(u.right,r.right),std::max(u.bottom,r.bottom)};}
+                if(u.right>u.left){const bool group=menuTargets.size()>1;if(group)u={u.left-2,u.top-2,u.right+2,u.bottom+2};const float rr=group?8.f:Design::Radius::control;
+                    Color(1,Design::Focus::keyboardOpacity);target->DrawRoundedRectangle(D2D1::RoundedRect({u.left+.5f,u.top+.5f,u.right-.5f,u.bottom-.5f},rr-.5f,rr-.5f),brush,1);}}
+            target->PopAxisAlignedClip();}
+        auto drawOne=[&](const Motion::TabItem& item){
+            const int n=item.index;
+            D2D1_RECT_F tab=box2rect(ShownSurface(item)),content=box2rect(ShownContent(item));
+            if(n==dragIndex){auto s=strip.Surface(n);s.left+=dragOffset;s.right+=dragOffset;tab=content={s.left,s.top,s.right,s.bottom};}
+            if(tab.right-tab.left<.25f||!visible(tab))return;
+            const bool partial=item.presence<1&&n!=dragIndex;
+            const float radius=std::min(Design::Radius::control,(tab.right-tab.left)/2);
+            // Partially scrolled tabs are cut at the strip viewport, then masked.
+            target->PushAxisAlignedClip(viewport,D2D1_ANTIALIAS_MODE_ALIASED);
+            if(n==liftedIndex){Color(1,.10f);target->DrawRoundedRectangle(D2D1::RoundedRect({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},5.5f,5.5f),brush,1);target->PopAxisAlignedClip();return;}
+            const Design::Box box{content.left,content.top,content.right,content.bottom};
+            auto close=strip.CloseIn(box);auto title=strip.TitleIn(box);auto favicon=strip.FaviconIn(box);
+            const bool closable=strip.Clear(n)&&strip.Closable(n,selected)&&n!=dragIndex;
+            bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
+            float emphasis=dragIndex<0&&motion&&animateSelection?motion->selection.Visual((int)TabKey(n),now):(n==selected?1.f:0.f);
+            const int group=n<(int)tabGroups.size()?tabGroups[n]:0;const bool member=group!=0;
+            // Split group (Paper 08): members share a neutral 1 DIP white-10 % border, outer
+            // corners 6 / inner corners 2, and a 2 x 10 separator between them. In the group
+            // on screen every member has a surface; the active one is the selected #292929.
+            float base=member&&group==visibleTabGroup?std::max(Design::Surface::tabHover,Design::TabSurface(false,tabHover)):Design::TabSurface(false,tabHover);
+            // Reduced motion: an opening tab cross-fades its opaque fill from the canvas.
+            const float fill=Design::Surface::canvas+(base+(Design::Surface::selected-base)*emphasis-Design::Surface::canvas)*item.fill;
+            bool filled=false;
+            if(member){const bool first=n==0||tabGroups[n-1]!=group,last=n+1>=(int)tabGroups.size()||tabGroups[n+1]!=group;
+                const float rl=std::min(first?Design::Radius::control:2.f,radius),rr=std::min(last?Design::Radius::control:2.f,radius);
+                if(emphasis>0||tabHover>0||n==dragIndex||group==visibleTabGroup){FillShape(tab,rl,rr,fill);filled=true;}
+                StrokeShape({tab.left+.5f,tab.top+.5f,tab.right-.5f,tab.bottom-.5f},std::max(0.f,rl-.5f),std::max(0.f,rr-.5f),1,Design::Focus::pointerOpacity);}
+            else if(emphasis>0||tabHover>0||n==dragIndex){Color(fill);target->FillRoundedRectangle(D2D1::RoundedRect(tab,radius,radius),brush);filled=true;}
+            // Sleeping (never the selected tab): favicon at 40%, title at 32% instead of muted.
+            const bool asleep=n!=selected&&n<(int)sleeping.size()&&sleeping[n];
+            if(keyed){auto& snap=tabSnapshots[item.key];if(n<(int)titles.size())snap.title=titles[n];snap.favicon=n<(int)favicons.size()?favicons[n]:nullptr;snap.fill=filled?fill:Design::Surface::canvas;snap.selected=n==selected;}
+            if(focus==TabBase+n)FocusRing(tab,radius);
+            if(partial)target->PushAxisAlignedClip(tab,D2D1_ANTIALIAS_MODE_ALIASED);
+            const float a=item.opacity;
+            // Narrow selected tab: the close glyph cross-fades in over the favicon it replaces.
+            const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
+            DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},(strip.SwapsClose(n,selected)?1-closeShown:1)*(asleep?.4f:1)*a);
+            if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,(n==selected?Design::Text::secondary:asleep?.32f:Design::Text::muted)*a,false,Design::Type::label.medium,Design::Type::label.tracking);
+            if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown*a);}
+            if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
+            if(partial)target->PopAxisAlignedClip();
+            target->PopAxisAlignedClip();
+        };
+        // Paint the grabbed tab last so it stays above its neighbours.
+        for(auto& item:tabFrame.items)if(item.index>=0&&item.index!=dragIndex)drawOne(item);
+        for(auto& item:tabFrame.items)if(item.index>=0&&item.index==dragIndex)drawOne(item);
+        if(keyed)for(auto it=tabSnapshots.begin();it!=tabSnapshots.end();){if(std::none_of(tabFrame.items.begin(),tabFrame.items.end(),[&](const Motion::TabItem& i){return i.key==it->first;}))it=tabSnapshots.erase(it);else ++it;}
+    }
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
     std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
-        auto paintRegions=regions;
-        // Paint the grabbed tab last so it stays above its neighbours.
-        if(dragIndex>=0){auto it=std::find_if(paintRegions.begin(),paintRegions.end(),[&](const Region& r){return r.id==TabBase+dragIndex;});if(it!=paintRegions.end()){auto r=*it;paintRegions.erase(it);paintRegions.push_back(r);}}
-        for(auto& r:paintRegions){int id=r.id;auto box=r.rect;if(IsClose(id)||!visible(box))continue;if(IsTab(id)){int n=TabIndex(id);auto surface=strip.Surface(n);if(n==dragIndex){surface.left+=dragOffset;surface.right+=dragOffset;}D2D1_RECT_F tab{surface.left,surface.top,surface.right,surface.bottom};auto close=strip.CloseIn(surface);auto title=strip.TitleIn(surface);auto favicon=strip.FaviconIn(surface);const bool closable=strip.Clear(n)&&strip.Closable(n,selected)&&n!=dragIndex;
-                // Partially scrolled tabs are cut at the strip viewport, then masked.
-                target->PushAxisAlignedClip(D2D1::RectF(strip.ViewLeft(),Design::TabStrip::regionTop,strip.ViewRight(),Design::TabStrip::regionBottom),D2D1_ANTIALIAS_MODE_ALIASED);bool tabHovered=TabIndex(hover)==n;float tabHover=motion?std::max(motion->Visual(TabBase+n,now).hover,motion->Visual(CloseBase+n,now).hover):(tabHovered?1.f:0.f);
-                // Exactly one opaque surface: no second close-button hover fill.
-                float emphasis=dragIndex<0&&motion&&animateSelection?motion->selection.Visual(n+1,now):(n==selected?1.f:0.f);
-                float base=Design::TabSurface(false,tabHover);
-                if(emphasis>0||tabHover>0||n==dragIndex){Round(tab,Design::Radius::control,base+(Design::Surface::selected-base)*emphasis);}
-                if(focus==TabBase+n)FocusRing(tab,Design::Radius::control);
-                // Narrow selected tab: the close glyph cross-fades in over the favicon it replaces.
-                const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
-                // Sleeping (never the selected tab): favicon at 40%, title at 32% instead of muted.
-                const bool asleep=n!=selected&&n<(int)sleeping.size()&&sleeping[n];
-                DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},(strip.SwapsClose(n,selected)?1-closeShown:1)*(asleep?.4f:1));
-                if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,n==selected?Design::Text::secondary:asleep?.32f:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
-                if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown);}
-                if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
-                target->PopAxisAlignedClip();continue;}
-            if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I')continue;
+        DrawTabs(titles,selected,hover,focus,visible,now);
+        for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||IsTab(id)||!visible(box))continue;
+            if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
-            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
+            if(id=='V'){DrawAudioButton(box,{interaction.hover,interaction.press,false,focus==id},now);continue;}
+            const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){
                     auto style=Design::Resolve(variant,state);if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}if(style.focus)FocusRing(box,style.radius);
                     float size=style.iconSize*Motion::PressScale(state.press,motion->ReducedMotion(),!state.disabled);
                     bool painted=false;
                     if(!motion->ReducedMotion()){
                         if(id=='C'&&lottie.CopyActive(now))painted=DrawLottie(copyLottie,lottie.CopyProgress(now),box,size,style.iconOpacity);
-                        if(id=='R'&&!navigationLoading&&lottie.RefreshActive(now))painted=DrawLottie(refreshLottie,lottie.RefreshProgress(now),box,size,style.iconOpacity);
+                        if(id=='R'&&lottie.RefreshActive(now))painted=DrawLottie(refreshLottie,lottie.RefreshProgress(now),box,size,style.iconOpacity);
                     }
                     // Missing/invalid assets keep the native static Phosphor endpoint.
                     if(!painted&&id=='C'&&(motion->ReducedMotion()||copyLottie.Duration()==0)){
                         float a=motion->copy.Visual(now).opacity;
                         Icon(icon,box,size,(1-a)*style.iconOpacity);Icon(L"check",box,size,a*style.iconOpacity);
-                    }else if(!painted)Icon(icon,box,size,style.iconOpacity);
+                    }else if(!painted&&id=='R')DrawStopMorph(box,size,style.iconOpacity,now);
+                    else if(!painted)Icon(icon,box,size,style.iconOpacity);
+                }
+                else if(id=='D'&&(!downloadIcon.At(now).idle||downloadIcon.At(now).ripple>=0)){
+                    auto pose=downloadIcon.At(now);auto style=Design::Resolve(variant,state);
+                    if(style.fill)Round(box,style.radius,style.surface);
+                    if(style.focus)FocusRing(box,style.radius);
+                    const float size=style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled);
+                    if(pose.idle||!DrawDownloadIcon(pose,box,size,style.iconOpacity))Icon(icon,box,size,style.iconOpacity);
                 }
                 else if(id=='X')DrawCloseWindow(box,state);
+                else if(id=='B'||id=='F')DrawNavButton(id,icon,box,state,now);
                 else DrawButton(icon,box,variant,state);}
 
         }
-        if(strip.HiddenBefore())DrawFade(strip.ViewLeft(),strip.ViewLeft()+Design::TabStrip::fade);
-        if(strip.HiddenAfter())DrawFade(strip.ViewRight(),strip.ViewRight()-Design::TabStrip::fade);
-        Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({bar.right-37,55,bar.right-36,65},.5f,.5f),brush);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
+        // Fades follow the presented strip (scroll/visible width may be gliding).
+        if(tabFrame.scroll>.5f)DrawFade(strip.ViewLeft(),strip.ViewLeft()+Design::TabStrip::fade);
+        if(tabFrame.scroll<tabFrame.content-tabFrame.view-.5f)DrawFade(ShownViewRight(),ShownViewRight()-Design::TabStrip::fade);
+        Color(Design::Text::primary,Design::Surface::separatorOpacity);target->FillRoundedRectangle(D2D1::RoundedRect({width-37,55,width-36,65},.5f,.5f),brush);
         DrawAddress(editing,hover=='I');
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropFade();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        DrawBand(hover,focus,now);
+        // Chrome's lower edge: a 1 DIP #FFFFFF05 hairline, then the page (Paper: no top padding).
+        Color(1,5/255.f);target->FillRectangle(D2D1::RectF(0,ContentTop()-1,width,ContentTop()),brush);
+        DrawSplit();
+        // Ripple last, over the neighbouring buttons it reaches, never over the page edge.
+        if(const auto ripple=downloadIcon.At(now).ripple;ripple>=0){
+            const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
+            if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
+        }
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropGhostLayer();DropFade();DropDownloadIcon();DropAudioIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };
 }

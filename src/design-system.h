@@ -14,8 +14,8 @@ inline constexpr float primary=1, secondary=.5f, muted=128/255.f*.9f, disabled=.
 }
 namespace Space {
 inline constexpr float xs=4, sm=6, md=8, lg=16;
-// One inter-control gap for the whole chrome: back->forward is 38->44 (6 DIP),
-// so visible tab->tab and last tab->new-tab use the same 6 DIP.
+// One inter-control gap for the whole chrome (6 DIP): forward->field, brand->first tab,
+// tab->tab and last tab->new-tab. Back/Forward are one joined pair (see Toolbar).
 inline constexpr float controlGap=sm, tabGap=controlGap;
 }
 // `button` is the one corner for every rectangular button, taken from the toolbar
@@ -47,6 +47,29 @@ namespace AddressLoading { inline constexpr float opacity=.08f; }
 // Danger tone (Paper --color-browser-danger #FF7B6E): an invalid certificate,
 // "Effacer les données…". Always paired with an icon and a label, never alone.
 namespace Danger { inline constexpr float r=1, g=.482f, b=.431f, plate=.14f; }
+// Accent (Paper --color-browser-accent #3E67FF): the text caret of every native field,
+// later the user-chosen highlight. One accessor so a future "Couleur d'accentuation"
+// setting only calls SetAccent (the value persists in `settings` as accent=#RRGGBB).
+struct Rgb { float r, g, b; };
+namespace Accent {
+inline constexpr unsigned long defaultRgb=0x3E67FF;
+inline constexpr float caretOpacity=.9f;   // Paper #3E67FFE6 / #FF7B6EE6
+inline Rgb& Current(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
+inline void Set(unsigned long rgb){Current()={((rgb>>16)&255)/255.f,((rgb>>8)&255)/255.f,(rgb&255)/255.f};}
+inline Rgb Get(){return Current();}
+}
+inline Rgb DangerRgb(){return {Danger::r,Danger::g,Danger::b};}
+// Vertical chrome (Paper "Favoris — flow", 2026-11-08): the page starts right under the
+// chrome, with no top padding (4 DIP on the sides and bottom only). Chrome = tab row
+// 2+36, gap 6, toolbar 32, bottom padding 4, 1 DIP hairline = 81; the optional
+// bookmarks band adds its 6 DIP gap and 34 DIP row (32 DIP items, bottom-aligned) = 121.
+namespace Vertical {
+inline constexpr float toolbarBottom=76, hairline=80, top=81;
+inline constexpr float bandGap=Space::sm, bandRow=34, bandTop=toolbarBottom+bandGap+(bandRow-32), bandBottom=bandTop+32; // 84..116
+inline constexpr float bandExtra=bandGap+bandRow; // 40
+inline constexpr float ContentTop(bool band){return top+(band?bandExtra:0);}
+}
+static_assert(Vertical::ContentTop(false)==81&&Vertical::ContentTop(true)==121,"Paper chrome heights: 81 without the bookmarks band, 121 with it");
 // Address bar (issue #20). The indicator lives in a 24 DIP slot 4 DIP inside the
 // field, the same lane as the suggestion icons; text starts at 32 DIP.
 namespace Address {
@@ -66,25 +89,39 @@ static_assert(Size::focusStroke==1,"focus stroke is the user-chosen 1 DIP");
 // visible gaps, hit areas and overflow capacity can never drift apart.
 struct Box { float left, top, right, bottom; };
 // Web viewport, the native frame that hosts the WebView2 site (Paper "Lisière —
-// prototype actuel V3": Outline > Viewbox). The site sits flush under the toolbar
-// (square top corners) inside a 2 DIP canvas outline on its left, right and bottom
-// edges, with 8 DIP bottom corners concentric with the 10 DIP window corner (8+2).
-// Maximised, the window corner is square, so the viewport corner is too.
+// prototype actuel V3": Outline > Viewbox). The site sits flush under the chrome
+// (square top corners; Vertical::ContentTop: 81 DIP, 121 with the bookmarks band) inside
+// a 2 DIP canvas outline on its left, right and bottom edges, with 8 DIP bottom corners
+// concentric with Paper's 10 DIP window corner (8+2). Maximised, the window corner is
+// square, so the viewport corner is too. (Ported from the composition viewport onto the
+// windowed pages: the window itself keeps DWM's native rounding, see RoundNatively.)
 namespace Viewport {
-inline constexpr float top=84, inset=2, radius=8, windowRadius=radius+inset;
-inline constexpr Box Bounds(float width,float height){return {inset,top,std::max(inset,width-inset),std::max(top,height-inset)};}
+inline constexpr float top=Vertical::top, inset=2, radius=8, windowRadius=radius+inset;
+inline constexpr Box Bounds(float width,float height,bool band=false){return {inset,Vertical::ContentTop(band),std::max(inset,width-inset),std::max(Vertical::ContentTop(band),height-inset)};}
 inline constexpr float Radius(bool maximized){return maximized?0:radius;}
 }
 static_assert(Viewport::windowRadius==10,"viewport corner stays concentric with the 10 DIP window corner");
-// Toolbar column edges (DIP) that the tab row aligns to: back {6,38}, forward {44,76}.
+// Toolbar navigation pair (Paper, Page 1 "Chrome", 2026-11-09 "Bouton avant arrière
+// retouché"): Back and Forward are one joined segment. Each half is 32 x 32 on the raised
+// surface with 6 DIP outer corners and 3 DIP inner corners; a 1 x 10 hairline (white at
+// --opacity-browser-focus 10 %) sits between them with 3 DIP on each side:
+// back {6,38}, hairline {41,42}, forward {45,77}. Then, 6 DIP apart, a standalone Reload
+// (32 x 32, #FFFFFF14 = the raised surface, radius 6) at {83,115}, and the field at 121.
+// It is the only Reload/Stop: the field's embedded Reload was removed (user request after
+// review), so the field holds Copy and the star only.
 namespace Toolbar {
-inline constexpr float backLeft=Space::sm, backCenterX=backLeft+Size::control/2;
-inline constexpr float forwardLeft=backLeft+Size::control+Space::controlGap;
+inline constexpr float backLeft=Space::sm, backCenterX=backLeft+Size::control/2, backRight=backLeft+Size::control;
+inline constexpr float pairGap=3, innerRadius=Radius::inset, separatorWidth=1, separatorHeight=10, separatorOpacity=.10f;
+inline constexpr float separatorLeft=backRight+pairGap;
+inline constexpr float forwardLeft=separatorLeft+separatorWidth+pairGap, forwardRight=forwardLeft+Size::control;
+inline constexpr float reloadLeft=forwardRight+Space::controlGap, reloadRight=reloadLeft+Size::control;
+inline constexpr float addressLeft=reloadRight+Space::controlGap;
 }
+static_assert(Toolbar::forwardLeft==45&&Toolbar::reloadLeft==83&&Toolbar::addressLeft==121,"Paper: back 6..38, hairline 41, forward 45..77, reload 83..115, field at 121");
 namespace TabStrip {
-// Region origin chosen so the first visible tab surface starts at forwardLeft (44):
-// left 38 + tabGap 6 = 44. The brand region owns 0..38.
-inline constexpr float left=Toolbar::forwardLeft-Space::tabGap;
+// Region origin chosen so the first visible tab surface starts one control gap after
+// the back button (44): left 38 + tabGap 6 = 44. The brand region owns 0..38.
+inline constexpr float left=Toolbar::backRight;
 inline constexpr float regionTop=2, regionBottom=40, top=6, bottom=38;
 inline constexpr float trailingReserve=118; // window controls, unchanged
 // Hit region: contiguous, gap belongs to the tab it precedes (no dead zone between tabs).
@@ -160,7 +197,7 @@ inline Strip Layout(float width,int count,int selected,float scroll,float locked
 }
 static_assert(Size::tabMin==2*Space::md+Size::icon,"favicon-only tab keeps the 8 DIP favicon inset on both sides");
 static_assert(Size::tabIconOnly<Size::tabCloseAll&&Size::tabCloseAll<=Size::tab,"tab compaction thresholds are ordered");
-static_assert(TabStrip::left==38&&TabStrip::Surface(0).left==Toolbar::forwardLeft,"first tab surface aligns with the forward button (44)");
+static_assert(TabStrip::left==38&&TabStrip::Surface(0).left==Toolbar::backRight+Space::tabGap,"first tab surface sits one control gap after the back button (44)");
 // Brand flower: optically placed on the toolbar column and tab row, not the
 // geometric centre of its 0..38 region (which would be x 19).
 namespace Brand {

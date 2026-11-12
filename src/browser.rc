@@ -6,7 +6,8 @@
 #define BROWSER_FILEVERSION 0,2,0,0
 #define BROWSER_VERSION_TEXT "0.2.0"
 #endif
-101 ICON "assets/browser.ico"
+#include "app-icon.rc"
+1 24 "src/browser.manifest"
 1 VERSIONINFO
  FILEVERSION BROWSER_FILEVERSION
  PRODUCTVERSION BROWSER_FILEVERSION

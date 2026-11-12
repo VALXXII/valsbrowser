@@ -57,6 +57,12 @@ def existing_fixtures() -> None:
     # test-lottie.py: loading, frame clock, lottie, clipboard gate, design system, hover, ui
     run('test-lottie.py (native lottie/ui fixtures)', [sys.executable, ROOT / 'test-lottie.py'])
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
+    fixture('bookmarks_test', [*STRICT, 'tests/bookmarks_test.cpp'])
+    bookmarks_evidence = ROOT / 'build/bookmarks-ui-qa'
+    bookmarks_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('bookmarks_ui_test', [*LOOSE, '-municode', *TVG, WV2,
+            'tests/bookmarks/bookmarks_ui_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, bookmarks_evidence])
     fixture('geometry_test', [*STRICT, 'tests/design-system/geometry_test.cpp'])
     fixture('motion_test', [*STRICT, '-pedantic', 'tests/motion/motion_test.cpp', '-luser32'])
     fixture('polish_test', [*STRICT, 'tests/motion/polish_test.cpp', '-luser32'])
@@ -64,7 +70,13 @@ def existing_fixtures() -> None:
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # Split view: pure model (zones, capacity, rails, springs) and host behaviour through WndProc
+    fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
+    fixture('site_name_test', [*STRICT, 'tests/split-view/site_name_test.cpp'])
+    fixture('split_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_ui_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Screen-reader view of the chrome through a real UI Automation client (issue #2)
+    # Native menus: a submenu's row hover follows the pointer mid-entrance (cascade, keyboard, reduced motion)
+    fixture('context_menu_hover_test', [*LOOSE, '-municode', *TVG, 'tests/ui/context_menu_hover_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32'], [ROOT])
     fixture('accessibility_test', [*LOOSE, *TVG, WV2, 'tests/accessibility/accessibility_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-loleaut32'])
     # Download history popover/drawer (upstream PR #28/#29, same line as test-downloads.ps1)
     downloads_evidence = ROOT / 'build/downloads-qa'
@@ -83,7 +95,8 @@ def existing_fixtures() -> None:
 def peer_suites() -> None:
     core = ROOT / 'tests/update-core/run_tests.py'
     toast = ROOT / 'tests/update-toast/run.py'
-    for label, script in (('update-core tests', core), ('update-toast tests', toast)):
+    webview2 = ROOT / 'tests/webview2-runtime/run_tests.py'   # startup recovery (fakes only, read-only loader probe)
+    for label, script in (('update-core tests', core), ('update-toast tests', toast), ('webview2 startup recovery tests', webview2)):
         if not script.exists():
             print(f'FAILED: {label}: runner {script.relative_to(ROOT)} missing')
             sys.exit(3)
@@ -93,6 +106,16 @@ def peer_suites() -> None:
 def integration() -> None:
     run('release tooling tests', [sys.executable, '-I', HERE / 'test_release_tools.py'])
     run('host integration + mocked end-to-end install', [sys.executable, HERE / 'e2e_install.py'])
+
+
+def ico_png(path: Path) -> bytes:
+    """The 256 px PNG entry of an ICO (unique per variant; windres embeds it verbatim)."""
+    data = path.read_bytes()
+    for i in range(struct.unpack_from('<H', data, 4)[0]):
+        size, offset = struct.unpack_from('<II', data, 6 + 16 * i + 8)
+        if data[offset:offset + 8] == b'\x89PNG\r\n\x1a\n':
+            return data[offset:offset + size]
+    sys.exit(f'{path} has no PNG entry')
 
 
 def check_app(app: Path) -> None:
@@ -117,6 +140,18 @@ def check_app(app: Path) -> None:
                 sys.exit('BROWSER_UPDATE_VERSION string not embedded in browser.exe')
             if info['updateRepository'].encode('utf-16-le') not in data:
                 sys.exit('update repository not embedded in browser.exe')
+    # App icon policy (tools/release/version.py): release -> live, dev -> preview. Both executables
+    # embed exactly that ICO's 256 px image, never the other one, and assets/browser.ico is that ICO.
+    sys.path.insert(0, str(ROOT / 'tools/release'))
+    import version as V
+    want = V.app_icon(info['channel'])
+    other = V.app_icon('dev' if info['channel'] == 'release' else 'release')
+    if (app / 'assets/browser.ico').read_bytes() != want.read_bytes():
+        sys.exit(f'assets/browser.ico is not {want.name}')
+    for exe in ('browser.exe', 'update-helper.exe'):
+        data = (app / exe).read_bytes()
+        if ico_png(want) not in data or ico_png(other) in data:
+            sys.exit(f'{exe} does not embed {want.name} (channel {info["channel"]})')
     for required in ('WebView2Loader.dll', 'assets/fonts/InterDisplay-Regular.ttf', 'WebView2-LICENSE.txt'):
         if not (app / required).is_file():
             sys.exit(f'missing {required}')

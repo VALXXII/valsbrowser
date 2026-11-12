@@ -8,6 +8,14 @@ strictly in merge order. It never compares git hashes. The version is
 
 CI must check out with full history (fetch-depth: 0); a shallow clone would give
 a wrong, small N, so shallow repositories are refused.
+
+App icon policy (the icon is part of the build identity, stamped into the binaries and
+never decided from the launch directory):
+  channel "release" -> live icon (cream). Only builds of a commit already on main may
+                       use it: the CI release job on main, or a local release build of main.
+  channel "dev"     -> preview icon (blue). The default of build.py / build.ps1, so every
+                       local build, every worktree or branch build and every portable
+                       preview looks distinct from the installed live browser.
 """
 from __future__ import annotations
 import argparse, json, re, subprocess, sys
@@ -15,6 +23,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SERIES = (0, 3)  # bump the series by editing this line; N keeps growing anyway.
+APP_ICONS = {'release': 'live', 'dev': 'preview'}
+MAIN_REFS = ('origin/main', 'main')
 
 
 def git(*args: str, repo: Path = ROOT) -> str:
@@ -39,6 +49,27 @@ def identity(build: int | None = None, commit: str | None = None,
     version = f'{SERIES[0]}.{SERIES[1]}.{build}'
     return {'version': version, 'build': build, 'major': SERIES[0], 'minor': SERIES[1],
             'commit': commit, 'tag': f'v{version}', 'channel': channel}
+
+
+def app_icon(channel: str) -> Path:
+    """The committed ICO (tools/release/make_app_icons.py) a build of this channel embeds."""
+    if channel not in APP_ICONS:
+        raise SystemExit(f'Unknown channel: {channel}')
+    return ROOT / 'src/icons' / f'browser-{APP_ICONS[channel]}.ico'
+
+
+def require_on_main(commit: str, repo: Path = ROOT) -> str:
+    """Refuse a release (live icon) identity for a commit that is not on main."""
+    for ref in MAIN_REFS:
+        try:
+            git('rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}', repo=repo)
+        except subprocess.CalledProcessError:
+            continue
+        if subprocess.run(['git', 'merge-base', '--is-ancestor', commit, ref], cwd=repo,
+                          capture_output=True).returncode == 0:
+            return ref
+    raise SystemExit(f'Channel "release" (live icon) requires a commit on main; {commit[:12]} is not on '
+                     f'{" or ".join(MAIN_REFS)}. Build a branch or worktree with the default --channel dev.')
 
 
 def main() -> int:

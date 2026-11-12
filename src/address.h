@@ -175,6 +175,44 @@ inline bool Recordable(const std::wstring& url) {
     return Split(url, p) && (p.scheme == L"https" || p.scheme == L"http" || p.scheme == L"file") && url.size() < 4096;
 }
 
+// A host a person could mean: dot-separated labels, none empty (so "lemonde..fr" is a
+// typo, not a page), letters, digits, '-' or any non-ASCII letter (IDN), an optional
+// numeric port; or "localhost". IPv6 literals are bracketed and kept as typed.
+inline bool PlausibleHost(const std::wstring& hostPort) {
+    if (hostPort.empty()) return false;
+    if (hostPort[0] == L'[') return hostPort.find(L']') != std::wstring::npos;
+    std::wstring host = hostPort; const auto colon = host.rfind(L':');
+    if (colon != std::wstring::npos) {
+        const std::wstring port = host.substr(colon + 1); host = host.substr(0, colon);
+        if (port.empty() || port.size() > 5 || port.find_first_not_of(L"0123456789") != std::wstring::npos) return false;
+    }
+    if (host.empty() || host.front() == L'.' || host.back() == L'.' || host.find(L"..") != std::wstring::npos) return false;
+    for (wchar_t c : host) if (!(c >= 0x80 || iswalnum(c) || c == L'-' || c == L'.')) return false;
+    return host.find(L'.') != std::wstring::npos || Lower(host) == L"localhost";
+}
+// A bookmark address typed by hand (never a search): trimmed; an explicit scheme must be
+// http, https or file; otherwise text that looks like an address gets https://.
+// Empty result = refused ("Adresse non valide").
+inline std::wstring Normalize(const std::wstring& typed) {
+    const std::wstring s = Trim(typed);
+    if (s.empty() || s.size() >= 4096 || s.find_first_of(L" \t\r\n") != std::wstring::npos) return L"";
+    const std::wstring low = Lower(s);
+    if (low.find(L"://") != std::wstring::npos) {
+        Parts p; if (!Split(s, p) || !Recordable(s)) return L"";
+        if (p.scheme == L"file") return s.size() > 8 ? s : L"";
+        return PlausibleHost(p.host) ? s : L"";
+    }
+    const auto colon = low.find(L':');
+    // "mailto:x", "javascript:…": a scheme without "//" is never an address. "host:port" is.
+    if (colon != std::wstring::npos && !StartsWith(low, L"localhost") && low.find(L'.') > colon && low.find(L'/') > colon) {
+        const auto after = low.substr(colon + 1);
+        if (after.empty() || !iswdigit(after[0])) return L"";
+    }
+    const auto end = s.find_first_of(L"/?#");
+    if (!PlausibleHost(s.substr(0, end))) return L"";
+    return L"https://" + s;
+}
+
 class History {
 public:
     static constexpr size_t Limit = 1000;
@@ -256,6 +294,8 @@ struct Suggestion {
     size_t match = std::wstring::npos, matchLength = 0; // highlighted range of `text`
     bool host = false;  // Site row aggregating every page of one host
     std::wstring site;  // Site/Address: the site whose remembered favicon the row shows
+    bool popular = false; // from the bundled list (never visited): not removable
+    std::wstring alias;   // popular row matched by this alias ("gmail" -> mail.google.com)
 };
 struct Suggestions {
     std::vector<Suggestion> rows;
@@ -263,9 +303,60 @@ struct Suggestions {
 };
 constexpr size_t MaxSites = 4;
 
+// Bundled list of popular sites (assets\popular-sites.txt), so a site never visited
+// is still offered by name: "yout" -> youtube.com. Read once; no network, ever.
+struct PopularSite { std::wstring host, name; std::vector<std::wstring> aliases; };
+inline std::vector<PopularSite> ReadPopular(std::istream& in) {
+    std::vector<PopularSite> sites; std::string line;
+    if (!std::getline(in, line)) return sites;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("\xEF\xBB\xBF", 0) == 0) line.erase(0, 3);
+    if (line != "# browser popular sites 1") return sites;
+    while (std::getline(in, line) && sites.size() < 5000) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        std::wstring wide; if (!NativeChrome::Downloads::FromUtf8(line, wide)) continue;
+        std::vector<std::wstring> f; size_t start = 0;
+        for (size_t tab; (tab = wide.find(L'\t', start)) != std::wstring::npos; start = tab + 1) f.push_back(wide.substr(start, tab - start));
+        f.push_back(wide.substr(start));
+        PopularSite site; site.host = Lower(Trim(f[0]));
+        if (site.host.empty() || site.host.find_first_of(L" /:?#") != std::wstring::npos) continue;
+        site.name = f.size() > 1 ? Trim(f[1]) : L"";
+        if (f.size() > 2) { std::wstring a; for (wchar_t c : Lower(f[2]) + L" ") { if (c == L' ') { if (!a.empty()) site.aliases.push_back(a); a.clear(); } else a += c; } }
+        sites.push_back(std::move(site));
+    }
+    return sites;
+}
+
+// Visits per http(s) host (readable, without "www."), summing its pages; `url` is the
+// visited root page when there is one, else the host's root. Shared by the address
+// suggestions' host rows and the new tab page's most visited sites.
+struct HostTotal { std::wstring host, title, url; int visits = 0, pages = 0; std::int64_t last = 0; bool root = false; };
+inline std::vector<HostTotal> HostTotals(const History& history) {
+    std::vector<HostTotal> hosts;
+    for (auto& v : history.Items()) {
+        Parts p;
+        if (!Split(v.url, p) || (p.scheme != L"https" && p.scheme != L"http")) continue;
+        const std::wstring host = ReadableHost(p.host);
+        auto it = std::find_if(hosts.begin(), hosts.end(), [&](const HostTotal& h) { return h.host == host; });
+        if (it == hosts.end()) { hosts.push_back({host, L"", p.scheme + L"://" + p.host + L"/", 0, 0, false}); it = hosts.end() - 1; }
+        it->visits += v.visits; ++it->pages; it->last = std::max(it->last, v.last);
+        if (ReadableRest(p.rest).empty()) { it->root = true; it->title = v.title; it->url = v.url; }
+    }
+    return hosts;
+}
+// Most visited sites, best first (visits, then most recent): the new tab page's tiles.
+inline std::vector<HostTotal> TopSites(const History& history, size_t max) {
+    auto hosts = HostTotals(history);
+    std::stable_sort(hosts.begin(), hosts.end(), [](const HostTotal& a, const HostTotal& b) { return a.visits != b.visits ? a.visits > b.visits : a.last > b.last; });
+    if (hosts.size() > max) hosts.resize(max);
+    return hosts;
+}
+
 // `typed` is what the user typed (without any inline completion). `inlineAllowed`
 // is false right after a deletion, so Backspace can remove the completion.
-inline Suggestions Suggest(const std::wstring& typed, const History& history, bool inlineAllowed = true) {
+// `popular` (optional) ranks after the history: visited sites always come first.
+inline Suggestions Suggest(const std::wstring& typed, const History& history, bool inlineAllowed = true, const std::vector<PopularSite>* popular = nullptr) {
     Suggestions out;
     const std::wstring query = Trim(typed);
     if (query.empty()) return out;
@@ -281,22 +372,11 @@ inline Suggestions Suggest(const std::wstring& typed, const History& history, bo
         else if (Lower(title).find(q) != std::wstring::npos) tier = 3;
         if (tier < 0) return;
         if (at != std::wstring::npos) { row.match = at; row.matchLength = q.size(); }
-        found.push_back({std::move(row), tier, visits, last});
+        found.push_back({std::move(row), tier * 2, visits, last}); // history: even tiers
     };
     // Host rows: one per visited host, summing its pages, so "git" offers github.com
     // even when only deep pages were visited (two or more). A visited root page becomes that row.
-    struct HostTotal { std::wstring host, title, url; int visits = 0, pages = 0; std::int64_t last = 0; bool root = false; };
-    std::vector<HostTotal> hosts;
-    for (auto& v : history.Items()) {
-        Parts p;
-        if (!Split(v.url, p) || (p.scheme != L"https" && p.scheme != L"http")) continue;
-        const std::wstring host = ReadableHost(p.host);
-        auto it = std::find_if(hosts.begin(), hosts.end(), [&](const HostTotal& h) { return h.host == host; });
-        if (it == hosts.end()) { hosts.push_back({host, L"", p.scheme + L"://" + p.host + L"/", 0, 0, false}); it = hosts.end() - 1; }
-        it->visits += v.visits; ++it->pages; it->last = std::max(it->last, v.last);
-        if (ReadableRest(p.rest).empty()) { it->root = true; it->title = v.title; it->url = v.url; }
-    }
-    for (auto& h : hosts) {
+    for (auto& h : HostTotals(history)) {
         if (!h.root && h.pages < 2) continue; // a single deep page is its own row
         Suggestion row; row.kind = Kind::Site; row.url = h.url; row.text = h.host; row.title = h.title; row.host = !h.root; row.site = SiteOf(h.url);
         consider(row, h.title, h.visits, h.last);
@@ -308,6 +388,25 @@ inline Suggestions Suggest(const std::wstring& typed, const History& history, bo
         Suggestion row; row.kind = Kind::Site; row.url = v.url; row.text = text; row.title = v.title; row.site = SiteOf(v.url);
         consider(row, v.title, v.visits, v.last);
     }
+    // Popular sites interleave one step below the history at each match quality (odd
+    // tiers), in list order; a host the history already offers is not repeated.
+    if (popular) {
+        for (size_t i = 0; i < popular->size(); ++i) {
+            const auto& p = (*popular)[i];
+            if (std::any_of(found.begin(), found.end(), [&](const Candidate& c) { return c.row.text == p.host; })) continue;
+            Suggestion row; row.kind = Kind::Site; row.url = L"https://" + p.host + L"/"; row.text = p.host; row.title = p.name;
+            row.site = SiteOf(row.url); row.popular = true;
+            const auto at = p.host.find(q);
+            int tier = -1;
+            if (at == 0) tier = 0;
+            else if (at != std::wstring::npos) tier = (p.host[at - 1] == L'.' || p.host[at - 1] == L'/') ? 1 : 2;
+            if (tier != 0) for (auto& a : p.aliases) if (StartsWith(a, q)) { tier = 0; row.alias = a; break; } // "gma" -> Gmail
+            if (tier < 0 && Lower(p.name).find(q) != std::wstring::npos) tier = 3;
+            if (tier < 0) continue;
+            if (at != std::wstring::npos && row.alias.empty()) { row.match = at; row.matchLength = q.size(); }
+            found.push_back({std::move(row), tier * 2 + 1, 0, -static_cast<std::int64_t>(i)});
+        }
+    }
     std::stable_sort(found.begin(), found.end(), [](const Candidate& a, const Candidate& b) {
         if (a.tier != b.tier) return a.tier < b.tier;
         if (a.visits != b.visits) return a.visits > b.visits;
@@ -317,11 +416,15 @@ inline Suggestions Suggest(const std::wstring& typed, const History& history, bo
     for (auto& c : found) { if (out.rows.size() == MaxSites) break; out.rows.push_back(std::move(c.row)); }
 
     const bool address = LooksLikeAddress(query);
-    // Inline completion: only to a whole host, so Enter opens what the field shows.
-    if (inlineAllowed && !out.rows.empty() && out.rows.front().match == 0 && query.size() < out.rows.front().text.size() &&
-        out.rows.front().text.find_first_of(L"/?#") == std::wstring::npos && query == typed)
-        out.completion = out.rows.front().text.substr(query.size());
-    const bool exact = !out.rows.empty() && Lower(out.rows.front().text) == q;
+    // Inline completion: only to a whole host, so Enter opens what the field shows. A
+    // popular site needs two typed characters; an alias completes as the alias.
+    const Suggestion* top = out.rows.empty() ? nullptr : &out.rows.front();
+    const bool plain = top && query == typed && (!top->popular || query.size() >= 2);
+    if (inlineAllowed && plain && !top->alias.empty() && query.size() < top->alias.size())
+        out.completion = top->alias.substr(query.size());
+    else if (inlineAllowed && plain && top->alias.empty() && top->match == 0 && query.size() < top->text.size() && top->text.find_first_of(L"/?#") == std::wstring::npos)
+        out.completion = top->text.substr(query.size());
+    const bool exact = top && (Lower(top->text) == q || (!top->alias.empty() && top->alias == q));
     if (address && out.completion.empty() && !exact) {
         Suggestion go; go.kind = Kind::Address; go.text = query;
         go.site = SiteOf(StartsWith(Lower(query), L"http://") || StartsWith(Lower(query), L"https://") ? query : L"https://" + query);

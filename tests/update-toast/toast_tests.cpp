@@ -443,9 +443,12 @@ static void WindowTests() {
     RECT pr{}; GetWindowRect(popup, &pr);
     CHECK(impl->surface && impl->surface->GetPixelSize().width == (UINT)(pr.right - pr.left));
     HRGN materialClip = CreateRectRgn(0, 0, 0, 0);
-    CHECK(GetWindowRgn(popup, materialClip) != ERROR);
-    CHECK(!PtInRegion(materialClip, 0, 0) && PtInRegion(materialClip, 20, 20));
+    CHECK(GetWindowRgn(popup, materialClip) != ERROR); // shadowless popup: round-rect region at the Paper radius (NativeUI::ConfigureShadowlessPopup)
     DeleteObject(materialClip);
+    DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_DEFAULT;
+    const HRESULT cornerStatus = DwmGetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+    CHECK(FAILED(cornerStatus) || corner == DWMWCP_DONOTROUND); // any DWM rounding casts a shadow (Windows 11; older systems cannot report it)
+    CHECK(NativeUI::IsShadowless(popup));
     bool separateMaterial = false;
     EnumThreadWindows(GetCurrentThreadId(), [](HWND h, LPARAM p) -> BOOL {
         wchar_t name[80]{}; GetClassNameW(h, name, 80);

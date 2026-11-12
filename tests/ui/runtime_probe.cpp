@@ -25,34 +25,27 @@ int wmain(int argc,wchar_t** argv){
     NativeUI::ConfigureFullClientFrame(window);if(FAILED(chrome.Init(window,base)))return 3;chrome.SetMotion(&motion);motion.SetReducedMotion(true);UpdateFont();
     auto first=std::make_shared<Tab>();first->title=L"Google";pages.push_back(first);auto second=std::make_shared<Tab>();second->title=L"Second tab";pages.push_back(second);current=0;
     Layout();ShowWindow(window,SW_SHOW);UpdateWindow(window);PumpNativeMessages();
-    // Viewport host (Paper V3 Outline > Viewbox): placed 2 DIP inside left/right/bottom,
-    // bottom-only 8 DIP corners restored, square maximised, restored again after.
-    // DirectComposition: the corners are the GPU clip (soft, antialiased border) with
-    // the exact fractional radius and no window region; otherwise the aliased region.
-    auto viewportShape=[](const char* label,bool maximized){RECT client{},host{},box{};GetClientRect(window,&client);GetWindowRect(viewport,&host);MapWindowPoints(nullptr,window,(POINT*)&host,2);HRGN rgn=CreateRectRgn(0,0,0,0);int kind=GetWindowRgn(viewport,rgn);GetRgnBox(rgn,&box);
-        const int w=host.right-host.left,hh=host.bottom-host.top;const float expectedRadius=maximized?0.f:8.f*GetDpiForWindow(window)/96.f;
-        bool rounded,topSquare;
-        if(compositor.Ready()){
-            // The clip covers the host; a bottom-corner pixel is outside the shape, a top-corner pixel inside.
-            rounded=kind==ERROR&&compositor.Masked()==!maximized&&compositor.Width()==w&&compositor.Height()==hh&&std::fabs(compositor.Radius()-expectedRadius)<.001f&&(maximized?compositor.Contains(0,(float)hh-1):!compositor.Contains(0,(float)hh-1));
-            topSquare=compositor.Contains(0,0)&&compositor.Contains((float)w-1,0);
-        }else{rounded=kind!=ERROR&&!PtInRegion(rgn,0,hh-1);topSquare=kind==ERROR||PtInRegion(rgn,0,0);if(maximized)rounded=kind==ERROR;}
-        DeleteObject(rgn);
-        std::printf("VIEWPORT %s dpi=%u composition=%d client=%ldx%ld host=(%ld,%ld,%ld,%ld) expected=(%d,%d,%d,%d) clip=%.0fx%.0f radius=%.2f expectedRadius=%.2f windowRegion=%d shapeOk=%d topSquare=%d\n",label,GetDpiForWindow(window),compositor.Ready(),client.right,client.bottom,host.left,host.top,host.right,host.bottom,S(2),S(84),(int)client.right-S(2),(int)client.bottom-S(2),compositor.Width(),compositor.Height(),compositor.Radius(),expectedRadius,kind,rounded,topSquare);
-        return std::make_tuple(host.left==S(2)&&host.top==S(84)&&host.right==client.right-S(2)&&host.bottom==client.bottom-S(2)&&w>0&&hh>0,rounded,topSquare);};
-    {auto [placed,rounded,square]=viewportShape("restored",false);if(!placed||!rounded||!square){std::printf("FAIL viewport restored\n");return 4;}
-     ShowWindow(window,SW_MAXIMIZE);PumpNativeMessages();auto [mp,mr,ms]=viewportShape("maximized",true);if(!mp||!mr||!ms){std::printf("FAIL viewport maximized\n");return 4;}
-     SetWindowPos(window,nullptr,0,0,900,600,SWP_NOMOVE|SWP_NOZORDER);ShowWindow(window,SW_RESTORE);PumpNativeMessages();SetWindowPos(window,nullptr,0,0,900,600,SWP_NOMOVE|SWP_NOZORDER);PumpNativeMessages();auto [rp,rr,rs]=viewportShape("resized",false);if(!rp||!rr||!rs){std::printf("FAIL viewport resized\n");return 4;}}
-    // Corner mask coverage (8x8 per pixel): opaque canvas outside the arc, clear inside,
-    // partial alpha along it, mirrored exactly between the two corners, at 100/125/175 %.
-    for(float r:{8.f,10.f,14.f}){const int n=(int)std::ceil(r);int partial=0;bool ok=NativeViewport::MaskAlpha(0,n-1,n,r,false)>.99f&&NativeViewport::MaskAlpha(n-1,0,n,r,false)==0.f;
-     for(int j=0;j<n;++j)for(int i=0;i<n;++i){const float a=NativeViewport::MaskAlpha(i,j,n,r,false);if(a>0&&a<1)++partial;if(a!=NativeViewport::MaskAlpha(n-1-i,j,n,r,true))ok=false;if(i+1<n&&NativeViewport::MaskAlpha(i+1,j,n,r,false)>a)ok=false;}
-     std::printf("VIEWPORT mask radius=%.0f px tile=%d partialPixels=%d ok=%d\n",r,n,partial,ok&&partial>=n);if(!ok||partial<n){std::printf("FAIL viewport mask\n");return 4;}}
-    // Overlay scrollbar layer (Paper V3 "Scrollbar minimale"): with composition, both
-    // handle visuals exist above the pages and accept a raster; hidden (opacity 0) at rest.
-    if(compositor.Ready()){const float sc=GetDpiForWindow(window)/96.f;auto tile=NativeChrome::Scrollbar::Raster(compositor.Width()-2*sc,(int)std::lround(120*sc),sc,0,true);
-     const bool uploaded=compositor.Bars()&&compositor.SetBarContent(0,tile.pixels.data(),tile.across,tile.along);compositor.HideBar(0);compositor.Commit();
-     std::printf("SCROLLBAR layer bars=%d uploaded=%d tile=%dx%d\n",compositor.Bars(),uploaded,tile.across,tile.along);if(!uploaded){std::printf("FAIL scrollbar layer\n");return 4;}}
+    // Viewport (Paper V3 Outline > Viewbox) on windowed pages: the content box sits 2 DIP
+    // inside left/right/bottom, flush under the chrome; the outer bottom corners are
+    // masked (8 DIP) while restored and square when maximised.
+    auto viewportShape=[&](const char* label,bool maximized){
+        const auto c=ContentBox();first->shown=true;const auto corners=PageCorners();
+        const bool placed=std::fabs(c.left-2)<.01f&&std::fabs(c.top-chrome.ContentTop())<.01f&&std::fabs(c.right-(chrome.width-2))<.01f&&std::fabs(c.bottom-(chrome.height-2))<.01f;
+        const bool rounded=maximized?corners.empty():corners.size()==2;
+        std::printf("VIEWPORT %s dpi=%u box=(%.1f,%.1f,%.1f,%.1f) chrome=%.0fx%.0f corners=%zu radius=%.0f\n",label,GetDpiForWindow(window),c.left,c.top,c.right,c.bottom,chrome.width,chrome.height,corners.size(),SV::pageRadius);
+        return placed&&rounded&&SV::pageRadius==8;};
+    if(!viewportShape("restored",false)){std::printf("FAIL viewport restored\n");return 4;}
+    ShowWindow(window,SW_MAXIMIZE);PumpNativeMessages();if(!viewportShape("maximized",true)){std::printf("FAIL viewport maximized\n");return 4;}
+    ShowWindow(window,SW_RESTORE);PumpNativeMessages();if(!viewportShape("resized",false)){std::printf("FAIL viewport resized\n");return 4;}
+    // Overlay scrollbar (Paper V3 "Scrollbar minimale") on a windowed page: a metrics report
+    // shows the vertical handle as a layered child window at the page's right edge.
+    {const float sc=GetDpiForWindow(window)/96.f;first->home=false;first->shown=true;first->placedVisible=1;first->placed={S(2),S(chrome.ContentTop()),S(chrome.width-2),S(chrome.height-2)};
+     const bool taken=ScrollbarMessageFrom(first,L"lisiere-scrollbar 1 0 0 800 400 800 2400 1 1 0");
+     auto& bar=pageScrollbars[first->serial];PlaceScrollbars(first->serial,bar,NativeChrome::Motion::Now()+std::chrono::milliseconds(150)); /* past the 100 ms fade-in */RECT r{};if(bar.bars[0])GetWindowRect(bar.bars[0],&r);MapWindowPoints(nullptr,window,(POINT*)&r,2);
+     const bool shown=bar.bars[0]&&(GetWindowLongW(bar.bars[0],GWL_STYLE)&WS_VISIBLE)&&r.right<=first->placed.right&&r.right>=first->placed.right-(int)std::ceil(12*sc)&&r.top>=first->placed.top;
+     std::printf("SCROLLBAR handle taken=%d shown=%d window=(%ld,%ld,%ld,%ld) page=(%ld,%ld,%ld,%ld)\n",taken,shown,r.left,r.top,r.right,r.bottom,first->placed.left,first->placed.top,first->placed.right,first->placed.bottom);
+     if(!taken||!shown){std::printf("FAIL scrollbar handle\n");return 4;}
+     first->home=true;first->placedVisible=-1;first->placed={};ScrollbarRefresh(NativeChrome::Motion::Now());}
     SetWindowSubclass(address,TraceEdit,99,0);FocusAddress();SetWindowTextW(address,L"https://example.com/");PumpNativeMessages();
     wchar_t face[128]{};HDC dc=GetDC(address);auto old=SelectObject(dc,font);GetTextFaceW(dc,128,face);TEXTMETRICW tm{};GetTextMetricsW(dc,&tm);SelectObject(dc,old);ReleaseDC(address,dc);RECT format{};SendMessageW(address,EM_GETRECT,0,(LPARAM)&format);RECT bounds{};GetWindowRect(address,&bounds);MapWindowPoints(nullptr,window,(POINT*)&bounds,2);
     std::printf("REAL EDIT: face=%s dpi=%u fontHeight=%ld ascent=%ld window=(%ld,%ld,%ld,%ld) format=(%ld,%ld,%ld,%ld)\n",Utf8(face).c_str(),GetDpiForWindow(window),tm.tmHeight,tm.tmAscent,bounds.left,bounds.top,bounds.right,bounds.bottom,format.left,format.top,format.right,format.bottom);

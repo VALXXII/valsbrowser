@@ -168,8 +168,57 @@ struct Fixture {
     }
 };
 
+// ---- Toolbar icon model (download-icon.h) ----
+static void IconChecks() {
+    using namespace NativeChrome::DownloadIcon;
+    const auto t0 = Motion::Time{} + std::chrono::seconds(50);
+    auto at = [&](double ms) { return t0 + std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double, std::milli>(ms)); };
+    const double frame = 1000.0 / Fps;
+    Expect(RingFrames == 82 && ArrowFrames == 120, "icon frame layout matches the generator");
+    Model m; Expect(m.At(t0).idle && !m.NextWake(t0).delay, "idle: static icon, no frames");
+    m.Update(true, 0, false, t0, false);
+    Expect(!m.At(t0).idle && m.At(t0).ring == 0 && m.At(t0).arrow == 0, "start leaves from the tray pose");
+    Expect(m.At(at(7 * frame + 1)).ring == 7 && m.At(at(7 * frame + 1)).arrow == 7, "start morph plays in time");
+    Expect(m.At(at(20 * frame)).ring == Morph, "waiting: grey ring, no fill");
+    const int a1 = m.At(at(20 * frame)).arrow, a2 = m.At(at(40 * frame)).arrow;
+    Expect(a1 > Morph && a2 > a1 && a2 < LoopEnd, "arrow loops on its own clock");
+    m.Update(true, .5f, false, at(40 * frame), false);
+    Expect(m.At(at(41 * frame)).ring == Morph + Steps / 2 && m.At(at(41 * frame)).arrow != m.At(at(55 * frame)).arrow, "fill follows progress while the arrow keeps moving");
+    // Completion at frame 60: the loop restarts at 14 + 78 = 92 -> done waits for that boundary.
+    m.Update(false, 1, true, at(60 * frame), false);
+    Expect(m.At(at(61 * frame)).ripple >= 0 && m.At(at(61 * frame)).ring == FillEnd, "completed: full ring + ripple right away");
+    Expect(m.At(at(91 * frame)).ring == FillEnd && m.At(at(93 * frame)).ring > FillEnd && m.At(at(93 * frame)).arrow > LoopEnd, "done starts at the loop boundary (arrow at rest)");
+    Expect(m.At(at(92 * frame + 1)).arrow == LoopEnd, "hand-off frame is the loop's rest pose");
+    m.Settle(at(130 * frame));
+    Expect(m.At(at(130 * frame)).idle && !m.Active() && !m.NextWake(at(130 * frame)).delay, "back to the static icon, no more frames");
+    // Cancel: the start, reversed, without ripple.
+    Model c; c.Update(true, .3f, false, t0, false); c.Update(false, .3f, false, at(30 * frame), false);
+    Expect(c.At(at(31 * frame)).ripple < 0, "cancel: no ripple");
+    Expect(c.At(at(93 * frame)).ring < Morph && c.At(at(93 * frame)).ring > 0, "cancel: ring rolls back into the tray");
+    // A new download while leaving starts right after.
+    Model q; q.Update(true, 0, false, t0, false); q.Update(false, 1, true, at(20 * frame), false); q.Update(true, 0, false, at(100 * frame), false);
+    q.Settle(at(130 * frame));
+    Expect(q.Active() && !q.At(at(130 * frame)).idle, "queued restart after the icon left");
+    // Reduced motion: no morph, no loop, no ripple; progress still shown.
+    Model r; r.Update(true, .5f, false, t0, true);
+    Expect(r.At(t0).ring == Morph + Steps / 2 && r.At(at(500)).arrow == Morph && !r.NextWake(t0).delay, "reduced motion: static ring with progress");
+    // The x4 ripple stays inside the repainted rectangle (16 DIP icon, button centre).
+    {
+        const float reachDip = Ripple::reach * 16 / 256, ringDip = (Ripple::radius * Ripple::grow + Ripple::stroke * Ripple::grow / 2) * 16 / 256;
+        Expect(Ripple::grow == 4 && reachDip > ringDip && reachDip < 40, "ripple reach covers the x4 ring and its blur");
+    }
+    // Composition: grey ink like the other icons, fill opaque, the cut-out removes both.
+    const uint32_t opaque = 0xFF949494u, none = 0, blue = 0xFF3E67FFu;
+    std::vector<uint32_t> out;
+    Compose(&opaque, &none, &none, &none, 1, out); Expect((out[0] >> 24) == 128 && (out[0] & 255) == 128, "track: white at 50%");
+    Compose(&opaque, &blue, &none, &none, 1, out); Expect(out[0] == blue, "fill covers the track");
+    const uint32_t cut = 0xFFFFFFFFu;
+    Compose(&opaque, &blue, &cut, &none, 1, out); Expect(out[0] == 0, "cut-out is transparent");
+}
+
 int wmain(int argc, wchar_t** argv) {
     ModelChecks();
+    IconChecks();
     if (argc >= 3) {
         if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
         Fixture f(argv[1], argv[2]);
@@ -206,6 +255,30 @@ int wmain(int argc, wchar_t** argv) {
             Expect(f.Morph(name, drawerPaper, 728, DrawerMotion::morphSpring.At(i / 6.f)), "render morph frame");
         }
         Expect(f.Drawer(L"drawer-scrolled.png", drawerPaper, 728, {1, 1, 1, 1, 1}, 120, DownloadsUI::SectionHit(Period::Yesterday)), "render scrolled drawer");
+        // Real toolbar (Chrome::Paint) with the animated icon, cropped to the button.
+        {
+            using namespace NativeChrome::DownloadIcon;
+            const auto t0 = Motion::Time{} + std::chrono::seconds(50);
+            auto at = [&](double frames) { return t0 + std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double>(frames / Fps)); };
+            struct Shot { const wchar_t* name; double when; float fraction; bool complete; };
+            const Shot shots[] = {{L"icon-0-idle", -1, 0, false}, {L"icon-1-start", 7, 0, false}, {L"icon-2-waiting", 30, 0, false},
+                                  {L"icon-3-bob-low", 14 + 39, 0, false}, {L"icon-4-40pct", 60, .4f, false}, {L"icon-5-ripple", 72, 1, true}, {L"icon-5b-ripple-30", 70 + 11, 1, true}, {L"icon-5c-ripple-60", 70 + 22, 1, true},
+                                  {L"icon-6-done", 92 + 12, 1, true}};
+            for (const auto& shot : shots) {
+                Chrome chrome; if (FAILED(chrome.InitOffscreen(f.root, 180, 360, 84))) { Expect(false, "toolbar offscreen"); continue; }
+                Motion::Time now = t0;
+                if (shot.when >= 0) {
+                    chrome.downloadIcon.Update(true, shot.fraction, false, t0, false);
+                    if (shot.fraction > 0) chrome.downloadIcon.Update(true, shot.fraction, false, at(40), false);
+                    if (shot.complete) chrome.downloadIcon.Update(false, 1, true, at(70), false);
+                    now = at(shot.when);
+                }
+                std::vector<std::wstring> titles{L"Example"};
+                auto* target = chrome.RenderTarget(); (void)target;
+                chrome.Paint(titles, 0, L"", false, 0, 0, nullptr, now);
+                Expect(SUCCEEDED(chrome.SavePng((f.out + L"\\" + shot.name + L".png").c_str())), "save toolbar shot");
+            }
+        }
         CoUninitialize();
     }
     if (failures) { std::fprintf(stderr, "%d download panel check(s) failed\n", failures); return 1; }
