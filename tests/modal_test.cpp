@@ -264,6 +264,69 @@ int wmain(int argc, wchar_t** argv) {
         Check(calls == 3 && got.action == OriginPrompt::Action::Block && got.remember, "permission: notifications choice always remembered (B02)");
         p.Surface().FinishAnimationsForTest();
     }
+    {   // Permission popovers as drawn in Paper B02 (user edit 2026-11-12): head (glyph, title, subtitle), the
+        // remember check by kind, Bloquer / Autoriser, Fermer. No collapsible help, no extra note.
+        using OriginPrompt::Permission::Notifications; namespace OPP = OriginPrompt::Permission; using D = Modal::Dialog;
+        auto spec = [](std::vector<int> kinds, std::wstring origin = L"x.com") {
+            OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::Permission; s.origin = origin; s.permissions = std::move(kinds); return s; };
+        auto has = [](const std::wstring& text, const wchar_t* part) { return text.find(part) != std::wstring::npos; };
+        // Kind 13 is the SDK's COREWEBVIEW2_PERMISSION_KIND_PERSISTENT_STORAGE (the x.com capture), never « notifications ».
+        Check(OPP::PersistentStorage == 13 && SiteRequest::Kind::PersistentStorage == 13, "permission kinds: 13 = persistent storage (SDK 1.0.4314.35)");
+        auto st = OriginPrompt::Build(spec({OPP::PersistentStorage}), true);
+        Check(st.title == L"x.com veut conserver ses données sur cet appareil" && st.headGlyph == DialogKit::Glyph::storage && SiteRequest::GlyphOf(13) == SiteRequest::Path::storage, "permission kinds: 13 has its own title and storage glyph");
+        Check(st.subtitle == L"Sinon, le navigateur peut les effacer s'il manque d'espace." && !has(st.title, L"notification") && !has(st.subtitle, L"otification"), "permission kinds: 13 never described as notifications");
+        Check(st.checkLabel == L"Mémoriser pour ce site" && st.notices.empty(), "permission kinds: 13 keeps the remember check (policy unchanged)");
+        auto unknown = OriginPrompt::Build(spec({OPP::Unknown}, L"exemple.fr"), true);
+        Check(unknown.title == L"exemple.fr demande une autorisation" && unknown.subtitle == L"Le moteur ne précise pas de quoi il s'agit." && unknown.headGlyph == DialogKit::Glyph::info, "permission kinds: 0 says the engine gave no type");
+        auto future = OriginPrompt::Build(spec({14}), true);
+        Check(future.title == L"x.com demande une autorisation" && future.subtitle == L"Type non reconnu par ce navigateur (code moteur 14).", "permission kinds: a future kind is named by its engine code, not guessed");
+        auto notif = OriginPrompt::Build(spec({Notifications}, L"lemonde.fr"), true);
+        Check(notif.title == L"lemonde.fr veut vous envoyer des notifications" && notif.subtitle == L"Le site pourra afficher des alertes en dehors de la page." && !has(notif.subtitle, L"onglet fermé"), "notifications: Paper title and subtitle, no unproven promise");
+        Check(notif.notices.empty() && notif.checkLabel.empty(), "notifications: no note and no check (Paper B02)");
+        for (int k = 0; k <= 14; ++k) { if (OriginPrompt::Build(spec({k}), true).subtitle.empty()) { Check(false, "permission kinds: every kind has a subtitle"); break; } if (k == 14) Check(true, "permission kinds: every kind has a subtitle"); }
+
+        // What the window exposes: no « Plus d'infos » button, no text block, nothing that scrolls.
+        RECT anchor{200, 150, 224, 174}; int calls = 0; OriginPrompt::Result got; auto& S = p.Surface();
+        auto exposed = [&](std::vector<std::wstring>& names, bool& extra) {
+            names.clear(); extra = false;
+            for (auto& n : S.NodesForTest()) { if (n.key == 1) continue; names.push_back(n.name); if (n.expand != 0 || has(n.name, L"Plus d'infos") || has(n.automationId, L"More")) extra = true; }
+        };
+        std::vector<std::wstring> names; bool extra = false;
+        p.Show(spec({OPP::PersistentStorage}), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        exposed(names, extra);
+        Check(!extra && names == std::vector<std::wstring>{L"Mémoriser pour ce site", L"Bloquer", L"Autoriser", L"Fermer"}, "storage popover: check, Bloquer, Autoriser, Fermer; no collapsible help");
+        Check(S.FocusForTest() == D::ButtonHit(0), "storage popover: initial focus on Bloquer (unchanged)");
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::ButtonHit(1), "storage popover: Tab → Autoriser");
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::CloseHit, "storage popover: Tab → Fermer");
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::SimpleCheckHit, "storage popover: Tab → Mémoriser (wraps)");
+        { const float before = S.HeightForTest(); SendMessageW(p.Window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), 0); S.KeyForTest(VK_DOWN); Check(S.HeightForTest() == before && calls == 0, "storage popover: wheel / ↓ change nothing, nothing answered"); }
+        for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/perm-storage-" + std::to_wstring(dpi) + L".png", dpi), "storage popover render");
+        S.KeyForTest(VK_ESCAPE); Check(calls == 1 && got.action == OriginPrompt::Action::Dismiss && !got.remember, "storage popover: Échap = Dismiss once, nothing remembered");
+        S.KeyForTest(VK_ESCAPE); S.FinishAnimationsForTest(); Check(calls == 1, "storage popover: no second answer");
+
+        p.Show(spec({Notifications}, L"lemonde.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        exposed(names, extra);
+        Check(!extra && names == std::vector<std::wstring>{L"Bloquer", L"Autoriser", L"Fermer"}, "notifications popover: title + subtitle + buttons only (Paper B02)");
+        {   std::wstring help; for (auto& n : S.NodesForTest()) if (n.key == 1) help = n.help;
+            Check(help == L"Le site pourra afficher des alertes en dehors de la page.", "notifications popover: UIA group help is the subtitle"); }
+        { const auto block = S.BoxForTest(D::ButtonHit(0)); Check(S.HeightForTest() - block.bottom == 16, "notifications popover: buttons end the popover"); }
+        for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/perm-notifications-" + std::to_wstring(dpi) + L".png", dpi), "notifications popover render");
+        S.ActivateForTest(D::ButtonHit(0)); Check(calls == 2 && got.action == OriginPrompt::Action::Block && got.remember, "notifications popover: Bloquer still always remembered");
+        S.FinishAnimationsForTest();
+
+        p.Show(spec({OPP::Camera, OPP::Microphone, OPP::Geolocation}, L"rendez-vous.doctolib.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        exposed(names, extra);
+        Check(!extra && names == std::vector<std::wstring>{L"Mémoriser pour ce site", L"Bloquer", L"Autoriser", L"Fermer"}, "grouped popover: kind rows, check, buttons; no collapsible help");
+        Check(S.RenderForTest(root + L"/build/popups/perm-grouped-144.png", 144), "grouped popover render");
+        p.Abort(); S.FinishAnimationsForTest(); Check(calls == 3 && got.action == OriginPrompt::Action::Dismiss, "grouped popover: Abort answers once");
+
+        p.Show(spec({OPP::PersistentStorage}, L"un-sous-domaine-vraiment-tres-long.exemple-de-domaine-public-pour-tester.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        Check(S.RenderForTest(root + L"/build/popups/perm-storage-long-192.png", 192), "long origin render (title wraps, nothing cut)");
+        p.Abort(); S.FinishAnimationsForTest();
+        p.Show(spec({OPP::Unknown}, L"exemple.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        Check(S.RenderForTest(root + L"/build/popups/perm-unknown-144.png", 144), "unknown kind render");
+        p.Abort(); S.FinishAnimationsForTest(); Check(calls == 5, "every request answered exactly once");
+    }
     {   // B06 HTTP auth: Submit returns the credentials once; the EDIT buffer is wiped; refusal.
         OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::BasicAuth; s.origin = L"imprimante-bureau"; s.user = L"admin"; s.insecure = true;
         int calls = 0; std::wstring user, password; bool wipedAfter = false; OriginPrompt::Result* seen = nullptr;
