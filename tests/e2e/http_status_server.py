@@ -4,6 +4,8 @@
 /cut       : headers announce 4096 bytes, 40 are sent, then the connection is closed (truncated response).
 /empty     : the connection is closed without any response (empty reply).
 /rst       : the connection is reset (RST) without any response.
+/e/<code>  : HTTP status <code> with an empty body.
+/r/<code>  : a 302 redirect to /s/<code>.
 Usage: python http_status_server.py <port>
 """
 import http.server, socket, struct, sys
@@ -20,6 +22,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(code); self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body))); self.send_header('Cache-Control', 'no-store'); self.end_headers()
             self.wfile.write(body); return
+        if self.path.startswith('/e/'):   # an HTTP error status with an EMPTY body
+            self.send_response(int(self.path[3:6])); self.send_header('Content-Length', '0'); self.send_header('Cache-Control', 'no-store'); self.end_headers(); return
+        if self.path.startswith('/r/'):   # 302 to /s/<code>
+            self.send_response(302); self.send_header('Location', '/s/' + self.path[3:6]); self.send_header('Content-Length', '0'); self.end_headers(); return
         if self.path.startswith('/cut'):
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Length', '4096'); self.end_headers()
             self.wfile.write(b'<!doctype html><title>sentinel-cut</title>'); self.wfile.flush()

@@ -22,6 +22,7 @@ int main() {
     Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 302) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 600), "only 400-599");
     Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID, 403) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, 503) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, 404), "certificate / reset / timeout are never hidden by a status code");
     Require(!ErrorPages::KeepsServerPage(true, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 404), "a successful navigation is not this case");
+    Require(!ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 399) && !ErrorPages::KeepsServerPage(false, COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED, 404), "399 and a cancelled navigation are not kept");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT, true) == Kind::Refused, "refused");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT, true) == Kind::TimedOut, "timeout");
     Require(ErrorPages::Classify(COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, true) == Kind::Reset, "reset");

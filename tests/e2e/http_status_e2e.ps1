@@ -51,19 +51,25 @@ try {
     @{ name = '404'; url = "http://127.0.0.1:$port/s/404"; body = $true },
     @{ name = '429'; url = "http://127.0.0.1:$port/s/429"; body = $true },
     @{ name = '503'; url = "http://127.0.0.1:$port/s/503"; body = $true },
-    @{ name = 'cut'; url = "http://127.0.0.1:$port/cut"; body = $null },        # partial body: engine behaviour recorded
+    @{ name = '302-404'; url = "http://127.0.0.1:$port/r/404"; body = $true; title = 'sentinel-404' },   # redirect, then the site's 404 page
+    @{ name = 'empty-404'; url = "http://127.0.0.1:$port/e/404"; body = $null },  # 4xx with no body: engine behaviour recorded (review M1)
+    @{ name = 'empty-500'; url = "http://127.0.0.1:$port/e/500"; body = $null },
+    @{ name = 'cut'; url = "http://127.0.0.1:$port/cut"; body = $false },       # response cut after its 200 headers: our error page (HttpStatusCode 200)
     @{ name = 'empty'; url = "http://127.0.0.1:$port/empty"; body = $false },   # no response at all: our error page
     @{ name = 'rst'; url = "http://127.0.0.1:$port/rst"; body = $false },       # reset: our error page
     @{ name = 'refused'; url = "http://127.0.0.1:$closed/x"; body = $false }    # connection refused: our error page
   )
   foreach ($c in $cases) {
     $before = (Log-Text).Length
-    [void](Cdp-Send $ws 'Page.navigate' @{ url = $c.url }); Start-Sleep -Milliseconds 2500
+    [void](Cdp-Send $ws 'Page.navigate' @{ url = $c.url })
+    for ($i = 0; $i -lt 60; $i++) { Start-Sleep -Milliseconds 250; if ((Log-Text).Substring($before) -match '(?m)^(NAVIGATION|ERROR PAGE)') { break } }   # wait for this navigation's outcome in the log
+    Start-Sleep -Milliseconds 800   # let our error page (NavigateToString) or the kept page settle
     $title = Read-Page $ws 'document.title'; $sentinel = Read-Page $ws 'String(window.__sentinel)'; $href = Read-Page $ws 'location.href'
     $lines = ((Log-Text).Substring($before) -split "`r?`n" | Where-Object { $_ -match '^(NAVIGATION|ERROR PAGE|NAV)' }) -join ' | '
     "case $($c.name): title=[$title] sentinel=[$sentinel] location=[$href]"
     "     log: $lines"
-    $own = $title -eq "sentinel-$($c.name)" -and $sentinel -eq "js-$($c.name)"
+    $want = if ($c.title) { $c.title } else { "sentinel-$($c.name)" }; $js = 'js-' + $want.Substring(9)
+    $own = $title -eq $want -and $sentinel -eq $js
     $errorPage = $lines -match 'ERROR PAGE'
     if ($c.body -eq $true) { Check ($own -and -not $errorPage) "HTTP $($c.name): the server's own body and script are shown (not replaced by our error page)" }
     elseif ($c.body -eq $false) { Check ($errorPage -and -not $own) "$($c.name): a real transport failure still shows our error page" }

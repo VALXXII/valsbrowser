@@ -2311,20 +2311,22 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
     if(t==Active()){chrome.lottie.RefreshEnd();RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
     if(!ok){
         COREWEBVIEW2_WEB_ERROR_STATUS error;a->get_WebErrorStatus(&error);
-        int httpStatus=0;{Com<ICoreWebView2NavigationCompletedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationCompletedEventArgs2,(void**)&a2.p))&&a2.p&&FAILED(a2->get_HttpStatusCode(&httpStatus)))httpStatus=0;}   // 0: older runtime / no response
-        // An HTTP 4xx/5xx answer (e.g. a 403 challenge page) IS the site's page: shown as received, never replaced.
-        if(t->errorPage.forced<0&&NativeChrome::ErrorPages::KeepsServerPage(false,(int)error,httpStatus)){
-            Log(L"NAVIGATION HTTP "+std::to_wstring(httpStatus)+L" (the site's own page) "+t->uri);
-            RequestFavicon(t);if(halted)return S_OK;
-            t->revealed=true;ApplyPages();if(t==Active())Update();
-            return S_OK;
-        }
+
         // Our CANCEL of a refused server certificate may surface as « cancelled »: the recorded status wins.
         // (WebView2 reports the cancelled request as « connection aborted/reset » or « cancelled »), only for
         // this navigation and only when the refused request is the navigation's own URL.
         if(t->errorPage.certStatus>=0&&navigationId==t->errorPage.startingId&&NativeChrome::ErrorPages::CertificateMatches(t->errorPage.certStatus,t->errorPage.certUri,t->errorPage.starting))error=(COREWEBVIEW2_WEB_ERROR_STATUS)t->errorPage.certStatus;
         if(error==COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)return S_OK;
         if(HttpsUpgradeFailed(t,navigationId,error))return S_OK;
+        int httpStatus=0;{Com<ICoreWebView2NavigationCompletedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationCompletedEventArgs2,(void**)&a2.p))&&a2.p&&FAILED(a2->get_HttpStatusCode(&httpStatus)))httpStatus=0;}   // 0: older runtime / no response
+        // An HTTP 4xx/5xx answer (e.g. a 403 challenge page) IS the site's page: shown as received, never replaced.
+        // Only for the tab's latest top-level navigation, no refused certificate recorded, no forced error page.
+        if(navigationId==t->errorPage.startingId&&t->errorPage.certStatus<0&&t->errorPage.forced<0&&NativeChrome::ErrorPages::KeepsServerPage(false,(int)error,httpStatus)){
+            Log(L"NAVIGATION HTTP "+std::to_wstring(httpStatus)+L" (the site's own page) "+t->errorPage.starting);
+            RequestFavicon(t);if(halted)return S_OK;
+            t->revealed=true;ApplyPages();if(t==Active())Update();
+            return S_OK;
+        }
         if(ShowErrorPage(t,error,navigationId)){t->revealed=true;ApplyPages();if(t==Active())Update();return S_OK;}
         Log(L"NAVIGATION FAILED WebErrorStatus="+std::to_wstring(error)+L" "+t->uri);
         // A new controller starts hidden until its first navigation completes.
