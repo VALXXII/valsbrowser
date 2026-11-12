@@ -72,8 +72,8 @@ try {
   $asked = Wait-Log 'PERMISSION request kind=13 http://127\.0\.0\.1:18767'
   Check $asked 'engine raised PermissionRequested kind=13 (persistent storage) for the fixture origin'
   if ($asked) {
-    $group = Find-Id 'PermissionPrompt'; Check ($group -and $group.Current.Name -like '127.0.0.1*conserver ses données*') "popover title names persistent storage: $($group.Current.Name)"
-    Check ($group -and $group.Current.HelpText -eq "Sinon, le navigateur peut les effacer s'il manque d'espace.") 'popover subtitle (UIA help) explains persistent storage'
+    $group = Find-Id 'PermissionPrompt'; Check ($group -and $group.Current.Name -like '127.0.0.1*protéger son stockage local*') "popover title names persistent storage: $($group.Current.Name)"
+    Check ($group -and $group.Current.HelpText -eq "Protège les données locales du site quand le navigateur libère de l'espace. Les mots de passe sont gérés séparément.") 'popover subtitle (UIA help) explains persistent storage'
     Check ($null -eq (Find-Id 'PermissionMore' 2)) 'no « Plus d''infos » row on the popover (UIA)'
     Check ($null -ne (Find-Id 'PermissionBlock') -and $null -ne (Find-Id 'PermissionAllow') -and $null -ne (Find-Id 'DialogClose')) 'Bloquer, Autoriser and Fermer exposed'
     Check ((Count-Name 'Mémoriser pour ce site') -eq 1) 'remember check exposed for persistent storage (control for the notifications check)'

@@ -1,0 +1,16 @@
+Positions relatives a VSS-0 (x,y,w,h) apres la modification:
+VST-0 Paiement 0 0 520 34
+VSU-0 Frame 0 54 520 68
+VSY-0 Frame 0 142 520 68
+VT2-0 Payer — sélectionné 0 230 240 68
+VT3-0 Bouton Payer (site) 0 24 240 44
+VT5-0 Cadre de sélection -4 20 248 52
+VT6-0 Étiquette -4 -2 293 20
+VYF-0 Mesure — gap 20 (titre → e-mail) 0 34 520 20
+VYJ-0 Mesure — gap 20 (e-mail → carte) 0 122 520 20
+VYN-0 Mesure — gap 20 (carte → bouton) 0 210 520 20
+arbre (noms, IDs, tailles) hors noeuds ajoutes: lignes differentes = 2 longueurs 116 116
+ avant: Frame "Étiquette" (VT6-0) 207×20
+ apres: Frame "Étiquette" (VT6-0) 293×20
+ avant: Text "button.btn-primary ·…" (VT7-0) 195×16 "button.btn-primary · 240×44"
+ apres: Text "button.btn-primary ·…" (VT7-0) 281×16 "button.btn-primary · 240×44 · padding 0"

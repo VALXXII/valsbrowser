@@ -29,7 +29,7 @@ Aucune rangée « Plus d'infos », aucun paragraphe repliable, aucun indicateur 
 
 | Type | Titre | Sous-titre |
 |---|---|---|
-| 13 Stockage persistant | « <o> veut conserver ses données sur cet appareil » (glyphe base de données) | Sinon, le navigateur peut les effacer s'il manque d'espace. |
+| 13 Stockage persistant | « <o> veut protéger son stockage local » (glyphe base de données) | Protège les données locales du site quand le navigateur libère de l'espace. Les mots de passe sont gérés séparément. |
 | 4 Notifications | inchangé | Le site pourra afficher des alertes en dehors de la page. (« même onglet fermé » retiré : non prouvé) |
 | Caméra / Micro / Capteurs / Fichiers / Lecture auto / Polices / Fenêtres | inchangés | une phrase courte par type (PR64) |
 | 0 inconnu | « <o> demande une autorisation » | Le moteur ne précise pas de quoi il s'agit. |

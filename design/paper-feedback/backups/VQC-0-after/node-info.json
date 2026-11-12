@@ -1,0 +1,21 @@
+{
+ "id": "VQC-0",
+ "name": "Exploration · B1 · Barre + bandeau — sélection et note",
+ "component": "Frame",
+ "width": 1180,
+ "height": 815,
+ "worldX": -3146,
+ "worldY": -767,
+ "x": -3146,
+ "y": -767,
+ "isVisible": true,
+ "isLocked": false,
+ "parentId": "root_node_p-H-0",
+ "childIds": [
+  "VQD-0",
+  "VSN-0"
+ ],
+ "childCount": 2,
+ "artboardId": null,
+ "textContent": null
+}

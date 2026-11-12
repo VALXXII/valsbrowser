@@ -1,0 +1,1 @@
+PASS: 186 overlay scrollbar checks (Paper values, real-metric geometry at 100/125/175 %, hit bands, AA raster with outer ring, 100/800/200/120 ms motion, reduced motion, dark-site palette by contrast, strict 10/12-field message).

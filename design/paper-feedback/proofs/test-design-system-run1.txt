@@ -1,0 +1,27 @@
+﻿exit=0
+PASS: typed variants, disabled/focus isolation, pointer vs keyboard focus strength, opaque state fills, native state sheets at 96/144/192 DPI, stable close hover and glyph ink.
+R enter t=0 fill=41
+R enter t=1 fill=41
+R enter t=60 fill=46
+R enter t=120 fill=51
+R leave t=121 fill=51
+R leave t=180 fill=46
+R leave t=240 fill=41
+C enter t=0 fill=41
+C enter t=1 fill=41
+C enter t=60 fill=46
+C enter t=120 fill=51
+C leave t=121 fill=51
+C leave t=180 fill=46
+C leave t=240 fill=41
+window controls t=0 equal fill=23
+window controls t=1 equal fill=23
+window controls t=60 equal fill=37
+window controls t=120 equal fill=51
+window close t=0 red=23 blue=23
+window close t=1 red=23 blue=23
+window close t=60 red=58 blue=33
+window close t=120 red=91 blue=43
+PASS: focused hover colors, reverse transitions, memory PNG/alpha, favicon stale-request and close guards; no browser launch.
+PASS: 186 overlay scrollbar checks (Paper values, real-metric geometry at 100/125/175 %, hit bands, AA raster with outer ring, 100/800/200/120 ms motion, reduced motion, dark-site palette by contrast, strict 10/12-field message).
+

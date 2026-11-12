@@ -1,0 +1,23 @@
+{
+ "VQC-0": {
+  "id": "VQC-0",
+  "name": "Exploration · B1 · Barre + bandeau — sélection et note",
+  "parentId": "root_node_p-H-0",
+  "x": -3146,
+  "y": -767,
+  "worldX": -3146,
+  "worldY": -767,
+  "width": 1180,
+  "height": 815,
+  "visible": null,
+  "locked": null,
+  "childIds": [
+   "VQD-0",
+   "VSN-0"
+  ],
+  "descendants": 100,
+  "jsx_sha256": "096e0436ebfb18e5bfb7c00a7f4762fff60ded1b72ad1ea60cf6000a77fd9876",
+  "styles_sha256": "f46a989d6883cc197f369cf29fc22a7f11bd6ca2f5953f5cf3394e04d48d0033",
+  "tree_sha256": "323810f1440f9df4633b785f98d4c1e1e7da19d51e01d658c2d72a9ae5bb8ad4"
+ }
+}

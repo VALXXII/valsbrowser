@@ -1,0 +1,15 @@
+{
+  "file": "01M6Q7YT14ZKMGET54ASPNGQEC",
+  "base": {"main": "4a3971d88b6c481e4c9a397099e0ce90007215c0", "release": "v0.3.235 (VALXXII/browser-releases)", "tokensHash": "b5366ac2"},
+  "paperOperations": [
+    {"thread": "c-l6gvbn", "op": "duplicate_nodes", "source": "3AK-0", "new": "VVQ-0", "then": {"position": "4420/32340.4", "VVS-0 backgroundColor": "#121212", "VVT-0": "backgroundColor #FFFFFF8F, boxShadow #17171729 0 0 0 1px", "rename": "Scrollbar minimale D — site sombre"}},
+    {"thread": "c-l6gvbn", "op": "duplicate_nodes", "source": "K9Q-0", "new": "VXK-0", "text": "Scrollbar minimale D — site sombre", "parent": "K9L-0 (anchor kept)"},
+    {"thread": "c-l6gvbn", "op": "duplicate_nodes", "source": "R8K-0", "new": "VXL-0 (in I4N-0)", "text": "À fusionner · D site sombre"},
+    {"thread": "c-bu5dzt", "op": "none", "note": "user cleanup in 9Z2-0 is the reference; only the native code changed"},
+    {"thread": "c-qdlkgz", "op": "duplicate_nodes", "source": "DR3-0", "new": "VXN-0 (Variante — Stockage persistant)", "texts": {"VY8-0": "Stockage persistant", "VY4-0": "x.com veut protéger son stockage local", "VY3-0": "Protège les données locales du site quand le navigateur libère de l'espace. Les mots de passe sont gérés séparément."}, "glyph": "VY6-0 replaced by VYC-0 (code storage path)", "DQY-0": "flexWrap wrap, rowGap 32px"},
+    {"thread": "c-wsk4r6", "exception": "user: « Autoriser uniquement ce feedback », scope approved by root: VQC-0 only", "op": "write_html into VSS-0 + move to index 0..2", "new": ["VYF-0", "VYJ-0", "VYN-0"], "positions": "absolute 0/34, 0/122, 0/210, 520x20, background var(--color-browser-split-tint), label 20", "VT7-0": "button.btn-primary · 240×44 · padding 0", "sideEffect": "Paper set position: relative on VSS-0 (needed) and VST-0/VSU-0/VSY-0 (forced by Paper, static refused); no offset, geometry identical"}
+  ],
+  "notTouched": ["SYJ-0 and its thread", "Icon page", "tokens", "V9W-0", "VEM-0", "VHX-0", "VLO-0", "VTK-0", "GFT-0/GNK-0 (orphaned)"],
+  "externalChanges": {"VVO-0": "2-node artboard appeared then left p-H during the session", "VLO-0": "font families tokenised to var(--font-browser-inter) (proofs/external-change-VLO.txt)"},
+  "commentsResolved": []
+}

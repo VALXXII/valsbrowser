@@ -1,0 +1,3 @@
+﻿exit=0
+PASS elements integration: deferrals once, deny by default, sandbox guard and bridge, schemes, labels, B01 request chip lifecycle
+

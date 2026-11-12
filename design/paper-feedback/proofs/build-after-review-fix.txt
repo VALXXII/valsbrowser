@@ -1,0 +1,4 @@
+﻿exit=0
++ C:\Users\<user>\orca\workspaces\Browser\paper-live-unification\tools\w64devkit\bin\strip.exe --strip-debug C:\Users\<user>\orca\workspaces\Browser\paper-live-unification\build\feedback-v2\update-helper.exe
+Build OK: C:\Users\<user>\orca\workspaces\Browser\paper-live-unification\build\feedback-v2\browser.exe (0.3.237, cc231a698bd7)
+

@@ -88,10 +88,38 @@ inline constexpr float describedWidth = 288, describedTop = 7, describedBottom =
 inline constexpr float enterSlide = 6, enterBlur = 3, enterMs = 180;
 // Split block (Paper "V2"): 28 DIP header and reason rows in 13 DIP text, glyph 18 x 14 then 10 DIP to the label.
 inline constexpr float header = 28, small = 13, glyphW = 18, glyphH = 14, glyphGap = 10, headerIcon = 14, miniIcon = 12, headerGap = 8;
+// Glyph ink, opaque grey on the #171717 menu (Paper 9Z2-0: #8A8A8A outline and fill, the same on
+// the highlighted row). Disabled keeps the former 32 % white over #171717 (0x61).
+inline constexpr unsigned glyphInk = 0x8A, glyphInkDisabled = 0x61;
 }
 // CLSID_D2D1GaussianBlur (d2d1effects.h declares it extern; dxguid is not linked).
 inline constexpr GUID BlurEffect{0x1feb6d69, 0x2fe6, 0x4ac9, {0x8c, 0x58, 0x1d, 0x7f, 0x93, 0xe7, 0xa6, 0xa5}};
 static_assert(Layout::radius == Layout::rowRadius + Layout::pad, "concentric shell: row radius + inset");
+
+// 18 x 14, radius 2, 1.5 DIP inset outline, the destination half (or a 6 DIP end) filled.
+// One opaque ink for the outline and the fill (Paper 9Z2-0, user clean-up for c-bu5dzt):
+// the fill overlaps the outline on three sides, so a translucent ink doubled its alpha there.
+inline void PaintLayoutGlyph(ID2D1RenderTarget* t, ID2D1SolidColorBrush* brush, Glyph g, float x, float cy, bool enabled) {
+    if (g == Glyph::None || g == Glyph::Blank) return;
+    const float ink = (enabled ? Layout::glyphInk : Layout::glyphInkDisabled) / 255.f;
+    brush->SetColor(D2D1::ColorF(ink, ink, ink, 1));
+    const D2D1_RECT_F box{x, cy - Layout::glyphH / 2, x + Layout::glyphW, cy + Layout::glyphH / 2};
+    t->DrawRoundedRectangle(D2D1::RoundedRect({box.left + .75f, box.top + .75f, box.right - .75f, box.bottom - .75f}, 1.25f, 1.25f), brush, 1.5f);
+    const float w = Layout::glyphW, h = Layout::glyphH; D2D1_RECT_F fill = box;
+    switch (g) {
+    case Glyph::Right: fill.left = box.right - w / 2; break;
+    case Glyph::Left: fill.right = box.left + w / 2; break;
+    case Glyph::Top: fill.bottom = box.top + h / 2; break;
+    case Glyph::Bottom: fill.top = box.bottom - h / 2; break;
+    case Glyph::StartRow: fill.right = box.left + 6; break;
+    case Glyph::EndRow: fill.left = box.right - 6; break;
+    case Glyph::StartColumn: fill.bottom = box.top + 5; break;
+    case Glyph::EndColumn: fill.top = box.bottom - 5; break;
+    default: break;
+    }
+    t->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    t->FillRoundedRectangle(D2D1::RoundedRect(fill, 2, 2), brush); t->PopAxisAlignedClip();
+}
 
 class Menu {
     struct Level {
@@ -326,27 +354,7 @@ class Menu {
         const D2D1_RECT_F box{x, cy - single / 2, x + single, cy + single / 2};
         if (item.icons.empty() || !l.chrome.DrawSiteImage(item.icons[0], box, alpha)) l.chrome.Icon(L"favicon", box, 16, alpha);
     }
-    // 18 x 14, radius 2, 1.5 DIP inset outline, the destination half (or a 6 DIP end) filled.
-    void DrawGlyph(Level& l, Glyph g, float x, float cy, float alpha) {
-        if (g == Glyph::None || g == Glyph::Blank) return;
-        auto* t = l.chrome.RenderTarget(); auto* brush = l.chrome.SolidBrush(); brush->SetColor(D2D1::ColorF(1, 1, 1, alpha));
-        const D2D1_RECT_F box{x, cy - Layout::glyphH / 2, x + Layout::glyphW, cy + Layout::glyphH / 2};
-        t->DrawRoundedRectangle(D2D1::RoundedRect({box.left + .75f, box.top + .75f, box.right - .75f, box.bottom - .75f}, 1.25f, 1.25f), brush, 1.5f);
-        const float w = Layout::glyphW, h = Layout::glyphH; D2D1_RECT_F fill = box;
-        switch (g) {
-        case Glyph::Right: fill.left = box.right - w / 2; break;
-        case Glyph::Left: fill.right = box.left + w / 2; break;
-        case Glyph::Top: fill.bottom = box.top + h / 2; break;
-        case Glyph::Bottom: fill.top = box.bottom - h / 2; break;
-        case Glyph::StartRow: fill.right = box.left + 6; break;
-        case Glyph::EndRow: fill.left = box.right - 6; break;
-        case Glyph::StartColumn: fill.bottom = box.top + 5; break;
-        case Glyph::EndColumn: fill.top = box.bottom - 5; break;
-        default: break;
-        }
-        t->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        t->FillRoundedRectangle(D2D1::RoundedRect(fill, 2, 2), brush); t->PopAxisAlignedClip();
-    }
+    void DrawGlyph(Level& l, Glyph g, float x, float cy, bool enabled) { PaintLayoutGlyph(l.chrome.RenderTarget(), l.chrome.SolidBrush(), g, x, cy, enabled); }
     // The highlighted command (hover or keyboard) across every open level, for the owner.
     void Highlight() {
         const Item* now = nullptr;
@@ -447,7 +455,7 @@ class Menu {
                 }
                 textLeft += Layout::icon + Layout::iconGap;
             }
-            if (item.glyph != Glyph::None) { DrawGlyph(l, item.glyph, textLeft, cy, (.5f + .2f * h) * (item.enabled ? 1.f : .32f / .5f)); textLeft += Lead(item); }
+            if (item.glyph != Glyph::None) { DrawGlyph(l, item.glyph, textLeft, cy, item.enabled); textLeft += Lead(item); }
             else if (item.siteIcon || !item.icons.empty()) { DrawIcons(l, item, textLeft, cy, Layout::icon, dim); textLeft += Lead(item); }
             const float labelRight = std::max(textLeft + 8, std::min(tail + Layout::shortcutGap - 8, right - Layout::padRight));
             const bool danger = item.danger && item.enabled;

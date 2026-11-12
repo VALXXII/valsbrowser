@@ -8,7 +8,8 @@
 //    the page's *root* scrollbar (`:root{scrollbar-width:none!important}`; nested
 //    scrollers and iframes keep theirs), posts the root scroller's metrics (rAF-coalesced
 //    on scroll, resize, ResizeObserver, fullscreen) and whether the pointer is near the
-//    right/bottom edge (the track strip that reveals a resting handle);
+//    right/bottom edge (the track strip that reveals a resting handle), and the colour really
+//    painted under each track (Scrollbar::DarkSurface then picks the handle colours);
 //  * every shown page (a single page or each split panel) gets its handles as small
 //    layered child windows above it, like the split grips: premultiplied pixels from
 //    Scrollbar::Raster, opacity through the layered window's constant alpha (no re-raster
@@ -21,13 +22,24 @@ constexpr wchar_t ScrollbarScript[]=LR"JS((()=>{try{if(window!==window.top)retur
 const sheet=new CSSStyleSheet();sheet.replaceSync(':root{scrollbar-width:none!important}');
 const adopt=()=>{const l=document.adoptedStyleSheets;if(l.indexOf(sheet)<0)document.adoptedStyleSheets=[...l,sheet];};
 let frame=0,scrolled=0,nearEdge=0;
+const probe=document.createElement('canvas');probe.width=probe.height=1;const pc=probe.getContext('2d',{willReadFrequently:true}),rgba=new Map();
+const parse=v=>{if(!v||v==='transparent'||v==='rgba(0, 0, 0, 0)')return null;let c=rgba.get(v);if(c===undefined){c=null;try{pc.clearRect(0,0,1,1);pc.fillStyle='#000';pc.fillStyle=v;pc.fillRect(0,0,1,1);const d=pc.getImageData(0,0,1,1).data;c=d[3]?[d[0],d[1],d[2],d[3]/255]:null;}catch(_){}if(rgba.size>64)rgba.clear();rgba.set(v,c);}return c;};
+const darkScheme=()=>{let v=(getComputedStyle(document.documentElement).colorScheme||'normal').trim().toLowerCase();if(v==='normal'){const m=document.querySelector('meta[name="color-scheme"]');v=(m&&m.content||'').toLowerCase();}
+const d=/\bdark\b/.test(v),l=/\blight\b/.test(v);return d&&(!l||matchMedia('(prefers-color-scheme: dark)').matches);};
+const over=(c,b)=>b.map((v,k)=>c[k]*c[3]+v*(1-c[3]));
+const surface=(x,y)=>{const r=document.documentElement,body=document.body;let rgb=darkScheme()?[18,18,18]:[255,255,255];
+const rs=getComputedStyle(r),rc=parse(rs.backgroundColor),skip=new Set([r]);
+if(rc||rs.backgroundImage!=='none'){if(rc)rgb=over(rc,rgb);}else if(body&&body.localName==='body'){const bc=parse(getComputedStyle(body).backgroundColor);if(bc)rgb=over(bc,rgb);skip.add(body);}
+const layers=[];for(let el=document.elementFromPoint(x,y);el;el=el.parentElement){if(skip.has(el))continue;const q=el.getBoundingClientRect();if(x<q.left||x>=q.right||y<q.top||y>=q.bottom)continue;const c=parse(getComputedStyle(el).backgroundColor);if(c)layers.push(c);}
+for(let i=layers.length-1;i>=0;--i)rgb=over(layers[i],rgb);
+return (Math.round(rgb[0])<<16)|(Math.round(rgb[1])<<8)|Math.round(rgb[2]);};
 const send=()=>{frame=0;try{adopt();const e=document.scrollingElement,d=document.documentElement;if(!e||!d)return;
 const s=getComputedStyle(d),b=document.body;let ox=s.overflowX,oy=s.overflowY;
 if(b&&ox==='visible'&&oy==='visible'){const bs=getComputedStyle(b);ox=bs.overflowX;oy=bs.overflowY;}
 const fs=!!document.fullscreenElement,free=v=>!fs&&v!=='hidden'&&v!=='clip'?1:0;
-w.postMessage('lisiere-scrollbar '+[scrolled,e.scrollLeft,e.scrollTop,e.clientWidth,e.clientHeight,e.scrollWidth,e.scrollHeight,free(ox),free(oy),s.direction==='rtl'?1:0].join(' '));}catch(_){}scrolled=0;};
+w.postMessage('lisiere-scrollbar '+[scrolled,e.scrollLeft,e.scrollTop,e.clientWidth,e.clientHeight,e.scrollWidth,e.scrollHeight,free(ox),free(oy),s.direction==='rtl'?1:0,surface(innerWidth-6,innerHeight/2),surface(innerWidth/2,innerHeight-6)].join(' '));}catch(_){}scrolled=0;};
 const queue=k=>{if(k)scrolled=1;if(!frame)frame=requestAnimationFrame(send);};
-const edge=v=>{if(v!==nearEdge){nearEdge=v;try{w.postMessage('lisiere-scrollbar-near '+v);}catch(_){}}};
+const edge=v=>{if(v!==nearEdge){nearEdge=v;try{w.postMessage('lisiere-scrollbar-near '+v);}catch(_){}if(v)queue(0);}};
 addEventListener('scroll',()=>queue(1),{passive:true});
 addEventListener('resize',()=>queue(0),{passive:true});
 addEventListener('load',()=>queue(0));
@@ -35,7 +47,10 @@ addEventListener('pointermove',e=>{edge(innerWidth-e.clientX<=12||innerHeight-e.
 document.addEventListener('pointerleave',()=>edge(0),{passive:true});
 document.addEventListener('fullscreenchange',()=>queue(0));
 const ro=new ResizeObserver(()=>queue(0));
-const watch=()=>{if(document.documentElement)ro.observe(document.documentElement);if(document.body)ro.observe(document.body);queue(0);};
+const watch=()=>{if(document.documentElement)ro.observe(document.documentElement);if(document.body)ro.observe(document.body);watch0();queue(0);};
+try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>queue(0));}catch(_){}
+const mo=new MutationObserver(()=>queue(0)),themed={attributes:true,attributeFilter:['class','style','data-theme','data-color-mode']};
+const watch0=()=>{if(document.documentElement)mo.observe(document.documentElement,themed);if(document.body)mo.observe(document.body,themed);};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',watch,{once:true});else watch();
 adopt();queue(0);}catch(_){}})();)JS";
 constexpr wchar_t ScrollbarMessage[]=L"lisiere-scrollbar ";
@@ -46,7 +61,7 @@ struct PageScrollbar {
     NativeChrome::Scrollbar::Motion motion;NativeChrome::Scrollbar::Layout layout;
     int hovered=-1,dragging=-1;bool nearEdge=false;float grab=0;
     RECT page{};                            // the page's client rectangle (px) the layout was computed for
-    struct Drawn { float outer=-1,scale=0,hover=-1,origin=0;int length=-1,pad=0,w=0,h=0;std::vector<uint32_t> pixels; } drawn[2];
+    struct Drawn { float outer=-1,scale=0,hover=-1,origin=0;int length=-1,pad=0,w=0,h=0,dark=-1;std::vector<uint32_t> pixels; } drawn[2];
     bool scriptBusy=false;std::wstring scriptPending;
 };
 std::map<unsigned,PageScrollbar> pageScrollbars; // by tab serial
@@ -88,9 +103,10 @@ void PlaceScrollbars(unsigned serial,PageScrollbar& s,NativeChrome::Motion::Time
         if(!a.present||v.opacity<=.001f){HideScrollbarWindow(s.bars[k]);continue;}
         if(!s.bars[k]&&!(s.bars[k]=NewScrollbarWindow()))continue;
         const float outer=SB::Outer(s.layout,vertical);const int length=(int)std::lround(a.thumbLength);auto& d=s.drawn[k];
-        if(d.outer!=outer||d.scale!=scale||d.length!=length||d.hover!=v.hover){
-            auto tile=SB::Raster(outer,length,scale,v.hover,vertical);
-            d.outer=outer;d.scale=scale;d.hover=v.hover;d.length=length;d.origin=tile.originAcross;d.pad=(tile.along-length)/2;
+        const int dark=SB::DarkSurface(vertical?t->scroll.surfaceV:t->scroll.surfaceH)?1:0;
+        if(d.outer!=outer||d.scale!=scale||d.length!=length||d.hover!=v.hover||d.dark!=dark){
+            auto tile=SB::Raster(outer,length,scale,v.hover,vertical,dark!=0);
+            d.outer=outer;d.scale=scale;d.hover=v.hover;d.length=length;d.dark=dark;d.origin=tile.originAcross;d.pad=(tile.along-length)/2;
             d.w=vertical?tile.across:tile.along;d.h=vertical?tile.along:tile.across;d.pixels=std::move(tile.pixels);
         }
         if(d.w<=0||d.h<=0){HideScrollbarWindow(s.bars[k]);continue;}
@@ -108,18 +124,17 @@ void ScrollbarRefresh(NativeChrome::Motion::Time now){
 }
 void ScrollbarSettleHover(){for(auto& [serial,s]:pageScrollbars)s.motion.SettleHover();ScrollbarRefresh(NativeChrome::Motion::Now());}
 void ScrollbarReset(){for(auto& [serial,s]:pageScrollbars){if(s.dragging>=0&&s.bars[s.dragging]&&GetCapture()==s.bars[s.dragging])ReleaseCapture();s.dragging=-1;s.motion.Reset();s.hovered=-1;s.nearEdge=false;s.scriptPending.clear();}ScrollbarRefresh(NativeChrome::Motion::Now());}
-// Untrusted page text: ten finite numbers within sane bounds, else ignored.
+// Untrusted page text: ten finite numbers within sane bounds (older script), or the same ten
+// plus the two track surfaces (0xRRGGBB integers, or -1); anything else is ignored.
 bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text){
     const bool metrics=text.rfind(ScrollbarMessage,0)==0,nearing=text.rfind(ScrollbarNearMessage,0)==0;
     if(!metrics&&!nearing)return false;if(!t||t->closed)return true;
     auto& s=pageScrollbars[t->serial];const auto now=NativeChrome::Motion::Now();
     if(nearing){s.nearEdge=text.size()>wcslen(ScrollbarNearMessage)&&text[wcslen(ScrollbarNearMessage)]==L'1';
         if(s.dragging<0)s.motion.Pointer(s.nearEdge,s.hovered>=0,false,now,motion.ReducedMotion());}
-    else{int kind=0,nx=0,ny=0,rtl=0;float x=0,y=0,cw=0,ch=0,sw=0,sh=0;
-        if(swscanf(text.c_str(),L"lisiere-scrollbar %d %f %f %f %f %f %f %d %d %d",&kind,&x,&y,&cw,&ch,&sw,&sh,&nx,&ny,&rtl)!=10)return true;
-        for(float f:{x,y,cw,ch,sw,sh})if(!std::isfinite(f)||std::fabs(f)>1e8f)return true;
-        if(cw<0||ch<0||sw<0||sh<0)return true;
-        t->scroll={x,y,cw,ch,sw,sh,nx!=0,ny!=0,rtl!=0,true};if(kind==1)s.motion.Scrolled(now);}
+    else{NativeChrome::Scrollbar::Metrics m;bool scrolled=false;
+        if(!NativeChrome::Scrollbar::ParseMessage(text,m,scrolled))return true;
+        t->scroll=m;if(scrolled)s.motion.Scrolled(now);}
     PlaceScrollbars(t->serial,s,now);ScheduleMotion(now);return true;
 }
 // Drag: one script in flight per page, the latest target queued behind it.

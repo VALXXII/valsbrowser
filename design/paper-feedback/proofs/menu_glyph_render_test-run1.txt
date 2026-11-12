@@ -1,0 +1,14 @@
+ok   ink is Paper's #8A8A8A (9Z2-0 outline and fill)
+ok   96 dpi: the former drawing is brighter where the fill covers the outline (197 > 139), reproduced
+ok   96 dpi: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   96 dpi highlighted row: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   96 dpi: disabled glyph keeps the former 32 % level (fill 97, outline 97)
+ok   120 dpi: the former drawing is brighter where the fill covers the outline (197 > 139), reproduced
+ok   120 dpi: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   120 dpi highlighted row: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   120 dpi: disabled glyph keeps the former 32 % level (fill 97, outline 97)
+ok   144 dpi: the former drawing is brighter where the fill covers the outline (197 > 139), reproduced
+ok   144 dpi: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   144 dpi highlighted row: outline alone 138, outline under the fill 138, fill 138: one ink, no doubled strip
+ok   144 dpi: disabled glyph keeps the former 32 % level (fill 97, outline 97)
+all menu glyph checks passed
