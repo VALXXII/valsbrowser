@@ -441,6 +441,11 @@ int main(){
         Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
         std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
         Expect(PrivateCommandLine(L"C:/b/browser.exe")==L"\"C:/b/browser.exe\" --private","private window: same executable, only --private passed");
+        // V5: the native fill control is not armed right after it appeared (500 ms, same tab and navigation).
+        { chrome.vaultKey=true;vaultKeySerial=live->serial;vaultKeyNav=live->navStamp;vaultKeyShownAt=GetTickCount64();
+          Expect(!VaultKeyArmed(),"V5: the fill control ignores an activation before 500 ms");
+          vaultKeyShownAt=GetTickCount64()-600;vaultKeyNav=live->navStamp+1;Expect(!VaultKeyArmed(),"V5: a navigation since it appeared re-arms it");
+          chrome.vaultKey=false; }
         // A5 with engine categories but no engine profile (no live tab / older runtime): a real failure, never « effacé ».
         { HRESULT got=S_FALSE;StartClearSelected({false,true,true,false,false},1,[&](HRESULT hr){got=hr;});Expect(FAILED(got),"A5: cookies/cache selected without an engine profile is reported as a failure"); }
         // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.

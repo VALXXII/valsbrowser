@@ -42,7 +42,7 @@ private:
     Modal::Dialog dialog_; Hooks hooks_; std::vector<Account> accounts_ = SampleAccounts();
     // B05 REAL mode (E8, vault): the vault's accounts WITHOUT any decrypted secret (no reveal), removal
     // through `remove_` (the vault transaction; false = not removed, said so). No « Démonstration » badge.
-    bool real_ = false; std::function<bool(std::uint64_t)> remove_;
+    bool real_ = false, readOnly_ = false; std::function<bool(std::uint64_t)> remove_;
     std::function<void()> closed_; View view_ = View::List; size_t current_ = 0;
     Modal::Spec Base() const {
         Modal::Spec s; s.kind = Modal::Kind::Passwords; s.scope = Modal::Scope::Window; s.width = 332; s.demo = !real_; s.closeButton = true;
@@ -51,7 +51,7 @@ private:
     }
     Modal::Spec ListSpec() const {
         Modal::Spec s = Base(); s.automationId = real_ ? L"PasswordList" : L"PasswordDemoList"; s.title = L"Mots de passe";
-        s.subtitle = real_ ? L"Enregistrés par browser, chiffrés pour votre session Windows. Les mots de passe enregistrés auparavant restent proposés par le moteur." : L"Démonstration : comptes fictifs en mémoire, rien n'est enregistré.";
+        s.subtitle = readOnly_ ? L"Lecture seule dans une fenêtre privée : rien ne peut être modifié ici." : real_ ? L"Enregistrés par browser, chiffrés pour votre session Windows. Les mots de passe enregistrés auparavant restent proposés par le moteur." : L"Démonstration : comptes fictifs en mémoire, rien n'est enregistré.";
         s.accountsTitle = L"Enregistrés · " + std::to_wstring(accounts_.size()); s.accountsNavigate = true;
         for (auto& a : accounts_) s.accounts.push_back({a.site + L" · " + a.user, std::wstring(12, L'\x2022')});
         if (accounts_.empty()) s.accountsTitle = real_ ? L"Aucun mot de passe enregistré par browser" : L"Aucun mot de passe enregistré";
@@ -73,6 +73,7 @@ private:
             Modal::Button del = Modal::Make(DeleteButton, L"Supprimer ce mot de passe…", Modal::Role::Danger, false, false, false, L"PasswordDemoAskDelete"); del.closes = false; del.leading = true;
             Modal::Button back = Modal::Make(BackButton, L"Retour", Modal::Role::Secondary, false, false, true, L"PasswordDemoBack"); back.closes = false;
             s.buttons = {del, back}; s.softButtons = true;
+            if (readOnly_) { s.buttons = {back}; s.notices.push_back({DialogKit::Glyph::info, L"Suppression disponible dans une fenêtre normale.", false}); }   // §6: no inert action
         }
         return s;
     }
@@ -114,10 +115,11 @@ public:
     View CurrentView() const { return view_; }
     const std::vector<Account>& Accounts() const { return accounts_; }
     // Real mode: `accounts` carry no secret (password empty); `remove(i)` removes the i-th from the vault.
+    void SetReadOnly(bool readOnly) { readOnly_ = readOnly; }
     void SetReal(std::vector<Account> accounts, std::function<bool(std::uint64_t)> remove) { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = std::move(accounts); for (auto& a : accounts_) a.password.clear(); remove_ = std::move(remove); real_ = true; }
     bool Real() const { return real_; }
     // Back to the fictitious demonstration (the sandbox): never shows real accounts.
-    void SetDemo() { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = SampleAccounts(); remove_ = nullptr; real_ = false; }
+    void SetDemo() { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = SampleAccounts(); remove_ = nullptr; real_ = false; readOnly_ = false; }
     Modal::Dialog& Surface() { return dialog_; }   // tests
     Motion::Wake NextWake(Motion::Time now) const { return dialog_.NextWake(now); }
     void Frame(Motion::Time now) { dialog_.Frame(now); }

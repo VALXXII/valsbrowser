@@ -687,6 +687,15 @@ public:
         if(m<1&&requestFrom!=requestState)DrawChipState(requestFrom,box,a*(1-m));
         DrawChipState(requestState,box,a*(requestFrom!=requestState?m:1.f));}
     D2D1_COLOR_F DangerColor(float a=1)const{return D2D1::ColorF(Design::Danger::r,Design::Danger::g,Design::Danger::b,a);}
+    // B03 native key control (no icon asset yet: a drawn key; final glyph from the Paper writer). Ghost button.
+    bool vaultKey=false;static constexpr int VaultKeyId=906;   // not a character id: 'W' is Ctrl+W (close tab)
+    void DrawVaultKey(D2D1_RECT_F box,float hover,bool focused){
+        if(hover>0)FillBox(box,Design::Radius::button,D2D1::ColorF(1,1,1,.06f*std::clamp(hover,0.f,1.f)));
+        if(focused)FocusRing(box,Design::Radius::button);
+        const float cx=(box.left+box.right)/2,cy=(box.top+box.bottom)/2;brush->SetColor(D2D1::ColorF(1,1,1,.8f));
+        target->DrawEllipse(D2D1::Ellipse({cx-3.5f,cy},3.5f,3.5f),brush,1.5f);
+        target->DrawLine({cx,cy},{cx+7,cy},brush,1.5f);target->DrawLine({cx+5,cy},{cx+5,cy+3},brush,1.5f);target->DrawLine({cx+7,cy},{cx+7,cy+2.5f},brush,1.5f);
+    }
     // A9 « Privée » chip: drawn only, never hovered/focused/clicked (region kept for UIA bounds).
     static constexpr int PrivateChipId=905; bool privateChip=false; ID2D1PathGeometry* eyeSlash=nullptr;
     Design::Box PrivateChipRect(){return Design::PrivateChip::Rect(TextWidth(Design::PrivateChip::label,14,true));}
@@ -776,7 +785,9 @@ public:
         request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
         // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
-        regions.push_back({'L',{bar.left,44,bar.right-64,76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
+        // B03 (vault, review §5): « Remplir un mot de passe enregistré », left of Copy, only when the host says so.
+        regions.push_back({'L',{bar.left,44,bar.right-(vaultKey?96.f:64.f),76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});
+        if(vaultKey)regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},L"Remplir un mot de passe enregistré"});regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
         regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Nouvelle fenêtre privée (Ctrl+Maj+N)"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
         BuildBand();
@@ -864,6 +875,7 @@ public:
         DrawTabs(titles,selected,hover,focus,visible,now);
         for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||IsTab(id)||!visible(box))continue;
             if(id==PrivateChipId){DrawPrivateChip();continue;}
+            if(id==VaultKeyId){DrawVaultKey(box,motion?motion->Visual(id,now).hover:(hover==id?1.f:0.f),focus==VaultKeyId);continue;}
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};

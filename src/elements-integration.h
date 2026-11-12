@@ -890,14 +890,20 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
 // ENGINE reports for the message (never a value from the page); the vault is written only after the
 // user's explicit « Enregistrer » / « Mettre à jour » (B04), through Vault::Commit (fail closed).
 // A private window never captures (D3). Secret copies held by the host are wiped after use (V7).
-Vault::Store vault,vaultBase;bool vaultLoaded=false;std::set<unsigned> vaultPromptOpen;
+Vault::Store vault,vaultBase;bool vaultLoaded=false;std::set<unsigned> vaultPromptOpen;std::map<unsigned,std::wstring> vaultCaptureSeen;   // last capture id handled per tab
 std::wstring VaultFile(){return dataDir+L"\\passwords";}
+// The submit usually navigates at once and the message of the leaving document can be dropped: the
+// capture is also kept in the SAME origin's sessionStorage (the page already holds this password) and
+// re-sent by the next document of that origin, then removed. Each capture has an id; the host acts on
+// an id once per tab. Another origin never sees it (sessionStorage is per origin).
 constexpr const wchar_t* VaultCaptureScript=
-    L"(function(){if(window.top!==window||!window.chrome||!chrome.webview)return;"
+    L"(function(){if(window.top!==window||!window.chrome||!chrome.webview)return;var K='__browserVaultPending';"
+    L"try{var p=sessionStorage.getItem(K);if(p){sessionStorage.removeItem(K);chrome.webview.postMessage(JSON.parse(p));}}catch(e){}"
     L"document.addEventListener('submit',function(e){var f=e.target;if(!f||!f.querySelector)return;"
     L"var pw=f.querySelector('input[type=password]');if(!pw||!pw.value)return;"
     L"var u=f.querySelector('input[autocomplete=username],input[type=email],input[type=text]');"
-    L"chrome.webview.postMessage({browserVault:'capture',user:u?u.value:'',password:pw.value});},true);})();";
+    L"var m={browserVault:'capture',id:String(Date.now())+String(Math.random()).slice(2),user:u?u.value:'',password:pw.value};"
+    L"try{sessionStorage.setItem(K,JSON.stringify(m));}catch(e){}chrome.webview.postMessage(m);},true);})();";
 void Wipe(std::wstring& s){if(!s.empty())SecureZeroMemory(s.data(),s.size()*sizeof(wchar_t));s.clear();}
 bool LoadVault(){
     if(vaultLoaded)return true;std::string bytes;{ProfileStore::Lock lock(dataDir);if(!lock.Held())return false;ProfileStore::ReadAll(VaultFile(),bytes);}
@@ -924,7 +930,10 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     const std::wstring origin=Vault::CanonicalOrigin(source);
     if(origin.empty()||vaultPromptOpen.count(t->serial))return true;   // http / already asking: no prompt by itself (D2)
     if(!LoadVault()){VaultNotice(L"Mot de passe non enregistré",L"Le fichier des mots de passe est illisible ou d'une autre version ; il n'a pas été modifié.");return true;}   // F5
+    std::wstring captureId;JsonField(message,L"id",captureId);
+    if(!captureId.empty()&&vaultCaptureSeen[t->serial]==captureId)return true;   // the same submit re-sent by the next document: once only
     std::wstring user,secret;if(!JsonField(message,L"user",user)||!JsonField(message,L"password",secret)||secret.empty()){Wipe(secret);return true;}
+    if(!captureId.empty())vaultCaptureSeen[t->serial]=captureId;
     auto accounts=vault.For(origin);
     OP::Spec s;s.demo=false;s.origin=origin;s.user=user;s.secret=secret;Wipe(secret);
     const bool known=std::any_of(accounts.begin(),accounts.end(),[&](const Vault::Entry& e){return e.user==user;});
@@ -933,8 +942,9 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
         else if(user.empty())for(auto& e:accounts)s.accounts.push_back({e.user,L""});}   // several: explicit choice (D1)
     else s.kind=OP::Kind::PasswordSave;
     vaultPromptOpen.insert(t->serial);const unsigned serial=t->serial;
+    Log(L"VAULT capture: B04 prompt for "+origin);
     AskPrompt(std::move(s),t,[origin,serial](OP::Result& r){
-        vaultPromptOpen.erase(serial);
+        vaultPromptOpen.erase(serial);Log(L"VAULT B04 answer action="+std::to_wstring((int)r.action)+(r.password.empty()?L" (no password)":L""));
         if(r.action==OP::Action::Save&&!r.password.empty()){
             const auto saved=vault.Save(origin,r.user,r.password,NativeChrome::DownloadsUI::UnixNowMs());
             const auto res=saved==Vault::Store::Saved::Refused?ProfileStore::Result::Failed:Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
@@ -953,10 +963,41 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
 // ancestors), and the host's copies of the secret and of the script are wiped (V7). No vault access is
 // ever started by a page message.
 void ShowVaultManager(bool keyboard);
-Vault::Target VaultTargetNow(const std::shared_ptr<Tab>& t,bool userAction){Vault::Target v;v.frameSource=t->uri;v.topSource=t->uri;v.frameId=0;v.navigation=t->navStamp;v.userAction=userAction;return v;}
+// ---- B03 native control (review §5): shown only when every condition holds; armed 500 ms after it became
+// visible and still, in a foreground window; the timer restarts on tab switch and on navigation.
+void OfferVaultFill(const std::shared_ptr<Tab>& t);
+ULONGLONG vaultKeyShownAt=0;unsigned vaultKeySerial=0;std::uint64_t vaultKeyNav=0;bool vaultKeyWasShown=false;
+std::wstring EngineSource(const std::shared_ptr<Tab>& t){LPWSTR s=nullptr;if(!t||!t->view.p||FAILED(t->view->get_Source(&s))||!s)return L"";return TakeString(s);}
+bool VaultKeyVisible(){
+    auto t=Active();if(!Vault::Active()||halted||!t||t->closed||t->home||!t->view.p||!t->errorPage.shown.empty()||!t->https.shown.empty()||IsSandboxUri(t->uri))return false;
+    const std::wstring origin=Vault::CanonicalOrigin(t->uri);if(origin.empty())return false;
+    // §6: a private window re-reads the file (at most every 2 s for this visibility check; an explicit open always re-reads).
+    static ULONGLONG lastPrivateRead=0;if(privateWindow&&GetTickCount64()-lastPrivateRead>2000){vaultLoaded=false;lastPrivateRead=GetTickCount64();}
+    return LoadVault()&&!vault.For(origin).empty();
+}
+void SyncVaultKey(){
+    auto t=Active();const bool show=VaultKeyVisible();
+    if(show&&(!vaultKeyWasShown||!t||t->serial!=vaultKeySerial||t->navStamp!=vaultKeyNav)){vaultKeyShownAt=GetTickCount64();vaultKeySerial=t?t->serial:0;vaultKeyNav=t?t->navStamp:0;}
+    vaultKeyWasShown=show;chrome.vaultKey=show;
+}
+bool VaultKeyArmed(){auto t=Active();bool fg=GetForegroundWindow()==window;
+#ifdef BROWSER_E2E_VAULT_HOST
+    fg=true;   // TEST HOST ONLY (see modal.h Armed): the 500 ms arming still applies
+#endif
+    return chrome.vaultKey&&t&&t->serial==vaultKeySerial&&t->navStamp==vaultKeyNav&&GetTickCount64()>=vaultKeyShownAt+500&&fg;}
+void VaultKeyActivated(){
+    if(!VaultKeyArmed()){Log(L"VAULT key: activation ignored (not armed)");return;}   // V5: a click the page arranged right after it appeared does nothing
+    Log(L"VAULT key: activated");OfferVaultFill(Active());
+}
+// The source is read from the ENGINE now (review §5), never from our cached URL or a page message.
+Vault::Target VaultTargetNow(const std::shared_ptr<Tab>& t,bool userAction){const std::wstring src=EngineSource(t);Vault::Target v;v.frameSource=src;v.topSource=src;v.frameId=0;v.navigation=t->navStamp;v.userAction=userAction;return v;}
 void OfferVaultFill(const std::shared_ptr<Tab>& t){
-    if(!Vault::Active()||privateWindow||!t||t->closed||!t->view.p||!LoadVault())return;
-    const Vault::Target atAction=VaultTargetNow(t,true);const std::wstring origin=Vault::CanonicalOrigin(t->uri);
+    if(!Vault::Active()||!t||t->closed||!t->view.p)return;
+    if(privateWindow)vaultLoaded=false;   // §6: fresh read in a private window (a removal elsewhere is honoured)
+    if(!LoadVault()){VaultNotice(L"Mots de passe indisponibles",L"Le fichier des mots de passe est illisible ou d'une autre version.");return;}
+    const Vault::Target atAction=VaultTargetNow(t,true);const std::wstring origin=Vault::CanonicalOrigin(atAction.topSource);
+    if(atAction.topSource!=t->uri){Log(L"VAULT fill: engine source differs from the tab");VaultNotice(L"Remplissage annulé",Vault::RefusalText(Vault::Refusal::Stale));return;}
+    Log(L"VAULT fill: B03 prompt");
     if(origin.empty()){VaultNotice(L"Mots de passe indisponibles",Vault::RefusalText(Vault::Refusal::NotHttps));return;}   // D2: short state on explicit request only
     const auto accounts=vault.For(origin);
     OP::Spec s;s.kind=OP::Kind::PasswordFill;s.demo=false;s.origin=origin;for(const auto& e:accounts)s.accounts.push_back({e.user,L"••••••••"});
@@ -965,6 +1006,12 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
     AskPrompt(std::move(s),t,[weak,ids,atAction,origin](OP::Result& r){
         if(r.action==OP::Action::Manage){ShowVaultManager(false);return;}
         auto t=weak.lock();if(r.action!=OP::Action::Fill||!t||t->closed||!t->view.p||r.choice<0||r.choice>=(int)ids.size())return;
+        // Guards at choice (§5): still the active tab, foreground window, no interstitial/error page, same document.
+        bool foreground=GetForegroundWindow()==window;
+#ifdef BROWSER_E2E_VAULT_HOST
+        foreground=true;   // TEST HOST ONLY
+#endif
+        if(t!=Active()||!foreground||!t->errorPage.shown.empty()||!t->https.shown.empty()){VaultNotice(L"Remplissage annulé",Vault::RefusalText(Vault::Refusal::Stale));return;}
         const auto refusal=Vault::CanFill(atAction,VaultTargetNow(t,false),origin);
         if(refusal!=Vault::Refusal::None){Log(std::wstring(L"VAULT fill refused: ")+Vault::RefusalText(refusal));VaultNotice(L"Remplissage annulé",Vault::RefusalText(refusal));return;}   // F5: said, not only logged
         const Vault::Entry* e=vault.Find(ids[(size_t)r.choice]);if(!e)return;
@@ -980,9 +1027,11 @@ std::wstring VaultModified(std::int64_t ms){if(ms<=0)return L"";FILETIME ft;ULAR
     static const wchar_t* months[]={L"janvier",L"février",L"mars",L"avril",L"mai",L"juin",L"juillet",L"août",L"septembre",L"octobre",L"novembre",L"décembre"};
     return L"Modifié le "+std::to_wstring(lt.wDay)+L" "+months[(lt.wMonth+11)%12]+L" "+std::to_wstring(lt.wYear);}
 // {shown, count}; count SIZE_MAX = the vault file could not be read (Settings says so instead of « 0 », F5).
-std::pair<bool,std::size_t> VaultInfo(){if(!Vault::Active()||privateWindow)return {false,0};if(!LoadVault())return {true,SIZE_MAX};return {true,vault.Entries().size()};}
+std::pair<bool,std::size_t> VaultInfo(){if(!Vault::Active())return {false,0};if(privateWindow)vaultLoaded=false;if(!LoadVault())return {true,SIZE_MAX};return {true,vault.Entries().size()};}
 void ShowVaultManager(bool keyboard){
-    if(!Vault::Active()||privateWindow||!LoadVault())return;
+    if(!Vault::Active())return;
+    if(privateWindow)vaultLoaded=false;   // §6: fresh read, read-only
+    if(!LoadVault()){VaultNotice(L"Mots de passe indisponibles",L"Le fichier des mots de passe est illisible ou d'une autre version.");return;}
     keyboardModality=keyboard;std::vector<NativeChrome::PasswordDemo::Account> rows;std::vector<std::uint64_t> ids;
     for(const auto& e:vault.Entries()){std::wstring host=e.origin.substr(e.origin.find(L"://")+3);NativeChrome::PasswordDemo::Account a{host,e.user,L"",L"",VaultModified(e.updated)};a.id=e.id;rows.push_back(a);ids.push_back(e.id);}
     passwordDemo.SetReal(std::move(rows),[](std::uint64_t id)->bool{   // review F1: the row's own vault id, never a shifting index
@@ -990,6 +1039,7 @@ void ShowVaultManager(bool keyboard){
         const auto r=Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
         if(r!=ProfileStore::Result::Written&&r!=ProfileStore::Result::Unchanged){Log(L"VAULT removal NOT written");vault=vaultBase;return false;}   // back to what the file holds
         return true;});
+    passwordDemo.SetReadOnly(privateWindow);   // §6: no removal from a private window (Vault::Commit refuses anyway)
     passwordDemo.Show(PageScreenRect());
 }
 HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){

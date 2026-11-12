@@ -17,6 +17,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.startswith('/with-img?p='):
             body = ('<title>with img</title><img src="https://127.0.0.1:%s/img.png">' % self.path.split('=')[1]).encode('utf-8')
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if self.path.startswith('/login'):   # vault E2E: a synthetic login form (fictitious account only)
+            body = b'<title>connexion</title><form method="get" action="/login"><input id="u" name="u" autocomplete="username"><input id="p" name="p" type="password" autocomplete="current-password"><button id="go">go</button></form>'
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
         cert = self.connection.getpeercert() or {}
         subject = ', '.join('='.join(x) for rdn in cert.get('subject', ()) for x in rdn)
         with open(os.path.join(d, 'observed.txt'), 'a', encoding='utf-8') as f: f.write(subject + '\n')

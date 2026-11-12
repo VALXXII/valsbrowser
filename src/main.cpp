@@ -311,7 +311,8 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // Stable tab serials let the strip animate opens/closes and the selection fade
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
-void BuildChrome(){chrome.privateChip=privateWindow; /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void SyncVaultKey();
+void BuildChrome(){chrome.privateChip=privateWindow;SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -3550,7 +3551,8 @@ case BookmarkBarCommand:ToggleBookmarkBar();break;
 case BookmarksDrawerCommand:if(bookmarksDismissClick){bookmarksDismissClick=false;break;}ToggleBookmarksDrawer(keyboardModality);break;
 case BookmarkUndoCommand:UndoBookmark();break;
 case 'I':FocusAddress();break; // the security indicator opens the address
-case 'Q':RequestChipActivated();break; // B01 chip: back to its open popover, never a new request
+case 'Q':RequestChipActivated();break;
+case NativeChrome::Chrome::VaultKeyId:VaultKeyActivated();break; // B03 native fill control (armed, guarded; review §5) // B01 chip: back to its open popover, never a new request
 case 900:TabMenu(KeyboardAnchor());break;
 case 'Y':if(historyDismissClick){historyDismissClick=false;break;}ToggleHistory(KeyboardAnchor()!=0||keyboardModality);break;
 case PrintActive:if(t&&!t->home)PrintPage(t);break; // like the tab menu: nothing to print on a home tab
@@ -3816,6 +3818,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     // opens the address.
     if(auto* r=region('I')){Node n;n.key='I';n.parent=AccessibleToolbar;n.name=chrome.address.tip();n.automationId=L"SiteSecurity";n.bounds=screen(r->rect);n.focusable=false;nodes.push_back(std::move(n));}
     // B01 pending-request chip, right after the security indicator: invoking it focuses the open popover.
+    if(auto* r=region(NativeChrome::Chrome::VaultKeyId)){Node n;n.key=NativeChrome::Chrome::VaultKeyId;n.parent=AccessibleToolbar;n.name=L"Remplir un mot de passe enregistré";n.automationId=L"VaultFill";n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     if(auto* r=region('Q')){Node n;n.key='Q';n.parent=AccessibleToolbar;n.name=chrome.requestTip;n.automationId=L"SitePermissionRequest";n.bounds=screen(r->rect);n.focusable=false;nodes.push_back(std::move(n));}
     // While the real EDIT is open it stands for the address itself (named through
     // AccessibleHost().label), with its own value, text and caret.
@@ -4249,7 +4252,11 @@ void StopEngineStart(){
     if(state.detached)line+=L"; worker still busy"+(state.dir.empty()?std::wstring():L", its folder %TEMP%\\"+state.dir+L" may remain if the process ends first");
     Log(line);
 }
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
+#ifdef BROWSER_E2E_VAULT_HOST
+    Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
+#endif
+    if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
 #ifdef BROWSER_UPDATES
 #ifndef BROWSER_PREVIEW
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2

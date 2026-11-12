@@ -30,6 +30,8 @@ namespace Vault {
 
 // Flipped only after the independent security review (decision 1). Tests force it per case.
 inline bool& ActiveFlag() { static bool active = false; return active; }
+// Review §6 (D3): a private window may READ and FILL, never write. Enforced here, in the only write path.
+inline bool& WritesForbidden() { static bool forbidden = false; return forbidden; }
 inline bool Active() { return ActiveFlag(); }
 
 inline std::string Utf8(const std::wstring& s) { if (s.empty()) return {}; const int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0, nullptr, nullptr); std::string r(n, 0); WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), r.data(), n, nullptr, nullptr); return r; }
@@ -238,6 +240,7 @@ private:
 #include "profile-store.h"
 namespace Vault {
 inline ProfileStore::Result Commit(const std::wstring& dataDir, const std::wstring& path, Store& base, Store& mine, DWORD timeoutMs = 5000) {
+    if (WritesForbidden()) return ProfileStore::Result::Failed;   // private window: no Save/Remove reaches the disk (no .tmp, no backup)
     return ProfileStore::Commit<Store>(dataDir, path, base, mine, [](const Store& b, const Store& m, const Store& t) { return Store::Merge(b, m, t); }, timeoutMs,
                                        {Store::Header}, false, [](const Store& s) { return s.Entries().size() <= Store::Limit && !Store::Digest(Store::Header).empty(); });   // V2-L4: no file without a digest
 }

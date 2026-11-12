@@ -898,6 +898,9 @@ private:
     bool Armed() const {
         if (spec_.armMs <= 0) return true;
         if (GetTickCount64() < armedFrom_) return false;
+#ifdef BROWSER_E2E_VAULT_HOST
+        return true;   // TEST HOST ONLY: automation cannot bring a window forward without SendInput; the 500 ms arming still applies
+#endif
         HWND fg = GetForegroundWindow(); return fg == hwnd_ || fg == owner_ || (owner_ && GetAncestor(fg, GA_ROOTOWNER) == owner_);
     }
 public:
