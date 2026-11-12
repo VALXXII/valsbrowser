@@ -7,6 +7,9 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <wincodec.h>
+#include <algorithm>
+#include <vector>
 #include "../src/chrome.h"
 #include "../src/modal.h"
 #include "../src/origin-prompt.h"
@@ -311,6 +314,130 @@ int wmain(int argc, wchar_t** argv) {
         p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0));
         Check(calls == 3 && got.action == OriginPrompt::Action::Block && got.remember, "permission: notifications choice always remembered (B02)");
         p.Surface().FinishAnimationsForTest();
+    }
+    {   // « Plus d'infos » (design/origin-prompt-help.md, Paper SYJ-0): kind mapping, copy, toggle never answers.
+        using OriginPrompt::Permission::Notifications; namespace OPP = OriginPrompt::Permission;
+        auto spec = [](std::vector<int> kinds, std::wstring origin = L"x.com", std::wstring requester = L"https://x.com") {
+            OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::Permission; s.origin = origin; s.requester = requester; s.permissions = std::move(kinds); return s; };
+        auto has = [](const std::wstring& text, const wchar_t* part) { return text.find(part) != std::wstring::npos; };
+        // Mapping: 13 is the SDK's COREWEBVIEW2_PERMISSION_KIND_PERSISTENT_STORAGE (the x.com capture), never « notifications ».
+        Check(OPP::PersistentStorage == 13 && SiteRequest::Kind::PersistentStorage == 13, "more: kind 13 = persistent storage (SDK 1.0.4314.35)");
+        auto st = OriginPrompt::Build(spec({OPP::PersistentStorage}), true);
+        Check(st.title == L"x.com veut conserver ses données sur cet appareil" && st.headGlyph == DialogKit::Glyph::storage && SiteRequest::GlyphOf(13) == SiteRequest::Path::storage, "more: kind 13 has its own title and storage glyph");
+        Check(st.subtitle == L"Sinon, le navigateur peut les effacer s'il manque d'espace." && !has(st.title, L"notification") && !has(st.more.text, L"otification"), "more: kind 13 never described as notifications");
+        Check(st.checkLabel == L"Mémoriser pour ce site" && st.notices.empty(), "more: kind 13 keeps the remember check (policy unchanged)");
+        Check(has(st.more.text, L"contre l'effacement automatique quand l'appareil manque d'espace") && has(st.more.text, L"Bloquer ne supprime rien") && has(st.more.text, L"Concerne https://x.com uniquement.")
+              && has(st.more.text, L"ne vaut que pour cette demande") && has(st.more.text, L"Fermer refuse cette fois, sans rien enregistrer."), "more: kind 13 paragraph (scope, remember, close)");
+        Check(st.more.label == L"Plus d'infos" && st.more.automationId == L"PermissionMore" && !st.more.open, "more: row label, id, closed");
+        auto unknown = OriginPrompt::Build(spec({OPP::Unknown}, L"exemple.fr", L"https://exemple.fr"), true);
+        Check(unknown.title == L"exemple.fr demande une autorisation" && unknown.subtitle == L"Le moteur ne précise pas de quoi il s'agit." && unknown.headGlyph == DialogKit::Glyph::info, "more: kind 0 says the engine gave no type");
+        auto future = OriginPrompt::Build(spec({14}), true);
+        Check(future.title == L"x.com demande une autorisation" && future.subtitle == L"Type non reconnu par ce navigateur (code moteur 14)." && !has(future.more.text, L"otification"), "more: unknown future kind named by its engine code, not guessed");
+        auto notif = OriginPrompt::Build(spec({Notifications}, L"lemonde.fr", L"https://lemonde.fr"), true);
+        Check(notif.title == L"lemonde.fr veut vous envoyer des notifications" && notif.subtitle == L"Le site pourra afficher des alertes en dehors de la page.", "more: notifications title and subtitle");
+        Check(notif.notices.empty() && notif.checkLabel.empty(), "more: notifications show no note row and no check on the popover (user request)");
+        Check(has(notif.more.text, L"Choix toujours mémorisé. Modifiable dans Réglages › Autorisations des sites.") && !has(notif.more.text, L"même onglet fermé") && has(notif.more.text, L"rien ne garantit")
+              && !has(notif.more.text, L"Sans «") && !has(notif.more.text, L"WebView2"), "more: notifications note moved into the panel, no unproven promise");
+        { const auto t = notif.more.text; Check(t.rfind(L"Choix toujours mémorisé") > t.find(L"Fermer refuse"), "more: the note ends the panel (just above the buttons)"); }
+        for (int k = 0; k <= 14; ++k) { auto m = OriginPrompt::Build(spec({k}), true); if (m.subtitle.empty() || m.more.text.empty()) { Check(false, "more: every kind has a subtitle and a paragraph"); break; } if (k == 14) Check(true, "more: every kind has a subtitle and a paragraph"); }
+        auto grouped = OriginPrompt::Build(spec({OPP::Camera, OPP::Microphone}, L"meet.google.com", L"https://meet.google.com"), true);
+        Check(grouped.rows.size() == 2 && has(grouped.more.text, L"Concerne https://meet.google.com uniquement.") && grouped.checkLabel == L"Mémoriser pour ce site", "more: grouped camera + microphone keep rows and get the panel");
+        Check(OriginPrompt::Build(spec({OPP::Camera}, L"x.com", L""), true).more.text.find(L"Concerne x.com uniquement.") != std::wstring::npos, "more: requester falls back to the shown origin");
+
+        // Window: toggling never answers; Échap still dismisses exactly once; closed on every new request.
+        RECT anchor{200, 150, 224, 174}; int calls = 0; OriginPrompt::Result got;
+        auto& S = p.Surface(); using D = Modal::Dialog;
+        p.Show(spec({OPP::PersistentStorage}), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        const float closedH = S.HeightForTest(); const auto row = S.BoxForTest(D::MoreHit);
+        Check(row.bottom - row.top == 32 && row.left == 16 && row.right == 340 - 16, "more: 32 DIP row across the content width");
+        Check(!S.MoreOpenForTest() && S.FocusForTest() == D::ButtonHit(0), "more: closed, initial focus unchanged (Bloquer)");
+        S.ActivateForTest(D::MoreHit); S.FinishAnimationsForTest();
+        Check(S.MoreOpenForTest() && calls == 0 && p.Visible() && S.HeightForTest() > closedH + 40, "more: click opens, grows, answers nothing");
+        { RECT w{}; GetWindowRect(p.Window(), &w); Check(w.top == anchor.bottom + MulDiv(16, GetDpiForWindow(p.Window()), 96), "more: the popover stays anchored under the indicator"); }
+        {   auto nodes = S.NodesForTest(); int expand = 0; std::wstring text; for (auto& n : nodes) { if (n.key == D::MoreHit && n.automationId == L"PermissionMore" && n.role == Accessibility::Role::Button) expand = n.expand; if (n.key == D::MoreTextKey && n.role == Accessibility::Role::Text) text = n.name; }
+            Check(expand == 2 && !text.empty(), "more: UIA button expanded + text node"); Check(text.find(L"Concerne https://x.com") != std::wstring::npos, "more: UIA text node carries the whole paragraph"); }
+        S.KeyForTest(VK_RETURN); Check(!S.MoreOpenForTest() && calls == 0 && S.FocusForTest() == D::MoreHit, "more: Entrée on the row closes it, nothing answered");
+        S.KeyForTest(VK_SPACE); Check(S.MoreOpenForTest() && calls == 0, "more: Espace opens it");
+        S.ExpandForTest(true); Check(S.MoreOpenForTest(), "more: UIA Expand on an open row keeps it open");
+        S.ExpandForTest(false); Check(!S.MoreOpenForTest() && calls == 0, "more: UIA Collapse closes, nothing answered");
+        {   auto nodes = S.NodesForTest(); int expand = 0; bool text = false; for (auto& n : nodes) { if (n.key == D::MoreHit) expand = n.expand; if (n.key == D::MoreTextKey) text = true; }
+            Check(expand == 1 && !text, "more: UIA collapsed, no text node"); }
+        // Tab order: Plus d'infos → Mémoriser → Bloquer → Autoriser → Fermer.
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::SimpleCheckHit, "more: Tab after the row goes to the check");
+        S.KeyForTest(VK_TAB); S.KeyForTest(VK_TAB); S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::CloseHit, "more: then Bloquer, Autoriser, Fermer");
+        S.KeyForTest(VK_TAB); Check(S.FocusForTest() == D::MoreHit, "more: and back to the row");
+        S.ActivateForTest(D::MoreHit); S.KeyForTest(VK_ESCAPE);
+        Check(calls == 1 && got.action == OriginPrompt::Action::Dismiss && !got.remember, "more: Échap with the panel open = Dismiss once, nothing remembered");
+        S.KeyForTest(VK_ESCAPE); S.FinishAnimationsForTest(); Check(calls == 1, "more: no second answer");
+        p.Show(spec({OPP::PersistentStorage}), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        Check(!S.MoreOpenForTest() && S.HeightForTest() == closedH, "more: a new request starts closed");
+        S.ActivateForTest(D::MoreHit); S.ActivateForTest(D::SimpleCheckHit); S.ActivateForTest(D::ButtonHit(1));
+        Check(calls == 2 && got.action == OriginPrompt::Action::Allow && got.remember, "more: Autoriser + Mémoriser after reading the panel");
+        S.FinishAnimationsForTest();
+        p.Show(spec({OPP::PersistentStorage}), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        S.ActivateForTest(D::MoreHit); p.Abort(); S.FinishAnimationsForTest();
+        Check(calls == 3 && got.action == OriginPrompt::Action::Dismiss, "more: Abort (navigation / tab change) with the panel open answers once");
+        // Notifications: no note row when closed; Bloquer still remembered (policy unchanged).
+        p.Show(spec({Notifications}, L"lemonde.fr", L"https://lemonde.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        {   const auto more = S.BoxForTest(D::MoreHit), block = S.BoxForTest(D::ButtonHit(0)); Check(block.top - more.bottom == 16, "more: notifications closed = head, row, buttons (no note line)"); }
+        for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/more-notifications-closed-" + std::to_wstring(dpi) + L".png", dpi), "more: notifications closed render");
+        // Glyph colour: white 50 % (never black). Max ink in the glyph box over the #171717 canvas.
+        {   const std::wstring png = root + L"/build/popups/more-glyph-96.png"; S.RenderForTest(png, 96);
+            IWICImagingFactory* f = nullptr; IWICBitmapDecoder* dec = nullptr; IWICBitmapFrameDecode* fr = nullptr; IWICFormatConverter* cv = nullptr; int peak = -1;
+            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f))) && SUCCEEDED(f->CreateDecoderFromFilename(png.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &dec))
+                && SUCCEEDED(dec->GetFrame(0, &fr)) && SUCCEEDED(f->CreateFormatConverter(&cv)) && SUCCEEDED(cv->Initialize(fr, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) {
+                UINT w = 0, h = 0; cv->GetSize(&w, &h); std::vector<BYTE> px(static_cast<size_t>(w) * h * 4); cv->CopyPixels(nullptr, w * 4, static_cast<UINT>(px.size()), px.data());
+                const auto r = S.BoxForTest(D::MoreHit); const int x0 = static_cast<int>(r.right) - 4 - 14, y0 = static_cast<int>(r.top) + 9;
+                for (int y = y0; y < y0 + 14; ++y) for (int x = x0; x < x0 + 14; ++x) if (x >= 0 && y >= 0 && x < static_cast<int>(w) && y < static_cast<int>(h)) { const BYTE* q = &px[(static_cast<size_t>(y) * w + x) * 4]; peak = std::max(peak, std::min({static_cast<int>(q[0]), static_cast<int>(q[1]), static_cast<int>(q[2])})); }
+            }
+            if (cv) cv->Release(); if (fr) fr->Release(); if (dec) dec->Release(); if (f) f->Release();
+            std::printf("     glyph peak grey = %d (canvas 23, white 50%% = 139)\n", peak);
+            Check(peak >= 110 && peak <= 170, "more: + glyph drawn white 50 % (not black, not opaque)"); }
+        S.ActivateForTest(D::MoreHit); S.FinishAnimationsForTest();
+        for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/more-notifications-open-" + std::to_wstring(dpi) + L".png", dpi), "more: notifications open render");
+        S.ActivateForTest(D::ButtonHit(0)); Check(calls == 4 && got.action == OriginPrompt::Action::Block && got.remember, "more: notifications Bloquer still always remembered");
+        S.FinishAnimationsForTest();
+        // Long origin + bottom of the screen: the paragraph scrolls (min 3 lines), the actions stay on screen.
+        {   MONITORINFO mi{sizeof mi}; GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTOPRIMARY), &mi); const RECT work = mi.rcWork;
+            const std::wstring longHost = L"un-sous-domaine-vraiment-tres-long.exemple-de-domaine-public-pour-tester.fr";
+            RECT low{work.left + 100, work.bottom - MulDiv(250, GetDpiForWindow(owner), 96), work.left + 124, work.bottom - MulDiv(226, GetDpiForWindow(owner), 96)};
+            p.Show(spec({OPP::PersistentStorage}, longHost, L"https://" + longHost + L":8443"), low, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+            S.ActivateForTest(D::MoreHit); S.FinishAnimationsForTest();
+            RECT w{}; GetWindowRect(p.Window(), &w);
+            Check(w.bottom <= work.bottom && w.top >= work.top, "more: open popover stays inside the work area");
+            Check(S.MoreViewportForTest() < S.MoreFullForTest() && S.MoreViewportForTest() >= 3 * 20, "more: paragraph scrolls instead of pushing the actions off screen");
+            {   const auto t0 = S.MoreThumbForTest(), row = S.BoxForTest(D::MoreHit);
+                Check(t0.bottom > t0.top && t0.left >= row.right + 6 && t0.right <= S.WidthForTest() - 8 && t0.top >= row.bottom, "more: overflow shows the A2 scroll position in the right padding (not over text or ring)");
+                for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/more-storage-long-low-thumb-" + std::to_wstring(dpi) + L".png", dpi), "more: overflow + indicator render");
+                S.WheelForTest(-WHEEL_DELTA); const auto t1 = S.MoreThumbForTest();
+                Check(S.MoreScrollForTest() > 0 && t1.top > t0.top, "more: wheel scrolls the paragraph, the indicator follows");
+                S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN); S.KeyForTest(VK_DOWN);
+                const auto t2 = S.MoreThumbForTest();
+                Check(S.MoreScrollForTest() == S.MoreFullForTest() - S.MoreViewportForTest() && t2.bottom >= row.bottom + S.MoreViewportForTest() - .5f, "more: ↓ on the row reaches the end, indicator at the bottom");
+                Check(S.RenderForTest(root + L"/build/popups/more-storage-long-low-end-144.png", 144), "more: scrolled to the end render");
+                {   auto nodes = S.NodesForTest(); std::wstring text; for (auto& n : nodes) if (n.key == D::MoreTextKey) text = n.name;
+                    Check(text.find(L"Fermer refuse cette fois") != std::wstring::npos, "more: UIA text node keeps the whole paragraph while it scrolls"); }
+                S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP); S.KeyForTest(VK_UP);
+                Check(S.MoreScrollForTest() == 0 && S.MoreThumbForTest().top == t0.top, "more: ↑ on the row scrolls back to the top"); }
+            Check(S.RenderForTest(root + L"/build/popups/more-storage-long-low-144.png", 144), "more: long origin, low anchor render");
+            Check(calls == 4, "more: still nothing answered");
+            p.Abort(); S.FinishAnimationsForTest(); Check(calls == 5 && got.action == OriginPrompt::Action::Dismiss, "more: abort answers once");
+        }
+        // Long origin at a roomy anchor: the full paragraph shows, never cut.
+        p.Show(spec({OPP::PersistentStorage}, L"un-sous-domaine-vraiment-tres-long.exemple-de-domaine-public-pour-tester.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        S.ActivateForTest(D::MoreHit); S.FinishAnimationsForTest();
+        Check(S.MoreViewportForTest() == S.MoreFullForTest(), "more: roomy screen shows the whole paragraph");
+        {   const auto t = S.MoreThumbForTest(); Check(!(t.bottom > t.top), "more: no overflow, no scroll indicator"); }
+        for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/more-storage-open-long-" + std::to_wstring(dpi) + L".png", dpi), "more: storage open long-origin render");
+        p.Abort(); S.FinishAnimationsForTest();
+        // Grouped camera + microphone: the row sits under the kind rows.
+        p.Show(spec({OPP::Camera, OPP::Microphone}, L"meet.google.com", L"https://meet.google.com"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        Check(S.BoxForTest(D::MoreHit).top > 100, "more: grouped request, row under the kind rows");
+        S.ActivateForTest(D::MoreHit); S.FinishAnimationsForTest(); Check(S.RenderForTest(root + L"/build/popups/more-grouped-open-144.png", 144), "more: grouped open render");
+        p.Abort(); S.FinishAnimationsForTest();
+        p.Show(spec({OPP::Unknown}, L"exemple.fr", L"https://exemple.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
+        Check(S.RenderForTest(root + L"/build/popups/more-unknown-closed-144.png", 144), "more: unknown kind render");
+        p.Abort(); S.FinishAnimationsForTest();
     }
     {   // B06 HTTP auth: Submit returns the credentials once; the EDIT buffer is wiped; refusal.
         OriginPrompt::Spec s; s.kind = OriginPrompt::Kind::BasicAuth; s.origin = L"imprimante-bureau"; s.user = L"admin"; s.insecure = true;

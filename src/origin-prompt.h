@@ -33,12 +33,13 @@ enum class Action { Dismiss, Allow, AllowOnce, Block, Submit, Cancel, Open, Keep
 // COREWEBVIEW2_PERMISSION_KIND values (no WebView2 header needed here).
 namespace Permission {
 inline constexpr int Unknown = 0, Microphone = 1, Camera = 2, Geolocation = 3, Notifications = 4, OtherSensors = 5, ClipboardRead = 6,
-    MultipleDownloads = 7, FileReadWrite = 8, Autoplay = 9, LocalFonts = 10, Midi = 11, WindowManagement = 12;
+    MultipleDownloads = 7, FileReadWrite = 8, Autoplay = 9, LocalFonts = 10, Midi = 11, WindowManagement = 12, PersistentStorage = 13;
 }
 struct DemoAccount { std::wstring user, hint; bool disabled = false; };
 struct Spec {
     Kind kind = Kind::Permission;
     std::wstring origin;                 // host of the requesting top-level site
+    std::wstring requester;              // Permission: the engine's requesting origin (« https://x.com »), named in « Plus d'infos »
     std::wstring detail;                 // BasicAuth: server challenge (realm); ExternalApp: target URI;
                                          // DangerousDownload/KeepFile: file name; ScreenShare: unused
     std::vector<int> permissions;        // Permission values, merged per origin by the host
@@ -74,7 +75,7 @@ inline std::wstring Noun(int p) {
     case Permission::Notifications: return L"Notifications"; case Permission::ClipboardRead: return L"Presse-papiers"; case Permission::Midi: return L"Appareils MIDI";
     case Permission::MultipleDownloads: return L"Téléchargements multiples"; case Permission::OtherSensors: return L"Capteurs de mouvement";
     case Permission::FileReadWrite: return L"Fichiers"; case Permission::Autoplay: return L"Lecture automatique"; case Permission::LocalFonts: return L"Polices installées";
-    case Permission::WindowManagement: return L"Gestion des fenêtres"; default: return L"Autorisation";
+    case Permission::WindowManagement: return L"Gestion des fenêtres"; case Permission::PersistentStorage: return L"Stockage persistant"; default: return L"Autorisation";
     }
 }
 // Single-permission titles. Paper exports: position, notifications, clipboard (B02); the others
@@ -85,7 +86,7 @@ inline std::wstring Title(const std::wstring& o, int p) {
     case Permission::Microphone: return o + L" veut utiliser votre micro";
     case Permission::Geolocation: return o + L" veut connaître votre position";
     case Permission::Notifications: return o + L" veut vous envoyer des notifications";
-    case Permission::ClipboardRead: return o + L" veut lire votre presse‑papiers";
+    case Permission::ClipboardRead: return o + L" veut lire votre presse\u2011papiers";
     case Permission::Midi: return o + L" veut contrôler vos appareils MIDI";
     case Permission::MultipleDownloads: return o + L" veut télécharger plusieurs fichiers";
     case Permission::OtherSensors: return o + L" veut utiliser les capteurs de mouvement";
@@ -93,18 +94,42 @@ inline std::wstring Title(const std::wstring& o, int p) {
     case Permission::Autoplay: return o + L" veut lire du son automatiquement";
     case Permission::LocalFonts: return o + L" veut utiliser les polices installées";
     case Permission::WindowManagement: return o + L" veut gérer les fenêtres sur vos écrans";
+    case Permission::PersistentStorage: return o + L" veut conserver ses données sur cet appareil";
     default: return o + L" demande une autorisation";
     }
 }
 inline std::wstring Subtitle(int p) {
     switch (p) {
     case Permission::Geolocation: return L"Position fournie par Windows, à quelques centaines de mètres près.";
-    case Permission::Notifications: return L"Elles s'affichent dans Windows, même onglet fermé.";
+    case Permission::Notifications: return L"Le site pourra afficher des alertes en dehors de la page.";   // no proof for « même onglet fermé » (design/origin-prompt-help.md §2)
     case Permission::ClipboardRead: return L"Le site verra le texte et les images que vous avez copiés.";
     case Permission::MultipleDownloads: return L"Le site pourra enregistrer plusieurs fichiers à la suite.";
     case Permission::Midi: return L"Le site pourra envoyer des messages système à vos instruments.";
-    default: return L"";
+    case Permission::Camera: return L"Le site pourra filmer avec votre caméra.";
+    case Permission::Microphone: return L"Le site pourra enregistrer le son de votre micro.";
+    case Permission::OtherSensors: return L"Accéléromètre, gyroscope et autres capteurs de l'appareil.";
+    case Permission::FileReadWrite: return L"Lecture et écriture de fichiers ou de dossiers de cet appareil.";
+    case Permission::Autoplay: return L"Le son et la vidéo pourront démarrer sans clic de votre part.";
+    case Permission::LocalFonts: return L"Le site verra les polices installées sur cet appareil.";
+    case Permission::WindowManagement: return L"Le site pourra ouvrir et placer des fenêtres sur vos écrans.";
+    case Permission::PersistentStorage: return L"Sinon, le navigateur peut les effacer s'il manque d'espace.";
+    case Permission::Unknown: return L"Le moteur ne précise pas de quoi il s'agit.";
+    default: return L"Type non reconnu par ce navigateur (code moteur " + std::to_wstring(p) + L").";   // a newer engine kind: never guessed
     }
+}
+// « Plus d'infos » (Paper SYJ-0): what the choice covers. Facts only (design/origin-prompt-help.md §2):
+// SavesInProfile FALSE = this request only; Fermer / Échap = refused once, nothing saved.
+inline std::wstring More(const std::vector<int>& kinds, const std::wstring& requester, bool always) {
+    std::wstring s;
+    if (kinds.size() == 1 && kinds[0] == Permission::Notifications)
+        s = L"Elles peuvent apparaître en dehors de cette page. Leur réception dépend du site et du navigateur\u00A0: rien ne garantit qu'elles arrivent onglet ou navigateur fermé.\n";
+    else if (kinds.size() == 1 && kinds[0] == Permission::PersistentStorage)
+        s = L"Autoriser protège les données que le site enregistre ici contre l'effacement automatique quand l'appareil manque d'espace. Vous pouvez toujours les effacer vous\u2011même\u00A0; Bloquer ne supprime rien.\n";
+    s += L"Concerne " + requester + L" uniquement. ";
+    if (!always) s += L"Sans «\u00A0Mémoriser\u00A0», ce choix ne vaut que pour cette demande\u00A0; coché, il est enregistré dans ce profil (Réglages\u00A0› Autorisations des sites). ";
+    s += L"Fermer refuse cette fois, sans rien enregistrer.";
+    if (always) s += L"\nChoix toujours mémorisé. Modifiable dans Réglages\u00A0› Autorisations des sites.";   // B02 note, moved into the panel
+    return s;
 }
 inline const char* Glyph(int p) {
     switch (p) {
@@ -112,6 +137,7 @@ inline const char* Glyph(int p) {
     case Permission::Geolocation: return DialogKit::Glyph::position; case Permission::Notifications: return DialogKit::Glyph::bell;
     case Permission::ClipboardRead: return DialogKit::Glyph::clipboard; case Permission::MultipleDownloads: return DialogKit::Glyph::download;
     case Permission::FileReadWrite: return DialogKit::Glyph::file; case Permission::WindowManagement: return DialogKit::Glyph::screen;
+    case Permission::PersistentStorage: return DialogKit::Glyph::storage;
     default: return DialogKit::Glyph::info;
     }
 }
@@ -135,8 +161,9 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
             for (int q : s.permissions) m.rows.push_back({Text::Glyph(q), Text::Noun(q), q == Permission::Geolocation ? L"Approximative" : L""});
         } else { m.title = Text::Title(s.origin, p); m.subtitle = Text::Subtitle(p); m.headGlyph = Text::Glyph(p); }
         const bool always = !many && p == Permission::Notifications;   // B02: notifications are always remembered
-        if (always) m.notices.push_back({DialogKit::Glyph::info, L"Choix toujours mémorisé. Modifiable dans Réglages › Autorisations des sites.", false});
-        else { m.checkLabel = L"Mémoriser pour ce site"; m.originCheck = true; }
+        // User request 2026-11-12: the « toujours mémorisé » note lives in « Plus d'infos », not on the popover.
+        if (!always) { m.checkLabel = L"Mémoriser pour ce site"; m.originCheck = true; }
+        m.more.text = Text::More(s.permissions, s.requester.empty() ? s.origin : s.requester, always); m.more.automationId = L"PermissionMore";
         m.stretchButtons = true; m.softButtons = true;
         m.buttons = {button(Id::Cancel, L"Bloquer", Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, L"Autoriser", Role::Primary, true, false, false, L"PermissionAllow")};
         m.checkValue = always;

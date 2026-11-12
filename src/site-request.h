@@ -25,10 +25,12 @@ inline constexpr const char* clipboard = "M200,28H163.94A51.89,51.89,0,0,0,92.06
 inline constexpr const char* info = "M108,84a16,16,0,1,1,16,16A16,16,0,0,1,108,84Zm128,44A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Zm-72,36.68V132a20,20,0,0,0-20-20,12,12,0,0,0-4,23.32V168a20,20,0,0,0,20,20,12,12,0,0,0,4-23.32Z";
 inline constexpr const char* file = "M216.49,79.52l-56-56A12,12,0,0,0,152,20H56A20,20,0,0,0,36,40V216a20,20,0,0,0,20,20H200a20,20,0,0,0,20-20V88A12,12,0,0,0,216.49,79.52ZM160,57l23,23H160ZM60,212V44h76V92a12,12,0,0,0,12,12h48V212Z";
 inline constexpr const char* screen = "M208,36H48A28,28,0,0,0,20,64V176a28,28,0,0,0,28,28h68v16H96a12,12,0,0,0,0,24h64a12,12,0,0,0,0-24H140V204h68a28,28,0,0,0,28-28V64A28,28,0,0,0,208,36Zm4,140a4,4,0,0,1-4,4H48a4,4,0,0,1-4-4V64a4,4,0,0,1,4-4H208a4,4,0,0,1,4,4Z";
+// Phosphor « database » (bold): persistent storage (COREWEBVIEW2_PERMISSION_KIND_PERSISTENT_STORAGE).
+inline constexpr const char* storage = "M196,35.52C177.62,25.51,153.48,20,128,20S78.38,25.51,60,35.52C39.37,46.79,28,62.58,28,80v96c0,17.42,11.37,33.21,32,44.48,18.35,10,42.49,15.52,68,15.52s49.62-5.51,68-15.52c20.66-11.27,32-27.06,32-44.48V80C228,62.58,216.63,46.79,196,35.52ZM204,128c0,17-31.21,36-76,36s-76-19-76-36v-8.46a88.9,88.9,0,0,0,8,4.94c18.35,10,42.49,15.52,68,15.52s49.62-5.51,68-15.52a88.9,88.9,0,0,0,8-4.94ZM128,44c44.79,0,76,19,76,36s-31.21,36-76,36S52,97,52,80,83.21,44,128,44Zm0,168c-44.79,0-76-19-76-36v-8.46a88.9,88.9,0,0,0,8,4.94c18.35,10,42.49,15.52,68,15.52s49.62-5.51,68-15.52a88.9,88.9,0,0,0,8-4.94V176C204,193,172.79,212,128,212Z";
 inline constexpr const char* download = "M228,144v64a12,12,0,0,1-12,12H40a12,12,0,0,1-12-12V144a12,12,0,0,1,24,0v52H204V144a12,12,0,0,1,24,0Zm-108.49,8.49a12,12,0,0,0,17,0l40-40a12,12,0,0,0-17-17L140,115V32a12,12,0,0,0-24,0v83L96.49,95.51a12,12,0,0,0-17,17Z";
 }
 // COREWEBVIEW2_PERMISSION_KIND values (no WebView2 header needed).
-namespace Kind { inline constexpr int Microphone = 1, Camera = 2, Geolocation = 3, Notifications = 4, ClipboardRead = 6, MultipleDownloads = 7, FileReadWrite = 8, WindowManagement = 12; }
+namespace Kind { inline constexpr int Microphone = 1, Camera = 2, Geolocation = 3, Notifications = 4, ClipboardRead = 6, MultipleDownloads = 7, FileReadWrite = 8, WindowManagement = 12, PersistentStorage = 13; }
 // Same mapping as OriginPrompt::Text::Glyph (the popover's row / header glyph).
 inline const char* GlyphOf(int kind) {
     switch (kind) {
@@ -36,6 +38,7 @@ inline const char* GlyphOf(int kind) {
     case Kind::Geolocation: return Path::position; case Kind::Notifications: return Path::bell;
     case Kind::ClipboardRead: return Path::clipboard; case Kind::MultipleDownloads: return Path::download;
     case Kind::FileReadWrite: return Path::file; case Kind::WindowManagement: return Path::screen;
+    case Kind::PersistentStorage: return Path::storage;
     default: return Path::info;
     }
 }
