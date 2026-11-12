@@ -57,10 +57,12 @@ Branche `VALXXII/notification-permission`, basée sur `8237c2a` (PR63, committé
 
 | Niveau | Fichier | Résultat |
 |---|---|---|
-| Unitaire, fenêtre réelle (U) | `test-popups.ps1 -SkipPixels` → `modal_test` | 290 vérifications, 0 échec (×2) ; 57 nouvelles (233 avant) |
+| Unitaire, fenêtre réelle (U) | `test-popups.ps1 -SkipPixels` → `modal_test` | 298 vérifications, 0 échec ; 65 nouvelles (233 avant) |
 | Transport simulé (faux arguments WebView2) | `test-elements-integration.ps1` | PASS (types 13, 4, 0, 14 ; deferral jamais complétée par le panneau, une fois à la navigation) |
 | Moteur réel isolé (E2E) | `tests/e2e/permission_help_e2e.ps1` | 17/17 : runtime 157.0.4341.46, copie jetable, profil neuf, serveur local temporaire |
-| Build estampillé | `tools/release/build.py` | 0.3.189, commit `11202b0` |
+| Build estampillé | `tools/release/build.py` | 0.3.191, commit `b04b249` |
+
+Journaux de ces exécutions, suivis dans git : `design/origin-prompt-help-evidence/logs/`.
 
 L'E2E réel montre que `navigator.storage.persist()` lève bien `PermissionRequested` avec `kind=13` et
 `Notification.requestPermission()` avec `kind=4`. Le panneau s'ouvre et se ferme par UIA sans réponse
@@ -68,21 +70,34 @@ L'E2E réel montre que `navigator.storage.persist()` lève bien `PermissionReque
 `action=0`, la page reçoit `denied`. Aucun clic « Autoriser ».
 
 Rendus natifs à 96, 144 et 192 DPI (notifications fermé et ouvert, stockage avec origine longue, ancre en
-bas d'écran, demande groupée, type inconnu) : `build/popups/more-*.png`. Le glyphe est mesuré en gris 123
+bas d'écran avec indicateur, défilé jusqu'à la fin, demande groupée, type inconnu). Une sélection est
+suivie dans `design/origin-prompt-help-evidence/native/` ; les captures Paper avant/après (B01, B02,
+planche dédiée et sa copie) sont dans `paper-before/` et `paper-after/`. Le glyphe est mesuré en gris 123
 sur fond 23, soit du blanc 50 % (attendu ≈ 139 avant lissage).
 
 Une première exécution de `modal_test` a montré 3 échecs « période » (liste native, sensible au
-premier plan). Ils sont sans lien avec ce lot et passaient dans les 3 autres exécutions.
+premier plan). Ils sont sans lien avec ce lot et passaient dans toutes les autres exécutions.
+
+## 5 bis. Finitions (b04b249)
+
+* **Indicateur de défilement** : réutilise l'indicateur existant du message A2 (`modal.h`, B::Message) :
+  trait de 2 DIP, blanc 20 %, dans la marge droite, à 6 DIP du bord du contenu. Il n'apparaît que si le
+  paragraphe déborde, ne recouvre ni le texte ni l'anneau de focus, et suit la molette et ↑/↓. Aucun
+  nouveau contrat partagé : le changement reste local au bloc « Plus d'infos ». Tests : absent sans
+  débordement ; présent dans la marge en bas d'écran ; position après molette, ↓ jusqu'à la fin, ↑
+  jusqu'au début ; texte UIA complet pendant le défilement ; rendus 96/144/192.
+* **B01 contexte caméra + micro** (`DEZ-0`) : rangée « Plus d'infos » au repos ajoutée sous les rangées de
+  types, comme dans le code. Rien d'autre n'a changé ; aucun commentaire sur ce nœud ; pas de copie
+  B01 sur la vue d'ensemble, donc aucune copie à synchroniser.
+* **Paper** : variante « Stockage persistant · bas d'écran, défilement » (3 lignes visibles et l'indicateur)
+  ajoutée en 4e position de la rangée « Autres types », dans la planche dédiée et dans sa copie. Les deux
+  planches passent à 1824 de large pour éviter de chevaucher C7 en dessous (bas 23030 < 23349).
 
 ## 6. Limites
 
 * Pas de capture d'écran du popover réel dans l'E2E ; le rendu est prouvé par les PNG hors écran et les
   assertions UIA.
-* Quand le paragraphe défile (bas d'écran, 200 %), aucun indicateur visuel ne signale la suite du texte.
-  Le texte complet reste lisible par la molette, ↑/↓ et l'UIA.
 * L'effet d'un retrait de l'autorisation 13 (Réglages, ligne « Autre ») sur des données déjà stockées
   n'est pas documenté : la copie ne le promet pas.
-* La planche contexte B01 (caméra + micro, `DEZ-0`) n'a pas encore la rangée ; elle est hors lot et
-  signalée à l'intégrateur.
 * 100/150/200 % au sens fenêtre réelle : seul le DPI du moniteur de test a été exercé en direct ; les trois
   DPI sont couverts par les rendus hors écran.
