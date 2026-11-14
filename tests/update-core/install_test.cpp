@@ -647,6 +647,118 @@ void TestBridgeBinJunctionRefused() {
     RemoveDirectoryW((root + L"\\bin").c_str());  // the junction only
 }
 
+// Review P2-1: a junction anywhere under root (above the bridge source or at bin) is never followed: nothing from
+// outside root is published, nothing outside root is written or deleted.
+void TestBridgeJunctionAboveSource() {
+    std::wstring s = TempDir(L"e2e-bridge-src-junction"), root = s + L"\\root", outside = s + L"\\outside";
+    Canaries c;
+    InstalledWithBridge(root, c);
+    MkDirs(outside + L"\\assets\\bin");
+    Copy(Fx(L"bridge-0.3.3.exe"), outside + L"\\assets\\bin\\browser-annotations-mcp.exe");  // external canary
+    const std::string canary = HashOf(outside + L"\\assets\\bin\\browser-annotations-mcp.exe");
+    std::wstring assets = root + L"\\versions\\0.3.1\\assets";
+    DeleteFileW((assets + L"\\bin\\browser-annotations-mcp.exe").c_str());
+    RemoveDirectoryW((assets + L"\\bin").c_str());
+    std::wstring keep = root + L"\\versions\\0.3.1\\assets-real";
+    CHECK(MoveFileExW(assets.c_str(), keep.c_str(), 0));
+    CHECK(CreateJunction(assets, outside + L"\\assets"));
+    // bin holds 0.3.1 bytes; a launcher start must not replace them with the external file.
+    CHECK(Run(root + L"\\browser.exe", L"--echo src-junction", 10000) == 0);
+    CHECK(WaitFor(root + L"\\fake-launches.txt", "echo 0.3.1 [src-junction]", 10000));
+    CHECK(BinIs(root, L"bridge-0.3.1.exe"));
+    // Same with bin empty: still nothing published from outside.
+    DeleteFileW(BinBridge(root).c_str());
+    CHECK(Run(root + L"\\browser.exe", L"--echo src-junction-2", 10000) == 0);
+    CHECK(WaitFor(root + L"\\fake-launches.txt", "echo 0.3.1 [src-junction-2]", 10000));
+    CHECK(!UP::PathExists(BinBridge(root)));
+    CHECK(HashOf(outside + L"\\assets\\bin\\browser-annotations-mcp.exe") == canary);
+    RemoveDirectoryW(assets.c_str());  // the junction only
+}
+
+void TestLauncherBinJunction() {
+    std::wstring s = TempDir(L"e2e-launcher-bin-junction"), root = s + L"\\root", elsewhere = s + L"\\elsewhere";
+    Canaries c;
+    InstalledWithBridge(root, c);
+    DeleteFileW(BinBridge(root).c_str());
+    RemoveDirectoryW((root + L"\\bin").c_str());
+    MkDirs(elsewhere);
+    WriteText(elsewhere + L"\\keep.txt", "untouched");
+    CHECK(CreateJunction(root + L"\\bin", elsewhere));
+    CHECK(Run(root + L"\\browser.exe", L"--echo bin-junction", 10000) == 0);
+    CHECK(WaitFor(root + L"\\fake-launches.txt", "echo 0.3.1 [bin-junction]", 10000));
+    CHECK(!UP::PathExists(elsewhere + L"\\browser-annotations-mcp.exe") && !UP::PathExists(elsewhere + L"\\.publish-lock"));
+    CHECK(ReadText(elsewhere + L"\\keep.txt") == "untouched");
+    RemoveDirectoryW((root + L"\\bin").c_str());
+}
+
+// Review P2-2: real concurrency. The install pauses between publishing bin and switching `current`, holding the
+// bin lock; a launcher started meanwhile waits, then reads `current` again under the lock: it launches 0.3.2 and
+// leaves bin on 0.3.2 (a stale 0.3.1 read would have reverted bin to 0.3.1).
+void TestLauncherInstallBarrier() {
+    std::wstring s = TempDir(L"e2e-launcher-barrier"), root = s + L"\\root", feed = s + L"\\feed";
+    Canaries c;
+    InstalledWithBridge(root, c);
+    FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    SetFault(L"pause-after-publish");
+    CHECK(Update(root, feed) == 0);
+    SetFault(nullptr);
+    CHECK(WaitFor(root + L"\\updates\\helper.log", "bridge published to bin for 0.3.2", 60000));
+    CHECK(ReadText(root + L"\\current") == "0.3.1\n");  // inside the window
+    const ULONGLONG t0 = GetTickCount64();
+    CHECK(Run(root + L"\\browser.exe", L"--echo barrier", 30000) == 0);
+    const ULONGLONG waited = GetTickCount64() - t0;
+    std::printf("launcher waited %llu ms for the install's bin lock\n", (unsigned long long)waited);
+    CHECK(waited >= 1000);
+    CHECK(WaitFor(root + L"\\fake-launches.txt", "echo 0.3.2 [barrier]", 10000));
+    CHECK(ReadText(root + L"\\fake-launches.txt").find("echo 0.3.1 [barrier]") == std::string::npos);
+    CHECK(WaitFor(root + L"\\updates\\last-result", "status installed", 60000));
+    CHECK(BinIs(root, L"bridge-0.3.2.exe") && ReadText(root + L"\\current") == "0.3.2\n");
+}
+
+// Review finding 3: first transition from an install whose launcher predates the bridge (helper built from
+// 9f73bdd, the release tooling before plan B). The new helper replaces the launcher BEFORE publishing bin, so a crash
+// right after the publication is repaired by the next launcher start.
+void TestFirstTransitionOldLauncher() {
+    {
+        std::wstring s = TempDir(L"e2e-old-launcher-kill"), root = s + L"\\root", feed = s + L"\\feed";
+        Canaries c;
+        InstalledLayout(root, c);  // 0.3.1 without bridge, no bin
+        Copy(Fx(L"update-helper-preB.exe"), root + L"\\browser.exe");
+        FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+        SetFault(L"kill-after-publish");
+        CHECK(Update(root, feed) == 0);
+        SetFault(nullptr);
+        CHECK(WaitFor(root + L"\\updates\\helper.log", "bridge published to bin for 0.3.2", 60000));
+        CHECK(HelperGone(root, 60000));
+        CHECK(ReadText(root + L"\\current") == "0.3.1\n");
+        CHECK(BinIs(root, L"bridge-0.3.2.exe"));                                   // the mismatch the review found
+        CHECK(HashOf(root + L"\\browser.exe") == HashOf(Fx(L"update-helper.exe")));  // launcher already replaced
+        CHECK(Run(root + L"\\browser.exe", L"--echo old-launcher", 10000) == 0);
+        CHECK(WaitFor(root + L"\\fake-launches.txt", "echo 0.3.1 [old-launcher]", 10000));
+        CHECK(!UP::PathExists(BinBridge(root)));  // 0.3.1 ships no bridge: none left in bin
+        CHECK(Update(root, feed) == 0);
+        CHECK(WaitFor(root + L"\\updates\\last-result", "status installed", 60000));
+        CHECK(BinIs(root, L"bridge-0.3.2.exe") && ReadText(root + L"\\current") == "0.3.2\n");
+    }
+    {
+        // Launcher cannot be replaced (busy): the install aborts before publishing anything.
+        std::wstring s = TempDir(L"e2e-old-launcher-busy"), root = s + L"\\root", feed = s + L"\\feed";
+        Canaries c;
+        InstalledLayout(root, c);
+        Copy(Fx(L"update-helper-preB.exe"), root + L"\\browser.exe");
+        FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+        SetFault(L"launcher-busy");
+        CHECK(Update(root, feed) == 0);
+        SetFault(nullptr);
+        CHECK(WaitFor(root + L"\\updates\\last-result", "status failed", 60000));
+        CHECK(ReadText(root + L"\\updates\\last-result").find("launcher busy") != std::string::npos);
+        CHECK(HelperGone(root, 30000));
+        CHECK(ReadText(root + L"\\current") == "0.3.1\n");
+        CHECK(!UP::PathExists(BinBridge(root)));
+        CHECK(HashOf(root + L"\\browser.exe") == HashOf(Fx(L"update-helper-preB.exe")));
+    }
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -670,5 +782,9 @@ int wmain(int argc, wchar_t** argv) {
     TestBridgeKills();
     TestBridgePortableFirstInstallAndRollback();
     TestBridgeBinJunctionRefused();
+    TestBridgeJunctionAboveSource();
+    TestLauncherBinJunction();
+    TestLauncherInstallBarrier();
+    TestFirstTransitionOldLauncher();
     return Report("install_test");
 }

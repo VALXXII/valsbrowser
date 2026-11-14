@@ -41,6 +41,15 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     # Fixture helper: same source, plus test-only fault points (BROWSER_HELPER_FAULT, see src/update-helper.cpp).
     compile_exe("update-helper.exe", ["src/update-helper.cpp", "src/update-package.cpp"], ["-mwindows", "-DUPDATE_HELPER_FAULTS"])
+    # Launcher as shipped BEFORE plan B (release tooling 9f73bdd): first-transition tests (install_test).
+    pre = OUT / "preB"
+    for rel in ("src/update-helper.cpp", "src/update-package.cpp", "src/update-package.h"):
+        text = subprocess.run(["git", "show", f"9f73bdd3a5950fd2cee15f9a5ba2f7137ede34e9:{rel}"], cwd=ROOT, check=True,
+                              capture_output=True, text=True, encoding="utf-8").stdout
+        (pre / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pre / rel).write_text(text, encoding="utf-8", newline="\n")
+    run([GXX, *[f for f in FLAGS if f != "-Isrc"], "-mwindows", f"-I{pre / 'src'}", str(pre / "src/update-helper.cpp"),
+         str(pre / "src/update-package.cpp"), "-o", str(OUT / "update-helper-preB.exe"), *LIBS], "compile update-helper-preB.exe")
     # Real MCP bridges (src/mcp-bridge.cpp) with distinct bytes per version: live agent processes in install_test.
     for version in ("0.3.1", "0.3.2", "0.3.3"):
         compile_exe(f"bridge-{version}.exe", ["src/mcp-bridge.cpp", "src/annotations.cpp", *CORE], [f'-DBROWSER_VERSION_TEXT="{version}"'])

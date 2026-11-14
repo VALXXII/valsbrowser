@@ -9,6 +9,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -192,11 +193,6 @@ private:
     HANDLE h_ = INVALID_HANDLE_VALUE;
 };
 
-bool RegularFile(const std::wstring& path) {
-    DWORD a = GetFileAttributesW(path.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && !(a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
-}
-
 bool SameBytes(const std::wstring& a, const std::wstring& b) {
     UP::Digest da{}, db{};
     std::uint64_t sa = 0, sb = 0;
@@ -217,24 +213,107 @@ void CleanBridgeLeftovers(const std::wstring& bin) {
 }
 
 // Caller holds the BinLock when bin exists. `version` empty: no current version (portable previous).
+// Final path of an open handle, lower-case, without the \\?\ prefix ("" on failure).
+std::wstring FinalPath(HANDLE h) {
+    std::wstring buffer(32768, L'\0');
+    DWORD n = GetFinalPathNameByHandleW(h, buffer.data(), DWORD(buffer.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (!n || n >= buffer.size()) return L"";
+    buffer.resize(n);
+    if (buffer.rfind(L"\\\\?\\UNC\\", 0) == 0) buffer = L"\\\\" + buffer.substr(8);
+    else if (buffer.rfind(L"\\\\?\\", 0) == 0) buffer = buffer.substr(4);
+    return Lower(buffer);
+}
+
+// Opens `rel` under `root` without following a final reparse point and checks that the object actually opened is
+// exactly <final path of root>\rel: a junction or symlink ANYWHERE between root and the object (assets, bin,
+// versions\<v>, ...) changes the final path and is refused. Root itself may be reached through a link above it
+// (the user's profile path), never below it.
+class RootedHandle {
+public:
+    RootedHandle(const std::wstring& root, const std::wstring& rel, bool directory, DWORD access = GENERIC_READ) {
+        HANDLE r = CreateFileW(root.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                               OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (r == INVALID_HANDLE_VALUE) return;
+        const std::wstring rootFinal = FinalPath(r);
+        CloseHandle(r);
+        if (rootFinal.empty()) return;
+        h_ = CreateFileW((root + L"\\" + rel).c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) return;
+        FILE_ATTRIBUTE_TAG_INFO tag{};
+        const bool kindOk = GetFileInformationByHandleEx(h_, FileAttributeTagInfo, &tag, sizeof(tag)) &&
+                            !(tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+                            bool(tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == directory;
+        if (!kindOk || FinalPath(h_) != rootFinal + L"\\" + Lower(rel)) {
+            CloseHandle(h_);
+            h_ = INVALID_HANDLE_VALUE;
+        }
+    }
+    ~RootedHandle() { if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_); }
+    RootedHandle(const RootedHandle&) = delete;
+    RootedHandle& operator=(const RootedHandle&) = delete;
+    bool Ok() const { return h_ != INVALID_HANDLE_VALUE; }
+    HANDLE Get() const { return h_; }
+private:
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+};
+
+bool ReadAll(HANDLE h, std::string& out, std::uint64_t max) {
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(h, &size) || size.QuadPart < 0 || std::uint64_t(size.QuadPart) > max) return false;
+    out.assign(std::size_t(size.QuadPart), '\0');
+    std::size_t done = 0;
+    while (done < out.size()) {
+        DWORD got = 0;
+        const DWORD want = DWORD(std::min<std::size_t>(out.size() - done, 1 << 20));
+        if (!ReadFile(h, out.data() + done, want, &got, nullptr) || got == 0) return false;
+        done += got;
+    }
+    return true;
+}
+
+// Caller holds the BinLock. `version` empty: no current version (portable previous). Every object read or written is
+// opened through RootedHandle (no reparse point anywhere under root); the bytes published are the bytes read from the
+// verified source handle, and the published file is re-read through a verified handle and compared.
 bool ReconcileBridge(const std::wstring& root, const std::string& version, const std::string& tag, std::string& error) {
     const std::wstring bin = root + L"\\bin", final_ = bin + L"\\" + BridgeName;
-    const std::wstring src = version.empty() ? L"" : root + L"\\versions\\" + UP::Widen(version) + L"\\assets\\bin\\" + BridgeName;
-    const bool want = !src.empty() && UP::PathExists(src);
-    if (want && (!RegularFile(src) || UP::IsReparsePoint(Parent(src)))) return error = "bridge source invalid", false;
-    if (UP::PathExists(bin) && (UP::IsReparsePoint(bin) || !UP::IsDirectory(bin))) return error = "bin is not a plain directory", false;
+    const std::wstring srcRel = version.empty() ? L"" : L"versions\\" + UP::Widen(version) + L"\\assets\\bin\\" + BridgeName;
+    const bool want = !srcRel.empty() && UP::PathExists(root + L"\\" + srcRel);
+    std::string bytes;
+    if (want) {
+        RootedHandle source(root, srcRel, false);
+        if (!source.Ok() || !ReadAll(source.Get(), bytes, 256ull << 20)) return error = "bridge source invalid", false;
+    }
+    if (UP::PathExists(bin) && !RootedHandle(root, L"bin", true).Ok()) return error = "bin is not a plain directory", false;
+    const UP::Digest digest = UP::Sha256Of(bytes);
+    auto publishedIs = [&](const std::wstring& rel) {
+        RootedHandle h(root, rel, false);
+        std::string got;
+        return h.Ok() && ReadAll(h.Get(), got, 256ull << 20) && got.size() == bytes.size() && UP::Sha256Of(got) == digest;
+    };
     const bool present = UP::PathExists(final_);
-    if (want && present && RegularFile(final_) && SameBytes(final_, src)) {
+    if (want && present && publishedIs(L"bin\\" + std::wstring(BridgeName))) {
         CleanBridgeLeftovers(bin);
         return true;  // already published
     }
     if (!want && !present) return true;
-    const std::wstring aside = bin + L"\\.old-" + UP::Widen(tag) + L".exe", fresh = bin + L"\\.new-" + UP::Widen(tag) + L".exe";
+    const std::wstring asideName = L".old-" + UP::Widen(tag) + L".exe", freshName = L".new-" + UP::Widen(tag) + L".exe";
+    const std::wstring aside = bin + L"\\" + asideName, fresh = bin + L"\\" + freshName;
     if (want) {
         if (!CreateDirectoryW(bin.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return error = "bin create failed", false;
-        if (UP::IsReparsePoint(bin)) return error = "bin is not a plain directory", false;
+        if (!RootedHandle(root, L"bin", true).Ok()) return error = "bin is not a plain directory", false;
         DeleteFileW(fresh.c_str());
-        if (Fault("bin-copy") || !CopyFileW(src.c_str(), fresh.c_str(), TRUE) || !SameBytes(fresh, src)) {
+        bool written = false;
+        if (!Fault("bin-copy")) {
+            HANDLE out = CreateFileW(fresh.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (out != INVALID_HANDLE_VALUE) {
+                DWORD put = 0;
+                written = bytes.empty() || (WriteFile(out, bytes.data(), DWORD(bytes.size()), &put, nullptr) && put == bytes.size());
+                written = written && FlushFileBuffers(out);
+                CloseHandle(out);
+            }
+        }
+        if (!written || !publishedIs(L"bin\\" + freshName)) {
             DeleteFileW(fresh.c_str());
             return error = "bridge copy failed", false;
         }
@@ -244,7 +323,9 @@ bool ReconcileBridge(const std::wstring& root, const std::string& version, const
         return error = "bridge in place could not be moved aside", false;
     }
     Fault("kill-after-aside");
-    if (want && (Fault("bin-final") || !MoveFileExW(fresh.c_str(), final_.c_str(), MOVEFILE_WRITE_THROUGH))) {
+    if (want && (Fault("bin-final") || !MoveFileExW(fresh.c_str(), final_.c_str(), MOVEFILE_WRITE_THROUGH) ||
+                 !publishedIs(L"bin\\" + std::wstring(BridgeName)))) {
+        if (UP::PathExists(final_) && !UP::PathExists(fresh)) MoveFileExW(final_.c_str(), fresh.c_str(), 0);
         if (present) MoveFileExW(aside.c_str(), final_.c_str(), MOVEFILE_WRITE_THROUGH);  // previous file back in place
         DeleteFileW(fresh.c_str());
         return error = "bridge publish failed", false;
@@ -253,42 +334,48 @@ bool ReconcileBridge(const std::wstring& root, const std::string& version, const
     return true;
 }
 
-// Best effort for the launcher: repairs an interrupted publication; a busy lock means an install is doing it.
-void LauncherReconcile(const std::wstring& root, const std::string& current) {
-    const std::wstring bin = root + L"\\bin";
-    const bool ships = UP::PathExists(root + L"\\versions\\" + UP::Widen(current) + L"\\assets\\bin\\" + BridgeName);
-    if (!ships && !UP::PathExists(bin)) return;
-    if (!UP::PathExists(bin) && !CreateDirectoryW(bin.c_str(), nullptr)) return;
-    if (UP::IsReparsePoint(bin)) return;
-    BinLock lock(bin, 0);
-    std::string error;
-    if (lock.Held()) ReconcileBridge(root, current, "launch-" + std::to_string(GetCurrentProcessId()), error);
-}
-
 // ---------------------------------------------------------------- launcher
 void RecoverAnnotationsMigration(const std::wstring& root, const std::string& tag);  // install section
 
 
-int RunLauncher(int argc, wchar_t** argv) {
-    std::wstring root = Parent(SelfPath());
+// Reads <root>\current: the version if valid and its browser.exe is launchable, else "".
+std::string LaunchableCurrent(const std::wstring& root) {
     std::string current;
     UP::Version v;
-    if (UP::ReadSmallFile(root + L"\\current", 64, current)) {
-        while (!current.empty() && (current.back() == '\n' || current.back() == '\r')) current.pop_back();
-        if (UP::ParseVersion(current, v)) {
-            std::wstring exe = root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe";
-            if (ValidExeAt(exe) && !UP::IsReparsePoint(root + L"\\versions")) {
-                RecoverAnnotationsMigration(root, "launch-" + std::to_string(GetCurrentProcessId()));
-                LauncherReconcile(root, current);
-                std::vector<std::wstring> args(argv + 1, argv + argc);
-                PROCESS_INFORMATION pi{};
-                if (Launch(exe, args, pi)) {
-                    AllowSetForegroundWindow(pi.dwProcessId);
-                    CloseHandle(pi.hThread);
-                    CloseHandle(pi.hProcess);
-                    return 0;
-                }
+    if (!UP::ReadSmallFile(root + L"\\current", 64, current)) return "";
+    while (!current.empty() && (current.back() == '\n' || current.back() == '\r')) current.pop_back();
+    if (!UP::ParseVersion(current, v) || UP::IsReparsePoint(root + L"\\versions")) return "";
+    return ValidExeAt(root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe") ? current : "";
+}
+
+int RunLauncher(int argc, wchar_t** argv) {
+    const std::wstring root = Parent(SelfPath()), bin = root + L"\\bin";
+    RecoverAnnotationsMigration(root, "launch-" + std::to_string(GetCurrentProcessId()));
+    // The stable bridge is reconciled and the browser launched for the SAME `current`, read under the bin lock: an
+    // install switching `current` holds that lock from its publication to its switch, so this launcher either sees
+    // the old state before it, or the new one after it — never a stale value. Busy lock (install in progress past
+    // the timeout): launch without touching bin; the install reconciles it.
+    std::string current = LaunchableCurrent(root);
+    std::unique_ptr<BinLock> lock;
+    if (!current.empty() && (UP::PathExists(bin) || UP::PathExists(root + L"\\versions\\" + UP::Widen(current) + L"\\assets\\bin\\" + BridgeName))) {
+        if ((UP::PathExists(bin) || CreateDirectoryW(bin.c_str(), nullptr)) && RootedHandle(root, L"bin", true).Ok()) {
+            lock = std::make_unique<BinLock>(bin, 15000);
+            if (lock->Held()) {
+                current = LaunchableCurrent(root);  // re-read under the lock
+                std::string error;
+                if (!current.empty()) ReconcileBridge(root, current, "launch-" + std::to_string(GetCurrentProcessId()), error);
+                if (Fault("pause-launcher-locked")) Sleep(4000);
             }
+        }
+    }
+    if (!current.empty()) {
+        std::vector<std::wstring> args(argv + 1, argv + argc);
+        PROCESS_INFORMATION pi{};
+        if (Launch(root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe", args, pi)) {  // still under the lock
+            AllowSetForegroundWindow(pi.dwProcessId);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return 0;
         }
     }
     MessageBoxW(nullptr, L"Installation introuvable ou endommagée.", L"browser", MB_OK | MB_ICONERROR);
@@ -627,6 +714,19 @@ void RecoverAnnotationsMigration(const std::wstring& root, const std::string& ta
     if (CommitAnnotations(root, src, tag)) Log("annotations migration recovered and committed from " + from);
 }
 
+bool InstallLauncher(const std::wstring& root, const std::wstring& target, const std::string& nonce) {
+    const std::wstring launcher = root + L"\\browser.exe", temp = root + L"\\browser.exe.new-" + UP::Widen(nonce);
+    const std::wstring helper = target + L"\\update-helper.exe";
+    if (UP::PathExists(launcher) && SameBytes(launcher, helper)) return true;
+    if (!CopyFileW(helper.c_str(), temp.c_str(), FALSE)) return false;
+    if (Fault("launcher-busy") ||
+        !MoveFileExW(temp.c_str(), launcher.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(temp.c_str());
+        return false;
+    }
+    return SameBytes(launcher, helper);
+}
+
 int RunInstall(const std::string& nonce) {
     std::wstring self = SelfPath(), helperDir = Parent(self), updates = Parent(helperDir), root = Parent(updates);
     if (Lower(Leaf(helperDir)) != L"helper" || Lower(Leaf(updates)) != L"updates" || root.size() < 4) return 10;
@@ -711,6 +811,15 @@ int RunInstall(const std::string& nonce) {
             if (UP::IsReparsePoint(bin)) return abortBeforeSwitch("bridge-publish bin is not a plain directory", 32);
             lock = std::make_unique<BinLock>(bin, 10000);
             if (!lock->Held()) return abortBeforeSwitch("bridge-publish bin locked", 32);
+            // The stable launcher is what repairs an interrupted publication (RunLauncher). An install from a version
+            // whose launcher predates the bridge would leave a launcher that cannot: it is replaced FIRST, and
+            // strictly (a busy launcher aborts this install, retried later). It stays compatible with the previous
+            // `current` if this install aborts.
+            if (!InstallLauncher(root, target, nonce)) {
+                lock.reset();
+                return abortBeforeSwitch("bridge-publish launcher busy", 32);
+            }
+            Fault("kill-after-launcher");
             std::string e;
             if (!ReconcileBridge(root, p.version, nonce, e)) {
                 lock.reset();
@@ -719,6 +828,7 @@ int RunInstall(const std::string& nonce) {
             }
             Log("bridge published to bin for " + p.version);
             Fault("kill-after-publish");
+            if (Fault("pause-after-publish")) Sleep(4000);  // lock held: a concurrent launcher must wait
         }
         // Switch.
         if (Fault("current-write") || !UP::AtomicWriteFile(root + L"\\current", p.version + "\n")) {
