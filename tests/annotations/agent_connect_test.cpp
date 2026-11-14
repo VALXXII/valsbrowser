@@ -505,6 +505,22 @@ std::string Patched(const std::string& pe, std::size_t at, unsigned value) {
     out[off + at] = char(value & 255); out[off + at + 1] = char((value >> 8) & 255);
     return out;
 }
+// A directory junction made by cmd's mklink (no privilege needed); true when the link exists as a reparse point.
+bool Junction(const std::wstring& link, const std::wstring& target) {
+    std::wstring line = L"cmd /c mklink /J \"" + link + L"\" \"" + target + L"\" >nul";
+    STARTUPINFOW si{sizeof si}; PROCESS_INFORMATION pi{}; wchar_t comspec[MAX_PATH] = {};
+    GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH);
+    if (CreateProcessW(comspec, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 10000); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    }
+    const DWORD a = GetFileAttributesW(link.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT);
+}
+std::string WithLfanew(std::string bytes, std::uint32_t offset) {
+    if (bytes.size() < 0x40) bytes.resize(0x40, '\0');
+    for (int i = 0; i < 4; ++i) bytes[0x3C + i] = char((offset >> (8 * i)) & 255);
+    return bytes;
+}
 void TestBridgeUsable(Fixture& f) {
     std::string why;
     CHECK(AC::BridgeUsable(f.target.bridgeExe, &why));   // the real bridge: console x64 PE
@@ -538,6 +554,36 @@ void TestBridgeUsable(Fixture& f) {
     CHECK(AC::BridgeUsable(real + L"\\browser-annotations-mcp.exe", &why));
     CHECK(!AC::BridgeUsable(link + L"\\browser-annotations-mcp.exe", &why) && why.find("lien") != std::string::npos);
     RemoveDirectoryW(link.c_str());
+    // Review of 65adadd, P2: a junction ABOVE bin (bin and the file themselves plain) was followed. Every ancestor counts.
+    const std::wstring realRoot = f.base + L"\\real-root", aliasRoot = f.base + L"\\alias-root", deep = f.base + L"\\deep";
+    for (const std::wstring& d : {realRoot, realRoot + L"\\bin", deep, deep + L"\\x"}) CreateDirectoryW(d.c_str(), nullptr);
+    CHECK(CopyTo(f.target.bridgeExe, realRoot + L"\\bin\\browser-annotations-mcp.exe"));
+    CHECK(AC::BridgeUsable(realRoot + L"\\bin\\browser-annotations-mcp.exe", &why));
+    CHECK(Junction(aliasRoot, realRoot) && Junction(deep + L"\\x\\link", realRoot));
+    const DWORD binAttr = GetFileAttributesW((aliasRoot + L"\\bin").c_str());
+    CHECK(binAttr != INVALID_FILE_ATTRIBUTES && !(binAttr & FILE_ATTRIBUTE_REPARSE_POINT));   // bin itself is plain
+    why.clear();
+    CHECK(!AC::BridgeUsable(aliasRoot + L"\\bin\\browser-annotations-mcp.exe", &why) && why.find("lien") != std::string::npos);
+    CHECK(!AC::BridgeUsable(deep + L"\\x\\link\\bin\\browser-annotations-mcp.exe", &why) && why.find("lien") != std::string::npos);
+    RemoveDirectoryW((deep + L"\\x\\link").c_str());
+    // One spelling only: ".", empty component, trailing separator.
+    CHECK(!AC::BridgeUsable(realRoot + L"\\.\\bin\\browser-annotations-mcp.exe", &why));
+    CHECK(!AC::BridgeUsable(realRoot + L"\\\\bin\\browser-annotations-mcp.exe", &why));
+    CHECK(!AC::BridgeUsable(realRoot + L"\\bin\\", &why));
+    // Review of 65adadd, P2: e_lfanew near UINT32_MAX wrapped the 32-bit bound and crashed. Extreme and edge offsets are
+    // refused (no crash), the real bridge truncated just before / at the end of the checked header behaves accordingly.
+    for (std::uint32_t off : {0xFFFFFFF0u, 0xFFFFFFFFu, 0xFFFFFFA0u, 0xFFFFFF00u, 0x80000000u, 0x7FFFFFFFu, 0x10000u, 0x1000u, 0xFFFu, 0x3Fu}) {
+        CHECK(WriteText(dir + L"\\lfanew.exe", WithLfanew(std::string("MZ") + std::string(126, '\0'), off)));
+        why.clear();
+        CHECK(!AC::BridgeUsable(dir + L"\\lfanew.exe", &why) && why.find("programme valide") != std::string::npos);
+    }
+    const std::uint32_t lfanew = std::uint32_t(std::uint8_t(pe[0x3C])) | (std::uint32_t(std::uint8_t(pe[0x3D])) << 8);
+    CHECK(WriteText(dir + L"\\cut93.exe", pe.substr(0, lfanew + 93)) && !AC::BridgeUsable(dir + L"\\cut93.exe", &why));
+    CHECK(WriteText(dir + L"\\cut94.exe", pe.substr(0, lfanew + 94)) && AC::BridgeUsable(dir + L"\\cut94.exe", &why));   // a header screen
+    std::string big = pe; big.resize(8192, '\0');
+    for (std::uint32_t off : {4096u - 94u, 4096u - 93u, 4096u - 4u, 4096u}) {
+        CHECK(WriteText(dir + L"\\edge.exe", WithLfanew(big, off)) && !AC::BridgeUsable(dir + L"\\edge.exe", &why));
+    }
 }
 // Connect with an unusable bridge: refused BEFORE anything is written (no config, no backup, no CLI, no .mcpb).
 void TestConnectRefusesMissingBridge(Fixture& f) {
@@ -556,6 +602,16 @@ void TestConnectRefusesMissingBridge(Fixture& f) {
     r = AC::ConnectCodex(f.env, gone);
     CHECK(r.result == AC::Result::Failed && !r.usedCli && r.backup.empty());
     CHECK(ReadText(codex) == codexBefore && ReadText(log) == logBefore);
+    // The same with a real bridge reached through an ANCESTOR junction (review of 65adadd): refused, nothing written.
+    const std::wstring viaLink = f.base + L"\\alias-root\\bin\\browser-annotations-mcp.exe";
+    CHECK(Exists(viaLink));
+    AC::Target linked = f.target; linked.bridgeExe = viaLink;
+    r = AC::ConnectClaude(f.env, linked, f.work);
+    CHECK(r.result == AC::Result::Failed && r.message.find("lien") != std::string::npos && r.backup.empty());
+    CHECK(ReadText(claude) == claudeBefore && f.opened.size() == opened && !Exists(f.work + L"\\browser-annotations.mcpb"));
+    r = AC::ConnectCodex(f.env, linked);
+    CHECK(r.result == AC::Result::Failed && !r.usedCli && r.backup.empty() && ReadText(codex) == codexBefore && ReadText(log) == logBefore);
+    RemoveDirectoryW((f.base + L"\\alias-root").c_str());
     f.associated = false;   // the merge path below (never Claude's installer here)
     // The same bridge once published: accepted (the merge path, in test mode never Claude's installer).
     CreateDirectoryW((f.base + L"\\inst\\bin").c_str(), nullptr);

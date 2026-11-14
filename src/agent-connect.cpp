@@ -888,10 +888,23 @@ bool BridgeUsable(const std::wstring& path, std::string* why) {
                           "Réessayez après la mise à jour du navigateur, ou réinstallez-le.";
     const bool drive = path.size() >= 3 && ((path[0] >= L'A' && path[0] <= L'Z') || (path[0] >= L'a' && path[0] <= L'z')) &&
                        path[1] == L':' && path[2] == L'\\';
-    if (!drive || path.find(L"\\..\\") != std::wstring::npos || path.find(L'/') != std::wstring::npos) return no(missing);
-    const DWORD dirAttr = GetFileAttributesW(Parent(path).c_str());
-    if (dirAttr == INVALID_FILE_ATTRIBUTES || !(dirAttr & FILE_ATTRIBUTE_DIRECTORY)) return no(missing);
-    if (dirAttr & FILE_ATTRIBUTE_REPARSE_POINT) return no("Le dossier du relais des annotations est un lien : refusé, rien n'a été modifié.");
+    // One canonical spelling only: no "..", ".", empty component, forward slash or trailing separator (the ancestry
+    // walk below and the final-path comparison check exactly the components written in the configuration).
+    if (!drive || path.find(L'/') != std::wstring::npos || path.back() == L'\\') return no(missing);
+    for (std::size_t at = 2; at < path.size();) {
+        const std::size_t next = std::min(path.find(L'\\', at + 1), path.size());
+        const std::wstring part = path.substr(at + 1, next - at - 1);
+        if (part.empty() || part == L"." || part == L"..") return no(missing);
+        at = next;
+    }
+    // Every folder of the path, from the drive's first folder down to the bridge's own (review of 65adadd: a junction
+    // ABOVE bin was followed). GetFileAttributes on a link reports the link itself, never its target.
+    const char* linked = "Le chemin du relais des annotations passe par un lien : refusé, rien n'a été modifié.";
+    for (std::size_t at = path.find(L'\\', 3); at != std::wstring::npos; at = path.find(L'\\', at + 1)) {
+        const DWORD a = GetFileAttributesW(path.substr(0, at).c_str());
+        if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return no(missing);
+        if (a & FILE_ATTRIBUTE_REPARSE_POINT) return no(linked);
+    }
     // Opened WITHOUT following a reparse point: the attributes below are the file's own.
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                            FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
@@ -899,17 +912,34 @@ bool BridgeUsable(const std::wstring& path, std::string* why) {
     BY_HANDLE_FILE_INFORMATION info{};
     const bool regular = GetFileType(h) == FILE_TYPE_DISK && GetFileInformationByHandle(h, &info) &&
                          !(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE));
+    // The object actually opened must be the one named (a folder swapped for a link after the walk, a subst drive or a
+    // short-name alias would resolve elsewhere): its final path, from the handle, equals the long form of `path`.
+    bool same = false;
+    if (regular) {
+        std::wstring final(32768, L'\0'), longForm(32768, L'\0');
+        const DWORD nf = GetFinalPathNameByHandleW(h, final.data(), DWORD(final.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        const DWORD nl = GetLongPathNameW(path.c_str(), longForm.data(), DWORD(longForm.size()));
+        if (nf > 0 && nf < final.size() && nl > 0 && nl < longForm.size()) {
+            final.resize(nf); longForm.resize(nl);
+            if (final.compare(0, 4, L"\\\\?\\") == 0) final.erase(0, 4);
+            same = CompareStringOrdinal(final.c_str(), int(final.size()), longForm.c_str(), int(longForm.size()), TRUE) == CSTR_EQUAL;
+        }
+    }
     unsigned char head[4096] = {};
     DWORD got = 0;
-    const bool read = regular && ReadFile(h, head, sizeof head, &got, nullptr);
+    const bool read = regular && same && ReadFile(h, head, sizeof head, &got, nullptr);
     CloseHandle(h);
     if (!regular) return no("Le relais des annotations n'est pas un fichier ordinaire : refusé, rien n'a été modifié.");
+    if (!same) return no(linked);
     const char* notPe = "Le relais des annotations n'est pas un programme valide pour cet ordinateur : rien n'a été modifié. Réinstallez le navigateur.";
     if (!read || got < 0x40 || head[0] != 'M' || head[1] != 'Z') return no(notPe);
-    const std::uint32_t pe = std::uint32_t(head[0x3C]) | (std::uint32_t(head[0x3D]) << 8) | (std::uint32_t(head[0x3E]) << 16) |
-                             (std::uint32_t(head[0x3F]) << 24);
-    // PE signature (4) + file header (20), then the optional header: magic at +0, subsystem at +68.
-    if (pe < 0x40 || pe + 24 + 70 > got) return no(notPe);
+    const std::size_t size = std::min<std::size_t>(got, sizeof head);
+    const std::size_t pe = std::size_t(head[0x3C]) | (std::size_t(head[0x3D]) << 8) | (std::size_t(head[0x3E]) << 16) |
+                           (std::size_t(head[0x3F]) << 24);
+    // PE signature (4) + file header (20), then the optional header: magic at +0, subsystem at +68 (2 bytes) => 94 bytes
+    // from `pe`. Checked by subtraction once pe <= size is known (review of 65adadd: pe + 94 wrapped in 32 bits).
+    constexpr std::size_t headerBytes = 24 + 70;
+    if (pe < 0x40 || pe > size || size - pe < headerBytes) return no(notPe);
     const unsigned char* p = head + pe;
     const unsigned machine = p[4] | (p[5] << 8), magic = p[24] | (p[25] << 8), subsystem = p[24 + 68] | (p[24 + 69] << 8);
     if (p[0] != 'P' || p[1] != 'E' || p[2] || p[3] || machine != 0x8664 || magic != 0x20B || subsystem != 3) return no(notPe);

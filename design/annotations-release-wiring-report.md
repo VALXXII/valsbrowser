@@ -60,3 +60,25 @@ locale (mode, note, capture, magasin) n'en dépend pas.
 ## Correctif de revue PR72 répercuté (merge c7bc8c2)
 
 Le commit ac6a5ef (plancher BETA/libellé sur toutes les lignes de fond) est fusionné dans cette branche sans réécriture. Re-vérifié sur la tête fusionnée : test pur 31/31, harnais natif 1376/0, suite annotations --quick OK (agent_connect 249/0), build dev OK, E2E couleurs réel 0 échec (`07a…07e`). Le gate reste inactif.
+
+## Revue indépendante de 65adadd : deux P2 corrigés
+
+1. **Débordement du décalage PE** : `pe + 24 + 70` était calculé sur 32 bits ; un fichier local de 128 octets « MZ » avec
+   `e_lfanew = 0xFFFFFFF0` faisait planter le contrôle (0xC0000005). Correction : décalage en `size_t`, bornes vérifiées
+   par soustraction après `pe <= taille lue` (`pe < 0x40 || pe > size || size - pe < 94`), avant tout accès.
+2. **Lien au-dessus de `bin`** : seuls le dossier parent et le fichier étaient contrôlés ; un chemin
+   `alias\bin\browser-annotations-mcp.exe` (jonction `alias -> real`) était accepté. Correction : orthographe unique
+   (pas de `.`, `..`, composant vide, `/`, séparateur final), **chaque dossier** du chemin depuis le lecteur est contrôlé
+   (existe, dossier, pas un point d'analyse), et le chemin final du handle ouvert (`GetFinalPathNameByHandle`) doit égaler
+   la forme longue du chemin (contre un échange de dossier après le contrôle, un lecteur `subst` ou un alias).
+
+Rouge/vert (sondes en processus séparés, `tests/annotations/bridge_probe.py`, équivalentes à celles de la revue) :
+`08a` sur 65adadd — 4 échecs (2 jonctions acceptées, 2 plantages 0xC0000005) ; `08b` après correction — 0 échec (23 cas :
+jonction à 1 et 2 niveaux au-dessus de `bin`, dossier immédiat lien, décalages extrêmes/limites, fichiers tronqués).
+`agent_connect_test` : `08c` sur l'ancien `agent-connect.cpp` — échecs puis segfault (exit 139) ; `08d` après — 288
+vérifications, 0 échec, dont connexion Claude/Codex refusée via jonction ancêtre sans config, sauvegarde, CLI ni `.mcpb`.
+
+Limites : contrôle d'en-tête seulement (pas de preuve de chargeabilité ni d'identité du fichier au démarrage du client) ;
+un dossier utilisateur redirigé par jonction, un lecteur `subst` ou un dossier OneDrive « à la demande » (points
+d'analyse) font désormais refuser la connexion — restriction voulue, message « passe par un lien ». `main.cpp` non
+modifié par ce correctif (gate inchangé). Build/E2E application non refaits pour ce correctif ciblé.
