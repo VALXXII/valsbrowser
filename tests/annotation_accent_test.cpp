@@ -26,19 +26,38 @@ static std::uint32_t WhiteOver(std::uint32_t c, double a) { return T::Over(0xFFF
 static std::uint32_t Rgb24(NativeChrome::Design::Rgb c) { return (std::uint32_t(std::lround(c.r * 255)) << 16) | (std::uint32_t(std::lround(c.g * 255)) << 8) | std::uint32_t(std::lround(c.b * 255)); }
 
 int main() {
-    // ---- 1. Personnel (neutral, P07): the reference blue, the exact Paper tones.
+    // ---- 1. Personnel (neutral, P07): the reference blue; the exact Paper tones wherever they meet their threshold.
     {   const T::Band b = T::BandFor(T::reference);
-        Check(b.gradientEnd == 0x233FD6 && b.label == 0x5B84FF && b.beta == 0x6A8FFF && b.border == 0x3E67FF3D, "reference fill: gradient #233FD6, label #5B84FF, BETA #6A8FFF, border #3E67FF3D (Paper)");
+        Check(b.gradientEnd == 0x233FD6 && b.label == 0x5B84FF && b.border == 0x3E67FF3D, "reference fill: gradient #233FD6, label #5B84FF (4.5:1 met on every row), border #3E67FF3D (Paper)");
         Check(b.markLight == 0xD1DFFF && b.markMid == 0x3296FF && b.markDeep == 0x2F63E7 && b.waveDim == D::Wave::dim && b.waveBright == D::Wave::bright, "reference fill: mark ramp and wave dots are the Paper values");
         Check(T::Relative(T::reference, 0x5B84FF) == 0x5B84FF, "Relative(reference, tone) == tone, exactly");
-        std::printf("     Personnel: « Mode Annotation » %.2f:1 on the band (label bottom), « BETA » %.2f:1 on its chip\n",
-                    T::Contrast(b.label, T::LabelBackdrop(b.gradientEnd)), T::Contrast(b.beta, T::BetaBackdrop(b.fill, b.gradientEnd)));
+        // Paper's « BETA » #6A8FFF fails on the chip's lower rows (review of e204fd6): it is lifted, hue kept, minimally.
+        const double paperBetaBottom = T::Contrast(0x6A8FFF, T::BetaBackdrop(T::reference, 0x233FD6));
+        Check(paperBetaBottom < 4.5 && b.beta != 0x6A8FFF, "Paper BETA #6A8FFF is below 4.5:1 on the chip bottom row, so Personnel's BETA is lifted (not kept)");
+        const T::Lch was = T::ToOklch(0x6A8FFF), now = T::ToOklch(b.beta);
+        Check(HueGap(was.h, now.h) < 2 && now.L > was.L && now.L - was.L < .03, "Personnel BETA: same hue, lightness raised by < 0.03 (minimal)");
+        std::printf("     Personnel: « Mode Annotation » #%06X >= %.2f:1 on every row; « BETA » #%06X >= %.2f:1 on every chip row (Paper #6A8FFF: %.2f:1 at the bottom)\n",
+                    unsigned(b.label), T::WorstContrast(b.label, T::LabelBackdrops(b.gradientEnd)), unsigned(b.beta), T::WorstContrast(b.beta, T::BetaBackdrops(b.fill, b.gradientEnd)), paperBetaBottom);
+    }
+    // ---- 1b. The review's reproducer: hue 288, intensity .10 => fill #756DAF. e204fd6 chose BETA #948EC1, floored on the
+    //          chip's MIDDLE row only: 4.32:1 measured natively at device row 38 (y 19 DIP). Every row must pass now.
+    {   const std::uint32_t fill = Fill(288, .10f); const T::Band b = T::BandFor(fill);
+        Check(fill == 0x756DAF, "reproducer fill hue 288 / .10 is #756DAF");
+        const std::uint32_t old = T::Readable(T::Relative(fill, 0x6A8FFF), T::Over(fill, .16, T::BandAt(b.gradientEnd, 16)), 4.5);
+        const double oldAt19 = T::Contrast(old, T::Over(fill, .16, T::BandAt(b.gradientEnd, 19)));
+        std::printf("     reproducer: e204fd6 BETA #%06X = %.2f:1 at y 19 (review measured 4.32 natively); now #%06X >= %.2f:1 on rows 7..25\n",
+                    unsigned(old), oldAt19, unsigned(b.beta), T::WorstContrast(b.beta, T::BetaBackdrops(fill, b.gradientEnd)));
+        Check(old == 0x948EC1 && oldAt19 < 4.5, "regression evidence: the middle-row floor gives #948EC1, below 4.5:1 lower in the chip");
+        Check(T::WorstContrast(b.beta, T::BetaBackdrops(fill, b.gradientEnd)) >= 4.5, "reproducer: BETA >= 4.5:1 on every chip row (7..25 DIP)");
+        Check(T::WorstContrast(b.label, T::LabelBackdrops(b.gradientEnd)) >= 4.5, "reproducer: label >= 4.5:1 on every label row (6..26 DIP)");
     }
     // ---- 2. Every hue x intensity of a real profile fill: identity kept, text >= 4.5:1, roles ordered.
     {   double worstLabel = 99, worstBeta = 99, worstHue = 0; int worstLabelHue = -1, worstBetaHue = -1; bool ordered = true, fillHueKept = true, roundTrip = true;
-        for (int hue = 0; hue < 360; ++hue) for (float c : {.0f, .02f, .06f, .10f, .14f, .16f}) {
-            const std::uint32_t fill = Fill(hue, c); const T::Band b = T::BandFor(fill);
-            const double label = T::Contrast(b.label, T::LabelBackdrop(b.gradientEnd)), beta = T::Contrast(b.beta, T::BetaBackdrop(fill, b.gradientEnd));
+        std::vector<std::uint32_t> all{T::reference};
+        for (int hue = 0; hue < 360; ++hue) for (float c : {.0f, .02f, .04f, .06f, .08f, .10f, .12f, .14f, .16f}) all.push_back(Fill(hue, c));
+        for (std::uint32_t fill : all) {
+            const int hue = int(T::ToOklch(fill).h); const T::Band b = T::BandFor(fill);
+            const double label = T::WorstContrast(b.label, T::LabelBackdrops(b.gradientEnd)), beta = T::WorstContrast(b.beta, T::BetaBackdrops(fill, b.gradientEnd));
             if (label < worstLabel) { worstLabel = label; worstLabelHue = hue; }
             if (beta < worstBeta) { worstBeta = beta; worstBetaHue = hue; }
             const T::Lch f = T::ToOklch(fill), g = T::ToOklch(b.gradientEnd), l = T::ToOklch(b.label), w = T::ToOklch(b.waveBright >> 8);
@@ -52,8 +71,8 @@ int main() {
             if (std::abs(int(back >> 16) - int(fill >> 16)) > 1 || std::abs(int((back >> 8) & 255) - int((fill >> 8) & 255)) > 1 || std::abs(int(back & 255) - int(fill & 255)) > 1) roundTrip = false;
         }
         std::printf("     all fills: « Mode Annotation » >= %.2f:1 (hue %d), « BETA » >= %.2f:1 (hue %d), tones within %.1f deg of (fill hue + Paper offset)\n", worstLabel, worstLabelHue, worstBeta, worstBetaHue, worstHue);
-        Check(worstLabel >= 4.5, "« Mode Annotation » >= 4.5:1 on the band for every profile fill (1.4.3 AA)");
-        Check(worstBeta >= 4.5, "« BETA » >= 4.5:1 on its accent chip for every profile fill (1.4.3 AA)");
+        Check(worstLabel >= 4.5, "« Mode Annotation » >= 4.5:1 on EVERY row of its box, every profile fill (1.4.3 AA)");
+        Check(worstBeta >= 4.5, "« BETA » >= 4.5:1 on EVERY row of its chip, every profile fill (1.4.3 AA)");
         Check(worstHue <= 5, "every tone keeps the fill hue + its Paper offset (<= 5 deg: byte rounding at low chroma; offsets <= 14 deg)");
         Check(ordered, "roles kept: gradient end deeper than the fill, label and bright dots lighter");
         Check(fillHueKept, "border and dim dots are the fill itself (alpha only)");
@@ -63,6 +82,10 @@ int main() {
     {   Check(T::Readable(0x5B84FF, 0x1A2140, 4.5) == 0x5B84FF, "Readable leaves a passing pair unchanged");
         const std::uint32_t dark = 0x403080, up = T::Readable(dark, 0x171717, 4.5);
         Check(T::Contrast(up, 0x171717) >= 4.5 && HueGap(T::ToOklch(up).h, T::ToOklch(dark).h) < 3 && T::ToOklch(up).L > T::ToOklch(dark).L, "Readable lifts L only (hue kept) to reach 4.5:1");
+        const std::vector<std::uint32_t> rows{0x171717, 0x202020, 0x303030};
+        const std::uint32_t all = T::ReadableOnAll(dark, rows, 4.5);
+        Check(T::WorstContrast(all, rows) >= 4.5 && T::Contrast(T::Readable(dark, 0x171717, 4.5), 0x303030) < 4.5, "ReadableOnAll floors on the lightest row, where a single-row floor would not");
+        Check(T::BandAt(0x233FD6, 25) != T::BandAt(0x233FD6, 16) && T::Contrast(0xFFFFFF, T::BandAt(0x233FD6, 25)) < T::Contrast(0xFFFFFF, T::BandAt(0x233FD6, 7)), "the band lightens downwards (the bottom row is the lightest)");
     }
     // ---- 4. Primary buttons « Ajouter », « Terminé », « Annoter cette page »: white on every state >= 4.5:1.
     {   double worstNew = 99, worstOld = 99; std::uint32_t oldAt = 0;

@@ -8,9 +8,12 @@
 // takes #3E67FF to it: lightness + dL, chroma x (C tone / C reference), hue + dh, chroma then fitted into sRGB (hue and
 // lightness kept). The reference fill gives the Paper value back EXACTLY (no rounding drift for « Personnel »).
 // A tone used for text gets a minimal contrast floor on its real backdrop: its lightness is raised in small steps
-// (hue kept) until the WCAG ratio is met; a tone that already passes is returned unchanged.
+// (hue kept) until the WCAG ratio is met on EVERY composited backdrop row its text box covers (the band's gradient
+// lightens towards the bottom: review of e204fd6, BETA was floored on the chip's middle row only and fell to 4.32:1
+// lower down); a tone that already passes everywhere is returned unchanged — the Personnel shortcut never skips it.
 // Colours are 0xRRGGBB (no alpha) unless a name says RGBA.
 #include <cstdint>
+#include <vector>
 #include "profile-color.h"
 
 namespace NativeChrome { namespace Annotations { namespace AccentTone {
@@ -54,6 +57,16 @@ inline std::uint32_t Readable(std::uint32_t fg, std::uint32_t bg, double minimum
     for (int i = 0; i < 200 && c.L < 1; ++i) { c.L = std::min(1.0, c.L + .0025); out = FromOklch(c); if (Contrast(out, bg) >= minimum) break; }
     return out;
 }
+// The same on several backdrops: the floor is the worst of them (the lightest backdrop, for a light text).
+template <class Backdrops> inline double WorstContrast(std::uint32_t fg, const Backdrops& bgs) {
+    double worst = 99; for (std::uint32_t bg : bgs) worst = std::min(worst, Contrast(fg, bg)); return worst;
+}
+template <class Backdrops> inline std::uint32_t ReadableOnAll(std::uint32_t fg, const Backdrops& bgs, double minimum) {
+    if (WorstContrast(fg, bgs) >= minimum) return fg;
+    Lch c = ToOklch(fg); std::uint32_t out = fg;
+    for (int i = 0; i < 200 && c.L < 1; ++i) { c.L = std::min(1.0, c.L + .0025); out = FromOklch(c); if (WorstContrast(out, bgs) >= minimum) break; }
+    return out;
+}
 inline std::uint32_t Rgba(std::uint32_t rgb, std::uint32_t alphaByte) { return ((rgb & 0xFFFFFF) << 8) | (alphaByte & 255); }
 
 // ---------------------------------------------------------------- the band (Paper 1.1 / 5.2)
@@ -63,6 +76,9 @@ inline constexpr std::uint32_t markLight = 0xD1DFFF, markMid = 0x3296FF, markDee
 inline constexpr std::uint32_t borderAlpha = 0x3D, waveDimAlpha = 0x96, waveBrightAlpha = 0xDC;
 inline constexpr float gradientAlpha = .32f, betaChip = .16f;
 inline constexpr double textMinimum = 4.5;   // 1.4.3 AA: « Mode Annotation » 14 px, « BETA » 12 px
+// Text boxes in the 32 DIP band (annotation-banner.h LayoutBanner): « Mode Annotation » 6..26, the « BETA » chip
+// (h 18, centred) 7..25. The glyphs sit inside; the floors cover the whole box (conservative bound).
+inline constexpr float bandHeight = 32, labelTop = 6, labelBottom = 26, betaTop = 7, betaBottom = 25;
 }
 struct Band {
     std::uint32_t fill = reference;
@@ -72,17 +88,31 @@ struct Band {
     std::uint32_t markLight = Paper::markLight, markMid = Paper::markMid, markDeep = Paper::markDeep;
     std::uint32_t waveDim = Rgba(reference, Paper::waveDimAlpha), waveBright = Rgba(Paper::waveBright, Paper::waveBrightAlpha);   // RGBA
 };
-// The backdrop under « Mode Annotation » at its lightest (the label's bottom, y 26 of 32): the gradient over the canvas.
-inline std::uint32_t LabelBackdrop(std::uint32_t gradientEnd) { return Over(gradientEnd, Paper::gradientAlpha * 26.0 / 32.0, canvas); }
-// The « BETA » chip (accent 16 %) over the gradient at the chip's middle (y 16 of 32).
-inline std::uint32_t BetaBackdrop(std::uint32_t fill, std::uint32_t gradientEnd) { return Over(fill, Paper::betaChip, Over(gradientEnd, Paper::gradientAlpha * .5, canvas)); }
+// The band's background at y (DIP, 0..32) as composed natively: the canvas, then the vertical gradient (gradient end at
+// 0 -> 32 % from the top to the bottom, annotation-banner.h PaintBanner). The texture's dots are not included (their
+// own, existing limit). Lighter downwards: the gradient end is always lighter than the canvas.
+inline std::uint32_t BandAt(std::uint32_t gradientEnd, double y) {
+    return Over(gradientEnd, Paper::gradientAlpha * std::clamp(y / Paper::bandHeight, 0.0, 1.0), canvas);
+}
+// Every backdrop row behind a text box, top to bottom in 0.25 DIP steps (finer than a device pixel at 400 %).
+inline std::vector<std::uint32_t> LabelBackdrops(std::uint32_t gradientEnd) {
+    std::vector<std::uint32_t> out; for (double y = Paper::labelTop; y <= Paper::labelBottom + 1e-9; y += .25) out.push_back(BandAt(gradientEnd, y)); return out;
+}
+// The « BETA » chip: the accent at 16 % over the band, rows 7..25.
+inline std::vector<std::uint32_t> BetaBackdrops(std::uint32_t fill, std::uint32_t gradientEnd) {
+    std::vector<std::uint32_t> out; for (double y = Paper::betaTop; y <= Paper::betaBottom + 1e-9; y += .25) out.push_back(Over(fill, Paper::betaChip, BandAt(gradientEnd, y))); return out;
+}
+// The lightest of them (the box's bottom row) — kept for reports.
+inline std::uint32_t LabelBackdrop(std::uint32_t gradientEnd) { return BandAt(gradientEnd, Paper::labelBottom); }
+inline std::uint32_t BetaBackdrop(std::uint32_t fill, std::uint32_t gradientEnd) { return Over(fill, Paper::betaChip, BandAt(gradientEnd, Paper::betaBottom)); }
 inline Band BandFor(std::uint32_t fill) {
     fill &= 0xFFFFFF; Band b; b.fill = fill;
-    if (fill == reference) return b;
+    // Non-text tones: the reference fill gives the Paper values back exactly (Relative's own shortcut). Text tones are
+    // always floored: Paper's « BETA » #6A8FFF itself measures 4.34:1 on the chip's bottom row.
     b.gradientEnd = Relative(fill, Paper::gradientEnd);
     b.border = Rgba(fill, Paper::borderAlpha);
-    b.label = Readable(Relative(fill, Paper::label), LabelBackdrop(b.gradientEnd), Paper::textMinimum);
-    b.beta = Readable(Relative(fill, Paper::beta), BetaBackdrop(fill, b.gradientEnd), Paper::textMinimum);
+    b.label = ReadableOnAll(Relative(fill, Paper::label), LabelBackdrops(b.gradientEnd), Paper::textMinimum);
+    b.beta = ReadableOnAll(Relative(fill, Paper::beta), BetaBackdrops(fill, b.gradientEnd), Paper::textMinimum);
     b.markLight = Relative(fill, Paper::markLight); b.markMid = Relative(fill, Paper::markMid); b.markDeep = Relative(fill, Paper::markDeep);
     b.waveDim = Rgba(fill, Paper::waveDimAlpha); b.waveBright = Rgba(Relative(fill, Paper::waveBright), Paper::waveBrightAlpha);
     return b;
