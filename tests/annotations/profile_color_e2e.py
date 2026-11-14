@@ -35,7 +35,7 @@ import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import sandbox_qa as Q   # noqa: E402  (WS client, post_key, print_window)
+import sandbox_qa as Q   # noqa: E402  (WS client, window lookup, posted clicks)
 
 ROOT = HERE.parents[1]
 APP = ROOT / 'build' / 'accent-e2e-app'
@@ -222,6 +222,14 @@ def main(argv):
     return 1 if failures else 0
 
 
+def toggle_mode(h):
+    """The toolbar « Annoter » button (src/chrome.h region 'N': 24 DIP square ending AnnotateRight() = 133 DIP from the
+    right edge, y 48..72), clicked with posted mouse messages to OUR window only: no foreground change, no keyboard
+    state, nothing sent to the user's session."""
+    r = W.RECT(); user32.GetClientRect(h, ctypes.byref(r))
+    Q.post_click(r.right / Q.scale(h) - 133 - 12, 60, h)
+
+
 def rgb_in(css, rgb):
     return f'rgb({rgb[0]},{rgb[1]},{rgb[2]})' in css.replace(' ', '')
 
@@ -229,9 +237,9 @@ def rgb_in(css, rgb):
 def run():
     check(wait(lambda: Q.main_window(), 20) is not None, 'the throwaway copy starts in profile « vert »')
     navigate()
-    h = Q.main_window(); Q.front()
+    h = Q.main_window()
     # ---- entry
-    Q.post_key(0x41, h, ctrl=True, shift=True)
+    toggle_mode(h)
     on = wait(lambda: re.search(r'ANNOTATE mode on \(.*accent (\d+),(\d+),(\d+)\)', all_logs()), 10)
     check(bool(on), 'the mode starts (log « ANNOTATE mode on … accent r,g,b »)')
     if not on:
@@ -274,12 +282,11 @@ def run():
     # « ambre » runs its own engine (its own WebView2 folder; the debug port stays with « vert »'s engine): the page is
     # opened through the address bar, the value handed to the new page script is read from the log.
     wait(lambda: 'engine of vert exited' in all_logs(), 10); time.sleep(1.0)
-    Q.post_key(0x4C, h, ctrl=True); time.sleep(.3)
+    Q.post_click(300, 60, h); time.sleep(.4)   # the address field (posted click: it shows its EDIT)
     edit = user32.FindWindowExW(h, None, 'Edit', None)
-    for ch in URL:
-        user32.PostMessageW(edit, 0x102, ord(ch), 1)
-    time.sleep(.2); Q.post_key(0x0D, edit); time.sleep(2.5)
-    Q.post_key(0x41, h, ctrl=True, shift=True)
+    user32.SendMessageW(edit, 0x0C, 0, URL)   # WM_SETTEXT
+    user32.PostMessageW(edit, 0x100, 0x0D, 1); user32.PostMessageW(edit, 0x101, 0x0D, 0xC0000001); time.sleep(2.5)   # Entrée
+    toggle_mode(h)
 
     def second_on():
         found = re.findall(r'ANNOTATE mode on \(.*accent (\d+),(\d+),(\d+)\)', all_logs())
@@ -290,7 +297,7 @@ def run():
     if c3:
         log(f'     band colour (ambre): {tuple(round(v) for v in c3)}')
         check(c3[0] > c3[1] > c3[2], 'band in amber after the switch')
-    Q.post_key(0x1B, h)
+    toggle_mode(h)   # leave the mode
     # ---- the store
     store = APP / 'annotations'
     written = [p for p in store.rglob('*.json')] if store.exists() else []
