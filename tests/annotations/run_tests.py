@@ -25,7 +25,9 @@ Outputs go to build/annotations-test. Exit code is non-zero if any build or test
 import argparse
 import base64
 import ctypes
+import hashlib
 import json
+import os
 import pathlib
 import queue
 import random
@@ -35,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HERE = pathlib.Path(__file__).resolve().parent
@@ -453,6 +456,76 @@ def idle_and_shutdown(exe, fixture):
         fail(label, str(e))
 
 
+# ---------------------------------------------------------------- agent connection
+def real_config_fingerprint():
+    """The user's REAL Claude Desktop / Codex configuration (read-only): files we could ever write, plus any of
+    our backup/temporary names in their folders. Compared before/after the run: any difference is a failure."""
+    env = os.environ
+    claude = pathlib.Path(env.get("APPDATA", "")) / "Claude"
+    codex = pathlib.Path(env["CODEX_HOME"]) if env.get("CODEX_HOME") else pathlib.Path(env.get("USERPROFILE", "")) / ".codex"
+    dirs = [claude, codex] + sorted((pathlib.Path(env.get("LOCALAPPDATA", "")) / "Packages").glob("Claude_*/LocalCache/Roaming/Claude"))
+    files = [claude / "claude_desktop_config.json", codex / "config.toml"] + [d / "claude_desktop_config.json" for d in dirs[2:]]
+    snap = {}
+    for f in files:
+        if f.is_file():
+            st = f.stat()
+            snap[str(f)] = (st.st_size, st.st_mtime_ns, hashlib.sha256(f.read_bytes()).hexdigest())
+        else:
+            snap[str(f)] = None
+    for d in dirs:
+        names = sorted(n.name for n in d.iterdir()) if d.is_dir() else []
+        snap[f"{d}\\<ours>"] = [n for n in names if ".browser-annotations-" in n or ".tmp-" in n and n.startswith(("claude_desktop_config", "config.toml"))]
+        ext = d / "Claude Extensions"
+        snap[f"{ext}\\<listing>"] = sorted(n.name for n in ext.iterdir()) if ext.is_dir() else None
+    return snap
+
+
+MANIFEST_KEYS = {"manifest_version", "name", "display_name", "version", "description", "long_description", "author", "repository",
+                 "homepage", "documentation", "support", "icon", "icons", "screenshots", "server", "tools", "tools_generated",
+                 "prompts", "prompts_generated", "keywords", "license", "privacy_policies", "compatibility", "user_config",
+                 "localization"}
+
+
+def check_mcpb(path: pathlib.Path, bridge: pathlib.Path, store: pathlib.Path):
+    """The .mcpb opens with Python's zipfile, and its manifest follows MCPB MANIFEST.md 0.3 for a binary server."""
+    label = "mcpb bundle"
+    try:
+        with zipfile.ZipFile(path) as z:
+            if z.testzip() is not None:
+                raise ValueError("CRC error")
+            names = z.namelist()
+            if names != ["manifest.json", "server/browser-annotations-mcp.exe"]:
+                raise ValueError(f"entries {names}")
+            m = json.loads(z.read("manifest.json").decode("utf-8"))
+            exe = z.read("server/browser-annotations-mcp.exe")
+        if exe != bridge.read_bytes():
+            raise ValueError("bundled exe differs from the bridge")
+        if set(m) - MANIFEST_KEYS:
+            raise ValueError(f"unknown manifest keys {set(m) - MANIFEST_KEYS}")
+        for key in ("manifest_version", "name", "version", "description", "author", "server"):
+            if key not in m:
+                raise ValueError(f"missing {key}")
+        if m["manifest_version"] != "0.3" or not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", m["version"]):
+            raise ValueError("manifest_version/version")
+        if not isinstance(m["author"], dict) or not m["author"].get("name"):
+            raise ValueError("author.name")
+        server = m["server"]
+        if server.get("type") != "binary" or server.get("entry_point") not in names:
+            raise ValueError(f"server {server}")
+        cfg = server["mcp_config"]
+        if not cfg["command"].startswith("${__dirname}/server/") or cfg["args"] != ["--store", str(store)]:
+            raise ValueError(f"mcp_config {cfg}")
+        if m.get("compatibility", {}).get("platforms") != ["win32"]:
+            raise ValueError("compatibility.platforms")
+        tools = [t["name"] for t in m.get("tools", [])]
+        if tools != ["browser_annotations_list", "browser_annotation_get", "browser_annotation_claim",
+                     "browser_annotation_resolve", "browser_annotation_release"]:
+            raise ValueError(f"tools {tools}")
+        print(f"ok {label}: zipfile opens it (CRC ok), entries {names}, manifest 0.3 binary, --store {store}")
+    except Exception as e:  # noqa: BLE001
+        fail(label, str(e))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bridge", action="append", default=[], help="bridge executable to test (repeatable)")
@@ -460,12 +533,16 @@ def main():
     ap.add_argument("--update-golden", action="store_true")
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
+    real_before = real_config_fingerprint()
     compile_exe("store_test.exe", ["tests/annotations/store_test.cpp", *STORE, "src/update-core.cpp", "src/update-package.cpp"],
                 ["-municode"], ["-lbcrypt", "-lwinhttp"])
     compile_exe("json_fuzz.exe", ["tests/annotations/json_fuzz.cpp"], [], [])
     compile_exe("bridge_fixture.exe", ["tests/annotations/bridge_fixture.cpp", *STORE], ["-municode"])
     compile_exe("browser-annotations-mcp.exe", ["src/mcp-bridge.cpp", *STORE], ["-municode"])
     compile_exe("host_test.exe", ["tests/annotations/host_test.cpp", *STORE])   # T3: browser-side message/crop/project logic
+    compile_exe("fake_codex.exe", ["tests/annotations/fake_codex.cpp"], ["-municode"], [])
+    compile_exe("agent_connect_test.exe", ["tests/annotations/agent_connect_test.cpp", "src/agent-connect.cpp", *STORE], ["-municode"],
+                ["-lbcrypt", "-lshlwapi", "-lshell32", "-lole32"])
     if not a.quick:
         compile_exe("claim_race.exe", ["tests/annotations/claim_race.cpp", *STORE], ["-municode"])
     if failures:
@@ -474,6 +551,10 @@ def main():
     run([OUT / "json_fuzz.exe"], "json_fuzz")
     run([OUT / "host_test.exe"], "host_test")
     json_differential(OUT / "json_fuzz.exe")
+    mcpb = OUT / "agent-connect.mcpb"
+    mcpb.unlink(missing_ok=True)
+    run([OUT / "agent_connect_test.exe", OUT / "browser-annotations-mcp.exe", OUT / "fake_codex.exe", mcpb], "agent_connect_test")
+    check_mcpb(mcpb, OUT / "browser-annotations-mcp.exe", OUT / "tmp" / "agent-connect" / "Browser O'Brien Données" / "annotations")
     if not a.quick:
         run([OUT / "claim_race.exe"], "claim_race")
 
@@ -500,6 +581,13 @@ def main():
         else:
             print(f"ok tools/list deterministic ({len(tool_lists)} lists) and equal to golden [{exe.parent.name}]")
         print(f"bridge size: {exe} = {exe.stat().st_size:,} bytes")
+    real_after = real_config_fingerprint()
+    if real_after != real_before:
+        fail("real Claude/Codex configuration", f"changed during the run: {[k for k in real_before if real_before[k] != real_after.get(k)]}")
+    else:
+        for k, v in real_after.items():
+            shown = "absent" if v is None else (f"{v[0]} bytes, sha256 {v[2][:16]}…" if isinstance(v, tuple) else v)
+            print(f"ok real config unchanged: {k} = {shown}")
     return finish()
 
 

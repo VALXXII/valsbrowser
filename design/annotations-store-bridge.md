@@ -1,4 +1,4 @@
-# Annotations V1 — magasin et bridge MCP
+# Annotations — magasin, bridge MCP et connexion des agents (V1 + V2-A)
 
 Contrat : `design/annotations-v1-brief.md` (worktree du plan). Ce document décrit ce qui est livré côté magasin et bridge, pour l'intégration dans le navigateur.
 
@@ -61,3 +61,114 @@ command = 'C:\…\build\annotations-preview\browser-annotations-mcp.exe'
 - Le paquet de release (`tools/release/package.py`, `update-package`) ne connaît pas encore le bridge : il n'est donc pas construit en `--channel release` (sinon `package.py` refuserait le fichier). Un dossier `annotations\` à côté d'un `browser.exe` portable serait aussi refusé par `package.py` (données d'exécution non listées dans `RUNTIME_DATA`) : à ajouter lors de l'intégration.
 - Le contrôle du plafond de 200 Mio ne parcourt le magasin que lorsque le nombre d'entrées pourrait l'atteindre (≥ ~110 entrées, chaque entrée étant bornée à ~1,8 Mio par nos écritures).
 - Les liens symboliques de fichiers ne sont testés que si le mode développeur Windows est actif (sinon le cas est signalé « skipped ») ; jonctions et liens physiques sont toujours testés.
+
+---
+
+# V2-A — regroupement par site, historique, connexion des agents (14 novembre 2026)
+
+Contrat : `plan-annotations-mcp-local/design/annotations-v2-brief.md` §1, §2, §5. Les sections V1 ci-dessus restent vraies sauf ce qui suit.
+
+## Magasin par site
+
+- **Clé = origine** `http(s)://hôte[:port]` (`SiteOrigin(url)` : minuscules, port par défaut et identifiants retirés, même règle que `AnnotationHost::OriginOf` ; tout autre schéma → `""`, affiché « Autres pages »).
+- **Dossier** `SiteKey(origine)` = partie lisible `hôte[-port]` (a-z0-9 et `-`, ≤ 40) + `-` + 8 hexa d'un FNV-1a 64 bits replié de l'origine, ex. `localhost-5173-1f2e3d4c`. Déterministe entre processus et versions ; `run_tests.py` en a une copie Python indépendante qui retrouve le `shot.png` écrit par le C++ (vérification croisée). Le hachage distingue `http`/`https` et `a.b`/`a-b`. `IsValidSiteKey` : `[a-z0-9][a-z0-9-]{0,63}`, ni `drafts`/`readers`/`trash`, ni nom de périphérique.
+- **Schéma** `browser-annotation/2` : `"site": "<origine>"`, plus de `project`. `projects.json` n'est plus lu ni écrit.
+- **Lecture tolérante V1** (pas de migration) : un dossier de projet V1 (`boutique\`) est un dossier comme un autre ; ses entrées `browser-annotation/1` sont lues avec `site` = origine de leur URL et `siteKey` = nom du dossier. Filtre par origine = dossier V2 de l'origine + dossiers V1 (entrées filtrées par `site`). Une entrée V2 rangée dans un dossier qui n'est pas le sien est ignorée (comptée `skipped`). Les agents peuvent réserver/résoudre une entrée V1 ; son fichier reste en V1.
+- Toute méthode `Store` qui prend `site` accepte une origine (ou n'importe quelle URL du site) **ou** une clé de dossier (`Entry.annotation.siteKey`).
+- `MaxAnnotationsPerSite` = 500 (l'ancien nom reste un alias).
+
+## API ajoutée pour le panneau Historique (`annotations.h`)
+
+```cpp
+std::string SiteOrigin(std::string_view urlOrOrigin);   // pures
+std::string SiteKey(std::string_view origin);
+std::string SiteLabel(std::string_view origin);         // "example.com", "localhost:5173", "Autres pages"
+bool IsSiteOrigin(std::string_view s);
+bool IsValidSiteKey(std::string_view key);
+enum class Progress { Any, InProgress, Done };          // En cours = open+claimed ; Terminées = resolved+needs_info+dismissed
+bool IsDone(Status s);
+struct ListQuery { std::string site; std::optional<Status> status; Progress progress = Progress::Any;
+                   bool drafts; bool newestFirst; std::size_t limit; std::string cursor; };
+struct SiteGroup { std::string site, siteKey, label; std::vector<Entry> entries; };
+std::vector<SiteGroup> GroupBySite(std::vector<Entry> entries);  // ordre de 1re apparition (site le plus récent d'abord)
+struct Annotation { std::string id, site, siteKey; std::string project /* compat V1 = siteKey */; ... };
+struct Reader { std::string client, label, site; std::string project /* compat, toujours vide */; std::int64_t lastReadAt; };
+struct PurgeReport { std::size_t drafts, closed, tempFiles, trash; };
+constexpr std::int64_t TrashRetentionSeconds = 120;
+// Store (E/S bloquantes, hors fil UI)
+Outcome Trash(const std::string& site, const std::string& id) const;         // « Supprimer »
+Outcome Restore(const std::string& site, const std::string& id) const;       // « Annuler » (toast 6 s)
+Outcome DiscardTrash(const std::string& site, const std::string& id) const;  // toast fermé
+std::size_t CountClaimed() const;                                            // compteur du lanceur
+Outcome DeleteSite(const std::string& site) const;                           // DeleteProject = alias
+PurgeReport Purge() const;   // + terminées (needs_info inclus) > 30 j, corbeille > 120 s
+```
+
+Liste paginée tous sites, récente d'abord : `ListQuery q; q.progress = Progress::Done; q.newestFirst = true; q.limit = 30;` puis `q.cursor = page.nextCursor` ; regrouper chaque page avec `GroupBySite`.
+
+**Suppression + « Annuler » : corbeille temporaire** (et non suppression différée). `Trash` écrit `trashed.json` (heure de suppression) puis renomme `<siteKey>\<id>` en `trash\<siteKey>\<id>` (un seul `MoveFileExW`, même volume). Raisons : (1) l'annotation disparaît **immédiatement** pour les agents (`list`/`get`/`claim` → introuvable), alors qu'une suppression différée la laisserait servie pendant 6 s ; (2) « Annuler » rend l'entrée intacte (état, bail en cours, capture) par le renommage inverse ; (3) un plantage pendant les 6 s ne laisse rien durablement : `Purge()` vide la corbeille après 120 s (y compris un élément sans marqueur). Si un agent a un fichier de l'entrée ouvert, le renommage échoue → `Busy` après ~1 s de nouvelles tentatives (entrée intacte, l'UI réessaie).
+
+**Compatibilité source V1** (pour que `annotation-mode.h`, réécrit en parallèle par l'autre worker, compile) : `Project`, `LoadProjects()` (toujours vide), `SaveProjects()` (n'écrit rien), `MaxProjects`, `MaxOriginsPerProject`, `IsValidProjectId`, `Annotation::project` (= `siteKey` après écriture/lecture), `Reader::project` (vide). À retirer quand l'UI n'en dépend plus.
+
+## Bridge
+
+- `--site <origine>` (ou une URL du site) restreint le serveur à ce site. `--project` : **déprécié** ; une valeur qui est une origine agit comme `--site`, sinon elle est **ignorée** avec un avertissement sur stderr (un identifiant de projet V1 ne désigne pas un site de façon fiable : mieux vaut ne rien filtrer que filtrer faux).
+- `browser_annotations_list` accepte `site` (origine ou URL, `maxLength` 2048) ; `project` n'existe plus (« Argument inconnu : project. »). Les sorties portent `site` au lieu de `project`. `readers\<client>.json` porte `site` (origine de `--site` ou `null`).
+- Transcriptions : `legacy-2025-11-25` (filtre `site` par URL, entrée V1 servie par site, erreurs), `modern-2026-07-28`, `site-restricted` (`--site` donné en URL majuscules), `project-deprecated`. Golden `tools-list.json` régénéré (diff : `project` → `site`).
+
+## Connexion des agents (`src/agent-connect.h/.cpp`, sans UI)
+
+API (namespace `AgentConnect`) :
+
+```cpp
+struct Environment { std::wstring appData, localAppData, userProfile, codexHome, path;
+                     std::function<unsigned(const std::wstring&)> driveType; std::function<std::int64_t()> now;
+                     std::function<bool()> mcpbAssociated; std::function<bool(const std::wstring&)> openFile;
+                     static Environment FromProcess(); };
+struct Target { std::wstring bridgeExe, storeRoot; std::string serverName = "browser-annotations"; std::string version; };
+enum class Client { Claude, Codex };
+enum class Result { Connected, AlreadyConnected, PendingInstall, Disconnected, NotConnected, ManualStep, NoClient, InvalidConfig, Failed };
+struct Report { Result result; std::string message; std::wstring file, backup; bool usedCli; bool ok() const; };
+struct Detection { bool claude, codex; std::wstring claudeConfig, codexConfig, codexCli; bool mcpbAssociated; };
+struct ConfiguredEntry { bool present; std::wstring command; std::vector<std::wstring> args; };
+struct Status { bool configured, extensionInstalled, stalePath, recentlyRead; std::int64_t lastReadAt;
+                std::string readerLabel; bool removableDrive; bool connected() const; };
+
+Detection Detect(const Environment&);
+std::wstring ClaudeConfigDir(const Environment&), ClaudeConfigPath(...), CodexHome(...), CodexConfigPath(...), FindCodexCli(...);
+std::wstring StableBridgePath(const std::wstring& browserExe, const std::wstring& installRoot = L"");
+bool IsOnRemovableDrive(const Environment&, const std::wstring& path);
+std::string ClaudeJsonSnippet(const Target&); std::string CodexTomlSnippet(const Target&); std::wstring CodexAddCommandLine(const Target&);
+Report ConnectClaude(const Environment&, const Target&, const std::wstring& workDir);  // .mcpb ouvert, sinon fusion JSON
+Report DisconnectClaude(const Environment&, const Target&);
+Report ConnectCodex(const Environment&, const Target&);
+Report DisconnectCodex(const Environment&, const Target&);
+Status ClientStatus(const Environment&, Client, const Target&, const std::vector<BrowserAnnotations::Reader>&,
+                    std::int64_t recentSeconds = 7 * 86400);
+// Niveau fichier (tests, « Reconnecter ») : MergeClaudeConfig, RemoveClaudeConfig, ReadClaudeEntry, ClaudeExtensionInstalled,
+// MergeCodexToml, RemoveCodexToml, ReadCodexEntry, McpbManifest, BuildMcpb. Briques pures : ZipStored, Crc32, QuoteArg.
+```
+
+Intégration attendue : `Target{StableBridgePath(exe du navigateur), StoreRootForDataDir(dataDir), "browser-annotations", version}` ; appels **hors fil UI** (E/S + processus Codex jusqu'à 20 s) ; `Report.message` est en français, prêt pour l'UI. Correspondance planches : `PendingInstall` = 1.2 (« Cliquez sur Installer dans Claude ») ; `Connected` = 1.3 (« Redémarrez … ») ; `InvalidConfig`/`Failed` = 1.4 (rien n'a été écrit) ; snippets = 1.5 (Copier JSON/TOML) ; `Status.removableDrive` = 1.6 (« Reconnecter » = rappeler `Connect*` avec le chemin courant ; `stalePath` signale une entrée qui pointe ailleurs).
+
+Choix et vérifications :
+
+- **Détection par dossiers de configuration uniquement** : Claude = `%APPDATA%\Claude`, ou la copie MSIX `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude` si elle existe (celle que lit Claude installé depuis le Store) ; Codex = `%CODEX_HOME%`, sinon `%USERPROFILE%\.codex`. La détection ne crée aucun dossier.
+- **`.mcpb`** : zip avec `manifest.json` (`manifest_version` `"0.3"` = version courante du MANIFEST.md officiel, relu le 14/11/2026 ; requis `name`, `version`, `description`, `author.name`, `server` ; `server.type: "binary"`, `entry_point: "server/browser-annotations-mcp.exe"`, `mcp_config.command: "${__dirname}/server/browser-annotations-mcp"` **sans** `.exe` car le MANIFEST dit « For binaries, apps will automatically append .exe on Windows » ; `args: ["--store", <chemin réel>]`, `tools`, `compatibility.platforms: ["win32"]`). Ouvert par `ShellExecuteExW("open")` si `.mcpb` a une association (`AssocQueryStringW` exécutable / commande / DelegateExecute) ; sinon, ou si l'ouverture échoue, **fusion** dans `claude_desktop_config.json`.
+- **Zip interne** (méthode 0 « stored », CRC-32, noms UTF-8, ~60 lignes) : Win32 n'a pas d'API publique d'écriture de zip (le dossier compressé du Shell est COM, asynchrone, avec UI possible ; `cabinet.dll` fait du CAB/MSZIP, pas un zip) ; la méthode 0 est lue par tout lecteur zip, et compresser un exe de 1,2 Mo destiné à un fichier local éphémère n'apporte rien. Vérifié par `zipfile` de Python (CRC, entrées, manifest) dans `run_tests.py`.
+- **Fusion JSON** : le texte existant est **découpé, jamais re-sérialisé** (parseur strict pour valider + scanner de positions) : autres clés, ordre, nombres (`12345678901234567890`, `1.50`, `1E+2`), échappements, BOM, CRLF et indentation conservés octet pour octet ; connecter puis déconnecter redonne le fichier d'origine (testé). JSON invalide (virgule finale, commentaire, clé dupliquée, tronqué, racine non objet) ou `mcpServers` non objet → `InvalidConfig`, aucune écriture, aucune sauvegarde. Le résultat est re-parsé avant écriture (filet). Sauvegarde `<fichier>.browser-annotations-AAAAMMJJ-HHMMSS[-n].bak` (UTC) avant toute écriture, puis temporaire + `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` ; si l'écriture échoue, la sauvegarde devenue inutile est retirée. Déjà connecté à l'identique → rien n'est écrit.
+- **Codex — CLI** : syntaxe **vérifiée** sur la CLI présente (`codex-cli 0.166.0`, `codex mcp add --help` : `codex mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)`, `codex mcp remove <NAME>`) et essayée à la main dans un `CODEX_HOME` temporaire : elle conserve commentaires et autres tables et remplace une entrée existante. Utilisée seulement si **`codex.exe`** est dans une entrée **absolue** du `PATH` ; lancée cachée avec `CODEX_HOME` explicite (même valeur que la détection), stdio sur NUL, 20 s max ; son résultat est **relu et vérifié** dans `config.toml`, sinon repli sur l'édition directe (une seule sauvegarde, prise avant la CLI). Un `codex.cmd`/`.ps1` (shim npm) n'est **pas** utilisé : il passe par cmd.exe/PowerShell, dont l'interprétation de `% ^ & !` dans un chemin ne peut pas être neutralisée de façon sûre.
+- **Codex — édition directe** : scanner TOML (4 sortes de chaînes, commentaires, tableaux et tables en ligne multi-lignes) qui ne réécrit que **nos** blocs `[mcp_servers.browser-annotations]` (+ sous-tables) ; tout le reste est intact octet pour octet (aller-retour testé, y compris un faux en-tête dans une chaîne multi-ligne). Notre entrée sous une autre forme (table en ligne `mcp_servers = {…}`, clés pointées, `[mcp_servers]` + `browser-annotations = {…}`, `[[mcp_servers]]`) ou fichier non analysable → `InvalidConfig`, rien n'est écrit. Valeurs en chaînes de base échappées (chemins avec `'`, espaces, accents).
+- **Déconnecter** retire seulement notre entrée (JSON : notre membre, `mcpServers` gardé ; TOML : nos blocs). Extension installée depuis le `.mcpb` (`Claude Extensions\*\manifest.json` dont `name` est le nôtre, lecture seule) → `ManualStep` (« Désinstallez … dans Claude › Réglages › Extensions ») : on ne modifie jamais les fichiers internes de Claude.
+- **État connecté** : entrée de configuration présente (ou extension installée) **ou** `readers\<client>.json` de moins de 7 jours (client contenant `claude` / `codex`) ; `stalePath` si l'entrée pointe vers un autre exe ou magasin.
+- **Disque amovible** : `GetDriveTypeW(racine)` = `DRIVE_REMOVABLE` pour l'exe du bridge ou le magasin (UNC : non).
+- **Chemin stable du bridge** : navigateur installé (`<installRoot>\versions\<M.m.B>\browser.exe`) → `<installRoot>\bin\browser-annotations-mcp.exe` s'il existe (survit aux mises à jour), sinon à côté de `browser.exe` (portable, preview).
+
+Tests (`tests/annotations/agent_connect_test.cpp` + `fake_codex.cpp`, 187 vérifications) : le processus redirige `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`, `CODEX_HOME` et `PATH` vers `build\annotations-test\tmp\agent-connect\…` et **s'arrête** si l'une pointe ailleurs ; `run_tests.py` relève l'empreinte (taille, mtime, SHA-256) des vrais `claude_desktop_config.json` et `.codex\config.toml`, la liste de `Claude Extensions` et l'absence de nos `.bak`/`.tmp-` avant et après tout le run.
+
+## Limites / non vérifié
+
+- **Installation réelle du `.mcpb` dans Claude Desktop** : non faite (interdit de toucher Claude) ; sur ce poste `.mcpb` n'a **pas** d'association (`assoc .mcpb` : aucune), donc le parcours réel y serait la fusion JSON. Le bundle est validé contre le MANIFEST (champs, types) et par `zipfile`, pas par `mcpb validate` (CLI Node non installée).
+- L'emplacement où Claude décompresse les extensions (`Claude Extensions\<id>`) est déduit : la détection lit `manifest.json` dans **tous** les sous-dossiers ; si Claude change ce format, `extensionInstalled` reste faux et l'état « connecté » repose sur `readers`.
+- La vraie `codex mcp add` n'est pas exécutée par les tests (faux `codex.exe` dans un `PATH` temporaire) ; elle a été essayée une fois à la main dans un `CODEX_HOME` temporaire, jamais sur `C:\Users\<user>\.codex`.
+- Le build preview a été fait pendant que l'autre worker modifiait les en-têtes `annotation-*.h` dans le même worktree : il prouve que `agent-connect.cpp` et le magasin V2 compilent avec l'UI de ce moment, pas avec sa version finale.

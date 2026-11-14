@@ -32,7 +32,9 @@ DEFAULT_REPO = 'VALXXII/browser-releases'
 # the lists below name them exactly as their contracts publish them.
 BROWSER_SOURCES = ['src/main.cpp', 'src/native-lottie.cpp',
                    'src/update-core.cpp', 'src/update-package.cpp', 'src/update-toast.cpp',
-                   'src/annotations.cpp']
+                   'src/annotations.cpp',
+                   # Annotations V2: one-click agent connection (Claude .mcpb / config merge, Codex), no UI.
+                   'src/agent-connect.cpp']
 BROWSER_LIBS = ['-lole32', '-luuid', '-lcomctl32', '-lshlwapi', '-lgdi32', '-ld2d1', '-ldwrite',
                 '-lwindowscodecs', '-ldwmapi', '-lwinhttp', '-lbcrypt', '-lshell32', '-luser32',
                 '-lkernel32', '-ladvapi32']
