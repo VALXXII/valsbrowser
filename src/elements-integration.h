@@ -1123,6 +1123,7 @@ void ShowVaultManager(bool keyboard){
 HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){
     if(halted||!t||t->closed||!a)return S_OK;
     if(!t->https.shown.empty())return InterstitialMessage(t,a);
+    if(AnnotationPageMessage(t,a))return S_OK; // annotation mode (src/annotation-mode.h): only while it is on in this tab
     const std::wstring source=TakeString([&]{LPWSTR s=nullptr;a->get_Source(&s);return s;}());
     LPWSTR raw=nullptr;std::wstring message;
     if(SUCCEEDED(a->TryGetWebMessageAsString(&raw))&&raw)message=TakeString(raw);

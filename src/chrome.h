@@ -4,6 +4,7 @@
 #include <dwrite_1.h>
 #include <wincodec.h>
 #include <map>
+#include <functional>
 #include "motion.h"
 #include "favicon.h"
 #include "design-system.h"
@@ -626,7 +627,12 @@ public:
     int bandDrag=-1;float bandDragOffset=0; // item being dragged (visible index) and its pointer offset
     int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
     BookmarksBar::Result band;     // last layout (Build)
-    float ContentTop()const{return Design::Vertical::ContentTop(bandShown);}
+    // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
+    // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
+    bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip=L"Annoter (Ctrl+Maj+A)";
+    std::function<void(ID2D1RenderTarget*,ID2D1Factory*,ID2D1SolidColorBrush*,D2D1_RECT_F,Motion::InteractionVisual,bool focus)> paintAnnotate;
+    float AnnotateRight()const{return (audioShown?AudioLeft:127.f)+6;}   // from the right edge: 6 DIP left of Audio/History
+    float ContentTop()const{return Design::Vertical::ContentTop(bandShown)+annotationBand;}
     D2D1_RECT_F BandRect(int i)const{return {band.left[i],BookmarksBar::Layout::top,band.left[i]+band.width[i],BookmarksBar::Layout::bottom};}
     float BandTitleWidth(const BandItem& item){return item.title.empty()?0:TextWidth(item.title,Design::Type::label.size,Design::Type::label.medium,false,Design::Type::label.tracking);}
     void BuildBand(){
@@ -849,7 +855,7 @@ public:
         }
         float x=viewRight+Design::Space::tabGap;regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
         regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
-        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-(audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
+        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-(annotateShown?AnnotateRight()+24+Design::Space::controlGap:audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
         request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
@@ -859,6 +865,7 @@ public:
         if(vaultKey){regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},L"Remplir un mot de passe enregistré"});}
         regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
+        if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},annotateTip.c_str()});
         if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},audioTip.c_str()});
         regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Nouvelle fenêtre privée (Ctrl+Maj+N)"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
         BuildBand();
@@ -950,6 +957,7 @@ public:
             if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
             if(id=='V'){DrawAudioButton(box,{interaction.hover,interaction.press,false,focus==id},now);continue;}
+            if(id=='N'){if(paintAnnotate)paintAnnotate(target,factory,brush,box,interaction,focus==id);continue;}
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
                 if((id=='C'||id=='R')&&motion){
                     auto style=Design::Resolve(variant,state);if(style.fill){Round(box,style.radius,style.surface);if(variant==Design::ButtonVariant::Embedded)DrawLoading(box);}if(style.focus)FocusRing(box,style.radius);

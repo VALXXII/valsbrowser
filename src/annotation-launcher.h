@@ -28,11 +28,12 @@
 
 namespace NativeChrome { namespace Annotations {
 enum class LauncherState { Rest, Working };
-enum class CardKind { None, Working, NoAgent, Added };
+enum class CardKind { None, Working, NoAgent, Added, Resolved };   // Resolved (T3): « Résolue par … » + summary
 struct CardContent {
     CardKind kind = CardKind::None;
     std::wstring agent, since, note, project;   // « Opus 5.5 », « Depuis 2 min », note text, « Boutique »
     std::wstring monogram;                       // avatar fallback (« C »); `avatar` pixels win when given
+    std::wstring headline;                       // Resolved: « Résolue par » / « Question de » / « Écartée par »
     Shot avatar;
 };
 enum CardHit { CardNone = 0, CardClose = 1, CardOpen = 2, CardLater = 3, CardConnect = 4 };
@@ -73,10 +74,10 @@ inline void PaintLauncher(Ink& ink, const LauncherVisual& v, float opacity = 1, 
 struct CardLayout { float height = 0; D2D1_RECT_F header{}, close{}, body{}, footer{}, open{}, later{}, connect{}, projectLabel{}; };
 inline const wchar_t* NoAgentBody() { return L"Aucun agent ne la lit encore. Connectez Claude, Codex ou un autre client MCP en une minute."; }
 inline CardLayout LayoutCard(Ink& ink, const CardContent& c) {
-    using namespace LauncherSpec; CardLayout l; const float x = 1 + pad, r = cardW - 1 - pad, gap = c.kind == CardKind::Working ? 8.f : 10.f;
+    using namespace LauncherSpec; CardLayout l; const float x = 1 + pad, r = cardW - 1 - pad, gap = (c.kind == CardKind::Working || c.kind == CardKind::Resolved) ? 8.f : 10.f;
     float y = 1 + pad;
     l.header = {x, y, r, y + 24}; l.close = {r - 24, y, r, y + 24}; y += 24;
-    if (c.kind == CardKind::Working) {
+    if (c.kind == CardKind::Working || c.kind == CardKind::Resolved) {
         const float h = std::min(4, ink.Lines(c.note, F(14, 20), r - x)) * 20.f;
         y += gap; l.body = {x, y, r, y + h}; y += h + gap;
         l.footer = {x, y, r, y + 32};
@@ -92,7 +93,7 @@ inline CardLayout LayoutCard(Ink& ink, const CardContent& c) {
 }
 inline int CardHitAt(const CardLayout& l, const CardContent& c, float x, float y) {
     if (Inside(l.close, x, y)) return CardClose;
-    if (c.kind == CardKind::Working && Inside(l.open, x, y)) return CardOpen;
+    if ((c.kind == CardKind::Working || c.kind == CardKind::Resolved) && Inside(l.open, x, y)) return CardOpen;
     if (c.kind == CardKind::NoAgent && Inside(l.later, x, y)) return CardLater;
     if (c.kind == CardKind::NoAgent && Inside(l.connect, x, y)) return CardConnect;
     return CardNone;
@@ -104,11 +105,13 @@ inline void PaintCard(Ink& ink, const CardContent& c, const CardLayout& l, const
     ink.Fill(all, cardRadius, Hex(Ink_::raised));
     const float cy = (l.header.top + l.header.bottom) / 2;
     float x = l.header.left;
-    if (c.kind == CardKind::Working) {
-        ink.Icon(Glyphs::ring, {x, cy - 8, x + 16, cy + 8}, Accent(), v.spinner); x += 16 + 8;
+    if (c.kind == CardKind::Working || c.kind == CardKind::Resolved) {
+        if (c.kind == CardKind::Resolved) ink.Icon(Glyphs::check, {x, cy - 8, x + 16, cy + 8}, Accent()); else ink.Icon(Glyphs::ring, {x, cy - 8, x + 16, cy + 8}, Accent(), v.spinner);
+        x += 16 + 8;
+        const std::wstring lead = c.kind == CardKind::Resolved ? (c.headline.empty() ? std::wstring(L"Résolue par") : c.headline) : std::wstring(L"Prise par");
         const Font f = F(14, 18, 500); const float sinceW = ink.Width(c.since, F(14, 18)), right = l.close.left - 8;
-        const float pw = ink.Width(L"Prise par", f);
-        ink.Text(L"Prise par", f, {x, l.header.top, x + pw + 1, l.header.bottom}, Hex(0xFFFFFFE6), false, Align::Leading, true); x += pw + 4;
+        const float pw = ink.Width(lead, f);
+        ink.Text(lead, f, {x, l.header.top, x + pw + 1, l.header.bottom}, Hex(0xFFFFFFE6), false, Align::Leading, true); x += pw + 4;
         if (c.avatar.width) { ink.Thumbnail(&c.avatar, {x, cy - 8, x + 16, cy + 8}, 3); x += 16 + 4; }
         else if (!c.monogram.empty()) { ink.Fill({x, cy - 8, x + 16, cy + 8}, 4, Hex(0xFFFFFF14)); ink.Text(c.monogram, F(10, 12, 500), {x, cy - 8, x + 16, cy + 8}, {1, 1, 1, 1}, false, Align::Center, true); x += 16 + 4; }
         ink.Text(c.agent, f, {x, l.header.top, right - sinceW - 8, l.header.bottom}, Hex(0xFFFFFFE6), false, Align::Leading, true);
@@ -150,6 +153,7 @@ inline std::wstring CardAnnouncement(const CardContent& c) {
     case CardKind::Working: return L"Annotation prise par " + c.agent;
     case CardKind::NoAgent: return L"Annotation ajoutée" + (c.project.empty() ? std::wstring() : L" · " + c.project) + L". Aucun agent connecté.";
     case CardKind::Added: return L"Annotation ajoutée" + (c.project.empty() ? std::wstring() : L" · " + c.project);
+    case CardKind::Resolved: return (c.headline.empty() ? std::wstring(L"Résolue par") : c.headline) + L" " + c.agent + L" : " + c.note;
     default: return {};
     }
 }
@@ -235,7 +239,7 @@ class Launcher : public Animator::Client {
     }
     std::vector<int> CardOrder() const {
         std::vector<int> o;
-        if (content_.kind == CardKind::Working) o = {CardOpen, CardClose};
+        if (content_.kind == CardKind::Working || content_.kind == CardKind::Resolved) o = {CardOpen, CardClose};
         else if (content_.kind == CardKind::NoAgent) o = {CardLater, CardConnect, CardClose};
         else o = {CardClose};
         return o;
@@ -296,11 +300,11 @@ class Launcher : public Animator::Client {
     std::vector<Accessibility::Node> CardNodes() {
         std::vector<Accessibility::Node> n; if (!cardPresence_.IsOpen()) return n;
         Accessibility::Node g; g.key = CardKey; g.role = Accessibility::Role::Group; g.focusable = false; g.automationId = L"AnnotationCard";
-        g.name = content_.kind == CardKind::Working ? L"Annotation en cours" : L"Annotation ajoutée"; GetWindowRect(card_.Window(), &g.bounds); n.push_back(g);
+        g.name = content_.kind == CardKind::Working ? L"Annotation en cours" : content_.kind == CardKind::Resolved ? L"Annotation traitée" : L"Annotation ajoutée"; GetWindowRect(card_.Window(), &g.bounds); n.push_back(g);
         Accessibility::Node t; t.key = CardBodyKey; t.parent = CardKey; t.role = Accessibility::Role::Text; t.focusable = false; t.name = CardAnnouncement(content_);
-        t.value = content_.kind == CardKind::Working ? content_.note : content_.kind == CardKind::NoAgent ? NoAgentBody() : L""; t.bounds = card_.Screen(cardLayout_.header); n.push_back(t);
+        t.value = (content_.kind == CardKind::Working || content_.kind == CardKind::Resolved) ? content_.note : content_.kind == CardKind::NoAgent ? NoAgentBody() : L""; t.bounds = card_.Screen(cardLayout_.header); n.push_back(t);
         auto add = [&](int hit, const wchar_t* name, D2D1_RECT_F r) { Accessibility::Node b; b.key = 100 + hit; b.parent = CardKey; b.name = name; b.bounds = card_.Screen(r); b.automationId = name; n.push_back(b); };
-        if (content_.kind == CardKind::Working) add(CardOpen, L"Ouvrir", cardLayout_.open);
+        if (content_.kind == CardKind::Working || content_.kind == CardKind::Resolved) add(CardOpen, L"Ouvrir", cardLayout_.open);
         if (content_.kind == CardKind::NoAgent) { add(CardLater, L"Plus tard", cardLayout_.later); add(CardConnect, L"Connecter un agent", cardLayout_.connect); }
         add(CardClose, L"Fermer", cardLayout_.close);
         return n;

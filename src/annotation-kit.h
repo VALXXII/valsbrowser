@@ -65,8 +65,8 @@ inline constexpr Glyph ring{"M118.004 63.985a54 54 0 0 1-108 0c0-21.26 12.365-40
 
 // ---- Typography -------------------------------------------------------------------------
 // Inter Display everywhere (bundled Regular/Medium: Paper's 600 renders Medium, no faux
-// bold); JetBrains Mono only for selectors, CSS and config (first installed of JetBrains
-// Mono, Cascadia Mono, Consolas). Sizes/line heights in DIP, tracking in em.
+// bold); JetBrains Mono only for selectors, CSS and config: the bundled JetBrains Mono 2.304
+// Regular (assets/fonts, OFL; T3), else the first installed of Cascadia Mono, Consolas. Sizes/line heights in DIP, tracking in em.
 struct Font {
     float size = 14, line = 20; int weight = 400; bool mono = false, tabular = false, plain = false; float tracking = 0;
 };
@@ -78,13 +78,17 @@ struct Span { std::wstring text; D2D1_COLOR_F color; int weight = 400; };
 namespace Detail {
 struct FontEnum final : IDWriteFontFileEnumerator {
     LONG refs = 1; IDWriteFactory* factory; std::wstring folder; int index = -1; IDWriteFontFile* file = nullptr;
-    FontEnum(IDWriteFactory* f, std::wstring d) : factory(f), folder(std::move(d)) {}
+    FontEnum(IDWriteFactory* f, std::wstring d) : factory(f), folder(std::move(d)) {
+        for (const wchar_t* c : candidates) if (GetFileAttributesW((folder + c).c_str()) != INVALID_FILE_ATTRIBUTES) files.push_back(c);
+    }
     ~FontEnum() { Annotations::Release(file); }
-    static constexpr const wchar_t* files[2] = {L"InterDisplay-Regular.ttf", L"InterDisplay-Medium.ttf"};
+    // JetBrains Mono is optional: a payload without it keeps the Inter collection and falls back to a system mono.
+    static constexpr const wchar_t* candidates[3] = {L"InterDisplay-Regular.ttf", L"InterDisplay-Medium.ttf", L"JetBrainsMono-Regular.ttf"};
+    std::vector<std::wstring> files;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** p) override { if (!p) return E_POINTER; *p = nullptr; if (iid == IID_IUnknown || iid == __uuidof(IDWriteFontFileEnumerator)) { *p = this; AddRef(); return S_OK; } return E_NOINTERFACE; }
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
     ULONG STDMETHODCALLTYPE Release() override { const ULONG r = InterlockedDecrement(&refs); if (!r) delete this; return r; }
-    HRESULT STDMETHODCALLTYPE MoveNext(BOOL* more) override { Annotations::Release(file); *more = ++index < 2; if (!*more) return S_OK; return factory->CreateFontFileReference((folder + files[index]).c_str(), nullptr, &file); }
+    HRESULT STDMETHODCALLTYPE MoveNext(BOOL* more) override { Annotations::Release(file); *more = ++index < int(files.size()); if (!*more) return S_OK; return factory->CreateFontFileReference((folder + files[size_t(index)]).c_str(), nullptr, &file); }
     HRESULT STDMETHODCALLTYPE GetCurrentFontFile(IDWriteFontFile** out) override { if (!file) return E_FAIL; *out = file; file->AddRef(); return S_OK; }
 };
 struct FontLoader final : IDWriteFontCollectionLoader {
@@ -104,7 +108,7 @@ struct Shot { unsigned width = 0, height = 0; std::vector<std::uint32_t> pixels;
 class Ink {
     ID2D1Factory* factory_ = nullptr; IDWriteFactory* write_ = nullptr; Detail::FontLoader* loader_ = nullptr;
     IDWriteFontCollection* inter_ = nullptr; IWICImagingFactory* wic_ = nullptr;
-    std::wstring mono_ = L"Consolas";
+    std::wstring mono_ = L"Consolas"; bool monoBundled_ = false;
     float interAscent_ = .96875f, interDescent_ = .2421875f, monoAscent_ = .8f, monoDescent_ = .2f;
     std::map<const char*, ID2D1PathGeometry*> geometries_;
     struct Key { std::wstring text; float size, line, tracking, width; int weight; bool mono, tabular, plain, wrap; int align;
@@ -149,7 +153,8 @@ public:
         UINT32 index = 0; BOOL exists = FALSE; inter_->FindFamilyName(L"Inter Display", &index, &exists); if (!exists) return E_FAIL;
         Metrics(inter_, L"Inter Display", interAscent_, interDescent_);
         IDWriteFontCollection* system = nullptr;
-        if (SUCCEEDED(write_->GetSystemFontCollection(&system, FALSE))) {
+        if (SUCCEEDED(inter_->FindFamilyName(L"JetBrains Mono", &index, &exists)) && exists) { mono_ = L"JetBrains Mono"; monoBundled_ = true; Metrics(inter_, L"JetBrains Mono", monoAscent_, monoDescent_); }
+        else if (SUCCEEDED(write_->GetSystemFontCollection(&system, FALSE))) {
             for (const wchar_t* name : {L"JetBrains Mono", L"Cascadia Mono", L"Consolas"}) {
                 if (SUCCEEDED(system->FindFamilyName(name, &index, &exists)) && exists) { mono_ = name; Metrics(system, name, monoAscent_, monoDescent_); break; }
             }
@@ -234,7 +239,7 @@ public:
         auto it = layouts_.find(key); if (it != layouts_.end()) return it->second;
         if (layouts_.size() > 512) { for (auto& l : layouts_) Release(l.second); layouts_.clear(); }
         IDWriteTextFormat* format = nullptr;
-        if (FAILED(write_->CreateTextFormat(f.mono ? mono_.c_str() : L"Inter Display", f.mono ? nullptr : inter_,
+        if (FAILED(write_->CreateTextFormat(f.mono ? mono_.c_str() : L"Inter Display", f.mono ? (monoBundled_ ? inter_ : nullptr) : inter_,
                 key.weight >= 500 ? DWRITE_FONT_WEIGHT_MEDIUM : DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, f.size, L"fr-FR", &format))) return nullptr;
         format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
         format->SetTextAlignment(align == Align::Center ? DWRITE_TEXT_ALIGNMENT_CENTER : align == Align::Trailing ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);

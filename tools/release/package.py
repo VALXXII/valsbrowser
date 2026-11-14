@@ -22,7 +22,8 @@ TOP_PATTERN = re.compile(r'^(browser\.exe|update-helper\.exe|WebView2Loader\.dll
                          r'[A-Za-z0-9.]+-(LICENSE|NOTICE)\.txt)$')
 # Runtime data that may sit beside a portable exe; never packaged, never touched.
 RUNTIME_DATA = {'profile', 'session', 'session.tmp', 'downloads', 'downloads.tmp',
-                'bookmarks', 'bookmarks.bak', 'bookmarks.tmp', 'prototype.log', 'browser.log'}
+                'bookmarks', 'bookmarks.bak', 'bookmarks.tmp', 'prototype.log', 'browser.log',
+                'annotations'}  # annotation store of a portable/preview build (never packaged)
 FORBIDDEN_SUFFIXES = ('.o', '.obj', '.a', '.pdb', '.log', '.tmp', '.partial', '.cpp', '.h', '.py', '.ps1')
 
 

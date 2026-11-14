@@ -49,7 +49,8 @@ struct AgentRow { std::wstring monogram, name, detail; bool connected = false; }
 struct OnboardingSetup {
     std::wstring projectId, projectLabel;      // « boutique », « Boutique »
     std::wstring bridgePath;                   // real path of browser-annotations-mcp.exe
-    std::wstring mcpbName = L"annotations-browser.mcpb", mcpbSize = L"1,2 Mo";
+    std::wstring mcpbName = L"annotations-browser.mcpb", mcpbSize = L"1,2 Mo";   // mcpbName empty: no .mcpb in this build (T3 V1)
+    std::wstring serverName = L"browser-annotations";                            // key in mcpServers / [mcp_servers.<name>]
 };
 struct VerifyStatus {
     bool read = false;
@@ -70,14 +71,20 @@ inline std::wstring TomlString(const std::wstring& s) {
 }
 inline std::wstring ArgsText(const std::wstring& project) { return project.empty() ? std::wstring() : L"--project " + project; }
 inline std::wstring ArgsJson(const std::wstring& project) { return project.empty() ? L"[]" : L"[\"--project\", " + JsonString(project) + L"]"; }
-inline std::wstring ClaudeConfig(const std::wstring& path, const std::wstring& project) {
-    return L"\"browser-annotations\": {\n  \"command\": " + JsonString(path) + L",\n  \"args\": " + ArgsJson(project) + L"\n}";
+// A complete document (claude_desktop_config.json has the same shape): valid JSON on its own, merged by
+// hand into an existing « mcpServers » (T3: the bare `"name": {...}` member was not a valid document).
+inline std::wstring GenericConfig(const std::wstring& path, const std::wstring& project, const std::wstring& name = L"browser-annotations") {
+    return L"{\n  \"mcpServers\": {\n    " + JsonString(name) + L": {\n      \"command\": " + JsonString(path) + L",\n      \"args\": " + ArgsJson(project) + L"\n    }\n  }\n}";
 }
-inline std::wstring CodexConfig(const std::wstring& path, const std::wstring& project) {
-    return L"[mcp_servers.browser-annotations]\ncommand = " + TomlString(path) + L"\nargs = " + ArgsJson(project);
+inline std::wstring ClaudeConfig(const std::wstring& path, const std::wstring& project, const std::wstring& name = L"browser-annotations") { return GenericConfig(path, project, name); }
+// TOML: bare key when possible (A-Za-z0-9_-), else a quoted key.
+inline std::wstring TomlKey(const std::wstring& k) {
+    bool bare = !k.empty();
+    for (wchar_t c : k) bare = bare && ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L'-' || c == L'_');
+    return bare ? k : JsonString(k);
 }
-inline std::wstring GenericConfig(const std::wstring& path, const std::wstring& project) {
-    return L"{\n  \"mcpServers\": {\n    \"browser-annotations\": {\n      \"command\": " + JsonString(path) + L",\n      \"args\": " + ArgsJson(project) + L"\n    }\n  }\n}";
+inline std::wstring CodexConfig(const std::wstring& path, const std::wstring& project, const std::wstring& name = L"browser-annotations") {
+    return L"[mcp_servers." + TomlKey(name) + L"]\ncommand = " + TomlString(path) + L"\nargs = " + ArgsJson(project);
 }
 inline const wchar_t* AppName(AgentApp a) { return a == AgentApp::Claude ? L"Claude Desktop" : a == AgentApp::Codex ? L"Codex" : L"Votre client MCP"; }
 inline const wchar_t* AppShort(AgentApp a) { return a == AgentApp::Claude ? L"Claude" : a == AgentApp::Codex ? L"Codex" : L"votre client"; }
@@ -94,7 +101,11 @@ struct ModalView {
     Motion::InteractionVisual V(int id) const { auto it = iv.find(id); return it == iv.end() ? Motion::InteractionVisual{} : it->second; }
     int State() const { return step == OnboardingStep::Verify ? (status.read ? 3 : 2) : int(step); }
     std::wstring Project() const { return limit ? setup.projectId : std::wstring(); }
-    std::wstring Config() const { const auto p = Project(); return app == AgentApp::Claude ? ClaudeConfig(setup.bridgePath, p) : app == AgentApp::Codex ? CodexConfig(setup.bridgePath, p) : GenericConfig(setup.bridgePath, p); }
+    std::wstring Config() const { const auto p = Project(); return app == AgentApp::Claude ? ClaudeConfig(setup.bridgePath, p, setup.serverName) : app == AgentApp::Codex ? CodexConfig(setup.bridgePath, p, setup.serverName) : GenericConfig(setup.bridgePath, p, setup.serverName); }
+    // No .mcpb shipped (V1 preview): Claude gets the manual configuration, open, and no extension button.
+    bool NoMcpb() const { return app == AgentApp::Claude && setup.mcpbName.empty(); }
+    bool ManualOpen() const { return manual || app == AgentApp::Other || NoMcpb(); }
+    bool Disclosable() const { return app != AgentApp::Other && !NoMcpb(); }
     std::wstring Quote() const { return L"« Liste mes annotations" + (setup.projectLabel.empty() ? std::wstring() : L" " + setup.projectLabel) + L". »"; }
     std::wstring Title() const {
         if (step == OnboardingStep::Verify) return status.read ? std::wstring(AppName(app)) + L" est connecté" : L"Vérifier la connexion";
@@ -108,11 +119,11 @@ struct ModalView {
     }
     std::wstring PrimaryLabel() const {
         if (step == OnboardingStep::Choose) return L"Continuer";
-        if (step == OnboardingStep::Install) return app == AgentApp::Claude ? L"C'est installé" : L"C'est ajouté";
+        if (step == OnboardingStep::Install) return app == AgentApp::Claude && !NoMcpb() ? L"C'est installé" : L"C'est ajouté";
         return L"Terminé";
     }
     std::wstring SecondaryLabel() const { return step == OnboardingStep::Choose ? L"Annuler" : (step == OnboardingStep::Verify && status.read) ? L"" : L"Retour"; }
-    bool PrimaryAccent() const { return !(step == OnboardingStep::Install && app == AgentApp::Claude); }
+    bool PrimaryAccent() const { return !(step == OnboardingStep::Install && app == AgentApp::Claude && !NoMcpb()); }
 };
 namespace ModalSpec { inline constexpr float width = 560, radius = 12, padX = 20; }
 struct ModalLayout {
@@ -136,14 +147,16 @@ inline ModalLayout LayoutModal(Ink& ink, const ModalView& v) {
         y += 8 + 8; l.limit = {x0 + 2, y + 1, x0 + 18, y + 17}; l.limitLabel = {x0 + 28, y, x1, y + 18}; y += 18 + 16;
     } else if (v.step == OnboardingStep::Install) {
         const float cw = inner - 32; float cy = y + 16;
-        const std::wstring title = v.app == AgentApp::Claude ? L"Installer l'extension" : v.app == AgentApp::Codex ? L"Ajouter dans l'app Codex" : L"Ajouter dans votre client MCP";
-        const std::wstring text = v.app == AgentApp::Claude ? L"Claude Desktop s'ouvre et affiche « Annotations Browser ». Cliquez sur Installer, puis revenez ici."
+        const std::wstring title = v.NoMcpb() ? L"Ajouter dans Claude Desktop" : v.app == AgentApp::Claude ? L"Installer l'extension" : v.app == AgentApp::Codex ? L"Ajouter dans l'app Codex" : L"Ajouter dans votre client MCP";
+        const std::wstring text = v.NoMcpb() ? L"L'extension en un clic arrive bientôt. Pour l'instant : Réglages › Développeur › Modifier la config, ajoutez ce bloc (fusionnez « mcpServers » s'il existe déjà), puis redémarrez Claude Desktop."
+            : v.app == AgentApp::Claude ? L"Claude Desktop s'ouvre et affiche « Annotations Browser ». Cliquez sur Installer, puis revenez ici."
             : v.app == AgentApp::Codex ? L"Réglages › Serveurs MCP › Ajouter un serveur › STDIO, puis collez ces deux valeurs et redémarrez Codex."
             : L"Déclarez un serveur stdio avec cette commande et ces arguments, puis redémarrez le client.";
         (void)title;
         const float ch = ink.Height(text, F(13, 19), cw);
         l.cardTitle = {x0 + 16, cy, x0 + 16 + cw, cy + 20}; l.cardText = {x0 + 16, cy + 24, x0 + 16 + cw, cy + 24 + ch}; cy += 24 + ch + 12;
-        if (v.app == AgentApp::Claude) {
+        if (v.NoMcpb()) { cy -= 12; }
+        else if (v.app == AgentApp::Claude) {
             const float bw = 14 + 16 + 8 + ink.Width(L"Ouvrir dans Claude Desktop", F(14, 18, 500)) + 14;
             l.openMcpb = {x0 + 16, cy, x0 + 16 + bw, cy + 32}; l.fileLabel = {l.openMcpb.right + 12, cy, x0 + 16 + cw, cy + 32}; cy += 32;
         } else {
@@ -155,7 +168,7 @@ inline ModalLayout LayoutModal(Ink& ink, const ModalView& v) {
         }
         l.card = {x0, y, x1, cy + 16}; y = l.card.bottom + 12 + 2;
         l.disclosure = {x0 + 2, y, x1 - 2, y + 18}; y += 18;
-        if (v.manual || v.app == AgentApp::Other) {
+        if (v.ManualOpen()) {
             y += 10; const float cwid = CopyWidth(ink, true, v.copied == MCopyBlock);
             const float tw = inner - 4 - 24 - 12 - cwid; const float bh = ink.Height(v.Config(), Mono(12, 18, true), tw);
             l.block = {x0 + 2, y, x1 - 2, y + 24 + bh}; l.blockText = {x0 + 14, y + 12, x0 + 14 + tw, y + 12 + bh}; l.blockCopy = {l.block.right - 12 - cwid, y + 12, l.block.right - 12, y + 40};
@@ -199,9 +212,9 @@ inline std::vector<int> ModalOrder(const ModalView& v, const ModalLayout& l) {
     std::vector<int> o;
     if (v.step == OnboardingStep::Choose) { o = {MOption + int(v.app), MLimit}; }
     else if (v.step == OnboardingStep::Install) {
-        if (v.app == AgentApp::Claude) o.push_back(MOpenMcpb); else { o.push_back(MCopyCommand); if (!v.Project().empty()) o.push_back(MCopyArgs); }
-        if (v.app != AgentApp::Other) o.push_back(MDisclosure);
-        if (v.manual || v.app == AgentApp::Other) o.push_back(MCopyBlock);
+        if (v.NoMcpb()) {} else if (v.app == AgentApp::Claude) o.push_back(MOpenMcpb); else { o.push_back(MCopyCommand); if (!v.Project().empty()) o.push_back(MCopyArgs); }
+        if (v.Disclosable()) o.push_back(MDisclosure);
+        if (v.ManualOpen()) o.push_back(MCopyBlock);
     } else {
         o.push_back(MCopyQuote); if (l.help.right > 0) o.push_back(MHelp);
         for (int i = 0; i < l.agents; ++i) o.push_back(MAgent + i);
@@ -217,7 +230,7 @@ inline int ModalHitAt(const ModalView& v, const ModalLayout& l, float x, float y
     if (v.step == OnboardingStep::Install) {
         if (l.openMcpb.right > 0 && Inside(l.openMcpb, x, y)) return MOpenMcpb;
         for (int i = 0; i < 2; ++i) if (l.rowCopy[i].right > 0 && Inside(l.rowCopy[i], x, y) && !(i == 1 && v.Project().empty())) return MCopyCommand + i;
-        if (v.app != AgentApp::Other && Inside(l.disclosure, x, y)) return MDisclosure;
+        if (v.Disclosable() && Inside(l.disclosure, x, y)) return MDisclosure;
         if (l.blockCopy.right > 0 && Inside(l.blockCopy, x, y)) return MCopyBlock;
     }
     if (v.step == OnboardingStep::Verify) {
@@ -280,7 +293,8 @@ inline void PaintModalContent(Ink& ink, const ModalView& v, const ModalLayout& l
             ink.Text(names[i], nf, {tx, ty, r.right - 42, ty + 20}, {1, 1, 1, 1});
             if (i == 0) { const float bx = tx + ink.Width(names[i], nf) + 8, bw = ink.Width(L"Recommandé", F(11, 14, 500)) + 12;
                 ink.Fill({bx, ty + 1, bx + bw, ty + 19}, 4, Hex(0xFFFFFF14)); ink.Text(L"Recommandé", F(11, 14, 500), {bx + 6, ty + 1, bx + bw, ty + 19}, Hex(0xFFFFFFE6), false, Align::Leading, true); }
-            ink.Text(descs[i], F(13, 18), {tx, ty + 22, r.right - 42, ty + 40}, Hex(0xFFFFFF99));
+            const wchar_t* desc = (i == 0 && v.setup.mcpbName.empty()) ? L"Configuration à ajouter à la main (extension bientôt)" : descs[i];   // honest without a .mcpb (T3)
+            ink.Text(desc, F(13, 18), {tx, ty + 22, r.right - 42, ty + 40}, Hex(0xFFFFFF99));
             const float rx = r.right - 12 - 18, ry = (r.top + r.bottom) / 2 - 9;
             if (chosen) ink.Ring(rx + 9, ry + 9, 9, Accent(), 5); else ink.Ring(rx + 9, ry + 9, 9, Hex(0xFFFFFF66), 1.5f);
             if (v.focus == MOption + i) FocusRing(ink, r, 8, v.keyboard);
@@ -290,12 +304,14 @@ inline void PaintModalContent(Ink& ink, const ModalView& v, const ModalLayout& l
         ink.Spans({{L"Limiter cet agent au projet ", Hex(0xFFFFFFE6), 400}, {v.setup.projectLabel, {1, 1, 1, 1}, 500}}, F(13, 18), l.limitLabel);
     } else if (v.step == OnboardingStep::Install) {
         ink.Fill(l.card, 8, Hex(0xFFFFFF08)); ink.Stroke(l.card, 8, Hex(0xFFFFFF14), 1);
-        const std::wstring title = v.app == AgentApp::Claude ? L"Installer l'extension" : v.app == AgentApp::Codex ? L"Ajouter dans l'app Codex" : L"Ajouter dans votre client MCP";
-        const std::wstring text = v.app == AgentApp::Claude ? L"Claude Desktop s'ouvre et affiche « Annotations Browser ». Cliquez sur Installer, puis revenez ici."
+        const std::wstring title = v.NoMcpb() ? L"Ajouter dans Claude Desktop" : v.app == AgentApp::Claude ? L"Installer l'extension" : v.app == AgentApp::Codex ? L"Ajouter dans l'app Codex" : L"Ajouter dans votre client MCP";
+        const std::wstring text = v.NoMcpb() ? L"L'extension en un clic arrive bientôt. Pour l'instant : Réglages › Développeur › Modifier la config, ajoutez ce bloc (fusionnez « mcpServers » s'il existe déjà), puis redémarrez Claude Desktop."
+            : v.app == AgentApp::Claude ? L"Claude Desktop s'ouvre et affiche « Annotations Browser ». Cliquez sur Installer, puis revenez ici."
             : v.app == AgentApp::Codex ? L"Réglages › Serveurs MCP › Ajouter un serveur › STDIO, puis collez ces deux valeurs et redémarrez Codex."
             : L"Déclarez un serveur stdio avec cette commande et ces arguments, puis redémarrez le client.";
         ink.Text(title, F(14, 20, 500), l.cardTitle, {1, 1, 1, 1}); ink.Text(text, F(13, 19), l.cardText, Hex(0xFFFFFFB3), true);
-        if (v.app == AgentApp::Claude) {
+        if (v.NoMcpb()) {}
+        else if (v.app == AgentApp::Claude) {
             const auto iv = v.V(MOpenMcpb);
             { ScaleScope s(ink.Target(), l.openMcpb, Motion::PressScale(iv.press, v.reduced));
               ink.Fill(l.openMcpb, 6, Accent()); ink.Fill(l.openMcpb, 6, {1, 1, 1, .08f * iv.hover + .06f * iv.press});
@@ -321,9 +337,9 @@ inline void PaintModalContent(Ink& ink, const ModalView& v, const ModalLayout& l
                 }
             }
         }
-        {   const bool open = v.manual || v.app == AgentApp::Other; const float cy = (l.disclosure.top + l.disclosure.bottom) / 2; float x = l.disclosure.left;
-            if (v.app != AgentApp::Other) { ink.Icon(Glyphs::caretDown, {x, cy - 7, x + 14, cy + 7}, {1, 1, 1, .7f}, open ? 0.f : -90.f); x += 20; }
-            const std::wstring label = v.app == AgentApp::Claude ? L"Ou ajouter manuellement" : v.app == AgentApp::Codex ? L"Ou modifier config.toml" : L"Configuration JSON";
+        {   const bool open = v.ManualOpen(); const float cy = (l.disclosure.top + l.disclosure.bottom) / 2; float x = l.disclosure.left;
+            if (v.Disclosable()) { ink.Icon(Glyphs::caretDown, {x, cy - 7, x + 14, cy + 7}, {1, 1, 1, .7f}, open ? 0.f : -90.f); x += 20; }
+            const std::wstring label = v.NoMcpb() ? L"Configuration JSON" : v.app == AgentApp::Claude ? L"Ou ajouter manuellement" : v.app == AgentApp::Codex ? L"Ou modifier config.toml" : L"Configuration JSON";
             const std::wstring path = v.app == AgentApp::Claude ? L"Claude › Réglages › Développeur › Modifier la config" : v.app == AgentApp::Codex ? L"~/.codex/config.toml" : L"mcpServers";
             const Font lf = F(13, 18, 500); const float lw = ink.Width(label, lf);
             ink.Text(label, lf, {x, l.disclosure.top, x + lw + 1, l.disclosure.bottom}, Hex(0xFFFFFFE6)); x += lw + 6;
@@ -562,11 +578,12 @@ class Onboarding : public Animator::Client {
             for (int i = 0; i < 3; ++i) { Accessibility::Node o; o.key = MOption + i; o.parent = OptionsKey; o.role = Accessibility::Role::ListItem; o.name = names[i]; o.selected = int(view_.app) == i; o.position = i + 1; o.count = 3; o.bounds = modal_.Screen(layout_.options[i]); n.push_back(o); }
             auto& lim = node(MLimit, Accessibility::Role::Button, L"Limiter cet agent au projet " + view_.setup.projectLabel, layout_.limit); lim.toggle = view_.limit ? 2 : 1;
         } else if (view_.step == OnboardingStep::Install) {
-            if (view_.app == AgentApp::Claude) { auto& o = node(MOpenMcpb, Accessibility::Role::Button, L"Ouvrir dans Claude Desktop", layout_.openMcpb); o.help = view_.setup.mcpbName + L" · " + view_.setup.mcpbSize; }
+            if (view_.NoMcpb()) {}
+            else if (view_.app == AgentApp::Claude) { auto& o = node(MOpenMcpb, Accessibility::Role::Button, L"Ouvrir dans Claude Desktop", layout_.openMcpb); o.help = view_.setup.mcpbName + L" · " + view_.setup.mcpbSize; }
             else { auto& c = node(MCopyCommand, Accessibility::Role::Button, L"Copier la commande", layout_.rowCopy[0]); c.help = view_.setup.bridgePath;
                    if (!view_.Project().empty()) { auto& a = node(MCopyArgs, Accessibility::Role::Button, L"Copier les arguments", layout_.rowCopy[1]); a.help = ArgsText(view_.Project()); } }
-            if (view_.app != AgentApp::Other) { auto& d2 = node(MDisclosure, Accessibility::Role::Button, view_.app == AgentApp::Claude ? L"Ou ajouter manuellement" : L"Ou modifier config.toml", layout_.disclosure); d2.expand = view_.manual ? 2 : 1; }
-            if (view_.manual || view_.app == AgentApp::Other) {
+            if (view_.Disclosable()) { auto& d2 = node(MDisclosure, Accessibility::Role::Button, view_.app == AgentApp::Claude ? L"Ou ajouter manuellement" : L"Ou modifier config.toml", layout_.disclosure); d2.expand = view_.manual ? 2 : 1; }
+            if (view_.ManualOpen()) {
                 auto& b = node(BlockKey, Accessibility::Role::Text, L"Configuration", layout_.block); b.value = view_.Config(); b.focusable = false;
                 node(MCopyBlock, Accessibility::Role::Button, L"Copier la configuration", layout_.blockCopy);
             }

@@ -7,6 +7,8 @@
                     pagination, projects, readers, Markdown, caps, store location parity with UpdateCore
   json_fuzz         strict JSON vectors, bounds, 300k mutations, random round trips
   json differential the C++ parser against Python's json module on generated + mutated documents
+  host_test         browser side (T3): page message envelope/schema/size, crop plans at 100/150/200 %, origins,
+                    projects, agent status summary, page script invariants
   claim_race        2 processes x 1000 annotations (fresh and expired leases), 8 threads x 1000
   transcripts       stdin -> expected stdout replays (legacy initialize 2025-11-25, modern _meta 2026-07-28,
                     --project), tools/list determinism (+ golden file), image bytes, stdout strictly JSON-RPC,
@@ -428,12 +430,14 @@ def main():
     compile_exe("json_fuzz.exe", ["tests/annotations/json_fuzz.cpp"], [], [])
     compile_exe("bridge_fixture.exe", ["tests/annotations/bridge_fixture.cpp", *STORE], ["-municode"])
     compile_exe("browser-annotations-mcp.exe", ["src/mcp-bridge.cpp", *STORE], ["-municode"])
+    compile_exe("host_test.exe", ["tests/annotations/host_test.cpp", *STORE])   # T3: browser-side message/crop/project logic
     if not a.quick:
         compile_exe("claim_race.exe", ["tests/annotations/claim_race.cpp", *STORE], ["-municode"])
     if failures:
         return finish()
     run([OUT / "store_test.exe"], "store_test")
     run([OUT / "json_fuzz.exe"], "json_fuzz")
+    run([OUT / "host_test.exe"], "host_test")
     json_differential(OUT / "json_fuzz.exe")
     if not a.quick:
         run([OUT / "claim_race.exe"], "claim_race")

@@ -167,7 +167,7 @@ Indice statique pour chaque état animé : couleur (accent/danger), icône (coch
 ## Écarts assumés avec Paper
 
 1. **Ombres portées non dessinées** (liste, info-bulle, lanceur, cartes, modale) : règle du dépôt « zero drop shadow » (`src/native-ui.h`, décision du 2026-11-09).
-2. **JetBrains Mono** n'est ni embarquée ni installée sur la machine de test : repli Cascadia Mono puis Consolas (même 12/18, ligatures coupées). L'embarquer demande un changement de `tools/release/build.py` (hors périmètre T2).
+2. ~~**JetBrains Mono** n'est ni embarquée ni installée~~ — corrigé en T3 : JetBrains Mono 2.304 est embarquée (voir « Intégration T3 ») ; le repli Cascadia Mono puis Consolas ne sert plus que si le fichier manque.
 3. Graisse **600** rendue en Medium (seuls Regular/Medium d'Inter Display sont embarqués ; pas de faux gras).
 4. Logo du bandeau : le shader « Heatmap » est rendu par la même marque remplie de son dégradé (#D1DFFF → #3296FF → #2F63E7).
 5. Champ de note : l'EDIT natif garde la hauteur de ligne GDI (~17 px au lieu de 20) ; halo du champ approché par anneaux dégradés.
@@ -277,8 +277,18 @@ Entrée : 594 ms, 67 images (horloge compositeur). Repos 1500 ms : images 0, req
 | read detail 13px #FFFFFFB3 on accent 12 % | 6.75:1 | 6.77:1 | `#C1C3C8` | `#313649` |
 | agent detail 12px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
 
-Police mono résolue : Consolas.
+Police mono résolue : Consolas (avant T3) ; JetBrains Mono depuis T3.
 
 ### Captures (`build/annotations-ui-qa/`)
 
 `01-banner.png`, `01b-banner-quit-focus.png`, `02b-toolbar-annotate-idle.png`, `02-toolbar-annotate-active.png`, `03-note-editing.png`, `04-note-collapsed.png`, `05-note-project-list.png`, `06-note-tooltip.png`, `07-note-capturing.png`, `08-note-write-failed.png`, `09-note-empty-validation.png`, `09b-note-capture-unavailable.png`, `10-launcher-rest.png`, `11-launcher-working.png`, `12-card-working.png`, `13-card-no-agent.png`, `14-card-added.png`, `15-onboarding-choose.png`, `16-onboarding-claude.png`, `17-onboarding-claude-manual.png`, `18-onboarding-codex.png`, `18b-onboarding-codex-toml.png`, `19-onboarding-other.png`, `20-onboarding-verify-waiting.png`, `21-onboarding-verify-help.png`, `22-onboarding-verify-connected.png`, `30-scene-v2-note.png`, `31-scene-v5-working.png`, `32-scene-onboarding-1-no-agent.png`, `33-scene-onboarding-2-choose.png`, `34-scene-onboarding-3a-claude.png`, `35-scene-onboarding-4-connected.png`, `40-motion-card-enter-0-quarter-half-end.png`, `41-motion-card-exit-0-quarter-half-end.png`, `42-motion-card-interrupt-mid.png`, `43-motion-card-reduced.png`, `44-motion-note-enter-from-target.png`, `45-motion-modal-enter.png`, `46-motion-onboarding-step-crossfade-mid.png`, `50-window-banner.png`, `51-window-launcher-rest.png`, `52-window-launcher-working.png`, `53-window-card-entering.png`, `54-window-card-no-agent.png`, `55-window-note-ghost-entering.png`, `56-window-onboarding-choose.png`, `57-window-onboarding-crossfade.png`, `58-window-onboarding-connected.png`
+
+## Intégration T3 (navigateur)
+
+Branché par `src/annotation-mode.h` (voir `design/annotations-v1-validation.md`). Ajouts faits ici pendant l'intégration :
+
+- `CardKind::Resolved` + `CardContent::headline` : « Résolue par / Question de / Écartée par » + agent + âge court + résumé, bouton « Ouvrir » (même mise en page que la carte « en cours », coche accent au lieu de l'anneau).
+- Onboarding : `OnboardingSetup::serverName` (préversion : `browser-annotations-preview`) ; `mcpbName` vide = pas de `.mcpb` : option Claude « Configuration à ajouter à la main (extension bientôt) », étape 2 sans bouton d'extension, bloc JSON ouvert d'office, bouton principal « C'est ajouté ».
+- `ClaudeConfig` = document JSON complet `{"mcpServers": {...}}` (le membre isolé n'était pas du JSON valide) ; `CodexConfig` accepte le nom de serveur (clé TOML nue ou citée).
+- JetBrains Mono 2.304 Regular embarquée (`assets/fonts/JetBrainsMono-Regular.ttf`, OFL à côté) : chargée dans la collection privée si le fichier est présent, sinon repli système comme avant. Le harnais rapporte `Monospace family: JetBrains Mono`.
+- Écart maintenu : graisse 600 rendue Medium (pas d'Inter Display SemiBold dans les fontes du dépôt).

@@ -108,7 +108,8 @@ def clean_payload(out: Path) -> None:
         shutil.rmtree(assets)
 
 
-def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: bool = False) -> None:
+def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: bool = False,
+          annotations: bool = True) -> None:
     for tool in ('g++.exe', 'windres.exe', 'strip.exe'):
         if not (BIN / tool).exists():
             raise SystemExit(f'Missing {BIN / tool}: run setup.ps1 (pinned w64devkit) first.')
@@ -136,6 +137,8 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: bool 
               '-DBROWSER_HAS_BUILD_INFO', '-Wl,--no-insert-timestamp', f'-ffile-prefix-map={ROOT}=.']
     if preview:  # design preview: updates and the hand-over to an installed copy are compiled out
         common.append('-DBROWSER_PREVIEW')
+    if not annotations:  # measurement baseline: the annotation mode compiled out (src/main.cpp)
+        common.append('-DBROWSER_NO_ANNOTATIONS')
     run([BIN / 'g++.exe', *common, '-mwindows', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
          f'-I{SDK / "include"}', *BROWSER_SOURCES, res, THORVG, '-o', out / 'browser.exe',
          *BROWSER_LIBS])
@@ -172,6 +175,8 @@ def main() -> int:
                    help='owner/repo whose GitHub releases are the only trusted update feed')
     p.add_argument('--annotations-bridge', choices=('auto', 'on', 'off'), default='auto',
                    help=f'build {BRIDGE_NAME} next to browser.exe (auto: every channel except release)')
+    p.add_argument('--no-annotations', action='store_true',
+                   help='compile the annotation mode out of browser.exe (baseline for measurements); implies no bridge')
     a = p.parse_args()
     out = (ROOT / a.out).resolve()
     if ROOT.resolve() not in out.parents:
@@ -184,7 +189,9 @@ def main() -> int:
     except subprocess.CalledProcessError:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = '0'
     bridge = a.annotations_bridge == 'on' or (a.annotations_bridge == 'auto' and info['channel'] != 'release')
-    build(out, info, a.update_repo, a.preview, bridge)
+    if a.no_annotations:
+        bridge = False
+    build(out, info, a.update_repo, a.preview, bridge, not a.no_annotations)
     return 0
 
 

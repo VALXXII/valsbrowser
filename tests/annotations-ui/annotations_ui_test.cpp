@@ -182,7 +182,9 @@ static void MotionTests() {
 
 static void ConfigTests() {
     const std::wstring path = L"C:\\Users\\vous\\AppData\\Local\\browser\\bin\\browser-annotations-mcp.exe";
-    CHECK(ClaudeConfig(path, L"boutique") == L"\"browser-annotations\": {\n  \"command\": \"C:\\\\Users\\\\vous\\\\AppData\\\\Local\\\\browser\\\\bin\\\\browser-annotations-mcp.exe\",\n  \"args\": [\"--project\", \"boutique\"]\n}");
+    // T3: a complete JSON document (the bare member was not valid JSON on its own).
+    CHECK(ClaudeConfig(path, L"boutique") == L"{\n  \"mcpServers\": {\n    \"browser-annotations\": {\n      \"command\": \"C:\\\\Users\\\\vous\\\\AppData\\\\Local\\\\browser\\\\bin\\\\browser-annotations-mcp.exe\",\n      \"args\": [\"--project\", \"boutique\"]\n    }\n  }\n}");
+    CHECK(CodexConfig(path, L"", L"browser-annotations-preview") == L"[mcp_servers.browser-annotations-preview]\ncommand = 'C:\\Users\\vous\\AppData\\Local\\browser\\bin\\browser-annotations-mcp.exe'\nargs = []");
     CHECK(CodexConfig(path, L"boutique") == L"[mcp_servers.browser-annotations]\ncommand = 'C:\\Users\\vous\\AppData\\Local\\browser\\bin\\browser-annotations-mcp.exe'\nargs = [\"--project\", \"boutique\"]");
     CHECK(CodexConfig(L"C:\\O'Brien\\x.exe", L"") == L"[mcp_servers.browser-annotations]\ncommand = \"C:\\\\O'Brien\\\\x.exe\"\nargs = []");
     CHECK(GenericConfig(L"C:\\a\\b.exe", L"p\"q").find(L"\"args\": [\"--project\", \"p\\\"q\"]") != std::wstring::npos);
