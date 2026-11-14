@@ -2,7 +2,7 @@
 // Annotation mode V3-B — the entry veil (Paper 5.1 « Entrée du mode — pic du dégradé », track « Dégradé du viewport »
 // of 5.2, validated). At the entry only (none at the exit: « seule l'entrée se célèbre »):
 //   a child layered window over the page area, click-through (WS_EX_TRANSPARENT) and never activated, carrying a
-//   #3E67FF wash that falls 160 DIP from the band, an inset rim (~48 DIP) on the three other sides, and the dithered
+//   wash in the window accent (Paper #3E67FF) that falls 160 DIP from the band, an inset rim (~48 DIP) on the three other sides, and the dithered
 //   texture rippling (src/annotation-dither.h). Up in 140 ms, held 80 ms, out by 500 ms, then the window is DESTROYED.
 //   Interruptible: leaving the mode during the entry fades it from the value on screen (160 ms).
 //   Reduced motion: the wash without the texture, 50 %, 150 ms in and 150 ms out.
@@ -20,11 +20,12 @@ class EntryVeil : public Animator::Client {
     double Ms(Motion::Time now) const { return std::chrono::duration<double, std::milli>(now - start_).count(); }
     void Render(Motion::Time now) {
         const double ms = Ms(now); const float k = timeline_.Value(ms); const bool texture = !timeline_.Reduced();
+        const std::uint32_t accent = AccentRgb24();   // the window accent as presented, read per frame
         const float scale = layer_.Scale(); const double seconds = ms / 1000.0;
         LARGE_INTEGER f{}, a{}, b{}; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
         layer_.PresentPixels(rect_, [&](std::uint32_t* px, int stride, int w, int h) {
             LARGE_INTEGER r0{}, r1{}; QueryPerformanceCounter(&r0);
-            Dither::RasterVeil({px, stride, w, h}, scale, seconds, k, texture);
+            Dither::RasterVeil({px, stride, w, h}, scale, seconds, k, texture, accent);
             QueryPerformanceCounter(&r1); rasterCost_ += double(r1.QuadPart - r0.QuadPart) * 1000.0 / double(f.QuadPart); }, frames_ == 0);
         QueryPerformanceCounter(&b); const double cost = double(b.QuadPart - a.QuadPart) * 1000.0 / double(f.QuadPart);
         frameCost_ += cost; worstFrame_ = std::max(worstFrame_, cost);

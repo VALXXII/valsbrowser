@@ -1305,6 +1305,120 @@ static void Windows(Ink& ink, const std::wstring& root) {
 }
 } // namespace V3B
 
+// ---------------------------------------------------------------------------------------
+// Profile colour (design/annotation-profile-color-plan.md): the mode follows the window's profile accent.
+// Static: band, note, launcher, toolbar button, page frame (light / dark page), veil — Personnel (Paper values) and
+// real profile fills; pixels sampled against the expected tone, rendered contrast measured. Windows: a live band and
+// launcher repaint in the new accent on AccentChanged() alone (no input), with zero wake-ups afterwards.
+namespace ProfileAccent {
+struct Profile { const char* name; std::uint32_t fill; };
+static std::uint32_t FillOf(int hue, float chroma) { const auto f = ProfileColor::AccentFill(hue, chroma); return (std::uint32_t(f.r) << 16) | (std::uint32_t(f.g) << 8) | f.b; }
+static std::vector<Profile> Profiles() {
+    return {{"personnel", AccentTone::reference}, {"vert", FillOf(150, .14f)}, {"ambre", FillOf(55, .14f)}, {"rose", FillOf(0, .14f)},
+            {"violet-max", FillOf(300, .16f)}, {"bleu-gris-faible", FillOf(240, .02f)}, {"gris-intensite-0", FillOf(0, 0)}};
+}
+static void SetAccent(std::uint32_t rgb) { Design::Accent::Set(rgb); }
+static Rgb Of(std::uint32_t rgb) { return Solid(rgb); }
+static std::string Name(const char* what, const Profile& p) { return std::string(what) + " [" + p.name + " " + Hex6(Of(p.fill)) + "]"; }
+static void Static(Ink& ink) {
+    const UINT dpi = 192; const float k = 2; Canvas c;
+    for (const auto& p : Profiles()) {
+        SetAccent(p.fill); const auto tone = AccentTone::BandFor(p.fill);
+        const std::wstring tag = Wide(p.name);
+        // ---- band (texture on, wave at full amplitude)
+        BannerVisual bv; bv.beta = true; bv.texture = true; bv.waveSeconds = 1.3; bv.waveAmp = 1; bv.accent = p.fill;
+        Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float h) { PaintBanner(i, w, h, bv); }, c);
+        Save(ink, c, (L"pc-band-" + tag + L".png").c_str());   // the live look (texture + wave)
+        bv.texture = false;   // measured without the dither dots (as the V2 boards): the solid backdrop under the texts
+        Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float h) { PaintBanner(i, w, h, bv); }, c);
+        {   const auto l = LayoutBanner(ink, 1180, true);
+            const Rgb mid = Of(AccentTone::Over(tone.gradientEnd, AccentTone::Paper::gradientAlpha * .5, 0x171717));
+            MeasureText(c, k, {l.label.left, 8, l.label.right, 24}, mid, (tone.label << 8) | 0xFF, Name("band « Mode Annotation » 14/20", p).c_str());
+            const Rgb chip = Px(c.At(int((l.beta.left + 1.5f) * k), int(16 * k)));
+            Sample(c, k, l.beta.left + 1.5f, 16, Of(AccentTone::Over(p.fill, .16, AccentTone::Over(tone.gradientEnd, AccentTone::Paper::gradientAlpha * .5, 0x171717))), Name("band BETA chip accent 16 %", p).c_str(), 4);
+            MeasureText(c, k, {l.beta.left + 3, l.beta.top + 2, l.beta.right - 3, l.beta.bottom - 2}, chip, (tone.beta << 8) | 0xFF, Name("band « BETA » 12 medium", p).c_str());
+        }
+        // ---- note panel: « Ajouter » at rest and hovered (deepened, never lightened), the focused field border
+        for (int hover = 0; hover < 2; ++hover) {
+            NoteView nv; nv.context = SampleContext(); nv.note = sampleNote; nv.fieldHeight = 40; nv.fieldFocused = true;
+            if (hover) { Motion::InteractionVisual iv; iv.hover = 1; nv.visuals[NoteAdd] = iv; }
+            const auto l = LayoutNote(ink, nv);
+            Render(ink, 430, l.height + 80, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintNote(i, nv, l); }); }, c);
+            Save(ink, c, (L"pc-note-" + tag + (hover ? L"-hover.png" : L".png")).c_str());
+            const auto st = Design::Accent::StateColor(Design::Accent::Get(), hover ? 1.f : 0.f, 0);
+            const Rgb add{st.r * 255.0, st.g * 255.0, st.b * 255.0};
+            Sample(c, k, 40 + l.add.left + 3, 40 + l.add.top + 12, add, Name(hover ? "« Ajouter » hovered (deepened)" : "« Ajouter » at rest = fill", p).c_str(), 3);
+            MeasureText(c, k, {40 + l.add.left + 4, 40 + l.add.top + 4, 40 + l.add.right - 4, 40 + l.add.bottom - 4}, add, 0xFFFFFFFF, Name(hover ? "« Ajouter » white, hovered" : "« Ajouter » white, rest", p).c_str());
+            if (!hover) Sample(c, k, 40 + .25f, 40 + l.height / 2, Of(AccentTone::Over(p.fill, .6, 0x171717)), Name("note border, field focused (accent 60 %)", p).c_str(), 14);
+        }
+        // ---- launcher (history open: accent 60 % contour, working badge) and the toolbar « Annoter » (active)
+        {   LauncherVisual lv; lv.expanded = true; lv.state = LauncherState::Working; lv.count = 3;
+            Render(ink, 120, 120, dpi, 0x171717FF, [&](Ink& i, float, float) { At_(i, 40, 34, [&] { PaintLauncher(i, lv); }); }, c);
+            Save(ink, c, (L"pc-launcher-" + tag + L".png").c_str());
+        }
+        {   ToolbarVisual tv; tv.active = true;
+            Render(ink, 40, 40, dpi, 0x171717FF, [&](Ink& i, float, float) { PaintToolbarButton(i.Target(), i.Factory(), i.Brush({1, 1, 1, 1}), {8, 6, 32, 30}, tv); }, c);
+            Save(ink, c, (L"pc-toolbar-" + tag + L".png").c_str());
+            const Rgb plate = Of(AccentTone::Over(p.fill, .16, 0x171717));
+            Sample(c, k, 10, 18, plate, Name("toolbar « Annoter » active plate accent 16 %", p).c_str(), 3);
+            Sample(c, k, 20, 33, Of(p.fill), Name("toolbar « Annoter » active bar = fill", p).c_str(), 3);
+            MeasureText(c, k, {13, 11, 27, 25}, plate, (p.fill << 8) | 0xFF, Name("toolbar « Annoter » mark on its plate (1.4.11)", p).c_str(), 3);
+        }
+        // ---- the page frame (native copy = what the page script paints) on light and dark pages
+        for (std::uint32_t page : {0xFFFFFFu, 0xF4F4F3u, 0x000000u, 0x1C1C1Cu}) {
+            FrameMark m; m.page = {0, 0, 800, 400}; m.dpr = 2; m.accent = p.fill;
+            m.x = 100; m.y = 80; m.w = 240; m.h = 44; m.lx = 100; m.ly = 58; m.lw = 152; m.lh = 20; m.text = L"button.btn-primary · 240×44";
+            Render(ink, 400, 200, dpi, (page << 8) | 0xFF, [&](Ink& i, float, float) { SelectionFrame::Paint(i, m, {0, 0}, 2); }, c);
+            char what[96]; std::snprintf(what, sizeof what, "page frame edge 2 px on page %s (1.4.11)", Hex6(Of(page)).c_str());
+            Sample(c, k, 100 + 120, 80 + .5f, Of(p.fill), Name(what, p).c_str(), 3);
+            const double edge = Ratio(Px(c.At(int((100 + 120) * k), int((80 + .5f) * k))), Of(page));
+            contrasts.push_back({Name(what, p), edge, Ratio(Of(p.fill), Of(page)), Hex6(Of(p.fill)), Hex6(Of(page))});
+            MeasureText(c, k, {100 + 6, 58 + 2, 100 + 150, 58 + 18}, Of(p.fill), 0xFFFFFFFF, Name("page frame label white on accent", p).c_str());
+            if (page == 0xFFFFFFu || page == 0x000000u) Save(ink, c, (L"pc-frame-" + tag + (page ? L"-light.png" : L"-dark.png")).c_str());
+        }
+        // ---- the entry veil at its peak over a light page
+        {   const float w = 600, h = 300; std::vector<std::uint32_t> px(size_t(w * k) * size_t(h * k), 0);
+            Dither::RasterVeil({px.data(), int(w * k), int(w * k), int(h * k)}, k, .1, 1, true, p.fill);
+            Canvas v; v.width = unsigned(w * k); v.height = unsigned(h * k); v.pixels.resize(px.size());
+            for (size_t i = 0; i < px.size(); ++i) v.pixels[i] = Dither::Over(px[i], 0xFFF4F4F3);
+            Save(ink, v, (L"pc-veil-" + tag + L".png").c_str());
+        }
+    }
+    SetAccent(AccentTone::reference);
+}
+static void Windows(Ink& ink, const std::wstring& root) {
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    HWND host = CreateWindowExW(0, L"AnnotationHarnessHost", L"Annotations harness - profile colour", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 60, 60, 1200, 820, nullptr, nullptr, inst, nullptr);
+    CHECK(host != nullptr); if (!host) return;
+    ShowWindow(host, SW_SHOW); UpdateWindow(host); SetWindowPos(host, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); ForceForeground(host); Pump(100);
+    RECT client{}; GetClientRect(host, &client); const float s = GetDpiForWindow(host) / 96.f;
+    SetAccent(AccentTone::reference);
+    Banner band; BannerHooks bh; band.Init(inst, host, root, bh); band.SetLiveForTest(0);   // the wave clock stopped: only AccentChanged repaints
+    CHECK(band.Show({0, LONG(std::lround(85 * s)), client.right, LONG(std::lround(117 * s))}, true));
+    CHECK(Settle());
+    auto chipPixel = [&] {   // the BETA chip, left edge, middle row (the layer's premultiplied BGRA, opaque there)
+        const auto l = band.LayoutForTest(); const auto px = band.LayerForTest().Pixels(); const RECT r = band.LayerForTest().Rect(); const int w = r.right - r.left;
+        const int x = int((l.beta.left + 1.5f) * s), y = int(16 * s); return px.size() > size_t(y) * w + x ? Px(px[size_t(y) * w + x]) : Rgb{0, 0, 0}; };
+    const Rgb before = chipPixel();
+    SaveLayer(ink, band.LayerForTest(), L"pc-window-band-personnel.png");
+    // A profile colour edit (green), reduced motion: SetAccents sets the accent at once and calls AnnotationAccentChanged
+    // => each visible surface's AccentChanged(). No input, no clock.
+    const std::uint32_t green = FillOf(150, .14f); SetAccent(green);
+    const auto frames0 = Animator::Get().Frames();
+    band.AccentChanged();
+    const Rgb after = chipPixel();
+    SaveLayer(ink, band.LayerForTest(), L"pc-window-band-vert.png");
+    const Rgb expect = Of(AccentTone::Over(green, .16, AccentTone::Over(AccentTone::BandFor(green).gradientEnd, AccentTone::Paper::gradientAlpha * .5, 0x171717)));
+    sampled.push_back({"live band BETA chip after AccentChanged (vert)", Hex6(expect), Hex6(after)});
+    CHECKM(Close(after, expect, 5) && !Close(before, after, 5), "live band repainted in the new accent: before %s, after %s, expected %s", Hex6(before).c_str(), Hex6(after).c_str(), Hex6(expect).c_str());
+    CHECKM(Animator::Get().Frames() == frames0, "AccentChanged paints synchronously, no animator frame requested");
+    IdleCheck("profile colour after AccentChanged");
+    band.Hide(false); CHECK(Settle());
+    SetAccent(AccentTone::reference);
+    DestroyWindow(host); Pump(50);
+}
+} // namespace ProfileAccent
+
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3) { std::fprintf(stderr, "usage: annotations-ui-test.exe <repoRoot> <outDir> [--no-window]\n"); return 2; }
     const std::wstring root = argv[1]; outDir = argv[2];
@@ -1324,8 +1438,9 @@ int wmain(int argc, wchar_t** argv) {
     Captures(*ink);
     V3Tests(*ink);
     V3B::Static(*ink);
+    ProfileAccent::Static(*ink);
     MotionStrips(*ink);
-    if (windows) { WindowTests(*ink, root); V3Windows(*ink, root); V3B::Windows(*ink, root); }
+    if (windows) { WindowTests(*ink, root); V3Windows(*ink, root); V3B::Windows(*ink, root); ProfileAccent::Windows(*ink, root); }
     std::printf("\nGeometry (Paper box model vs native):\n");
     for (auto& g : geometry) std::printf("  %-44s Paper %7.2f  native %7.2f\n", g.surface.c_str(), g.paper, g.native);
     std::printf("\nPaper colours sampled in the renders (2x):\n");

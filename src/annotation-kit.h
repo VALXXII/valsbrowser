@@ -39,7 +39,13 @@ template<class T> inline void Release(T*& p) { if (p) { p->Release(); p = nullpt
 inline constexpr D2D1_COLOR_F Hex(std::uint32_t rgba) {
     return {((rgba >> 24) & 255) / 255.f, ((rgba >> 16) & 255) / 255.f, ((rgba >> 8) & 255) / 255.f, (rgba & 255) / 255.f};
 }
+// The window's accent as presented (the profile's fill; it follows the 120 ms profile fade, src/profiles-integration.h).
 inline D2D1_COLOR_F Accent(float alpha = 1) { const auto a = Design::Accent::Get(); return {a.r, a.g, a.b, alpha}; }
+inline std::uint32_t Rgb24(Design::Rgb a) { return (std::uint32_t(std::lround(a.r * 255)) << 16) | (std::uint32_t(std::lround(a.g * 255)) << 8) | std::uint32_t(std::lround(a.b * 255)); }
+inline std::uint32_t AccentRgb24() { return Rgb24(Design::Accent::Get()); }
+// A filled accent button under white text, hover / press progress 0..1: the project's states (Design::Accent::StatesOf:
+// deepened, white >= 4.5:1 in every state), never a white veil over the fill (that lightens it below 4.5:1).
+inline D2D1_COLOR_F AccentButton(float hover, float press, float alpha = 1) { const auto c = Design::Accent::StateColor(Design::Accent::Get(), hover, press); return {c.r, c.g, c.b, alpha}; }
 inline D2D1_COLOR_F WithAlpha(D2D1_COLOR_F c, float a) { c.a *= a; return c; }
 namespace Ink_ {
 inline constexpr std::uint32_t canvas = 0x171717FF, raised = 0x292929FF, hover = 0x333333FF, pressed = 0x3E3E3EFF, danger = 0xFF7B6EFF;

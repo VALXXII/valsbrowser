@@ -1,7 +1,7 @@
 #pragma once
 // Note panel (V2) — Paper « MCP - Design UI UX »: 2.1 1075-0 (écrire la note), 2.2 10D3-0 (« Ce que
 // l'agent verra » déplié), 2.3 10NN-0 (capture impossible); motion « Spéc · Annotations » 10IT-0.
-//   Panel 350, canvas #171717, border 1 (#3E67FF99 while the field has focus, else #FFFFFF1F),
+//   Panel 350, canvas #171717, border 1 (#3E67FF99 = the window accent at 60 % while the field has focus, else #FFFFFF1F),
 //   radius 12, padding 12, gap 12, min-height 84:
 //     native multi-line EDIT, 14/20 #FFFFFFE6, placeholder « Que faut-il changer ? » #FFFFFF99
 //     (also the field's accessible name);
@@ -98,15 +98,14 @@ inline void PaintNote(Ink& ink, const NoteView& v, const NoteLayout& l) {
     Pieces(ink, {PIcon(Glyphs::globe, 13, {1, 1, 1, .5f}), PText(NoteSite(v.context), F(12, 16), Hex(0xFFFFFF99))}, {l.site.left + 2, l.site.top, l.site.right, l.site.bottom}, Align::Leading);
     {   const auto iv = v.V(NoteAdd); const bool busy = v.status == NoteStatus::Saving;
         ScaleScope s(ink.Target(), l.add, Motion::PressScale(iv.press, v.reduced, !busy));
-        ink.Fill(l.add, 6, Accent(busy ? .6f : 1.f));
-        if (!busy) ink.Fill(l.add, 6, {1, 1, 1, .08f * iv.hover + .06f * iv.press});
+        ink.Fill(l.add, 6, busy ? Accent(.6f) : AccentButton(iv.hover, iv.press));
         ink.Text(AddLabel(v.status), F(13, 16, 500), l.add, {1, 1, 1, busy ? .8f : 1.f}, false, Align::Center, true);
         if (v.focus == NoteAdd) FocusRing(ink, l.add, 6, v.keyboard); }
     if (!v.message.empty()) {
         ink.Icon(Glyphs::warningCircle, {l.message.left, l.message.top + 1.5f, l.message.left + 13, l.message.top + 14.5f}, Hex(Ink_::danger));
         ink.Text(v.message, F(12, 16), {l.message.left + 19, l.message.top, l.message.right, l.message.bottom}, Hex(Ink_::danger), true);
     }
-    const D2D1_COLOR_F border = v.fieldError ? WithAlpha(Hex(Ink_::danger), .6f) : v.fieldFocused ? Hex(0x3E67FF99) : Hex(0xFFFFFF1F);
+    const D2D1_COLOR_F border = v.fieldError ? WithAlpha(Hex(Ink_::danger), .6f) : v.fieldFocused ? Accent(.6f) : Hex(0xFFFFFF1F);
     ink.Stroke(all, radius, border, 1);
 }
 
@@ -526,6 +525,13 @@ public:
     void Init(HINSTANCE instance, HWND owner, std::wstring root, NoteHooks hooks) { instance_ = instance; owner_ = owner; root_ = std::move(root); hooks_ = std::move(hooks); }
     bool Created() const { return hwnd_ != nullptr; }
     bool Visible() const { return open_; }
+    // The window's accent changed: « Ajouter », the focused border, the checkboxes, the spinner and the caret repaint
+    // in the accent as presented (no clock of its own: called once per step of the profile fade).
+    void AccentChanged() {
+        if (!hwnd_ || !open_) return;
+        if (GetFocus() == edit_) caret_.Apply(edit_, FieldGray(), CaretColor(), std::max(1, Px(1)), Px(18));
+        InvalidateRect(hwnd_, nullptr, FALSE); PlacePill(Motion::Now());
+    }
     HWND Window() const { return hwnd_; }
     HWND Edit() const { return edit_; }
     HWND PillWindow() const { return pill_.Window(); }
