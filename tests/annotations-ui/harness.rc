@@ -1,0 +1,2 @@
+// Windows 8+ compatibility manifest (layered CHILD windows: launcher, card, banner).
+1 24 "../../src/browser.manifest"
