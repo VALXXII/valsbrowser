@@ -14,9 +14,11 @@
 #include <string>
 #include <vector>
 
+#include "annotations-migration.h"
 #include "update-package.h"
 
 namespace UP = UpdatePackage;
+namespace AM = AnnotationsMigration;
 
 namespace {
 
@@ -264,6 +266,8 @@ void LauncherReconcile(const std::wstring& root, const std::string& current) {
 }
 
 // ---------------------------------------------------------------- launcher
+void RecoverAnnotationsMigration(const std::wstring& root, const std::string& tag);  // install section
+
 
 int RunLauncher(int argc, wchar_t** argv) {
     std::wstring root = Parent(SelfPath());
@@ -274,6 +278,7 @@ int RunLauncher(int argc, wchar_t** argv) {
         if (UP::ParseVersion(current, v)) {
             std::wstring exe = root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe";
             if (ValidExeAt(exe) && !UP::IsReparsePoint(root + L"\\versions")) {
+                RecoverAnnotationsMigration(root, "launch-" + std::to_string(GetCurrentProcessId()));
                 LauncherReconcile(root, current);
                 std::vector<std::wstring> args(argv + 1, argv + argc);
                 PROCESS_INFORMATION pi{};
@@ -428,6 +433,7 @@ bool MigrationStepFailed(const std::string& step) {
 // One-time copy of portable <exeDir>\profile + session into <root>\data, plus the profile registry
 // (profiles.txt and its recovery copies) and the other profiles' folders (profiles\, trash included).
 // Existing data is never overwritten; the source is never modified.
+// The caller holds the source's annotation gate EXCLUSIVELY (no writer can touch <src>\annotations meanwhile).
 bool MigratePortable(const std::wstring& root, const Plan& p, const std::string& nonce, bool& migrated) {
     migrated = false;
     std::wstring data = root + L"\\data";
@@ -499,6 +505,18 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
         }
     }
     if (ok && UP::IsDirectory(profiles)) ok = CopyTree(profiles, work + L"\\profiles", deadline) || MigrationStepFailed("copy profiles");
+    // Annotation store (src/annotations-migration.h): copied frozen, recorded « copied »; « committed » only after ack.
+    const std::wstring annotations = src + L"\\annotations";
+    if (ok && UP::IsReparsePoint(annotations)) ok = MigrationStepFailed("annotations store is a reparse point");
+    if (ok && UP::IsDirectory(annotations))
+        ok = CopyTree(annotations, work + L"\\annotations", GetTickCount64() + 60000) || MigrationStepFailed("copy annotations");
+    if (ok) {
+        AM::Record record;
+        record.state = AM::State::Copied;
+        record.from = UP::Narrow(src);
+        record.nonce = nonce;
+        ok = UP::AtomicWriteFile(work + L"\\" + AM::RecordName, AM::Format(record)) || MigrationStepFailed("write annotations record");
+    }
     if (ok) ok = UP::AtomicWriteFile(work + L"\\migrated-from.txt", UP::Narrow(src) + "\n") || MigrationStepFailed("write migrated-from.txt");
     int attempts = 0;
     if (ok) ok = UP::MoveDirectory(work, data, TransientRenameMs, &attempts) || MigrationStepFailed("publish data");
@@ -553,6 +571,62 @@ void Prune(const std::wstring& root, const std::string& keep1, const std::string
     }
 }
 
+// Durable commit of the annotation migration: the record first (lets a portable bridge redirect), then the mirror in
+// the source folder (a portable browser still running there stops writing). Only after the new version's ack.
+bool CommitAnnotations(const std::wstring& root, const std::wstring& src, const std::string& nonce) {
+    AM::Record record;
+    record.state = AM::State::Committed;
+    record.from = UP::Narrow(src);
+    record.nonce = nonce;
+    if (!UP::AtomicWriteFile(root + L"\\data\\" + AM::RecordName, AM::Format(record))) return false;
+    if (UP::IsDirectory(src) && !UP::IsReparsePoint(src))
+        UP::AtomicWriteFile(src + L"\\annotations" + AM::MirrorSuffix, AM::Format(record));  // best effort: the record decides
+    return true;
+}
+
+// Bounded recovery (every launcher start and install start): a migration whose helper died before the commit (record
+// « copied ») is finished from the source, which stayed authoritative: the installed copy refused mutations meanwhile,
+// so it is replaced by a fresh copy taken under the exclusive gate, then committed. A migration made before the
+// record existed is committed when nothing was moved yet, else marked « skipped » (installed store kept, no redirect).
+void RecoverAnnotationsMigration(const std::wstring& root, const std::string& tag) {
+    const std::wstring data = root + L"\\data", recordPath = data + L"\\" + AM::RecordName;
+    std::string from, text;
+    if (UP::IsReparsePoint(data) || !UP::ReadSmallFile(data + L"\\migrated-from.txt", 4096, from)) return;
+    while (!from.empty() && (from.back() == '\n' || from.back() == '\r')) from.pop_back();
+    const AM::Record record = UP::ReadSmallFile(recordPath, 8192, text) ? AM::Parse(text) : AM::Record{};
+    if (record.state == AM::State::Committed || record.state == AM::State::Skipped || from.empty()) return;
+    const std::wstring src = UP::Widen(from), store = src + L"\\annotations", installed = data + L"\\annotations";
+    if (record.state == AM::State::None && UP::PathExists(installed)) {
+        AM::Record skipped;
+        skipped.state = AM::State::Skipped;
+        skipped.from = from;
+        skipped.nonce = tag;
+        UP::AtomicWriteFile(recordPath, AM::Format(skipped));
+        return;
+    }
+    AM::Gate gate(AM::GatePath(store), true);
+    if (gate.Busy() || UP::IsReparsePoint(store) || UP::IsReparsePoint(installed)) return;  // next start
+    if (UP::IsDirectory(store)) {
+        const std::wstring fresh = data + L"\\annotations.recover-" + UP::Widen(tag), old = data + L"\\annotations.old-" + UP::Widen(tag);
+        UP::RemoveTree(fresh);
+        if (!CopyTree(store, fresh, GetTickCount64() + 60000)) {
+            UP::RemoveTree(fresh);
+            return;
+        }
+        if (UP::PathExists(installed) && !MoveFileExW(installed.c_str(), old.c_str(), 0)) {
+            UP::RemoveTree(fresh);
+            return;
+        }
+        if (!MoveFileExW(fresh.c_str(), installed.c_str(), 0)) {
+            if (UP::PathExists(old)) MoveFileExW(old.c_str(), installed.c_str(), 0);
+            UP::RemoveTree(fresh);
+            return;
+        }
+        UP::RemoveTree(old);
+    }
+    if (CommitAnnotations(root, src, tag)) Log("annotations migration recovered and committed from " + from);
+}
+
 int RunInstall(const std::string& nonce) {
     std::wstring self = SelfPath(), helperDir = Parent(self), updates = Parent(helperDir), root = Parent(updates);
     if (Lower(Leaf(helperDir)) != L"helper" || Lower(Leaf(updates)) != L"updates" || root.size() < 4) return 10;
@@ -575,6 +649,7 @@ int RunInstall(const std::string& nonce) {
         WriteResult(updates, "failed", p.version, "browser-did-not-exit");
         return 20;
     }
+    RecoverAnnotationsMigration(root, nonce + "-pre");
     auto abortBeforeSwitch = [&](const std::string& reason, int code) {
         Log("aborted: " + reason);
         WriteResult(updates, "failed", p.version, reason);
@@ -601,6 +676,15 @@ int RunInstall(const std::string& nonce) {
     }
     // Data: never start the new version on a live or half-copied profile.
     bool migrated = false;
+    // Held from before the copy until this function returns (ack + commit, or rollback): a portable bridge or
+    // browser writing the source store waits or gets Busy; if this helper dies, the handle goes with it and the
+    // record stays « copied » (recovered later, never redirected to).
+    AM::Gate annotationsGate;
+    const std::wstring portableDir = Parent(p.previousExe);
+    if (p.previousKind == "portable" && !UP::PathExists(root + L"\\data")) {
+        annotationsGate.Open(AM::GatePath(portableDir + L"\\annotations"), true, 30000);
+        if (annotationsGate.Busy()) return abortBeforeSwitch("annotations-busy", 26);
+    }
     if (p.previousKind == "portable") {
         if (!MigratePortable(root, p, nonce, migrated)) return abortBeforeSwitch("migration-failed", 26);
     } else if (!WaitProfileUnlocked(root + L"\\data\\profile", ProfileUnlockMs)) {
@@ -710,6 +794,10 @@ int RunInstall(const std::string& nonce) {
     if (acked) {
         DeleteFileW(pending.c_str());
         DeleteFileW(ack.c_str());
+        if (migrated) {
+            Fault("kill-before-commit");
+            if (!CommitAnnotations(root, portableDir, nonce)) Log("annotations commit failed; recovered at the next launcher start");
+        }
         WriteResult(updates, "installed", p.version, "ack");
         Prune(root, p.version, p.previousKind == "installed" ? p.previousVersion : "", nonce);
         Log("installed " + p.version);

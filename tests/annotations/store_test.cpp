@@ -1,9 +1,12 @@
 // Annotation store tests: ids, schemas, bounds, hostile paths, corrupt files, drafts, leases, retention on a
 // simulated clock, pagination, sites (keys, V1 tolerance), trash/restore, history filters and counter, readers,
 // Markdown, caps, store location parity with UpdateCore.
+#include <cstdio>
+#include <functional>
 #include <set>
 #include <vector>
 
+#include "../../src/annotations-migration.h"
 #include "../../src/update-core.h"
 #include "annotations_test_util.h"
 
@@ -910,6 +913,193 @@ void TestReopenUnhandled() {
     CHECK(store.Claim(S("boutique"), a.id, "Codex", "", c).ok());
 }
 
+// ---------------------------------------------------------------- plan B items 4 + 6 (src/annotations-migration.h)
+namespace AM = AnnotationsMigration;
+std::string N(const std::wstring& w) {
+    std::string out(WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), nullptr, 0, nullptr, nullptr), ' ');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), out.data(), int(out.size()), nullptr, nullptr);
+    return out;
+}
+
+void TestReleaseBridgeLocation() {
+    const std::wstring root = L"C:\\Users\\u\\AppData\\Local\\browser";
+    // Release bridge in assets\bin: resolved like the browser.exe two levels up.
+    CHECK(BA::DefaultStoreRoot(L"D:\\amis\\browser-0.3.300-win-x64\\assets\\bin\\browser-annotations-mcp.exe", root) ==
+          L"D:\\amis\\browser-0.3.300-win-x64\\annotations");
+    CHECK(BA::DefaultStoreRoot(root + L"\\versions\\0.3.300\\assets\\bin\\browser-annotations-mcp.exe", root) == root + L"\\data\\annotations");
+    CHECK(BA::DefaultStoreRoot(root + L"\\bin\\browser-annotations-mcp.exe", root) == root + L"\\data\\annotations");
+    // Dev bridge next to browser.exe: unchanged.
+    CHECK(BA::DefaultStoreRoot(L"C:\\w\\build\\annotations-preview\\browser-annotations-mcp.exe", root) ==
+          L"C:\\w\\build\\annotations-preview\\annotations");
+    // Only the exact assets\bin pair counts.
+    CHECK(BA::DefaultStoreRoot(L"D:\\x\\bin\\browser-annotations-mcp.exe", root) == L"D:\\x\\bin\\annotations");
+    CHECK(BA::DefaultStoreRoot(L"D:\\x\\assets\\browser-annotations-mcp.exe", root) == L"D:\\x\\assets\\annotations");
+}
+
+void TestMigrationRecordFormat() {
+    AM::Record r;
+    r.state = AM::State::Committed;
+    r.from = "D:\\amis\\browser";
+    r.nonce = "abc";
+    const std::string text = AM::Format(r);
+    const AM::Record back = AM::Parse(text);
+    CHECK(back.state == AM::State::Committed && back.from == r.from && back.nonce == "abc");
+    std::string crlf = text;
+    for (std::size_t i = crlf.find('\n'); i != std::string::npos; i = crlf.find('\n', i + 2)) crlf.replace(i, 1, "\r\n");
+    for (const std::string& bad : {std::string(), crlf, text.substr(0, text.size() - 1), text + "extra\n",
+                                   std::string("browser-annotations-migration 2\nstate committed\nfrom D:\\x\nnonce n\n"),
+                                   std::string("browser-annotations-migration 1\nstate done\nfrom D:\\x\nnonce n\n"),
+                                   std::string("browser-annotations-migration 1\nstate committed\nfrom \nnonce n\n"),
+                                   std::string("browser-annotations-migration 1\nfrom D:\\x\nstate committed\nnonce n\n")})
+        CHECK(AM::Parse(bad).state == AM::State::None);
+    CHECK(AM::GatePath(L"D:\\a\\annotations") == L"D:\\a\\annotations.write-gate");
+    CHECK(AM::GatePath(L"D:\\a\\Annotations\\") == L"D:\\a\\Annotations.write-gate");
+    CHECK(AM::GatePath(L"D:\\a\\custom-store").empty());  // custom --store: no gate
+}
+
+// Installed layout + portable folder for redirect tests. Returns the portable folder.
+struct MigrationFixture {
+    std::wstring base, root, app, bridge;
+    explicit MigrationFixture(const std::wstring& name) {
+        base = TempDir(name);
+        root = base + L"\\browser";
+        app = base + L"\\amis\\browser-0.3.300-win-x64";
+        bridge = app + L"\\assets\\bin\\browser-annotations-mcp.exe";
+        for (const std::wstring& d : {root, root + L"\\data", root + L"\\versions", root + L"\\versions\\0.3.301", root + L"\\updates",
+                                      base + L"\\amis", app, app + L"\\assets", app + L"\\assets\\bin", app + L"\\annotations",
+                                      root + L"\\data\\annotations"})
+            CreateDirectoryW(d.c_str(), nullptr);
+        WriteText(root + L"\\versions\\0.3.301\\browser.exe", "installed");
+        WriteText(root + L"\\current", "0.3.301\n");
+        WriteText(root + L"\\data\\migrated-from.txt", N(app) + "\n");
+        Record(AM::State::Committed, N(app));
+    }
+    void Record(AM::State s, const std::string& from) {
+        AM::Record r;
+        r.state = s;
+        r.from = from;
+        r.nonce = "t";
+        WriteText(root + L"\\data\\annotations-migration", AM::Format(r));
+    }
+    BA::AgentStore Resolve(const std::wstring& storeArg = L"", bool allow = true, const std::wstring& exe = L"") const {
+        return BA::ResolveAgentStore(exe.empty() ? bridge : exe, storeArg, allow, [this](const std::wstring& portableExe) {
+            return !UpdateCore::PortableForwardTarget(portableExe, root).empty();
+        }, root);
+    }
+};
+
+void TestAgentStoreRedirect() {
+    {
+        MigrationFixture f(L"redirect-ok");
+        const BA::AgentStore a = f.Resolve();
+        CHECK(a.eligible && a.redirected && a.root == f.root + L"\\data\\annotations");
+        CHECK(a.gate == f.app + L"\\annotations.write-gate");
+        // --store equal to the default portable store (Claude/Codex config written by a portable run) also follows.
+        const BA::AgentStore b = f.Resolve(f.app + L"\\annotations");
+        CHECK(b.redirected && b.root == f.root + L"\\data\\annotations");
+        CHECK(f.Resolve(f.app + L"\\ANNOTATIONS\\").redirected);  // same path, case and trailing separator
+    }
+    struct Case { const wchar_t* name; std::function<void(MigrationFixture&)> breakIt; };
+    const std::vector<Case> cases = {
+        {L"no-record", [](MigrationFixture& f) { DeleteFileW((f.root + L"\\data\\annotations-migration").c_str()); }},
+        {L"copied-only", [](MigrationFixture& f) { f.Record(AM::State::Copied, N(f.app)); }},
+        {L"skipped", [](MigrationFixture& f) { f.Record(AM::State::Skipped, N(f.app)); }},
+        {L"garbage-record", [](MigrationFixture& f) { WriteText(f.root + L"\\data\\annotations-migration", "committed\n"); }},
+        {L"other-folder", [](MigrationFixture& f) { f.Record(AM::State::Committed, N(f.base + L"\\other")); }},
+        {L"prefix-folder", [](MigrationFixture& f) { f.Record(AM::State::Committed, N(f.app.substr(0, f.app.size() - 3))); }},
+        {L"migrated-from-other", [](MigrationFixture& f) { WriteText(f.root + L"\\data\\migrated-from.txt", N(f.base) + "\n"); }},
+        {L"no-current", [](MigrationFixture& f) { DeleteFileW((f.root + L"\\current").c_str()); }},
+        {L"zero-current", [](MigrationFixture& f) { WriteText(f.root + L"\\current", "0.0.0\n"); }},
+        {L"bad-current", [](MigrationFixture& f) { WriteText(f.root + L"\\current", "latest\n"); }},
+        {L"missing-exe", [](MigrationFixture& f) { DeleteFileW((f.root + L"\\versions\\0.3.301\\browser.exe").c_str()); }},
+        {L"failed-install", [](MigrationFixture& f) {
+             WriteText(f.root + L"\\updates\\last-result", "browser-result 1\nstatus failed\nversion 0.3.301\nreason x\nreported 0\n"); }},
+        {L"reparse-versions", [](MigrationFixture& f) {
+             RemoveTree(f.root + L"\\versions");
+             CreateDirectoryW((f.base + L"\\elsewhere").c_str(), nullptr);
+             CreateJunction(f.root + L"\\versions", f.base + L"\\elsewhere"); }},
+    };
+    for (const auto& c : cases) {
+        MigrationFixture f(std::wstring(L"redirect-") + c.name);
+        c.breakIt(f);
+        const BA::AgentStore a = f.Resolve();
+        if (a.redirected) std::printf("unexpected redirect: %ls\n", c.name);
+        CHECK(!a.redirected && a.root == f.app + L"\\annotations");
+        if (std::wstring(c.name) == L"reparse-versions") RemoveDirectoryW((f.root + L"\\versions").c_str());
+    }
+    {
+        MigrationFixture f(L"redirect-never");
+        CHECK(!f.Resolve(L"", false).redirected);                                       // dev / preview build
+        const BA::AgentStore custom = f.Resolve(f.base + L"\\my-store");                // custom --store
+        CHECK(!custom.eligible && !custom.redirected && custom.root == f.base + L"\\my-store" && custom.gate.empty());
+        const BA::AgentStore installed = f.Resolve(L"", true, f.root + L"\\bin\\browser-annotations-mcp.exe");
+        CHECK(!installed.eligible && !installed.redirected && installed.root == f.root + L"\\data\\annotations");
+        CHECK(!f.Resolve(L"\\\\server\\share\\annotations").redirected);               // UNC custom store
+    }
+}
+
+void TestMigrationGuards() {
+    FakeClock clock;
+    const std::wstring base = TempDir(L"migration-guards");
+    const std::wstring portable = base + L"\\app\\annotations", data = base + L"\\root\\data";
+    CreateDirectoryW((base + L"\\app").c_str(), nullptr);
+    CreateDirectoryW((base + L"\\root").c_str(), nullptr);
+    CreateDirectoryW(data.c_str(), nullptr);
+    BA::Store source(portable, clock.Fn());
+    BA::Annotation a = Sample("boutique");
+    CHECK(source.WriteAnnotation(a, nullptr, false).ok());
+    BA::ClaimResult lease;
+    CHECK(source.Claim(S("boutique"), a.id, "agent", "", lease).ok());
+    {
+        // Helper holds the gate exclusively: every mutation is Busy and writes nothing; reads still work.
+        AM::Gate helper(AM::GatePath(portable), true);
+        CHECK(helper.Held());
+        const std::string before = ReadText(portable + L"\\" + Wk("boutique") + L"\\" + std::wstring(a.id.begin(), a.id.end()) + L"\\state.json");
+        CHECK(source.Resolve(S("boutique"), a.id, lease.token, "resolved", "fait", "agent").code == BA::Code::Busy);
+        BA::Annotation b = Sample("boutique", "autre");
+        CHECK(source.WriteAnnotation(b, nullptr, false).code == BA::Code::Busy);
+        BA::Reader r;
+        r.client = "claude";
+        CHECK(source.WriteReader(r).code == BA::Code::Busy);
+        CHECK(ReadText(portable + L"\\" + Wk("boutique") + L"\\" + std::wstring(a.id.begin(), a.id.end()) + L"\\state.json") == before);
+        BA::Entry e;
+        CHECK(source.Read(S("boutique"), a.id, e).ok());
+        // A shared holder (a request in flight) makes the helper wait, then fail after its deadline.
+    }
+    {
+        AM::Gate request(AM::GatePath(portable), false);
+        CHECK(request.Held());
+        const ULONGLONG t0 = GetTickCount64();
+        AM::Gate helper(AM::GatePath(portable), true, 300);
+        CHECK(helper.Busy() && !helper.Held() && GetTickCount64() - t0 >= 250);
+        request.Close();
+        helper.Open(AM::GatePath(portable), true, 300);
+        CHECK(helper.Held());  // free once the request ended
+    }
+    // Committed mirror in the source: the abandoned store refuses writes (portable browser still running there).
+    AM::Record committed;
+    committed.state = AM::State::Committed;
+    committed.from = N(base + L"\\app");
+    WriteText(portable + L".migrated", AM::Format(committed));
+    CHECK(source.Resolve(S("boutique"), a.id, lease.token, "resolved", "fait", "agent").code == BA::Code::Busy);
+    DeleteFileW((portable + L".migrated").c_str());
+    CHECK(source.Release(S("boutique"), a.id, lease.token, "agent", "test").ok());
+    // Installed copy before commit (record « copied »): mutations Busy; committed: allowed.
+    BA::Store installed(data + L"\\annotations", clock.Fn());
+    WriteText(data + L"\\migrated-from.txt", N(base + L"\\app") + "\n");
+    AM::Record copied = committed;
+    copied.state = AM::State::Copied;
+    WriteText(data + L"\\annotations-migration", AM::Format(copied));
+    BA::Annotation c = Sample("boutique", "installée");
+    CHECK(installed.WriteAnnotation(c, nullptr, false).code == BA::Code::Busy);
+    WriteText(data + L"\\annotations-migration", AM::Format(committed));
+    CHECK(installed.WriteAnnotation(c, nullptr, false).ok());
+    // An install migrated before the record existed (no record): never blocked.
+    DeleteFileW((data + L"\\annotations-migration").c_str());
+    BA::Annotation d = Sample("boutique", "ancienne");
+    CHECK(installed.WriteAnnotation(d, nullptr, false).ok());
+}
+
 }  // namespace
 
 // Global store (one for every profile): source.profile recorded and read tolerantly; Markdown / JSON show it.
@@ -1042,5 +1232,9 @@ int wmain() {
     TestReopenUnhandled();
     TestProfileOrigin();
     TestProfileStoreMigration();
+    TestReleaseBridgeLocation();
+    TestMigrationRecordFormat();
+    TestAgentStoreRedirect();
+    TestMigrationGuards();
     return Finish("store_test");
 }

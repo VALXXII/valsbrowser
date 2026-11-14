@@ -43,7 +43,7 @@ def main():
     compile_exe("update-helper.exe", ["src/update-helper.cpp", "src/update-package.cpp"], ["-mwindows", "-DUPDATE_HELPER_FAULTS"])
     # Real MCP bridges (src/mcp-bridge.cpp) with distinct bytes per version: live agent processes in install_test.
     for version in ("0.3.1", "0.3.2", "0.3.3"):
-        compile_exe(f"bridge-{version}.exe", ["src/mcp-bridge.cpp", "src/annotations.cpp"], [f'-DBROWSER_VERSION_TEXT="{version}"'])
+        compile_exe(f"bridge-{version}.exe", ["src/mcp-bridge.cpp", "src/annotations.cpp", *CORE], [f'-DBROWSER_VERSION_TEXT="{version}"'])
     for name, version, crash in [("fake-0.3.1.exe", "0.3.1", 0), ("fake-0.3.2.exe", "0.3.2", 0), ("fake-0.3.2-crash.exe", "0.3.2", 1),
                                  ("fake-0.3.3.exe", "0.3.3", 0)]:
         compile_exe(name, ["tests/update-core/fake_browser.cpp", *CORE],

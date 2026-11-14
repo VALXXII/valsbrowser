@@ -1,6 +1,7 @@
 // Annotation store (V2, grouped by site). Contract: src/annotations.h and design/annotations-store-bridge.md.
 // Win32 (kernel32, bcrypt) + C++17 only; no UI, no globals beyond constant tables.
 #include "annotations.h"
+#include "annotations-migration.h"
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -1577,7 +1578,11 @@ std::wstring DefaultInstallRootW() {
 }  // namespace
 
 std::wstring DefaultStoreRoot(const std::wstring& exePath, const std::wstring& installRoot) {
-    const std::wstring exe = FullPath(exePath), dir = Parent(exe);
+    const std::wstring exe = FullPath(exePath);
+    std::wstring dir = Parent(exe);
+    // Release bridge <app>\assets\bin\<bridge> (tools/release/build.py RELEASE_BRIDGE): resolved like <app>\browser.exe,
+    // portable (<app>\annotations) or installed (<root>\versions\<v>\assets\bin -> <root>\data\annotations).
+    if (LowerW(Leaf(dir)) == L"bin" && LowerW(Leaf(Parent(dir))) == L"assets") dir = Parent(Parent(dir));
     const std::wstring root = FullPath(installRoot.empty() ? DefaultInstallRootW() : installRoot);
     if (!root.empty()) {
         const std::wstring versions = Parent(dir);
@@ -1585,6 +1590,50 @@ std::wstring DefaultStoreRoot(const std::wstring& exePath, const std::wstring& i
         if (LowerW(dir) == LowerW(root + L"\\bin")) return root + L"\\data\\annotations";
     }
     return dir + L"\\annotations";
+}
+
+// ================================================================ portable -> installed migration (plan B)
+namespace AM = AnnotationsMigration;
+namespace {
+std::string ReadRecordText(const std::wstring& path) {
+    std::string text;
+    return ReadWhole(path, text) ? text : std::string();
+}
+// Every mutation of a store that a migration may be moving runs with the gate held SHARED (src/annotations-migration.h).
+// Busy when the update helper holds it, when this portable store was moved to the installed version (mirror), or
+// when this is the installed copy of a migration not yet committed.
+Outcome GuardMutation(const std::wstring& root, AM::Gate& gate) {
+    gate.Open(AM::GatePath(root), false);
+    if (gate.Busy()) return Fail(Code::Busy, "Migration des annotations en cours : réessayez dans un instant.");
+    if (AM::Parse(ReadRecordText(root + AM::MirrorSuffix)).state == AM::State::Committed)
+        return Fail(Code::Busy, "Ces annotations ont été déplacées vers la version installée du navigateur : utilisez-la.");
+    const std::wstring data = Parent(root);
+    if (LowerW(Leaf(root)) == L"annotations" && Exists(data + L"\\migrated-from.txt") &&
+        AM::Parse(ReadRecordText(data + L"\\" + AM::RecordName)).state == AM::State::Copied)
+        return Fail(Code::Busy, "Migration des annotations en cours : réessayez dans un instant.");
+    return Outcome{};
+}
+}  // namespace
+
+AgentStore ResolveAgentStore(const std::wstring& bridgeExe, const std::wstring& storeArg, bool allowRedirect,
+                             const std::function<bool(const std::wstring&)>& forwardValid, const std::wstring& installRoot) {
+    AgentStore out;
+    const std::wstring root = FullPath(installRoot.empty() ? DefaultInstallRootW() : installRoot);
+    const std::wstring portable = DefaultStoreRoot(bridgeExe, root);
+    const std::wstring installed = root.empty() ? L"" : root + L"\\data\\annotations";
+    out.root = storeArg.empty() ? portable : FullPath(storeArg);
+    // Only the default portable store of this bridge: never a custom --store, never an installed bridge.
+    out.eligible = !installed.empty() && SamePath(out.root, portable) && !SamePath(portable, installed);
+    if (!out.eligible) return out;
+    out.gate = AM::GatePath(portable);
+    if (!allowRedirect) return out;
+    const AM::Record record = AM::Parse(ReadRecordText(root + L"\\data\\" + AM::RecordName));
+    const std::wstring app = Parent(portable);
+    if (record.state != AM::State::Committed || !SamePath(FullPath(Widen(record.from)), app)) return out;
+    if (!forwardValid || !forwardValid(app + L"\\browser.exe")) return out;  // same rules as the browser's own forward
+    out.root = installed;
+    out.redirected = true;
+    return out;
 }
 
 // ================================================================ Store
@@ -1787,6 +1836,8 @@ std::string ConflictMessage(const ClaimFile& c) {
 }  // namespace
 
 Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     a.site = SiteOrigin(a.site.empty() ? RedactUrl(a.source.url) : a.site);
     a.siteKey = SiteKey(a.site);
     if (!IsValidSiteKey(a.siteKey)) return Fail(Code::Invalid, "Site invalide.");
@@ -1873,6 +1924,8 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
 }
 
 Outcome Store::PublishDraft(const std::string& site, const std::string& id) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     if (!IsValidSiteKey(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const Paths from = EntryPaths(root_, project, id, true), to = EntryPaths(root_, project, id, false);
@@ -2012,6 +2065,8 @@ ListPage Store::List(const ListQuery& q) const {
 
 Outcome Store::Claim(const std::string& site, const std::string& id, const std::string& agentIn,
                      const std::string& token, ClaimResult& out) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     out = ClaimResult();
     const std::string agent = Agent(agentIn);
@@ -2129,6 +2184,8 @@ Outcome Store::Claim(const std::string& site, const std::string& id, const std::
 
 Outcome Store::Release(const std::string& site, const std::string& id, const std::string& token, const std::string& actor,
                        const std::string& reason) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     Entry entry;
     Outcome read = Read(project, id, entry);
@@ -2157,6 +2214,8 @@ Outcome Store::Release(const std::string& site, const std::string& id, const std
 
 Outcome Store::Resolve(const std::string& site, const std::string& id, const std::string& token, const std::string& outcome,
                        const std::string& summaryIn, const std::string& actor, State* newState) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     Status target;
     if (!ParseStatus(outcome, target) || !IsTerminal(target))
@@ -2190,6 +2249,8 @@ Outcome Store::Resolve(const std::string& site, const std::string& id, const std
 }
 
 Outcome Store::ForceRelease(const std::string& site, const std::string& id) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     Entry entry;
     Outcome read = Read(project, id, entry);
@@ -2212,6 +2273,8 @@ Outcome Store::ForceRelease(const std::string& site, const std::string& id) cons
 }
 
 Outcome Store::Reopen(const std::string& site, const std::string& id) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     Entry entry;
     Outcome read = Read(project, id, entry);
@@ -2234,6 +2297,8 @@ Outcome Store::Reopen(const std::string& site, const std::string& id) const {
 }
 
 Outcome Store::Delete(const std::string& site, const std::string& id, bool draft) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     if (!IsValidSiteKey(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const Paths p = EntryPaths(root_, project, id, draft);
@@ -2249,6 +2314,8 @@ Outcome Store::Delete(const std::string& site, const std::string& id, bool draft
 }
 
 Outcome Store::DeleteSite(const std::string& site) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string project = KeyOf(site);
     if (!IsValidSiteKey(project)) return Fail(Code::Invalid, "Site invalide.");
     const std::wstring dir = root_ + L"\\" + Widen(project);
@@ -2260,6 +2327,8 @@ Outcome Store::DeleteSite(const std::string& site) const {
 }
 
 Outcome Store::Trash(const std::string& site, const std::string& id) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string key = KeyOf(site);
     if (key.empty() || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const Paths p = EntryPaths(root_, key, id, false);
@@ -2279,6 +2348,8 @@ Outcome Store::Trash(const std::string& site, const std::string& id) const {
 }
 
 Outcome Store::Restore(const std::string& site, const std::string& id) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string key = KeyOf(site);
     if (key.empty() || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const std::wstring siteDir = root_ + L"\\trash\\" + Widen(key), from = siteDir + L"\\" + Widen(id);
@@ -2294,6 +2365,8 @@ Outcome Store::Restore(const std::string& site, const std::string& id) const {
 }
 
 Outcome Store::DiscardTrash(const std::string& site, const std::string& id) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     const std::string key = KeyOf(site);
     if (key.empty() || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const std::wstring siteDir = root_ + L"\\trash\\" + Widen(key), dir = siteDir + L"\\" + Widen(id);
@@ -2326,6 +2399,8 @@ std::size_t Store::CountClaimed() const {
 
 PurgeReport Store::Purge(std::int64_t closedRetentionSeconds) const {
     PurgeReport report;
+    AM::Gate gate;
+    if (!GuardMutation(root_, gate).ok()) return report;  // retried by the next purge
     const std::int64_t closedRetention = closedRetentionSeconds > 0 ? closedRetentionSeconds : ClosedRetentionSeconds;
     if (!RootUsable()) return report;
     const std::int64_t now = Now(), realNow = RealNow();
@@ -2381,6 +2456,8 @@ PurgeReport Store::Purge(std::int64_t closedRetentionSeconds) const {
 std::uint64_t Store::StoreBytes() const { return RootUsable() ? TreeBytes(root_, 0) : 0; }
 
 Outcome Store::WriteReader(const Reader& r) const {
+    AM::Gate gate;
+    if (Outcome g = GuardMutation(root_, gate); !g.ok()) return g;
     if (r.client.empty() || ClientSlug(r.client) != r.client) return Fail(Code::Invalid, "Nom de client invalide.");
     if (!r.site.empty() && SiteOrigin(r.site) != r.site) return Fail(Code::Invalid, "Site invalide.");
     Outcome root = EnsureRoot();

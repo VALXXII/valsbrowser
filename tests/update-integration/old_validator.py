@@ -48,7 +48,7 @@ def build_old_validator() -> Path:
 def build_bridge() -> Path:
     exe = OUT / 'browser-annotations-mcp.exe'
     sh([GXX, '-std=c++17', '-O2', '-static', '-municode', '-Isrc', 'src/mcp-bridge.cpp', 'src/annotations.cpp',
-        '-o', exe, '-lbcrypt', '-lkernel32'])
+        'src/update-core.cpp', 'src/update-package.cpp', '-o', exe, '-lwinhttp', '-lbcrypt', '-lkernel32'])
     return exe
 
 

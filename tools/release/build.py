@@ -47,10 +47,11 @@ HELPER_NAME = 'update-helper.exe'
 HELPER_LIBS = ['-lbcrypt', '-lshlwapi', '-lshell32', '-luser32', '-lkernel32', '-ladvapi32', '-lole32']
 # Annotations MCP bridge: console exe, static, no runtime; JSON parser is in-house (src/strict-json.h),
 # so no third-party licence is added.
-BRIDGE_SOURCES = ['src/mcp-bridge.cpp', 'src/annotations.cpp']
+# update-core/update-package: the portable->installed migration reuses UpdateCore::PortableForwardTarget.
+BRIDGE_SOURCES = ['src/mcp-bridge.cpp', 'src/annotations.cpp', 'src/update-core.cpp', 'src/update-package.cpp']
 BRIDGE_NAME = 'browser-annotations-mcp.exe'
 RELEASE_BRIDGE = f'assets/bin/{BRIDGE_NAME}'  # same constant in tools/release/package.py
-BRIDGE_LIBS = ['-lbcrypt', '-lkernel32']
+BRIDGE_LIBS = ['-lwinhttp', '-lbcrypt', '-lkernel32']
 WARNINGS = ['-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-type',
             '-Wno-misleading-indentation', '-Wno-missing-field-initializers']
 LICENSES = {  # destination name -> source

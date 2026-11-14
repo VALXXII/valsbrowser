@@ -541,7 +541,8 @@ def main():
                 ["-municode"], ["-lbcrypt", "-lwinhttp"])
     compile_exe("json_fuzz.exe", ["tests/annotations/json_fuzz.cpp"], [], [])
     compile_exe("bridge_fixture.exe", ["tests/annotations/bridge_fixture.cpp", *STORE], ["-municode"])
-    compile_exe("browser-annotations-mcp.exe", ["src/mcp-bridge.cpp", *STORE], ["-municode"])
+    compile_exe("browser-annotations-mcp.exe", ["src/mcp-bridge.cpp", *STORE, "src/update-core.cpp", "src/update-package.cpp"], ["-municode"],
+                libs=("-lwinhttp", "-lbcrypt"))
     compile_exe("host_test.exe", ["tests/annotations/host_test.cpp", *STORE])   # T3: browser-side message/crop/project logic
     compile_exe("fake_codex.exe", ["tests/annotations/fake_codex.cpp"], ["-municode"], [])
     compile_exe("agent_connect_test.exe", ["tests/annotations/agent_connect_test.cpp", "src/agent-connect.cpp", *STORE], ["-municode"],
