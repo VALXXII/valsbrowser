@@ -20,7 +20,9 @@
 //              other value is ignored with a warning on stderr, so it never filters on a wrong key.
 #include <windows.h>
 
+#include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 
 #include "annotations.h"
@@ -359,6 +361,8 @@ private:
     std::string legacyVersion_;
     ClientIdentity legacyClient_;
     std::map<std::string, std::int64_t> readerWrites_;
+    std::map<std::string, std::vector<std::pair<std::string, std::int64_t>>> seen_;
+    std::set<std::string> seenLoaded_;
 
     enum class Era { Legacy, Modern };
     enum class MetaState { Absent, Ok, BadVersion, Malformed };
@@ -540,14 +544,31 @@ private:
     }
 
     // readers\<client>.json: at most one write every 10 s per client, never on a timer.
-    void NoteReader(const ClientIdentity& client) {
+    // ids: annotations this call showed to the agent (list / get). A newly read id is written at once (the browser's
+    // « Lue par … »); otherwise at most one write every 10 s per client.
+    void NoteReader(const ClientIdentity& client, const std::vector<std::string>& ids = {}) {
         BA::Reader r;
         r.client = BA::ClientSlug(client.known ? client.name : "");
         r.label = !client.title.empty() ? client.title : (client.known ? client.name : r.client);
         r.site = site_;
         r.lastReadAt = store_.Now();
+        auto& seen = seen_[r.client];
+        if (!seenLoaded_.count(r.client)) {   // keep what earlier sessions of this client read
+            seenLoaded_.insert(r.client);
+            for (const auto& old : store_.ListReaders()) if (old.client == r.client) seen = old.seen;
+        }
+        bool fresh = false;
+        for (const auto& id : ids) {
+            auto at = std::find_if(seen.begin(), seen.end(), [&](const std::pair<std::string, std::int64_t>& s) { return s.first == id; });
+            if (at == seen.end()) { seen.emplace_back(id, r.lastReadAt); fresh = true; }
+        }
+        if (seen.size() > BA::MaxReaderSeen) {
+            std::stable_sort(seen.begin(), seen.end(), [](const std::pair<std::string, std::int64_t>& x, const std::pair<std::string, std::int64_t>& y) { return x.second > y.second; });
+            seen.resize(BA::MaxReaderSeen);
+        }
+        r.seen = seen;
         auto it = readerWrites_.find(r.client);
-        if (it != readerWrites_.end() && r.lastReadAt - it->second < BA::ReaderWriteIntervalSeconds) return;
+        if (!fresh && it != readerWrites_.end() && r.lastReadAt - it->second < BA::ReaderWriteIntervalSeconds) return;
         readerWrites_[r.client] = r.lastReadAt;
         const BA::Outcome o = store_.WriteReader(r);
         if (!o.ok()) Log("readers write skipped: " + std::string(BA::CodeName(o.code)));
@@ -641,7 +662,9 @@ private:
         q.cursor = cursor;
         const BA::ListPage page = store_.List(q);
         if (page.badCursor) return ToolError("cursor invalide : reprenez sans cursor.");
-        NoteReader(client);
+        std::vector<std::string> shown;
+        for (const auto& e : page.entries) shown.push_back(e.annotation.id);
+        NoteReader(client, shown);
         Value items = Value::Arr();
         std::string text = std::to_string(page.entries.size()) + " annotation(s)" +
                            (status == "all" ? std::string() : " au statut " + status) + (q.site.empty() ? "" : " pour " + q.site) +
@@ -669,7 +692,7 @@ private:
         BA::Entry entry;
         ToolResult failure;
         if (!FindEntry(id, entry, failure)) return failure;
-        NoteReader(client);
+        NoteReader(client, {entry.annotation.id});
         Value structured = BA::EntryToJson(entry, true);
         ToolResult r = ToolOk(std::string(DataBanner) + "\n\n" + BA::ToMarkdown(entry), std::move(structured));
         if (includeShot && entry.annotation.screenshot.present) {

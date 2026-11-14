@@ -133,5 +133,5 @@
     {"raw": "", "expect": null},
     {"raw": "{\"jsonrpc\":\"2.0\",\"id\":52,\"method\":\"ping\"}\r", "expect": {"id": 52, "result": {"$EXACT": true}}}
   ],
-  "after": {"reader": {"file": "readers/claude-ai.json", "client": "claude-ai", "label": "Claude Desktop"}, "png_capture": "png", "png_file": "{site:http://localhost:5173}/ann_aaaaaaaaaaaaaaaaaaaaaaaaaa/shot.png"}
+  "after": {"reader": {"file": "readers/claude-ai.json", "client": "claude-ai", "label": "Claude Desktop", "seen": ["ann_aaaaaaaaaaaaaaaaaaaaaaaaaa", "ann_bbbbbbbbbbbbbbbbbbbbbbbbbb"]}, "png_capture": "png", "png_file": "{site:http://localhost:5173}/ann_aaaaaaaaaaaaaaaaaaaaaaaaaa/shot.png"}
 }

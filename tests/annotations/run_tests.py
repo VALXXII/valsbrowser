@@ -406,6 +406,9 @@ def play(exe, fixture, path: pathlib.Path, tool_lists):
             if data.get("client") != want["client"] or data.get("label") != want["label"] or \
                     data.get("site") != want.get("site") or "project" in data or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", data.get("lastReadAt", "")):
                 raise Mismatch(f"readers file {data}")
+            for ident in want.get("seen", []):   # V3: ids the agent read (list / get) -> « Lue par … » in the browser
+                if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", (data.get("seen") or {}).get(ident, "")):
+                    raise Mismatch(f"readers file does not record {ident} as read: {data}")
         stderr = b"".join(bridge.stderr).decode("utf-8", "replace")
         if "started" not in stderr:
             raise Mismatch("expected diagnostics on stderr")

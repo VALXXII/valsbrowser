@@ -2191,6 +2191,14 @@ Outcome Store::WriteReader(const Reader& r) const {
     v.Set("label", Value::Str(label.empty() ? r.client : label));
     v.Set("lastReadAt", Value::Str(FormatTime(r.lastReadAt ? r.lastReadAt : Now())));
     v.Set("site", StrOrNull(r.site));
+    if (!r.seen.empty()) {
+        auto seen = r.seen;   // most recent first, valid ids only, bounded (the file stays under MaxSmallFileBytes)
+        seen.erase(std::remove_if(seen.begin(), seen.end(), [](const std::pair<std::string, std::int64_t>& s) { return !IsValidAnnotationId(s.first) || s.second <= 0; }), seen.end());
+        std::stable_sort(seen.begin(), seen.end(), [](const std::pair<std::string, std::int64_t>& a, const std::pair<std::string, std::int64_t>& b) { return a.second > b.second; });
+        Value m = Value::Obj(); std::size_t n = 0;
+        for (const auto& s : seen) { if (m.Get(s.first)) continue; if (++n > MaxReaderSeen) break; m.Set(s.first, Value::Str(FormatTime(s.second))); }
+        v.Set("seen", std::move(m));
+    }
     if (!AtomicWrite(dir + L"\\" + Widen(r.client) + L".json", SJ::Serialize(v))) return Fail(Code::Io, "Écriture du lecteur impossible.");
     return {};
 }
@@ -2214,6 +2222,11 @@ std::vector<Reader> Store::ListReaders() const {
             continue;  // a V1 file's "project" member is ignored
         r.label = CleanText(r.label, MaxLabelChars);
         if (r.site != SiteOrigin(r.site)) r.site.clear();
+        if (const Value* seen = v.Get("seen"); seen && seen->IsObject())   // V3, tolerant: a bad member is skipped
+            for (const auto& m : seen->members) {
+                std::int64_t at = 0;
+                if (r.seen.size() < MaxReaderSeen && IsValidAnnotationId(m.first) && m.second.IsString() && ParseTime(m.second.string, at)) r.seen.emplace_back(m.first, at);
+            }
         out.push_back(std::move(r));
     }
     std::sort(out.begin(), out.end(), [](const Reader& a, const Reader& b) { return a.client < b.client; });

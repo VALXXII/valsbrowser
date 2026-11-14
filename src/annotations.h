@@ -199,7 +199,13 @@ struct Reader {
     std::string label;    // display name ("Claude Desktop")
     std::string site;     // origin the bridge is restricted to (--site); empty = every site
     std::int64_t lastReadAt = 0;
+    // V3: the annotations this client actually read (browser_annotations_list / browser_annotation_get), id -> UTC
+    // seconds, at most MaxReaderSeen (most recent kept). « Lue par Claude » in the history comes from here, not from
+    // lastReadAt (bumped by initialize / tools/list too). Absent in V2 files.
+    std::vector<std::pair<std::string, std::int64_t>> seen;
+    std::int64_t SeenAt(const std::string& id) const { for (const auto& s : seen) if (s.first == id) return s.second; return 0; }
 };
+constexpr std::size_t MaxReaderSeen = 40;
 
 // One annotation as seen by readers. `state` is the EFFECTIVE state: a claim whose lease expired reads as
 // open (nothing is written by a read); a valid lease on an open/claimed annotation reads as claimed.
