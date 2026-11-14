@@ -63,6 +63,8 @@ struct Session {
     AH::Selection sel; BA::Annotation pending; std::string origin;
     Cap cap = Cap::None; std::string png; double shotScale = 1; std::string shotCrop;
     std::wstring draft;                       // kept when the panel is cancelled
+    std::uint32_t pageAccent = 0x3E67FF;      // the accent the page script paints (0xRRGGBB): the window's SETTLED accent
+    bool accentOwed = false;                  // an accent change waits for the capture under way (ShotDone)
 } s;
 std::uint64_t serials = 0;                    // never reset: a new session never matches an old result
 AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
@@ -254,11 +256,12 @@ void Cmd(const std::shared_ptr<Tab>& t, const std::wstring& op, const std::wstri
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
     t->view->ExecuteScript(AUI::PageCommand(AH::Wide(s.nonce.empty() ? std::string("-") : s.nonce), op, arg).c_str(), cb); cb->Release();
 }
-// The accent as the page script gets it (ints): the native frame and the fill removal use the same values.
-std::uint32_t AccentRgb() {
-    const auto a = NativeChrome::Design::Accent::Get();
-    return (std::uint32_t(std::lround(a.r * 255)) << 16) | (std::uint32_t(std::lround(a.g * 255)) << 8) | std::uint32_t(std::lround(a.b * 255));
-}
+// The accent the page script paints (its frame fill, edges, label, padding hatches, cursor dot): the native frame and
+// the capture's fill removal use the same value. It is the window's SETTLED accent (Design::Accent::Settled: the profile
+// colour stored, never a step of the 120 ms fade) given at the injection and replaced by SendAccent.
+std::uint32_t AccentRgb() { return s.pageAccent; }
+std::uint32_t SettledAccentRgb() { return AUI::Rgb24(NativeChrome::Design::Accent::Settled()); }
+std::string AccentInts(std::uint32_t c) { return std::to_string((c >> 16) & 255) + "," + std::to_string((c >> 8) & 255) + "," + std::to_string(c & 255); }
 // V3-B cursor size: 32 / 48 / 64 from the window's DPI and the Windows pointer size (CursorBaseSize, 32 by default).
 unsigned PointerBaseSize() {
     DWORD v = 0, n = sizeof v, type = 0;
@@ -272,19 +275,41 @@ std::wstring Params(const std::shared_ptr<Tab>& t, const Start& st) {
     SJ::Value styles = SJ::Value::Arr(); for (const auto& n : BA::AllowedStyleProperties()) styles.Push(SJ::Value::Str(n));
     SJ::Value attrs = SJ::Value::Arr(); for (const auto& n : BA::AllowedAttributes()) attrs.Push(SJ::Value::Str(n));
     p.Set("styles", std::move(styles)); p.Set("attrs", std::move(attrs)); p.Set("reduced", SJ::Value::Bool(Reduced()));
-    const auto a = NativeChrome::Design::Accent::Get();
-    p.Set("accent", SJ::Value::Str(std::to_string(int(std::lround(a.r * 255))) + "," + std::to_string(int(std::lround(a.g * 255))) + "," + std::to_string(int(std::lround(a.b * 255)))));
+    p.Set("accent", SJ::Value::Str(AccentInts(s.pageAccent)));
     SJ::Value start = SJ::Value::Obj();
     start.Set("kind", SJ::Value::Str(st.kind == 1 ? "point" : st.kind == 2 ? "selection" : "none"));
     start.Set("x", SJ::Value::Int(st.at.x)); start.Set("y", SJ::Value::Int(st.at.y));
     start.Set("text", SJ::Value::Str(BA::CleanText(AH::Utf8(st.text), BA::MaxTextChars, true)));
     p.Set("start", std::move(start));
     SJ::Value cursor = SJ::Value::Obj();
-    cursor.Set("svg", SJ::Value::Str(AUI::Dither::Cursor::Svg())); cursor.Set("size", SJ::Value::Int(CursorSize()));
+    cursor.Set("svg", SJ::Value::Str(AUI::Dither::Cursor::Svg(s.pageAccent))); cursor.Set("size", SJ::Value::Int(CursorSize()));
     cursor.Set("hx", SJ::Value::Int(AUI::Dither::Cursor::hotX)); cursor.Set("hy", SJ::Value::Int(AUI::Dither::Cursor::hotY));
     cursor.Set("scale", SJ::Value::Num(GetDpiForWindow(window) / 96.0));   // the screen's scale (never the page zoom)
     p.Set("cursor", std::move(cursor));
     return AH::Wide(SJ::Serialize(p));
+}
+// The window's accent changed (src/profiles-integration.h: SetAccents, then each step of the 120 ms fade; once under
+// reduced motion). Native surfaces repaint with the accent as presented (they follow the fade on its own timer, no
+// clock here). The page of the mode gets the SETTLED accent, once per change: never a step of the fade (it would stay
+// there), never while a capture is under way (the page's fill, the native frame and the fill removal must agree on
+// one colour: it is sent at ShotDone), never to a page no longer on screen (a profile switch leaves it: the mode ends
+// with it, and nothing of the other profile is sent to that page).
+void SendAccent() {
+    if (!s.active) return;
+    const std::uint32_t target = SettledAccentRgb();
+    if (target == s.pageAccent) { s.accentOwed = false; return; }
+    auto t = ModeTab(); if (!t || t != Active()) return;
+    if (shot.waiting || shot.inFlight) { s.accentOwed = true; return; }
+    namespace SJ = StrictJson; SJ::Value a = SJ::Value::Obj();
+    a.Set("accent", SJ::Value::Str(AccentInts(target))); a.Set("svg", SJ::Value::Str(AUI::Dither::Cursor::Svg(target)));
+    s.pageAccent = target; s.accentOwed = false;
+    Cmd(t, L"accent", AH::Wide(SJ::Serialize(a)));
+    Log(L"ANNOTATE accent " + AH::Wide(AccentInts(target)) + L" sent to the page");
+}
+void AccentChanged() {
+    if (!uiReady) return;
+    banner.AccentChanged(); note.AccentChanged(); launcher.AccentChanged(); connect.AccentChanged();
+    SendAccent();
 }
 void SendStart(const std::shared_ptr<Tab>& t, const Start& st) {
     if (st.kind == 1) Cmd(t, L"point", L"{\"x\":" + std::to_wstring(st.at.x) + L",\"y\":" + std::to_wstring(st.at.y) + L"}");
@@ -707,6 +732,7 @@ void ShotDone(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
         if (EnsurePost()) SetTimer(post, FrameTimer, 1000, nullptr);   // a page that never answers « shown »
     } else Cmd(t, L"show");
     if (resumeOwed && !shot.waiting && !shot.inFlight) { resumeOwed = false; if (s.active && !s.frozen) Cmd(t, L"resume"); }
+    if (s.accentOwed && !shot.waiting && !shot.inFlight) SendAccent();   // a colour change during the capture
 }
 void OnShown(std::int64_t serial) {
     if (!frame.Visible() || std::uint64_t(serial) != frameSerial) return;
@@ -989,6 +1015,7 @@ void Activate(const Start& st) {
     if (s.nonce.empty()) { s.active = false; Log(L"ANNOTATE no random source"); return; }
     { LPWSTR src = nullptr; if (SUCCEEDED(t->view->get_Source(&src)) && src) s.source = src; CoTaskMemFree(src); }
     s.origin = AH::OriginOf(t->uri); t->controller->get_ZoomFactor(&s.zoom); s.draft = keepDraft;
+    s.pageAccent = SettledAccentRgb();   // the profile's colour, even when the entry falls inside its 120 ms fade
     const std::string nonce = s.nonce;
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([nonce](HRESULT hr, LPCWSTR result) -> HRESULT {
         if (!s.active || s.nonce != nonce) return S_OK;
@@ -1014,7 +1041,7 @@ void Activate(const Start& st) {
         } else banner.SetReminder(true);
     });
     RefreshStatus(); SyncWatch();
-    Log(L"ANNOTATE mode on (" + std::to_wstring(GetTickCount64() - started) + L" ms to inject request) " + t->uri);
+    Log(L"ANNOTATE mode on (" + std::to_wstring(GetTickCount64() - started) + L" ms to inject request, accent " + AH::Wide(AccentInts(s.pageAccent)) + L") " + t->uri);
 }
 void Exit(const wchar_t* why, bool pageChanged) {
     if (!s.active) return;
@@ -1064,6 +1091,7 @@ bool AnnotationSurfaceFocus() {
 void AnnotationSyncChrome() { Ann::SyncChrome(); Ann::LauncherSync(); }
 void AnnotationLayout() { Ann::Place(); }
 void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); }   // V3-B: the wave's clock
+void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
 void AnnotationNavigation(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"navigation", true); }
 void AnnotationTabChanged() { if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }
 void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }
@@ -1187,6 +1215,7 @@ void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab, int choice) {
 // Unstamped fixtures (tests that include main.cpp) and --channel release builds: no annotation mode.
 bool AnnotationModeActive() { return false; }
 bool AnnotationSurfaceFocus() { return false; }
+void AnnotationAccentChanged() {}
 void AnnotationSyncChrome() {}
 void AnnotationLayout() {}
 void AnnotationWindowState() {}

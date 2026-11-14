@@ -347,7 +347,7 @@ inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout
         ink.IconHalo(Glyphs::close, {cx - 16 + 11, top + 7.2f, cx - 16 + 31, top + 27.2f}, Hex(0x8B8B8BFF), Hex(Ink_::canvas), 22 * 256.f / 160.f);
         ink.Text(empty, F(14, 20, 500), {1, top + 36, 1 + inner, top + 56}, Hex(0xFFFFFF80), false, Align::Center);
         const auto iv = v.V(HAnnotate); ScaleScope s(ink.Target(), l.annotate, Motion::PressScale(iv.press, v.reduced));
-        ink.Fill(l.annotate, 6, Accent()); ink.Fill(l.annotate, 6, {1, 1, 1, .08f * iv.hover + .06f * iv.press});
+        ink.Fill(l.annotate, 6, AccentButton(iv.hover, iv.press));
         Pieces(ink, {PText(L"Annoter cette page", F(13, 16, 500), {1, 1, 1, 1}), PKey(L"Ctrl", Hex(0x00000038), {1, 1, 1, 1}), PKey(L"Maj", Hex(0x00000038), {1, 1, 1, 1}), PKey(L"A", Hex(0x00000038), {1, 1, 1, 1})}, l.annotate);
         if (v.focus == HAnnotate) FocusRing(ink, l.annotate, 6, v.keyboard);
         return;
@@ -724,6 +724,7 @@ public:
     void Init(HINSTANCE instance, HWND parent, HistoryHooks hooks) { instance_ = instance; parent_ = parent; hooks_ = std::move(hooks); }
     bool Created() const { return panel_.Window() != nullptr; }
     bool Visible() const { return presence_.IsOpen(); }
+    void AccentChanged() { if (panel_.Window() && presence_.Visible(Motion::Now())) Render(Motion::Now()); }   // « Annoter cette page »
     bool ToastVisible() const { return toastPresence_.IsOpen(); }
     HWND Window() const { return panel_.Window(); }
     HWND ToastWindow() const { return toast_.Window(); }

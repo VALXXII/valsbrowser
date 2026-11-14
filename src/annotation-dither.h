@@ -10,6 +10,8 @@
 //   page   top = max(0, 1 − y/260)^1.8   edge = 0.7 max(0, 1 − d/110)², d = min(x, W − x, H − y)
 //          v   = max(top, edge) (1 + 0.22 sin(x/70 + y/38 − ωt)) 0.95 · k
 // A dot is drawn where v > (Bayer + 0.5)/16, in #3E67FF at alpha 150 (band) / 120 (page), or the bright tone above 0.75.
+// #3E67FF is the reference accent: the live mode passes the window's profile accent and its tones
+// (src/annotation-accent.h); the defaults below are the Paper values (the neutral « Personnel » profile).
 // Two deliberate changes to the script, both needed by the motion and the user's correction:
 //   - c(φ): the script moved the envelope from 0.15 W to 0.85 W and jumped back at the end of each pass; the loop
 //     here is seamless (the envelope travels one full width per 4 s pass, wrapped: c = 0.15 + φ modulo 1).
@@ -19,6 +21,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 namespace NativeChrome { namespace Annotations { namespace Dither {
@@ -137,10 +141,11 @@ inline std::uint32_t Over(std::uint32_t src, std::uint32_t dst) noexcept {   // 
 inline int CellPx(float dip, float scale) noexcept { return std::max(2, int(std::lround(dip * scale))); }
 inline int GapPx(float scale) noexcept { return std::max(1, int(std::lround(scale))); }
 // The band's texture over the whole band (transparent elsewhere): base + wave, Wave::opacity applied.
-inline int RasterBand(const Raster& r, float scale, double seconds, float amp, const Zones& z) {
+// dimRgba / brightRgba: the dot tones (RGBA), Wave::dim / Wave::bright for the reference accent.
+inline int RasterBand(const Raster& r, float scale, double seconds, float amp, const Zones& z, std::uint32_t dimRgba = Wave::dim, std::uint32_t brightRgba = Wave::bright) {
     const int cp = CellPx(Wave::cell, scale), dot = cp - GapPx(scale); int dots = 0;
     const float w = r.w / scale, h = r.h / scale; const double phase = Phase(seconds);
-    const std::uint32_t dim = Premul(Wave::dim, Wave::opacity), bright = Premul(Wave::bright, Wave::opacity);
+    const std::uint32_t dim = Premul(dimRgba, Wave::opacity), bright = Premul(brightRgba, Wave::opacity);
     for (int y = 0; y < r.h; ++y) std::fill_n(r.px + size_t(y) * r.stride, r.w, 0u);
     for (int cy = 0; cy * cp < r.h; ++cy) for (int cx = 0; cx * cp < r.w; ++cx) {
         const float x = (cx + .5f) * cp / scale, y = (cy + .5f) * cp / scale;
@@ -153,15 +158,17 @@ inline int RasterBand(const Raster& r, float scale, double seconds, float amp, c
 }
 // The veil over the page at intensity k: wash from the top + rim on the three other sides, then the texture.
 // `r` must come zeroed (the live layer clears its surface): the page's middle, transparent, is never touched — a
-// full-page frame costs the top band, the three rims and the texture cells only.
-inline void RasterVeil(const Raster& r, float scale, double seconds, float k, bool texture) {
+// full-page frame costs the top band, the three rims and the texture cells only. `accent`: the wash's colour (RGB, the
+// window's profile accent; #3E67FF in Paper), its texture dots the same colour at Veil::dim / Veil::bright alphas.
+inline void RasterVeil(const Raster& r, float scale, double seconds, float k, bool texture, std::uint32_t accent = 0x3E67FF) {
+    const std::uint32_t ar = (accent >> 16) & 255, ag = (accent >> 8) & 255, ab = accent & 255;
     const float w = r.w / scale, h = r.h / scale;
     if (k <= 0) return;
     const int rimPx = std::min(int(std::ceil(Veil::rimBlur * 2 * scale)) + 1, std::max(1, r.w / 2));
     static thread_local std::vector<float> rim; rim.assign(size_t(rimPx), 0);
     for (int d = 0; d < rimPx; ++d) rim[size_t(d)] = RimAlpha((d + .5f) / scale);
-    static thread_local std::uint32_t lut[256];   // alpha byte -> premultiplied #3E67FF
-    for (int i = 0; i < 256; ++i) lut[i] = (std::uint32_t(i) << 24) | (std::uint32_t((62 * i + 127) / 255) << 16) | (std::uint32_t((103 * i + 127) / 255) << 8) | std::uint32_t(i);
+    static thread_local std::uint32_t lut[256];   // alpha byte -> premultiplied accent
+    for (std::uint32_t i = 0; i < 256; ++i) lut[i] = (i << 24) | (((ar * i + 127) / 255) << 16) | (((ag * i + 127) / 255) << 8) | ((ab * i + 127) / 255);
     const int washRows = std::min(r.h, int(std::ceil(Veil::topDip * scale)) + 1);
     auto pixel = [&](float wash, float side) -> std::uint32_t { const int a = int((1 - (1 - wash) * (1 - side)) * k * 255 + .5f); return a > 0 ? lut[std::min(a, 255)] : 0u; };
     for (int y = 0; y < r.h; ++y) {
@@ -179,7 +186,7 @@ inline void RasterVeil(const Raster& r, float scale, double seconds, float k, bo
     }
     if (!texture) return;
     const int cp = CellPx(Veil::cell, scale), dot = cp - GapPx(scale);
-    const std::uint32_t dim = Premul(Veil::dim, 1), bright = Premul(Veil::bright, 1);
+    const std::uint32_t dim = Premul(((accent & 0xFFFFFF) << 8) | (Veil::dim & 255), 1), bright = Premul(((accent & 0xFFFFFF) << 8) | (Veil::bright & 255), 1);
     // VeilField, separated: top(y) per row, the ripple sin(x/70 + y/38 - wt) = sin(a)cos(b) + cos(a)sin(b) from
     // per-column and per-row tables (same values, no pow / sin per cell).
     const int cols = (r.w + cp - 1) / cp;
@@ -204,17 +211,19 @@ inline void RasterVeil(const Raster& r, float scale, double seconds, float k, bo
 
 // ---------------------------------------------------------------- the mode's cursor (Paper 5.4, direction B « viseur »)
 // Chosen by the user after the 0.3.258 test (not A « flèche + note »). SVG 32x32: four black strokes 1.6 px on a white
-// 4 px halo, an empty centre, a blue dot #3E67FF r 2.6 ringed white 1.2; hot spot = the centre (16, 16). Sizes 32 / 48 / 64 px from the display scale x the Windows pointer size
+// 4 px halo, an empty centre, a dot r 2.6 in the window's accent (Paper: blue #3E67FF) ringed white 1.2; hot spot = the centre (16, 16). Sizes 32 / 48 / 64 px from the display scale x the Windows pointer size
 // (HKCU\Control Panel\Cursors\CursorBaseSize, 32 by default): the nearest of the three, at or above 1.25 => 48,
 // at or above 1.75 => 64.
 namespace Cursor {
 inline constexpr int hotX = 16, hotY = 16;
 inline constexpr const char* strokes = "M16 4 V12 M16 20 V28 M4 16 H12 M20 16 H28";
-inline const char* Svg() {
-    return "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>"
+// dot: 0xRRGGBB, the window's accent (the page script receives it again at each accent change).
+inline std::string Svg(std::uint32_t dot = 0x3E67FF) {
+    char hex[8]; std::snprintf(hex, sizeof hex, "#%06X", unsigned(dot & 0xFFFFFF));
+    return std::string("<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>"
            "<path d='M16 4 V12 M16 20 V28 M4 16 H12 M20 16 H28' fill='none' stroke='#FFFFFF' stroke-width='4' stroke-linecap='round'/>"
            "<path d='M16 4 V12 M16 20 V28 M4 16 H12 M20 16 H28' fill='none' stroke='#1C1C1C' stroke-width='1.6' stroke-linecap='round'/>"
-           "<circle cx='16' cy='16' r='2.6' fill='#3E67FF' stroke='#FFFFFF' stroke-width='1.2'/></svg>";
+           "<circle cx='16' cy='16' r='2.6' fill='") + hex + "' stroke='#FFFFFF' stroke-width='1.2'/></svg>";
 }
 inline int SizeFor(unsigned dpi, unsigned baseSize) noexcept {
     const double f = (dpi ? dpi : 96) / 96.0 * (baseSize >= 16 && baseSize <= 512 ? baseSize : 32) / 32.0;

@@ -280,7 +280,7 @@ inline void PaintConnectBlock(Ink& ink, const ConnectView& v, const ConnectLayou
     case BCodexMsg: PaintAppMessage(ink, v, AgentKind::Codex, l.codexMsg); break;
     case BDone: {
         const auto iv = v.V(CDone); ScaleScope s(ink.Target(), l.done, Motion::PressScale(iv.press, v.reduced));
-        ink.Fill(l.done, 6, Accent()); ink.Fill(l.done, 6, {1, 1, 1, .08f * iv.hover + .06f * iv.press});
+        ink.Fill(l.done, 6, AccentButton(iv.hover, iv.press));
         Pieces(ink, {PText(L"Terminé", F(13, 16, 500), {1, 1, 1, 1}), PKey(L"Entrée", Hex(0x00000038), {1, 1, 1, 1})}, l.done);
         if (v.focus == CDone) FocusRing(ink, l.done, 6, v.keyboard);
         break; }
@@ -585,6 +585,7 @@ public:
     void Init(HINSTANCE instance, HWND owner, std::wstring root, ConnectHooks hooks) { instance_ = instance; owner_ = owner; root_ = std::move(root); hooks_ = std::move(hooks); }
     bool Created() const { return modal_.Window() != nullptr; }
     bool Visible() const { return open_; }
+    void AccentChanged() { if (modal_.Window() && presence_.Visible(Motion::Now())) Render(Motion::Now()); }   // « Terminé »
     HWND Window() const { return modal_.Window(); }
     HWND Veil() const { return veil_; }
     // ownerClient: the browser window's client area in screen pixels (veil + centring).
