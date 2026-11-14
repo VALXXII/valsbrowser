@@ -35,6 +35,9 @@ int wmain(int argc, wchar_t** argv) {
     a1.id = "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa";
     a1.screenshot.crop = "element+margin";
     a1.screenshot.scale = 0.5;
+    // V3-B: padding / gap (target.spacing) => the « Style » line of the bridge's Markdown and structuredContent.
+    a1.target.spacing.present = true; a1.target.spacing.top = a1.target.spacing.bottom = 10; a1.target.spacing.left = a1.target.spacing.right = 24;
+    a1.target.spacing.hasGap = true; a1.target.spacing.row = 0; a1.target.spacing.column = 8; a1.target.spacing.layout = "flex";
     ok(store.WriteAnnotation(a1, &png, false));
 
     now += 60;

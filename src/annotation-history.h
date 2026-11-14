@@ -22,6 +22,9 @@
 //     logo 14 + status 13/18 medium white + age 12/16 #FFFFFF99 at right, then 12/17 #FFFFFF99;
 //     actions padding 12, gap 8, h 30: « Copier en Markdown » raised 12/16 medium white,
 //     « Supprimer » danger 10 % with #FF7B6E (subdued red).
+//     V3-B (Paper 5.5): an annotation an agent gave back (« … n'a pas pu la traiter ») gets « Rouvrir » first
+//     (raised, hugging its text, padding 10), then « Copier en Markdown » (hugging), « Supprimer » hugging at the
+//     right. « Rouvrir » puts it back in waiting for an agent (the host: state open, « Rouverte » in the follow-up).
 //   Empty (4.3): body padding 20/24, gap 6: the mark 22 at 50 % crossed by an x 20 #8B8B8B (canvas
 //     halo); « Aucune annotation pour l'instant... » 14/20 medium #FFFFFF80; « Annoter cette
 //     page » (accent, h 32, padding 12, key caps Ctrl Maj A #00000038, gap 2).
@@ -65,6 +68,7 @@ struct HistoryHooks {
     std::function<void(const std::wstring& id)> detail;       // a detail opened (the host may SetEntryCapture)
     std::function<void(const std::wstring& markdown)> copy;   // « Copier en Markdown »: the host writes the clipboard
     std::function<void(const std::wstring& id)> copyEntry;    // integration: when set, replaces copy (the host builds the full Markdown from its store)
+    std::function<void(const std::wstring& id)> reopen;       // V3-B « Rouvrir » (an annotation an agent gave back)
     std::function<void()> annotate;                           // « Annoter cette page » (empty state)
     std::function<void(bool keyboard)> closed;                // the panel closed itself (close, Échap)
     std::function<void(const std::wstring&)> announce;
@@ -109,12 +113,12 @@ inline constexpr float detailHeader = 48, capture = 150, emptyBody = 96, emptyAc
 inline constexpr float toastH = 40, launcher = 40, gap = 8;
 inline constexpr const wchar_t* empty = L"Aucune annotation pour l'instant...";
 }
-enum HistoryHit { HNone = 0, HClose = 1, HFilters = 2, HList = 3, HBack = 5, HCopy = 6, HDelete = 7, HAnnotate = 8, HMenuCopy = 9, HMenuDelete = 10, HFilter0 = 20, HRowBase = 1000, HMoreBase = 100000 };
+enum HistoryHit { HNone = 0, HClose = 1, HFilters = 2, HList = 3, HBack = 5, HCopy = 6, HDelete = 7, HAnnotate = 8, HMenuCopy = 9, HMenuDelete = 10, HReopen = 11, HFilter0 = 20, HRowBase = 1000, HMoreBase = 100000 };
 struct HistoryItem { bool section = false; int entry = -1; std::wstring site; bool current = false; int count = 0; float y = 0, h = 0; };
 struct HistoryLayout {
     bool detail = false, empty = false, filterEmpty = false;
     float height = 0, listTop = 0, viewport = 0, content = 0;
-    D2D1_RECT_F close{}, filters{}, segment[3]{}, annotate{}, back{}, copy{}, del{}, capture{}, note{}, follow{}, page{}, help{};
+    D2D1_RECT_F close{}, filters{}, segment[3]{}, annotate{}, back{}, copy{}, del{}, capture{}, note{}, follow{}, page{}, help{}, reopen{};
     std::vector<HistoryItem> items;
 };
 struct HistoryView {
@@ -144,7 +148,11 @@ inline HistoryLayout LayoutHistory(Ink& ink, const HistoryView& v) {
             const float fh = 10 + 18 + (follow.empty() ? 0 : 6 + ink.Height(follow, F(12, 17), inner - 24 - 24)) + 10;
             l.follow = {x0 + 12, y, x0 + inner - 12, y + fh}; y += fh + 12;
         }
-        const float bw = (inner - 24 - 8) / 2; l.copy = {x0 + 12, y, x0 + 12 + bw, y + 30}; l.del = {l.copy.right + 8, y, x0 + inner - 12, y + 30}; y += 30 + 12;
+        if (Unhandled(e)) {   // V3-B: Rouvrir · Copier en Markdown … Supprimer, each hugging its text
+            const float rw = 20 + ink.Width(L"Rouvrir", F(12, 16, 500)), cw = 20 + ink.Width(L"Copier en Markdown", F(12, 16, 500)), dw = 20 + ink.Width(L"Supprimer", F(12, 16, 500));
+            l.reopen = {x0 + 12, y, x0 + 12 + rw, y + 30}; l.copy = {l.reopen.right + 8, y, l.reopen.right + 8 + cw, y + 30}; l.del = {x0 + inner - 12 - dw, y, x0 + inner - 12, y + 30};
+        } else { const float bw = (inner - 24 - 8) / 2; l.copy = {x0 + 12, y, x0 + 12 + bw, y + 30}; l.del = {l.copy.right + 8, y, x0 + inner - 12, y + 30}; }
+        y += 30 + 12;
         l.height = y + 1; l.viewport = 0; return l;
     }
     float y = 1;
@@ -178,7 +186,7 @@ inline HistoryLayout LayoutHistory(Ink& ink, const HistoryView& v) {
 inline float MaxScroll(const HistoryLayout& l) { return std::max(0.f, l.content - l.viewport); }
 inline int HistoryHitAt(const HistoryLayout& l, const HistoryView& v, float x, float y) {
     if (Inside(l.close, x, y)) return HClose;
-    if (l.detail) { if (Inside(l.back, x, y)) return HBack; if (Inside(l.copy, x, y)) return HCopy; if (Inside(l.del, x, y)) return HDelete; return HNone; }
+    if (l.detail) { if (Inside(l.back, x, y)) return HBack; if (l.reopen.right > l.reopen.left && Inside(l.reopen, x, y)) return HReopen; if (Inside(l.copy, x, y)) return HCopy; if (Inside(l.del, x, y)) return HDelete; return HNone; }
     if (l.empty) return Inside(l.annotate, x, y) ? HAnnotate : HNone;
     for (int i = 0; i < 3; ++i) if (Inside(l.segment[i], x, y)) return HFilter0 + i;
     if (y >= l.listTop && y < l.listTop + l.viewport && x > 1 && x < HistorySpec::width - 1) {
@@ -317,6 +325,10 @@ inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout
         if (!follow.empty()) ink.Text(follow, F(12, 17), {fx, fy + 24, fr, l.follow.bottom - 10}, Hex(0xFFFFFF99), true);
         }
         if (l.help.bottom > l.help.top) { ink.Fill(l.help, 8, Hex(0xFFFFFF0D)); ink.Text(UnhandledHelp, F(13, 18), {l.help.left + 12, l.help.top + 10, l.help.right - 12, l.help.bottom - 10}, Hex(0xFFFFFFCC), true); }
+        if (l.reopen.right > l.reopen.left) {   // V3-B « Rouvrir »
+            const auto iv = v.V(HReopen); ScaleScope s(ink.Target(), l.reopen, Motion::PressScale(iv.press, v.reduced));
+            ink.Fill(l.reopen, 6, RaisedFill(iv)); ink.Text(L"Rouvrir", F(12, 16, 500), l.reopen, {1, 1, 1, 1}, false, Align::Center, true);
+            if (v.focus == HReopen) FocusRing(ink, l.reopen, 6, v.keyboard); }
         {   const auto iv = v.V(HCopy); ScaleScope s(ink.Target(), l.copy, Motion::PressScale(iv.press, v.reduced));
             ink.Fill(l.copy, 6, RaisedFill(iv)); ink.Text(L"Copier en Markdown", F(12, 16, 500), l.copy, {1, 1, 1, 1}, false, Align::Center, true);
             if (v.focus == HCopy) FocusRing(ink, l.copy, 6, v.keyboard); }
@@ -414,7 +426,7 @@ class HistoryPanel : public Animator::Client {
     }
     HistoryView Visual(const HistoryView& base, Motion::Time now) const {
         HistoryView v = base; v.reduced = reduced_;
-        for (int id : {int(HClose), int(HBack), int(HCopy), int(HDelete), int(HAnnotate), int(HFilter0), int(HFilter0) + 1, int(HFilter0) + 2}) v.iv[id] = motion_.Visual(id, now);
+        for (int id : {int(HClose), int(HBack), int(HReopen), int(HCopy), int(HDelete), int(HAnnotate), int(HFilter0), int(HFilter0) + 1, int(HFilter0) + 2}) v.iv[id] = motion_.Visual(id, now);
         for (size_t i = 0; i < base.data.entries.size(); ++i) v.iv[HMoreBase + int(i)] = motion_.Visual(HMoreBase + int(i), now);
         return v;
     }
@@ -539,6 +551,7 @@ class HistoryPanel : public Animator::Client {
         case HClose: Hide(true); if (hooks_.closed) hooks_.closed(keyboard); break;
         case HBack: CloseDetail(keyboard); break;
         case HCopy: Copy(view_.Find(view_.detailId)); break;
+        case HReopen: if (hooks_.reopen && !view_.detailId.empty()) { hooks_.reopen(view_.detailId); Announce(L"Annotation rouverte"); } break;
         case HDelete: Delete(view_.Find(view_.detailId), keyboard); break;
         case HAnnotate: Hide(true); if (hooks_.annotate) hooks_.annotate(); break;
         case HMenuCopy: { const int e = view_.menuEntry; view_.menuEntry = -1; Copy(e); Render(Motion::Now()); break; }
@@ -547,7 +560,7 @@ class HistoryPanel : public Animator::Client {
     }
     void Interact() { const auto now = Motion::Now(); motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, now); Render(now); Animator::Get().Request(this); }
     std::vector<int> Order() const {
-        if (layout_.detail) return {HBack, HClose, HCopy, HDelete};
+        if (layout_.detail) { if (layout_.reopen.right > layout_.reopen.left) return {HBack, HClose, HReopen, HCopy, HDelete}; return {HBack, HClose, HCopy, HDelete}; }
         if (layout_.empty) return {HClose, HAnnotate};
         std::vector<int> o{HClose, HFilters}; if (!layout_.filterEmpty) o.push_back(HList); return o;
     }
@@ -655,6 +668,7 @@ class HistoryPanel : public Animator::Client {
             add(HBack, Accessibility::Role::Button, L"Retour à l'historique", layout_.back).accelerator = L"Échap";
             add(HClose, Accessibility::Role::Button, L"Fermer l'historique", layout_.close);
             auto& t = add(DetailTextKey, Accessibility::Role::Text, e.page, layout_.note); t.value = e.note; t.status = StatusTitle(e) + L" · " + e.age; t.help = e.steps.empty() ? e.followUp : StepsText(e) + (Unhandled(e) ? std::wstring(L". ") + UnhandledHelp : L""); t.focusable = false;
+            if (layout_.reopen.right > layout_.reopen.left) add(HReopen, Accessibility::Role::Button, L"Rouvrir", layout_.reopen).help = L"Remettre l'annotation en attente pour un agent";
             add(HCopy, Accessibility::Role::Button, L"Copier en Markdown", layout_.copy);
             add(HDelete, Accessibility::Role::Button, L"Supprimer", layout_.del).help = L"Annulable pendant 6 secondes";
             return n;

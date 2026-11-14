@@ -627,7 +627,7 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     // ---- Banner: reminder « Aucun agent connecté · Connecter »
     Banner banner; int exits = 0, bannerConnects = 0;
     BannerHooks bh; bh.exit = [&] { ++exits; }; bh.connect = [&] { ++bannerConnects; }; bh.announce = announce;
-    banner.Init(inst, host, root, bh);
+    banner.Init(inst, host, root, bh); banner.SetLiveForTest(0);   // V3-B: the wave is tested in V3B::Windows; here the band must settle
     CHECK(banner.Show({0, int(std::lround(85 * dpiScale)), client.right, pageTop}, false));
     CHECK(lastSaid(L"Mode Annotation activé"));
     banner.SetReminder(true);
@@ -984,7 +984,7 @@ static void V3Windows(Ink& ink, const std::wstring& root) {
     CHECK(Settle()); launcher.ShowHistory(SampleHistory(), false); CHECK(!launcher.HistoryForTest().LowAnchor()); launcher.HideHistory(false);
     launcher.Hide(false); launcher.SetDormant(true); CHECK(launcher.WindowsForTest() == 0);
     // Band in a real window: mid-slide frame, then at rest.
-    Banner band; BannerHooks bh; band.Init(inst, host, root, bh);
+    Banner band; BannerHooks bh; band.Init(inst, host, root, bh); band.SetLiveForTest(0);
     CHECK(band.Show({0, 88, page.right, 120}, false)); Pump(40); SaveLayer(ink, band.LayerForTest(), L"v3-6-window-band-entering.png");
     CHECK(band.PresenceForTest().Moving(Motion::Now()) || band.PresenceForTest().Progress(Motion::Now()) > 0);
     CHECK(Settle()); band.Hide(true); CHECK(Settle()); CHECK(!IsWindowVisible(band.Window()));
@@ -996,6 +996,280 @@ static void V3Windows(Ink& ink, const std::wstring& root) {
     frame.Hide(); CHECK(!frame.Visible()); frame.Destroy(); CHECK(!frame.Window());
     DestroyWindow(host); Pump(50);
 }
+
+
+// =======================================================================================
+// V3-B (Paper 5.1 – 5.5): entry veil, living band, cursor, spacing inspector, « Rouvrir ».
+namespace V3B {
+namespace D = NativeChrome::Annotations::Dither;
+// The veil's pixels as a bitmap drawn at (x, y) DIP of the current target (same raster as the live window).
+static void DrawVeil(Ink& ink, float x, float y, float w, float h, double ms, const D::VeilTimeline& tl) {
+    auto* t = ink.Target(); float dx = 96, dy = 96; t->GetDpi(&dx, &dy); const float s = dx / 96.f;
+    const int pw = int(std::lround(w * s)), ph = int(std::lround(h * s)); std::vector<std::uint32_t> px(size_t(pw) * ph, 0);
+    D::RasterVeil({px.data(), pw, pw, ph}, s, ms / 1000.0, tl.Value(ms), !tl.Reduced());
+    ID2D1Bitmap* b = nullptr; const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dx, dy);
+    if (SUCCEEDED(t->CreateBitmap(D2D1::SizeU(UINT32(pw), UINT32(ph)), px.data(), UINT32(pw * 4), props, &b))) t->DrawBitmap(b, D2D1::RectF(x, y, x + pw / s, y + ph / s), 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+    Release(b);
+}
+static void Band(Ink& i, float w, double seconds, float amp, float reminder = 0, bool beta = false) {
+    BannerVisual bv; bv.texture = true; bv.waveSeconds = seconds; bv.waveAmp = amp; bv.reminder = reminder; bv.beta = beta; PaintBanner(i, w, 32, bv);
+}
+// Pixels of a band render that differ between the wave and the base texture alone, per column range (device px).
+struct Diff { int inText = 0, inMiddle = 0; };
+static Diff WaveDiff(Ink& ink, float w, double seconds, float reminder, bool beta, UINT dpi) {
+    Canvas a, b; const float k = dpi / 96.f;
+    Render(ink, w, 32, dpi, 0x171717FF, [&](Ink& i, float, float) { Band(i, w, seconds, 1, reminder, beta); }, a);
+    Render(ink, w, 32, dpi, 0x171717FF, [&](Ink& i, float, float) { Band(i, w, seconds, 0, reminder, beta); }, b);
+    const auto l = LayoutBanner(ink, w, beta); const auto z = WaveZones(l, beta, reminder);
+    Diff d;
+    for (unsigned y = 0; y < a.height; ++y) for (unsigned x = 0; x < a.width; ++x) {
+        if (a.At(int(x), int(y)) == b.At(int(x), int(y))) continue;
+        const float xd = (x + .5f) / k;
+        if (xd <= z.left || xd >= z.right) ++d.inText; else ++d.inMiddle;
+    }
+    return d;
+}
+static void Static(Ink& ink) {
+    const UINT dpi = 192; const float k = 2; Canvas c;
+    // ---- 5.2 three instants of the same loop (t = 0, 1.3, 2.7 s), and the reminder variant
+    {   const double ts[3] = {0, 1.3, 2.7}; const float w = 1180, h = 3 * (32 + 20) + 20;
+        Render(ink, w, h, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { for (int f = 0; f < 3; ++f) At_(i, 0, 20 + f * 52.f, [&] { Band(i, w, ts[f], 1); }); }, c);
+        Save(ink, c, L"v3b-5.2-band-wave-0-1.3-2.7s.png");
+        Render(ink, w, 32 + 40, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 0, 20, [&] { Band(i, w, 1.3, 1, 1); }); }, c);
+        Save(ink, c, L"v3b-5.2-band-wave-reminder.png");
+        Render(ink, w, 32 + 40, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 0, 20, [&] { Band(i, w, 1.3, 0); }); }, c);
+        Save(ink, c, L"v3b-5.2-band-reduced-still-texture.png");
+    }
+    // ---- 5.2 proof: the wave is ZERO under every label (pixels identical to the base texture there), at 12 instants
+    //      of the loop, without and with the reminder, with BETA, at 2x and 1.25x; and present in the middle.
+    {   int text = 0, middle = 0, renders = 0;
+        for (UINT dpi2 : {UINT(192), UINT(120)}) for (int r = 0; r < 2; ++r) for (int b = 0; b < 2; ++b) for (int f = 0; f < 12; ++f) {
+            const Diff d = WaveDiff(ink, 1180, f * D::Wave::period / 12, float(r), b == 1, dpi2); text += d.inText; middle += d.inMiddle; ++renders;
+            CHECKM(d.inText == 0, "wave under a label: %d pixels (dpi %u, reminder %d, beta %d, t %.2f s)", d.inText, dpi2, r, b, f * D::Wave::period / 12);
+        }
+        CHECKM(middle > renders * 50, "the wave shows between the labels (%d pixels over %d renders)", middle, renders);
+        std::printf("V3-B wave under the labels: %d differing pixels in the text zones, %d in the middle (%d renders)\n", text, middle, renders);
+        report << L"\"v3b_waveUnderLabels\":{\"renders\":" << renders << L",\"pixelsInTextZones\":" << text << L",\"pixelsInMiddle\":" << middle << L"},";
+        // The zones come from the label rectangles: wider labels move them.
+        const auto l = LayoutBanner(ink, 1180, false); const auto z = WaveZones(l, false, 0), zr = WaveZones(l, false, 1), zb = WaveZones(LayoutBanner(ink, 1180, true), true, 0);
+        CHECK(Near(z.left, l.label.right, 1e-3) && Near(z.right, l.quit.left, 1e-3) && Near(zr.right, l.remind.left, 1e-3) && zb.left > z.left);
+    }
+    // ---- 5.2 the wave frames' fast path (pixels written in place, no Direct2D) = the full Direct2D frame there
+    for (UINT dpi2 : {UINT(96), UINT(120), UINT(144), UINT(192)}) for (int rem = 0; rem < 2; ++rem) for (double t : {0.4, 1.7, 3.3}) {
+        Canvas full; const float w = 1180, kk = dpi2 / 96.f;
+        Render(ink, w, 32, dpi2, 0x171717FF, [&](Ink& i, float, float) { Band(i, w, t, 1, float(rem), true); }, full);
+        const auto l = LayoutBanner(ink, w, true); const auto z = WaveZones(l, true, float(rem));
+        const RECT span{LONG(std::ceil(z.left * kk)), 0, LONG(std::floor(z.right * kk)), LONG(full.height)};
+        std::vector<std::uint32_t> px(full.pixels); RasterBandSpan(px.data(), int(full.width), span, w, 32, kk, t, 1, z);
+        int worst = 0, over2 = 0;
+        for (LONG y = span.top; y < span.bottom; ++y) for (LONG x = std::max(0L, span.left); x < std::min(LONG(full.width), span.right); ++x) {
+            const std::uint32_t a = full.pixels[size_t(y) * full.width + x], b = px[size_t(y) * full.width + x];
+            for (int sh = 0; sh < 32; sh += 8) { const int dd = std::abs(int((a >> sh) & 255) - int((b >> sh) & 255)); worst = std::max(worst, dd); if (dd > 2) ++over2; }
+        }
+        CHECKM(over2 == 0, "wave span fast path vs Direct2D at %u dpi, reminder %d, t %.1f: worst %d levels, %d channel values over 2", dpi2, rem, t, worst, over2);
+        if (dpi2 == 120 && rem == 0 && t == 1.7) { std::printf("V3-B wave span fast path vs Direct2D (120 dpi): worst %d levels\n", worst); report << L"\"v3b_spanVsD2dWorst\":" << worst << L","; }
+    }
+    // ---- 5.2 entry timeline strip: band + veil at 0 / 60 / 140 / 220 / 360 / 500 ms (scene, page reduced to 400 DIP)
+    {   const double ts[6] = {0, 60, 140, 220, 360, 500}; const float cw = 590, ch = 117 + 300;
+        D::VeilTimeline tl; tl.Start(false);
+        Render(ink, cw * 3, ch * 2, 96 * 1, 0x0E0E0EFF, [&](Ink& i, float, float) {
+            for (int f = 0; f < 6; ++f) At_(i, (f % 3) * cw, (f / 3) * ch, [&] {
+                i.Target()->PushAxisAlignedClip({0, 0, cw - 6, ch - 6}, D2D1_ANTIALIAS_MODE_ALIASED);
+                PaintChrome(i, 1180); PaintPage(i, 0, 117, 1180, 300, false);
+                Presence q(BannerTiming()); q.Show(At(0), true, false); const float pr = q.Progress(At(ts[f]));
+                At_(i, 0, 85 + BannerOffset(pr, false), [&] { ID2D1Layer* g = nullptr; const bool pushed = i.PushOpacity(pr, g); Band(i, 1180, ts[f] / 1000.0, D::Amplitude(ts[f], false)); if (pushed) i.PopOpacity(g); });
+                DrawVeil(i, 0, 117, 1180, 300, ts[f], tl);
+                i.Target()->PopAxisAlignedClip(); });
+        }, c);
+        Save(ink, c, L"v3b-5.2-entry-strip-0-60-140-220-360-500ms.png");
+    }
+    // ---- 5.1 the peak (~180 ms): scene at 1180 x 815, and the reduced variant (no texture, 50 %)
+    {   D::VeilTimeline tl; tl.Start(false);
+        Render(ink, 1180, 815, dpi, 0x171717FF, [&](Ink& i, float w, float h) {
+            PaintChrome(i, w); At_(i, 0, 85, [&] { Band(i, w, .18, D::Amplitude(180, false)); }); PaintPage(i, 0, 117, w, h - 117, false);
+            DrawVeil(i, 0, 117, w, h - 117, 180, tl); }, c);
+        Save(ink, c, L"v3b-5.1-entry-peak-180ms.png");
+        const Rgb top = Px(c.At(int(600 * k), int((117 + 2) * k))), mid = Px(c.At(int(400 * k), int(600 * k)));
+        CHECKM(top.b > top.r + 8, "5.1 the wash at the top of the page is blue (%s)", Hex6(top).c_str());
+        CHECKM(Close(mid, pageRgb, 2), "5.1 nothing in the middle of the page (%s)", Hex6(mid).c_str());
+        D::VeilTimeline rt; rt.Start(true);
+        Render(ink, 1180, 815, dpi, 0x171717FF, [&](Ink& i, float w, float h) {
+            PaintChrome(i, w); At_(i, 0, 85, [&] { Band(i, w, 0, 0); }); PaintPage(i, 0, 117, w, h - 117, false);
+            DrawVeil(i, 0, 117, w, h - 117, 150, rt); }, c);
+        Save(ink, c, L"v3b-5.1-entry-reduced-150ms.png");
+        CHECK(Near(rt.Value(150), .5, 1e-4));
+        // Reduced: no dot anywhere (the wash only): the top rows are smooth (no pixel darker than its neighbours by a dot).
+        int dots = 0; for (int x = 0; x < 2000; x += 1) { const Rgb p = Px(c.At(x, int((117 + 48) * k))), q = Px(c.At(x + 1, int((117 + 48) * k))); if (std::fabs(p.r - q.r) > 6) ++dots; }   // the header's empty row
+        CHECKM(dots == 0, "reduced motion: no texture (%d dot edges)", dots);
+        // Interruption at 60 ms: from the presented value, out in 160 ms; the values on a strip.
+        D::VeilTimeline it; it.Start(false); const float v60 = it.Value(60); it.Interrupt(60);
+        CHECK(Near(it.Value(60), v60, 1e-5) && it.Value(140) < v60 && it.Value(220) == 0 && Near(it.EndMs(), 220, 1e-6));
+        const double ts[4] = {30, 60, 120, 200};
+        Render(ink, 4 * 300, 200, 192, 0xF4F4F3FF, [&](Ink& i, float, float) { for (int f = 0; f < 4; ++f) { i.Fill({f * 300.f, 0, f * 300.f + 296, 200}, 0, Hex(0xF4F4F3FF)); DrawVeil(i, f * 300.f, 0, 296, 200, ts[f], it); } }, c);
+        Save(ink, c, L"v3b-5.2-entry-interrupted-at-60ms-30-60-120-200.png");
+        std::printf("V3-B veil: natural 60 ms %.3f, 140 ms %.3f, 220 ms %.3f, 360 ms %.3f, 500 ms %.3f; interrupted at 60 ms: 120 ms %.3f, 220 ms %.3f\n",
+                    tl.Value(60), tl.Value(140), tl.Value(220), tl.Value(360), tl.Value(500), it.Value(120), it.Value(220));
+    }
+    // ---- 5.3 the inspector as the native copy draws it (same geometry as the page): Paper's summary card
+    {   FrameMark m; m.page = {0, 0, 1240, 680}; m.dpr = 2; m.accent = 0x3E67FF;
+        m.x = 140; m.y = 96; m.w = 340; m.h = 179; m.lx = 138; m.ly = 74; m.lw = 92; m.lh = 20; m.text = L"div.summary · 340×179"; m.radius = 9;
+        m.bands = {{0, 141, 97, 338, 20}, {0, 141, 254, 338, 20}, {0, 141, 117, 20, 137}, {0, 459, 117, 20, 137},
+                   {1, 161, 137, 298, 14}, {1, 161, 171, 298, 14}, {1, 161, 205, 298, 14}, {1, 161, 220, 298, 14}};
+        m.labels = {{0, 300, 100, 20, 14, L"20"}, {0, 142, 178, 18, 14, L"20"}, {1, 300, 137, 20, 14, L"14"}};
+        Render(ink, 620, 340, dpi, 0xF3F3F2FF, [&](Ink& i, float, float) {
+            const D2D1_RECT_F card{140, 96, 480, 275}; i.Fill(card, 10, Hex(0xFFFFFFFF)); i.Stroke(card, 10, Hex(0xE2E2E0FF), 1);
+            i.Text(L"Récapitulatif", F(15, 20, 600), {161, 117, 480, 137}, Hex(0x1C1C1CFF));
+            const wchar_t* items[2] = {L"Tasse grès, sable", L"Carnet A5 ligné"};
+            for (int r = 0; r < 2; ++r) { const float y = 151 + r * 34.f; i.Text(items[r], F(14, 20), {161, y, 459, y + 20}, Hex(0x4A4A4AFF)); i.Text(L"24,00 €", F(14, 20), {161, y, 459, y + 20}, Hex(0x4A4A4AFF), false, Align::Trailing); }
+            i.Fill({161, 219, 459, 220}, 0, Hex(0xE2E2E0FF));
+            i.Text(L"Total", F(15, 20, 600), {161, 234, 459, 254}, Hex(0x1C1C1CFF)); i.Text(L"48,00 €", F(15, 20, 600), {161, 234, 459, 254}, Hex(0x1C1C1CFF), false, Align::Trailing);
+            SelectionFrame::Paint(i, m, {0, 0}, 2); }, c);
+        Save(ink, c, L"v3b-5.3-spacing-inspector.png");
+        // Hatch pixels: blue lines in the padding, pink lines in the gaps; the value labels' fills.
+        int blue = 0, pink = 0;
+        for (int y = int(98 * k); y < int(116 * k); ++y) for (int x = int(160 * k); x < int(280 * k); ++x) { const Rgb p = Px(c.At(x, y)); if (p.b > 230 && p.r < 200 && p.g < 210) ++blue; }
+        for (int y = int(138 * k); y < int(150 * k); ++y) for (int x = int(330 * k); x < int(450 * k); ++x) { const Rgb p = Px(c.At(x, y)); if (p.r > 220 && p.g < 200 && p.b > 200 && p.r > p.g + 30) ++pink; }
+        CHECKM(blue > 300, "5.3 blue hatches in the top padding (%d px)", blue); CHECKM(pink > 200, "5.3 pink hatches in the gap (%d px)", pink);
+        Sample(c, k, 303, 101, accentRgb, "5.3 padding label --color-browser-accent", 4);
+        Sample(c, k, 303, 138, Solid(0xD63E92), "5.3 gap label #D63E92", 4);
+    }
+    // ---- 5.4 the cursor (reference render of the SVG paths at 32 / 48 / 64 on light and dark)
+    {   auto* f = ink.Factory();
+        ID2D1PathGeometry* arrow = DialogKit::SvgGeometry(f, "M5 3 L5 24 L10.2 19.4 L13.6 27.2 L17 25.7 L13.7 18.1 L20.6 18.1 Z");
+        ID2D1PathGeometry* plus = DialogKit::SvgGeometry(f, "M23.5 20.5 V26.5 M20.5 23.5 H26.5");
+        CHECK(arrow && plus);
+        Render(ink, 3 * 80 + 20, 2 * 80 + 20, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) {
+            auto* t = i.Target(); const int sizes[3] = {32, 48, 64};
+            for (int row = 0; row < 2; ++row) for (int n = 0; n < 3; ++n) {
+                const float x0 = 10 + n * 80.f, y0 = 10 + row * 80.f; i.Fill({x0, y0, x0 + 76, y0 + 76}, 8, Hex(row ? 0x171717FF : 0xF3F3F2FF));
+                const float sc = sizes[n] / 32.f / 2;   // DIP at 2x = device px / 2
+                D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+                t->SetTransform(D2D1::Matrix3x2F::Scale(sc, sc) * D2D1::Matrix3x2F::Translation(x0 + 6, y0 + 6) * base);
+                if (arrow) { t->FillGeometry(arrow, i.Brush(Hex(0x1C1C1CFF))); t->DrawGeometry(arrow, i.Brush({1, 1, 1, 1}), 1.5f); }
+                ID2D1EllipseGeometry* circle = nullptr; f->CreateEllipseGeometry(D2D1::Ellipse({23.5f, 23.5f}, 6.5f, 6.5f), &circle);
+                if (circle) { t->FillGeometry(circle, i.Brush(Hex(0x3E67FFFF))); t->DrawGeometry(circle, i.Brush({1, 1, 1, 1}), 1.5f); circle->Release(); }
+                ID2D1StrokeStyle* cap = nullptr; f->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0, &cap);
+                if (plus) t->DrawGeometry(plus, i.Brush({1, 1, 1, 1}), 1.6f, cap); if (cap) cap->Release();
+                t->SetTransform(base);
+            }
+        }, c);
+        Save(ink, c, L"v3b-5.4-cursor-32-48-64.png");
+        if (arrow) arrow->Release(); if (plus) plus->Release();
+    }
+    // ---- 5.5 « Rouvrir » in the detail of an annotation an agent gave back
+    {   HistoryView v; v.data = V3History(); v.hot = -1; v.maxHeight = 2000; v.detailId = L"a5"; const auto l = LayoutHistory(ink, v);
+        CHECK(l.reopen.right > l.reopen.left && l.reopen.right + 8 <= l.copy.left + .01f && l.copy.right < l.del.left);
+        CHECK(HistoryHitAt(l, v, (l.reopen.left + l.reopen.right) / 2, (l.reopen.top + l.reopen.bottom) / 2) == HReopen);
+        HistoryView o = v; o.detailId = L"a2"; const auto ol = LayoutHistory(ink, o); CHECK(ol.reopen.right <= ol.reopen.left);   // only when given back
+        Render(ink, 440, 24 + l.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, v, l, l.height); }); }, c);
+        Save(ink, c, L"v3b-5.5-history-detail-reopen.png");
+        const float x = 440 - 16 - 360;
+        MeasureText(c, k, {x + l.reopen.left + 6, 24 + l.reopen.top + 6, x + l.reopen.right - 6, 24 + l.reopen.bottom - 6}, raisedRgb, 0xFFFFFFFF, "5.5 « Rouvrir » 12/16 medium white on raised");
+        // After « Rouvrir »: the entry is waiting again, « Rouverte » closes the follow-up.
+        HistoryView after = v; auto& e = after.data.entries[4]; e.unhandled = false; e.reason.clear();
+        HistoryEntry::Step s; s.kind = HistoryEntry::Step::Reopened; s.label = L"Rouverte"; s.time = L"15:40"; e.steps.push_back(s);
+        const auto al = LayoutHistory(ink, after); CHECK(al.reopen.right <= al.reopen.left && al.help.bottom <= al.help.top);
+        Render(ink, 440, 24 + al.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, after, al, al.height); }); }, c);
+        Save(ink, c, L"v3b-5.5-history-detail-reopened.png");
+    }
+}
+
+// Live windows: the band's wave clock (30 frames/s at most, paused in the background, zero wake-up outside the
+// mode), the entry veil (click-through, destroyed after 500 ms, interruptible, reduced), « Rouvrir » end to end.
+static void Windows(Ink& ink, const std::wstring& root) {
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    HWND host = CreateWindowExW(0, L"AnnotationHarnessHost", L"Annotations harness V3-B", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 60, 60, 1200, 820, nullptr, nullptr, inst, nullptr);
+    CHECK(host != nullptr); if (!host) return;
+    ShowWindow(host, SW_SHOW); UpdateWindow(host); SetWindowPos(host, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); ForceForeground(host); Pump(100);
+    RECT client{}; GetClientRect(host, &client); const float s = GetDpiForWindow(host) / 96.f;
+    RECT page{0, LONG(std::lround(117 * s)), client.right, client.bottom};
+    HWND web = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_WHITERECT, page.left, page.top, page.right - page.left, page.bottom - page.top, host, nullptr, inst, nullptr);
+    CHECK(web != nullptr);
+    // ---- band: the wave at <= 30 frames/s once landed
+    Banner band; BannerHooks bh; band.Init(inst, host, root, bh); band.SetLiveForTest(1);
+    const RECT bandRect{0, LONG(std::lround(85 * s)), client.right, LONG(std::lround(117 * s))};
+    const unsigned long long f0 = Animator::Get().Frames();
+    CHECK(band.Show(bandRect, false));
+    const DWORD t0 = GetTickCount(); Pump(300); const auto w0 = band.WaveFramesForTest(); const DWORD t1 = GetTickCount();
+    band.ResetRenderStatsForTest(); const auto ticks0 = Animator::Get().Frames();
+    Pump(2000); const auto w1 = band.WaveFramesForTest(); const DWORD t2 = GetTickCount();
+    std::printf("V3-B band frame cost: %.2f ms per presented frame (paint + texture + layered update)\n", band.AverageRenderMsForTest());
+    report << L"\"v3b_bandFrameMs\":" << band.AverageRenderMsForTest() << L",";
+    const double rate = double(w1 - w0) * 1000.0 / double(t2 - t1);
+    std::printf("V3-B band wave: %llu frames in %lu ms => %.1f frames/s (animator ticks %llu over %lu ms, wave timers %llu)\n", (unsigned long long)(w1 - w0), (unsigned long)(t2 - t1), rate, Animator::Get().Frames() - f0, (unsigned long)(t2 - t0), band.WaveTimersForTest());
+    CHECKM(rate <= 31.5 && rate >= 20, "wave at %.1f frames/s (30 at most)", rate);
+    {   const double tickRate = double(Animator::Get().Frames() - ticks0) * 1000.0 / double(t2 - t1);
+        std::printf("V3-B display-clock ticks while only the wave runs: %.1f per second\n", tickRate);
+        CHECKM(tickRate <= 2.5 * 31.5, "the clock is not kept running between wave frames (%.1f ticks/s)", tickRate);
+        report << L"\"v3b_waveClockTicksPerSecond\":" << tickRate << L","; }
+    report << L"\"v3b_waveFps\":" << rate << L",";
+    SaveLayer(ink, band.LayerForTest(), L"v3b-5.2-window-band-wave-a.png"); Pump(700); SaveLayer(ink, band.LayerForTest(), L"v3b-5.2-window-band-wave-b.png");
+    {   // the live band's pixels: identical between two instants in the text zones, different in the middle
+        const auto l = band.LayoutForTest(); const auto z = WaveZones(l, true, 0);
+        auto a = band.LayerForTest().Pixels(); Pump(500); auto b = band.LayerForTest().Pixels(); const RECT r = band.LayerForTest().Rect(); const int w = r.right - r.left, h = r.bottom - r.top;
+        int text = 0, middle = 0;
+        if (a.size() == b.size() && a.size() == size_t(w) * h) for (int y = 0; y < h - 1; ++y) for (int x = 0; x < w; ++x) { if (a[size_t(y) * w + x] == b[size_t(y) * w + x]) continue; const float xd = (x + .5f) / s; if (xd <= z.left || xd >= z.right) ++text; else ++middle; }
+        std::printf("V3-B live band, two instants 500 ms apart: %d pixels changed in the text zones, %d in the middle\n", text, middle);
+        CHECKM(text == 0 && middle > 100, "live band: %d changed pixels under the labels, %d between", text, middle);
+        report << L"\"v3b_liveBandChanges\":{\"textZones\":" << text << L",\"middle\":" << middle << L"},";
+    }
+    // background / minimised: the clock stops (no frame, no wake-up), the wave time does not run
+    band.SetLiveForTest(0); Pump(100); const double paused = band.WaveSecondsForTest(Motion::Now());
+    IdleCheck("v3b band in the background");
+    CHECK(Near(band.WaveSecondsForTest(Motion::Now()), paused, 1e-6));
+    band.SetLiveForTest(1); Pump(200); CHECK(band.WaveFramesForTest() > w1 && band.WaveSecondsForTest(Motion::Now()) < paused + .5);
+    // the real window state: minimised => paused
+    band.SetLiveForTest(-1); ShowWindow(host, SW_MINIMIZE); band.WindowStateChanged(); Pump(150);
+    IdleCheck("v3b band, window minimised");
+    ShowWindow(host, SW_RESTORE); ForceForeground(host); band.WindowStateChanged(); Pump(200);
+    std::printf("V3-B band restored, foreground %d: wave frames %llu\n", GetForegroundWindow() == host ? 1 : 0, band.WaveFramesForTest());
+    band.SetLiveForTest(1);
+    // exit: zero wake-up outside the mode
+    band.Hide(true); CHECK(Settle()); IdleCheck("v3b outside the mode after the wave");
+    // reduced motion: still texture, no frame once landed
+    CHECK(band.Show(bandRect, true)); CHECK(Settle()); IdleCheck("v3b band in reduced motion (still texture)");
+    band.Hide(false); CHECK(Settle());
+    // ---- entry veil: click-through, never activated, destroyed after 500 ms
+    EntryVeil veil; veil.Init(inst, host, root);
+    const unsigned created = Layer::Created();
+    double ended = -1; unsigned long long frames = 0; veil.OnEnded([&](double ms, unsigned long long n, double) { ended = ms; frames = n; });
+    const auto v0 = Motion::Now(); CHECK(veil.Start(page, false));
+    CHECK(Layer::Created() == created + 1 && veil.Window() && (GetWindowLongW(veil.Window(), GWL_EXSTYLE) & (WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE)) == (WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE));
+    PumpUntil([&] { return veil.LastMs() >= 170; }, 1000); SaveLayer(ink, veil.LayerForTest(), L"v3b-5.1-window-veil-near-peak.png");
+    {   POINT pt{(page.left + page.right) / 2, page.top + 40}; ClientToScreen(host, &pt);
+        CHECKM(WindowFromPoint(pt) != veil.Window(), "the veil takes no click (WindowFromPoint skips it)"); }
+    PumpUntil([&] { return !veil.Running(); }, 2000);
+    const double real = std::chrono::duration<double, std::milli>(Motion::Now() - v0).count();
+    std::printf("V3-B entry veil: %llu frames, ended %.1f ms after the start (timeline 500), peak %.3f, average frame %.2f ms (raster %.2f), worst %.2f ms, observed %.1f ms\n",
+                frames, ended, veil.Peak(), veil.AverageFrameMs(), veil.AverageRasterMs(), veil.WorstFrameMs(), real);
+    CHECKM(ended >= 500 && ended < 560, "veil destroyed %.1f ms after the start", ended);
+    CHECK(!veil.Running() && !veil.Window() && veil.Peak() > .97f);
+    report << L"\"v3b_veil\":{\"frames\":" << frames << L",\"endedMs\":" << ended << L",\"peak\":" << veil.Peak() << L",\"avgFrameMs\":" << veil.AverageFrameMs() << L",\"worstFrameMs\":" << veil.WorstFrameMs() << L"},";
+    // interruption at ~60 ms: out from the value on screen, ended ~160 ms later
+    CHECK(veil.Start(page, false)); PumpUntil([&] { return veil.LastMs() >= 55; }, 1000);
+    const float atInterrupt = veil.LastValue(); veil.Interrupt();
+    PumpUntil([&] { return !veil.Running(); }, 2000);
+    std::printf("V3-B veil interrupted at %.3f: ended %.1f ms after the start, peak %.3f\n", atInterrupt, ended, veil.Peak());
+    CHECKM(ended < 300 && veil.Peak() < .999f && !veil.Window(), "interrupted veil: ended %.1f ms, peak %.3f", ended, veil.Peak());
+    // reduced: 50 %, no texture, 300 ms
+    CHECK(veil.Start(page, true)); PumpUntil([&] { return veil.LastMs() >= 140; }, 1000); SaveLayer(ink, veil.LayerForTest(), L"v3b-5.1-window-veil-reduced.png");
+    PumpUntil([&] { return !veil.Running(); }, 2000);
+    CHECKM(veil.Peak() <= .5001f && veil.Peak() > .45f && ended >= 300 && ended < 360, "reduced veil: peak %.3f, ended %.1f ms", veil.Peak(), ended);
+    IdleCheck("v3b after the entry veil");
+    // ---- « Rouvrir » end to end in the live history panel
+    {   Launcher launcher; LauncherHooks lh; std::vector<std::wstring> reopened; lh.announce = [](const std::wstring&) {}; lh.history.reopen = [&](const std::wstring& id) { reopened.push_back(id); };
+        launcher.Init(inst, host, root, lh); launcher.Place(page);
+        CHECK(launcher.ShowHistory(V3History(), true)); launcher.ShowHistoryDetail(L"a5"); CHECK(Settle());
+        auto& panel = launcher.HistoryForTest();
+        const auto nodes = panel.NodesForTest(); CHECK(HasNode(nodes, L"Rouvrir"));
+        panel.ActivateForTest(HReopen); CHECK(reopened.size() == 1 && reopened[0] == L"a5");
+        // keyboard: Rouvrir sits between Fermer and Copier in the Tab order
+        SaveLayer(ink, panel.LayerForTest(), L"v3b-5.5-window-history-reopen.png");
+        launcher.HideHistory(false); launcher.SetDormant(true); CHECK(Settle());
+    }
+    DestroyWindow(host); Pump(50);
+}
+} // namespace V3B
 
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3) { std::fprintf(stderr, "usage: annotations-ui-test.exe <repoRoot> <outDir> [--no-window]\n"); return 2; }
@@ -1015,8 +1289,9 @@ int wmain(int argc, wchar_t** argv) {
     GeometryTests(*ink);
     Captures(*ink);
     V3Tests(*ink);
+    V3B::Static(*ink);
     MotionStrips(*ink);
-    if (windows) { WindowTests(*ink, root); V3Windows(*ink, root); }
+    if (windows) { WindowTests(*ink, root); V3Windows(*ink, root); V3B::Windows(*ink, root); }
     std::printf("\nGeometry (Paper box model vs native):\n");
     for (auto& g : geometry) std::printf("  %-44s Paper %7.2f  native %7.2f\n", g.surface.c_str(), g.paper, g.native);
     std::printf("\nPaper colours sampled in the renders (2x):\n");

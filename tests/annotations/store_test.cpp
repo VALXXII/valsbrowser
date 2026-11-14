@@ -841,6 +841,75 @@ void TestLocationParity() {
     CHECK(BA::StoreRootForDataDir(L"C:\\data\\") == L"C:\\data\\annotations");
 }
 
+// V3-B: target.spacing (padding / gap) in the schema and the Markdown « Style » line; read tolerantly.
+void TestSpacingStyle() {
+    FakeClock clock;
+    BA::Store store(TempDir(L"spacing") + L"\\annotations", clock.Fn());
+    BA::Annotation a = Sample("boutique");
+    a.target.spacing.present = true; a.target.spacing.top = 18; a.target.spacing.right = 20; a.target.spacing.bottom = 18; a.target.spacing.left = 20;
+    a.target.spacing.hasGap = true; a.target.spacing.row = 14; a.target.spacing.column = 14; a.target.spacing.layout = "flex";
+    CHECK(store.WriteAnnotation(a, nullptr, false).ok());
+    BA::Entry e;
+    CHECK(store.Read(S("boutique"), a.id, e).ok());
+    const auto& sp = e.annotation.target.spacing;
+    CHECK(sp.present && sp.top == 18 && sp.right == 20 && sp.bottom == 18 && sp.left == 20 && sp.hasGap && sp.row == 14 && sp.column == 14 && sp.layout == "flex");
+    CHECK(BA::SpacingText(sp) == "padding 18 20 \xc2\xb7 gap 14 (flex)");
+    const std::string md = BA::ToMarkdown(e, L"");
+    CHECK(md.find("- Style (px CSS) : `padding 18 20 \xc2\xb7 gap 14 (flex)`") != std::string::npos);
+    const std::string json = StrictJson::Serialize(BA::AnnotationToJson(e.annotation));
+    CHECK(json.find("\"spacing\":{\"unit\":\"css-px\",\"padding\":{\"top\":18,\"right\":20,\"bottom\":18,\"left\":20},\"gap\":{\"row\":14,\"column\":14},\"layout\":\"flex\"}") != std::string::npos);
+    // Shorthands.
+    BA::Spacing x; x.present = true; x.top = 4; x.right = 8; x.bottom = 12; x.left = 8;
+    CHECK(BA::SpacingText(x) == "padding 4 8 12");
+    x.left = 6; CHECK(BA::SpacingText(x) == "padding 4 8 12 6");
+    x.top = x.right = x.bottom = x.left = 0; x.hasGap = true; x.row = 16; x.column = 24; x.layout = "grid";
+    CHECK(BA::SpacingText(x) == "gap 16 24 (grid)");
+    x.hasGap = false; CHECK(BA::SpacingText(x).empty());
+    // Sanitize: a block element keeps no gap; a text selection keeps no spacing; values are clamped and rounded.
+    BA::Annotation b = Sample("boutique"); b.target.spacing.present = true; b.target.spacing.top = 3.14159; b.target.spacing.hasGap = true; b.target.spacing.row = 9; b.target.spacing.layout = "block";
+    BA::Sanitize(b); CHECK(b.target.spacing.top == 3.14 && !b.target.spacing.hasGap && b.target.spacing.layout.empty());
+    b.target.kind = "selection"; b.target.selectionText = "x"; BA::Sanitize(b); CHECK(!b.target.spacing.present);
+    // Tolerant read: before V3-B (no spacing), null, malformed => no spacing, the annotation reads.
+    auto parse = [](const std::string& spacing) {
+        BA::Annotation s = Sample("boutique"); s.id = BA::NewAnnotationId(); s.createdAt = s.updatedAt = 1794000000;
+        std::string j = StrictJson::Serialize(BA::AnnotationToJson(s));
+        const auto at = j.find("\"hints\":"); j.insert(at, spacing.empty() ? std::string() : "\"spacing\":" + spacing + ",");
+        StrictJson::Value v; std::string err; BA::Annotation out;
+        const bool ok = StrictJson::Parse(j, v, &err) && BA::AnnotationFromJson(v, out, &err);
+        return std::make_pair(ok, out.target.spacing);
+    };
+    { auto r = parse(""); CHECK(r.first && !r.second.present); }
+    { auto r = parse("null"); CHECK(r.first && !r.second.present); }
+    { auto r = parse("{\"unit\":\"css-px\",\"padding\":{\"top\":\"18\"}}"); CHECK(r.first && !r.second.present); }
+    { auto r = parse("{\"unit\":\"em\",\"padding\":{\"top\":1,\"right\":1,\"bottom\":1,\"left\":1}}"); CHECK(r.first && !r.second.present); }
+    { auto r = parse("{\"padding\":{\"top\":1,\"right\":2,\"bottom\":3,\"left\":4},\"gap\":{\"row\":5,\"column\":6},\"layout\":\"grid\",\"future\":true}"); CHECK(r.first && r.second.present && r.second.left == 4 && r.second.column == 6 && r.second.layout == "grid"); }
+    { auto r = parse("[1,2]"); CHECK(r.first && !r.second.present); }
+}
+
+// V3-B (Paper 5.5): « Rouvrir » on an annotation an agent gave back with a reason: open, a « rouverte » event by the
+// user after the agent's, nothing held.
+void TestReopenUnhandled() {
+    FakeClock clock;
+    BA::Store store(TempDir(L"reopen-unhandled") + L"\\annotations", clock.Fn());
+    BA::Annotation a = Sample("boutique");
+    CHECK(store.WriteAnnotation(a, nullptr, false).ok());
+    BA::ClaimResult c;
+    CHECK(store.Claim(S("boutique"), a.id, "Claude", "", c).ok());
+    clock.now += 60;
+    CHECK(store.Release(S("boutique"), a.id, c.token, "Claude", "Pas d'acc\xc3\xa8s au code source de ce site.").ok());
+    BA::Entry e;
+    CHECK(store.Read(S("boutique"), a.id, e).ok() && e.state.status == BA::Status::Open && !e.state.events.empty());
+    const auto given = e.state.events.back();
+    CHECK(given.from == "claimed" && given.to == "open" && given.actor == "Claude" && given.summary.find("code source") != std::string::npos);
+    clock.now += 120;
+    CHECK(store.Reopen(S("boutique"), a.id).ok());
+    CHECK(store.Read(S("boutique"), a.id, e).ok() && e.state.status == BA::Status::Open && !e.state.claimedBy && !e.state.resolution);
+    const auto& last = e.state.events.back();
+    CHECK(last.actor == "user" && last.from == "open" && last.to == "open" && last.summary == "rouverte" && last.at == clock.now && e.state.updatedAt == clock.now);
+    // Claimable again by any agent.
+    CHECK(store.Claim(S("boutique"), a.id, "Codex", "", c).ok());
+}
+
 }  // namespace
 
 int wmain() {
@@ -859,5 +928,7 @@ int wmain() {
     TestHistoryFiltersAndCounter();
     TestCaps();
     TestLocationParity();
+    TestSpacingStyle();
+    TestReopenUnhandled();
     return Finish("store_test");
 }

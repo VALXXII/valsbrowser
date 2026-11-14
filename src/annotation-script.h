@@ -29,6 +29,18 @@
 // is removed from the image arithmetically (src/annotation-capture.h, RemoveFill). After the shot, « show »
 // puts the page's edges back and answers « shown » two frames later; only then does the host drop its layer.
 // « hide » (a host without the native layer) still hides everything and answers « hidden » two frames later.
+// V3-B (Paper 5.3, 5.4, validated):
+//   - cursor « flèche + note » on the whole page while the mode is on: one constructed style sheet adopted by the
+//     document (and by the open shadow roots the hit-test enters) sets it on every element with !important; the
+//     iframe shields (both origins) carry it too. Sizes 32 / 48 / 64 from the host (image-set at the page's pixel
+//     ratio). At the exit the sheet is un-adopted and the shields go with the closed root: no style is left.
+//   - spacing inspector on the hovered element only (same closed root as the frame, same fade): padding as blue
+//     135° hatches in bands under the border, gaps (flex, grid) as pink 45° hatches between the children's real
+//     rectangles, one value label per distinct value and axis (« 20 » in px CSS, rounded; none under 4 px). Hidden at
+//     once when the target changes and shown 120 ms later (the frame's glide): nothing during a fast movement, one
+//     update per frame at most. At a selection its geometry goes to the host with the frame's (« sp »): the native
+//     copy draws it too and the « handoff » hides the page's, so it is never in the shot. padding / gap values join
+//     the selection (target.spacing).
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <string>
@@ -45,6 +57,27 @@ var STYLE_PROPS = P.styles || [], ATTRS = P.attrs || [];
 var reduced = !!P.reduced;
 try { if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) reduced = true; } catch (e) {}
 var A = P.accent || '62,103,255';
+// V3-B cursor: the host's SVG at its pixel size, shown 1:1 on screen. The image-set resolution is the SCREEN's scale
+// (the host's DPI, not devicePixelRatio: custom cursors are not zoomed with the page), so a 48 px image at 125 % is
+// 48 device px at any page zoom. The hot spot is in the image's CSS coordinates (pixels / resolution).
+var CUR = P.cursor || {}, CURSOR = 'default', CURSOR_W = 'default';
+(function () {
+  var px = Math.max(16, Math.min(128, +CUR.size || 32)), svg = String(CUR.svg || ''), k = px / 32;
+  if (!svg) return;
+  svg = svg.replace("width='32' height='32'", "width='" + px + "' height='" + px + "'");
+  var url = 'url("data:image/svg+xml,' + encodeURIComponent(svg).replace(/'/g, '%27') + '")';
+  var r = Math.max(0.25, Math.min(8, +CUR.scale || 1));
+  var hx = ((+CUR.hx || 5) * k / r).toFixed(2), hy = ((+CUR.hy || 3) * k / r).toFixed(2);
+  var set = '(' + url + ' ' + r.toFixed(4) + 'x) ' + hx + ' ' + hy + ',default';
+  CURSOR_W = '-webkit-image-set' + set; CURSOR = 'image-set' + set;
+})();
+function cursorDecl(important) { var imp = important ? ' !important' : ''; return 'cursor:' + CURSOR_W + imp + ';cursor:' + CURSOR + imp; }
+var sheet = null, adopted = [];
+function adopt(rootNode) {
+  if (!sheet || !rootNode || adopted.indexOf(rootNode) >= 0) return;
+  try { rootNode.adoptedStyleSheets = rootNode.adoptedStyleSheets.concat([sheet]); adopted.push(rootNode); } catch (e) {}
+}
+try { sheet = new CSSStyleSheet(); sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) { sheet = null; }
 var MAX_TEXT = 2000, MAX_MSG = 60000;
 var listeners = [], raf = 0, alive = true;
 var px = -1, py = -1, haveMove = false;
@@ -63,11 +96,19 @@ root.innerHTML = '<style>' +
   '.h,.v{background:rgb(' + A + ')}.h{width:100px;height:2px}.v{width:2px;height:100px}' +
   '.l{font:500 11px/16px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;background:rgb(' + A + ');' +
   'padding:2px 6px;border-radius:4px;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}' +
-  '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;cursor:crosshair;background:transparent}' +
-  '</style><div class="x f"></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div>';
+  '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;' + cursorDecl(false) + ';background:transparent}' +
+  '.i{position:fixed;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none}.i.on{transition:opacity 120ms ease-out}' +
+  '.pb,.gb,.pl,.gl{position:fixed;left:0;top:0;box-sizing:border-box}' +
+  '.pb{background:repeating-linear-gradient(135deg,rgba(' + A + ',.4) 0 1px,transparent 1px 5px),rgba(' + A + ',.08)}' +
+  '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
+  '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;white-space:nowrap;letter-spacing:0}' +
+  '.pl{background:rgb(' + A + ')}.gl{background:#D63E92}' +
+  '</style><div class="x f"></div><div class="i"></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div>';
 var parts = root.querySelectorAll('.x'), shields = [];
 var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4], label = parts[5];
+var ins = root.querySelector('.i'), insPool = { pb: [], gb: [], pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false;
 (D.documentElement || D).appendChild(host);
+adopt(D);
 
 function on(t, type, fn, opt) { t.addEventListener(type, fn, opt); listeners.push([t, type, fn, opt]); }
 function post(msg) {
@@ -107,7 +148,7 @@ function hit(x, y) {
     var sr = el.shadowRoot;   // open shadow roots only (closed ones return null: the host is the target)
     if (sr && sr.elementFromPoint) {
       var inner = sr.elementFromPoint(x - info.ox, y - info.oy);
-      if (inner && inner !== el && sr.contains(inner)) { info.shadow.push(el); info.el = inner; continue; }
+      if (inner && inner !== el && sr.contains(inner)) { adopt(sr); info.shadow.push(el); info.el = inner; continue; }
     }
     if (el.localName === 'iframe' || el.localName === 'frame') {
       var cd = null; try { cd = el.contentDocument; } catch (e) { cd = null; }
@@ -242,7 +283,7 @@ function describe(info, selText) {
       tag: el.localName, role: roleOf(el), accessibleName: nameOf(el, k), attributes: attrs,
       text: selText === null ? textOf(el, k) : '', selectionText: selText,
       rect: { x: Math.round(r.x * 100) / 100, y: Math.round(r.y * 100) / 100, width: Math.round(r.w * 100) / 100, height: Math.round(r.h * 100) / 100 },
-      styles: styles, sourceAttributes: src
+      styles: styles, sourceAttributes: src, spacing: selText === null && k !== 'cross-origin' ? spacingOf(el) : null
     },
     viewport: { width: innerWidth, height: innerHeight, scrollX: scrollX, scrollY: scrollY, devicePixelRatio: devicePixelRatio || 1 }
   };
@@ -259,7 +300,7 @@ function sendSelect(info, selText, ev) {
   post(m);
 }
 // marks: the edges and the label only (the fill stays: it is removed from the image by the host).
-function conceal(on, marksOnly) { for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; }
+function conceal(on, marksOnly) { for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; ins.style.visibility = on ? 'hidden' : ''; }
 // At the click: the frame jumps to its final state (any glide or fade-in ends now, transitions off inline), so the
 // geometry and the fill opacity sent are exactly what the next frame shows (V3: a click within a fade-in left the
 // fill nearly transparent in the shot, and the host removed 8 % that was not there).
@@ -267,18 +308,140 @@ function settle() {
   var i;
   for (i = 0; i < parts.length; i++) parts[i].style.transition = 'none';
   if (shown) setOpacity(1);
+  if (insTimer) { clearTimeout(insTimer); insTimer = 0; }
+  if (insData && insEl === (cur && cur.el)) insFade(true, false); else insFade(false, false);
+  void getComputedStyle(ins).opacity;
   for (i = 0; i < parts.length; i++) { var cs = getComputedStyle(parts[i]); void cs.opacity; void cs.transform; }
   for (i = 0; i < parts.length; i++) parts[i].style.transition = '';
 }
 function geometry(info) {
   var r = rectOf(info), lb = label.getBoundingClientRect();
   return { x: r.x, y: r.y, w: Math.max(r.w, 1), h: Math.max(r.h, 1), lx: lb.left, ly: lb.top, lw: lb.width, lh: lb.height,
-           text: String(label.textContent || '').slice(0, 200), fill: 0.08 * (parseFloat(getComputedStyle(fill).opacity) || 0) };
+           text: String(label.textContent || '').slice(0, 200), fill: 0.08 * (parseFloat(getComputedStyle(fill).opacity) || 0), sp: spaceMark() };
+}
+// The inspector as drawn (only when on screen): [kind, x, y, w, h] bands and [kind, x, y, w, h, text] labels.
+function spaceMark() {
+  if (!insData || !insShown || insEl !== (cur && cur.el)) return null;
+  var bands = [], labels = [];
+  for (var i = 0; i < insData.bands.length && i < 96; i++) { var b = insData.bands[i]; bands.push([b.k, r2(b.x), r2(b.y), r2(b.w), r2(b.h)]); }
+  for (var j = 0; j < insData.labels.length && j < 12; j++) { var l = insData.labels[j]; if (l.w) labels.push([l.k, r2(l.x), r2(l.y), r2(l.w), 14, l.t]); }
+  return { bands: bands, labels: labels, radius: r2(insData.radius) };
+}
+
+// ---- spacing inspector (V3-B, Paper 5.3)
+function num(v) { var n = parseFloat(v); return isFinite(n) ? n : 0; }
+function r2(v) { return Math.round(v * 100) / 100; }
+function flowOf(cs) { var d = cs.display || ''; return /grid/.test(d) ? 'grid' : /flex/.test(d) ? 'flex' : ''; }
+function spacingOf(el) {
+  try {
+    var cs = (el.ownerDocument.defaultView || window).getComputedStyle(el), flow = flowOf(cs);
+    var o = { padding: [r2(num(cs.paddingTop)), r2(num(cs.paddingRight)), r2(num(cs.paddingBottom)), r2(num(cs.paddingLeft))], layout: flow };
+    o.gap = flow ? { row: r2(num(cs.rowGap)), column: r2(num(cs.columnGap)) } : null;
+    return o;
+  } catch (e) { return null; }
+}
+// Bands (CSS px of the top viewport) and labels of an element; null when it has neither padding nor gap.
+function spaceGeometry(info) {
+  if (!info || info.range || (info.kind === 'cross-origin' && info.el === info.frame)) return null;
+  var el = info.el, cs;
+  try { cs = (el.ownerDocument.defaultView || window).getComputedStyle(el); } catch (e) { return null; }
+  var r = rectOf(info); if (r.w < 1 || r.h < 1) return null;
+  var bt = num(cs.borderTopWidth), br = num(cs.borderRightWidth), bb = num(cs.borderBottomWidth), bl = num(cs.borderLeftWidth);
+  var pt = num(cs.paddingTop), pr = num(cs.paddingRight), pb = num(cs.paddingBottom), pl = num(cs.paddingLeft);
+  var ix = r.x + bl, iy = r.y + bt, iw = Math.max(0, r.w - bl - br), ih = Math.max(0, r.h - bt - bb);
+  var g = { bands: [], labels: [], radius: 0 }, rad = cs.borderTopLeftRadius || '';
+  if (/px$/.test(rad)) g.radius = Math.max(0, num(rad) - Math.max(bt, bl));
+  function band(k, x, y, w, h, value, axis) { if (w < 0.5 || h < 0.5) return null; var b = { k: k, x: x, y: y, w: w, h: h, v: value, axis: axis }; g.bands.push(b); return b; }
+  var top = band(0, ix, iy, iw, Math.min(pt, ih), pt, 'v'), bottom = band(0, ix, iy + ih - Math.min(pb, ih), iw, Math.min(pb, ih), pb, 'v');
+  var midH = Math.max(0, ih - pt - pb);
+  var left = band(0, ix, iy + pt, Math.min(pl, iw), midH, pl, 'h'), right = band(0, ix + iw - Math.min(pr, iw), iy + pt, Math.min(pr, iw), midH, pr, 'h');
+  // gaps: from the children's real rectangles (rows by vertical overlap; flex keeps the real space, grid the gap)
+  var flow = flowOf(cs), rg = num(cs.rowGap), cg = num(cs.columnGap), firstRow = null, firstCol = null;
+  if (flow && (rg > 0 || cg > 0)) {
+    var cx = ix + pl, cy = iy + pt, cw = Math.max(0, iw - pl - pr), items = [], kids = el.children;
+    for (var i = 0; i < kids.length && items.length < 200; i++) {
+      var c = kids[i], ccs; try { ccs = getComputedStyle(c); } catch (e) { continue; }
+      if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
+      var b = c.getBoundingClientRect(); if (b.width <= 0 && b.height <= 0) continue;
+      items.push({ x: b.left + info.ox, y: b.top + info.oy, r: b.right + info.ox, b: b.bottom + info.oy });
+    }
+    items.sort(function (a, b) { return a.y - b.y || a.x - b.x; });
+    var rows = [];
+    for (var j = 0; j < items.length; j++) {
+      var it = items[j], row = rows.length ? rows[rows.length - 1] : null;
+      if (row && it.y < row.b - 0.5) { row.items.push(it); row.b = Math.max(row.b, it.b); row.y = Math.min(row.y, it.y); }
+      else rows.push({ y: it.y, b: it.b, items: [it] });
+    }
+    if (cg > 0) for (var q = 0; q < rows.length; q++) {
+      var list = rows[q].items.slice().sort(function (a, b) { return a.x - b.x; });
+      for (var n = 1; n < list.length; n++) {
+        var from = list[n - 1].r, to = list[n].x; if (to - from <= 0.5) continue;
+        if (flow === 'grid') from = Math.max(from, to - cg);
+        var cb = band(1, from, rows[q].y, to - from, rows[q].b - rows[q].y, cg, 'h'); if (cb && !firstCol) firstCol = cb;
+      }
+    }
+    if (rg > 0) for (var u = 1; u < rows.length; u++) {
+      var a0 = rows[u - 1].b, a1 = rows[u].y; if (a1 - a0 <= 0.5) continue;
+      if (flow === 'grid') a0 = Math.max(a0, a1 - rg);
+      var rb = band(1, cx, a0, cw, a1 - a0, rg, 'v'); if (rb && !firstRow) firstRow = rb;
+    }
+  }
+  if (!g.bands.length) return null;
+  // one label per distinct value and axis (Paper 5.3: « 20 » on the top band and on the left band); none under 4 px
+  function lab(b) { if (!b || Math.round(b.v) < 4) return; g.labels.push({ k: b.k, b: b, t: String(Math.round(b.v)) }); }
+  if (top && bottom && Math.round(pt) === Math.round(pb)) lab(top); else { lab(top); lab(bottom); }
+  if (left && right && Math.round(pl) === Math.round(pr)) lab(left); else { lab(left); lab(right); }
+  lab(firstRow); lab(firstCol);
+  return g;
+}
+function pool(kind, i) {
+  var list = insPool[kind], d = list[i];
+  if (!d) { d = D.createElement('div'); d.className = kind; ins.appendChild(d); list.push(d); }
+  d.style.display = ''; return d;
+}
+function trim(kind, n) { var list = insPool[kind]; for (var i = n; i < list.length; i++) list[i].style.display = 'none'; }
+function drawSpace(g) {
+  var counts = { pb: 0, gb: 0, pl: 0, gl: 0 };
+  if (g) {
+    for (var i = 0; i < g.bands.length && i < 96; i++) {
+      var b = g.bands[i], kind = b.k ? 'gb' : 'pb', d = pool(kind, counts[kind]++);
+      d.style.transform = 'translate(' + b.x.toFixed(2) + 'px,' + b.y.toFixed(2) + 'px)';
+      d.style.width = b.w.toFixed(2) + 'px'; d.style.height = b.h.toFixed(2) + 'px';
+      var rr = !b.k && g.radius > 0 ? Math.min(g.radius, b.h, b.w) : 0;
+      d.style.borderRadius = rr && b === g.bands[0] ? rr + 'px ' + rr + 'px 0 0' : rr && b === g.bands[1] ? '0 0 ' + rr + 'px ' + rr + 'px' : '';
+    }
+    for (var j = 0; j < g.labels.length && j < 12; j++) {
+      var l = g.labels[j], lk = l.k ? 'gl' : 'pl', e = pool(lk, counts[lk]++);
+      e.textContent = l.t;
+      var lw = e.offsetWidth || 20, lx = l.b.x + l.b.w / 2 - lw / 2, ly = l.b.y + l.b.h / 2 - 7;
+      lx = Math.max(0, Math.min(lx, innerWidth - lw)); ly = Math.max(0, Math.min(ly, innerHeight - 14));
+      e.style.transform = 'translate(' + lx.toFixed(2) + 'px,' + ly.toFixed(2) + 'px)';
+      l.x = lx; l.y = ly; l.w = lw; l.h = 14;
+    }
+  }
+  trim('pb', counts.pb); trim('gb', counts.gb); trim('pl', counts.pl); trim('gl', counts.gl);
+}
+function insFade(on, animate) {
+  if (animate && !reduced) ins.classList.add('on'); else ins.classList.remove('on');
+  ins.style.opacity = on ? '1' : '0'; insShown = on;
+}
+// The inspector follows the frame: same element => updated in place; another element => hidden now, shown when the
+// pointer has rested 120 ms (the frame's glide); nothing at all during a fast movement.
+function placeSpace(info, first) {
+  var el = info ? info.el : null;
+  insData = info ? spaceGeometry(info) : null;
+  drawSpace(insData);
+  if (!insData) { if (insTimer) { clearTimeout(insTimer); insTimer = 0; } insFade(false, false); insEl = el; return; }
+  if (el === insEl) return;
+  insEl = el; if (insTimer) { clearTimeout(insTimer); insTimer = 0; }
+  if (first) { insFade(true, true); return; }   // first appearance: with the frame's own fade
+  insFade(false, false);
+  insTimer = setTimeout(function () { insTimer = 0; if (alive && insData && insEl === el) insFade(true, true); }, reduced ? 0 : 120);
 }
 
 // ---- drawing
 function place(info) {
-  if (!info) { if (shown) { setOpacity(0); shown = false; } return; }
+  if (!info) { if (shown) { setOpacity(0); shown = false; } placeSpace(null, false); return; }
   var r = rectOf(info);
   var first = !shown;
   if (first) moveOnly(true);
@@ -291,6 +454,7 @@ function place(info) {
   var lx = Math.max(0, Math.min(x, innerWidth - 120));
   tr(label, lx, ly);
   if (first) { void getComputedStyle(fill).transform; moveOnly(false); setOpacity(1); shown = true; }
+  placeSpace(info, first);
 }
 // Shields over the visible top-level iframes (same and cross origin): their events reach our window
 // listeners, the hit-test (elementsFromPoint without our host) still finds the iframe below.
@@ -388,6 +552,9 @@ function teardown() {
   if (raf) cancelAnimationFrame(raf); raf = 0;
   for (var i = 0; i < listeners.length; i++) { var l = listeners[i]; try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) {} }
   listeners = []; cur = null; down = [];
+  if (insTimer) { clearTimeout(insTimer); insTimer = 0; }
+  for (var a = 0; a < adopted.length; a++) { try { var rn = adopted[a]; rn.adoptedStyleSheets = rn.adoptedStyleSheets.filter(function (x) { return x !== sheet; }); } catch (e) {} }
+  adopted = [];
   try { host.remove(); } catch (e) {}
   try { if (window[KEY] && window[KEY].nonce === NONCE) delete window[KEY]; } catch (e) {}
 }

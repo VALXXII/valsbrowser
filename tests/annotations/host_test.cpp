@@ -6,6 +6,7 @@
 #include "annotation-host.h"
 #include "annotation-script.h"
 #include "annotation-capture.h"
+#include "annotation-dither.h"
 
 static int failures = 0, checks = 0;
 #define CHECK(c) do { ++checks; if (!(c)) { ++failures; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -217,8 +218,70 @@ static void V3Capture() {
     CHECK(js.find(L"m.mark = geometry(info)") != std::wstring::npos && js.find(L"conceal(true); ") == std::wstring::npos);   // no hiding at the click any more
 }
 
+// V3-B: the spacing inspector's geometry (« sp ») and target.spacing from the page, the « Style » row, the cursor, the
+// dither model (wave zones, veil timeline).
+static void V3B() {
+    namespace D = NativeChrome::Annotations::Dither;
+    const std::string n = "clm_abcdefghijklmnopqrstuvwxyz";
+    const std::string sp = ",\"seq\":4,\"mark\":{\"x\":140,\"y\":96,\"w\":340,\"h\":179,\"lx\":140,\"ly\":74,\"lw\":120,\"lh\":20,\"text\":\"div.summary\",\"fill\":0.08,"
+        "\"sp\":{\"bands\":[[0,141,97,338,20],[0,141,258,338,20],[0,141,117,20,141],[1,161,137,298,14]],\"labels\":[[0,300,100,20,14,\"20\"],[1,300,137,20,14,\"14\"]],\"radius\":9}}";
+    std::string target = GoodTarget;
+    target.replace(target.find("\"sourceAttributes\":{}"), 21, "\"sourceAttributes\":{},\"spacing\":{\"padding\":[18,20,18,20],\"gap\":{\"row\":14,\"column\":0},\"layout\":\"flex\"}");
+    auto c = AH::CheckMessage(Message(n, 7, "select", Select(target) + sp), n, 7);
+    CHECK(c.env.op == AH::Op::Select && c.selection.mark.present && c.selection.mark.bands.size() == 4 && c.selection.mark.labels.size() == 2);
+    CHECK(c.selection.mark.bands[3].kind == 1 && c.selection.mark.bands[3].h == 14 && c.selection.mark.labels[1].text == "14" && c.selection.mark.radius == 9);
+    const auto& g = c.selection.target.spacing;
+    CHECK(g.present && g.top == 18 && g.right == 20 && g.hasGap && g.row == 14 && g.column == 0 && g.layout == "flex");
+    CHECK(AH::StyleSummary(c.selection.target) == L"padding 18 20 \u00b7 gap 14 0 (flex)");
+    // A malformed inspector is dropped, never the selection; a malformed spacing likewise.
+    std::string bad = sp; bad.replace(bad.find("[1,161,137,298,14]"), 18, "[1,161,137,\"x\",14]");
+    auto b = AH::CheckMessage(Message(n, 7, "select", Select(target) + bad), n, 7);
+    CHECK(b.env.op == AH::Op::Select && b.selection.mark.present && b.selection.mark.bands.empty() && b.selection.mark.labels.empty());
+    std::string t2 = GoodTarget; t2.replace(t2.find("\"sourceAttributes\":{}"), 21, "\"sourceAttributes\":{},\"spacing\":{\"padding\":[1,2,3],\"layout\":\"flex\"}");
+    auto d = AH::CheckMessage(Message(n, 7, "select", Select(t2)), n, 7);
+    CHECK(d.env.op == AH::Op::Select && !d.selection.target.spacing.present);
+    std::string t3 = GoodTarget; t3.replace(t3.find("\"sourceAttributes\":{}"), 21, "\"sourceAttributes\":{},\"spacing\":{\"padding\":[0,0,0,0],\"gap\":null,\"layout\":\"\"}");
+    auto e = AH::CheckMessage(Message(n, 7, "select", Select(t3)), n, 7);
+    CHECK(e.selection.target.spacing.present && AH::StyleSummary(e.selection.target) == L"Taille, couleurs et marges");   // no padding, no gap: the V2 line
+    {   BA::Annotation a; a.target = c.selection.target; BA::Sanitize(a); CHECK(BA::SpacingText(a.target.spacing) == "padding 18 20 \xc2\xb7 gap 14 0 (flex)"); }
+    // Cursor: 32 / 48 / 64 from the DPI x the Windows pointer size; the hot spot is the arrow's tip.
+    CHECK(D::Cursor::SizeFor(96, 32) == 32 && D::Cursor::SizeFor(120, 32) == 48 && D::Cursor::SizeFor(144, 32) == 48 && D::Cursor::SizeFor(168, 32) == 64 && D::Cursor::SizeFor(192, 32) == 64);
+    CHECK(D::Cursor::SizeFor(96, 48) == 48 && D::Cursor::SizeFor(96, 64) == 64 && D::Cursor::SizeFor(96, 0) == 32);
+    CHECK(std::string(D::Cursor::Svg()).find("M5 3 L5 24") != std::string::npos && D::Cursor::hotX == 5 && D::Cursor::hotY == 3);
+    {   const std::wstring js = NativeChrome::Annotations::PageScript();
+        CHECK(js.find(L"adoptedStyleSheets") != std::wstring::npos && js.find(L"!important") != std::wstring::npos);   // the cursor sheet
+        CHECK(js.find(L"filter(function (x) { return x !== sheet; })") != std::wstring::npos);                       // removed at teardown
+        CHECK(js.find(L"repeating-linear-gradient(135deg") != std::wstring::npos && js.find(L"repeating-linear-gradient(45deg") != std::wstring::npos);
+        CHECK(js.find(L"ins.style.visibility") != std::wstring::npos);                                                // hidden with the marks at the handoff
+    }
+    // Wave zones: zero outside [left, right], smoothstep over 120 DIP, full in between.
+    D::Zones z; z.left = 145; z.right = 1063;
+    CHECK(D::Mask(100, z) == 0 && D::Mask(145, z) == 0 && D::Mask(1063, z) == 0 && D::Mask(1100, z) == 0);
+    CHECK(std::fabs(D::Mask(205, z) - .5f) < 1e-4f && D::Mask(265, z) == 1 && D::Mask(600, z) == 1 && std::fabs(D::Mask(1003, z) - .5f) < 1e-4f);
+    for (float x = 0; x <= 145; x += .5f) for (float y = 0; y < 31; y += .5f) CHECK(D::BandField(x, y, 1180, 31, .3, 1, z) == .18f * D::Clamp01(y / 31));   // only the base under a text
+    CHECK(D::Amplitude(0, false) == 0 && D::Amplitude(220, false) == 0 && D::Amplitude(620, false) == 1 && D::Amplitude(5000, true) == 0);
+    // Seamless loop: the field at phase 0 equals the field at phase 1.
+    for (float x = 150; x < 1060; x += 37) CHECK(std::fabs(D::WaveBand(x, 16, 1180, 31, 0) - D::WaveBand(x, 16, 1180, 31, .999999)) < 1e-3f);
+    // Veil: up 0..140, held to 220, out by 500; interrupted => from the presented value to 0 in 160 ms.
+    D::VeilTimeline v; v.Start(false);
+    CHECK(v.Value(0) == 0 && v.Value(140) == 1 && v.Value(200) == 1 && v.Value(220) == 1 && v.Value(360) > 0 && v.Value(360) < 1 && v.Value(500) == 0 && v.Done(500) && !v.Done(499));
+    D::VeilTimeline i; i.Start(false); const float at60 = i.Value(60); i.Interrupt(60);
+    CHECK(at60 > 0 && at60 < 1 && std::fabs(i.Value(60) - at60) < 1e-6f && i.Value(100) < at60 && i.Value(220) == 0 && i.Done(220) && !i.Done(219));
+    D::VeilTimeline r; r.Start(true);
+    CHECK(std::fabs(r.Value(150) - .5f) < 1e-6f && r.Value(300) == 0 && r.Done(300));
+    // Rasters: a band with no wave has only the base; dots are snapped to whole pixels.
+    std::vector<std::uint32_t> px(size_t(1475) * 40);
+    const int base = D::RasterBand({px.data(), 1475, 1475, 40}, 1.25f, 0, 0, z), waved = D::RasterBand({px.data(), 1475, 1475, 40}, 1.25f, 1.3, 1, z);
+    CHECK(base > 0 && waved > base);
+    std::vector<std::uint32_t> vp(size_t(400) * 300);
+    D::RasterVeil({vp.data(), 400, 400, 300}, 1, .1, 1, false);
+    CHECK((vp[0] >> 24) > 0 && (vp[size_t(200) * 400 + 200] >> 24) == 0);   // the wash at the top, nothing in the middle (no texture)
+    std::fill(vp.begin(), vp.end(), 0u); D::RasterVeil({vp.data(), 400, 300, 300}, 1, .1, 0, true);
+    CHECK(std::all_of(vp.begin(), vp.end(), [](std::uint32_t p) { return p == 0; }));   // k = 0: nothing at all
+}
+
 int main() {
-    Envelopes(); Crops(); Clips(); Origins(); Status(); Texts(); Script(); V3Capture();
+    Envelopes(); Crops(); Clips(); Origins(); Status(); Texts(); Script(); V3Capture(); V3B();
     std::printf("host_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

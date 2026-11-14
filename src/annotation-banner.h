@@ -18,9 +18,14 @@
 // 220 ms cubic-bezier(.32,.72,0,1) and goes back up in 160 ms; every move starts from the presented value
 // (interruptible); reduced motion: a 150 ms fade only. The page moves by 32 DIP at once; what the sliding band
 // uncovers is the chrome's own canvas (the chrome paints down to ContentTop), the same #171717 as the band.
-// A future animated background (Paper 5.2 « vague tramée ») plugs into Banner::backdrop: drawn under the
-// content, clipped to the band, given the time; it keeps frames coming only while backdropAnimates is set.
+// V3-B (Paper 5.2 « Bandeau vivant », validated): a dithered wave lives in the band's background
+// (src/annotation-dither.h), drawn under the content: the base texture everywhere, the wave (band + travelling
+// envelope, 4 s linear loop) faded to 0 over 120 DIP before « Mode Annotation », before « Quitter / Échap » and under
+// the reminder while it shows (zones from the real label rectangles). It starts 220 ms after the entry (the band has
+// landed) and grows in over 400 ms; 30 frames/s at most; its clock stops while the window is minimised, hidden or in
+// the background, and at the exit: zero wake-up outside the mode. Reduced motion: the base texture, still.
 #include "annotation-kit.h"
+#include "annotation-dither.h"
 
 namespace NativeChrome { namespace Annotations {
 namespace BannerSpec {
@@ -38,6 +43,7 @@ enum BannerHit { BannerNone = 0, BannerRemind = 1, BannerQuit = 2 };
 struct BannerVisual {
     Motion::InteractionVisual quit, remind; bool focus = false, keyboard = false, reduced = false;
     int focusItem = BannerQuit; bool beta = true; float reminder = 0;   // reminder: 0 hidden .. 1 shown (fade)
+    bool texture = false; double waveSeconds = 0; float waveAmp = 0;     // V3-B: the dithered background (off in the static boards)
 };
 struct BannerLayout { D2D1_RECT_F logo{}, label{}, beta{}, quit{}, remind{}; float keycapX = 0; };
 inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true) {
@@ -51,6 +57,66 @@ inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true) {
     const float rw = remindPad + ink.Width(L"Aucun agent connecté", F(12, 16)) + remindGap + ink.Width(L"Connecter", F(12, 16, 500)) + remindPad;
     l.remind = {l.quit.left - gap - rw, (height - remindH) / 2, l.quit.left - gap, (height + remindH) / 2};
     return l;
+}
+// The text-free span of the band for the wave (V3-B): from the end of « Mode Annotation » (+ BETA) to the start of
+// « Quitter » — or of the reminder, as it fades in (reminder 0..1).
+inline Dither::Zones WaveZones(const BannerLayout& l, bool beta, float reminder) {
+    Dither::Zones z; z.left = std::max(l.label.right, beta ? l.beta.right : 0.f);
+    z.right = l.quit.left + (l.remind.left - l.quit.left) * Motion::Clamp(reminder);
+    return z;
+}
+// The texture as a bitmap at the target's pixel density (dots snapped to device pixels), drawn at (0, 0).
+inline int PaintBandTexture(Ink& ink, float w, float h, double seconds, float amp, const Dither::Zones& z) {
+    auto* t = ink.Target(); float dx = 96, dy = 96; t->GetDpi(&dx, &dy); const float scale = dx / 96.f;
+    const int pw = std::max(1, int(std::lround(w * scale))), ph = std::max(1, int(std::lround(h * scale)));
+    static thread_local std::vector<std::uint32_t> buffer; buffer.assign(size_t(pw) * ph, 0);
+    const int dots = Dither::RasterBand({buffer.data(), pw, pw, ph}, scale, seconds, amp, z);
+    ID2D1Bitmap* bitmap = nullptr;
+    const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dx, dy);
+    if (SUCCEEDED(t->CreateBitmap(D2D1::SizeU(UINT32(pw), UINT32(ph)), buffer.data(), UINT32(pw * 4), props, &bitmap)))
+        t->DrawBitmap(bitmap, D2D1::RectF(0, 0, pw / scale, ph / scale), 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+    Release(bitmap); return dots;
+}
+// V3-B: the wave span's pixels without Direct2D, the same composition as PaintBanner there: the canvas, the band's
+// vertical gradient, the dots (the bitmap PaintBandTexture draws 1:1), the bottom border over them. `d` = the device
+// rect to write (inside the text-free span: no text, no chip, no focus ring can be there); w / h = the band (DIP),
+// k = px per DIP. Equal to the Direct2D render within 2 levels (harness: v3b span vs full frame).
+inline void RasterBandSpan(std::uint32_t* px, int stride, RECT d, float w, float h, float k, double seconds, float amp, const Dither::Zones& z) {
+    using namespace BannerSpec;
+    const float cr = 0x17 / 255.f, cg = 0x17 / 255.f, cb = 0x17 / 255.f;
+    const float er = 0x23 / 255.f, eg = 0x3F / 255.f, eb = 0xD6 / 255.f;
+    const int pw = std::max(1, int(std::lround(w * k))), ph = std::max(1, int(std::lround((h - 1) * k)));   // the texture bitmap (PaintBandTexture)
+    const float texW = pw / k, texH = ph / k; const double phase = Dither::Phase(seconds);
+    const int cp = Dither::CellPx(Dither::Wave::cell, k), dot = cp - Dither::GapPx(k);
+    const std::uint32_t dim = Dither::Premul(Dither::Wave::dim, Dither::Wave::opacity), bright = Dither::Premul(Dither::Wave::bright, Dither::Wave::opacity);
+    const float borderTop = (h - 1) * k, borderBottom = h * k;
+    // one field evaluation per cell (not per dot pixel): the dot colours of the current cell row, 0 = no dot
+    const int c0 = int(d.left) / cp, c1 = std::min(pw - 1, int(d.right) - 1) / cp; static thread_local std::vector<std::uint32_t> cells; int cellRow = -1;
+    cells.assign(size_t(std::max(0, c1 - c0 + 1)), 0u);
+    for (int y = d.top; y < d.bottom; ++y) {
+        const float a = gradientAlpha * Motion::Clamp(((y + .5f) / k) / h);
+        const float r = cr + (er - cr) * a, g = cg + (eg - cg) * a, b = cb + (eb - cb) * a;
+        const std::uint32_t bg = 0xFF000000u | (std::uint32_t(std::lround(r * 255)) << 16) | (std::uint32_t(std::lround(g * 255)) << 8) | std::uint32_t(std::lround(b * 255));
+        const float cov = std::max(0.f, std::min(float(y + 1), borderBottom) - std::max(float(y), borderTop));
+        const std::uint32_t edge = cov > 0 ? Dither::Premul(border, cov) : 0;
+        std::uint32_t* row = px + size_t(y) * stride; const int cy = y / cp; const bool dotRow = y < ph && (y - cy * cp) < dot;
+        if (dotRow && cy != cellRow) {
+            cellRow = cy;
+            for (int cx = c0; cx <= c1; ++cx) {
+                const float v = Dither::BandField((cx + .5f) * cp / k, (cy + .5f) * cp / k, texW, texH, phase, amp, z);
+                cells[size_t(cx - c0)] = v > Dither::Threshold(cx, cy) ? (v < .75f ? dim : bright) : 0u;
+            }
+        }
+        for (int x = d.left; x < d.right; ++x) {
+            std::uint32_t c = bg;
+            if (dotRow && x < pw) {
+                const int cx = x / cp;
+                if (x - cx * cp < dot && cells[size_t(cx - c0)]) c = Dither::Over(cells[size_t(cx - c0)], c);
+            }
+            if (edge) c = Dither::Over(edge, c);
+            row[x] = c;
+        }
+    }
 }
 inline int BannerHitAt(const BannerLayout& l, bool reminder, float x, float y) {
     if (Inside(l.quit, x, y)) return BannerQuit;
@@ -66,6 +132,7 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
     const D2D1_GRADIENT_STOP s[2] = {{0, {end.r, end.g, end.b, 0}}, {1, {end.r, end.g, end.b, gradientAlpha}}};
     if (SUCCEEDED(t->CreateGradientStopCollection(s, 2, &stops)) && SUCCEEDED(t->CreateLinearGradientBrush({{0, 0}, {0, h}}, stops, &gradient))) t->FillRectangle({0, 0, w, h}, gradient);
     Release(gradient); Release(stops);
+    if (v.texture) PaintBandTexture(ink, w, h - 1, v.waveSeconds, v.waveAmp, WaveZones(l, v.beta, v.reminder));
     if (backdrop) { t->PushAxisAlignedClip({0, 0, w, h}, D2D1_ANTIALIAS_MODE_ALIASED); backdrop(); t->PopAxisAlignedClip(); }
     ink.Fill({0, h - 1, w, h}, 0, Hex(border));
     {   // Mark with the shader's ramp.
@@ -144,12 +211,22 @@ class Banner : public Animator::Client {
     Motion::State motion_; Ramp reminder_; bool reminderOn_ = false, beta_ = true;
     RECT rect_{}; int hover_ = 0, pressed_ = 0, focusItem_ = BannerQuit; bool focus_ = false, keyboard_ = false, reduced_ = false;
     float Width() const { return (rect_.right - rect_.left) / layer_.Scale(); }
-    BannerLayout Layout() { auto* ink = Ink::Instance(); return ink ? LayoutBanner(*ink, Width(), beta_) : BannerLayout{}; }
-    void Render(Motion::Time now) {
+    // Cached per width / BETA / scale (V3-B: the wave frames need the label rectangles 30 times a second).
+    BannerLayout layoutCache_{}; float layoutW_ = -1, layoutScale_ = 0; bool layoutBeta_ = true;
+    BannerLayout Layout() {
+        auto* ink = Ink::Instance(); if (!ink) return BannerLayout{};
+        const float w = Width(), sc = layer_.Scale();
+        if (w != layoutW_ || beta_ != layoutBeta_ || sc != layoutScale_) { layoutCache_ = LayoutBanner(*ink, w, beta_); layoutW_ = w; layoutBeta_ = beta_; layoutScale_ = sc; }
+        return layoutCache_;
+    }
+    void Render(Motion::Time now, bool waveOnly = false) {
         if (!layer_.Window()) return;
         const float opacity = presence_.Progress(now), dy = BannerOffset(opacity, reduced_);
         BannerVisual v; v.quit = motion_.Visual(BannerQuit, now); v.remind = motion_.Visual(BannerRemind, now); v.focus = focus_; v.keyboard = keyboard_;
         v.reduced = reduced_; v.focusItem = focusItem_; v.beta = beta_; v.reminder = Motion::Clamp(reminder_.Value(now));
+        v.texture = true; v.waveSeconds = WaveSeconds(now); v.waveAmp = Dither::Amplitude(std::chrono::duration<double, std::milli>(now - enteredAt_).count(), reduced_);
+        if (v.waveAmp > 0 && presence_.IsOpen()) ++waveFrames_;
+        lastRender_ = now;
         const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count(); auto backdrop = backdrop_;
         layer_.paint = [v, opacity, dy, seconds, backdrop](Ink& ink, float w, float h) {
             auto* t = ink.Target(); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
@@ -159,9 +236,39 @@ class Banner : public Animator::Client {
             if (pushed) ink.PopOpacity(group);
             t->SetTransform(base);
         };
-        layer_.Present(rect_, true);
+        // V3-B: raised above the page only when shown / moved, never per wave frame (a z-order call 30 times a
+        // second made every frame cost a window-position round trip).
+        LARGE_INTEGER a{}, b{}, f{}; QueryPerformanceCounter(&a);
+        // A wave-only frame (nothing else moves): only the span between the labels changes; its pixels are written in
+        // place (no Direct2D) and only they go to the compositor.
+        bool done = false;
+        if (waveOnly && !raiseNext_ && opacity >= 1 && dy == 0) {
+            const auto z = WaveZones(Layout(), beta_, v.reminder); const float k = layer_.Scale(), w = Width(), h = BannerSpec::height;
+            const RECT span{LONG(std::ceil(z.left * k)), 0, LONG(std::floor(z.right * k)), LONG(std::lround(h * k))};
+            if (z.right > z.left) done = layer_.PresentRegion(rect_, span, [&](std::uint32_t* px, int stride, RECT d) { RasterBandSpan(px, stride, d, w, h, k, v.waveSeconds, v.waveAmp, z); });
+        }
+        if (!done) layer_.Present(rect_, raiseNext_);
+        raiseNext_ = false;
+        QueryPerformanceCounter(&b); QueryPerformanceFrequency(&f); renderMs_ += double(b.QuadPart - a.QuadPart) * 1000.0 / double(f.QuadPart); ++renders_;
     }
+    bool raiseNext_ = true; double renderMs_ = 0; unsigned long long renders_ = 0;
     std::function<void(Ink&, float, float, double)> backdrop_; bool backdropAnimates_ = false;
+    // V3-B wave clock: seconds of wave time (paused while the window cannot be seen), 30 frames/s at most.
+    Motion::Time enteredAt_{}, waveOrigin_{}, pausedAt_{}, lastRender_{}; bool paused_ = false; unsigned long long waveFrames_ = 0;
+    int liveForTest_ = -1;   // -1: the real window state; 0 / 1: forced (harness)
+    double WaveSeconds(Motion::Time now) const { return std::chrono::duration<double>((paused_ ? pausedAt_ : now) - waveOrigin_).count(); }
+    // Can the wave be seen? The browser window visible, not minimised, and its app in the foreground.
+    bool Live() const {
+        if (liveForTest_ >= 0) return liveForTest_ == 1;
+        HWND root = parent_ ? GetAncestor(parent_, GA_ROOT) : nullptr;
+        if (!root || IsIconic(root) || !IsWindowVisible(root) || !layer_.Shown()) return false;
+        HWND fg = GetForegroundWindow(); DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
+        return pid == GetCurrentProcessId();
+    }
+    // The wave wants frames: open, not reduced, past its start, visible.
+    bool WaveWanted(Motion::Time now) const { return presence_.IsOpen() && !reduced_ && now >= enteredAt_ + std::chrono::milliseconds(Dither::Wave::startMs) && Live(); }
+    void Pause(Motion::Time now) { if (!paused_) { paused_ = true; pausedAt_ = now; } }
+    void Unpause(Motion::Time now) { if (paused_) { paused_ = false; waveOrigin_ += now - pausedAt_; } }
     void Interact() { const auto now = Motion::Now(); motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, now); Render(now); Animator::Get().Request(this); }
     void Activate(int item) {
         if (item == BannerQuit) { if (hooks_.exit) hooks_.exit(); }
@@ -190,6 +297,8 @@ class Banner : public Animator::Client {
             if (w == VK_ESCAPE) { if (hooks_.exit) hooks_.exit(); r = 0; return true; }
             return false;
         case WM_APP + 1: Activate(int(w)); r = 0; return true;
+        case WM_TIMER: if (w != WaveTimer) return false;   // V3-B: the next wave frame is due: back to the display clock
+            DisarmWave(); if (WaveWanted(Motion::Now())) Animator::Get().Request(this); r = 0; return true;
         }
         return false;
     }
@@ -208,7 +317,7 @@ class Banner : public Animator::Client {
         return n;
     }
 public:
-    ~Banner() { if (Animator::Exists()) Animator::Get().Forget(this); }
+    ~Banner() { DisarmWave(); if (Animator::Exists()) Animator::Get().Forget(this); }
     // Stores the context only: no window, no thread, no allocation of D2D resources.
     void Init(HINSTANCE instance, HWND parent, std::wstring root, BannerHooks hooks) { instance_ = instance; parent_ = parent; root_ = std::move(root); hooks_ = std::move(hooks); }
     bool Created() const { return layer_.Window() != nullptr; }
@@ -231,6 +340,8 @@ public:
         }
         rect_ = rect; reduced_ = reduced; motion_.SetReducedMotion(reduced); const auto now = Motion::Now();
         const bool was = presence_.IsOpen();
+        if (!was) { enteredAt_ = waveOrigin_ = now; paused_ = false; }
+        raiseNext_ = true;
         presence_.Show(now, true, reduced); Render(now); Animator::Get().Request(this);
         if (!was) {
             if (hooks_.announce) hooks_.announce(L"Mode Annotation activé");
@@ -238,7 +349,7 @@ public:
         }
         return true;
     }
-    void Move(RECT rect) { rect_ = rect; if (presence_.Visible(Motion::Now())) Render(Motion::Now()); }
+    void Move(RECT rect) { rect_ = rect; raiseNext_ = true; if (presence_.Visible(Motion::Now())) Render(Motion::Now()); }
     // V2 (1.8): « Aucun agent connecté · Connecter » after « Plus tard »; fades in/out in 120 ms.
     void SetReminder(bool on, bool animate = true) {
         if (on == reminderOn_) return;
@@ -250,15 +361,42 @@ public:
     void SetBeta(bool beta) { beta_ = beta; if (layer_.Window() && presence_.Visible(Motion::Now())) Render(Motion::Now()); }
     void Hide(bool animate = true) {
         if (!layer_.Window()) return;
+        DisarmWave();
         const auto now = Motion::Now();
         presence_.Hide(now, animate, reduced_); hover_ = pressed_ = 0; focus_ = false; motion_.ClearInteractions();
         if (!presence_.Visible(now)) layer_.Hide(); else Animator::Get().Request(this);
     }
     bool Frame(Motion::Time now) override {
         if (!presence_.Visible(now)) { layer_.Hide(); return false; }
-        Render(now);
-        return presence_.Moving(now) || reminder_.Moving(now) || motion_.NextWake(now).delay.has_value() || (backdropAnimates_ && presence_.IsOpen());
+        const bool moving = presence_.Moving(now) || reminder_.Moving(now) || motion_.NextWake(now).delay.has_value() || (backdropAnimates_ && presence_.IsOpen());
+        const bool waveDue = presence_.IsOpen() && !reduced_ && now < enteredAt_ + std::chrono::milliseconds(Dither::Wave::startMs);   // waiting for 220 ms
+        const bool wave = WaveWanted(now);
+        if (wave) Unpause(now); else { Pause(now); DisarmWave(); }
+        if (moving || !wave) { Render(now); return moving || (waveDue && Live()); }
+        // The wave alone: one frame per 1/30 s at most. Between two wave frames the display clock (60-144 Hz) is not
+        // kept running: a one-shot timer hands back to it just before the next frame is due (~2 clock ticks per frame).
+        const auto period = std::chrono::microseconds(1000000 / Dither::Wave::fps - 1500);
+        if (now - lastRender_ >= period) Render(now, true);
+        const double untilMs = std::chrono::duration<double, std::milli>(lastRender_ + period - now).count();
+        if (untilMs <= 10) return true;   // due within a clock tick or so
+        ArmWave(UINT(untilMs - 8)); return false;
     }
+    static constexpr UINT_PTR WaveTimer = 41;
+    bool waveTimer_ = false; unsigned long long waveTimers_ = 0;
+    void ArmWave(UINT ms) { if (layer_.Window() && SetTimer(layer_.Window(), WaveTimer, std::max(1u, ms), nullptr)) { waveTimer_ = true; ++waveTimers_; } }
+    void DisarmWave() { if (waveTimer_ && layer_.Window()) KillTimer(layer_.Window(), WaveTimer); waveTimer_ = false; }
+    // V3-B: the browser window was minimised / restored / shown / hidden, or its app lost / took the foreground.
+    void WindowStateChanged() {
+        if (!layer_.Window()) return;
+        if (presence_.IsOpen() && !reduced_ && Live()) Animator::Get().Request(this); else { DisarmWave(); Pause(Motion::Now()); }
+    }
+    unsigned long long WaveTimersForTest() const { return waveTimers_; }
+    unsigned long long WaveFramesForTest() const { return waveFrames_; }
+    double AverageRenderMsForTest() const { return renders_ ? renderMs_ / double(renders_) : 0; }
+    void ResetRenderStatsForTest() { renderMs_ = 0; renders_ = 0; }
+    double WaveSecondsForTest(Motion::Time now) const { return WaveSeconds(now); }
+    void SetLiveForTest(int live) { liveForTest_ = live; WindowStateChanged(); }
+    BannerLayout LayoutForTest() { return Layout(); }
     // Future animated background (see the header comment): paint(ink, w, h, seconds), above the band's
     // gradient and under its content; animates = keep requesting frames while the band is open.
     void SetBackdrop(std::function<void(Ink&, float, float, double)> paint, bool animates) {

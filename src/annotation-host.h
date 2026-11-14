@@ -73,7 +73,14 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
 
 // V3: the page frame's geometry at the selection (CSS px of the top viewport): edges (x, y, w, h), label box and
 // text, fill opacity. The host draws the edges and the label natively (never captured) and removes the fill.
-struct Mark { bool present = false; double x = 0, y = 0, w = 0, h = 0, lx = 0, ly = 0, lw = 0, lh = 0, fill = 0; std::string text; };
+// V3-B: the spacing inspector as drawn by the page at the selection (CSS px of the top viewport): kind 0 = padding,
+// 1 = gap. At most 96 bands and 12 labels; anything malformed drops the inspector, never the selection.
+struct SpaceBand { int kind = 0; double x = 0, y = 0, w = 0, h = 0; };
+struct SpaceLabel { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::string text; };
+struct Mark {
+    bool present = false; double x = 0, y = 0, w = 0, h = 0, lx = 0, ly = 0, lw = 0, lh = 0, fill = 0; std::string text;
+    std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels; double radius = 0;   // V3-B inspector (empty: none)
+};
 struct Selection {
     Mark mark;
     BA::Target target;
@@ -105,6 +112,45 @@ inline bool Pairs(const SJ::Value* v, std::vector<BA::NamedValue>& out, std::siz
 }
 }
 
+// V3-B: mark.sp — { bands: [[kind, x, y, w, h]...], labels: [[kind, x, y, w, h, text]...], radius }. False = ignore it.
+inline bool ParseSpaceMark(const SJ::Value& sp, Mark& m) {
+    using namespace detail; constexpr double lim = 1e6;
+    const auto* b = sp.Get("bands"); const auto* l = sp.Get("labels");
+    if (!sp.IsObject() || !b || !b->IsArray() || b->items.size() > 96 || !l || !l->IsArray() || l->items.size() > 12) return false;
+    std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels; double radius = 0;
+    for (const auto& i : b->items) {
+        if (!i.IsArray() || i.items.size() != 5) return false;
+        SpaceBand x; double k = 0;
+        if (!Num(&i.items[0], k, 0, 1) || !Num(&i.items[1], x.x, -lim, lim) || !Num(&i.items[2], x.y, -lim, lim) || !Num(&i.items[3], x.w, 0, lim) || !Num(&i.items[4], x.h, 0, lim)) return false;
+        x.kind = k >= .5 ? 1 : 0; bands.push_back(x);
+    }
+    for (const auto& i : l->items) {
+        if (!i.IsArray() || i.items.size() != 6) return false;
+        SpaceLabel x; double k = 0;
+        if (!Num(&i.items[0], k, 0, 1) || !Num(&i.items[1], x.x, -lim, lim) || !Num(&i.items[2], x.y, -lim, lim) || !Num(&i.items[3], x.w, 0, 400) || !Num(&i.items[4], x.h, 0, 100) ||
+            !Str(&i.items[5], x.text, 16)) return false;
+        x.kind = k >= .5 ? 1 : 0; labels.push_back(x);
+    }
+    if (const auto* r = sp.Get("radius")) { if (!Num(r, radius, 0, 10000)) return false; }
+    m.bands = std::move(bands); m.labels = std::move(labels); m.radius = radius; return true;
+}
+// V3-B: target.spacing from the page (tolerant: malformed => no spacing).
+inline BA::Spacing ParseSpacing(const SJ::Value* v) {
+    using namespace detail; BA::Spacing s;
+    if (!v || !v->IsObject()) return s;
+    const auto* p = v->Get("padding");
+    if (!p || !p->IsArray() || p->items.size() != 4) return s;
+    double pad[4];
+    for (int i = 0; i < 4; ++i) if (!Num(&p->items[size_t(i)], pad[i], 0, 100000)) return s;
+    s.top = pad[0]; s.right = pad[1]; s.bottom = pad[2]; s.left = pad[3];
+    if (const auto* l = v->Get("layout"); l && l->IsString() && (l->string == "flex" || l->string == "grid")) s.layout = l->string;
+    if (const auto* g = v->Get("gap"); g && g->IsObject() && !s.layout.empty()) {
+        if (!Num(g->Get("row"), s.row, 0, 100000) || !Num(g->Get("column"), s.column, 0, 100000)) return BA::Spacing();
+        s.hasGap = true;
+    }
+    s.present = true; return s;
+}
+
 // Schema of a "select" message (types, bounds, allow-lists are then enforced by BA::Sanitize).
 inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why = nullptr) {
     using namespace detail; auto bad = [&](const char* w) { if (why) *why = w; return false; };
@@ -121,6 +167,7 @@ inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why 
             !Num(mk->Get("lx"), m.lx, -lim, lim) || !Num(mk->Get("ly"), m.ly, -lim, lim) || !Num(mk->Get("lw"), m.lw, 0, 4000) || !Num(mk->Get("lh"), m.lh, 0, 200) ||
             !Num(mk->Get("fill"), m.fill, 0, 1) || !Str(mk->Get("text"), m.text, 1024)) return bad("mark");
         m.present = true;
+        if (const auto* sp = mk->Get("sp"); sp && !sp->IsNull() && !ParseSpaceMark(*sp, m)) { m.bands.clear(); m.labels.clear(); }
     }
     auto& g = s.target;
     if (!Str(t->Get("kind"), g.kind, 16) || (g.kind != "element" && g.kind != "selection")) return bad("target.kind");
@@ -143,6 +190,7 @@ inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why 
     if (!Num(r->Get("x"), g.rect.x, -big, big) || !Num(r->Get("y"), g.rect.y, -big, big) || !Num(r->Get("width"), g.rect.width, 0, big) || !Num(r->Get("height"), g.rect.height, 0, big)) return bad("rect values");
     if (!Pairs(t->Get("styles"), g.styles, 64, false)) return bad("styles");
     if (!Pairs(t->Get("sourceAttributes"), g.sourceAttributes, 16, false)) return bad("sourceAttributes");
+    if (g.kind == "element") g.spacing = ParseSpacing(t->Get("spacing"));
     if (!Num(vp->Get("width"), g.viewport.width, 1, 100000) || !Num(vp->Get("height"), g.viewport.height, 1, 100000) ||
         !Num(vp->Get("scrollX"), g.viewport.scrollX, -big, big) || !Num(vp->Get("scrollY"), g.viewport.scrollY, -big, big) ||
         !Num(vp->Get("devicePixelRatio"), g.viewport.devicePixelRatio, 0.05, 20)) return bad("viewport");
@@ -377,6 +425,12 @@ inline std::string StoreTag(const std::wstring& dataDir) {
     char b[9]; snprintf(b, sizeof b, "%06x", h & 0xFFFFFF); return b;
 }
 // What the popover's « Ce que l'agent verra » lists (page, element, text, styles).
+// V3-B: the note panel's « Style » row: padding / gap first when the element has them.
+inline std::wstring StyleSummary(const BA::Target& t) {
+    const std::string sp = BA::SpacingText(t.spacing);
+    if (!sp.empty()) return Wide(sp);
+    return t.styles.empty() ? std::wstring() : std::wstring(L"Taille, couleurs et marges");
+}
 inline std::wstring StylesText(const std::vector<BA::NamedValue>& styles) {
     static const char* keep[] = {"display", "position", "width", "height", "margin", "padding", "font-size", "font-weight", "color", "background-color", "border-radius", "text-align"};
     std::wstring o; int n = 0;

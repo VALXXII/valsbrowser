@@ -564,7 +564,7 @@ private:
     HWND hwnd_ = nullptr, owner_ = nullptr; Options options_; bool shown_ = false;
     HDC mem_ = nullptr; HBITMAP dib_ = nullptr; HGDIOBJ old_ = nullptr; void* bits_ = nullptr; int bw_ = 0, bh_ = 0;
     ID2D1DCRenderTarget* rt_ = nullptr; UINT rtDpi_ = 0;
-    RECT rect_{}; unsigned long long presents_ = 0;
+    RECT rect_{}; unsigned long long presents_ = 0, partials_ = 0;
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Layer*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (m == WM_NCCREATE) { self = static_cast<Layer*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
@@ -610,6 +610,7 @@ public:
     float Scale() const { return Dpi() / 96.f; }
     RECT Rect() const { return rect_; }          // last presented rect (screen, or parent client for a child)
     unsigned long long Presents() const { return presents_; }
+    unsigned long long Partials() const { return partials_; }
     // Renders `paint` into a w x h pixel surface and shows it at r (screen px for a popup,
     // parent-client px for a child). The window size equals r; everything else is alpha.
     bool Present(RECT r, bool raise = false) {
@@ -645,6 +646,42 @@ public:
         }
         rect_ = r; ++presents_;
         if (!shown_) { ShowWindow(hwnd_, options_.activatable ? SW_SHOW : SW_SHOWNOACTIVATE); shown_ = true; }
+        return true;
+    }
+    // V3-B: a region of the LAST presented surface rewritten in place (same rect, same size) and only that region sent
+    // to the compositor (UpdateLayeredWindowIndirect + prcDirty), no Direct2D: the band's wave frames, 30 a second,
+    // change the span between its labels and nothing else. False: not possible (never presented, moved, resized).
+    bool PresentRegion(RECT r, RECT dirty, const std::function<void(std::uint32_t* px, int stride, RECT dirty)>& fill) {
+        if (!hwnd_ || !shown_ || !presents_ || !mem_ || !EqualRect(&r, &rect_)) return false;
+        const int w = r.right - r.left, h = r.bottom - r.top;
+        RECT all{0, 0, w, h}; RECT d{}; if (w > bw_ || h > bh_ || !IntersectRect(&d, &dirty, &all)) return false;
+        GdiFlush();
+        fill(static_cast<std::uint32_t*>(bits_), bw_, d);
+        POINT src{0, 0}; SIZE size{w, h}; BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UPDATELAYEREDWINDOWINFO info{sizeof(info)}; info.hdcSrc = mem_; info.pptSrc = &src; info.psize = &size; info.pblend = &blend; info.dwFlags = ULW_ALPHA; info.prcDirty = &d;
+        if (!UpdateLayeredWindowIndirect(hwnd_, &info)) return false;
+        ++presents_; ++partials_; return true;
+    }
+    // V3-B: pixels written straight into the surface (premultiplied BGRA, top-down; `fill` gets a zeroed w x h
+    // buffer), no Direct2D: the entry veil's full-page texture. Same single update as Present.
+    bool PresentPixels(RECT r, const std::function<void(std::uint32_t* px, int stride, int w, int h)>& fill, bool raise = false) {
+        if (!hwnd_) return false;
+        const int w = std::max<LONG>(1, r.right - r.left), h = std::max<LONG>(1, r.bottom - r.top);
+        if (!EnsureBitmap(w, h)) return false;
+        GdiFlush();
+        auto* px = static_cast<std::uint32_t*>(bits_);
+        for (int y = 0; y < h; ++y) std::fill_n(px + size_t(y) * bw_, w, 0u);
+        if (fill) fill(px, bw_, w, h);
+        POINT src{0, 0}, dst{r.left, r.top}; SIZE size{w, h}; BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        if (options_.child) {
+            UpdateLayeredWindow(hwnd_, nullptr, &dst, &size, mem_, &src, 0, &blend, ULW_ALPHA);
+            if (raise) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
+        } else {
+            HDC screen = GetDC(nullptr); UpdateLayeredWindow(hwnd_, screen, &dst, &size, mem_, &src, 0, &blend, ULW_ALPHA); ReleaseDC(nullptr, screen);
+            if (raise) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        rect_ = r; ++presents_;
+        if (!shown_) { ShowWindow(hwnd_, SW_SHOWNOACTIVATE); shown_ = true; }
         return true;
     }
     void Hide() { if (hwnd_ && shown_) { ShowWindow(hwnd_, SW_HIDE); shown_ = false; } }

@@ -46,13 +46,14 @@
 
     {"send": {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "browser_annotation_get", "arguments": {"id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa"}}},
      "expect": {"id": 10, "result": {"isError": false, "content": [
-         {"type": "text", "text": "$CONTAINS:## Annotation ann_aaaaaaaaaaaaaaaaaaaaaaaaaa"},
+         {"type": "text", "text": "$RE:(?s).*## Annotation ann_aaaaaaaaaaaaaaaaaaaaaaaaaa.*\n- Style \\(px CSS\\) : `padding 10 24 · gap 0 8 \\(flex\\)`\n.*"},
          {"type": "image", "mimeType": "image/png", "data": "$CAPTURE:png"}],
        "structuredContent": {"schema": "browser-annotation/2", "id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa", "site": "http://localhost:5173", "project": "$ABSENT", "status": "open",
          "note": "Le bouton « Payer » devrait être aligné à droite comme sur la maquette.",
          "source": {"url": "http://localhost:5173/checkout?step=2", "urlRedacted": false, "title": "Paiement"},
          "target": {"selector": "main form.checkout > button.btn-primary", "tag": "button", "rect": {"x": 412, "y": 688, "width": 120, "height": 40, "unit": "css-px"},
-           "viewport": {"devicePixelRatio": 1.5}, "styles": {"display": "inline-flex"}, "attributes": {"type": "submit", "data-testid": "pay-button"}},
+           "viewport": {"devicePixelRatio": 1.5}, "styles": {"display": "inline-flex"}, "attributes": {"type": "submit", "data-testid": "pay-button"},
+           "spacing": {"$EXACT": true, "unit": "css-px", "padding": {"top": 10, "right": 24, "bottom": 10, "left": 24}, "gap": {"row": 0, "column": 8}, "layout": "flex"}},
          "screenshot": {"file": "shot.png", "mime": "image/png", "width": 1, "height": 1, "crop": "element+margin", "scale": 0.5},
          "claimedBy": null, "resolution": null, "events": [{"actor": "user", "from": "draft", "to": "open"}]}}}},
     {"send": {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "browser_annotation_get", "arguments": {"id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa", "include_screenshot": false}}},

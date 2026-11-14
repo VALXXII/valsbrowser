@@ -149,6 +149,19 @@ struct Source {
     std::string frameKind = "main";  // "main" | "same-origin" | "cross-origin"
 };
 
+// V3-B (Paper 5.3): the element's inner spacing, CSS px of the page (getComputedStyle), rounded to 0.01. Optional:
+// annotations written before V3-B, text selections and cross-origin iframes have none. JSON target.spacing:
+// {"unit":"css-px","padding":{"top","right","bottom","left"},"gap":{"row","column"}|null,"layout":"flex"|"grid"|""}.
+// Read tolerantly: absent, null or malformed => no spacing (never an error).
+struct Spacing {
+    bool present = false;
+    double top = 0, right = 0, bottom = 0, left = 0;   // padding
+    bool hasGap = false; double row = 0, column = 0;   // row-gap / column-gap (flex and grid only)
+    std::string layout;                                 // "flex" | "grid" | ""
+};
+// « padding 18 20 · gap 14 » (CSS shorthand order; empty when there is no padding and no gap). The « Style » line.
+std::string SpacingText(const Spacing& s);
+
 struct Target {
     std::string kind = "element";  // "element" | "selection"
     std::string selector;
@@ -162,6 +175,7 @@ struct Target {
     Viewport viewport;
     std::vector<NamedValue> styles;            // AllowedStyleProperties() only
     std::vector<NamedValue> sourceAttributes;  // hints.sourceAttributes: data-* only, <= MaxSourceAttributes
+    Spacing spacing;                           // V3-B: padding / gap (target.spacing)
 };
 
 struct Screenshot {

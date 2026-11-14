@@ -224,3 +224,106 @@ QA, après usage complet puis sortie du mode : **0 fenêtre du lanceur**, CPU du
 - **Défilement pendant la prise** : si la page défile dans les ~100 ms où la copie native est affichée, les bords natifs ne suivent pas (le voile, lui, suit) ; non observé, non corrigé.
 - Sondes d'écran sur un bureau partagé avec d'autres agents : la fenêtre QA est mise au premier plan (topmost) le temps des sondes, sans entrée clavier synthétique ; une fenêtre d'un autre processus peut fausser une sonde (vu une fois au lancement : l'invocation UIA du bouton « Annoter » n'était pas arrivée ; le pilote réessaie).
 - Le décalage de 32 DIP de la page à l'entrée / sortie du mode (redimensionnement du WebView) reste un saut (inhérent).
+
+# V3-B — entrée animée, bandeau vivant, curseur dédié, espacements au survol : validation (14 novembre 2026)
+
+Branche `VALXXII/annotations-v1`, sur V3-A (`12d5ff8`). Source : Paper `01M6Q7YT14ZKMGET54ASPNGQEC` / `p-H-0`, planches 5.1 à 5.5 (lecture seule, valeurs par `get_computed_styles` / `get_jsx`) ; trames : formules de `gen_dither.py`. Conception : `design/annotations-ui.md` § V3-B, `design/annotations-store-bridge.md` § V3-B. Build sous test : `build/annotations-v3-preview` et sa copie QA `build/annotations-v3-qa-app` ; référence V3-A pour le repos : `build/annotations-v3a-ref` (même commande de build sur `12d5ff8`, arbre de travail temporaire supprimé ensuite). `build/annotations-preview` et la sandbox de l'utilisateur n'ont été ni modifiés ni lancés ; `sandbox/annotations/site/style.css` (modifié par l'utilisateur) reste tel quel, non commité. Windows 11 26200, 125 % (DPI 120), WebView2 157.
+
+Légende : **Vérifié** = observé ici, preuve citée · **Non vérifié** = pas démontré, raison donnée.
+
+## 1. Livré
+
+| Point | Ce qui change | Statut |
+| --- | --- | --- |
+| 5.2 Bandeau vivant | Trame de base + vague tramée (Bayer, cellules 2 DIP) en boucle linéaire de 4 s, ≤ 30 images/s, départ à 220 ms (montée 400 ms) ; nulle sous « Mode Annotation » (+ BETA), « Quitter / Échap » et le rappel (zones issues de `LayoutBanner`, smoothstep 120 DIP) ; horloge arrêtée fenêtre réduite / masquée / en arrière-plan et hors du mode ; réduit : trame fixe. Images de vague : intervalle réécrit en pixels + mise à jour partielle de la fenêtre en couches. | Vérifié |
+| 5.1 Dégradé d'entrée | `EntryVeil` : fenêtre en couches cliquable-au-travers, non activable, au-dessus de la page ; lavis 160 DIP + liseré 48 px sur trois bords + trame qui ondule (cellules 3 DIP) ; 140 / 80 / jusqu'à 500 ms puis **détruite** ; interruptible (160 ms depuis la valeur affichée) ; réduit : 50 % sans trame, 150 + 150 ms ; rien à la sortie. Lanceur à 120 ms et glissé du bandeau inchangés (V3-A). | Vérifié |
+| 5.4 Curseur « flèche + note » | Feuille adoptée (document + racines d'ombre ouvertes) et boucliers des iframes ; SVG Paper exact, point chaud (5, 3) ; 32 / 48 / 64 px selon DPI × taille de pointeur ; résolution = échelle de l'écran (indépendante du zoom) ; retiré à la sortie. | Vérifié (curseur Windows réel) |
+| 5.3 Espacements au survol | Padding (135°, bleu) et gap (45°, rose, flex et grid, wrap) sur l'élément survolé, étiquettes par valeur distincte et par axe, < 4 px sans étiquette, fondu 120 ms avec le cadre, rien pendant un mouvement rapide, zoom pris en compte (valeurs en px CSS) ; copie native à la sélection, donc jamais dans la capture ; `target.spacing` + ligne « Style » (pastille, Markdown, bridge). | Vérifié |
+| 5.5 « Rouvrir » | Bouton du détail d'une annotation « … n'a pas pu la traiter » ; `Store::Reopen` (ouverte, « Rouverte » horodaté), historique et compteur relus. | Vérifié (unitaire + harnais + capture) ; non cliqué dans la QA réelle |
+
+## 2. Build
+
+`python tools/release/build.py --out build/annotations-v3-preview --channel dev --preview` : `Build OK … browser.exe (0.3.257, 12d5ff8ae426)`, **0 avertissement, 0 erreur** (`build/v3b-build.log`). `browser.exe` 10 840 605 o, `browser-annotations-mcp.exe` 1 249 898 o.
+
+## 3. Tests
+
+| Commande | Résultat |
+| --- | --- |
+| `python -I tests/annotations/run_tests.py --bridge build/annotations-v3-preview/browser-annotations-mcp.exe` | **Vérifié** : « annotations: all builds and tests passed » — store_test 2 562 (dont `TestSpacingStyle` : écriture/lecture de `target.spacing`, raccourcis, Sanitize, 6 lectures tolérantes ; `TestReopenUnhandled`), json_fuzz 156 715, host_test 18 181 (dont `V3B` : `mark.sp` et `target.spacing` venus de la page, rejet doux, `StyleSummary`, tailles du curseur, zones de vague nulles sous les libellés, boucle sans couture, `VeilTimeline` naturelle / interrompue / réduite, rasters), agent_connect_test 199, claim_race 15 ; transcriptions sur les deux bridges (legacy 53 étapes, avec la ligne « - Style (px CSS) : `padding 10 24 · gap 0 8 (flex)` » et `structuredContent.target.spacing` exact), `tools/list` égal au golden **régénéré** (seule différence : la description de `browser_annotation_get` mentionne les espacements) ; vrais fichiers inchangés. `build/v3b-run_tests.log`. |
+| `python tests/annotations-ui/run.py` | **Vérifié** : « 945 checks, 0 failures; 108 captures » (`build/annotations-ui-qa/v2/`, captures `v3b-*`). Voir §4. |
+| `test-annotation-settings.ps1` | **Vérifié** : exit 0, 102 checks + 111 lignes « ok », client UIA ok, vraies configurations inchangées (`build/v3b-settings.log`). |
+| `python tests/annotations/sandbox_qa_v3b.py run` (nouveau) | **Vérifié** : **49 étapes, 0 échec** (§5), `build/annotations-v3b-qa/report.json` + captures. |
+| Vraies configurations | Empreintes SHA-256 de `%APPDATA%\Claude\claude_desktop_config.json` (`d5c653f1…`) et `%USERPROFILE%\.codex\config.toml` (`f5c61dea…`) identiques avant (`build/v3b-fp-before.txt`) et après toute la série ; chaque script les vérifie aussi. |
+
+## 4. Harnais (planches 5.1 à 5.5)
+
+| Preuve | Mesure | Statut |
+| --- | --- | --- |
+| 5.2 trois instants (0 / 1,3 / 2,7 s), variante rappel, trame fixe (réduit) | `v3b-5.2-band-wave-0-1.3-2.7s.png`, `…-reminder.png`, `…-reduced-still-texture.png` | Vérifié |
+| **Vague nulle sous les libellés** | rendu vague vs trame seule, pixel à pixel : **0 pixel différent dans les zones de texte**, 283 520 entre elles, sur 96 rendus (12 instants × rappel oui/non × BETA oui/non × 96 et 120 DPI) ; fenêtre réelle, deux instants à 500 ms : 0 pixel changé sous les libellés, 1 324 entre eux | Vérifié |
+| Chemin rapide de la vague = rendu Direct2D | intervalle réécrit en pixels vs image Direct2D complète, 4 DPI × 2 × 3 instants : pire écart **1 niveau** | Vérifié |
+| Cadence et coût du bandeau (fenêtre réelle) | **27,5 images/s** (≤ 30) ; **0,93 ms** par image ; horloge d'affichage **30 réveils/s** pendant la vague seule (≈ 120 avant le minuteur) | Vérifié |
+| Arrêt de l'horloge | 1,5 s en arrière-plan, fenêtre réduite, hors du mode après la vague, mouvement réduit, après le voile : **0 image, 0 réveil d'horloge, 0 `WM_TIMER`** ; le temps de vague ne court pas en pause | Vérifié |
+| 5.1 pic (~180 ms), variante réduite, bande d'entrée 0 / 60 / 140 / 220 / 360 / 500 ms | `v3b-5.1-entry-peak-180ms.png`, `v3b-5.1-entry-reduced-150ms.png`, `v3b-5.2-entry-strip-…png` ; bleu en haut de page, rien au milieu ; réduit : aucun point | Vérifié |
+| Voile réel | fenêtre `WS_EX_LAYERED`, `WS_EX_TRANSPARENT`, `WS_EX_NOACTIVATE`, `WindowFromPoint` la traverse ; **détruit 503–505 ms** après le départ, pic 1,0, 59 images, 1,8 ms par image (calcul 1,1 ms) | Vérifié |
+| Interruption | interrompu à ~60 ms (valeur 0,85–0,88) : éteint depuis cette valeur, détruit ~240 ms après le départ, pic < 1 ; strip `v3b-5.2-entry-interrupted-…png` | Vérifié |
+| Réduit | pic 0,50, pas de trame, détruit ~300 ms | Vérifié |
+| 5.3 inspecteur (copie native) | `v3b-5.3-spacing-inspector.png` (carte Paper) : hachures bleues / roses, pastilles accent et #D63E92 échantillonnées | Vérifié |
+| 5.4 curseur | `v3b-5.4-cursor-32-48-64.png` (rendu de référence des tracés, clair / sombre) | Vérifié |
+| 5.5 « Rouvrir » | `v3b-5.5-history-detail-reopen.png`, `…-reopened.png`, fenêtre réelle `v3b-5.5-window-history-reopen.png` ; frappe (HReopen), crochet appelé avec l'id, nœud UIA « Rouvrir », contraste mesuré | Vérifié |
+
+## 5. Parcours réel (copie QA du build V3, sandbox, agents redirigés)
+
+`tests/annotations/sandbox_qa_v3b.py run` : copie `build/annotations-v3-qa-app`, `BROWSER_ANNOTATIONS_TEST=1`, dossiers d'agents sous `build/`, port de débogage pour cette copie seulement, navigateur fermé et serveur arrêté dans des `finally`. Le pointeur est déplacé par `SetCursorPos` sur notre fenêtre seulement (au premier plan le temps des sondes) et remis en place. Curseur réel lu par `GetCursorInfo` + `GetIconInfo` (taille, point chaud, pixels bleus du « + »).
+
+| Étape | Preuve | Statut |
+| --- | --- | --- |
+| Entrée : voile à l'écran puis parti | images d'écran du haut de la page : bleu visible ~300 ms au-dessus du seuil (pic `v3b-5.1-real-entry-peak.png`), rien après ; journal « entry veil destroyed after **501–508 ms** (28–42 images, pire image 5–9 ms) » ; aucune fenêtre cliquable-au-travers restante | Vérifié |
+| Curseur réel sur texte (h1), lien, champ, canvas, iframe même origine, **iframe d'une autre origine** | curseur personnalisé **48×48, point chaud (7, 4)**, 165 pixels bleus du « + » (DPI 120) ; style calculé `image-set(...)` sur ces éléments et sur les boucliers des deux iframes | Vérifié |
+| Notre UI | flèche sur le bandeau ; panneau de note : I-beam dans le champ, flèche sur le panneau | Vérifié |
+| Pas de sablier pendant la capture | 37–40 échantillons sur 600 ms après le clic : uniquement notre curseur | Vérifié |
+| Sortie | curseurs de la page revenus (I-beam sur le texte, main sur le lien) ; aucune règle de curseur, aucune feuille à nous (la page garde la feuille du navigateur `:root{scrollbar-width:none}`), aucune couche | Vérifié |
+| Zoom 150 % | même curseur réel 48×48 / (7, 4) ; résolution `1.25dppx` (échelle écran, pas 1,875) ; inspecteur visible, étiquette « 6 » (px CSS) | Vérifié |
+| Inspecteur sur `form.checkout` (flex colonne, gap 6), `.row` (flex-wrap, gap 8), `.frames` (grid, gap 16), `.summary` (padding 18 / 20) | lu dans la racine fermée via CDP (opacité 1, bandes, étiquettes `g6`, `g8 g8`, `g16`, `p18 p20`) **et** à l'écran (pixels de hachures bleus / roses) | Vérifié |
+| Rien pendant un mouvement rapide | 16 conteneurs en ~530 ms : opacité 0 après chaque mouvement, 1 au repos | Vérifié |
+| Capture flex et grid | journal « inspector at the selection: 8 / 2 gap bands, labels g6 / g16 » ; 67–76 images d'écran pendant la prise : **aucune** où les hachures perdent plus de 30 % (copie native) | Vérifié |
+| **Image enregistrée sans cadre, hachures, étiquettes ni curseur** | comparée à la prise du moteur, mode éteint, même défilement, même survol, même recadrage : **pire écart 1–2 niveaux, 0 pixel au-delà de 2** (585 × 644 et 1 070 × 259) | Vérifié |
+| `target.spacing` + « Style » | magasin : gap 6 flex / 16 grid ; `try-mcp get` : « - Style (px CSS) : `gap 6 (flex)` » / « `gap 16 (grid)` » | Vérifié |
+| Interruption | Échap ~300 ms après l'entrée : voile détruit après **209–232 ms** | Vérifié |
+| Réduit (réglage « reduce-motion ») | voile détruit après **300–304 ms** | Vérifié |
+
+## 6. Mesures
+
+### Repos hors du mode après un usage (même protocole, 3 exécutions × 20 s, copie fraîche à chaque fois)
+
+| Build | CPU (% d'un cœur) | Changements de contexte / s (tous les fils de `browser.exe`) |
+| --- | --- | --- |
+| V3-A (`build/annotations-v3a-ref`) | 1,64 · 1,48 · 0,78 | 1 429,5 · 1 428,2 · 1 453,9 |
+| V3-B | 0,47 · 0,47 · 2,34 | 1 422,5 · 1 422,7 · 1 421,5 |
+
+Égal à V3-A : le CPU varie de 0,5 à 2,3 % selon la charge du poste partagé, dans les deux sens ; les réveils sont identiques à 2 % près. Harnais : 0 réveil hors du mode (§4). `build/annotations-v3b-qa/idle.json`.
+
+### Pendant le mode (fenêtre au premier plan, 15 s)
+
+| Situation | CPU (% d'un cœur) | Changements de contexte / s |
+| --- | --- | --- |
+| Mode, vague en cours | 6,0 · 7,1 (deux séries) | ~3 600 |
+| Mode, mouvement réduit (pas de vague) | 1,4 · 2,1 | ~1 425 |
+
+**Budget annoncé : le mode avec sa vague coûte au plus 8 % d'un cœur au processus navigateur** (mesuré 6,0–7,1 %, soit ~4,5–5,5 % pour la vague seule). Dans le harnais, une image de vague coûte 0,93 ms (≈ 2,6 % à 27,5 images/s) ; l'écart avec le navigateur réel (et les ~2 200 changements de contexte/s supplémentaires) vient de la recomposition de la fenêtre en couches au-dessus du WebView, non décomposée plus finement. Optimisations faites pendant la tâche : 5 ms → 0,93 ms par image (intervalle en pixels sans Direct2D au lieu d'un rendu Direct2D complet avec relecture GPU), ~120 → 30 réveils d'horloge/s (minuteur entre deux images), plus de `SetWindowPos` par image, mise en page des libellés mise en cache.
+
+### Durée réelle de l'entrée
+
+Voile : détruit **501–508 ms** après son départ (5 entrées réelles), 28–42 images, pire image 5–9 ms ; à l'écran, bleu au-dessus du seuil pendant ~300 ms (montée et fin du fondu sous le seuil). Bandeau 220 ms, lanceur 120 → 320 ms (V3-A, inchangés). Interrompue : 209–232 ms. Réduite : 300–304 ms.
+
+## 7. Non vérifié / limites
+
+- **Bureau verrouillé pendant une partie de la tâche** : la session n'avait plus de bureau d'entrée (capture d'écran et `GetCursorInfo` refusés) ; le pilote QA sait alors sauter les sondes d'écran (marquées « SKIP »). La série finale (49/49) a tourné bureau disponible, toutes sondes faites.
+- **Taille de pointeur Windows ≠ 32** (accessibilité) : calcul testé en unitaire (`SizeFor(96, 48) == 48` …), pas essayé avec le réglage changé (réglage global de l'utilisateur, non modifié).
+- **Point chaud** : mesuré (7, 4) sur 48 px à 125 % pour une pointe en (7,5 ; 4,5) — arrondi de Chromium, < 1 px.
+- **Iframes imbriquées dans une iframe d'une autre origine, racines d'ombre fermées de la page** : couvertes par le bouclier / l'héritage du curseur ; un élément d'une racine fermée qui force son propre `cursor` garderait le sien (non observé dans la sandbox).
+- **Coût réel de la vague** : voir §6, non ramené au coût du harnais.
+- **« Rouvrir »** : non cliqué dans le parcours réel (unitaire magasin + fenêtre réelle du harnais).
+- **Hachures de la copie native** : rendu Direct2D vs Skia, même géométrie et même phase ; l'anticrénelage des traits peut différer d'un sous-pixel pendant ~100 ms ; la sonde d'écran ne voit aucune image avec plus de 30 % de hachures perdues.
+- **Inspecteur dans une iframe même origine** : la cible y est trouvée (V1), l'inspecteur suit ses rectangles décalés ; non mesuré à part dans la QA.
+- Les écarts assumés avec `gen_dither.py` (enveloppe enroulée pour une boucle sans couture, montée d'amplitude de 400 ms) sont décrits dans `design/annotations-ui.md` § V3-B.

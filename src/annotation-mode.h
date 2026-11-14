@@ -27,6 +27,11 @@
 //                cards 3.1 -> 3.3 follow the annotations of this session while the store is watched.
 //   watch        ReadDirectoryChangesW only while the mode, the history or the modal is open, or while an
 //                agent is working (the launcher's ring turns anyway).
+//   V3-B         entry: the band slides (220 ms), the page receives a 500 ms blue wash (EntryVeil, destroyed at
+//                the end, faded from its value if the mode ends first), the launcher follows at 120 ms, the band's
+//                wave starts at 220 ms (stopped when the window is minimised, hidden or in the background: the host
+//                calls AnnotationWindowState). The page script gets the cursor (SVG + size from the DPI and the
+//                Windows pointer size) and draws the spacing inspector; its geometry joins the native frame copy.
 #include <atomic>
 #include <map>
 #include <memory>
@@ -60,7 +65,7 @@ struct Session {
     std::wstring draft;                       // kept when the panel is cancelled
 } s;
 std::uint64_t serials = 0;                    // never reset: a new session never matches an old result
-AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame;
+AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
 // the image is ready) so the page is only told to resume once the engine has its frame.
 struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
@@ -221,6 +226,7 @@ void LauncherSync(bool entering = false) {
 }
 void Place() {
     if (s.active) banner.Move(BandRect());
+    if (veil.Running()) veil.Move(PageClient(Active()));
     LauncherSync();
 }
 
@@ -235,6 +241,13 @@ std::uint32_t AccentRgb() {
     const auto a = NativeChrome::Design::Accent::Get();
     return (std::uint32_t(std::lround(a.r * 255)) << 16) | (std::uint32_t(std::lround(a.g * 255)) << 8) | std::uint32_t(std::lround(a.b * 255));
 }
+// V3-B cursor size: 32 / 48 / 64 from the window's DPI and the Windows pointer size (CursorBaseSize, 32 by default).
+unsigned PointerBaseSize() {
+    DWORD v = 0, n = sizeof v, type = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Cursors", L"CursorBaseSize", RRF_RT_REG_DWORD, &type, &v, &n) != ERROR_SUCCESS) return 32;
+    return unsigned(v);
+}
+int CursorSize() { return AUI::Dither::Cursor::SizeFor(GetDpiForWindow(window), PointerBaseSize()); }
 std::wstring Params(const std::shared_ptr<Tab>& t, const Start& st) {
     namespace SJ = StrictJson; SJ::Value p = SJ::Value::Obj();
     p.Set("nonce", SJ::Value::Str(s.nonce)); p.Set("navStamp", SJ::Value::Int(std::int64_t(t->navStamp)));
@@ -248,6 +261,11 @@ std::wstring Params(const std::shared_ptr<Tab>& t, const Start& st) {
     start.Set("x", SJ::Value::Int(st.at.x)); start.Set("y", SJ::Value::Int(st.at.y));
     start.Set("text", SJ::Value::Str(BA::CleanText(AH::Utf8(st.text), BA::MaxTextChars, true)));
     p.Set("start", std::move(start));
+    SJ::Value cursor = SJ::Value::Obj();
+    cursor.Set("svg", SJ::Value::Str(AUI::Dither::Cursor::Svg())); cursor.Set("size", SJ::Value::Int(CursorSize()));
+    cursor.Set("hx", SJ::Value::Int(AUI::Dither::Cursor::hotX)); cursor.Set("hy", SJ::Value::Int(AUI::Dither::Cursor::hotY));
+    cursor.Set("scale", SJ::Value::Num(GetDpiForWindow(window) / 96.0));   // the screen's scale (never the page zoom)
+    p.Set("cursor", std::move(cursor));
     return AH::Wide(SJ::Serialize(p));
 }
 void SendStart(const std::shared_ptr<Tab>& t, const Start& st) {
@@ -760,6 +778,13 @@ bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
     if (control) return false;
     AUI::FrameMark m; m.page = PageClient(t); m.dpr = sel.target.viewport.devicePixelRatio; m.accent = AccentRgb();
     m.x = sel.mark.x; m.y = sel.mark.y; m.w = sel.mark.w; m.h = sel.mark.h; m.lx = sel.mark.lx; m.ly = sel.mark.ly; m.lw = sel.mark.lw; m.lh = sel.mark.lh; m.text = AH::Wide(sel.mark.text);
+    for (const auto& b : sel.mark.bands) m.bands.push_back({b.kind, b.x, b.y, b.w, b.h});          // V3-B: the spacing inspector
+    for (const auto& l : sel.mark.labels) m.labels.push_back({l.kind, l.x, l.y, l.w, l.h, AH::Wide(l.text)});
+    m.radius = sel.mark.radius;
+    if (!m.bands.empty()) {   // QA evidence: what the native copy draws for the inspector
+        int pad = 0, gap = 0; std::wstring labels; for (const auto& b : m.bands) (b.kind ? gap : pad)++; for (const auto& l : m.labels) labels += (labels.empty() ? L"" : L",") + std::wstring(l.kind ? L"g" : L"p") + l.text;
+        Log(L"ANNOTATE inspector at the selection: " + std::to_wstring(pad) + L" padding bands, " + std::to_wstring(gap) + L" gap bands, labels " + labels + L"; style " + AH::StyleSummary(sel.target));
+    }
     if (post) KillTimer(post, FrameTimer);
     return frame.Show(m);
 }
@@ -796,7 +821,7 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         const std::wstring text = a.target.selectionText ? AH::Wide(*a.target.selectionText) : AH::Wide(a.target.text);
         req.context.text = text.empty() ? L"(aucun)" : L"« " + Clip(text, 80) + L" »";
         req.context.styles = AH::StylesText(a.target.styles);
-        req.context.style = a.target.styles.empty() ? L"" : L"Taille, couleurs et marges";
+        req.context.style = AH::StyleSummary(a.target);   // V3-B: « padding 20 · gap 14 (flex) » when the element has them
         const auto plan = AH::PlanClip(r, a.target.viewport);
         req.context.shotLabel = plan.ok ? L"Recadrée · " + std::to_wstring(plan.outW) + L"×" + std::to_wstring(plan.outH) : L"Hors de la zone visible";
     }
@@ -906,6 +931,16 @@ void EnsureUi() {
         if (CopyToClipboard(AH::Wide(BA::ToMarkdown(*e, e->annotation.screenshot.present ? Store().ShotPath(e->annotation.siteKey, e->annotation.id) : L"")))) Log(L"ANNOTATE copied as Markdown " + id);
     };
     lh.history.copy = [](const std::wstring& md) { CopyToClipboard(md); };
+    lh.history.reopen = [](const std::wstring& id) {   // V3-B (Paper 5.5): back to waiting for an agent
+        const auto* e = FindHistory(id); if (!e) return;
+        const std::string site = e->annotation.siteKey, ann = e->annotation.id; auto r = std::make_shared<BA::Outcome>();
+        seenUnhandled.erase(ann); seenDone.erase(ann); seenWorking.erase(ann);
+        Run([site, ann, r] { std::lock_guard<std::mutex> g(writeLock); *r = Store().Reopen(site, ann); },
+            [ann, r] { Log(L"ANNOTATE history reopen " + AH::Wide(ann) + L": " + AH::Wide(BA::CodeName(r->code)));
+                       if (!r->ok()) Announce(L"Impossible de rouvrir : " + AH::Wide(r->message));
+                       if (launcher.HistoryVisible()) LoadHistory(false, false);
+                       RefreshStatus(); });
+    };
     lh.history.annotate = [] { if (!s.active) AnnotationCommand(AnnotateCommand); };
     lh.history.closed = [](bool) { SyncWatch(); FocusPage(); };
     lh.history.announce = [](const std::wstring& t) { Announce(t); };
@@ -918,6 +953,9 @@ void EnsureUi() {
     ch.announce = [](const std::wstring& t) { Announce(t); };
     connect.Init(instance, window, base, ch);
     frame.Init(instance, window, base);
+    veil.Init(instance, window, base);
+    veil.OnEnded([](double ms, unsigned long long frames, double worst) {
+        Log(L"ANNOTATE entry veil destroyed after " + Ms(ms) + L" ms (" + std::to_wstring(frames) + L" frames, worst frame " + Ms(worst) + L" ms)"); });
 }
 void Activate(const Start& st) {
     auto t = Active(); std::wstring why;
@@ -940,6 +978,7 @@ void Activate(const Start& st) {
     if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, st)).c_str(), cb))) { cb->Release(); s.active = false; chrome.annotationBand = 0; SyncChrome(); Layout(); Log(L"ANNOTATE ExecuteScript refused"); return; }
     cb->Release();
     banner.Show(BandRect(), Reduced());
+    if (!veil.Start(PageClient(t), Reduced())) Log(L"ANNOTATE entry veil unavailable");   // V3-B: entry only
     LauncherSync(true);
     if (!purged) { purged = true; const std::int64_t retention = Prefs::Retention(settings); Run([retention] { std::lock_guard<std::mutex> g(writeLock); Store().Purge(retention); }, nullptr); }   // retention: first use of the session
     // Launch rule (Spéc · Lancement): no agent => the modal right away (80 ms after the band), mode active behind.
@@ -967,6 +1006,7 @@ void Exit(const wchar_t* why, bool pageChanged) {
     lates.erase(std::remove_if(lates.begin(), lates.end(), [](const Late& l) { return l.serial == s.serial && !l.shot; }), lates.end());
     s = Session{}; s.draft = pageChanged ? std::wstring() : draft; ++serials;
     note.Close(!pageChanged); banner.Hide(); if (connect.Visible()) connect.Close(false);
+    veil.Interrupt();   // V3-B: an exit during the entry fades the veil from its value (none at the exit otherwise)
     card = Card::None;
     chrome.annotationBand = 0; SyncChrome(); Layout();
     LauncherSync();   // the launcher goes back into its corner; its windows are destroyed once it is gone
@@ -1001,6 +1041,7 @@ bool AnnotationSurfaceFocus() {
 }
 void AnnotationSyncChrome() { Ann::SyncChrome(); Ann::LauncherSync(); }
 void AnnotationLayout() { Ann::Place(); }
+void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); }   // V3-B: the wave's clock
 void AnnotationNavigation(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"navigation", true); }
 void AnnotationTabChanged() { if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }
 void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }
@@ -1126,6 +1167,7 @@ bool AnnotationModeActive() { return false; }
 bool AnnotationSurfaceFocus() { return false; }
 void AnnotationSyncChrome() {}
 void AnnotationLayout() {}
+void AnnotationWindowState() {}
 void AnnotationNavigation(const std::shared_ptr<Tab>&) {}
 void AnnotationTabChanged() {}
 void AnnotationTabSleeping(const std::shared_ptr<Tab>&) {}

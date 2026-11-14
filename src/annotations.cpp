@@ -560,6 +560,31 @@ std::string Number(double v) {
     return b;
 }
 
+// V3-B: target.spacing, read tolerantly (absent / null / any malformed part => no spacing at all).
+Spacing ReadSpacing(const Value* v) {
+    Spacing s;
+    if (!v || !v->IsObject()) return s;
+    auto num = [](const Value* o, const char* key, double& out) {
+        const Value* n = o ? o->Get(key) : nullptr;
+        if (!n || !n->IsNumber() || !std::isfinite(n->number) || n->number < 0 || n->number > 100000) return false;
+        out = n->number;
+        return true;
+    };
+    if (const Value* u = v->Get("unit"); u && !(u->IsString() && u->string == "css-px")) return s;
+    const Value* pad = v->Get("padding");
+    if (!pad || !pad->IsObject() || !num(pad, "top", s.top) || !num(pad, "right", s.right) || !num(pad, "bottom", s.bottom) ||
+        !num(pad, "left", s.left))
+        return Spacing();
+    if (const Value* gap = v->Get("gap"); gap && !gap->IsNull()) {
+        if (!gap->IsObject() || !num(gap, "row", s.row) || !num(gap, "column", s.column)) return Spacing();
+        s.hasGap = true;
+    }
+    if (const Value* l = v->Get("layout"); l && l->IsString() && (l->string == "flex" || l->string == "grid")) s.layout = l->string;
+    if (s.layout.empty()) { s.hasGap = false; s.row = s.column = 0; }
+    s.present = true;
+    return s;
+}
+
 }  // namespace
 
 // ================================================================ identifiers
@@ -882,6 +907,23 @@ const char* CodeName(Code c) {
     return "io";
 }
 
+std::string SpacingText(const Spacing& s) {
+    if (!s.present) return "";
+    std::string out;
+    const double t = s.top, r = s.right, b = s.bottom, l = s.left;
+    if (t > 0 || r > 0 || b > 0 || l > 0) {
+        out = "padding " + (t == r && r == b && b == l ? Number(t)
+                            : t == b && r == l     ? Number(t) + " " + Number(r)
+                            : r == l               ? Number(t) + " " + Number(r) + " " + Number(b)
+                                                   : Number(t) + " " + Number(r) + " " + Number(b) + " " + Number(l));
+    }
+    if (s.hasGap && (s.row > 0 || s.column > 0)) {
+        out += std::string(out.empty() ? "" : " · ") + "gap " + (s.row == s.column ? Number(s.row) : Number(s.row) + " " + Number(s.column));
+        out += " (" + s.layout + ")";
+    }
+    return out;
+}
+
 void Sanitize(Annotation& a) {
     a.site = SiteOrigin(CleanText(a.site, 300));
     a.note = CleanText(a.note, MaxNoteChars, true);
@@ -959,6 +1001,15 @@ void Sanitize(Annotation& a) {
         }
         t.sourceAttributes = std::move(kept);
     }
+    if (t.spacing.present) {
+        Spacing& sp = t.spacing;
+        auto px = [](double v) { return std::round(Finite(v, 0, 100000, 0) * 100) / 100; };
+        sp.top = px(sp.top); sp.right = px(sp.right); sp.bottom = px(sp.bottom); sp.left = px(sp.left);
+        sp.row = sp.hasGap ? px(sp.row) : 0; sp.column = sp.hasGap ? px(sp.column) : 0;
+        if (sp.layout != "flex" && sp.layout != "grid") sp.layout.clear();
+        if (sp.layout.empty()) { sp.hasGap = false; sp.row = sp.column = 0; }
+    }
+    if (t.kind == "selection") t.spacing = Spacing();
     Screenshot& sh = a.screenshot;
     sh.crop = CleanText(sh.crop, 40);
     sh.scale = Finite(sh.scale, 0.01, 16, 1);
@@ -1032,6 +1083,26 @@ StrictJson::Value AnnotationToJson(const Annotation& a) {
     for (const auto& nv : t.sourceAttributes) sourceAttributes.Set(nv.name, Value::Str(nv.value));
     hints.Set("sourceAttributes", std::move(sourceAttributes));
     target.Set("hints", std::move(hints));
+    if (t.spacing.present) {
+        Value sp = Value::Obj();
+        sp.Set("unit", Value::Str("css-px"));
+        Value pad = Value::Obj();
+        pad.Set("top", Value::Num(t.spacing.top));
+        pad.Set("right", Value::Num(t.spacing.right));
+        pad.Set("bottom", Value::Num(t.spacing.bottom));
+        pad.Set("left", Value::Num(t.spacing.left));
+        sp.Set("padding", std::move(pad));
+        if (t.spacing.hasGap) {
+            Value gap = Value::Obj();
+            gap.Set("row", Value::Num(t.spacing.row));
+            gap.Set("column", Value::Num(t.spacing.column));
+            sp.Set("gap", std::move(gap));
+        } else {
+            sp.Set("gap", Value());
+        }
+        sp.Set("layout", Value::Str(t.spacing.layout));
+        target.Set("spacing", std::move(sp));
+    }
     v.Set("target", std::move(target));
 
     if (a.screenshot.present) {
@@ -1136,6 +1207,7 @@ bool AnnotationFromJson(const StrictJson::Value& v, Annotation& out, std::string
                          !GetNumber(*viewport, "zoom", t.viewport.zoom, error)))
             return false;
         if (hints && !GetPairs(*hints, "sourceAttributes", t.sourceAttributes, false, error)) return false;
+        t.spacing = ReadSpacing(target->Get("spacing"));
     }
     if (shot) {
         std::int64_t w = 0, h = 0, bytes = 0;
@@ -1318,6 +1390,7 @@ std::string ToMarkdown(const Entry& e, const std::wstring& shotPath) {
     md += "- Fenêtre : " + Number(t.viewport.width) + " × " + Number(t.viewport.height) + ", défilement " +
           Number(t.viewport.scrollX) + "/" + Number(t.viewport.scrollY) + ", DPR " + Number(t.viewport.devicePixelRatio) +
           ", zoom " + Number(t.viewport.zoom) + "\n";
+    if (const std::string style = SpacingText(t.spacing); !style.empty()) md += "- Style (px CSS) : " + InlineCode(style) + "\n";
     if (!t.styles.empty()) {
         md += "\n### Styles calculés\n\n";
         for (const auto& nv : t.styles) md += "- " + nv.name + " : " + InlineCode(nv.value) + "\n";
