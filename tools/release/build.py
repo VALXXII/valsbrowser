@@ -117,6 +117,14 @@ def bridge_location(channel: str, mode: str, annotations: bool) -> str | None:
     return None if mode == 'off' else BRIDGE_NAME
 
 
+def release_annotation_defines(channel: str, bridge: str | None, annotations: bool) -> list[str]:
+    """src/main.cpp compiles the annotation mode into a --channel release build only with
+    BROWSER_RELEASE_ANNOTATIONS, which is passed only when the bridge ships at RELEASE_BRIDGE."""
+    if channel == 'release' and annotations and bridge == RELEASE_BRIDGE:
+        return ['-DBROWSER_RELEASE_ANNOTATIONS']
+    return []
+
+
 def clean_payload(out: Path) -> None:
     """Remove only previously built payload entries. Anything else in the directory
     (an old exe-adjacent profile, session or log) is left strictly untouched."""
@@ -162,6 +170,7 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
         common.append('-DBROWSER_PREVIEW')
     if not annotations:  # measurement baseline: the annotation mode compiled out (src/main.cpp)
         common.append('-DBROWSER_NO_ANNOTATIONS')
+    common += release_annotation_defines(info['channel'], bridge, annotations)
     run([BIN / 'g++.exe', *common, '-mwindows', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
          f'-I{SDK / "include"}', *BROWSER_SOURCES, res, THORVG, '-o', out / 'browser.exe',
          *BROWSER_LIBS])

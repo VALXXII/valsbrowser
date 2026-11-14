@@ -599,6 +599,121 @@ class Publisher(unittest.TestCase):
         self.assertEqual(fake.mutations(), [])
 
 
+def fake_pe(machine=0x8664, magic=0x20B, subsystem=3) -> bytes:
+    """Minimal PE header: what package.check_console_x64 reads (not runnable)."""
+    data = bytearray(0x200)
+    data[:2] = b'MZ'
+    data[0x3C:0x40] = (0x80).to_bytes(4, 'little')
+    data[0x80:0x84] = b'PE\0\0'
+    data[0x84:0x86] = machine.to_bytes(2, 'little')
+    opt = 0x80 + 24
+    data[opt:opt + 2] = magic.to_bytes(2, 'little')
+    data[opt + 68:opt + 70] = subsystem.to_bytes(2, 'little')
+    return bytes(data) + b'bridge-body'
+
+
+def lsrupd_entries(path: Path) -> dict:
+    """Entries of a .lsrupd v1 (format in tools/update-package/make_update_package.py)."""
+    import struct
+    data, pos, out = path.read_bytes(), 0, {}
+    def take(n):
+        nonlocal pos
+        pos += n
+        return data[pos - n:pos]
+    assert take(8) == b'LSRUPD01'
+    take(struct.unpack('<H', take(2))[0])
+    take(struct.unpack('<H', take(2))[0])
+    for _ in range(struct.unpack('<I', take(4))[0]):
+        name = take(struct.unpack('<H', take(2))[0]).decode('ascii')
+        size = struct.unpack('<Q', take(8))[0]
+        take(32)
+        out[name] = take(size)
+    assert take(8) == b'LSRUEND1' and pos == len(data)
+    return out
+
+
+class ReleaseBridgePayload(unittest.TestCase):
+    """Plan B item 1: the annotations MCP bridge ships at exactly assets/bin/<name>."""
+
+    def test_constants_agree(self):
+        self.assertEqual(B.RELEASE_BRIDGE, K.RELEASE_BRIDGE)
+        self.assertEqual(B.RELEASE_BRIDGE, 'assets/bin/browser-annotations-mcp.exe')
+
+    def test_bridge_location_flag_coherence(self):
+        loc = B.bridge_location
+        self.assertEqual(loc('release', 'auto', True), 'assets/bin/browser-annotations-mcp.exe')
+        self.assertEqual(loc('release', 'on', True), 'assets/bin/browser-annotations-mcp.exe')
+        self.assertIsNone(loc('release', 'auto', False))     # --no-annotations measurement baseline
+        self.assertIsNone(loc('release', 'off', False))
+        self.assertEqual(loc('dev', 'auto', True), 'browser-annotations-mcp.exe')  # dev: sibling
+        self.assertIsNone(loc('dev', 'off', True))
+        self.assertIsNone(loc('dev', 'auto', False))
+        for args in (('release', 'off', True),   # annotation UI without its bridge
+                     ('release', 'on', False), ('dev', 'on', False),  # bridge without annotations
+                     ('release', 'maybe', True)):
+            with self.subTest(args=args), self.assertRaises(SystemExit):
+                loc(*args)
+
+    def test_release_annotations_define_only_with_the_bridge(self):
+        # src/main.cpp gate: release builds get the annotation mode only with this define.
+        d = B.release_annotation_defines
+        self.assertEqual(d('release', B.RELEASE_BRIDGE, True), ['-DBROWSER_RELEASE_ANNOTATIONS'])
+        self.assertEqual(d('release', None, False), [])
+        self.assertEqual(d('release', B.RELEASE_BRIDGE, False), [])
+        self.assertEqual(d('release', B.BRIDGE_NAME, True), [])
+        self.assertEqual(d('dev', B.BRIDGE_NAME, True), [])
+        for channel, mode, ann in (('release', 'auto', True), ('release', 'on', True), ('release', 'auto', False),
+                                   ('dev', 'auto', True), ('dev', 'off', True)):
+            loc = B.bridge_location(channel, mode, ann)
+            self.assertEqual(bool(d(channel, loc, ann)), channel == 'release' and ann, (channel, mode, ann))
+
+    def app_with_bridge(self, root: Path, rel=K.RELEASE_BRIDGE, data=None) -> Path:
+        app = make_app(root)
+        (app / rel).parent.mkdir(parents=True, exist_ok=True)
+        (app / rel).write_bytes(fake_pe() if data is None else data)
+        return app
+
+    def test_bridge_packaged_identically_in_zip_and_lsrupd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.app_with_bridge(Path(tmp))
+            dist = package_dist(Path(tmp), app)
+            pkg = lsrupd_entries(dist / 'browser-0.3.7-win-x64.lsrupd')
+            with zipfile.ZipFile(dist / 'browser-0.3.7-win-x64.zip') as z:
+                zipped = {n.split('/', 1)[1]: z.read(n) for n in z.namelist()}
+            self.assertEqual(pkg, zipped)  # same names, same bytes
+            self.assertEqual(pkg[K.RELEASE_BRIDGE], fake_pe())
+            self.assertNotIn('browser-annotations-mcp.exe', pkg)  # never at the root
+
+    def test_other_executables_refused(self):
+        cases = {
+            'root bridge': ('browser-annotations-mcp.exe', fake_pe()),
+            'other name in assets/bin': ('assets/bin/other.exe', fake_pe()),
+            'bridge elsewhere in assets': ('assets/browser-annotations-mcp.exe', fake_pe()),
+            'case variant': ('assets/bin/Browser-Annotations-MCP.exe', fake_pe()),
+            'dll in assets': ('assets/bin/helper.dll', fake_pe()),
+            'script in assets': ('assets/run.cmd', b'@echo off'),
+            'GUI subsystem': (K.RELEASE_BRIDGE, fake_pe(subsystem=2)),
+            'x86 image': (K.RELEASE_BRIDGE, fake_pe(machine=0x14C, magic=0x10B)),
+            'not a PE': (K.RELEASE_BRIDGE, b'MZ not really'),
+        }
+        for label, (rel, data) in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                app = make_app(Path(tmp))
+                (app / rel).parent.mkdir(parents=True, exist_ok=True)
+                (app / rel).write_bytes(data)
+                with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+                    package_dist(Path(tmp), app)
+                self.assertFalse((Path(tmp) / 'dist/browser-0.3.7-win-x64.zip').exists())
+
+    def test_existing_clients_accept_the_bridge_path(self):
+        """Python mirror of src/update-package.cpp AllowedPayloadPath (unchanged since v0.3.239);
+        the C++ validator of v0.3.239 itself is exercised by tests/update-integration/old_validator.py."""
+        sys.path.insert(0, str(ROOT / 'tools/update-package'))
+        import make_update_package as M
+        self.assertTrue(M.allowed(K.RELEASE_BRIDGE) and M.valid_path(K.RELEASE_BRIDGE))
+        self.assertFalse(M.allowed('browser-annotations-mcp.exe'))
+
+
 class Workflow(unittest.TestCase):
     def test_workflow_security_properties(self):
         text = (ROOT / '.github/workflows/update-release.yml').read_text(encoding='utf-8')
