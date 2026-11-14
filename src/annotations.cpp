@@ -1925,7 +1925,8 @@ Outcome Store::Claim(const std::string& site, const std::string& id, const std::
     return Fail(Code::Busy, "Réservation disputée, réessayez.");
 }
 
-Outcome Store::Release(const std::string& site, const std::string& id, const std::string& token, const std::string& actor) const {
+Outcome Store::Release(const std::string& site, const std::string& id, const std::string& token, const std::string& actor,
+                       const std::string& reason) const {
     const std::string project = KeyOf(site);
     Entry entry;
     Outcome read = Read(project, id, entry);
@@ -1944,7 +1945,8 @@ Outcome Store::Release(const std::string& site, const std::string& id, const std
         s.status = Status::Open;
         s.claimedBy.reset();
         s.updatedAt = now;
-        PushEvent(s, now, Agent(actor), "claimed", "open", "libérée");
+        { const std::string why = CleanText(reason, MaxEventSummaryChars);
+          PushEvent(s, now, Agent(actor), "claimed", "open", why.find_first_not_of(" \n\t") == std::string::npos ? std::string("libérée") : why); }
         if (!WriteState(dir, s)) return Fail(Code::Io, "Écriture de l'état impossible.");
     }
     if (!DeleteFileW((dir + L"\\claim").c_str())) return Fail(Code::Io, "Suppression du bail impossible.");

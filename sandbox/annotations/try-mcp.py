@@ -5,7 +5,7 @@
     python sandbox/annotations/try-mcp.py get <id>                 # contexte Markdown + capture enregistrée (PNG)
     python sandbox/annotations/try-mcp.py claim <id>               # « Claude s'en occupe » côté navigateur (agent try-mcp)
     python sandbox/annotations/try-mcp.py resolve <id> <résumé…>  [--outcome resolved|needs_info|dismissed]
-    python sandbox/annotations/try-mcp.py release <id>             # rend l'annotation (retour à « En attente »)
+    python sandbox/annotations/try-mcp.py release <id> [raison]    # rend l'annotation (retour à « En attente »), raison lue par l'utilisateur
     python sandbox/annotations/try-mcp.py wait [--timeout 300]     # attend la prochaine annotation ouverte et l'affiche
     python sandbox/annotations/try-mcp.py demo [--work 8]          # wait + claim + (8 s de « travail ») + resolve
     python sandbox/annotations/try-mcp.py tools                    # outils exposés par le connecteur
@@ -153,7 +153,10 @@ def finish(b: Bridge, command: str, ident: str, claims: dict, summary: str, outc
     if command == 'resolve':
         r = b.call('browser_annotation_resolve', {'id': ident, 'claim_token': token, 'outcome': outcome, 'summary': summary or 'Corrigé.'})
     else:
-        r = b.call('browser_annotation_release', {'id': ident, 'claim_token': token})
+        args = {'id': ident, 'claim_token': token}
+        if summary:
+            args['reason'] = summary   # « release <id> <raison> » : montrée à l'utilisateur dans l'historique
+        r = b.call('browser_annotation_release', args)
     print(text_of(r))
     if not r.get('isError'):
         claims.pop(ident, None)

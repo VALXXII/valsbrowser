@@ -327,8 +327,9 @@ public:
     // Lease (agent side). token empty => new claim; token = current lease token => renewal (30 min more).
     Outcome Claim(const std::string& site, const std::string& id, const std::string& agent,
                   const std::string& token, ClaimResult& out) const;
+    // reason (optional, <= MaxEventSummaryChars): why the agent gives it back (« pas d'accès au code »); shown in the history.
     Outcome Release(const std::string& site, const std::string& id, const std::string& token,
-                    const std::string& actor) const;
+                    const std::string& actor, const std::string& reason = "") const;
     // outcome: "resolved" | "needs_info" | "dismissed"; summary required (<= MaxSummaryChars).
     Outcome Resolve(const std::string& site, const std::string& id, const std::string& token,
                     const std::string& outcome, const std::string& summary, const std::string& actor,
