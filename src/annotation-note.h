@@ -40,7 +40,10 @@ namespace NoteSpec {
 inline constexpr float width = 350, radius = 12, pad = 12, gap = 12, row = 24, minHeight = 84, noteLine = 20;
 inline constexpr float fieldMin = 22, fieldMax = 160;
 inline constexpr float pillGap = 8, pillRadius = 8, cardRadius = 12, labelW = 48;
-inline constexpr float thumbW = 96, thumbH = 62;      // capture thumbnail (the host crops/reduces to this ratio)
+inline constexpr float thumbW = 96, thumbH = 62;      // capture thumbnail box (V3: the image is contained, never cropped)
+// V3 (retours §11, Paper 5.7): an image wider than 2.2:1 would be a thin strip in that box: the card stacks instead,
+// the image full width (326 x 64, contain, neutral page colour) above Page / Élément / Style.
+inline constexpr float wideRatio = 2.2f, wideH = 64;
 inline constexpr const wchar_t* placeholder = L"Que faut-il changer ?";
 inline constexpr const wchar_t* pillLabel = L"Ce que l'agent verra";
 inline constexpr const wchar_t* unavailable = L"Capture impossible ici · l'annotation partira sans image";
@@ -113,14 +116,17 @@ inline D2D1_SIZE_F PillCollapsed(Ink& ink, CaptureState c) {
     if (!PillExpandable(c)) return {8 + 13 + 6 + ink.Width(NoteSpec::unavailable, F(12, 16)) + 8 + 2, 30};
     return {8 + ink.Width(NoteSpec::pillLabel, F(12, 16)) + 6 + 14 + 8 + 2, 30};
 }
-inline float PillExpandedH() { return 1 + 10 + 16 + 10 + NoteSpec::thumbH + 12 + 1; }
-inline D2D1_RECT_F PillRect(Ink& ink, CaptureState c, float cx, float top, float fold) {
-    const auto s = PillCollapsed(ink, c); const float w = Lerp(s.width, NoteSpec::width, fold), h = Lerp(s.height, PillExpandedH(), fold);
+inline bool PillWide(const Shot* shot) { return shot && shot->width && shot->height && float(shot->width) / float(shot->height) > NoteSpec::wideRatio; }
+inline float PillExpandedH(bool wide = false) {
+    return wide ? 1 + 10 + 16 + 10 + NoteSpec::wideH + 10 + (3 * 16 + 2 * 5) + 12 + 1 : 1 + 10 + 16 + 10 + NoteSpec::thumbH + 12 + 1;
+}
+inline D2D1_RECT_F PillRect(Ink& ink, CaptureState c, float cx, float top, float fold, bool wide = false) {
+    const auto s = PillCollapsed(ink, c); const float w = Lerp(s.width, NoteSpec::width, fold), h = Lerp(s.height, PillExpandedH(wide), fold);
     return {cx - w / 2, top, cx + w / 2, top + h};
 }
 struct PillView { NoteContext context; CaptureState capture = CaptureState::Ready; const Shot* shot = nullptr; float fold = 0, spinner = 0; bool focus = false, keyboard = false; Motion::InteractionVisual iv; };
 inline void PaintCaptureBox(Ink& ink, const Shot* shot, CaptureState capture, D2D1_RECT_F box, float radius, float spinner) {
-    if (capture == CaptureState::Ready && shot && shot->width) ink.Thumbnail(shot, box, radius);
+    if (capture == CaptureState::Ready && shot && shot->width) ink.Thumbnail(shot, box, radius, 1, true);   // V3: contain
     else ink.Fill(box, radius, capture == CaptureState::Unavailable ? Hex(0xFFFFFF0A) : Hex(Ink_::page));
     const float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
     if (capture == CaptureState::Pending) ink.Icon(Glyphs::ring, {cx - 8, cy - 8, cx + 8, cy + 8}, Accent(), spinner);
@@ -146,12 +152,12 @@ inline void PaintPill(Ink& ink, const PillView& v, D2D1_RECT_F r) {
         ID2D1Layer* g = nullptr; const bool pushed = ink.PushOpacity(b, g);
         const float top = r.top + 11, x = r.left + 13;
         Pieces(ink, {PText(pillLabel, F(12, 16, 500), Hex(0xFFFFFFE6)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f}, 6, 180)}, {r.left, top, r.right, top + 16});
-        const float cy = top + 16 + 10;
-        PaintCaptureBox(ink, v.shot, v.capture, {x, cy, x + thumbW, cy + thumbH}, 6, v.spinner);
-        const float rx = x + thumbW + 12;
+        const float cy = top + 16 + 10; const bool wide = PillWide(v.shot);
+        float rx = x + thumbW + 12, ry = cy;
+        if (wide) { PaintCaptureBox(ink, v.shot, v.capture, {x, cy, r.right - 13, cy + wideH}, 6, v.spinner); rx = x; ry = cy + wideH + 10; }
+        else PaintCaptureBox(ink, v.shot, v.capture, {x, cy, x + thumbW, cy + thumbH}, 6, v.spinner);
         const std::wstring values[3] = {NotePage(v.context), NoteElement(v.context), NoteStyle(v.context)};
         const wchar_t* labels[3] = {L"Page", L"Élément", L"Style"};
-        float ry = cy;
         for (int i = 0; i < 3; ++i) {
             ink.Text(labels[i], F(12, 16), {rx, ry, rx + labelW, ry + 16}, Hex(0xFFFFFF99));
             ink.Text(values[i], F(12, 16), {rx + labelW + 8, ry, r.right - 13, ry + 16}, Hex(0xFFFFFFE6));
@@ -281,9 +287,9 @@ class NotePopover : public Animator::Client {
     // ---- the pill (owned no-activate layer): fold + entrance
     RECT PillWindowRect() const {   // room for the unfolded card + the entrance lift
         const int x = final_.left, y = final_.bottom + Px(NoteSpec::pillGap) - Px(Spec::pillLift);
-        return {x, y, x + Px(NoteSpec::width), y + Px(PillExpandedH() + Spec::pillLift + 4)};
+        return {x, y, x + Px(NoteSpec::width), y + Px(PillExpandedH(true) + Spec::pillLift + 4)};   // room for either layout
     }
-    D2D1_RECT_F PillLocal(Motion::Time now) { return PillRect(I(), view_.capture, NoteSpec::width / 2, Spec::pillLift, Motion::Clamp(fold_.Value(now))); }
+    D2D1_RECT_F PillLocal(Motion::Time now) { return PillRect(I(), view_.capture, NoteSpec::width / 2, Spec::pillLift, Motion::Clamp(fold_.Value(now)), PillWide(shot_.width ? &shot_ : nullptr)); }
     void PlacePill(Motion::Time now) {
         if (!hwnd_ || (!open_ && !pillIn_.Moving(now) && pillIn_.Value(now) <= 0)) { pill_.Hide(); return; }
         const float in = Motion::Clamp(pillIn_.Value(now)); if (in <= 0) { pill_.Hide(); return; }

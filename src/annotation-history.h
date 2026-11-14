@@ -45,8 +45,17 @@ struct HistoryEntry {
     std::wstring followUp;                  // « Ajoutée à 14:02 · prise en charge à 14:04 »
     std::wstring summary;                   // the agent's summary when done
     Shot thumb;                             // row capture (cover-fitted 44x32), optional
-    Shot capture;                           // detail capture (cover-fitted 334x150), optional (else thumb)
+    Shot capture;                           // detail capture (V3: contain-fitted inside 334x150), optional (else thumb)
+    // V3 (Paper 5.5 « Suivi par l'agent »): what the agents did, even when they stopped on the way.
+    std::wstring readBy;                    // « Claude »: an agent read it (bridge readers, per annotation) — « Lue par Claude »
+    std::wstring readAge;                   // « il y a 2 min »
+    bool unhandled = false;                 // an agent gave it back with a reason: « Claude n'a pas pu la traiter » (amber), still « En cours »
+    std::wstring reason;                    // that reason, quoted in the detail
+    struct Step { enum Kind { Added, Read, Claimed, Released, Unhandled, Done, Question, Dismissed, Reopened } kind = Added;
+                  AgentKind agent = AgentKind::Other; std::wstring label, time, quote; };
+    std::vector<Step> steps;                // the detail's « Suivi », oldest first (empty: followUp as plain text)
 };
+inline constexpr const wchar_t* UnhandledHelp = L"Pour qu'un agent modifie le site, ouvrez Claude Code ou Codex dans le dossier du projet, puis rouvrez l'annotation.";
 struct HistoryData { std::wstring currentSite; std::vector<HistoryEntry> entries; };   // most recent first
 enum class HistoryFilter { All = 0, Open = 1, Done = 2 };
 struct HistoryHooks {
@@ -60,19 +69,34 @@ struct HistoryHooks {
     std::function<void(bool keyboard)> closed;                // the panel closed itself (close, Échap)
     std::function<void(const std::wstring&)> announce;
 };
+// V3 order: done > held by an agent > given back with a reason > read > waiting.
+inline bool Unhandled(const HistoryEntry& e) { return e.status == EntryStatus::Pending && e.unhandled; }
+inline bool ReadOnly(const HistoryEntry& e) { return e.status == EntryStatus::Pending && !e.unhandled && !e.readBy.empty(); }
 inline std::wstring StatusLine(const HistoryEntry& e) {
     const std::wstring a = e.agentName.empty() ? std::wstring(AgentName(e.agent)) : e.agentName;
-    return e.status == EntryStatus::Done ? L"Terminée par " + a : e.status == EntryStatus::Working ? a : std::wstring(L"En attente");
+    if (e.status == EntryStatus::Done) return L"Terminée par " + a;
+    if (e.status == EntryStatus::Working) return a;
+    if (Unhandled(e)) return a + L" n'a pas pu la traiter";
+    if (ReadOnly(e)) return L"Lue par " + e.readBy;
+    return L"En attente";
 }
 inline std::wstring StatusTitle(const HistoryEntry& e) {
     const std::wstring a = e.agentName.empty() ? std::wstring(AgentName(e.agent)) : e.agentName;
-    return e.status == EntryStatus::Done ? a + L" a terminé" : e.status == EntryStatus::Working ? a + L" s'en occupe" : std::wstring(L"En attente d'un agent");
+    if (e.status == EntryStatus::Done) return a + L" a terminé";
+    if (e.status == EntryStatus::Working) return a + L" s'en occupe";
+    if (Unhandled(e)) return a + L" n'a pas pu la traiter";
+    if (ReadOnly(e)) return L"Lue par " + e.readBy + (e.readAge.empty() ? L"" : L" · " + e.readAge);
+    return L"En attente d'un agent";
+}
+inline std::wstring StepsText(const HistoryEntry& e) {
+    std::wstring t; for (const auto& s : e.steps) t += (t.empty() ? L"" : L" · ") + s.label + L" " + s.time + (s.quote.empty() ? L"" : L" « " + s.quote + L" »"); return t;
 }
 // « Copier en Markdown » (pure).
 inline std::wstring EntryMarkdown(const HistoryEntry& e) {
     std::wstring first = e.note.substr(0, e.note.find(L'\n'));
     std::wstring md = L"## " + first + L"\n\n- Site : " + e.site + L"\n- Page : " + e.page + L"\n- Statut : " + StatusTitle(e) + L"\n";
-    if (!e.followUp.empty()) md += L"- Suivi : " + e.followUp + L"\n";
+    if (!e.steps.empty()) md += L"- Suivi : " + StepsText(e) + L"\n";
+    else if (!e.followUp.empty()) md += L"- Suivi : " + e.followUp + L"\n";
     md += L"\n" + e.note + L"\n";
     if (!e.summary.empty()) md += L"\n> " + e.summary + L"\n";
     return md;
@@ -90,7 +114,7 @@ struct HistoryItem { bool section = false; int entry = -1; std::wstring site; bo
 struct HistoryLayout {
     bool detail = false, empty = false, filterEmpty = false;
     float height = 0, listTop = 0, viewport = 0, content = 0;
-    D2D1_RECT_F close{}, filters{}, segment[3]{}, annotate{}, back{}, copy{}, del{}, capture{}, note{}, follow{}, page{};
+    D2D1_RECT_F close{}, filters{}, segment[3]{}, annotate{}, back{}, copy{}, del{}, capture{}, note{}, follow{}, page{}, help{};
     std::vector<HistoryItem> items;
 };
 struct HistoryView {
@@ -110,9 +134,16 @@ inline HistoryLayout LayoutHistory(Ink& ink, const HistoryView& v) {
         y += detailHeader;
         l.capture = {x0 + 12, y, x0 + inner - 12, y + capture}; y += capture + 12;
         const float nh = ink.Height(e.note, F(14, 20), inner - 32); l.note = {x0 + 16, y, x0 + inner - 16, y + nh}; y += nh + 12;
-        const std::wstring follow = e.status == EntryStatus::Done && !e.summary.empty() ? e.summary : e.followUp;
-        const float fh = 10 + 18 + (follow.empty() ? 0 : 6 + ink.Height(follow, F(12, 17), inner - 24 - 24)) + 10;
-        l.follow = {x0 + 12, y, x0 + inner - 12, y + fh}; y += fh + 12;
+        if (!e.steps.empty()) {   // V3 « Suivi »: one line per step (icon 16, label 13/16, time at right), quotes under it
+            float fh = 10 + 16 + 8;   // « Suivi » 12/16 medium, then the steps
+            for (size_t i = 0; i < e.steps.size(); ++i) { fh += 16; if (!e.steps[i].quote.empty()) fh += 4 + ink.Height(L"« " + e.steps[i].quote + L" »", F(13, 18), inner - 24 - 24 - 26 - 40); if (i + 1 < e.steps.size()) fh += 10; }
+            fh += 12; l.follow = {x0 + 12, y, x0 + inner - 12, y + fh}; y += fh + 12;
+            if (Unhandled(e)) { const float hh = 20 + ink.Height(UnhandledHelp, F(13, 18), inner - 24 - 24); l.help = {x0 + 12, y, x0 + inner - 12, y + hh}; y += hh + 12; }
+        } else {
+            const std::wstring follow = e.status == EntryStatus::Done && !e.summary.empty() ? e.summary : e.followUp;
+            const float fh = 10 + 18 + (follow.empty() ? 0 : 6 + ink.Height(follow, F(12, 17), inner - 24 - 24)) + 10;
+            l.follow = {x0 + 12, y, x0 + inner - 12, y + fh}; y += fh + 12;
+        }
         const float bw = (inner - 24 - 8) / 2; l.copy = {x0 + 12, y, x0 + 12 + bw, y + 30}; l.del = {l.copy.right + 8, y, x0 + inner - 12, y + 30}; y += 30 + 12;
         l.height = y + 1; l.viewport = 0; return l;
     }
@@ -159,8 +190,8 @@ inline int HistoryHitAt(const HistoryLayout& l, const HistoryView& v, float x, f
     }
     return HNone;
 }
-inline void PaintCaptureThumb(Ink& ink, const Shot* shot, D2D1_RECT_F box, float radius, bool done) {
-    if (shot && shot->width) ink.Thumbnail(shot, box, radius);
+inline void PaintCaptureThumb(Ink& ink, const Shot* shot, D2D1_RECT_F box, float radius, bool done, bool contain = false) {
+    if (shot && shot->width) ink.Thumbnail(shot, box, radius, 1, contain);
     else {   // no image: the page colour and a bar (Paper's placeholder)
         ink.Fill(box, radius, Hex(Ink_::page)); const float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2, w = (box.right - box.left) * .59f, h = std::max(7.f, (box.bottom - box.top) * .22f);
         ink.Fill({cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2}, 1, Hex(done ? 0xBDBDBDFF : 0x1C1C1CFF));
@@ -173,7 +204,7 @@ inline void PaintHistoryRow(Ink& ink, const HistoryView& v, const HistoryEntry& 
     const bool done = e.status == EntryStatus::Done;
     // Done rows are dimmed to 70 % (Paper) on the capture and the note only: the 12 px status and
     // age keep #FFFFFF99 at full strength (6.2:1), which 70 % would bring under 4.5:1 (4.1:1).
-    ID2D1Layer* g = nullptr; const bool pushed = ink.PushOpacity(done ? .7f : 1.f, g);
+    ID2D1Layer* g = nullptr; const bool pushed = ink.PushOpacity(done ? .7f : 1.f, g);   // V3: an unhandled row stays at full strength
     const float x = r.left + 8, cy = (r.top + r.bottom) / 2, more = r.right - 8 - 24;
     PaintCaptureThumb(ink, e.thumb.width ? &e.thumb : nullptr, {x, cy - 16, x + 44, cy + 16}, 5, done);
     const float tx = x + 44 + 10, tr = more - 10, top = r.top + 8;
@@ -184,6 +215,8 @@ inline void PaintHistoryRow(Ink& ink, const HistoryView& v, const HistoryEntry& 
     ink.Text(e.age, F(12, 16), {tr - ageW, my, tr, my + 16}, Hex(0xFFFFFF99), false, Align::Trailing);
     const D2D1_RECT_F status{tx, my, tr - ageW - 8, my + 16};
     if (e.status == EntryStatus::Working) Pieces(ink, {PLogo(e.agent, 12, 5), PText(StatusLine(e), F(12, 16), Hex(0xFFFFFF99))}, status, Align::Leading);
+    else if (Unhandled(e)) Pieces(ink, {PIcon(Glyphs::warningCircle, 12, Hex(Ink_::amber), 5), PText(StatusLine(e), F(12, 16), Hex(Ink_::amber))}, status, Align::Leading);
+    else if (ReadOnly(e)) Pieces(ink, {PIcon(Glyphs::eye, 12, {1, 1, 1, .7f}, 5), PText(StatusLine(e), F(12, 16), Hex(0xFFFFFF99))}, status, Align::Leading);
     else if (e.status == EntryStatus::Pending) { ink.Disc(status.left + 6, my + 8, 3, Hex(0xFFFFFF66)); ink.Text(StatusLine(e), F(12, 16), {status.left + 20, my, status.right, my + 16}, Hex(0xFFFFFF99)); }
     else Pieces(ink, {PIcon(Glyphs::check, 12, {1, 1, 1, .7f}, 5), PText(StatusLine(e), F(12, 16), Hex(0xFFFFFF99))}, status, Align::Leading);
     if (hot) {   // « … » (revealed instantly on hover / focus)
@@ -227,6 +260,35 @@ inline void PaintSegmented(Ink& ink, const HistoryView& v, const HistoryLayout& 
         if (v.focus == HFilters && on) FocusRing(ink, l.segment[i], 6, v.keyboard);
     }
 }
+// V3 « Suivi » (Paper 5.5): « Suivi » 12/16 medium #FFFFFF99, then per step a 16 DIP icon slot (dot 6 #FFFFFF66 /
+// eye 12 at 70 % / logo 12 / check 12 at 70 % / warning-circle 12 amber), label 13/16 #FFFFFFCC (amber 500 when an agent
+// could not handle it), time 12/16 #FFFFFF80 at right, the quote (reason, summary, question) 13/18 #FFFFFFB3 under it.
+inline void PaintSteps(Ink& ink, const HistoryEntry& e, const HistoryLayout& l) {
+    using Step = HistoryEntry::Step;
+    const float x = l.follow.left + 12, r = l.follow.right - 12; float y = l.follow.top + 10;
+    ink.Text(L"Suivi", F(12, 16, 500), {x, y, r, y + 16}, Hex(0xFFFFFF99)); y += 16 + 8;
+    for (size_t i = 0; i < e.steps.size(); ++i) {
+        const auto& s = e.steps[i]; const float cy = y + 8;
+        const D2D1_RECT_F icon{x + 2, cy - 6, x + 14, cy + 6};
+        switch (s.kind) {
+        case Step::Added: ink.Disc(x + 8, cy, 3, Hex(0xFFFFFF66)); break;
+        case Step::Read: ink.Icon(Glyphs::eye, icon, {1, 1, 1, .7f}); break;
+        case Step::Claimed: case Step::Released: Logo(ink, s.agent, icon); break;
+        case Step::Unhandled: ink.Icon(Glyphs::warningCircle, icon, Hex(Ink_::amber)); break;
+        case Step::Done: ink.Icon(Glyphs::check, icon, {1, 1, 1, .7f}); break;
+        case Step::Question: case Step::Dismissed: ink.Icon(Glyphs::info, icon, {1, 1, 1, .7f}); break;
+        case Step::Reopened: ink.Icon(Glyphs::ring, icon, {1, 1, 1, .5f}); break;
+        }
+        const float tw = ink.Width(s.time, F(12, 16));
+        ink.Text(s.time, F(12, 16), {r - tw, y, r, y + 16}, Hex(0xFFFFFF80), false, Align::Trailing);
+        const bool amber = s.kind == Step::Unhandled;
+        ink.Text(s.label, F(13, 16, amber ? 500 : 400), {x + 26, y, r - tw - 8, y + 16}, amber ? Hex(Ink_::amber) : Hex(0xFFFFFFCC));
+        y += 16;
+        if (!s.quote.empty()) { const std::wstring q = L"« " + s.quote + L" »"; const float qw = r - tw - 8 - (x + 26); const float qh = ink.Height(q, F(13, 18), qw);
+            ink.Text(q, F(13, 18), {x + 26, y + 4, x + 26 + qw, y + 4 + qh}, Hex(0xFFFFFFB3), true); y += 4 + qh; }
+        y += 10;
+    }
+}
 inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout& l) {
     using namespace HistorySpec; const float inner = width - 2;
     if (l.detail) {
@@ -237,9 +299,11 @@ inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout
             if (v.focus == HBack) FocusRing(ink, l.back, 6, v.keyboard); }
         ink.Text(e.page, F(13, 18), l.page, Hex(0xFFFFFFB3), false, Align::Leading, true);
         CloseButton(ink, l.close, 14, v.V(HClose), v.focus == HClose, v.keyboard, v.reduced);
-        PaintCaptureThumb(ink, e.capture.width ? &e.capture : e.thumb.width ? &e.thumb : nullptr, l.capture, 8, false);
+        PaintCaptureThumb(ink, e.capture.width ? &e.capture : e.thumb.width ? &e.thumb : nullptr, l.capture, 8, false, e.capture.width != 0);   // V3: contain
         ink.Text(e.note, F(14, 20), l.note, Hex(0xFFFFFFE6), true);
         ink.Fill(l.follow, 8, Hex(Ink_::raised));
+        if (!e.steps.empty()) { PaintSteps(ink, e, l); }
+        else {
         const float fx = l.follow.left + 12, fy = l.follow.top + 10, fr = l.follow.right - 12;
         const float ageW = ink.Width(e.age, F(12, 16));
         ink.Text(e.age, F(12, 16), {fr - ageW, fy, fr, fy + 18}, Hex(0xFFFFFF99), false, Align::Trailing, true);
@@ -251,6 +315,8 @@ inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout
         Pieces(ink, head, {fx, fy, fr - ageW - 8, fy + 18}, Align::Leading);
         const std::wstring follow = e.status == EntryStatus::Done && !e.summary.empty() ? e.summary : e.followUp;
         if (!follow.empty()) ink.Text(follow, F(12, 17), {fx, fy + 24, fr, l.follow.bottom - 10}, Hex(0xFFFFFF99), true);
+        }
+        if (l.help.bottom > l.help.top) { ink.Fill(l.help, 8, Hex(0xFFFFFF0D)); ink.Text(UnhandledHelp, F(13, 18), {l.help.left + 12, l.help.top + 10, l.help.right - 12, l.help.bottom - 10}, Hex(0xFFFFFFCC), true); }
         {   const auto iv = v.V(HCopy); ScaleScope s(ink.Target(), l.copy, Motion::PressScale(iv.press, v.reduced));
             ink.Fill(l.copy, 6, RaisedFill(iv)); ink.Text(L"Copier en Markdown", F(12, 16, 500), l.copy, {1, 1, 1, 1}, false, Align::Center, true);
             if (v.focus == HCopy) FocusRing(ink, l.copy, 6, v.keyboard); }
@@ -588,7 +654,7 @@ class HistoryPanel : public Animator::Client {
             const int d = view_.Find(view_.detailId); if (d < 0) return n; const auto& e = view_.data.entries[size_t(d)];
             add(HBack, Accessibility::Role::Button, L"Retour à l'historique", layout_.back).accelerator = L"Échap";
             add(HClose, Accessibility::Role::Button, L"Fermer l'historique", layout_.close);
-            auto& t = add(DetailTextKey, Accessibility::Role::Text, e.page, layout_.note); t.value = e.note; t.status = StatusTitle(e) + L" · " + e.age; t.help = e.followUp; t.focusable = false;
+            auto& t = add(DetailTextKey, Accessibility::Role::Text, e.page, layout_.note); t.value = e.note; t.status = StatusTitle(e) + L" · " + e.age; t.help = e.steps.empty() ? e.followUp : StepsText(e) + (Unhandled(e) ? std::wstring(L". ") + UnhandledHelp : L""); t.focusable = false;
             add(HCopy, Accessibility::Role::Button, L"Copier en Markdown", layout_.copy);
             add(HDelete, Accessibility::Role::Button, L"Supprimer", layout_.del).help = L"Annulable pendant 6 secondes";
             return n;

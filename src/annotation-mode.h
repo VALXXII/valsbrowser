@@ -68,10 +68,11 @@ ShotJob shot; bool resumeOwed = false; std::uint64_t frameSerial = 0;
 bool uiReady = false, purged = false, countLoaded = false, laterThisSession = false, connectLaunch = false;
 std::unique_ptr<BA::Store> store; std::mutex writeLock;
 std::optional<BA::Entry> last;                // last annotation added in this session (« Copier en Markdown »)
-std::set<std::string> sessionIds, seenWorking, seenDone;   // this session's annotations, cards already shown
+std::set<std::string> sessionIds, seenWorking, seenDone, seenRead, seenUnhandled;   // this session's annotations, cards already shown
+std::vector<BA::Reader> readers;              // V3: last read of readers\ (« Lue par … »), with the store's other reads
 int claimed = 0;                              // launcher counter: annotations an agent is handling
 bool statusBusy = false, statusDirty = false;
-enum class Card { None, Working, NoAgent, Added, Done } card = Card::None; std::string cardId, cardSite;
+enum class Card { None, Working, NoAgent, Added, Done, Read, Unhandled } card = Card::None; std::string cardId, cardSite;
 std::wstring loggedOnce;
 HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2;
 struct Watch { HANDLE thread = nullptr, stop = nullptr; std::wstring root; } watch; std::atomic<bool> watchSignal{false};
@@ -404,6 +405,50 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
         });
 }
 
+// V3 (retours §5, Paper 5.5): who read an annotation (the bridge records the ids an agent listed or opened), and
+// whether an agent gave it back with a reason (release reason: the last claimed -> open event of an agent).
+struct ReadBy { std::string label; std::int64_t at = 0; };
+ReadBy ReadOf(const std::string& id) {
+    ReadBy r; for (const auto& rd : readers) if (const auto at = rd.SeenAt(id); at > 0 && (!r.at || at < r.at)) r = {rd.label.empty() ? rd.client : rd.label, at};
+    return r;
+}
+const BA::Event* GivenBack(const BA::Entry& e) {
+    if (e.state.status != BA::Status::Open) return nullptr;
+    for (auto it = e.state.events.rbegin(); it != e.state.events.rend(); ++it) {
+        if (it->to != "open") continue;
+        if (it->from == "claimed" && it->actor != "user" && !it->summary.empty() && it->summary != "libérée") return &*it;
+        return nullptr;   // the last return to « open » was something else (plain release, reopened by the user)
+    }
+    return nullptr;
+}
+std::wstring StepTime(std::int64_t at, std::int64_t now) {
+    const auto a = LocalOf(at), n = LocalOf(now);
+    return a.dayIndex == n.dayIndex ? ClockText(at) : AH::AgeLabel(86400 * 30, 30, 0, a.day, a.month) + L" " + ClockText(at);
+}
+std::vector<AUI::HistoryEntry::Step> StepsOf(const BA::Entry& e, std::int64_t now) {
+    using Step = AUI::HistoryEntry::Step; std::vector<std::pair<std::int64_t, Step>> out;
+    auto add = [&](std::int64_t at, Step::Kind kind, const std::string& who, std::wstring label, std::wstring quote = L"") {
+        Step s; s.kind = kind; s.agent = AUI::AgentKind(AH::AgentKindOf(who)); s.label = std::move(label); s.time = StepTime(at, now); s.quote = std::move(quote); out.emplace_back(at, s); };
+    const auto& a = e.annotation;
+    add(a.createdAt, Step::Added, "", L"Ajoutée");
+    if (const auto r = ReadOf(a.id); r.at) add(r.at, Step::Read, r.label, L"Lue par " + AH::AgentDisplay(r.label));
+    for (const auto& ev : e.state.events) {
+        const std::wstring who = AH::AgentDisplay(ev.actor), quote = AH::Wide(ev.summary);
+        if (ev.to == "claimed") add(ev.at, Step::Claimed, ev.actor, L"Prise en charge par " + who);
+        else if (ev.from == "claimed" && ev.to == "open") {
+            if (ev.actor == "user") add(ev.at, Step::Released, ev.actor, L"Libérée par vous");
+            else if (ev.summary.empty() || ev.summary == "libérée") add(ev.at, Step::Released, ev.actor, L"Rendue par " + who);
+            else add(ev.at, Step::Unhandled, ev.actor, who + L" n'a pas pu la traiter", quote);
+        }
+        else if (ev.to == "resolved") add(ev.at, Step::Done, ev.actor, L"Terminée par " + who, e.state.resolution && e.state.status == BA::Status::Resolved ? AH::Wide(e.state.resolution->summary) : quote);
+        else if (ev.to == "needs_info") add(ev.at, Step::Question, ev.actor, L"Question de " + who, e.state.resolution && e.state.status == BA::Status::NeedsInfo ? AH::Wide(e.state.resolution->summary) : quote);
+        else if (ev.to == "dismissed") add(ev.at, Step::Dismissed, ev.actor, L"Écartée par " + who, quote);
+        else if (ev.to == "open" && ev.actor == "user" && ev.from != "draft") add(ev.at, Step::Reopened, ev.actor, L"Rouverte");
+    }
+    std::stable_sort(out.begin(), out.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+    std::vector<Step> steps; for (auto& o : out) steps.push_back(std::move(o.second)); return steps;
+}
+
 // ---------------------------------------------------------------- status: counter, live cards
 void ShowCardFor(const BA::Entry& e, Card kind) {
     AUI::CardContent c; const auto now = BA::SystemNow();
@@ -412,6 +457,14 @@ void ShowCardFor(const BA::Entry& e, Card kind) {
         c.kind = AUI::CardKind::Working; const std::string who = e.state.claimedBy ? e.state.claimedBy->agent : "";
         c.agent = AH::AgentDisplay(who); c.agentKind = AUI::AgentKind(AH::AgentKindOf(who)); c.since = AH::SinceLower(now - AH::ClaimTime(e));
         seenWorking.insert(e.annotation.id);
+    } else if (kind == Card::Read) {
+        c.kind = AUI::CardKind::Read; const auto r = ReadOf(e.annotation.id);
+        c.agent = AH::AgentDisplay(r.label); c.agentKind = AUI::AgentKind(AH::AgentKindOf(r.label));
+        seenRead.insert(e.annotation.id);
+    } else if (kind == Card::Unhandled) {
+        c.kind = AUI::CardKind::Unhandled; const auto* back = GivenBack(e); const std::string who = back ? back->actor : "";
+        c.agent = AH::AgentDisplay(who); c.agentKind = AUI::AgentKind(AH::AgentKindOf(who)); c.summary = back ? AH::Wide(back->summary) : L"";
+        seenUnhandled.insert(e.annotation.id);
     } else {
         c.kind = AUI::CardKind::Done; const std::string who = e.state.resolution ? e.state.resolution->by : "";
         c.agent = AH::AgentDisplay(who); c.agentKind = AUI::AgentKind(AH::AgentKindOf(who));
@@ -428,23 +481,27 @@ void ApplyStatus(const std::vector<BA::Entry>& entries) {
     if (claimed != was && launcher.Visible()) ShowLauncher();
     // Cards follow this session's annotations: claimed -> 3.2 (once), done -> 3.3 (once).
     if (!note.Visible() && !launcher.HistoryVisible() && launcher.Visible()) {
-        const BA::Entry* done = nullptr; const BA::Entry* working = nullptr;
+        const BA::Entry* done = nullptr; const BA::Entry* working = nullptr; const BA::Entry* back = nullptr; const BA::Entry* read = nullptr;
         for (const auto& e : entries) {
             if (!sessionIds.count(e.annotation.id)) continue;
             if (BA::IsDone(e.state.status) && e.state.resolution && !seenDone.count(e.annotation.id)) { if (!done || e.state.resolution->at > done->state.resolution->at) done = &e; }
             else if (e.state.status == BA::Status::Claimed && !seenWorking.count(e.annotation.id)) { if (!working || AH::ClaimTime(e) > AH::ClaimTime(*working)) working = &e; }
+            else if (GivenBack(e) && !seenUnhandled.count(e.annotation.id)) back = &e;
+            else if (e.state.status == BA::Status::Open && !GivenBack(e) && ReadOf(e.annotation.id).at && !seenRead.count(e.annotation.id) && !seenWorking.count(e.annotation.id)) read = &e;
         }
         if (done) ShowCardFor(*done, Card::Done);
         else if (working) ShowCardFor(*working, Card::Working);
+        else if (back) ShowCardFor(*back, Card::Unhandled);
+        else if (read && card != Card::Working) ShowCardFor(*read, Card::Read);
     }
     SyncWatch();
 }
 void RefreshStatus() {
     if (statusBusy) { statusDirty = true; return; }
     statusBusy = true;
-    auto out = std::make_shared<std::vector<BA::Entry>>();
-    Run([out] { BA::ListQuery q; q.newestFirst = true; q.limit = 500; *out = Store().List(q).entries; },
-        [out] { statusBusy = false; ApplyStatus(*out); if (statusDirty) { statusDirty = false; RefreshStatus(); } });
+    auto out = std::make_shared<std::vector<BA::Entry>>(); auto rd = std::make_shared<std::vector<BA::Reader>>();
+    Run([out, rd] { BA::ListQuery q; q.newestFirst = true; q.limit = 500; *out = Store().List(q).entries; *rd = Store().ListReaders(); },
+        [out, rd] { statusBusy = false; readers = std::move(*rd); ApplyStatus(*out); if (statusDirty) { statusDirty = false; RefreshStatus(); } });
 }
 // The counter at the launcher's first display: one count, only when the store already exists.
 void RefreshCount() {
@@ -471,6 +528,9 @@ AUI::HistoryEntry HistoryRow(const BA::Entry& e, std::int64_t now) {
     if (e.state.resolution && BA::IsDone(e.state.status)) f += (e.state.status == BA::Status::NeedsInfo ? L" · question " : e.state.status == BA::Status::Dismissed ? L" · écartée " : L" · terminée ") + When(e.state.resolution->at, now);
     h.followUp = f;
     if (e.state.resolution) h.summary = AH::Wide(e.state.resolution->summary);
+    if (const auto* back = GivenBack(e)) { h.unhandled = true; h.reason = AH::Wide(back->summary); h.agent = AUI::AgentKind(AH::AgentKindOf(back->actor)); h.agentName = AH::AgentDisplay(back->actor); }
+    else if (e.state.status == BA::Status::Open) if (const auto r = ReadOf(a.id); r.at) { h.readBy = AH::AgentDisplay(r.label); h.readAge = AH::AgoText(std::max<std::int64_t>(0, now - r.at)); }
+    h.steps = StepsOf(e, now);
     if (auto it = thumbs.find(a.id); it != thumbs.end() && it->second.updatedAt == a.updatedAt) h.thumb = it->second.shot;
     return h;
 }
@@ -483,13 +543,13 @@ AUI::HistoryData HistoryFrom(const std::vector<BA::Entry>& entries) {
 void LoadHistory(bool open, bool keyboard) {
     if (historyBusy) { historyDirty = true; return; }
     historyBusy = true;
-    struct Out { std::vector<BA::Entry> entries; std::map<std::string, Cached> thumbs; };
+    struct Out { std::vector<BA::Entry> entries; std::map<std::string, Cached> thumbs; std::vector<BA::Reader> readers; };
     auto out = std::make_shared<Out>(); const bool purge = !purged; purged = true; const std::int64_t retention = Prefs::Retention(settings);
     std::map<std::string, std::int64_t> known; for (const auto& t : thumbs) known[t.first] = t.second.updatedAt;
     const unsigned tw = unsigned(S(44)), th = unsigned(S(32));
     Run([out, purge, retention, known, tw, th] {
             if (purge) { std::lock_guard<std::mutex> g(writeLock); Store().Purge(retention); }
-            BA::ListQuery q; q.newestFirst = true; q.limit = 300; out->entries = Store().List(q).entries;
+            BA::ListQuery q; q.newestFirst = true; q.limit = 300; out->entries = Store().List(q).entries; out->readers = Store().ListReaders();
             int decoded = 0;
             for (const auto& e : out->entries) {
                 if (!e.annotation.screenshot.present || decoded >= 80) continue;
@@ -499,7 +559,7 @@ void LoadHistory(bool open, bool keyboard) {
             }
         },
         [out, open, keyboard] {
-            historyBusy = false;
+            historyBusy = false; readers = std::move(out->readers);
             for (auto& t : out->thumbs) thumbs[t.first] = std::move(t.second);
             historyEntries.clear(); for (const auto& e : out->entries) historyEntries[e.annotation.id] = e;
             ApplyStatus(out->entries);
@@ -527,7 +587,7 @@ void HistoryDetail(const std::wstring& id) {
     const auto* e = FindHistory(id); if (!e || !e->annotation.screenshot.present) return;
     const std::string site = e->annotation.siteKey, ann = e->annotation.id; const unsigned w = unsigned(S(334)), h = unsigned(S(150));
     auto img = std::make_shared<AnnotationCapture::Image>(); auto ok = std::make_shared<bool>(false);
-    Run([site, ann, w, h, img, ok] { std::string png; *ok = Store().ReadShot(site, ann, png).ok() && AnnotationCapture::Thumbnail(png, w, h, *img); },
+    Run([site, ann, w, h, img, ok] { std::string png; *ok = Store().ReadShot(site, ann, png).ok() && AnnotationCapture::Thumbnail(png, w, h, *img, true); },   // V3: never cropped
         [id, img, ok] { if (*ok && launcher.HistoryVisible()) launcher.SetHistoryCapture(id, ToShot(*img)); });
 }
 // Trash / Restore / DiscardTrash on the thread pool; an agent holding a file of the entry => Busy: retried.
@@ -994,7 +1054,7 @@ void AnnotationClearAll(std::function<void(bool, std::size_t)> done) {
         [out, done] {
             using namespace Ann;
             Log(L"ANNOTATE all annotations cleared: " + std::to_wstring(out->removed) + (out->ok ? L"" : L" (some folders could not be removed)"));
-            sessionIds.clear(); seenWorking.clear(); seenDone.clear(); last.reset(); historyEntries.clear(); trashed.clear(); thumbs.clear(); lates.clear(); claimed = 0;
+            sessionIds.clear(); seenWorking.clear(); seenDone.clear(); seenRead.clear(); seenUnhandled.clear(); last.reset(); historyEntries.clear(); trashed.clear(); thumbs.clear(); lates.clear(); claimed = 0;
             if (uiReady) { if (launcher.CardVisible()) { launcher.HideCard(); card = Card::None; } if (launcher.Visible()) ShowLauncher(); if (launcher.HistoryVisible()) LoadHistory(false, false); }
             SyncWatch();
             if (done) done(out->ok, out->removed);

@@ -833,6 +833,170 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     DestroyWindow(host); Pump(50);
 }
 
+// ---------------------------------------------------------------------------------------
+// V3-A (retours du premier test réel): band slide, launcher entrance, « Lue par » / « n'a pas pu la traiter »,
+// one restart line for both apps, wide capture laid out vertically (contain), the native frame copy.
+static Shot WideShot() { return MakeShot(420, 120, 322, 52, 6); }   // span.badge 161 x 26 + 24 margin at DPR 2: 3.5:1
+static HistoryData V3History() {
+    HistoryData d = SampleHistory();
+    auto& read = d.entries[1]; read.readBy = L"Claude"; read.readAge = L"il y a 1 min";
+    using Step = HistoryEntry::Step;
+    read.steps = {Step{Step::Added, AgentKind::Other, L"Ajoutée", L"15:34", L""}, Step{Step::Read, AgentKind::Claude, L"Lue par Claude", L"15:36", L""}};
+    HistoryEntry back; back.id = L"a5"; back.site = L"localhost:4173"; back.page = L"localhost:4173/"; back.note = L"Le badge « Code promo » devrait tenir sur une ligne";
+    back.status = EntryStatus::Pending; back.unhandled = true; back.agent = AgentKind::Claude; back.agentName = L"Claude"; back.age = L"4 min";
+    back.reason = L"Je n'ai pas accès aux fichiers du site depuis cette conversation.";
+    back.steps = {Step{Step::Added, AgentKind::Other, L"Ajoutée", L"15:34", L""}, Step{Step::Read, AgentKind::Claude, L"Lue par Claude", L"15:36", L""},
+                  Step{Step::Claimed, AgentKind::Claude, L"Prise en charge par Claude", L"15:36", L""},
+                  Step{Step::Unhandled, AgentKind::Claude, L"Claude n'a pas pu la traiter", L"15:37", back.reason}};
+    back.capture = WideShot();
+    d.entries.push_back(back);
+    return d;
+}
+static void V3Tests(Ink& ink) {
+    const UINT dpi = 192; const float k = 2; Canvas c;
+    // ---- band: -32 -> 0 + fade, 220 ms (0.32, 0.72, 0, 1); back up in 160 ms; reduced: a 150 ms fade
+    {   const Timing t = BannerTiming();
+        CHECK(t.enter == 220 && t.exit == 160 && t.reducedEnter == 150 && t.reducedExit == 150 && t.from == 1 && t.to == 1);
+        CHECK(Near(BannerOffset(0, false), -32, 1e-4) && Near(BannerOffset(1, false), 0, 1e-4) && Near(BannerOffset(0, true), 0, 1e-4));
+        Presence p(t); p.Show(At(0), true, false);
+        CHECK(Near(p.Progress(At(0)), 0, 1e-4) && Near(p.Progress(At(220)), 1, 1e-4) && p.Progress(At(60)) > .55f);   // (0.32, 0.72, 0, 1): fast start
+        p.Hide(At(100), true, false); const float shown = p.Progress(At(100));
+        CHECK(Near(p.Progress(At(100.5)), shown, .02) && Near(p.Progress(At(260)), 0, 1e-4));   // interrupted from the presented value, out in 160 ms
+        Presence r(t); r.Show(At(0), true, true); CHECK(Near(r.Progress(At(150)), 1, 1e-4) && Near(BannerOffset(r.Progress(At(40)), true), 0, 1e-4));
+        // A strip of the real paint at 0 / 40 / 90 / 220 ms (slides down from under the toolbar).
+        const float times[4] = {0, 40, 90, 220}; const float w = 600, h = 4 * (32 + 12) + 12;
+        Render(ink, w, h, dpi, 0x171717FF, [&](Ink& i, float, float) {
+            for (int f = 0; f < 4; ++f) {
+                Presence q(t); q.Show(At(0), true, false); const float pr = q.Progress(At(times[f])), dy = BannerOffset(pr, false);
+                const float top = 12 + f * 44.f; i.Target()->PushAxisAlignedClip({0, top, w, top + 32}, D2D1_ANTIALIAS_MODE_ALIASED);
+                At_(i, 0, top + dy, [&] { ID2D1Layer* g = nullptr; const bool pushed = i.PushOpacity(pr, g); BannerVisual bv; PaintBanner(i, w, 32, bv); if (pushed) i.PopOpacity(g); });
+                i.Target()->PopAxisAlignedClip();
+            }
+        }, c);
+        Save(ink, c, L"v3-6-band-slide-0-40-90-220ms.png");
+    }
+    // ---- launcher: appears 120 ms after the band, 0.9 -> 1 + opacity in 200 ms; back into its corner in 150 ms
+    {   Timing t = LauncherTiming(); CHECK(t.enter == 200 && t.exit == 150 && Near(t.from, .9, 1e-6) && Near(t.to, .9, 1e-6));
+        t.delay = 120; Presence p(t); p.Show(At(0), true, false);
+        CHECK(Near(p.Progress(At(100)), 0, 1e-4) && Near(p.Scale(At(119)), .9, 1e-4) && Near(p.Progress(At(320)), 1, 1e-4) && Near(p.Scale(At(320)), 1, 1e-4));
+        p.Hide(At(400), true, false); CHECK(Near(p.Progress(At(550)), 0, 1e-4) && Near(p.Scale(At(550)), .9, 1e-4));
+    }
+    // ---- 5.5 history: « Lue par Claude » (eye), « Claude n'a pas pu la traiter » (amber, full strength, counted « En cours »)
+    {   const HistoryData d = V3History();
+        CHECK(StatusLine(d.entries[1]) == L"Lue par Claude" && StatusTitle(d.entries[1]) == L"Lue par Claude · il y a 1 min");
+        CHECK(StatusLine(d.entries[4]) == L"Claude n'a pas pu la traiter" && Matches(d.entries[4], HistoryFilter::Open) && !Matches(d.entries[4], HistoryFilter::Done));
+        HistoryEntry claimed = d.entries[0]; claimed.readBy = L"Claude"; CHECK(StatusLine(claimed) == L"Claude");   // held: the claim wins over the read
+        HistoryView v; v.data = d; v.hot = -1; v.maxHeight = 2000; const auto l = LayoutHistory(ink, v);
+        Render(ink, 440, 24 + l.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, v, l, l.height); }); }, c);
+        Save(ink, c, L"v3-5.5-history-read-unhandled.png");
+        const float x = 440 - 16 - 360; float readTop = 0, backTop = 0;
+        for (auto& it : l.items) if (!it.section) { if (it.entry == 1) readTop = l.listTop + it.y; if (it.entry == 4) backTop = l.listTop + it.y; }
+        MeasureText(c, k, {x + 5 + 62 + 17, 24 + readTop + 28, x + 5 + 170, 24 + readTop + 44}, canvasRgb, 0xFFFFFF99, "5.5 « Lue par Claude » 12/16 #FFFFFF99");
+        MeasureText(c, k, {x + 5 + 62 + 17, 24 + backTop + 28, x + 5 + 230, 24 + backTop + 44}, canvasRgb, 0xE6AC3DFF, "5.5 « Claude n'a pas pu la traiter » 12/16 amber #E6AC3D");
+        MeasureText(c, k, {x + 5 + 62, 24 + backTop + 8, x + 300, 24 + backTop + 26}, canvasRgb, 0xFFFFFFFF, "5.5 unhandled row note 13/18 white (full strength)");
+        // Detail: « Suivi » steps, the reason quoted, the help box; the wide capture contained (retours §11).
+        HistoryView dv = v; dv.detailId = L"a5"; const auto dl = LayoutHistory(ink, dv);
+        CHECK(dl.detail && dl.help.bottom > dl.help.top && dl.follow.bottom > dl.follow.top + 100);
+        Render(ink, 440, 24 + dl.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, dv, dl, dl.height); }); }, c);
+        Save(ink, c, L"v3-5.5-history-detail-steps-unhandled.png");
+        MeasureText(c, k, {x + dl.follow.left + 38, 24 + dl.follow.top + 34, x + dl.follow.left + 200, 24 + dl.follow.top + 50}, raisedRgb, 0xFFFFFFCC, "5.5 step « Ajoutée » 13/16 #FFFFFFCC on #292929");
+        MeasureText(c, k, {x + dl.help.left + 12, 24 + dl.help.top + 10, x + dl.help.right - 12, 24 + dl.help.top + 28}, Over(0xFFFFFF0D, canvasRgb), 0xFFFFFFCC, "5.5 help 13/18 #FFFFFFCC on #FFFFFF0D");
+        {   // contain: the whole wide image inside the 334 x 150 box, the page colour around it (never cropped)
+            const Rgb above = Px(c.At(int((x + (dl.capture.left + dl.capture.right) / 2) * k), int((24 + dl.capture.top + 6) * k)));
+            CHECKM(Close(above, pageRgb, 3), "detail capture: page colour above a contained wide image (%s)", Hex6(above).c_str()); }
+        HistoryView rv = v; rv.detailId = L"a2"; const auto rl = LayoutHistory(ink, rv);
+        Render(ink, 440, 24 + rl.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, rv, rl, rl.height); }); }, c);
+        Save(ink, c, L"v3-5.5-history-detail-read.png");
+        CHECK(EntryMarkdown(d.entries[4]).find(L"- Suivi : Ajoutée 15:34 · Lue par Claude 15:36") != std::wstring::npos);
+    }
+    // ---- cards: « Lue par Claude », « Claude n'a pas pu la traiter » (Voir l'annotation)
+    {   CardContent r; r.kind = CardKind::Read; r.agent = L"Claude"; r.note = sampleNote;
+        CardContent u; u.kind = CardKind::Unhandled; u.agent = L"Claude"; u.summary = L"Je n'ai pas accès aux fichiers du site depuis cette conversation."; u.note = sampleNote;
+        CHECK(CardTitle(r) == L"Lue par Claude" && CardTitle(u) == L"Claude n'a pas pu la traiter");
+        for (auto* card : {&r, &u}) {
+            const auto l = LayoutCard(ink, *card); CHECK(l.primary.right > l.primary.left && CardHitAt(l, *card, (l.primary.left + l.primary.right) / 2, (l.primary.top + l.primary.bottom) / 2) == CardOpen);
+            Render(ink, 400, l.height + 80, dpi, 0xF4F4F3FF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintCard(i, *card, l, {}); }); }, c);
+            Save(ink, c, card == &r ? L"v3-5.5-card-read.png" : L"v3-5.5-card-unhandled.png");
+        }
+    }
+    // ---- 5.6 one restart line for both apps
+    {   ConnectView v = ConnectState_(SampleSetup());
+        v.setup.claude = {ConnectState::Connected, L"Redémarrez Claude pour l'activer"}; v.setup.codex = {ConnectState::Connected, L"Redémarrez Codex pour l'activer"};
+        CHECK(v.BothRestart() && v.Message(AgentKind::Claude).empty() && v.Message(AgentKind::Codex) == L"Redémarrez Claude et Codex pour les activer");
+        const auto l = LayoutConnect(ink, v); CHECK(l.claudeMsg.bottom == l.claudeMsg.top && l.codexMsg.bottom > l.codexMsg.top);
+        const float h = ConnectGroupHeight(ink, v, l) + 80;
+        Render(ink, 520, h, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintConnectStatic(i, v, l, 0, 0); }); }, c); Save(ink, c, L"v3-5.6-connect-restart-both.png");
+        MeasureText(c, k, {40 + 120, 40 + l.codexMsg.top, 40 + 400, 40 + l.codexMsg.bottom}, canvasRgb, 0xFFFFFF99, "5.6 « Redémarrez Claude et Codex pour les activer » 12/16 #FFFFFF99");
+        ConnectView one = v; one.setup.codex = {ConnectState::Idle, L""};
+        CHECK(!one.BothRestart() && one.Message(AgentKind::Claude) == L"Redémarrez Claude pour l'activer");
+    }
+    // ---- 5.7 « Ce que l'agent verra »: wide image => vertical card, image full width, contained
+    {   Shot wide = WideShot(), normal = MakeShot(192, 124, 124, 30, 6);
+        CHECK(PillWide(&wide) && !PillWide(&normal) && PillExpandedH(true) > PillExpandedH(false));
+        auto pillBoard = [&](const Shot& s, const wchar_t* name) {
+            PillView pv; pv.context = SampleContext(); pv.context.label = L"Badge « Code promo AUTOMNE10 »"; pv.capture = CaptureState::Ready; pv.shot = &s; pv.fold = 1;
+            const D2D1_RECT_F pr = PillRect(ink, CaptureState::Ready, NoteSpec::width / 2, 0, 1, PillWide(&s));
+            Render(ink, 430, pr.bottom + 80, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintPill(i, pv, pr); }); }, c);
+            Save(ink, c, name); return pr; };
+        const auto pw = pillBoard(wide, L"v3-11a-pill-wide-vertical.png");
+        CHECK(Near(pw.bottom - pw.top, PillExpandedH(true), .01));
+        {   // the image spans the card's width: the page colour 4 DIP in from the image box's left edge, at mid-height
+            const Rgb left = Px(c.At(int((40 + 13 + 4) * k), int((40 + 11 + 16 + 10 + 32) * k))); CHECKM(Close(left, pageRgb, 3), "wide pill: image box full width (%s)", Hex6(left).c_str()); }
+        pillBoard(normal, L"v3-11b-pill-normal-contain.png");
+    }
+    // ---- 2 the frame's native copy: same pixels as the page's edges and label, nothing else
+    {   FrameMark m; m.page = {0, 0, 1200, 600}; m.dpr = 2; m.x = 100.25; m.y = 80.5; m.w = 240; m.h = 44; m.lx = 100.25; m.ly = 58.5; m.lw = 152; m.lh = 20;
+        m.text = L"button.btn-primary · 240×44"; m.accent = 0x3E67FF;
+        const RECT b = SelectionFrame::Bounds(m);
+        CHECK(b.left <= LONG(100.25 * 2) && b.top <= LONG(58.5 * 2) && b.right >= LONG(340.25 * 2) && b.bottom >= LONG(124.5 * 2));
+        { FrameMark off = m; off.x = off.lx = 2000; const RECT e = SelectionFrame::Bounds(off); CHECK(IsRectEmpty(&e)); }
+        const float w = float(b.right - b.left) / 2, h = float(b.bottom - b.top) / 2;
+        Render(ink, w, h, dpi, 0xF4F4F3FF, [&](Ink& i, float, float) { SelectionFrame::Paint(i, m, {b.left, b.top}, 2); }, c);
+        Save(ink, c, L"v3-2-native-frame-copy.png");
+        auto at = [&](double cssX, double cssY) { return Px(c.At(int(std::lround(cssX * 2 - b.left)), int(std::lround(cssY * 2 - b.top)))); };
+        CHECKM(Close(at(220, 81.5), accentRgb, 4), "top edge accent (%s)", Hex6(at(220, 81.5)).c_str());
+        CHECKM(Close(at(101.25, 100), accentRgb, 4), "left edge accent");
+        CHECKM(Close(at(220, 100), pageRgb, 1), "inside the edges: nothing (the fill stays in the page)");
+        CHECKM(Close(at(103, 60), accentRgb, 4), "label box accent");
+    }
+}
+// Live: the launcher's windows are destroyed at rest outside the mode; the history opens alone, anchored low.
+static void V3Windows(Ink& ink, const std::wstring& root) {
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    HWND host = CreateWindowExW(0, L"AnnotationHarnessHost", L"Annotations harness V3", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 60, 60, 1200, 820, nullptr, nullptr, inst, nullptr);
+    CHECK(host != nullptr); if (!host) return;
+    ShowWindow(host, SW_SHOW); UpdateWindow(host); Pump(80);
+    RECT page{}; GetClientRect(host, &page); page.top = 120;
+    Launcher launcher; LauncherHooks lh; lh.announce = [](const std::wstring&) {}; launcher.Init(inst, host, root, lh); launcher.Place(page);
+    launcher.Show(LauncherState::Rest, 0, false, 120); CHECK(launcher.WindowsForTest() == 2);   // button + card (history: created on demand)
+    CHECK(Settle()); launcher.Hide(true); launcher.SetDormant(true);
+    CHECK(Settle()); CHECKM(launcher.WindowsForTest() == 0, "outside the mode, at rest: %d launcher windows", launcher.WindowsForTest());
+    // Ctrl+Maj+H outside the mode: the panel alone, 16 DIP from the bottom.
+    CHECK(launcher.ShowHistory(SampleHistory(), true) && launcher.WindowsForTest() == 2 && launcher.HistoryForTest().LowAnchor());
+    CHECK(Settle()); RECT hr{}; GetWindowRect(launcher.HistoryWindow(), &hr); RECT pc = page; MapWindowPoints(host, nullptr, reinterpret_cast<POINT*>(&pc), 2);
+    const float s = GetDpiForWindow(host) / 96.f;
+    CHECKM(std::abs((pc.bottom - hr.bottom) - std::lround((16 - 4) * s)) <= 2, "history 16 DIP from the bottom outside the mode (window has 4 DIP of room below: %ld px)", pc.bottom - hr.bottom);
+    SaveLayer(ink, launcher.HistoryForTest().LayerForTest(), L"v3-5.8-window-history-outside-the-mode.png");
+    launcher.HideHistory(true); CHECK(Settle()); CHECKM(launcher.WindowsForTest() == 0, "history closed outside the mode: %d windows", launcher.WindowsForTest());
+    IdleCheck("v3 outside the mode");
+    // The mode again: windows come back, the history above the launcher.
+    launcher.Show(LauncherState::Rest, 0, false, 120); CHECK(launcher.WindowsForTest() == 2 && !launcher.Dormant());
+    CHECK(Settle()); launcher.ShowHistory(SampleHistory(), false); CHECK(!launcher.HistoryForTest().LowAnchor()); launcher.HideHistory(false);
+    launcher.Hide(false); launcher.SetDormant(true); CHECK(launcher.WindowsForTest() == 0);
+    // Band in a real window: mid-slide frame, then at rest.
+    Banner band; BannerHooks bh; band.Init(inst, host, root, bh);
+    CHECK(band.Show({0, 88, page.right, 120}, false)); Pump(40); SaveLayer(ink, band.LayerForTest(), L"v3-6-window-band-entering.png");
+    CHECK(band.PresenceForTest().Moving(Motion::Now()) || band.PresenceForTest().Progress(Motion::Now()) > 0);
+    CHECK(Settle()); band.Hide(true); CHECK(Settle()); CHECK(!IsWindowVisible(band.Window()));
+    // The native frame: click-through child, above the page, gone when hidden.
+    SelectionFrame frame; frame.Init(inst, host, root);
+    FrameMark m; m.page = page; m.dpr = s; m.x = 100; m.y = 80; m.w = 240; m.h = 44; m.lx = 100; m.ly = 58; m.lw = 152; m.lh = 20; m.text = L"button.btn-primary · 240×44";
+    CHECK(frame.Show(m) && frame.Visible() && (GetWindowLongW(frame.Window(), GWL_EXSTYLE) & (WS_EX_TRANSPARENT | WS_EX_LAYERED)) == (WS_EX_TRANSPARENT | WS_EX_LAYERED));
+    SaveLayer(ink, frame.LayerForTest(), L"v3-2-window-native-frame.png");
+    frame.Hide(); CHECK(!frame.Visible()); frame.Destroy(); CHECK(!frame.Window());
+    DestroyWindow(host); Pump(50);
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3) { std::fprintf(stderr, "usage: annotations-ui-test.exe <repoRoot> <outDir> [--no-window]\n"); return 2; }
     const std::wstring root = argv[1]; outDir = argv[2];
@@ -850,8 +1014,9 @@ int wmain(int argc, wchar_t** argv) {
     report << L"\"monoFamily\":\"" << ink->MonoFamily() << L"\",";
     GeometryTests(*ink);
     Captures(*ink);
+    V3Tests(*ink);
     MotionStrips(*ink);
-    if (windows) WindowTests(*ink, root);
+    if (windows) { WindowTests(*ink, root); V3Windows(*ink, root); }
     std::printf("\nGeometry (Paper box model vs native):\n");
     for (auto& g : geometry) std::printf("  %-44s Paper %7.2f  native %7.2f\n", g.surface.c_str(), g.paper, g.native);
     std::printf("\nPaper colours sampled in the renders (2x):\n");

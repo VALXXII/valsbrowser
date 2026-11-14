@@ -5,6 +5,7 @@
 
 #include "annotation-host.h"
 #include "annotation-script.h"
+#include "annotation-capture.h"
 
 static int failures = 0, checks = 0;
 #define CHECK(c) do { ++checks; if (!(c)) { ++failures; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -169,8 +170,48 @@ static void Script() {
     CHECK(cmd.find(L"h.nonce==='clm_x'") != std::wstring::npos && cmd.find(L"h.cmd('hide',3)") != std::wstring::npos);
 }
 
+// V3-A: capture without any visible change — the page's geometry (« mark »), « shown », and the fill removed
+// from the image arithmetically (exact up to rounding, at fractional edges too).
+static void V3Capture() {
+    const std::string n = "clm_abcdefghijklmnopqrstuvwxyz";
+    const std::string mark = ",\"seq\":3,\"mark\":{\"x\":411.5,\"y\":688.25,\"w\":120,\"h\":40,\"lx\":411.5,\"ly\":666.25,\"lw\":152.4,\"lh\":20,\"text\":\"button.btn-primary \u00b7 120\u00d740\",\"fill\":0.08}";
+    auto c = AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget) + mark), n, 7);
+    CHECK(c.env.op == AH::Op::Select && c.selection.mark.present && c.selection.mark.x == 411.5 && c.selection.mark.lw == 152.4 && c.selection.mark.fill == 0.08 && c.selection.seq == 3);
+    CHECK(c.selection.mark.text == "button.btn-primary \xc2\xb7 120\xc3\x97" "40");
+    auto noMark = AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget)), n, 7); CHECK(noMark.env.op == AH::Op::Select && !noMark.selection.mark.present);
+    std::string bad = mark; bad.replace(bad.find("\"fill\":0.08"), 11, "\"fill\":3.00");
+    CHECK(AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget) + bad), n, 7).env.op == AH::Op::Invalid);
+    bad = mark; bad.replace(bad.find("\"w\":120"), 7, "\"w\":\"1\"");
+    CHECK(AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget) + bad), n, 7).env.op == AH::Op::Invalid);
+    auto shown = AH::CheckMessage(Message(n, 7, "shown", ",\"serial\":42"), n, 7); CHECK(shown.env.op == AH::Op::Shown && shown.env.serial == 42);
+    // Plan: the clip's viewport origin is kept for the fill mapping.
+    BA::Rect r; r.x = 411.5; r.y = 688.25; r.width = 120; r.height = 40; BA::Viewport vp; vp.width = 1000; vp.height = 800; vp.scrollY = 420; vp.devicePixelRatio = 1.5;
+    const auto plan = AH::PlanClip(r, vp); CHECK(plan.ok && plan.viewX == 387 && plan.viewY == 664 && plan.y == 664 + 420);
+    const auto f = AnnotationCapture::FillIn(plan, &c.selection.mark, plan.outW, plan.outH, 62, 103, 255);
+    CHECK(f.on && std::fabs(f.x0 - (411.5 - 387) * plan.outW / plan.width) < 1e-9 && std::fabs(f.y1 - (688.25 + 40 - 664) * plan.outH / plan.height) < 1e-9);
+    // Removal: a synthetic page under an 8 % accent fill, with fractional edges, comes back within 1 level.
+    const unsigned w = 64, h = 40; std::vector<std::uint8_t> page(size_t(w) * h * 4), shot;
+    for (unsigned y = 0; y < h; ++y) for (unsigned x = 0; x < w; ++x) { auto* p = &page[(size_t(y) * w + x) * 4]; p[0] = std::uint8_t((x * 37 + y * 11) & 255); p[1] = std::uint8_t((x * 5 + 200) & 255); p[2] = std::uint8_t((y * 9 + x) & 255); p[3] = 255; }
+    AnnotationCapture::Fill fill; fill.on = true; fill.x0 = 10.4; fill.x1 = 50.75; fill.y0 = 6.5; fill.y1 = 33.2; fill.r = 62; fill.g = 103; fill.b = 255; fill.alpha = .08;
+    shot = page;   // what the engine renders: page * (1 - a) + accent * a, rounded (a = 0.08 x coverage)
+    for (unsigned y = 0; y < h; ++y) for (unsigned x = 0; x < w; ++x) {
+        const double a = fill.alpha * AnnotationCapture::Coverage(y, y + 1, fill.y0, fill.y1) * AnnotationCapture::Coverage(x, x + 1, fill.x0, fill.x1); if (a <= 0) continue;
+        auto* p = &shot[(size_t(y) * w + x) * 4]; const double acc[3] = {fill.b, fill.g, fill.r};
+        for (int ch = 0; ch < 3; ++ch) p[ch] = std::uint8_t(std::lround(p[ch] * (1 - a) + acc[ch] * a));
+    }
+    AnnotationCapture::RemoveFill(shot.data(), w, h, w * 4, fill);
+    int worst = 0; for (size_t i = 0; i < page.size(); ++i) worst = std::max(worst, std::abs(int(page[i]) - int(shot[i])));
+    std::printf("fill removal: worst channel error %d level(s) over %u x %u\n", worst, w, h);
+    CHECK(worst <= 1);
+    CHECK(AnnotationCapture::Unblend(200, 255, 0) == 200 && AnnotationCapture::Unblend(int(std::lround(100 * .92 + 255 * .08)), 255, .08) == 100);
+    // The script hands the edges and label over, keeps the fill, and answers « shown » only when asked with a serial.
+    const std::wstring js = NativeChrome::Annotations::PageScript();
+    CHECK(js.find(L"op === 'handoff'") != std::wstring::npos && js.find(L"conceal(true, true)") != std::wstring::npos && js.find(L"op: 'shown'") != std::wstring::npos);
+    CHECK(js.find(L"m.mark = geometry(info)") != std::wstring::npos && js.find(L"conceal(true); ") == std::wstring::npos);   // no hiding at the click any more
+}
+
 int main() {
-    Envelopes(); Crops(); Clips(); Origins(); Status(); Texts(); Script();
+    Envelopes(); Crops(); Clips(); Origins(); Status(); Texts(); Script(); V3Capture();
     std::printf("host_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

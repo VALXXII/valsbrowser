@@ -30,14 +30,15 @@ namespace NativeChrome { namespace Annotations {
 enum class LauncherState { Rest, Working };
 // V2 cards: NoAgent (3.1), Added (header only, agent connected), Working (3.2), Done (3.3).
 // Resolved is the V1 name of Done (kept so older callers compile).
-enum class CardKind { None, Working, NoAgent, Added, Done, Resolved = Done };
+// V3 (Paper 5.5): Read (« Lue par Claude », no claim yet) and Unhandled (given back with a reason).
+enum class CardKind { None, Working, NoAgent, Added, Done, Read, Unhandled, Resolved = Done };
 struct CardContent {
     CardKind kind = CardKind::None;
     std::wstring agent;        // « Claude » (display name)
     AgentKind agentKind = AgentKind::Claude;
     std::wstring since;        // « depuis 2 min » (3.2)
     std::wstring note;         // 3.2: the note (quoted); 3.3: the summary when `summary` is empty
-    std::wstring summary;      // 3.3: what the agent did
+    std::wstring summary;      // 3.3: what the agent did; V3 Unhandled: the agent's reason
     std::wstring id;           // the annotation (for the hooks)
     std::wstring project, monogram, headline; Shot avatar;   // V1, unused in V2
 };
@@ -81,7 +82,8 @@ struct CardLayout { float height = 0; D2D1_RECT_F header{}, close{}, body{}, act
 inline const wchar_t* NoAgentBody() { return L"Aucun agent ne la lit encore."; }
 inline std::wstring CardTitle(const CardContent& c) {
     const std::wstring a = c.agent.empty() ? std::wstring(AgentName(c.agentKind)) : c.agent;
-    switch (c.kind) { case CardKind::Working: return a + L" s'en occupe"; case CardKind::Done: return a + L" a terminé"; default: return L"Annotation ajoutée"; }
+    switch (c.kind) { case CardKind::Working: return a + L" s'en occupe"; case CardKind::Done: return a + L" a terminé"; case CardKind::Read: return L"Lue par " + a;
+                      case CardKind::Unhandled: return a + L" n'a pas pu la traiter"; default: return L"Annotation ajoutée"; }
 }
 inline CardLayout LayoutCard(Ink& ink, const CardContent& c) {
     using namespace LauncherSpec; CardLayout l; const float x0 = 1, inner = cardW - 2;
@@ -91,7 +93,8 @@ inline CardLayout LayoutCard(Ink& ink, const CardContent& c) {
     if (c.kind == CardKind::Added) { l.height = y + 1; return l; }
     const float bw = inner - 40 - 14; const Font f = F(13, 19);
     if (c.kind == CardKind::NoAgent) l.bodyText = NoAgentBody();
-    else if (c.kind == CardKind::Working) l.bodyText = ink.Clamp(c.note, f, bw, 2, L"« ", L" »");
+    else if (c.kind == CardKind::Working || c.kind == CardKind::Read) l.bodyText = ink.Clamp(c.note, f, bw, 2, L"« ", L" »");
+    else if (c.kind == CardKind::Unhandled) l.bodyText = ink.Clamp(c.summary.empty() ? c.note : c.summary, f, bw, 2, L"« ", L" »");
     else l.bodyText = ink.Clamp(c.summary.empty() ? c.note : c.summary, f, bw, 2);
     const float bh = ink.Height(l.bodyText, f, bw);
     l.body = {x0 + 40, y, x0 + 40 + bw, y + bh}; y += bh + 12;
@@ -104,7 +107,7 @@ inline CardLayout LayoutCard(Ink& ink, const CardContent& c) {
 inline int CardHitAt(const CardLayout& l, const CardContent& c, float x, float y) {
     if (Inside(l.close, x, y)) return CardClose;
     if (c.kind == CardKind::Added) return CardNone;
-    if (Inside(l.primary, x, y)) return c.kind == CardKind::NoAgent ? CardConnect : c.kind == CardKind::Working ? CardOpen : CardReload;
+    if (Inside(l.primary, x, y)) return c.kind == CardKind::NoAgent ? CardConnect : c.kind == CardKind::Done ? CardReload : CardOpen;
     if (c.kind == CardKind::Done && Inside(l.secondary, x, y)) return CardReopen;
     return CardNone;
 }
@@ -118,9 +121,11 @@ inline void CardButton(Ink& ink, const CardVisual& v, int id, D2D1_RECT_F r, std
 // The card's content (no surface): cross-faded on a state change.
 inline void PaintCardContent(Ink& ink, const CardContent& c, const CardLayout& l, const CardVisual& v) {
     const float cy = (l.header.top + l.header.bottom) / 2; float x = l.header.left;
-    if (c.kind == CardKind::Working || c.kind == CardKind::Done) Logo(ink, c.agentKind, {x, cy - 8, x + 16, cy + 8});
+    const bool agent = c.kind == CardKind::Working || c.kind == CardKind::Done || c.kind == CardKind::Read || c.kind == CardKind::Unhandled;
+    if (c.kind == CardKind::Unhandled) ink.Icon(Glyphs::warningCircle, {x, cy - 8, x + 16, cy + 8}, Hex(Ink_::amber));
+    else if (agent) Logo(ink, c.agentKind, {x, cy - 8, x + 16, cy + 8});
     else { ink.Disc(x + 9, cy, 9, Accent()); ink.Icon(Glyphs::check, {x + 3.5f, cy - 5.5f, x + 14.5f, cy + 5.5f}, {1, 1, 1, 1}); }
-    x += (c.kind == CardKind::Working || c.kind == CardKind::Done ? 16 : 18) + 8;
+    x += (agent ? 16 : 18) + 8;
     const D2D1_RECT_F title{x, l.header.top, l.close.left - 8, l.header.bottom};
     if (c.kind == CardKind::Working && !c.since.empty()) ink.Spans({{CardTitle(c), {1, 1, 1, 1}, 600}, {L" · " + c.since, Hex(0xFFFFFF99), 400}}, F(14, 20), title);
     else ink.Text(CardTitle(c), F(14, 20, 600), title, {1, 1, 1, 1}, false, Align::Leading, true);
@@ -128,7 +133,7 @@ inline void PaintCardContent(Ink& ink, const CardContent& c, const CardLayout& l
     if (c.kind == CardKind::Added) return;
     ink.Text(l.bodyText, F(13, 19), l.body, Hex(0xFFFFFFB3), true);
     if (c.kind == CardKind::NoAgent) CardButton(ink, v, CardConnect, l.primary, {PIcon(Glyphs::tree, 16, {1, 1, 1, .6f}), PText(L"Connecter un agent", F(13, 16, 500), {1, 1, 1, 1})});
-    else if (c.kind == CardKind::Working) CardButton(ink, v, CardOpen, l.primary, {PText(L"Voir l'annotation", F(13, 16, 500), {1, 1, 1, 1})});
+    else if (c.kind == CardKind::Working || c.kind == CardKind::Read || c.kind == CardKind::Unhandled) CardButton(ink, v, CardOpen, l.primary, {PText(L"Voir l'annotation", F(13, 16, 500), {1, 1, 1, 1})});
     else { CardButton(ink, v, CardReload, l.primary, {PText(L"Recharger la page", F(13, 16, 500), {1, 1, 1, 1})}); CardButton(ink, v, CardReopen, l.secondary, {PText(L"Rouvrir", F(13, 16, 500), {1, 1, 1, 1})}); }
 }
 inline void PaintCard(Ink& ink, const CardContent& c, const CardLayout& l, const CardVisual& v) {
@@ -143,6 +148,8 @@ inline std::wstring CardAnnouncement(const CardContent& c) {
     case CardKind::NoAgent: return std::wstring(L"Annotation ajoutée. ") + NoAgentBody();
     case CardKind::Added: return L"Annotation ajoutée";
     case CardKind::Done: return CardTitle(c) + L" : " + (c.summary.empty() ? c.note : c.summary);
+    case CardKind::Read: return CardTitle(c);
+    case CardKind::Unhandled: return CardTitle(c) + (c.summary.empty() ? L"" : L" : " + c.summary);
     default: return {};
     }
 }
@@ -249,7 +256,7 @@ class Launcher : public Animator::Client {
     std::vector<int> CardOrder() const {
         switch (content_.kind) {
         case CardKind::NoAgent: return {CardConnect, CardClose};
-        case CardKind::Working: return {CardOpen, CardClose};
+        case CardKind::Working: case CardKind::Read: case CardKind::Unhandled: return {CardOpen, CardClose};
         case CardKind::Done: return {CardReload, CardReopen, CardClose};
         default: return {CardClose};
         }
@@ -318,11 +325,11 @@ class Launcher : public Animator::Client {
         Accessibility::Node g; g.key = CardKey; g.role = Accessibility::Role::Group; g.focusable = false; g.automationId = L"AnnotationCard";
         g.name = CardTitle(content_); GetWindowRect(card_.Window(), &g.bounds); n.push_back(g);
         Accessibility::Node t; t.key = CardBodyKey; t.parent = CardKey; t.role = Accessibility::Role::Text; t.focusable = false; t.name = CardAnnouncement(content_);
-        t.value = content_.kind == CardKind::Working ? content_.note : content_.kind == CardKind::Done ? (content_.summary.empty() ? content_.note : content_.summary) : content_.kind == CardKind::NoAgent ? NoAgentBody() : L"";
+        t.value = content_.kind == CardKind::Working || content_.kind == CardKind::Read ? content_.note : content_.kind == CardKind::Done || content_.kind == CardKind::Unhandled ? (content_.summary.empty() ? content_.note : content_.summary) : content_.kind == CardKind::NoAgent ? NoAgentBody() : L"";
         t.bounds = at(cardLayout_.header); n.push_back(t);
         auto add = [&](int hit, const wchar_t* name, D2D1_RECT_F r) { Accessibility::Node b; b.key = 100 + hit; b.parent = CardKey; b.name = name; b.bounds = at(r); b.automationId = name; n.push_back(b); };
         if (content_.kind == CardKind::NoAgent) add(CardConnect, L"Connecter un agent", cardLayout_.primary);
-        if (content_.kind == CardKind::Working) add(CardOpen, L"Voir l'annotation", cardLayout_.primary);
+        if (content_.kind == CardKind::Working || content_.kind == CardKind::Read || content_.kind == CardKind::Unhandled) add(CardOpen, L"Voir l'annotation", cardLayout_.primary);
         if (content_.kind == CardKind::Done) { add(CardReload, L"Recharger la page", cardLayout_.primary); add(CardReopen, L"Rouvrir", cardLayout_.secondary); }
         add(CardClose, L"Fermer", cardLayout_.close);
         return n;

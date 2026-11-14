@@ -43,6 +43,7 @@ inline D2D1_COLOR_F WithAlpha(D2D1_COLOR_F c, float a) { c.a *= a; return c; }
 namespace Ink_ {
 inline constexpr std::uint32_t canvas = 0x171717FF, raised = 0x292929FF, hover = 0x333333FF, pressed = 0x3E3E3EFF, danger = 0xFF7B6EFF;
 inline constexpr std::uint32_t claude = 0xD97757FF, page = 0xF4F4F3FF;
+inline constexpr std::uint32_t amber = 0xE6AC3DFF;   // V3 (Paper 5.5, token profile-ambre): « … n'a pas pu la traiter »
 }
 
 // ---- Phosphor (bold) glyphs, exact Paper exports ---------------------------------------
@@ -68,6 +69,8 @@ inline constexpr Glyph warningCircle{"M128,20A108,108,0,1,0,236,128,108.12,108.1
 inline constexpr Glyph globe{"M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm83.13,96H172.7c-2.08-31.31-12.9-56.83-27.61-73.22A84.24,84.24,0,0,1,211.13,116ZM128,212c-11.36-12.3-22.41-36.53-24.67-72h49.34C150.41,175.47,139.36,199.7,128,212Zm-24.67-96c2.26-35.47,13.31-59.7,24.67-72,11.36,12.3,22.41,36.53,24.67,72Zm7.58-73.22C96.2,59.17,85.38,84.69,83.3,116H44.87A84.24,84.24,0,0,1,110.91,42.78ZM44.87,140H83.3c2.08,31.31,12.9,56.83,27.61,73.22A84.24,84.24,0,0,1,44.87,140Zm100.22,73.22c14.71-16.39,25.53-41.91,27.61-73.22h38.43A84.24,84.24,0,0,1,145.09,213.22Z", 0, 0, 256, 256};
 inline constexpr Glyph dots{"M144,128a16,16,0,1,1-16-16A16,16,0,0,1,144,128ZM60,112a16,16,0,1,0,16,16A16,16,0,0,0,60,112Zm136,0a16,16,0,1,0,16,16A16,16,0,0,0,196,112Z", 0, 0, 256, 256};
 inline constexpr Glyph caretLeft{"M168.49,199.51a12,12,0,0,1-17,17l-80-80a12,12,0,0,1,0-17l80-80a12,12,0,0,1,17,17L97,128Z", 0, 0, 256, 256};
+// Phosphor « eye » (bold), Paper 5.5 « Lue par Claude ».
+inline constexpr Glyph eye{"M251,123.13c-.37-.81-9.13-20.26-28.48-39.61C196.63,57.67,164,44,128,44S59.37,57.67,33.51,83.52C14.16,102.87,5.4,122.32,5,123.13a12.08,12.08,0,0,0,0,9.75c.37.82,9.13,20.26,28.49,39.61C59.37,198.34,92,212,128,212s68.63-13.66,94.48-39.51c19.36-19.35,28.12-38.79,28.49-39.61A12.08,12.08,0,0,0,251,123.13Zm-46.06,33C183.47,177.27,157.59,188,128,188s-55.47-10.73-76.91-31.88A130.36,130.36,0,0,1,29.52,128,130.45,130.45,0,0,1,51.09,99.89C72.54,78.73,98.41,68,128,68s55.46,10.73,76.91,31.89A130.36,130.36,0,0,1,226.48,128,130.45,130.45,0,0,1,204.91,156.12ZM128,84a44,44,0,1,0,44,44A44.05,44.05,0,0,0,128,84Zm0,64a20,20,0,1,1,20-20A20,20,0,0,1,128,148Z", 0, 0, 256, 256};
 inline constexpr Glyph history{"M140,80v41.21l34.17,20.5a12,12,0,1,1-12.34,20.58l-40-24A12,12,0,0,1,116,128V80a12,12,0,0,1,24,0ZM128,28A99.38,99.38,0,0,0,57.24,57.34c-4.69,4.74-9,9.37-13.24,14V64a12,12,0,0,0-24,0v40a12,12,0,0,0,12,12H72a12,12,0,0,0,0-24H57.77C63,86,68.37,80.22,74.26,74.26a76,76,0,1,1,1.58,109,12,12,0,0,0-16.48,17.46A100,100,0,1,0,128,28Z", 0, 0, 256, 256};
 // Launcher « tiroir » (corbeille à courrier): stroked outline, Paper viewBox 0 0 24 24, stroke 2, round caps/joins.
 inline constexpr Glyph tray{"M4 13.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4.5M4 13.5 6.2 5.6A2 2 0 0 1 8.1 4h7.8a2 2 0 0 1 1.9 1.6L20 13.5M4 13.5h4.5l1.2 2h4.6l1.2-2H20", 0, 0, 24, 24};
@@ -352,14 +355,18 @@ public:
         while (!head.empty() && Width(head + L"…" + tail, f) > width) head.pop_back();
         return head + L"…" + tail;
     }
-    // The capture thumbnail, cover-fitted and clipped to a rounded box.
-    void Thumbnail(const Shot* shot, D2D1_RECT_F box, float radius, float opacity = 1) {
+    // The capture thumbnail, cover-fitted and clipped to a rounded box. contain (V3, retours §11): the whole image,
+    // centred on the neutral page colour, never cropped and never enlarged beyond its own pixels.
+    void Thumbnail(const Shot* shot, D2D1_RECT_F box, float radius, float opacity = 1, bool contain = false) {
         if (!shot || !shot->width || !shot->height || shot->pixels.size() < size_t(shot->width) * shot->height || !target_) return;
         auto& bitmap = bitmaps_[{target_, shot, shot->pixels.data()}];
         if (!bitmap) target_->CreateBitmap(D2D1::SizeU(shot->width, shot->height), shot->pixels.data(), shot->width * 4,
             D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &bitmap);
         if (!bitmap) return;
-        const float bw = box.right - box.left, bh = box.bottom - box.top, k = std::max(bw / shot->width, bh / shot->height);
+        const float bw = box.right - box.left, bh = box.bottom - box.top;
+        float dpiX = 96, dpiY = 96; target_->GetDpi(&dpiX, &dpiY);
+        const float k = contain ? std::min({bw / shot->width, bh / shot->height, 96.f / std::max(1.f, dpiX)}) : std::max(bw / shot->width, bh / shot->height);
+        if (contain) Fill(box, radius, WithAlpha(Hex(Ink_::page), opacity));
         const float w = shot->width * k, h = shot->height * k, x = box.left + (bw - w) / 2, y = box.top + (bh - h) / 2;
         ID2D1RoundedRectangleGeometry* clip = nullptr; ID2D1Layer* layer = nullptr;
         if (FAILED(factory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, radius, radius), &clip)) || FAILED(target_->CreateLayer(nullptr, &layer))) { Release(clip); return; }

@@ -128,7 +128,15 @@ struct ConnectView {
     bool AnyConnected() const { return setup.claude.state == ConnectState::Connected || setup.codex.state == ConnectState::Connected; }
     bool AnyWorking() const { return setup.claude.state == ConnectState::Working || setup.codex.state == ConnectState::Working; }
     bool DoneVisible() const { return AnyConnected() && !AnyWorking(); }
-    bool HasMessage(AgentKind a) const { const auto& s = App(a); return (s.state == ConnectState::Failed || s.state == ConnectState::Connected) && !s.detail.empty(); }
+    // V3 (Paper 5.6): both apps connected and both to restart => one line under the last button,
+    // « Redémarrez Claude et Codex pour les activer ».
+    static bool Restart(const AppStatus& s) { return s.state == ConnectState::Connected && s.detail.rfind(L"Redémarrez ", 0) == 0; }
+    bool BothRestart() const { return Restart(setup.claude) && Restart(setup.codex); }
+    std::wstring Message(AgentKind a) const {
+        if (BothRestart()) return a == AgentKind::Codex ? std::wstring(L"Redémarrez Claude et Codex pour les activer") : std::wstring();
+        const auto& s = App(a); return (s.state == ConnectState::Failed || s.state == ConnectState::Connected) ? s.detail : std::wstring();
+    }
+    bool HasMessage(AgentKind a) const { return !Message(a).empty(); }
     bool Disconnectable(AgentKind a) const { return setup.disconnectable && App(a).state == ConnectState::Connected; }
 };
 struct ConnectLayout {
@@ -154,7 +162,7 @@ inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
         auto& off = a == AgentKind::Claude ? l.claudeOff : l.codexOff;
         if (v.Disconnectable(a)) { const float w = 10 + ink.Width(L"Déconnecter", F(12, 16, 500)) + 10; off = {br - 4 - w, y + 4, br - 4, y + button - 4}; } else off = {};
         l.blocks.push_back({key, y, button, size_t(s.state) * 1000003u ^ Hash(AppButtonLabel(a, s))}); y += button;
-        if (v.HasMessage(a)) { y += gap; msg = {bx, y, br, y + 16}; l.blocks.push_back({msgKey, y, 16, Hash(s.detail) ^ size_t(s.state)}); y += 16; }
+        if (v.HasMessage(a)) { y += gap; msg = {bx, y, br, y + 16}; l.blocks.push_back({msgKey, y, 16, Hash(v.Message(a)) ^ size_t(s.state)}); y += 16; }
         else msg = {};
     };
     app(AgentKind::Claude, BClaude, BClaudeMsg, l.claude, l.claudeMsg); y += gap;
@@ -233,7 +241,7 @@ inline void PaintAppButton(Ink& ink, const ConnectView& v, AgentKind a, D2D1_REC
 inline void PaintAppMessage(Ink& ink, const ConnectView& v, AgentKind a, D2D1_RECT_F r) {
     const auto& s = v.App(a);
     if (s.state == ConnectState::Failed) Pieces(ink, {PIcon(Glyphs::warningCircle, 13, Hex(Ink_::danger)), PText(s.detail, F(12, 16), Hex(Ink_::danger))}, r);
-    else ink.Text(s.detail, F(12, 16), r, Hex(0xFFFFFF99), false, Align::Center, true);
+    else ink.Text(v.Message(a), F(12, 16), r, Hex(0xFFFFFF99), false, Align::Center, true);
 }
 inline void PaintConnectHeader(Ink& ink, const ConnectView& v, const ConnectLayout& l) {
     const float x = l.header.left + 20, y = l.header.top + 20, right = l.headerButton.left - 12;
@@ -539,7 +547,7 @@ class ConnectModal : public Animator::Client {
             auto& b = node(id, Accessibility::Role::Button, AppButtonLabel(a, s), a == AgentKind::Claude ? layout_.claude : layout_.codex);
             b.enabled = AppEnabled(s); b.automationId = a == AgentKind::Claude ? L"AnnotationConnectClaude" : L"AnnotationConnectCodex";
             b.status = s.state == ConnectState::Working ? L"En cours" : s.state == ConnectState::Connected ? L"Connecté" : s.state == ConnectState::Failed ? L"Échec" : L"";
-            if (view_.HasMessage(a)) b.help = s.detail;
+            if (view_.HasMessage(a)) b.help = view_.Message(a);
             if (view_.Disconnectable(a)) { auto& d = node(a == AgentKind::Claude ? CClaudeOff : CCodexOff, Accessibility::Role::Button, L"Déconnecter " + AppLong(a), a == AgentKind::Claude ? layout_.claudeOff : layout_.codexOff);
                 d.help = L"Retire seulement l'entrée du navigateur dans la configuration de " + AppLong(a); d.automationId = a == AgentKind::Claude ? L"AnnotationDisconnectClaude" : L"AnnotationDisconnectCodex"; }
         }

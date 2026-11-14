@@ -37,7 +37,7 @@ struct Image { unsigned width = 0, height = 0; std::vector<std::uint32_t> pixels
 struct Fill { bool on = false; double x0 = 0, y0 = 0, x1 = 0, y1 = 0; double r = 0, g = 0, b = 0, alpha = 0; };
 // Pure (tests): one channel of a pixel covered at `a` (= opacity x coverage) by `accent`.
 inline int Unblend(int out, double accent, double a) {
-    if (a <= 0) return out; if (a >= .999) return out;
+    if (a <= 0 || a >= .999) return out;
     const double v = (out - accent * a) / (1 - a);
     return int(std::lround(std::clamp(v, 0.0, 255.0)));
 }
