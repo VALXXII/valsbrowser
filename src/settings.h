@@ -181,7 +181,6 @@ struct State {
     Autoplay autoplay = Autoplay::Muted;
     bool grayscaleText = false;    // page text in grayscale antialiasing, like the chrome (engine flag)
     // Annotations et agents (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
-    bool annotationLauncher = true;      // the drawer button at the bottom right of the pages
     bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
     int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
     int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices
@@ -194,7 +193,7 @@ struct State {
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
-               bookmarksBar == o.bookmarksBar && accent == o.accent && annotationLauncher == o.annotationLauncher &&
+               bookmarksBar == o.bookmarksBar && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
                annotationRetentionDays == o.annotationRetentionDays;
     }
@@ -204,7 +203,7 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
                     AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
-                    AnnotationLauncher, AnnotationConnectPrompt, AnnotationRetention };
+                    AnnotationConnectPrompt, AnnotationRetention };
 // Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
@@ -245,7 +244,6 @@ inline void Write(std::ostream& out, const State& s) {
         << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
         << "accent=" << AccentText(s.accent) << '\n'
-        << "annotation-launcher=" << (s.annotationLauncher ? 1 : 0) << '\n'
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
         << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
         << "annotation-retention-days=" << s.annotationRetentionDays << '\n';
@@ -279,7 +277,7 @@ inline State Read(std::istream& in) {
         else if (key == "memory-saver") flag(value, s.memorySaver);
         else if (key == "mute-background") flag(value, s.muteBackground);
         else if (key == "grayscale-text") flag(value, s.grayscaleText);
-        else if (key == "annotation-launcher") flag(value, s.annotationLauncher);
+        else if (key == "annotation-launcher") {}   // V2 « Afficher le lanceur d'annotations »: since V3 the launcher only exists in the mode (read, ignored, not written back)
         else if (key == "annotation-connect-prompt") flag(value, s.annotationConnectPrompt);
         else if (key == "annotation-connect-declines") { for (int n = 0; n <= MaxConnectDeclines; ++n) if (value == std::to_string(n)) s.annotationConnectDeclines = n; }
         else if (key == "annotation-retention-days") { for (int d : RetentionChoices) if (value == std::to_string(d)) s.annotationRetentionDays = d; }

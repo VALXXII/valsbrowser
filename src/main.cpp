@@ -2194,7 +2194,6 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
     // Réglages › « Annotations et agents »: the launcher shows / hides at once; the launch prompt and the
     // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
-    case Change::AnnotationLauncher:AnnotationSettingsChanged();break;
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
     case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
     case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
@@ -2236,8 +2235,8 @@ void CreateSettingsPanel(){
     namespace AS=AnnotationSettings;
     hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationHistoryAvailable();};
     hooks.loadAgents=[](std::function<void(AS::Agents)> done){AnnotationAgentsStatus([done](const AnnotationAgentState& claude,const AnnotationAgentState& codex){
-        auto to=[](const AnnotationAgentState& s){AS::Agent a;a.detected=s.detected;a.configured=s.configured;a.connected=s.connected;a.stalePath=s.stalePath;a.lastReadAt=s.lastReadAt;return a;};
-        AS::Agents agents;agents.claude=to(claude);agents.codex=to(codex);if(done)done(agents);});};
+        auto to=[](const AnnotationAgentState& s){AS::Agent a;a.detected=s.detected;a.configured=s.configured;a.connected=s.connected;a.stalePath=s.stalePath;a.lastReadAt=s.lastReadAt;a.restart=s.restart;return a;};
+        AS::Agents agents;agents.claude=to(claude);agents.codex=to(codex);agents.codex.app=AS::App::Codex;if(done)done(agents);});};
     hooks.connectAgent=[](AS::App app,bool on,std::function<void(bool,std::wstring)> done){   // explicit click only: same path, backups and test guard as the modal
         AnnotationConnectAgent(app==AS::App::Claude?AnnotationApp::Claude:AnnotationApp::Codex,on,[done](bool ok,const std::wstring& message){if(done)done(ok,message);});};
     hooks.openConnect=[]{settingsDrawer.Hide(false,true);AnnotationOpenConnect(true);};   // « Autre app ou réglage manuel »: the modal on its manual fallback

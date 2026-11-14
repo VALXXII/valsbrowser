@@ -20,9 +20,15 @@
 //     computed styles (lists given by the host), text <= 2000 characters, never a field value
 //     (input/textarea/select contents, password fields), no cookies/storage/HTML.
 // The host talks to it through window[Symbol.for('browser.annotation')] guarded by the nonce
-// (hide before capture, show, resume, select at a point, select the text selection, exit). V2: a selection
-// hides the frame itself in the click's task and sends its counter; the host captures on receipt. « hide »
-// (fallback for a host that asks) answers « hidden » two frames later.
+// (handoff, show, resume, select at a point, select the text selection, exit).
+// V3 capture without any visible change (retours §2): at a selection NOTHING changes on screen. The message
+// carries the frame's exact geometry (edges + label box + label text); the host draws the same edges and label
+// in a native layer above the page, then sends « handoff »: the page hides its own edges and label (the native
+// copy covers them pixel for pixel) and answers « hidden » in the same task; the host then asks for the shot,
+// which never contains the edges or the label. The 8 % fill stays in the page (it never changes on screen) and
+// is removed from the image arithmetically (src/annotation-capture.h, RemoveFill). After the shot, « show »
+// puts the page's edges back and answers « shown » two frames later; only then does the host drop its layer.
+// « hide » (a host without the native layer) still hides everything and answers « hidden » two frames later.
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <string>
@@ -243,14 +249,21 @@ function sendSelect(info, selText, ev) {
   if (JSON.stringify(m).length > MAX_MSG) { m.target.text = m.target.text.slice(0, 400); if (m.target.selectionText) m.target.selectionText = m.target.selectionText.slice(0, 400); }
   if (JSON.stringify(m).length > MAX_MSG) { m.target.styles = {}; m.target.path = m.target.path.slice(-4); m.target.selector = m.target.selector.slice(-200); }
   if (JSON.stringify(m).length > MAX_MSG) return;
-  // V2: the capture is taken at the click. The frame is hidden in this very task, before the message: the
-  // host asks the engine for the clipped shot as soon as it gets it (the next frame no longer has the frame).
-  var mine = ++seq; m.seq = mine; conceal(true);
+  // V3: nothing changes on screen at the click; the host takes the edges and label over (« handoff »).
+  var mine = ++seq; m.seq = mine; settle(); m.mark = geometry(info);
   // When the user acted (event time on the system clock): the host measures click -> image ready.
   m.at = ev && ev.timeStamp > 0 && performance.timeOrigin ? performance.timeOrigin + ev.timeStamp : Date.now();
   post(m);
 }
-function conceal(on) { for (var i = 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; }
+// marks: the edges and the label only (the fill stays: it is removed from the image by the host).
+function conceal(on, marksOnly) { for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; }
+// Finishes any glide in progress (transitions jump to their end) so the geometry sent is what is on screen.
+function settle() { animate(false); void getComputedStyle(fill).transform; void getComputedStyle(label).transform; animate(true); }
+function geometry(info) {
+  var r = rectOf(info), lb = label.getBoundingClientRect();
+  return { x: r.x, y: r.y, w: Math.max(r.w, 1), h: Math.max(r.h, 1), lx: lb.left, ly: lb.top, lw: lb.width, lh: lb.height,
+           text: String(label.textContent || '').slice(0, 200), fill: 0.08 };
+}
 
 // ---- drawing
 function place(info) {
@@ -375,7 +388,12 @@ function cmd(op, arg) {
     requestAnimationFrame(function () { requestAnimationFrame(function () { if (alive) post({ op: 'hidden', serial: arg }); }); });
     return;
   }
-  if (op === 'show') { conceal(false); syncShields(); return; }
+  if (op === 'handoff') { conceal(true, true); post({ op: 'hidden', serial: arg }); return; }
+  if (op === 'show') {
+    conceal(false); syncShields();
+    if (arg !== null && arg !== undefined) requestAnimationFrame(function () { requestAnimationFrame(function () { if (alive) post({ op: 'shown', serial: arg }); }); });
+    return;
+  }
   if (op === 'resume') { conceal(false); frozen = false; ++seq; haveMove = px >= 0; schedule(); if (!haveMove) place(null); return; }
   if (op === 'point') { selectAtPoint(arg.x, arg.y); return; }
   if (op === 'selection') { if (!selectSelection(arg)) post({ op: 'noselection' }); return; }

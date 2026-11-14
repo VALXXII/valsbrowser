@@ -48,7 +48,7 @@ inline std::wstring Wide(const std::string& s) {
 }
 
 // ---------------------------------------------------------------- page messages
-enum class Op { Invalid, Select, Hidden, Escape, NoSelection };
+enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection };
 struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; };
 
 // Checks the frame of every message: type/version, the session nonce and the navigation stamp.
@@ -64,13 +64,18 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
     if (!op || !op->IsString()) return bad("op");
     if (op->string == "select") e.op = Op::Select;
     else if (op->string == "hidden") { e.op = Op::Hidden; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
+    else if (op->string == "shown") { e.op = Op::Shown; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
     else if (op->string == "escape") e.op = Op::Escape;
     else if (op->string == "noselection") e.op = Op::NoSelection;
     else return bad("op");
     return e;
 }
 
+// V3: the page frame's geometry at the selection (CSS px of the top viewport): edges (x, y, w, h), label box and
+// text, fill opacity. The host draws the edges and the label natively (never captured) and removes the fill.
+struct Mark { bool present = false; double x = 0, y = 0, w = 0, h = 0, lx = 0, ly = 0, lw = 0, lh = 0, fill = 0; std::string text; };
 struct Selection {
+    Mark mark;
     BA::Target target;
     std::string frameKind = "main";
     bool keyboard = false;
@@ -110,6 +115,13 @@ inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why 
     if (const auto* k = v.Get("keyboard")) { if (!k->IsBool()) return bad("keyboard"); s.keyboard = k->boolean; }
     if (const auto* t0 = v.Get("at")) { if (!t0->IsNumber() || !std::isfinite(t0->number) || t0->number < 0 || t0->number > 1e14) return bad("at"); s.at = t0->number; }
     if (const auto* q = v.Get("seq")) { if (!q->IsNumber() || !q->integral || q->integer < 0 || q->integer > (std::int64_t(1) << 40)) return bad("seq"); s.seq = q->integer; }
+    if (const auto* mk = v.Get("mark")) {
+        constexpr double lim = 1e6; auto& m = s.mark;
+        if (!mk->IsObject() || !Num(mk->Get("x"), m.x, -lim, lim) || !Num(mk->Get("y"), m.y, -lim, lim) || !Num(mk->Get("w"), m.w, 0, lim) || !Num(mk->Get("h"), m.h, 0, lim) ||
+            !Num(mk->Get("lx"), m.lx, -lim, lim) || !Num(mk->Get("ly"), m.ly, -lim, lim) || !Num(mk->Get("lw"), m.lw, 0, 4000) || !Num(mk->Get("lh"), m.lh, 0, 200) ||
+            !Num(mk->Get("fill"), m.fill, 0, 1) || !Str(mk->Get("text"), m.text, 1024)) return bad("mark");
+        m.present = true;
+    }
     auto& g = s.target;
     if (!Str(t->Get("kind"), g.kind, 16) || (g.kind != "element" && g.kind != "selection")) return bad("target.kind");
     if (!Str(t->Get("selector"), g.selector, 4096)) return bad("selector");
@@ -197,6 +209,7 @@ struct ClipPlan {
     double scale = 1;
     unsigned outW = 0, outH = 0;                  // expected image size (device px x scale)
     double markX = 0, markY = 0, markW = 0, markH = 0;
+    double viewX = 0, viewY = 0;                  // the clip's origin in CSS px of the viewport (V3: fill removal)
     std::string crop;
 };
 inline ClipPlan PlanClip(const BA::Rect& r, const BA::Viewport& vp, double marginCss = 24, unsigned maxSide = BA::MaxShotSide) {
@@ -215,7 +228,7 @@ inline ClipPlan PlanClip(const BA::Rect& r, const BA::Viewport& vp, double margi
     p.scale = longest > maxSide ? maxSide / longest : 1.0;
     p.outW = std::min<unsigned>(maxSide, std::max(1u, unsigned(std::lround(p.width * dpr * p.scale))));
     p.outH = std::min<unsigned>(maxSide, std::max(1u, unsigned(std::lround(p.height * dpr * p.scale))));
-    p.x = x0 + vp.scrollX; p.y = y0 + vp.scrollY;
+    p.x = x0 + vp.scrollX; p.y = y0 + vp.scrollY; p.viewX = x0; p.viewY = y0;
     p.markX = std::max(0.0, ex0 - x0); p.markY = std::max(0.0, ey0 - y0);
     p.markW = std::max(0.0, std::min(p.width, ex1 - x0) - p.markX); p.markH = std::max(0.0, std::min(p.height, ey1 - y0) - p.markY);
     const bool elementClipped = ex0 < 0 || ey0 < 0 || ex1 > vp.width || ey1 > vp.height;

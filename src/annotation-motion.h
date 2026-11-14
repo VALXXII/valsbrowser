@@ -39,6 +39,7 @@ namespace Curves {
 inline constexpr Bezier out{.23f, 1, .32f, 1};       // panels, modal, cards, pills
 inline constexpr Bezier inOut{.77f, 0, .175f, 1};    // the manual fold
 inline constexpr Bezier easeOut{0, 0, .58f, 1};      // press (CSS ease-out)
+inline constexpr Bezier band{.32f, .72f, 0, 1};       // V3 « Spéc · Entrée du mode » (Paper 5.2): the band's slide
 }
 
 namespace Spec {
@@ -83,6 +84,7 @@ struct Pose { float opacity = 0, scale = 1, dx = 0, dy = 0; };
 struct Timing {
     int enter = Spec::panelIn, exit = Spec::panelOut, reducedEnter = Spec::modalReducedIn, reducedExit = Spec::modalReducedOut, delay = 0;
     float from = Spec::enterScale, to = Spec::exitScale;
+    Bezier curve = Curves::out;
 };
 inline Timing ModalTiming() { return {}; }
 inline Timing NoteTiming() { Timing t; t.enter = Spec::noteIn; t.exit = Spec::noteOut; return t; }
@@ -102,14 +104,14 @@ public:
         open_ = true; reduced_ = reduced;
         if (!animate) { opacity_.Snap(1); scale_.Snap(1); return; }
         if (opacity_.Value(now) <= 0 && !opacity_.Moving(now)) scale_.Snap(t_.from);
-        opacity_.Set(1, now, reduced ? t_.reducedEnter : t_.enter, Curves::out, t_.delay);
-        scale_.Set(1, now, reduced ? 0 : t_.enter, Curves::out, t_.delay);
+        opacity_.Set(1, now, reduced ? t_.reducedEnter : t_.enter, t_.curve, t_.delay);
+        scale_.Set(1, now, reduced ? 0 : t_.enter, t_.curve, t_.delay);
     }
     void Hide(Motion::Time now, bool animate = true, bool reduced = false) noexcept {
         open_ = false; reduced_ = reduced;
         if (!animate) { opacity_.Snap(0); scale_.Snap(t_.from); return; }
-        opacity_.Set(0, now, reduced ? t_.reducedExit : t_.exit, Curves::out);
-        scale_.Set(t_.to, now, reduced ? 0 : t_.exit, Curves::out);
+        opacity_.Set(0, now, reduced ? t_.reducedExit : t_.exit, t_.curve);
+        scale_.Set(t_.to, now, reduced ? 0 : t_.exit, t_.curve);
     }
     float Progress(Motion::Time now) const noexcept { return Motion::Clamp(opacity_.Value(now)); }
     float Raw(Motion::Time now) const noexcept { return opacity_.Value(now); }

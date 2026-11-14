@@ -80,7 +80,12 @@ static void TestModel() {
     Check(SettingsUI::SearchSettings(L"annotation").empty() && SettingsUI::SearchSettings(L"codex").empty(), "search without the mode: nothing about annotations");
     const auto found = SettingsUI::SearchSettings(L"annotations", true);
     Check(!found.empty() && found[0].entry->hit == SettingsUI::CatAnnotations, "search with the mode: « Annotations et agents » first");
-    Check(!SettingsUI::SearchSettings(L"lanceur", true).empty() && SettingsUI::SearchSettings(L"lanceur", true)[0].entry->hit == SettingsUI::AnnotationLauncher, "search: « lanceur » finds the switch");
+    {   // V3: no launcher switch any more (the launcher only exists in the mode).
+        bool none = true; for (const auto& r : SettingsUI::SearchSettings(L"lanceur", true)) if (std::wstring(r.entry->title).find(L"lanceur") != std::wstring::npos) none = false;
+        Check(none, "search: no « Afficher le lanceur d'annotations » row (V3)");
+        const auto prompt = SettingsUI::SearchSettings(L"proposer", true);
+        Check(!prompt.empty() && prompt[0].entry->hit == SettingsUI::AnnotationPrompt, "search: « proposer » finds the prompt switch");
+    }
 }
 
 // ---------------------------------------------------------------- redirected environment (temp folders only)
@@ -193,11 +198,11 @@ int wmain(int argc, wchar_t** argv) {
     Check(dr.CurrentViewForTest() == V::Annotations, "row opens the « Annotations et agents » view");
     if (argc > 3 && std::wstring(argv[3]) == L"--hold") {
         // Real UIA client (test-annotation-settings.ps1): the section stays on screen while it reads and
-        // toggles « Afficher le lanceur d'annotations »; the state is printed at the end.
+        // toggles « Proposer de connecter un agent »; the state is printed at the end.
         dr.Hide(false, false); dr.Show(V::Annotations); dr.SettleForTest(); Pump(100);   // on screen (the drawer without the mode above took the activation)
         std::printf("READY\n"); std::fflush(stdout);
         const DWORD end = GetTickCount() + 12000; while (static_cast<int>(end - GetTickCount()) > 0) Pump(20);
-        std::printf("launcher=%d changes=%d\n", st.annotationLauncher ? 1 : 0, static_cast<int>(changes.size())); std::fflush(stdout);
+        std::printf("prompt=%d changes=%d\n", st.annotationConnectPrompt ? 1 : 0, static_cast<int>(changes.size())); std::fflush(stdout);
         dr.Hide(false, false); dr.Dispose(); confirm.Dispose(); DestroyWindow(owner); RemoveTree(e.base);
         return failures ? 1 : 0;
     }
@@ -209,7 +214,7 @@ int wmain(int argc, wchar_t** argv) {
         Check(codex && codex->hit == SettingsUI::None && codex->value.empty() && codex->lines == std::vector<std::wstring>{L"Non installé"}, "Codex: « Non installé », no button");
         Check(Find(slots, Kind::Nav, L"Autre app ou réglage manuel") != nullptr, "« Autre app ou réglage manuel »");
         const auto* launcher = Find(slots, Kind::Switch, L"Afficher le lanceur d'annotations"); const auto* prompt = Find(slots, Kind::Switch, L"Proposer de connecter un agent");
-        Check(launcher && prompt && !launcher->lines.empty() && !prompt->lines.empty(), "two switches with their description");
+        Check(!launcher && prompt && !prompt->lines.empty(), "one switch with its description (V3: no launcher switch)");
         const auto* note = Find(slots, Kind::Note, AS::ShortcutsNote); Check(note && note->hit == 0, "shortcut reminder: Ctrl+Maj+A, Ctrl+Maj+H (text, not focusable)");
         const auto* retention = Find(slots, Kind::Value, L"Conserver les terminées"); Check(retention && retention->value == L"30 jours", "retention: « 30 jours » by default");
         const auto* folder = Find(slots, Kind::Folder, L"Ouvrir le dossier des annotations"); Check(folder && folder->value == L"…\\annotations", "folder row: the store's folder name");
@@ -235,8 +240,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     {
         using namespace SettingsUI;
-        const std::vector<int> want{Back, Close, AgentBase, ManualConnect, AnnotationLauncher, AnnotationPrompt, AnnotationRetention, AnnotationFolder, AnnotationClear};
-        Check(dr.FocusOrderForTest() == want, "Tab order: Retour, Fermer, Connecter Claude, manuel, lanceur, proposition, conservation, dossier, effacer");
+        const std::vector<int> want{Back, Close, AgentBase, ManualConnect, AnnotationPrompt, AnnotationRetention, AnnotationFolder, AnnotationClear};
+        Check(dr.FocusOrderForTest() == want, "Tab order: Retour, Fermer, Connecter Claude, manuel, proposition, conservation, dossier, effacer");
         bool walked = true; for (size_t i = 0; i < want.size(); ++i) { dr.KeyForTest(VK_TAB); walked = walked && dr.FocusForTest() == want[i]; }
         dr.KeyForTest(VK_TAB); walked = walked && dr.FocusForTest() == want[0];
         Check(walked, "Tab walks that order and wraps");
@@ -254,8 +259,8 @@ int wmain(int argc, wchar_t** argv) {
         const auto* connect = Node(nodes, SettingsUI::AgentBase);
         Check(connect && connect->role == Role::Button && connect->name == L"Connecter Claude Desktop" && connect->help == L"Non connecté" && connect->enabled, "UIA: « Connecter Claude Desktop », status as help");
         Check(NodeNamed(nodes, L"Codex : Non installé") && !NodeNamed(nodes, L"Codex : Non installé")->focusable, "UIA: « Codex : Non installé » read as text");
-        const auto* launcher = Node(nodes, SettingsUI::AnnotationLauncher); const auto* prompt = Node(nodes, SettingsUI::AnnotationPrompt);
-        Check(launcher && launcher->toggle == 2 && launcher->name == L"Afficher le lanceur d'annotations" && prompt && prompt->toggle == 2 && !prompt->help.empty(), "UIA: two toggles, on, described");
+        const auto* prompt = Node(nodes, SettingsUI::AnnotationPrompt);
+        Check(!NodeNamed(nodes, L"Afficher le lanceur d'annotations") && prompt && prompt->toggle == 2 && !prompt->help.empty(), "UIA: one toggle (proposition), on, described; no launcher toggle");
         const auto* retention = Node(nodes, SettingsUI::AnnotationRetention); Check(retention && retention->expand == 1 && retention->status == L"30 jours", "UIA: retention opens a list, value « 30 jours »");
         const auto* folder = Node(nodes, SettingsUI::AnnotationFolder); Check(folder && folder->help == e.target.storeRoot, "UIA: folder button, full path as help");
         const auto* clear = Node(nodes, SettingsUI::AnnotationClear); Check(clear && clear->enabled && clear->help == L"Effacer 3 annotations", "UIA: clear names the count");
@@ -337,9 +342,6 @@ int wmain(int argc, wchar_t** argv) {
 
     // ---- Switches ----------------------------------------------------------------------------------
     changes.clear();
-    dr.ActivateForTest(SettingsUI::AnnotationLauncher, false);
-    Check(!st.annotationLauncher && changes == std::vector<BrowserSettings::Change>{BrowserSettings::Change::AnnotationLauncher}, "« Afficher le lanceur d'annotations » off: state + Change::AnnotationLauncher");
-    dr.ActivateForTest(SettingsUI::AnnotationLauncher, false); Check(st.annotationLauncher, "launcher back on");
     st.annotationConnectDeclines = 3; dr.Changed(); changes.clear();
     { const auto nodes = dr.AccessibleNodesForTest(); const auto* n = Node(nodes, SettingsUI::AnnotationPrompt); Check(n && n->toggle == 1, "3 « Plus tard »: the prompt switch shows off"); }
     shot(L"prompt-off");

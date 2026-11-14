@@ -76,19 +76,19 @@ $rows | Format-Table -AutoSize | Out-String -Width 250 | Tee-Object -FilePath (J
 function Need($ok, $what) { if (-not $ok) { $p.Kill(); throw "UIA: $what" } ; Write-Host "ok   UIA client: $what" }
 Need ($rows | Where-Object { $_.Type -eq 'Button' -and $_.Name -eq 'Connecter Claude Desktop' -and $_.Help -eq 'Non connecté' }) 'button « Connecter Claude Desktop », status as help text'
 Need ($rows | Where-Object { $_.Type -eq 'Text' -and $_.Name -eq 'Codex : Non installé' }) 'text « Codex : Non installé »'
-Need ($rows | Where-Object { $_.Name -eq "Afficher le lanceur d'annotations" -and "$($_.Toggle)" -eq 'On' }) 'launcher switch exposes Toggle = On'
+Need (-not ($rows | Where-Object { $_.Name -eq "Afficher le lanceur d'annotations" })) 'no launcher switch (V3: the launcher only exists in the mode)'
 Need ($rows | Where-Object { $_.Name -eq 'Proposer de connecter un agent' -and "$($_.Toggle)" -eq 'On' }) 'prompt switch exposes Toggle = On'
 Need ($rows | Where-Object { $_.Name -eq 'Conserver les terminées' -and $_.Status -eq '30 jours' -and "$($_.Expand)" -eq 'Collapsed' }) 'retention: value « 30 jours », ExpandCollapse'
 Need ($rows | Where-Object { $_.Name -eq 'Effacer toutes les annotations…' -and $_.Enabled }) 'clear-all button'
 Need ($rows | Where-Object { $_.Name -eq 'Fermer les réglages' }) 'close button'
-$switch = $items | Where-Object { $_.Current.Name -eq "Afficher le lanceur d'annotations" } | Select-Object -First 1
+$switch = $items | Where-Object { $_.Current.Name -eq 'Proposer de connecter un agent' } | Select-Object -First 1
 $switch.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
 Start-Sleep -Milliseconds 600
 $state = $switch.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState
-Need ("$state" -eq 'Off') 'Toggle() through UIA turns the launcher switch off'
+Need ("$state" -eq 'Off') 'Toggle() through UIA turns the prompt switch off'
 $p.WaitForExit(30000) | Out-Null
 $tail = Get-Content $stdout | Select-Object -Last 1
-Need ($tail -eq 'launcher=0 changes=1') "the drawer applied it ($tail)"
+Need ($tail -eq 'prompt=0 changes=1') "the drawer applied it ($tail)"
 $after = Fingerprint
 if ($before -ne $after) { throw 'The REAL Claude / Codex configuration changed during the UIA run.' }
 Write-Host 'UIA client checks: ok; real configurations unchanged'

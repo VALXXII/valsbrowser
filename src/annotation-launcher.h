@@ -159,12 +159,16 @@ struct LauncherHooks {
     std::function<void(const std::wstring&)> announce;
     HistoryHooks history;              // the history panel (4.1 – 4.3)
 };
+// « Spéc · Entrée du mode » (Paper 5.2): the launcher appears 0.9 -> 1 + opacity in 200 ms; it goes back into its
+// corner by the same path in 150 ms. Reduced motion: opacity only.
+inline Timing LauncherTiming() { Timing t; t.enter = 200; t.exit = Spec::panelOut; t.from = .9f; t.to = .9f; return t; }
 class Launcher : public Animator::Client {
     static constexpr long long ButtonKey = 1, CardKey = 10, CardBodyKey = 11;
     static constexpr UINT_PTR DwellTimer = 7;
     HINSTANCE instance_ = nullptr; HWND parent_ = nullptr; std::wstring root_; LauncherHooks hooks_;
     Layer button_, card_; HistoryPanel history_;
-    Presence buttonPresence_{PanelTiming()}, cardPresence_{PanelTiming()}; Motion::State motion_;
+    Presence buttonPresence_{LauncherTiming()}, cardPresence_{PanelTiming()}; Motion::State motion_;
+    bool dormant_ = false;   // V3: the mode is off => every launcher window is destroyed as soon as nothing shows
     RECT page_{}; LauncherState state_ = LauncherState::Rest; int count_ = 0; bool reduced_ = false;
     CardContent content_, before_; CardLayout cardLayout_, beforeLayout_; Crossfade cardFade_; Ramp cardHeight_; int cardStamp_ = 0;
     bool buttonHover_ = false, buttonPressed_ = false, buttonFocus_ = false, keyboard_ = false;
@@ -323,9 +327,21 @@ class Launcher : public Animator::Client {
         add(CardClose, L"Fermer", cardLayout_.close);
         return n;
     }
-    bool Ensure() {
-        if (button_.Window()) return true;
+    // History alone (Ctrl+Maj+H outside the mode): no launcher window.
+    bool EnsureHistory() {
         if (!Ink::Shared(root_)) return false;
+        if (historyReady_) return true; historyReady_ = true;
+        HistoryHooks hh = hooks_.history;
+        auto closed = hh.closed; hh.closed = [this, closed](bool keyboard) { RenderButton(Motion::Now()); if (keyboard) FocusLauncher(); if (closed) closed(keyboard); ReleaseIfDormant(); };
+        if (!hh.announce) hh.announce = hooks_.announce;
+        history_.Init(instance_, parent_, std::move(hh));
+        history_.idle = [this] { ReleaseIfDormant(); };
+        return true;
+    }
+    bool historyReady_ = false;
+    bool Ensure() {
+        if (!EnsureHistory()) return false;
+        if (button_.Window()) return true;
         Layer::Options b; b.child = true; b.tabStop = true; b.title = L"Annotations";
         Layer::Options c; c.child = true; c.tabStop = true; c.title = L"Annotation";
         if (!card_.Create(instance_, parent_, c) || !button_.Create(instance_, parent_, b)) return false;
@@ -340,10 +356,6 @@ class Launcher : public Animator::Client {
         ch.focused = [this]() -> long long { return cardFocus_ ? 100 + cardFocus_ : 0; };
         ch.invoke = [this](long long key) { PostMessageW(card_.Window(), WM_APP + 2, WPARAM(key - 100), 0); };
         card_.uia.Attach(std::move(ch));
-        HistoryHooks hh = hooks_.history;
-        auto closed = hh.closed; hh.closed = [this, closed](bool keyboard) { RenderButton(Motion::Now()); if (keyboard) FocusLauncher(); if (closed) closed(keyboard); };
-        if (!hh.announce) hh.announce = hooks_.announce;
-        history_.Init(instance_, parent_, std::move(hh));
         motion_.EnablePolish();
         return true;
     }
@@ -367,18 +379,41 @@ public:
     }
     void SetBadgeRing(std::uint32_t rgba) { ring_ = rgba; }   // V1 (no ring in V2)
     // count: Working = annotations an agent is processing (accent badge); Rest = new annotations no agent read yet (raised badge, 3.1); 0 = no badge.
-    bool Show(LauncherState state, int count, bool reduced) {
+    // delayMs: « Spéc · Entrée du mode » — the launcher appears 120 ms after the band (0.9 -> 1 + opacity, 200 ms).
+    bool Show(LauncherState state, int count, bool reduced, int delayMs = 0) {
         if (!Ensure()) return false;
         const auto now = Motion::Now(); state_ = state; count_ = count; reduced_ = reduced; motion_.SetReducedMotion(reduced);
+        dormant_ = false; history_.SetLowAnchor(false);
+        if (!buttonPresence_.IsOpen()) { Timing t = LauncherTiming(); t.delay = delayMs; buttonPresence_.Configure(t); }
         buttonPresence_.Show(now, true, reduced); RenderButton(now); Animator::Get().Request(this);
         if (button_.uia.Listening()) button_.uia.ChildrenChanged(ButtonKey);
         return true;
     }
+    // The launcher and its card leave (into their corner, 150 ms). The history is the host's call (it may stay
+    // open outside the mode: it is then re-anchored 16 DIP from the bottom).
     void Hide(bool animate = true) {
         if (!button_.Window()) return; const auto now = Motion::Now();
-        HideCard(animate); HideHistory(animate); buttonPresence_.Hide(now, animate, reduced_); buttonHover_ = buttonPressed_ = false;
+        HideCard(animate); buttonPresence_.Hide(now, animate, reduced_); buttonHover_ = buttonPressed_ = false;
+        if (GetFocus() == button_.Window()) SetFocus(parent_);
         if (!buttonPresence_.Visible(now)) button_.Hide(); else Animator::Get().Request(this);
+        if (button_.uia.Listening()) button_.uia.ChildrenChanged(ButtonKey);
     }
+    // V3: outside the mode. Once nothing is on screen, every window is destroyed (zero launcher window at rest);
+    // the next Show / ShowHistory creates them again.
+    void SetDormant(bool dormant) { dormant_ = dormant; if (dormant) { history_.SetLowAnchor(true); ReleaseIfDormant(); } }
+    bool Dormant() const { return dormant_; }
+    void ReleaseIfDormant() {
+        if (!dormant_) return; const auto now = Motion::Now();
+        if (buttonPresence_.Visible(now) || cardPresence_.Visible(now)) return;
+        if (button_.Window() || card_.Window()) {
+            if (card_.Window()) KillTimer(card_.Window(), DwellTimer);
+            dwellArmed_ = false; buttonFocus_ = false; cardFocus_ = cardHover_ = cardPressed_ = 0; buttonHover_ = buttonPressed_ = false;
+            button_.Destroy(); card_.Destroy(); motion_.ClearInteractions();
+        }
+        if (history_.ReleaseWindows() && Animator::Exists()) Animator::Get().Forget(this);
+    }
+    // Live windows (QA « au repos » count).
+    int WindowsForTest() const { return (button_.Window() ? 1 : 0) + (card_.Window() ? 1 : 0) + (history_.Window() ? 1 : 0) + (history_.ToastWindow() ? 1 : 0); }
     void ShowCard(const CardContent& content) {
         if (!Ensure() || content.kind == CardKind::None) return;
         const auto now = Motion::Now(); const bool open = cardPresence_.IsOpen();
@@ -404,8 +439,8 @@ public:
     }
     // History (4.1 – 4.3): born from the launcher; the card steps aside while it is open.
     bool ShowHistory(const HistoryData& data, bool keyboard = false) {
-        if (!Ensure()) return false;
-        HideCard(true); history_.Place(page_);
+        if (!EnsureHistory()) return false;
+        HideCard(true); history_.SetLowAnchor(dormant_ || !buttonPresence_.IsOpen()); history_.Place(page_);
         const bool ok = history_.Show(data, keyboard, reduced_);
         RenderButton(Motion::Now()); if (button_.uia.Listening()) button_.uia.ChildrenChanged(ButtonKey);
         return ok;
@@ -414,7 +449,7 @@ public:
     void ShowHistoryDetail(const std::wstring& id) { history_.ShowDetail(id); }
     const std::wstring& HistoryDetailId() const { return history_.DetailId(); }
     void SetHistoryCapture(const std::wstring& id, const Shot& capture) { history_.SetEntryCapture(id, capture); }
-    void HideHistory(bool animate = true) { history_.Hide(animate); RenderButton(Motion::Now()); }
+    void HideHistory(bool animate = true) { history_.Hide(animate); RenderButton(Motion::Now()); if (!animate) ReleaseIfDormant(); }
     void FocusLauncher() { if (button_.Window() && buttonPresence_.IsOpen()) { keyboard_ = true; SetFocus(button_.Window()); } }
     void FocusCard() { if (card_.Window() && cardPresence_.IsOpen()) { keyboard_ = true; cardFocus_ = CardOrder().front(); SetFocus(card_.Window()); RenderCard(Motion::Now()); } }
     bool Frame(Motion::Time now) override {
@@ -426,6 +461,7 @@ public:
         if (cardPresence_.Visible(now)) { RenderCard(now); more |= cardPresence_.Moving(now) || cardFade_.Moving(now) || cardHeight_.Moving(now); }
         else card_.Hide();
         more |= motion_.NextWake(now).delay.has_value();
+        if (!more && dormant_) ReleaseIfDormant();
         return more;
     }
     // ---- tests / QA

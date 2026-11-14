@@ -54,7 +54,7 @@ enum Hit : int {
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
     CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84, CatAnnotations = 85,
     // « Annotations et agents »: one button per agent row, the manual fallback, two switches, retention, folder, clear all.
-    AgentBase = 90, ManualConnect = 92, AnnotationLauncher = 66, AnnotationPrompt = 67, AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
+    AgentBase = 90, ManualConnect = 92, AnnotationPrompt = 67, AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
 inline constexpr int AgentHit(AnnotationSettings::App a) { return AgentBase + static_cast<int>(a); }
@@ -67,8 +67,8 @@ inline bool IsSite(int hit) { return hit >= SiteBase && hit < PermissionBase; }
 inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < PermissionBase + 100; }
 constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
                               ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground,
-                              GrayscaleText, AnnotationLauncher, AnnotationPrompt};
-constexpr int SwitchCount = 17;
+                              GrayscaleText, AnnotationPrompt};
+constexpr int SwitchCount = 16;
 inline int SwitchIndex(int hit) { for (int i = 0; i < SwitchCount; ++i) if (SwitchHits[i] == hit) return i; return -1; }
 
 // ---- Geometry (DIP, panel-local; x = 0 is the drawer's leading edge) -----------
@@ -284,7 +284,6 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         add(Kind::Nav, ManualConnect, row, L"Autre app ou réglage manuel");
         endGroup();
         labelAt(L"Mode Annotation");
-        twoLine(AnnotationLauncher, L"Afficher le lanceur d'annotations");
         twoLine(AnnotationPrompt, L"Proposer de connecter un agent");
         { auto lines = described(ShortcutsNoteKey); const size_t n = std::max<size_t>(1, lines.size()); auto* s = add(Kind::Note, None, n * 20.f, AS::ShortcutsNote); s->lines = std::move(lines); }
         endGroup();
@@ -345,7 +344,6 @@ inline const std::pair<int, const wchar_t*> Descriptions[] = {
     {ReduceMotion, L"S'ajoute au réglage d'animation de Windows."},
     {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
     {GrayscaleText, L"Adoucit l'affichage des pages, un peu comme sur Mac."},
-    {AnnotationLauncher, L"En bas à droite des pages : vos annotations et leur suivi."},
     {AnnotationPrompt, L"Au lancement du mode Annotation, tant qu'aucun agent n'est connecté."},
 };
 // Settings search: every row a query can reach, with where it lives and the words it answers to.
@@ -382,7 +380,6 @@ inline const Searchable SearchIndex[] = {
     {AgentHit(AnnotationSettings::App::Claude), L"Claude Desktop", L"Annotations et agents › Agents", View::Annotations, L"connecter deconnecter anthropic mcp agent"},
     {AgentHit(AnnotationSettings::App::Codex), L"Codex", L"Annotations et agents › Agents", View::Annotations, L"connecter deconnecter openai mcp agent"},
     {ManualConnect, L"Autre app ou réglage manuel", L"Annotations et agents › Agents", View::Annotations, L"mcp configuration json toml commande connecter agent"},
-    {AnnotationLauncher, L"Afficher le lanceur d'annotations", L"Annotations et agents › Mode Annotation", View::Annotations, L"historique bouton annoter"},
     {AnnotationPrompt, L"Proposer de connecter un agent", L"Annotations et agents › Mode Annotation", View::Annotations, L"plus tard lancement annoter mcp"},
     {AnnotationRetention, L"Conserver les terminées", L"Annotations et agents › Historique", View::Annotations, L"annotations terminees duree jours supprimer"},
     {AnnotationFolder, L"Ouvrir le dossier des annotations", L"Annotations et agents › Historique", View::Annotations, L"explorateur fichiers emplacement"},
@@ -535,7 +532,7 @@ private:
         case ClearOnExit: return &state_->clearOnExit; case ConfirmClose: return &state_->confirmCloseTabs; case CloseWithLastTab: return &state_->closeWithLastTab;
         case AdBlock: return &state_->adBlock; case HttpsOnly: return &state_->httpsOnly; case ThirdPartyCookies: return &state_->blockThirdPartyCookies;
         case MemorySaver: return &state_->memorySaver; case MuteBackground: return &state_->muteBackground;
-        case GrayscaleText: return &state_->grayscaleText; case AnnotationLauncher: return &state_->annotationLauncher; default: return nullptr;
+        case GrayscaleText: return &state_->grayscaleText; default: return nullptr;
         }
     }
     static BrowserSettings::Change SwitchChange(int hit) {
@@ -546,7 +543,7 @@ private:
         case ConfirmClose: return C::ConfirmCloseTabs; case CloseWithLastTab: return C::CloseWithLastTab; case AdBlock: return C::AdBlock;
         case HttpsOnly: return C::HttpsOnly; case ThirdPartyCookies: return C::ThirdPartyCookies; case MemorySaver: return C::MemorySaver;
         case MuteBackground: return C::MuteBackground; case GrayscaleText: return C::GrayscaleText;
-        case AnnotationLauncher: return C::AnnotationLauncher; case AnnotationPrompt: return C::AnnotationConnectPrompt; default: return C::ClearOnExit;
+        case AnnotationPrompt: return C::AnnotationConnectPrompt; default: return C::ClearOnExit;
         }
     }
     // « Proposer de connecter un agent » shows whether the modal would still open by itself (BrowserSettings::ConnectPromptActive).

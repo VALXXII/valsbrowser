@@ -23,13 +23,16 @@ struct Agent {
     bool configured = false;   // our entry is in its configuration (Claude: or the .mcpb extension installed)
     bool connected = false;    // configured, or it read the store recently
     bool stalePath = false;    // configured for another bridge / store path
+    bool restart = false;      // configured, not read since: the app must be restarted to load the server
+    App app = App::Claude;     // which app (the restart line names it)
     long long lastReadAt = 0;  // UTC seconds, 0 = never read
     Activity activity = Activity::Idle;
     bool failed = false;       // the last connect / disconnect failed: `message` says why
+    static Agent For(App a) { Agent x; x.app = a; return x; }
     std::wstring message;      // last result (French, from agent-connect): an error, or a step left (« Cliquez sur Installer dans Claude »)
 };
 struct Agents {
-    Agent claude, codex;
+    Agent claude, codex{Agent::For(App::Codex)};
     Agent& operator[](App a) { return a == App::Claude ? claude : codex; }
     const Agent& operator[](App a) const { return a == App::Claude ? claude : codex; }
 };
@@ -59,6 +62,8 @@ inline std::wstring Ago(long long seconds) {
     if (seconds < 2 * 86400) return L"hier";
     return L"il y a " + std::to_wstring(seconds / 86400) + L" jours";
 }
+// After a connection, until the app reads the store: same words as the connect modal (1.3).
+inline std::wstring RestartText(App app) { return std::wstring(L"Redémarrez ") + AppShort(app) + L" pour l'activer"; }
 // The status line under the app's name.
 inline std::wstring StatusText(const Agent& a, long long now) {
     if (a.activity == Activity::Connecting) return L"Connexion…";
@@ -66,6 +71,7 @@ inline std::wstring StatusText(const Agent& a, long long now) {
     if (!a.known) return L"Vérification…";
     if (a.failed) return a.message.empty() ? std::wstring(L"La connexion a échoué. Réessayez.") : a.message;
     if (a.stalePath) return L"Connecté à un ancien emplacement du navigateur";
+    if (a.connected && a.restart) return std::wstring(L"Connecté · redémarrez ") + AppShort(a.app) + L" pour l'activer";
     if (a.connected && a.lastReadAt > 0) return L"Connecté · a lu vos annotations " + Ago(now - a.lastReadAt);
     if (a.connected) return L"Connecté";
     if (!a.message.empty()) return a.message;   // e.g. the .mcpb is open: « Cliquez sur Installer dans Claude »

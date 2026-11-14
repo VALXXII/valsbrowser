@@ -326,21 +326,24 @@ class HistoryPanel : public Animator::Client {
     Presence presence_{PanelTiming()}, toastPresence_{PanelTiming()}; Crossfade fade_; Ramp height_; int stamp_ = 0, direction_ = 1;
     Motion::State motion_; RECT page_{}; bool reduced_ = false, toastHover_ = false, toastFocus_ = false, toastPressed_ = false; int hover_ = 0, pressed_ = 0;
     HistoryEntry deleted_; int deletedAt_ = -1; std::wstring deletedId_;
+    bool low_ = false;   // V3: no launcher (outside the mode) => anchored 16 DIP from the bottom, not 64
+    float Bottom() const { return low_ ? HistorySpec::inset : HistorySpec::bottom; }
 
     Ink& I() { return *Ink::Instance(); }
     float Scale() const { const UINT d = GetDpiForWindow(parent_); return (d ? d : 96) / 96.f; }
     int Px(float d) const { return int(std::lround(d * Scale())); }
     float H(Motion::Time now) const { return height_.Value(now); }
     RECT PanelRect(Motion::Time now) const {   // parent-client px, bottom-anchored, + 4 DIP of room for the scale origin
-        const int r = page_.right - Px(HistorySpec::inset), b = page_.bottom - Px(HistorySpec::bottom) + Px(4);
+        const int r = page_.right - Px(HistorySpec::inset), b = page_.bottom - Px(Bottom()) + Px(4);
         return {r - Px(HistorySpec::width), b - Px(4) - Px(std::max(layout_.height, H(now))), r, b};
     }
     RECT ToastRect() const {
-        const int r = page_.right - Px(HistorySpec::inset + HistorySpec::launcher + HistorySpec::gap), b = page_.bottom - Px(HistorySpec::inset);
+        // Left of the launcher on its line; without the launcher, left of the panel (anchored on the same line).
+        const int r = page_.right - Px(HistorySpec::inset + (low_ ? HistorySpec::width : HistorySpec::launcher) + HistorySpec::gap), b = page_.bottom - Px(HistorySpec::inset);
         return {r - Px(ToastWidth(*Ink::Instance())), b - Px(HistorySpec::toastH), r, b};
     }
     void Relayout() {
-        view_.maxHeight = (page_.bottom - page_.top) / Scale() - HistorySpec::bottom - HistorySpec::inset;
+        view_.maxHeight = (page_.bottom - page_.top) / Scale() - Bottom() - HistorySpec::inset;
         layout_ = LayoutHistory(I(), view_); view_.scroll = std::clamp(view_.scroll, 0.f, MaxScroll(layout_));
     }
     HistoryView Visual(const HistoryView& base, Motion::Time now) const {
@@ -636,6 +639,7 @@ class HistoryPanel : public Animator::Client {
         return true;
     }
 public:
+    std::function<void()> idle;   // nothing left on screen (set by the launcher)
     ~HistoryPanel() { if (Animator::Exists()) Animator::Get().Forget(this); }
     void Init(HINSTANCE instance, HWND parent, HistoryHooks hooks) { instance_ = instance; parent_ = parent; hooks_ = std::move(hooks); }
     bool Created() const { return panel_.Window() != nullptr; }
@@ -678,11 +682,25 @@ public:
         if (panel_.uia.Listening()) panel_.uia.Raise(PanelKey, UIA_Window_WindowClosedEventId);
     }
     void Focus() { if (panel_.Window() && presence_.IsOpen()) { view_.keyboard = true; SetFocus(panel_.Window()); } }
+    // V3: anchored above the launcher (mode on) or 16 DIP from the bottom (no launcher). Re-placed at once.
+    void SetLowAnchor(bool low) { if (low == low_) return; low_ = low; Place(page_); }
+    bool LowAnchor() const { return low_; }
+    // Nothing on screen, nothing pending (a deletion still undoable keeps the toast's window).
+    bool Idle(Motion::Time now) const { return !presence_.Visible(now) && !toastPresence_.Visible(now) && deletedAt_ < 0; }
+    // V3 « au repos, zéro fenêtre »: the windows are destroyed once idle; Ensure() recreates them at the next Show.
+    bool ReleaseWindows() {
+        if (!panel_.Window() && !toast_.Window()) return true;
+        if (!Idle(Motion::Now())) return false;
+        if (Animator::Exists()) Animator::Get().Forget(this);
+        if (toast_.Window()) KillTimer(toast_.Window(), ToastTimer);
+        panel_.Destroy(); toast_.Destroy(); hover_ = pressed_ = 0; toastHover_ = toastFocus_ = toastPressed_ = false; motion_.ClearInteractions(); return true;
+    }
     bool Frame(Motion::Time now) override {
         bool more = false;
         if (presence_.Visible(now)) { Render(now); more |= presence_.Moving(now) || fade_.Moving(now) || height_.Moving(now); } else panel_.Hide();
         if (toastPresence_.Visible(now)) { RenderToast(now); more |= toastPresence_.Moving(now); } else toast_.Hide();
         more |= motion_.NextWake(now).delay.has_value();
+        if (!more && idle && Idle(now)) idle();   // the launcher may destroy the windows now (outside the mode)
         return more;
     }
     // ---- tests / QA

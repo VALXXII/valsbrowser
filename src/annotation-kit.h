@@ -84,6 +84,8 @@ inline constexpr Glyph ring{"M118.004 63.985a54 54 0 0 1-108 0c0-21.26 12.365-40
 // Regular (assets/fonts, OFL; T3), else the first installed of Cascadia Mono, Consolas. Sizes/line heights in DIP, tracking in em.
 struct Font {
     float size = 14, line = 20; int weight = 400; bool mono = false, tabular = false, plain = false; float tracking = 0;
+    bool system = false;   // V3 (mono only): the first INSTALLED of JetBrains Mono, Cascadia Mono, Consolas — what the page's
+                           // CSS stack resolves to — never the bundled copy (the native selection label must match the page's)
 };
 inline Font F(float size, float line, int weight = 400, float tracking = 0) { Font f; f.size = size; f.line = line; f.weight = weight; f.tracking = tracking; return f; }
 inline Font Mono(float size, float line, bool plain = false) { Font f; f.size = size; f.line = line; f.mono = true; f.plain = plain; return f; }
@@ -123,11 +125,11 @@ struct Shot { unsigned width = 0, height = 0; std::vector<std::uint32_t> pixels;
 class Ink {
     ID2D1Factory* factory_ = nullptr; IDWriteFactory* write_ = nullptr; Detail::FontLoader* loader_ = nullptr;
     IDWriteFontCollection* inter_ = nullptr; IWICImagingFactory* wic_ = nullptr;
-    std::wstring mono_ = L"Consolas"; bool monoBundled_ = false;
-    float interAscent_ = .96875f, interDescent_ = .2421875f, monoAscent_ = .8f, monoDescent_ = .2f;
+    std::wstring mono_ = L"Consolas"; bool monoBundled_ = false; std::wstring systemMono_ = L"Consolas";
+    float interAscent_ = .96875f, interDescent_ = .2421875f, monoAscent_ = .8f, monoDescent_ = .2f, sysAscent_ = .8f, sysDescent_ = .2f;
     std::map<const char*, ID2D1PathGeometry*> geometries_;
-    struct Key { std::wstring text; float size, line, tracking, width; int weight; bool mono, tabular, plain, wrap; int align;
-        bool operator<(const Key& o) const { return std::tie(text, size, line, tracking, width, weight, mono, tabular, plain, wrap, align) < std::tie(o.text, o.size, o.line, o.tracking, o.width, o.weight, o.mono, o.tabular, o.plain, o.wrap, o.align); } };
+    struct Key { std::wstring text; float size, line, tracking, width; int weight; bool mono, tabular, plain, wrap; int align; bool system;
+        bool operator<(const Key& o) const { return std::tie(text, size, line, tracking, width, weight, mono, tabular, plain, wrap, align, system) < std::tie(o.text, o.size, o.line, o.tracking, o.width, o.weight, o.mono, o.tabular, o.plain, o.wrap, o.align, o.system); } };
     std::map<Key, IDWriteTextLayout*> layouts_;
     std::map<ID2D1RenderTarget*, ID2D1SolidColorBrush*> brushes_;
     struct BitmapKey { ID2D1RenderTarget* target; const void* shot; const void* data; bool operator<(const BitmapKey& o) const { return std::tie(target, shot, data) < std::tie(o.target, o.shot, o.data); } };
@@ -145,7 +147,8 @@ class Ink {
         Release(font); Release(fam);
     }
     float Baseline(const Font& f) const {
-        const float a = (f.mono ? monoAscent_ : interAscent_) * f.size, d = (f.mono ? monoDescent_ : interDescent_) * f.size;
+        const bool sys = f.mono && f.system;
+        const float a = (sys ? sysAscent_ : f.mono ? monoAscent_ : interAscent_) * f.size, d = (sys ? sysDescent_ : f.mono ? monoDescent_ : interDescent_) * f.size;
         return (f.line - (a + d)) / 2 + a;   // CSS half-leading
     }
 public:
@@ -168,13 +171,14 @@ public:
         UINT32 index = 0; BOOL exists = FALSE; inter_->FindFamilyName(L"Inter Display", &index, &exists); if (!exists) return E_FAIL;
         Metrics(inter_, L"Inter Display", interAscent_, interDescent_);
         IDWriteFontCollection* system = nullptr;
-        if (SUCCEEDED(inter_->FindFamilyName(L"JetBrains Mono", &index, &exists)) && exists) { mono_ = L"JetBrains Mono"; monoBundled_ = true; Metrics(inter_, L"JetBrains Mono", monoAscent_, monoDescent_); }
-        else if (SUCCEEDED(write_->GetSystemFontCollection(&system, FALSE))) {
+        if (SUCCEEDED(write_->GetSystemFontCollection(&system, FALSE))) {   // the page's CSS stack, as Chromium resolves it
             for (const wchar_t* name : {L"JetBrains Mono", L"Cascadia Mono", L"Consolas"}) {
-                if (SUCCEEDED(system->FindFamilyName(name, &index, &exists)) && exists) { mono_ = name; Metrics(system, name, monoAscent_, monoDescent_); break; }
+                if (SUCCEEDED(system->FindFamilyName(name, &index, &exists)) && exists) { systemMono_ = name; Metrics(system, name, sysAscent_, sysDescent_); break; }
             }
-            Release(system);
         }
+        if (SUCCEEDED(inter_->FindFamilyName(L"JetBrains Mono", &index, &exists)) && exists) { mono_ = L"JetBrains Mono"; monoBundled_ = true; Metrics(inter_, L"JetBrains Mono", monoAscent_, monoDescent_); }
+        else { mono_ = systemMono_; monoAscent_ = sysAscent_; monoDescent_ = sysDescent_; }
+        Release(system);
         return CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_));
     }
     void Dispose() {
@@ -189,6 +193,7 @@ public:
     float BaselineOf(const Font& f) const { return Baseline(f); }
     IWICImagingFactory* Wic() const { return wic_; }
     const std::wstring& MonoFamily() const { return mono_; }
+    const std::wstring& SystemMonoFamily() const { return systemMono_; }
     unsigned long long LayoutsCreated() const { return layoutsCreated_; }
     // Bind before drawing; a target's brush is created once and kept until Forget(target).
     bool Bind(ID2D1RenderTarget* t) {
@@ -283,11 +288,12 @@ public:
     }
     // ---- text ----
     IDWriteTextLayout* Layout(const std::wstring& text, const Font& f, float width, bool wrap, Align align = Align::Leading) {
-        Key key{text, f.size, f.line, f.tracking, std::max(1.f, width), f.mono ? 400 : (f.weight >= 500 ? 500 : 400), f.mono, f.tabular, f.plain, wrap, int(align)};
+        const bool sys = f.mono && f.system;
+        Key key{text, f.size, f.line, f.tracking, std::max(1.f, width), f.mono && !sys ? 400 : (f.weight >= 500 ? 500 : 400), f.mono, f.tabular, f.plain, wrap, int(align), sys};
         auto it = layouts_.find(key); if (it != layouts_.end()) return it->second;
         if (layouts_.size() > 512) { for (auto& l : layouts_) Release(l.second); layouts_.clear(); }
         IDWriteTextFormat* format = nullptr;
-        if (FAILED(write_->CreateTextFormat(f.mono ? mono_.c_str() : L"Inter Display", f.mono ? (monoBundled_ ? inter_ : nullptr) : inter_,
+        if (FAILED(write_->CreateTextFormat(sys ? systemMono_.c_str() : f.mono ? mono_.c_str() : L"Inter Display", sys ? nullptr : f.mono ? (monoBundled_ ? inter_ : nullptr) : inter_,
                 key.weight >= 500 ? DWRITE_FONT_WEIGHT_MEDIUM : DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, f.size, L"fr-FR", &format))) return nullptr;
         format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
         format->SetTextAlignment(align == Align::Center ? DWRITE_TEXT_ALIGNMENT_CENTER : align == Align::Trailing ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);

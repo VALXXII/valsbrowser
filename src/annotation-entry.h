@@ -6,7 +6,7 @@
 //
 // Settings read by the mode (src/settings.h, owned by the settings worker; until a key exists its default
 // is used — detection at compile time in annotation-mode.h, no source dependency either way):
-//   annotationLauncher        bool  true   « Afficher le lanceur d'annotations »
+//   (annotation-launcher: V2 key, read and ignored since V3 — the launcher only exists in the mode)
 //   annotationConnectPrompt   bool  true   « Proposer de connecter un agent au lancement du mode »
 //   annotationConnectDeclines int    0     « Plus tard » answers (the modal stops opening by itself at 3)
 //   annotationRetentionDays   int    30    7 / 30 / 90: done annotations kept that long (Store::Purge)
@@ -28,6 +28,7 @@ struct AnnotationAgentState {
     long long lastReadAt = 0;   // UTC seconds, 0 = never
     std::wstring lastRead;      // « il y a 3 min » (empty = never)
     std::wstring readerLabel;   // « Claude Desktop », « Codex »… as the bridge saw it
+    bool restart = false;       // configured, but the app has not read the store since: « Redémarrez Claude pour l'activer »
 };
 enum class AnnotationApp { Claude = 0, Codex = 1 };
 

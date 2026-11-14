@@ -14,7 +14,12 @@
 // Toolbar « Annoter » (Paper W09-0, active): 24x24 radius 6, split tint (accent 16 %), mark
 // 13x12.25 accent, an accent bar 10x2 radius 1 at x+7, 2 DIP under the button.
 // The band is a child layered window of the browser window (above the WebView), created
-// at the first Show; it fades in/out in 120 ms (opacity only: the page moves by 32 DIP at once).
+// at the first Show. V3 (« Spéc · Entrée du mode », Paper 5.2): it slides from -32 DIP to 0 with a fade in
+// 220 ms cubic-bezier(.32,.72,0,1) and goes back up in 160 ms; every move starts from the presented value
+// (interruptible); reduced motion: a 150 ms fade only. The page moves by 32 DIP at once; what the sliding band
+// uncovers is the chrome's own canvas (the chrome paints down to ContentTop), the same #171717 as the band.
+// A future animated background (Paper 5.2 « vague tramée ») plugs into Banner::backdrop: drawn under the
+// content, clipped to the band, given the time; it keeps frames coming only while backdropAnimates is set.
 #include "annotation-kit.h"
 
 namespace NativeChrome { namespace Annotations {
@@ -52,7 +57,7 @@ inline int BannerHitAt(const BannerLayout& l, bool reminder, float x, float y) {
     if (reminder && Inside(l.remind, x, y)) return BannerRemind;
     return BannerNone;
 }
-inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v) {
+inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const std::function<void()>& backdrop = {}) {
     using namespace BannerSpec;
     auto* t = ink.Target(); const auto l = LayoutBanner(ink, w, v.beta);
     ink.Fill({0, 0, w, h}, 0, Hex(Ink_::canvas));
@@ -61,6 +66,7 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v) {
     const D2D1_GRADIENT_STOP s[2] = {{0, {end.r, end.g, end.b, 0}}, {1, {end.r, end.g, end.b, gradientAlpha}}};
     if (SUCCEEDED(t->CreateGradientStopCollection(s, 2, &stops)) && SUCCEEDED(t->CreateLinearGradientBrush({{0, 0}, {0, h}}, stops, &gradient))) t->FillRectangle({0, 0, w, h}, gradient);
     Release(gradient); Release(stops);
+    if (backdrop) { t->PushAxisAlignedClip({0, 0, w, h}, D2D1_ANTIALIAS_MODE_ALIASED); backdrop(); t->PopAxisAlignedClip(); }
     ink.Fill({0, h - 1, w, h}, 0, Hex(border));
     {   // Mark with the shader's ramp.
         const D2D1_RECT_F m{(l.logo.left + l.logo.right - markW) / 2, (l.logo.top + l.logo.bottom - markH) / 2, (l.logo.left + l.logo.right + markW) / 2, (l.logo.top + l.logo.bottom + markH) / 2};
@@ -127,7 +133,10 @@ struct BannerHooks {
     std::function<void()> connect;                            // V2: « Aucun agent connecté · Connecter » (1.8)
     std::function<void(const std::wstring&)> announce;        // optional: the host's announcer
 };
-inline Timing BannerTiming() { Timing t; t.enter = t.exit = t.reducedEnter = t.reducedExit = Spec::bannerFade; t.from = t.to = 1; return t; }
+namespace BannerMotion { inline constexpr int enter = 220, exit = 160, reduced = 150; inline constexpr float lift = 32; }
+inline Timing BannerTiming() { Timing t; t.enter = BannerMotion::enter; t.exit = BannerMotion::exit; t.reducedEnter = t.reducedExit = BannerMotion::reduced; t.from = t.to = 1; t.curve = Curves::band; return t; }
+// The band's offset for a presence progress (0 hidden .. 1 in place): slides with its opacity, none when reduced.
+inline float BannerOffset(float progress, bool reduced) { return reduced ? 0.f : -(1 - Motion::Clamp(progress)) * BannerMotion::lift; }
 class Banner : public Animator::Client {
     static constexpr long long RootKey = 1, QuitKey = 2, RemindKey = 3;
     HINSTANCE instance_ = nullptr; HWND parent_ = nullptr; std::wstring root_; BannerHooks hooks_;
@@ -138,15 +147,21 @@ class Banner : public Animator::Client {
     BannerLayout Layout() { auto* ink = Ink::Instance(); return ink ? LayoutBanner(*ink, Width(), beta_) : BannerLayout{}; }
     void Render(Motion::Time now) {
         if (!layer_.Window()) return;
-        const float opacity = presence_.Progress(now);
+        const float opacity = presence_.Progress(now), dy = BannerOffset(opacity, reduced_);
         BannerVisual v; v.quit = motion_.Visual(BannerQuit, now); v.remind = motion_.Visual(BannerRemind, now); v.focus = focus_; v.keyboard = keyboard_;
         v.reduced = reduced_; v.focusItem = focusItem_; v.beta = beta_; v.reminder = Motion::Clamp(reminder_.Value(now));
-        layer_.paint = [v, opacity](Ink& ink, float w, float h) {
+        const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count(); auto backdrop = backdrop_;
+        layer_.paint = [v, opacity, dy, seconds, backdrop](Ink& ink, float w, float h) {
+            auto* t = ink.Target(); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+            t->SetTransform(D2D1::Matrix3x2F::Translation(0, dy) * base);
             ID2D1Layer* group = nullptr; const bool pushed = ink.PushOpacity(opacity, group);
-            PaintBanner(ink, w, h, v); if (pushed) ink.PopOpacity(group);
+            PaintBanner(ink, w, h, v, backdrop ? [&] { backdrop(ink, w, h, seconds); } : std::function<void()>());
+            if (pushed) ink.PopOpacity(group);
+            t->SetTransform(base);
         };
         layer_.Present(rect_, true);
     }
+    std::function<void(Ink&, float, float, double)> backdrop_; bool backdropAnimates_ = false;
     void Interact() { const auto now = Motion::Now(); motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, now); Render(now); Animator::Get().Request(this); }
     void Activate(int item) {
         if (item == BannerQuit) { if (hooks_.exit) hooks_.exit(); }
@@ -242,8 +257,15 @@ public:
     bool Frame(Motion::Time now) override {
         if (!presence_.Visible(now)) { layer_.Hide(); return false; }
         Render(now);
-        return presence_.Moving(now) || reminder_.Moving(now) || motion_.NextWake(now).delay.has_value();
+        return presence_.Moving(now) || reminder_.Moving(now) || motion_.NextWake(now).delay.has_value() || (backdropAnimates_ && presence_.IsOpen());
     }
+    // Future animated background (see the header comment): paint(ink, w, h, seconds), above the band's
+    // gradient and under its content; animates = keep requesting frames while the band is open.
+    void SetBackdrop(std::function<void(Ink&, float, float, double)> paint, bool animates) {
+        backdrop_ = std::move(paint); backdropAnimates_ = animates && backdrop_;
+        if (layer_.Window() && presence_.Visible(Motion::Now())) { Render(Motion::Now()); if (backdropAnimates_) Animator::Get().Request(this); }
+    }
+    Presence& PresenceForTest() { return presence_; }
     // Tests.
     Layer& LayerForTest() { return layer_; }
     std::vector<Accessibility::Node> NodesForTest() { return Nodes(); }

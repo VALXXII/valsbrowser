@@ -4,9 +4,10 @@
 // Contract: plan-annotations-mcp-local/design/annotations-v2-brief.md (+ the Paper « Spéc » boards).
 //
 // Budget « au repos = aucune activité »: until the user does something, nothing here runs — no script,
-// listener, thread, timer, folder watch or store read. The launcher (40 DIP drawer button, bottom right of
-// the page, setting « Afficher le lanceur d'annotations ») is a window painted once; its counter is read
-// once at its first display (one CountClaimed off the UI thread, only when the store exists).
+// listener, thread, timer, folder watch, store read or window. V3: the launcher (40 DIP drawer button, bottom
+// right of the page) exists only while the mode is on: it appears 120 ms after the band and goes back into its
+// corner at the exit, then its windows are destroyed. The history stays reachable outside the mode by
+// Ctrl+Maj+H (anchored 16 DIP from the bottom); its windows are destroyed too once it closes.
 //
 //   activation   ExecuteScript(page script) in the ACTIVE tab only (src/annotation-script.h); the page
 //                moves down 32 DIP under the band. The agents' state is read off the UI thread: none
@@ -59,7 +60,11 @@ struct Session {
     std::wstring draft;                       // kept when the panel is cancelled
 } s;
 std::uint64_t serials = 0;                    // never reset: a new session never matches an old result
-AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect;
+AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame;
+// V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
+// the image is ready) so the page is only told to resume once the engine has its frame.
+struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0; };
+ShotJob shot; bool resumeOwed = false; std::uint64_t frameSerial = 0;
 bool uiReady = false, purged = false, countLoaded = false, laterThisSession = false, connectLaunch = false;
 std::unique_ptr<BA::Store> store; std::mutex writeLock;
 std::optional<BA::Entry> last;                // last annotation added in this session (« Copier en Markdown »)
@@ -68,7 +73,7 @@ int claimed = 0;                              // launcher counter: annotations a
 bool statusBusy = false, statusDirty = false;
 enum class Card { None, Working, NoAgent, Added, Done } card = Card::None; std::string cardId, cardSite;
 std::wstring loggedOnce;
-HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1;
+HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2;
 struct Watch { HANDLE thread = nullptr, stop = nullptr; std::wstring root; } watch; std::atomic<bool> watchSignal{false};
 struct Menu { bool valid = false, selection = false; POINT at{}; std::wstring text; } menu;
 // A capture still being prepared when « Ajouter » was clicked: it joins the written annotation.
@@ -89,11 +94,10 @@ bool Reduced() { return motion.ReducedMotion(); }
 namespace Prefs {
 #define ANN_HAS(Name, field) template<class S, class = void> struct Name : std::false_type {}; \
     template<class S> struct Name<S, std::void_t<decltype(std::declval<S&>().field)>> : std::true_type {};
-ANN_HAS(HasLauncher, annotationLauncher) ANN_HAS(HasPrompt, annotationConnectPrompt) ANN_HAS(HasDeclines, annotationConnectDeclines) ANN_HAS(HasRetention, annotationRetentionDays)
+ANN_HAS(HasPrompt, annotationConnectPrompt) ANN_HAS(HasDeclines, annotationConnectDeclines) ANN_HAS(HasRetention, annotationRetentionDays)
 #undef ANN_HAS
 constexpr int MaxDeclines = 3;
 int sessionDeclines = 0;   // without the key: counted for this run only
-template<class S> bool Launcher(const S& st) { if constexpr (HasLauncher<S>::value) return bool(st.annotationLauncher); else return (void)st, true; }
 template<class S> bool Prompt(const S& st) { if constexpr (HasPrompt<S>::value) return bool(st.annotationConnectPrompt); else return (void)st, true; }
 template<class S> int Declines(const S& st) { if constexpr (HasDeclines<S>::value) return int(st.annotationConnectDeclines); else return (void)st, sessionDeclines; }
 template<class S> void AddDecline(S& st) {
@@ -194,16 +198,22 @@ RECT ClientScreen() { RECT r{}; GetClientRect(window, &r); MapWindowPoints(windo
 RECT PageScreen(const std::shared_ptr<Tab>& t) { RECT r = PageClient(t); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
 void EnsureUi();
 void RefreshCount();
+// V3 (retours §6): only in the mode, on the mode's tab, never in full screen.
 bool LauncherWanted() {
     auto t = Active();
-    return Prefs::Launcher(settings) && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window);
+    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window);
 }
-void ShowLauncher() { launcher.Show(claimed > 0 ? AUI::LauncherState::Working : AUI::LauncherState::Rest, claimed, Reduced()); }
-void LauncherSync() {
-    if (!LauncherWanted()) { if (uiReady && launcher.Visible()) launcher.Hide(false); return; }
-    EnsureUi();
+void ShowLauncher(int delayMs = 0) { launcher.Show(claimed > 0 ? AUI::LauncherState::Working : AUI::LauncherState::Rest, claimed, Reduced(), delayMs); }
+// entering: the mode just started (the launcher follows the band by 120 ms). Leaving: animated (into its corner).
+void LauncherSync(bool entering = false) {
+    if (!uiReady) return;
     launcher.Place(PageClient(Active()));
-    if (!launcher.Visible()) { ShowLauncher(); if (!countLoaded) RefreshCount(); }
+    if (!LauncherWanted()) {
+        if (launcher.Visible()) launcher.Hide(!InFullscreen() && !PageFullscreenActive() && !IsIconic(window));
+        launcher.SetDormant(!s.active);
+        return;
+    }
+    if (!launcher.Visible()) { ShowLauncher(entering && !Reduced() ? 120 : 0); if (!countLoaded) RefreshCount(); }
 }
 void Place() {
     if (s.active) banner.Move(BandRect());
@@ -215,6 +225,11 @@ void Cmd(const std::shared_ptr<Tab>& t, const std::wstring& op, const std::wstri
     if (!t || !t->view.p || t->closed || halted) return;
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
     t->view->ExecuteScript(AUI::PageCommand(AH::Wide(s.nonce.empty() ? std::string("-") : s.nonce), op, arg).c_str(), cb); cb->Release();
+}
+// The accent as the page script gets it (ints): the native frame and the fill removal use the same values.
+std::uint32_t AccentRgb() {
+    const auto a = NativeChrome::Design::Accent::Get();
+    return (std::uint32_t(std::lround(a.r * 255)) << 16) | (std::uint32_t(std::lround(a.g * 255)) << 8) | std::uint32_t(std::lround(a.b * 255));
 }
 std::wstring Params(const std::shared_ptr<Tab>& t, const Start& st) {
     namespace SJ = StrictJson; SJ::Value p = SJ::Value::Obj();
@@ -256,7 +271,8 @@ DWORD WINAPI WatchMain(LPVOID p) {
     }
     CloseHandle(ov.hEvent); CloseHandle(dir); return 0;
 }
-bool WatchWanted() { return uiReady && (s.active || launcher.HistoryVisible() || connect.Visible() || claimed > 0 || pendingInstall); }
+// V3: no launcher outside the mode, so no watch for its ring either.
+bool WatchWanted() { return uiReady && (s.active || launcher.HistoryVisible() || connect.Visible() || pendingInstall); }
 void SyncWatch() {
     if (WatchWanted()) {
         if (watch.thread || !EnsurePost()) return;
@@ -294,15 +310,25 @@ std::wstring When(std::int64_t unix, std::int64_t now) {
 }
 
 // ---------------------------------------------------------------- agents (connection)
-AUI::AppStatus StatusFor(const AC::Status& st) {
-    if (st.connected()) return {(st.stalePath || (st.removableDrive && st.configured)) ? AUI::ConnectState::Reconnect : AUI::ConnectState::Connected, L""};
+// V3 (retours §1): a client only loads its MCP servers when it starts. Configured but not read since (never, or
+// not since a connection made in this session) => « Redémarrez Claude pour l'activer », in the modal and the settings.
+std::int64_t connectedAt[2] = {0, 0};
+bool RestartNeeded(int app, const AC::Status& st) {
+    return st.configured && !st.stalePath && (st.lastReadAt == 0 || (connectedAt[app] && st.lastReadAt < connectedAt[app]));
+}
+std::wstring RestartLine(int app) { return app == 0 ? L"Redémarrez Claude pour l'activer" : L"Redémarrez Codex pour l'activer"; }
+AUI::AppStatus StatusFor(int app, const AC::Status& st) {
+    if (st.connected()) {
+        if (st.stalePath || (st.removableDrive && st.configured)) return {AUI::ConnectState::Reconnect, L""};
+        return {AUI::ConnectState::Connected, RestartNeeded(app, st) ? RestartLine(app) : L""};
+    }
     return {AUI::ConnectState::Idle, L""};
 }
 void ApplyAgents() {
     if (s.active && banner.Visible() && !connect.Visible()) banner.SetReminder(!agents.any());
     if (connect.Visible()) {
-        if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) connect.SetStatus(AUI::AgentKind::Claude, StatusFor(agents.claude));
-        if (!connectBusy[1]) connect.SetStatus(AUI::AgentKind::Codex, StatusFor(agents.codex));
+        if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) connect.SetStatus(AUI::AgentKind::Claude, StatusFor(0, agents.claude));
+        if (!connectBusy[1]) connect.SetStatus(AUI::AgentKind::Codex, StatusFor(1, agents.codex));
         connect.SetRemovable(agents.removable);
     }
     if (pendingInstall && agents.claude.connected()) { pendingInstall = false; Log(L"ANNOTATE Claude extension installed or read the store"); SyncWatch(); }
@@ -331,7 +357,7 @@ void OpenConnect(bool launch, bool manual = false) {
     if (connect.Visible()) return;
     AUI::ConnectSetup setup; const auto target = ConnectTarget();
     setup.launch = launch; setup.manual = manual; setup.command = target.bridgeExe; setup.args = {L"--store", target.storeRoot}; setup.serverName = AH::Wide(target.serverName);
-    setup.removableDrive = agents.removable; setup.claude = StatusFor(agents.claude); setup.codex = StatusFor(agents.codex); setup.disconnectable = true;
+    setup.removableDrive = agents.removable; setup.claude = StatusFor(0, agents.claude); setup.codex = StatusFor(1, agents.codex); setup.disconnectable = true;
     if (pendingInstall && !agents.claude.connected()) setup.claude = {AUI::ConnectState::Working, L"Cliquez sur Installer dans Claude"};
     if (GetFileAttributesW(setup.command.c_str()) == INVALID_FILE_ATTRIBUTES) Log(L"ANNOTATE bridge not found: " + setup.command);
     connectLaunch = launch;
@@ -340,8 +366,9 @@ void OpenConnect(bool launch, bool manual = false) {
 AUI::AppStatus ConnectOutcome(AUI::AgentKind a, const AC::Report& r) {
     const std::wstring msg = AH::Wide(r.message);
     switch (r.result) {
-    case AC::Result::Connected: return {AUI::ConnectState::Connected, a == AUI::AgentKind::Codex ? L"Redémarrez Codex pour l'activer" : L"Redémarrez Claude pour l'activer"};
-    case AC::Result::AlreadyConnected: return {AUI::ConnectState::Connected, L""};
+    case AC::Result::Connected: return {AUI::ConnectState::Connected, RestartLine(a == AUI::AgentKind::Codex ? 1 : 0)};
+    case AC::Result::AlreadyConnected: { const auto& st = a == AUI::AgentKind::Codex ? agents.codex : agents.claude; const int i = a == AUI::AgentKind::Codex ? 1 : 0;
+        return {AUI::ConnectState::Connected, RestartNeeded(i, st) ? RestartLine(i) : L""}; }
     case AC::Result::PendingInstall: return {AUI::ConnectState::Working, L"Cliquez sur Installer dans Claude"};
     default: return {AUI::ConnectState::Failed, msg.empty() ? L"Connexion impossible" : msg};
     }
@@ -362,6 +389,7 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
             Log(std::wstring(L"ANNOTATE ") + (on ? L"connect " : L"disconnect ") + (a == AUI::AgentKind::Claude ? L"claude: " : L"codex: ") + AH::Wide(AC::ResultName(report->result)) +
                 L" — " + AH::Wide(report->message) + (report->file.empty() ? L"" : L" [" + report->file + L"]") + (report->backup.empty() ? L"" : L" backup " + report->backup) + (report->usedCli ? L" (codex CLI)" : L""));
             if (on) {
+                if (report->result == AC::Result::Connected) connectedAt[i] = BA::SystemNow();
                 const auto st = ConnectOutcome(a, *report);
                 if (a == AUI::AgentKind::Claude) pendingInstall = report->result == AC::Result::PendingInstall;
                 if (report->ok() && card == Card::NoAgent && launcher.CardVisible()) { launcher.HideCard(); card = Card::None; }   // « Aucun agent ne la lit encore » is no longer true
@@ -485,7 +513,7 @@ void LoadHistory(bool open, bool keyboard) {
         });
 }
 void OpenHistory(bool keyboard, const std::string& focusId = "") {
-    EnsureUi(); if (!launcher.Visible()) { launcher.Place(PageClient(Active())); ShowLauncher(); }
+    EnsureUi(); launcher.Place(PageClient(Active()));   // V3: outside the mode, the panel alone (no launcher)
     historyFocus = focusId;
     if (launcher.HistoryVisible()) { if (!focusId.empty()) { launcher.ShowHistoryDetail(AH::Wide(focusId)); historyFocus.clear(); } return; }
     LoadHistory(true, keyboard);
@@ -533,8 +561,9 @@ void Exit(const wchar_t* why, bool pageChanged = false);
 void Resume() {
     auto t = ModeTab(); if (!t) return;
     s.frozen = false; s.cap = Cap::None; s.png.clear(); s.saving = s.captureWanted = false; s.pageSeq = -1; ++serials; s.serial = serials;
-    if (post) KillTimer(post, HideTimer);
-    Cmd(t, L"resume");
+    // A shot still owed to the page's frame (« Ajouter » or Échap within ~60 ms of the click): the page resumes
+    // once the engine has rendered it, never before (resuming would show the page's own edges in the shot).
+    if (shot.waiting || shot.inFlight) resumeOwed = true; else Cmd(t, L"resume");
     if (t->controller.p) t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 }
 void Attach(const Late& l) {
@@ -568,11 +597,26 @@ void OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r, double
     AUI::Shot shot; shot.width = r.thumbW; shot.height = r.thumbH; shot.pixels = r.thumb; shot.mark = {r.markL, r.markT, r.markR, r.markB};
     note.SetShot(AUI::CaptureState::Ready, shot.width ? &shot : nullptr);
 }
-void CaptureFailed(std::uint64_t serial, const char* why) { AnnotationCapture::Result r; r.path = "plan"; r.why = why; OnCaptured(serial, r, s.selectedAt, -1); }
+void CaptureFailed(std::uint64_t serial, const char* why) { AnnotationCapture::Result r; r.path = "plan"; r.why = why; OnCaptured(serial, r, shot.serial == serial ? shot.selectedAt : s.selectedAt, -1); }
+// The engine has rendered the shot (or gave up): the page's edges come back, and it answers « shown » two frames
+// later (then the native copy goes: OnShown). A resume the user asked for meanwhile is sent now.
+void ShotDone(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
+    if (shot.serial == serial) { shot.waiting = shot.inFlight = false; }
+    if (!t) { frame.Hide(); return; }
+    if (frame.Visible() && frameSerial == serial) {
+        Cmd(t, L"show", std::to_wstring(serial));
+        if (EnsurePost()) SetTimer(post, FrameTimer, 1000, nullptr);   // a page that never answers « shown »
+    } else Cmd(t, L"show");
+    if (resumeOwed && !shot.waiting && !shot.inFlight) { resumeOwed = false; if (s.active && !s.frozen) Cmd(t, L"resume"); }
+}
+void OnShown(std::int64_t serial) {
+    if (!frame.Visible() || std::uint64_t(serial) != frameSerial) return;
+    if (EnsurePost()) SetTimer(post, FrameTimer, 34, nullptr);   // two page frames + one compositor frame of margin
+}
 // Fallback: CapturePreview of the viewport, cropped on the thread pool.
 void Preview(const std::shared_ptr<Tab>& t, std::uint64_t serial, AH::Selection sel, double selectedAt, double lag) {
     IStream* stream = nullptr;
-    if (!t || !t->view.p || FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &stream))) { Cmd(t, L"show"); CaptureFailed(serial, "stream"); return; }
+    if (!t || !t->view.p || FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &stream))) { ShotDone(t, serial); CaptureFailed(serial, "stream"); return; }
     const auto rect = sel.target.rect; const double vw = sel.target.viewport.width, vh = sel.target.viewport.height;
     const unsigned tw = unsigned(S(AUI::NoteSpec::thumbW)), th = unsigned(S(AUI::NoteSpec::thumbH));
     std::weak_ptr<Tab> weak = t;
@@ -580,48 +624,60 @@ void Preview(const std::shared_ptr<Tab>& t, std::uint64_t serial, AH::Selection 
         std::string bytes;
         if (SUCCEEDED(hr)) { HGLOBAL mem = nullptr; STATSTG st{}; if (SUCCEEDED(GetHGlobalFromStream(stream, &mem)) && SUCCEEDED(stream->Stat(&st, STATFLAG_NONAME))) { if (const void* d = GlobalLock(mem)) { bytes.assign(static_cast<const char*>(d), size_t(st.cbSize.QuadPart)); GlobalUnlock(mem); } } }
         stream->Release();
-        Cmd(weak.lock(), L"show");   // the frame comes back right after the shot
+        ShotDone(weak.lock(), serial);   // the frame comes back right after the shot
         if (bytes.empty()) { AnnotationCapture::Result r; r.path = "preview"; r.why = "CapturePreview"; OnCaptured(serial, r, selectedAt, lag); return S_OK; }
         auto result = std::make_shared<AnnotationCapture::Result>(); auto input = std::make_shared<std::string>(std::move(bytes));
         Run([result, input, rect, vw, vh, tw, th] { *result = AnnotationCapture::Process(*input, rect, vw, vh, tw, th); },
             [result, serial, selectedAt, lag] { OnCaptured(serial, *result, selectedAt, lag); });
         return S_OK; });
     const HRESULT hr = t->view->CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream, cb); cb->Release();
-    if (FAILED(hr)) { stream->Release(); Cmd(t, L"show"); CaptureFailed(serial, "CapturePreview refused"); }
+    if (FAILED(hr)) { stream->Release(); ShotDone(t, serial); CaptureFailed(serial, "CapturePreview refused"); }
 }
 // The engine's clipped capture (Page.captureScreenshot), decoded/checked on the thread pool; any failure => Preview.
 void Capture(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
-    if (!t || !t->view.p) { CaptureFailed(serial, "no page"); return; }
-    const AH::Selection sel = s.sel; const double selectedAt = s.selectedAt, lag = s.clickLagMs, engineAt = NowMs();
+    if (!t || !t->view.p) { ShotDone(t, serial); CaptureFailed(serial, "no page"); return; }
+    shot.waiting = false; shot.inFlight = true;
+    const AH::Selection sel = shot.sel; const double selectedAt = shot.selectedAt, lag = shot.lag, engineAt = NowMs(), handoff = shot.handoffAt, frameMs = shot.frameMs;
     const auto plan = AH::PlanClip(sel.target.rect, sel.target.viewport);
-    if (!plan.ok) { Cmd(t, L"show"); CaptureFailed(serial, "outside the viewport"); return; }
+    if (!plan.ok) { ShotDone(t, serial); CaptureFailed(serial, "outside the viewport"); return; }
+    const std::uint32_t accent = AccentRgb();
     const double dpr = sel.target.viewport.devicePixelRatio;
     const unsigned tw = unsigned(S(AUI::NoteSpec::thumbW)), th = unsigned(S(AUI::NoteSpec::thumbH));
     std::weak_ptr<Tab> weak = t;
-    auto cb = Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler, HRESULT, LPCWSTR>([weak, serial, sel, plan, dpr, tw, th, selectedAt, lag, engineAt](HRESULT hr, LPCWSTR json) -> HRESULT {
+    auto cb = Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler, HRESULT, LPCWSTR>([weak, serial, sel, plan, dpr, tw, th, selectedAt, lag, engineAt, accent, handoff, frameMs](HRESULT hr, LPCWSTR json) -> HRESULT {
         auto tab = weak.lock(); const double engineDone = NowMs();
-        if (FAILED(hr) || !json || !*json) { Log(L"ANNOTATE Page.captureScreenshot failed: falling back to CapturePreview"); if (tab) Preview(tab, serial, sel, selectedAt, lag); else CaptureFailed(serial, "tab closed"); return S_OK; }
-        Cmd(tab, L"show");
+        if (FAILED(hr) || !json || !*json) { Log(L"ANNOTATE Page.captureScreenshot failed: falling back to CapturePreview"); if (tab) Preview(tab, serial, sel, selectedAt, lag); else { ShotDone(tab, serial); CaptureFailed(serial, "tab closed"); } return S_OK; }
+        ShotDone(tab, serial);
         auto wide = std::make_shared<std::wstring>(json); auto result = std::make_shared<AnnotationCapture::Result>(); auto work = std::make_shared<double>(0);
-        Run([wide, result, plan, dpr, tw, th, work] {
+        auto mark = std::make_shared<AH::Mark>(sel.mark);
+        Run([wide, result, plan, dpr, tw, th, work, mark, accent] {
                 const double w0 = NowMs(); struct Done { double w0; std::shared_ptr<double> out; ~Done() { *out = NowMs() - w0; } } done{w0, work};
                 std::string png;
                 if (!AH::ScreenshotData(AH::Utf8(*wide), png)) { result->path = "cdp"; result->why = "no image in the reply"; return; }
                 wide->clear(); wide->shrink_to_fit();
-                *result = AnnotationCapture::ProcessClip(std::move(png), plan, dpr, tw, th);
+                *result = AnnotationCapture::ProcessClip(std::move(png), plan, dpr, tw, th, mark.get(), accent);
             },
-            [result, serial, selectedAt, lag, engineAt, engineDone, work] {
-                OnCaptured(serial, *result, selectedAt, lag, L"engine asked after " + Ms(engineAt - selectedAt) + L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/thumbnail " + Ms(*work) +
-                                                             L" ms => image in memory " + Ms(engineDone + *work - selectedAt) + L" ms after the selection; UI hand-off " + Ms(NowMs() - engineDone - *work) + L" ms");
+            [result, serial, selectedAt, lag, engineAt, engineDone, work, handoff, frameMs, mark] {
+                OnCaptured(serial, *result, selectedAt, lag, L"native frame " + Ms(frameMs) + L" ms, page handoff " + Ms(engineAt - handoff) + L" ms, engine asked after " + Ms(engineAt - selectedAt) +
+                                                             L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/fill/thumbnail " + Ms(*work) + L" ms" + (mark->present ? L" (fill removed)" : L"") +
+                                                             L" => image in memory " + Ms(engineDone + *work - selectedAt) + L" ms after the selection; UI hand-off " + Ms(NowMs() - engineDone - *work) + L" ms");
             });
         return S_OK; });
     const HRESULT hr = t->view->CallDevToolsProtocolMethod(L"Page.captureScreenshot", AH::Wide(AH::ClipParams(plan)).c_str(), cb); cb->Release();
     if (FAILED(hr)) { Log(L"ANNOTATE Page.captureScreenshot refused: falling back to CapturePreview"); Preview(t, serial, sel, selectedAt, lag); }
 }
 void OnHidden(const std::shared_ptr<Tab>& t, std::int64_t serial) {
-    if (!s.captureWanted || serial != s.pageSeq) return;
+    if (!shot.waiting || serial != shot.pageSeq) return;
     if (post) KillTimer(post, HideTimer);
-    s.captureWanted = false; Capture(t, s.serial);
+    s.captureWanted = false; Capture(t, shot.serial);
+}
+// The page frame's native copy (src/annotation-frame.h), on screen when this returns true.
+bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
+    if (!sel.mark.present) return false;
+    AUI::FrameMark m; m.page = PageClient(t); m.dpr = sel.target.viewport.devicePixelRatio; m.accent = AccentRgb();
+    m.x = sel.mark.x; m.y = sel.mark.y; m.w = sel.mark.w; m.h = sel.mark.h; m.lx = sel.mark.lx; m.ly = sel.mark.ly; m.lw = sel.mark.lw; m.lh = sel.mark.lh; m.text = AH::Wide(sel.mark.text);
+    if (post) KillTimer(post, FrameTimer);
+    return frame.Show(m);
 }
 std::wstring Clip(std::wstring t, size_t n) { for (auto& c : t) if (c == L'\n' || c == L'\r' || c == L'\t') c = L' '; if (t.size() > n) { t.resize(n); t += L"…"; } return t; }
 void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
@@ -660,16 +716,23 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         const auto plan = AH::PlanClip(r, a.target.viewport);
         req.context.shotLabel = plan.ok ? L"Recadrée · " + std::to_wstring(plan.outW) + L"×" + std::to_wstring(plan.outH) : L"Hors de la zone visible";
     }
-    // The page hid its frame in the click's own task, before posting: a capture requested now is produced from a
-    // frame without it (the engine composites a new frame for the clipped shot; checked 10/10 in QA, and the QA
-    // looks for the frame's colour in every stored shot). It is requested BEFORE the panel is built, so the engine
-    // works while the UI thread lays the panel out. A page that sent no counter (older script) is asked to hide
-    // and answers « hidden » two frames later; the timer catches a page that never answers.
+    // V3 (retours §2): nothing changes on screen. The native layer draws the page frame's edges and label at the same
+    // pixels and waits for the compositor; then the page hides its own (« handoff ») and answers « hidden » in the
+    // same task; the shot requested then is rendered without them (a style change made in the task before is absent
+    // from the next capture: 10/10 in V2 QA). Started BEFORE the panel is built, so the engine works while the UI
+    // thread lays the panel out. Without the native layer (no geometry, no window): the V2 path, the page hides
+    // its whole frame and answers two frames later (visible). The timer catches a page that never answers.
     if (!AH::PlanClip(r, a.target.viewport).ok) {   // nothing of it is on screen: « Capture impossible ici » at once
-        s.cap = Cap::Failed; s.captureWanted = false; req.capture = AUI::CaptureState::Unavailable; Cmd(t, L"show");
+        s.cap = Cap::Failed; s.captureWanted = false; req.capture = AUI::CaptureState::Unavailable;
         Log(L"ANNOTATE capture unavailable (plan): outside the viewport");
-    } else if (s.pageSeq >= 0) { s.captureWanted = false; Capture(t, s.serial); }
-    else { s.captureWanted = true; s.pageSeq = std::int64_t(s.serial); Cmd(t, L"hide", std::to_wstring(s.serial)); if (EnsurePost()) SetTimer(post, HideTimer, 800, nullptr); }
+    } else {
+        shot = ShotJob{}; shot.serial = s.serial; shot.sel = sel; shot.selectedAt = s.selectedAt; shot.lag = lag; shot.waiting = true; s.captureWanted = true;
+        const double f0 = NowMs(); const bool native = ShowFrame(t, sel); shot.frameMs = NowMs() - f0; shot.handoffAt = NowMs();
+        if (native) { frameSerial = s.serial; shot.pageSeq = sel.seq; Cmd(t, L"handoff", std::to_wstring(sel.seq)); }
+        else { shot.pageSeq = std::int64_t(s.serial) + (std::int64_t(1) << 41); Cmd(t, L"hide", std::to_wstring(shot.pageSeq)); Log(L"ANNOTATE native frame unavailable: the page hides its frame for the shot"); }
+        s.pageSeq = shot.pageSeq;
+        if (EnsurePost()) SetTimer(post, HideTimer, 800, nullptr);
+    }
     if (!note.Show(req, target, page, sel.keyboard, Reduced())) { Log(L"ANNOTATE note panel unavailable"); return; }
     if (launcher.CardVisible()) { launcher.HideCard(); card = Card::None; }
 }
@@ -685,7 +748,7 @@ void OnSubmit(const AUI::NoteSubmission& sub) {
     // « Ajouter » never waits for the capture: it joins the annotation when it lands.
     if (!png && s.cap == Cap::Pending) {
         Late l; l.serial = s.serial; l.site = a.site; l.id = a.id; lates.push_back(l);
-        if (s.captureWanted) { s.captureWanted = false; if (post) KillTimer(post, HideTimer); Capture(t, s.serial); }   // the page has not said « hidden » yet: shoot now
+        // the page has not said « hidden » yet: the shot follows its pipeline and joins the annotation (OnCaptured)
     }
     struct Out { BA::Outcome result; BA::Entry entry; };
     auto out = std::make_shared<Out>(); const auto serial = s.serial; const double clicked = NowMs();
@@ -769,6 +832,7 @@ void EnsureUi() {
     ch.closed = [](AUI::ConnectEnd end) { ConnectClosed(end); };
     ch.announce = [](const std::wstring& t) { Announce(t); };
     connect.Init(instance, window, base, ch);
+    frame.Init(instance, window, base);
 }
 void Activate(const Start& st) {
     auto t = Active(); std::wstring why;
@@ -791,7 +855,7 @@ void Activate(const Start& st) {
     if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, st)).c_str(), cb))) { cb->Release(); s.active = false; chrome.annotationBand = 0; SyncChrome(); Layout(); Log(L"ANNOTATE ExecuteScript refused"); return; }
     cb->Release();
     banner.Show(BandRect(), Reduced());
-    LauncherSync();
+    LauncherSync(true);
     if (!purged) { purged = true; const std::int64_t retention = Prefs::Retention(settings); Run([retention] { std::lock_guard<std::mutex> g(writeLock); Store().Purge(retention); }, nullptr); }   // retention: first use of the session
     // Launch rule (Spéc · Lancement): no agent => the modal right away (80 ms after the band), mode active behind.
     const bool direct = st.kind != 0;   // started on an element from the page menu: the note comes first
@@ -810,13 +874,16 @@ void Exit(const wchar_t* why, bool pageChanged) {
     if (!s.active) return;
     auto t = ModeTab(); const bool hadPopover = note.Visible();
     Cmd(t, L"exit");
-    if (post) KillTimer(post, HideTimer);
+    if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); }
+    frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;   // the page's frame is gone with its script
     const std::wstring draft = hadPopover && note.Edit() ? [] { const int n = GetWindowTextLengthW(note.Edit()); std::wstring d(size_t(n) + 1, L'\0'); GetWindowTextW(note.Edit(), d.data(), n + 1); d.resize(size_t(n)); return d; }() : s.draft;
     // A capture still owed to a written annotation is lost if its page goes away (the note stays, without image).
     lates.erase(std::remove_if(lates.begin(), lates.end(), [](const Late& l) { return l.serial == s.serial && !l.shot; }), lates.end());
     s = Session{}; s.draft = pageChanged ? std::wstring() : draft; ++serials;
     note.Close(!pageChanged); banner.Hide(); if (connect.Visible()) connect.Close(false);
+    card = Card::None;
     chrome.annotationBand = 0; SyncChrome(); Layout();
+    LauncherSync();   // the launcher goes back into its corner; its windows are destroyed once it is gone
     if (pageChanged && hadPopover) Announce(L"La page a changé, sélection annulée");
     SyncWatch();
     Log(std::wstring(L"ANNOTATE mode off (") + why + L")");
@@ -830,7 +897,8 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (connect.Visible() || pendingInstall) RefreshAgents();
         return 0;
     }
-    if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && s.captureWanted) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), s.serial); } return 0; }
+    if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } return 0; }
+    if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
 } // namespace Ann
@@ -869,6 +937,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
             const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; if (now - c.selection.at > -50 && now - c.selection.at < 10000) lag = std::max(0.0, now - c.selection.at); }
         OnSelect(t, c.selection, lag); break; }
     case AH::Op::Hidden: OnHidden(t, c.env.serial); break;
+    case AH::Op::Shown: OnShown(c.env.serial); break;
     case AH::Op::Escape: Exit(L"escape"); break;
     case AH::Op::NoSelection: Announce(L"Aucun texte sélectionné à annoter"); break;
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
@@ -901,7 +970,9 @@ void AnnotationAgentsStatus(std::function<void(const AnnotationAgentState&, cons
             a.lastReadAt = st.lastReadAt; a.lastRead = st.lastReadAt ? AnnotationHost::AgoText(now - st.lastReadAt) : L""; a.readerLabel = AnnotationHost::Wide(st.readerLabel);
             return a;
         };
-        if (done) done(to(Ann::agents.claude, Ann::agents.claudeFolder), to(Ann::agents.codex, Ann::agents.codexFolder));
+        auto claude = to(Ann::agents.claude, Ann::agents.claudeFolder), codex = to(Ann::agents.codex, Ann::agents.codexFolder);
+        claude.restart = claude.connected && Ann::RestartNeeded(0, Ann::agents.claude); codex.restart = codex.connected && Ann::RestartNeeded(1, Ann::agents.codex);
+        if (done) done(claude, codex);
     });
 }
 void AnnotationOpenFolder() {
@@ -930,7 +1001,7 @@ void AnnotationClearAll(std::function<void(bool, std::size_t)> done) {
         });
 }
 bool AnnotationsCompiled() { return true; }
-void AnnotationSettingsChanged() { Ann::LauncherSync(); Log(Ann::Prefs::Launcher(settings) ? L"SETTINGS annotation launcher shown" : L"SETTINGS annotation launcher hidden"); }
+void AnnotationSettingsChanged() { Ann::LauncherSync(); }
 // Page menu (PageContextMenu / ShowPageMenu): « Annoter l'élément », « Annoter la sélection », Markdown.
 constexpr int AnnotateElementItem = 0x10010, AnnotateSelectionItem = 0x10011, AnnotateMarkdownItem = 0x10012;
 void AnnotationMenuItems(const std::shared_ptr<Tab>& tab, ICoreWebView2ContextMenuRequestedEventArgs* args, std::vector<CM::Item>& items) {
