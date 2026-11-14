@@ -180,6 +180,7 @@ const Value& ToolCatalogue() {
                                                  {"note", Obj({{"type", Str("string")}})},
                                                  {"url", Obj({{"type", Str("string")}})},
                                                  {"title", Obj({{"type", Str("string")}})},
+                                                 {"profile", Obj({{"type", StrArr({"string", "null"})}, {"description", Str("Profil du navigateur d'où l'annotation a été ajoutée (null : inconnu).")}})},
                                                  {"selector", Obj({{"type", Str("string")}})},
                                                  {"createdAt", Obj({{"type", Str("string")}})},
                                                  {"claimedBy", ClaimedByProperty()},
@@ -625,6 +626,7 @@ private:
         v.Set("note", Str(BA::CleanText(e.annotation.note, 200)));
         v.Set("url", Str(e.annotation.source.url));
         v.Set("title", Str(e.annotation.source.title));
+        v.Set("profile", e.annotation.source.profileName.empty() ? Value() : Str(e.annotation.source.profileName));   // the browser profile it was added from (null = unknown)
         v.Set("selector", Str(e.annotation.target.selector));
         v.Set("createdAt", Str(BA::FormatTime(e.annotation.createdAt)));
         if (e.state.claimedBy)

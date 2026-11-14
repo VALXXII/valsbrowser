@@ -480,6 +480,44 @@ void TestGuard(Fixture& f) {
 
 }  // namespace
 
+// Annotations are global: the agent's --store is <data root>\annotations whatever the profile. For the default
+// profile that is the path existing installs already have (nothing to reconnect); a config written by an
+// older build for another profile's own store (<data root>\profiles\<id>\annotations) shows « Reconnecter »,
+// and reconnecting rewrites it to the global store.
+void TestGlobalStorePath(Fixture& f) {
+    CreateDirectoryW((f.appData + L"\\Claude").c_str(), nullptr);
+    const std::wstring cfg = AC::ClaudeConfigPath(f.env);
+    CHECK(!cfg.empty());
+    AC::Target global = f.target;
+    global.storeRoot = BA::GlobalStoreRoot(f.app);
+    CHECK(global.storeRoot == f.app + L"\\annotations");
+    AC::Target legacyDefault = f.target;   // what a pre-profiles build (or the default profile) wrote: the same folder
+    legacyDefault.storeRoot = BA::StoreRootForDataDir(f.app);
+    CHECK(WriteText(cfg, "{}") && AC::MergeClaudeConfig(cfg, legacyDefault, f.now).ok());
+    AC::Status st = AC::ClientStatus(f.env, AC::Client::Claude, global, {});
+    CHECK(st.configured && !st.stalePath && st.connected());   // unchanged path: no « Reconnecter » for existing installs
+    AC::Target perProfile = f.target;
+    perProfile.storeRoot = BA::StoreRootForDataDir(f.app + L"\\profiles\\ptravail01");
+    CHECK(AC::MergeClaudeConfig(cfg, perProfile, f.now).ok());
+    st = AC::ClientStatus(f.env, AC::Client::Claude, global, {});
+    CHECK(st.configured && st.stalePath && st.connected());    // « Connecté à un ancien emplacement » + Reconnecter
+    CHECK(AC::MergeClaudeConfig(cfg, global, f.now).result == AC::Result::Connected);
+    const auto entry = AC::ReadClaudeEntry(cfg, "browser-annotations");
+    CHECK(entry.args.size() == 2 && entry.args[1] == global.storeRoot);
+    st = AC::ClientStatus(f.env, AC::Client::Claude, global, {});
+    CHECK(st.configured && !st.stalePath);
+    // Codex: the same rule on config.toml.
+    CreateDirectoryW(AC::CodexHome(f.env).c_str(), nullptr);
+    const std::wstring toml = AC::CodexConfigPath(f.env);
+    CHECK(WriteText(toml, "# mine\n") && AC::MergeCodexToml(toml, perProfile, f.now).ok());
+    st = AC::ClientStatus(f.env, AC::Client::Codex, global, {});
+    CHECK(st.configured && st.stalePath);
+    CHECK(AC::MergeCodexToml(toml, global, f.now).ok());
+    st = AC::ClientStatus(f.env, AC::Client::Codex, global, {});
+    CHECK(st.configured && !st.stalePath && ReadText(toml).rfind("# mine\n", 0) == 0);
+    CHECK(AC::RemoveCodexToml(toml, f.target.serverName, f.now).ok() && AC::RemoveClaudeConfig(cfg, f.target.serverName, f.now).ok());
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc != 4) {
         std::printf("usage: agent_connect_test <bridge.exe> <fake-codex.exe> <out.mcpb>\n");
@@ -496,6 +534,7 @@ int wmain(int argc, wchar_t** argv) {
     TestClaudeConnectFlow(f, mcpbOut);
     TestCodexToml(f);
     TestCodexCli(f, fakeCodex);
+    TestGlobalStorePath(f);
     TestGuard(f);
     return Finish("agent_connect_test");
 }

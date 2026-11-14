@@ -912,6 +912,116 @@ void TestReopenUnhandled() {
 
 }  // namespace
 
+// Global store (one for every profile): source.profile recorded and read tolerantly; Markdown / JSON show it.
+void TestProfileOrigin() {
+    FakeClock clock;
+    const std::wstring base = TempDir(L"profile-origin");
+    BA::Store store(base + L"\\annotations", clock.Fn());
+    BA::Annotation a = Sample("boutique");
+    a.source.profileId = "ptravail01"; a.source.profileName = "Travail \x01 \xC3\xA9t\xC3\xA9";   // control char dropped, accents kept
+    CHECK(store.WriteAnnotation(a, nullptr, false).ok());
+    BA::Entry e;
+    CHECK(store.Read(a.siteKey, a.id, e).ok());
+    CHECK(e.annotation.source.profileId == "ptravail01" && e.annotation.source.profileName.find("Travail") == 0 &&
+          e.annotation.source.profileName.find('\x01') == std::string::npos && e.annotation.source.profileName.find("\xC3\xA9t\xC3\xA9") != std::string::npos);
+    const std::string json = ReadText(base + L"\\annotations\\" + Wk("boutique") + L"\\" + std::wstring(a.id.begin(), a.id.end()) + L"\\annotation.json");
+    CHECK(json.find("\"profile\":{\"id\":\"ptravail01\",\"name\":\"Travail") != std::string::npos);
+    const std::string md = BA::ToMarkdown(e);
+    CHECK(md.find("- Profil : `Travail") != std::string::npos);
+    const std::string agent = StrictJson::Serialize(BA::EntryToJson(e));
+    CHECK(agent.find("\"profile\":{\"id\":\"ptravail01\"") != std::string::npos);
+    // Unknown profile (older annotation, or written without one): "profile": null, no Markdown line.
+    BA::Annotation b = Sample("boutique", "Sans profil");
+    CHECK(store.WriteAnnotation(b, nullptr, false).ok());
+    BA::Entry eb;
+    CHECK(store.Read(b.siteKey, b.id, eb).ok() && eb.annotation.source.profileId.empty() && eb.annotation.source.profileName.empty());
+    CHECK(BA::ToMarkdown(eb).find("Profil") == std::string::npos);
+    const std::wstring bfile = base + L"\\annotations\\" + Wk("boutique") + L"\\" + std::wstring(b.id.begin(), b.id.end()) + L"\\annotation.json";
+    std::string bj = ReadText(bfile);
+    CHECK(bj.find("\"profile\":null") != std::string::npos);
+    // Tolerant read: absent, wrong type, wrong member types => unknown, the annotation is still listed.
+    auto rewrite = [&](const std::string& replacement) {
+        std::string t = bj; const auto at = t.find("\"profile\":null"); t.replace(at, 14, replacement); return WriteText(bfile, t);
+    };
+    for (const std::string& variant : {std::string("\"profileX\":null"), std::string("\"profile\":\"Travail\""), std::string("\"profile\":[1,2]"),
+                                       std::string("\"profile\":{\"id\":7,\"name\":true}"), std::string("\"profile\":{}")}) {
+        CHECK(rewrite(variant));
+        BA::Entry t;
+        CHECK(store.Read(b.siteKey, b.id, t).ok() && t.annotation.source.profileId.empty() && t.annotation.source.profileName.empty());
+    }
+    CHECK(rewrite("\"profile\":{\"name\":\"Loisirs\"}"));
+    BA::Entry named;
+    CHECK(store.Read(b.siteKey, b.id, named).ok() && named.annotation.source.profileId.empty() && named.annotation.source.profileName == "Loisirs");
+}
+
+// Every missing folder of `path` (the store creates its root, not the root's parents).
+static void Dirs(const std::wstring& path) {
+    for (std::size_t at = path.find(L'\\', 3);; at = path.find(L'\\', at + 1)) {
+        CreateDirectoryW(path.substr(0, at).c_str(), nullptr);
+        if (at == std::wstring::npos) break;
+    }
+}
+// Older builds: one store per profile. MigrateProfileStores merges them into <root>\annotations, without loss.
+void TestProfileStoreMigration() {
+    FakeClock clock;
+    const std::wstring root = TempDir(L"profile-stores");
+    const std::wstring global = BA::GlobalStoreRoot(root);
+    CHECK(global == root + L"\\annotations" && BA::GlobalStoreRoot(root + L"\\") == global);
+    // Nothing to migrate: no profiles folder, or only the default profile (its old store IS the global store).
+    CHECK(BA::ProfileStoreRoots(root).empty() && BA::MigrateProfileStores(root).stores == 0);
+    BA::Store home(global, clock.Fn());
+    BA::Annotation h = Sample("boutique", "Personnel");
+    CHECK(home.WriteAnnotation(h, nullptr, false).ok());
+    CHECK(BA::MergeStoreInto(global, global).stores == 0 && BA::MergeStoreInto(global, root + L"\\ANNOTATIONS\\").stores == 0);
+    // Two profiles with their own store, one sharing a site with the default profile, one with a draft and a reader.
+    const std::wstring travail = root + L"\\profiles\\ptravail01\\annotations", loisirs = root + L"\\profiles\\ploisirs01\\annotations";
+    const std::wstring outside = TempDir(L"profile-stores-outside");
+    Dirs(travail + L"\\readers"); Dirs(loisirs + L"\\readers"); Dirs(global + L"\\readers");
+    Dirs(root + L"\\profiles\\.trash\\t1\\data\\annotations\\x"); Dirs(outside + L"\\annotations");
+    BA::Store t(travail, clock.Fn()), l(loisirs, clock.Fn());
+    BA::Annotation ta = Sample("boutique", "Travail 1"), tb = Sample("blog", "Travail 2"), la = Sample("boutique", "Loisirs");
+    const std::string tiny = TinyPng();
+    CHECK(t.WriteAnnotation(ta, &tiny, false).ok() && t.WriteAnnotation(tb, nullptr, false).ok() && l.WriteAnnotation(la, nullptr, true).ok());
+    CHECK(WriteText(travail + L"\\readers\\claude-desktop.json", "{\"a\":1}") && WriteText(global + L"\\readers\\claude-desktop.json", "{\"b\":2}"));
+    CHECK(WriteText(loisirs + L"\\readers\\codex.json", "{\"c\":3}"));
+    // A deleted profile's store (profiles\.trash) is never taken; a link is never followed.
+    CHECK(WriteText(root + L"\\profiles\\.trash\\t1\\data\\annotations\\x\\y", "trash"));
+    CHECK(WriteText(outside + L"\\annotations\\secret", "s") && CreateDirectoryW((root + L"\\profiles\\plink").c_str(), nullptr) &&
+          CreateJunction(root + L"\\profiles\\plink\\annotations", outside + L"\\annotations"));
+    const auto stores = BA::ProfileStoreRoots(root);
+    CHECK(stores.size() == 2 && stores[0] == loisirs && stores[1] == travail);
+    const BA::MergeReport r = BA::MigrateProfileStores(root);
+    CHECK(r.stores == 2 && r.moved >= 3 && r.kept == 1 && r.failed == 0);   // kept: Travail's reader file differs from the global one
+    // Everything is in the global store: the default profile's annotation, Travail's two, Loisirs' draft, the shot.
+    BA::Entry e;
+    CHECK(home.Read(h.siteKey, h.id, e).ok() && home.Read(ta.siteKey, ta.id, e).ok() && e.annotation.note == "Travail 1" && e.annotation.screenshot.present);
+    std::string png;
+    CHECK(home.ReadShot(ta.siteKey, ta.id, png).ok() && png == TinyPng());
+    CHECK(home.Read(tb.siteKey, tb.id, e).ok() && home.Read(la.siteKey, la.id, e, true).ok());
+    BA::ListQuery q; q.status.reset();
+    CHECK(home.List(q).entries.size() == 3);
+    CHECK(ReadText(global + L"\\readers\\codex.json") == "{\"c\":3}" && ReadText(global + L"\\readers\\claude-desktop.json") == "{\"b\":2}");
+    // Nothing lost: the conflicting reader file stays in Travail's old store (folder kept), Loisirs' is gone.
+    CHECK(ReadText(travail + L"\\readers\\claude-desktop.json") == "{\"a\":1}" && !Exists(travail + L"\\" + Wk("boutique")) && !Exists(loisirs));
+    CHECK(ReadText(root + L"\\profiles\\.trash\\t1\\data\\annotations\\x\\y") == "trash" && ReadText(outside + L"\\annotations\\secret") == "s");
+    // Idempotent: a second run moves nothing more.
+    const BA::MergeReport again = BA::MigrateProfileStores(root);
+    CHECK(again.moved == 0 && again.failed == 0 && again.kept == 1 && home.List(q).entries.size() == 3);
+    // An identical file is dropped, not duplicated; a store with no global store yet is renamed whole.
+    CHECK(WriteText(travail + L"\\readers\\claude-desktop.json", "{\"b\":2}"));
+    const BA::MergeReport same = BA::MigrateProfileStores(root);
+    CHECK(same.identical == 1 && same.removed && !Exists(travail));
+    const std::wstring fresh = TempDir(L"profile-stores-fresh");
+    Dirs(fresh + L"\\profiles\\p1");
+    BA::Store only(fresh + L"\\profiles\\p1\\annotations", clock.Fn());
+    BA::Annotation o = Sample("boutique", "Seule");
+    CHECK(only.WriteAnnotation(o, nullptr, false).ok());
+    const BA::MergeReport whole = BA::MigrateProfileStores(fresh);
+    BA::Store freshGlobal(BA::GlobalStoreRoot(fresh), clock.Fn());
+    CHECK(whole.moved == 1 && whole.removed && freshGlobal.Read(o.siteKey, o.id, e).ok());
+    RemoveDirectoryW((root + L"\\profiles\\plink\\annotations").c_str());
+}
+
 int wmain() {
     TestIds();
     TestTimeAndText();
@@ -930,5 +1040,7 @@ int wmain() {
     TestLocationParity();
     TestSpacingStyle();
     TestReopenUnhandled();
+    TestProfileOrigin();
+    TestProfileStoreMigration();
     return Finish("store_test");
 }

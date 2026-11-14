@@ -294,6 +294,8 @@ int wmain(int argc, wchar_t** argv) {
         WriteFile(root + L"\\history", "h"); WriteFile(root + L"\\history.damaged-20260101", "old"); WriteFile(root + L"\\bookmarks.bak", "b"); WriteFile(root + L"\\profile\\Default\\Cookies", "c");
         WriteFile(root + L"\\sessions\\w0009", "s"); WriteFile(root + L"\\settings", "browser-settings 1\n"); WriteFile(root + L"\\passwords", "v");
         WriteFile(root + L"\\browser.exe", "exe"); WriteFile(root + L"\\assets\\fonts\\a.ttf", "font"); WriteFile(root + L"\\prototype.log", "log"); WriteFile(root + L"\\profilesnotes.txt", "keep");
+        // The global annotation store and its connect work folder (GlobalEntries): shared by every profile.
+        WriteFile(root + L"\\annotations\\example-com-1a2b3c4d\\a-1\\annotation.json", "{\"a\":1}"); WriteFile(root + L"\\annotations\\readers\\claude.json", "{}"); WriteFile(root + L"\\annotations-connect\\x.mcpb", "z");
         auto reg = Load(root); const auto work = Create(root, reg, Seed(L"Travail"));
         WriteFile(ResolvePaths(root, work.id).dataDir + L"\\history", "w");
         const auto before = Snapshot(root);
@@ -301,6 +303,8 @@ int wmain(int argc, wchar_t** argv) {
         Check(Delete(root, reg, DefaultId, t, error) && !reg.Find(DefaultId), "the default profile can be deleted when another exists");
         Check(!fs::exists(root + L"\\history") && !fs::exists(root + L"\\history.damaged-20260101") && !fs::exists(root + L"\\profile") && !fs::exists(root + L"\\sessions") && !fs::exists(root + L"\\passwords"), "its own entries and their backups moved");
         Check(ReadFile(root + L"\\browser.exe") == "exe" && ReadFile(root + L"\\assets\\fonts\\a.ttf") == "font" && ReadFile(root + L"\\prototype.log") == "log" && ReadFile(root + L"\\profilesnotes.txt") == "keep" && ReadFile(ResolvePaths(root, work.id).dataDir + L"\\history") == "w", "executable, assets, logs, other files and other profiles untouched");
+        Check(ReadFile(root + L"\\annotations\\example-com-1a2b3c4d\\a-1\\annotation.json") == "{\"a\":1}" && ReadFile(root + L"\\annotations\\readers\\claude.json") == "{}" && ReadFile(root + L"\\annotations-connect\\x.mcpb") == "z",
+              "the global annotation store (and its connect folder) stays where it is: a profile delete never touches it");
         Check(t.closedSessions == std::vector<std::wstring>{L"w0009"} && Load(root).Find(DefaultId) == nullptr, "the default is not recreated by a later start");
         Check(Undo(root, reg, t) && reg.items.front().id == DefaultId, "undo puts the default back first");
         auto after = Snapshot(root); auto expected = before; after.erase(L"profiles.txt"); expected.erase(L"profiles.txt"); after.erase(L"profiles"); expected.erase(L"profiles");
@@ -375,6 +379,18 @@ int wmain(int argc, wchar_t** argv) {
             for (std::sregex_iterator it(text.begin(), text.end(), re), end; it != end; ++it) { ++seen; const std::string n = (*it)[1]; if (!known.count(std::wstring(n.begin(), n.end()))) { std::printf("     missing default entry: %s\n", n.c_str()); all = false; } }
         }
         Check(seen > 0 && all, "DefaultEntries covers every dataDir+L\"\\…\" store in src");
+    }
+    { // Annotations are global: their entries are application-wide (never a profile's), and src never derives
+      // the annotation store from a profile's dataDir (it follows the data root: GlobalStoreRoot(profile root)).
+        bool disjoint = true; for (const auto& g : GlobalEntries()) disjoint = disjoint && std::find(DefaultEntries().begin(), DefaultEntries().end(), g) == DefaultEntries().end();
+        Check(disjoint && GlobalEntries().size() == 2, "GlobalEntries (annotations, annotations-connect) are no profile's entries");
+        std::regex perProfile(R"(StoreRootForDataDir\s*\(\s*dataDir\s*\)|dataDir\s*\+\s*L\"\\\\annotations)"); int hits = 0, global = 0;
+        for (const auto& e : fs::directory_iterator(L"src")) {
+            std::ifstream in(e.path()); std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            for (std::sregex_iterator it(text.begin(), text.end(), perProfile), end; it != end; ++it) { ++hits; std::printf("     per-profile annotation store in %s: %s\n", e.path().filename().string().c_str(), (*it)[0].str().c_str()); }
+            if (text.find("GlobalStoreRoot(DataRoot())") != std::string::npos) ++global;
+        }
+        Check(hits == 0 && global > 0, "src never puts the annotation store in a profile's dataDir (GlobalStoreRoot of the data root)");
     }
     { // Several pending deletes, undone in ANY order: the list comes back in its original order.
         const auto root = Case(L"multi-undo");

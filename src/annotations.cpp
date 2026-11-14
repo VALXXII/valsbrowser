@@ -938,6 +938,8 @@ void Sanitize(Annotation& a) {
     s.urlRedacted = s.urlRedacted || redacted;
     s.title = CleanText(s.title, MaxTitleChars);
     if (s.frameKind != "main" && s.frameKind != "same-origin" && s.frameKind != "cross-origin") s.frameKind = "main";
+    s.profileId = AsciiToken(s.profileId, 64);
+    s.profileName = CleanText(s.profileName, 64);
 
     Target& t = a.target;
     if (t.kind != "element" && t.kind != "selection") t.kind = "element";
@@ -1039,6 +1041,13 @@ StrictJson::Value AnnotationToJson(const Annotation& a) {
     Value frame = Value::Obj();
     frame.Set("kind", Value::Str(a.source.frameKind));
     source.Set("frame", std::move(frame));
+    if (a.source.profileId.empty() && a.source.profileName.empty()) source.Set("profile", Value());
+    else {
+        Value profile = Value::Obj();
+        profile.Set("id", StrOrNull(a.source.profileId));
+        profile.Set("name", StrOrNull(a.source.profileName));
+        source.Set("profile", std::move(profile));
+    }
     v.Set("source", std::move(source));
 
     const Target& t = a.target;
@@ -1178,6 +1187,11 @@ bool AnnotationFromJson(const StrictJson::Value& v, Annotation& out, std::string
             !GetString(*source, "url", a.source.url, false, error) ||
             !GetBool(*source, "urlRedacted", a.source.urlRedacted, error) || !GetString(*source, "title", a.source.title, false, error))
             return false;
+        // source.profile: tolerant (absent, null, not an object, non-string members => unknown, never an error).
+        if (const Value* profile = source->Get("profile"); profile && profile->IsObject()) {
+            if (const Value* id = profile->Get("id"); id && id->IsString()) a.source.profileId = AsciiToken(id->string, 64);
+            if (const Value* name = profile->Get("name"); name && name->IsString()) a.source.profileName = CleanText(name->string, 64);
+        }
     }
     if (target) {
         Target& t = a.target;
@@ -1354,7 +1368,9 @@ std::string ToMarkdown(const Entry& e, const std::wstring& shotPath) {
     md += "- Site : " + InlineCode(a.site.empty() ? SiteLabel(a.site) : a.site) + "\n";
     md += "- Statut : " + std::string(e.draft ? "brouillon" : StatusName(e.state.status));
     if (e.state.claimedBy) md += " (pris par " + InlineCode(e.state.claimedBy->agent) + " jusqu'à " + FormatTime(e.state.claimedBy->until) + ")";
-    md += "\n- Créée : " + FormatTime(a.createdAt) + "\n\n";
+    md += "\n- Créée : " + FormatTime(a.createdAt) + "\n";
+    if (!a.source.profileName.empty()) md += "- Profil : " + InlineCode(a.source.profileName) + "\n";
+    md += "\n";
     md += "### Note\n\n";
     if (a.note.empty()) md += "(aucune note)\n\n";
     else {
@@ -1420,6 +1436,119 @@ std::wstring StoreRootForDataDir(const std::wstring& dataDir) {
     std::wstring d = dataDir;
     while (!d.empty() && (d.back() == L'\\' || d.back() == L'/')) d.pop_back();
     return d + L"\\annotations";
+}
+
+// ================================================================ per-profile stores -> the global store
+namespace {
+std::vector<std::pair<std::wstring, bool>> Children(const std::wstring& dir) {   // {name, is a plain directory}; links reported as files
+    std::vector<std::pair<std::wstring, bool>> out;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileExW((dir + L"\\*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        const std::wstring n = fd.cFileName;
+        if (n == L"." || n == L"..") continue;
+        out.emplace_back(n, (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT));
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+bool ReadWhole(const std::wstring& path, std::string& out) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    bool ok = GetFileSizeEx(h, &size) && size.QuadPart <= (64ll << 20);
+    if (ok) {
+        out.assign(std::size_t(size.QuadPart), '\0');
+        DWORD got = 0;
+        ok = out.empty() || (ReadFile(h, out.data(), DWORD(out.size()), &got, nullptr) && got == out.size());
+    }
+    CloseHandle(h);
+    return ok;
+}
+bool SameFile(const std::wstring& a, const std::wstring& b) {
+    std::string x, y;
+    return ReadWhole(a, x) && ReadWhole(b, y) && x == y;
+}
+bool SamePath(const std::wstring& a, const std::wstring& b) {
+    auto norm = [](std::wstring p) { while (!p.empty() && (p.back() == L'\\' || p.back() == L'/')) p.pop_back(); for (auto& c : p) if (c == L'/') c = L'\\'; return p; };
+    const std::wstring x = norm(a), y = norm(b);
+    return CompareStringOrdinal(x.c_str(), int(x.size()), y.c_str(), int(y.size()), TRUE) == CSTR_EQUAL;
+}
+void MergeDir(const std::wstring& from, const std::wstring& to, MergeReport& r) {
+    for (const auto& [name, isDir] : Children(from)) {
+        const std::wstring src = from + L"\\" + name, dst = to + L"\\" + name;
+        const DWORD at = GetFileAttributesW(src.c_str());
+        if (at == INVALID_FILE_ATTRIBUTES) { ++r.failed; continue; }
+        if (at & FILE_ATTRIBUTE_REPARSE_POINT) { ++r.kept; continue; }   // a link or junction: never followed, never moved
+        const DWORD dt = GetFileAttributesW(dst.c_str());
+        if (dt == INVALID_FILE_ATTRIBUTES) {
+            // Missing in the global store: one rename (atomic on the same volume). Across volumes a folder is
+            // re-created and merged file by file (MoveFileEx copies files, not folders).
+            if (MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_WRITE_THROUGH)) { ++r.moved; continue; }
+            if (isDir) {
+                if (CreateDirectoryW(dst.c_str(), nullptr)) MergeDir(src, dst, r); else ++r.failed;
+            } else if (MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH)) ++r.moved;
+            else ++r.failed;
+            continue;
+        }
+        if (dt & FILE_ATTRIBUTE_REPARSE_POINT) { ++r.kept; continue; }
+        if (isDir) {
+            if (dt & FILE_ATTRIBUTE_DIRECTORY) MergeDir(src, dst, r); else ++r.kept;   // a file where we have a folder: keep both apart
+            continue;
+        }
+        if (!(dt & FILE_ATTRIBUTE_DIRECTORY) && SameFile(src, dst)) {
+            if (DeleteFileW(src.c_str())) ++r.identical; else ++r.failed;
+        } else {
+            ++r.kept;   // different content (or a folder there): never overwritten, the old copy stays
+        }
+    }
+    RemoveDirectoryW(from.c_str());   // only succeeds when empty: anything kept keeps its folder
+}
+}  // namespace
+
+std::vector<std::wstring> ProfileStoreRoots(const std::wstring& dataRoot) {
+    std::vector<std::wstring> out;
+    std::wstring root = dataRoot;
+    while (!root.empty() && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+    const std::wstring profiles = root + L"\\profiles";
+    if (root.empty() || !IsPlainDir(profiles)) return out;
+    for (const auto& [name, isDir] : Children(profiles)) {
+        if (!isDir || name.empty() || name[0] == L'.') continue;   // .trash: a deleted profile is not taken
+        const std::wstring store = StoreRootForDataDir(profiles + L"\\" + name);
+        if (IsPlainDir(store)) out.push_back(store);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+MergeReport MergeStoreInto(const std::wstring& from, const std::wstring& to) {
+    MergeReport r;
+    if (from.empty() || to.empty() || SamePath(from, to) || !IsPlainDir(from)) return r;
+    r.stores = 1;
+    if (!Exists(to)) {
+        // Nothing yet in the global store: the whole old store becomes it in one rename (same volume).
+        if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) { ++r.moved; r.removed = true; return r; }
+        // Another volume, or the global store appeared meanwhile (the browser or the bridge created it): merge.
+        CreateDirectoryW(to.c_str(), nullptr);
+    }
+    if (!IsPlainDir(to)) { ++r.failed; return r; }   // the global store is a link or a file: refused, nothing moved
+    MergeDir(from, to, r);
+    r.removed = !Exists(from);
+    return r;
+}
+
+MergeReport MigrateProfileStores(const std::wstring& dataRoot) {
+    MergeReport total;
+    total.removed = true;
+    const std::wstring global = GlobalStoreRoot(dataRoot);
+    for (const auto& old : ProfileStoreRoots(dataRoot)) {
+        const MergeReport r = MergeStoreInto(old, global);
+        total.moved += r.moved; total.identical += r.identical; total.kept += r.kept; total.failed += r.failed; total.stores += r.stores;
+        total.removed = total.removed && r.removed;
+    }
+    return total;
 }
 
 namespace {

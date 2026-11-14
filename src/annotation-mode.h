@@ -123,8 +123,25 @@ std::wstring Ms(double v) { return std::to_wstring(int(std::lround(v))); }
 long long UtcMs() { FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime; return (long long)(u.QuadPart / 10000ULL) - 11644473600000LL; }
 void Announce(const std::wstring& text) { accessibility.Notify('N', text.c_str(), L"Annotation"); Log(L"ANNOTATE " + text); }
 void LogOnce(const std::wstring& what) { if (loggedOnce.find(what) != std::wstring::npos) return; loggedOnce += what + L";"; Log(L"ANNOTATE ignored page message: " + what); }
+// Annotations are GLOBAL (one store for every profile, src/annotations.h): the application's data root
+// (profiles-integration.h `profileRoot`: the folder holding profiles.txt and the default profile's layout),
+// never `dataDir`, which follows the profile shown in this window. Before profiles, both were the same folder.
+std::wstring DataRoot() { return profileRoot.empty() ? dataDir : profileRoot; }
 // Created on the UI thread before any job uses it (every caller of Run touches it first).
-BA::Store& Store() { if (!store) store = std::make_unique<BA::Store>(BA::StoreRootForDataDir(dataDir)); return *store; }
+BA::Store& Store() { if (!store) store = std::make_unique<BA::Store>(BA::GlobalStoreRoot(DataRoot())); return *store; }
+// Older builds kept one store per profile (<data root>\profiles\<id>\annotations): merged once into the global
+// store, without loss, by the first job of the session, before it touches the store (RunJob).
+std::once_flag migrateOnce; BA::MergeReport migration; std::atomic<bool> migrationToLog{false};
+void MigrateOnce() {
+    std::call_once(migrateOnce, [] { migration = BA::MigrateProfileStores(DataRoot()); if (migration.stores) migrationToLog = true; });
+}
+void LogMigration() {
+    if (!migrationToLog.exchange(false)) return;
+    const auto& m = migration;
+    Log(L"ANNOTATE per-profile stores merged into " + Store().Root() + L": " + std::to_wstring(m.stores) + L" store(s), " + std::to_wstring(m.moved) + L" moved, " +
+        std::to_wstring(m.identical) + L" identical, " + std::to_wstring(m.kept) + L" kept in place (conflict or link), " + std::to_wstring(m.failed) + L" failed" +
+        (m.removed ? L"; old folders removed" : L"; old folders kept (see kept / failed)"));
+}
 std::string ServerName() { return "browser-annotations-preview"; }   // dev/preview builds only: never the name of a release install
 std::wstring BrowserExe() { std::wstring exe(32768, L'\0'); const DWORD n = GetModuleFileNameW(nullptr, exe.data(), DWORD(exe.size())); exe.resize(n < exe.size() ? n : 0); return exe; }
 AC::Target ConnectTarget() {
@@ -167,6 +184,7 @@ bool EnsurePost() {
 }
 VOID CALLBACK RunJob(PTP_CALLBACK_INSTANCE, PVOID p) {
     auto* j = static_cast<Job*>(p);
+    try { MigrateOnce(); } catch (...) {}   // every job waits for the one-time merge of the old per-profile stores
     try { if (j->work) j->work(); } catch (...) {}
     if (!post || !PostMessageW(post, JobDone, 0, reinterpret_cast<LPARAM>(j))) delete j;
 }
@@ -400,7 +418,7 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
     if (a == AUI::AgentKind::Other || connectBusy[i]) { if (then) { AC::Report r; r.result = AC::Result::Failed; r.message = "Une connexion est déjà en cours pour cette app."; then(r); } return; }
     connectBusy[i] = true; Store();
     if (on && connect.Visible()) connect.SetStatus(a, {AUI::ConnectState::Working, a == AUI::AgentKind::Claude ? L"Connexion à Claude…" : L"Connexion à Codex…"});   // « Cliquez sur Installer » only once a .mcpb was opened
-    auto report = std::make_shared<AC::Report>(); const auto target = ConnectTarget(); const std::wstring work = dataDir + L"\\annotations-connect";
+    auto report = std::make_shared<AC::Report>(); const auto target = ConnectTarget(); const std::wstring work = DataRoot() + L"\\annotations-connect";
     Run([a, on, report, target, work] {
             const auto env = ConnectEnv();
             if (on) { CreateDirectoryW(work.c_str(), nullptr); *report = a == AUI::AgentKind::Claude ? AC::ConnectClaude(env, target, work) : AC::ConnectCodex(env, target); }
@@ -451,7 +469,7 @@ std::vector<AUI::HistoryEntry::Step> StepsOf(const BA::Entry& e, std::int64_t no
     auto add = [&](std::int64_t at, Step::Kind kind, const std::string& who, std::wstring label, std::wstring quote = L"") {
         Step s; s.kind = kind; s.agent = AUI::AgentKind(AH::AgentKindOf(who)); s.label = std::move(label); s.time = StepTime(at, now); s.quote = std::move(quote); out.emplace_back(at, s); };
     const auto& a = e.annotation;
-    add(a.createdAt, Step::Added, "", L"Ajoutée");
+    add(a.createdAt, Step::Added, "", a.source.profileName.empty() ? std::wstring(L"Ajoutée") : L"Ajoutée · profil " + AH::Wide(a.source.profileName));
     if (const auto r = ReadOf(a.id); r.at) add(r.at, Step::Read, r.label, L"Lue par " + AH::AgentDisplay(r.label));
     for (const auto& ev : e.state.events) {
         const std::wstring who = AH::AgentDisplay(ev.actor), quote = AH::Wide(ev.summary);
@@ -527,7 +545,7 @@ void RefreshStatus() {
 // The counter at the launcher's first display: one count, only when the store already exists.
 void RefreshCount() {
     countLoaded = true;
-    const DWORD at = GetFileAttributesW(BA::StoreRootForDataDir(dataDir).c_str());
+    const DWORD at = GetFileAttributesW(BA::GlobalStoreRoot(DataRoot()).c_str());
     if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) return;
     auto n = std::make_shared<std::size_t>(0);
     Run([n] { *n = Store().CountClaimed(); }, [n] { if (int(*n) != claimed) { claimed = int(*n); if (launcher.Visible()) ShowLauncher(); SyncWatch(); } });
@@ -544,7 +562,7 @@ AUI::HistoryEntry HistoryRow(const BA::Entry& e, std::int64_t now) {
     const std::string who = e.state.resolution && BA::IsDone(e.state.status) ? e.state.resolution->by : e.state.claimedBy ? e.state.claimedBy->agent : "";
     h.agent = AUI::AgentKind(AH::AgentKindOf(who)); h.agentName = who.empty() ? L"" : AH::AgentDisplay(who);
     h.age = Age(a.createdAt, now);
-    std::wstring f = L"Ajoutée " + When(a.createdAt, now);
+    std::wstring f = L"Ajoutée " + When(a.createdAt, now) + (a.source.profileName.empty() ? L"" : L" · profil " + AH::Wide(a.source.profileName));
     for (const auto& ev : e.state.events) if (ev.to == "claimed") { f += L" · prise en charge " + When(ev.at, now); break; }
     if (e.state.resolution && BA::IsDone(e.state.status)) f += (e.state.status == BA::Status::NeedsInfo ? L" · question " : e.state.status == BA::Status::Dismissed ? L" · écartée " : L" · terminée ") + When(e.state.resolution->at, now);
     h.followUp = f;
@@ -798,7 +816,7 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
 #ifdef BROWSER_VERSION_TEXT
     a.source.version = BROWSER_VERSION_TEXT;
 #endif
-    a.source.storeTag = AH::StoreTag(dataDir); a.source.tabSerial = t->serial; a.source.navStamp = std::int64_t(s.navStamp);
+    a.source.storeTag = AH::StoreTag(DataRoot()); a.source.tabSerial = t->serial; a.source.navStamp = std::int64_t(s.navStamp);
     a.source.url = AH::Utf8(t->uri); a.source.title = AH::Utf8(t->title); a.source.frameKind = sel.frameKind;
     a.target = sel.target; a.target.viewport.zoom = s.zoom;
     BA::Sanitize(a); s.pending = a;
@@ -854,6 +872,9 @@ void OnSubmit(const AUI::NoteSubmission& sub) {
     BA::Annotation a = s.pending; std::wstring typed = sub.note;
     while (!typed.empty() && iswspace(typed.back())) typed.pop_back();   // a trailing Entrée/newline is not part of the note
     a.note = AH::Utf8(typed); a.id = BA::NewAnnotationId(); a.site = s.origin;
+    a.source.profileId = AH::Utf8(profileId);
+    if (const auto* p = CurrentProfile()) a.source.profileName = AH::Utf8(p->name); else a.source.profileName = AH::Utf8(DefaultProfileLook().name);
+    BA::Sanitize(a);
     auto png = s.cap == Cap::Ready && !s.png.empty() ? std::make_shared<std::string>(s.png) : nullptr;
     if (png) { a.screenshot.scale = s.shotScale; a.screenshot.crop = s.shotCrop; }
     // « Ajouter » never waits for the capture: it joins the annotation when it lands.
@@ -1016,7 +1037,7 @@ void Exit(const wchar_t* why, bool pageChanged) {
     Log(std::wstring(L"ANNOTATE mode off (") + why + L")");
 }
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == JobDone) { std::unique_ptr<Job> j(reinterpret_cast<Job*>(l)); if (j->done && !halted) j->done(); return 0; }
+    if (m == JobDone) { std::unique_ptr<Job> j(reinterpret_cast<Job*>(l)); LogMigration(); if (j->done && !halted) j->done(); return 0; }
     if (m == WatchChanged) {
         watchSignal = false; if (!watch.thread) return 0;
         RefreshStatus();

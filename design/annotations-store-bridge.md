@@ -193,3 +193,38 @@ Retours §5 : Claude avait lu l'annotation sans jamais appeler `claim` / `resolv
 - **Sanitize** : bornes 0..100 000, arrondi 0,01, `layout` hors flex/grid ⇒ vide et pas de gap ; une sélection de texte n'en garde pas.
 - **Rendu** : `BA::SpacingText` (ordre des raccourcis CSS : « padding 18 20 · gap 14 (flex) », « gap 16 24 (grid) ») ; Markdown du bridge (`browser_annotation_get`, « Copier en Markdown ») : ligne « - Style (px CSS) : `…` » dans « Cible ». `structuredContent.target.spacing` tel quel. Description de `browser_annotation_get` : « …styles, espacements padding / gap, texte » (golden `tools-list.json` régénéré, seule différence).
 - **Rouvrir** (historique) : `Store::Reopen` existant, appelé depuis le détail ; testé après un `release` avec raison (store_test `TestReopenUnhandled`).
+
+# Annotations globales — un seul magasin pour tous les profils (14 novembre 2026)
+
+Choix de l'utilisateur : les annotations sont **globales**, pas par profil.
+
+- **Chemin exact** : `<racine des données>\annotations`, où la racine des données est le dossier qui contient
+  `profiles.txt`, la disposition du profil par défaut (`profile\`, `session`, `settings`…) et `profiles\<id>\`
+  (`profileRoot` de `src/profiles-integration.h`, = le `dataDir` résolu par `UpdateCore::ResolveDataPaths` avant
+  la sélection du profil). Build portable / preview : `<dossier de browser.exe>\annotations` (ex.
+  `build\annotations-preview\annotations`) ; installation : `<installRoot>\data\annotations`. C'est exactement
+  l'ancien chemin du profil par défaut et `DefaultStoreRoot` du bridge : rien ne change pour les installations
+  existantes, et la config des agents (`--store`) reste valable sans « Reconnecter ».
+- `BrowserAnnotations::GlobalStoreRoot(dataRoot)` ; le navigateur l'appelle avec `Ann::DataRoot()`
+  (`profileRoot`, jamais le `dataDir` du profil affiché). Changer de profil dans la fenêtre ne change pas de
+  magasin. `annotations-connect\` (travail des `.mcpb`) est aussi à la racine.
+- **Profil d'origine** : `source.profile = {"id","name"}` (nom au moment de l'ajout ; `null` = inconnu, lecture
+  tolérante : absent, mauvais type ou membres invalides → inconnu, jamais une erreur). Affiché dans le détail de
+  l'historique (étape « Ajoutée · profil Travail »), dans le Markdown (`- Profil : \`Travail\``), et par le bridge
+  (`browser_annotations_list` : `profile` dans chaque résumé ; `browser_annotation_get` : JSON complet + Markdown).
+  Pas de filtre par profil.
+- **Migration** (une fois, sans perte) : les anciens magasins par profil `<racine>\profiles\<id>\annotations`
+  (jamais `profiles\.trash`, jamais via un lien) sont fusionnés dans le magasin global par le premier travail de
+  la session (`Ann::MigrateOnce`, hors fil UI, avant tout accès au magasin) : dossier absent du global → renommé
+  (atomique sur un même volume) ; présent → fusion entrée par entrée ; fichier identique → doublon supprimé ;
+  fichier différent → jamais écrasé, laissé en place (son dossier reste). Journal :
+  « ANNOTATE per-profile stores merged into … ». Le profil par défaut n'a rien à migrer (même chemin).
+- Une config d'agent écrite par une ancienne build pour le magasin d'un autre profil est vue « Connecté à un
+  ancien emplacement » + « Reconnecter » (`Status.stalePath`), qui la réécrit vers le magasin global.
+- **Suppression d'un profil** : ne touche jamais le magasin global (`Profiles::GlobalEntries()` =
+  `annotations`, `annotations-connect`, disjoint de `DefaultEntries()`, vérifié par `tests/profiles_test.cpp`).
+- Preuves : `store_test` (profil d'origine, lecture tolérante, fusion), `agent_connect_test` (chemin inchangé →
+  pas de Reconnecter ; ancien chemin de profil → Reconnecter → global), `profiles_test` (suppression du profil
+  par défaut : magasin global intact ; aucun `StoreRootForDataDir(dataDir)` dans `src`),
+  `tests/annotations/global_store_walk.py` (parcours réel : migration, ajout dans Personnel puis dans Travail
+  après changement de profil dans la même fenêtre → même magasin, profil enregistré, rendu par le bridge).

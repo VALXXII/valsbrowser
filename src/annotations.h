@@ -5,7 +5,13 @@
 // V2 groups annotations by SITE: the origin "scheme://host[:port]" of the annotated page is the key; there
 // is no project any more (projects.json is ignored and never written).
 //
-//   <root> = <dataDir>\annotations
+//   <root> = <data root>\annotations — ONE store for every profile (annotations are global, not per profile):
+//            the application's data root, i.e. the folder that holds profiles.txt, the default profile's own
+//            layout and <root>\profiles\<id>\ (src/profiles.h). It never follows the profile shown in a window,
+//            and a profile delete never touches it. Portable / preview builds: <exe dir>\annotations; installed
+//            builds: <installRoot>\data\annotations (= DefaultStoreRoot, what the bridge uses without --store).
+//            Older per-profile stores (<data root>\profiles\<id>\annotations) are merged into it once
+//            (MigrateProfileStores). Each annotation records the profile it was added from (source.profile).
 //     readers\<client>.json              written by the bridge (<= 1 write / 10 s / client)
 //     <siteKey>\<annId>\annotation.json     "schema":"browser-annotation/2", "site":"https://example.com"
 //     <siteKey>\<annId>\shot.png            cropped capture (optional)
@@ -147,6 +153,9 @@ struct Source {
     bool urlRedacted = false;
     std::string title;
     std::string frameKind = "main";  // "main" | "same-origin" | "cross-origin"
+    // The browser profile the annotation was added from (JSON source.profile {"id","name"}; the name as it was
+    // at that moment). Optional: absent, null or malformed => unknown (""), never an error. Shown, never filtered on.
+    std::string profileId, profileName;
 };
 
 // V3-B (Paper 5.3): the element's inner spacing, CSS px of the page (getComputedStyle), rounded to 0.01. Optional:
@@ -245,6 +254,30 @@ std::string ToMarkdown(const Entry& e, const std::wstring& shotPath = L"");
 
 // ---------------------------------------------------------------- store location (pure)
 std::wstring StoreRootForDataDir(const std::wstring& dataDir);  // <dataDir>\annotations
+// The ONE store of the application, from its data root (the folder holding profiles.txt, the default
+// profile's layout and profiles\<id>\): <dataRoot>\annotations, whatever the profile shown.
+inline std::wstring GlobalStoreRoot(const std::wstring& dataRoot) { return StoreRootForDataDir(dataRoot); }
+
+// ---------------------------------------------------------------- per-profile stores -> the global store (I/O)
+// Older builds kept one store per profile (<dataRoot>\profiles\<id>\annotations): the existing real
+// directories of that form (never under profiles\.trash, never through a link or junction).
+std::vector<std::wstring> ProfileStoreRoots(const std::wstring& dataRoot);
+struct MergeReport {
+    int moved = 0;         // entries (files or whole folders) moved into the global store
+    int identical = 0;     // files already there byte for byte: the duplicate is removed
+    int kept = 0;          // conflicting files (or links) left where they were: never overwritten, never deleted
+    int failed = 0;        // I/O errors (the source entry stays)
+    int stores = 0;        // old stores looked at
+    bool removed = false;  // the old store folder(s) are gone (everything was taken)
+};
+// Merges `from` into `to` WITHOUT LOSS: a folder missing from `to` is renamed into it (atomic on one volume),
+// a folder present in both is merged entry by entry, a file missing from `to` is moved, an identical file is
+// dropped, a different file is never overwritten and stays in `from`. Links and junctions are never followed
+// (left in place). Empty folders left in `from` are removed. `from` == `to` (case-insensitive): nothing.
+MergeReport MergeStoreInto(const std::wstring& from, const std::wstring& to);
+// Every ProfileStoreRoots(dataRoot) merged into GlobalStoreRoot(dataRoot). Idempotent: a later run finds
+// nothing (or only the conflicting files an earlier run kept).
+MergeReport MigrateProfileStores(const std::wstring& dataRoot);
 // Store root for an executable placed next to browser.exe, mirroring UpdateCore::ResolveDataPaths for that
 // sibling browser.exe: <installRoot>\versions\<M.m.B>\* and the stable copy <installRoot>\bin\* map to
 // <installRoot>\data\annotations; anything else (portable/preview/worktree) to <exe dir>\annotations.
