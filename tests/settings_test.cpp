@@ -15,6 +15,22 @@ int main(){
         State s;s.bookmarksBar=bar;s.accent=0xA054CB;std::stringstream io;Write(io,s);assert(Read(io)==s);
     }
     {std::istringstream invalid("browser-settings 1\nbookmarks-bar=invalid\naccent=#XYZXYZ\n");assert(Read(invalid)==State{});}
+    // Annotations et agents: launcher shown, prompt on, no « Plus tard », 30 days by default.
+    {State d;assert(d.annotationLauncher&&d.annotationConnectPrompt&&d.annotationConnectDeclines==0&&d.annotationRetentionDays==30&&ConnectPromptActive(d));
+     // Round trip of every value.
+     for(int days:RetentionChoices)for(int n=0;n<=MaxConnectDeclines;++n){State s;s.annotationLauncher=n%2;s.annotationConnectPrompt=!(n%2);s.annotationConnectDeclines=n;s.annotationRetentionDays=days;std::stringstream io;Write(io,s);assert(Read(io)==s);}
+     // A file from before these keys: defaults (missing keys keep them).
+     {std::istringstream old("browser-settings 1\nengine=bing\n");State r=Read(old);assert(r.annotationLauncher&&r.annotationConnectPrompt&&r.annotationConnectDeclines==0&&r.annotationRetentionDays==30);}
+     // Invalid values are ignored, valid ones read (CRLF too).
+     {std::istringstream odd("browser-settings 1\r\nannotation-launcher=maybe\r\nannotation-connect-prompt=2\r\nannotation-connect-declines=9\r\nannotation-retention-days=45\r\n");State r=Read(odd);
+      assert(r.annotationLauncher&&r.annotationConnectPrompt&&r.annotationConnectDeclines==0&&r.annotationRetentionDays==30);}
+     {std::istringstream odd("browser-settings 1\nannotation-connect-declines=-1\nannotation-retention-days=07\nannotation-retention-days= 90\n");State r=Read(odd);assert(r.annotationConnectDeclines==0&&r.annotationRetentionDays==30);}
+     {std::istringstream ok("browser-settings 1\r\nannotation-launcher=0\r\nannotation-connect-prompt=0\r\nannotation-connect-declines=2\r\nannotation-retention-days=7\r\n");State r=Read(ok);
+      assert(!r.annotationLauncher&&!r.annotationConnectPrompt&&r.annotationConnectDeclines==2&&r.annotationRetentionDays==7);}
+     // The switch: off after 3 « Plus tard »; turning it on again restarts the count at 0; off keeps the count.
+     {State s;s.annotationConnectDeclines=MaxConnectDeclines;assert(!ConnectPromptActive(s));SetConnectPrompt(s,true);assert(ConnectPromptActive(s)&&s.annotationConnectDeclines==0);
+      s.annotationConnectDeclines=2;SetConnectPrompt(s,false);assert(!ConnectPromptActive(s)&&s.annotationConnectDeclines==2);SetConnectPrompt(s,true);assert(s.annotationConnectDeclines==0);}
+     assert(RetentionLabel(30)==L"30 jours"&&RetentionCount==3);}
     // Missing, foreign or damaged files keep the defaults; unknown keys and bad values are ignored.
     for(const char* bad:{"","garbage\nengine=google\n","browser-settings 2\nengine=google\n"}){std::istringstream in(bad);assert(Read(in)==State{});}
     std::istringstream partial("browser-settings 1\r\nengine=bing\r\nrestore-tabs=maybe\r\nfuture-key=1\r\nreduce-motion=1\r\nengine=nope\r\n");

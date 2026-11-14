@@ -25,6 +25,7 @@
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <array>
+#include <ctime>
 #include <map>
 #include <functional>
 #include <vector>
@@ -33,6 +34,10 @@
 #include "settings.h"
 #include "context-menu.h"
 #include "native-ui.h"
+#include "modal.h"
+#include "accessibility.h"
+#include "svg-path.h"
+#include "annotation-settings.h"
 
 namespace NativeChrome {
 namespace SettingsUI {
@@ -47,9 +52,13 @@ enum Hit : int {
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
-    CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84,
+    CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84, CatAnnotations = 85,
+    // « Annotations et agents »: one button per agent row, the manual fallback, two switches, retention, folder, clear all.
+    AgentBase = 90, ManualConnect = 92, AnnotationLauncher = 66, AnnotationPrompt = 67, AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
+inline constexpr int AgentHit(AnnotationSettings::App a) { return AgentBase + static_cast<int>(a); }
+inline constexpr bool IsAgent(int hit) { return hit >= AgentBase && hit < AgentBase + AnnotationSettings::AppCount; }
 inline bool IsField(int hit) { return hit == CustomSearchField || hit == HomepageField || hit == SearchField; }
 inline bool IsResult(int hit) { return hit >= ResultBase && hit < ResultBase + 32; }
 inline int EngineHit(int index) { return EngineBase + index; }
@@ -58,8 +67,8 @@ inline bool IsSite(int hit) { return hit >= SiteBase && hit < PermissionBase; }
 inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < PermissionBase + 100; }
 constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
                               ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground,
-                              GrayscaleText};
-constexpr int SwitchCount = 15;
+                              GrayscaleText, AnnotationLauncher, AnnotationPrompt};
+constexpr int SwitchCount = 17;
 inline int SwitchIndex(int hit) { for (int i = 0; i < SwitchCount; ++i) if (SwitchHits[i] == hit) return i; return -1; }
 
 // ---- Geometry (DIP, panel-local; x = 0 is the drawer's leading edge) -----------
@@ -95,6 +104,12 @@ inline constexpr Box Icon(float y, float h = row) { return {iconLeft, y + (h - i
 inline constexpr Box Chevron(float y, float h = row) { return {slotRight - 16, y + (h - 24) / 2, slotRight, y + (h + 24) / 2}; }
 // Two-line switch rows wrap their description up to 16 DIP before the switch.
 inline constexpr float descriptionWidth = slotRight - switchWidth - 16 - textLeft;
+// Agent rows (« Annotations et agents »): logo in the icon slot, name on the first line, the action as a
+// compact raised button (the update toast's Raised button at the drawer's 24 DIP control height) on the
+// same line, the status wrapped under the name across the row (it starts where the button ends).
+inline constexpr float actionHeight = Design::Size::compact, actionPad = 8;
+inline constexpr float statusWidth = rowRight - 8 - nameLeft;
+inline constexpr Box Action(float top, float w) { return {slotRight - w, top + twoLinePad - 2, slotRight, top + twoLinePad - 2 + actionHeight}; }
 }
 static_assert(Layout::nameLeft == Layout::rowLeft + Layout::slot + 8, "sub-view title: 8 DIP after the back button");
 static_assert(Layout::viewTop == 72, "content starts 32 DIP under the 24 DIP header");
@@ -104,11 +119,12 @@ inline constexpr Spring selectSpring{.26f}, switchSpring{.2f}, pageSpring{.34f};
 inline constexpr Motion::Milliseconds select = Settle(.26f), toggle = Settle(.2f), press{120}, spin{900}, page = Settle(.34f);
 }
 
-enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site };
+enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site, Annotations };
 inline const wchar_t* Title(View v) {
     switch (v) {
     case View::Engine: return L"Moteur de recherche"; case View::Tabs: return L"Onglets"; case View::Privacy: return L"Confidentialité";
     case View::Downloads: return L"Téléchargements"; case View::Display: return L"Affichage et son"; case View::Sites: return L"Autorisations";
+    case View::Annotations: return L"Annotations et agents";
     default: return L"Réglages";
     }
 }
@@ -116,19 +132,25 @@ inline const wchar_t* Title(View v) {
 inline int Opener(View v) {
     switch (v) {
     case View::Engine: return CatEngine; case View::Tabs: return CatTabs; case View::Privacy: return CatPrivacy;
-    case View::Downloads: return CatDownloads; case View::Display: return CatDisplay; case View::Sites: return Permissions; default: return None;
+    case View::Downloads: return CatDownloads; case View::Display: return CatDisplay; case View::Sites: return Permissions;
+    case View::Annotations: return CatAnnotations; default: return None;
     }
 }
 // One laid-out element of a view's scrolling list (content coordinates).
-enum class Kind { Label, Engine, Switch, Folder, Value, Nav, SiteRow, Note, Field, Search, Danger };
+enum class Kind { Label, Engine, Switch, Folder, Value, Nav, SiteRow, Note, Field, Search, Danger, Agent };
 struct Slot {
     Kind kind = Kind::Label; int hit = 0, index = -1;
     float top = 0, height = Layout::row, opacity = 1;
     float clipTop = -1e6f, clipBottom = 1e6f;
-    std::wstring text, value;              // label; value/summary/description text
-    std::vector<std::wstring> lines;       // wrapped description (two-line switches)
+    std::wstring text, value;              // label; value/summary/description text (Agent: the action's label)
+    std::vector<std::wstring> lines;       // wrapped description (two-line switches; Agent: its status)
     const wchar_t* icon = nullptr;         // leading 16 DIP glyph (root rows): the label moves to nameLeft
+    const AnnotationSettings::Glyph* glyph = nullptr; // a vector glyph in that slot instead (annotation mark)
+    bool disabled = false;                 // shown, not actionable (no hover, not in the Tab order)
+    bool error = false;                    // Agent: the status is an error (danger ink)
 };
+// Key in LayoutInput::lines of the section's shortcut reminder (no hit: it is read, not focused).
+inline constexpr int ShortcutsNoteKey = -2;
 // Per-frame inputs of the pure layout.
 struct LayoutInput {
     const std::map<int, std::vector<std::wstring>>* lines = nullptr; // wrapped descriptions by hit
@@ -139,6 +161,13 @@ struct LayoutInput {
     const BrowserSettings::State* state = nullptr;
     const std::vector<BrowserSettings::Site>* sites = nullptr; bool sitesLoaded = false;
     bool sitesQuiet = false;   // first load still within its grace period: no « Chargement… » flash
+    // « Annotations et agents » (only when the annotation mode is compiled in: dev / preview builds).
+    bool annotations = false;
+    const AnnotationSettings::Agents* agents = nullptr; bool agentsKnown = false;
+    std::array<std::vector<std::wstring>, AnnotationSettings::AppCount> agentLines;   // wrapped status per app
+    long long now = 0;                                          // UTC seconds (status « il y a … »)
+    std::size_t annotationCount = SIZE_MAX;                     // SIZE_MAX: not counted yet
+    std::wstring annotationFolder;                              // the store root (second line of the folder row)
     bool vaultManager = false; std::size_t vaultCount = 0;   // E8: the vault is active (entry shown) and its account count
     int site = -1;                                             // Site view: index into sites
 };
@@ -182,6 +211,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         lead(Kind::Nav, CatPrivacy, L"shield-mask", L"Confidentialité", st ? BrowserSettings::Info(st->tracking).label : L"");
         lead(Kind::Nav, CatDownloads, L"downloads-mask", L"Téléchargements", st ? (st->askWhereToSave ? std::wstring(L"Demander") : in.folderName) : L"");
         lead(Kind::Nav, CatDisplay, L"eye-mask", L"Affichage et son", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
+        if (in.annotations) { auto* s = lead(Kind::Nav, CatAnnotations, nullptr, L"Annotations et agents", in.agents ? AnnotationSettings::Summary(*in.agents, in.agentsKnown) : L""); s->glyph = &AnnotationSettings::Mark; }
         y -= rowGap;
     } else if (view == View::Engine) {
         for (int i = 0; i < BrowserSettings::EngineCount; ++i) { auto* s = add(Kind::Engine, EngineHit(i), row); s->index = i; }
@@ -241,6 +271,28 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         }
         twoLine(MuteBackground, L"Couper le son en arrière-plan");
         y -= rowGap;
+    } else if (view == View::Annotations) {
+        namespace AS = AnnotationSettings;
+        labelAt(L"Agents");
+        for (int i = 0; i < AS::AppCount; ++i) {
+            const auto app = AS::AppAt(i); const AS::Agent agent = in.agents ? (*in.agents)[app] : AS::Agent{};
+            auto lines = in.agentLines[static_cast<size_t>(i)]; if (lines.empty()) lines.push_back(AS::StatusText(agent, in.now));
+            const auto action = AS::ActionFor(agent);
+            auto* s = add(Kind::Agent, action == AS::Action::None ? None : AgentHit(app), TwoLine(lines.size()), AS::AppName(app), AS::ActionLabel(action));
+            s->index = i; s->lines = std::move(lines); s->disabled = !AS::ActionEnabled(agent); s->error = AS::StatusIsError(agent);
+        }
+        add(Kind::Nav, ManualConnect, row, L"Autre app ou réglage manuel");
+        endGroup();
+        labelAt(L"Mode Annotation");
+        twoLine(AnnotationLauncher, L"Afficher le lanceur d'annotations");
+        twoLine(AnnotationPrompt, L"Proposer de connecter un agent");
+        { auto lines = described(ShortcutsNoteKey); const size_t n = std::max<size_t>(1, lines.size()); auto* s = add(Kind::Note, None, n * 20.f, AS::ShortcutsNote); s->lines = std::move(lines); }
+        endGroup();
+        labelAt(L"Historique");
+        add(Kind::Value, AnnotationRetention, row, L"Conserver les terminées", st ? BrowserSettings::RetentionLabel(st->annotationRetentionDays) : L"");
+        add(Kind::Folder, AnnotationFolder, folderRow, L"Ouvrir le dossier des annotations", in.annotationFolder);
+        { auto* s = add(Kind::Danger, AnnotationClear, row, L"Effacer toutes les annotations…"); s->disabled = in.annotationCount == 0 || in.annotationCount == SIZE_MAX; }
+        y -= rowGap;
     } else if (view == View::Sites) {
         const size_t n = in.sites ? in.sites->size() : 0;
         if (!in.sitesLoaded) { if (!in.sitesQuiet) add(Kind::Note, None, row, L"Chargement…"); }
@@ -293,6 +345,8 @@ inline const std::pair<int, const wchar_t*> Descriptions[] = {
     {ReduceMotion, L"S'ajoute au réglage d'animation de Windows."},
     {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
     {GrayscaleText, L"Adoucit l'affichage des pages, un peu comme sur Mac."},
+    {AnnotationLauncher, L"En bas à droite des pages : vos annotations et leur suivi."},
+    {AnnotationPrompt, L"Au lancement du mode Annotation, tant qu'aucun agent n'est connecté."},
 };
 // Settings search: every row a query can reach, with where it lives and the words it answers to.
 struct Searchable { int hit; const wchar_t* title; const wchar_t* path; View view; const wchar_t* keywords; };
@@ -323,7 +377,18 @@ inline const Searchable SearchIndex[] = {
     {GrayscaleText, L"Affichage lissé", L"Affichage et son › Pages", View::Display, L"lisse doux mac police texte antialiasing cleartype nettete"},
     {AutoplayHit, L"Lecture automatique", L"Affichage et son › Son et vidéo", View::Display, L"video son"},
     {MuteBackground, L"Couper le son en arrière-plan", L"Affichage et son › Son et vidéo", View::Display, L"muet son"},
+    // « Annotations et agents » (found only when the annotation mode is compiled in).
+    {CatAnnotations, L"Annotations et agents", L"Réglages", View::Main, L"annoter mcp claude codex agent"},
+    {AgentHit(AnnotationSettings::App::Claude), L"Claude Desktop", L"Annotations et agents › Agents", View::Annotations, L"connecter deconnecter anthropic mcp agent"},
+    {AgentHit(AnnotationSettings::App::Codex), L"Codex", L"Annotations et agents › Agents", View::Annotations, L"connecter deconnecter openai mcp agent"},
+    {ManualConnect, L"Autre app ou réglage manuel", L"Annotations et agents › Agents", View::Annotations, L"mcp configuration json toml commande connecter agent"},
+    {AnnotationLauncher, L"Afficher le lanceur d'annotations", L"Annotations et agents › Mode Annotation", View::Annotations, L"historique bouton annoter"},
+    {AnnotationPrompt, L"Proposer de connecter un agent", L"Annotations et agents › Mode Annotation", View::Annotations, L"plus tard lancement annoter mcp"},
+    {AnnotationRetention, L"Conserver les terminées", L"Annotations et agents › Historique", View::Annotations, L"annotations terminees duree jours supprimer"},
+    {AnnotationFolder, L"Ouvrir le dossier des annotations", L"Annotations et agents › Historique", View::Annotations, L"explorateur fichiers emplacement"},
+    {AnnotationClear, L"Effacer toutes les annotations…", L"Annotations et agents › Historique", View::Annotations, L"supprimer annotations"},
 };
+inline bool IsAnnotationEntry(const Searchable& e) { return e.view == View::Annotations || e.hit == CatAnnotations; }
 // Case- and accent-insensitive form for matching ("Économiseur" ~ "economiseur").
 inline std::wstring Folded(const std::wstring& text) {
     std::wstring out; out.reserve(text.size());
@@ -340,10 +405,11 @@ inline std::wstring Folded(const std::wstring& text) {
 }
 // Results: title matches first (with the matched span), then keyword matches.
 struct SearchResult { const Searchable* entry; size_t at = std::wstring::npos, length = 0; };
-inline std::vector<SearchResult> SearchSettings(const std::wstring& query) {
+inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool annotations = false) {
     std::vector<SearchResult> titled, keyed; const std::wstring q = Folded(BrowserSettings::TrimText(query));
     if (q.empty()) return {};
     for (const auto& e : SearchIndex) {
+        if (!annotations && IsAnnotationEntry(e)) continue;
         const size_t at = Folded(e.title).find(q);
         if (at != std::wstring::npos) titled.push_back({&e, at, q.size()});
         else if (Folded(e.keywords).find(q) != std::wstring::npos) keyed.push_back({&e});
@@ -361,6 +427,15 @@ inline FieldText FieldTexts(int hit) {
 }
 inline constexpr const wchar_t* NoSitesDescription = L"Aucun site n'a encore demandé d'autorisation.";
 inline constexpr const wchar_t* SitesNote = L"Un site demande de nouveau l'accès la prochaine fois.";
+// « Effacer toutes les annotations… »: the host shows this confirmation (src/modal.h, A6 vocabulary like
+// « Supprimer N favoris ? »): it names the count, focus starts on Annuler, the destructive action is never Entrée.
+inline Modal::Spec ClearAnnotationsSpec(std::size_t count) {
+    Modal::Spec s; s.kind = Modal::Kind::Generic; s.scope = Modal::Scope::Window; s.automationId = L"ClearAnnotations";
+    s.title = AnnotationSettings::ClearTitle(count); s.body = AnnotationSettings::ClearBody(count);
+    s.buttons = {Modal::Make(Modal::CancelButton, L"Annuler", Modal::Role::Secondary, false, true, true, L"DialogCancel"),
+                 Modal::Make(Modal::AcceptButton, AnnotationSettings::ClearAction(count), Modal::Role::Danger, true, false, false, L"DialogClearAnnotations")};
+    return s;
+}
 
 class Drawer {
 public:
@@ -381,11 +456,23 @@ public:
         std::function<void(const std::wstring&, BrowserSettings::Permission, BrowserSettings::PermissionState)> setPermission;
         std::function<void(const std::wstring&)> resetSites;                                       // empty origin: all
         std::function<int(const std::vector<ContextMenu::Item>&, RECT, bool)> choose;            // modal native menu, 0 = dismissed
+        // ---- « Annotations et agents » (every hook optional; the section exists only when `annotations` says so).
+        // Nothing here touches the store or another app's configuration: the host does, off the UI thread,
+        // and answers on the UI thread. See design/annotations-settings.md for the main.cpp wiring.
+        std::function<bool()> annotations;                                                         // the annotation mode is compiled in
+        std::function<void(std::function<void(AnnotationSettings::Agents)>)> loadAgents;            // detection (async)
+        std::function<void(AnnotationSettings::App, bool connect, std::function<void(bool ok, std::wstring message)>)> connectAgent; // explicit click only
+        std::function<void()> openConnect;                                                         // the connect modal on its manual fallback
+        std::function<std::wstring()> annotationFolder;                                            // the store root (shown, tooltip)
+        std::function<void()> openAnnotationFolder;                                                // Explorer on it
+        std::function<void(std::function<void(std::size_t)>)> countAnnotations;                    // published + drafts (async)
+        std::function<void(std::size_t count, bool keyboard)> clearAnnotations;                    // ClearAnnotationsSpec(count), then clear; call AnnotationsChanged()
+        std::function<long long()> now;                                                            // UTC seconds (tests); default time()
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
     std::vector<UINT_PTR> tips_; std::vector<std::wstring> tipTexts_;
-    Chrome chrome_; Motion::State motion_;
+    Chrome chrome_; Chrome* pc_ = &chrome_; Motion::State motion_;   // pc_: the surface painted (chrome_, or an offscreen one for RenderForTest)
     BrowserSettings::State* state_ = nullptr; Hooks hooks_;
     ID2D1GradientStopCollection* stops_ = nullptr; ID2D1LinearGradientBrush* fade_ = nullptr;
     Lane slide_, plate_, page_;
@@ -396,6 +483,14 @@ private:
     // Search: the query typed in the root's field and what it finds.
     std::wstring query_; std::vector<SearchResult> results_; NativeUI::AccentCaret caret_;
     std::vector<BrowserSettings::Site> sites_; bool sitesLoaded_ = false; int site_ = -1; unsigned loadTicket_ = 0;
+    // « Annotations et agents »: what the host last said, read when the section (or the root) is shown.
+    AnnotationSettings::Agents agents_; bool agentsKnown_ = false; unsigned agentsTicket_ = 0, countTicket_ = 0;
+    std::array<std::vector<std::wstring>, AnnotationSettings::AppCount> agentLines_;
+    std::size_t annotationCount_ = SIZE_MAX;
+    std::map<const char*, ID2D1PathGeometry*> glyphs_;   // logos and the annotation mark (factory resources)
+    Accessibility::Bridge uia_;
+    float heightOverride_ = 0;                            // RenderForTest: the offscreen page's height (DIP)
+    static constexpr UINT InvokeMessage = WM_APP + 41;   // UIA invoke / toggle / expand, posted (providers must not block)
     // A first permissions load answered within this grace shows the list (or « Aucun site ») directly.
     static constexpr int loadGraceMs = 250; Motion::Time loadStart_{};
     bool LoadQuiet(Motion::Time now) const { return !sitesLoaded_ && now < loadStart_ + Motion::Milliseconds(loadGraceMs); }
@@ -440,7 +535,7 @@ private:
         case ClearOnExit: return &state_->clearOnExit; case ConfirmClose: return &state_->confirmCloseTabs; case CloseWithLastTab: return &state_->closeWithLastTab;
         case AdBlock: return &state_->adBlock; case HttpsOnly: return &state_->httpsOnly; case ThirdPartyCookies: return &state_->blockThirdPartyCookies;
         case MemorySaver: return &state_->memorySaver; case MuteBackground: return &state_->muteBackground;
-        case GrayscaleText: return &state_->grayscaleText; default: return nullptr;
+        case GrayscaleText: return &state_->grayscaleText; case AnnotationLauncher: return &state_->annotationLauncher; default: return nullptr;
         }
     }
     static BrowserSettings::Change SwitchChange(int hit) {
@@ -450,15 +545,19 @@ private:
         case Suggestions: return C::SearchSuggestions; case Passwords: return C::Passwords; case Autofill: return C::Autofill;
         case ConfirmClose: return C::ConfirmCloseTabs; case CloseWithLastTab: return C::CloseWithLastTab; case AdBlock: return C::AdBlock;
         case HttpsOnly: return C::HttpsOnly; case ThirdPartyCookies: return C::ThirdPartyCookies; case MemorySaver: return C::MemorySaver;
-        case MuteBackground: return C::MuteBackground; case GrayscaleText: return C::GrayscaleText; default: return C::ClearOnExit;
+        case MuteBackground: return C::MuteBackground; case GrayscaleText: return C::GrayscaleText;
+        case AnnotationLauncher: return C::AnnotationLauncher; case AnnotationPrompt: return C::AnnotationConnectPrompt; default: return C::ClearOnExit;
         }
     }
-    bool SwitchValue(int hit) const { auto* f = SwitchField(hit); return f && *f; }
+    // « Proposer de connecter un agent » shows whether the modal would still open by itself (BrowserSettings::ConnectPromptActive).
+    bool SwitchValue(int hit) const { if (hit == AnnotationPrompt) return state_ && BrowserSettings::ConnectPromptActive(*state_); auto* f = SwitchField(hit); return f && *f; }
+    bool AnnotationsOn() const { return hooks_.annotations && hooks_.annotations(); }
+    long long NowSeconds() const { return hooks_.now ? hooks_.now() : static_cast<long long>(std::time(nullptr)); }
     bool Reduced() const { return motion_.ReducedMotion(); }
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
-    float Height() const { RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
+    float Height() const { if (heightOverride_ > 0) return heightOverride_; RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
     View Current() const { return views_[depth_]; }
     int DepthOf(View v) const { for (int d = depth_; d >= 0; --d) if (views_[d] == v) return d; return -1; }
     bool Searching() const { return !BrowserSettings::TrimText(query_).empty(); }
@@ -472,7 +571,10 @@ private:
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
         in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
-        in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_; if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
+        in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_;
+        in.annotations = AnnotationsOn(); in.agents = &agents_; in.agentsKnown = agentsKnown_; in.agentLines = agentLines_; in.now = NowSeconds();
+        in.annotationCount = annotationCount_; if (in.annotations && hooks_.annotationFolder) in.annotationFolder = FolderText(hooks_.annotationFolder());
+        if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
     }
     mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
     void Reveals(Motion::Time now, bool target) const {
@@ -496,14 +598,14 @@ private:
     }
     template<class T> static void Drop(T*& p) { if (p) { p->Release(); p = nullptr; } }
     void PushOpacity(float opacity) {
-        ID2D1Layer* layer = nullptr; auto* t = chrome_.RenderTarget();
+        ID2D1Layer* layer = nullptr; auto* t = pc_->RenderTarget();
         if (FAILED(t->CreateLayer(&layer))) return;
         t->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), opacity), layer);
         layer->Release();
     }
     void Fill(Design::Box b, float radius, float r, float g, float bl, float a) {
-        auto* brush = chrome_.SolidBrush(); brush->SetColor(D2D1::ColorF(r, g, bl, a));
-        chrome_.RenderTarget()->FillRoundedRectangle(D2D1::RoundedRect({b.left, b.top, b.right, b.bottom}, radius, radius), brush);
+        auto* brush = pc_->SolidBrush(); brush->SetColor(D2D1::ColorF(r, g, bl, a));
+        pc_->RenderTarget()->FillRoundedRectangle(D2D1::RoundedRect({b.left, b.top, b.right, b.bottom}, radius, radius), brush);
     }
     void White(Design::Box b, float radius, float a) { if (a > .001f) Fill(b, radius, 1, 1, 1, a); }
     static D2D1_RECT_F R(Design::Box b) { return {b.left, b.top, b.right, b.bottom}; }
@@ -523,34 +625,54 @@ private:
             if (i < text.size() && text[i] != L' ') { word += text[i]; continue; }
             if (word.empty()) continue;
             const std::wstring candidate = line.empty() ? word : line + L" " + word;
-            if (!line.empty() && chrome_.TextWidth(candidate, 14, false, false, -.14f) > width) { lines.push_back(line); line = word; } else line = candidate;
+            if (!line.empty() && pc_->TextWidth(candidate, 14, false, false, -.14f) > width) { lines.push_back(line); line = word; } else line = candidate;
             word.clear();
         }
         if (!line.empty()) lines.push_back(line);
         return lines;
     }
     void MeasureDescriptions() {
-        if (!chrome_.RenderTarget()) chrome_.Resize();
+        if (!pc_->RenderTarget()) pc_->Resize();
         lines_.clear();
         for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(text, Layout::descriptionWidth);
         noSitesLines_ = Wrap(NoSitesDescription, Layout::rowRight - 8 - Layout::textLeft);
         sitesNoteLines_ = Wrap(SitesNote, Layout::rowRight - Layout::textLeft - 4);
+        lines_[ShortcutsNoteKey] = Wrap(AnnotationSettings::ShortcutsNote, Layout::rowRight - Layout::textLeft);
+        MeasureAgents();
+    }
+    // Agent status lines: re-wrapped whenever the state or the clock (« il y a … ») may have changed them.
+    void MeasureAgents() {
+        if (!pc_->RenderTarget()) pc_->Resize();
+        const long long now = NowSeconds();
+        for (int i = 0; i < AnnotationSettings::AppCount; ++i)
+            agentLines_[static_cast<size_t>(i)] = Wrap(AnnotationSettings::StatusText(agents_[AnnotationSettings::AppAt(i)], now), Layout::statusWidth);
+    }
+    // A vector glyph (Paper path, its own viewBox) fitted in `box` at `size` DIP.
+    void PaintGlyph(const AnnotationSettings::Glyph& g, Design::Box box, float size, D2D1_COLOR_F color) {
+        auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush(); if (!t || !brush) return;
+        auto& geometry = glyphs_[g.d];
+        if (!geometry) { ID2D1Factory* f = nullptr; t->GetFactory(&f); geometry = DialogKit::SvgGeometry(f, g.d); if (f) f->Release(); }
+        if (!geometry) return;
+        const float k = size / std::max(g.w, g.h), x = (box.left + box.right) / 2 - (g.x + g.w / 2) * k, y = (box.top + box.bottom) / 2 - (g.y + g.h / 2) * k;
+        D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+        t->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * base);
+        brush->SetColor(color); t->FillGeometry(geometry, brush); t->SetTransform(base);
     }
 
     // Ghost icon button (14 DIP glyph at 70%, shared button radius): fills and brightens on hover.
     void IconButton(const wchar_t* icon, Design::Box box, int hit, Motion::Time now, float rotation = 0, bool enabled = true) {
-        auto* t = chrome_.RenderTarget(); const auto v = Interaction(hit, now);
+        auto* t = pc_->RenderTarget(); const auto v = Interaction(hit, now);
         const float h = enabled ? v.hover : 0, p = enabled ? v.press : 0;
         if (h > 0 || p > 0) {
             const float c = Design::Surface::canvas, hovered = c + (Design::Surface::hover - c) * h, fill = hovered + (Design::Surface::pressed - hovered) * p;
-            chrome_.Round(R(box), Design::Radius::button, fill);
+            pc_->Round(R(box), Design::Radius::button, fill);
         }
-        if (focus_ == hit) chrome_.FocusRing(R(box), Design::Radius::button);
+        if (focus_ == hit) pc_->FocusRing(R(box), Design::Radius::button);
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
         if (rotation != 0) t->SetTransform(D2D1::Matrix3x2F::Rotation(rotation, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base);
         // Full-opacity 14 px masks (the regular icons bake in 50% at 16 px): Paper's exact 70%, crisp bold strokes.
         const float size = 14 * Motion::PressScale(p, Reduced(), enabled), a = enabled ? .7f + .3f * h : Design::Text::disabled;
-        chrome_.TintedIcon((std::wstring(icon) + L"-mask").c_str(), R(box), size, D2D1::ColorF(1, 1, 1, a));
+        pc_->TintedIcon((std::wstring(icon) + L"-mask").c_str(), R(box), size, D2D1::ColorF(1, 1, 1, a));
         t->SetTransform(base);
     }
     // Opaque equivalent of `amount` white over the canvas: row fills never stack
@@ -560,18 +682,18 @@ private:
     void RowSurface(Design::Box box, int hit, Motion::Time now) {
         if (!hit) return;
         const auto v = Interaction(hit, now); const float amount = hoverTint * v.hover + pressTint * v.press;
-        if (amount > .0005f) chrome_.Round(R(box), Design::Radius::control, Tint(amount));
+        if (amount > .0005f) pc_->Round(R(box), Design::Radius::control, Tint(amount));
     }
-    void RowFocus(Design::Box box, int hit) { if (focus_ == hit) chrome_.FocusRing(R(box), Design::Radius::control); }
-    void Label16(const std::wstring& text, float left, float top, float right, float opacity) { chrome_.Text(text, {left, top, right, top + 20}, 16, opacity, false, false, -.16f); }
-    void Label14(const std::wstring& text, float left, float top, float right, float opacity, float height = 18) { chrome_.Text(text, {left, top, right, top + height}, 14, opacity, false, false, -.14f); }
+    void RowFocus(Design::Box box, int hit) { if (focus_ == hit) pc_->FocusRing(R(box), Design::Radius::control); }
+    void Label16(const std::wstring& text, float left, float top, float right, float opacity) { pc_->Text(text, {left, top, right, top + 20}, 16, opacity, false, false, -.16f); }
+    void Label14(const std::wstring& text, float left, float top, float right, float opacity, float height = 18) { pc_->Text(text, {left, top, right, top + height}, 14, opacity, false, false, -.14f); }
     // The engine's own favicon (assets\engines\<key>.png), dimmed like its name until selected.
     void EngineTile(int index, float y, float strength) {
         const auto box = Layout::Icon(y);
-        if (static_cast<Engine>(index) == Engine::Custom) { chrome_.TintedIcon(L"favicon-mask", R(box), 16, D2D1::ColorF(1, 1, 1, .6f + .3f * strength)); return; }
+        if (static_cast<Engine>(index) == Engine::Custom) { pc_->TintedIcon(L"favicon-mask", R(box), 16, D2D1::ColorF(1, 1, 1, .6f + .3f * strength)); return; }
         const std::string key = BrowserSettings::Info(static_cast<Engine>(index)).key;
-        if (auto* favicon = chrome_.AssetBitmap(L"engines\\" + std::wstring(key.begin(), key.end()) + L".png")) {
-            chrome_.RenderTarget()->DrawBitmap(favicon, R(box), .75f + .25f * strength, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        if (auto* favicon = pc_->AssetBitmap(L"engines\\" + std::wstring(key.begin(), key.end()) + L".png")) {
+            pc_->RenderTarget()->DrawBitmap(favicon, R(box), .75f + .25f * strength, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
             return;
         }
         White(box, 4, .7f + .3f * strength);
@@ -580,11 +702,38 @@ private:
         RowFocus(Layout::Row(s.top), s.hit);
         const float plateTop = plate_.Value(now), closeness = Motion::Clamp(1 - std::abs(plateTop - (s.top + paintScroll_)) / Layout::pitch);
         EngineTile(s.index, s.top, closeness);
-        chrome_.Text(BrowserSettings::Info(static_cast<Engine>(s.index)).name, {Layout::nameLeft, s.top, Layout::slotRight - Layout::slot - 4, s.top + Layout::row}, 16, .7f + .3f * closeness, false, false, -.16f);
+        pc_->Text(BrowserSettings::Info(static_cast<Engine>(s.index)).name, {Layout::nameLeft, s.top, Layout::slotRight - Layout::slot - 4, s.top + Layout::row}, 16, .7f + .3f * closeness, false, false, -.16f);
     }
     float paintScroll_ = 0; // scroll of the view being painted (the plate rides on it)
     // Leading glyph of a root row: full-opacity 16 DIP mask at Paper's 70%, brighter on hover.
-    void Lead(const Slot& s, float hover) { if (s.icon) chrome_.TintedIcon(s.icon, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); }
+    void Lead(const Slot& s, float hover) {
+        if (s.icon) pc_->TintedIcon(s.icon, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover));
+        else if (s.glyph) PaintGlyph(*s.glyph, Layout::Icon(s.top), 14, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); // the mark at the masks' optical size
+    }
+    // « Annotations et agents » › Agents: logo, name, status; the action as a compact raised button.
+    float ActionWidth(const std::wstring& label) const { return std::ceil(pc_->TextWidth(label, 14, false, false, -.14f)) + 2 * Layout::actionPad; }
+    Design::Box AgentAction(const Slot& s) const { return Layout::Action(s.top, ActionWidth(s.value)); }
+    void AgentRow(const Slot& s, Motion::Time now) {
+        namespace AS = AnnotationSettings; const auto app = AS::AppAt(s.index);
+        const auto& logo = AS::Logo(app); const Design::Box icon = Layout::Icon(s.top + Layout::twoLinePad, 20);
+        if (app == AS::App::Claude) PaintGlyph(logo, icon, 16, D2D1::ColorF(AS::ClaudeRgb));
+        else PaintGlyph(logo, icon, 16, D2D1::ColorF(1, 1, 1, .9f));
+        const bool action = !s.value.empty(); const auto box = action ? AgentAction(s) : Design::Box{Layout::slotRight, 0, Layout::slotRight, 0};
+        Label16(s.text, Layout::nameLeft, s.top + Layout::twoLinePad, box.left - 8, .9f);
+        if (s.error) pc_->ink = D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, 1);
+        for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::nameLeft, s.top + Layout::twoLinePad + 22 + k * Layout::descriptionLine, Layout::rowRight - 8, s.error ? 1.f : .5f);
+        pc_->ink = D2D1::ColorF(1, 1, 1, 1);
+        if (!action) return;
+        const auto v = Interaction(s.hit, now); const bool enabled = !s.disabled;
+        const auto style = Design::Resolve(Design::ButtonVariant::Raised, {enabled ? v.hover : 0, enabled ? v.press : 0, !enabled, focus_ == s.hit});
+        auto* t = pc_->RenderTarget(); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+        const float scale = Motion::PressScale(enabled ? v.press : 0, Reduced(), enabled);
+        if (scale != 1) t->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base);
+        pc_->Round(R(box), style.radius, style.surface);
+        pc_->Text(s.value, {box.left + Layout::actionPad - 1, box.top + 2, box.right - Layout::actionPad + 1, box.top + 22}, 14, enabled ? .9f : Design::Text::disabled, false, false, -.14f);
+        if (focus_ == s.hit) pc_->FocusRing(R(box), Design::Radius::button);
+        t->SetTransform(base);
+    }
     void SwitchRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const int i = SwitchIndex(s.hit); const float on = Motion::Clamp(switches_[i].Value(now));
@@ -610,11 +759,11 @@ private:
     void ValueRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
-        const float w = chrome_.TextWidth(s.value, 14, false, false, -.14f);
+        const float w = pc_->TextWidth(s.value, 14, false, false, -.14f);
         Lead(s, v.hover);
-        Label16(s.text, s.icon ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
-        chrome_.Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
-        chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
+        Label16(s.text, (s.icon || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
+        pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         // A pending note (engine policy applied at the next launch) under the label.
         for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::textLeft, s.top + 6 + 22 + k * Layout::descriptionLine, Layout::rowRight - 8, .5f);
     }
@@ -623,20 +772,20 @@ private:
     void FieldRow(const Slot& s, Motion::Time now) {
         const auto v = Interaction(s.hit, now); const bool editing = editing_ == s.hit, error = errors_[s.hit];
         const Design::Box box{Layout::rowLeft, s.top, Layout::rowRight, s.top + Layout::field};
-        chrome_.Round(R(box), Design::Radius::control, Tint(FieldFill(v.hover, editing)));
-        auto* brush = chrome_.SolidBrush(); auto* t = chrome_.RenderTarget();
+        pc_->Round(R(box), Design::Radius::control, Tint(FieldFill(v.hover, editing)));
+        auto* brush = pc_->SolidBrush(); auto* t = pc_->RenderTarget();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         brush->SetColor(error ? D2D1::ColorF(1, .482f, .431f, .5f) : D2D1::ColorF(1, 1, 1, editing ? .2f : .06f + .04f * v.hover));
         t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(box.left + px / 2, box.top + px / 2, box.right - px / 2, box.bottom - px / 2), Design::Radius::control, Design::Radius::control), brush, px);
-        if (focus_ == s.hit && !editing) chrome_.FocusRing(R(box), Design::Radius::control);
+        if (focus_ == s.hit && !editing) pc_->FocusRing(R(box), Design::Radius::control);
         const auto texts = FieldTexts(s.hit);
         if (!editing) {
             const std::wstring value = FieldValue(s.hit);
             if (value.empty()) Label14(texts.placeholder, Layout::textLeft, s.top + 7, Layout::rowRight - 8, .35f);
-            else chrome_.Text(value, {Layout::textLeft, s.top + 7, Layout::rowRight - 8, s.top + 25}, 14, .9f, false, false, -.14f);
+            else pc_->Text(value, {Layout::textLeft, s.top + 7, Layout::rowRight - 8, s.top + 25}, 14, .9f, false, false, -.14f);
         }
         const float hint = s.top + Layout::field + Layout::fieldHint;
-        if (error) { chrome_.ink = D2D1::ColorF(1, .482f, .431f, 1); Label14(texts.error, Layout::textLeft, hint, Layout::rowRight, 1); chrome_.ink = D2D1::ColorF(1, 1, 1, 1); }
+        if (error) { pc_->ink = D2D1::ColorF(1, .482f, .431f, 1); Label14(texts.error, Layout::textLeft, hint, Layout::rowRight, 1); pc_->ink = D2D1::ColorF(1, 1, 1, 1); }
         else Label14(texts.hint, Layout::textLeft, hint, Layout::rowRight, .5f);
     }
     static float FieldFill(float hover, bool editing) { return editing ? .02f : .03f + .02f * hover; }
@@ -646,18 +795,18 @@ private:
     void SearchRow(const Slot& s, Motion::Time now) {
         const auto v = Interaction(s.hit, now); const bool editing = editing_ == SearchField;
         const Design::Box box{Layout::rowLeft, s.top, Layout::rowRight, s.top + Layout::field};
-        chrome_.Round(R(box), Design::Radius::control, Tint(searchFill + .02f * v.hover * (editing ? 0 : 1)));
-        auto* brush = chrome_.SolidBrush(); auto* t = chrome_.RenderTarget();
+        pc_->Round(R(box), Design::Radius::control, Tint(searchFill + .02f * v.hover * (editing ? 0 : 1)));
+        auto* brush = pc_->SolidBrush(); auto* t = pc_->RenderTarget();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         if (editing) { brush->SetColor(D2D1::ColorF(1, 1, 1, .1f)); t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(box.left + px / 2, box.top + px / 2, box.right - px / 2, box.bottom - px / 2), Design::Radius::control, Design::Radius::control), brush, px); }
-        if (focus_ == s.hit && !editing) chrome_.FocusRing(R(box), Design::Radius::control);
+        if (focus_ == s.hit && !editing) pc_->FocusRing(R(box), Design::Radius::control);
         const Design::Box glass{box.left + 8, s.top + 9, box.left + 22, s.top + 23};
-        chrome_.TintedIcon(L"search-mask", R(glass), 14, D2D1::ColorF(1, 1, 1, editing || Searching() ? .7f : .5f));
+        pc_->TintedIcon(L"search-mask", R(glass), 14, D2D1::ColorF(1, 1, 1, editing || Searching() ? .7f : .5f));
         if (!editing) {
             if (query_.empty()) Label14(FieldTexts(SearchField).placeholder, SearchTextLeft(), s.top + 7, Layout::rowRight - 8, .4f);
-            else chrome_.Text(query_, {SearchTextLeft(), s.top + 7, ClearBox(s.top).left - 4, s.top + 25}, 14, .9f, false, false, -.14f);
+            else pc_->Text(query_, {SearchTextLeft(), s.top + 7, ClearBox(s.top).left - 4, s.top + 25}, 14, .9f, false, false, -.14f);
         }
-        if (Searching()) chrome_.TintedIcon(L"close-mask", R(ClearBox(s.top)), 12, D2D1::ColorF(1, 1, 1, .5f + .3f * Interaction(SearchDismiss, now).hover));
+        if (Searching()) pc_->TintedIcon(L"close-mask", R(ClearBox(s.top)), 12, D2D1::ColorF(1, 1, 1, .5f + .3f * Interaction(SearchDismiss, now).hover));
     }
     static constexpr float SearchTextLeft() { return Layout::rowLeft + 8 + 14 + 8; } // 42
     static Design::Box ClearBox(float top) { return {Layout::rowRight - 4 - 20, top + 4, Layout::rowRight - 4, top + 28}; }
@@ -668,14 +817,14 @@ private:
     }
     void ResultCardPaint(float fieldTop, Motion::Time now) {
         const auto card = ResultCard(fieldTop);
-        chrome_.Round(R(card), Design::Radius::control, Tint(searchFill));
+        pc_->Round(R(card), Design::Radius::control, Tint(searchFill));
         if (results_.empty()) { Label14(L"Aucun réglage pour « " + BrowserSettings::TrimText(query_) + L" »", card.left + Layout::resultPadLeft, card.top + 19, card.right - Layout::resultPadRight, .5f); return; }
         for (size_t i = 0; i < results_.size(); ++i) {
             const auto& r = results_[i]; const int hit = ResultBase + static_cast<int>(i);
             const Design::Box row{card.left, card.top + i * Layout::resultRow, card.right, card.top + (i + 1) * Layout::resultRow};
             const auto v = Interaction(hit, now);
-            if (v.hover > 0 || v.press > 0) chrome_.Round(R(row), Design::Radius::control, Tint(searchFill + .04f * v.hover + .03f * v.press));
-            if (focus_ == hit) chrome_.FocusRing(R(row), Design::Radius::control);
+            if (v.hover > 0 || v.press > 0) pc_->Round(R(row), Design::Radius::control, Tint(searchFill + .04f * v.hover + .03f * v.press));
+            if (focus_ == hit) pc_->FocusRing(R(row), Design::Radius::control);
             const int sw = SwitchIndex(r.entry->hit);
             const float right = row.right - Layout::resultPadRight - (sw >= 0 ? Layout::switchWidth : 16) - 16, x = row.left + Layout::resultPadLeft, y = row.top + 8;
             // Title at 70%, the matched span in full white.
@@ -683,7 +832,7 @@ private:
             if (r.at == std::wstring::npos) Label16(title, x, y, right, .7f + .2f * v.hover);
             else {
                 const std::wstring a = title.substr(0, r.at), m = title.substr(r.at, r.length), b = title.substr(r.at + r.length);
-                const float wa = chrome_.TextWidth(a, 16, false, false, -.16f), wm = chrome_.TextWidth(m, 16, false, false, -.16f);
+                const float wa = pc_->TextWidth(a, 16, false, false, -.16f), wm = pc_->TextWidth(m, 16, false, false, -.16f);
                 Label16(a, x, y, x + wa + 1, .7f + .2f * v.hover); Label16(m, x + wa, y, x + wa + wm + 1, 1); Label16(b, x + wa + wm, y, right, .7f + .2f * v.hover);
             }
             Label14(r.entry->path, x, y + 22, right, .5f);
@@ -698,10 +847,10 @@ private:
                 const float travel = Layout::switchWidth - 2 * Layout::knobInset - Layout::knob, left = track.left + Layout::knobInset + travel * on;
                 Fill({left, track.top + Layout::knobInset, left + Layout::knob, track.top + Layout::knobInset + Layout::knob}, Layout::knob / 2, knobGray, knobGray, knobGray, 1);
             } else {
-                auto* t = chrome_.RenderTarget(); const Design::Box chevron{row.right - Layout::resultPadRight - 16, row.top + (Layout::resultRow - 24) / 2, row.right - Layout::resultPadRight, row.top + (Layout::resultRow + 24) / 2};
+                auto* t = pc_->RenderTarget(); const Design::Box chevron{row.right - Layout::resultPadRight - 16, row.top + (Layout::resultRow - 24) / 2, row.right - Layout::resultPadRight, row.top + (Layout::resultRow + 24) / 2};
                 D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
                 t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
-                chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover); t->SetTransform(base);
+                pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover); t->SetTransform(base);
             }
         }
     }
@@ -713,63 +862,64 @@ private:
             return;
         }
         RowFocus(Layout::Row(s.top), s.hit);
-        auto* t = chrome_.RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
+        auto* t = pc_->RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
         const bool counted = s.hit == Permissions; // a count reads in tabular figures; a summary in text
-        const float w = chrome_.TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        const float w = pc_->TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
         Lead(s, v.hover);
-        Label16(s.text, s.icon ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
-        if (!s.value.empty()) chrome_.Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, counted, false, counted ? 0.f : -.14f);
+        Label16(s.text, (s.icon || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        if (!s.value.empty()) pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, counted, false, counted ? 0.f : -.14f);
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
         t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
-        chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
+        pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         t->SetTransform(base);
     }
+    // A folder row: « Enregistrer dans » (downloads) or « Ouvrir le dossier des annotations » (s.text / s.value).
     void FolderRow(const Slot& s, Motion::Time now) {
-        RowFocus(Layout::Row(s.top, Layout::folderRow), Folder);
-        Label16(L"Enregistrer dans", Layout::textLeft, s.top + 8, Layout::Trailing(s.top).left - 8, .7f);
-        const std::wstring folder = hooks_.downloadFolder ? hooks_.downloadFolder() : (state_ ? state_->downloadFolder : L"");
-        chrome_.Text(FolderText(folder), {Layout::textLeft, s.top + 30, Layout::Trailing(s.top).left - 8, s.top + 46}, 14, .5f, false, false, -.14f);
+        RowFocus(Layout::Row(s.top, Layout::folderRow), s.hit);
+        Label16(s.text.empty() ? std::wstring(L"Enregistrer dans") : s.text, Layout::textLeft, s.top + 8, Layout::Trailing(s.top).left - 8, .7f);
+        const std::wstring folder = s.hit != Folder ? s.value : FolderText(hooks_.downloadFolder ? hooks_.downloadFolder() : (state_ ? state_->downloadFolder : L""));
+        pc_->Text(folder, {Layout::textLeft, s.top + 30, Layout::Trailing(s.top).left - 8, s.top + 46}, 14, .5f, false, false, -.14f);
         // Closed at rest, it opens on hover: cross-fade on the row's own hover tween.
-        const auto v = Interaction(Folder, now); const auto box = Layout::Trailing(s.top, Layout::folderRow);
+        const auto v = Interaction(s.hit, now); const auto box = Layout::Trailing(s.top, Layout::folderRow);
         const float h = Motion::Clamp(v.hover);
-        chrome_.FolderGlyph(R(box), 14 * Motion::PressScale(v.press, Reduced()), .7f + .3f * h, h, Reduced());
+        pc_->FolderGlyph(R(box), 14 * Motion::PressScale(v.press, Reduced()), .7f + .3f * h, h, Reduced());
     }
     void SiteRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
-        auto* t = chrome_.RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top, s.height);
-        chrome_.Icon(L"favicon", R(Layout::Icon(s.top + 8, 20)), 16, .6f + .3f * v.hover);
+        auto* t = pc_->RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top, s.height);
+        pc_->Icon(L"favicon", R(Layout::Icon(s.top + 8, 20)), 16, .6f + .3f * v.hover);
         Label16(s.text, Layout::nameLeft, s.top + 8, chevron.left - 8, .8f + .2f * v.hover);
         Label14(s.value, Layout::nameLeft, s.top + 30, chevron.left - 8, .5f, 16);
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
         t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
-        chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
+        pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         t->SetTransform(base);
     }
     void Plate(Motion::Time now, float scroll) {
         // One plate for the selection: it glides between rows, the check rides on it.
         const float y = plate_.Value(now) - scroll;
-        chrome_.Round(R(Layout::Row(y)), Design::Radius::control, Tint(plateTint)); // opaque: covers a hover fill instead of adding to it
-        chrome_.Icon(L"check", R(Layout::Trailing(y)), 14, .9f);
+        pc_->Round(R(Layout::Row(y)), Design::Radius::control, Tint(plateTint)); // opaque: covers a hover fill instead of adding to it
+        pc_->Icon(L"check", R(Layout::Trailing(y)), 14, .9f);
     }
     void DangerRow(const wchar_t* text, float top, int hit, Motion::Time now, bool enabled) {
         const auto v = Interaction(hit, now); const auto row = Layout::Row(top);
         if (enabled && (v.hover > 0 || v.press > 0)) Fill(row, Design::Radius::control, 1, .482f, .431f, .08f * v.hover + .05f * v.press);
-        if (focus_ == hit) chrome_.FocusRing(R(row), Design::Radius::control);
-        chrome_.ink = D2D1::ColorF(1, .482f, .431f, 1);
+        if (focus_ == hit) pc_->FocusRing(R(row), Design::Radius::control);
+        pc_->ink = D2D1::ColorF(1, .482f, .431f, 1);
         Label16(text, Layout::textLeft, top + 6, Layout::rowRight, enabled ? 1.f : Design::Text::disabled);
-        chrome_.ink = D2D1::ColorF(1, 1, 1, 1);
+        pc_->ink = D2D1::ColorF(1, 1, 1, 1);
     }
-    void DangerContent(const Slot& s, Motion::Time now) { DangerRow(s.text.c_str(), s.top, s.hit, now, true); }
+    void DangerContent(const Slot& s, Motion::Time now) { DangerRow(s.text.c_str(), s.top, s.hit, now, !s.disabled); }
     void Footer(View view, Motion::Time now) {
         const float h = Height(), top = h - FooterHeight(view);
-        auto* t = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
+        auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
-        chrome_.Color(1, .04f); t->FillRectangle(D2D1::RectF(Layout::rowLeft, top, Layout::rowRight, top + px), brush);
+        pc_->Color(1, .04f); t->FillRectangle(D2D1::RectF(Layout::rowLeft, top, Layout::rowRight, top + px), brush);
         if (view != View::Sites && view != View::Site) {
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
-            chrome_.Text(version.text, {Layout::textLeft, y, Layout::Trailing(y, Layout::slot).left - 4, y + Layout::slot}, 14, .5f, true, false, -.14f);
+            pc_->Text(version.text, {Layout::textLeft, y, Layout::Trailing(y, Layout::slot).left - 4, y + Layout::slot}, 14, .5f, true, false, -.14f);
             float turn = 0;
             if (Spinning(now)) turn = -SpinDegrees(now); // counter-clockwise, the way the glyph's arrow points
             IconButton(L"reload", Layout::Trailing(y, Layout::slot), CheckUpdates, now, turn, version.canCheck && !version.checking);
@@ -785,18 +935,18 @@ private:
     }
     // One view at a horizontal offset (navigation push/pop).
     void PaintView(int depth, float x, float opacity, Motion::Time now) {
-        auto* target = chrome_.RenderTarget(); const View view = views_[depth];
+        auto* target = pc_->RenderTarget(); const View view = views_[depth];
         D2D1_MATRIX_3X2_F base; target->GetTransform(&base);
         target->SetTransform(D2D1::Matrix3x2F::Translation(x, 0) * base);
         const bool layered = opacity < .998f; if (layered) PushOpacity(opacity);
         const float c = Design::Surface::canvas, h = Height();
-        chrome_.Round({0, 0, Layout::width, h}, 0, c); // opaque page: the view beneath never shows through
+        pc_->Round({0, 0, Layout::width, h}, 0, c); // opaque page: the view beneath never shows through
         // Header
-        if (view == View::Main) chrome_.Text(L"Réglages", R(Layout::Title(false)), 16, .9f, false, true, -.16f);
+        if (view == View::Main) pc_->Text(L"Réglages", R(Layout::Title(false)), 16, .9f, false, true, -.16f);
         else {
             IconButton(L"back", Layout::BackButton(), Back, now);
             const std::wstring title = view == View::Site ? (site_ >= 0 && site_ < static_cast<int>(sites_.size()) ? Host(sites_[site_].origin) : L"") : Title(view);
-            chrome_.Text(title, R(Layout::Title(true)), 16, .9f, false, true, -.16f);
+            pc_->Text(title, R(Layout::Title(true)), 16, .9f, false, true, -.16f);
         }
         IconButton(L"close", Layout::CloseButton(), Close, now);
         // Content, clipped between the header and the footer.
@@ -809,7 +959,7 @@ private:
         const auto slots = Slots(view, now);
         // Three passes: row fills, then the selection plate over them, then row contents.
         auto pass = [&](bool surfaces) { for (const auto& s : slots) {
-            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note || s.kind == Kind::Field || s.kind == Kind::Search || s.kind == Kind::Danger))) continue;
+            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note || s.kind == Kind::Field || s.kind == Kind::Search || s.kind == Kind::Danger || s.kind == Kind::Agent))) continue;
             if (s.kind == Kind::Search) searchTop = s.top;
             const float opacity = s.opacity * (dim && s.kind != Kind::Search ? Layout::searchDim : 1.f); // results own the root while a query stands
             const bool clipped = s.clipTop > -1e5f, fading = opacity < .998f;
@@ -817,8 +967,8 @@ private:
             if (fading) PushOpacity(opacity);
             if (surfaces) RowSurface(Layout::Row(s.top, s.height), s.hit, now);
             else switch (s.kind) {
-            case Kind::Label: chrome_.Text(s.text, {Layout::textLeft, s.top, Layout::rowRight, s.top + 20}, 14, .5f, false, true, -.14f); break;
-            case Kind::Note: { const auto lines = Wrap(s.text, Layout::rowRight - Layout::textLeft); for (size_t k = 0; k < lines.size(); ++k) Label14(lines[k], Layout::textLeft, s.top + k * 20, Layout::rowRight, .5f, 20); break; }
+            case Kind::Label: pc_->Text(s.text, {Layout::textLeft, s.top, Layout::rowRight, s.top + 20}, 14, .5f, false, true, -.14f); break;
+            case Kind::Note: { const auto lines = s.lines.empty() ? Wrap(s.text, Layout::rowRight - Layout::textLeft) : s.lines; for (size_t k = 0; k < lines.size(); ++k) Label14(lines[k], Layout::textLeft, s.top + k * 20, Layout::rowRight, .5f, 20); break; }
             case Kind::Engine: EngineRow(s, now); break;
             case Kind::Search: SearchRow(s, now); break;
             case Kind::Danger: DangerContent(s, now); break;
@@ -828,6 +978,7 @@ private:
             case Kind::Nav: NavRow(s, now); break;
             case Kind::SiteRow: SiteRow(s, now); break;
             case Kind::Field: FieldRow(s, now); break;
+            case Kind::Agent: AgentRow(s, now); break;
             }
             if (fading) target->PopLayer();
             if (clipped) target->PopAxisAlignedClip();
@@ -855,7 +1006,7 @@ private:
         target->SetTransform(base);
     }
     void Paint(Motion::Time now) {
-        auto* target = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush(); if (!target || !brush) return;
+        auto* target = pc_->RenderTarget(); auto* brush = pc_->SolidBrush(); if (!target || !brush) return;
         if (!fade_) {
             const float c = Design::Surface::canvas;
             D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(c, c, c, 0)}, {1, D2D1::ColorF(c, c, c, 1)}};
@@ -864,7 +1015,7 @@ private:
         }
         const float c = Design::Surface::canvas, h = Height();
         target->Clear(D2D1::ColorF(c, c, c, 1));
-        chrome_.keyboardModality = keyboard_;
+        pc_->keyboardModality = keyboard_;
         // Navigation: views below the current position slide 30% left and dim; the
         // one above enters from the right edge (iOS push). Reduced motion: no travel.
         const float pos = page_.Value(now); const int lo = std::clamp(static_cast<int>(std::floor(pos)), 0, MaxDepth - 1), hi = std::min(MaxDepth - 1, lo + 1);
@@ -875,13 +1026,13 @@ private:
         target->PopAxisAlignedClip();
         // Leading edge: one physical pixel, a touch lighter than the canvas (as the download drawer).
         const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width));
-        chrome_.Color(1, .02f); target->FillRectangle(D2D1::RectF(0, 0, px, h), brush);
+        pc_->Color(1, .02f); target->FillRectangle(D2D1::RectF(0, 0, px, h), brush);
     }
     void PaintNow() {
-        if (!chrome_.RenderTarget()) chrome_.Resize();
-        auto* target = chrome_.RenderTarget(); if (!target) return;
+        if (!pc_->RenderTarget()) pc_->Resize();
+        auto* target = pc_->RenderTarget(); if (!target) return;
         target->BeginDraw(); Paint(Motion::Now());
-        if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); chrome_.RecreateTarget(); }
+        if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); pc_->RecreateTarget(); }
     }
 
     // ---- Input -----------------------------------------------------------------
@@ -907,7 +1058,8 @@ private:
             return SearchDismiss;
         }
         for (const auto& s : Slots(view, Motion::Now())) {
-            if (!s.hit || s.opacity < .5f) continue;
+            if (!s.hit || s.opacity < .5f || s.disabled) continue;
+            if (s.kind == Kind::Agent) { if (in(AgentAction(s))) return s.hit; continue; }   // only the button answers
             if (in(Layout::Row(s.top, s.height)) && y >= s.clipTop && y < s.clipBottom) return s.hit;
         }
         return None;
@@ -917,7 +1069,7 @@ private:
         if (view != View::Main) order.push_back(Back);
         order.push_back(Close);
         if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
-        for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f) order.push_back(s.hit);
+        for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f && (!s.disabled || s.kind == Kind::Agent)) order.push_back(s.hit);   // a busy agent button keeps the focus
         if (view != View::Sites && view != View::Site) { if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
         else if (view == View::Sites) { if (!sites_.empty()) order.push_back(ResetAll); }
         else order.push_back(ResetSite);
@@ -983,7 +1135,7 @@ private:
     }
     // Search ---------------------------------------------------------------------------
     void SetQuery(std::wstring q) {
-        query_ = std::move(q); results_ = SearchSettings(query_);
+        query_ = std::move(q); results_ = SearchSettings(query_, AnnotationsOn());
         motion_.ClearInteractions(); if (IsResult(focus_)) focus_ = 0;
         Invalidate(); Schedule(Motion::Now());
     }
@@ -1009,6 +1161,53 @@ private:
             if (visible_) { auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; RefreshTips(); Invalidate(); Schedule(Motion::Now()); }
         });
     }
+    // ---- « Annotations et agents » ---------------------------------------------------
+    // Asks the host for the agents' state and the annotation count (both async, off the UI thread there).
+    void LoadAnnotations() {
+        if (!AnnotationsOn()) return;
+        if (hooks_.loadAgents) {
+            const unsigned ticket = ++agentsTicket_;
+            hooks_.loadAgents([this, ticket](AnnotationSettings::Agents agents) { if (ticket == agentsTicket_ && hwnd_) ApplyAgents(agents); });
+        }
+        if (hooks_.countAnnotations) {
+            const unsigned ticket = ++countTicket_;
+            hooks_.countAnnotations([this, ticket](std::size_t n) { if (ticket == countTicket_ && hwnd_) { annotationCount_ = n; AnnotationsRelaid(); } });
+        }
+    }
+    // The host's detection; what the drawer owns (a running action, the last result) stays.
+    void ApplyAgents(const AnnotationSettings::Agents& from) {
+        for (int i = 0; i < AnnotationSettings::AppCount; ++i) {
+            const auto app = AnnotationSettings::AppAt(i); auto& mine = agents_[app]; AnnotationSettings::Agent next = from[app];
+            next.known = true; next.activity = mine.activity; next.failed = mine.failed; next.message = mine.message;
+            if (next.connected && !next.failed) next.message.clear();   // the step it waited for is done (« Cliquez sur Installer »)
+            mine = next;
+        }
+        agentsKnown_ = true; AnnotationsRelaid();
+    }
+    void AnnotationsRelaid() {
+        MeasureAgents();
+        if (!visible_) return;
+        auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
+        RefreshTips(); Invalidate(); Schedule(Motion::Now());
+    }
+    void Announce(const std::wstring& text) { if (uia_.Listening()) uia_.Notify(Close, text.c_str(), L"Reglages"); }
+    // Connecter / Déconnecter / Reconnecter: only on this explicit click; the host does the work (same path,
+    // backups and atomic writes as the connect modal) and answers once.
+    void AgentAction(AnnotationSettings::App app) {
+        namespace AS = AnnotationSettings; auto& a = agents_[app];
+        if (!AS::ActionEnabled(a) || !hooks_.connectAgent) return;
+        const bool connect = AS::ActionFor(a) != AS::Action::Disconnect;
+        a.activity = connect ? AS::Activity::Connecting : AS::Activity::Disconnecting; a.failed = false; a.message.clear();
+        AnnotationsRelaid();
+        Announce((connect ? L"Connexion de " : L"Déconnexion de ") + std::wstring(AS::AppName(app)) + L"…");
+        hooks_.connectAgent(app, connect, [this, app, connect](bool ok, std::wstring message) {
+            if (!hwnd_) return;
+            auto& a = agents_[app]; a.activity = AS::Activity::Idle; a.failed = !ok; a.message = ok && !connect ? L"" : std::move(message);
+            AnnotationsRelaid();
+            Announce(!ok ? AS::StatusText(a, NowSeconds()) : std::wstring(AS::AppName(app)) + (connect ? L" connecté" : L" déconnecté"));
+            LoadAnnotations();
+        });
+    }
     void Activate(int hit, bool keyboard) {
         if (!state_) return;
         const auto now = Motion::Now(); using namespace BrowserSettings;
@@ -1026,9 +1225,9 @@ private:
                 SyncReveals(now);
             }
         } else if (SwitchIndex(hit) >= 0) {
-            bool* value = SwitchField(hit); if (!value) return;
-            *value = !*value;
-            switches_[SwitchIndex(hit)].Set(*value ? 1.f : 0.f, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::toggle, Timing::switchSpring);
+            if (hit == AnnotationPrompt) BrowserSettings::SetConnectPrompt(*state_, !SwitchValue(hit));   // on again: the « Plus tard » count restarts
+            else { bool* value = SwitchField(hit); if (!value) return; *value = !*value; }
+            switches_[SwitchIndex(hit)].Set(SwitchValue(hit) ? 1.f : 0.f, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::toggle, Timing::switchSpring);
             if (hooks_.changed) hooks_.changed(SwitchChange(hit));
             if (hit == ReduceMotion) SyncReducedMotion();
         } else if (hit == Tracking) {
@@ -1067,12 +1266,24 @@ private:
             if (chosen > 0 && static_cast<BrowserSettings::Autoplay>(chosen - 1) != state_->autoplay) { state_->autoplay = static_cast<BrowserSettings::Autoplay>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::Autoplay); }
         } else if (IsField(hit)) { if (editing_ != hit) StartEdit(hit); return; }
         else if (hit == SearchDismiss) { if (editing_) EndEdit(); ClearSearch(); }
-        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_); }
+        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_, AnnotationsOn()); }
         else if (hit == CatEngine) Push(View::Engine, now);
         else if (hit == CatTabs) Push(View::Tabs, now);
         else if (hit == CatPrivacy) { LoadSites(); Push(View::Privacy, now); }
         else if (hit == CatDownloads) Push(View::Downloads, now);
         else if (hit == CatDisplay) Push(View::Display, now);
+        else if (hit == CatAnnotations) { LoadAnnotations(); Push(View::Annotations, now); }
+        else if (IsAgent(hit)) AgentAction(static_cast<AnnotationSettings::App>(hit - AgentBase));
+        else if (hit == ManualConnect) { if (hooks_.openConnect) hooks_.openConnect(); }
+        else if (hit == AnnotationFolder) { if (hooks_.openAnnotationFolder) hooks_.openAnnotationFolder(); }
+        else if (hit == AnnotationClear) {
+            if (hooks_.clearAnnotations && annotationCount_ != SIZE_MAX && annotationCount_ > 0) { const std::size_t n = annotationCount_; Modal([&] { hooks_.clearAnnotations(n, keyboard); }); }
+        } else if (hit == AnnotationRetention) {
+            std::vector<ContextMenu::Item> items;
+            for (int i = 0; i < RetentionCount; ++i) { const int d = RetentionChoices[i]; auto item = ContextMenu::Command(i + 1, RetentionLabel(d), L"", true, state_->annotationRetentionDays == d); item.description = AnnotationSettings::RetentionNote(d); items.push_back(item); }
+            const int chosen = Choose(items, hit, keyboard);
+            if (chosen > 0 && RetentionChoices[chosen - 1] != state_->annotationRetentionDays) { state_->annotationRetentionDays = RetentionChoices[chosen - 1]; if (hooks_.changed) hooks_.changed(Change::AnnotationRetention); }
+        }
         else if (hit == Zoom) {
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < ZoomCount; ++i) items.push_back(ContextMenu::Command(i + 1, ZoomLabel(ZoomChoices[i]), L"", true, state_->zoomPercent == ZoomChoices[i]));
@@ -1270,8 +1481,10 @@ private:
         if (view != View::Main) add(Back, Layout::BackButton(), L"Retour");
         if (view == View::Sites || view == View::Site) return;
         add(CheckUpdates, Layout::Trailing(Height() - Layout::padBottom - Layout::slot, Layout::slot), L"Rechercher une mise à jour");
-        for (const auto& s : Slots(view, Motion::Now())) if (s.kind == Kind::Folder && s.top >= Layout::viewTop - 1 && s.top + s.height <= ViewBottom(view))
-            add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : L"Changer de dossier");
+        for (const auto& s : Slots(view, Motion::Now())) if (s.kind == Kind::Folder && s.top >= Layout::viewTop - 1 && s.top + s.height <= ViewBottom(view)) {
+            if (s.hit == Folder) add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : L"Changer de dossier");
+            else add(static_cast<UINT_PTR>(s.hit), Layout::Row(s.top, s.height), hooks_.annotationFolder ? hooks_.annotationFolder() : L"");
+        }
     }
     void Invalidate() { if (hwnd_ && visible_) InvalidateRect(hwnd_, nullptr, FALSE); }
     void Activated() { ShowWindow(hwnd_, SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(hwnd_); }
@@ -1313,6 +1526,8 @@ private:
         const float scale = 96.f / Dpi();
         switch (msg) {
         case WM_ERASEBKGND: return 1;
+        case WM_GETOBJECT: { LRESULT result; if (uia_.OnGetObject(h, w, l, result)) return result; break; }
+        case InvokeMessage: if (visible_ && !closing_) { keyboard_ = true; focus_ = static_cast<int>(w); Activate(static_cast<int>(w), true); } return 0;
         case WM_CTLCOLOREDIT: {
             // The EDIT blends into the field: its exact fill, text at 90% white.
             HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(EditFill());
@@ -1321,7 +1536,7 @@ private:
             editBrush_ = CreateSolidBrush(fill); return reinterpret_cast<LRESULT>(editBrush_);
         }
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
-        case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
+        case WM_SIZE: pc_->Resize(); Invalidate(); return 0;
         case WM_DPICHANGED: ApplyGeometry(Motion::Now(), true); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
         case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !modal_) Hide(false, true); return 0;
@@ -1353,7 +1568,9 @@ private:
                 auto it = std::find(order.begin(), order.end(), focus_);
                 int index = it == order.end() ? (back ? static_cast<int>(order.size()) - 1 : 0) : static_cast<int>(it - order.begin()) + (back ? -1 : 1);
                 index = (index + static_cast<int>(order.size())) % static_cast<int>(order.size());
-                focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_); return 0;
+                focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_);
+                if (uia_.Listening()) uia_.Raise(focus_, UIA_AutomationFocusChangedEventId);
+                return 0;
             }
             if ((w == VK_RETURN || w == VK_SPACE) && focus_) { keyboard_ = true; Activate(focus_, true); return 0; }
             // Typing on the root starts a search (as Ctrl+F / F3 would).
@@ -1364,6 +1581,68 @@ private:
         return DefWindowProcW(h, msg, w, l);
     }
 public:
+    // ---- Accessibility: one node per control of the view on screen, in reading order ----------------------
+    std::vector<Accessibility::Node> AccessibleNodes() const {
+        using Accessibility::Role; std::vector<Accessibility::Node> out;
+        if (!hwnd_ || !visible_) return out;
+        auto bounds = [&](Design::Box b) { RECT r{Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; };
+        auto add = [&](long long key, Role role, std::wstring name, Design::Box b) -> Accessibility::Node& {
+            Accessibility::Node n; n.key = key; n.role = role; n.name = std::move(name); n.bounds = bounds(b); out.push_back(std::move(n)); return out.back();
+        };
+        auto join = [](const std::vector<std::wstring>& lines) { std::wstring t; for (const auto& l : lines) t += (t.empty() ? L"" : L" ") + l; return t; };
+        long long textKey = 100000;   // static text: keys outside every hit range
+        const View view = Current();
+        add(textKey++, Role::Text, view == View::Site && site_ >= 0 && site_ < static_cast<int>(sites_.size()) ? Host(sites_[site_].origin) : std::wstring(Title(view)), Layout::Title(view != View::Main)).focusable = false;
+        if (view != View::Main) add(Back, Role::Button, L"Retour", Layout::BackButton()).accelerator = L"Retour arrière";
+        add(Close, Role::Button, L"Fermer les réglages", Layout::CloseButton()).accelerator = L"Échap";
+        const float top = Layout::viewTop - Layout::groupGap / 2, bottom = ViewBottom(view);
+        if (view == View::Main && Searching()) {
+            const float fieldTop = Layout::viewTop - scrolls_[0].Value(Motion::Now());
+            auto& f = add(SearchField, Role::Edit, L"Rechercher un réglage", Layout::Row(fieldTop, Layout::field)); f.value = query_;
+            const auto card = ResultCard(fieldTop);
+            for (size_t i = 0; i < results_.size(); ++i) {
+                auto& n = add(ResultBase + static_cast<int>(i), Role::Button, results_[i].entry->title, {card.left, card.top + i * Layout::resultRow, card.right, card.top + (i + 1) * Layout::resultRow});
+                n.help = results_[i].entry->path; if (SwitchIndex(results_[i].entry->hit) >= 0) n.toggle = SwitchValue(results_[i].entry->hit) ? 2 : 1;
+            }
+            return out;
+        }
+        for (const auto& s : Slots(view, Motion::Now())) {
+            if (s.opacity < .5f) continue;
+            const auto box = Layout::Row(s.top, s.height); const bool offscreen = s.top + s.height <= top || s.top >= bottom;
+            Accessibility::Node* n = nullptr;
+            switch (s.kind) {
+            case Kind::Label: n = &add(textKey++, Role::Text, s.text, box); n->focusable = false; break;
+            case Kind::Note: n = &add(textKey++, Role::Text, s.text, box); n->focusable = false; break;
+            case Kind::Search: n = &add(s.hit, Role::Edit, L"Rechercher un réglage", box); n->value = query_; break;
+            case Kind::Field: n = &add(s.hit, Role::Edit, s.hit == CustomSearchField ? L"Adresse du moteur personnalisé" : L"Adresse de la page d'accueil", box); n->value = FieldValue(s.hit); n->help = FieldTexts(s.hit).hint; break;
+            case Kind::Engine: n = &add(s.hit, Role::Button, BrowserSettings::Info(static_cast<Engine>(s.index)).name, box); n->selected = s.index == SelectedIndex(); break;
+            case Kind::Switch: n = &add(s.hit, Role::Button, s.text, box); n->toggle = SwitchValue(s.hit) ? 2 : 1; n->help = join(s.lines); break;
+            case Kind::Value: n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; n->expand = 1; n->help = join(s.lines); break;
+            case Kind::Nav: if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; } break;
+            case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(L"Enregistrer dans") : s.text, box);
+                n->help = s.hit == Folder ? (hooks_.downloadFolder ? hooks_.downloadFolder() : L"") : (hooks_.annotationFolder ? hooks_.annotationFolder() : L""); break;
+            case Kind::SiteRow: n = &add(s.hit, Role::Button, s.text, box); n->help = s.value; break;
+            case Kind::Danger: n = &add(s.hit, Role::Button, s.text, box); n->enabled = !s.disabled; n->focusable = !s.disabled;
+                if (s.hit == AnnotationClear && annotationCount_ != SIZE_MAX) n->help = annotationCount_ == 0 ? std::wstring(L"Aucune annotation") : AnnotationSettings::ClearAction(annotationCount_); break;
+            case Kind::Agent: {
+                // The row reads as one sentence; its button names the app it acts on.
+                n = &add(textKey++, Role::Text, s.text + L" : " + join(s.lines), box); n->focusable = false; n->offscreen = offscreen;
+                if (!s.hit) break;
+                n = &add(s.hit, Role::Button, s.value + L" " + s.text, AgentAction(s)); n->help = join(s.lines); n->enabled = !s.disabled;
+                break;
+            }
+            }
+            if (n) n->offscreen = offscreen;
+        }
+        const float h = Height(), footerTop = h - FooterHeight(view);
+        if (view != View::Sites && view != View::Site) {
+            const auto version = hooks_.version ? hooks_.version() : Version{};
+            if (!version.text.empty()) add(textKey++, Role::Text, version.text, {Layout::textLeft, h - Layout::padBottom - Layout::slot, Layout::rowRight, h - Layout::padBottom}).focusable = false;
+            if (version.canCheck) add(CheckUpdates, Role::Button, L"Rechercher une mise à jour", Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot)).enabled = !version.checking;
+        } else if (view == View::Sites) { auto& n = add(ResetAll, Role::Button, L"Tout retirer", Layout::Row(footerTop + 13 + 40 + 8)); n.enabled = n.focusable = !sites_.empty(); }
+        else add(ResetSite, Role::Button, L"Retirer les autorisations", Layout::Row(footerTop + 13));
+        return out;
+    }
     // Recently closed by deactivation: the click that caused it must not reopen it.
     ULONGLONG hiddenAt = 0;
     Drawer() { slide_.Snap(0); page_.Snap(0); customReveal_.Snap(0); homeReveal_.Snap(0); }
@@ -1381,11 +1660,37 @@ public:
     }
     static std::pair<float, float> FadeReachForTest(float scroll, float max) { return FadeReach(scroll, max); }
     bool SitesNoteForTest(Motion::Time now) const { return !sitesLoaded_ && !LoadQuiet(now); }   // « Chargement… » drawn
+    // « Annotations et agents » tests: the laid-out rows, the Tab order, hit testing, the UIA tree, the agents.
+    std::vector<Slot> SlotsForTest() const { return Slots(Current(), Motion::Now(), true); }
+    std::vector<int> FocusOrderForTest() const { return FocusOrder(); }
+    int HitForTest(float x, float y) const { return HitAt(x, y); }
+    int FocusForTest() const { return focus_; }
+    void KeyForTest(WPARAM key) { if (hwnd_) Handle(hwnd_, WM_KEYDOWN, key, 0); }
+    std::vector<Accessibility::Node> AccessibleNodesForTest() const { return AccessibleNodes(); }
+    const AnnotationSettings::Agents& AgentsForTest() const { return agents_; }
+    std::size_t AnnotationCountForTest() const { return annotationCount_; }
+    Design::Box AgentActionForTest(const Slot& s) const { return AgentAction(s); }
+    float TextWidthForTest(const std::wstring& text, float size) const { return pc_->TextWidth(text, size, false, false, size >= 16 ? -.16f : -.14f); }
+    void SettleForTest() { slide_.Snap(slide_.Target()); page_.Snap(page_.Target()); for (auto& l : scrolls_) l.Snap(l.Target()); for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(switches_[i].Target()); knobPress_[i].Snap(0); } }
+    void ScrollForTest(float y) { scrolls_[depth_].Snap(std::clamp(y, 0.f, MaxScroll(Current(), Motion::Now(), true))); }
+    void HoverForTest(int hit) { Interact(hit, 0); }
+    // Paints the drawer as it stands into a PNG (offscreen Direct2D: works on a locked desktop).
+    bool RenderForTest(const std::wstring& png, UINT dpi, float height, const std::wstring& root) {
+        Chrome off; if (FAILED(off.InitOffscreen(root, dpi, Layout::width, height))) return false;
+        off.SetMotion(&motion_); off.textCacheLimit = 384;
+        auto* keepFade = fade_; auto* keepStops = stops_; fade_ = nullptr; stops_ = nullptr; auto keepGlyphs = std::move(glyphs_); glyphs_.clear();
+        pc_ = &off; heightOverride_ = height;
+        off.RenderTarget()->BeginDraw(); Paint(Motion::Now()); const HRESULT drawn = off.RenderTarget()->EndDraw();
+        const bool ok = SUCCEEDED(drawn) && SUCCEEDED(off.SavePng(png.c_str()));
+        for (auto& g : glyphs_) Drop(g.second); glyphs_ = std::move(keepGlyphs); Drop(fade_); Drop(stops_); fade_ = keepFade; stops_ = keepStops;
+        pc_ = &chrome_; heightOverride_ = 0; off.Dispose();
+        return ok;
+    }
     ~Drawer() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, BrowserSettings::State* state, Hooks hooks) {
         owner_ = owner; state_ = state; hooks_ = std::move(hooks);
         if (state_) { launchAutoplay_ = state_->autoplay; launchCookies_ = state_->blockThirdPartyCookies; launchGrayscale_ = state_->grayscaleText; } // engine flags in effect for this run
-        motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 384;
+        motion_.EnablePolish(); pc_->SetMotion(&motion_); pc_->textCacheLimit = 384;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereSettingsDrawer";
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Réglages", WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
@@ -1393,13 +1698,22 @@ public:
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
         NativeUI::StripTooltipShadow(tip_);
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
-        return SUCCEEDED(chrome_.Init(hwnd_, root));
+        if (FAILED(chrome_.Init(hwnd_, root))) return false;
+        Accessibility::Host host; host.window = hwnd_;
+        host.nodes = [this] { return AccessibleNodes(); };
+        host.focused = [this]() -> long long { return visible_ && keyboard_ ? focus_ : 0; };
+        host.invoke = host.toggle = [this](long long key) { PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(key), 0); };
+        host.expand = [this](long long key, bool) { PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(key), 0); };
+        host.focus = [this](long long key) { keyboard_ = true; focus_ = static_cast<int>(key); Reveal(focus_); Invalidate(); };
+        uia_.Attach(std::move(host));
+        return true;
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
     void Dispose() {
         if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
         edit_ = nullptr; editing_ = 0;
+        uia_.Detach(); for (auto& g : glyphs_) Drop(g.second); glyphs_.clear();
         Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
@@ -1418,6 +1732,7 @@ public:
         const bool cold = !visible_ || closing_;
         if (visible_ && !closing_ && target != View::Main && Current() != target) {
             if (target == View::Sites) LoadSites();
+            if (target == View::Annotations) LoadAnnotations();
             if (depth_ >= 1 && views_[1] == target) Navigate(1, now);          // e.g. a site's detail: back to the list
             else if (depth_ + 1 < MaxDepth) Push(target, now);               // from what is on screen, like a row
             else { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); focus_ = 0; motion_.ClearInteractions(); }
@@ -1436,6 +1751,7 @@ public:
             MeasureDescriptions();
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
+            LoadAnnotations(); // the « Annotations et agents » row shows the connected agents
             if (target != View::Main) { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); }
         }
         { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }
@@ -1450,6 +1766,10 @@ public:
     }
     // Opens straight on « Autorisations des sites » (B02 « Autorisations du site » link).
     void ShowSites() { Show(View::Sites); }
+    // Opens straight on « Annotations et agents » (no-op section when the annotation mode is compiled out).
+    void ShowAnnotations() { if (AnnotationsOn()) Show(View::Annotations); else Show(); }
+    // The agents or the store changed outside the drawer (connect modal, clear all done, …): ask again.
+    void AnnotationsChanged() { if (hwnd_) LoadAnnotations(); }
     // Leaves along the path it came in on; `animate` false hides at once.
     void Hide(bool keyboard, bool animate) {
         if (!visible_ || closing_) { if (visible_ && !animate) Finish(); return; }
@@ -1473,7 +1793,8 @@ public:
         SyncReveals(now);
         plate_.Set(EngineTop(SelectedIndex()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
         SetChecking(hooks_.version && hooks_.version().checking, now);
-        if (Searching()) results_ = SearchSettings(query_);
+        if (AnnotationsOn()) MeasureAgents();   // « il y a … » follows the clock
+        if (Searching()) results_ = SearchSettings(query_, AnnotationsOn());
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }

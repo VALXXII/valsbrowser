@@ -180,6 +180,11 @@ struct State {
     bool muteBackground = false;   // only the active tab plays sound
     Autoplay autoplay = Autoplay::Muted;
     bool grayscaleText = false;    // page text in grayscale antialiasing, like the chrome (engine flag)
+    // Annotations et agents (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
+    bool annotationLauncher = true;      // the drawer button at the bottom right of the pages
+    bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
+    int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
+    int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices
     bool operator==(const State& o) const {
         return engine == o.engine && restoreTabs == o.restoreTabs && downloadFolder == o.downloadFolder &&
                askWhereToSave == o.askWhereToSave && reduceMotion == o.reduceMotion && searchSuggestions == o.searchSuggestions &&
@@ -189,14 +194,27 @@ struct State {
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
-               bookmarksBar == o.bookmarksBar && accent == o.accent;
+               bookmarksBar == o.bookmarksBar && accent == o.accent && annotationLauncher == o.annotationLauncher &&
+               annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
+               annotationRetentionDays == o.annotationRetentionDays;
     }
 };
 // What a panel interaction changed; the host applies and saves it.
 enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceMotion,
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
-                    AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText };
+                    AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
+                    AnnotationLauncher, AnnotationConnectPrompt, AnnotationRetention };
+// Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
+inline constexpr int MaxConnectDeclines = 3;
+inline constexpr int RetentionChoices[] = {7, 30, 90};
+inline constexpr int RetentionCount = 3;
+inline std::wstring RetentionLabel(int days) { return std::to_wstring(days) + L" jours"; }
+// « Proposer de connecter un agent au lancement du mode » as the switch shows it: on while the modal would
+// still open by itself (not turned off, and fewer than MaxConnectDeclines « Plus tard »).
+inline bool ConnectPromptActive(const State& s) { return s.annotationConnectPrompt && s.annotationConnectDeclines < MaxConnectDeclines; }
+// Flipping that switch: off = no more prompts; on again = prompts back and the « Plus tard » count restarts at 0.
+inline void SetConnectPrompt(State& s, bool on) { s.annotationConnectPrompt = on; if (on) s.annotationConnectDeclines = 0; }
 
 inline void Write(std::ostream& out, const State& s) {
     out << "browser-settings 1\n"
@@ -226,7 +244,11 @@ inline void Write(std::ostream& out, const State& s) {
         << "autoplay=" << Info(s.autoplay).key << '\n'
         << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
-        << "accent=" << AccentText(s.accent) << '\n';
+        << "accent=" << AccentText(s.accent) << '\n'
+        << "annotation-launcher=" << (s.annotationLauncher ? 1 : 0) << '\n'
+        << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
+        << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
+        << "annotation-retention-days=" << s.annotationRetentionDays << '\n';
 }
 inline State Read(std::istream& in) {
     State s; std::string line;
@@ -257,6 +279,10 @@ inline State Read(std::istream& in) {
         else if (key == "memory-saver") flag(value, s.memorySaver);
         else if (key == "mute-background") flag(value, s.muteBackground);
         else if (key == "grayscale-text") flag(value, s.grayscaleText);
+        else if (key == "annotation-launcher") flag(value, s.annotationLauncher);
+        else if (key == "annotation-connect-prompt") flag(value, s.annotationConnectPrompt);
+        else if (key == "annotation-connect-declines") { for (int n = 0; n <= MaxConnectDeclines; ++n) if (value == std::to_string(n)) s.annotationConnectDeclines = n; }
+        else if (key == "annotation-retention-days") { for (int d : RetentionChoices) if (value == std::to_string(d)) s.annotationRetentionDays = d; }
         else if (key == "new-tab-page") { for (int i = 0; i < NewTabPageCount; ++i) if (value == Info(static_cast<NewTabPage>(i)).key) s.newTabPage = static_cast<NewTabPage>(i); }
         else if (key == "tab-position") { for (int i = 0; i < TabPositionCount; ++i) if (value == Info(static_cast<TabPosition>(i)).key) s.tabPosition = static_cast<TabPosition>(i); }
         else if (key == "autoplay") { for (int i = 0; i < AutoplayCount; ++i) if (value == Info(static_cast<Autoplay>(i)).key) s.autoplay = static_cast<Autoplay>(i); }
