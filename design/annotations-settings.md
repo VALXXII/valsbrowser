@@ -44,14 +44,13 @@ agent ») après « Affichage et son », seulement quand le mode est compilé (d
 Lecture des réglages tolérante : clé absente = défaut, valeur hors liste ignorée (`annotation-connect-declines`
 0..3, `annotation-retention-days` 7 / 30 / 90, booléens `0` / `1`).
 
-## Branchement dans `main.cpp` (à faire après V2-C)
+## Branchement dans `main.cpp` (fait)
 
-`annotation-mode.h` lit déjà ces clés par leur nom (`Prefs::HasPrompt` …) : rien à changer de son côté.
-Il manque une seule fonction d'entrée, à ajouter par V2-C dans `src/annotation-entry.h` / `annotation-mode.h` :
-
-```cpp
-std::wstring AnnotationStoreRoot();   // mode compilé : Ann::Store().Root() ; sinon L""
-```
+`annotation-mode.h` lit ces clés par leur nom (`Prefs::Prompt`, `Prefs::Declines`, `Prefs::Retention`) : la modale
+de lancement ne s'ouvre que si `annotationConnectPrompt` et `annotationConnectDeclines < 3`, « Plus tard »
+incrémente `annotationConnectDeclines` (même plafond que `BrowserSettings::MaxConnectDeclines`). La rétention est
+lue à la purge (première utilisation du magasin dans la session). `AnnotationStoreRoot()` est fourni par
+`src/annotation-entry.h` (V2-C). Lignes ajoutées :
 
 Dans `SettingChanged` (fait disparaître les trois `-Wswitch`) :
 
@@ -114,7 +113,11 @@ passent par une notification UIA.
    confirmation d'effacement (nombre nommé, focus sur Annuler, Entrée n'efface pas) ; captures 96 et 144 dpi.
 3. Client UI Automation réel hors processus sur la section affichée : noms, rôles, aide, Toggle, ExpandCollapse,
    puis `Toggle()` du lanceur appliqué par le tiroir (`uia-tree.txt`).
-4. Empreinte des **vraies** configurations (`%APPDATA%\Claude\claude_desktop_config.json`,
+4. Parcours réel dans une copie du preview : `python tests/annotations/settings_walk.py` (garde-fous de
+   `sandbox_qa_v2.py` : `BROWSER_ANNOTATIONS_TEST=1`, `BROWSER_ANNOTATIONS_CONNECT_ROOT` sous `build/`, navigateur
+   et serveur fermés dans un `finally`) : Réglages → section → lanceur masqué puis réaffiché (fichier `settings`,
+   journal) → Connecter / Déconnecter Claude Desktop sur la configuration redirigée → `build/annotations-v2-qa/settings-walk/`.
+5. Empreinte des **vraies** configurations (`%APPDATA%\Claude\claude_desktop_config.json`,
    `%USERPROFILE%\.codex\config.toml`, nos sauvegardes / temporaires, `Claude Extensions`) avant et après chaque
    étape : toute différence fait échouer.
 

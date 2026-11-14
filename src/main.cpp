@@ -2192,6 +2192,11 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
+    // Réglages › « Annotations et agents »: the launcher shows / hides at once; the launch prompt and the
+    // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
+    case Change::AnnotationLauncher:AnnotationSettingsChanged();break;
+    case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
+    case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
     case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
     case Change::AdBlock:ApplyAdBlock();break;
     case Change::MemorySaver:ApplyMemorySaver();break;
@@ -2226,6 +2231,31 @@ void CreateSettingsPanel(){
     hooks.resetSites=ResetSitePermissions;
     // Value rows open the native menu as their list of choices.
     hooks.choose=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.left,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
+    // « Annotations et agents » (design/annotations-settings.md): dev / preview builds with the mode, never in a
+    // private window. The drawer only asks; every disk / other-app access runs in src/annotation-mode.h, off the UI thread.
+    namespace AS=AnnotationSettings;
+    hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationHistoryAvailable();};
+    hooks.loadAgents=[](std::function<void(AS::Agents)> done){AnnotationAgentsStatus([done](const AnnotationAgentState& claude,const AnnotationAgentState& codex){
+        auto to=[](const AnnotationAgentState& s){AS::Agent a;a.detected=s.detected;a.configured=s.configured;a.connected=s.connected;a.stalePath=s.stalePath;a.lastReadAt=s.lastReadAt;return a;};
+        AS::Agents agents;agents.claude=to(claude);agents.codex=to(codex);if(done)done(agents);});};
+    hooks.connectAgent=[](AS::App app,bool on,std::function<void(bool,std::wstring)> done){   // explicit click only: same path, backups and test guard as the modal
+        AnnotationConnectAgent(app==AS::App::Claude?AnnotationApp::Claude:AnnotationApp::Codex,on,[done](bool ok,const std::wstring& message){if(done)done(ok,message);});};
+    hooks.openConnect=[]{settingsDrawer.Hide(false,true);AnnotationOpenConnect(true);};   // « Autre app ou réglage manuel »: the modal on its manual fallback
+    hooks.annotationFolder=[]{return AnnotationStoreRoot();};
+    hooks.openAnnotationFolder=[]{AnnotationOpenFolder();};
+    hooks.countAnnotations=[](std::function<void(std::size_t)> done){AnnotationCount(std::move(done));};
+    hooks.clearAnnotations=[](std::size_t n,bool keyboard){
+        keyboardModality=keyboard;   // the confirmation's focus ring follows how the row was activated (as « Effacer les données… »)
+        auto spec=NativeChrome::SettingsUI::ClearAnnotationsSpec(n);spec.buttons[1].closes=false;
+        spec.onButton=[](int id){
+            if(id!=MD::AcceptButton)return;
+            modal.SetBusy(true,L"Effacement…");
+            AnnotationClearAll([](bool ok,std::size_t removed){
+                if(!ok){modal.SetBusy(false);modal.SetError(L"Certaines annotations n'ont pas pu être effacées. Réessayez.");}
+                else{modal.Finish(MD::AcceptButton);accessibility.Notify('S',(std::to_wstring(removed)+(removed>1?L" annotations effacées":L" annotation effacée")).c_str(),L"Settings");}
+                settingsDrawer.AnnotationsChanged();});
+        };
+        AskModal(std::move(spec),nullptr,[](const MD::Result&){});};
     if(!settingsDrawer.Create(instance,window,base,&settings,std::move(hooks)))Log(L"SETTINGS drawer unavailable");
 }
 
