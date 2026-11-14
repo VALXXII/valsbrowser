@@ -225,6 +225,13 @@ inline const std::vector<std::wstring>& DefaultEntries() {
     static const std::vector<std::wstring> e{L"profile", L"session", L"sessions", L"history", L"bookmarks", L"settings", L"downloads", L"passwords", L"site-volumes", L"adblock", L"favicons", L"engine-args"};
     return e;
 }
+// Application-wide entries at the data root, shared by EVERY profile (annotations are global: one store, see
+// src/annotations.h GlobalStoreRoot). Never part of a profile: a delete (the default profile's included) never
+// moves or erases them. Checked by tests/profiles_test.cpp (disjoint from DefaultEntries, kept by a delete).
+inline const std::vector<std::wstring>& GlobalEntries() {
+    static const std::vector<std::wstring> e{L"annotations", L"annotations-connect"};
+    return e;
+}
 
 // ---- Names ----------------------------------------------------------------------------------
 inline std::wstring TrimName(const std::wstring& name) {

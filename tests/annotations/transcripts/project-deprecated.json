@@ -1,0 +1,16 @@
+{
+  "description": "--project is a deprecated V1 alias: a project id no longer filters anything (every site is served, warning on stderr); an origin given to --project acts as --site.",
+  "args": ["--project", "admin"],
+  "stderr_contains": ["--project is deprecated and ignored"],
+  "steps": [
+    {"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "old-config"}}},
+     "expect": {"id": 1, "result": {"protocolVersion": "2025-11-25"}}},
+    {"send": {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "browser_annotations_list", "arguments": {"status": "all"}}},
+     "expect": {"id": 2, "result": {"isError": false, "structuredContent": {"annotations": [
+       {"id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"id": "ann_bbbbbbbbbbbbbbbbbbbbbbbbbb"}, {"id": "ann_cccccccccccccccccccccccccc"},
+       {"id": "ann_ffffffffffffffffffffffffff"}, {"id": "ann_gggggggggggggggggggggggggg"}]}}}},
+    {"send": {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "browser_annotation_get", "arguments": {"id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa", "include_screenshot": false}}},
+     "expect": {"id": 3, "result": {"isError": false}}}
+  ],
+  "after": {"reader": {"file": "readers/old-config.json", "client": "old-config", "label": "old-config", "site": null}}
+}
