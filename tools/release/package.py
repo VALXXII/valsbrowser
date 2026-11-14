@@ -30,6 +30,27 @@ RUNTIME_DATA = {'profile', 'session', 'session.tmp', 'downloads', 'downloads.tmp
                 'bookmarks', 'bookmarks.bak', 'bookmarks.tmp', 'prototype.log', 'browser.log',
                 'annotations'}  # annotation store of a portable/preview build (never packaged)
 FORBIDDEN_SUFFIXES = ('.o', '.obj', '.a', '.pdb', '.log', '.tmp', '.partial', '.cpp', '.h', '.py', '.ps1')
+# Executable code under assets/ is refused, with ONE documented exception: the annotations MCP
+# bridge (tools/release/build.py RELEASE_BRIDGE). assets/** is the only location every existing
+# client's AllowedPayloadPath accepts besides the fixed root names (src/update-package.cpp).
+RELEASE_BRIDGE = 'assets/bin/browser-annotations-mcp.exe'
+EXECUTABLE_SUFFIXES = ('.exe', '.dll', '.com', '.scr', '.sys', '.cpl', '.ocx', '.msi', '.msp', '.bat',
+                       '.cmd', '.vbs', '.vbe', '.lnk', '.url', '.appx', '.msix')
+
+
+def check_console_x64(path: Path) -> None:
+    """The bridge must be a Windows x64 console PE (stdio is its MCP transport)."""
+    data = path.read_bytes()
+    if len(data) < 0x40 or data[:2] != b'MZ':
+        raise SystemExit(f'{path.name} is not a PE image')
+    pe = int.from_bytes(data[0x3C:0x40], 'little')
+    if data[pe:pe + 4] != b'PE\0\0' or int.from_bytes(data[pe + 4:pe + 6], 'little') != 0x8664:
+        raise SystemExit(f'{path.name} is not a Windows x64 PE')
+    opt = pe + 24
+    if int.from_bytes(data[opt:opt + 2], 'little') != 0x20B:  # PE32+
+        raise SystemExit(f'{path.name} is not PE32+')
+    if int.from_bytes(data[opt + 68:opt + 70], 'little') != 3:  # IMAGE_SUBSYSTEM_WINDOWS_CUI
+        raise SystemExit(f'{path.name} is not a console executable')
 
 
 def sha256(path: Path) -> str:
@@ -90,6 +111,10 @@ def stage(app: Path, staging: Path) -> list[str]:
                 if item.suffix.lower() in FORBIDDEN_SUFFIXES:
                     raise SystemExit(f'Refusing non-asset file: {item}')
                 rel = item.relative_to(app)
+                if item.name.lower().endswith(EXECUTABLE_SUFFIXES):
+                    if rel.as_posix() != RELEASE_BRIDGE:  # exact path and case
+                        raise SystemExit(f'Refusing executable under assets: {rel.as_posix()}')
+                    check_console_x64(item)
                 (staging / rel).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(item, staging / rel)
                 copied.append(rel.as_posix())

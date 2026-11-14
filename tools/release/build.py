@@ -9,9 +9,13 @@ PATH is not modified.
 Output layout (the application directory, exactly the release payload):
   <out>/browser.exe, <out>/<helper>.exe, WebView2Loader.dll, licences, assets/**,
   version.json
-  + <out>/browser-annotations-mcp.exe (MCP stdio bridge over the annotation store) for
-    non-release builds only: the release payload allowlists (tools/release/package.py,
-    update-package) do not know it yet, so --channel release builds stay unchanged.
+  + the MCP stdio bridge over the annotation store (browser-annotations-mcp.exe), placed by
+    bridge_location():
+      --channel release: <out>/assets/bin/browser-annotations-mcp.exe. Documented product
+        payload: it is the only place every existing client accepts (their AllowedPayloadPath
+        knows fixed root names + assets/**; a root-level exe would make them reject every
+        update). tools/release/package.py refuses any other executable under assets/.
+      other channels: <out>/browser-annotations-mcp.exe (dev bridge next to browser.exe).
 Intermediates (resources object, generated headers) go to <out>-obj so they can
 never leak into a package.
 """
@@ -45,6 +49,7 @@ HELPER_LIBS = ['-lbcrypt', '-lshlwapi', '-lshell32', '-luser32', '-lkernel32', '
 # so no third-party licence is added.
 BRIDGE_SOURCES = ['src/mcp-bridge.cpp', 'src/annotations.cpp']
 BRIDGE_NAME = 'browser-annotations-mcp.exe'
+RELEASE_BRIDGE = f'assets/bin/{BRIDGE_NAME}'  # same constant in tools/release/package.py
 BRIDGE_LIBS = ['-lbcrypt', '-lkernel32']
 WARNINGS = ['-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-type',
             '-Wno-misleading-indentation', '-Wno-missing-field-initializers']
@@ -96,6 +101,22 @@ def write_build_info(gen: Path, info: dict, repo: str) -> None:
 PAYLOAD_FILES = ['browser.exe', HELPER_NAME, BRIDGE_NAME, 'WebView2Loader.dll', 'version.json', *LICENSES]
 
 
+def bridge_location(channel: str, mode: str, annotations: bool) -> str | None:
+    """Where the bridge goes (relative to <out>), or None. Refuses incoherent combinations:
+    an annotation UI without its bridge, or a bridge without the annotation mode."""
+    if mode not in ('auto', 'on', 'off'):
+        raise SystemExit(f'bad --annotations-bridge {mode!r}')
+    if not annotations:
+        if mode == 'on':
+            raise SystemExit('--annotations-bridge on contradicts --no-annotations')
+        return None
+    if channel == 'release':
+        if mode == 'off':
+            raise SystemExit('a release build with annotations ships its bridge; use --no-annotations for a baseline')
+        return RELEASE_BRIDGE
+    return None if mode == 'off' else BRIDGE_NAME
+
+
 def clean_payload(out: Path) -> None:
     """Remove only previously built payload entries. Anything else in the directory
     (an old exe-adjacent profile, session or log) is left strictly untouched."""
@@ -110,7 +131,7 @@ def clean_payload(out: Path) -> None:
         shutil.rmtree(assets)
 
 
-def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: bool = False,
+def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str | None = None,
           annotations: bool = True) -> None:
     for tool in ('g++.exe', 'windres.exe', 'strip.exe'):
         if not (BIN / tool).exists():
@@ -147,9 +168,9 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: bool 
     run([BIN / 'g++.exe', *common, '-mwindows', *HELPER_SOURCES, helper_res, '-o', out / HELPER_NAME,
          *HELPER_LIBS])
     executables = ['browser.exe', HELPER_NAME]
-    if bridge:  # console subsystem: stdio is the MCP transport
-        run([BIN / 'g++.exe', *common, *BRIDGE_SOURCES, '-o', out / BRIDGE_NAME, *BRIDGE_LIBS])
-        executables.append(BRIDGE_NAME)
+    if bridge:  # console subsystem: stdio is the MCP transport; linked in <out>-obj, placed below
+        run([BIN / 'g++.exe', *common, *BRIDGE_SOURCES, '-o', obj / BRIDGE_NAME, *BRIDGE_LIBS])
+        run([BIN / 'strip.exe', '--strip-debug', obj / BRIDGE_NAME])
     for exe in executables:
         run([BIN / 'strip.exe', '--strip-debug', out / exe])
     shutil.copy2(SDK / 'x64/WebView2Loader.dll', out / 'WebView2Loader.dll')
@@ -158,6 +179,9 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: bool 
     shutil.copytree(ROOT / 'assets', out / 'assets')
     # Same icon as a loose file: the updater refreshes <root>\browser.ico from it for shortcuts.
     shutil.copy2(version_mod.app_icon(info['channel']), out / 'assets/browser.ico')
+    if bridge:
+        (out / bridge).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(obj / BRIDGE_NAME, out / bridge)
     (out / 'version.json').write_text(json.dumps({
         'product': 'browser', 'version': info['version'], 'build': info['build'],
         'commit': info['commit'], 'channel': info['channel'], 'arch': 'x64',
@@ -176,9 +200,9 @@ def main() -> int:
     p.add_argument('--update-repo', default=DEFAULT_REPO,
                    help='owner/repo whose GitHub releases are the only trusted update feed')
     p.add_argument('--annotations-bridge', choices=('auto', 'on', 'off'), default='auto',
-                   help=f'build {BRIDGE_NAME} next to browser.exe (auto: every channel except release)')
+                   help=f'build {BRIDGE_NAME} (auto: release -> {RELEASE_BRIDGE}, other channels -> next to browser.exe)')
     p.add_argument('--no-annotations', action='store_true',
-                   help='compile the annotation mode out of browser.exe (baseline for measurements); implies no bridge')
+                   help='compile the annotation mode out of browser.exe (baseline for measurements); no bridge')
     a = p.parse_args()
     out = (ROOT / a.out).resolve()
     if ROOT.resolve() not in out.parents:
@@ -190,9 +214,7 @@ def main() -> int:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = version_mod.git('show', '-s', '--format=%ct', info['commit'])
     except subprocess.CalledProcessError:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = '0'
-    bridge = a.annotations_bridge == 'on' or (a.annotations_bridge == 'auto' and info['channel'] != 'release')
-    if a.no_annotations:
-        bridge = False
+    bridge = bridge_location(info['channel'], a.annotations_bridge, not a.no_annotations)
     build(out, info, a.update_repo, a.preview, bridge, not a.no_annotations)
     return 0
 
