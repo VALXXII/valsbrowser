@@ -696,43 +696,45 @@ void Preview(const std::shared_ptr<Tab>& t, std::uint64_t serial, AH::Selection 
     const HRESULT hr = t->view->CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream, cb); cb->Release();
     if (FAILED(hr)) { stream->Release(); ShotDone(t, serial); CaptureFailed(serial, "CapturePreview refused"); }
 }
-// The engine's clipped capture (Page.captureScreenshot), decoded/checked on the thread pool; any failure => Preview.
+// The engine's shot of the whole viewport (Page.captureScreenshot WITHOUT a clip: a clipped shot made the engine
+// re-render the view on screen for the clip, the page's text vanished for ~4 frames at every click — V3 retours §3,
+// measured), cropped / cleaned / encoded on the thread pool (AnnotationCapture::ProcessViewport); any failure => Preview.
 void Capture(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
     if (!t || !t->view.p) { ShotDone(t, serial); CaptureFailed(serial, "no page"); return; }
     shot.waiting = false; shot.inFlight = true;
     const AH::Selection sel = shot.sel; const double selectedAt = shot.selectedAt, lag = shot.lag, engineAt = NowMs(), handoff = shot.handoffAt, frameMs = shot.frameMs;
     const auto plan = AH::PlanClip(sel.target.rect, sel.target.viewport);
     if (!plan.ok) { ShotDone(t, serial); CaptureFailed(serial, "outside the viewport"); return; }
-    const std::uint32_t accent = AccentRgb();
-    const double dpr = sel.target.viewport.devicePixelRatio;
+    const std::uint32_t accent = AccentRgb(); const double viewW = sel.target.viewport.width;
     const unsigned tw = unsigned(S(AUI::NoteSpec::thumbW)), th = unsigned(S(AUI::NoteSpec::thumbH));
     std::weak_ptr<Tab> weak = t;
-    auto cb = Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler, HRESULT, LPCWSTR>([weak, serial, sel, plan, dpr, tw, th, selectedAt, lag, engineAt, accent, handoff, frameMs](HRESULT hr, LPCWSTR json) -> HRESULT {
+    auto cb = Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler, HRESULT, LPCWSTR>([weak, serial, sel, plan, viewW, tw, th, selectedAt, lag, engineAt, accent, handoff, frameMs](HRESULT hr, LPCWSTR json) -> HRESULT {
         auto tab = weak.lock(); const double engineDone = NowMs();
         if (FAILED(hr) || !json || !*json) { Log(L"ANNOTATE Page.captureScreenshot failed: falling back to CapturePreview"); if (tab) Preview(tab, serial, sel, selectedAt, lag); else { ShotDone(tab, serial); CaptureFailed(serial, "tab closed"); } return S_OK; }
         ShotDone(tab, serial);
         auto wide = std::make_shared<std::wstring>(json); auto result = std::make_shared<AnnotationCapture::Result>(); auto work = std::make_shared<double>(0);
         auto mark = std::make_shared<AH::Mark>(sel.mark);
         static const std::wstring rawDir = EnvVar(L"BROWSER_ANNOTATIONS_QA_RAW_DIR");
-        Run([wide, result, plan, dpr, tw, th, work, mark, accent, serial] {
+        Run([wide, result, plan, viewW, tw, th, work, mark, accent, serial] {
                 const double w0 = NowMs(); struct Done { double w0; std::shared_ptr<double> out; ~Done() { *out = NowMs() - w0; } } done{w0, work};
                 std::string png;
                 if (!AH::ScreenshotData(AH::Utf8(*wide), png)) { result->path = "cdp"; result->why = "no image in the reply"; return; }
-                if (!rawDir.empty()) {   // QA only (BROWSER_ANNOTATIONS_QA_RAW_DIR): the engine's image before the fill removal
-                    HANDLE f = CreateFileW((rawDir + L"\\raw-" + std::to_wstring(serial) + L".png").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                wide->clear(); wide->shrink_to_fit();
+                if (!rawDir.empty()) {   // QA only (BROWSER_ANNOTATIONS_QA_RAW_DIR): the engine's image before crop and fill removal
+                    HANDLE f = CreateFileW((rawDir + L"\raw-" + std::to_wstring(serial) + L".png").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
                     if (f != INVALID_HANDLE_VALUE) { DWORD n = 0; WriteFile(f, png.data(), DWORD(png.size()), &n, nullptr); CloseHandle(f); }
                 }
-                wide->clear(); wide->shrink_to_fit();
-                *result = AnnotationCapture::ProcessClip(std::move(png), plan, dpr, tw, th, mark.get(), accent);
+                *result = AnnotationCapture::ProcessViewport(png, plan, viewW, tw, th, mark.get(), accent);
             },
-            [result, serial, selectedAt, lag, engineAt, engineDone, work, handoff, frameMs, mark, plan] {
+            [result, serial, selectedAt, lag, engineAt, engineDone, work, handoff, frameMs, mark] {
                 const double panelMs = shot.serial == serial ? shot.panelMs : -1;
-                OnCaptured(serial, *result, selectedAt, lag, L"clip " + AH::Wide(AH::ClipParams(plan)) + L"; native frame " + Ms(frameMs) + L" ms, page handoff " + Ms(engineAt - handoff) + L" ms, engine asked after " + Ms(engineAt - selectedAt) +
-                                                             L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/fill/thumbnail " + Ms(*work) + L" ms" + (mark->present ? L" (fill removed)" : L"") + L", panel built in " + Ms(panelMs) + L" ms while the engine worked" +
+                OnCaptured(serial, *result, selectedAt, lag, L"viewport crop " + std::to_wstring(result->cropX) + L"," + std::to_wstring(result->cropY) + L" " + std::to_wstring(result->cropW) + L"x" + std::to_wstring(result->cropH) +
+                                                             L"; native frame " + Ms(frameMs) + L" ms, page handoff " + Ms(engineAt - handoff) + L" ms, engine asked after " + Ms(engineAt - selectedAt) +
+                                                             L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/crop/fill/encode/thumbnail " + Ms(*work) + L" ms" + (mark->present ? L" (fill removed)" : L"") + L", panel built in " + Ms(panelMs) + L" ms while the engine worked" +
                                                              L" => image in memory " + Ms(engineDone + *work - selectedAt) + L" ms after the selection; UI hand-off " + Ms(NowMs() - engineDone - *work) + L" ms");
             });
         return S_OK; });
-    const HRESULT hr = t->view->CallDevToolsProtocolMethod(L"Page.captureScreenshot", AH::Wide(AH::ClipParams(plan)).c_str(), cb); cb->Release();
+    const HRESULT hr = t->view->CallDevToolsProtocolMethod(L"Page.captureScreenshot", AH::Wide(AH::ViewportShotParams()).c_str(), cb); cb->Release();
     if (FAILED(hr)) { Log(L"ANNOTATE Page.captureScreenshot refused: falling back to CapturePreview"); Preview(t, serial, sel, selectedAt, lag); }
 }
 void ShowPanel() {

@@ -206,23 +206,21 @@ def frames_during(box, action, ms):
 
 
 def page_origin():
-    """Desktop px of the page's (0, 0): the WebView's top-left, from a screen grab of a marker the QA paints."""
-    Q.evaluate("(function(){var d=document.getElementById('qa-origin');if(!d){d=document.createElement('div');d.id='qa-origin';"
-               "d.style.cssText='position:fixed;left:0;top:0;width:6px;height:6px;background:rgb(255,0,255);z-index:2147483646;pointer-events:none';document.documentElement.appendChild(d);}return 1})()")
-    time.sleep(0.3)
-    r = ctypes.wintypes.RECT() if hasattr(ctypes, 'wintypes') else None
+    """Desktop px of the page's (0, 0): the top-left of the WebView's own child window (Chrome_WidgetWin_*, the largest)."""
     import ctypes.wintypes as W
-    r = W.RECT(); user32.GetWindowRect(Q.main_window(), ctypes.byref(r))
-    im = grab((r.left, r.top, r.right, r.bottom)).convert('RGB'); px = im.load(); found = None
-    for y in range(im.size[1]):
-        for x in range(im.size[0]):
-            p = px[x, y]
-            if p[0] > 240 and p[1] < 20 and p[2] > 240:
-                found = (r.left + x, r.top + y); break
-        if found:
-            break
-    Q.evaluate("(function(){var d=document.getElementById('qa-origin');if(d)d.remove();return 1})()")
-    return found
+    main = Q.main_window(); best = [None, 0]
+    if not main:
+        return None
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def cb(h, _):
+        name = ctypes.create_unicode_buffer(128); user32.GetClassNameW(h, name, 128)
+        if name.value.startswith('Chrome_WidgetWin') and user32.IsWindowVisible(h):
+            r = W.RECT(); user32.GetWindowRect(h, ctypes.byref(r)); area = (r.right - r.left) * (r.bottom - r.top)
+            if area > best[1]:
+                best[0], best[1] = (r.left, r.top), area
+        return True
+    user32.EnumChildWindows(main, cb, 0)
+    return best[0]
 
 
 def flash_probe(selector, label, control=False):
@@ -236,6 +234,9 @@ def flash_probe(selector, label, control=False):
     x0 = origin[0] + int((pos[0] - pos[2] / 2) * dpr) - 8; y0 = origin[1] + int((pos[1] - pos[3] / 2 - 26) * dpr) - 8
     box = (x0, y0, origin[0] + int((pos[0] + pos[2] / 2) * dpr) + 8, origin[1] + int((pos[1] + pos[3] / 2) * dpr) + 8)
     before = accent_count(grab(box))
+    if before < 50:   # covered by another window (shared desktop): bring ours back on top, hover again, once
+        topmost(True); ws.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': pos[0] + 1, 'y': pos[1]}); time.sleep(0.6)
+        before = accent_count(grab(box))
     mark = len(log_text())
     def click():
         ws.call('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': pos[0], 'y': pos[1], 'button': 'left', 'clickCount': 1})
@@ -244,17 +245,31 @@ def flash_probe(selector, label, control=False):
     cap = wait_log(r'ANNOTATE capture \d+x\d+ [^\n]*', 3, mark)
     counts = [(round(t), accent_count(im)) for t, im in frames]
     low = [c for c in counts if c[1] < before * 0.7]
+    # The page itself (its text = dark pixels) must not blink either.
+    def dark(im):
+        return sum(1 for px in (im.get_flattened_data() if hasattr(im, 'get_flattened_data') else im.getdata()) if px[0] + px[1] + px[2] < 200)
+    darks = [(round(t), dark(im)) for t, im in frames]
+    pre = [d for t, d in darks if t < 0] or [darks[0][1]]
+    dark_before = sorted(pre)[len(pre) // 2]
+    page_low = [d for d in darks if dark_before > 20 and d[1] < dark_before * 0.7]
+    worst_page = min(range(len(frames)), key=lambda i: darks[i][1]) if frames else None
     intervals = [b[0] - a[0] for a, b in zip(counts, counts[1:])]
     rec = {'element': selector, 'frames': len(counts), 'medianFrameMs': sorted(intervals)[len(intervals) // 2] if intervals else None, 'accentBefore': before,
-           'minAccent': min(c[1] for c in counts) if counts else None, 'framesBelow70pc': len(low), 'control': control, 'capture': cap.group(0)[:160] if cap else None}
+           'minAccent': min(c[1] for c in counts) if counts else None, 'framesBelow70pc': len(low), 'control': control, 'capture': cap.group(0)[:160] if cap else None,
+           'pageDarkBefore': dark_before, 'pageDarkMin': min(d[1] for d in darks) if darks else None, 'pageFramesBelow70pc': len(page_low), 'pageLowAt': [t for t, _ in page_low][:12]}
     report['measures'].setdefault('flashProbe', []).append(rec)
     try:
         frames[min(range(len(frames)), key=lambda i: counts[i][1])][1].save(QA / f"flash-{'control' if control else 'v3'}-{label.split()[0]}-darkest-frame.png")
     except Exception:
         pass
+    try:
+        if worst_page is not None:
+            frames[worst_page][1].save(QA / f"flash-{'control' if control else 'v3'}-{label.replace(' ', '_').replace('«', '').replace('»', '')}-page-darkest.png")
+    except Exception:
+        pass
     if control:
         return step(f'{label}: negative control (V2 path, page hides its frame) is DETECTED by the probe', len(low) > 0, rec)
-    return step(f'{label}: no visible change during the shot (every screen frame keeps the frame)', before > 50 and not low and cap is not None, rec)
+    return step(f'{label}: no visible change during the shot (every screen frame keeps the frame and the page)', before > 50 and not low and not page_low and cap is not None, rec)
 
 
 def rest_cpu(seconds):
@@ -718,11 +733,11 @@ def main_run():
         # ---- passwords never stored
         leaked = [str(p) for p in STORE.rglob('*') if p.is_file() and (b'MDP-SANDBOX' in p.read_bytes() or b'client@exemple' in p.read_bytes())]
         step('the prefilled password / e-mail never reach the store', not leaked, leaked)
-        # ---- V3: the fill is removed from the image exactly (the engine's own shot of the same clip, mode off, same hover)
+        # ---- V3: the fill is removed from the image exactly (the engine's own viewport shot, mode off, same hover, same crop)
         fill_check = None
         try:
             mode(True); pos = rect_of('button.btn-primary, button[type=submit]'); mark = len(log_text())
-            Q.mouse('click', pos[0], pos[1]); m6 = wait_log(r'ANNOTATE capture (\d+)x(\d+) [^\n]*clip (\{[^\n]*?\}); native frame[^\n]*\(fill removed\)', 4, mark)
+            Q.mouse('click', pos[0], pos[1]); m6 = wait_log(r'ANNOTATE capture (\d+)x(\d+) [^\n]*viewport crop (\d+),(\d+) (\d+)x(\d+); native frame[^\n]*\(fill removed\)', 4, mark)
             note_type('Contrôle du remplissage'); mark2 = len(log_text()); invoke('AnnotationAdd')
             w6 = wait_log(r'ANNOTATE written (\S+)/(ann_\w+) with shot', 5, mark2)
             mode(False); time.sleep(0.5)
@@ -730,7 +745,8 @@ def main_run():
             if m6 and w6:
                 import base64, io
                 from PIL import Image, ImageChops
-                ref = Image.open(io.BytesIO(base64.b64decode(ws.call('Page.captureScreenshot', json.loads(m6.group(3)))['data']))).convert('RGB')
+                x, y, cw, ch = (int(m6.group(k)) for k in (3, 4, 5, 6))   # the engine's viewport shot, mode off, the same crop
+                ref = Image.open(io.BytesIO(base64.b64decode(ws.call('Page.captureScreenshot', {'format': 'png', 'fromSurface': True, 'captureBeyondViewport': False})['data']))).convert('RGB').crop((x, y, x + cw, y + ch))
                 d6 = next(iter(STORE.glob(f'*/{w6.group(2)}')))
                 got = Image.open(d6 / 'shot.png').convert('RGB')
                 if ref.size == got.size:
@@ -743,7 +759,7 @@ def main_run():
         except Exception as e:
             fill_check = {'error': str(e)}
         report['measures']['fillRemoval'] = fill_check
-        step('V3 fill removed: stored shot = the page without any frame (engine shot of the same clip, mode off)', bool(fill_check) and fill_check.get('pixels') and fill_check['pixelsOver2Levels'] <= fill_check['pixels'] * 0.002, fill_check)
+        step('V3 fill removed: stored shot = the page without any frame (engine viewport shot, mode off, same crop)', bool(fill_check) and fill_check.get('pixels') and fill_check['pixelsOver2Levels'] <= fill_check['pixels'] * 0.002, fill_check)
         # ---- fullscreen hides the launcher (V3: in the mode)
         mode(True); time.sleep(0.6)
         Q.post_key(0x7A, None); time.sleep(1.0)

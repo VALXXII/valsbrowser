@@ -1,6 +1,11 @@
 #pragma once
 // Annotation mode — capture processing (V2). Runs on a thread-pool thread, NEVER on the UI thread.
 //
+//   ProcessViewport  V3: the PNG of the whole viewport from Page.captureScreenshot WITHOUT a clip (a clipped shot
+//                makes the engine re-render the view for the clip: the page's text vanished on screen for ~4
+//                frames at every click, measured). Cropped here to the plan (element + margin), the frame's fill
+//                removed, reduced to the store's limits, encoded; + the thumbnail. Only the rows down to the crop
+//                are decoded.
 //   ProcessClip  the PNG returned by Page.captureScreenshot (CDP, clip = element + margin, already cropped
 //                and reduced by the engine): kept as is when it fits the store's limits (<= 1600 px,
 //                <= 1.5 MiB; no re-encoding), otherwise reduced and re-encoded; + the popover thumbnail.
@@ -30,6 +35,7 @@ struct Result {
     unsigned thumbW = 0, thumbH = 0; std::vector<std::uint32_t> thumb;   // premultiplied BGRA
     float markL = 0, markT = 0, markR = 0, markB = 0;                     // element inside the thumbnail
     std::string why;
+    int cropX = 0, cropY = 0, cropW = 0, cropH = 0;   // V3: the crop in the viewport image (device px)
     const char* path = "";               // "cdp" | "preview"
 };
 struct Image { unsigned width = 0, height = 0; std::vector<std::uint32_t> pixels; };   // premultiplied BGRA
@@ -154,6 +160,42 @@ inline Fill FillIn(const AnnotationHost::ClipPlan& plan, const AnnotationHost::M
     axis(mark->y, mark->y + mark->h, plan.viewY, plan.scrollY, f.y0, f.y1);
     f.r = r; f.g = g; f.b = b; f.alpha = mark->fill; f.on = f.x1 > 0 && f.y1 > 0 && f.x0 < w && f.y0 < h;
     return f;
+}
+// V3: `png` = the whole viewport as on screen (device px). viewportCssW = the page's innerWidth (CSS px).
+inline Result ProcessViewport(const std::string& png, const AnnotationHost::ClipPlan& plan, double viewportCssW, unsigned thumbMaxW, unsigned thumbMaxH,
+                              const AnnotationHost::Mark* mark = nullptr, std::uint32_t accentRgb = 0) {
+    using namespace detail; Result r; r.path = "cdp";
+    Com com; Ptr<IWICImagingFactory> wic; if (!Factory(wic)) { r.why = "wic"; return r; }
+    Ptr<IStream> in; in.p = SHCreateMemStream(reinterpret_cast<const BYTE*>(png.data()), UINT(png.size())); if (!in.p) { r.why = "stream"; return r; }
+    Ptr<IWICBitmapDecoder> dec; Ptr<IWICBitmapFrameDecode> frame;
+    if (FAILED(wic->CreateDecoderFromStream(in.p, nullptr, WICDecodeMetadataCacheOnDemand, &dec)) || FAILED(dec->GetFrame(0, &frame))) { r.why = "decode"; return r; }
+    UINT iw = 0, ih = 0; frame->GetSize(&iw, &ih); if (!iw || !ih || !(viewportCssW > 0)) { r.why = "size"; return r; }
+    const double k = double(iw) / viewportCssW;   // image px per CSS px (= devicePixelRatio)
+    const int x0 = std::clamp(int(std::floor(plan.viewX * k + 1e-6)), 0, int(iw) - 1), y0 = std::clamp(int(std::floor(plan.viewY * k + 1e-6)), 0, int(ih) - 1);
+    const int x1 = std::clamp(int(std::ceil((plan.viewX + plan.width) * k - 1e-6)), x0 + 1, int(iw)), y1 = std::clamp(int(std::ceil((plan.viewY + plan.height) * k - 1e-6)), y0 + 1, int(ih));
+    const UINT w = UINT(x1 - x0), h = UINT(y1 - y0); r.cropX = x0; r.cropY = y0; r.cropW = int(w); r.cropH = int(h);
+    Ptr<IWICBitmapClipper> clip; const WICRect cr{x0, y0, INT(w), INT(h)};
+    Ptr<IWICFormatConverter> conv; Ptr<IWICBitmap> img;
+    if (FAILED(wic->CreateBitmapClipper(&clip)) || FAILED(clip->Initialize(frame.p, &cr)) || FAILED(wic->CreateFormatConverter(&conv)) ||
+        FAILED(conv->Initialize(clip.p, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) ||
+        FAILED(wic->CreateBitmapFromSource(conv.p, WICBitmapCacheOnLoad, &img))) { r.why = "crop"; return r; }
+    if (mark && mark->present && mark->fill > 0) {   // the content sits at the scroll offset rounded to device px (see FillIn)
+        Fill f; const double sx = plan.scrollX * k - std::round(plan.scrollX * k), sy = plan.scrollY * k - std::round(plan.scrollY * k);
+        f.x0 = mark->x * k + sx - x0; f.x1 = (mark->x + mark->w) * k + sx - x0; f.y0 = mark->y * k + sy - y0; f.y1 = (mark->y + mark->h) * k + sy - y0;
+        f.r = double((accentRgb >> 16) & 255); f.g = double((accentRgb >> 8) & 255); f.b = double(accentRgb & 255); f.alpha = mark->fill;
+        f.on = f.x1 > 0 && f.y1 > 0 && f.x0 < w && f.y0 < h;
+        if (f.on) {
+            Ptr<IWICBitmapLock> lock; const WICRect all{0, 0, INT(w), INT(h)}; UINT stride = 0, size = 0; BYTE* bits = nullptr;
+            if (FAILED(img->Lock(&all, WICBitmapLockWrite | WICBitmapLockRead, &lock)) || FAILED(lock->GetStride(&stride)) || FAILED(lock->GetDataPointer(&size, &bits)) || !bits) { r.why = "fill: lock"; return r; }
+            RemoveFill(bits, w, h, stride, f);
+        }
+    }
+    const double scale = std::min(plan.scale > 0 ? plan.scale : 1.0, double(BrowserAnnotations::MaxShotSide) / std::max(w, h));
+    if (!Fit(wic.p, img.p, w, h, scale, r)) return r;
+    r.scale = r.width / double(w); r.crop = plan.crop;
+    const double px = double(w) / plan.width;   // crop px per CSS px
+    Thumb(wic.p, img.p, w, h, plan.markX * px, plan.markY * px, plan.markW * px, plan.markH * px, thumbMaxW, thumbMaxH, r);
+    r.ok = true; return r;
 }
 // Engine clip: `png` is already the element + margin (AnnotationHost::PlanClip), devicePixelRatio = the page's.
 // fill (V3): the page's frame fill to remove (FillIn), then the image is re-encoded.

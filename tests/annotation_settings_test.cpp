@@ -56,6 +56,10 @@ static void TestModel() {
     a.known = true; Check(AS::StatusText(a, now) == L"Non installé" && AS::ActionFor(a) == AS::Action::None, "no configuration folder: « Non installé », no button");
     a.detected = true; Check(AS::StatusText(a, now) == L"Non connecté" && AS::ActionFor(a) == AS::Action::Connect && AS::ActionEnabled(a), "folder, no entry: « Non connecté » + Connecter");
     a.configured = a.connected = true; Check(AS::StatusText(a, now) == L"Connecté" && AS::ActionFor(a) == AS::Action::Disconnect, "configured: « Connecté » + Déconnecter");
+    {   // V3 (retours §1): connected but not read since => the app must be restarted, said like the connect modal.
+        AS::Agent r = a; r.restart = true; Check(AS::StatusText(r, now) == L"Connecté · redémarrez Claude pour l'activer" && AS::ActionFor(r) == AS::Action::Disconnect, "restart: « Connecté · redémarrez Claude pour l'activer »");
+        AS::Agents both; both.claude = r; both.codex = r; both.codex.app = AS::App::Codex;
+        Check(AS::StatusText(both.codex, now) == L"Connecté · redémarrez Codex pour l'activer" && AS::Agents{}.codex.app == AS::App::Codex, "restart: the line names the app (Codex)"); }
     a.lastReadAt = now - 300; Check(AS::StatusText(a, now) == L"Connecté · a lu vos annotations il y a 5 min", "read: « Connecté · a lu vos annotations il y a 5 min »");
     a.stalePath = true; Check(AS::ActionFor(a) == AS::Action::Reconnect && AS::ActionLabel(AS::ActionFor(a)) == std::wstring(L"Reconnecter"), "stale path: Reconnecter");
     AS::Agent reader; reader.known = reader.detected = reader.connected = true; reader.lastReadAt = now - 90000;

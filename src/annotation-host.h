@@ -236,6 +236,8 @@ inline ClipPlan PlanClip(const BA::Rect& r, const BA::Viewport& vp, double margi
     p.crop = elementClipped ? "element+margin (visible part)" : clipped ? "element+margin (viewport edge)" : "element+margin";
     p.ok = true; return p;
 }
+// V3: the whole viewport as on screen (no clip: a clipped shot re-renders the view on screen, see annotation-capture.h).
+inline std::string ViewportShotParams() { return "{\"format\":\"png\",\"fromSurface\":true,\"optimizeForSpeed\":true,\"captureBeyondViewport\":false}"; }
 // The CDP parameters (JSON) for a plan: PNG, the clip, no capture beyond the viewport, encoder tuned for speed.
 inline std::string ClipParams(const ClipPlan& p) {
     SJ::Value clip = SJ::Value::Obj();
