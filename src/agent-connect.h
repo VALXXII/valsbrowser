@@ -83,11 +83,26 @@ struct Detection {
 };
 Detection Detect(const Environment& env);
 
-// Where the bridge exe should be referenced from: for an installed browser
-// (<installRoot>\versions\<M.m.B>\browser.exe) the stable copy <installRoot>\bin\browser-annotations-mcp.exe when it exists (it survives
-// updates), otherwise the bridge next to browser.exe (portable / preview / worktree). installRoot defaults to
-// %LOCALAPPDATA%\browser (same rule as BrowserAnnotations::DefaultStoreRoot).
-std::wstring StableBridgePath(const std::wstring& browserExe, const std::wstring& installRoot = L"");
+// Where the bridge exe is referenced from (public download plan B, item 5):
+//   installed browser (<installRoot>\versions\<M.m.B>\browser.exe): ALWAYS the stable copy
+//     <installRoot>\bin\browser-annotations-mcp.exe, published by the update helper before the browser starts and
+//     surviving updates. When it is missing this is still the answer: the caller checks BridgeUsable and refuses to
+//     connect (never a fall back to the versioned copy, which the helper prunes two updates later);
+//   portable: next to browser.exe, at <exeDir>\assets\bin\browser-annotations-mcp.exe in the release payload
+//     (BridgeLayout::AssetsBin), at <exeDir>\browser-annotations-mcp.exe in dev / preview builds (Sibling).
+// installRoot defaults to %LOCALAPPDATA%\browser (same rule as BrowserAnnotations::DefaultStoreRoot). Path arithmetic
+// only: nothing is created, nothing is trusted.
+enum class BridgeLayout { Sibling, AssetsBin };
+struct BridgeLocation {
+    std::wstring path;
+    bool installed = false;   // under <installRoot>\versions: `path` is the stable bin copy (present or not)
+};
+BridgeLocation LocateBridge(const std::wstring& browserExe, BridgeLayout layout, const std::wstring& installRoot = L"");
+std::wstring StableBridgePath(const std::wstring& browserExe, const std::wstring& installRoot = L"");   // LocateBridge(..., Sibling).path
+// The bridge may be written into an agent configuration: a local absolute path to a regular file (not a directory, not
+// a reparse point, nor its folder), readable, a PE image for x64 with the console subsystem. Checked right before any
+// configuration is written (ConnectClaude / ConnectCodex). False + a French reason for the UI.
+bool BridgeUsable(const std::wstring& path, std::string* why = nullptr);
 // True when `path` is on a removable drive (GetDriveType = DRIVE_REMOVABLE): the UI warns and offers
 // "Reconnecter" (a config pointing to a drive letter that changes or disappears).
 bool IsOnRemovableDrive(const Environment& env, const std::wstring& path);
