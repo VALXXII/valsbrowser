@@ -56,3 +56,7 @@ locale (mode, note, capture, magasin) n'en dépend pas.
 - Non testé en E2E : connexion refusée sur une vraie installation sans `<root>\bin` (couvert en unitaire avec une
   arborescence `versions`/`bin` réelle) ; la modale affiche le message d'échec existant.
 - La section « Réglage manuel » de la modale montre toujours le chemin stable attendu, même si le pont est absent.
+
+## Correctif de revue PR72 répercuté (merge c7bc8c2)
+
+Le commit ac6a5ef (plancher BETA/libellé sur toutes les lignes de fond) est fusionné dans cette branche sans réécriture. Re-vérifié sur la tête fusionnée : test pur 31/31, harnais natif 1376/0, suite annotations --quick OK (agent_connect 249/0), build dev OK, E2E couleurs réel 0 échec (`07a…07e`). Le gate reste inactif.
