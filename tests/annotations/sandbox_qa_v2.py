@@ -470,8 +470,17 @@ def main_run():
             import ctypes.wintypes as W
             r = W.RECT(); user32.GetWindowRect(Q.main_window(), ctypes.byref(r))
             band_box = (origin[0], origin[1] - 2, origin[0] + 400, origin[1] + 60)   # the page moves 32 DIP down: the band appears where the page's top was
+        for _ in range(25):   # the toolbar's UIA tree must be up before the first invoke (a fresh launch)
+            if 'AnnotateButton' in uia_list():
+                break
+            time.sleep(0.2)
         topmost(True)
-        band_frames, _ = frames_during(band_box or (0, 0, 10, 10), lambda: invoke('AnnotateButton'), 600) if band_box else ([], None)
+        band_frames = []
+        for attempt in range(2):   # one retry when the invoke did not reach the window (shared desktop)
+            band_frames, _ = frames_during(band_box or (0, 0, 10, 10), lambda: invoke('AnnotateButton'), 600) if band_box else ([], None)
+            if mode_active():
+                break
+            report.setdefault('notes', []).append('band: the first invoke did not activate the mode, retried')
         topmost(False)
         if band_frames:
             lum = [(round(t), sum(sum(px) for px in im.convert('RGB').resize((40, 6)).getdata()) / 240) for t, im in band_frames]

@@ -123,3 +123,10 @@ passent par une notification UIA.
 
 Captures : `root`, `section`, `claude-connected`, `codex-busy`, `both-connected`, `claude-failed`, `prompt-off`,
 `focus-connect` (`-96.png` / `-144.png`), `confirm-clear-96.png` / `-144.png`.
+
+
+## V3-A (14 novembre 2026)
+
+- **« Afficher le lanceur d'annotations » retiré** : le lanceur n'existe plus qu'en mode Annotation (retours §6). Retirés de `settings.h` (`annotationLauncher`, `Change::AnnotationLauncher`, l'écriture de `annotation-launcher=`), de `settings-panel.h` (ligne, description, recherche, ordre Tab : 8 arrêts) et de `main.cpp`. **Lecture tolérante** : une ancienne ligne `annotation-launcher=…` est lue et ignorée, jamais réécrite (`settings_test`).
+- **Redémarrer l'app** (retours §1) : la ligne d'une app connectée qui n'a pas lu le magasin depuis la connexion dit « Connecté · redémarrez Claude pour l'activer » (« … Codex … ») : `AnnotationAgentState::restart` → `AnnotationSettings::Agent::restart` (+ `app`), même règle que la modale.
+- Tests : `annotation_settings_test` (plus de ligne « lanceur » dans la recherche, un seul interrupteur, ordre Tab, ligne « redémarrez »), `test-annotation-settings.ps1` (le client UIA réel bascule « Proposer de connecter un agent »), `settings_walk.py` (interrupteur de proposition au lieu du lanceur).

@@ -139,3 +139,88 @@ Décomposition type (journal) : clic → hôte ≈ 5–10 ms ; moteur (`Page.cap
 - **Avertissements du build partagé** : `build.py` sur l'arbre de travail actuel affiche 3 `-Wswitch` (`Change::AnnotationLauncher/ConnectPrompt/Retention` non traités dans `SettingChanged`) : valeurs ajoutées par V2-D (4e167a0), dont le branchement dans `main.cpp` est prévu après V2-C. Nos sources seules : 0 avertissement (`own_warnings.py`).
 - **Réglages « Annotations et agents »** : livrés par V2-D ; leur branchement à `annotation-entry.h` dans `main.cpp` n'est pas encore fait, donc non vérifié de bout en bout ici.
 - Vue partagée, plusieurs fenêtres, mise en veille de l'onglet annoté : non exercés (comme en V1).
+
+
+---
+
+# V3-A — corrections du premier test réel : validation (14 novembre 2026)
+
+Branche `VALXXII/annotations-v1`, commits `e09b799` → (ce commit), sur `c62426c`. Retours : `plan-annotations-mcp-local/design/annotations-v2-retours.md` (points 1, 2, 3, 5, 6 + glissé du bandeau du 9, et 11 ajouté en cours de tâche). Références Paper relues en lecture seule (section « 5 · Retours du test » : 5.2, 5.5, 5.6, 5.7, 5.8 ; valeurs de mouvement de 5.2). Détails de conception : `design/annotations-ui.md` § V3-A, `design/annotations-store-bridge.md` § V3-A, `design/annotations-settings.md` § V3-A. Le build et la sandbox de l'utilisateur (`build/annotations-preview`, `run-sandbox.py --agents real`) n'ont été ni touchés ni lancés ; tout s'est fait sur `build/annotations-v3-preview` et ses copies QA (`build/annotations-v3-qa-app`). `sandbox/annotations/site/style.css`, modifié pendant le test de l'utilisateur, est laissé tel quel, non commité.
+
+Légende : **Vérifié** = observé ici, preuve citée · **Non vérifié** = pas démontré, raison donnée.
+
+## 1. Livré
+
+| Point | Ce qui change | Statut |
+| --- | --- | --- |
+| §1 Redémarrer | Modale : « Redémarrez Claude pour l'activer » tant que l'app n'a pas lu le magasin depuis la connexion (même composant que Codex) ; une seule ligne « Redémarrez Claude et Codex pour les activer » si les deux. Réglages : « Connecté · redémarrez Claude pour l'activer ». README de la sandbox. | Vérifié (QA réelle, harnais, test des réglages) |
+| §2 Capture sans flash | Copie native des bords + étiquette (`SelectionFrame`) puis « handoff » ; voile retiré par calcul ; prise de la vue entière recadrée par l'hôte ; panneau construit après la demande au moteur. | Vérifié (sondes d'écran, image comparée à la prise du moteur mode éteint) |
+| §3 Petits flashs | 9 causes trouvées et corrigées (tableau dans `annotations-ui.md` § V3-A, résumé §4 ci-dessous). | Vérifié pour 1, 2, 7, 8 à l'écran ; 3–6, 9 par construction + harnais |
+| §5 Prise en charge | Instructions et descriptions directives, `release` avec `reason`, prompt MCP « Traiter mes annotations », lectures par annotation (`readers\…\seen`) ; historique (ligne, détail « Suivi », aide) et cartes « Lue par … » / « … n'a pas pu la traiter ». | Vérifié (transcriptions, QA réelle avec `try-mcp`) |
+| §6 Lanceur en mode seulement | Apparaît 120 ms après le bandeau (0,9 → 1, 200 ms), repart à la sortie, fenêtres détruites au repos ; historique hors mode par Ctrl+Maj+H, ancré à 16 DIP du bas ; réglage « Afficher le lanceur » retiré (lecture tolérante de l'ancienne clé). | Vérifié |
+| Glissé du bandeau | −32 → 0 + fondu, 220 ms (0,32, 0,72, 0, 1) ; sortie 160 ms ; réduit : fondu 150 ms ; interruptible ; point d'accroche `SetBackdrop` pour le fond animé à venir. | Vérifié (modèle + écran) |
+| §11 Aperçu rogné | `contain` partout ; disposition verticale au-delà de 2,2:1 ; même règle pour le détail de l'historique. | Vérifié (harnais, captures) |
+
+## 2. Build
+
+`python tools/release/build.py --out build/annotations-v3-preview --channel dev --preview` → `Build OK … browser.exe (0.3.256, 035f20445d41)`, **0 avertissement, 0 erreur** dans le journal complet (`build/v3a-build.log` : aucune ligne « warning »). `browser.exe` 10 704 720 o, `browser-annotations-mcp.exe` 1 231 866 o.
+
+## 3. Tests
+
+| Commande | Résultat |
+| --- | --- |
+| `python -I tests/annotations/run_tests.py --bridge build/annotations-v3-preview/browser-annotations-mcp.exe` | **Vérifié** : exit 0 « annotations: all builds and tests passed » — store_test 2 535 (dont `seen` des lecteurs : borne 40, plus récents gardés, lecture tolérante), json_fuzz 156 715, host_test 90 (dont `mark`, `shown`, plan d'origine du clip, retrait du voile ≤ 1 niveau sur 64 × 40 avec bords fractionnaires), agent_connect_test 199, claim_race 15 ; transcriptions sur le bridge de test **et** sur celui du build V3 (legacy 53 étapes, modern 19, project-deprecated 3, site-restricted 9), `tools/list` égal au golden régénéré ; vrais fichiers Claude/Codex inchangés (empreintes du runner). `build/v3a-run_tests.log`. |
+| `python tests/annotations-ui/run.py` | **Vérifié** : « 528 checks, 0 failures; 92 captures » (`build/annotations-ui-qa/v2/`). V3 : temps et courbe du bandeau (−32 px, 220 / 160 / 150 ms, reprise depuis la valeur présentée), lanceur (120 ms, 0,9, 200 / 150 ms), « Lue par » / « n'a pas pu la traiter » (lignes, détail « Suivi » + aide, Markdown, cartes), contrastes (ambre 12/16 sur `#171717`), ligne de redémarrage unique, pastille verticale + `contain` (pixels), copie native du cadre (pixels des bords, rien à l'intérieur), fenêtres réelles : **0 fenêtre du lanceur hors mode**, historique seul ancré à 16 DIP, **0 réveil en 1,5 s hors mode** (`Idle 1500 ms (v3 outside the mode): frames 0 … WM_TIMER 0`), bandeau réel en cours de glissé, copie native cliquable-à-travers. Captures `v3-*.png`. |
+| `test-annotation-settings.ps1` | **Vérifié** : exit 0, 111 lignes « ok » (plus de ligne « lanceur », un seul interrupteur, ordre Tab à 8 arrêts, « Connecté · redémarrez Claude / Codex pour l'activer », `annotation-launcher=` lu et jamais réécrit) ; client UIA réel : « no launcher switch », bascule de « Proposer de connecter un agent » appliquée ; « real configurations unchanged ». |
+| `python tests/annotations/sandbox_qa_v2.py run` (adapté V3) | **Vérifié** : **64 étapes, 0 échec** (§4), `build/annotations-v3-qa/report.json` + captures. |
+| Vraies configurations | Empreintes SHA-256 de `%APPDATA%\Claude\claude_desktop_config.json` et `%USERPROFILE%\.codex\config.toml` identiques avant/après la dernière série (`build/v3a-fp-before.txt`) ; chaque script les vérifie aussi. (`config.toml` a changé entre deux de mes séries, hors de mes tests : modification de l'utilisateur ; jamais pendant un test.) |
+
+## 4. Parcours réel (copie QA du build V3, sandbox, agents redirigés)
+
+Pilote `tests/annotations/sandbox_qa_v2.py run` : copie `build/annotations-v3-qa-app`, `BROWSER_ANNOTATIONS_TEST=1`, `BROWSER_ANNOTATIONS_CONNECT_ROOT` sous `build/`, port de débogage pour cette copie seulement ; navigateur et serveur fermés dans un `finally` (aucun processus restant, vérifié par `tasklist`). Étapes V3 ajoutées :
+
+| Étape | Preuve | Statut |
+| --- | --- | --- |
+| Aucun lanceur au lancement | pas de nœud UIA `AnnotationLauncher`, **aucune fenêtre** de lanceur (énumération des fenêtres enfants) | Vérifié |
+| Bandeau animé à l'entrée | 165 images d'écran de la zone du bandeau, ≥ 4 niveaux distincts (pas un saut) | Vérifié |
+| Lanceur avec le mode, absent après | UIA présent en mode ; mode quitté : 0 nœud, 0 fenêtre | Vérifié |
+| §2 aucun changement visible pendant la prise (« Payer », h1, h2) | 72 images d'écran par clic (une toutes les ~8–11 ms, BitBlt + CAPTUREBLT, fenêtres en couches comprises, de 150 ms avant le clic à 500 ms après) : **0 image où le cadre perd plus de 30 % de ses pixels d'accent, 0 image où la page perd son texte** | Vérifié |
+| Contrôle négatif (chemin V2 : la page masque son cadre) | la même sonde voit le cadre disparaître sur 5 à 9 images | Vérifié (la sonde détecte bien un flash) |
+| Voile retiré exactement | image enregistrée vs prise du moteur de la vue, mode éteint, même survol, même recadrage : **pire écart 1 niveau, 0 pixel au-delà de 2** (585 × 117) | Vérifié |
+| Aucun pixel du cadre dans les images | 0 pixel d'accent dans tous les `shot.png` | Vérifié |
+| §1 Redémarrer | « Redémarrez Claude pour l'activer » après la connexion ; « Redémarrez Claude et Codex pour les activer » (aide UIA du bouton Codex) | Vérifié |
+| §5 « Lue par … » | `try-mcp get` → `readers\…\seen` contient l'id → carte « Lue par try-mcp (sandbox) » en direct | Vérifié |
+| §5 « … n'a pas pu la traiter » | `try-mcp claim` puis `release <id> Pas d'accès au code source de ce site.` → carte en direct ; historique : ligne « try-mcp (sandbox) n'a pas pu la traiter », détail « Ajoutée · Lue par · Prise en charge · n'a pas pu la traiter « Pas d'accès… » » + aide | Vérifié |
+| Historique hors mode | Ctrl+Maj+H : panneau seul, aucun bouton lanceur | Vérifié |
+| Repos hors mode après usage | 0 fenêtre de lanceur ; seule reste la fenêtre (masquée) du bandeau | Vérifié |
+| Étapes V2 conservées (modale, « Plus tard », connexions redirigées, capture impossible, Ajouter avant l'image, cartes 3.x, historique, corbeille / Annuler, Markdown, mots de passe jamais stockés, plein écran) | toutes passent | Vérifié |
+
+## 5. Mesures
+
+### Temps de capture (clic → image)
+
+| Série | médiane | max | < 150 ms |
+| --- | ---: | ---: | ---: |
+| QA, 12 clics réels (CDP) — image en mémoire | **103 ms** | 127 ms | 12/12 |
+| QA — image affichée dans la pastille | 124 ms | 153 ms | — |
+| `capture_timing.py`, 10 clics | 103 ms | 126 ms | 10/10 |
+
+Décomposition type (journal) : copie native 11–29 ms (dont `DwmFlush` ≤ 16 ms), « handoff » de la page 1–11 ms, moteur 58–88 ms (vue entière), recadrage + voile + encodage + vignette 2–7 ms, panneau construit pendant que le moteur travaille (32–60 ms). Avant de construire le panneau après la demande : « handoff » 30–85 ms (le panneau bloquait le fil UI), médiane 120 ms. **« Ajouter » : écriture en 16–17 ms, 0 ms d'attente de l'image** (étape 2.4 : la note part, l'image la rejoint).
+
+### Flash à la capture (preuve)
+
+Sondes d'écran ci-dessus (§4). Expériences A/B pendant la tâche (même session, mêmes éléments, 3 clics chacune) : prise **avec** clip → le texte de la page disparaît sur 4 images (24–110 ms après le clic) à chaque clic, aussi en chemin V2 ; sans prise → 0 ; prise de la vue entière → 0 ; `CapturePreview` → 0 mais 141–155 ms. Choix : vue entière + recadrage (0 flash, même coût moteur). Les interrupteurs d'expérience ont été retirés ; restent pour la QA `BROWSER_ANNOTATIONS_QA_NO_NATIVE_FRAME` (contrôle négatif) et `BROWSER_ANNOTATIONS_QA_RAW_DIR` (image brute du moteur), lus seulement s'ils sont définis.
+
+### Repos hors mode
+
+QA, après usage complet puis sortie du mode : **0 fenêtre du lanceur**, CPU du processus navigateur 0,47 % d'un cœur sur 10 s (bruit du poste partagé : la référence V2 variait de 1,3 à 2,0 %). Harnais : 0 image, 0 réveil d'horloge, 0 `WM_TIMER` en 1,5 s hors mode. La surveillance du magasin ne tourne plus pour l'anneau du lanceur hors mode (le lanceur n'existe plus).
+
+## 6. Non vérifié / limites
+
+- **Vrais agents** : Claude Desktop / Codex non lancés contre ce build (interdit d'y toucher) ; le client est `try-mcp.py` (même protocole). Que Claude appelle désormais `claim` / `resolve` n'est **pas** démontré : les instructions, descriptions et le prompt le demandent explicitement, l'usage réel reste à observer.
+- **Étiquette native vs étiquette de la page** : même police (première installée de JetBrains Mono, Cascadia Mono, Consolas), même boîte (mesurée par la page), mais rendu DirectWrite contre Skia : l'anticrénelage du texte de l'étiquette peut différer d'un sous-pixel pendant ~100 ms (la sonde compte jusqu'à ~20 % de pixels d'accent en moins sur h1, dans le texte de l'étiquette, sans trou). Non perceptible sur les captures, non prouvé imperceptible.
+- **`DwmFlush`** sur le fil UI au clic (≤ 16 ms) : garantit que la copie native est à l'écran avant que la page masque la sienne ; coût inclus dans les mesures.
+- **Planche 5.5** : « Rouvrir » du détail non ajouté (l'annotation est ouverte) ; titres des cartes « Lue par … » / « … n'a pas pu la traiter » en version propre avec les composants existants, à ajuster au design final. Dégradé du viewport, vague tramée, curseur dédié, inspecteur d'espacements : non faits (en design, tâche suivante). Point 7 (Claude Code en un clic) : hors périmètre.
+- **Défilement pendant la prise** : si la page défile dans les ~100 ms où la copie native est affichée, les bords natifs ne suivent pas (le voile, lui, suit) ; non observé, non corrigé.
+- Sondes d'écran sur un bureau partagé avec d'autres agents : la fenêtre QA est mise au premier plan (topmost) le temps des sondes, sans entrée clavier synthétique ; une fenêtre d'un autre processus peut fausser une sonde (vu une fois au lancement : l'invocation UIA du bouton « Annoter » n'était pas arrivée ; le pilote réessaie).
+- Le décalage de 32 DIP de la page à l'entrée / sortie du mode (redimensionnement du WebView) reste un saut (inhérent).

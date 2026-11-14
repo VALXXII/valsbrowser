@@ -172,3 +172,16 @@ Tests (`tests/annotations/agent_connect_test.cpp` + `fake_codex.cpp`, 187 vérif
 - L'emplacement où Claude décompresse les extensions (`Claude Extensions\<id>`) est déduit : la détection lit `manifest.json` dans **tous** les sous-dossiers ; si Claude change ce format, `extensionInstalled` reste faux et l'état « connecté » repose sur `readers`.
 - La vraie `codex mcp add` n'est pas exécutée par les tests (faux `codex.exe` dans un `PATH` temporaire) ; elle a été essayée une fois à la main dans un `CODEX_HOME` temporaire, jamais sur `C:\Users\<user>\.codex`.
 - Le build preview a été fait pendant que l'autre worker modifiait les en-têtes `annotation-*.h` dans le même worktree : il prouve que `agent-connect.cpp` et le magasin V2 compilent avec l'UI de ce moment, pas avec sa version finale.
+
+
+---
+
+# V3-A — l'agent prend en charge et termine (14 novembre 2026)
+
+Retours §5 : Claude avait lu l'annotation sans jamais appeler `claim` / `resolve`.
+
+- **Instructions** (`initialize` et `server/discover`) directives : lire (`list`, `get`), **avant** de modifier `browser_annotation_claim`, **après** `browser_annotation_resolve` avec `outcome` et un `summary` d'une phrase montré à l'utilisateur, et s'il ne peut pas la traiter (pas d'accès au code, fichier introuvable…) `browser_annotation_release` avec `reason`. Descriptions des cinq outils alignées (avant / après / sinon).
+- **`browser_annotation_release` accepte `reason`** (facultatif, ≤ 280 caractères) : `Store::Release(…, reason)` l'écrit comme résumé de l'événement `claimed → open` ; le navigateur en fait « … n'a pas pu la traiter » avec la raison citée.
+- **Prompt MCP « Traiter mes annotations »** (`traiter_mes_annotations`, argument `site` facultatif) : capacité `prompts` (`listChanged: false`) annoncée dans les deux ères ; `prompts/list` et `prompts/get` servis comme `tools/*` (avec `_meta` 2026-07-28, ou après `initialize`) ; prompt ou argument inconnu → `-32602`.
+- **Lectures par annotation** : `readers\<client>.json` porte `seen` = `{id: date}` des annotations que ce client a vraiment lues (`list` qui les lui montre, `get`), 40 au plus (les plus récentes), écrit aussitôt quand un id est nouveau (sinon toujours ≤ 1 écriture / 10 s). `lastReadAt` seul ne suffisait pas (mis à jour aussi par `initialize` / `tools/list`). Lecture tolérante (fichier V2 sans `seen`, membres invalides ignorés). `Reader::seen`, `Reader::SeenAt(id)`.
+- Transcriptions mises à jour (`legacy-2025-11-25` : instructions, capacités, `release` avec `reason`, `reason` non chaîne, `prompts/list`, `prompts/get` avec et sans `site`, prompt et argument inconnus, `seen` vérifié dans `readers\claude-ai.json` ; `modern-2026-07-28` : instructions, capacités, `prompts/*` avec `_meta`, `prompts/list` sans `_meta` refusé). Golden `tools-list.json` régénéré (descriptions + `reason`).
