@@ -4,7 +4,13 @@ profile, settings and store). Drives only that copy: page input through CDP (loo
 for this copy only), native surfaces through UI Automation (tests/annotations/uia.ps1) and messages posted to
 OUR windows, captures through PrintWindow. No SendInput, no other application touched.
 
-    python -I tests/annotations/sandbox_qa_v2.py run        # whole scenario -> build/annotations-v2-qa/report.json + PNGs
+    python -I tests/annotations/sandbox_qa_v2.py run        # whole scenario -> build/annotations-v3-qa/report.json + PNGs
+
+V3-A: the build under test is build/annotations-v3-preview (copied to build/annotations-v3-qa-app); never the user's
+build/annotations-preview. New checks: no launcher window outside the mode, the band's slide, a capture without any
+visible change (screen frames grabbed around the frame during the shot, with a negative control: the V2 path), the
+fill removed from the image (compared with the engine's own shot of the same clip, mode off), « Lue par » and
+« n'a pas pu la traiter » live, one restart line for both apps.
 
 Agent connection is redirected (BROWSER_ANNOTATIONS_CONNECT_ROOT = build/annotations-v2-qa/agent-configs); the
 real %APPDATA%\\Claude and %USERPROFILE%\\.codex are fingerprinted before and after (any change = failure).
@@ -27,8 +33,10 @@ sys.path.insert(0, str(HERE))
 import sandbox_qa as Q   # noqa: E402  (CDP, windows, PrintWindow helpers)
 
 ROOT = HERE.parents[1]
-QA = ROOT / 'build' / 'annotations-v2-qa'
+QA = ROOT / 'build' / 'annotations-v3-qa'
 Q.QA = QA
+Q.SRC = ROOT / 'build' / 'annotations-v3-preview'      # V3-A build under test (never build/annotations-preview: the user's)
+Q.APP = ROOT / 'build' / 'annotations-v3-qa-app'
 APP = Q.APP
 AGENTS = QA / 'agent-configs'
 STORE = APP / 'annotations'
@@ -116,6 +124,155 @@ def mode(on):
 
 def visible(cls):
     return [w for w in Q.windows() if w[1] == cls]
+
+
+LAUNCHER_TITLES = ('Annotations', 'Annotation', 'Historique', 'Annotation supprimée')
+
+
+def layer_windows():
+    """Every child layer window of the browser (visible or not): (title, visible)."""
+    import ctypes.wintypes as W
+    main = Q.main_window(); out = []
+    if not main:
+        return out
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def cb(h, _):
+        name = ctypes.create_unicode_buffer(128); user32.GetClassNameW(h, name, 128)
+        if name.value == 'BrowserAnnotationLayer':
+            title = ctypes.create_unicode_buffer(128); user32.GetWindowTextW(h, title, 128)
+            out.append((title.value, bool(user32.IsWindowVisible(h))))
+        return True
+    user32.EnumChildWindows(main, cb, 0)
+    return out
+
+
+def launcher_windows():
+    return [w for w in layer_windows() if w[0] in LAUNCHER_TITLES]
+
+
+def topmost(on):
+    h = Q.main_window()
+    if h:
+        user32.SetWindowPos(h, -1 if on else -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+
+
+ACCENT = (62, 103, 255)
+
+
+def accent_count(im, box=None):
+    px = im.convert('RGB').load(); w, h = im.size; n = 0
+    x0, y0, x1, y1 = box or (0, 0, w, h)
+    for y in range(max(0, y0), min(h, y1)):
+        for x in range(max(0, x0), min(w, x1)):
+            p = px[x, y]
+            if abs(p[0] - ACCENT[0]) < 16 and abs(p[1] - ACCENT[1]) < 16 and abs(p[2] - ACCENT[2]) < 16:
+                n += 1
+    return n
+
+
+def accent_bbox(im):
+    px = im.convert('RGB').load(); w, h = im.size; xs, ys = [], []
+    for y in range(0, h):
+        for x in range(0, w):
+            p = px[x, y]
+            if abs(p[0] - ACCENT[0]) < 16 and abs(p[1] - ACCENT[1]) < 16 and abs(p[2] - ACCENT[2]) < 16:
+                xs.append(x); ys.append(y)
+    return (min(xs), min(ys), max(xs) + 1, max(ys) + 1) if xs else None
+
+
+def grab(box):
+    from PIL import ImageGrab
+    return ImageGrab.grab(bbox=box, all_screens=True)
+
+
+def frames_during(box, action, ms):
+    """Screen frames of `box` (desktop px) grabbed every ~10 ms (BitBlt + CAPTUREBLT: layered windows included) while
+    `action` runs, for `ms` after it; kept raw, decoded afterwards. Returns [(ms since the action, PIL image)]."""
+    import threading
+    from fastgrab import Grabber
+    g = Grabber(box); raws = []; stop = threading.Event(); t0 = [0.0]
+    def loop():
+        while not stop.is_set():
+            raws.append((time.perf_counter(), g.grab()))
+    th = threading.Thread(target=loop, daemon=True); th.start()
+    time.sleep(0.15)
+    try:
+        t0[0] = time.perf_counter(); action()
+    finally:
+        time.sleep(ms / 1000); stop.set(); th.join(2)
+    frames = [((t - t0[0]) * 1000, g.image(raw)) for t, raw in raws]
+    g.close()
+    return frames, t0[0]
+
+
+def page_origin():
+    """Desktop px of the page's (0, 0): the WebView's top-left, from a screen grab of a marker the QA paints."""
+    Q.evaluate("(function(){var d=document.getElementById('qa-origin');if(!d){d=document.createElement('div');d.id='qa-origin';"
+               "d.style.cssText='position:fixed;left:0;top:0;width:6px;height:6px;background:rgb(255,0,255);z-index:2147483646;pointer-events:none';document.documentElement.appendChild(d);}return 1})()")
+    time.sleep(0.3)
+    r = ctypes.wintypes.RECT() if hasattr(ctypes, 'wintypes') else None
+    import ctypes.wintypes as W
+    r = W.RECT(); user32.GetWindowRect(Q.main_window(), ctypes.byref(r))
+    im = grab((r.left, r.top, r.right, r.bottom)).convert('RGB'); px = im.load(); found = None
+    for y in range(im.size[1]):
+        for x in range(im.size[0]):
+            p = px[x, y]
+            if p[0] > 240 and p[1] < 20 and p[2] > 240:
+                found = (r.left + x, r.top + y); break
+        if found:
+            break
+    Q.evaluate("(function(){var d=document.getElementById('qa-origin');if(d)d.remove();return 1})()")
+    return found
+
+
+def flash_probe(selector, label, control=False):
+    """Hover an element (the page's frame shows), grab the screen around the frame + label while it is clicked and
+    the shot is taken; every frame must keep the frame's accent pixels (a hidden frame = a flash)."""
+    pos = rect_of(selector); origin = page_origin()
+    if not pos or not origin:
+        return step(f'{label}: probe set-up', False, f'pos={pos} origin={origin}')
+    dpr = Q.evaluate('devicePixelRatio')
+    ws = Q.page_ws(); ws.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': pos[0], 'y': pos[1]}); time.sleep(0.45)
+    x0 = origin[0] + int((pos[0] - pos[2] / 2) * dpr) - 8; y0 = origin[1] + int((pos[1] - pos[3] / 2 - 26) * dpr) - 8
+    box = (x0, y0, origin[0] + int((pos[0] + pos[2] / 2) * dpr) + 8, origin[1] + int((pos[1] + pos[3] / 2) * dpr) + 8)
+    before = accent_count(grab(box))
+    mark = len(log_text())
+    def click():
+        ws.call('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': pos[0], 'y': pos[1], 'button': 'left', 'clickCount': 1})
+        ws.call('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': pos[0], 'y': pos[1], 'button': 'left', 'clickCount': 1})
+    frames, _ = frames_during(box, click, 500)
+    cap = wait_log(r'ANNOTATE capture \d+x\d+ [^\n]*', 3, mark)
+    counts = [(round(t), accent_count(im)) for t, im in frames]
+    low = [c for c in counts if c[1] < before * 0.7]
+    intervals = [b[0] - a[0] for a, b in zip(counts, counts[1:])]
+    rec = {'element': selector, 'frames': len(counts), 'medianFrameMs': sorted(intervals)[len(intervals) // 2] if intervals else None, 'accentBefore': before,
+           'minAccent': min(c[1] for c in counts) if counts else None, 'framesBelow70pc': len(low), 'control': control, 'capture': cap.group(0)[:160] if cap else None}
+    report['measures'].setdefault('flashProbe', []).append(rec)
+    try:
+        frames[min(range(len(frames)), key=lambda i: counts[i][1])][1].save(QA / f"flash-{'control' if control else 'v3'}-{label.split()[0]}-darkest-frame.png")
+    except Exception:
+        pass
+    if control:
+        return step(f'{label}: negative control (V2 path, page hides its frame) is DETECTED by the probe', len(low) > 0, rec)
+    return step(f'{label}: no visible change during the shot (every screen frame keeps the frame)', before > 50 and not low and cap is not None, rec)
+
+
+def rest_cpu(seconds):
+    """CPU time of the browser process (main exe only) over `seconds`, and its window/thread counts."""
+    import ctypes.wintypes as W
+    k32 = ctypes.windll.kernel32; h = k32.OpenProcess(0x1000, False, Q.our_pid())
+    def cpu():
+        c, e, k, u = W.FILETIME(), W.FILETIME(), W.FILETIME(), W.FILETIME(); k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(k), ctypes.byref(u))
+        return ((k.dwHighDateTime << 32 | k.dwLowDateTime) + (u.dwHighDateTime << 32 | u.dwLowDateTime)) / 1e4
+    c0 = cpu(); time.sleep(seconds); c1 = cpu(); k32.CloseHandle(h)
+    return {'seconds': seconds, 'cpuMs': round(c1 - c0, 1), 'percentOfOneCore': round((c1 - c0) / (seconds * 10), 3), 'launcherWindows': len(launcher_windows()), 'layerWindows': layer_windows()}
+
+
+def close_note():
+    pop = [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote']
+    if pop:
+        Q.post_key(0x1B, Q.find_child(pop[0][0], 'Edit'))
+    time.sleep(0.5)
 
 
 def pw_shot(name):
@@ -286,12 +443,35 @@ def main_run():
                 time.sleep(0.1)
         time.sleep(1.0)
         p = launch()
-        # ---- launcher at rest, nothing read before any use
+        # ---- V3 §6: no launcher outside the mode (no UIA node, no window at all), nothing read before any use
         ids = uia_list()
-        step('launcher visible at launch (UIA AnnotationLauncher)', 'AnnotationLauncher' in ids, '')
+        step('V3 no launcher at launch (no UIA AnnotationLauncher, zero launcher window)', 'AnnotationLauncher' not in ids and not launcher_windows(), layer_windows())
         step('store untouched at launch (no annotations folder)', not STORE.exists())
         step('no ANNOTATE line before use', 'ANNOTATE' not in log_text())
-        shot('0.1-launcher-at-rest')
+        shot('0.1-no-launcher-at-rest')
+        # ---- V3 §6 band: slides in (-32 -> 0 + fade, 220 ms); the launcher follows 120 ms later
+        origin = page_origin(); band_box = None
+        if origin:
+            import ctypes.wintypes as W
+            r = W.RECT(); user32.GetWindowRect(Q.main_window(), ctypes.byref(r))
+            band_box = (origin[0], origin[1] - 2, origin[0] + 400, origin[1] + 60)   # the page moves 32 DIP down: the band appears where the page's top was
+        topmost(True)
+        band_frames, _ = frames_during(band_box or (0, 0, 10, 10), lambda: invoke('AnnotateButton'), 600) if band_box else ([], None)
+        topmost(False)
+        if band_frames:
+            lum = [(round(t), sum(sum(px) for px in im.convert('RGB').resize((40, 6)).getdata()) / 240) for t, im in band_frames]
+            distinct = len({round(v) for _, v in lum})
+            report['measures']['bandFrames'] = lum
+            step('V3 band enters animated (several distinct frames on screen, not one jump)', distinct >= 4, f'{len(lum)} frames, {distinct} distinct levels')
+        mark0 = 0
+        time.sleep(0.5)
+        step('V3 launcher appears with the mode (UIA AnnotationLauncher)', 'AnnotationLauncher' in uia_list(), launcher_windows())
+        shot('0.2-mode-on-launcher')
+        invoke('AnnotationConnectLater'); time.sleep(0.4)
+        mode(False); time.sleep(0.7)
+        step('V3 mode off: launcher gone (no UIA node, zero launcher window)', 'AnnotationLauncher' not in uia_list() and not launcher_windows(), layer_windows())
+        # Back to a fresh launch for the V2 scenario (the « Plus tard » above must not count).
+        quit_browser(p); p = launch()
         # ---- 1.1 activation without agent -> modal
         mark = len(log_text())
         invoke('AnnotateButton')
@@ -310,6 +490,12 @@ def main_run():
         mark = len(log_text())
         mode(False); mode(True); time.sleep(0.6)
         step('same session: the modal does not reopen', not wait_log(r'connect modal opened', 1.0, mark) and 'AnnotationConnectReminder' in uia_list())
+        # ---- V3 §2 capture without a flash: screen frames around the frame while the shot is taken
+        topmost(True)
+        flash_probe('button.btn-primary, button[type=submit]', 'V3 « Payer »'); close_note()
+        flash_probe('h1', 'V3 h1'); close_note()
+        flash_probe('.summary h2, h2', 'V3 h2'); close_note()
+        topmost(False)
         # ---- 2.1 annotate an element (capture at the click)
         annotate_click('button.btn-primary, button[type=submit]', 'x', '2.1 element « Payer »')
         time.sleep(0.4)
@@ -418,11 +604,14 @@ def main_run():
         step('1.3 Claude connected (config merge, other keys kept, backup)', f and f.group(1) == 'connected' and 'browser-annotations-preview' in cfg.get('mcpServers', {}) and 'autre-serveur' in cfg['mcpServers'] and cfg.get('globalShortcut') == 'Ctrl+Space' and len(baks) == 1,
              f.group(0) if f else '')
         shot('1.3-connect-claude-connected')
+        step("V3 §1 « Redémarrez Claude pour l'activer » after the connection", "Redémarrez Claude pour l'activer" in uia_list())
         mark = len(log_text()); invoke('AnnotationConnectCodex')
         f = wait_log(r'ANNOTATE connect codex: (\w+)[^\n]*', 25, mark)
         toml = codex_cfg.read_text(encoding='utf-8')
         step('1.3 Codex connected (TOML table added, rest intact)', f and f.group(1) == 'connected' and '[mcp_servers.browser-annotations-preview]' in toml and toml.startswith('# test\nmodel = "gpt-5-codex"\n\n[mcp_servers.autre-serveur]'), f.group(0) if f else '')
         shot('1.3b-connect-both-connected')
+        names = uia_list()
+        step('V3 §1 one restart line for both apps (« Redémarrez Claude et Codex pour les activer »)', 'Redémarrez Claude et Codex pour les activer' in names, [l for l in names.splitlines() if 'Redémarrez' in l][:2])
         mark = len(log_text()); invoke('AnnotationDisconnectClaude')
         f = wait_log(r'ANNOTATE disconnect claude: (\w+)', 6, mark)
         cfg = json.loads(claude_cfg.read_text(encoding='utf-8'))
@@ -445,23 +634,57 @@ def main_run():
             time.sleep(1.5)
             shot('3.2-card-agent-working')
             names = uia_list()
+            if "s'en occupe" not in names:
+                time.sleep(1.0); names = uia_list()   # one more read (the UIA tree of a card being cross-faded)
             step('3.2 card « … s\'en occupe » + counter 1 (live, store watched)', "s'en occupe" in names and '1 en cours' in names, [l for l in names.splitlines() if 'Card' in l or 'Launcher' in l][:3])
             rc, out = try_mcp('resolve', live, 'Libellé', 'changé', 'dans', 'Checkout.tsx')
             time.sleep(1.5)
             shot('3.3-card-agent-done')
             names = uia_list()
             step('3.3 card « … a terminé » + « Recharger la page » (live)', 'a terminé' in names and 'Recharger la page' in names, out.splitlines()[0] if out else '')
+        # ---- V3 §5 « Lue par » (an agent read it: get, no claim) then « n'a pas pu la traiter » (release with a reason)
+        mode(True)
+        annotate_click('h1', 'x', 'V3 §5 element')
+        note_type('Le titre devrait être plus court')
+        mark = len(log_text()); invoke('AnnotationAdd')
+        w5 = wait_log(r'ANNOTATE written (\S+)/(ann_\w+)', 5, mark)
+        read_id = w5.group(2) if w5 else None
+        if read_id:
+            time.sleep(0.8)
+            rc, out = try_mcp('get', read_id); time.sleep(1.8)
+            rfile = next(iter((STORE / 'readers').glob('*.json')), None)
+            seen = json.loads(rfile.read_text(encoding='utf-8')).get('seen', {}) if rfile else {}
+            names = uia_list()
+            step('V3 « Lue par … » card live after an agent read it (no claim)', read_id in seen and 'Lue par' in names, [l for l in names.splitlines() if 'Lue par' in l][:2])
+            shot('v3-5-card-read')
+            try_mcp('claim', read_id); time.sleep(1.2)
+            rc, out = try_mcp('release', read_id, "Pas", "d'accès", 'au', 'code', 'source', 'de', 'ce', 'site.'); time.sleep(1.8)
+            names = uia_list()
+            step("V3 « … n'a pas pu la traiter » card live after a release with a reason", "n'a pas pu la traiter" in names, out.splitlines()[0] if out else '')
+            shot('v3-5-card-unhandled')
         # ---- 4.x history
         mode(False)
+        time.sleep(0.6)
+        step('V3 mode off: zero launcher window (before Ctrl+Maj+H)', not launcher_windows(), layer_windows())
         mark = len(log_text())
         Q.post_key(ord('H'), None, ctrl=True, shift=True)
         h = wait_log(r'ANNOTATE history opened \((\d+) annotations\)', 5, mark)
         via = 'Ctrl+Maj+H'
         if not h:   # a posted shortcut shares the keyboard state with whoever is typing on this PC: the launcher instead
-            invoke('AnnotationLauncher'); via = 'launcher (Ctrl+Maj+H posted did not arrive)'
+            Q.post_key(ord('H'), None, ctrl=True, shift=True); via = 'Ctrl+Maj+H (posted twice: the first did not arrive)'   # V3: no launcher outside the mode
             h = wait_log(r'ANNOTATE history opened \((\d+) annotations\)', 5, mark)
         step('4.1 history opens (store read at opening) via ' + via, h is not None, h.group(0) if h else '')
+        step('V3 history outside the mode: the panel alone (no launcher button)', 'AnnotationLauncher' not in uia_list() and any(t == 'Historique' for t, v in layer_windows()))
         shot('4.1-history')
+        if read_id:
+            names = uia_list()
+            step("V3 history row: « … n'a pas pu la traiter » (status)", "n'a pas pu la traiter" in names, [l for l in names.splitlines() if 'pas pu' in l][:1])
+            invoke(name='Le titre devrait être plus court'); time.sleep(0.8)
+            names = uia_list()
+            step('V3 history detail: steps (Ajoutée · Lue par · Prise en charge · n\'a pas pu la traiter « raison ») + help', 'Lue par' in names and "Pas d'accès au code source" in names and 'Claude Code ou Codex' in names,
+                 [l for l in names.splitlines() if 'Ajoutée' in l][:1])
+            shot('v3-5-history-detail-unhandled')
+            invoke(name="Retour à l'historique"); time.sleep(0.5)
         if live:
             invoke(name='Le libellé doit dire « Payer maintenant »'); time.sleep(0.8)
             shot('4.2-history-detail')
@@ -495,12 +718,51 @@ def main_run():
         # ---- passwords never stored
         leaked = [str(p) for p in STORE.rglob('*') if p.is_file() and (b'MDP-SANDBOX' in p.read_bytes() or b'client@exemple' in p.read_bytes())]
         step('the prefilled password / e-mail never reach the store', not leaked, leaked)
-        # ---- fullscreen hides the launcher
+        # ---- V3: the fill is removed from the image exactly (the engine's own shot of the same clip, mode off, same hover)
+        fill_check = None
+        try:
+            mode(True); pos = rect_of('button.btn-primary, button[type=submit]'); mark = len(log_text())
+            Q.mouse('click', pos[0], pos[1]); m6 = wait_log(r'ANNOTATE capture (\d+)x(\d+) [^\n]*clip (\{[^\n]*?\}); native frame[^\n]*\(fill removed\)', 4, mark)
+            note_type('Contrôle du remplissage'); mark2 = len(log_text()); invoke('AnnotationAdd')
+            w6 = wait_log(r'ANNOTATE written (\S+)/(ann_\w+) with shot', 5, mark2)
+            mode(False); time.sleep(0.5)
+            ws = Q.page_ws(); ws.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': pos[0], 'y': pos[1]}); time.sleep(0.5)
+            if m6 and w6:
+                import base64, io
+                from PIL import Image, ImageChops
+                ref = Image.open(io.BytesIO(base64.b64decode(ws.call('Page.captureScreenshot', json.loads(m6.group(3)))['data']))).convert('RGB')
+                d6 = next(iter(STORE.glob(f'*/{w6.group(2)}')))
+                got = Image.open(d6 / 'shot.png').convert('RGB')
+                if ref.size == got.size:
+                    diff = ImageChops.difference(ref, got); hist = diff.convert('L').histogram()
+                    worst = max(i for i, v in enumerate(hist) if v); over2 = sum(hist[3:]); total = sum(hist)
+                    fill_check = {'size': got.size, 'worstLevel': worst, 'pixelsOver2Levels': over2, 'pixels': total}
+                    ref.save(QA / 'v3-fill-reference-mode-off.png'); got.save(QA / 'v3-fill-stored-shot.png')
+                else:
+                    fill_check = {'sizes': (ref.size, got.size)}
+        except Exception as e:
+            fill_check = {'error': str(e)}
+        report['measures']['fillRemoval'] = fill_check
+        step('V3 fill removed: stored shot = the page without any frame (engine shot of the same clip, mode off)', bool(fill_check) and fill_check.get('pixels') and fill_check['pixelsOver2Levels'] <= fill_check['pixels'] * 0.002, fill_check)
+        # ---- fullscreen hides the launcher (V3: in the mode)
+        mode(True); time.sleep(0.6)
         Q.post_key(0x7A, None); time.sleep(1.0)
         hidden = 'AnnotationLauncher' not in uia_list()
         Q.post_key(0x7A, None); time.sleep(1.0)
-        step('launcher hidden in fullscreen (F11) and back after', hidden and 'AnnotationLauncher' in uia_list())
+        step('launcher hidden in fullscreen (F11) and back after (mode on)', hidden and ('AnnotationLauncher' in uia_list() or not mode_active()))
+        mode(False); time.sleep(1.0)
+        # ---- V3 rest outside the mode: zero launcher window, CPU of the browser process over 10 s
+        step('V3 rest outside the mode after use: zero launcher window', not launcher_windows(), layer_windows())
+        report['measures']['restOutsideMode'] = rest_cpu(10)
         report['log'] = [l for l in log_text().splitlines() if 'ANNOTATE' in l or 'SETTINGS annotation' in l]
+        # ---- negative control: the same probe on the V2 path (page hides its frame for the shot) sees the flash
+        quit_browser(p); p = launch({'BROWSER_ANNOTATIONS_QA_NO_NATIVE_FRAME': '1'}, fresh=False)
+        mode(True); time.sleep(0.4)
+        if 'AnnotationConnectLater' in uia_list():
+            invoke('AnnotationConnectLater'); time.sleep(0.4)
+        topmost(True)
+        flash_probe('h1', 'control h1', control=True); close_note()
+        topmost(False)
     except BaseException:
         step('driver', False, traceback.format_exc())
     finally:

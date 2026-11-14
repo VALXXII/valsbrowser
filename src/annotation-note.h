@@ -249,7 +249,9 @@ class NotePopover : public Animator::Client {
         if (final_.bottom > bounds_.bottom) OffsetRect(&final_, 0, bounds_.bottom - final_.bottom);
         SetWindowPos(hwnd_, nullptr, final_.left, final_.top, final_.right - final_.left, h, SWP_NOZORDER | SWP_NOACTIVATE);
         if (rt_) rt_->Resize(D2D1::SizeU(final_.right - final_.left, h));
-        PlaceEdit(); InvalidateRect(hwnd_, nullptr, FALSE); PlacePill(Motion::Now());
+        // V3 (no flash): the grown area is painted at once (WM_PAINT would come later: a compositor frame of
+        // uninitialised pixels under the field when a new line is typed).
+        PlaceEdit(); InvalidateRect(hwnd_, nullptr, FALSE); if (settled_ && open_) UpdateWindow(hwnd_); PlacePill(Motion::Now());
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
     NoteView Visual(Motion::Time now) {
@@ -502,9 +504,12 @@ class NotePopover : public Animator::Client {
         motion_.EnablePolish();
         return true;
     }
-    void Settle() {
-        settled_ = true; ghost_.Hide();
-        SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA); InvalidateRect(hwnd_, nullptr, FALSE); UpdateWindow(hwnd_);
+    void Settle() {   // V3 (no flash): the real panel painted and opaque first, then the ghost goes (overlap, never a gap)
+        settled_ = true;
+        InvalidateRect(hwnd_, nullptr, FALSE); UpdateWindow(hwnd_);
+        SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
+        DwmFlush();
+        ghost_.Hide();
     }
     std::wstring projectId_;
 public:
@@ -573,7 +578,7 @@ public:
         presence_.Hide(now, animate, reduced_);
         pillIn_.Set(0, now, animate ? (reduced_ ? Spec::modalReducedOut : Spec::noteOut) : 0, Curves::out);
         if (GetForegroundWindow() == hwnd_ && owner_) SetForegroundWindow(owner_);
-        if (ghost) { ShowWindow(hwnd_, SW_HIDE); PaintGhost(now); }
+        if (ghost) { PaintGhost(now); DwmFlush(); ShowWindow(hwnd_, SW_HIDE); }   // V3: the ghost is on screen before the panel goes
         else if (reduced_ && animate) EnableWindow(hwnd_, FALSE);
         else { ShowWindow(hwnd_, SW_HIDE); ghost_.Hide(); }
         PlacePill(now);

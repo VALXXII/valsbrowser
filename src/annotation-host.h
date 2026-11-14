@@ -210,6 +210,7 @@ struct ClipPlan {
     unsigned outW = 0, outH = 0;                  // expected image size (device px x scale)
     double markX = 0, markY = 0, markW = 0, markH = 0;
     double viewX = 0, viewY = 0;                  // the clip's origin in CSS px of the viewport (V3: fill removal)
+    double scrollX = 0, scrollY = 0, dpr = 1;     // V3: the engine snaps a fractional scroll to device px (fill removal)
     std::string crop;
 };
 inline ClipPlan PlanClip(const BA::Rect& r, const BA::Viewport& vp, double marginCss = 24, unsigned maxSide = BA::MaxShotSide) {
@@ -228,7 +229,7 @@ inline ClipPlan PlanClip(const BA::Rect& r, const BA::Viewport& vp, double margi
     p.scale = longest > maxSide ? maxSide / longest : 1.0;
     p.outW = std::min<unsigned>(maxSide, std::max(1u, unsigned(std::lround(p.width * dpr * p.scale))));
     p.outH = std::min<unsigned>(maxSide, std::max(1u, unsigned(std::lround(p.height * dpr * p.scale))));
-    p.x = x0 + vp.scrollX; p.y = y0 + vp.scrollY; p.viewX = x0; p.viewY = y0;
+    p.x = x0 + vp.scrollX; p.y = y0 + vp.scrollY; p.viewX = x0; p.viewY = y0; p.scrollX = vp.scrollX; p.scrollY = vp.scrollY; p.dpr = dpr;
     p.markX = std::max(0.0, ex0 - x0); p.markY = std::max(0.0, ey0 - y0);
     p.markW = std::max(0.0, std::min(p.width, ex1 - x0) - p.markX); p.markH = std::max(0.0, std::min(p.height, ey1 - y0) - p.markY);
     const bool elementClipped = ex0 < 0 || ey0 < 0 || ex1 > vp.width || ey1 > vp.height;

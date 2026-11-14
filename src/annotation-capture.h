@@ -141,9 +141,17 @@ inline Result Process(const std::string& capture, const BrowserAnnotations::Rect
 // The fill of the page's frame (V3) mapped into an image of w x h covering the clip; mark = CSS px of the viewport.
 inline Fill FillIn(const AnnotationHost::ClipPlan& plan, const AnnotationHost::Mark* mark, unsigned w, unsigned h, double r, double g, double b) {
     Fill f; if (!mark || !mark->present || mark->fill <= 0 || plan.width <= 0 || plan.height <= 0) return f;
-    const double kx = w / plan.width, ky = h / plan.height;
-    f.x0 = (mark->x - plan.viewX) * kx; f.x1 = (mark->x + mark->w - plan.viewX) * kx;
-    f.y0 = (mark->y - plan.viewY) * ky; f.y1 = (mark->y + mark->h - plan.viewY) * ky;
+    // Device px: the engine draws the page at the scroll offset rounded to whole device pixels (a fractional scroll
+    // moves the content by up to half a pixel against getBoundingClientRect), and the shot starts on a whole device
+    // pixel. Measured: without this, the fill's first and last rows were off by up to 7 levels (QA, fill_probe.py).
+    const double dpr = plan.dpr > 0 ? plan.dpr : 1, scale = plan.width > 0 ? (w / plan.width) / dpr : 1;
+    auto axis = [&](double css0, double css1, double view, double scroll, double& o0, double& o1) {
+        const double snap = scroll * dpr - std::round(scroll * dpr);           // content offset, device px
+        const double origin = std::floor(view * dpr + snap + 1e-6);            // first device row of the shot
+        o0 = (css0 * dpr + snap - origin) * scale; o1 = (css1 * dpr + snap - origin) * scale;
+    };
+    axis(mark->x, mark->x + mark->w, plan.viewX, plan.scrollX, f.x0, f.x1);
+    axis(mark->y, mark->y + mark->h, plan.viewY, plan.scrollY, f.y0, f.y1);
     f.r = r; f.g = g; f.b = b; f.alpha = mark->fill; f.on = f.x1 > 0 && f.y1 > 0 && f.x0 < w && f.y0 < h;
     return f;
 }

@@ -58,6 +58,7 @@ var T = 'transform 120ms cubic-bezier(0.2,0,0,1),opacity 120ms ease-out';
 root.innerHTML = '<style>' +
   '.x{position:fixed;left:0;top:0;transform-origin:0 0;opacity:0;pointer-events:none;will-change:transform,opacity}' +
   '.on{transition:' + (reduced ? 'opacity 120ms ease-out' : T) + '}' +
+  '.mv{transition:opacity 120ms ease-out}' +
   '.f{width:100px;height:100px;background:rgba(' + A + ',0.08)}' +
   '.h,.v{background:rgb(' + A + ')}.h{width:100px;height:2px}.v{width:2px;height:100px}' +
   '.l{font:500 11px/16px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;background:rgb(' + A + ');' +
@@ -78,6 +79,8 @@ function tr(el, x, y, sx, sy) {
 }
 function setOpacity(v) { for (var i = 0; i < parts.length; i++) parts[i].style.opacity = v; }
 function animate(onOff) { for (var i = 0; i < parts.length; i++) { if (onOff) parts[i].classList.add('on'); else parts[i].classList.remove('on'); } }
+// The position jumps (no glide from the old place) while the opacity goes on from what is on screen.
+function moveOnly(onOff) { for (var i = 0; i < parts.length; i++) { if (onOff) { parts[i].classList.remove('on'); parts[i].classList.add('mv'); } else { parts[i].classList.remove('mv'); parts[i].classList.add('on'); } } }
 
 // ---- geometry
 function rectOf(info) {
@@ -257,12 +260,20 @@ function sendSelect(info, selText, ev) {
 }
 // marks: the edges and the label only (the fill stays: it is removed from the image by the host).
 function conceal(on, marksOnly) { for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; }
-// Finishes any glide in progress (transitions jump to their end) so the geometry sent is what is on screen.
-function settle() { animate(false); void getComputedStyle(fill).transform; void getComputedStyle(label).transform; animate(true); }
+// At the click: the frame jumps to its final state (any glide or fade-in ends now, transitions off inline), so the
+// geometry and the fill opacity sent are exactly what the next frame shows (V3: a click within a fade-in left the
+// fill nearly transparent in the shot, and the host removed 8 % that was not there).
+function settle() {
+  var i;
+  for (i = 0; i < parts.length; i++) parts[i].style.transition = 'none';
+  if (shown) setOpacity(1);
+  for (i = 0; i < parts.length; i++) { var cs = getComputedStyle(parts[i]); void cs.opacity; void cs.transform; }
+  for (i = 0; i < parts.length; i++) parts[i].style.transition = '';
+}
 function geometry(info) {
   var r = rectOf(info), lb = label.getBoundingClientRect();
   return { x: r.x, y: r.y, w: Math.max(r.w, 1), h: Math.max(r.h, 1), lx: lb.left, ly: lb.top, lw: lb.width, lh: lb.height,
-           text: String(label.textContent || '').slice(0, 200), fill: 0.08 };
+           text: String(label.textContent || '').slice(0, 200), fill: 0.08 * (parseFloat(getComputedStyle(fill).opacity) || 0) };
 }
 
 // ---- drawing
@@ -270,7 +281,7 @@ function place(info) {
   if (!info) { if (shown) { setOpacity(0); shown = false; } return; }
   var r = rectOf(info);
   var first = !shown;
-  if (first) animate(false);
+  if (first) moveOnly(true);
   var x = r.x, y = r.y, w = Math.max(r.w, 1), h = Math.max(r.h, 1);
   // 100 px bases: a 1 px box would be snapped to one device pixel (DPR 1.25 -> scale 20 % short).
   tr(fill, x, y, w / 100, h / 100); tr(eT, x, y, w / 100, 1); tr(eB, x, y + h - 2, w / 100, 1); tr(eL, x, y, 1, h / 100); tr(eR, x + w - 2, y, 1, h / 100);
@@ -279,7 +290,7 @@ function place(info) {
   var ly = y >= 22 ? y - 22 : Math.min(y + h + 4, innerHeight - 20);
   var lx = Math.max(0, Math.min(x, innerWidth - 120));
   tr(label, lx, ly);
-  if (first) { void getComputedStyle(fill).transform; animate(true); setOpacity(1); shown = true; }
+  if (first) { void getComputedStyle(fill).transform; moveOnly(false); setOpacity(1); shown = true; }
 }
 // Shields over the visible top-level iframes (same and cross origin): their events reach our window
 // listeners, the hit-test (elementsFromPoint without our host) still finds the iframe below.

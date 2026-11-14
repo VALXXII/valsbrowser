@@ -16,6 +16,7 @@
 #include <d2d1.h>
 #include <dwrite_1.h>
 #include <wincodec.h>
+#include <dwmapi.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -632,8 +633,11 @@ public:
         if (hr == D2DERR_RECREATE_TARGET) { DropTarget(); return false; }
         POINT src{0, 0}; SIZE size{w, h}; BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
         if (options_.child) {
-            SetWindowPos(hwnd_, raise ? HWND_TOP : nullptr, r.left, r.top, w, h, SWP_NOACTIVATE | (raise ? 0 : SWP_NOZORDER) | SWP_NOREDRAW);
-            UpdateLayeredWindow(hwnd_, nullptr, nullptr, &size, mem_, &src, 0, &blend, ULW_ALPHA);
+            // V3 (no flash): position, size and pixels in ONE update. (Moving with SetWindowPos first gave the
+            // compositor a frame of the old pixels at the new place / size.) pptDst = parent-client px for a child.
+            POINT dst{r.left, r.top};
+            UpdateLayeredWindow(hwnd_, nullptr, &dst, &size, mem_, &src, 0, &blend, ULW_ALPHA);
+            if (raise) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
         } else {
             POINT dst{r.left, r.top};
             HDC screen = GetDC(nullptr); UpdateLayeredWindow(hwnd_, screen, &dst, &size, mem_, &src, 0, &blend, ULW_ALPHA); ReleaseDC(nullptr, screen);

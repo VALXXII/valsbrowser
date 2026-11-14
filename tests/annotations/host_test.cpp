@@ -188,7 +188,14 @@ static void V3Capture() {
     BA::Rect r; r.x = 411.5; r.y = 688.25; r.width = 120; r.height = 40; BA::Viewport vp; vp.width = 1000; vp.height = 800; vp.scrollY = 420; vp.devicePixelRatio = 1.5;
     const auto plan = AH::PlanClip(r, vp); CHECK(plan.ok && plan.viewX == 387 && plan.viewY == 664 && plan.y == 664 + 420);
     const auto f = AnnotationCapture::FillIn(plan, &c.selection.mark, plan.outW, plan.outH, 62, 103, 255);
-    CHECK(f.on && std::fabs(f.x0 - (411.5 - 387) * plan.outW / plan.width) < 1e-9 && std::fabs(f.y1 - (688.25 + 40 - 664) * plan.outH / plan.height) < 1e-9);
+    // device px: origin = floor(387 x 1.5) = 580 (the engine starts the shot on a whole pixel), scroll 420 x 1.5 whole
+    CHECK(f.on && std::fabs(f.x0 - (411.5 * 1.5 - 580) * (plan.outW / plan.width / 1.5)) < 1e-9 && std::fabs(f.y1 - ((688.25 + 40) * 1.5 - 996) * (plan.outH / plan.height / 1.5) * (plan.outW / plan.width) / (plan.outH / plan.height)) < 1e-6);
+    {   // a fractional scroll (0.2 CSS px at 1.25): the content sits a quarter pixel lower than getBoundingClientRect says
+        BA::Viewport v2 = vp; v2.scrollY = 432.2; v2.devicePixelRatio = 1.25; const auto p2 = AH::PlanClip(r, v2);
+        const auto f2 = AnnotationCapture::FillIn(p2, &c.selection.mark, p2.outW, p2.outH, 62, 103, 255);
+        const double origin = std::floor(p2.viewY * 1.25 + .25 + 1e-6);
+        CHECK(std::fabs(f2.y0 - (688.25 * 1.25 + .25 - origin) * (p2.outW / p2.width / 1.25)) < 1e-6);
+    }
     // Removal: a synthetic page under an 8 % accent fill, with fractional edges, comes back within 1 level.
     const unsigned w = 64, h = 40; std::vector<std::uint8_t> page(size_t(w) * h * 4), shot;
     for (unsigned y = 0; y < h; ++y) for (unsigned x = 0; x < w; ++x) { auto* p = &page[(size_t(y) * w + x) * 4]; p[0] = std::uint8_t((x * 37 + y * 11) & 255); p[1] = std::uint8_t((x * 5 + 200) & 255); p[2] = std::uint8_t((y * 9 + x) & 255); p[3] = 255; }

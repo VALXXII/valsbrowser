@@ -63,7 +63,7 @@ std::uint64_t serials = 0;                    // never reset: a new session neve
 AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame;
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
 // the image is ready) so the page is only told to resume once the engine has its frame.
-struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0; };
+struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
 ShotJob shot; bool resumeOwed = false; std::uint64_t frameSerial = 0;
 bool uiReady = false, purged = false, countLoaded = false, laterThisSession = false, connectLaunch = false;
 std::unique_ptr<BA::Store> store; std::mutex writeLock;
@@ -74,7 +74,10 @@ int claimed = 0;                              // launcher counter: annotations a
 bool statusBusy = false, statusDirty = false;
 enum class Card { None, Working, NoAgent, Added, Done, Read, Unhandled } card = Card::None; std::string cardId, cardSite;
 std::wstring loggedOnce;
-HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2;
+HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3;
+// V3: the note panel is built right after the engine is asked for the shot (building it takes 30-55 ms of the UI
+// thread: done before, it delayed the page's « hidden » and so the shot by as much). 60 ms at most after the click.
+struct PendingPanel { bool on = false; std::uint64_t serial = 0; AUI::NoteRequest req; RECT target{}, page{}; bool keyboard = false; } panel;
 struct Watch { HANDLE thread = nullptr, stop = nullptr; std::wstring root; } watch; std::atomic<bool> watchSignal{false};
 struct Menu { bool valid = false, selection = false; POINT at{}; std::wstring text; } menu;
 // A capture still being prepared when « Ajouter » was clicked: it joins the written annotation.
@@ -710,30 +713,49 @@ void Capture(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
         ShotDone(tab, serial);
         auto wide = std::make_shared<std::wstring>(json); auto result = std::make_shared<AnnotationCapture::Result>(); auto work = std::make_shared<double>(0);
         auto mark = std::make_shared<AH::Mark>(sel.mark);
-        Run([wide, result, plan, dpr, tw, th, work, mark, accent] {
+        static const std::wstring rawDir = EnvVar(L"BROWSER_ANNOTATIONS_QA_RAW_DIR");
+        Run([wide, result, plan, dpr, tw, th, work, mark, accent, serial] {
                 const double w0 = NowMs(); struct Done { double w0; std::shared_ptr<double> out; ~Done() { *out = NowMs() - w0; } } done{w0, work};
                 std::string png;
                 if (!AH::ScreenshotData(AH::Utf8(*wide), png)) { result->path = "cdp"; result->why = "no image in the reply"; return; }
+                if (!rawDir.empty()) {   // QA only (BROWSER_ANNOTATIONS_QA_RAW_DIR): the engine's image before the fill removal
+                    HANDLE f = CreateFileW((rawDir + L"\\raw-" + std::to_wstring(serial) + L".png").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (f != INVALID_HANDLE_VALUE) { DWORD n = 0; WriteFile(f, png.data(), DWORD(png.size()), &n, nullptr); CloseHandle(f); }
+                }
                 wide->clear(); wide->shrink_to_fit();
                 *result = AnnotationCapture::ProcessClip(std::move(png), plan, dpr, tw, th, mark.get(), accent);
             },
-            [result, serial, selectedAt, lag, engineAt, engineDone, work, handoff, frameMs, mark] {
-                OnCaptured(serial, *result, selectedAt, lag, L"native frame " + Ms(frameMs) + L" ms, page handoff " + Ms(engineAt - handoff) + L" ms, engine asked after " + Ms(engineAt - selectedAt) +
-                                                             L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/fill/thumbnail " + Ms(*work) + L" ms" + (mark->present ? L" (fill removed)" : L"") +
+            [result, serial, selectedAt, lag, engineAt, engineDone, work, handoff, frameMs, mark, plan] {
+                const double panelMs = shot.serial == serial ? shot.panelMs : -1;
+                OnCaptured(serial, *result, selectedAt, lag, L"clip " + AH::Wide(AH::ClipParams(plan)) + L"; native frame " + Ms(frameMs) + L" ms, page handoff " + Ms(engineAt - handoff) + L" ms, engine asked after " + Ms(engineAt - selectedAt) +
+                                                             L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/fill/thumbnail " + Ms(*work) + L" ms" + (mark->present ? L" (fill removed)" : L"") + L", panel built in " + Ms(panelMs) + L" ms while the engine worked" +
                                                              L" => image in memory " + Ms(engineDone + *work - selectedAt) + L" ms after the selection; UI hand-off " + Ms(NowMs() - engineDone - *work) + L" ms");
             });
         return S_OK; });
     const HRESULT hr = t->view->CallDevToolsProtocolMethod(L"Page.captureScreenshot", AH::Wide(AH::ClipParams(plan)).c_str(), cb); cb->Release();
     if (FAILED(hr)) { Log(L"ANNOTATE Page.captureScreenshot refused: falling back to CapturePreview"); Preview(t, serial, sel, selectedAt, lag); }
 }
+void ShowPanel() {
+    if (!panel.on) return; panel.on = false; if (post) KillTimer(post, PanelTimer);
+    if (!s.active || s.serial != panel.serial) return;
+    if (s.cap == Cap::Failed) panel.req.capture = AUI::CaptureState::Unavailable;
+    const double p0 = NowMs();
+    if (!note.Show(panel.req, panel.target, panel.page, panel.keyboard, Reduced())) { Log(L"ANNOTATE note panel unavailable"); return; }
+    shot.panelMs = NowMs() - p0;
+    if (launcher.CardVisible()) { launcher.HideCard(); card = Card::None; }
+}
 void OnHidden(const std::shared_ptr<Tab>& t, std::int64_t serial) {
     if (!shot.waiting || serial != shot.pageSeq) return;
+    shot.hiddenAt = NowMs();
     if (post) KillTimer(post, HideTimer);
     s.captureWanted = false; Capture(t, shot.serial);
+    ShowPanel();   // the engine works while the panel is built
 }
 // The page frame's native copy (src/annotation-frame.h), on screen when this returns true.
 bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
     if (!sel.mark.present) return false;
+    static const bool control = !EnvVar(L"BROWSER_ANNOTATIONS_QA_NO_NATIVE_FRAME").empty();   // QA negative control only: the V2 path (visible hide)
+    if (control) return false;
     AUI::FrameMark m; m.page = PageClient(t); m.dpr = sel.target.viewport.devicePixelRatio; m.accent = AccentRgb();
     m.x = sel.mark.x; m.y = sel.mark.y; m.w = sel.mark.w; m.h = sel.mark.h; m.lx = sel.mark.lx; m.ly = sel.mark.ly; m.lw = sel.mark.lw; m.lh = sel.mark.lh; m.text = AH::Wide(sel.mark.text);
     if (post) KillTimer(post, FrameTimer);
@@ -793,8 +815,9 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         s.pageSeq = shot.pageSeq;
         if (EnsurePost()) SetTimer(post, HideTimer, 800, nullptr);
     }
-    if (!note.Show(req, target, page, sel.keyboard, Reduced())) { Log(L"ANNOTATE note panel unavailable"); return; }
-    if (launcher.CardVisible()) { launcher.HideCard(); card = Card::None; }
+    panel.on = true; panel.serial = s.serial; panel.req = req; panel.target = target; panel.page = page; panel.keyboard = sel.keyboard;
+    if (shot.waiting && shot.serial == s.serial && EnsurePost()) SetTimer(post, PanelTimer, 60, nullptr);   // shown by OnHidden, or by the timer
+    else ShowPanel();
 }
 void OnSubmit(const AUI::NoteSubmission& sub) {
     auto t = ModeTab(); if (!s.active || !t) { note.Close(false); return; }
@@ -934,7 +957,8 @@ void Exit(const wchar_t* why, bool pageChanged) {
     if (!s.active) return;
     auto t = ModeTab(); const bool hadPopover = note.Visible();
     Cmd(t, L"exit");
-    if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); }
+    if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); KillTimer(post, PanelTimer); }
+    panel = PendingPanel{};
     frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;   // the page's frame is gone with its script
     const std::wstring draft = hadPopover && note.Edit() ? [] { const int n = GetWindowTextLengthW(note.Edit()); std::wstring d(size_t(n) + 1, L'\0'); GetWindowTextW(note.Edit(), d.data(), n + 1); d.resize(size_t(n)); return d; }() : s.draft;
     // A capture still owed to a written annotation is lost if its page goes away (the note stays, without image).
@@ -957,7 +981,8 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (connect.Visible() || pendingInstall) RefreshAgents();
         return 0;
     }
-    if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } return 0; }
+    if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } ShowPanel(); return 0; }
+    if (m == WM_TIMER && w == PanelTimer) { KillTimer(h, PanelTimer); ShowPanel(); return 0; }
     if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
     return DefWindowProcW(h, m, w, l);
 }

@@ -14,7 +14,7 @@ foreach ($t in $tops) {
     $all = $t.FindAll([System.Windows.Automation.TreeScope]::Subtree, [System.Windows.Automation.Condition]::TrueCondition)
     foreach ($e in $all) {
         $aid = $e.Current.AutomationId; $nm = $e.Current.Name
-        if ($List -and ($aid -like "Annotat*" -or ($nm -ne "" -and $e.Current.ControlType.ProgrammaticName -ne "ControlType.Pane" -and $e.Current.ControlType.ProgrammaticName -ne "ControlType.Document"))) { "{0} | {1} | {2} | enabled={3} | {4}" -f $aid, $nm, $e.Current.ControlType.ProgrammaticName, $e.Current.IsEnabled, $e.Current.HelpText }
+        if ($List -and ($aid -like "Annotat*" -or ($nm -ne "" -and $e.Current.ControlType.ProgrammaticName -ne "ControlType.Pane" -and $e.Current.ControlType.ProgrammaticName -ne "ControlType.Document"))) { "{0} | {1} | {2} | enabled={3} | {4} | {5}" -f $aid, $nm, $e.Current.ControlType.ProgrammaticName, $e.Current.IsEnabled, $e.Current.HelpText, $e.Current.ItemStatus }
         if (-not $found -and (($Id -ne "" -and $aid -eq $Id) -or ($Name -ne "" -and $nm -eq $Name))) { $found = $e }
     }
 }
