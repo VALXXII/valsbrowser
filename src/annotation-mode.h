@@ -778,12 +778,13 @@ bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
     if (control) return false;
     AUI::FrameMark m; m.page = PageClient(t); m.dpr = sel.target.viewport.devicePixelRatio; m.accent = AccentRgb();
     m.x = sel.mark.x; m.y = sel.mark.y; m.w = sel.mark.w; m.h = sel.mark.h; m.lx = sel.mark.lx; m.ly = sel.mark.ly; m.lw = sel.mark.lw; m.lh = sel.mark.lh; m.text = AH::Wide(sel.mark.text);
-    for (const auto& b : sel.mark.bands) m.bands.push_back({b.kind, b.x, b.y, b.w, b.h});          // V3-B: the spacing inspector
+    // V3-B: the spacing inspector (padding ring, gaps, value labels, the viewport of the hatches' phase)
+    m.hasPad = sel.mark.hasPad; std::copy(sel.mark.pad, sel.mark.pad + 8, m.pad); m.radius = sel.mark.radius; m.innerRadius = sel.mark.innerRadius; m.vw = sel.mark.vw; m.vh = sel.mark.vh;
+    for (const auto& b : sel.mark.bands) m.gaps.push_back({b.x, b.y, b.w, b.h});
     for (const auto& l : sel.mark.labels) m.labels.push_back({l.kind, l.x, l.y, l.w, l.h, AH::Wide(l.text)});
-    m.radius = sel.mark.radius;
-    if (!m.bands.empty()) {   // QA evidence: what the native copy draws for the inspector
-        int pad = 0, gap = 0; std::wstring labels; for (const auto& b : m.bands) (b.kind ? gap : pad)++; for (const auto& l : m.labels) labels += (labels.empty() ? L"" : L",") + std::wstring(l.kind ? L"g" : L"p") + l.text;
-        Log(L"ANNOTATE inspector at the selection: " + std::to_wstring(pad) + L" padding bands, " + std::to_wstring(gap) + L" gap bands, labels " + labels + L"; style " + AH::StyleSummary(sel.target));
+    if (sel.mark.HasSpace()) {   // QA evidence: what the native copy draws for the inspector
+        std::wstring labels; for (const auto& l : m.labels) labels += (labels.empty() ? L"" : L",") + std::wstring(l.kind ? L"g" : L"p") + l.text;
+        Log(L"ANNOTATE inspector at the selection: padding ring " + std::wstring(m.hasPad ? L"yes" : L"no") + L", " + std::to_wstring(m.gaps.size()) + L" gap rectangles, labels " + labels + L"; style " + AH::StyleSummary(sel.target));
     }
     if (post) KillTimer(post, FrameTimer);
     return frame.Show(m);

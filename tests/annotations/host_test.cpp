@@ -224,19 +224,22 @@ static void V3B() {
     namespace D = NativeChrome::Annotations::Dither;
     const std::string n = "clm_abcdefghijklmnopqrstuvwxyz";
     const std::string sp = ",\"seq\":4,\"mark\":{\"x\":140,\"y\":96,\"w\":340,\"h\":179,\"lx\":140,\"ly\":74,\"lw\":120,\"lh\":20,\"text\":\"div.summary\",\"fill\":0.08,"
-        "\"sp\":{\"bands\":[[0,141,97,338,20],[0,141,258,338,20],[0,141,117,20,141],[1,161,137,298,14]],\"labels\":[[0,300,100,20,14,\"20\"],[1,300,137,20,14,\"14\"]],\"radius\":9}}";
+        "\"sp\":{\"pad\":[141,97,338,177,161,117,298,137],\"radius\":9,\"inner\":0,\"gaps\":[[161,137,298,14],[161,171,298,14]],"
+        "\"labels\":[[0,300,100,20,14,\"20\"],[1,300,137,20,14,\"14\"]],\"vw\":1180,\"vh\":698}}";
     std::string target = GoodTarget;
     target.replace(target.find("\"sourceAttributes\":{}"), 21, "\"sourceAttributes\":{},\"spacing\":{\"padding\":[18,20,18,20],\"gap\":{\"row\":14,\"column\":0},\"layout\":\"flex\"}");
     auto c = AH::CheckMessage(Message(n, 7, "select", Select(target) + sp), n, 7);
-    CHECK(c.env.op == AH::Op::Select && c.selection.mark.present && c.selection.mark.bands.size() == 4 && c.selection.mark.labels.size() == 2);
-    CHECK(c.selection.mark.bands[3].kind == 1 && c.selection.mark.bands[3].h == 14 && c.selection.mark.labels[1].text == "14" && c.selection.mark.radius == 9);
+    CHECK(c.env.op == AH::Op::Select && c.selection.mark.present && c.selection.mark.hasPad && c.selection.mark.bands.size() == 2 && c.selection.mark.labels.size() == 2);
+    CHECK(c.selection.mark.pad[2] == 338 && c.selection.mark.pad[7] == 137 && c.selection.mark.bands[1].y == 171 && c.selection.mark.labels[1].text == "14" && c.selection.mark.radius == 9 && c.selection.mark.vw == 1180);
     const auto& g = c.selection.target.spacing;
     CHECK(g.present && g.top == 18 && g.right == 20 && g.hasGap && g.row == 14 && g.column == 0 && g.layout == "flex");
     CHECK(AH::StyleSummary(c.selection.target) == L"padding 18 20 \u00b7 gap 14 0 (flex)");
     // A malformed inspector is dropped, never the selection; a malformed spacing likewise.
-    std::string bad = sp; bad.replace(bad.find("[1,161,137,298,14]"), 18, "[1,161,137,\"x\",14]");
+    std::string bad = sp; bad.replace(bad.find("[161,171,298,14]"), 16, "[161,171,\"x\",14]");
     auto b = AH::CheckMessage(Message(n, 7, "select", Select(target) + bad), n, 7);
-    CHECK(b.env.op == AH::Op::Select && b.selection.mark.present && b.selection.mark.bands.empty() && b.selection.mark.labels.empty());
+    CHECK(b.env.op == AH::Op::Select && b.selection.mark.present && !b.selection.mark.HasSpace() && b.selection.mark.labels.empty());
+    bad = sp; bad.replace(bad.find("[141,97,338,177,161,117,298,137]"), 32, "[141,97,338]");
+    CHECK(!AH::CheckMessage(Message(n, 7, "select", Select(target) + bad), n, 7).selection.mark.HasSpace());
     std::string t2 = GoodTarget; t2.replace(t2.find("\"sourceAttributes\":{}"), 21, "\"sourceAttributes\":{},\"spacing\":{\"padding\":[1,2,3],\"layout\":\"flex\"}");
     auto d = AH::CheckMessage(Message(n, 7, "select", Select(t2)), n, 7);
     CHECK(d.env.op == AH::Op::Select && !d.selection.target.spacing.present);
@@ -244,10 +247,11 @@ static void V3B() {
     auto e = AH::CheckMessage(Message(n, 7, "select", Select(t3)), n, 7);
     CHECK(e.selection.target.spacing.present && AH::StyleSummary(e.selection.target) == L"Taille, couleurs et marges");   // no padding, no gap: the V2 line
     {   BA::Annotation a; a.target = c.selection.target; BA::Sanitize(a); CHECK(BA::SpacingText(a.target.spacing) == "padding 18 20 \xc2\xb7 gap 14 0 (flex)"); }
-    // Cursor: 32 / 48 / 64 from the DPI x the Windows pointer size; the hot spot is the arrow's tip.
+    // Cursor « viseur » (direction B): 32 / 48 / 64 from the DPI x the Windows pointer size; the hot spot is the centre.
     CHECK(D::Cursor::SizeFor(96, 32) == 32 && D::Cursor::SizeFor(120, 32) == 48 && D::Cursor::SizeFor(144, 32) == 48 && D::Cursor::SizeFor(168, 32) == 64 && D::Cursor::SizeFor(192, 32) == 64);
     CHECK(D::Cursor::SizeFor(96, 48) == 48 && D::Cursor::SizeFor(96, 64) == 64 && D::Cursor::SizeFor(96, 0) == 32);
-    CHECK(std::string(D::Cursor::Svg()).find("M5 3 L5 24") != std::string::npos && D::Cursor::hotX == 5 && D::Cursor::hotY == 3);
+    CHECK(std::string(D::Cursor::Svg()).find("M16 4 V12 M16 20 V28 M4 16 H12 M20 16 H28") != std::string::npos && std::string(D::Cursor::Svg()).find("r='2.6' fill='#3E67FF'") != std::string::npos);
+    CHECK(std::string(D::Cursor::Svg()).find("M5 3") == std::string::npos && D::Cursor::hotX == 16 && D::Cursor::hotY == 16);
     {   const std::wstring js = NativeChrome::Annotations::PageScript();
         CHECK(js.find(L"adoptedStyleSheets") != std::wstring::npos && js.find(L"!important") != std::wstring::npos);   // the cursor sheet
         CHECK(js.find(L"filter(function (x) { return x !== sheet; })") != std::wstring::npos);                       // removed at teardown

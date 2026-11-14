@@ -16,10 +16,12 @@
 // translucent copies would darken while both are up.
 // A click-through child layered window (WS_EX_TRANSPARENT, fully transparent pixels): it never takes input. It is
 // created at the first selection and destroyed with the mode's other windows when the mode ends.
-// V3-B: the spacing inspector (Paper 5.3) lives with the frame, so it takes the same road: the page sends its bands
-// and value labels with the frame's geometry, this copy draws them at the same pixels (hatches in the page's phase:
-// a CSS repeating-linear-gradient at 135° / 45°, 1 px every 5 px, anchored on each band's box), the « handoff » hides
-// the page's — the shot never contains them either.
+// V3-B: the spacing inspector (Paper 5.3) lives with the frame, so it takes the same road: the page sends its padding
+// ring, gap rectangles and value labels with the frame's geometry, this copy draws them at the same pixels, the
+// « handoff » hides the page's — the shot never contains them either. As in the page: the ring is ONE geometry (padding
+// box with its radius minus the content box, even-odd) and the gaps ONE union, each hatched by a CSS-like
+// repeating-linear-gradient (135° / 45°, 1 px every 5 px) whose box is the viewport — one phase for everything, no
+// seam where the sides meet; order: hatches, the frame's edges, its label, the value labels on top.
 #include <dwmapi.h>
 #include "annotation-kit.h"
 
@@ -32,9 +34,12 @@ struct FrameMark {
     double lx = 0, ly = 0, lw = 0, lh = 0;      // label box
     std::wstring text;                          // label text (« button.primary · 240×44 »)
     std::uint32_t accent = 0x3E67FF;            // the page's accent (the ints sent to the page script)
-    struct Band { int kind = 0; double x = 0, y = 0, w = 0, h = 0; };                       // V3-B: 0 padding, 1 gap
-    struct Label { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::wstring text; };
-    std::vector<Band> bands; std::vector<Label> labels; double radius = 0;     // V3-B inspector (empty: none)
+    struct Gap { double x = 0, y = 0, w = 0, h = 0; };
+    struct Label { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::wstring text; };   // 0 padding, 1 gap
+    // V3-B inspector: pad = [outer x, y, w, h, inner x, y, w, h] (CSS px), radii of the outer / inner rounded rects,
+    // vw / vh = the viewport (the hatches' gradient box); empty: none.
+    bool hasPad = false; double pad[8]{}; double radius = 0, innerRadius = 0, vw = 0, vh = 0;
+    std::vector<Gap> gaps; std::vector<Label> labels;
 };
 // Page CSS constants of the inspector (annotation-script.h): hatch 1 px every 5 px, label 14 px high, radius 3,
 // 400 10/14 mono, padding 0 4; gap pink rgb(224 71 158), gap label #D63E92.
@@ -56,61 +61,79 @@ public:
         auto X = [&](double css) { return m.page.left + css * m.dpr; }; auto Y = [&](double css) { return m.page.top + css * m.dpr; };
         double x0 = std::min(m.x, m.lw > 0 ? m.lx : m.x), y0 = std::min(m.y, m.lh > 0 ? m.ly : m.y);
         double x1 = std::max(m.x + m.w, m.lw > 0 ? m.lx + m.lw : m.x + m.w), y1 = std::max(m.y + m.h, m.lh > 0 ? m.ly + m.lh : m.y + m.h);
-        for (const auto& b : m.bands) { x0 = std::min(x0, b.x); y0 = std::min(y0, b.y); x1 = std::max(x1, b.x + b.w); y1 = std::max(y1, b.y + b.h); }
+        if (m.hasPad) { x0 = std::min(x0, m.pad[0]); y0 = std::min(y0, m.pad[1]); x1 = std::max(x1, m.pad[0] + m.pad[2]); y1 = std::max(y1, m.pad[1] + m.pad[3]); }
+        for (const auto& b : m.gaps) { x0 = std::min(x0, b.x); y0 = std::min(y0, b.y); x1 = std::max(x1, b.x + b.w); y1 = std::max(y1, b.y + b.h); }
         for (const auto& l : m.labels) { x0 = std::min(x0, l.x); y0 = std::min(y0, l.y); x1 = std::max(x1, l.x + l.w); y1 = std::max(y1, l.y + l.h); }
         RECT r{LONG(std::floor(X(x0))) - 1, LONG(std::floor(Y(y0))) - 1, LONG(std::ceil(X(x1))) + 1, LONG(std::ceil(Y(y1))) + 1};
         RECT in{}; if (!IntersectRect(&in, &r, &m.page)) return RECT{};
         return in;
     }
-    // V3-B: a band's hatches exactly as the page draws them. CSS repeating-linear-gradient(angle, c 0 1px, transparent
-    // 1px 5px) on a box w x h: the gradient line goes through the box's centre in the direction of `angle`, its 0 is
-    // where the perpendicular through the corner meets it (length |w sin a| + |h cos a|); a pixel is on a line when its
-    // position along the gradient line modulo 5 is under 1. Drawn as 1 px wide strokes across the box, clipped to it.
-    static void PaintHatch(Ink& ink, D2D1_RECT_F box, double cssW, double cssH, float k, double angleDeg, D2D1_COLOR_F lineColor, D2D1_COLOR_F fillColor, float radius, int roundTop) {
-        auto* t = ink.Target(); if (box.right <= box.left || box.bottom <= box.top) return;
-        ID2D1RoundedRectangleGeometry* round = nullptr; ID2D1Layer* layer = nullptr; bool pushed = false;
-        if (radius > 0 && roundTop) {   // the top band's top corners / the bottom band's bottom corners (inner radius)
-            const float r = radius; D2D1_RECT_F ext = box; if (roundTop > 0) ext.bottom += r; else ext.top -= r;
-            if (SUCCEEDED(ink.Factory()->CreateRoundedRectangleGeometry(D2D1::RoundedRect(ext, r, r), &round)) && SUCCEEDED(t->CreateLayer(nullptr, &layer))) {
-                t->PushLayer(D2D1::LayerParameters(box, round), layer); pushed = true;
-            }
-        }
-        if (!pushed) t->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_ALIASED);
-        ink.Fill(box, 0, fillColor);
-        const double a = angleDeg * 3.14159265358979 / 180, gx = std::sin(a), gy = -std::cos(a);   // gradient direction (CSS: 0deg = up)
-        const double len = std::fabs(cssW * gx) + std::fabs(cssH * gy);
-        const double cx = cssW / 2, cy = cssH / 2, sx = cx - gx * len / 2, sy = cy - gy * len / 2;   // gradient start (CSS px, box space)
-        // A line at position p along the gradient is the set {q : (q - s)·g = p}; direction along the line: (-gy, gx).
-        const double reach = std::hypot(cssW, cssH) + 2;
+    // V3-B: one hatched geometry exactly as the page draws it. CSS repeating-linear-gradient(angle, c 0 1px, transparent
+    // 1px 5px) on the VIEWPORT box (vw x vh): the gradient line goes through its centre in the direction of `angle`,
+    // its 0 where the perpendicular through the corner meets it (length |vw sin a| + |vh cos a|); a point is on a line
+    // when its position along that line modulo 5 is under 1. Filled, then 1 px strokes across the geometry's bounds,
+    // all inside one layer masked by the geometry (anti-aliased on its contours only: no inner edge, no seam).
+    static void PaintHatched(Ink& ink, ID2D1Geometry* geo, double cssX0, double cssY0, double cssX1, double cssY1, double vw, double vh, double angleDeg,
+                             const std::function<float(double)>& X, const std::function<float(double)>& Y, float k, D2D1_COLOR_F line, D2D1_COLOR_F fill) {
+        auto* t = ink.Target(); if (!geo) return;
+        const D2D1_RECT_F bounds{X(cssX0) - 1, Y(cssY0) - 1, X(cssX1) + 1, Y(cssY1) + 1};
+        ID2D1Layer* layer = nullptr; if (FAILED(t->CreateLayer(nullptr, &layer))) return;
+        t->PushLayer(D2D1::LayerParameters(bounds, geo, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE), layer);
+        ink.Fill(bounds, 0, fill);
+        const double a = angleDeg * 3.14159265358979 / 180, gx = std::sin(a), gy = -std::cos(a);
+        const double len = std::fabs(vw * gx) + std::fabs(vh * gy), sx = vw / 2 - gx * len / 2, sy = vh / 2 - gy * len / 2;
+        double pmin = 1e18, pmax = -1e18;
+        for (double cx : {cssX0, cssX1}) for (double cy : {cssY0, cssY1}) { const double p = (cx - sx) * gx + (cy - sy) * gy; pmin = std::min(pmin, p); pmax = std::max(pmax, p); }
+        const double reach = (cssX1 - cssX0) + (cssY1 - cssY0) + 4, cx = (cssX0 + cssX1) / 2, cy = (cssY0 + cssY1) / 2;
         ID2D1SolidColorBrush* brush = nullptr;
-        if (SUCCEEDED(t->CreateSolidColorBrush(lineColor, &brush))) {
-            for (double p = SpaceSpec::line / 2; p < len + SpaceSpec::pitch; p += SpaceSpec::pitch) {
-                const double px = sx + gx * p, py = sy + gy * p;
-                const D2D1_POINT_2F a0{box.left + float((px + gy * reach) * k), box.top + float((py - gx * reach) * k)};
-                const D2D1_POINT_2F a1{box.left + float((px - gy * reach) * k), box.top + float((py + gx * reach) * k)};
-                t->DrawLine(a0, a1, brush, float(SpaceSpec::line) * k);
+        if (SUCCEEDED(t->CreateSolidColorBrush(line, &brush))) {
+            for (double n = std::floor((pmin - 1) / SpaceSpec::pitch); n * SpaceSpec::pitch <= pmax + 1; n += 1) {
+                const double p = n * SpaceSpec::pitch + SpaceSpec::line / 2;
+                // the line's point nearest the bounds' centre, then +- reach along the line's direction (-gy, gx)
+                const double t0 = (cx - sx) * -gy + (cy - sy) * gx, px = sx + gx * p + -gy * t0, py = sy + gy * p + gx * t0;
+                t->DrawLine({X(px + gy * reach), Y(py - gx * reach)}, {X(px - gy * reach), Y(py + gx * reach)}, brush, float(SpaceSpec::line) * k);
             }
             brush->Release();
         }
-        if (pushed) t->PopLayer(); else t->PopAxisAlignedClip();
-        Release(layer); Release(round);
+        t->PopLayer(); Release(layer);
+    }
+    static ID2D1Geometry* RoundRect(ID2D1Factory* f, D2D1_RECT_F r, float radius) {
+        ID2D1RoundedRectangleGeometry* g = nullptr; radius = std::max(0.f, std::min({radius, (r.right - r.left) / 2, (r.bottom - r.top) / 2}));
+        f->CreateRoundedRectangleGeometry(D2D1::RoundedRect(r, radius, radius), &g); return g;
     }
     static void PaintSpace(Ink& ink, const FrameMark& m, const std::function<float(double)>& X, const std::function<float(double)>& Y, float k) {
         const D2D1_COLOR_F accent{((m.accent >> 16) & 255) / 255.f, ((m.accent >> 8) & 255) / 255.f, (m.accent & 255) / 255.f, 1};
         const D2D1_COLOR_F pink{((SpaceSpec::gap >> 16) & 255) / 255.f, ((SpaceSpec::gap >> 8) & 255) / 255.f, (SpaceSpec::gap & 255) / 255.f, 1};
         auto with = [](D2D1_COLOR_F c, float a) { c.a = a; return c; };
-        for (size_t i = 0; i < m.bands.size(); ++i) {
-            const auto& b = m.bands[i]; const D2D1_RECT_F box{X(b.x), Y(b.y), X(b.x + b.w), Y(b.y + b.h)};
-            const bool pad = b.kind == 0;
-            const int roundTop = pad && m.radius > 0 ? (i == 0 ? 1 : i == 1 ? -1 : 0) : 0;   // the page rounds bands 0 (top) and 1 (bottom)
-            const float r = float(std::min({m.radius, b.h, b.w})) * k;
-            PaintHatch(ink, box, b.w, b.h, k, pad ? 135 : 45, with(pad ? accent : pink, pad ? SpaceSpec::padLine : SpaceSpec::gapLine), with(pad ? accent : pink, pad ? SpaceSpec::padFill : SpaceSpec::gapFill), r, roundTop);
+        auto* f = ink.Factory(); const double vw = m.vw > 0 ? m.vw : (m.page.right - m.page.left) / m.dpr, vh = m.vh > 0 ? m.vh : (m.page.bottom - m.page.top) / m.dpr;
+        if (m.hasPad) {   // the ring: padding box (outer radius) minus the content box (inner radius), even-odd
+            const auto* p = m.pad; ID2D1Geometry* parts[2] = {RoundRect(f, {X(p[0]), Y(p[1]), X(p[0] + p[2]), Y(p[1] + p[3])}, float(m.radius) * k), nullptr};
+            UINT n = 1; if (p[6] > 0 && p[7] > 0) { parts[1] = RoundRect(f, {X(p[4]), Y(p[5]), X(p[4] + p[6]), Y(p[5] + p[7])}, float(m.innerRadius) * k); n = parts[1] ? 2 : 1; }
+            ID2D1GeometryGroup* ring = nullptr;
+            if (parts[0] && SUCCEEDED(f->CreateGeometryGroup(D2D1_FILL_MODE_ALTERNATE, parts, n, &ring)))
+                PaintHatched(ink, ring, p[0], p[1], p[0] + p[2], p[1] + p[3], vw, vh, 135, X, Y, k, with(accent, SpaceSpec::padLine), with(accent, SpaceSpec::padFill));
+            Release(ring); Release(parts[0]); Release(parts[1]);
         }
+        if (!m.gaps.empty()) {   // the gaps: one union (non-zero)
+            std::vector<ID2D1Geometry*> rects; double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+            for (const auto& g : m.gaps) {
+                if (auto* r = RoundRect(f, {X(g.x), Y(g.y), X(g.x + g.w), Y(g.y + g.h)}, 0)) rects.push_back(r);
+                x0 = std::min(x0, g.x); y0 = std::min(y0, g.y); x1 = std::max(x1, g.x + g.w); y1 = std::max(y1, g.y + g.h);
+            }
+            ID2D1GeometryGroup* group = nullptr;
+            if (!rects.empty() && SUCCEEDED(f->CreateGeometryGroup(D2D1_FILL_MODE_WINDING, rects.data(), UINT(rects.size()), &group)))
+                PaintHatched(ink, group, x0, y0, x1, y1, vw, vh, 45, X, Y, k, with(pink, SpaceSpec::gapLine), with(pink, SpaceSpec::gapFill));
+            Release(group); for (auto* r : rects) r->Release();
+        }
+    }
+    // The value labels, above everything (the page placed them: whole, inward on thin sides, off the element label).
+    static void PaintValueLabels(Ink& ink, const FrameMark& m, const std::function<float(double)>& X, const std::function<float(double)>& Y, float k) {
+        const D2D1_COLOR_F accent{((m.accent >> 16) & 255) / 255.f, ((m.accent >> 8) & 255) / 255.f, (m.accent & 255) / 255.f, 1};
         for (const auto& l : m.labels) {
             const D2D1_RECT_F box{X(l.x), Y(l.y), X(l.x + l.w), Y(l.y + l.h)};
             ink.Fill(box, float(SpaceSpec::labelR) * k, l.kind == 0 ? accent : D2D1_COLOR_F{((SpaceSpec::gapLabel >> 16) & 255) / 255.f, ((SpaceSpec::gapLabel >> 8) & 255) / 255.f, (SpaceSpec::gapLabel & 255) / 255.f, 1});
             Font f = Mono(float(SpaceSpec::font) * k, float(SpaceSpec::labelH) * k); f.system = true; f.weight = 400;
-            ink.Text(l.text, f, {box.left, box.top, box.right, box.bottom}, {1, 1, 1, 1}, false, Align::Center, true);
+            ink.Text(l.text, f, box, {1, 1, 1, 1}, false, Align::Center, true);
         }
     }
     // Paints the mark into a surface whose top-left is `origin` (parent client px), at `dipScale` px per DIP.
@@ -119,7 +142,7 @@ public:
         auto X = [&](double css) { return float((m.page.left - origin.x + css * m.dpr) / dipScale); };
         auto Y = [&](double css) { return float((m.page.top - origin.y + css * m.dpr) / dipScale); };
         const D2D1_COLOR_F accent{((m.accent >> 16) & 255) / 255.f, ((m.accent >> 8) & 255) / 255.f, (m.accent & 255) / 255.f, 1};
-        if (!m.bands.empty()) PaintSpace(ink, m, X, Y, k);   // under the edges and label, as in the page
+        if (m.hasPad || !m.gaps.empty()) PaintSpace(ink, m, X, Y, k);   // the hatches: under the edges and the label, as in the page
         const double e = FrameSpec::edge, w = std::max(m.w, 1.0), h = std::max(m.h, 1.0);
         ink.Fill({X(m.x), Y(m.y), X(m.x + w), Y(m.y + e)}, 0, accent);               // top
         ink.Fill({X(m.x), Y(m.y + h - e), X(m.x + w), Y(m.y + h)}, 0, accent);       // bottom
@@ -134,6 +157,7 @@ public:
             ink.Text(m.text, f, text, {1, 1, 1, 1});
             ink.Target()->PopAxisAlignedClip();
         }
+        if (!m.labels.empty()) PaintValueLabels(ink, m, X, Y, k);   // V3-B: on top of the edges and the element label
     }
     // Draws the mark and returns once the compositor has shown it (or false: no window, nothing visible).
     bool Show(const FrameMark& m) {

@@ -76,8 +76,18 @@ def skipped(name, why='desktop unavailable (session locked / disconnected): scre
 
 # ---------------------------------------------------------------- the closed root, read through CDP (DOM pierce)
 class Dom:
+    opened = []
     def __init__(self):
-        self.ws = Q.page_ws(); self.ws.call('DOM.enable', {}); self.ws.call('CSS.enable', {})
+        self.ws = Q.page_ws(); self.ws.call('DOM.enable', {}); self.ws.call('CSS.enable', {}); Dom.opened.append(self)
+    @staticmethod
+    def close_all():
+        """The DevTools sessions this driver opened (DOM / CSS agents enabled): closed before any rest measure."""
+        for d in Dom.opened:
+            try:
+                d.ws.call('CSS.disable', {}); d.ws.call('DOM.disable', {}); d.ws.s.close()
+            except Exception:
+                pass
+        Dom.opened = []
     def root(self):
         doc = self.ws.call('DOM.getDocument', {'depth': -1, 'pierce': True})['root']
         stack = [doc]
@@ -94,27 +104,43 @@ class Dom:
     def cursor(self, node_id):
         cs = self.ws.call('CSS.getComputedStyleForNode', {'nodeId': node_id})['computedStyle']
         return next((p['value'] for p in cs if p['name'] == 'cursor'), None)
-    def inspector(self):
-        """(opacity, visible bands {'pb': n, 'gb': n}, label texts) of the inspector container."""
+    def inspector(self, boxes=False):
+        """(opacity, {'pb': 0/1 padding ring shown, 'gb': 0/1 gap union shown}, label texts[, label boxes, element label
+        box, order of the root's layers]). V3-B rev.: one ring + one union in `.i`, the value labels in `.j` (after `.l`)."""
         r = self.root()
         if not r:
             return None
-        cont = next((c for c in r.get('children', []) if Dom.attrs(c).get('class', '').split()[:1] == ['i']), None)
-        if not cont:
+        kids = r.get('children', [])
+        cont = next((c for c in kids if Dom.attrs(c).get('class', '').split()[:1] == ['i']), None)
+        labs = next((c for c in kids if Dom.attrs(c).get('class', '').split()[:1] == ['j']), None)
+        if not cont or not labs:
             return None
         style = Dom.attrs(cont).get('style', '')
         m = re.search(r'opacity:\s*([0-9.]+)', style); op = float(m.group(1)) if m else 0.0
-        bands = {'pb': 0, 'gb': 0}; labels = []
+        bands = {'pb': 0, 'gb': 0}; labels = []; lboxes = []
         for ch in cont.get('children', []):
             a = Dom.attrs(ch); cls = a.get('class', ''); st = a.get('style', '')
-            if 'display: none' in st:
-                continue
-            if cls in bands:
+            if cls in bands and 'display: none' not in st and 'clip-path' in st:
                 bands[cls] += 1
-            elif cls in ('pl', 'gl'):
-                txt = ''.join(t.get('nodeValue', '') for t in ch.get('children', []) if t.get('nodeType') == 3)
-                labels.append(('p' if cls == 'pl' else 'g') + txt)
-        return op, bands, labels
+        for ch in labs.get('children', []):
+            a = Dom.attrs(ch); cls = a.get('class', ''); st = a.get('style', '')
+            if 'display: none' in st or cls not in ('pl', 'gl'):
+                continue
+            txt = ''.join(t.get('nodeValue', '') for t in ch.get('children', []) if t.get('nodeType') == 3)
+            labels.append(('p' if cls == 'pl' else 'g') + txt)
+            if boxes:
+                lboxes.append((labels[-1], self.box(ch['nodeId'])))
+        if not boxes:
+            return op, bands, labels
+        el = next((c for c in kids if Dom.attrs(c).get('class', '').split()[:2] == ['x', 'l']), None)
+        order = [Dom.attrs(c).get('class', '').replace(' on', '') for c in kids if Dom.attrs(c).get('class', '') not in ('s',) and c.get('nodeType') == 1 and c.get('localName') == 'div']
+        return op, bands, labels, lboxes, self.box(el['nodeId']) if el else None, order
+    def box(self, node_id):
+        try:
+            q = self.ws.call('DOM.getBoxModel', {'nodeId': node_id})['model']['border']
+            xs, ys = q[0::2], q[1::2]; return [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]
+        except Exception:
+            return None
     def shields(self):
         r = self.root()
         return [c for c in (r.get('children', []) if r else []) if Dom.attrs(c).get('class') == 's' and 'display:none' not in Dom.attrs(c).get('style', '').replace(' ', '')]
@@ -187,8 +213,9 @@ def css_to_screen(cx, cy):
     o = V.page_origin(); dpr = Q.evaluate('devicePixelRatio')
     return o[0] + cx * dpr, o[1] + cy * dpr
 
-def is_ours(c):   # the « flèche + note »: a custom cursor with the blue « + »
-    return c.get('kind') == 'custom' and c.get('bluePixels', 0) > 20
+def is_ours(c):   # the « viseur »: a custom cursor with its blue centre dot, hot spot at the centre
+    sz = c.get('size') or [0, 0]; hot = c.get('hot') or [-9, -9]
+    return c.get('kind') == 'custom' and c.get('bluePixels', 0) > 8 and abs(hot[0] - sz[0] / 2) <= 1.5 and abs(hot[1] - sz[1] / 2) <= 1.5
 
 # ---------------------------------------------------------------- hatches on screen
 def hatch_counts(im):
@@ -349,7 +376,14 @@ def scenario():
         later()
         # ---- the mode with the wave: CPU + wake-ups (the wave runs only when the window can be seen)
         if screen:
-            foreground(); measure('modeWithWave', 15)
+            def ours_fg():
+                pid = W.DWORD(); user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid)); return pid.value == Q.our_pid()
+            for attempt in range(3):   # the wave runs only while our window is in the foreground: held for the whole window
+                foreground(); time.sleep(0.5); before_fg = ours_fg(); m_ = measure('modeWithWave', 15); after_fg = ours_fg()
+                m_['foregroundBeforeAfter'] = [before_fg, after_fg]
+                if before_fg and after_fg:
+                    break
+            step('mode with the wave measured with the window in the foreground (before and after the 15 s)', before_fg and after_fg, m_)
         else:
             measure('modeWaveNotVisible', 15)
             skipped('CPU in the mode with the wave running (needs the window in the foreground)')
@@ -357,7 +391,7 @@ def scenario():
         sels = [('h1', 'texte (h1)'), ('a.brand', 'lien'), ('#email', 'champ'), ('canvas', 'canvas (image)'), ('label', 'libellé')]
         css = {name: css_cursor(sel) for sel, name in sels}
         report['measures']['cssCursors'] = {k: (v[:80] + '…' if isinstance(v, str) and len(v) > 80 else v) for k, v in css.items()}
-        step('5.4 page: the « flèche + note » cursor on text, link, field, canvas (computed style)', all(our_css_cursor(v) for v in css.values()), report['measures']['cssCursors'])
+        step('5.4 page: the « viseur » cursor on text, link, field, canvas (computed style)', all(our_css_cursor(v) for v in css.values()), report['measures']['cssCursors'])
         d = Dom(); sh = d.shields(); frames_ = Q.evaluate("Array.from(document.querySelectorAll('iframe')).map(function(f){var r=f.getBoundingClientRect();return [f.title,Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height)]})")
         shield_cursors = [d.cursor(n['nodeId']) for n in sh]
         rec = {'iframes': frames_, 'shields': [Dom.attrs(n).get('style') for n in sh], 'cursors': [c[:60] + '…' if c else c for c in shield_cursors]}
@@ -369,8 +403,11 @@ def scenario():
             old = W.POINT(); user32.GetCursorPos(ctypes.byref(old)); cursors = {}
             try:
                 for sel, name in [('h1', 'texte (h1)'), ('a.brand', 'lien'), ('#email', 'champ'), ('canvas', 'canvas'), ('iframe[title=Livraison]', 'iframe même origine'), ('iframe[title="Paiement PayCo"]', 'iframe croisée')]:
-                    rc = V.rect_of(sel); foreground(); c = cursor_at(*css_to_screen(rc[0], rc[1])); cursors[name] = c
-                    step(f'5.4 real Windows cursor « flèche + note » over {name}', is_ours(c), c)
+                    rc = V.rect_of(sel); foreground(); c = cursor_at(*css_to_screen(rc[0], rc[1]))
+                    if not is_ours(c):   # once more: a window of another app may have passed over ours (shared desktop)
+                        V.topmost(True); foreground(); c = cursor_at(*css_to_screen(rc[0], rc[1]), settle=0.5); c['retried'] = True
+                    cursors[name] = c
+                    step(f'5.4 real Windows cursor « viseur » over {name}', is_ours(c), c)
                 c = cursor_at((r.left + r.right) / 2, V.page_origin()[1] - 16 * dpi / 96); cursors['bandeau'] = c
                 step('5.4 real cursor: normal arrow over the band (our native UI)', c.get('kind') == 'arrow', c)
                 report['measures']['cursors'] = cursors
@@ -398,6 +435,57 @@ def scenario():
         inspector_dom('.row', '.row flex-wrap gap 8')
         inspector_dom('.frames', '.frames grid gap 16')
         inspector_dom('aside.summary', '.summary padding 18/20 (block)', expect_gap=False)
+        # ---- value labels: above the frame's edges and the element label, whole on a 4 px side (span.badge: padding 4 / 10,
+        #      in promo-badge's open shadow root — the case seen in the real test of 0.3.258)
+        bd = Q.evaluate("(function(){var h=document.querySelector('promo-badge');h.scrollIntoView({block:'center'});var b=h.shadowRoot.querySelector('.badge'),r=b.getBoundingClientRect();"
+                        "for(var x=r.left+1;x<r.left+10;x+=1)if(h.shadowRoot.elementFromPoint(x,r.top+r.height/2)===b)return [x,r.top+r.height/2,r.left,r.top,r.width,r.height];return null})()")
+        if bd:
+            hover(bd[0], bd[1]); time.sleep(0.5); got = Dom().inspector(boxes=True)
+            rec = {'badge': bd[2:], 'inspector': got}
+            report['measures']['badgeLabels'] = rec
+            if got:
+                op, bands, labels, lboxes, elbox, order = got
+                step('5.3 layers: hatches under the frame edges, value labels above the edges AND the element label (DOM order)',
+                     order.index('i') < order.index('x h') and order.index('j') > order.index('x l'), order)
+                def inter(a, b): return a and b and a[0] < b[0] + b[2] - 0.01 and b[0] < a[0] + a[2] - 0.01 and a[1] < b[1] + b[3] - 0.01 and b[1] < a[1] + a[3] - 0.01
+                collide = [t for t, b in lboxes if inter(b, elbox)] + [f'{t1}/{t2}' for i1, (t1, b1) in enumerate(lboxes) for (t2, b2) in lboxes[i1 + 1:] if inter(b1, b2)]
+                step('5.3 span.badge: value labels « 4 » and « 10 », none under the element label nor on each other', 'p4' in labels and 'p10' in labels and not collide, {'labels': lboxes, 'elementLabel': elbox, 'collisions': collide})
+                x0, y0, w0, h0 = bd[2:]; dprb = 1   # boxes are CSS px of the viewport
+                whole = all(b and b[3] >= 13.5 and b[2] >= 12 and b[0] >= -0.5 and b[1] >= -0.5 for t, b in lboxes)
+                inward = all(b[1] >= y0 - 0.5 for t, b in lboxes if t == 'p4') and all(b[0] >= x0 - 0.5 for t, b in lboxes if t == 'p10')
+                step('5.3 span.badge: each label whole (14 px) and overflowing INWARD on the 4 px / 10 px sides', whole and inward, lboxes)
+                if desktop_ok():
+                    foreground(); im = V.grab(box_of([x0 - 30, y0 - 30, w0 + 60, h0 + 60])); im.save(QA / 'v3b-real-badge-value-labels.png')
+        else:
+            step('5.3 span.badge found', False)
+        # ---- no seam at the padding ring's four inner corners (.summary, padding 18/20, radius 12): on screen, each pixel
+        #      equals the pixel 4 device px further along the stripes (135 deg: direction (-1, 1))
+        if desktop_ok():
+            foreground()
+            geo = Q.evaluate("(function(){var e=document.querySelector('aside.summary');e.scrollIntoView({block:'center'});var r=e.getBoundingClientRect(),c=getComputedStyle(e),f=parseFloat;"
+                             "var bl=f(c.borderLeftWidth),bt=f(c.borderTopWidth),br=f(c.borderRightWidth),bb=f(c.borderBottomWidth);"
+                             "return [r.left+bl,r.top+bt,r.width-bl-br,r.height-bt-bb,f(c.paddingLeft),f(c.paddingTop),f(c.paddingRight),f(c.paddingBottom)]})()")
+            pt_ = point_on('aside.summary'); hover(pt_[0], pt_[1]); time.sleep(0.6)
+            o = V.page_origin(); dpr = Q.evaluate('devicePixelRatio')
+            ix, iy, iw, ih, pl_, pt2, pr_, pb_ = geo
+            cl, ct, cr, cb = ix + pl_, iy + pt2, ix + iw - pr_, iy + ih - pb_
+            im = V.grab((int(o[0] + ix * dpr) - 2, int(o[1] + iy * dpr) - 2, int(o[0] + (ix + iw) * dpr) + 2, int(o[1] + (iy + ih) * dpr) + 2)).convert('RGB')
+            im.save(QA / 'v3b-real-summary-ring.png'); px = im.load(); ox, oy = int(o[0] + ix * dpr) - 2, int(o[1] + iy * dpr) - 2
+            def D(cx, cy): return int(o[0] + cx * dpr) - ox, int(o[1] + cy * dpr) - oy
+            corners = {'top-left': (ix + 6, cl - 1, ct - 6, ct + 6, -1), 'top-right': (cr + 1, ix + iw - 6, ct - 6, ct + 6, 1),
+                       'bottom-left': (ix + 6, cl - 1, cb - 6, cb + 6, -1), 'bottom-right': (cr + 1, ix + iw - 6, cb - 6, cb + 6, 1)}
+            res = {}
+            for name, (xa, xb, ya, yb, sgn) in corners.items():
+                (X0, Y0), (X1, Y1) = D(xa, ya), D(xb, yb); over = worst = n = 0
+                for yy in range(Y0, Y1):
+                    for xx in range(X0, X1):
+                        a_ = px[xx, yy]; b_ = px[xx + 4 * sgn, yy - 4 * sgn]; d_ = max(abs(a_[0] - b_[0]), abs(a_[1] - b_[1]), abs(a_[2] - b_[2])); n += 1
+                        worst = max(worst, d_); over += d_ > 3
+                res[name] = {'pixels': n, 'over3': over, 'worst': worst}
+            report['measures']['ringCornerSeams'] = res
+            step('5.3 no seam at the padding ring\'s four inner corners (on screen: pattern equal along the stripes)', all(v['over3'] == 0 and v['pixels'] > 50 for v in res.values()), res)
+        else:
+            skipped('5.3 corner seams on screen')
         # nothing during a fast movement: a new container every 25 ms, the container read after each move
         pts = [x for x in (point_on(s_) for s_ in ('form.checkout', '.row', '.frames', 'aside.summary', 'main#app')) if x]
         hover(1, 1); time.sleep(0.3); d = Dom(); ws = Q.page_ws(); seen = []
@@ -421,7 +509,7 @@ def scenario():
                 click_at(pt[0], pt[1])
             insp = V.wait_log(r'ANNOTATE inspector at the selection: [^\n]*', 3, mark)
             cap = V.wait_log(r'ANNOTATE capture \d+x\d+[^\n]*|ANNOTATE capture unavailable[^\n]*', 5, mark)
-            step(f'capture {name}: the inspector goes to the native copy at the selection (log)', insp is not None and 'gap bands' in insp.group(0), insp.group(0) if insp else None)
+            step(f'capture {name}: the inspector goes to the native copy at the selection (log)', insp is not None and 'gap rectangles' in insp.group(0), insp.group(0) if insp else None)
             if screen:
                 step(f'capture {name}: the hatches stay on screen during the shot (native copy)', before[0] + before[1] > 60 and not low and cap is not None, {'before': before, 'frames': len(counts), 'framesBelow70pc': len(low)})
             else:
@@ -481,6 +569,7 @@ def scenario():
                 step('5.4 after the exit: real cursor I-beam on text, hand on the link', c1.get('kind') == 'ibeam' and c2.get('kind') == 'hand', {'text': c1, 'link': c2})
             finally:
                 user32.SetCursorPos(old.x, old.y)
+        Dom.close_all(); import gc; gc.collect()
         time.sleep(2); measure('restAfterUse', 15)
         step('rest outside the mode after use: no click-through layer, no launcher window', not transparent_layers() and not V.launcher_windows(), V.layer_windows())
         # ---- interruption: the mode ends ~300 ms after it began (UIA invoke, then Échap posted to the band)

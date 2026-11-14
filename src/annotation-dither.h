@@ -202,17 +202,19 @@ inline void RasterVeil(const Raster& r, float scale, double seconds, float k, bo
     }
 }
 
-// ---------------------------------------------------------------- the mode's cursor (Paper 5.4, direction A « flèche + note »)
-// SVG 32x32, hot spot = the arrow's tip (5, 3). Sizes 32 / 48 / 64 px from the display scale x the Windows pointer size
+// ---------------------------------------------------------------- the mode's cursor (Paper 5.4, direction B « viseur »)
+// Chosen by the user after the 0.3.258 test (not A « flèche + note »). SVG 32x32: four black strokes 1.6 px on a white
+// 4 px halo, an empty centre, a blue dot #3E67FF r 2.6 ringed white 1.2; hot spot = the centre (16, 16). Sizes 32 / 48 / 64 px from the display scale x the Windows pointer size
 // (HKCU\Control Panel\Cursors\CursorBaseSize, 32 by default): the nearest of the three, at or above 1.25 => 48,
 // at or above 1.75 => 64.
 namespace Cursor {
-inline constexpr int hotX = 5, hotY = 3;
+inline constexpr int hotX = 16, hotY = 16;
+inline constexpr const char* strokes = "M16 4 V12 M16 20 V28 M4 16 H12 M20 16 H28";
 inline const char* Svg() {
     return "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>"
-           "<path d='M5 3 L5 24 L10.2 19.4 L13.6 27.2 L17 25.7 L13.7 18.1 L20.6 18.1 Z' fill='#1C1C1C' stroke='#FFFFFF' stroke-width='1.5' stroke-linejoin='round'/>"
-           "<circle cx='23.5' cy='23.5' r='6.5' fill='#3E67FF' stroke='#FFFFFF' stroke-width='1.5'/>"
-           "<path d='M23.5 20.5 V26.5 M20.5 23.5 H26.5' fill='none' stroke='#FFFFFF' stroke-width='1.6' stroke-linecap='round'/></svg>";
+           "<path d='M16 4 V12 M16 20 V28 M4 16 H12 M20 16 H28' fill='none' stroke='#FFFFFF' stroke-width='4' stroke-linecap='round'/>"
+           "<path d='M16 4 V12 M16 20 V28 M4 16 H12 M20 16 H28' fill='none' stroke='#1C1C1C' stroke-width='1.6' stroke-linecap='round'/>"
+           "<circle cx='16' cy='16' r='2.6' fill='#3E67FF' stroke='#FFFFFF' stroke-width='1.2'/></svg>";
 }
 inline int SizeFor(unsigned dpi, unsigned baseSize) noexcept {
     const double f = (dpi ? dpi : 96) / 96.0 * (baseSize >= 16 && baseSize <= 512 ? baseSize : 32) / 32.0;

@@ -30,13 +30,17 @@
 // puts the page's edges back and answers « shown » two frames later; only then does the host drop its layer.
 // « hide » (a host without the native layer) still hides everything and answers « hidden » two frames later.
 // V3-B (Paper 5.3, 5.4, validated):
-//   - cursor « flèche + note » on the whole page while the mode is on: one constructed style sheet adopted by the
+//   - cursor « viseur » (Paper 5.4, direction B) on the whole page while the mode is on: one constructed style sheet adopted by the
 //     document (and by the open shadow roots the hit-test enters) sets it on every element with !important; the
 //     iframe shields (both origins) carry it too. Sizes 32 / 48 / 64 from the host (image-set at the page's pixel
 //     ratio). At the exit the sheet is un-adopted and the shields go with the closed root: no style is left.
 //   - spacing inspector on the hovered element only (same closed root as the frame, same fade): padding as blue
-//     135° hatches in bands under the border, gaps (flex, grid) as pink 45° hatches between the children's real
-//     rectangles, one value label per distinct value and axis (« 20 » in px CSS, rounded; none under 4 px). Hidden at
+//     135° hatches on ONE ring (padding box with its inner radius minus the content box, even-odd clip), gaps
+//     (flex, grid) as pink 45° hatches on ONE union of the spaces between the children's real rectangles; both
+//     layers span the viewport, so every hatch is anchored on the viewport's origin: no seam where bands meet.
+//     Drawing order: hatches -> the frame's edges -> its label -> the value labels (« 20 » in px CSS, one per
+//     distinct value and axis, none under 4 px), always whole: on a thin side they overflow inward, and they move
+//     off the element label (and each other) when they would collide. Hidden at
 //     once when the target changes and shown 120 ms later (the frame's glide): nothing during a fast movement, one
 //     update per frame at most. At a selection its geometry goes to the host with the frame's (« sp »): the native
 //     copy draws it too and the « handoff » hides the page's, so it is never in the shot. padding / gap values join
@@ -67,7 +71,7 @@ var CUR = P.cursor || {}, CURSOR = 'default', CURSOR_W = 'default';
   svg = svg.replace("width='32' height='32'", "width='" + px + "' height='" + px + "'");
   var url = 'url("data:image/svg+xml,' + encodeURIComponent(svg).replace(/'/g, '%27') + '")';
   var r = Math.max(0.25, Math.min(8, +CUR.scale || 1));
-  var hx = ((+CUR.hx || 5) * k / r).toFixed(2), hy = ((+CUR.hy || 3) * k / r).toFixed(2);
+  var hx = ((+CUR.hx || 16) * k / r).toFixed(2), hy = ((+CUR.hy || 16) * k / r).toFixed(2);
   var set = '(' + url + ' ' + r.toFixed(4) + 'x) ' + hx + ' ' + hy + ',default';
   CURSOR_W = '-webkit-image-set' + set; CURSOR = 'image-set' + set;
 })();
@@ -97,16 +101,17 @@ root.innerHTML = '<style>' +
   '.l{font:500 11px/16px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;background:rgb(' + A + ');' +
   'padding:2px 6px;border-radius:4px;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}' +
   '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;' + cursorDecl(false) + ';background:transparent}' +
-  '.i{position:fixed;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none}.i.on{transition:opacity 120ms ease-out}' +
+  '.i,.j{position:fixed;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none}.i.on,.j.on{transition:opacity 120ms ease-out}' +
   '.pb,.gb,.pl,.gl{position:fixed;left:0;top:0;box-sizing:border-box}' +
   '.pb{background:repeating-linear-gradient(135deg,rgba(' + A + ',.4) 0 1px,transparent 1px 5px),rgba(' + A + ',.08)}' +
   '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
   '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;white-space:nowrap;letter-spacing:0}' +
   '.pl{background:rgb(' + A + ')}.gl{background:#D63E92}' +
-  '</style><div class="x f"></div><div class="i"></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div>';
+  '</style><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div>';
 var parts = root.querySelectorAll('.x'), shields = [];
 var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4], label = parts[5];
-var ins = root.querySelector('.i'), insPool = { pb: [], gb: [], pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false;
+var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb');
+var insPool = { pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = null;
 (D.documentElement || D).appendChild(host);
 adopt(D);
 
@@ -300,7 +305,7 @@ function sendSelect(info, selText, ev) {
   post(m);
 }
 // marks: the edges and the label only (the fill stays: it is removed from the image by the host).
-function conceal(on, marksOnly) { for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; ins.style.visibility = on ? 'hidden' : ''; }
+function conceal(on, marksOnly) { for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; ins.style.visibility = insL.style.visibility = on ? 'hidden' : ''; }
 // At the click: the frame jumps to its final state (any glide or fade-in ends now, transitions off inline), so the
 // geometry and the fill opacity sent are exactly what the next frame shows (V3: a click within a fade-in left the
 // fill nearly transparent in the shot, and the host removed 8 % that was not there).
@@ -310,7 +315,7 @@ function settle() {
   if (shown) setOpacity(1);
   if (insTimer) { clearTimeout(insTimer); insTimer = 0; }
   if (insData && insEl === (cur && cur.el)) insFade(true, false); else insFade(false, false);
-  void getComputedStyle(ins).opacity;
+  void getComputedStyle(ins).opacity; void getComputedStyle(insL).opacity;
   for (i = 0; i < parts.length; i++) { var cs = getComputedStyle(parts[i]); void cs.opacity; void cs.transform; }
   for (i = 0; i < parts.length; i++) parts[i].style.transition = '';
 }
@@ -319,13 +324,15 @@ function geometry(info) {
   return { x: r.x, y: r.y, w: Math.max(r.w, 1), h: Math.max(r.h, 1), lx: lb.left, ly: lb.top, lw: lb.width, lh: lb.height,
            text: String(label.textContent || '').slice(0, 200), fill: 0.08 * (parseFloat(getComputedStyle(fill).opacity) || 0), sp: spaceMark() };
 }
-// The inspector as drawn (only when on screen): [kind, x, y, w, h] bands and [kind, x, y, w, h, text] labels.
+// The inspector as drawn (only when on screen): the padding ring [outer x, y, w, h, inner x, y, w, h] + radii, the gap
+// rectangles [x, y, w, h], the value labels [kind, x, y, w, h, text], the viewport (the hatches' common box).
 function spaceMark() {
   if (!insData || !insShown || insEl !== (cur && cur.el)) return null;
-  var bands = [], labels = [];
-  for (var i = 0; i < insData.bands.length && i < 96; i++) { var b = insData.bands[i]; bands.push([b.k, r2(b.x), r2(b.y), r2(b.w), r2(b.h)]); }
+  var gaps = [], labels = [], p = insData.pad;
+  for (var i = 0; i < insData.gaps.length && i < 96; i++) { var b = insData.gaps[i]; gaps.push([r2(b.x), r2(b.y), r2(b.w), r2(b.h)]); }
   for (var j = 0; j < insData.labels.length && j < 12; j++) { var l = insData.labels[j]; if (l.w) labels.push([l.k, r2(l.x), r2(l.y), r2(l.w), 14, l.t]); }
-  return { bands: bands, labels: labels, radius: r2(insData.radius) };
+  return { pad: p ? [r2(p.ox), r2(p.oy), r2(p.ow), r2(p.oh), r2(p.ix), r2(p.iy), r2(p.iw), r2(p.ih)] : null, radius: p ? r2(p.r) : 0, inner: p ? r2(p.ri) : 0,
+           gaps: gaps, labels: labels, vw: innerWidth, vh: innerHeight };
 }
 
 // ---- spacing inspector (V3-B, Paper 5.3)
@@ -349,12 +356,17 @@ function spaceGeometry(info) {
   var bt = num(cs.borderTopWidth), br = num(cs.borderRightWidth), bb = num(cs.borderBottomWidth), bl = num(cs.borderLeftWidth);
   var pt = num(cs.paddingTop), pr = num(cs.paddingRight), pb = num(cs.paddingBottom), pl = num(cs.paddingLeft);
   var ix = r.x + bl, iy = r.y + bt, iw = Math.max(0, r.w - bl - br), ih = Math.max(0, r.h - bt - bb);
-  var g = { bands: [], labels: [], radius: 0 }, rad = cs.borderTopLeftRadius || '';
-  if (/px$/.test(rad)) g.radius = Math.max(0, num(rad) - Math.max(bt, bl));
-  function band(k, x, y, w, h, value, axis) { if (w < 0.5 || h < 0.5) return null; var b = { k: k, x: x, y: y, w: w, h: h, v: value, axis: axis }; g.bands.push(b); return b; }
-  var top = band(0, ix, iy, iw, Math.min(pt, ih), pt, 'v'), bottom = band(0, ix, iy + ih - Math.min(pb, ih), iw, Math.min(pb, ih), pb, 'v');
+  var g = { bands: [], gaps: [], labels: [], pad: null }, rad = cs.borderTopLeftRadius || '', radius = 0;
+  if (/px$/.test(rad)) radius = Math.max(0, num(rad) - Math.max(bt, bl));
+  function band(k, x, y, w, h, value, side) { if (w < 0.5 || h < 0.5) return null; var b = { k: k, x: x, y: y, w: w, h: h, v: value, side: side }; g.bands.push(b); if (k) g.gaps.push(b); return b; }
+  var top = band(0, ix, iy, iw, Math.min(pt, ih), pt, 'top'), bottom = band(0, ix, iy + ih - Math.min(pb, ih), iw, Math.min(pb, ih), pb, 'bottom');
   var midH = Math.max(0, ih - pt - pb);
-  var left = band(0, ix, iy + pt, Math.min(pl, iw), midH, pl, 'h'), right = band(0, ix + iw - Math.min(pr, iw), iy + pt, Math.min(pr, iw), midH, pr, 'h');
+  var left = band(0, ix, iy + pt, Math.min(pl, iw), midH, pl, 'left'), right = band(0, ix + iw - Math.min(pr, iw), iy + pt, Math.min(pr, iw), midH, pr, 'right');
+  if (top || bottom || left || right) {   // the ring: padding box (inner radius) minus the content box
+    var cw0 = Math.max(0, iw - pl - pr), ch0 = Math.max(0, ih - pt - pb);
+    g.pad = { ox: ix, oy: iy, ow: iw, oh: ih, r: Math.min(radius, iw / 2, ih / 2), ix: ix + Math.min(pl, iw), iy: iy + Math.min(pt, ih), iw: cw0, ih: ch0,
+              ri: Math.max(0, radius - Math.max(pt, pr, pb, pl)) };
+  }
   // gaps: from the children's real rectangles (rows by vertical overlap; flex keeps the real space, grid the gap)
   var flow = flowOf(cs), rg = num(cs.rowGap), cg = num(cs.columnGap), firstRow = null, firstCol = null;
   if (flow && (rg > 0 || cg > 0)) {
@@ -377,13 +389,13 @@ function spaceGeometry(info) {
       for (var n = 1; n < list.length; n++) {
         var from = list[n - 1].r, to = list[n].x; if (to - from <= 0.5) continue;
         if (flow === 'grid') from = Math.max(from, to - cg);
-        var cb = band(1, from, rows[q].y, to - from, rows[q].b - rows[q].y, cg, 'h'); if (cb && !firstCol) firstCol = cb;
+        var cb = band(1, from, rows[q].y, to - from, rows[q].b - rows[q].y, cg, 'col'); if (cb && !firstCol) firstCol = cb;
       }
     }
     if (rg > 0) for (var u = 1; u < rows.length; u++) {
       var a0 = rows[u - 1].b, a1 = rows[u].y; if (a1 - a0 <= 0.5) continue;
       if (flow === 'grid') a0 = Math.max(a0, a1 - rg);
-      var rb = band(1, cx, a0, cw, a1 - a0, rg, 'v'); if (rb && !firstRow) firstRow = rb;
+      var rb = band(1, cx, a0, cw, a1 - a0, rg, 'row'); if (rb && !firstRow) firstRow = rb;
     }
   }
   if (!g.bands.length) return null;
@@ -396,34 +408,67 @@ function spaceGeometry(info) {
 }
 function pool(kind, i) {
   var list = insPool[kind], d = list[i];
-  if (!d) { d = D.createElement('div'); d.className = kind; ins.appendChild(d); list.push(d); }
+  if (!d) { d = D.createElement('div'); d.className = kind; insL.appendChild(d); list.push(d); }
   d.style.display = ''; return d;
 }
 function trim(kind, n) { var list = insPool[kind]; for (var i = n; i < list.length; i++) list[i].style.display = 'none'; }
-function drawSpace(g) {
-  var counts = { pb: 0, gb: 0, pl: 0, gl: 0 };
-  if (g) {
-    for (var i = 0; i < g.bands.length && i < 96; i++) {
-      var b = g.bands[i], kind = b.k ? 'gb' : 'pb', d = pool(kind, counts[kind]++);
-      d.style.transform = 'translate(' + b.x.toFixed(2) + 'px,' + b.y.toFixed(2) + 'px)';
-      d.style.width = b.w.toFixed(2) + 'px'; d.style.height = b.h.toFixed(2) + 'px';
-      var rr = !b.k && g.radius > 0 ? Math.min(g.radius, b.h, b.w) : 0;
-      d.style.borderRadius = rr && b === g.bands[0] ? rr + 'px ' + rr + 'px 0 0' : rr && b === g.bands[1] ? '0 0 ' + rr + 'px ' + rr + 'px' : '';
-    }
-    for (var j = 0; j < g.labels.length && j < 12; j++) {
-      var l = g.labels[j], lk = l.k ? 'gl' : 'pl', e = pool(lk, counts[lk]++);
-      e.textContent = l.t;
-      var lw = e.offsetWidth || 20, lx = l.b.x + l.b.w / 2 - lw / 2, ly = l.b.y + l.b.h / 2 - 7;
-      lx = Math.max(0, Math.min(lx, innerWidth - lw)); ly = Math.max(0, Math.min(ly, innerHeight - 14));
-      e.style.transform = 'translate(' + lx.toFixed(2) + 'px,' + ly.toFixed(2) + 'px)';
-      l.x = lx; l.y = ly; l.w = lw; l.h = 14;
-    }
+function f2(v) { return (Math.round(v * 100) / 100).toString(); }
+function rectPath(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  if (!(r > 0.01)) return 'M' + f2(x) + ' ' + f2(y) + 'h' + f2(w) + 'v' + f2(h) + 'h' + f2(-w) + 'z';
+  var a = 'a' + f2(r) + ' ' + f2(r) + ' 0 0 1 ';
+  return 'M' + f2(x + r) + ' ' + f2(y) + 'h' + f2(w - 2 * r) + a + f2(r) + ' ' + f2(r) + 'v' + f2(h - 2 * r) + a + f2(-r) + ' ' + f2(r) +
+         'h' + f2(-(w - 2 * r)) + a + f2(-r) + ' ' + f2(-r) + 'v' + f2(-(h - 2 * r)) + a + f2(r) + ' ' + f2(-r) + 'z';
+}
+// One element per layer, as big as the viewport (the gradient's box): the hatches share the viewport's origin.
+function layer(el, d, rule) {
+  if (!d) { el.style.display = 'none'; return; }
+  el.style.display = ''; el.style.width = innerWidth + 'px'; el.style.height = innerHeight + 'px';
+  el.style.clipPath = 'path(' + rule + ", '" + d + "')";
+}
+function hits(a, b) { return a && b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
+// A value label's place: centred on its band; on a side too thin for it, flush with the band's inner edge (it
+// overflows inward, never out of the element); moved along the band, then past the obstacle, if it would collide.
+function labelPlace(b, lw, obstacles) {
+  var lh = 14, x = b.x + b.w / 2 - lw / 2, y = b.y + b.h / 2 - lh / 2;
+  if (b.side === 'top' && b.h < lh) y = b.y;
+  if (b.side === 'bottom' && b.h < lh) y = b.y + b.h - lh;
+  if (b.side === 'left' && b.w < lw) x = b.x;
+  if (b.side === 'right' && b.w < lw) x = b.x + b.w - lw;
+  var horizontal = b.side === 'top' || b.side === 'bottom' || b.side === 'row';
+  var c = [{ x: x, y: y }];
+  for (var o = 0; o < obstacles.length; o++) {
+    var ob = obstacles[o]; if (!ob) continue;
+    if (horizontal) { c.push({ x: ob.x + ob.w + 4, y: y }); c.push({ x: ob.x - lw - 4, y: y }); c.push({ x: x, y: ob.y + ob.h + 2 }); }
+    else { c.push({ x: x, y: ob.y + ob.h + 4 }); c.push({ x: x, y: ob.y - lh - 4 }); c.push({ x: ob.x + ob.w + 2, y: y }); }
   }
-  trim('pb', counts.pb); trim('gb', counts.gb); trim('pl', counts.pl); trim('gl', counts.gl);
+  for (var k = 0; k < c.length; k++) {
+    var p = { x: Math.max(0, Math.min(c[k].x, innerWidth - lw)), y: Math.max(0, Math.min(c[k].y, innerHeight - lh)), w: lw, h: lh }, ok = true;
+    for (var q = 0; q < obstacles.length && ok; q++) if (hits(p, obstacles[q])) ok = false;
+    if (ok) return p;
+  }
+  return { x: Math.max(0, Math.min(x, innerWidth - lw)), y: Math.max(0, Math.min(y, innerHeight - lh)), w: lw, h: lh };
+}
+function drawSpace(g) {
+  var counts = { pl: 0, gl: 0 };
+  if (!g) { layer(padEl, null); layer(gapEl, null); trim('pl', 0); trim('gl', 0); return; }
+  var p = g.pad;
+  layer(padEl, p ? rectPath(p.ox, p.oy, p.ow, p.oh, p.r) + (p.iw > 0 && p.ih > 0 ? rectPath(p.ix, p.iy, p.iw, p.ih, p.ri) : '') : null, 'evenodd');
+  var gd = ''; for (var i = 0; i < g.gaps.length && i < 96; i++) { var b = g.gaps[i]; gd += rectPath(b.x, b.y, b.w, b.h, 0); }
+  layer(gapEl, gd || null, 'nonzero');
+  var obstacles = [labelBox];
+  for (var j = 0; j < g.labels.length && j < 12; j++) {
+    var l = g.labels[j], lk = l.k ? 'gl' : 'pl', e = pool(lk, counts[lk]++);
+    e.textContent = l.t;
+    var pl = labelPlace(l.b, e.offsetWidth || 20, obstacles); obstacles.push(pl);
+    e.style.transform = 'translate(' + pl.x.toFixed(2) + 'px,' + pl.y.toFixed(2) + 'px)';
+    l.x = pl.x; l.y = pl.y; l.w = pl.w; l.h = 14;
+  }
+  trim('pl', counts.pl); trim('gl', counts.gl);
 }
 function insFade(on, animate) {
-  if (animate && !reduced) ins.classList.add('on'); else ins.classList.remove('on');
-  ins.style.opacity = on ? '1' : '0'; insShown = on;
+  for (var i = 0, l = [ins, insL]; i < 2; i++) { if (animate && !reduced) l[i].classList.add('on'); else l[i].classList.remove('on'); l[i].style.opacity = on ? '1' : '0'; }
+  insShown = on;
 }
 // The inspector follows the frame: same element => updated in place; another element => hidden now, shown when the
 // pointer has rested 120 ms (the frame's glide); nothing at all during a fast movement.
@@ -453,6 +498,7 @@ function place(info) {
   var ly = y >= 22 ? y - 22 : Math.min(y + h + 4, innerHeight - 20);
   var lx = Math.max(0, Math.min(x, innerWidth - 120));
   tr(label, lx, ly);
+  labelBox = { x: lx - 2, y: ly - 2, w: (label.offsetWidth || 120) + 4, h: (label.offsetHeight || 20) + 4 };   // + 2 px of air
   if (first) { void getComputedStyle(fill).transform; moveOnly(false); setOpacity(1); shown = true; }
   placeSpace(info, first);
 }

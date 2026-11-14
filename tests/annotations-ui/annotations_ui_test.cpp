@@ -1110,34 +1110,66 @@ static void Static(Ink& ink) {
         std::printf("V3-B veil: natural 60 ms %.3f, 140 ms %.3f, 220 ms %.3f, 360 ms %.3f, 500 ms %.3f; interrupted at 60 ms: 120 ms %.3f, 220 ms %.3f\n",
                     tl.Value(60), tl.Value(140), tl.Value(220), tl.Value(360), tl.Value(500), it.Value(120), it.Value(220));
     }
-    // ---- 5.3 the inspector as the native copy draws it (same geometry as the page): Paper's summary card
+    // ---- 5.3 the inspector as the native copy draws it (same geometry as the page): Paper's summary card.
+    //      ONE padding ring + ONE gap union, hatched in the viewport's phase; order hatches -> edges -> element label ->
+    //      value labels; no seam at the ring's four inner corners.
     {   FrameMark m; m.page = {0, 0, 1240, 680}; m.dpr = 2; m.accent = 0x3E67FF;
-        m.x = 140; m.y = 96; m.w = 340; m.h = 179; m.lx = 138; m.ly = 74; m.lw = 92; m.lh = 20; m.text = L"div.summary · 340×179"; m.radius = 9;
-        m.bands = {{0, 141, 97, 338, 20}, {0, 141, 254, 338, 20}, {0, 141, 117, 20, 137}, {0, 459, 117, 20, 137},
-                   {1, 161, 137, 298, 14}, {1, 161, 171, 298, 14}, {1, 161, 205, 298, 14}, {1, 161, 220, 298, 14}};
+        m.x = 140; m.y = 96; m.w = 340; m.h = 179; m.lx = 138; m.ly = 74; m.lw = 120; m.lh = 20; m.text = L"div.summary · 340×179";
+        m.hasPad = true; const double pad[8] = {141, 97, 338, 177, 161, 117, 298, 137}; std::copy(pad, pad + 8, m.pad); m.radius = 9; m.vw = 620; m.vh = 340;
+        m.gaps = {{161, 137, 298, 14}, {161, 171, 298, 14}, {161, 205, 298, 14}, {161, 220, 298, 14}};
         m.labels = {{0, 300, 100, 20, 14, L"20"}, {0, 142, 178, 18, 14, L"20"}, {1, 300, 137, 20, 14, L"14"}};
-        Render(ink, 620, 340, dpi, 0xF3F3F2FF, [&](Ink& i, float, float) {
-            const D2D1_RECT_F card{140, 96, 480, 275}; i.Fill(card, 10, Hex(0xFFFFFFFF)); i.Stroke(card, 10, Hex(0xE2E2E0FF), 1);
+        auto card = [&](Ink& i) {
+            const D2D1_RECT_F cardBox{140, 96, 480, 275}; i.Fill(cardBox, 10, Hex(0xFFFFFFFF)); i.Stroke(cardBox, 10, Hex(0xE2E2E0FF), 1);
             i.Text(L"Récapitulatif", F(15, 20, 600), {161, 117, 480, 137}, Hex(0x1C1C1CFF));
             const wchar_t* items[2] = {L"Tasse grès, sable", L"Carnet A5 ligné"};
             for (int r = 0; r < 2; ++r) { const float y = 151 + r * 34.f; i.Text(items[r], F(14, 20), {161, y, 459, y + 20}, Hex(0x4A4A4AFF)); i.Text(L"24,00 €", F(14, 20), {161, y, 459, y + 20}, Hex(0x4A4A4AFF), false, Align::Trailing); }
             i.Fill({161, 219, 459, 220}, 0, Hex(0xE2E2E0FF));
             i.Text(L"Total", F(15, 20, 600), {161, 234, 459, 254}, Hex(0x1C1C1CFF)); i.Text(L"48,00 €", F(15, 20, 600), {161, 234, 459, 254}, Hex(0x1C1C1CFF), false, Align::Trailing);
-            SelectionFrame::Paint(i, m, {0, 0}, 2); }, c);
+        };
+        Render(ink, 620, 340, dpi, 0xF3F3F2FF, [&](Ink& i, float, float) { card(i); SelectionFrame::Paint(i, m, {0, 0}, 2); }, c);
         Save(ink, c, L"v3b-5.3-spacing-inspector.png");
-        // Hatch pixels: blue lines in the padding, pink lines in the gaps; the value labels' fills.
         int blue = 0, pink = 0;
         for (int y = int(98 * k); y < int(116 * k); ++y) for (int x = int(160 * k); x < int(280 * k); ++x) { const Rgb p = Px(c.At(x, y)); if (p.b > 230 && p.r < 200 && p.g < 210) ++blue; }
         for (int y = int(138 * k); y < int(150 * k); ++y) for (int x = int(330 * k); x < int(450 * k); ++x) { const Rgb p = Px(c.At(x, y)); if (p.r > 220 && p.g < 200 && p.b > 200 && p.r > p.g + 30) ++pink; }
         CHECKM(blue > 300, "5.3 blue hatches in the top padding (%d px)", blue); CHECKM(pink > 200, "5.3 pink hatches in the gap (%d px)", pink);
         Sample(c, k, 303, 101, accentRgb, "5.3 padding label --color-browser-accent", 4);
         Sample(c, k, 303, 138, Solid(0xD63E92), "5.3 gap label #D63E92", 4);
+        // No seam: the hatch pattern is invariant along its stripes (direction (-1, 1) for 135 deg); around each inner
+        // corner of the ring (where the old top / side bands met), every pixel equals the pixel 4 device px down-left.
+        struct Corner { const char* name; float x0, x1, y0, y1; } corners[4] = {{"top-left", 150, 158, 110, 124}, {"top-right", 462, 470, 110, 124},
+                                                                              {"bottom-left", 150, 158, 247, 261}, {"bottom-right", 462, 470, 247, 261}};
+        int seamWorst = 0;
+        for (const auto& cn : corners) {
+            int worst = 0, over = 0, n = 0;
+            for (int y = int(cn.y0 * k); y < int(cn.y1 * k); ++y) for (int x = int(cn.x0 * k); x < int(cn.x1 * k); ++x) {
+                const Rgb a = Px(c.At(x, y)), b = Px(c.At(x - 4, y + 4)); ++n;
+                const int d = int(std::max({std::fabs(a.r - b.r), std::fabs(a.g - b.g), std::fabs(a.b - b.b)}));
+                worst = std::max(worst, d); if (d > 3) ++over;
+            }
+            seamWorst = std::max(seamWorst, worst);
+            CHECKM(over == 0, "5.3 seam at the %s inner corner: %d of %d pixels differ by > 3 levels along the stripes (worst %d)", cn.name, over, n, worst);
+        }
+        std::printf("V3-B padding ring corners: worst difference along the stripes %d levels (4 corners)\n", seamWorst);
+        report << L"\"v3b_cornerSeamWorst\":" << seamWorst << L",";
+        // Order: a value label over the frame's top edge and over the element label stays whole on top of both.
+        FrameMark o = m; o.labels = {{1, 300, 90, 20, 14, L"10"}, {1, 150, 78, 20, 14, L"4"}};
+        Render(ink, 620, 340, dpi, 0xF3F3F2FF, [&](Ink& i, float, float) { card(i); SelectionFrame::Paint(i, o, {0, 0}, 2); }, c);
+        Save(ink, c, L"v3b-5.3-value-labels-on-top.png");
+        Sample(c, k, 302, 97, Solid(0xD63E92), "5.3 value label above the frame's edge", 6);
+        Sample(c, k, 152, 84, Solid(0xD63E92), "5.3 value label above the element label", 6);
+        // Thin sides: a 4 px padding keeps a whole 14 px label (the page puts it flush with the inner edge: inward).
+        FrameMark t = m; const double thin[8] = {141, 97, 338, 177, 151, 101, 318, 169}; std::copy(thin, thin + 8, t.pad); t.gaps.clear();
+        t.labels = {{0, 300, 101 - 4, 20, 14, L"4"}}; t.labels[0].y = 97;   // flush with the band's top, overflowing inward
+        Render(ink, 620, 340, dpi, 0xF3F3F2FF, [&](Ink& i, float, float) { card(i); SelectionFrame::Paint(i, t, {0, 0}, 2); }, c);
+        Save(ink, c, L"v3b-5.3-thin-side-label-inward.png");
+        Sample(c, k, 302, 109, accentRgb, "5.3 thin side: the label's lower part inside the element", 6);
     }
-    // ---- 5.4 the cursor (reference render of the SVG paths at 32 / 48 / 64 on light and dark)
+    // ---- 5.4 the cursor « viseur » (direction B): reference render of the SVG at 32 / 48 / 64 on light and dark;
+    //      the hot spot (16, 16) is the blue dot's centre
     {   auto* f = ink.Factory();
-        ID2D1PathGeometry* arrow = DialogKit::SvgGeometry(f, "M5 3 L5 24 L10.2 19.4 L13.6 27.2 L17 25.7 L13.7 18.1 L20.6 18.1 Z");
-        ID2D1PathGeometry* plus = DialogKit::SvgGeometry(f, "M23.5 20.5 V26.5 M20.5 23.5 H26.5");
-        CHECK(arrow && plus);
+        ID2D1PathGeometry* cross = DialogKit::SvgGeometry(f, D::Cursor::strokes);
+        CHECK(cross != nullptr && D::Cursor::hotX == 16 && D::Cursor::hotY == 16);
+        ID2D1StrokeStyle* cap = nullptr; f->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0, &cap);
         Render(ink, 3 * 80 + 20, 2 * 80 + 20, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) {
             auto* t = i.Target(); const int sizes[3] = {32, 48, 64};
             for (int row = 0; row < 2; ++row) for (int n = 0; n < 3; ++n) {
@@ -1145,16 +1177,18 @@ static void Static(Ink& ink) {
                 const float sc = sizes[n] / 32.f / 2;   // DIP at 2x = device px / 2
                 D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
                 t->SetTransform(D2D1::Matrix3x2F::Scale(sc, sc) * D2D1::Matrix3x2F::Translation(x0 + 6, y0 + 6) * base);
-                if (arrow) { t->FillGeometry(arrow, i.Brush(Hex(0x1C1C1CFF))); t->DrawGeometry(arrow, i.Brush({1, 1, 1, 1}), 1.5f); }
-                ID2D1EllipseGeometry* circle = nullptr; f->CreateEllipseGeometry(D2D1::Ellipse({23.5f, 23.5f}, 6.5f, 6.5f), &circle);
-                if (circle) { t->FillGeometry(circle, i.Brush(Hex(0x3E67FFFF))); t->DrawGeometry(circle, i.Brush({1, 1, 1, 1}), 1.5f); circle->Release(); }
-                ID2D1StrokeStyle* cap = nullptr; f->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0, &cap);
-                if (plus) t->DrawGeometry(plus, i.Brush({1, 1, 1, 1}), 1.6f, cap); if (cap) cap->Release();
+                if (cross) { t->DrawGeometry(cross, i.Brush({1, 1, 1, 1}), 4, cap); t->DrawGeometry(cross, i.Brush(Hex(0x1C1C1CFF)), 1.6f, cap); }
+                ID2D1EllipseGeometry* dot = nullptr; f->CreateEllipseGeometry(D2D1::Ellipse({16, 16}, 2.6f, 2.6f), &dot);
+                if (dot) { t->FillGeometry(dot, i.Brush(Hex(0x3E67FFFF))); t->DrawGeometry(dot, i.Brush({1, 1, 1, 1}), 1.2f); dot->Release(); }
                 t->SetTransform(base);
             }
         }, c);
-        Save(ink, c, L"v3b-5.4-cursor-32-48-64.png");
-        if (arrow) arrow->Release(); if (plus) plus->Release();
+        Save(ink, c, L"v3b-5.4-cursor-viseur-32-48-64.png");
+        // the centre is blue, the empty ring around it shows the background, the strokes are dark on a white halo
+        const float cx = 10 + 80 + 6 + 16 * 48 / 32.f / 2, cy = 10 + 6 + 16 * 48 / 32.f / 2;
+        Sample(c, k, cx, cy, accentRgb, "5.4 viseur centre #3E67FF (48 px)", 6);
+        Sample(c, k, cx + 4 * 48 / 32.f / 2, cy + 4 * 48 / 32.f / 2, Solid(0xF3F3F2), "5.4 viseur: background between the dot and the strokes (48 px)", 6);
+        if (cross) cross->Release(); if (cap) cap->Release();
     }
     // ---- 5.5 « Rouvrir » in the detail of an annotation an agent gave back
     {   HistoryView v; v.data = V3History(); v.hot = -1; v.maxHeight = 2000; v.detailId = L"a5"; const auto l = LayoutHistory(ink, v);

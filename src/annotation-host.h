@@ -73,13 +73,16 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
 
 // V3: the page frame's geometry at the selection (CSS px of the top viewport): edges (x, y, w, h), label box and
 // text, fill opacity. The host draws the edges and the label natively (never captured) and removes the fill.
-// V3-B: the spacing inspector as drawn by the page at the selection (CSS px of the top viewport): kind 0 = padding,
-// 1 = gap. At most 96 bands and 12 labels; anything malformed drops the inspector, never the selection.
-struct SpaceBand { int kind = 0; double x = 0, y = 0, w = 0, h = 0; };
+// V3-B: the spacing inspector as drawn by the page at the selection (CSS px of the top viewport): the padding ring
+// (outer = padding box with its radius, inner = content box), the gap rectangles, the value labels, and the viewport
+// (the hatches' common box). At most 96 gaps and 12 labels; anything malformed drops the inspector, never the selection.
+struct SpaceBand { int kind = 1; double x = 0, y = 0, w = 0, h = 0; };
 struct SpaceLabel { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::string text; };
 struct Mark {
     bool present = false; double x = 0, y = 0, w = 0, h = 0, lx = 0, ly = 0, lw = 0, lh = 0, fill = 0; std::string text;
-    std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels; double radius = 0;   // V3-B inspector (empty: none)
+    bool hasPad = false; double pad[8]{}; double radius = 0, innerRadius = 0, vw = 0, vh = 0;   // V3-B: padding ring, viewport
+    std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels;                                 // V3-B: gaps, value labels
+    bool HasSpace() const { return hasPad || !bands.empty(); }
 };
 struct Selection {
     Mark mark;
@@ -112,27 +115,37 @@ inline bool Pairs(const SJ::Value* v, std::vector<BA::NamedValue>& out, std::siz
 }
 }
 
-// V3-B: mark.sp — { bands: [[kind, x, y, w, h]...], labels: [[kind, x, y, w, h, text]...], radius }. False = ignore it.
+// V3-B: mark.sp — { pad: [ox, oy, ow, oh, ix, iy, iw, ih] | null, radius, inner, gaps: [[x, y, w, h]...],
+// labels: [[kind, x, y, w, h, text]...], vw, vh }. False = ignore it.
 inline bool ParseSpaceMark(const SJ::Value& sp, Mark& m) {
     using namespace detail; constexpr double lim = 1e6;
-    const auto* b = sp.Get("bands"); const auto* l = sp.Get("labels");
-    if (!sp.IsObject() || !b || !b->IsArray() || b->items.size() > 96 || !l || !l->IsArray() || l->items.size() > 12) return false;
-    std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels; double radius = 0;
-    for (const auto& i : b->items) {
-        if (!i.IsArray() || i.items.size() != 5) return false;
-        SpaceBand x; double k = 0;
-        if (!Num(&i.items[0], k, 0, 1) || !Num(&i.items[1], x.x, -lim, lim) || !Num(&i.items[2], x.y, -lim, lim) || !Num(&i.items[3], x.w, 0, lim) || !Num(&i.items[4], x.h, 0, lim)) return false;
-        x.kind = k >= .5 ? 1 : 0; bands.push_back(x);
+    if (!sp.IsObject()) return false;
+    const auto* p = sp.Get("pad"); const auto* g = sp.Get("gaps"); const auto* l = sp.Get("labels");
+    if (!g || !g->IsArray() || g->items.size() > 96 || !l || !l->IsArray() || l->items.size() > 12) return false;
+    Mark out;
+    if (p && !p->IsNull()) {
+        if (!p->IsArray() || p->items.size() != 8) return false;
+        for (size_t i = 0; i < 8; ++i) if (!Num(&p->items[i], out.pad[i], (i % 4) < 2 ? -lim : 0, lim)) return false;
+        out.hasPad = true;
+    }
+    for (const auto& i : g->items) {
+        if (!i.IsArray() || i.items.size() != 4) return false;
+        SpaceBand x;
+        if (!Num(&i.items[0], x.x, -lim, lim) || !Num(&i.items[1], x.y, -lim, lim) || !Num(&i.items[2], x.w, 0, lim) || !Num(&i.items[3], x.h, 0, lim)) return false;
+        out.bands.push_back(x);
     }
     for (const auto& i : l->items) {
         if (!i.IsArray() || i.items.size() != 6) return false;
         SpaceLabel x; double k = 0;
         if (!Num(&i.items[0], k, 0, 1) || !Num(&i.items[1], x.x, -lim, lim) || !Num(&i.items[2], x.y, -lim, lim) || !Num(&i.items[3], x.w, 0, 400) || !Num(&i.items[4], x.h, 0, 100) ||
             !Str(&i.items[5], x.text, 16)) return false;
-        x.kind = k >= .5 ? 1 : 0; labels.push_back(x);
+        x.kind = k >= .5 ? 1 : 0; out.labels.push_back(x);
     }
-    if (const auto* r = sp.Get("radius")) { if (!Num(r, radius, 0, 10000)) return false; }
-    m.bands = std::move(bands); m.labels = std::move(labels); m.radius = radius; return true;
+    if (const auto* r = sp.Get("radius")) { if (!Num(r, out.radius, 0, 10000)) return false; }
+    if (const auto* r = sp.Get("inner")) { if (!Num(r, out.innerRadius, 0, 10000)) return false; }
+    if (!Num(sp.Get("vw"), out.vw, 1, 100000) || !Num(sp.Get("vh"), out.vh, 1, 100000)) return false;
+    m.hasPad = out.hasPad; std::copy(out.pad, out.pad + 8, m.pad); m.radius = out.radius; m.innerRadius = out.innerRadius; m.vw = out.vw; m.vh = out.vh;
+    m.bands = std::move(out.bands); m.labels = std::move(out.labels); return true;
 }
 // V3-B: target.spacing from the page (tolerant: malformed => no spacing).
 inline BA::Spacing ParseSpacing(const SJ::Value* v) {
@@ -167,7 +180,7 @@ inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why 
             !Num(mk->Get("lx"), m.lx, -lim, lim) || !Num(mk->Get("ly"), m.ly, -lim, lim) || !Num(mk->Get("lw"), m.lw, 0, 4000) || !Num(mk->Get("lh"), m.lh, 0, 200) ||
             !Num(mk->Get("fill"), m.fill, 0, 1) || !Str(mk->Get("text"), m.text, 1024)) return bad("mark");
         m.present = true;
-        if (const auto* sp = mk->Get("sp"); sp && !sp->IsNull() && !ParseSpaceMark(*sp, m)) { m.bands.clear(); m.labels.clear(); }
+        if (const auto* sp = mk->Get("sp"); sp && !sp->IsNull() && !ParseSpaceMark(*sp, m)) { m.hasPad = false; m.bands.clear(); m.labels.clear(); }
     }
     auto& g = s.target;
     if (!Str(t->Get("kind"), g.kind, 16) || (g.kind != "element" && g.kind != "selection")) return bad("target.kind");
