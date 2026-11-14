@@ -48,6 +48,7 @@
 #include "webview2-install.h"
 #include <wrl/client.h>
 #include "viewport-scrollbar.h"
+#include "content-transition.h"
 #include <shlobj.h>
 // Self-update host integration is compiled into identity-stamped builds only
 // (tools/release/build.py defines BROWSER_HAS_BUILD_INFO). Unstamped builds and the
@@ -85,6 +86,7 @@ GUID_TEXT(ICoreWebView2DocumentTitleChangedEventHandler,"{f5f2b923-953e-4042-9f9
 GUID_TEXT(ICoreWebView2NewWindowRequestedEventHandler,"{d4c185fe-c81c-4989-97af-2d3fa7ab5651}")
 GUID_TEXT(ICoreWebView2AcceleratorKeyPressedEventHandler,"{b29c7e28-fa79-41a8-8e44-65811c76dcb2}")
 GUID_TEXT(ICoreWebView2ProcessFailedEventHandler,"{79e0aea4-990b-42d9-aa1d-0fcc2e5bc7f1}")
+GUID_TEXT(ICoreWebView2BrowserProcessExitedEventHandler,"{fa504257-a216-4911-a860-fe8825712861}")
 GUID_TEXT(ICoreWebView2ExecuteScriptCompletedHandler,"{49511172-cc67-4bca-9923-137112f4c4cc}")
 GUID_TEXT(ICoreWebView2FaviconChangedEventHandler,"{2913da94-833d-4de0-8dca-900fc524a1a4}")
 GUID_TEXT(ICoreWebView2FocusChangedEventHandler,"{05ea24bd-6452-4926-9014-4b82b498135d}")
@@ -122,8 +124,16 @@ GUID_TEXT(ICoreWebView2WebResourceRequestedEventHandler,"{ab00b74c-15f1-4646-80e
 #ifdef BROWSER_E2E_FIXTURE_HOOK
 GUID_TEXT(ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,"{3b40aac6-acfe-4ffd-8211-f607b96e2d5b}")
 #endif
+// Same-window profiles (src/profile-workspace.h): every COM callback and every deferred job runs in the
+// workspace (profile) that was in the globals when it was created — a hidden profile's tab never writes
+// into the profile on screen. Defined in profile-workspace.h (end of this file).
+struct Workspace; Workspace* WorkspaceNow(); bool WorkspaceDead(Workspace* w); bool WorkspaceParked();
+bool WorkspaceEngineFailed(const std::wstring& where,HRESULT hr); bool WorkspaceCanFailAlone(); extern bool workspaceTest; extern bool qaControllerFailure; extern bool qaExpectTerminal;
+bool windowClosing=false; // WM_CLOSE accepted: late engine failures only clean up
+void EngineDropped(const std::wstring& root,const std::wstring& id,const wchar_t* why); void WatchEngineExit(ICoreWebView2Environment* environment,const std::wstring& root,const std::wstring& id);
+struct WorkspaceScope { Workspace* previous=nullptr; std::uint64_t switches=0; bool entered=false; explicit WorkspaceScope(Workspace* w); ~WorkspaceScope(); WorkspaceScope(const WorkspaceScope&)=delete; WorkspaceScope& operator=(const WorkspaceScope&)=delete; };
 template<class I, class... A> class Handler final : public I {
-    LONG refs=1; IID iid{}; std::function<HRESULT(A...)> fn;
+    LONG refs=1; IID iid{}; std::function<HRESULT(A...)> fn; Workspace* owner=WorkspaceNow();
 public:
     explicit Handler(std::function<HRESULT(A...)> f):fn(std::move(f)){CLSIDFromString(GuidText<I>(),&iid);}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id,void** out) override {
@@ -132,7 +142,7 @@ public:
     }
     ULONG STDMETHODCALLTYPE AddRef() override{return InterlockedIncrement(&refs);}
     ULONG STDMETHODCALLTYPE Release() override{ULONG n=InterlockedDecrement(&refs);if(!n)delete this;return n;}
-    HRESULT STDMETHODCALLTYPE Invoke(A... args) override{return fn(args...);}
+    HRESULT STDMETHODCALLTYPE Invoke(A... args) override{if(WorkspaceDead(owner))return S_OK; /* its profile left this window: late events are dropped */WorkspaceScope scope(owner);return fn(args...);}
 };
 template<class I,class... A,class F> auto Callback(F f){return new Handler<I,A...>(std::move(f));}
 template<class T> struct Com {
@@ -156,7 +166,7 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; HttpsOnlyState https; // hiddenAt: when it last stopped being shown
     // Split view: group id (0 = none), relative size, use order (rails collapse the least
     // recent), on screen now, first navigation done (until then the controller stays hidden).
-    int group=0; float weight=1; std::uint64_t usedAt=0; bool shown=false,revealed=false; RECT placed{}; int placedVisible=-1;
+    int group=0; float weight=1; std::uint64_t usedAt=0; bool shown=false,revealed=false; RECT placed{}; int placedVisible=-1; HWND host=nullptr; /* its WebView host window, once known (switch transition capture allowlist) */
     // Per-site audio (audio-integration.h): what this tab plays, and its injected script.
     NativeChrome::Audio::TabAudio audio; std::wstring audioScript; unsigned audioScriptGeneration=0;
     // Resize preview: `navStamp` changes with every navigation (a snapshot never outlives it);
@@ -238,7 +248,7 @@ void CheckForUpdates(); bool UpdateCheckAvailable(); bool FocusUpdateToast(); bo
 void SetUpdateToastTop(float dip); float UpdateToastHeight(); // the bookmarks band and the undo toast keep clear of it
 void SyncUpdateToastMotion();
 constexpr int CheckUpdatesCommand=3020;
-void InvalidateChrome(){RECT r;GetClientRect(window,&r);r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
+void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */RECT r;GetClientRect(window,&r);r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
 // clock is unavailable the legacy SetTimer path remains (not display synchronised).
@@ -316,7 +326,7 @@ void SmokeAdvance();
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
 // Serialized: the WebView2 install worker reports its real outcome from its own thread. A private window logs nothing.
 void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
-void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
+void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
 void FocusAddress(){editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
@@ -330,7 +340,7 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
 void SyncVaultKey();
-void BuildChrome(){chrome.privateChip=privateWindow;SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -340,13 +350,13 @@ void FocusPage(){
     auto t=Active();if(t&&t->controller.p&&PageShown(*t)&&!halted)Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus page");
     InvalidateChrome();
 }
-std::vector<int> ShownPanels();
+std::vector<int> ShownPanels();bool FocusContextToast();
 void ToggleChromeFocus(bool back=false){
     // F6 cycle: page -> toolbar -> update toast (when one is shown) -> page. In a split
     // view the pages come first, in panel order (Shift+F6 walks back).
     if(UpdateToastHasFocus()){FocusPage();return;}
     auto panels=ShownPanels();
-    if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();return;}
+    if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();return;}
     if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);return;}}}
     SetFocus(window);auto order=chrome.FocusOrder();keyboardFocus=order.empty()?0:order.front();InvalidateChrome();
 }
@@ -361,7 +371,8 @@ void FindInPage(){
     auto completed=Callback<ICoreWebView2FindStartCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{Check(hr,L"Find completed");return S_OK;});
     HRESULT hr=find->Start(options.p,completed);completed->Release();Check(hr,L"Find Start");
 }
-void Layout(){if(!window)return;chrome.Resize();BuildChrome();auto r=chrome.edit;
+void CancelContentTransitionIfMoved();
+void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();chrome.Resize();BuildChrome();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
     auto placement=chrome.MeasureText(L"Ag",{r.left,44,r.right,76},16,false,false,-.16f);
     const int baseline=S(placement.originY+placement.baseline);int editHeight=std::max(S(22),(int)(metrics.tmHeight+metrics.tmExternalLeading+2));
@@ -374,7 +385,7 @@ void Layout(){if(!window)return;chrome.Resize();BuildChrome();auto r=chrome.edit
     ApplyPages();
     RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
-void Update(){
+void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     auto t=Active();if(!t)return;
     BOOL canGoBack=FALSE,canGoForward=FALSE;
     if(t->view.p&&!halted){
@@ -385,7 +396,11 @@ void Update(){
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+(privateWindow?L" — browser (navigation privée)":L" — browser")).c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
     ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
 }
-void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();AnnotationTabChanged();}
+// Tab / profile switch transition (src/content-transition.h; functions defined before profile-workspace.h).
+ContentTransition::Overlay contentTransition; unsigned contentTransitionGeneration=0; constexpr UINT_PTR ContentTransitionTimerId=0x5051;
+constexpr UINT_PTR ContentReadyTimerId=0x5053; void ContentReadyTick();
+void BeginContentTransition(ContentTransition::Kind kind);void RevealContentTransition();void ContentTransitionInput(const wchar_t* what);
+void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;if(WorkspaceParked()){current=n;pages[n]->usedAt=++useClock;return;}const bool transition=n!=current&&current>=0&&current<(int)pages.size()&&pages[current]&&!pages[current]->closed&&pages[current]->controller.p&&pages[n]&&!pages[n]->closed;if(transition)BeginContentTransition(ContentTransition::Kind::Tab); /* before the outgoing page is hidden */editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();AnnotationTabChanged();if(transition)RevealContentTransition();}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
 void MoveTab(int from,int to){
     if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
@@ -468,7 +483,7 @@ void SyncSplitDecor(){
 }
 // Link preview (status bubble): shown only over the page whose link is hovered, while
 // that page is on screen; gone when the hover ends, on navigation, tab switch or close.
-void SyncStatusBubble(){
+void SyncStatusBubble(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     std::shared_ptr<Tab> tab;if(!halted&&window&&!IsIconic(window))for(auto& t:pages)if(t&&t->serial==statusSerial){tab=t;break;}
     // A page taken off screen (tab switch, split change) forgets its hover: no stale bubble on return.
     if(tab&&(!tab->shown||tab->placedVisible!=1)){tab->status.clear();statusSerial=0;tab=nullptr;}
@@ -486,7 +501,7 @@ RECT PixelRect(const SV::Box& b){return {S(b.left),S(b.top),S(b.right),S(b.botto
 // rules (home hidden, a new controller hidden until its first navigation completes);
 // a visible group shows every non-collapsed member at its slot. Hidden tabs start
 // their sleep clock, shown ones wake: a visible site is never suspended.
-void ApplyPages(){
+void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
     const float top=chrome.ContentTop();namespace View=NativeChrome::Design::Viewport;RECT full{S(View::inset),S(top),S(chrome.width-View::inset),std::max(S(top),S(chrome.height-View::inset))}; /* Paper V3 Viewbox: 2 DIP outline */const ULONGLONG now=GetTickCount64();
@@ -990,6 +1005,8 @@ void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p|
 // The EDIT keeps focus: typing recomputes the list, the arrows move its active row
 // (the field shows what Enter will open), Escape restores then closes, Enter opens.
 void SyncAccessibility();void AnnounceSuggestion();void SuggestionsStructureChanged();void SaveHistory();void ForgetSiteIcon(const std::wstring& site);
+// Profiles (src/profiles-integration.h, included later).
+WindowSessions::Adoption AdoptThisWindow();extern bool profilesEnabled;void ProfileMenuOpen(bool keyboard);void PublishProfileWindow(bool cached=false);void SchedulePublishProfileWindow();std::wstring ProfileArgument();bool FocusContextToast();
 void HideSuggestions(){if(!suggestions.Visible())return;suggestions.Hide();chrome.editIcon=nullptr;InvalidateChrome();SuggestionsStructureChanged();}
 std::wstring AddressText(){int n=GetWindowTextLengthW(address);std::wstring s(n+1,0);GetWindowTextW(address,s.data(),n+1);s.resize(n);return s;}
 void SetAddressText(const std::wstring& s,int from,int to){addressSetting=true;SetWindowTextW(address,s.c_str());SendMessageW(address,EM_SETSEL,from,to);addressSetting=false;}
@@ -1088,6 +1105,7 @@ int Key(UINT key){
         if(!shift&&key=='Z'){HWND f=GetFocus();return f&&(f==window||f==bookmarkToast.Window()||f==bookmarksDrawer.Window())?BookmarkUndoCommand:0;}
         if(shift&&key=='T')return 'U';
         if(shift&&key=='N')return 'P'; // Ctrl+Maj+N: nouvelle fenêtre privée
+        if(shift&&key=='M'&&(profilesEnabled||privateWindow))return 900; // Ctrl+Maj+M: menu des profils (Paper p-I-0) / fenêtre privée
         if(!shift&&key>='1'&&key<='9')return SelectTabBase+key-'1';
         if(shift&&key==VK_PRIOR)return MoveTabLeft;
         if(shift&&key==VK_NEXT)return MoveTabRight;
@@ -1137,16 +1155,20 @@ std::string SessionText(const std::vector<std::wstring>& urls){BrowserSession::S
 bool LaunchWindow(const std::wstring& id){
     if(smoke)return false;
     std::wstring exe(32768,L'\0');const DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);if(exe.empty())return false;
-    std::wstring cmd=L"\""+exe+L"\" --restore-window "+id;const std::wstring dir=std::filesystem::path(exe).parent_path().wstring();
+    std::wstring cmd=L"\""+exe+L"\" --restore-window "+id+ProfileArgument();const std::wstring dir=std::filesystem::path(exe).parent_path().wstring();
     STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
     if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,0,nullptr,dir.c_str(),&si,&pi)){Log(L"WINDOW launch failed "+id);return false;}
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);Log(L"WINDOW launched "+id);return true;
 }
+bool claimingInWindow=false; // SwitchWorkspace: the profile starts inside this window
 void ClaimWindowSession(){
     if(smoke||privateWindow)return;
-    auto a=WindowSessions::Adopt(dataDir,sessionFile,windowRequested,settings.restoreTabs);
+    auto a=AdoptThisWindow(); // set-aware (Profiles::AdoptWorkspace): a profile cached in another window set is never adopted alone
     windowId=a.id;windowLive=a.live;windowForced=a.requested;windowReservations=a.reservations; /* held for this process life */sessionFile=WindowSessions::File(dataDir,windowId);
     Log(L"WINDOW session "+windowId+(a.requested?L" (handed over)":a.adopted?L" (adopted)":L" (new)"));
+    // A profile started INSIDE this window (same-window switch) adopts one session and launches no window: its
+    // other orphans stay orphans (their reservations given back) for the next cold start or « Rouvrir » (L4).
+    if(claimingInWindow){for(HANDLE r:a.reservations)if(r)CloseHandle(r);windowReservations.clear();if(!a.relaunch.empty())Log(L"WINDOW in-window start: "+std::to_wstring(a.relaunch.size())+L" other session(s) left for the next start");return;}
     for(const auto& id:a.relaunch)LaunchWindow(id); // a failed relaunch stays an orphan: restored next time
 }
 void ShowWindowLaunchFailed(const std::wstring& id);
@@ -1169,6 +1191,7 @@ void SaveSession(){
     const auto path=std::filesystem::path(sessionFile),temp=std::filesystem::path(sessionFile+L".tmp");
     {std::ofstream out(temp,std::ios::binary|std::ios::trunc);BrowserSession::Write(out,state);out.close();if(!out){Log(L"SESSION save failed");return;}}
     if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))Log(L"SESSION replace failed");
+    PublishProfileWindow(); // the other windows' profile menus read this window's tabs
 }
 // Visited sites for the address suggestions, beside `session` (UTF-8, atomic replace).
 std::wstring HistoryFile(){return dataDir+L"\\history";}
@@ -1311,8 +1334,16 @@ void RestoreSession(){
 // `session`; in-progress operations belong to the engine and are not restored.
 namespace DL=NativeChrome::Downloads;
 std::vector<DL::Item> downloads; int nextDownloadId=1;
-struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; };
+// `owner`: the workspace (profile in this window) whose `downloads` hold the row. The map is process-wide (ids are
+// unique across workspaces); every prune / disposal touches only the operations of ONE owner, never another
+// profile's live downloads (a parked profile's download stays cancellable after another profile clears its data).
+DL::Item* FindDownload(int id);
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; };
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
+// Drops the operations of `owner` (the workspace in the globals by default) whose row is gone from its downloads.
+void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)?downloadOps.erase(it):std::next(it);}
+// Drops every operation of a workspace leaving this window (its engine is closed with it).
+void DropDownloadOps(Workspace* owner){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner?downloadOps.erase(it):std::next(it);}
 bool downloadDismissClick=false;
 DL::Item* FindDownload(int id){for(auto& item:downloads)if(item.id==id)return &item;return nullptr;}
 // Interprocess transaction (src/profile-store.h + DL::MergeHistory): another window's finished
@@ -1375,7 +1406,7 @@ void ShowDownloadDrawer();void SyncLatch();
 std::set<int> downloadIconRun;
 void InvalidateDownloadIcon(){auto d=chrome.DownloadIconDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);}
 bool labDownloadRunning=false; // motion lab download replay (a real download cancels it)
-void UpdateDownloadIcon(bool completedNow){
+void UpdateDownloadIcon(bool completedNow){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(labDownloadRunning){labDownloadRunning=false;KillTimer(window,MotionLabTimerId);}
     bool active=false;
     for(auto& item:downloads)if(item.state==DL::State::InProgress||item.state==DL::State::Paused){active=true;downloadIconRun.insert(item.id);}
@@ -1418,7 +1449,7 @@ std::wstring MotionLabReplay(NativeChrome::Tuning::Group group){
     InvalidateChrome();ScheduleMotion(now);
     return std::wstring(L"Rejoué : ")+T::GroupName(group)+done;
 }
-void DownloadsChanged(){downloadPanel.Changed();downloadDrawer.Changed();}
+void DownloadsChanged(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */downloadPanel.Changed();downloadDrawer.Changed();}
 // Pull the operation's current state into its history row (UI thread, engine events).
 void SyncDownload(int id){
     auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item)return;
@@ -1460,7 +1491,7 @@ void SyncDownload(int id){
     }
 }
 void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
-void ShowDownloads(){
+void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!downloadPanel.Window())return;
     CloseAudioDrawer();RefreshMissing();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);
     // Right edge on the toolbar's 6 DIP margin, just under the toolbar row.
@@ -1546,7 +1577,7 @@ HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args){
 // History row + popover for a download whose path is settled.
 void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args){
     ICoreWebView2DownloadOperation* raw=nullptr;if(FAILED(args->get_DownloadOperation(&raw))||!raw){Log(L"DOWNLOAD operation unavailable");return;}
-    auto entry=std::make_shared<DownloadOperation>();entry->op.p=raw;
+    auto entry=std::make_shared<DownloadOperation>();entry->op.p=raw;entry->owner=WorkspaceNow();   // the profile that started it (scope of DownloadStarting)
     DL::Item item;item.id=nextDownloadId++;item.started=NativeChrome::DownloadsUI::UnixNowMs();const int id=item.id;
     LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){item.path=text;CoTaskMemFree(text);}
     text=nullptr;if(SUCCEEDED(raw->get_Uri(&text))&&text){item.uri=text;CoTaskMemFree(text);}
@@ -1568,9 +1599,14 @@ void DownloadAction(int id,DL::Action action){
     auto* item=FindDownload(id);if(!item)return;
     auto found=downloadOps.find(id);auto entry=found==downloadOps.end()?nullptr:found->second;auto* op=entry?entry->op.p:nullptr;
     switch(action){
-    case DL::Action::Pause:if(op&&SUCCEEDED(op->Pause())){entry->userPaused=true;SyncDownload(id);}break;
-    case DL::Action::Resume:case DL::Action::Retry:if(op&&SUCCEEDED(op->Resume())){entry->userPaused=false;SyncDownload(id);}break;
-    case DL::Action::Cancel:if(op){op->Cancel();SyncDownload(id);}break;
+    // Pause / Resume / Cancel need the row's live operation. Without it (never expected), the row is not left offering
+    // a dead action: it becomes a non-resumable failure (« Remove »), logged.
+    case DL::Action::Pause:case DL::Action::Resume:case DL::Action::Retry:case DL::Action::Cancel:
+        if(!op){Log(L"DOWNLOAD action without its operation: "+DL::FileName(item->path));if(item->state==DL::State::InProgress||item->state==DL::State::Paused||item->state==DL::State::Failed){item->state=DL::State::Failed;item->canResume=false;item->reason=L"Download unavailable";SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}break;}
+        if(action==DL::Action::Pause){if(SUCCEEDED(op->Pause()))entry->userPaused=true;}
+        else if(action==DL::Action::Cancel){const HRESULT hr=op->Cancel();Log(L"DOWNLOAD cancel "+DL::FileName(item->path)+(SUCCEEDED(hr)?L"":L" failed"));}
+        else if(SUCCEEDED(op->Resume()))entry->userPaused=false;
+        SyncDownload(id);break;
     case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
     case DL::Action::ShowInFolder:{const auto path=item->path;CloseDownloadSurfaces();
         PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
@@ -1707,9 +1743,9 @@ bool WipeLocalTraceFiles(){
     return ok;
 }
 void ClearLocalTraces(){
-    closedTabs.clear();history.Clear();ClearSiteIcons();historyDrawer.Changed();
+    closedTabs.clear();history.Clear();ClearSiteIcons();if(!WorkspaceParked())historyDrawer.Changed();
     downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[](const DL::Item& d){return d.state!=DL::State::InProgress&&d.state!=DL::State::Paused;}),downloads.end());
-    for(auto it=downloadOps.begin();it!=downloadOps.end();)it=FindDownload(it->first)?std::next(it):downloadOps.erase(it);
+    PruneDownloadOps();   // this profile's operations only
     if(!WipeLocalTraceFiles())Log(L"CLEAR local traces: NOT fully erased on disk");DownloadsChanged();
 }
 // Engine data lives in the shared profile: any live tab's webview reaches it. `out`
@@ -1895,7 +1931,7 @@ void ApplySleepSettings(){
 // Called by Select: the previous tab starts its out-of-sight clock; a sleeping tab wakes
 // (put_IsVisible(TRUE) resumes it too; Resume also covers a hidden home tab).
 void ApplyTabSettings();void ApplyMemorySaver();
-void TabShown(const std::shared_ptr<Tab>& tab){
+void TabShown(const std::shared_ptr<Tab>& tab){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     auto previous=shownTab.lock();if(previous==tab)return;
     if(previous)previous->hiddenAt=GetTickCount64();shownTab=tab;ApplyTabSettings();ApplyMemorySaver();
     if(tab&&tab->sleeping){tab->sleeping=false;Com<ICoreWebView2_3> v3;if(tab->view.p&&SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))&&v3.p)v3->Resume();InvalidateChrome();}
@@ -1953,7 +1989,7 @@ std::vector<std::wstring> httpAllowedHosts; // « Continuer quand même », for 
 std::vector<std::function<void()>> deferredJobs;
 // Navigations started from inside a WebView2 event handler run on the next message instead.
 void CALLBACK RunDeferredJobs(HWND,UINT,UINT_PTR id,DWORD){KillTimer(nullptr,id);auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& job:jobs)if(!halted)job();}
-void Defer(std::function<void()> job){deferredJobs.push_back(std::move(job));if(deferredJobs.size()==1&&!SetTimer(nullptr,0,0,RunDeferredJobs)){auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& j:jobs)if(!halted)j();}}
+void Defer(std::function<void()> job){job=[owner=WorkspaceNow(),job=std::move(job)]{if(WorkspaceDead(owner))return; /* its workspace was disposed: dropped, like a late COM event */WorkspaceScope scope(owner);job();};deferredJobs.push_back(std::move(job));if(deferredJobs.size()==1&&!SetTimer(nullptr,0,0,RunDeferredJobs)){auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& j:jobs)if(!halted)j();}}
 // Lower-case host (IPv6 kept in brackets), explicit port and authority end of an http:// URL.
 bool HttpParts(const std::wstring& uri,std::wstring& host,std::wstring& port,size_t& end){
     if(uri.size()<8||_wcsnicmp(uri.c_str(),L"http://",7)!=0)return false;
@@ -2080,6 +2116,7 @@ bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message)
 #include "elements-integration.h"
 void SyncLatch();
 #include "audio-integration.h"
+#include "profiles-integration.h"
 #include "viewport-scrollbar-host.h"
 // SETTINGS(cookies): third-party cookie blocking is Chromium's ForceThirdPartyCookieBlockingEnabled
 // feature (net::cookie_util::IsForceThirdPartyCookieBlockingEnabled also needs
@@ -2220,6 +2257,12 @@ void CreateSettingsPanel(){
     // The drawer knows how « Effacer les données… » was activated (click vs Entrée / Espace / UIA):
     // that is the host's last input for the confirmation's focus ring, whatever the chrome saw before.
     hooks.clearData=[](bool keyboard){keyboardModality=keyboard;ClearBrowsingData();};
+    // Réglages › Profils (src/profiles-integration.h): list, detail editor, delete with undo.
+    hooks.profiles=[]{return SettingsProfiles();};hooks.profile=[](const std::wstring& id){const auto* p=profileRegistry.Find(id);return p?*p:DefaultProfileLook();};
+    hooks.saveProfile=[](const Profiles::Profile& p,Profiles::NameError* ne){return SaveProfileEdit(p,ne);};
+    hooks.validateProfileName=[](const std::wstring& n,const std::wstring& id){return Profiles::ValidateName(profileRegistry,n,id);};
+    hooks.deleteProfile=[](const std::wstring& id,bool keyboard){keyboardModality=keyboard;AskDeleteProfile(id,keyboard);};
+    hooks.profilesReadOnly=[]{return profileRegistry.readOnly;};
     hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};hooks.vaultInfo=[]{return VaultInfo();};
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
@@ -2283,7 +2326,7 @@ void RemoveFromHistory(const std::wstring& url){
     if(!history.Remove(url))return;
     SaveHistory();Log(L"HISTORY removed "+url);
     const auto site=AddressBar::SiteOf(url);if(!site.empty()&&!history.HasSite(site)&&!BookmarkedSite(site))ForgetSiteIcon(site);
-    historyDrawer.Changed();
+    if(!WorkspaceParked())historyDrawer.Changed();
 }
 void CreateHistoryPanel(){
     NativeChrome::HistoryUI::Drawer::Hooks hooks;
@@ -2411,7 +2454,7 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
     }
     RequestFavicon(t);if(halted)return S_OK;
     Log(L"NAVIGATION OK "+t->uri);
-    if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&!SearchResultPage(t->uri)&&history.Record(t->uri,t->title==L"Nouvel onglet"?L"":t->title,NativeChrome::DownloadsUI::UnixNowMs())){SaveHistory();historyDrawer.Changed();}
+    if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&!SearchResultPage(t->uri)&&history.Record(t->uri,t->title==L"Nouvel onglet"?L"":t->title,NativeChrome::DownloadsUI::UnixNowMs())){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}
     t->revealed=true;ApplyPages();if(t==Active())Update();
     return S_OK;
 }
@@ -2434,11 +2477,11 @@ HRESULT ProcessFailed(const std::shared_ptr<Tab>& t,ICoreWebView2ProcessFailedEv
     return S_OK;
 }
 
-void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environment.p)return;if(pages.size()>=128){ShowTabLimitToast(uri);return;}motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=std::make_shared<Tab>();t->sandboxPending=sandboxNextTab&&IsSandboxUri(uri);if(IsSandboxUri(uri)&&!t->sandboxPending)uri.clear(); /* restored session or a page: never the sandbox */sandboxNextTab=false;t->uri=uri;t->home=uri.empty();t->title=std::move(title);if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());CancelTabDrag();pages.insert(pages.begin()+index,t);Select(index);std::weak_ptr<Tab> weak=t;
+void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environment.p)return;const bool parked=WorkspaceParked(); /* a hidden profile's page opened a window: its tab, never the visible window's hover / toast */if(pages.size()>=128){if(parked)Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return;}if(!parked){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=std::make_shared<Tab>();t->sandboxPending=sandboxNextTab&&IsSandboxUri(uri);if(IsSandboxUri(uri)&&!t->sandboxPending)uri.clear(); /* restored session or a page: never the sandbox */sandboxNextTab=false;t->uri=uri;t->home=uri.empty();t->title=std::move(title);if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());CancelTabDrag();pages.insert(pages.begin()+index,t);Select(index);std::weak_ptr<Tab> weak=t;
     auto done=Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,HRESULT,ICoreWebView2Controller*>([weak,uri](HRESULT hr,ICoreWebView2Controller* c)->HRESULT{
         // A tab closed before its controller arrived (e.g. reopened then closed, or the
         // window closing) may complete with E_ABORT: that is not an engine failure.
-        auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(!Check(hr,L"CreateController callback"))return S_OK;if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
+        auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(workspaceTest&&qaControllerFailure&&SUCCEEDED(hr)&&WorkspaceCanFailAlone()){qaControllerFailure=false;if(c)c->Close();c=nullptr;hr=HRESULT_FROM_WIN32(ERROR_INVALID_STATE);Log(L"WSQA controller failure injected");} /* --workspace-test only */if(FAILED(hr)&&WorkspaceEngineFailed(L"CreateController callback",hr))return S_OK; /* a profile started in this window: that profile fails, not the window */if(!Check(hr,L"CreateController callback"))return S_OK;if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
         Com<ICoreWebView2Settings> settings;Com<ICoreWebView2Settings3> settings3;
         if(!Check(t->view->get_Settings(&settings.p),L"get_Settings")||
            !Check(settings->QueryInterface(IID_ICoreWebView2Settings3,(void**)&settings3.p),L"QueryInterface Settings3")||
@@ -2465,13 +2508,13 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
         auto history=Callback<ICoreWebView2HistoryChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted&&tab==Active())Update();return S_OK;});
         result=t->view->add_HistoryChanged(history,&token);history->Release();if(!Check(result,L"add_HistoryChanged"))return S_OK;
-        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();historyDrawer.Changed();}}Update();return S_OK;});
+        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}}Update();SchedulePublishProfileWindow();return S_OK;});
         result=t->view->add_DocumentTitleChanged(title,&token);title->Release();if(!Check(result,L"add_DocumentTitleChanged"))return S_OK;
         auto nav=Callback<ICoreWebView2NavigationCompletedEventHandler,ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs* a)->HRESULT{return NavigationCompleted(weak.lock(),a);});
         result=t->view->add_NavigationCompleted(nav,&token);nav->Release();if(!Check(result,L"add_NavigationCompleted"))return S_OK;
         auto popup=Callback<ICoreWebView2NewWindowRequestedEventHandler,ICoreWebView2*,ICoreWebView2NewWindowRequestedEventArgs*>([](ICoreWebView2*,ICoreWebView2NewWindowRequestedEventArgs* a)->HRESULT{if(halted)return S_OK;a->put_Handled(TRUE);LPWSTR uri=nullptr;if(Check(a->get_Uri(&uri),L"NewWindow get_Uri")&&uri){std::wstring s=uri;CoTaskMemFree(uri);if((s.rfind(L"https://",0)==0||s.rfind(L"http://",0)==0)&&!IsSandboxUri(s))NewTab(s);}return S_OK;});
         result=t->view->add_NewWindowRequested(popup,&token);popup->Release();if(!Check(result,L"add_NewWindowRequested"))return S_OK;
-        auto key=Callback<ICoreWebView2AcceleratorKeyPressedEventHandler,ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs*>([](ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs* a)->HRESULT{if(halted)return S_OK;COREWEBVIEW2_KEY_EVENT_KIND kind;a->get_KeyEventKind(&kind);UINT vk;a->get_VirtualKey(&vk);if(kind==COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN||kind==COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN){int cmd=Key(vk);if(cmd){a->put_Handled(TRUE);PostMessageW(window,Shortcut,cmd,0);}}return S_OK;});
+        auto key=Callback<ICoreWebView2AcceleratorKeyPressedEventHandler,ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs*>([](ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs* a)->HRESULT{if(halted)return S_OK;COREWEBVIEW2_KEY_EVENT_KIND kind;a->get_KeyEventKind(&kind);UINT vk;a->get_VirtualKey(&vk);if(kind==COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN||kind==COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN)ContentTransitionInput(L"key");if(kind==COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN||kind==COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN){int cmd=Key(vk);if(cmd){a->put_Handled(TRUE);PostMessageW(window,Shortcut,cmd,0);}}return S_OK;});
         result=c->add_AcceleratorKeyPressed(key,&token);key->Release();if(!Check(result,L"add_AcceleratorKeyPressed"))return S_OK;
         auto gotFocus=Callback<ICoreWebView2FocusChangedEventHandler,ICoreWebView2Controller*,IUnknown*>([weak](ICoreWebView2Controller*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)ActivatePanel(tab);return S_OK;});
         result=c->add_GotFocus(gotFocus,&token);gotFocus->Release();if(!Check(result,L"add_GotFocus"))return S_OK;
@@ -3647,7 +3690,7 @@ case BookmarkUndoCommand:UndoBookmark();break;
 case 'I':FocusAddress();break; // the security indicator opens the address
 case 'Q':RequestChipActivated();break;
 case NativeChrome::Chrome::VaultKeyId:VaultKeyActivated();break; // B03 native fill control (armed, guarded; review §5) // B01 chip: back to its open popover, never a new request
-case 900:TabMenu(KeyboardAnchor());break;
+case 900:ProfileMenuOpen(keyboardModality);break;
 case 'Y':if(historyDismissClick){historyDismissClick=false;break;}ToggleHistory(KeyboardAnchor()!=0||keyboardModality);break;
 case PrintActive:if(t&&!t->home)PrintPage(t);break; // like the tab menu: nothing to print on a home tab
 case CheckUpdatesCommand:CheckForUpdates();break;
@@ -3789,9 +3832,12 @@ void StopUpdates(){if(window)KillTimer(window,UpdateTimerId);updateTimerDelayMs=
 // Legacy portable exe (old Start Menu shortcut target) after a successful first install: hand over to the
 // installed current version (stable profile/session) instead of reopening the obsolete portable copy.
 // Validation lives in UpdateCore::PortableForwardTarget; any failure keeps the portable browser running.
+extern std::wstring launchArgs;
 bool ForwardToInstalled(const std::wstring& installRoot=L""){
     const auto target=UpdateCore::PortableForwardTarget(ExePath(),installRoot);if(target.empty())return false;
     const auto dir=target.substr(0,target.find_last_of(L'\\'));std::wstring command=L"\""+target+L"\"";
+    // The installed copy opens the same profile (review M5): --profile <id> is passed through, nothing else.
+    if(const auto at=launchArgs.find(L"--profile ");at!=std::wstring::npos){size_t b=at+10;while(b<launchArgs.size()&&launchArgs[b]==L' ')++b;size_t e=b;while(e<launchArgs.size()&&launchArgs[e]!=L' ')++e;const std::wstring id=launchArgs.substr(b,e-b);if(Profiles::ValidId(id))command+=L" --profile "+id;}
     STARTUPINFOW si{sizeof(si)};PROCESS_INFORMATION pi{};
     if(!CreateProcessW(target.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,dir.c_str(),&si,&pi)){Log(L"UPDATE forward to installed failed, staying portable");return false;}
     AllowSetForegroundWindow(pi.dwProcessId);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
@@ -3852,7 +3898,9 @@ int AccessibleRegion(long long key){
 struct AccessibleLabel { std::wstring name,accelerator,help; const wchar_t* id; };
 AccessibleLabel AccessibleButton(int id){
     switch(id){
-    case 900:return {L"Liste des onglets",L"",std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"TabList"};
+    case 900:if(chrome.profileButton.shown&&chrome.profileButton.privateWindow)return {L"Fenêtre privée",L"Ctrl+Maj+M",L"Historique, cookies et session non conservés · "+std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"ProfileButton"};
+        if(chrome.profileButton.shown)return {L"Profil : "+chrome.profileButton.name,L"Ctrl+Maj+M",L"Menu des profils · "+std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"ProfileButton"};
+        return {L"Liste des onglets",L"",std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"TabList"};
     case 'Y':return {L"Historique",L"Ctrl+H",L"",L"History"};
     case 'T':return {L"Nouvel onglet",L"Ctrl+T",L"",L"NewTab"};
     case 'm':return {L"Réduire",L"",L"",L"Minimize"};
@@ -4050,7 +4098,7 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
 // WebView2 startup recovery (defined before wWinMain): installer worker notifications, shutdown.
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
-LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;switch(msg){
+LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
 case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(y<44&&!id)return HTCAPTION;return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
@@ -4061,19 +4109,20 @@ case WM_NCMOUSEMOVE:if(w==HTMAXBUTTON){UpdateInteraction('M',0);TRACKMOUSEEVENT 
 case WM_NCMOUSELEAVE:UpdateInteraction(0,0);return 0;
 case WM_NCLBUTTONDBLCLK:if(w==HTCAPTION){Command('M');return 0;}break;
 case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&monitor)){info->ptMaxPosition={monitor.rcWork.left-monitor.rcMonitor.left,monitor.rcWork.top-monitor.rcMonitor.top};info->ptMaxSize={monitor.rcWork.right-monitor.rcWork.left,monitor.rcWork.bottom-monitor.rcWork.top};}return 0;}
-case WM_DPICHANGED:{auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();RepositionElementSurfaces();
+case WM_DPICHANGED:{contentTransition.Cancel();auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();RepositionElementSurfaces();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
 #endif
     return 0;}
-case WM_SIZE:HideSuggestions();motionMinimized=w==SIZE_MINIMIZED;AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now());
+case WM_SIZE:HideSuggestions();motionMinimized=w==SIZE_MINIMIZED;contentTransition.Cancel(); /* resize / minimise / maximise */AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now());
 #ifdef BROWSER_UPDATES
     // Minimised: the toast stops its clock/timer (zero wakes); otherwise SetOwnerVisible(true)
     // re-lays the card out (bottom-left anchor, drawer reserve kept).
     updateToast.SetOwnerVisible(!motionMinimized);
 #endif
     return 0;
-case WM_MOVE:RepositionElementSurfaces();HideSuggestions();SyncStatusBubble();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
+case WM_PARENTNOTIFY:{const UINT e=LOWORD(w);if(e==WM_LBUTTONDOWN||e==WM_RBUTTONDOWN||e==WM_MBUTTONDOWN||e==WM_XBUTTONDOWN||e==0x0246 /* WM_POINTERDOWN */)ContentTransitionInput(L"click");break;}
+case WM_MOVE:contentTransition.Cancel();RepositionElementSurfaces();HideSuggestions();SyncStatusBubble();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
 #endif
@@ -4099,9 +4148,10 @@ case WM_LBUTTONUP:{if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDr
     if(!dragged&&original&&original==id&&NativeChrome::IsBookmark(id)){BandActivate(NativeChrome::BookmarkIndex(id),(w&MK_CONTROL)!=0,(w&MK_SHIFT)!=0,false);return 0;}
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}vaultKeyPress=-1;return 0;}   /* review R3: a press never outlives its release */
 case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelSeparator();CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
-case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE)vaultKeyShownAt=GetTickCount64();   /* review N6: the key re-arms when the window is activated */
-    if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
-case WM_ACTIVATEAPP:case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background
+case WM_COPYDATA:if(const int answer=ProfileCopyDataMessage(l))return answer;break;
+case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();}   /* review N6: the key re-arms when the window is activated */
+    if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
+case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background (WM_ACTIVATEAPP: below)
 case WM_DISPLAYCHANGE:Layout();break;
 case WM_SETTINGCHANGE:ApplyReducedMotion();return 0; // Windows' switch, OR'd with the app's own
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));
@@ -4143,6 +4193,7 @@ case WM_APP+3:SmokeAdvance();return 0;
 case FrameMessage:{if(l==NativeChrome::FrameClock::ClockLost){frameClock.Stop();frameClockReady=false;ScheduleMotion(NativeChrome::Motion::Now());return 0;}
     frameClock.Acknowledge();auto now=NativeChrome::Motion::Now();if(!halted&&!motionMinimized)InvalidateMotion(now);ScheduleMotion(now);return 0;}
 case WM_TIMER:
+    if(w==ContentTransitionTimerId){KillTimer(h,ContentTransitionTimerId);if(contentTransition.Holding()||contentTransition.Waiting())contentTransition.Cancel();else contentTransition.Finish(contentTransitionGeneration);return 0;}if(w==ContentReadyTimerId){KillTimer(h,ContentReadyTimerId);ContentReadyTick();return 0;}if(w==ProfileUndoTimerId){ProfileUndoTick();return 0;}if(w==ProfileAnimTimerId){ProfileAnimTick();return 0;}if(w==ProfilePublishTimerId){KillTimer(h,ProfilePublishTimerId);PublishDirtyWorkspaces();return 0;}if(w==ProfileCloseWaitTimerId){ProfileCloseWaitTick();return 0;}
 #ifdef BROWSER_UPDATES
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
@@ -4157,8 +4208,9 @@ case WM_TIMER:
 case EngineInstallMessage:OnEngineInstallMessage();return 0;
 // A window that never became ready (WebView2 recovery) never removes its session: it keeps it for the
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
-case WM_CLOSE:if(!CloseWindowAllowed())return 0;SaveSession();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
-case WM_DESTROY:StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
+case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */
+case WM_CLOSE:if(!CloseWindowAllowed())return 0;windowClosing=true;contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
+case WM_DESTROY:contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif
@@ -4227,7 +4279,24 @@ WI::Coordination EngineCoordination(){return WI::DefaultCoordination();}
 using CreateEnvironmentFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2EnvironmentOptions*,ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
 using ProbeRuntimeFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,ICoreWebView2EnvironmentOptions*,LPWSTR*);
 CreateEnvironmentFn engineCreate=nullptr; ProbeRuntimeFn engineProbe=nullptr;
-EngineOptions* NewEngineOptions(){auto options=new EngineOptions();options->extensions=!smoke;return options;}
+std::wstring engineGivenArgs;
+// The engine arguments of one environment, from the settings in the globals (its profile's): French UI, the
+// autoplay policy, grayscale text, third-party cookies; any user-set arguments are kept.
+std::wstring EngineArgumentsFor(const BrowserSettings::State& s){
+    std::wstring value=engineGivenArgs;
+    if(value.find(L"--lang=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--lang=fr");
+    // SETTINGS(media): autoplay policy, fixed for the engine's lifetime. Muted autoplay stays allowed under user-gesture-required.
+    if(value.find(L"--autoplay-policy=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(s.autoplay==BrowserSettings::Autoplay::Allowed?L"--autoplay-policy=no-user-gesture-required":L"--autoplay-policy=user-gesture-required");
+    // SETTINGS(display): grayscale text antialiasing for page content (D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE).
+    if(s.grayscaleText&&value.find(L"--disable-lcd-text")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--disable-lcd-text");
+    // SETTINGS(cookies): third-party cookies blocked for the engine's lifetime (see WithEnabledFeatures).
+    if(s.blockThirdPartyCookies)value=WithEnabledFeatures(value,{L"ForceThirdPartyCookieBlockingEnabled",L"ThirdPartyStoragePartitioning"});
+    return value;
+}
+// One user data folder = one set of options (WebView2 refuses a second environment on it with others): while another
+// process holds that profile's engine, its recorded arguments are used (Profiles::AcquireEngineArgs lease).
+std::wstring EngineArgumentsLeased(){const auto wanted=EngineArgumentsFor(settings);if(!profilesEnabled||smoke||privateWindow)return wanted;const auto lease=Profiles::AcquireEngineArgs(profileRoot,profileId,wanted);EngineHeld(profileId);if(!lease.error.empty())Log(L"PROFILES engine args "+lease.error);return lease.arguments;}
+EngineOptions* NewEngineOptions(){auto options=new EngineOptions();options->extensions=!smoke;options->arguments=EngineArgumentsLeased();return options;}
 HRESULT PrepareLoader(WR::Stage& stage){
     if(!loader){loader=LoadLibraryExW((base+L"\\WebView2Loader.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!loader){stage=WR::Stage::Loader;return HRESULT_FROM_WIN32(GetLastError());}}
     if(!WI::Resolve(loader,"CreateCoreWebView2EnvironmentWithOptions",engineCreate)){stage=WR::Stage::Export;return HRESULT_FROM_WIN32(GetLastError());}
@@ -4235,16 +4304,23 @@ HRESULT PrepareLoader(WR::Stage& stage){
     return S_OK;
 }
 WR::Probe ProbeRuntime(){
-    WR::Probe probe;if(!engineProbe)return probe;probe.attempted=true;LPWSTR version=nullptr;auto options=NewEngineOptions();
+    WR::Probe probe;if(!engineProbe)return probe;probe.attempted=true;LPWSTR version=nullptr;auto options=new EngineOptions();options->extensions=!smoke;options->arguments=EngineArgumentsFor(settings); /* a version probe creates no environment: no engine lease (it would never be released) */
     probe.hr=engineProbe(nullptr,options,&version);options->Release();if(version){probe.version=version;CoTaskMemFree(version);}return probe;
 }
 HRESULT CreateEngine(std::uint64_t generation){
-    auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([generation](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{
-        if(!engineStart)return S_OK; // window gone: nothing to restore into
+    // Each attempt takes an engine lease hold (NewEngineOptions); a failed attempt gives it back, a superseded one
+    // (an environment nobody uses) gives it back once that environment's browser process has exited.
+    const std::wstring root=profileRoot,id=profileId;
+    auto done=Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,HRESULT,ICoreWebView2Environment*>([generation,root,id](HRESULT hr,ICoreWebView2Environment* env)->HRESULT{
         if(SUCCEEDED(hr)&&!env)hr=E_POINTER;
-        if(SUCCEEDED(hr)&&engineStart->Accepts(generation))environment.set(env);
+        const bool used=engineStart&&SUCCEEDED(hr)&&engineStart->Accepts(generation);
+        if(FAILED(hr))EngineDropped(root,id,L"start attempt failed");else if(!used)WatchEngineExit(env,root,id);
+        if(!engineStart)return S_OK; // window gone: nothing to restore into
+        if(used){if(environment.p&&environment.p!=env)WatchEngineExit(environment.p,root,id); /* a retry replaces an earlier environment: its hold follows its exit */environment.set(env);}
         engineStart->Created(generation,hr);return S_OK;});
-    auto options=NewEngineOptions();HRESULT hr=engineCreate(nullptr,profileDir.c_str(),options,done);options->Release();done->Release();return hr;
+    auto options=NewEngineOptions();HRESULT hr=engineCreate(nullptr,profileDir.c_str(),options,done);options->Release();done->Release();
+    if(FAILED(hr))EngineDropped(root,id,L"start attempt not started");
+    return hr;
 }
 void EngineReady(){
     LPWSTR version=nullptr;if(Check(environment->get_BrowserVersionString(&version),L"get_BrowserVersionString")&&version){Log(L"RUNTIME "+std::wstring(version));CoTaskMemFree(version);}
@@ -4266,7 +4342,7 @@ bool StartRelaunchedInstance(){
     std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());if(!n||n>=exe.size())return false;exe.resize(n);
     // Same mode (--private is in launchArgs) and, for a normal window, the SAME session: its open marker
     // was given up at close (WindowSessions::Release), so the new instance adopts exactly this id.
-    std::wstring command=L"\""+exe+L"\" "+RelaunchArgs(launchArgs,privateWindow,windowId)+L" --webview2-recovered";STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
+    std::wstring command=L"\""+exe+L"\" "+RelaunchArgs(ProfileArgs::ForRelaunch(launchArgs),privateWindow,windowId)+(launchArgs.find(L"--profile ")==std::wstring::npos?ProfileArgument():L"")+L" --webview2-recovered";STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
     if(!CreateProcessW(exe.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,base.c_str(),&si,&pi)){Log(L"WEBVIEW2 RECOVERY relaunch failed "+std::to_wstring(GetLastError()));return false;}
     AllowSetForegroundWindow(pi.dwProcessId);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);Log(L"WEBVIEW2 RECOVERY relaunched after close");return true;
 }
@@ -4356,7 +4432,73 @@ void StopEngineStart(){
     if(state.detached)line+=L"; worker still busy"+(state.dir.empty()?std::wstring():L", its folder %TEMP%\\"+state.dir+L" may remain if the process ends first");
     Log(line);
 }
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
+// ---- tab / profile switch transition (src/content-transition.h) ----------------------------------------------
+void QaTransitionFrames();
+// The WebView host window of a shown tab: resolved once, only when unambiguous (exactly one visible Chrome_WidgetWin
+// child of the browser window at the tab's bounds and not claimed by another tab), then kept for the tab's life.
+BOOL CALLBACK CollectWebViewHost(HWND h,LPARAM l){wchar_t c[64]{};if(GetParent(h)==window&&IsWindowVisible(h)&&GetClassNameW(h,c,64)&&std::wcsncmp(c,L"Chrome_WidgetWin",16)==0)reinterpret_cast<std::vector<HWND>*>(l)->push_back(h);return TRUE;}
+HWND PageHostWindow(Tab& t){
+    if(t.host&&IsWindow(t.host)&&GetParent(t.host)==window)return t.host;t.host=nullptr;
+    std::vector<HWND> all;EnumChildWindows(window,CollectWebViewHost,reinterpret_cast<LPARAM>(&all));HWND found=nullptr;int n=0;
+    for(HWND h:all){bool claimed=false;for(auto& o:pages)if(o&&o.get()!=&t&&o->host==h){claimed=true;break;}if(claimed)continue;
+        RECT r{};GetWindowRect(h,&r);MapWindowPoints(nullptr,window,reinterpret_cast<POINT*>(&r),2);if(EqualRect(&r,&t.placed)){found=h;++n;}}
+    if(n==1)t.host=found;return t.host;}
+// The host windows of the pages shown NOW (the capture allowlist; split panes included).
+std::vector<HWND> ShownPageWindows(){std::vector<HWND> v;for(auto& t:pages)if(t&&!t->closed&&t->controller.p&&t->placedVisible==1&&PageShown(*t))if(HWND h=PageHostWindow(*t))v.push_back(h);return v;}
+// The first input to a page (a click: WM_PARENTNOTIFY, sent before the page handles it; a key in the page) removes
+// the overlay at once: what the user acts on is what they see. Nothing is consumed or delayed.
+void ContentTransitionInput(const wchar_t* what){if(!contentTransition.Active())return;contentTransition.Cancel();if(workspaceTest)Log(std::wstring(L"TRANSITION cancelled by input: ")+what);}
+RECT ContentTransitionRect(){const auto c=ContentBox();return {S(c.left),S(c.top),S(c.right),S(c.bottom)};}
+// Called just BEFORE the outgoing page is hidden: the snapshot is taken now, the switch then happens at once.
+void BeginContentTransition(ContentTransition::Kind kind){
+    if(!window||halted||smoke||splitTest||windowClosing||WorkspaceParked()||IsIconic(window)||!IsWindowVisible(window))return;
+    const bool reduced=ReducedMotionPreferred();const float scale=GetDpiForWindow(window)/96.f;
+    const bool was=contentTransition.Active();
+    if(!contentTransition.Begin(window,ContentTransitionRect(),kind,reduced,scale,ShownPageWindows())){if(!contentTransition.Available())return;Log(L"TRANSITION unavailable: instant switch");return;}
+    contentTransitionGeneration=contentTransition.Generation();
+    SetTimer(window,ContentTransitionTimerId,2600,nullptr);   // safety: cleared even if the switch never reveals
+    if(workspaceTest){Log(std::wstring(L"TRANSITION ")+(kind==ContentTransition::Kind::Profile?L"profile":L"tab")+(was?L" retarget":L" capture "+std::to_wstring(static_cast<int>(contentTransition.CaptureMs()))+L" ms")+(reduced?L" reduced (opacity only)":contentTransition.Blurring()?L" gpu blur":L" blur unavailable (fade only)"));QaTransitionFrames();}
+}
+// --workspace-test only: the DWM-composed viewport (screen pixels of this window's viewport) at 0 / 50 / 100 / 150 /
+// 220 ms of the next transition, written as BMP to the folder armed by « qa transition-frames <dir> ».
+std::wstring qaFramesDir; int qaFrameIndex=0; constexpr UINT_PTR QaFrameTimerId=0x5052; constexpr int QaFrames=22;
+// --workspace-test only: our own window rendered by PrintWindow (PW_RENDERFULLCONTENT: its DirectComposition content
+// included), cropped to the viewport, every 30 ms of a transition; written as BMP to the armed QA folder. Never the
+// desktop or another application.
+void QaSaveFrame(){
+    if(qaFramesDir.empty()||!window)return;RECT r=ContentTransitionRect();const int w=r.right-r.left,h=r.bottom-r.top;RECT c{};GetClientRect(window,&c);if(w<=0||h<=0||c.right<=0||c.bottom<=0)return;
+    BITMAPINFO bi{};bi.bmiHeader={sizeof(BITMAPINFOHEADER),c.right,-c.bottom,1,32,BI_RGB};void* bits=nullptr;HDC dc=GetDC(window);HDC mem=CreateCompatibleDC(dc);HBITMAP dib=CreateDIBSection(dc,&bi,DIB_RGB_COLORS,&bits,nullptr,0);ReleaseDC(window,dc);
+    if(!dib||!bits){if(dib)DeleteObject(dib);DeleteDC(mem);return;}HGDIOBJ old=SelectObject(mem,dib);PrintWindow(window,mem,PW_CLIENTONLY|0x2);SelectObject(mem,old);
+    std::vector<BYTE> px((size_t)w*h*4);for(int y=0;y<h;++y)memcpy(&px[(size_t)y*w*4],(BYTE*)bits+((size_t)(r.top+y)*c.right+r.left)*4,(size_t)w*4);DeleteObject(dib);DeleteDC(mem);
+    BITMAPINFOHEADER hi{sizeof(hi),w,-h,1,32,BI_RGB};BITMAPFILEHEADER fh{0x4D42,(DWORD)(sizeof(fh)+sizeof(hi)+px.size()),0,0,sizeof(fh)+sizeof(hi)};
+    const std::wstring path=qaFramesDir+L"\\frame-"+std::to_wstring(qaFrameIndex)+L".bmp";std::ofstream f(std::filesystem::path(path),std::ios::binary);f.write((const char*)&fh,sizeof(fh));f.write((const char*)&hi,sizeof(hi));f.write((const char*)px.data(),px.size());
+    const auto v=contentTransition.Now();const int ph=static_cast<int>(contentTransition.CurrentPhase());
+    Log(L"WSQA frame "+std::to_wstring(qaFrameIndex)+L" phase="+std::to_wstring(ph)+L" oldBlur="+std::to_wstring(v.oldBlur)+L" oldOpacity="+std::to_wstring(v.oldOpacity)+L" newBlur="+std::to_wstring(v.newBlur)+L" overlay="+std::to_wstring(v.outer));
+}
+void CALLBACK QaFrameTick(HWND,UINT,UINT_PTR,DWORD){QaSaveFrame();++qaFrameIndex;if(qaFrameIndex>=QaFrames){KillTimer(window,QaFrameTimerId);qaFramesDir.clear();}}
+void QaTransitionFrames(){if(qaFramesDir.empty()||qaFrameIndex!=0)return;QaSaveFrame();qaFrameIndex=1;SetTimer(window,QaFrameTimerId,30,QaFrameTick);}
+// The switch that began the transition returned: the fade starts (the timer then releases the snapshot).
+// The switch that began the transition returned: the incoming page is being placed. Its readiness is polled
+// asynchronously (generation-checked): a cached page is ready after one frame; a cold profile waits for its first
+// navigation, bounded (never the old profile's capture held over the new one). Ready -> blur-in; else a fade.
+unsigned contentReadyGeneration=0; ULONGLONG contentReadyDeadline=0;
+void RevealContentTransition(){if(!contentTransition.Holding()||!window)return;contentReadyGeneration=contentTransition.Placed();
+    contentReadyDeadline=GetTickCount64()+ContentTransition::WaitCapMs;SetTimer(window,ContentReadyTimerId,16,nullptr);}   // opaque hold capped: then a fade, cold profiles included
+void ContentReadyTick(){
+    if(!contentTransition.Waiting()||contentTransition.Generation()!=contentReadyGeneration||WorkspaceParked())return;   // stale: a newer switch owns the overlay
+    auto t=Active();const bool timeout=GetTickCount64()>=contentReadyDeadline;
+    const bool ready=t&&(!PageShown(*t)||(t->controller.p&&t->revealed&&t->placedVisible==1));
+    if(!ready&&!timeout){const ULONGLONG left=contentReadyDeadline-GetTickCount64();SetTimer(window,ContentReadyTimerId,static_cast<UINT>(std::min<ULONGLONG>(33,std::max<ULONGLONG>(1,left))),nullptr);return;}   // the last poll lands on the cap
+    const bool incoming=ready&&PageShown(*t)&&contentTransition.Incoming(window,contentReadyGeneration,ShownPageWindows());
+    if(!incoming)contentTransition.FadeOut(contentReadyGeneration);
+    if(workspaceTest)Log(std::wstring(L"TRANSITION ")+(incoming?L"incoming capture "+std::to_wstring(static_cast<int>(contentTransition.IncomingCaptureMs()))+L" ms"+(contentTransition.IncomingBlurring()?L" gpu blur-in":L""):timeout?L"incoming timeout: fade":L"incoming none: fade")+L" after "+std::to_wstring(static_cast<long long>(GetTickCount64()-(contentReadyDeadline-ContentTransition::WaitCapMs)))+L" ms surfaces="+std::to_wstring(contentTransition.Surfaces()));
+    contentTransitionGeneration=contentTransition.Generation();
+    SetTimer(window,ContentTransitionTimerId,static_cast<UINT>(contentTransition.RemainingMs())+40,nullptr);
+}
+void CancelContentTransitionIfMoved(){if(contentTransition.Active())contentTransition.Reanchor(ContentTransitionRect());}   // bookmarks bar, chrome layout: re-anchored (offset + clip)
+#include "workspace-failover.h"
+#include "profile-workspace.h"
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
 #ifdef BROWSER_E2E_VAULT_HOST
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif
@@ -4366,28 +4508,24 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
 #endif
 #endif
+    SelectProfile(args); // after the forward: a forwarded launch never touches this folder's profiles (review M5)
     Log(L"START browser");Log(std::wstring(L"VAULT state: ")+(Vault::Active()?L"active":L"inactive"));   /* P-I1: what a product run reports */
 #ifdef BROWSER_E2E_VAULT_HOST
     Log(L"E2E VAULT HOST: vault active, foreground condition lifted (test host only)");   /* binary marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?L"browser (navigation privée)":L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?L"browser (navigation privée)":L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
-    // Engine UI (page menu labels, print preview, dialogs) in French; any user-set arguments are kept.
-    {const DWORD size=GetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",nullptr,0);std::wstring value(size,L'\0');
-     if(size)value.resize(GetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.data(),size));
-     const std::wstring given=value;
-     if(value.find(L"--lang=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--lang=fr");
-     // SETTINGS(media): autoplay policy, fixed for the engine's lifetime (LoadSettings ran above). Muted
-     // autoplay stays allowed under user-gesture-required; a user-set policy is kept.
-     if(value.find(L"--autoplay-policy=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(settings.autoplay==BrowserSettings::Autoplay::Allowed?L"--autoplay-policy=no-user-gesture-required":L"--autoplay-policy=user-gesture-required");
-     // SETTINGS(display): grayscale text antialiasing for page content, matching the chrome's
-     // D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE (Windows' equivalent of -webkit-font-smoothing: antialiased).
-     if(settings.grayscaleText&&value.find(L"--disable-lcd-text")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--disable-lcd-text");
-     // SETTINGS(cookies): third-party cookies blocked for the engine's lifetime (see WithEnabledFeatures).
-     if(settings.blockThirdPartyCookies)value=WithEnabledFeatures(value,{L"ForceThirdPartyCookieBlockingEnabled",L"ThirdPartyStoragePartitioning"});
-     if(value!=given)SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",value.c_str());}
+    // Engine arguments are per ENVIRONMENT (EngineArgumentsFor, passed in the environment options): one window
+    // hosts several profiles, each with its own flags. The process-wide variable would force the first profile's
+    // flags onto every environment, so a user-set value is kept aside (BROWSER_GIVEN_WEBVIEW2_ARGUMENTS, inherited
+    // by the windows this process starts) and merged into each environment's arguments instead.
+    {auto read=[](const wchar_t* name){const DWORD size=GetEnvironmentVariableW(name,nullptr,0);std::wstring v(size,L'\0');if(size)v.resize(GetEnvironmentVariableW(name,v.data(),size));return v;};
+     engineGivenArgs=read(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");if(engineGivenArgs.empty())engineGivenArgs=read(L"BROWSER_GIVEN_WEBVIEW2_ARGUMENTS");
+     if(!engineGivenArgs.empty())SetEnvironmentVariableW(L"BROWSER_GIVEN_WEBVIEW2_ARGUMENTS",engineGivenArgs.c_str());
+     SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",nullptr);}
+    StartWorkspaces();
     StartEngine(); // loader, probe, environment; a failure opens the recovery dialog
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}StopEngineStart();engineStart.reset();environment.set(nullptr);if(loader)FreeLibrary(loader);RunPendingRelaunch();suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }

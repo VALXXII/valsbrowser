@@ -73,7 +73,7 @@ inline constexpr float disabled = .32f;
 inline constexpr float secondaryText = 0xCC / 255.f, quietText = 0xB3 / 255.f, body = 0xB3 / 255.f, muted = .5f, origin = 0x99 / 255.f, link = 0xE6 / 255.f;
 inline constexpr float infoFill = 0x0A / 255.f, listRule = 0x0D / 255.f;
 inline constexpr float dangerPlate = 0x24 / 255.f, dangerHover = 0x33 / 255.f, dangerPressed = 0x42 / 255.f;
-inline constexpr unsigned long primaryHover = 0x5779FF, primaryPressed = 0x3557D6, dangerLift = 0xFF9489;
+inline constexpr unsigned long dangerLift = 0xFF9489;   // primary hover / press: Design::Accent::StatesOf (from the fill on screen)
 inline constexpr float badge = 24, badgePad = 8, badgeTint = .16f;          // « Concept futur » chip (split tint)
 inline constexpr float enterMs = 150, exitMs = 120, enterRise = 4;
 inline constexpr int messageLines = 12;                                     // A2: scroll after 12 lines
@@ -231,7 +231,7 @@ public:
         D2D1_COLOR_F fill{}, ink = White(1); float ringAlpha = Paper::ring;
         const float raised = Design::Surface::raised, hov = Design::Surface::hover, pre = Design::Surface::pressed;
         switch (tone) {
-        case Tone::Primary: fill = Mix(Mix(AccentColor(), Rgb(Paper::primaryHover), hover), Rgb(Paper::primaryPressed), press); ringAlpha = Paper::ringPrimary; break;
+        case Tone::Primary: { const auto c = Design::Accent::StateColor(Design::Accent::Get(), hover, press); fill = D2D1::ColorF(c.r, c.g, c.b, 1); ringAlpha = Paper::ringPrimary; break; }   // the profile's hue in every state
         case Tone::Secondary: fill = Mix(Mix(Gray(raised), Gray(hov), hover), Gray(pre), press); ink = White(focus ? 1 : Paper::secondaryText + (1 - Paper::secondaryText) * std::max(hover, press)); break;
         case Tone::Danger: fill = Danger(Paper::dangerPlate + (Paper::dangerHover - Paper::dangerPlate) * hover + (Paper::dangerPressed - Paper::dangerHover) * press); ink = Mix(Danger(), Rgb(Paper::dangerLift), std::max(hover, press)); break;
         case Tone::Quiet: fill = Gray(hov, hover); fill = Mix(fill, Gray(pre), press); ink = White(focus ? 1 : Paper::quietText + (1 - Paper::quietText) * std::max(hover, press)); break;
@@ -1055,6 +1055,15 @@ private:
         Activate(SelectHit, true); return true;
     }
     void Scroll(float dy) { const float max = std::max(0.f, messageFull_ - messageHeight_); const float s = std::clamp(scroll_ + dy, 0.f, max); if (s != scroll_) { scroll_ = s; InvalidateRect(hwnd_, nullptr, FALSE); } }
+public:
+    // --workspace-test runtime QA only: the pointer state of the button whose role is `role` (the real paint path
+    // then renders it; a synthetic WM_MOUSEMOVE would be undone by TrackMouseEvent as the real cursor is elsewhere).
+    bool PointerForTest(Role role, bool hover, bool press) {
+        if (!hwnd_) return false;
+        for (size_t i = 0; i < spec_.buttons.size(); ++i) if (spec_.buttons[i].role == role) { hover_ = hover || press ? ButtonHit(i) : 0; pressed_ = press ? ButtonHit(i) : 0; keyboard_ = false; Interact(); return true; }
+        return false;
+    }
+private:
     void Interact() { motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, Motion::Now()); for (size_t i = 0; i < edits_.size(); ++i) edits_[i].SetColor(FieldColor(i)); InvalidateRect(hwnd_, nullptr, FALSE); if (hooks_.wake) hooks_.wake(); }
     // ---- window procedures ----------------------------------------------------------------------
     static LRESULT CALLBACK EditProc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {

@@ -44,7 +44,8 @@ static void RemoveTree(const std::wstring& dir) {
     RemoveDirectoryW(dir.c_str());
 }
 static const SettingsUI::Slot* Find(const std::vector<SettingsUI::Slot>& slots, Kind kind, const std::wstring& text) { for (auto& s : slots) if (s.kind == kind && s.text == text) return &s; return nullptr; }
-static const Accessibility::Node* Node(const std::vector<Accessibility::Node>& nodes, long long key) { for (auto& n : nodes) if (n.key == key) return &n; return nullptr; }
+// A control's node by its hit (the drawer keys controls SettingsUI::Drawer::UiaKey(hit)).
+static const Accessibility::Node* Node(const std::vector<Accessibility::Node>& nodes, int hit) { const long long key = SettingsUI::Drawer::UiaKey(hit); for (auto& n : nodes) if (n.key == key) return &n; return nullptr; }
 static const Accessibility::Node* NodeNamed(const std::vector<Accessibility::Node>& nodes, const std::wstring& name) { for (auto& n : nodes) if (n.name == name) return &n; return nullptr; }
 
 // ---------------------------------------------------------------- the pure model
@@ -196,6 +197,24 @@ int wmain(int argc, wchar_t** argv) {
         plain.Show(); plain.SettleForTest(); bool none = true; for (auto& s : plain.SlotsForTest()) none = none && s.hit != SettingsUI::CatAnnotations;
         Check(none, "mode compiled out: no « Annotations et agents » row"); plain.Hide(false, false); plain.Dispose();
     }
+    {   // With Profils (main #69): both sections side by side, distinct hits, both reachable (Tab, UIA, navigation).
+        SettingsUI::Drawer both; SettingsUI::Drawer::Hooks bh = h; BrowserSettings::State bs;
+        bh.profiles = [] { SettingsUI::ProfileItem a; a.id = L"default"; a.name = L"Personnel"; a.current = true; SettingsUI::ProfileItem b; b.id = L"p2"; b.name = L"Travail"; return std::vector<SettingsUI::ProfileItem>{a, b}; };
+        Check(both.Create(hi, owner, root, &bs, bh), "drawer with Profils and Annotations");
+        both.ShowProfiles(); both.SettleForTest(); both.KeyForTest(VK_ESCAPE); both.SettleForTest();   // profiles read, back on the root
+        const auto rs = both.SlotsForTest(); const auto* prof = Find(rs, Kind::Nav, L"Profils"); const auto* ann = Find(rs, Kind::Nav, L"Annotations et agents");
+        Check(prof && ann && prof->hit == SettingsUI::CatProfiles && ann->hit == SettingsUI::CatAnnotations && prof->hit != ann->hit && prof->value == L"Personnel", "root: « Profils » (Personnel) and « Annotations et agents », distinct hits");
+        const auto order = both.FocusOrderForTest();
+        Check(std::find(order.begin(), order.end(), SettingsUI::CatProfiles) != order.end() && std::find(order.begin(), order.end(), SettingsUI::CatAnnotations) != order.end(), "root Tab order reaches both rows");
+        const auto nodes = both.AccessibleNodesForTest(); const auto* pn = Node(nodes, SettingsUI::CatProfiles); const auto* an = Node(nodes, SettingsUI::CatAnnotations);
+        Check(pn && pn->automationId == L"SettingsProfiles" && pn->name == L"Profils, Personnel" && an && an->name == L"Annotations et agents" && an->status == L"Aucun agent", "UIA root: « Profils, Personnel » (SettingsProfiles) and « Annotations et agents »");
+        both.ActivateForTest(SettingsUI::CatProfiles, true); both.SettleForTest();
+        const auto pnodes = both.AccessibleNodesForTest(); int items = 0; for (auto& n : pnodes) items += n.automationId == L"ProfileListItem";
+        Check(both.CurrentViewForTest() == SettingsUI::View::Profiles && items == 2, "« Profils » still opens its list (2 ProfileListItem)");
+        both.KeyForTest(VK_ESCAPE); both.SettleForTest(); both.ActivateForTest(SettingsUI::CatAnnotations, true); both.SettleForTest();
+        Check(both.CurrentViewForTest() == SettingsUI::View::Annotations && Node(both.AccessibleNodesForTest(), SettingsUI::AgentBase), "« Annotations et agents » still opens its section");
+        both.Hide(false, false); both.Dispose();
+    }
 
     // ---- The section ---------------------------------------------------------------------------
     dr.ActivateForTest(SettingsUI::CatAnnotations, false); dr.SettleForTest();
@@ -259,7 +278,7 @@ int wmain(int argc, wchar_t** argv) {
         using Accessibility::Role; const auto nodes = dr.AccessibleNodesForTest();
         const auto* close = Node(nodes, SettingsUI::Close); const auto* back = Node(nodes, SettingsUI::Back);
         Check(close && close->role == Role::Button && close->name == L"Fermer les réglages" && close->accelerator == L"Échap" && back && back->name == L"Retour", "UIA: Retour, Fermer les réglages (Échap)");
-        Check(NodeNamed(nodes, L"Annotations et agents") && NodeNamed(nodes, L"Annotations et agents")->role == Role::Text, "UIA: the view title as text");
+        Check(NodeNamed(nodes, L"Annotations et agents") && NodeNamed(nodes, L"Annotations et agents")->role == Role::Group && NodeNamed(nodes, L"Annotations et agents")->automationId == L"SettingsDrawer", "UIA: the drawer pane is named after the view");
         const auto* connect = Node(nodes, SettingsUI::AgentBase);
         Check(connect && connect->role == Role::Button && connect->name == L"Connecter Claude Desktop" && connect->help == L"Non connecté" && connect->enabled, "UIA: « Connecter Claude Desktop », status as help");
         Check(NodeNamed(nodes, L"Codex : Non installé") && !NodeNamed(nodes, L"Codex : Non installé")->focusable, "UIA: « Codex : Non installé » read as text");
@@ -269,8 +288,8 @@ int wmain(int argc, wchar_t** argv) {
         const auto* folder = Node(nodes, SettingsUI::AnnotationFolder); Check(folder && folder->help == e.target.storeRoot, "UIA: folder button, full path as help");
         const auto* clear = Node(nodes, SettingsUI::AnnotationClear); Check(clear && clear->enabled && clear->help == L"Effacer 3 annotations", "UIA: clear names the count");
         Check(NodeNamed(nodes, AS::ShortcutsNote) != nullptr, "UIA: the shortcut reminder is readable");
-        std::vector<long long> focusables; for (auto& n : nodes) if (n.focusable && n.role != Role::Text) focusables.push_back(n.key);
-        std::vector<long long> order; for (int k : dr.FocusOrderForTest()) order.push_back(k);
+        std::vector<long long> focusables; for (auto& n : nodes) if (n.focusable && n.role != Role::Text && n.role != Role::Group) focusables.push_back(n.key);
+        std::vector<long long> order; for (int k : dr.FocusOrderForTest()) order.push_back(SettingsUI::Drawer::UiaKey(k));
         Check(focusables == order, "UIA reading order of the controls = the Tab order");
     }
 

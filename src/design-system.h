@@ -22,7 +22,9 @@ inline constexpr float controlGap=sm, tabGap=controlGap;
 // Downloads button (Ghost, 6 DIP): Copy link, Reload, tab close, popup remove,
 // settings icon buttons and update-toast actions all share it. `inset` stays for
 // non-button focus perimeters (text links).
-namespace Radius { inline constexpr float control=6, inset=3, button=control; }
+namespace Radius { inline constexpr float control=6, inset=3, button=control;
+// Profiles scale (Paper p-I-0 tokens --radius-browser-4/8/12/16): key caps, rows/plates, menus, dialogs.
+inline constexpr float r4=4, r8=8, r12=12, r16=16; }
 namespace Size {
 inline constexpr float control=32, compact=24, icon=16, windowIcon=14;
 // tabPitch = visible tab + gap. Was 140 (12 DIP visible gap, double the toolbar).
@@ -57,6 +59,30 @@ inline constexpr float caretOpacity=.9f;   // Paper #3E67FFE6 / #FF7B6EE6
 inline Rgb& Current(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
 inline void Set(unsigned long rgb){Current()={((rgb>>16)&255)/255.f,((rgb>>8)&255)/255.f,(rgb&255)/255.f};}
 inline Rgb Get(){return Current();}
+// Ink: the accent as a foreground on the dark chrome (progress, download ring and ripple, checks).
+// The reference blue by default; a coloured profile sets its OKLCH L .78 ink (Paper p-I-0 P07).
+inline Rgb& InkCurrent(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
+inline void SetInk(unsigned long rgb){InkCurrent()={((rgb>>16)&255)/255.f,((rgb>>8)&255)/255.f,(rgb&255)/255.f};}
+inline Rgb Ink(){return InkCurrent();}
+// Filled accent controls under white text (primary buttons, « Créer le profil »): rest / hover / pressed are
+// ALL derived from the fill on screen (the window's profile fill, or a draft's), never from fixed colours: a
+// coloured profile keeps its hue under the pointer (user report 2026-11-14: hover went back to the old blue via
+// the legacy #5779FF / #3557D6 pair). Hover and press DEEPEN the fill (mixed toward black, hue kept): profile
+// fills are solved at the lightest L where white text is >= 4.6:1, so any lightening would break the 4.5:1
+// minimum (the legacy #5779FF itself is ~3.7:1). Each state is then clamped to white >= 4.5:1, and every
+// interpolation between rest, hover and pressed stays on the same darkening line (contrast never below the
+// lower of its ends). Read per paint: a profile switch or colour edit repaints the new hue at once.
+inline constexpr float minWhiteContrast=4.5f, hoverDeepen=.08f, pressedDeepen=.16f;
+struct States{Rgb rest,hover,pressed;};
+inline float Linear(float c){return c<=.04045f?c/12.92f:std::pow((c+.055f)/1.055f,2.4f);}
+inline float Luminance(Rgb c){return .2126f*Linear(c.r)+.7152f*Linear(c.g)+.0722f*Linear(c.b);}
+inline float WhiteContrast(Rgb c){return 1.05f/(Luminance(c)+.05f);}
+inline Rgb Deepen(Rgb c,float k){k=std::clamp(k,0.f,1.f);return {c.r*(1-k),c.g*(1-k),c.b*(1-k)};}
+inline Rgb Mix(Rgb a,Rgb b,float t){t=std::clamp(t,0.f,1.f);return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};}
+inline Rgb Reach(Rgb fill,float k){Rgb c=Deepen(fill,k);while(WhiteContrast(c)<minWhiteContrast&&k<.9f){k+=.01f;c=Deepen(fill,k);}return c;}
+inline States StatesOf(Rgb fill){return {fill,Reach(fill,hoverDeepen),Reach(fill,pressedDeepen)};}
+// The colour painted for hover / press progress (0..1, animated): rest -> hover, then -> pressed.
+inline Rgb StateColor(Rgb fill,float hover,float press){const auto s=StatesOf(fill);return Mix(Mix(s.rest,s.hover,hover),s.pressed,press);}
 }
 inline Rgb DangerRgb(){return {Danger::r,Danger::g,Danger::b};}
 // Vertical chrome (Paper "Favoris — flow", 2026-11-08): the page starts right under the
@@ -212,6 +238,17 @@ inline constexpr Box Region(){return {0,TabStrip::regionTop,TabStrip::left,TabSt
 inline constexpr Box Glyph(){return {centerX-size/2,centerY-size/2,centerX+size/2,centerY+size/2};} // {14,14,30,30}
 }
 static_assert(Brand::centerX==22&&Brand::centerY==22,"brand flower centred at 22,22");
+// Profile button (Paper p-I-0 P01 YSV/YSW, user edits 2026-11): it takes the flower's exact slot in a
+// normal window: plate 32 at (6,6) radius 8, Phosphor Fill glyph 16 centred on (22,22) in the profile
+// ink. Plate = ink at 10 % rest, 16 % hover (120 ms), 22 % pressed or menu open (+ scale .96);
+// keyboard focus keeps 10 % and adds the 1 DIP white 50 % ring. Private windows keep the flower.
+namespace ProfileButton {
+inline constexpr float size=Size::control, left=6, top=TabStrip::top, radius=Radius::r8, glyph=Size::icon;
+inline constexpr float rest=.10f, hover=.16f, pressed=.22f, pressScale=.96f;
+inline constexpr Box Plate(){return {left,top,left+size,top+size};}
+}
+static_assert(ProfileButton::Plate().left+ProfileButton::size/2==Brand::centerX&&ProfileButton::Plate().top+ProfileButton::size/2==Brand::centerY,"profile glyph centred where the flower was");
+static_assert(ProfileButton::Plate().right==TabStrip::left,"plate ends where the tab region starts (first tab at 44)");
 // Private window chip (Paper LRZ-0 / LZZ-0, concept G84-0): after the brand, before the tabs, h 24
 // bottom-aligned 4 above the tab row bottom, padding 6 / 8, gap 6, radius 6, split tint 16 %,
 // eye-slash bold 16 white, « Privée » Inter Display Medium 14/18 white. The label width is measured

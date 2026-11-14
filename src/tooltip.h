@@ -265,7 +265,27 @@ class Tip {
     bool Multi() const { return !content_.detail.empty() || wrapped_; }
     bool wrapped_ = false;
     void SetBounds(const RECT* b) { hasBounds_ = b != nullptr; if (b) bounds_ = *b; }
-    float KeyWidth() { return content_.shortcut.empty() ? 0 : std::ceil(chrome_.TextWidth(content_.shortcut, Layout::keySize, true)) + 2 * Layout::keyPad; }
+    // Separate caps, one per key (« Ctrl » « Maj » « M », like the shortcuts panel; Paper p-I-0 tooltip keycaps):
+    // each at least 24 wide, 4 apart. A literal « + » key stays a key.
+    static std::vector<std::wstring> Keys(const std::wstring& shortcut) {
+        std::vector<std::wstring> keys; std::wstring cur;
+        for (size_t i = 0; i < shortcut.size(); ++i) { if (shortcut[i] == L'+' && !cur.empty()) { keys.push_back(cur); cur.clear(); } else cur += shortcut[i]; }
+        if (!cur.empty()) keys.push_back(cur); return keys;
+    }
+    static constexpr float keyMin = 24, keyGap = 4;
+    float CapWidth(const std::wstring& key) { return std::max(keyMin, std::ceil(chrome_.TextWidth(key, Layout::keySize, true)) + 2 * Layout::keyPad); }
+    float KeyWidth() { if (content_.shortcut.empty()) return 0; float w = 0; for (const auto& k : Keys(content_.shortcut)) w += (w > 0 ? keyGap : 0) + CapWidth(k); return w; }
+    // Draws the caps from `left` in a 20 DIP row at `top`.
+    void DrawCaps(Chrome& chrome, float left, float top) {
+        using namespace Layout; PopupKit::Type keys{keySize, 16, 0, true}; float x = left; constexpr float capText = 0xCC / 255.f;
+        for (const auto& k : Keys(content_.shortcut)) {
+            const float w = CapWidth(k); const D2D1_RECT_F cap{x, top, x + w, top + keyHeight};
+            // Paper p-I-0 XUX-0: cap #FFFFFF14, radius 4 (--radius-browser-4), 13/16 Medium #FFFFFFCC, centred in 20.
+            PopupKit::Fill(chrome, cap, Design::Radius::r4, PopupKit::White(keyPlate));
+            PopupKit::DrawText(chrome, k, {cap.left, cap.top + 2, cap.right, cap.bottom}, keys, PopupKit::White(capText), false, DWRITE_TEXT_ALIGNMENT_CENTER);
+            x += w + keyGap;
+        }
+    }
     void Measure() {
         using namespace Layout; PopupKit::Type text{textSize, line};
         const float key = KeyWidth(), labelW = PopupKit::Measure(chrome_, content_.label, 8192, text, false).width;
@@ -285,13 +305,12 @@ class Tip {
         if (!chrome_.RenderTarget()) chrome_.Resize();
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         t->BeginDraw(); t->Clear(PopupKit::Gray(0x17)); PopupKit::Fill(chrome_, {0, 0, width_, height_}, radius, PopupKit::Hex(surface));
-        PopupKit::Type text{textSize, line}, keys{keySize, line, 0, true};
+        PopupKit::Type text{textSize, line};
         const float key = KeyWidth();
         if (!Multi()) {
             const float right = width_ - 1 - (key ? padKey : padX);
             PopupKit::DrawText(chrome_, content_.label, {1 + padX, 4, right - (key ? key + gap : 0), 24}, text, PopupKit::White(label));
-            if (key) { D2D1_RECT_F cap{right - key, 4, right, 24}; PopupKit::Fill(chrome_, cap, Design::Radius::inset, PopupKit::White(keyPlate));
-                PopupKit::DrawText(chrome_, content_.shortcut, {cap.left + keyPad, cap.top, cap.right, cap.bottom}, keys, PopupKit::White(keyText)); }
+            if (key) DrawCaps(chrome_, right - key, 4);
         } else {
             const float left = 1 + padX, right = width_ - 1 - padX; float y = 1 + padY;
             const float titleRight = key ? right - key - gap : right;
@@ -299,8 +318,7 @@ class Tip {
             const float titleH = std::max(line, PopupKit::Measure(chrome_, content_.label, titleRight - left, text, true).height);
             const float labelW = PopupKit::Measure(chrome_, content_.label, 8192, text, false).width; // Paper EST-0: cap right after the label
             const float capLeft = std::min(titleRight + gap, left + labelW + gap);
-            if (key) { D2D1_RECT_F cap{capLeft, y, capLeft + key, y + keyHeight}; PopupKit::Fill(chrome_, cap, Design::Radius::inset, PopupKit::White(keyPlate));
-                PopupKit::DrawText(chrome_, content_.shortcut, {cap.left + keyPad, cap.top, cap.right, cap.bottom}, keys, PopupKit::White(keyText)); }
+            if (key) DrawCaps(chrome_, capLeft, y);
             y += titleH + (key ? headerGap : titleGap);
             PopupKit::DrawText(chrome_, content_.detail, {left, y, right, height_}, text, PopupKit::White(detail), true);
         }

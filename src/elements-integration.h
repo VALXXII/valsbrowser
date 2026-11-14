@@ -88,7 +88,7 @@ void FinishModal(const MD::Result& r){
     if(done)done(r);
     Defer([]{PumpModal();});
 }
-void PumpModal(){
+void PumpModal(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(halted||modalOpen||modalQueue.empty()||!modal.Window())return;
     for(auto it=modalQueue.begin();it!=modalQueue.end();++it){
         if(it->scoped){auto t=it->tab.lock();if(!t||t->closed){auto done=std::move(it->done);modalQueue.erase(it);if(done)done(MD::Result{});PumpModal();return;}if(t!=Active())continue;}
@@ -692,12 +692,12 @@ HRESULT ClearLocalTracesSelected(const std::vector<bool>& c,std::int64_t since){
         else{std::vector<std::wstring> gone;report(TraceErase::History(dataDir,HistoryFile(),since,history,historyBase,5000,&gone),L"history");
             // Review F8: a period erase also forgets the favicons of sites no longer in the history.
             std::set<std::wstring> sites;for(const auto& u:gone)sites.insert(AddressBar::SiteOf(u));for(const auto& site:sites)if(!site.empty()&&!history.HasSite(site))ForgetSiteIcon(site);}
-        historyDrawer.Changed();
+        if(!WorkspaceParked())historyDrawer.Changed();
     }
     if(on(3)){
         if(smoke||privateWindow)downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[since](const DL::Item& d){return DL::Persistent(d)&&(since<=0||d.started>=since||d.started==0);}),downloads.end());
         else report(TraceErase::Downloads(dataDir,downloadsFile,since,downloads,downloadsBase,nextDownloadId),L"downloads");
-        for(auto it=downloadOps.begin();it!=downloadOps.end();)it=FindDownload(it->first)?std::next(it):downloadOps.erase(it);
+        PruneDownloadOps();   // this profile's operations only (a parked profile's live downloads keep theirs)
         DownloadsChanged();
     }
     return result;
@@ -744,6 +744,7 @@ void AskClearBrowsingData(bool demo,std::function<void(bool)> result){
 }
 bool closeConfirmed=false;
 // WM_CLOSE: true = close now. Otherwise the modal asks and re-posts WM_CLOSE on « Fermer ».
+int ParkedDownloadsRunning();
 bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
     // Never asked for the updater's install handoff (closeWithoutPrompt) or a clear on exit
     // already under way: a question there would block the install / the shutdown.
@@ -752,6 +753,9 @@ bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
     // A6 variant: a download still running is cancelled by closing: always asked (independent of
     // « Ne plus demander », which is about tabs).
     const DL::Item* running=nullptr;for(const auto& d:downloads)if(d.state==DL::State::InProgress){running=&d;break;}
+    // Same-window profiles: a download running in a profile cached in this window is cancelled too.
+    const int parkedRunning=demo?0:ParkedDownloadsRunning();
+    DL::Item parkedItem;if(!running&&parkedRunning){parkedItem.path=parkedRunning>1?std::to_wstring(parkedRunning)+L" téléchargements d'un autre profil":L"un téléchargement d'un autre profil";running=&parkedItem;}
     if(!demo&&!running&&(n<=1||!settings.confirmCloseTabs))return true;
     if(modalOpen&&!demo)return false; // one question at a time
     auto spec=running&&!demo?MD::CloseWindowSpec(std::max(n,1),DL::FileName(running->path),BrowserUpdate::ToastModel::FormatSize((std::uint64_t)std::max<std::int64_t>(running->received,0),(std::uint64_t)std::max<std::int64_t>(running->total,0)) /* E2: 1 decimal, total unknown = received only */):MD::CloseWindowSpec(std::max(n,2));
