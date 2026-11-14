@@ -4,8 +4,10 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <memory>
 #include <vector>
 
+#include "../../src/annotations.h"
 #include "../../src/update-core.h"
 #include "test_util.h"
 
@@ -396,19 +398,23 @@ struct LiveBridge {
         CloseHandle(childOut);
     }
     bool Alive() const { return started && WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT; }
-    // One real JSON-RPC round trip (tools/list) on the live process.
-    bool Answers(int id) {
-        if (!Alive()) return false;
-        std::string req = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
-                          ",\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\","
+    // One real JSON-RPC round trip on the live process; returns the response line ("" when the process is gone).
+    std::string Request(int id, const std::string& method, const std::string& extraParams) {
+        if (!Alive()) return "";
+        std::string req = "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) + ",\"method\":\"" + method + "\",\"params\":{" +
+                          extraParams + "\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\","
                           "\"io.modelcontextprotocol/clientCapabilities\":{}}}}\n";
         DWORD put = 0;
-        if (!WriteFile(in, req.data(), DWORD(req.size()), &put, nullptr)) return false;
+        if (!WriteFile(in, req.data(), DWORD(req.size()), &put, nullptr)) return "";
         std::string line;
         char c;
         DWORD got = 0;
         while (line.size() < 1 << 20 && ReadFile(out, &c, 1, &got, nullptr) && got == 1 && c != '\n') line += c;
-        return line.find("\"id\":" + std::to_string(id)) != std::string::npos && line.find("browser_annotations_list") != std::string::npos;
+        return line.find("\"id\":" + std::to_string(id)) != std::string::npos ? line : "";
+    }
+    bool Answers(int id) { return Request(id, "tools/list", "").find("browser_annotations_list") != std::string::npos; }
+    std::string Tool(int id, const std::string& name, const std::string& argsJson) {
+        return Request(id, "tools/call", "\"name\":\"" + name + "\",\"arguments\":" + argsJson + ",");
     }
     void Close() {  // the agent closes stdin: the bridge exits by itself
         if (in) CloseHandle(in);
@@ -759,6 +765,184 @@ void TestFirstTransitionOldLauncher() {
     }
 }
 
+// ---------------------------------------------------------------- portable store migration with a live agent
+// (plan B items 4 + 6). Real release-flavoured bridge (bridge-release.exe: BROWSER_CHANNEL_RELEASE) running from the
+// portable folder's assets\bin, as a friend's agent would after connecting from the extracted ZIP. The install root
+// is <tmp>\browser and the bridge sees LOCALAPPDATA=<tmp>, exactly like %LOCALAPPDATA%\browser in real life.
+namespace BA = BrowserAnnotations;
+
+struct PortableAgent {
+    std::wstring s, root, portable, portableLog, installedLog;
+    std::string id;
+    std::unique_ptr<LiveBridge> agent;
+    explicit PortableAgent(const std::wstring& name) {
+        s = TempDir(name);
+        root = s + L"\\browser";
+        portable = s + L"\\portable";
+        portableLog = s + L"\\root\\fake-launches.txt";  // fake browser: portable fixtures log to <tmp>\root
+        installedLog = root + L"\\fake-launches.txt";
+        MkDirs(portable + L"\\assets\\bin");
+        MkDirs(s + L"\\root");  // the portable fake browser's log folder
+        Copy(Fx(L"fake-0.3.1.exe"), portable + L"\\browser.exe");
+        Copy(Fx(L"bridge-release.exe"), portable + L"\\" + BridgeRel);
+        BA::Annotation a;
+        a.site = "https://boutique.test";
+        a.note = "Le bouton Payer";
+        a.source.url = "https://boutique.test/checkout";
+        a.target.selector = "button.pay";
+        a.target.tag = "button";
+        CHECK(BA::Store(portable + L"\\annotations").WriteAnnotation(a, nullptr, false).ok());
+        id = a.id;
+        // The agent's environment: LOCALAPPDATA decides where the bridge looks for the installed copy.
+        wchar_t saved[4096];
+        const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", saved, 4096);
+        SetEnvironmentVariableW(L"LOCALAPPDATA", s.c_str());
+        agent = std::make_unique<LiveBridge>(portable + L"\\" + BridgeRel, L"");  // no --store: default store
+        SetEnvironmentVariableW(L"LOCALAPPDATA", n && n < 4096 ? saved : nullptr);
+    }
+    int Update(const std::wstring& feed) {
+        return Run(portable + L"\\browser.exe", L"--update \"" + root + L"\" \"" + feed + L"\"", 60000);
+    }
+    std::string Claim(int rpc) {
+        const std::string r = agent->Tool(rpc, "browser_annotation_claim", "{\"id\":\"" + id + "\"}");
+        const std::size_t at = r.find("\"claim_token\":\"");
+        return at == std::string::npos ? "" : r.substr(at + 15, r.find('"', at + 15) - at - 15);
+    }
+    std::string Resolve(int rpc, const std::string& token) {
+        return agent->Tool(rpc, "browser_annotation_resolve", "{\"id\":\"" + id + "\",\"claim_token\":\"" + token +
+                                                                  "\",\"outcome\":\"resolved\",\"summary\":\"Bouton corrigé\"}");
+    }
+    BA::Status StatusIn(const std::wstring& store) const {
+        BA::Entry e;
+        return BA::Store(store).Find(id, e).ok() ? e.state.status : BA::Status::Open;
+    }
+    std::string LeaseIn(const std::wstring& store) const {  // token of the lease file, "" when none
+        const std::string key = BA::SiteKey("https://boutique.test");
+        const std::string text = ReadText(store + L"\\" + std::wstring(key.begin(), key.end()) + L"\\" +
+                                          std::wstring(id.begin(), id.end()) + L"\\claim");
+        const std::size_t at = text.find("\"token\":\"");
+        return at == std::string::npos ? "" : text.substr(at + 9, text.find('"', at + 9) - at - 9);
+    }
+    std::wstring Installed() const { return root + L"\\data\\annotations"; }
+    std::wstring Source() const { return portable + L"\\annotations"; }
+    std::string RecordState() const {
+        const std::string t = ReadText(root + L"\\data\\annotations-migration");
+        const std::size_t at = t.find("\nstate ");
+        return at == std::string::npos ? "" : t.substr(at + 7, t.find('\n', at + 7) - at - 7);
+    }
+};
+bool IsError(const std::string& response) { return response.find("\"isError\":true") != std::string::npos; }
+
+void TestMigrationCommitWithLiveAgent() {
+    PortableAgent t(L"e2e-mig-commit");
+    const std::wstring feed = t.s + L"\\feed", feed3 = t.s + L"\\feed3";
+    const std::string token = t.Claim(1);
+    CHECK(!token.empty() && t.LeaseIn(t.Source()) == token);
+    FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    CHECK(t.Update(feed) == 0);
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
+    CHECK(t.RecordState() == "committed");
+    CHECK(UP::PathExists(t.Source() + L".migrated"));
+    CHECK(t.LeaseIn(t.Installed()) == token);  // the lease travelled with the copy
+    // The SAME running agent, original token: served by the installed store from its next request on.
+    const std::string r = t.Resolve(2, token);
+    CHECK(!IsError(r));
+    CHECK(t.StatusIn(t.Installed()) == BA::Status::Resolved);
+    CHECK(t.StatusIn(t.Source()) == BA::Status::Claimed);  // the abandoned source is left as it was
+    // Two later updates: the redirect stays valid (record + same forward rules), the store is intact.
+    FeedWithBridge(feed3, Fx(L"fake-0.3.3.exe"), "0.3.3", Fx(L"bridge-0.3.3.exe"));
+    CHECK(Run(t.root + L"\\versions\\0.3.2\\browser.exe", L"--update \"" + t.root + L"\" \"" + feed3 + L"\"", 60000) == 0);
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "version 0.3.3", 60000));
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
+    const std::string list = t.agent->Tool(3, "browser_annotation_get", "{\"id\":\"" + t.id + "\"}");
+    CHECK(!IsError(list) && list.find("Bouton corrig") != std::string::npos);
+}
+
+// Helper killed after the new version started but before the commit: no redirect, the source stays authoritative
+// (the agent keeps writing there), the installed copy refuses mutations; the next launcher start re-copies the
+// source (including writes made after the crash), commits, and the same agent continues with its newest token.
+void TestMigrationKillBeforeCommit() {
+    PortableAgent t(L"e2e-mig-kill");
+    const std::wstring feed = t.s + L"\\feed";
+    const std::string first = t.Claim(1);
+    CHECK(!first.empty());
+    FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    SetFault(L"kill-before-commit");
+    CHECK(t.Update(feed) == 0);
+    SetFault(nullptr);
+    CHECK(WaitFor(t.root + L"\\updates\\helper.log", "new version launched", 60000));
+    CHECK(HelperGone(t.root, 60000));
+    CHECK(t.RecordState() == "copied");
+    {
+        const ULONGLONG t0 = GetTickCount64();
+        bool freed = false;
+        while (!freed && GetTickCount64() - t0 < 15000) {
+            HANDLE g = CreateFileW((t.Source() + L".write-gate").c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                   OPEN_EXISTING, 0, nullptr);
+            if (g != INVALID_HANDLE_VALUE) { CloseHandle(g); freed = true; } else Sleep(50);
+        }
+        // The kernel closes a killed process's handles shortly after its image is released: an agent request in
+        // that window gets the retryable Busy. Never held for good (no stale lock after a crash).
+        std::printf("gate after helper kill: %s after %llu ms\n", freed ? "free" : "STILL HELD",
+                    (unsigned long long)(GetTickCount64() - t0));
+        CHECK(freed);
+    }
+    CHECK(!UP::PathExists(t.Source() + L".migrated"));
+    // The agent is still on the source: release + claim again there (a write AFTER the copy).
+    {
+        const std::string rel = t.agent->Tool(2, "browser_annotation_release", "{\"id\":\"" + t.id + "\",\"claim_token\":\"" + first +
+                                                                                   "\",\"reason\":\"test\"}");
+        if (IsError(rel)) std::printf("release after crash: %s\n", rel.substr(0, 400).c_str());
+        CHECK(!IsError(rel));
+    }
+    const std::string second = t.Claim(3);
+    CHECK(!second.empty() && second != first && t.LeaseIn(t.Source()) == second);
+    CHECK(t.LeaseIn(t.Installed()) == first);  // stale copy, not served to anyone
+    BA::Annotation other;
+    other.site = "https://boutique.test";
+    other.note = "installée";
+    other.source.url = "https://boutique.test/";
+    CHECK(BA::Store(t.Installed()).WriteAnnotation(other, nullptr, false).code == BA::Code::Busy);  // installed copy frozen
+    // Bounded recovery at the next launcher start.
+    CHECK(Run(t.root + L"\\browser.exe", L"--echo recover", 10000) == 0);
+    CHECK(WaitFor(t.installedLog, "echo 0.3.2 [recover]", 10000));
+    CHECK(t.RecordState() == "committed");
+    CHECK(t.LeaseIn(t.Installed()) == second);  // nothing written after the crash was lost
+    CHECK(!IsError(t.Resolve(4, second)));
+    CHECK(t.StatusIn(t.Installed()) == BA::Status::Resolved);
+}
+
+void TestMigrationRollbackNeverRedirects() {
+    PortableAgent t(L"e2e-mig-rollback");
+    const std::wstring feed = t.s + L"\\feed";
+    const std::string token = t.Claim(1);
+    FeedWithBridge(feed, Fx(L"fake-0.3.2-crash.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    CHECK(t.Update(feed) == 0);
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status failed", 60000));
+    CHECK(WaitFor(t.portableLog, "start 0.3.1 phase=0", 20000));
+    CHECK(!UP::PathExists(t.root + L"\\data") && !UP::PathExists(t.Source() + L".migrated"));
+    CHECK(!IsError(t.Resolve(2, token)));
+    CHECK(t.StatusIn(t.Source()) == BA::Status::Resolved);
+}
+
+// During the copy window the helper holds the gate: the agent's requests get a retryable error and change nothing;
+// right after the commit the same agent works on the installed store.
+void TestMigrationBusyDuringCopy() {
+    PortableAgent t(L"e2e-mig-busy");
+    const std::wstring feed = t.s + L"\\feed";
+    FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    SetFault(L"pause-after-migration");
+    CHECK(t.Update(feed) == 0);
+    SetFault(nullptr);
+    CHECK(WaitFor(t.root + L"\\updates\\helper.log", "portable data migrated", 60000));
+    const std::string during = t.agent->Tool(1, "browser_annotation_claim", "{\"id\":\"" + t.id + "\"}");
+    CHECK(IsError(during) && during.find("Migration des annotations") != std::string::npos);
+    CHECK(t.LeaseIn(t.Source()).empty());
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
+    const std::string token = t.Claim(2);
+    CHECK(!token.empty() && t.LeaseIn(t.Installed()) == token && t.LeaseIn(t.Source()).empty());
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -786,5 +970,9 @@ int wmain(int argc, wchar_t** argv) {
     TestLauncherBinJunction();
     TestLauncherInstallBarrier();
     TestFirstTransitionOldLauncher();
+    TestMigrationCommitWithLiveAgent();
+    TestMigrationKillBeforeCommit();
+    TestMigrationRollbackNeverRedirects();
+    TestMigrationBusyDuringCopy();
     return Report("install_test");
 }

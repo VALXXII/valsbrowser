@@ -787,6 +787,7 @@ int RunInstall(const std::string& nonce) {
     }
     if (p.previousKind == "portable") {
         if (!MigratePortable(root, p, nonce, migrated)) return abortBeforeSwitch("migration-failed", 26);
+        if (Fault("pause-after-migration")) Sleep(4000);  // gate held: agents' requests must get Busy
     } else if (!WaitProfileUnlocked(root + L"\\data\\profile", ProfileUnlockMs)) {
         return abortBeforeSwitch("profile-locked", 26);
     }
