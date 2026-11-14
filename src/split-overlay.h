@@ -21,8 +21,10 @@
 
 namespace NativeChrome { namespace SplitUI {
 
-// Accent (Paper --color-browser-split-accent), reserved to split-view surfaces.
-inline constexpr float accentR = 62 / 255.f, accentG = 103 / 255.f, accentB = 1.f, tintOpacity = .16f;
+// Accent (Paper --color-browser-split-accent), reserved to split-view surfaces: the WINDOW's accent fill
+// (its profile's; the reference blue for a neutral profile), read per paint, never a fixed blue.
+inline constexpr float tintOpacity = .16f;
+inline D2D1_COLOR_F SplitAccent(float a) { const auto c = Design::Accent::Get(); return D2D1::ColorF(c.r, c.g, c.b, a); }
 
 struct Plate { bool shown = false; Split::Box box; float opacity = 1; std::wstring title, detail; std::shared_ptr<const FaviconImage> favicon; };
 struct Pill { bool shown = false; float x = 0, y = 0; std::wstring title, detail; };
@@ -124,7 +126,7 @@ private:
         }
         for (auto& g : f.gaps) {  // the dragged separator turns accent: a 2 DIP line along it and its 8 x 36 handle
             const bool row = g.H() > g.W(); const float cx = (g.left + g.right) / 2, cy = (g.top + g.bottom) / 2;
-            b->SetColor(D2D1::ColorF(accentR, accentG, accentB, o));
+            b->SetColor(SplitAccent(o));
             t->FillRectangle(row ? D2D1_RECT_F{cx - 1, g.top, cx + 1, g.bottom} : D2D1_RECT_F{g.left, cy - 1, g.right, cy + 1}, b);
             const D2D1_RECT_F pill = row ? D2D1_RECT_F{cx - 4, cy - 18, cx + 4, cy + 18} : D2D1_RECT_F{cx - 18, cy - 4, cx + 18, cy + 4};
             t->FillRoundedRectangle(D2D1::RoundedRect(pill, 4, 4), b);
@@ -171,8 +173,8 @@ private:
     }
     void DrawPlate(ID2D1RenderTarget* t, ID2D1SolidColorBrush* b, const Plate& p) {
         const D2D1_RECT_F r{p.box.left, p.box.top, p.box.right, p.box.bottom};
-        b->SetColor(D2D1::ColorF(accentR, accentG, accentB, tintOpacity * p.opacity)); t->FillRoundedRectangle(D2D1::RoundedRect(r, 6, 6), b);
-        b->SetColor(D2D1::ColorF(accentR, accentG, accentB, p.opacity));
+        b->SetColor(SplitAccent(tintOpacity * p.opacity)); t->FillRoundedRectangle(D2D1::RoundedRect(r, 6, 6), b);
+        b->SetColor(SplitAccent(p.opacity));
         t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + 1, r.top + 1, r.right - 1, r.bottom - 1}, 5, 5), b, 2);
         // Label: favicon, site (medium) and where it lands, on a solid accent chip (4.58:1).
         const float title = TextWidth(p.title, true), detail = TextWidth(p.detail, false);
@@ -180,7 +182,7 @@ private:
         w = std::min(w, std::min(240.f, std::max(0.f, p.box.W() - 24)));  // long names end in an ellipsis
         if (w < 48) return;
         const float x = std::round((r.left + r.right - w) / 2), y = r.top + 24;
-        b->SetColor(D2D1::ColorF(accentR, accentG, accentB, p.opacity)); t->FillRoundedRectangle(D2D1::RoundedRect({x, y, x + w, y + 32}, 6, 6), b);
+        b->SetColor(SplitAccent(p.opacity)); t->FillRoundedRectangle(D2D1::RoundedRect({x, y, x + w, y + 32}, 6, 6), b);
         Fav(t, b, p.favicon, {x + 8, y + 8, x + 24, y + 24}, p.opacity);
         const float room = w - 8 - 16 - 8 - 12, tw = std::min(title, room);
         Text(t, b, p.title, {x + 32, y, x + 32 + tw, y + 32}, true, p.opacity);

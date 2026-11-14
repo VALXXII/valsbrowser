@@ -1,0 +1,51 @@
+# Profiles — UI/integration report (task_0cc0e84efa07, worker A)
+
+Branch VALXXII/Profiles, uncommitted working tree (no commit/release/publish). Backend (profiles.h, profile-color.h, update helper, success Lottie assets) by worker B.
+
+## What is implemented (my files)
+- `src/profile-icons.h`: 12 Phosphor Fill identity glyphs (generated from @phosphor-icons/core 2.1.1) + menu Bold glyphs copied from Paper.
+- `src/profile-menu.h`: profile menu (248, r12, rows 32 r8, lanes 16/flex/36/16, ink 10 % hover), tab preview (288, rows 28, favicon / initial tile, max 6 + « + n autres onglets · m autres fenêtres »), 400 ms open / 300 ms close, safe corridor, keyboard (↑↓ Début/Fin, → preview, Entrée, ← / Échap), UIA (Menu/MenuItem, « Travail, cette fenêtre, 1 fenêtre ouverte », preview as row description).
+- `src/profile-editor.h`: shared name / 12-icon radio grid / hue + intensity gradient sliders (bar thumb 4×20, drag 6×24, keys 1/10/30, Début/Fin, hue wrap) / plate + « Aa » + hex; native EDITs; name capped at 32 user-perceived characters; UIA (Edit, List/ListItem, Slider with RangeValue, ValuePattern on Nom/Hex).
+- `src/profile-dialog.h`: « Nouveau profil » (A1 400, r16); « Créer le profil » previews the DRAFT accent fill live (user correction).
+- `src/profile-delete-dialog.h`: P04 delete dialog per CURRENT Paper (title glyph in ink, consequences between hairlines, busy « Suppression… » row at 32 %, inline failure + « Réessayer »).
+- `src/profiles-integration.h` (+ hooks in main.cpp): profile selection at startup (before ClaimWindowSession; smoke/private/motion-lab never touch the registry), `--profile` on every relaunch, sidecar publish (start, activation, SaveSession, throttled title change) / unpublish, cold-start restore of other profiles (skips restore-tabs=0), profile button + per-window accent (fill + ink; neutral = reference blue), menu actions (tab list, switch = FocusOrLaunch, create, manage, open tab in its window), create, edit, delete with close-for-delete broadcast, bounded retry while WebView2 releases files, own-profile hand-over to another profile's window, 10 s undo notice with countdown (pauses on hover/focus), undo + « Rouvrir ses fenêtres ».
+- `src/settings-panel.h`: root row « Profils » (current glyph + name), Profils list (40 rows, ink 10 %, check, chevron), detail with the editor block, footer « Supprimer le profil… » / last-profile « Effacer les données… ».
+- `src/chrome.h`, `src/design-system.h`: profile button in the flower slot (plate 32 at 6,6, 10/16/22 %, .96 press, focus ring); radius tokens 4/8/12/16; `Accent::Ink`.
+- `src/download-icon.h`, `src/chrome.h`: download ring fill + ripple + success check in the window's profile ink (re-tinted live); success timeline (morph 400 ms → hold 3 s → morph back → usual done; failure/cancel never; new download reverses the morph then progress; reduced motion = static check 3 s) using B's download-success assets.
+- `src/context-toast.h`: P04 notice variant (320, r16, inline action). `src/tooltip.h`: separate key caps.
+
+## Evidence
+- Full build: `python tools/release/build.py --out build/profiles-qa` → Build OK.
+- Test suites exit 0: test-profiles, test-profile-store, test-design-system, test-downloads (incl. tint + success timing), test-popups, test-accessibility, test-ui, test-sandbox, test-shortcuts, test-audio, test-history, test-elements-integration, test-split-view, test-tab-drag, test-status-bubble, test-hover-favicon, test-bookmarks, test-navigation-errors, test-profiles-ui (new: menu/preview/editor/delete dialog states/P04 notices/ring tint/success frames).
+- Runtime (temp roots build/profiles-app then isolated build/profiles-qa; UIA + posted clicks to our windows only; captures by PrintWindow of our windows only): create via dialog (registry, own folder, own WebView2 dir, new process `--profile`), cold start = last used + orphan relaunch, menu counts incl. sidecar-only windows, switch focuses existing window, Settings list/detail, delete (window closes keeping session, retry absorbs WebView2 « in-use », registry + .trash), undo (registry/folder/session back), reopen (`--profile id --restore-window session`), delete dialog visually matches Paper Y6V-0, controlled local download: green progress → green check (hold) → idle, file in a temp download folder.
+
+## Gap closure + final-review fixes (task_0c1b3b82b7c4)
+- Motion (Paper P05, fresh read): profile button icon cross-fade 300 ms cubic-bezier(.2,0,0,1) (opacity, scale .25->1, blur 4->0; reduced: opacity only), colour-only 120 ms, interruptible from what is on screen (`Chrome::SetProfileButton`, now wired: review M3); window accent fill+ink 120 ms fade, reduced = instant; profile menu in 180 ms + 6 DIP, out the same path 150 ms, reduced opacity 100 ms; preview in/out 150 ms + 4 DIP; dialogs rise 4 DIP in 150 ms, out 120 ms. Tests: menu presence curves, button timings + interruption, rendered swap frames 0/75/150/225/300 ms.
+- Scrim: reverted — reviewer verified Paper P03/P04 draw none (#0E0E0E is the specimen panel).
+- Tooltip caps: separate caps #FFFFFF14, radius 4, 13/16 Medium #FFFFFFCC (Paper XUX-0).
+- UIA for the new Settings › Profils surfaces (review M4): minimal bridge on the drawer — drawer Pane, Retour/Fermer, root « Profils » button, profile List/ListItems (current selected), detail editor (Edit Nom/Hex with ValuePattern, Icône List/ListItems, Teinte/Intensité Sliders with RangeValue), « Supprimer le profil… » / « Effacer les données… »; actions posted, focus events raised on keyboard moves. Verified with a UIA client at runtime.
+- H1: a window launched to take over a delete never restores orphans and closes the target's windows itself; runtime: Loisirs (only profile open) deleted itself -> `--profile default --delete-profile` host, no reopen, registry updated.
+- H2: F6 cycle reaches the context notice; countdown paused while focused; runtime: F6, F6, Entrée on « Annuler » restored the profile and both sessions.
+- M1: the host comes forward (AllowSetForegroundWindow by the sender, restore + SetForegroundWindow by the host).
+- M2: private windows mark themselves (Profiles::MarkPrivateWindow) and ignore close-for-delete; deleting « Personnel » while a private window is open is refused before confirmation with « Fermez d'abord les fenêtres privées » (runtime verified).
+- M5: profile selection runs after the portable -> installed forward; the forward passes `--profile <id>` through.
+- L4: one pending undo; a second delete is refused and focuses the existing notice (never finalised silently, notice never replaced); the dialog says when downloads running in this window will be cancelled.
+- New (user): « Nouvelle fenêtre privée » row in the profile menu after « Nouveau profil… » (eye-slash glyph, UIA accelerator Ctrl+Maj+N): launches the existing `--private` window; runtime: registry hash/mtime unchanged, no sidecar.
+- « Fenêtres » placeholder: not implemented on purpose — current Paper detail XXG-0/XY5-0 is an empty 32 px frame with no children (the user removed its content); nothing to draw.
+- Delete dialog: runtime captures with keyboard (ring on « Annuler », as Paper Y6V-0) and pointer (no ring); notice focused by F6 shows its ring, countdown held.
+
+## Known gaps / risks (honest)
+- Downloads running in OTHER windows of a deleted profile are cancelled when they close; only this window's are announced (other processes' downloads are not visible here).
+- The drawer bridge covers only the Profils surfaces (and its header), not the other settings rows.
+- The manually used build/profiles-app windows were left untouched after the user started using them (their profile colour was edited by hand).
+- Not committed; worker B plans an independent final review.
+
+## Final small fixes (task_90d74e4b2459)
+- Downloads warning: whenever the profile has windows open (backend count, this window included), the delete dialog states « Les téléchargements en cours dans cette / sa / ces fenêtre(s) seront annulés. » as one wrapped line under the consequences (no clipping: offscreen test + runtime capture 418 px).
+- R1: `RunProfileDelete` never finalises a pending undo (refuses, key « pending »); a take-over request is answered 1 accepted / 2 refused by WM_COPYDATA; the own-profile asker asks each live window of another profile and closes nothing unless one accepts, else shows « Une autre suppression peut encore être annulée dans une autre fenêtre… » with Réessayer. Runtime: A deletes Travail, B (Loisirs) deletes itself during A's undo -> refused in B's dialog, B stays, A's undo intact and then undone.
+- R2: `--delete-profile <id>` is stripped from the engine-recovery relaunch (`ProfileArgs::ForRelaunch`, src/profile-args.h), `--profile` kept; unit tests.
+- Private window polish (user): the profile slot shows the incognito identity (Phosphor eye-slash, ink = the reference blue at OKLCH L .78, same plate states / focus ring) and replaces the flower + « Privée » chip; tooltip « Fenêtre privée (Ctrl+Maj+M) », UIA « Fenêtre privée » + help « Historique, cookies et session non conservés »; its menu = « Liste des onglets (n)… » + « Nouvelle fenêtre privée » only; no registry read/write, no sidecar, accent stays the reference blue. Runtime capture + UIA verified; registry hash unchanged.
+
+## Final LOW edges (task_7f827bf3da40)
+- `ProfileArgs::Strip/Value`: a flag's value is consumed only when the next token is not a flag; regressions: value-less `--delete-profile --profile pb` -> `--profile pb`, trailing value-less flag, extra spaces, malformed value never read.
+- Take-over race: `ProfileTakeOver::Gate` (src/profile-args.h, pure). The host reserves the take-over synchronously inside the WM_COPYDATA answer (and at start for `--delete-profile`); while reserved it refuses local deletes (« Une suppression est en cours ») and other take-overs, so no undo can start between « accepted » and the deferred take-over; cleared when the delete ends (done / failed / 10 s timeout). No cross-process lock. Unit tests for accept/race/second request/clear/busy/private; runtime: busy-host refusal (requester stays, host undo intact and undone) and ordinary own-profile delete via launched host (deleted, not reopened, undo restores 3 window sessions).

@@ -40,6 +40,10 @@ struct Spec {
     int durationMs = 4000;                               // 0 = stays until acted on
     Kind kind = Kind::Status; bool closable = true;      // ✕ (Status only)
     float progress = -1;                                 // Icon::Progress: 0..1
+    // Profiles (Paper p-I-0 P04 Y8Y-0 / Y9A-0): 320 wide, radius 16; header check-circle at 50 % + title;
+    // `inlineAction`: the detail and the action share one row (« Effacement définitif dans 7 s. » | Annuler),
+    // else the body wraps and the action sits right-aligned under it at its own width.
+    bool profileCard = false, inlineAction = false;
 };
 namespace Layout {
 inline constexpr float inset = 14, radius = 10, statusWidth = 360, cardWidth = 269;
@@ -47,7 +51,6 @@ inline constexpr float cardPad = 16, cardGap = 16, headerGap = 6, cardButton = 3
 inline constexpr float padY = 8, padLeft = 12, padRight = 8, briefRight = 16, gap = 10, action = 32, actionPad = 10, close = 24, closeRadius = 3, closeGlyph = 14;
 inline constexpr float statusRise = 8, cardRise = 12, statusEnterMs = 160, cardEnterMs = 240, exitMs = 150, reducedMs = 100;
 inline constexpr float border = 0x0D / 255.f;
-inline constexpr unsigned success = 0x7D98FF;
 }
 // Presets (Paper copy).
 inline Spec TabLimitSpec(int limit) {
@@ -86,8 +89,18 @@ private:
     PopupKit::Type Title() const { return spec_.kind == Kind::Card ? PopupKit::Type{16, 20, -.16f, true} : PopupKit::Type{14, 20, 0, spec_.kind == Kind::Status}; }
     float ActionWidth() { return std::ceil(PopupKit::Measure(chrome_, spec_.action, 8192, {14, 20, 0, true}, false).width) + 2 * Layout::actionPad; }
     float BodyHeight() { return PopupKit::Measure(chrome_, spec_.detail, Layout::cardWidth - 2 - 2 * Layout::cardPad, {16, 20, .16f}, true).height; }
+    // P04 profile card geometry.
+    static constexpr float profileWidth = 320, profileRadius = 16;
+    float Radius() const { return spec_.profileCard ? profileRadius : Layout::radius; }
+    float ProfileBodyHeight() { return PopupKit::Measure(chrome_, spec_.detail, profileWidth - 2 - 2 * Layout::cardPad, {14, 20}, true).height; }
+    float ProfileActionWidth() { return std::max(64.f, std::ceil(PopupKit::Measure(chrome_, spec_.action, 8192, {14, 18, -.14f, true}, false).width) + 24); }
     void Measure() {
         using namespace Layout;
+        if (spec_.profileCard) {
+            width_ = profileWidth; const float head = 2 + 2 * cardPad + 20;
+            if (spec_.inlineAction) { height_ = head + cardGap + cardButton; return; }
+            height_ = head + (spec_.detail.empty() ? 0 : cardGap + ProfileBodyHeight()) + (HasAction() ? cardGap + cardButton : 0); return;
+        }
         if (spec_.kind == Kind::Card) { width_ = cardWidth; height_ = 2 + 2 * cardPad + 20 + (spec_.detail.empty() ? 0 : cardGap + BodyHeight()) + (HasAction() ? cardGap + cardButton : 0); return; }
         if (spec_.kind == Kind::Brief) { width_ = std::ceil(2 + padLeft + (spec_.icon != Icon::None ? 16 + gap : 0) + PopupKit::Measure(chrome_, spec_.message, 8192, Title(), false).width + briefRight); height_ = 40; return; }
         width_ = statusWidth; height_ = 2 + 2 * padY + std::max(spec_.detail.empty() ? 20.f : 40.f, HasAction() ? action : 24.f);
@@ -95,6 +108,7 @@ private:
     D2D1_RECT_F ActionBox() {
         using namespace Layout;
         if (!HasAction()) return {};
+        if (spec_.profileCard) { const float y = height_ - 1 - cardPad - cardButton, r = width_ - 1 - cardPad; return {r - ProfileActionWidth(), y, r, y + cardButton}; }
         if (spec_.kind == Kind::Card) { const float y = height_ - 1 - cardPad - cardButton; return {1 + cardPad, y, width_ - 1 - cardPad, y + cardButton}; }
         const float right = width_ - 1 - padRight - (HasClose() ? close + gap : 0), cy = height_ / 2;
         return {right - ActionWidth(), cy - action / 2, right, cy + action / 2};
@@ -105,7 +119,7 @@ private:
         Chrome& chrome_ = *surface_;
         switch (spec_.icon) {
         case Icon::Info: glyphs_.Draw(chrome_, PopupKit::Glyphs::info, box, 16, PopupKit::White(.5f)); break;
-        case Icon::Success: glyphs_.Draw(chrome_, PopupKit::Glyphs::checkCircle, box, 16, PopupKit::Hex(Layout::success)); break;
+        case Icon::Success: { const auto k = Design::Accent::Ink(); glyphs_.Draw(chrome_, PopupKit::Glyphs::checkCircle, box, 16, D2D1::ColorF(k.r, k.g, k.b, 1)); break; }   // the window's profile ink (was the legacy #7D98FF)
         case Icon::Error: glyphs_.Draw(chrome_, PopupKit::Glyphs::warningCircle, box, 16, PopupKit::Danger()); break;
         case Icon::Link: glyphs_.Draw(chrome_, PopupKit::Glyphs::link, box, 16, PopupKit::White(0xB3 / 255.f)); break;
         case Icon::Progress: {
@@ -134,9 +148,25 @@ private:
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         const auto now = Motion::Now(); chrome_.keyboardModality = keyboard_;
         t->BeginDraw(); t->Clear(PopupKit::Gray(0x17));
-        PopupKit::Fill(chrome_, {0, 0, width_, height_}, radius, spec_.kind == Kind::Card ? PopupKit::Gray(0x17) : PopupKit::Gray(0x29));
+        PopupKit::Fill(chrome_, {0, 0, width_, height_}, Radius(), spec_.kind == Kind::Card ? PopupKit::Gray(0x17) : PopupKit::Gray(0x29));
         const bool focusShown = GetFocus() == hwnd_;
-        if (spec_.kind == Kind::Card) {
+        if (spec_.profileCard) {
+            // Header: check-circle (bold) white 50 %, gap 6, title 16/20 Medium #FFFFFFE6.
+            const float x = 1 + cardPad, y = 1 + cardPad;
+            glyphs_.Draw(chrome_, PopupKit::Glyphs::checkCircle, {x, y + 2, x + 16, y + 18}, 16, PopupKit::White(.5f));
+            PopupKit::DrawText(chrome_, spec_.message, {x + 22, y, width_ - x, y + 20}, {16, 20, -.16f, true}, PopupKit::White(.9f));
+            if (spec_.inlineAction) {
+                const auto b = ActionBox(); const float cy = (b.top + b.bottom) / 2;
+                PopupKit::DrawText(chrome_, spec_.detail, {x, cy - 10, b.left - 8, cy + 10}, {14, 20, 0, false, true}, PopupKit::White(0xB3 / 255.f));
+            } else if (!spec_.detail.empty()) PopupKit::DrawText(chrome_, spec_.detail, {x, y + 20 + cardGap, width_ - x, height_}, {14, 20}, PopupKit::White(0xB3 / 255.f), true);
+            if (HasAction()) {   // raised #292929, radius 8, 14/18 Medium white; focus: inset #FFFFFF80 (keyboard)
+                const auto b = ActionBox(); const auto v = motion_.Visual(ActionHit, now); const bool focused = focusShown && focus_ == ActionHit && keyboard_;
+                const float lit = std::max(v.hover, v.press);
+                PopupKit::Fill(chrome_, b, 8, PopupKit::Gray(static_cast<int>(std::lround(0x29 + (0x33 - 0x29) * lit + (0x3E - 0x33) * v.press))));
+                PopupKit::DrawText(chrome_, spec_.action, {b.left, b.top + 7, b.right, b.bottom}, {14, 18, -.14f, true}, PopupKit::White(1), false, DWRITE_TEXT_ALIGNMENT_CENTER);
+                if (focused) PopupKit::InsetRing(chrome_, b, 8);
+            }
+        } else if (spec_.kind == Kind::Card) {
             const float x = 1 + cardPad, y = 1 + cardPad;
             float textX = x; if (spec_.icon != Icon::None) { DrawIcon({x, y + 2, x + 16, y + 18}); textX += 16 + headerGap; }
             PopupKit::DrawText(chrome_, spec_.message, {textX, y, width_ - x, y + 20}, Title(), PopupKit::White(.9f));
@@ -172,7 +202,7 @@ private:
                 if (focusShown && focus_ == CloseHit) PopupKit::InsetRing(chrome_, b, closeRadius);
             }
         }
-        PopupKit::Outline(chrome_, width_, height_, radius, PopupKit::White(border));
+        PopupKit::Outline(chrome_, width_, height_, Radius(), PopupKit::White(border));
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
     }
     POINT Rest() const { return {page_.left + Px(Layout::inset), page_.bottom - Px(Layout::inset + bottomReserve_) - Px(height_)}; }
@@ -271,7 +301,7 @@ public:
         if (auto previous = std::move(done_)) { done_ = nullptr; previous(false); }
         const bool was = visible_ && !leaving_;
         spec_ = std::move(spec); done_ = std::move(done); page_ = pageScreen; leaving_ = false; focus_ = 0; hover_ = pressed_ = 0; motion_.ClearInteractions();
-        visible_ = true; phase_ = Motion::Now(); Measure(); chrome_.Resize();
+        visible_ = true; phase_ = Motion::Now(); Measure(); NativeUI::ConfigureShadowlessPopup(hwnd_, Radius()); chrome_.Resize();
         if (was) Place(1, false); else Place(0, true);
         ShowWindow(hwnd_, SW_SHOWNOACTIVATE); chrome_.Resize(); Paint(); ValidateRect(hwnd_, nullptr);
         if (was) phase_ = Motion::Now() - Motion::Milliseconds(static_cast<int>(EnterMs())); // no second entrance
@@ -282,7 +312,7 @@ public:
     // Same toast, new content (progress, « en cours » → réussite): keeps the callback and timer state.
     void Update(Spec spec) {
         if (!visible_ || leaving_) return; const bool restart = spec.durationMs != spec_.durationMs;
-        spec_ = std::move(spec); Measure(); Place(1, false); chrome_.Resize(); Paint(); ValidateRect(hwnd_, nullptr);
+        spec_ = std::move(spec); Measure(); NativeUI::ConfigureShadowlessPopup(hwnd_, Radius()); Place(1, false); chrome_.Resize(); Paint(); ValidateRect(hwnd_, nullptr);
         if (restart) { timing_ = false; remaining_ = spec_.durationMs > 0 ? static_cast<ULONGLONG>(spec_.durationMs) : 0; Resume(); }
     }
     void Hide() { Leave(false); }

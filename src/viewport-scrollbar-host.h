@@ -115,7 +115,7 @@ void PlaceScrollbars(unsigned serial,PageScrollbar& s,NativeChrome::Motion::Time
         ShowScrollbarWindow(s.bars[k],d,p.left+(vertical?across:along),p.top+(vertical?along:across),v.opacity);
     }
 }
-void ScrollbarRefresh(NativeChrome::Motion::Time now){
+void ScrollbarRefresh(NativeChrome::Motion::Time now){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     for(auto it=pageScrollbars.begin();it!=pageScrollbars.end();){
         if(!TabBySerial(it->first)){for(HWND b:it->second.bars)if(b)DestroyWindow(b);it=pageScrollbars.erase(it);continue;}
@@ -182,4 +182,4 @@ LRESULT CALLBACK ScrollbarProc(HWND h,UINT msg,WPARAM w,LPARAM l){
 }
 // Pages that just appeared (tab switch, split change) get their entry so a first metric
 // report has somewhere to land; pages that went away hide theirs (ApplyPages calls this).
-void SyncScrollbars(){for(auto& t:pages)if(t&&!t->closed&&ScrollbarOnScreen(*t))pageScrollbars[t->serial];ScrollbarRefresh(NativeChrome::Motion::Now());}
+void SyncScrollbars(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */for(auto& t:pages)if(t&&!t->closed&&ScrollbarOnScreen(*t))pageScrollbars[t->serial];ScrollbarRefresh(NativeChrome::Motion::Now());}

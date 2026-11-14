@@ -7,12 +7,48 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include "../../src/profile-color.h"
 #include "../../src/chrome.h"
 using namespace NativeChrome;
 void Require(bool condition,const char* what){if(!condition){std::fprintf(stderr,"FAIL: %s\n",what);std::exit(1);}}
+// Accent states (user report 2026-11-14: hover went back to the legacy blue): rest / hover / pressed derived from
+// the fill on screen; hue kept; white text >= 4.5:1 in every state and every interpolation, for every profile fill.
+static int AccentStateFailures() {
+    namespace A = NativeChrome::Design::Accent; int bad = 0;
+    auto rgb = [](ProfileColor::Rgb8 c) { return NativeChrome::Design::Rgb{c.r / 255.f, c.g / 255.f, c.b / 255.f}; };
+    auto hueOf = [](NativeChrome::Design::Rgb c) { const float mx = std::max({c.r, c.g, c.b}), mn = std::min({c.r, c.g, c.b}), d = mx - mn; if (d < 1e-4f) return -1.f;
+        float h = mx == c.r ? std::fmod((c.g - c.b) / d, 6.f) : mx == c.g ? (c.b - c.r) / d + 2 : (c.r - c.g) / d + 4; h *= 60; return h < 0 ? h + 360 : h; };
+    float worst = 99, worstHueShift = 0;
+    for (int hue = 0; hue < 360; ++hue) for (float chroma : {.03f, .06f, .10f, .14f, .16f}) {
+        const auto fill = rgb(ProfileColor::AccentFill(hue, chroma)); const auto st = A::StatesOf(fill);
+        for (int h = 0; h <= 10; ++h) for (int q = 0; q <= 10; ++q) { const float c = A::WhiteContrast(A::StateColor(fill, h / 10.f, q / 10.f)); worst = std::min(worst, c); if (c < A::minWhiteContrast) ++bad; }
+        const float h0 = hueOf(st.rest);
+        for (auto x : {st.hover, st.pressed}) { const float h1 = hueOf(x); if (h0 >= 0 && h1 >= 0) { float dh = std::fabs(h1 - h0); dh = std::min(dh, 360 - dh); worstHueShift = std::max(worstHueShift, dh); if (dh > 1.f) ++bad; } }
+        if (!(A::Luminance(st.hover) < A::Luminance(st.rest) && A::Luminance(st.pressed) < A::Luminance(st.hover))) ++bad;   // visible feedback, rest > hover > pressed
+    }
+    std::printf("%s accent states: 360 hues x 5 chromas x 121 hover/press mixes, worst white contrast %.2f:1 (>= 4.5), worst hue shift %.2f deg\n", bad ? "FAIL" : "ok  ", worst, worstHueShift);
+    // Vivid profiles: green / orange / purple never come near the legacy blue pair in any state.
+    for (int hue : {145, 55, 305}) {
+        const auto st = A::StatesOf(rgb(ProfileColor::AccentFill(hue, .14f)));
+        const float legacy = hueOf({0x57 / 255.f, 0x79 / 255.f, 1});   // the legacy hover blue hue (~227 deg)
+        float nearest = 360; for (auto x : {st.rest, st.hover, st.pressed}) { float dh = std::fabs(hueOf(x) - legacy); dh = std::min(dh, 360 - dh); nearest = std::min(nearest, dh); }
+        if (nearest < 20) ++bad;
+        std::printf("%s OKLCH hue %d: every state at sRGB hue %.0f deg, %.0f deg away from the legacy blue\n", nearest < 20 ? "FAIL" : "ok  ", hue, hueOf(st.hover), nearest);
+    }
+    // Neutral profile: the reference blue fill at rest exactly; hover / press deepen it (the legacy #5779FF fails 4.5:1).
+    const NativeChrome::Design::Rgb ref{0x3E / 255.f, 0x67 / 255.f, 1};
+    const auto n = A::StatesOf(ref);
+    const bool exact = n.rest.r == ref.r && n.rest.g == ref.g && n.rest.b == ref.b;
+    const bool legacyFails = A::WhiteContrast({0x57 / 255.f, 0x79 / 255.f, 1}) < 4.5f;
+    std::printf("%s neutral: rest #3E67FF exactly, hover %.2f:1 / pressed %.2f:1, legacy hover #5779FF %.2f:1 (fails 4.5, replaced)\n", exact && legacyFails && A::WhiteContrast(n.hover) >= 4.5f ? "ok  " : "FAIL", A::WhiteContrast(n.hover), A::WhiteContrast(n.pressed), A::WhiteContrast({0x57 / 255.f, 0x79 / 255.f, 1}));
+    if (!exact || !legacyFails) ++bad;
+    return bad;
+}
+
 int wmain(int argc,wchar_t** argv){
     Require(argc==3,"root and output arguments");Require(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"native COM initialization");
     Require(!GetModuleHandleW(L"WebView2Loader.dll"),"no WebView2 loader");
+    Require(AccentStateFailures()==0,"accent states: derived from the fill on screen, hue kept, white >= 4.5:1 everywhere");
     using namespace Design;
     for(auto variant:{ButtonVariant::Ghost,ButtonVariant::Raised,ButtonVariant::Embedded,ButtonVariant::Window,ButtonVariant::TabClose}){
         auto idle=Resolve(variant),hover=Resolve(variant,{1,0}),press=Resolve(variant,{1,1}),disabled=Resolve(variant,{1,1,true,true}),focus=Resolve(variant,{0,0,false,true});

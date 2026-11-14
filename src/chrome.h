@@ -166,8 +166,8 @@ public:
     DownloadIcon::Model downloadIcon;
     // Back/Forward travel and the Reload <-> Stop morph (nav-motion.h); fed by the host.
     NavMotion::State nav;
-    Lottie::Asset dlTrack,dlFill,dlArrow,dlCut;
-    ID2D1Bitmap* dlBitmap=nullptr;unsigned dlSide=0;int dlRing=-1,dlArrowFrame=-1;bool dlFailed=false;std::vector<uint32_t> dlPixels;
+    Lottie::Asset dlTrack,dlFill,dlArrow,dlCut,dlSuccess,dlSuccessCut;bool dlSuccessReady=false;int dlSuccessFrame=-2;
+    ID2D1Bitmap* dlBitmap=nullptr;unsigned dlSide=0;int dlRing=-1,dlArrowFrame=-1;bool dlFailed=false;std::vector<uint32_t> dlPixels;Design::Rgb dlTint{-1,-1,-1};
     void DropDownloadIcon(){Drop(dlBitmap);dlRing=dlArrowFrame=-1;}
     // One Asset serves one pixel size (the player cannot re-target): reload on a DPI change.
     bool LoadDownloadIcon(unsigned side){
@@ -175,22 +175,33 @@ public:
         DropDownloadIcon();dlSide=side;
         dlFailed=!(dlTrack.Load(assets+L"lottie\\download-ring-track.json")&&dlFill.Load(assets+L"lottie\\download-ring-fill.json")&&dlArrow.Load(assets+L"lottie\\download-arrow.json")&&dlCut.Load(assets+L"lottie\\download-arrow-cutout.json"))
             ||dlTrack.FrameCount()!=DownloadIcon::RingFrames||dlFill.FrameCount()!=DownloadIcon::RingFrames||dlArrow.FrameCount()!=DownloadIcon::ArrowFrames||dlCut.FrameCount()!=DownloadIcon::ArrowFrames;
+        // Success morph (arrow -> check-circle check + its own cut-out); optional: without it the arrow stays at rest.
+        dlSuccessReady=dlSuccess.Load(assets+L"lottie\\download-success.json")&&dlSuccessCut.Load(assets+L"lottie\\download-success-cutout.json")
+            &&dlSuccess.FrameCount()==DownloadIcon::SuccessFrames&&dlSuccessCut.FrameCount()==DownloadIcon::SuccessFrames;
         return !dlFailed;
     }
     bool DrawDownloadIcon(DownloadIcon::Pose pose,D2D1_RECT_F box,float size,float opacity){
         const unsigned side=std::clamp(static_cast<unsigned>(std::ceil(size*dpi/96)),1u,64u);
         if(!LoadDownloadIcon(side))return false;
-        if(!dlBitmap||pose.ring!=dlRing||pose.arrow!=dlArrowFrame){
+        // The ring's fill follows the window's accent ink, also when it changes mid-download.
+        const auto ink=Design::Accent::Ink();const bool retint=ink.r!=dlTint.r||ink.g!=dlTint.g||ink.b!=dlTint.b;
+        const int success=dlSuccessReady?pose.success:-1;
+        if(!dlBitmap||pose.ring!=dlRing||pose.arrow!=dlArrowFrame||success!=dlSuccessFrame||retint){
             auto at=[](Lottie::Asset& a,int frame,int frames,unsigned px){return a.Sample(double(frame)/(frames-1),px);};
             auto t=at(dlTrack,pose.ring,DownloadIcon::RingFrames,side),f=at(dlFill,pose.ring,DownloadIcon::RingFrames,side);
-            auto a=at(dlArrow,pose.arrow,DownloadIcon::ArrowFrames,side),c=at(dlCut,pose.arrow,DownloadIcon::ArrowFrames,side);
+            // The arrow layer and its matching cut-out: the success morph while it runs, else the arrow timeline.
+            auto a=success>=0?at(dlSuccess,success,DownloadIcon::SuccessFrames,side):at(dlArrow,pose.arrow,DownloadIcon::ArrowFrames,side);
+            auto c=success>=0?at(dlSuccessCut,success,DownloadIcon::SuccessFrames,side):at(dlCut,pose.arrow,DownloadIcon::ArrowFrames,side);
             if(!t||!f||!a||!c)return false;
-            DownloadIcon::Compose(t->bgra.data(),f->bgra.data(),c->bgra.data(),a->bgra.data(),side*side,dlPixels);
+            const float tint[3]={ink.r,ink.g,ink.b};
+            // The success check is drawn in the profile ink too, blended in over the first 6 frames of its morph (and out on the way back).
+            const float arrowMix=success>=0?std::min(1.f,success/6.f):0.f;
+            DownloadIcon::Compose(t->bgra.data(),f->bgra.data(),c->bgra.data(),a->bgra.data(),side*side,dlPixels,tint,arrowMix);dlTint=ink;
             HRESULT hr=S_OK;
             if(!dlBitmap)hr=target->CreateBitmap(D2D1::SizeU(side,side),dlPixels.data(),side*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED)),&dlBitmap);
             else hr=dlBitmap->CopyFromMemory(nullptr,dlPixels.data(),side*4);
             if(FAILED(hr)||!dlBitmap){DropDownloadIcon();return false;}
-            dlRing=pose.ring;dlArrowFrame=pose.arrow;
+            dlRing=pose.ring;dlArrowFrame=pose.arrow;dlSuccessFrame=success;
         }
         const float x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
         target->DrawBitmap(dlBitmap,{x,y,x+size,y+size},opacity);return true;
@@ -270,7 +281,8 @@ public:
         const float p=Motion::Eased(t,Motion::Curve::Icon),unit=size/256.f,scale=1+(R::grow-1)*p;
         const float radius=R::radius*unit*scale,width=R::stroke*unit*scale,blur=R::blur*unit*scale*p,alpha=R::opacity*(1-p);
         const D2D1_POINT_2F centre{(box.left+box.right)/2,(box.top+box.bottom)/2};
-        brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],alpha));
+        const auto ink=Design::Accent::Ink();   // the ripple is the ring's colour: the window's accent ink
+        brush->SetColor(D2D1::ColorF(ink.r,ink.g,ink.b,alpha));
         if(!rippleNoEffect&&!rippleDc){
             static const CLSID gaussian={0x1feb6d69,0x2fe6,0x4ac9,{0x8c,0x58,0x1d,0x7f,0x93,0xe7,0xa6,0xa5}};
             if(FAILED(target->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&rippleDc)))||FAILED(rippleDc->CreateEffect(gaussian,&rippleBlur))){Drop(rippleBlur);Drop(rippleDc);rippleNoEffect=true;}
@@ -296,7 +308,7 @@ public:
             }
         }
         const D2D1_ELLIPSE e=D2D1::Ellipse(centre,radius,radius);
-        auto pass=[&](float w,float a){brush->SetColor(D2D1::ColorF(DownloadIcon::FillColor[0],DownloadIcon::FillColor[1],DownloadIcon::FillColor[2],a));target->DrawEllipse(e,brush,w);};
+        auto pass=[&](float w,float a){brush->SetColor(D2D1::ColorF(ink.r,ink.g,ink.b,a));target->DrawEllipse(e,brush,w);};
         if(blur>.05f){pass(width+blur*2,alpha*.25f);pass(width+blur,alpha*.35f);}
         pass(width,alpha*(blur>.05f?.6f:1.f));
     }
@@ -765,6 +777,66 @@ public:
         target->DrawEllipse(D2D1::Ellipse({cx-3.5f,cy},3.5f,3.5f),brush,1.5f);
         target->DrawLine({cx,cy},{cx+7,cy},brush,1.5f);target->DrawLine({cx+5,cy},{cx+5,cy+3},brush,1.5f);target->DrawLine({cx+7,cy},{cx+7,cy+2.5f},brush,1.5f);
     }
+    // Profile button (region 900, Paper p-I-0 P01): the profile's Fill glyph on a plate of its ink.
+    // `open`: the profile menu is showing (pressed look held). Private windows leave it off.
+    // P05: an icon change cross-fades (incoming: opacity 0 -> 1, scale .25 -> 1, blur 4 -> 0 px; outgoing the
+    // reverse) in 300 ms cubic-bezier(.2,0,0,1); a colour-only change eases the ink in 120 ms. Each starts from
+    // what is on screen (interruptible). Reduced motion: the icon cross-fades by opacity only (300 ms), a colour
+    // is applied at once.
+    struct ProfileButtonState{bool shown=false,open=false;std::wstring name;const char* glyph=nullptr;D2D1_COLOR_F ink{1,1,1,1};
+        const char* fromGlyph=nullptr;D2D1_COLOR_F fromInk{1,1,1,1};Motion::Time changed{};bool iconChange=false,animating=false;
+        bool privateWindow=false;   // the incognito identity (eye-slash) in a private window
+    }profileButton;
+    static constexpr float profileIconMs=300,profileInkMs=120;
+    float ProfileButtonProgress(Motion::Time now)const{const auto& b=profileButton;if(!b.animating)return 1;const float ms=static_cast<float>(std::chrono::duration<double,std::milli>(now-b.changed).count());return Motion::Clamp(ms/(b.iconChange?profileIconMs:profileInkMs));}
+    D2D1_COLOR_F ProfileInkAt(Motion::Time now)const{const auto& b=profileButton;const float t=Motion::Eased(ProfileButtonProgress(now),Motion::Curve::Icon);return D2D1::ColorF(b.fromInk.r+(b.ink.r-b.fromInk.r)*t,b.fromInk.g+(b.ink.g-b.fromInk.g)*t,b.fromInk.b+(b.ink.b-b.fromInk.b)*t,1);}
+    // Host entry point: a new look for the button; `animate` false (first paint, another window) snaps.
+    void SetProfileButton(const std::wstring& name,const char* glyph,D2D1_COLOR_F ink,bool animate,Motion::Time now=Motion::Now()){
+        auto& b=profileButton;const bool reduced=motion&&motion->ReducedMotion();
+        const bool iconChange=b.glyph&&glyph&&b.glyph!=glyph,inkChange=b.ink.r!=ink.r||b.ink.g!=ink.g||b.ink.b!=ink.b;
+        if(animate&&b.shown&&(iconChange||(inkChange&&!reduced))){
+            b.fromInk=ProfileInkAt(now);
+            if(iconChange)b.fromGlyph=ProfileButtonProgress(now)<.5f&&b.animating&&b.iconChange?b.fromGlyph:b.glyph;   // mid swap: keep the glyph mostly on screen
+            b.iconChange=iconChange;b.changed=now;b.animating=true;
+        }else{b.animating=false;b.fromGlyph=nullptr;}
+        b.name=name;b.glyph=glyph;b.ink=ink;b.shown=true;
+    }
+    bool ProfileButtonAnimating(Motion::Time now){auto& b=profileButton;if(b.animating&&ProfileButtonProgress(now)>=1){b.animating=false;b.fromGlyph=nullptr;}return b.animating;}
+    // One glyph at a pose of the swap: opacity, scale about the plate centre, Gaussian blur (DIP).
+    void DrawSwapGlyph(const char* d,D2D1_RECT_F plate,float size,D2D1_COLOR_F color,float opacity,float scale,float blur){
+        if(!d||opacity<=.002f){return;}color.a*=opacity;const float s=size*scale;
+        if(blur<.05f){PathGlyph(d,plate,s,color);return;}
+        ID2D1DeviceContext* dc=nullptr;ID2D1Effect* fx=nullptr;ID2D1BitmapRenderTarget* layer=nullptr;
+        static const CLSID gaussian={0x1feb6d69,0x2fe6,0x4ac9,{0x8c,0x58,0x1d,0x7f,0x93,0xe7,0xa6,0xa5}};
+        const float extent=size+4*blur*2;
+        if(SUCCEEDED(target->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&dc)))&&SUCCEEDED(dc->CreateEffect(gaussian,&fx))&&SUCCEEDED(target->CreateCompatibleRenderTarget(D2D1::SizeF(extent,extent),&layer))){
+            ID2D1RenderTarget* keep=target;target=layer;layer->BeginDraw();layer->Clear(D2D1::ColorF(0,0,0,0));
+            ID2D1SolidColorBrush* own=nullptr;layer->CreateSolidColorBrush(color,&own);ID2D1SolidColorBrush* keepBrush=brush;if(own)brush=own;
+            PathGlyph(d,{0,0,extent,extent},s,color);brush=keepBrush;if(own)own->Release();target=keep;
+            ID2D1Bitmap* bitmap=nullptr;
+            if(SUCCEEDED(layer->EndDraw())&&SUCCEEDED(layer->GetBitmap(&bitmap))&&bitmap){
+                fx->SetInput(0,bitmap);const float deviation=blur/2;fx->SetValue(0,D2D1_PROPERTY_TYPE_FLOAT,reinterpret_cast<const BYTE*>(&deviation),sizeof(deviation));
+                ID2D1Image* out=nullptr;fx->GetOutput(&out);
+                if(out){const D2D1_POINT_2F at{(plate.left+plate.right-extent)/2,(plate.top+plate.bottom-extent)/2};dc->DrawImage(out,&at,nullptr,D2D1_INTERPOLATION_MODE_LINEAR,D2D1_COMPOSITE_MODE_SOURCE_OVER);out->Release();}
+                fx->SetInput(0,nullptr);bitmap->Release();
+            }
+        }else PathGlyph(d,plate,s,color);
+        if(layer){layer->Release();}if(fx){fx->Release();}if(dc){dc->Release();}
+    }
+    void DrawProfileButton(int hover,int focus,Motion::Time now){namespace PB=Design::ProfileButton;
+        const auto v=motion?motion->Visual(900,now):Motion::InteractionVisual{hover==900?1.f:0.f,0};const bool reduced=motion&&motion->ReducedMotion();
+        const float press=std::max(v.press,profileButton.open?1.f:0.f),h=Motion::Clamp(v.hover);
+        const float tint=PB::rest+(PB::hover-PB::rest)*h*(1-press)+(PB::pressed-PB::rest)*press;
+        const auto p=PB::Plate();const float k=1-(1-PB::pressScale)*(reduced?0.f:press),cx=(p.left+p.right)/2,cy=(p.top+p.bottom)/2,half=PB::size/2*k;
+        const D2D1_RECT_F plate{cx-half,cy-half,cx+half,cy+half};const auto ink=ProfileInkAt(now);
+        FillBox(plate,PB::radius*k,D2D1::ColorF(ink.r,ink.g,ink.b,tint));
+        const auto& b=profileButton;
+        if(b.animating&&b.iconChange&&b.fromGlyph){
+            const float t=Motion::Eased(ProfileButtonProgress(now),Motion::Curve::Icon);
+            if(reduced){DrawSwapGlyph(b.fromGlyph,plate,PB::glyph*k,ink,1-t,1,0);DrawSwapGlyph(b.glyph,plate,PB::glyph*k,ink,t,1,0);}
+            else{DrawSwapGlyph(b.fromGlyph,plate,PB::glyph*k,ink,1-t,1-.75f*t,4*t);DrawSwapGlyph(b.glyph,plate,PB::glyph*k,ink,t,.25f+.75f*t,4*(1-t));}
+        }else if(b.glyph)PathGlyph(b.glyph,plate,PB::glyph*k,ink);
+        if(focus==900)FocusRing({p.left,p.top,p.right,p.bottom},PB::radius);}
     // A9 « Privée » chip: drawn only, never hovered/focused/clicked (region kept for UIA bounds).
     static constexpr int PrivateChipId=905; bool privateChip=false; ID2D1PathGeometry* eyeSlash=nullptr;
     Design::Box PrivateChipRect(){return Design::PrivateChip::Rect(TextWidth(Design::PrivateChip::label,14,true));}
@@ -828,7 +900,7 @@ public:
         // scroll, drag, hit tests and focus all go through TS::Left()).
         TS::leading=privateChip?Design::PrivateChip::Width(TextWidth(Design::PrivateChip::label,14,true))+Design::Space::tabGap:0;
         strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;SyncTabMotion(count,now);
-        brandTip=L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
+        brandTip=profileButton.shown?(profileButton.privateWindow?std::wstring(L"Fenêtre privée (Ctrl+Maj+M)"):L"Profil : "+profileButton.name+L" (Ctrl+Maj+M)"):L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
         auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},brandTip.c_str()});
         if(privateChip){const auto c=PrivateChipRect();regions.push_back({PrivateChipId,{c.left,c.top,c.right,c.bottom},nullptr});}
         // Tooltips carry the full title: compact tabs truncate or hide it.
@@ -947,7 +1019,7 @@ public:
         for(auto& r:regions){int id=r.id;auto box=r.rect;if(IsClose(id)||IsTab(id)||!visible(box))continue;
             if(id==PrivateChipId){DrawPrivateChip();continue;}
             if(id==VaultKeyId){DrawVaultKey(box,motion?motion->Visual(id,now).hover:(hover==id?1.f:0.f),focus==VaultKeyId);continue;}
-            if(id==900){auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
+            if(id==900){if(profileButton.shown){DrawProfileButton(hover,focus,now);continue;}auto glyph=Design::Brand::Glyph();Icon(L"brand-flower",{glyph.left,glyph.top,glyph.right,glyph.bottom},Design::Brand::size,Design::Brand::opacity);if(focus==900)FocusRing(box,Design::Radius::control);continue;}if(id=='L'||id=='I'||id=='Q')continue;
             auto interaction=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};if(id==latched)interaction.hover=1;
             if(id=='V'){DrawAudioButton(box,{interaction.hover,interaction.press,false,focus==id},now);continue;}
             const wchar_t* icon=nullptr;switch(id){case 'T':icon=L"plus";break;case 'm':icon=L"minimize";break;case 'M':icon=L"maximize";break;case 'X':icon=L"close";break;case 'B':icon=L"back";break;case 'F':icon=L"forward";break;case 'R':icon=navigationLoading?L"tab-close":L"reload";break;case 'C':icon=L"copy";break;case 'K':icon=starred?L"star-fill":L"star";break;case 'Y':icon=L"history";break;case 'D':icon=L"downloads";break;case 'P':icon=L"private";break;case 'S':icon=L"settings";break;}if(icon){auto variant=VariantFor(id);Design::ButtonState state{interaction.hover,interaction.press,!Enabled(id),focus==id};
