@@ -207,9 +207,9 @@ data to `%LOCALAPPDATA%\browser\data`. Protocol (`src/annotations-migration.h`):
 |---|---|
 | `test_release_tools.py` | 38 OK, 1 skipped (symlink privilege) |
 | `old-validator-v0.3.239.txt` | v0.3.239 validator: `assets/bin` accepted + byte-identical staging (synthetic and real 0.3.239 payload); root bridge rejected |
-| `b-update-core-tests.txt` (`tests/update-core/run_tests.py`) | update_core_test 315/0; **install_test 491/0** with real live MCP bridge processes — see list below |
+| `b-update-core-tests.txt` (`tests/update-core/run_tests.py`) | update_core_test 315/0; **install_test 492/0** with real live MCP bridge processes — see list below |
 | `b-annotations-tests.txt` (`tests/annotations/run_tests.py --quick`) | store_test 2662/0, json_fuzz 156715/0, host_test 18183/0, agent_connect_test 288/0 (after merge) |
-| `b-item3-helper-mutations.txt`, `b-review-fix-mutations.txt` | 8 deliberate helper regressions, all detected |
+| `b-item3-helper-mutations.txt`, `b-review-fix-mutations.txt`, `b-items46-mutations.txt` | 15 deliberate regressions (helper, bridge, store), all detected (one first survived and got a test, see file) |
 | `b-item3-running-exe-replace-probe.txt` | replacing a running exe fails, rename aside works |
 | `b-integrated-release-0.3.285.txt` | **release CANDIDATE** (`--channel release`, source = B branch d3e81c6 = main 411acbb + B; `--commit 411acbb` was passed only to satisfy `require_on_main` locally, so its stamped identity is NOT its source and it must never be published — the final artifact is rebuilt by CI from the exact merged SHA): `-DBROWSER_RELEASE_ANNOTATIONS`, static check OK, package + ZIP (1630 entries) == app payload == tree staged by the real v0.3.239 validator, bridge only at `assets/bin`, release server name, no preview name |
 | `b-release-bridge-suite.txt` | the annotation MCP suite run against the candidate's bridge (LOCALAPPDATA redirected to a temp dir): all passed (protocol level) |

@@ -938,6 +938,9 @@ void TestMigrationBusyDuringCopy() {
     const std::string during = t.agent->Tool(1, "browser_annotation_claim", "{\"id\":\"" + t.id + "\"}");
     CHECK(IsError(during) && during.find("Migration des annotations") != std::string::npos);
     CHECK(t.LeaseIn(t.Source()).empty());
+    // Reads too: the store is resolved and read under the gate (bridge level), never from a store being copied.
+    const std::string read = t.agent->Tool(5, "browser_annotation_get", "{\"id\":\"" + t.id + "\"}");
+    CHECK(IsError(read) && read.find("version installée en cours") != std::string::npos);
     CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
     const std::string token = t.Claim(2);
     CHECK(!token.empty() && t.LeaseIn(t.Installed()) == token && t.LeaseIn(t.Source()).empty());
