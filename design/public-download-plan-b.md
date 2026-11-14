@@ -78,3 +78,54 @@ first install creates `bin` + bridge; second install with the bridge **running**
 succeeds via rename; publish failure aborts and relaunches previous; rollback restores previous
 bridge; two updates later the `bin` path still works; portable `annotations` migrated, source
 untouched; reparse `bin` refused. Old-validator positive/negative (item 2).
+
+## Items 4 + 6 — portable store migration with live writers (proposal, before code)
+
+Root accepted option (a) in principle (2026-11-14) with guard-rails: a portable bridge may already
+run before the update and keep running; source and destination must never diverge silently; the
+switch happens only after a validated migration; same validations as `PortableForwardTarget`;
+custom `--store`, preview/dev and other folders are never redirected; `--site` and lease identities
+are unchanged.
+
+**Write gate (crash-safe, no new daemon).** A sibling file `<exeDir>\annotations.write-gate`
+(outside the store, so store walks are unaffected). Every mutating `BA::Store` operation
+(write/claim/release/resolve/reopen/delete/trash/restore/purge/publish, in `annotations.cpp`, so the
+browser and the bridge both get it) opens the gate with `FILE_SHARE_READ|FILE_SHARE_WRITE`
+for its duration — only when the store is a portable default store (root == `<dir>\annotations`
+with `<dir>\browser.exe` present; never for `--store` elsewhere, never for `<root>\data`). The
+helper opens the same file with **no sharing** before copying: it succeeds only when no write is
+in flight, and while it holds it every write fails with a retryable « migration en cours » outcome
+(bridge: `isError` result, no state change). The handle dies with the helper, so a crashed helper
+never leaves the store frozen.
+
+**Helper sequence** (`MigratePortable`, browser already exited): take the gate (bounded wait,
+otherwise `abortBeforeSwitch("annotations-busy")`) → copy `annotations\` into the work dir with the
+profile → publish `data` → switch `current` → launch → **keep the gate until the outcome**:
+ack ⇒ release (redirect becomes valid); no ack ⇒ rollback removes the migrated `data` (existing
+code) then releases (source authoritative again, nothing written in between). A frozen source
+means the copy equals the source at every instant of the window: no silent divergence.
+
+**Redirect (bridge, re-evaluated per request, not only at start).** Before each request the bridge
+resolves its store: if launched without `--store` or with `--store` equal to `<its portable
+dir>\annotations` (case-insensitive full path), and `UpdateCore`-equivalent checks pass —
+`<root>\data\migrated-from.txt` names exactly that portable dir, `<root>\current` is a valid
+non-zero version whose `versions\<v>\browser.exe` exists, the last install result is not `failed`
+for it, root/data/versions are not reparse points, paths are local drive paths (no UNC) — **and**
+the gate is not held (try-open shared succeeds), it serves `<root>\data\annotations`. Otherwise it
+serves the portable store. Preview builds (`--preview`, `BROWSER_PREVIEW`) and dev-channel bridges
+never redirect (compile-time). Implementation reuses one pure function shared with
+`PortableForwardTarget` rules (moved/duplicated into `annotations.cpp` as `PortableStoreTarget`,
+pure, no writes) so the browser forward and the bridge redirect cannot disagree.
+
+**Leases/site.** `--site` filtering, claim tokens and agent identities are data in the store and
+travel with the copy unchanged; a claim taken on the portable store before the update is resolved
+on the migrated copy with the same token.
+
+**Tests.** Pure resolution: false references (other dir, prefix-only match, UNC, reparse root,
+missing/zero/invalid current, missing versions exe, last result failed, custom store, preview) ⇒
+no redirect. Gate: shared writers vs exclusive helper (busy outcome, no partial write), handle
+release on process kill. Helper e2e with a **live bridge process** (fixture talks JSON-RPC over
+pipes): claim before update, install with migration (writes during window refused), ack ⇒ the same
+running process resolves on `<root>\data` with the original token; no-ack rollback ⇒ same process
+back on the portable store with nothing lost; helper killed mid-copy ⇒ gate released, retry
+re-migrates; two further updates ⇒ redirect still valid, store intact.
