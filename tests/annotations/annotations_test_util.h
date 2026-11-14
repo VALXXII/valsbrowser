@@ -129,9 +129,17 @@ inline std::string TinyPng(std::uint32_t w = 1, std::uint32_t h = 1) {
     return s;
 }
 
-inline BrowserAnnotations::Annotation Sample(const std::string& project, const std::string& note = "Le bouton Payer") {
+// Test site names: "boutique" -> origin "https://boutique.test"; an origin/URL is kept as is.
+inline std::string S(const std::string& name) { return name.find("://") != std::string::npos ? name : "https://" + name + ".test"; }
+// Folder of a test site, as a wide path component.
+inline std::wstring Wk(const std::string& name) {
+    const std::string k = BrowserAnnotations::SiteKey(S(name));
+    return std::wstring(k.begin(), k.end());
+}
+
+inline BrowserAnnotations::Annotation Sample(const std::string& site, const std::string& note = "Le bouton Payer") {
     BrowserAnnotations::Annotation a;
-    a.project = project;
+    a.site = S(site);
     a.note = note;
     a.source.channel = "preview";
     a.source.version = "0.3.120";

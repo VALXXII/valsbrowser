@@ -21,7 +21,7 @@ constexpr int Count = 1000;
 constexpr int Processes = 2;
 constexpr std::int64_t T0 = 1794000000;
 
-// The per-project cap is 500: the 1000 annotations live in two projects.
+// The per-site cap is 500: the 1000 annotations live in two sites.
 std::string ProjectOf(int i) { return i % 2 ? "race-b" : "race-a"; }
 
 struct Item {

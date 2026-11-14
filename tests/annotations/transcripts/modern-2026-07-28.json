@@ -23,7 +23,7 @@
                  {"name": "browser_annotation_resolve"}, {"name": "browser_annotation_release"}]}}},
     {"send": {"jsonrpc": "2.0", "id": 6, "method": "ping", "params": {"_meta": "$META"}},
      "expect": {"id": 6, "result": {"$EXACT": true, "resultType": "complete", "_meta": "$ANY"}}},
-    {"send": {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"_meta": "$META", "name": "browser_annotations_list", "arguments": {"project": "admin"}}},
+    {"send": {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"_meta": "$META", "name": "browser_annotations_list", "arguments": {"site": "https://admin.example.com"}}},
      "expect": {"id": 7, "result": {"resultType": "complete", "isError": false, "structuredContent": {"annotations": [{"id": "ann_cccccccccccccccccccccccccc"}], "nextCursor": null}}}},
     {"send": {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"_meta": "$META", "name": "browser_annotation_get", "arguments": {"id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa"}}},
      "expect": {"id": 8, "result": {"resultType": "complete", "isError": false,
@@ -44,5 +44,5 @@
     {"send": {"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {"name": "browser_annotations_list"}},
      "expect": {"id": 15, "error": {"code": -32602}}}
   ],
-  "after": {"reader": {"file": "readers/codex.json", "client": "codex", "label": "codex"}, "png_capture": "png", "png_file": "boutique/ann_aaaaaaaaaaaaaaaaaaaaaaaaaa/shot.png"}
+  "after": {"reader": {"file": "readers/codex.json", "client": "codex", "label": "codex"}, "png_capture": "png", "png_file": "{site:http://localhost:5173}/ann_aaaaaaaaaaaaaaaaaaaaaaaaaa/shot.png"}
 }

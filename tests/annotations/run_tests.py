@@ -4,15 +4,19 @@
     python -I tests/annotations/run_tests.py [--bridge <exe>] [--quick] [--update-golden]
 
   store_test        ids, schemas, bounds, hostile paths, corrupt files, drafts, leases, retention (simulated clock),
-                    pagination, projects, readers, Markdown, caps, store location parity with UpdateCore
+                    pagination, sites (keys, V1 tolerance), trash/restore, history filters, claimed counter, readers,
+                    Markdown, caps, store location parity with UpdateCore
   json_fuzz         strict JSON vectors, bounds, 300k mutations, random round trips
   json differential the C++ parser against Python's json module on generated + mutated documents
   host_test         browser side (T3): page message envelope/schema/size, crop plans at 100/150/200 %, origins,
                     projects, agent status summary, page script invariants
   claim_race        2 processes x 1000 annotations (fresh and expired leases), 8 threads x 1000
   transcripts       stdin -> expected stdout replays (legacy initialize 2025-11-25, modern _meta 2026-07-28,
-                    --project), tools/list determinism (+ golden file), image bytes, stdout strictly JSON-RPC,
-                    readers\\<client>.json, idle CPU, exit on stdin close
+                    --site, deprecated --project, V1 entry served by site), tools/list determinism (+ golden file),
+                    image bytes, stdout strictly JSON-RPC, readers\\<client>.json, idle CPU, exit on stdin close
+  agent_connect     Claude Desktop / Codex connection on redirected APPDATA/USERPROFILE/CODEX_HOME/PATH only:
+                    JSON merge, TOML edit, codex CLI (fake), .mcpb zip (checked here with zipfile), removable drive;
+                    then the real %APPDATA%\\Claude and %USERPROFILE%\\.codex configs are fingerprinted unchanged
 
 --bridge   test this browser-annotations-mcp.exe (e.g. build/annotations-preview/...) instead of a fresh test build
 --quick    skip claim_race (the slow 1000-annotation race)
@@ -325,6 +329,34 @@ class Bridge:
         return rest, code
 
 
+def site_key(origin: str) -> str:
+    """Independent Python copy of BrowserAnnotations::SiteKey (origin already normalized): cross-checks the C++."""
+    h = 1469598103934665603
+    for b in origin.encode("utf-8"):
+        h ^= b
+        h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    folded = (h ^ (h >> 32)) & 0xFFFFFFFF
+    if not origin:
+        readable = "local"
+    else:
+        readable, dash = "", False
+        for ch in origin.split("://", 1)[1]:
+            if len(readable) >= 40:
+                break
+            if ch.isascii() and (ch.islower() or ch.isdigit()):
+                readable += ch
+                dash = False
+            elif readable and not dash:
+                readable += "-"
+                dash = True
+        readable = readable.rstrip("-") or "site"
+    return f"{readable}-{folded:08x}"
+
+
+def store_path(text: str) -> str:
+    return re.sub(r"\{site:([^}]*)\}", lambda m: site_key(m.group(1)), text)
+
+
 def fresh_store(fixture, name):
     store = OUT / "tmp" / "bridge" / name / "annotations"
     shutil.rmtree(store.parent, ignore_errors=True)
@@ -363,17 +395,20 @@ def play(exe, fixture, path: pathlib.Path, tool_lists):
         after = spec.get("after", {})
         if "png_capture" in after:
             png = base64.b64decode(captures[after["png_capture"]], validate=True)
-            if png != (store / after["png_file"]).read_bytes() or not png.startswith(b"\x89PNG\r\n\x1a\n"):
+            if png != (store / store_path(after["png_file"])).read_bytes() or not png.startswith(b"\x89PNG\r\n\x1a\n"):
                 raise Mismatch("image content differs from shot.png")
         if "reader" in after:
             want = after["reader"]
             data = json.loads((store / want["file"]).read_text(encoding="utf-8"))
             if data.get("client") != want["client"] or data.get("label") != want["label"] or \
-                    data.get("project") != want.get("project") or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", data.get("lastReadAt", "")):
+                    data.get("site") != want.get("site") or "project" in data or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", data.get("lastReadAt", "")):
                 raise Mismatch(f"readers file {data}")
         stderr = b"".join(bridge.stderr).decode("utf-8", "replace")
         if "started" not in stderr:
             raise Mismatch("expected diagnostics on stderr")
+        for needle in spec.get("stderr_contains", []):
+            if needle not in stderr:
+                raise Mismatch(f"stderr lacks {needle!r}: {stderr[-400:]!r}")
         print(f"ok {label}: {len(spec['steps'])} steps")
     except (Mismatch, queue.Empty, KeyError) as e:
         if bridge.p.poll() is None:

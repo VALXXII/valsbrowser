@@ -1,4 +1,4 @@
-// Annotation store (V1). Contract: src/annotations.h and design/annotations-v1-brief.md.
+// Annotation store (V2, grouped by site). Contract: src/annotations.h and design/annotations-store-bridge.md.
 // Win32 (kernel32, bcrypt) + C++17 only; no UI, no globals beyond constant tables.
 #include "annotations.h"
 
@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <set>
 
@@ -403,29 +405,30 @@ bool GetPairs(const Value& o, const char* key, std::vector<NamedValue>& out, boo
     return true;
 }
 
-bool SchemaMajorIs(const Value& o, const char* family, std::string* error) {
+int SchemaMajor(const Value& o, const char* family, int maxMajor, std::string* error) {
     std::string schema;
-    if (!GetString(o, "schema", schema, true, error)) return false;
+    if (!GetString(o, "schema", schema, true, error)) return 0;
     const std::string prefix = std::string(family) + "/";
     if (schema.compare(0, prefix.size(), prefix) != 0) {
         if (error) *error = "unknown schema " + schema;
-        return false;
+        return 0;
     }
     const std::string version = schema.substr(prefix.size());
     const std::string major = version.substr(0, version.find('.'));
-    if (major != "1") {
+    if (major.size() != 1 || major[0] < '1' || major[0] > char('0' + maxMajor)) {
         if (error) *error = "unsupported schema version " + schema;
-        return false;
+        return 0;
     }
     if (major.size() != version.size()) {  // "1.<digits>" only
         const std::string minor = version.substr(major.size() + 1);
         if (minor.empty() || minor.size() > 6 || minor.find_first_not_of("0123456789") != std::string::npos) {
             if (error) *error = "bad schema version " + schema;
-            return false;
+            return 0;
         }
     }
-    return true;
+    return major[0] - '0';
 }
+bool SchemaMajorIs(const Value& o, const char* family, std::string* error) { return SchemaMajor(o, family, 1, error) == 1; }
 
 Value TimeOrNull(std::int64_t t) { return t > 0 ? Value::Str(FormatTime(t)) : Value(); }
 Value StrOrNull(const std::string& s) { return s.empty() ? Value() : Value::Str(s); }
@@ -572,8 +575,99 @@ bool IsValidProjectId(std::string_view id) {
         const bool alnum = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
         if (!(alnum || (i > 0 && c == '-'))) return false;
     }
-    if (id == "drafts" || id == "readers") return false;
+    if (id == "drafts" || id == "readers" || id == "trash") return false;
     return !IsWindowsDeviceName(id);
+}
+
+bool IsValidSiteKey(std::string_view key) {
+    if (key.empty() || key.size() > 64) return false;
+    for (std::size_t i = 0; i < key.size(); ++i) {
+        const char c = key[i];
+        const bool alnum = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (!(alnum || (i > 0 && c == '-'))) return false;
+    }
+    if (key == "drafts" || key == "readers" || key == "trash") return false;
+    return !IsWindowsDeviceName(key);
+}
+
+// ================================================================ sites
+bool IsSiteOrigin(std::string_view s) { return s.find("://") != std::string_view::npos; }
+
+std::string SiteOrigin(std::string_view url) {
+    const auto sep = url.find("://");
+    if (sep == std::string_view::npos || sep == 0 || sep > 16) return {};
+    std::string scheme(url.substr(0, sep));
+    for (auto& c : scheme) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (scheme != "http" && scheme != "https") return {};
+    const std::size_t end = url.find_first_of("/?#\\", sep + 3);
+    std::string auth(url.substr(sep + 3, end == std::string_view::npos ? std::string_view::npos : end - sep - 3));
+    if (const auto at = auth.rfind('@'); at != std::string::npos) auth = auth.substr(at + 1);
+    for (auto& c : auth) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (auth.empty() || auth.size() > 255) return {};
+    for (unsigned char c : auth)  // host[:port] or [v6]:port; anything else is not an origin we key on
+        if (!(std::isalnum(c) || c == '.' || c == '-' || c == ':' || c == '[' || c == ']' || c == '_' || c == '%' || c >= 0x80)) return {};
+    if (scheme == "http" && auth.size() > 3 && auth.compare(auth.size() - 3, 3, ":80") == 0) auth.resize(auth.size() - 3);
+    if (scheme == "https" && auth.size() > 4 && auth.compare(auth.size() - 4, 4, ":443") == 0) auth.resize(auth.size() - 4);
+    if (!auth.empty() && auth.back() == ':') auth.pop_back();
+    if (auth.empty()) return {};
+    return scheme + "://" + auth;
+}
+
+std::string SiteKey(std::string_view originIn) {
+    const std::string origin = SiteOrigin(originIn);
+    std::uint64_t h = 1469598103934665603ull;  // FNV-1a 64
+    for (unsigned char c : origin) {
+        h ^= c;
+        h *= 1099511628211ull;
+    }
+    const std::uint32_t folded = std::uint32_t(h ^ (h >> 32));
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08x", folded);
+    std::string readable;
+    if (origin.empty()) {
+        readable = "local";
+    } else {
+        const std::string auth = origin.substr(origin.find("://") + 3);
+        bool dash = false;
+        for (unsigned char c : auth) {
+            if (readable.size() >= 40) break;
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+                readable += char(c);
+                dash = false;
+            } else if (!readable.empty() && !dash) {
+                readable += '-';
+                dash = true;
+            }
+        }
+        while (!readable.empty() && readable.back() == '-') readable.pop_back();
+        if (readable.empty()) readable = "site";
+    }
+    return readable + "-" + hex;
+}
+
+std::string SiteLabel(std::string_view originIn) {
+    const std::string origin = SiteOrigin(originIn);
+    if (origin.empty()) return "Autres pages";
+    return origin.substr(origin.find("://") + 3);
+}
+
+bool IsDone(Status s) { return s == Status::Resolved || s == Status::NeedsInfo || s == Status::Dismissed; }
+
+std::vector<SiteGroup> GroupBySite(std::vector<Entry> entries) {
+    std::vector<SiteGroup> groups;
+    for (auto& e : entries) {
+        auto it = std::find_if(groups.begin(), groups.end(), [&](const SiteGroup& g) { return g.site == e.annotation.site; });
+        if (it == groups.end()) {
+            SiteGroup g;
+            g.site = e.annotation.site;
+            g.siteKey = SiteKey(g.site);
+            g.label = SiteLabel(g.site);
+            groups.push_back(std::move(g));
+            it = groups.end() - 1;
+        }
+        it->entries.push_back(std::move(e));
+    }
+    return groups;
 }
 
 std::string ClientSlug(std::string_view clientName) {
@@ -789,6 +883,7 @@ const char* CodeName(Code c) {
 }
 
 void Sanitize(Annotation& a) {
+    a.site = SiteOrigin(CleanText(a.site, 300));
     a.note = CleanText(a.note, MaxNoteChars, true);
     Source& s = a.source;
     s.channel = AsciiToken(s.channel, 16);
@@ -875,7 +970,7 @@ StrictJson::Value AnnotationToJson(const Annotation& a) {
     Value v = Value::Obj();
     v.Set("schema", Value::Str(AnnotationSchema));
     v.Set("id", Value::Str(a.id));
-    v.Set("project", Value::Str(a.project));
+    v.Set("site", Value::Str(a.site));
     v.Set("createdAt", TimeOrNull(a.createdAt));
     v.Set("updatedAt", TimeOrNull(a.updatedAt));
     v.Set("note", Value::Str(a.note));
@@ -961,12 +1056,28 @@ bool AnnotationFromJson(const StrictJson::Value& v, Annotation& out, std::string
         if (error) *error = "not an object";
         return false;
     }
-    if (!SchemaMajorIs(v, "browser-annotation", error)) return false;
+    const int major = SchemaMajor(v, "browser-annotation", 2, error);
+    if (!major) return false;
     Annotation a;
-    if (!GetString(v, "id", a.id, true, error) || !GetString(v, "project", a.project, true, error)) return false;
-    if (!IsValidAnnotationId(a.id) || !IsValidProjectId(a.project)) {
-        if (error) *error = "bad id or project";
+    if (!GetString(v, "id", a.id, true, error)) return false;
+    if (!IsValidAnnotationId(a.id)) {
+        if (error) *error = "bad id";
         return false;
+    }
+    if (major == 1) {  // V1: projects. The folder is the project id; the site comes from the page URL below.
+        if (!GetString(v, "project", a.project, true, error)) return false;
+        if (!IsValidProjectId(a.project)) {
+            if (error) *error = "bad project";
+            return false;
+        }
+        a.siteKey = a.project;
+    } else {
+        if (!GetString(v, "site", a.site, true, error)) return false;
+        if (a.site != SiteOrigin(a.site)) {
+            if (error) *error = "bad site";
+            return false;
+        }
+        a.siteKey = a.project = SiteKey(a.site);
     }
     if (!GetTime(v, "createdAt", a.createdAt, true, error) || !GetTime(v, "updatedAt", a.updatedAt, false, error) ||
         !GetString(v, "note", a.note, false, error))
@@ -1041,6 +1152,7 @@ bool AnnotationFromJson(const StrictJson::Value& v, Annotation& out, std::string
         a.screenshot.height = std::uint32_t(std::max<std::int64_t>(0, std::min<std::int64_t>(h, MaxShotSide + 1)));
         a.screenshot.bytes = std::uint64_t(std::max<std::int64_t>(0, bytes));
     }
+    if (major == 1) a.site = SiteOrigin(a.source.url);
     Sanitize(a);
     out = std::move(a);
     return true;
@@ -1166,7 +1278,7 @@ std::string ToMarkdown(const Entry& e, const std::wstring& shotPath) {
     const Target& t = a.target;
     std::string md;
     md += "## Annotation " + a.id + "\n\n";
-    md += "- Projet : " + InlineCode(a.project) + "\n";
+    md += "- Site : " + InlineCode(a.site.empty() ? SiteLabel(a.site) : a.site) + "\n";
     md += "- Statut : " + std::string(e.draft ? "brouillon" : StatusName(e.state.status));
     if (e.state.claimedBy) md += " (pris par " + InlineCode(e.state.claimedBy->agent) + " jusqu'à " + FormatTime(e.state.claimedBy->until) + ")";
     md += "\n- Créée : " + FormatTime(a.createdAt) + "\n\n";
@@ -1275,7 +1387,7 @@ std::wstring DefaultStoreRoot(const std::wstring& exePath, const std::wstring& i
 // ================================================================ Store
 namespace {
 struct Paths {
-    std::wstring project, parent, dir;  // parent = project or project\drafts
+    std::wstring site, parent, dir;  // parent = site or site\drafts
 };
 }  // namespace
 
@@ -1296,15 +1408,21 @@ namespace {
 
 Paths EntryPaths(const std::wstring& root, const std::string& project, const std::string& id, bool draft) {
     Paths p;
-    p.project = root + L"\\" + Widen(project);
-    p.parent = draft ? p.project + L"\\drafts" : p.project;
+    p.site = root + L"\\" + Widen(project);
+    p.parent = draft ? p.site + L"\\drafts" : p.site;
     p.dir = p.parent + L"\\" + Widen(id);
     return p;
 }
 
+// `site` argument => folder key: an origin/URL gives SiteKey(origin); a valid key is kept; else "".
+std::string KeyOf(const std::string& site) {
+    if (IsSiteOrigin(site)) return SiteKey(site);
+    return IsValidSiteKey(site) ? site : std::string();
+}
+
 // Every directory of the chain must be a real directory (not a link/junction).
 Outcome CheckChain(const std::wstring& root, const Paths& p) {
-    for (const std::wstring* d : {&root, &p.project, &p.parent, &p.dir}) {
+    for (const std::wstring* d : {&root, &p.site, &p.parent, &p.dir}) {
         const DWORD a = GetFileAttributesW(d->c_str());
         if (a == INVALID_FILE_ATTRIBUTES) return Fail(Code::NotFound, "Annotation introuvable.");
         if (!(a & FILE_ATTRIBUTE_DIRECTORY) || (a & FILE_ATTRIBUTE_REPARSE_POINT))
@@ -1313,7 +1431,7 @@ Outcome CheckChain(const std::wstring& root, const Paths& p) {
     return {};
 }
 
-Outcome ReadAnnotationAt(const std::wstring& dir, const std::string& project, const std::string& id, Annotation& out) {
+Outcome ReadAnnotationAt(const std::wstring& dir, const std::string& project /* folder key */, const std::string& id, Annotation& out) {
     std::string text;
     switch (ReadSafe(dir + L"\\annotation.json", MaxAnnotationFileBytes, text)) {
     case ReadStatus::Ok: break;
@@ -1323,7 +1441,7 @@ Outcome ReadAnnotationAt(const std::wstring& dir, const std::string& project, co
     }
     Value v;
     if (!SJ::Parse(text, v, nullptr, FileLimits(MaxAnnotationFileBytes))) return Fail(Code::NotFound, "Annotation illisible.");
-    if (!AnnotationFromJson(v, out) || out.id != id || out.project != project)
+    if (!AnnotationFromJson(v, out) || out.id != id || out.siteKey != project)
         return Fail(Code::NotFound, "Annotation illisible.");
     if (out.screenshot.present) {
         const DWORD a = GetFileAttributesW((dir + L"\\shot.png").c_str());
@@ -1380,15 +1498,38 @@ void ApplyLease(const std::wstring& dir, State& s, std::int64_t now) {
     }
 }
 
-std::vector<std::string> ProjectDirs(const std::wstring& root) {
+std::vector<std::string> SiteDirs(const std::wstring& root) {
     std::vector<std::string> out;
     for (const auto& e : ListDir(root)) {
         if (!e.dir || e.reparse) continue;
         const std::string name = Narrow(e.name);
-        if (IsValidProjectId(name)) out.push_back(name);
+        if (IsValidSiteKey(name)) out.push_back(name);
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+// A V2 folder key ends with "-" + 8 lowercase hex digits; anything else is a V1 project folder.
+bool IsV2Key(const std::string& key) {
+    if (key.size() < 10 || key[key.size() - 9] != '-') return false;
+    for (std::size_t i = key.size() - 8; i < key.size(); ++i)
+        if (!((key[i] >= '0' && key[i] <= '9') || (key[i] >= 'a' && key[i] <= 'f'))) return false;
+    return true;
+}
+
+// Folders to scan for `site` ("" = all): an origin => its V2 folder + the V1 folders (entries filtered by
+// SiteMatches); a key => that folder only.
+std::vector<std::string> FoldersFor(const std::wstring& root, const std::string& site) {
+    if (site.empty()) return SiteDirs(root);
+    if (!IsSiteOrigin(site)) return IsValidSiteKey(site) ? std::vector<std::string>{site} : std::vector<std::string>{};
+    const std::string key = SiteKey(site);
+    std::vector<std::string> out{key};
+    for (const auto& d : SiteDirs(root))
+        if (d != key && !IsV2Key(d)) out.push_back(d);
+    return out;
+}
+bool SiteMatches(const Entry& e, const std::string& site) {
+    return site.empty() || !IsSiteOrigin(site) || e.annotation.site == SiteOrigin(site);
 }
 std::vector<std::string> EntryDirs(const std::wstring& parent) {
     std::vector<std::string> out;
@@ -1416,71 +1557,36 @@ std::string Agent(const std::string& agent) {
     return a.empty() ? std::string("agent") : a;
 }
 
+// Directory rename on the same volume; an open file inside (agent call in flight) makes it fail: retry briefly.
+bool MoveWithRetry(const std::wstring& from, const std::wstring& to) {
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) return true;
+        const DWORD e = GetLastError();
+        if (e != ERROR_ACCESS_DENIED && e != ERROR_SHARING_VIOLATION && e != ERROR_LOCK_VIOLATION) return false;
+        Sleep(50);
+    }
+    return false;
+}
+// When a trash item was deleted (store clock), from trashed.json; missing/unreadable => 0 (purged next time).
+std::int64_t TrashedAt(const std::wstring& dir) {
+    std::string text;
+    if (ReadSafe(dir + L"\\trashed.json", MaxSmallFileBytes, text) != ReadStatus::Ok) return 0;
+    Value v;
+    std::int64_t at = 0;
+    if (!SJ::Parse(text, v, nullptr, FileLimits(MaxSmallFileBytes)) || !v.IsObject() || !GetTime(v, "deletedAt", at, true, nullptr)) return 0;
+    return at;
+}
+
 std::string ConflictMessage(const ClaimFile& c) {
     return "Déjà prise par " + (c.agent.empty() ? std::string("un autre agent") : c.agent) + " jusqu'à " + FormatTime(c.expiresAt) + ".";
 }
 
 }  // namespace
 
-std::vector<Project> Store::LoadProjects() const {
-    std::vector<Project> out;
-    if (!RootUsable()) return out;
-    std::string text;
-    if (ReadSafe(root_ + L"\\projects.json", MaxProjectsFileBytes, text) != ReadStatus::Ok) return out;
-    Value v;
-    if (!SJ::Parse(text, v, nullptr, FileLimits(MaxProjectsFileBytes)) || !v.IsObject() ||
-        !SchemaMajorIs(v, "browser-annotation-projects", nullptr))
-        return out;
-    const Value* list = v.Get("projects");
-    if (!list || !list->IsArray()) return out;
-    std::set<std::string> seen;
-    for (const auto& item : list->items) {
-        if (out.size() >= MaxProjects) break;
-        if (!item.IsObject()) continue;
-        Project p;
-        std::vector<std::string> origins;
-        if (!GetString(item, "id", p.id, true, nullptr) || !IsValidProjectId(p.id) || !seen.insert(p.id).second) continue;
-        if (!GetString(item, "label", p.label, false, nullptr) || !GetStringArray(item, "origins", origins, MaxOriginsPerProject, nullptr))
-            continue;
-        p.label = CleanText(p.label, MaxLabelChars);
-        if (p.label.empty()) p.label = p.id;
-        for (auto& o : origins) {
-            if (p.origins.size() >= MaxOriginsPerProject) break;
-            std::string clean = LowerA(CleanText(o, 200));
-            if (clean.find("://") == std::string::npos || clean.find_first_of("/?#", clean.find("://") + 3) != std::string::npos) continue;
-            p.origins.push_back(clean);
-        }
-        out.push_back(std::move(p));
-    }
-    return out;
-}
-
-Outcome Store::SaveProjects(const std::vector<Project>& projects) const {
-    if (projects.size() > MaxProjects) return Fail(Code::LimitReached, "Trop de projets.");
-    Value list = Value::Arr();
-    std::set<std::string> seen;
-    for (const auto& p : projects) {
-        if (!IsValidProjectId(p.id) || !seen.insert(p.id).second) return Fail(Code::Invalid, "Identifiant de projet invalide : " + p.id);
-        Value item = Value::Obj();
-        item.Set("id", Value::Str(p.id));
-        const std::string label = CleanText(p.label, MaxLabelChars);
-        item.Set("label", Value::Str(label.empty() ? p.id : label));
-        Value origins = Value::Arr();
-        for (std::size_t i = 0; i < p.origins.size() && i < MaxOriginsPerProject; ++i) origins.Push(Value::Str(LowerA(CleanText(p.origins[i], 200))));
-        item.Set("origins", std::move(origins));
-        list.Push(std::move(item));
-    }
-    Value v = Value::Obj();
-    v.Set("schema", Value::Str(ProjectsSchema));
-    v.Set("projects", std::move(list));
-    Outcome root = EnsureRoot();
-    if (!root.ok()) return root;
-    if (!AtomicWrite(root_ + L"\\projects.json", SJ::Serialize(v))) return Fail(Code::Io, "Écriture de projects.json impossible.");
-    return {};
-}
-
 Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft) const {
-    if (!IsValidProjectId(a.project)) return Fail(Code::Invalid, "Identifiant de projet invalide.");
+    a.site = SiteOrigin(a.site.empty() ? RedactUrl(a.source.url) : a.site);
+    a.siteKey = a.project = SiteKey(a.site);
+    if (!IsValidSiteKey(a.siteKey)) return Fail(Code::Invalid, "Site invalide.");
     if (a.id.empty()) {
         a.id = NewAnnotationId();
         if (a.id.empty()) return Fail(Code::Io, "Générateur aléatoire indisponible.");
@@ -1491,36 +1597,36 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
     if (png && !InspectPng(*png, pngW, pngH)) return Fail(Code::Invalid, "Capture refusée (PNG invalide, > 1,5 Mo ou > 1600 px).");
     Outcome root = EnsureRoot();
     if (!root.ok()) return root;
-    const Paths p = EntryPaths(root_, a.project, a.id, draft);
-    for (const std::wstring* d : {&p.project, &p.parent})
-        if (!MakeDir(*d)) return Fail(IsReparse(*d) ? Code::Unsafe : Code::Io, "Dossier du projet inutilisable.");
+    const Paths p = EntryPaths(root_, a.siteKey, a.id, draft);
+    for (const std::wstring* d : {&p.site, &p.parent})
+        if (!MakeDir(*d)) return Fail(IsReparse(*d) ? Code::Unsafe : Code::Io, "Dossier du site inutilisable.");
     const std::int64_t now = Now();
     const bool isNew = !Exists(p.dir);
     Annotation existing;
     bool hasExisting = false;
     if (isNew) {
-        // Caps: per project (drafts included), then the whole store.
-        auto count = [&] { return EntryDirs(p.project).size() + EntryDirs(p.project + L"\\drafts").size(); };
-        if (count() >= MaxAnnotationsPerProject) {
+        // Caps: per site (drafts included), then the whole store.
+        auto count = [&] { return EntryDirs(p.site).size() + EntryDirs(p.site + L"\\drafts").size(); };
+        if (count() >= MaxAnnotationsPerSite) {
             std::vector<Entry> closed;
-            for (const auto& id : EntryDirs(p.project)) {
+            for (const auto& id : EntryDirs(p.site)) {
                 Entry e;
-                if (Read(a.project, id, e).ok() && (e.state.status == Status::Resolved || e.state.status == Status::Dismissed)) closed.push_back(e);
+                if (Read(a.siteKey, id, e).ok() && IsDone(e.state.status)) closed.push_back(e);
             }
             auto closedAt = [](const Entry& e) { return e.state.resolution ? e.state.resolution->at : e.state.updatedAt; };
             std::sort(closed.begin(), closed.end(), [&](const Entry& x, const Entry& y) { return closedAt(x) < closedAt(y); });
             for (const auto& e : closed) {
-                if (count() < MaxAnnotationsPerProject) break;
-                RemoveTree(EntryPaths(root_, a.project, e.annotation.id, false).dir);
+                if (count() < MaxAnnotationsPerSite) break;
+                RemoveTree(EntryPaths(root_, a.siteKey, e.annotation.id, false).dir);
             }
-            if (count() >= MaxAnnotationsPerProject)
-                return Fail(Code::LimitReached, "Ce projet contient déjà 500 annotations : supprimez-en avant d'en ajouter.");
+            if (count() >= MaxAnnotationsPerSite)
+                return Fail(Code::LimitReached, "Ce site a déjà 500 annotations : supprimez-en avant d'en ajouter.");
         }
         const std::uint64_t incoming = (png ? png->size() : 0) + 64 * 1024;
         // Walking the whole store costs O(entries); skip it while the entry count alone cannot reach the cap.
         std::uint64_t entries = 0;
-        for (const auto& project : ProjectDirs(root_))
-            entries += EntryDirs(root_ + L"\\" + Widen(project)).size() + EntryDirs(root_ + L"\\" + Widen(project) + L"\\drafts").size();
+        for (const auto& key : SiteDirs(root_))
+            entries += EntryDirs(root_ + L"\\" + Widen(key)).size() + EntryDirs(root_ + L"\\" + Widen(key) + L"\\drafts").size();
         constexpr std::uint64_t maxEntryBytes = MaxAnnotationFileBytes + MaxStateFileBytes + MaxShotBytes + 2 * MaxSmallFileBytes;
         if ((entries + 1) * maxEntryBytes > MaxStoreBytes && StoreBytes() + incoming > MaxStoreBytes) {
             Purge();
@@ -1531,7 +1637,7 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
     } else {
         Outcome chain = CheckChain(root_, p);
         if (!chain.ok()) return chain;
-        hasExisting = ReadAnnotationAt(p.dir, a.project, a.id, existing).ok();
+        hasExisting = ReadAnnotationAt(p.dir, a.siteKey, a.id, existing).ok();
     }
     auto abandon = [&](Code code, const char* message) {
         if (isNew) RemoveTree(p.dir);
@@ -1540,6 +1646,7 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
     a.createdAt = hasExisting ? existing.createdAt : now;
     a.updatedAt = now;
     Sanitize(a);
+    a.siteKey = a.project = SiteKey(a.site);
     if (png) {
         if (!AtomicWrite(p.dir + L"\\shot.png", *png)) return abandon(Code::Io, "Écriture de la capture impossible.");
         a.screenshot.present = true;
@@ -1562,8 +1669,9 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
     return {};
 }
 
-Outcome Store::PublishDraft(const std::string& project, const std::string& id) const {
-    if (!IsValidProjectId(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
+Outcome Store::PublishDraft(const std::string& site, const std::string& id) const {
+    const std::string project = KeyOf(site);
+    if (!IsValidSiteKey(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const Paths from = EntryPaths(root_, project, id, true), to = EntryPaths(root_, project, id, false);
     Outcome chain = CheckChain(root_, from);
     if (!chain.ok()) return chain;
@@ -1581,9 +1689,10 @@ Outcome Store::PublishDraft(const std::string& project, const std::string& id) c
     return {};
 }
 
-Outcome Store::Read(const std::string& project, const std::string& id, Entry& out, bool draft) const {
+Outcome Store::Read(const std::string& site, const std::string& id, Entry& out, bool draft) const {
+    const std::string project = KeyOf(site);
     out = Entry();
-    if (!IsValidProjectId(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
+    if (!IsValidSiteKey(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const Paths p = EntryPaths(root_, project, id, draft);
     Outcome chain = CheckChain(root_, p);
     if (!chain.ok()) return chain;
@@ -1601,28 +1710,34 @@ Outcome Store::Read(const std::string& project, const std::string& id, Entry& ou
     return {};
 }
 
-Outcome Store::Find(const std::string& id, Entry& out, const std::string& project) const {
+Outcome Store::Find(const std::string& id, Entry& out, const std::string& site) const {
     if (!IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant d'annotation invalide (attendu ann_ + 26 caractères).");
-    if (!project.empty() && !IsValidProjectId(project)) return Fail(Code::Invalid, "Identifiant de projet invalide.");
+    if (!site.empty() && KeyOf(site).empty()) return Fail(Code::Invalid, "Site invalide.");
     if (!RootUsable()) return Fail(Code::NotFound, "Annotation introuvable.");
-    const std::vector<std::string> projects = project.empty() ? ProjectDirs(root_) : std::vector<std::string>{project};
     Outcome last = Fail(Code::NotFound, "Annotation introuvable.");
-    for (const auto& p : projects) {
-        if (!Exists(EntryPaths(root_, p, id, false).dir)) continue;
-        last = Read(p, id, out, false);
-        if (last.ok()) return last;
+    for (const auto& key : FoldersFor(root_, site)) {
+        if (!Exists(EntryPaths(root_, key, id, false).dir)) continue;
+        Entry e;
+        last = Read(key, id, e, false);
+        if (last.ok() && !SiteMatches(e, site)) last = Fail(Code::NotFound, "Annotation introuvable.");
+        if (last.ok()) {
+            out = std::move(e);
+            return last;
+        }
     }
     return last;
 }
 
-std::wstring Store::ShotPath(const std::string& project, const std::string& id, bool draft) const {
-    if (!IsValidProjectId(project) || !IsValidAnnotationId(id)) return L"";
+std::wstring Store::ShotPath(const std::string& site, const std::string& id, bool draft) const {
+    const std::string project = KeyOf(site);
+    if (!IsValidSiteKey(project) || !IsValidAnnotationId(id)) return L"";
     return EntryPaths(root_, project, id, draft).dir + L"\\shot.png";
 }
 
-Outcome Store::ReadShot(const std::string& project, const std::string& id, std::string& png, bool draft) const {
+Outcome Store::ReadShot(const std::string& site, const std::string& id, std::string& png, bool draft) const {
+    const std::string project = KeyOf(site);
     png.clear();
-    if (!IsValidProjectId(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
+    if (!IsValidSiteKey(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const Paths p = EntryPaths(root_, project, id, draft);
     Outcome chain = CheckChain(root_, p);
     if (!chain.ok()) return chain;
@@ -1645,13 +1760,12 @@ ListPage Store::List(const ListQuery& q) const {
         page.badCursor = true;
         return page;
     }
-    if (!q.project.empty() && !IsValidProjectId(q.project)) return page;
+    if (!q.site.empty() && KeyOf(q.site).empty()) return page;
     if (!RootUsable()) return page;
-    const std::vector<std::string> projects = q.project.empty() ? ProjectDirs(root_) : std::vector<std::string>{q.project};
     std::vector<Entry> all;
-    for (const auto& project : projects) {
+    for (const auto& project : FoldersFor(root_, q.site)) {
         const Paths base = EntryPaths(root_, project, "", q.drafts);
-        if (IsReparse(base.project) || IsReparse(base.parent)) {
+        if (IsReparse(base.site) || IsReparse(base.parent)) {
             ++page.skipped;
             continue;
         }
@@ -1661,7 +1775,12 @@ ListPage Store::List(const ListQuery& q) const {
                 ++page.skipped;
                 continue;
             }
-            if (q.status && !q.drafts && e.state.status != *q.status) continue;
+            if (!SiteMatches(e, q.site)) continue;
+            if (!q.drafts) {
+                if (q.status && e.state.status != *q.status) continue;
+                if (q.progress == Progress::InProgress && IsDone(e.state.status)) continue;
+                if (q.progress == Progress::Done && !IsDone(e.state.status)) continue;
+            }
             all.push_back(std::move(e));
         }
     }
@@ -1688,8 +1807,9 @@ ListPage Store::List(const ListQuery& q) const {
     return page;
 }
 
-Outcome Store::Claim(const std::string& project, const std::string& id, const std::string& agentIn,
+Outcome Store::Claim(const std::string& site, const std::string& id, const std::string& agentIn,
                      const std::string& token, ClaimResult& out) const {
+    const std::string project = KeyOf(site);
     out = ClaimResult();
     const std::string agent = Agent(agentIn);
     Entry entry;
@@ -1804,7 +1924,8 @@ Outcome Store::Claim(const std::string& project, const std::string& id, const st
     return Fail(Code::Busy, "Réservation disputée, réessayez.");
 }
 
-Outcome Store::Release(const std::string& project, const std::string& id, const std::string& token, const std::string& actor) const {
+Outcome Store::Release(const std::string& site, const std::string& id, const std::string& token, const std::string& actor) const {
+    const std::string project = KeyOf(site);
     Entry entry;
     Outcome read = Read(project, id, entry);
     if (!read.ok()) return read;
@@ -1829,8 +1950,9 @@ Outcome Store::Release(const std::string& project, const std::string& id, const 
     return {};
 }
 
-Outcome Store::Resolve(const std::string& project, const std::string& id, const std::string& token, const std::string& outcome,
+Outcome Store::Resolve(const std::string& site, const std::string& id, const std::string& token, const std::string& outcome,
                        const std::string& summaryIn, const std::string& actor, State* newState) const {
+    const std::string project = KeyOf(site);
     Status target;
     if (!ParseStatus(outcome, target) || !IsTerminal(target))
         return Fail(Code::Invalid, "outcome doit valoir resolved, needs_info ou dismissed.");
@@ -1862,7 +1984,8 @@ Outcome Store::Resolve(const std::string& project, const std::string& id, const 
     return {};
 }
 
-Outcome Store::ForceRelease(const std::string& project, const std::string& id) const {
+Outcome Store::ForceRelease(const std::string& site, const std::string& id) const {
+    const std::string project = KeyOf(site);
     Entry entry;
     Outcome read = Read(project, id, entry);
     if (!read.ok()) return read;
@@ -1883,7 +2006,8 @@ Outcome Store::ForceRelease(const std::string& project, const std::string& id) c
     return {};
 }
 
-Outcome Store::Reopen(const std::string& project, const std::string& id) const {
+Outcome Store::Reopen(const std::string& site, const std::string& id) const {
+    const std::string project = KeyOf(site);
     Entry entry;
     Outcome read = Read(project, id, entry);
     if (!read.ok()) return read;
@@ -1904,11 +2028,12 @@ Outcome Store::Reopen(const std::string& project, const std::string& id) const {
     return {};
 }
 
-Outcome Store::Delete(const std::string& project, const std::string& id, bool draft) const {
-    if (!IsValidProjectId(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
+Outcome Store::Delete(const std::string& site, const std::string& id, bool draft) const {
+    const std::string project = KeyOf(site);
+    if (!IsValidSiteKey(project) || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
     const Paths p = EntryPaths(root_, project, id, draft);
     if (!Exists(p.dir)) return Fail(Code::NotFound, "Annotation introuvable.");
-    for (const std::wstring* d : {&root_, &p.project, &p.parent})
+    for (const std::wstring* d : {&root_, &p.site, &p.parent})
         if (!IsPlainDir(*d)) return Fail(Code::Unsafe, "Chemin refusé (lien ou jonction).");
     if (IsReparse(p.dir)) {  // unlink the link itself, never its target
         if (!RemoveDirectoryW(p.dir.c_str())) return Fail(Code::Io, "Suppression impossible.");
@@ -1918,14 +2043,80 @@ Outcome Store::Delete(const std::string& project, const std::string& id, bool dr
     return {};
 }
 
-Outcome Store::DeleteProject(const std::string& project) const {
-    if (!IsValidProjectId(project)) return Fail(Code::Invalid, "Identifiant de projet invalide.");
+Outcome Store::DeleteSite(const std::string& site) const {
+    const std::string project = KeyOf(site);
+    if (!IsValidSiteKey(project)) return Fail(Code::Invalid, "Site invalide.");
     const std::wstring dir = root_ + L"\\" + Widen(project);
     if (!Exists(dir)) return {};
     if (!IsPlainDir(root_)) return Fail(Code::Unsafe, "Chemin refusé.");
     if (IsReparse(dir)) return RemoveDirectoryW(dir.c_str()) ? Outcome() : Fail(Code::Io, "Suppression impossible.");
     if (!RemoveTree(dir)) return Fail(Code::Io, "Suppression incomplète (fichier ouvert ?).");
     return {};
+}
+
+Outcome Store::Trash(const std::string& site, const std::string& id) const {
+    const std::string key = KeyOf(site);
+    if (key.empty() || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
+    const Paths p = EntryPaths(root_, key, id, false);
+    Outcome chain = CheckChain(root_, p);
+    if (!chain.ok()) return chain;
+    const std::wstring trash = root_ + L"\\trash", siteDir = trash + L"\\" + Widen(key), to = siteDir + L"\\" + Widen(id);
+    for (const std::wstring* d : {&trash, &siteDir})
+        if (!MakeDir(*d)) return Fail(IsReparse(*d) ? Code::Unsafe : Code::Io, "Corbeille inutilisable.");
+    if (Exists(to) && !RemoveTree(to)) return Fail(Code::Io, "Corbeille inutilisable.");
+    // The marker is written before the rename, so a trash item always carries its deletion time.
+    if (!AtomicWrite(p.dir + L"\\trashed.json", "{\"deletedAt\":\"" + FormatTime(Now()) + "\"}")) return Fail(Code::Io, "Suppression impossible.");
+    if (!MoveWithRetry(p.dir, to)) {
+        DeleteFileW((p.dir + L"\\trashed.json").c_str());
+        return Fail(Code::Busy, "Annotation en cours d'utilisation, réessayez.");
+    }
+    return {};
+}
+
+Outcome Store::Restore(const std::string& site, const std::string& id) const {
+    const std::string key = KeyOf(site);
+    if (key.empty() || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
+    const std::wstring siteDir = root_ + L"\\trash\\" + Widen(key), from = siteDir + L"\\" + Widen(id);
+    if (!IsPlainDir(root_) || !IsPlainDir(root_ + L"\\trash") || !IsPlainDir(siteDir)) return Fail(Code::NotFound, "Annotation introuvable dans la corbeille.");
+    if (!IsPlainDir(from)) return Fail(Exists(from) ? Code::Unsafe : Code::NotFound, "Annotation introuvable dans la corbeille.");
+    const Paths p = EntryPaths(root_, key, id, false);
+    if (!MakeDir(p.site)) return Fail(IsReparse(p.site) ? Code::Unsafe : Code::Io, "Dossier du site inutilisable.");
+    if (Exists(p.dir)) return Fail(Code::Conflict, "Une annotation porte déjà cet identifiant.");
+    if (!MoveWithRetry(from, p.dir)) return Fail(Code::Busy, "Restauration impossible pour l'instant, réessayez.");
+    DeleteFileW((p.dir + L"\\trashed.json").c_str());
+    RemoveDirectoryW(siteDir.c_str());  // only when empty
+    return {};
+}
+
+Outcome Store::DiscardTrash(const std::string& site, const std::string& id) const {
+    const std::string key = KeyOf(site);
+    if (key.empty() || !IsValidAnnotationId(id)) return Fail(Code::Invalid, "Identifiant invalide.");
+    const std::wstring siteDir = root_ + L"\\trash\\" + Widen(key), dir = siteDir + L"\\" + Widen(id);
+    if (!Exists(dir)) return {};
+    if (!IsPlainDir(root_ + L"\\trash") || !IsPlainDir(siteDir)) return Fail(Code::Unsafe, "Chemin refusé (lien ou jonction).");
+    if (IsReparse(dir)) return RemoveDirectoryW(dir.c_str()) ? Outcome() : Fail(Code::Io, "Suppression impossible.");
+    if (!RemoveTree(dir)) return Fail(Code::Io, "Suppression incomplète (fichier ouvert ?).");
+    RemoveDirectoryW(siteDir.c_str());
+    return {};
+}
+
+std::size_t Store::CountClaimed() const {
+    std::size_t count = 0;
+    if (!RootUsable()) return 0;
+    const std::int64_t now = Now();
+    for (const auto& key : SiteDirs(root_)) {
+        const std::wstring siteDir = root_ + L"\\" + Widen(key);
+        if (IsReparse(siteDir)) continue;
+        for (const auto& id : EntryDirs(siteDir)) {
+            const std::wstring dir = siteDir + L"\\" + Widen(id);
+            if (!Exists(dir + L"\\annotation.json")) continue;  // being written / not an entry
+            State s;
+            if (LoadState(dir, s) == StateLoad::Corrupt) continue;
+            ApplyLease(dir, s, now);
+            if (s.status == Status::Claimed && s.claimedBy && s.claimedBy->until > now && !s.claimedBy->agent.empty()) ++count;
+        }
+    }
+    return count;
 }
 
 PurgeReport Store::Purge() const {
@@ -1938,13 +2129,26 @@ PurgeReport Store::Purge() const {
                 if (DeleteFileW((dir + L"\\" + f.name).c_str())) ++report.tempFiles;
     };
     sweepTemp(root_);
-    for (const auto& project : ProjectDirs(root_)) {
+    // Trash: entries deleted from the history more than TrashRetentionSeconds ago (or left by a crash).
+    const std::wstring trash = root_ + L"\\trash";
+    if (IsPlainDir(trash)) {
+        for (const auto& key : SiteDirs(trash)) {
+            const std::wstring siteDir = trash + L"\\" + Widen(key);
+            if (IsReparse(siteDir)) continue;
+            for (const auto& id : EntryDirs(siteDir)) {
+                const std::wstring dir = siteDir + L"\\" + Widen(id);
+                if (now - TrashedAt(dir) > TrashRetentionSeconds && RemoveTree(dir)) ++report.trash;
+            }
+            RemoveDirectoryW(siteDir.c_str());  // only when empty
+        }
+    }
+    for (const auto& project : SiteDirs(root_)) {
         const Paths base = EntryPaths(root_, project, "", false);
-        if (IsReparse(base.project)) continue;
-        for (const auto& id : EntryDirs(base.project)) {
+        if (IsReparse(base.site)) continue;
+        for (const auto& id : EntryDirs(base.site)) {
             const std::wstring dir = EntryPaths(root_, project, id, false).dir;
             Entry e;
-            if (Read(project, id, e).ok() && (e.state.status == Status::Resolved || e.state.status == Status::Dismissed)) {
+            if (Read(project, id, e).ok() && IsDone(e.state.status)) {
                 const std::int64_t closedAt = e.state.resolution && e.state.resolution->at ? e.state.resolution->at : e.state.updatedAt;
                 if (now - closedAt > ClosedRetentionSeconds && RemoveTree(dir)) {
                     ++report.closed;
@@ -1953,7 +2157,7 @@ PurgeReport Store::Purge() const {
             }
             sweepTemp(dir);
         }
-        const std::wstring drafts = base.project + L"\\drafts";
+        const std::wstring drafts = base.site + L"\\drafts";
         if (!IsPlainDir(drafts)) continue;
         for (const auto& id : EntryDirs(drafts)) {
             const std::wstring dir = EntryPaths(root_, project, id, true).dir;
@@ -1972,7 +2176,7 @@ std::uint64_t Store::StoreBytes() const { return RootUsable() ? TreeBytes(root_,
 
 Outcome Store::WriteReader(const Reader& r) const {
     if (r.client.empty() || ClientSlug(r.client) != r.client) return Fail(Code::Invalid, "Nom de client invalide.");
-    if (!r.project.empty() && !IsValidProjectId(r.project)) return Fail(Code::Invalid, "Identifiant de projet invalide.");
+    if (!r.site.empty() && SiteOrigin(r.site) != r.site) return Fail(Code::Invalid, "Site invalide.");
     Outcome root = EnsureRoot();
     if (!root.ok()) return root;
     const std::wstring dir = root_ + L"\\readers";
@@ -1982,7 +2186,7 @@ Outcome Store::WriteReader(const Reader& r) const {
     const std::string label = CleanText(r.label, MaxLabelChars);
     v.Set("label", Value::Str(label.empty() ? r.client : label));
     v.Set("lastReadAt", Value::Str(FormatTime(r.lastReadAt ? r.lastReadAt : Now())));
-    v.Set("project", StrOrNull(r.project));
+    v.Set("site", StrOrNull(r.site));
     if (!AtomicWrite(dir + L"\\" + Widen(r.client) + L".json", SJ::Serialize(v))) return Fail(Code::Io, "Écriture du lecteur impossible.");
     return {};
 }
@@ -2001,11 +2205,11 @@ std::vector<Reader> Store::ListReaders() const {
         if (!SJ::Parse(text, v, nullptr, FileLimits(MaxSmallFileBytes)) || !v.IsObject()) continue;
         Reader r;
         if (!GetString(v, "client", r.client, true, nullptr) || r.client != stem) continue;
-        if (!GetString(v, "label", r.label, false, nullptr) || !GetString(v, "project", r.project, false, nullptr) ||
+        if (!GetString(v, "label", r.label, false, nullptr) || !GetString(v, "site", r.site, false, nullptr) ||
             !GetTime(v, "lastReadAt", r.lastReadAt, true, nullptr))
-            continue;
+            continue;  // a V1 file's "project" member is ignored
         r.label = CleanText(r.label, MaxLabelChars);
-        if (!r.project.empty() && !IsValidProjectId(r.project)) r.project.clear();
+        if (r.site != SiteOrigin(r.site)) r.site.clear();
         out.push_back(std::move(r));
     }
     std::sort(out.begin(), out.end(), [](const Reader& a, const Reader& b) { return a.client < b.client; });

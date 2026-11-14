@@ -1,0 +1,26 @@
+{
+  "description": "--site https://admin.example.com: only that site is visible (any URL of it is accepted); legacy version negotiation falls back to 2025-11-25; 2025-06-18 is kept.",
+  "args": ["--site", "https://ADMIN.example.com/dashboard?x=1"],
+  "stderr_contains": ["site=https://admin.example.com"],
+  "steps": [
+    {"send": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2099-01-01", "capabilities": {}, "clientInfo": {"name": "Some Client"}}},
+     "expect": {"id": 1, "result": {"protocolVersion": "2025-11-25"}}},
+    {"send": {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "Some Client"}}},
+     "expect": {"id": 2, "result": {"protocolVersion": "2025-06-18"}}},
+    {"send": {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "browser_annotations_list", "arguments": {"status": "all"}}},
+     "expect": {"id": 3, "result": {"structuredContent": {"annotations": [{"id": "ann_cccccccccccccccccccccccccc", "site": "https://admin.example.com"}]}}}},
+    {"send": {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "browser_annotations_list", "arguments": {"site": "http://localhost:5173"}}},
+     "expect": {"id": 4, "result": {"isError": true, "content": [{"type": "text", "text": "Ce serveur est limité au site https://admin.example.com."}]}}},
+    {"send": {"jsonrpc": "2.0", "id": 41, "method": "tools/call", "params": {"name": "browser_annotations_list", "arguments": {"site": "https://admin.example.com/other"}}},
+     "expect": {"id": 41, "result": {"isError": false, "structuredContent": {"annotations": [{"id": "ann_cccccccccccccccccccccccccc"}]}}}},
+    {"send": {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "browser_annotation_get", "arguments": {"id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa"}}},
+     "expect": {"id": 5, "result": {"isError": true, "content": [{"type": "text", "text": "$CONTAINS:introuvable"}]}}},
+    {"send": {"jsonrpc": "2.0", "id": 51, "method": "tools/call", "params": {"name": "browser_annotation_get", "arguments": {"id": "ann_gggggggggggggggggggggggggg"}}},
+     "expect": {"id": 51, "result": {"isError": true, "content": [{"type": "text", "text": "$CONTAINS:introuvable"}]}}},
+    {"send": {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "browser_annotation_claim", "arguments": {"id": "ann_aaaaaaaaaaaaaaaaaaaaaaaaaa"}}},
+     "expect": {"id": 6, "result": {"isError": true}}},
+    {"send": {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "browser_annotation_get", "arguments": {"id": "ann_cccccccccccccccccccccccccc"}}},
+     "expect": {"id": 7, "result": {"isError": false, "content": [{"type": "text", "text": "$ANY"}], "structuredContent": {"site": "https://admin.example.com"}}}}
+  ],
+  "after": {"reader": {"file": "readers/some-client.json", "client": "some-client", "label": "Some Client", "site": "https://admin.example.com"}}
+}
