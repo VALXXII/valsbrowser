@@ -1,5 +1,9 @@
 # browser - Windows natif
 
+## Télécharger (Windows 10/11 x64)
+
+Dernière version publique : https://github.com/VALXXII/browser-releases/releases/latest — télécharger `browser-<version>-win-x64.zip` (les fichiers `.lsrupd` et `update-manifest` servent seulement aux mises à jour automatiques). Clic droit > **Extraire tout…**, ouvrir le dossier extrait et lancer **browser.exe** en gardant tout le dossier. Premier lancement portable (profil dans ce dossier) ; une mise à jour installée passe ensuite dans `%LOCALAPPDATA%\browser` et y copie le profil une fois. WebView2 requis (proposé à l'installation s'il manque). Construction et vérifications du ZIP : [design/public-download-report.md](design/public-download-report.md).
+
 ## Preview « Éléments & popups » (sandbox des composants)
 
 Build portable : `build/design-elements-preview/browser.exe` (ZIP `build/browser-design-elements-preview.zip`). Profil, session et journal restent dans ce dossier ; aucune mise à jour automatique, jamais de renvoi vers la version installée (`build.py --preview`). Ouvrir la sandbox : `Ouvrir la sandbox.cmd`, `browser.exe --debug-sandbox`, `browser://debug` dans la barre d'adresse ou Ctrl+Maj+F12.
