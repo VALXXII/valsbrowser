@@ -20,6 +20,7 @@
 #include "chrome.h"
 #include "native-ui.h"
 #include "downloads.h"
+#include "accessibility.h"
 
 namespace NativeChrome {
 namespace DownloadsUI {
@@ -473,14 +474,19 @@ protected:
         }
         return 0;
     }
-    // A row shows its actions while hovered or holding keyboard focus.
+    // A row shows its actions while hovered or holding keyboard focus. A download in progress or paused shows its
+    // Pause / Resume and Cancel at all times (user report 2026-11-14: an active download looked un-cancellable while
+    // the pointer was elsewhere); the name keeps its mask, the hit lanes are the same buttons.
+    static bool Active(const Item& item) { return item.state == State::InProgress || item.state == State::Paused; }
+    bool ActiveId(int id) const { if (!items_) return false; for (const auto& i : *items_) if (i.id == id) return Active(i); return false; }
     void UpdateReveals(Motion::Time now) {
         const bool reduced = motion_.ReducedMotion();
         const int focusId = IsAction(focus_) ? HitItem(focus_) : -1;
         if (hoverItem_ >= 0) reveals_.try_emplace(hoverItem_);
         if (focusId >= 0) reveals_.try_emplace(focusId);
+        if (items_) for (const auto& i : *items_) if (Active(i)) reveals_.try_emplace(i.id);
         for (auto it = reveals_.begin(); it != reveals_.end();) {
-            const bool shown = it->first == hoverItem_ || it->first == focusId;
+            const bool shown = it->first == hoverItem_ || it->first == focusId || ActiveId(it->first);
             it->second.Set(shown, now, reduced);
             if (!shown && it->second.Idle(now)) it = reveals_.erase(it); else ++it;
         }
@@ -562,6 +568,60 @@ protected:
         view_.Paint(scene, Slots(scene.now), SurfaceHeight());
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { view_.Release(); chrome_.RecreateTarget(); }
     }
+    // ---- UI Automation (the actions were reachable by pointer / keyboard only) ----------------------------------
+    static constexpr UINT InvokeMessage = WM_APP + 61;
+    static constexpr long long RowKeyBase = 1000000000LL;
+    static std::wstring StatusText(const Item& item) {
+        switch (item.state) {
+        case State::InProgress: return Bytes(item.received, item.total);
+        case State::Paused: return L"Paused";
+        case State::Completed: return item.missing ? L"File deleted" : L"Completed";
+        case State::Failed: return FailureText(item.reason);
+        case State::Cancelled: return L"Canceled";
+        }
+        return L"";
+    }
+    static const wchar_t* ActionId(Action a) {
+        switch (a) { case Action::Pause: return L"DownloadPause"; case Action::Resume: return L"DownloadResume"; case Action::Cancel: return L"DownloadCancel";
+        case Action::Retry: return L"DownloadRetry"; case Action::Remove: return L"DownloadRemove"; case Action::ShowInFolder: return L"DownloadShowInFolder"; case Action::Open: return L"DownloadOpen"; default: return L""; }
+    }
+public:
+    // The accessible tree of the surface (screen pixels), in reading order. Public: tests read it.
+    std::vector<Accessibility::Node> AccessibleNodes() const {
+        std::vector<Accessibility::Node> out; if (!hwnd_ || !items_) return out;
+        RECT w{}; GetWindowRect(hwnd_, &w); const float k = Dpi() / 96.f; const auto origin = Origin(Motion::Now());
+        auto screen = [&](Design::Box b) { return RECT{w.left + static_cast<LONG>((b.left + origin.x) * k), w.top + static_cast<LONG>((b.top + origin.y) * k), w.left + static_cast<LONG>((b.right + origin.x) * k), w.top + static_cast<LONG>((b.bottom + origin.y) * k)}; };
+        Accessibility::Node list; list.key = 3; list.role = Accessibility::Role::List; list.name = L"Download history"; list.automationId = L"DownloadList"; list.focusable = false; list.bounds = w; out.push_back(list);
+        Accessibility::Node close; close.key = CloseHit; close.role = Accessibility::Role::Button; close.name = L"Close"; close.accelerator = L"Esc"; close.automationId = L"DownloadsClose"; close.bounds = screen(Panel::Close()); out.push_back(close);
+        const auto scene = MakeScene(Motion::Now()); int position = 0, count = 0;
+        const auto slots = Slots(scene.now);
+        for (const auto& slot : slots) if (slot.kind == SlotKind::Row && slot.opacity > .5f) ++count;
+        for (const auto& slot : slots) {
+            if (slot.kind == SlotKind::ViewAll) { Accessibility::Node v; v.key = ViewAllHit; v.role = Accessibility::Role::Button; v.name = L"View all"; v.automationId = L"DownloadsViewAll"; v.bounds = screen(Panel::ViewAll(slot.top, const_cast<View&>(view_).ViewAllWidth())); out.push_back(v); continue; }
+            if (slot.kind != SlotKind::Row || slot.opacity <= .5f || slot.index < 0 || slot.index >= static_cast<int>(items_->size())) continue;
+            const auto& item = (*items_)[slot.index];
+            Accessibility::Node row; row.key = RowKeyBase + item.id; row.parent = 3; row.role = Accessibility::Role::ListItem; row.name = FileName(item.path); row.status = StatusText(item);
+            row.automationId = L"DownloadItem"; row.position = ++position; row.count = count; row.focusable = false; row.bounds = screen(Panel::Hover(slot.top));
+            row.offscreen = slot.top + Panel::tile < scene.viewTop || slot.top > scene.viewBottom; out.push_back(row);
+            const auto actions = ActionsFor(item);
+            for (int sl = 0; sl < 2; ++sl) {
+                const Action a = sl == 0 ? actions.first : actions.second; if (a == Action::None) continue;
+                Accessibility::Node b; b.key = ActionHit(item.id, sl); b.parent = row.key; b.role = Accessibility::Role::Button; b.name = TipFor(a); b.help = FileName(item.path);
+                b.automationId = ActionId(a); b.bounds = screen(Panel::ActionBox(slot.top, sl)); b.offscreen = row.offscreen; out.push_back(b);
+            }
+        }
+        return out;
+    }
+protected:
+    Accessibility::Bridge uia_;
+    void AttachAccessibility() {
+        Accessibility::Host host; host.window = hwnd_;
+        host.nodes = [this] { return AccessibleNodes(); };
+        host.focused = [this]() -> long long { return visible_ && GetFocus() == hwnd_ && keyboard_ ? focus_ : 0; };
+        host.invoke = [this](long long key) { if (key > 0 && key < RowKeyBase) PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(key), 0); };
+        host.focus = [this](long long key) { if (key > 0 && key < RowKeyBase) PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(key), 1); };
+        uia_.Attach(std::move(host));
+    }
     void ClearPointer() { if (GetCapture() == hwnd_) ReleaseCapture(); reveals_.clear(); motion_.ClearInteractions(); hoverItem_ = -1; hover_ = pressed_ = 0; tracking_ = false; }
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Host*>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -595,12 +655,20 @@ protected:
                 auto it = std::find(order.begin(), order.end(), focus_);
                 int index = it == order.end() ? (back ? static_cast<int>(order.size()) - 1 : 0) : static_cast<int>(it - order.begin()) + (back ? -1 : 1);
                 index = (index + static_cast<int>(order.size())) % static_cast<int>(order.size());
-                focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_); return 0;
+                focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_); if (uia_.Listening()) uia_.Raise(focus_, UIA_AutomationFocusChangedEventId); return 0;
             }
             if ((w == VK_RETURN || w == VK_SPACE) && focus_) { keyboard_ = true; Activate(focus_, true); return 0; }
             return 0;
         }
         case WM_TIMER: if (w == TickTimer) { Invalidate(); Ticker(); } return 0;
+        case WM_GETOBJECT: { LRESULT result; if (uia_.OnGetObject(h, w, l, result)) return result; break; }
+        case InvokeMessage: {   // UIA Invoke (lParam 0) or SetFocus (1): the same paths as Entrée / Tab
+            const int hit = static_cast<int>(w); auto order = FocusOrder();
+            if (std::find(order.begin(), order.end(), hit) == order.end()) return 0;
+            keyboard_ = true; focus_ = hit; Reveal(focus_); Interact(hover_, pressed_);
+            if (l == 0) Activate(hit, true);
+            return 0;
+        }
         case WM_DESTROY: KillTimer(h, TickTimer); return 0;
         }
         return DefWindowProcW(h, msg, w, l);
@@ -615,15 +683,26 @@ protected:
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
         NativeUI::StripTooltipShadow(tip_);
         Configure();
+        AttachAccessibility();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     void Activated() { ShowWindow(hwnd_, SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(hwnd_); }
 public:
     // Recently closed by deactivation: the click that caused it must not reopen it.
     ULONGLONG hiddenAt = 0;
+    // Tests: shown far off screen WITHOUT activation (never takes the user's focus), reveals settled.
+    void ShowForTest(float width, float height) {
+        if (!hwnd_) return; visible_ = true; motion_.SetReducedMotion(true);
+        SetWindowPos(hwnd_, HWND_BOTTOM, -12000, -12000, Px(width), Px(height), SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        chrome_.Resize(); UpdateReveals(Motion::Now()); RefreshTips();
+    }
+    bool RevealShownForTest(int id) const { auto it = reveals_.find(id); return it != reveals_.end() && it->second.Shown(); }
+    void ModelChangedForTest() { UpdateReveals(Motion::Now()); }
+    static constexpr UINT InvokeMessageForTest() { return InvokeMessage; }
+    static constexpr long long RowKeyBaseForTest() { return RowKeyBase; }
     virtual ~Host() { Dispose(); }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
-    void Dispose() { view_.Release(); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
+    void Dispose() { uia_.Detach(); view_.Release(); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
     void Invalidate() { if (hwnd_ && visible_) InvalidateRect(hwnd_, nullptr, FALSE); }

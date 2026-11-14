@@ -304,7 +304,9 @@ bool MigrationStepFailed(const std::string& step) {
     return false;
 }
 
-// One-time copy of portable <exeDir>\profile + session into <root>\data. Existing data is never overwritten.
+// One-time copy of portable <exeDir>\profile + session into <root>\data, plus the profile registry
+// (profiles.txt and its recovery copies) and the other profiles' folders (profiles\, trash included).
+// Existing data is never overwritten; the source is never modified.
 bool MigratePortable(const std::wstring& root, const Plan& p, const std::string& nonce, bool& migrated) {
     migrated = false;
     std::wstring data = root + L"\\data";
@@ -322,6 +324,32 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
         Log("portable profile still locked");
         return false;
     }
+    // Other profiles (src/profiles.h): <exeDir>\profiles\<id>\ each holds its own WebView2 folder and
+    // data; profiles\.trash\ holds deletions inside their undo window (journals relative to the data
+    // root, so they stay valid once copied). Same rules as the default profile: no reparse point,
+    // every WebView2 folder released before anything is copied.
+    const std::wstring profiles = src + L"\\profiles";
+    if (UP::IsReparsePoint(profiles)) {
+        Log("portable profiles folder is a reparse point; refusing migration");
+        return false;
+    }
+    if (UP::IsDirectory(profiles)) {
+        WIN32_FIND_DATAW pd;
+        HANDLE pf = FindFirstFileExW((profiles + L"\\*").c_str(), FindExInfoBasic, &pd, FindExSearchNameMatch, nullptr, 0);
+        bool locked = false, reparse = false;
+        if (pf != INVALID_HANDLE_VALUE) {
+            do {
+                const std::wstring name = pd.cFileName;
+                if (name == L"." || name == L".." || name == L".trash" || !(pd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                const std::wstring webview = profiles + L"\\" + name + L"\\profile";
+                if ((pd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || UP::IsReparsePoint(webview)) { reparse = true; break; }
+                if (!WaitProfileUnlocked(webview, ProfileUnlockMs)) { locked = true; break; }
+            } while (FindNextFileW(pf, &pd));
+            FindClose(pf);
+        }
+        if (reparse) { Log("a portable profile folder is a reparse point; refusing migration"); return false; }
+        if (locked) { Log("a portable profile is still locked"); return false; }
+    }
     std::wstring work = root + L"\\data.migrating-" + UP::Widen(nonce);
     UP::RemoveTree(work);
     if (!CreateDirectoryW(work.c_str(), nullptr)) return MigrationStepFailed("create work dir");
@@ -334,6 +362,22 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
         if (ok && UP::PathExists(file) && !UP::IsDirectory(file) && !UP::IsReparsePoint(file))
             ok = CopyWithRetry(file, work + L"\\" + name, deadline) || MigrationStepFailed("copy " + UP::Narrow(name));
     }
+    // Profile registry and its recovery copies (« profiles.txt.damaged-<stamp> », « .damaged-last »);
+    // the atomic-write temp files (« profiles.txt.tmp<pid> ») are transient and not copied.
+    if (ok) {
+        WIN32_FIND_DATAW rd;
+        HANDLE rf = FindFirstFileExW((src + L"\\profiles.txt*").c_str(), FindExInfoBasic, &rd, FindExSearchNameMatch, nullptr, 0);
+        if (rf != INVALID_HANDLE_VALUE) {
+            do {
+                const std::wstring name = rd.cFileName;
+                if (name != L"profiles.txt" && name.rfind(L"profiles.txt.damaged-", 0) != 0) continue;
+                if (rd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+                ok = CopyWithRetry(src + L"\\" + name, work + L"\\" + name, deadline) || MigrationStepFailed("copy " + UP::Narrow(name));
+            } while (ok && FindNextFileW(rf, &rd));
+            FindClose(rf);
+        }
+    }
+    if (ok && UP::IsDirectory(profiles)) ok = CopyTree(profiles, work + L"\\profiles", deadline) || MigrationStepFailed("copy profiles");
     if (ok) ok = UP::AtomicWriteFile(work + L"\\migrated-from.txt", UP::Narrow(src) + "\n") || MigrationStepFailed("write migrated-from.txt");
     int attempts = 0;
     if (ok) ok = UP::MoveDirectory(work, data, TransientRenameMs, &attempts) || MigrationStepFailed("publish data");

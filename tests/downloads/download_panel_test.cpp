@@ -187,18 +187,44 @@ static void IconChecks() {
     // Completion at frame 60: the loop restarts at 14 + 78 = 92 -> done waits for that boundary.
     m.Update(false, 1, true, at(60 * frame), false);
     Expect(m.At(at(61 * frame)).ripple >= 0 && m.At(at(61 * frame)).ring == FillEnd, "completed: full ring + ripple right away");
-    Expect(m.At(at(91 * frame)).ring == FillEnd && m.At(at(93 * frame)).ring > FillEnd && m.At(at(93 * frame)).arrow > LoopEnd, "done starts at the loop boundary (arrow at rest)");
-    Expect(m.At(at(92 * frame + 1)).arrow == LoopEnd, "hand-off frame is the loop's rest pose");
-    m.Settle(at(130 * frame));
-    Expect(m.At(at(130 * frame)).idle && !m.Active() && !m.NextWake(at(130 * frame)).delay, "back to the static icon, no more frames");
+    // Success (user request): from the loop boundary (92) the arrow morphs into the check (24 frames),
+    // holds 3 s with the ring full, morphs back, then the usual done (ring unrolls, arrow rises).
+    Expect(m.At(at(91 * frame)).ring == FillEnd && m.At(at(91 * frame)).success < 0, "success waits for the loop boundary (arrow at rest)");
+    Expect(m.At(at(92 * frame + 1)).success == 0 && m.At(at(92 * frame + 1)).ring == FillEnd, "morph starts from the arrow at rest, ring held full");
+    Expect(m.At(at(98 * frame + 1)).success == 6 && m.At(at(104 * frame + 1)).success == 12 && m.At(at(110 * frame + 1)).success == 18, "arrow -> check morph plays in time (quarter, half, three quarters)");
+    const double hold = 116 * frame;   // 92 + 24
+    Expect(m.At(at(hold + 1)).success == SuccessMorph, "check reached after 400 ms");
+    Expect(m.At(at(hold + 2999)).success == SuccessMorph && m.At(at(hold + 2999)).ring == FillEnd, "check holds for 3 s");
+    Expect(m.NextWake(at(hold + 100)).delay && m.NextWake(at(hold + 100)).delay->count() > 2800, "holding: one wake at the end of the 3 s, no frames");
+    Expect(m.At(at(hold + 3000 + 12 * frame + 1)).success == 12, "check -> arrow morph back after the hold");
+    const double back = hold + 3000 + 24 * frame;
+    Expect(m.At(at(back + 1)).success < 0 && m.At(at(back + 2 * frame)).ring > FillEnd && m.At(at(back + 2 * frame)).arrow > LoopEnd, "then the usual done (ring unrolls, arrow rises)");
+    m.Settle(at(back + 30 * frame));
+    Expect(m.At(at(back + 30 * frame)).idle && !m.Active() && !m.NextWake(at(back + 30 * frame)).delay, "back to the static icon, no stale success, no more frames");
     // Cancel: the start, reversed, without ripple.
     Model c; c.Update(true, .3f, false, t0, false); c.Update(false, .3f, false, at(30 * frame), false);
     Expect(c.At(at(31 * frame)).ripple < 0, "cancel: no ripple");
+    { bool any = false; for (int f = 30; f < 140; ++f) any = any || c.At(at(f * frame)).success >= 0; Expect(!any, "cancel / failure: never the success check"); }
     Expect(c.At(at(93 * frame)).ring < Morph && c.At(at(93 * frame)).ring > 0, "cancel: ring rolls back into the tray");
     // A new download while leaving starts right after.
-    Model q; q.Update(true, 0, false, t0, false); q.Update(false, 1, true, at(20 * frame), false); q.Update(true, 0, false, at(100 * frame), false);
-    q.Settle(at(130 * frame));
-    Expect(q.Active() && !q.At(at(130 * frame)).idle, "queued restart after the icon left");
+    // A new download during the success: the check morphs back from where it is (frame 8 at 100),
+    // then progress resumes straight from the arrow at rest (no tray morph).
+    Model q; q.Update(true, 0, false, t0, false); q.Update(false, 1, true, at(20 * frame), false);
+    Expect(q.At(at(100 * frame + 1)).success == 8, "success morph under way");
+    q.Update(true, .25f, false, at(100 * frame + 1), false);
+    Expect(q.At(at(104 * frame + 2)).success == 4, "interrupted: the check morphs back from where it was");
+    q.Settle(at(109 * frame + 2));
+    Expect(q.Active() && !q.At(at(109 * frame + 2)).idle && q.At(at(109 * frame + 2)).success < 0 && q.At(at(109 * frame + 2)).ring == Morph + Steps / 4, "then progress for the new download");
+    // Interrupted during the hold: back from the full check.
+    Model h; h.Update(true, 0, false, t0, false); h.Update(false, 1, true, at(20 * frame), false);
+    h.Update(true, 0, false, at(116 * frame + 1500), false);
+    Expect(h.At(at(116 * frame + 1500 + 1)).success == SuccessMorph && h.At(at(116 * frame + 1500 + 12 * frame + 1)).success == 12, "new download during the hold: morph back from the check at once");
+    // Reduced motion: the final check, static, for 3 s; then idle. A new download replaces it at once.
+    Model rs; rs.Update(true, .5f, false, t0, true); rs.Update(false, 1, true, at(100), true);
+    Expect(rs.At(at(101)).success == SuccessMorph && rs.At(at(3099)).success == SuccessMorph, "reduced motion: static check for 3 s (no morph frames)");
+    rs.Settle(at(3101)); Expect(rs.At(at(3101)).idle && !rs.Active(), "reduced motion: idle after 3 s");
+    Model ri; ri.Update(true, .5f, false, t0, true); ri.Update(false, 1, true, at(100), true); ri.Update(true, .1f, false, at(500), true);
+    Expect(ri.At(at(501)).success < 0 && !ri.At(at(501)).idle, "reduced motion: a new download replaces the check at once");
     // Reduced motion: no morph, no loop, no ripple; progress still shown.
     Model r; r.Update(true, .5f, false, t0, true);
     Expect(r.At(t0).ring == Morph + Steps / 2 && r.At(at(500)).arrow == Morph && !r.NextWake(t0).delay, "reduced motion: static ring with progress");
@@ -214,6 +240,95 @@ static void IconChecks() {
     Compose(&opaque, &blue, &none, &none, 1, out); Expect(out[0] == blue, "fill covers the track");
     const uint32_t cut = 0xFFFFFFFFu;
     Compose(&opaque, &blue, &cut, &none, 1, out); Expect(out[0] == 0, "cut-out is transparent");
+    // Profile accent (Paper p-I-0 P07): the fill takes the window's ink from its own coverage; the
+    // grey track/arrow and the cut-out are untouched; half coverage stays half (antialiasing kept).
+    const float green[3] = {0x6F / 255.f, 0xD0 / 255.f, 0x87 / 255.f};
+    Compose(&opaque, &blue, &none, &none, 1, out, green); Expect(out[0] == 0xFF6FD087u, "tinted fill: profile ink (#6FD087), opaque");
+    const uint32_t halfBlue = 0x801F3480u;   // premultiplied #3E67FF at 50 %
+    Compose(&none, &halfBlue, &none, &none, 1, out, green); Expect((out[0] >> 24) == 128 && ((out[0] >> 8) & 255) == 104, "tinted edge keeps its coverage (premultiplied)");
+    Compose(&opaque, &none, &none, &none, 1, out, green); Expect((out[0] >> 24) == 128 && (out[0] & 255) == 128, "track stays the grey ink under a tint");
+    Compose(&opaque, &blue, &cut, &none, 1, out, green); Expect(out[0] == 0, "cut-out stays transparent under a tint");
+    // Success check (arrow layer) in the profile ink: opaque at full mix, the grey ink at 0, half way in between.
+    const uint32_t arrowPx = 0xFFFFFFFFu;
+    Compose(&none, &none, &none, &arrowPx, 1, out, green, 1); Expect(out[0] == 0xFF6FD087u, "success check: profile ink, opaque");
+    Compose(&none, &none, &none, &arrowPx, 1, out, green, 0); Expect((out[0] >> 24) == 128 && (out[0] & 255) == 128, "mix 0: the usual grey arrow");
+    Compose(&none, &none, &none, &arrowPx, 1, out, green, .5f); Expect((out[0] >> 24) == 191 && ((out[0] >> 8) & 255) == 168, "mix .5: half way grey -> ink (premultiplied)");
+    const float orange[3] = {0xFB / 255.f, 0x95 / 255.f, 0x4A / 255.f};
+    Compose(&opaque, &blue, &none, &arrowPx, 1, out, orange, 1); Expect(out[0] == 0xFFFB954Au, "another profile ink (orange) over the full ring");
+}
+
+// ---- active downloads: always-visible Pause / Cancel, UIA, pointer lanes, keyboard (user report 2026-11-14) ----
+static int CancelSurfaceChecks(const std::wstring& root) {
+    using namespace NativeChrome; using namespace NativeChrome::Downloads; namespace UI = NativeChrome::DownloadsUI;
+    int failures = 0; auto expect = [&](bool ok, const char* what) { std::printf("%s %s\n", ok ? "ok  " : "FAIL", what); if (!ok) ++failures; };
+    WNDCLASSW wc{}; wc.lpfnWndProc = DefWindowProcW; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"DownloadCancelTestOwner"; RegisterClassW(&wc);
+    HWND owner = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"", WS_POPUP, -12000, -12000, 10, 10, nullptr, nullptr, wc.hInstance, nullptr);
+    std::vector<Item> items(4);
+    items[0].id = 1; items[0].state = State::InProgress; items[0].received = 400000; items[0].total = 4000000; items[0].path = L"C:\\d\\a-very-long-download-file-name-that-goes-under-the-actions-mask (2).bin";
+    items[1].id = 2; items[1].state = State::Paused; items[1].received = 1000; items[1].total = 4000; items[1].path = L"C:\\d\\paused.zip";
+    items[2].id = 3; items[2].state = State::Completed; items[2].path = L"C:\\d\\done.pdf";
+    items[3].id = 4; items[3].state = State::Cancelled; items[3].path = L"C:\\d\\stopped.bin";
+    std::vector<std::pair<int, Action>> fired;
+    UI::Host::Hooks hooks; hooks.schedule = [](Motion::Time) {}; hooks.action = [&](int id, Action a) { fired.push_back({id, a}); };
+    for (int surface = 0; surface < 2; ++surface) {
+        const char* name = surface == 0 ? "popover" : "drawer";
+        UI::Popover pop; UI::Drawer drawer; UI::Host* host = surface == 0 ? static_cast<UI::Host*>(&pop) : static_cast<UI::Host*>(&drawer);
+        const bool made = surface == 0 ? pop.Create(wc.hInstance, owner, root, &items, hooks) : drawer.Create(wc.hInstance, owner, root, &items, hooks);
+        expect(made, surface == 0 ? "popover created" : "drawer created");
+        if (!made) continue;
+        host->ShowForTest(Panel::width + (surface ? DrawerLayout::margin : 0), surface ? 728 : Panel::Height(4, true));
+        // 1. Without any pointer: the active rows (in progress, paused) show their actions; the others don't.
+        expect(host->RevealShownForTest(1) && host->RevealShownForTest(2) && !host->RevealShownForTest(3) && !host->RevealShownForTest(4),
+               surface == 0 ? "popover: Pause/Cancel visible at rest on active rows only (no hover needed)" : "drawer: Pause/Cancel visible at rest on active rows only");
+        // 2. Accessible tree: each row a ListItem with its status, its actions Buttons (Invoke) inside the surface.
+        const auto nodes = host->AccessibleNodes(); RECT w{}; GetWindowRect(host->Window(), &w);
+        auto find = [&](const wchar_t* id, int item) -> const Accessibility::Node* { for (const auto& n : nodes) if (n.automationId == id && n.key == UI::ActionHit(item, 0) + (std::wstring(id) == L"DownloadCancel" ? 1 : 0)) return &n; return nullptr; };
+        const auto* cancel1 = find(L"DownloadCancel", 1); const auto* pause1 = find(L"DownloadPause", 1); const auto* cancel2 = find(L"DownloadCancel", 2); const auto* resume2 = find(L"DownloadResume", 2);
+        int rows = 0, cancelled4 = 0; bool statusOk = false;
+        for (const auto& n : nodes) { if (n.automationId == L"DownloadItem") { ++rows; if (n.key == UI::Host::RowKeyBaseForTest() + 1 && n.status == Bytes(items[0].received, items[0].total) && !n.status.empty()) statusOk = true; } if (n.parent == UI::Host::RowKeyBaseForTest() + 4 && n.automationId == L"DownloadCancel") ++cancelled4; }
+        expect(rows == 4 && statusOk, "UIA: four ListItems, the active one says its progress");
+        expect(cancel1 && pause1 && cancel2 && resume2 && cancel1->role == Accessibility::Role::Button && cancel1->name == L"Cancel download" && cancel1->parent == UI::Host::RowKeyBaseForTest() + 1,
+               "UIA: Cancel download / Pause / Resume are Buttons under their row");
+        expect(cancelled4 == 0, "UIA: a cancelled row offers no Cancel (only Remove)");
+        if (cancel1 && pause1 && cancel2) {
+            const RECT c = cancel1->bounds, pz = pause1->bounds;
+            expect(c.left >= w.left && c.right <= w.right && c.right - c.left >= 20 && pz.right <= c.left && c.left == cancel2->bounds.left && c.right == cancel2->bounds.right,
+                   "Cancel lane: inside the surface, >= 20 px, right of Pause, aligned across rows (long names stay under the mask)");
+        }
+        // 3. Pointer: the Cancel lane cancels THAT row; the name area does nothing (no accidental cancel / open).
+        const float k = GetDpiForWindow(host->Window()) / 96.f;
+        auto click = [&](float x, float y) { const LPARAM lp = MAKELPARAM(static_cast<int>(x * k), static_cast<int>(y * k)); SendMessageW(host->Window(), WM_MOUSEMOVE, 0, lp); SendMessageW(host->Window(), WM_LBUTTONDOWN, MK_LBUTTON, lp); SendMessageW(host->Window(), WM_LBUTTONUP, 0, lp); };
+        if (cancel1 && pause1) {
+            const float cx = (cancel1->bounds.left + cancel1->bounds.right) / 2.f - w.left, cy = (cancel1->bounds.top + cancel1->bounds.bottom) / 2.f - w.top;
+            fired.clear(); click(cx / k, cy / k);
+            expect(fired.size() == 1 && fired[0].first == 1 && fired[0].second == Action::Cancel, "pointer: a click in the Cancel lane cancels that download");
+            fired.clear(); click(Panel::textLeft + 20, cy / k);
+            expect(fired.empty(), "pointer: a click on the row's name does nothing (no accidental cancel / open)");
+            fired.clear(); click(((pause1->bounds.left + pause1->bounds.right) / 2.f - w.left) / k, cy / k);
+            expect(fired.size() == 1 && fired[0].second == Action::Pause, "pointer: the Pause lane pauses, never cancels");
+        }
+        // 4. Keyboard: Tab walks Close -> Pause -> Cancel; Entrée activates Cancel.
+        if (surface == 0) {
+            fired.clear(); for (int i = 0; i < 3; ++i) SendMessageW(host->Window(), WM_KEYDOWN, VK_TAB, 0);
+            SendMessageW(host->Window(), WM_KEYDOWN, VK_RETURN, 0);
+            expect(fired.size() == 1 && fired[0].first == 1 && fired[0].second == Action::Cancel, "keyboard: Tab x3 + Entrée cancels the active download");
+        }
+        // 5. UI Automation Invoke reaches the same action.
+        fired.clear(); SendMessageW(host->Window(), UI::Host::InvokeMessageForTest(), static_cast<WPARAM>(UI::ActionHit(2, 1)), 0);
+        expect(fired.size() == 1 && fired[0].first == 2 && fired[0].second == Action::Cancel, "UIA Invoke: Cancel of the paused download");
+        fired.clear(); SendMessageW(host->Window(), UI::Host::InvokeMessageForTest(), static_cast<WPARAM>(UI::ActionHit(4, 1)), 0);
+        bool cancelFired = false; for (auto& f : fired) if (f.second == Action::Cancel) cancelFired = true;
+        expect(!cancelFired, "UIA Invoke: no Cancel on a cancelled row (its slot is Remove: disabled for Cancel)");
+        // 6. A row that stops being active loses its permanent actions (Cancel gone after the engine says Canceled).
+        SendMessageW(host->Window(), WM_MOUSELEAVE, 0, 0);   // pointer gone, keyboard focus on Close: only the model decides
+        SendMessageW(host->Window(), UI::Host::InvokeMessageForTest(), static_cast<WPARAM>(UI::CloseHit), 1);
+        items[0].state = State::Cancelled; host->ModelChangedForTest();
+        expect(!host->RevealShownForTest(1), surface == 0 ? "after cancel: the row's actions hide (no hover)" : "drawer: after cancel the actions hide");
+        items[0].state = State::InProgress;
+        (void)name; host->Dispose(); DestroyWindow(host->Window());
+    }
+    DestroyWindow(owner);
+    return failures;
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -222,6 +337,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc >= 3) {
         if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
         Fixture f(argv[1], argv[2]);
+        failures += CancelSurfaceChecks(f.root);
         // Same scales as the Paper exports: x2.875 (first frame), x1.875 (View all + drawer).
         const UINT paper = 276, drawerPaper = 180;
         Expect(f.Render(L"panel-paper.png", paper, {{2, -1}, {4, -1}}), "render Paper states");

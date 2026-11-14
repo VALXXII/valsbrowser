@@ -114,7 +114,7 @@ std::vector<NativeChrome::AudioPanel::Item> AudioItems(const std::vector<AU::Row
         item.artwork=AudioArtwork(r.artwork);items.push_back(std::move(item));}
     return items;
 }
-void InvalidateAudioIcon(){if(!chrome.audioShown)return;auto d=chrome.AudioIconDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);}
+void InvalidateAudioIcon(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!chrome.audioShown)return;auto d=chrome.AudioIconDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);}
 // Housekeeping deadlines (sustained sound, the music hold, forgetting quiet entries).
 void ArmAudioTimer(NativeChrome::Motion::Time now){
     NativeChrome::Motion::Wake w=audioToolbar.NextWake(now);bool listed=false;
@@ -122,7 +122,7 @@ void ArmAudioTimer(NativeChrome::Motion::Time now){
     if(listed)w=NativeChrome::Motion::Earlier(w,{NativeChrome::Motion::Milliseconds(60000),false}); // forget check
     KillTimer(window,AudioTimerId);if(w.delay&&!halted)SetTimer(window,AudioTimerId,(UINT)std::max<long long>(10,w.delay->count()),nullptr);
 }
-void RefreshAudio(){
+void RefreshAudio(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(halted||!window)return;
     const auto now=NativeChrome::Motion::Now();bool music=false;
     for(auto& t:pages){if(t->closed)continue;auto& a=t->audio;

@@ -33,6 +33,7 @@
 #include "settings.h"
 #include "context-menu.h"
 #include "native-ui.h"
+#include "profile-editor.h"
 
 namespace NativeChrome {
 namespace SettingsUI {
@@ -48,6 +49,7 @@ enum Hit : int {
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
     CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84,
+    CatProfiles = 85, ProfileDelete = 86, ProfileEditorHit = 87, ProfileClearData = 88, ProfileRowBase = 700,   // Réglages › Profils (Paper p-I-0 P02)
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
 inline bool IsField(int hit) { return hit == CustomSearchField || hit == HomepageField || hit == SearchField; }
@@ -56,6 +58,7 @@ inline int EngineHit(int index) { return EngineBase + index; }
 inline bool IsEngine(int hit) { return hit >= EngineBase && hit < EngineBase + BrowserSettings::EngineCount; }
 inline bool IsSite(int hit) { return hit >= SiteBase && hit < PermissionBase; }
 inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < PermissionBase + 100; }
+inline bool IsProfileRow(int hit) { return hit >= ProfileRowBase && hit < ProfileRowBase + 64; }
 constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
                               ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground,
                               GrayscaleText};
@@ -104,11 +107,12 @@ inline constexpr Spring selectSpring{.26f}, switchSpring{.2f}, pageSpring{.34f};
 inline constexpr Motion::Milliseconds select = Settle(.26f), toggle = Settle(.2f), press{120}, spin{900}, page = Settle(.34f);
 }
 
-enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site };
+enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site, Profiles, Profile };
 inline const wchar_t* Title(View v) {
     switch (v) {
     case View::Engine: return L"Moteur de recherche"; case View::Tabs: return L"Onglets"; case View::Privacy: return L"Confidentialité";
     case View::Downloads: return L"Téléchargements"; case View::Display: return L"Affichage et son"; case View::Sites: return L"Autorisations";
+    case View::Profiles: return L"Profils";
     default: return L"Réglages";
     }
 }
@@ -116,11 +120,11 @@ inline const wchar_t* Title(View v) {
 inline int Opener(View v) {
     switch (v) {
     case View::Engine: return CatEngine; case View::Tabs: return CatTabs; case View::Privacy: return CatPrivacy;
-    case View::Downloads: return CatDownloads; case View::Display: return CatDisplay; case View::Sites: return Permissions; default: return None;
+    case View::Downloads: return CatDownloads; case View::Display: return CatDisplay; case View::Sites: return Permissions; case View::Profiles: return CatProfiles; default: return None;
     }
 }
 // One laid-out element of a view's scrolling list (content coordinates).
-enum class Kind { Label, Engine, Switch, Folder, Value, Nav, SiteRow, Note, Field, Search, Danger };
+enum class Kind { Label, Engine, Switch, Folder, Value, Nav, SiteRow, Note, Field, Search, Danger, ProfileRow, Editor };
 struct Slot {
     Kind kind = Kind::Label; int hit = 0, index = -1;
     float top = 0, height = Layout::row, opacity = 1;
@@ -128,7 +132,12 @@ struct Slot {
     std::wstring text, value;              // label; value/summary/description text
     std::vector<std::wstring> lines;       // wrapped description (two-line switches)
     const wchar_t* icon = nullptr;         // leading 16 DIP glyph (root rows): the label moves to nameLeft
+    const char* path = nullptr;            // or a 256-unit Phosphor path (Profils row, profile rows)
+    const char* valueGlyph = nullptr;      // a glyph before the value (« Profils » → the current profile)
+    D2D1_COLOR_F ink{1, 1, 1, 1}; bool current = false;   // profile rows: identity ink, this window's profile
 };
+// One profile as the drawer lists it (Paper P02 « Profils · liste »).
+struct ProfileItem { std::wstring id, name; const char* glyph = nullptr; D2D1_COLOR_F ink{1, 1, 1, 1}; bool current = false; };
 // Per-frame inputs of the pure layout.
 struct LayoutInput {
     const std::map<int, std::vector<std::wstring>>* lines = nullptr; // wrapped descriptions by hit
@@ -141,6 +150,8 @@ struct LayoutInput {
     bool sitesQuiet = false;   // first load still within its grace period: no « Chargement… » flash
     bool vaultManager = false; std::size_t vaultCount = 0;   // E8: the vault is active (entry shown) and its account count
     int site = -1;                                             // Site view: index into sites
+    const std::vector<ProfileItem>* profiles = nullptr;        // Réglages › Profils
+    float editorHeight = 0;                                    // Profils › <profil>: the editor block
 };
 inline std::wstring Host(const std::wstring& origin) {
     std::wstring h = origin; const auto scheme = h.find(L"://"); if (scheme != std::wstring::npos) h = h.substr(scheme + 3);
@@ -177,6 +188,12 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         lead(Kind::Nav, CatEngine, L"favicon-mask", L"Moteur de recherche", st ? (st->engine == Engine::Custom ? std::wstring(L"Personnalisé") : std::wstring(BrowserSettings::Info(st->engine).name)) : L"");
         lead(Kind::Value, HomePageHit, L"home-mask", L"Page d'accueil", st ? BrowserSettings::Info(st->newTabPage).label : L"");
         fieldAt(HomepageField, in.homeReveal);
+        // « Profils » is always listed, even with one profile (Paper P02 XTM-0): its value is the
+        // current profile, glyph in its ink then its name.
+        if (in.profiles && !in.profiles->empty()) {
+            const ProfileItem* cur = &in.profiles->front(); for (const auto& p : *in.profiles) if (p.current) cur = &p;
+            auto* s = add(Kind::Nav, CatProfiles, row, L"Profils", cur->name); s->path = ProfileIcons::Bold::userCircle; s->valueGlyph = cur->glyph; s->ink = cur->ink;
+        }
         endGroup();
         lead(Kind::Nav, CatTabs, L"tabs-mask", L"Onglets", st ? (st->restoreTabs ? L"Restaurés" : L"Non restaurés") : L"");
         lead(Kind::Nav, CatPrivacy, L"shield-mask", L"Confidentialité", st ? BrowserSettings::Info(st->tracking).label : L"");
@@ -253,6 +270,18 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
             }
         }
         y -= rowGap;
+    } else if (view == View::Profiles) {
+        const size_t n = in.profiles ? in.profiles->size() : 0;
+        labelAt(n == 1 ? L"1 profil" : std::to_wstring(n) + L" profils");
+        for (size_t i = 0; i < n; ++i) {   // one line, 40 high, 2 apart (Paper XSN-0)
+            const auto& p = (*in.profiles)[i];
+            Slot s; s.kind = Kind::ProfileRow; s.hit = ProfileRowBase + static_cast<int>(i); s.index = static_cast<int>(i); s.top = y; s.height = 40;
+            s.text = p.name; s.path = p.glyph; s.ink = p.ink; s.current = p.current; slots.push_back(s); y += 40 + 2;
+        }
+        y += rowGap - 2;
+        y -= rowGap;
+    } else if (view == View::Profile) {
+        Slot s; s.kind = Kind::Editor; s.hit = ProfileEditorHit; s.top = y; s.height = in.editorHeight; slots.push_back(s); y += s.height;
     } else if (in.sites && in.site >= 0 && in.site < static_cast<int>(in.sites->size())) {
         labelAt(L"Autorisations");
         const auto& site = (*in.sites)[in.site];
@@ -381,6 +410,13 @@ public:
         std::function<void(const std::wstring&, BrowserSettings::Permission, BrowserSettings::PermissionState)> setPermission;
         std::function<void(const std::wstring&)> resetSites;                                       // empty origin: all
         std::function<int(const std::vector<ContextMenu::Item>&, RECT, bool)> choose;            // modal native menu, 0 = dismissed
+        // Réglages › Profils (Paper p-I-0 P02). Empty `profiles` hides the row (private window).
+        std::function<std::vector<ProfileItem>()> profiles;
+        std::function<Profiles::Profile(const std::wstring&)> profile;                          // full record of one profile
+        std::function<bool(const Profiles::Profile&, Profiles::NameError*)> saveProfile;          // name/icon/colour edit
+        std::function<Profiles::NameError(const std::wstring& name, const std::wstring& id)> validateProfileName;
+        std::function<void(const std::wstring&, bool keyboard)> deleteProfile;                  // P04 confirmation + undo
+        std::function<bool()> profilesReadOnly;                                                   // registry not writable: no edit/delete
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
@@ -406,6 +442,11 @@ private:
     HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
+    // Profiles: the list as last read, the profile open in the detail view and its editor block.
+    std::vector<ProfileItem> profiles_; int profileIndex_ = -1; std::wstring profileId_; ProfileEditor::Editor editor_;
+    std::vector<std::wstring> profileNoteLines_, lastProfileNoteLines_;
+    bool LastProfile() const { return profiles_.size() < 2; }
+    bool ProfilesReadOnly() const { return hooks_.profilesReadOnly && hooks_.profilesReadOnly(); }
     bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false, modal_ = false, animatingPainted_ = false, spinning_ = false;
     int appliedVisible_ = -1; RECT appliedOwner_{}, appliedWindow_{};
     Motion::Time spinStart_{}, landStart_{};
@@ -463,7 +504,10 @@ private:
     int DepthOf(View v) const { for (int d = depth_; d >= 0; --d) if (views_[d] == v) return d; return -1; }
     bool Searching() const { return !BrowserSettings::TrimText(query_).empty(); }
     // Footer height per view (DIP): main = clear + version; sites = note + "Tout retirer"; site = one danger row.
-    float FooterHeight(View v) const { return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer; }
+    float FooterHeight(View v) const {
+        if (v == View::Profile) { const auto& note = LastProfile() ? lastProfileNoteLines_ : profileNoteLines_; return 1 + 12 + note.size() * Layout::descriptionLine + 8 + Layout::row + Layout::padBottom; }
+        return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer;
+    }
     float ViewBottom(View v) const { return Height() - FooterHeight(v); }
     LayoutInput Input() const {
         LayoutInput in; in.lines = &lines_;
@@ -472,6 +516,7 @@ private:
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
         in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
+        in.profiles = &profiles_; in.editorHeight = editor_.Height();
         in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_; if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
     }
     mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
@@ -535,6 +580,8 @@ private:
         for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(text, Layout::descriptionWidth);
         noSitesLines_ = Wrap(NoSitesDescription, Layout::rowRight - 8 - Layout::textLeft);
         sitesNoteLines_ = Wrap(SitesNote, Layout::rowRight - Layout::textLeft - 4);
+        profileNoteLines_ = Wrap(L"Supprime son historique, ses cookies, ses mots de passe et ses favoris de cet appareil.", Layout::rowRight - Layout::textLeft - 4);
+        lastProfileNoteLines_ = Wrap(L"Il faut au moins un profil. Pour repartir de zéro :", Layout::rowRight - Layout::textLeft - 4);
     }
 
     // Ghost icon button (14 DIP glyph at 70%, shared button radius): fills and brightens on hover.
@@ -584,7 +631,7 @@ private:
     }
     float paintScroll_ = 0; // scroll of the view being painted (the plate rides on it)
     // Leading glyph of a root row: full-opacity 16 DIP mask at Paper's 70%, brighter on hover.
-    void Lead(const Slot& s, float hover) { if (s.icon) chrome_.TintedIcon(s.icon, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); }
+    void Lead(const Slot& s, float hover) { if (s.icon) chrome_.TintedIcon(s.icon, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); else if (s.path) chrome_.PathGlyph(s.path, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); }
     void SwitchRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const int i = SwitchIndex(s.hit); const float on = Motion::Clamp(switches_[i].Value(now));
@@ -717,8 +764,10 @@ private:
         const bool counted = s.hit == Permissions; // a count reads in tabular figures; a summary in text
         const float w = chrome_.TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
         Lead(s, v.hover);
-        Label16(s.text, s.icon ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        const float glyphW = s.valueGlyph ? 16 + 6 : 0;
+        Label16(s.text, s.icon || s.path ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - glyphW - 16, .7f + .3f * v.hover);
         if (!s.value.empty()) chrome_.Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, counted, false, counted ? 0.f : -.14f);
+        if (s.valueGlyph) { const float x = chevron.left - 8 - w - 6 - 16; chrome_.PathGlyph(s.valueGlyph, {x, s.top + 8, x + 16, s.top + 24}, 16, D2D1::ColorF(s.ink.r, s.ink.g, s.ink.b, 1)); }
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
         t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
         chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
@@ -745,6 +794,24 @@ private:
         chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         t->SetTransform(base);
     }
+    // Profile row (Paper XSN-0): one line, 40 high; hover or this window's profile: its ink at 10 %;
+    // glyph in its ink, name 16 (white when current or hovered, else 70 %), check lane 16, chevron 24.
+    void ProfileRow(const Slot& s, Motion::Time now) {
+        auto* t = chrome_.RenderTarget(); const auto v = Interaction(s.hit, now); const auto row = Layout::Row(s.top, s.height);
+        const float lit = std::max(s.current ? 1.f : 0.f, v.hover);
+        if (lit > 0 || v.press > 0) Fill(row, Design::Radius::r8, s.ink.r, s.ink.g, s.ink.b, .10f * lit + .06f * v.press);
+        if (focus_ == s.hit) chrome_.FocusRing(R(row), Design::Radius::r8);
+        const float cy = s.top + s.height / 2;
+        if (s.path) chrome_.PathGlyph(s.path, {Layout::textLeft, cy - 8, Layout::textLeft + 16, cy + 8}, 16, D2D1::ColorF(s.ink.r, s.ink.g, s.ink.b, 1));
+        const Design::Box chevron{Layout::rowRight - 4 - 24, cy - 12, Layout::rowRight - 4, cy + 12};
+        const Design::Box check{chevron.left - 8 - 16, cy - 8, chevron.left - 8, cy + 8};
+        Label16(s.text, Layout::textLeft + 16 + 8, cy - 10, check.left - 8, s.current ? 1.f : .7f + .3f * v.hover);
+        if (s.current) chrome_.Icon(L"check", R(check), 14, .9f);
+        D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+        t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
+        chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
+        t->SetTransform(base);
+    }
     void Plate(Motion::Time now, float scroll) {
         // One plate for the selection: it glides between rows, the check rides on it.
         const float y = plate_.Value(now) - scroll;
@@ -765,7 +832,20 @@ private:
         auto* t = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         chrome_.Color(1, .04f); t->FillRectangle(D2D1::RectF(Layout::rowLeft, top, Layout::rowRight, top + px), brush);
-        if (view != View::Sites && view != View::Site) {
+        if (view == View::Profile) {
+            const bool last = LastProfile(); const auto& lines = last ? lastProfileNoteLines_ : profileNoteLines_;
+            for (size_t k = 0; k < lines.size(); ++k) Label14(lines[k], Layout::textLeft, top + 13 + k * Layout::descriptionLine, Layout::rowRight, .5f);
+            const float y = top + 13 + lines.size() * Layout::descriptionLine + 8;
+            if (last) { // « Effacer les données… »: the last profile is never deleted (Paper XXY-0)
+                const auto v = Interaction(ProfileClearData, now); const auto row = Layout::Row(y);
+                if (v.hover > 0 || v.press > 0) chrome_.Round(R(row), Design::Radius::r8, Tint(hoverTint * v.hover + pressTint * v.press));
+                if (focus_ == ProfileClearData) chrome_.FocusRing(R(row), Design::Radius::r8);
+                Label16(L"Effacer les données…", Layout::textLeft, y + 6, Layout::rowRight - 32, .9f + .1f * v.hover);
+                const auto chevron = Layout::Chevron(y); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+                t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
+                chrome_.Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover); t->SetTransform(base);
+            } else DangerRow(L"Supprimer le profil…", y, ProfileDelete, now, !ProfilesReadOnly());
+        } else if (view != View::Sites && view != View::Site) {
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
@@ -795,7 +875,7 @@ private:
         if (view == View::Main) chrome_.Text(L"Réglages", R(Layout::Title(false)), 16, .9f, false, true, -.16f);
         else {
             IconButton(L"back", Layout::BackButton(), Back, now);
-            const std::wstring title = view == View::Site ? (site_ >= 0 && site_ < static_cast<int>(sites_.size()) ? Host(sites_[site_].origin) : L"") : Title(view);
+            const std::wstring title = view == View::Site ? (site_ >= 0 && site_ < static_cast<int>(sites_.size()) ? Host(sites_[site_].origin) : L"") : view == View::Profile ? editor_.Value().name : Title(view);
             chrome_.Text(title, R(Layout::Title(true)), 16, .9f, false, true, -.16f);
         }
         IconButton(L"close", Layout::CloseButton(), Close, now);
@@ -809,7 +889,7 @@ private:
         const auto slots = Slots(view, now);
         // Three passes: row fills, then the selection plate over them, then row contents.
         auto pass = [&](bool surfaces) { for (const auto& s : slots) {
-            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note || s.kind == Kind::Field || s.kind == Kind::Search || s.kind == Kind::Danger))) continue;
+            if (s.top + s.height < viewTop || s.top > viewBottom || s.opacity <= .002f || (surfaces && (s.kind == Kind::Label || s.kind == Kind::Note || s.kind == Kind::Field || s.kind == Kind::Search || s.kind == Kind::Danger || s.kind == Kind::ProfileRow || s.kind == Kind::Editor))) continue;
             if (s.kind == Kind::Search) searchTop = s.top;
             const float opacity = s.opacity * (dim && s.kind != Kind::Search ? Layout::searchDim : 1.f); // results own the root while a query stands
             const bool clipped = s.clipTop > -1e5f, fading = opacity < .998f;
@@ -828,6 +908,8 @@ private:
             case Kind::Nav: NavRow(s, now); break;
             case Kind::SiteRow: SiteRow(s, now); break;
             case Kind::Field: FieldRow(s, now); break;
+            case Kind::ProfileRow: ProfileRow(s, now); break;
+            case Kind::Editor: editor_.Paint(chrome_, {Layout::textLeft, s.top}); break;
             }
             if (fading) target->PopLayer();
             if (clipped) target->PopAxisAlignedClip();
@@ -892,7 +974,10 @@ private:
         if (in(Layout::CloseButton())) return Close;
         if (view != View::Main && in(Layout::BackButton())) return Back;
         const float footerTop = h - FooterHeight(view);
-        if (view != View::Sites && view != View::Site) {
+        if (view == View::Profile) {
+            const float y = footerTop + 13 + (LastProfile() ? lastProfileNoteLines_ : profileNoteLines_).size() * Layout::descriptionLine + 8;
+            if (in(Layout::Row(y))) return LastProfile() ? ProfileClearData : ProfilesReadOnly() ? None : ProfileDelete;
+        } else if (view != View::Sites && view != View::Site) {
             if (in(Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot))) return CheckUpdates;
         } else if (view == View::Sites) { if (!sites_.empty() && in(Layout::Row(footerTop + 13 + 40 + 8))) return ResetAll; }
         else if (in(Layout::Row(footerTop + 13))) return ResetSite;
@@ -918,7 +1003,8 @@ private:
         order.push_back(Close);
         if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
         for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f) order.push_back(s.hit);
-        if (view != View::Sites && view != View::Site) { if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
+        if (view == View::Profile) { if (LastProfile()) order.push_back(ProfileClearData); else if (!ProfilesReadOnly()) order.push_back(ProfileDelete); }
+        else if (view != View::Sites && view != View::Site) { if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
         else if (view == View::Sites) { if (!sites_.empty()) order.push_back(ResetAll); }
         else order.push_back(ResetSite);
         return order;
@@ -971,8 +1057,10 @@ private:
         // Popping back lands keyboard focus on the row that pushed the view.
         const int from = depth_; const View left = views_[from]; depth_ = depth; motion_.ClearInteractions();
         if (editing_) Commit(false);
-        focus_ = depth < from && keyboard_ ? (left == View::Site ? SiteBase + std::max(0, site_) : Opener(left)) : 0;
+        if (left == View::Profile && depth < from) { editor_.Blur(); editor_.Hide(); }
+        focus_ = depth < from && keyboard_ ? (left == View::Site ? SiteBase + std::max(0, site_) : left == View::Profile ? ProfileRowBase + std::max(0, profileIndex_) : Opener(left)) : 0;
         if (focus_) { const auto order = FocusOrder(); if (std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; }
+        if (uia_.Listening()) uia_.ChildrenChanged(DrawerKey);
         page_.Set(static_cast<float>(depth), now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::page, Timing::pageSpring);
     }
     void Push(View v, Motion::Time now) {
@@ -1008,6 +1096,113 @@ private:
             if (Current() == View::Site && (site_ < 0 || site_ >= static_cast<int>(sites_.size()))) Navigate(depth_ - 1, Motion::Now());
             if (visible_) { auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; RefreshTips(); Invalidate(); Schedule(Motion::Now()); }
         });
+    }
+    // ---- Profiles: UI Automation (minimal bridge for the new Réglages › Profils surfaces) ------------
+    // Exposed: the drawer (Pane), its header (Retour / Fermer), the root « Profils » row, the profile list
+    // (List + ListItems, current one selected), the detail editor (Edit, List/ListItem radios, Sliders with
+    // RangeValue, hex Edit) and the footer action. Other drawer rows are not part of this feature's bridge.
+    Accessibility::Bridge uia_;
+    static constexpr long long DrawerKey = 1, ListKey = 2, EditorBase = 3000, HitBase = 10000;
+    static constexpr UINT UiaInvoke = WM_APP + 52;
+    long long FocusKey() const {
+        if (focus_ == ProfileEditorHit) { const int f = editor_.Focus(); return f ? EditorBase + (f == ProfileEditor::Icons ? 100 + editor_.IconIndex() : f) : 0; }
+        return focus_ ? HitBase + focus_ : 0;
+    }
+    void RaiseFocus() { if (uia_.Listening() && FocusKey()) uia_.Raise(FocusKey(), UIA_AutomationFocusChangedEventId); }
+    RECT ScreenOf(Design::Box b) const {
+        RECT w{}; GetWindowRect(hwnd_, &w); const float k = Dpi() / 96.f;
+        return {w.left + static_cast<LONG>(b.left * k), w.top + static_cast<LONG>(b.top * k), w.left + static_cast<LONG>(b.right * k), w.top + static_cast<LONG>(b.bottom * k)};
+    }
+    std::vector<Accessibility::Node> UiaNodes() const {
+        std::vector<Accessibility::Node> nodes; if (!hwnd_ || !visible_) return nodes;
+        const View view = Current(); RECT win{}; GetWindowRect(hwnd_, &win);
+        Accessibility::Node pane; pane.key = DrawerKey; pane.role = Accessibility::Role::Group; pane.focusable = false; pane.bounds = win; pane.automationId = L"SettingsDrawer";
+        pane.name = view == View::Profile ? editor_.Value().name : Title(view); nodes.push_back(pane);
+        auto button = [&](int hit, const std::wstring& name, Design::Box box, const wchar_t* id) {
+            Accessibility::Node n; n.key = HitBase + hit; n.parent = DrawerKey; n.role = Accessibility::Role::Button; n.name = name; n.automationId = id; n.bounds = ScreenOf(box); nodes.push_back(n);
+        };
+        if (view != View::Main) button(Back, L"Retour", Layout::BackButton(), L"SettingsBack");
+        button(Close, L"Fermer les réglages", Layout::CloseButton(), L"SettingsClose");
+        const auto now = Motion::Now();
+        if (view == View::Main && !Searching()) {
+            for (const auto& sl : Slots(View::Main, now)) if (sl.hit == CatProfiles) { button(CatProfiles, L"Profils, " + sl.value, Layout::Row(sl.top, sl.height), L"SettingsProfiles"); nodes.back().help = L"Gérer les profils de ce navigateur"; }
+        } else if (view == View::Profiles) {
+            Accessibility::Node list; list.key = ListKey; list.parent = DrawerKey; list.role = Accessibility::Role::List; list.name = std::to_wstring(profiles_.size()) + (profiles_.size() > 1 ? L" profils" : L" profil"); list.focusable = false; list.automationId = L"ProfileList"; list.bounds = win; nodes.push_back(list);
+            for (const auto& sl : Slots(View::Profiles, now)) {
+                if (sl.kind != Kind::ProfileRow) continue;
+                Accessibility::Node n; n.key = HitBase + sl.hit; n.parent = ListKey; n.role = Accessibility::Role::ListItem; n.name = sl.text + (sl.current ? L", cette fenêtre" : L"");
+                n.selected = sl.current; n.position = sl.index + 1; n.count = static_cast<int>(profiles_.size()); n.automationId = L"ProfileListItem"; n.help = L"Ouvre le détail du profil"; n.bounds = ScreenOf(Layout::Row(sl.top, sl.height)); nodes.push_back(n);
+            }
+        } else if (view == View::Profile) {
+            auto ed = editor_.Nodes(EditorBase, DrawerKey, win); nodes.insert(nodes.end(), ed.begin(), ed.end());
+            const float y = Height() - FooterHeight(View::Profile) + 13 + (LastProfile() ? lastProfileNoteLines_ : profileNoteLines_).size() * Layout::descriptionLine + 8;
+            if (LastProfile()) button(ProfileClearData, L"Effacer les données…", Layout::Row(y), L"ProfileClearData");
+            else { button(ProfileDelete, L"Supprimer le profil…", Layout::Row(y), L"ProfileDelete"); nodes.back().enabled = !ProfilesReadOnly(); nodes.back().help = L"Supprime son historique, ses cookies, ses mots de passe et ses favoris de cet appareil."; }
+        }
+        return nodes;
+    }
+    void AttachUia() {
+        Accessibility::Host host; host.window = hwnd_;
+        host.nodes = [this] { return UiaNodes(); };
+        host.focused = [this]() -> long long { return visible_ ? FocusKey() : 0; };
+        // Actions never run inside the provider call: they are posted back to the drawer.
+        host.invoke = [this](long long key) { PostMessageW(hwnd_, UiaInvoke, 0, static_cast<LPARAM>(key)); };
+        host.select = [this](long long key) { PostMessageW(hwnd_, UiaInvoke, 1, static_cast<LPARAM>(key)); };
+        host.focus = [this](long long key) { PostMessageW(hwnd_, UiaInvoke, 2, static_cast<LPARAM>(key)); };
+        host.setRange = [this](long long key, double v) { if (key > EditorBase && key < HitBase) { editor_.Accessible(EditorBase, key, 2, v); Invalidate(); } };
+        host.setValue = [this](long long key, const std::wstring& v) { if (key > EditorBase && key < HitBase) { editor_.AccessibleValue(EditorBase, key, v); Invalidate(); } };
+        uia_.Attach(std::move(host));
+    }
+    void UiaAction(int kind, long long key) {
+        keyboard_ = true;
+        if (key > EditorBase && key < HitBase) { focus_ = ProfileEditorHit; editor_.Accessible(EditorBase, key, kind == 1 ? 1 : 0, 0); Invalidate(); return; }
+        if (key <= HitBase) return; const int hit = static_cast<int>(key - HitBase);
+        if (kind == 2) { focus_ = hit; Reveal(hit); Interact(hover_, pressed_); return; }
+        focus_ = hit; Activate(hit, true); if (uia_.Listening()) uia_.ChildrenChanged(DrawerKey); RaiseFocus();
+    }
+    // ---- Profiles -----------------------------------------------------------------------
+    void RefreshProfiles() {
+        profiles_ = hooks_.profiles ? hooks_.profiles() : std::vector<ProfileItem>{};
+        profileIndex_ = -1; for (size_t i = 0; i < profiles_.size(); ++i) if (profiles_[i].id == profileId_) profileIndex_ = static_cast<int>(i);
+        if (!profileId_.empty() && hooks_.profile && editor_.Focus() == ProfileEditor::None && !editor_.Dragging()) {
+            if (profileIndex_ >= 0) editor_.SetValue(hooks_.profile(profileId_));
+        }
+        // The profile shown was deleted elsewhere: back to the list.
+        if (profileIndex_ < 0 && !profileId_.empty() && DepthOf(View::Profile) >= 0 && Current() == View::Profile) { profileId_.clear(); editor_.Hide(); Navigate(depth_ - 1, Motion::Now()); }
+    }
+    void OpenProfile(int index) {
+        if (index < 0 || index >= static_cast<int>(profiles_.size()) || !hooks_.profile) { profileIndex_ = -1; return; }
+        profileIndex_ = index; profileId_ = profiles_[index].id; editor_.SetValue(hooks_.profile(profileId_));
+    }
+    D2D1_POINT_2F EditorOrigin() const {
+        for (const auto& s : Slots(View::Profile, Motion::Now())) if (s.kind == Kind::Editor) return {Layout::textLeft, s.top};
+        return {Layout::textLeft, Layout::viewTop};
+    }
+    // The editor's native edits sit on their painted fields only while the detail view is still
+    // and the block is within the visible content (never during a push/pop or a slide).
+    void SyncEditor(Motion::Time now) {
+        if (!visible_ || closing_ || Current() != View::Profile || page_.Moving(now) || slide_.Moving(now)) { editor_.Hide(); return; }
+        const auto o = EditorOrigin(); const float bottom = ViewBottom(View::Profile);
+        editor_.Place(o, Dpi() / 96.f, o.y >= Layout::viewTop - Layout::groupGap / 2 && o.y + editor_.Height() <= bottom + .5f);
+    }
+    void AttachEditor() {
+        ProfileEditor::Editor::Hooks h;
+        h.invalidate = [this] { Invalidate(); Schedule(Motion::Now()); };
+        h.validateName = [this](const std::wstring& n) { return hooks_.validateProfileName ? hooks_.validateProfileName(n, profileId_) : Profiles::NameError::None; };
+        h.changed = [this](const Profiles::Profile& p, ProfileEditor::Stop) {
+            if (ProfilesReadOnly() || !hooks_.saveProfile) return;
+            Profiles::NameError ne = Profiles::NameError::None;
+            if (!hooks_.saveProfile(p, &ne) && ne != Profiles::NameError::None) editor_.ShowNameError(ne);
+            profiles_ = hooks_.profiles ? hooks_.profiles() : profiles_; Invalidate();
+        };
+        h.focusChanged = [this](ProfileEditor::Stop s) { if (s != ProfileEditor::None) { focus_ = ProfileEditorHit; Invalidate(); RaiseFocus(); } };
+        h.tabOut = [this](int dir) {
+            const auto order = FocusOrder(); auto it = std::find(order.begin(), order.end(), static_cast<int>(ProfileEditorHit)); if (it == order.end() || order.empty()) return;
+            int index = static_cast<int>(it - order.begin()) + dir; index = (index + static_cast<int>(order.size())) % static_cast<int>(order.size());
+            focus_ = order[index]; keyboard_ = true; if (hwnd_) SetFocus(hwnd_); Reveal(focus_); Interact(hover_, pressed_); RaiseFocus();
+        };
+        editor_.Attach(hwnd_, std::move(h), ProfileEditor::Style::Drawer);
+        editor_.SetWidth(Layout::rowRight - 8 - Layout::textLeft);
     }
     void Activate(int hit, bool keyboard) {
         if (!state_) return;
@@ -1104,6 +1299,11 @@ private:
             if (hooks_.resetSites) hooks_.resetSites(sites_[site_].origin);
             Navigate(depth_ - 1, now); LoadSites();
         } else if (hit == ResetAll && !sites_.empty()) { if (hooks_.resetSites) hooks_.resetSites(L""); sites_.clear(); LoadSites(); }
+        else if (hit == CatProfiles) { RefreshProfiles(); Push(View::Profiles, now); }
+        else if (IsProfileRow(hit)) { OpenProfile(hit - ProfileRowBase); if (profileIndex_ >= 0) Push(View::Profile, now); }
+        else if (hit == ProfileDelete) { if (hooks_.deleteProfile && !profileId_.empty() && !LastProfile() && !ProfilesReadOnly()) { const std::wstring id = profileId_; Modal([&] { hooks_.deleteProfile(id, keyboard); }); } }
+        else if (hit == ProfileClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
+        else if (hit == ProfileEditorHit) { editor_.SetFocusStop(ProfileEditor::Name, keyboard); }
         else if (hit == Folder) { if (hooks_.pickFolder) Modal([&] { hooks_.pickFolder(); }); }
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
         else if (hit == ManagePasswords) { if (hooks_.managePasswords) Modal([&] { hooks_.managePasswords(keyboard); }); }
@@ -1313,7 +1513,10 @@ private:
         const float scale = 96.f / Dpi();
         switch (msg) {
         case WM_ERASEBKGND: return 1;
+        case WM_GETOBJECT: { LRESULT r; if (uia_.OnGetObject(h, w, l, r)) return r; break; }
+        case UiaInvoke: UiaAction(static_cast<int>(w), static_cast<long long>(l)); return 0;
         case WM_CTLCOLOREDIT: {
+            { LRESULT r; if (editor_.CtlColor(reinterpret_cast<HWND>(l), reinterpret_cast<HDC>(w), r)) return r; }
             // The EDIT blends into the field: its exact fill, text at 90% white.
             HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(EditFill());
             SetTextColor(dc, Gray(.9f)); SetBkColor(dc, fill);
@@ -1327,13 +1530,21 @@ private:
         case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !modal_) Hide(false, true); return 0;
         case WM_MOUSEMOVE: {
             if (!tracking_) { TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0}; TrackMouseEvent(&track); tracking_ = true; }
+            if (Current() == View::Profile) { const auto o = EditorOrigin(); if (editor_.Dragging()) { editor_.PointerMove(GET_X_LPARAM(l) * scale - o.x, GET_Y_LPARAM(l) * scale - o.y); return 0; } editor_.PointerMove(GET_X_LPARAM(l) * scale - o.x, GET_Y_LPARAM(l) * scale - o.y); }
             const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale);
             if (hit != hover_) Interact(hit, pressed_);
             return 0;
         }
-        case WM_MOUSELEAVE: tracking_ = false; Interact(0, 0); return 0;
-        case WM_LBUTTONDOWN: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); keyboard_ = false; if (editing_ && hit != editing_) Commit(false); if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
+        case WM_MOUSELEAVE: tracking_ = false; editor_.PointerLeave(); Interact(0, 0); return 0;
+        case WM_LBUTTONDOWN: {
+            if (Current() == View::Profile && !page_.Moving(Motion::Now())) {
+                const auto o = EditorOrigin(); keyboard_ = false;
+                if (editor_.PointerDown(GET_X_LPARAM(l) * scale - o.x, GET_Y_LPARAM(l) * scale - o.y)) { if (editor_.Dragging()) SetCapture(h); focus_ = ProfileEditorHit; Invalidate(); return 0; }
+                if (editor_.Focus()) editor_.Blur();
+            }
+            const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); keyboard_ = false; if (editing_ && hit != editing_) Commit(false); if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
         case WM_LBUTTONUP: {
+            if (editor_.Dragging()) { editor_.PointerUp(); if (GetCapture() == h) ReleaseCapture(); return 0; }
             const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale), was = pressed_;
             if (GetCapture() == h) ReleaseCapture();
             Interact(hit, 0); if (was && was == hit) Activate(hit, false);
@@ -1343,6 +1554,7 @@ private:
         case WM_CAPTURECHANGED: if (pressed_) Interact(hover_, 0); return 0;
         case WM_MOUSEWHEEL: { const auto now = Motion::Now(); ScrollTo(scrolls_[depth_].Target() - GET_WHEEL_DELTA_WPARAM(w) / 120.f * Layout::pitch * 1.5f, now); Repoint(); Schedule(now); return 0; }
         case WM_KEYDOWN: {
+            if (focus_ == ProfileEditorHit && Current() == View::Profile && w != VK_ESCAPE && w != VK_BACK && editor_.Key(w)) { keyboard_ = true; Invalidate(); return 0; }
             // Escape and Backspace step back out of a sub-view; Escape on the main view closes.
             if (w == VK_ESCAPE && depth_ == 0 && Searching()) { keyboard_ = true; ClearSearch(); Interact(hover_, pressed_); return 0; }
             if ((w == VK_ESCAPE || w == VK_BACK || (w == VK_LEFT && GetKeyState(VK_MENU) < 0)) && depth_ > 0) { keyboard_ = true; Navigate(depth_ - 1, Motion::Now()); Interact(hover_, pressed_); RefreshTips(); return 0; }
@@ -1353,7 +1565,9 @@ private:
                 auto it = std::find(order.begin(), order.end(), focus_);
                 int index = it == order.end() ? (back ? static_cast<int>(order.size()) - 1 : 0) : static_cast<int>(it - order.begin()) + (back ? -1 : 1);
                 index = (index + static_cast<int>(order.size())) % static_cast<int>(order.size());
-                focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_); return 0;
+                focus_ = order[index]; Reveal(focus_); RaiseFocus();
+                if (focus_ == ProfileEditorHit) editor_.SetFocusStop(back ? ProfileEditor::Hex : ProfileEditor::Name, true);
+                Interact(hover_, pressed_); return 0;
             }
             if ((w == VK_RETURN || w == VK_SPACE) && focus_) { keyboard_ = true; Activate(focus_, true); return 0; }
             // Typing on the root starts a search (as Ctrl+F / F3 would).
@@ -1393,13 +1607,14 @@ public:
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
         NativeUI::StripTooltipShadow(tip_);
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
+        AttachEditor(); AttachUia();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
     void Dispose() {
         if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
-        edit_ = nullptr; editing_ = 0;
+        edit_ = nullptr; editing_ = 0; uia_.Detach(); editor_.Detach();
         Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
@@ -1450,11 +1665,14 @@ public:
     }
     // Opens straight on « Autorisations des sites » (B02 « Autorisations du site » link).
     void ShowSites() { Show(View::Sites); }
+    // Opens on Réglages › Profils (profile menu « Gérer les profils… »).
+    void ShowProfiles() { RefreshProfiles(); Show(View::Profiles); }
     // Leaves along the path it came in on; `animate` false hides at once.
     void Hide(bool keyboard, bool animate) {
         if (!visible_ || closing_) { if (visible_ && !animate) Finish(); return; }
         hiddenAt = GetTickCount64();
         if (editing_) Commit(false);
+        editor_.Blur(); editor_.Hide();
         if (GetCapture() == hwnd_) ReleaseCapture();
         motion_.ClearInteractions(); hover_ = pressed_ = 0; tracking_ = false;
         auto now = Motion::Now(); closing_ = true;
@@ -1468,6 +1686,7 @@ public:
     // The state or the version status changed outside the drawer: follow it.
     void Changed() {
         if (!hwnd_ || !visible_ || !state_) return;
+        RefreshProfiles();
         const auto now = Motion::Now(); const bool reduced = Reduced();
         for (int i = 0; i < SwitchCount; ++i) switches_[i].Set(SwitchValue(SwitchHits[i]) ? 1.f : 0.f, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::toggle, Timing::switchSpring);
         SyncReveals(now);
@@ -1496,7 +1715,7 @@ public:
         if (!visible_) return;
         ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
-        PlaceEdit(now);
+        PlaceEdit(now); SyncEditor(now);
         // A window keeps only what it is painted with while its region shows it:
         // the entering slide repaints as it uncovers; the exit moves finished pixels.
         const bool content = (Moving(now) && !(closing_ && !page_.Moving(now))) || motion_.NextWake(now).delay.has_value();
