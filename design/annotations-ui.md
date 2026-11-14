@@ -1,294 +1,335 @@
-# Mode Annotation — UI native (V1)
+# Mode Annotation — UI native (V2)
 
-Composants natifs du mode Annotation : bandeau, état « actif » du bouton barre « Annoter », popover de note, lanceur + carte, onboarding « Connecter un agent ». Contrat : `plan-annotations-mcp-local/design/annotations-v1-brief.md` (références Paper, mouvement, budget). Maquettes : Paper `01M6Q7YT14ZKMGET54ASPNGQEC`, page `p-H-0` (lues avec `get_jsx` / `get_computed_styles`, rien modifié).
+Composants natifs du mode Annotation, refaits sur le design final de Paper (fichier `01M6Q7YT14ZKMGET54ASPNGQEC`, page `p-H-0` « MCP - Design UI UX », relu le 14 novembre 2026 avec `get_jsx` / `get_computed_styles` / `get_screenshot`, rien modifié). Contrat : `plan-annotations-mcp-local/design/annotations-v2-brief.md`. Skills appliqués : apple-design, better-ui / accessibility / typography / colors / layout / writing, emil-design-eng.
 
-| Fichier | Rôle |
-| --- | --- |
-| `src/annotation-ui.h` | Include unique pour l'hôte |
-| `src/annotation-motion.h` | Modèle de mouvement pur (ressorts, pose, fondu croisé, anneau) — testé sans fenêtre |
-| `src/annotation-kit.h` | `Ink` (D2D/DirectWrite/WIC partagé, texte Inter Display + mono, glyphes Phosphor exacts), `Layer` (fenêtre alpha par pixel), `Animator` (une horloge `frame-clock.h` pour toutes les surfaces), rendu hors écran pour la QA |
-| `src/annotation-banner.h` | `Banner` + `PaintToolbarButton` + `ToolbarNode` |
-| `src/annotation-note.h` | `NotePopover` (EDIT natif multi-ligne, liste Projet, repli contexte, info-bulle, états) |
-| `src/annotation-launcher.h` | `Launcher` (lanceur 40 + carte) |
-| `src/annotation-onboarding.h` | `Onboarding` (voile + modale 3 étapes) + textes de config purs |
-| `tests/annotations-ui/` | Harnais natif (`annotations_ui_test.cpp`, `run.py`, manifeste Windows 8+) |
+| Fichier | Rôle | Planches |
+| --- | --- | --- |
+| `src/annotation-ui.h` | Include unique pour l'hôte | — |
+| `src/annotation-motion.h` | Modèle de mouvement pur : `Bezier` (cubic-bezier CSS exacte), `Ramp` (interruptible, délai), `Presence` (opacité + échelle 0,96→1 / →0,98), `Crossfade` (ressort 0,3 s), `Spec` (toutes les durées) | Spéc ×4 |
+| `src/annotation-kit.h` | `Ink` (D2D/DirectWrite/WIC partagé, Inter Display + JetBrains Mono, glyphes Phosphor + logos Claude / OpenAI exacts, icône en trait), `Layer`, `Animator`, pièces communes (`Pieces`, `Logo`, `CloseButton`, `RaisedFill`, `Posed`, clip arrondi) | — |
+| `src/annotation-banner.h` | `Banner` (+ BETA, + rappel « Aucun agent connecté · Connecter »), `PaintToolbarButton`, `ToolbarNode` | 1.1, 1.8 |
+| `src/annotation-connect.h` | `ConnectModal` (voile + modale + pastille « Reste sur cet ordinateur ») + textes JSON/TOML purs | 1.1 → 1.7 |
+| `src/annotation-note.h` | `NotePopover` (panneau compact + pastille « Ce que l'agent verra ») | 2.1 → 2.3 |
+| `src/annotation-launcher.h` | `Launcher` (lanceur tiroir + compteur, cartes) ; possède l'historique | 3.1 → 3.3 |
+| `src/annotation-history.h` | `HistoryPanel` (liste, filtres, sections par site, détail, vide, menu « … », toast « Annuler ») | 4.1 → 4.3 |
+| `src/annotation-onboarding.h` | V1, **déprécié** (remplacé par `ConnectModal`) ; gardé pour que `annotation-mode.h` compile jusqu'à l'intégration V2 | — |
+| `tests/annotations-ui/` | Harnais natif (`annotations_ui_test.cpp`, `run.py`, `tables.py`) | toutes |
 
-Aucune E/S disque (hors lecture des polices embarquées), aucune dépendance à `annotations.h` : des structures simples en entrée, des callbacks en sortie.
+Aucune E/S disque (hors lecture des polices embarquées), aucune dépendance au magasin : structures simples en entrée, callbacks en sortie. Tout est créé paresseusement : `Init` ne stocke que le contexte (vérifié : ni `Ink`, ni `Animator`, ni fenêtre après les quatre `Init`).
 
-## Coût zéro et création paresseuse
-
-- `Init(...)` ne fait que stocker instance, fenêtre parente/propriétaire, racine et hooks : aucune fenêtre, aucun thread, aucune ressource D2D (vérifié : `Ink::Exists()`, `Animator::Exists()`, `Layer::Created()` restent faux/0 après les quatre `Init`).
-- Le premier `Show` d'une surface crée `Ink` (une fois par processus) et ses fenêtres. Les fenêtres restent ensuite cachées entre deux usages.
-- `Animator` : une fenêtre message-only + un `FrameClock::Clock`, créés à la **première animation**. Le thread de l'horloge est bloqué (`INFINITE`) dès que plus rien ne bouge. Pas de `SetTimer` récurrent (seul repli : 16 ms si l'horloge compositeur ne démarre pas, tué dès la fin du mouvement).
-- Minuteries ponctuelles (une seule fois, tuées à l'expiration ou à la fermeture) : carte « Annotation ajoutée » (4 s, en pause au survol/focus) et lien « Ça ne marche pas ? » (2 min, onboarding ouvert seulement).
-- Exception assumée : l'anneau « en cours » tourne (frames vsync) tant qu'un agent travaille et que le lanceur ou la carte est visible ; fixe en mouvement réduit.
-
-## API d'intégration (pour T3, `src/main.cpp`)
+## API d'intégration (pour l'intégrateur, `src/annotation-mode.h`)
 
 ```cpp
 #include "annotation-ui.h"
 using namespace NativeChrome::Annotations;
 ```
 
-### Bouton barre « Annoter » (dessiné par la Chrome existante)
+### Bandeau (1.1, 1.8)
 
 ```cpp
-struct ToolbarVisual { bool active; float hover, press; bool focus, keyboard, reduced; };
-void PaintToolbarButton(ID2D1RenderTarget*, ID2D1Factory*, ID2D1SolidColorBrush*, D2D1_RECT_F box24, const ToolbarVisual&);
-Accessibility::Node ToolbarNode(long long key, long long parent, RECT screenBounds, bool active); // « Annoter », Ctrl+Maj+A, toggle
-```
-Appel depuis la passe de peinture : `PaintToolbarButton(chrome.RenderTarget(), chrome.Factory(), chrome.SolidBrush(), box, v)`. Actif : plaque accent 16 %, marque accent 13×12,25, barre accent 10×2 sous le bouton.
-
-### Bandeau
-
-```cpp
-struct BannerHooks { std::function<void()> exit; std::function<void(const std::wstring&)> announce; };
+struct BannerHooks { std::function<void()> exit, connect; std::function<void(const std::wstring&)> announce; };
 class Banner {
-  void Init(HINSTANCE, HWND browserWindow, std::wstring appRoot, BannerHooks);
-  bool Show(RECT bandClientPx, bool reducedMotion);   // 32 DIP sous la barre ; annonce « Mode Annotation activé »
-  void Move(RECT bandClientPx);
-  void Hide(bool animate = true);
-  bool Visible() const; bool Created() const; HWND Window() const;
+  void Init(HINSTANCE, HWND browser, std::wstring appRoot, BannerHooks);
+  bool Show(RECT bandClientPx, bool reducedMotion);   // fondu 120 ms ; annonce « Mode Annotation activé »
+  void Move(RECT); void Hide(bool animate = true);
+  void SetReminder(bool on, bool animate = true);    // après « Plus tard » : « Aucun agent connecté · Connecter » → hooks.connect
+  void SetBeta(bool);                                // pastille BETA (défaut : oui)
+  bool Visible() const; bool ReminderVisible() const; HWND Window() const;
 };
 ```
-Fenêtre enfant du navigateur (au-dessus du WebView). L'hôte décale le WebView de 32 DIP (`Design::Vertical`) et route Échap (`AcceleratorKeyPressed`) vers sa propre sortie du mode ; « Quitter » (clic, Entrée/Espace/Échap si le bandeau a le focus, UIA Invoke) appelle `hooks.exit`.
+Clavier : Tab alterne rappel ↔ « Quitter », Entrée/Espace active, Échap = `exit`.
 
-### Popover de note
+### Modale « Connecter un agent » (1.1 → 1.7)
 
 ```cpp
-struct Project { std::wstring id, label, origin; };
-struct NoteContext { std::wstring page, element, text, styles, shotLabel; };   // styles: lignes séparées par \n
-enum class CaptureState { Pending, Ready, Unavailable };
-struct NoteRequest { std::wstring draft; std::vector<Project> projects; std::wstring projectId;
-                     NoteContext context; CaptureState capture = Pending; bool includeShot = true, expanded = true; };
-struct NoteSubmission { std::wstring note, projectId; bool includeShot; };
-struct Shot { unsigned width, height; std::vector<uint32_t> pixels /*BGRA prémultiplié*/; D2D1_RECT_F mark; };
-struct NoteHooks {
-  std::function<void(const NoteSubmission&)> submit;                 // écrire HORS fil UI, puis Saved() ou Failed()
-  std::function<void(const std::wstring& draft, bool keyboard)> cancel; // Échap / Annuler : l'hôte garde le brouillon
-  std::function<void()> newProject;                                  // « Nouveau projet pour cette origine… »
-  std::function<void(const std::wstring& projectId)> projectChanged;
-  std::function<void()> blurred;                                      // perte d'activation (le popover reste ouvert)
+enum class AgentKind { Claude, Codex, Other };
+enum class ConnectState { Idle, Working, Connected, Failed, Reconnect };
+struct AppStatus { ConnectState state; std::wstring detail; };   // Working: indication ; Failed: message ; Connected: note (« Redémarrez Codex pour l'activer »)
+struct ConnectSetup {
+  bool launch = true;                 // ouverte à l'activation du mode : sous-titre + « Plus tard (Échap) »
+  std::wstring command;               // chemin réel du bridge (réglage manuel)
+  std::vector<std::wstring> args;     // ex. {L"--store", L"C:\\…"}
+  std::wstring serverName = L"browser-annotations";
+  std::wstring removableDrive;        // L"E:" si GetDriveType == DRIVE_REMOVABLE (1.6)
+  AppStatus claude, codex;            // état initial (détection par les dossiers de config / readers\)
+};
+enum class ConnectEnd { Later, Done, Closed };
+struct ConnectHooks {
+  std::function<void(AgentKind)> connect;           // clic explicite SEULEMENT ; l'hôte configure hors fil UI puis SetStatus()
+  std::function<void(const std::wstring&)> copy;    // l'hôte écrit le presse-papiers (commande, JSON, TOML)
+  std::function<void(ConnectEnd)> closed;           // Later = « Plus tard »/Échap (compteur persistant côté hôte), Done = « Terminé », Closed = croix
   std::function<void(const std::wstring&)> announce;
 };
+class ConnectModal {
+  void Init(HINSTANCE, HWND browser, std::wstring appRoot, ConnectHooks);
+  bool Show(const ConnectSetup&, RECT browserClientScreenPx, bool reducedMotion, int delayMs = 0); // delayMs = 80 après le bandeau (Spéc Lancement)
+  void SetStatus(AgentKind, const AppStatus&);       // Working → Connected / Failed : fondu croisé du bouton + annonces
+  void SetRemovable(const std::wstring& drive);
+  void Close(bool animate = true, ConnectEnd = ConnectEnd::Closed);
+  bool Visible() const; HWND Window() const; HWND Veil() const;
+};
+std::wstring ConnectJson(const ConnectSetup&), ConnectToml(const ConnectSetup&);   // textes purs (testés)
+```
+La fenêtre du navigateur est désactivée pendant l'ouverture (`EnableWindow`) et réactivée avant `closed` ; le voile avale les clics. « Terminé » apparaît dès qu'une app est connectée et qu'aucune n'est en cours. La modale n'écrit jamais rien : `connect` est le seul déclencheur, sur clic.
+
+### Panneau de note (2.1 → 2.3)
+
+```cpp
+struct NoteContext { std::wstring page /*URL*/, element /*sélecteur*/, text, styles, shotLabel;   // champs V1 (toujours lus)
+                     std::wstring site /*« localhost:5173 », vide = déduit de page*/, label /*« Bouton « Payer 48,00 € » »*/, style /*« Taille, couleurs et marges »*/; };
+enum class CaptureState { Pending, Ready, Unavailable };
+struct NoteRequest { std::wstring draft; NoteContext context; CaptureState capture = Pending; bool expanded = false;
+                     std::vector<Project> projects; std::wstring projectId; bool includeShot; };   // les 3 derniers : V1, ignorés
+struct NoteSubmission { std::wstring note, projectId /*écho V1*/; bool includeShot /*= capture disponible*/; std::wstring site; };
+struct NoteHooks { submit, cancel(draft, keyboard), blurred, announce;  newProject, projectChanged /*V1, jamais appelés*/ };
 class NotePopover {
-  void Init(HINSTANCE, HWND browserWindow, std::wstring appRoot, NoteHooks);
+  void Init(HINSTANCE, HWND browser, std::wstring appRoot, NoteHooks);
   bool Show(const NoteRequest&, RECT targetScreenPx, RECT pageScreenPx, bool keyboard, bool reducedMotion);
-  void SetShot(CaptureState, const Shot*);                          // capture finie / impossible (copie interne)
-  void SetProjects(std::vector<Project>, const std::wstring& selectedId);
-  void Saved();                                                      // écriture réussie : sortie animée
-  void Failed(const std::wstring& message = …);                      // note conservée, « Réessayer » focalisé
+  void SetShot(CaptureState, const Shot*);   // l'image prise au clic arrive quand elle est prête (Unavailable : pastille 2.3)
+  void Saved();                              // le panneau se replie vers le lanceur (150 ms) ; l'hôte montre ensuite la carte
+  void Failed(const std::wstring& = …);      // note conservée, « Réessayer » focalisé
   void Close(bool animate = true);
-  bool Visible() const; HWND Window() const; HWND Edit() const;
+  void SetProjects(...);                     // V1, sans effet
+  bool Visible() const; HWND Window() const; HWND Edit() const; HWND PillWindow() const;
 };
 ```
-Placement : sous la cible (8 DIP), sinon au-dessus, sinon à côté ; gardé à 8 DIP du bord de la page. Clavier : Entrée = Ajouter (Maj+Entrée = nouvelle ligne, Ctrl+Entrée partout), Échap ferme d'abord l'info-bulle ou la liste puis annule, Tab/Maj+Tab : champ → Projet → « Ce que l'agent verra » → info → « Inclure la capture » → Annuler → Ajouter. Projet : Bas/F4/Alt+Bas ouvre la liste (Haut/Bas/Début/Fin/Entrée/Échap). Validation à l'envoi (jamais de bouton désactivé) : note vide → erreur dans le champ ; aucun projet → erreur sur Projet.
+Placement : à côté de l'élément (droite, sinon gauche, sinon dessous, sinon dessus), à 8 DIP du bord de la page ; la pastille est 8 DIP sous le panneau, centrée. `NoteSpec::thumbW/thumbH` = 96×62 (vignette à préparer par l'hôte). Clavier : Entrée = Ajouter (Maj+Entrée = nouvelle ligne, Ctrl+Entrée partout), Tab : champ → Ajouter → pastille, Espace/Entrée sur la pastille la déplie, Échap replie la pastille puis annule (l'hôte garde le brouillon). Validation à l'envoi (jamais de bouton désactivé).
 
-### Lanceur + carte
+### Lanceur, cartes, historique (3.1 → 4.3)
 
 ```cpp
 enum class LauncherState { Rest, Working };
-enum class CardKind { None, Working, NoAgent, Added };
-struct CardContent { CardKind kind; std::wstring agent, since, note, project, monogram; Shot avatar; };
-struct LauncherHooks { std::function<void()> toggle, open, later, connect, focusOut;
-                       std::function<void(bool keyboard)> dismissed; std::function<void(const std::wstring&)> announce; };
+enum class CardKind { None, Working, NoAgent, Added, Done, Resolved = Done };
+struct CardContent { CardKind kind; std::wstring agent /*« Claude »*/; AgentKind agentKind; std::wstring since /*« depuis 2 min »*/, note, summary, id;
+                     std::wstring project, monogram, headline; Shot avatar; /* V1, ignorés */ };
+enum class EntryStatus { Pending, Working, Done };
+struct HistoryEntry { std::wstring id, site, page, note; EntryStatus status; AgentKind agent; std::wstring agentName, age, followUp, summary; Shot thumb, capture; };
+struct HistoryData { std::wstring currentSite; std::vector<HistoryEntry> entries; };   // plus récentes d'abord
+struct HistoryHooks {
+  std::function<void(const std::wstring& id)> remove, undo, removeFinal, detail;   // suppression immédiate ; « Annuler » 6 s ; oubli définitif à l'expiration
+  std::function<void(const std::wstring& markdown)> copy;  std::function<void()> annotate;
+  std::function<void(bool keyboard)> closed;  std::function<void(const std::wstring&)> announce;
+};
+struct LauncherHooks { toggle /*clic, Entrée, UIA*/, open /*« Voir l'annotation »*/, connect, reload, reopen, later /*V1*/, focusOut;
+                       std::function<void(bool keyboard)> dismissed; announce; HistoryHooks history; };
 class Launcher {
-  void Init(HINSTANCE, HWND browserWindow, std::wstring appRoot, LauncherHooks);
-  void Place(RECT pageClientPx);                     // bounds du WebView ; ré-ancre lanceur (16/16) et carte (16/64)
-  bool Show(LauncherState, int count, bool reducedMotion);
+  void Init(HINSTANCE, HWND browser, std::wstring appRoot, LauncherHooks);
+  void Place(RECT pageClientPx);                       // bounds du WebView ; ré-ancre et remonte toutes les surfaces
+  bool Show(LauncherState, int count, bool reduced);   // Working : anneau + compteur accent ; Rest + count : compteur gris (3.1)
   void Hide(bool animate = true);
-  void ShowCard(const CardContent&); void HideCard(bool animate = true);
-  void FocusLauncher(); void FocusCard(); void SetBadgeRing(uint32_t rgba /*couleur de page, Paper #F4F4F3*/);
-  bool Visible() const; bool CardVisible() const; HWND LauncherWindow() const; HWND CardWindow() const;
+  void ShowCard(const CardContent&); void HideCard(bool animate = true);   // même id, autre état : fondu croisé en place
+  bool ShowHistory(const HistoryData&, bool keyboard = false);            // l'hôte lit le magasin à ce moment-là seulement
+  void UpdateHistory(const HistoryData&);                                 // surveillance du magasin pendant l'ouverture seulement
+  void SetHistoryCapture(const std::wstring& id, const Shot&);            // capture pleine taille du détail (hooks.history.detail)
+  void HideHistory(bool animate = true);
+  void FocusLauncher(); void FocusCard();
+  bool Visible() const; bool CardVisible() const; bool HistoryVisible() const;
+  HWND LauncherWindow() const, CardWindow() const, HistoryWindow() const, ToastWindow() const;
 };
+std::wstring EntryMarkdown(const HistoryEntry&);   // « Copier en Markdown » (pur)
 ```
-Deux fenêtres **enfants** à alpha par pixel : seuls les pixels dessinés reçoivent la souris (coins arrondis et pourtour du badge laissent passer le clic vers la page — vérifié par `WindowFromPoint`). Après un changement de z-order du WebView, rappeler `Place` (qui remet les surfaces en `HWND_TOP`).
+Toutes ces surfaces sont des fenêtres **enfants** à alpha par pixel au-dessus du WebView : seuls les pixels dessinés prennent la souris (vérifié par `WindowFromPoint`). Ctrl+Maj+H est à router par l'hôte vers `toggle`. Le lanceur se masque en plein écran (hôte : `Hide`). Historique au clavier : Tab (fermer → filtres → liste), ←/→ entre filtres, ↑/↓/Début/Fin/Page↑↓ dans la liste, Entrée = détail, Suppr = supprimer, Maj+F10 ou touche Menu = « … », Ctrl+Z = Annuler, Échap = retour puis fermeture. La molette fait défiler la liste et n'est jamais transmise à la page (`overscroll` contenu, vérifié).
 
-### Onboarding
+### Migration depuis V1 (pour l'intégrateur)
 
-```cpp
-enum class AgentApp { Claude, Codex, Other };
-struct OnboardingSetup { std::wstring projectId, projectLabel, bridgePath, mcpbName = L"annotations-browser.mcpb", mcpbSize = L"1,2 Mo"; };
-struct AgentRow { std::wstring monogram, name, detail; bool connected; };
-struct VerifyStatus { bool read; std::wstring reader, when = L"il y a quelques secondes", detail; std::vector<AgentRow> agents; };
-struct OnboardingHooks {
-  std::function<void()> openMcpb;                           // l'hôte ouvre le .mcpb (ShellExecute) — rien n'est lancé ici
-  std::function<void(const std::wstring&)> copy;            // l'hôte écrit le presse-papiers
-  std::function<void(AgentApp)> verifyStarted, verifyStopped; // surveiller readers\ SEULEMENT entre les deux
-  std::function<void(AgentApp)> help; std::function<void(int)> agentAction;
-  std::function<void(bool completed)> closed; std::function<void(const std::wstring&)> announce;
-};
-class Onboarding {
-  void Init(HINSTANCE, HWND browserWindow, std::wstring appRoot, OnboardingHooks);
-  bool Show(const OnboardingSetup&, RECT browserClientScreenPx, bool reducedMotion, AgentApp app = AgentApp::Claude);
-  void SetStatus(const VerifyStatus&);                       // depuis la surveillance de readers\
-  void Close(bool animate = true, bool completed = false);
-  bool Visible() const; HWND Window() const; HWND Veil() const;
-};
-// Textes purs (testés) :
-std::wstring ClaudeConfig(path, projectId), CodexConfig(path, projectId), GenericConfig(path, projectId), ArgsText(projectId);
-```
-Modale : la fenêtre du navigateur est désactivée pendant l'ouverture (`EnableWindow`), réactivée avant la sortie ; le voile (`#0000008C`) avale les clics. Le navigateur n'écrit jamais la configuration d'une autre app : il affiche/copie.
+`annotation-mode.h` compile tel quel (vérifié : `g++ -fsyntax-only src/main.cpp`, 0 avertissement) grâce aux champs V1 conservés. À faire côté intégration : remplacer `Onboarding` par `ConnectModal` (puis retirer `annotation-onboarding.h` d'`annotation-ui.h`), brancher `BannerHooks::connect` + `SetReminder`, `LauncherHooks::{reload, reopen, history}`, remplir `NoteContext::{site,label,style}` et `CardContent::{agentKind, summary, id}`, `CardKind::Resolved` → `Done`, `since` en minuscules (« depuis 2 min »). Aucune signature appelée par `annotation-mode.h` n'a changé : je n'ai modifié aucun fichier d'intégration.
 
 ## États
 
-| Surface | États |
+| Surface | États (captures) |
 | --- | --- |
-| Bandeau | visible (fondu), « Quitter » repos / survol / appui 0,96 / focus |
-| Bouton « Annoter » | inactif (glyphe 50 %), survol, actif (plaque + barre accent), focus |
-| Popover | saisie (champ focalisé, halo accent) · capture en cours (anneau + « Capture en cours… », saisie libre) · capture prête (miniature + repère accent) · capture indisponible (icône + « envoi sans image », case désactivée) · repli fermé · liste Projet ouverte · info-bulle · envoi (« Ajout… ») · échec d'écriture (message danger, « Réessayer », note intacte) · validation (note vide, projet manquant) |
-| Lanceur | repos (bordure 12 %), en cours (bordure accent 40 %, anneau tournant, badge compteur), survol, appui, focus |
-| Carte | en cours (WOL-0), aucun agent (WVJ-0 : Plus tard / Connecter un agent), annotation ajoutée (en-tête seul, part seule après 4 s) |
-| Onboarding | 1 choisir l'app (radio + « Limiter au projet ») · 2 Claude (extension, méthode manuelle repliable, JSON) · 2 Codex (Commande/Arguments + config.toml) · 2 autre client (JSON `mcpServers`) · 3 attente (anneau, lien d'aide après 2 min) · 3 connecté (statut, liste des agents) · « Copié » sur le bouton utilisé |
+| Bandeau | actif (BETA), rappel « Aucun agent connecté · Connecter » (fondu), focus clavier rappel / Quitter, appui 0,96 |
+| Modale | lancement (sous-titre + Plus tard), en cours (anneau tournant), connecté (+ note, + Terminé), échec (contour #FF7B6E66 + message), réglage manuel déplié (commande, Copier, JSON, TOML, « Copié »), disque amovible (Reconnecter + pastille d'avertissement), pastille dépliée, focus clavier |
+| Note | saisie (champ focalisé, bordure #3E67FF99), texte d'exemple, capture en préparation (anneau), pastille repliée / dépliée, capture impossible, validation (note vide), envoi (« Ajout… »), échec d'écriture (« Réessayer »), focus clavier |
+| Lanceur | repos (tiroir), agent au travail (anneau + compteur accent), annotation non lue (compteur gris), historique ouvert (bordure #3E67FF99), survol, appui, focus |
+| Cartes | 3.1 ajoutée sans agent, 3.2 l'agent s'en occupe, 3.3 l'agent a terminé, « Annotation ajoutée » (agent connecté, part seule après 4 s), focus clavier |
+| Historique | liste groupée par site (page courante d'abord), ligne survolée avec « … », menu « … », filtres En cours / Terminées, filtre vide, détail (en cours / terminé), vide (4.3), défilement interne, toast « Annuler » |
 
-## Mouvement (brief + apple-design + better-ui)
+## Mouvement (planches « Spéc » + skills)
 
 | Élément | Valeur |
 | --- | --- |
-| Ressort d'entrée | critique (amortissement 1,0), réponse 0,35 s : 98 % à 325 ms, posé à 557 ms |
-| Ressort de sortie | critique, réponse 0,16 s : 98 % à **149 ms**, posé à 255 ms (même chemin, plus court) |
-| Pose d'entrée | opacité 0→1, échelle 0,96→1, décalage 8 DIP (popover, vers la cible) / 10 DIP (carte, vers le lanceur) |
-| Origines | popover : point du bord le plus proche de la cible ; carte : axe du lanceur sur le bord bas ; modale : centre ; voile = opacité × 0,549 |
-| Interruption | reprise depuis la valeur **et la vitesse** présentées (mesuré à mi-course : 0,95956 → 0,95956, 0,605/s → 0,605/s) |
-| Appui | 0,96 en 150 ms ease-out (0,9726 à 75 ms), jamais si désactivé ou mouvement réduit |
-| Étapes onboarding | fondu croisé 200 ms ease-out, hauteur en ressort 0,35 s ; une interruption repart de l'alpha présenté |
-| Anneau « en cours » | 1 tour / 1,2 s ; fixe en mouvement réduit |
-| Mouvement réduit | même ressort, **opacité seule** (ni échelle ni glissement) ; popover : alpha de la vraie fenêtre, pas de fantôme |
-| Rendu | popover : couche fantôme cliquable-à-travers pendant le mouvement, vraie fenêtre (EDIT focalisé dès l'image 0) à alpha 0 puis 255 à l'arrêt ; carte/lanceur/modale : dessin direct transformé |
+| Modale | voile 0→0,549 en 200 ms ; opacité + échelle 0,96→1 en 200 ms `cubic-bezier(0.23,1,0.32,1)` depuis le centre ; sortie 150 ms vers 0,98 / 0 ; pastille 60 ms après (opacité + 4 DIP) ; `Show(..., delayMs = 80)` après le fondu de 120 ms du bandeau |
+| Bouton d'app | appui 0,96 (150 ms ease-out) ; En cours → Connecté / Échec : fondu croisé du contenu et du fond sur ressort critique 0,3 s (98 % à 279 ms), sans changer de place ; les blocs dessous glissent (200 ms `cubic-bezier(0.77,0,0.175,1)`) |
+| Réglage manuel | hauteur + opacité 200 ms `cubic-bezier(0.77,0,0.175,1)`, chevron qui tourne avec ; ouvert au clavier = instantané |
+| Pastille « local » | 150 ms d'intention (survol ou focus) ; taille sur ressort 0,3 s sans rebond, description 60 ms après (opacité + 4 DIP) ; reste ouverte sous le pointeur ; Échap la replie ; sortie 120 ms |
+| Note | 180 ms, origine côté cible + 8 DIP vers la cible ; fenêtre fantôme cliquable-à-travers, la vraie fenêtre (EDIT focalisé dès l'image 0) passe à 255 à l'arrêt ; pastille 60 ms après, se déplie en carte en 200 ms ; « Ajouter » : repli vers le lanceur (bas-droite) en 150 ms |
+| Cartes, historique | nés du lanceur (origine = centre du lanceur, bas-droite), 200 ms / 150 ms ; changement d'état de carte : fondu croisé en place + hauteur 200 ms ; détail : glisse de 16 DIP depuis la droite en fondu croisé |
+| Interruption | toutes les rampes repartent de la valeur présentée (mesuré : 0,8430 → 0,8430 au moment de l'interruption) ; le fondu croisé repart de l'alpha affiché |
+| Mouvement réduit | fondus seuls (modale 150 ms / 120 ms), ni échelle ni glissement, mise en page instantanée, anneau fixe (le compteur reste) |
+| Horloge | `frame-clock` seulement pendant une animation ; exception assumée : l'anneau « en cours » tourne tant qu'un agent travaille (lanceur, bouton En cours) ; minuteries ponctuelles seulement (intention 150 ms, « Copié » 1,6 s, toast 6 s, carte 4 s) |
 
-Indice statique pour chaque état animé : couleur (accent/danger), icône (coche, anneau, danger) ou texte (« Capture en cours… », « Copié », « Vérifié »).
+Indice statique pour chaque état animé : couleur (accent, danger), icône (anneau, coche, logo, avertissement) ou texte (« Cliquez sur Installer… », « Copié », « En attente »).
 
 ## Accessibilité
 
-- UIA (`accessibility.h`) : bandeau (Groupe « Mode Annotation », statut « Activé », bouton « Quitter le mode Annotation », raccourci Échap) ; bouton barre (`ToolbarNode`, toggle, Ctrl+Maj+A) ; popover (Groupe « Nouvelle annotation » avec statut d'erreur, EDIT nommé « Remarque pour l'agent » + aide d'erreur, « Projet » expand/collapse, liste « Projets » d'éléments sélectionnables, « Ce que l'agent verra » expand, lignes de contexte en Texte avec valeur, « Inclure la capture » toggle/désactivé, Annuler/Ajouter avec raccourcis) ; lanceur « Annotations » (expand, aide « 1 annotation en cours ») ; carte (Groupe + Texte + boutons) ; onboarding (Groupe titré, Texte « Étape n sur 3 », liste « Application », case toggle, blocs de config en Texte avec valeur, boutons).
-- Focus visible : anneau 1 DIP blanc (50 % clavier, 10 % pointeur, `Design::Focus`) sur chaque contrôle dessiné ; caret accent dans l'EDIT. Ordre Tab décrit plus haut ; Échap ferme partout ; la modale piège le focus (navigateur désactivé), le popover restaure le focus au retour d'activation.
-- Annonces : « Mode Annotation activé », « Annotation ajoutée · Boutique », « Annotation ajoutée · Boutique. Aucun agent connecté. », « Annotation prise par … », erreurs de validation et d'écriture, « Projet … », « Copié », « Étape n sur 3 : … », « Codex a lu vos annotations ».
+- UIA (`accessibility.h`) sur chaque surface : bandeau (groupe « Mode Annotation », statut, « Connecter un agent », « Quitter le mode Annotation » + Échap) ; modale (groupe titré + aide, « Plus tard »/« Fermer » + Échap, boutons d'app avec statut En cours / Connecté / Échec et message en aide, « Terminé » + Entrée, « Autre app ou réglage manuel » expand/collapse, « Copier la commande », « Copier au format JSON / TOML », pastille expand/collapse) ; note (groupe, champ nommé « Que faut-il changer ? » + raccourcis + erreur en aide, « Site » en texte, « Ajouter » + Entrée, pastille expand/collapse, lignes Page / Élément / Style, capture) ; lanceur (« Annotations » / « Annotations · 1 en cours », Ctrl+Maj+H, expand) ; cartes (groupe, texte, boutons) ; historique (onglets « Toutes / En cours (n) / Terminées (n) », liste d'éléments avec statut, position, hors-écran, détail, « Supprimer » annulable) ; toast (« Annuler », Ctrl+Z).
+- Ordre Tab visuel partout, Échap ferme (d'abord l'élément déplié), focus visible (anneau 1 DIP blanc, 50 % clavier / 10 % pointeur) sur chaque contrôle dessiné, la modale piège le focus (navigateur désactivé).
+- Annonces : « Mode Annotation activé », « Connecter un agent. Il recevra… », « Cliquez sur Installer dans Claude », « Claude Desktop connecté », « Échec : … », « Copié », « Ce que l'agent verra : affiché », « Écrivez ce qu'il faut changer. », « Annotation ajoutée. Aucun agent ne la lit encore. », « Claude s'en occupe, depuis 2 min », « Historique, 4 annotations », « Annotation supprimée. Ctrl+Z pour annuler. », « Suppression annulée ».
 
 ## Écarts assumés avec Paper
 
-1. **Ombres portées non dessinées** (liste, info-bulle, lanceur, cartes, modale) : règle du dépôt « zero drop shadow » (`src/native-ui.h`, décision du 2026-11-09).
-2. ~~**JetBrains Mono** n'est ni embarquée ni installée~~ — corrigé en T3 : JetBrains Mono 2.304 est embarquée (voir « Intégration T3 ») ; le repli Cascadia Mono puis Consolas ne sert plus que si le fichier manque.
-3. Graisse **600** rendue en Medium (seuls Regular/Medium d'Inter Display sont embarqués ; pas de faux gras).
-4. Logo du bandeau : le shader « Heatmap » est rendu par la même marque remplie de son dégradé (#D1DFFF → #3296FF → #2F63E7).
-5. Champ de note : l'EDIT natif garde la hauteur de ligne GDI (~17 px au lieu de 20) ; halo du champ approché par anneaux dégradés.
-6. Avatar de la carte « en cours » : monogramme par défaut, image si l'hôte fournit `CardContent::avatar`.
-7. La ligne « Avant : … · après 2 min … » de XHN-0 est une note de conception : elle est implémentée comme comportement (attente animée, lien après 2 min).
+1. **Ombres portées non dessinées** (modale, cartes, historique, lanceur) : règle du dépôt « zero drop shadow » (`src/native-ui.h`).
+2. **« BETA »** : #5B84FF sur sa pastille accent 16 % mesure 4,14:1 (12 px) ; éclairci en #6A8FFF (4,67:1). « Mode Annotation » garde #5B84FF.
+3. **Lignes terminées de l'historique** : opacité 70 % sur la vignette et la note seulement ; statut et âge (12 px #FFFFFF99) restent à 100 % (6,2:1 au lieu de 4,1:1).
+4. **2.1** montre « Ce que l'agent verra » dans le coin du panneau ; j'ai suivi 2.2/2.3 et la planche « Spéc · Annotations » (site globe + origine dans le panneau, pastille séparée dessous).
+5. Âge aligné à droite sur la même colonne dans toutes les lignes (4.1 décale de 8 DIP la ligne survolée).
+6. Graisse 600 rendue Medium (seuls Regular/Medium d'Inter Display sont embarqués) ; pas de flou 4 px dans les fondus croisés (cibles D2D sans effets) — fondu d'opacité seul.
+7. Icône tiroir à 18 DIP (1.1, 4.2, 4.3) ; 3.x l'affiche à 24.
+8. Hauteurs Paper arrondies : ±1 DIP sur 1.2 / 1.4 / 1.5 / 1.6 / 4.1 (texte 24 px arrondi par Paper).
+9. Champ de note : EDIT natif, hauteur de ligne GDI (~17 au lieu de 20) une fois posé (le rendu d'entrée est en DirectWrite 14/20).
 
 ## Preuves (harnais)
 
 ```
-python tests/annotations-ui/run.py            # build + tests + captures + build/annotations-ui-qa/report.json
-python tests/annotations-ui/run.py --no-window
+python tests/annotations-ui/run.py               # build + tests + captures + build/annotations-ui-qa/v2/report.json
+python tests/annotations-ui/run.py --no-window   # sans fenêtres réelles
+python tests/annotations-ui/tables.py            # tables ci-dessous depuis report.json
 ```
-Le harnais prend le premier plan (hôte topmost) pour tester les vrais clics : ne pas taper au clavier pendant les ~20 s de la partie fenêtres.
+Le harnais prend le premier plan (hôte topmost) pour les vrais clics : ne pas taper au clavier pendant ~15 s. Résultat (Windows 11 26200, 125 %) : **426 vérifications, 0 échec**, sur 4 passes complètes consécutives (et 283/283 sans fenêtres). Aucun échec intermittent observé sur ces passes ; un `WM_TIMER` « étranger » (fenêtre hors annotation) est parfois imprimé pendant le repos, il ne compte pas.
 
-Résultat de référence (Windows 11 26200, 125 %) : **291 vérifications, 0 échec**. Sur une quinzaine de passes, trois ont eu 1–2 échecs intermittents (focus perdu, Échap absorbé par l'info-bulle ouverte au survol, un `WM_TIMER`) pendant que le poste était utilisé : le harnais force désormais le premier plan, le popover restaure son focus à la réactivation, et la vérification de repos imprime la classe de toute fenêtre recevant un `WM_TIMER` (seules nos surfaces font échouer). Les 8 dernières passes sont vertes.
+### Échantillons de mouvement (modèle pur)
 
+Modale : entrée 200.0 ms, sortie 150.0 ms, mouvement réduit 150.0 ms ; fondu croisé d'état à 98 % en 279.0 ms.
 
+| Surface | Instant | t (ms) | opacité | échelle | dx (DIP) | dy (DIP) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| modal | enter t=0 | 0.0 | 0.0000 | 0.9600 | 0.000 | 0.000 |
+| modal | enter t=1/4 | 50.0 | 0.7754 | 0.9910 | 0.000 | 0.000 |
+| modal | enter t=1/2 | 100.0 | 0.9660 | 0.9986 | 0.000 | 0.000 |
+| modal | enter t=3/4 | 150.0 | 0.9974 | 0.9999 | 0.000 | 0.000 |
+| modal | enter t=end | 200.0 | 1.0000 | 1.0000 | 0.000 | 0.000 |
+| modal | exit t=1/2 | 75.0 | 0.0340 | 0.9807 | 0.000 | 0.000 |
+| modal | exit t=end | 150.0 | 0.0000 | 0.9800 | 0.000 | 0.000 |
+| modal | interrupt before | 60.0 | 0.8430 | 0.9937 | 0.000 | 0.000 |
+| modal | interrupt after | 60.0 | 0.8430 | 0.9937 | 0.000 | 0.000 |
+| modal | interrupt +40ms | 100.0 | 0.1682 | 0.9827 | 0.000 | 0.000 |
+| modal | reduced t=1/2 | 75.0 | 0.9660 | 1.0000 | 0.000 | 0.000 |
+| note | enter t=1/2 | 90.0 | 0.9660 | 0.9986 | -0.272 | 0.000 |
+| card | enter t=1/2 | 100.0 | 0.9660 | 0.9986 | 0.000 | 0.000 |
 
-### Échantillons de mouvement (carte, modèle pur)
+Modale dans une vraie fenêtre : 296 ms, 27 images (horloge compositeur).
 
-| Instant | t (ms) | progression | opacité | échelle | dy (DIP) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| enter t=0 | 0.0 | 0.0000 | 0.0000 | 0.9600 | 10.000 |
-| enter t=1/4 | 139.2 | 0.7127 | 0.7127 | 0.9885 | 2.873 |
-| enter t=1/2 | 278.5 | 0.9596 | 0.9596 | 0.9984 | 0.404 |
-| enter t=end | 557.0 | 1.0000 | 1.0000 | 1.0000 | 0.000 |
-| exit t=1/2 | 127.5 | 0.0402 | 0.0402 | 0.9616 | 9.598 |
-| interrupt +0 | 278.5 | 0.9596 | 0.9596 | 0.9984 | 0.404 |
-| interrupt +40ms | 318.5 | 0.5178 | 0.5178 | 0.9807 | 4.822 |
-| reduced t=1/2 | 278.5 | 0.9596 | 0.9596 | 1.0000 | 0.000 |
+Carte dans une vraie fenêtre : 234 ms, 20 images (horloge compositeur).
 
-### Fenêtre réelle : entrée de la carte puis repos
+Repos 1500 ms (card) : images 0, requêtes d'horloge 0, réveils 0, ticks 0, messages postés 0, WM_TIMER des surfaces 0 (autres fenêtres : 0).
 
-Entrée : 594 ms, 67 images (horloge compositeur). Repos 1500 ms : images 0, requêtes d'horloge 0, réveils du thread 0, ticks 0, messages postés 0, WM_TIMER 0.
+Repos 1500 ms (rest) : images 0, requêtes d'horloge 0, réveils 0, ticks 0, messages postés 0, WM_TIMER des surfaces 0 (autres fenêtres : 1).
 
 ### Géométrie Paper (modèle de boîtes CSS) vs layout natif
 
-| Surface | largeur | hauteur Paper | hauteur native |
+| Surface | largeur | Paper | natif |
 | --- | ---: | ---: | ---: |
-| note (WKR-0) | 340 | 536.00 | 536.00 |
-| card no agent (WVJ-0) | 320 | 142.00 | 142.00 |
-| card working (WOL-0) | 320 | — | 158.00 |
-| onboarding choose (XAF-0) | 560 | 484.00 | 484.00 |
+| 1.1 modal (launch) | 440 | 209.00 | 209.00 |
+| 1.2 modal (en cours) | 440 | 192.39 | 193.00 |
+| 1.3 modal (connecté + Terminé) | 440 | 261.00 | 261.00 |
+| 1.4 modal (échec) | 440 | 216.00 | 217.00 |
+| 1.5 modal (réglage manuel) | 440 | 305.00 | 306.00 |
+| 1.5 footer unfolded | 438 | 158.00 | 158.00 |
+| 1.6 modal (disque amovible) | 440 | 192.00 | 193.00 |
+| 1.1 pill « Reste sur cet ordinateur » width | 0 | 161.00 | 159.25 |
+| 1.6 pill (disque amovible) width | 0 | 389.00 | 388.00 |
+| 1.7 pill unfolded height | 340 | 100.00 | 100.00 |
+| 2.1 note panel (2 lines) | 350 | 102.00 | 102.00 |
+| 2.1 note panel min-height | 350 | 84.00 | 84.00 |
+| 2.2 pill unfolded | 350 | 111.19 | 112.00 |
+| 2.3 « Capture impossible » pill width | 0 | 320.00 | 318.00 |
+| 3.1 card | 320 | 118.59 | 119.00 |
+| 3.2 card | 320 | 138.00 | 138.00 |
+| 3.3 card | 320 | 138.00 | 138.00 |
+| 4.1 history panel | 360 | 362.00 | 363.00 |
+| 4.2 detail | 360 | 378.59 | 379.00 |
+| 4.3 empty | 360 | 203.59 | 204.00 |
 
 ### Couleurs Paper échantillonnées dans les rendus (2x)
 
 | Point | Paper (composé) | Rendu |
 | --- | --- | --- |
-| banner bottom border (#3E67FF3D over band) | `#23347D` | `#24347D` |
-| toolbar active plate (accent 16 %) | `#1D243C` | `#1D233C` |
-| toolbar active bar (accent) | `#3E67FF` | `#3E67FF` |
-| note surface #292929 | `#292929` | `#292929` |
-| note field #FFFFFF0A on raised | `#313131` | `#313131` |
-| project selector #FFFFFF0A | `#313131` | `#313131` |
-| context section #FFFFFF05 | `#2D2D2D` | `#2D2D2D` |
-| « Annuler » #333333 | `#333333` | `#333333` |
-| « Ajouter » accent #3E67FF | `#3E67FF` | `#3E67FF` |
-| list hot row #FFFFFF14 | `#3A3A3A` | `#3A3A3A` |
-| launcher surface #171717 | `#171717` | `#171717` |
-| launcher border #FFFFFF1F | `#333333` | `#333333` |
-| launcher surface #171717 | `#171717` | `#171717` |
-| launcher border #3E67FF66 | `#273774` | `#273774` |
-| badge accent | `#3E67FF` | `#3E67FF` |
-| card surface #292929 | `#292929` | `#292929` |
-| « Ouvrir » #FFFFFF0F | `#363636` | `#363636` |
-| card surface #292929 | `#292929` | `#292929` |
-| « Plus tard » #333333 | `#333333` | `#333333` |
-| « Connecter un agent » accent | `#3E67FF` | `#3E67FF` |
-| card surface #292929 | `#292929` | `#292929` |
-| chosen option #3E67FF1A | `#2B2F3F` | `#2B303F` |
-| other option #FFFFFF08 | `#303030` | `#303030` |
-| footer #FFFFFF05 | `#2D2D2D` | `#2D2D2D` |
-| code block #171717 | `#171717` | `#171717` |
-| read status #3E67FF1F | `#313649` | `#323749` |
+| 1.1 modal surface #171717 | `#171717` | `#171717` |
+| 1.1 « Connecter avec Claude » raised #292929 | `#292929` | `#292929` |
+| 1.1 modal border #FFFFFF14 | `#292929` | `#292929` |
+| Claude logo #D97757 | `#D97757` | `#D97757` |
+| 1.2 en cours #FFFFFF0A | `#202020` | `#202020` |
+| 1.3 connecté: no fill (contour only) | `#171717` | `#171717` |
+| 1.3 « Terminé » accent | `#3E67FF` | `#3E67FF` |
+| 1.4 échec border #FF7B6E66 | `#7F4A45` | `#7F4A45` |
+| 1.5 command box raised | `#292929` | `#292929` |
 | veil #0000008C over the page | `#6E6E6E` | `#6E6E6E` |
+| 1.8 reminder chip #FFFFFF14 over the band | `(composited)` | `#2B2F46` |
+| BETA chip accent 16 % over the band | `(composited)` | `#1F2856` |
+| 2.1 note surface #171717 | `#171717` | `#171717` |
+| 2.1 focused border #3E67FF99 | `#2E47A2` | `#2E47A2` |
+| 2.1 « Ajouter » accent | `#3E67FF` | `#3E67FF` |
+| 3.1 card surface #171717 | `#171717` | `#171717` |
+| 3.1 « Connecter un agent » raised | `#292929` | `#292929` |
+| 3.1 check disc accent | `#3E67FF` | `#3E67FF` |
+| 3.1 launcher badge raised #292929 | `#292929` | `#292929` |
+| 3.2 launcher badge accent | `#3E67FF` | `#3E67FF` |
+| launcher surface #171717 | `#171717` | `#171717` |
+| 4.1 chosen segment #3E3E3E | `#3E3E3E` | `#3E3E3E` |
+| 4.1 filters raised #292929 | `#292929` | `#292929` |
+| 4.1 hovered row #FFFFFF0A | `#202020` | `#202020` |
+| 4.2 « Supprimer » danger 10 % | `#2F2120` | `#2F2120` |
+| 4.3 « Annoter cette page » accent | `#3E67FF` | `#3E67FF` |
 
 ### Contrastes mesurés (pixels rendus à 2x, puis paire de jetons)
 
 | Texte | mesuré | jetons | encre | fond |
 | --- | ---: | ---: | --- | --- |
-| banner « Mode Annotation » #5B84FF | 4.87:1 | 4.86:1 | `#5B84FF` | `#191D36` |
-| banner « Quitter » #FFFFFFE6 | 13.64:1 | 14.67:1 | `#E9E9EC` | `#191D36` |
-| banner key cap « Échap » | 7.70:1 | 7.91:1 | `#C0C2CB` | `#2A2D3A` |
-| note label 12px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
-| note text 14px #FFFFFFE6 | 10.85:1 | 10.83:1 | `#EBEBEB` | `#313131` |
-| context row label 12px #FFFFFF99 | 5.98:1 | 5.99:1 | `#ABABAB` | `#2D2D2D` |
-| context value mono 12px #FFFFFFCC | 9.36:1 | 9.36:1 | `#D5D5D5` | `#2D2D2D` |
-| provider mention 12px #FFFFFF99 | 5.98:1 | 5.99:1 | `#ABABAB` | `#2D2D2D` |
-| capture label 12px #FFFFFF99 | 5.98:1 | 5.99:1 | `#ABABAB` | `#2D2D2D` |
-| « Ajouter » white on accent | 4.58:1 | 4.58:1 | `#FFFFFF` | `#3E67FF` |
-| « Annuler » white on #333333 | 12.63:1 | 12.63:1 | `#FFFFFF` | `#333333` |
-| project origin 13px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
-| tooltip 13px #FFFFFFE6 on #171717 | 14.63:1 | 14.67:1 | `#E8E8E8` | `#171717` |
-| write error 12px #FF7B6E | 5.76:1 | 5.76:1 | `#FF7B6E` | `#292929` |
-| card « Depuis 2 min » 14px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
-| card project 12px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
-| card « · Boutique » 13px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
-| card body 14px #FFFFFFE6 | 12.09:1 | 12.10:1 | `#EAEAEA` | `#292929` |
-| modal subtitle 14px #FFFFFFB3 | 7.91:1 | 7.93:1 | `#BFBFBF` | `#292929` |
-| footer note 12px #FFFFFF99 | 5.98:1 | 5.99:1 | `#ABABAB` | `#2D2D2D` |
-| option description 13px #FFFFFF99 | 5.84:1 | 5.84:1 | `#ACACAC` | `#303030` |
-| todo step label 12px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
-| config mono 12px #FFFFFFCC | 11.74:1 | 11.69:1 | `#D1D1D1` | `#171717` |
-| .mcpb label 12px #FFFFFF99 | 5.84:1 | 5.84:1 | `#ACACAC` | `#303030` |
-| « Ça ne marche pas ? » #9DB3FF | 5.78:1 | 5.78:1 | `#9DB3FF` | `#383838` |
-| waiting status 13px #FFFFFFB3 | 6.67:1 | 6.71:1 | `#C3C3C3` | `#383838` |
-| read detail 13px #FFFFFFB3 on accent 12 % | 6.75:1 | 6.77:1 | `#C1C3C8` | `#313649` |
-| agent detail 12px #FFFFFF99 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
+| modal title 18/24 white | 17.93:1 | 17.93:1 | `#FFFFFF` | `#171717` |
+| modal subtitle 13/18 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| « Plus tard » 13/16 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| « Connecter avec Claude » white on #292929 | 14.55:1 | 14.55:1 | `#FFFFFF` | `#292929` |
+| « Autre app ou réglage manuel » 13/18 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| pill « Reste sur cet ordinateur » 12/16 #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
+| « Cliquez sur Installer dans Claude » #FFFFFFCC | 10.76:1 | 10.81:1 | `#D2D2D2` | `#202020` |
+| « Redémarrez Codex pour l'activer » 12/16 #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
+| « Terminé » white on accent | 4.58:1 | 4.58:1 | `#FFFFFF` | `#3E67FF` |
+| échec message 12/16 #FF7B6E | 7.09:1 | 7.09:1 | `#FF7B6E` | `#171717` |
+| command JetBrains Mono 12/16 #FFFFFFCC | 9.81:1 | 9.83:1 | `#D4D4D4` | `#292929` |
+| « Copier au format : » 12/16 #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
+| manual text 13/19 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| removable pill 12/16 #FFFFFFCC | 11.74:1 | 11.69:1 | `#D1D1D1` | `#171717` |
+| local pill description 12/18 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| band « Aucun agent connecté » 12/16 #FFFFFFCC | 9.06:1 | 9.00:1 | `#D5D6DC` | `#2B2F46` |
+| band « Connecter » 12/16 medium white | 13.14:1 | 13.14:1 | `#FFFFFF` | `#2B2F46` |
+| band « BETA » 12 medium #6A8FFF (Paper #5B84FF: 4.14:1) | 4.67:1 | 4.67:1 | `#6A8FFF` | `#1F2856` |
+| note text 14/20 #FFFFFFE6 | 14.63:1 | 14.67:1 | `#E8E8E8` | `#171717` |
+| site 12/16 #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
+| « Ajouter » 13/16 white on accent | 4.58:1 | 4.58:1 | `#FFFFFF` | `#3E67FF` |
+| pill « Ce que l'agent verra » 12/16 #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
+| placeholder « Que faut-il changer ? » #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
+| pill row label 12/16 #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
+| pill row value 12/16 #FFFFFFE6 | 14.63:1 | 14.67:1 | `#E8E8E8` | `#171717` |
+| pill header 12/16 medium #FFFFFFE6 | 14.63:1 | 14.67:1 | `#E8E8E8` | `#171717` |
+| « Capture impossible ici » 12/16 #FFFFFFCC | 11.74:1 | 11.69:1 | `#D1D1D1` | `#171717` |
+| write error 12/16 #FF7B6E | 7.09:1 | 7.09:1 | `#FF7B6E` | `#171717` |
+| card title 14/20 600 white | 17.93:1 | 17.93:1 | `#FFFFFF` | `#171717` |
+| card body 13/19 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| card action 13/16 white on #292929 | 14.55:1 | 14.55:1 | `#FFFFFF` | `#292929` |
+| card « · depuis 2 min » 14/20 #FFFFFF99 | 17.93:1 | 7.04:1 | `#FFFFFF` | `#171717` |
+| « Historique » 16/20 600 white | 17.93:1 | 17.93:1 | `#FFFFFF` | `#171717` |
+| segment 12/16 medium #FFFFFFB3 on #292929 | 7.91:1 | 7.93:1 | `#BFBFBF` | `#292929` |
+| segment count 11/14 #FFFFFF80 on #292929 | 4.80:1 | 4.82:1 | `#949494` | `#292929` |
+| section site 12/16 medium #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| « · cette page » 11/14 #FFFFFF80 | 5.26:1 | 5.29:1 | `#8B8B8B` | `#171717` |
+| row status 12/16 #FFFFFF99 | 6.69:1 | 6.67:1 | `#A6A6A6` | `#202020` |
+| done row status 12/16 #FFFFFF99 (kept at 100 %) | 9.14:1 | 7.04:1 | `#B9B9B9` | `#171717` |
+| done row note 13/18 white at 70 % | 9.14:1 | 9.22:1 | `#B9B9B9` | `#171717` |
+| « Supprimer » 12/16 #FF7B6E on danger 10 % | 6.11:1 | 6.11:1 | `#FF7B6E` | `#2F2120` |
+| follow-up 12/17 #FFFFFF99 on #292929 | 6.19:1 | 6.22:1 | `#A9A9A9` | `#292929` |
+| detail page 13/18 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| « Copier en Markdown » 12/16 white on #292929 | 14.55:1 | 14.55:1 | `#FFFFFF` | `#292929` |
+| empty « Aucune annotation pour l'instant... » 14/20 #FFFFFF80 | 5.26:1 | 5.29:1 | `#8B8B8B` | `#171717` |
+| toast « Annotation supprimée » 13/16 #FFFFFFE6 | 14.63:1 | 14.67:1 | `#E8E8E8` | `#171717` |
 
-Police mono résolue : Consolas (avant T3) ; JetBrains Mono depuis T3.
+Police mono résolue : JetBrains Mono.
 
-### Captures (`build/annotations-ui-qa/`)
+### Captures (`build/annotations-ui-qa/v2/`, 78)
 
-`01-banner.png`, `01b-banner-quit-focus.png`, `02b-toolbar-annotate-idle.png`, `02-toolbar-annotate-active.png`, `03-note-editing.png`, `04-note-collapsed.png`, `05-note-project-list.png`, `06-note-tooltip.png`, `07-note-capturing.png`, `08-note-write-failed.png`, `09-note-empty-validation.png`, `09b-note-capture-unavailable.png`, `10-launcher-rest.png`, `11-launcher-working.png`, `12-card-working.png`, `13-card-no-agent.png`, `14-card-added.png`, `15-onboarding-choose.png`, `16-onboarding-claude.png`, `17-onboarding-claude-manual.png`, `18-onboarding-codex.png`, `18b-onboarding-codex-toml.png`, `19-onboarding-other.png`, `20-onboarding-verify-waiting.png`, `21-onboarding-verify-help.png`, `22-onboarding-verify-connected.png`, `30-scene-v2-note.png`, `31-scene-v5-working.png`, `32-scene-onboarding-1-no-agent.png`, `33-scene-onboarding-2-choose.png`, `34-scene-onboarding-3a-claude.png`, `35-scene-onboarding-4-connected.png`, `40-motion-card-enter-0-quarter-half-end.png`, `41-motion-card-exit-0-quarter-half-end.png`, `42-motion-card-interrupt-mid.png`, `43-motion-card-reduced.png`, `44-motion-note-enter-from-target.png`, `45-motion-modal-enter.png`, `46-motion-onboarding-step-crossfade-mid.png`, `50-window-banner.png`, `51-window-launcher-rest.png`, `52-window-launcher-working.png`, `53-window-card-entering.png`, `54-window-card-no-agent.png`, `55-window-note-ghost-entering.png`, `56-window-onboarding-choose.png`, `57-window-onboarding-crossfade.png`, `58-window-onboarding-connected.png`
+`1.1-connect-launch.png`, `1.2-connect-working.png`, `1.3-connect-connected.png`, `1.4-connect-failed.png`, `1.5-connect-manual.png`, `1.5b-connect-manual-copied.png`, `1.6-connect-removable.png`, `1.7-connect-local-unfolded.png`, `1.1b-connect-focus-keyboard.png`, `1.1-scene-launch.png`, `1.8-scene-band-reminder.png`, `1.1c-band-beta.png`, `2.1-note-panel.png`, `2.1b-note-placeholder.png`, `2.2-note-what-the-agent-sees.png`, `2.2b-note-capture-pending.png`, `2.3-note-capture-unavailable.png`, `2.4-note-empty-validation.png`, `2.5-note-saving.png`, `2.6-note-write-failed.png`, `2.7-note-focus-add-keyboard.png`, `2.1-scene-write-note.png`, `3.1-card-added-no-agent.png`, `3.2-card-agent-working.png`, `3.3-card-agent-done.png`, `3.4-card-added-agent-connected.png`, `3.3b-card-done-focus-keyboard.png`, `3.2b-card-codex-working.png`, `3.0-launcher-rest.png`, `3.0b-launcher-working.png`, `3.0c-launcher-history-open.png`, `3.0d-launcher-focus-keyboard.png`, `3.0e-launcher-hover.png`, `4.1-history-list.png`, `4.1b-history-row-menu.png`, `4.1c-history-filter-open.png`, `4.1d-history-filter-done-keyboard.png`, `4.2-history-detail.png`, `4.2b-history-detail-done.png`, `4.3-history-empty.png`, `4.3b-history-filter-empty.png`, `4.4-history-scrolled.png`, `4.5-history-toast-undo.png`, `4.1-scene-history.png`, `3.2-scene-card-working.png`, `m1-modal-enter-0-50-100-150-200ms.png`, `m2-modal-exit-0-50-100-150ms.png`, `m3-modal-interrupt-at-60ms.png`, `m4-modal-reduced-fade.png`, `m5-button-crossfade-working-to-connected.png`, `m6-local-pill-unfold.png`, `m7-card-from-launcher.png`, `m8-history-back-to-launcher.png`, `m9-note-pill-unfold.png`, `w1-window-band-reminder.png`, `w2-window-modal-entering.png`, `w3-window-modal-launch.png`, `w4-window-modal-crossfade-working-to-connected.png`, `w5-window-modal-connected.png`, `w6-window-modal-failed.png`, `w7-window-modal-manual.png`, `w8-window-modal-local-unfolded.png`, `w9-window-note-entering.png`, `w10-window-note-pill.png`, `w11-window-note-pill-unfolded.png`, `w12-window-note-capture-unavailable.png`, `w13-window-launcher-rest.png`, `w14-window-card-entering.png`, `w15-window-card-no-agent.png`, `w16-window-card-crossfade-working-to-done.png`, `w17-window-card-done.png`, `w18-window-history-entering.png`, `w19-window-history.png`, `w20-window-history-detail-sliding.png`, `w21-window-history-detail.png`, `w22-window-toast-undo.png`, `w23-window-history-scrolled.png`, `w24-window-history-empty.png`
 
-## Intégration T3 (navigateur)
 
-Branché par `src/annotation-mode.h` (voir `design/annotations-v1-validation.md`). Ajouts faits ici pendant l'intégration :
+## Historique
 
-- `CardKind::Resolved` + `CardContent::headline` : « Résolue par / Question de / Écartée par » + agent + âge court + résumé, bouton « Ouvrir » (même mise en page que la carte « en cours », coche accent au lieu de l'anneau).
-- Onboarding : `OnboardingSetup::serverName` (préversion : `browser-annotations-preview`) ; `mcpbName` vide = pas de `.mcpb` : option Claude « Configuration à ajouter à la main (extension bientôt) », étape 2 sans bouton d'extension, bloc JSON ouvert d'office, bouton principal « C'est ajouté ».
-- `ClaudeConfig` = document JSON complet `{"mcpServers": {...}}` (le membre isolé n'était pas du JSON valide) ; `CodexConfig` accepte le nom de serveur (clé TOML nue ou citée).
-- JetBrains Mono 2.304 Regular embarquée (`assets/fonts/JetBrainsMono-Regular.ttf`, OFL à côté) : chargée dans la collection privée si le fichier est présent, sinon repli système comme avant. Le harnais rapporte `Monospace family: JetBrains Mono`.
-- Écart maintenu : graisse 600 rendue Medium (pas d'Inter Display SemiBold dans les fontes du dépôt).
+V1 (bandeau, popover avec sélecteur de projet, lanceur + carte, onboarding en 3 étapes) : voir ce fichier au commit `120999a`.

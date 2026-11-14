@@ -41,7 +41,8 @@ inline constexpr D2D1_COLOR_F Hex(std::uint32_t rgba) {
 inline D2D1_COLOR_F Accent(float alpha = 1) { const auto a = Design::Accent::Get(); return {a.r, a.g, a.b, alpha}; }
 inline D2D1_COLOR_F WithAlpha(D2D1_COLOR_F c, float a) { c.a *= a; return c; }
 namespace Ink_ {
-inline constexpr std::uint32_t canvas = 0x171717FF, raised = 0x292929FF, hover = 0x333333FF, danger = 0xFF7B6EFF;
+inline constexpr std::uint32_t canvas = 0x171717FF, raised = 0x292929FF, hover = 0x333333FF, pressed = 0x3E3E3EFF, danger = 0xFF7B6EFF;
+inline constexpr std::uint32_t claude = 0xD97757FF, page = 0xF4F4F3FF;
 }
 
 // ---- Phosphor (bold) glyphs, exact Paper exports ---------------------------------------
@@ -59,6 +60,20 @@ inline constexpr Glyph code{"M69.12,94.15,28.5,128l40.62,33.85a12,12,0,1,1-15.36
 inline constexpr Glyph danger{"M240.26,186.1,152.81,34.23h0a28.74,28.74,0,0,0-49.62,0L15.74,186.1a27.45,27.45,0,0,0,0,27.71A28.31,28.31,0,0,0,40.55,228h174.9a28.31,28.31,0,0,0,24.79-14.19A27.45,27.45,0,0,0,240.26,186.1Zm-20.8,15.7a4.46,4.46,0,0,1-4,2.2H40.55a4.46,4.46,0,0,1-4-2.2,3.56,3.56,0,0,1,0-3.73L124,46.2a4.77,4.77,0,0,1,8,0l87.44,151.87A3.56,3.56,0,0,1,219.46,201.8ZM116,136V104a12,12,0,0,1,24,0v32a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,176Z", 0, 0, 256, 256};
 // The annotation mark (launcher, banner, toolbar). Paper path + translate(-9.5 -9.8).
 inline constexpr Glyph mark{"M46.008 256.187L46.082 241.973C46.085 241.297 46.668 240.757 47.376 240.774L63.371 240.829C66.248 240.899 67.033 244.643 64.407 245.765L55.985 248.654C55.284 248.954 54.691 249.439 54.276 250.053 54.225 250.127 54.185 250.207 54.149 250.288L51.029 257.525C49.617 259.778 45.994 258.813 46.008 256.187Z", 46.0, 240.756f, 20, 18.862f};
+// ---- V2 (Paper « MCP - Design UI UX », Phosphor bold unless noted) ----
+// Network « tree structure » (modal title, « Connecter un agent »): Paper viewBox 0 0 160 160.
+inline constexpr Glyph tree{"M145 67.5H87.5V57.5h2.5a12.5 12.5 0 0 0 12.5-12.5V25a12.5 12.5 0 0 0-12.5-12.5H70A12.5 12.5 0 0 0 57.5 25V45a12.5 12.5 0 0 0 12.5 12.5h2.5v10H15a7.5 7.5 0 0 0 0 15H32.5v15H30a12.5 12.5 0 0 0-12.5 12.5v20a12.5 12.5 0 0 0 12.5 12.5H50a12.5 12.5 0 0 0 12.5-12.5V110a12.5 12.5 0 0 0-12.5-12.5H47.5V82.5H112.5v15h-2.5a12.5 12.5 0 0 0-12.5 12.5v20a12.5 12.5 0 0 0 12.5 12.5h20a12.5 12.5 0 0 0 12.5-12.5V110a12.5 12.5 0 0 0-12.5-12.5h-2.5V82.5h17.5a7.5 7.5 0 0 0 0-15ZM72.5 27.5h15V42.5H72.5ZM47.5 127.5H32.5V112.5H47.5Zm80 0H112.5V112.5h15Z", 0, 0, 160, 160};
+inline constexpr Glyph infoLocal{"M47.25 36.751a7 7 0 1 1 7 7A7 7 0 0 1 47.25 36.751Zm56 19.25A47.25 47.25 0 1 1 56 8.751 47.302 47.302 90 0 1 103.25 56.001Zm-10.5 0a36.75 36.75 0 1 0-36.75 36.75A36.789 36.789 90 0 0 92.75 56.001Zm-31.5 16.047V57.751a8.75 8.75 0 0 0-8.75-8.75 5.25 5.25 0 0 0-1.75 10.202V73.501a8.75 8.75 0 0 0 8.75 8.75 5.25 5.25 0 0 0 1.75-10.203Z", 0, 0, 112, 112};
+inline constexpr Glyph warningCircle{"M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,192a84,84,0,1,1,84-84A84.09,84.09,0,0,1,128,212Zm-12-80V80a12,12,0,0,1,24,0v52a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,172Z", 0, 0, 256, 256};
+inline constexpr Glyph globe{"M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm83.13,96H172.7c-2.08-31.31-12.9-56.83-27.61-73.22A84.24,84.24,0,0,1,211.13,116ZM128,212c-11.36-12.3-22.41-36.53-24.67-72h49.34C150.41,175.47,139.36,199.7,128,212Zm-24.67-96c2.26-35.47,13.31-59.7,24.67-72,11.36,12.3,22.41,36.53,24.67,72Zm7.58-73.22C96.2,59.17,85.38,84.69,83.3,116H44.87A84.24,84.24,0,0,1,110.91,42.78ZM44.87,140H83.3c2.08,31.31,12.9,56.83,27.61,73.22A84.24,84.24,0,0,1,44.87,140Zm100.22,73.22c14.71-16.39,25.53-41.91,27.61-73.22h38.43A84.24,84.24,0,0,1,145.09,213.22Z", 0, 0, 256, 256};
+inline constexpr Glyph dots{"M144,128a16,16,0,1,1-16-16A16,16,0,0,1,144,128ZM60,112a16,16,0,1,0,16,16A16,16,0,0,0,60,112Zm136,0a16,16,0,1,0,16,16A16,16,0,0,0,196,112Z", 0, 0, 256, 256};
+inline constexpr Glyph caretLeft{"M168.49,199.51a12,12,0,0,1-17,17l-80-80a12,12,0,0,1,0-17l80-80a12,12,0,0,1,17,17L97,128Z", 0, 0, 256, 256};
+inline constexpr Glyph history{"M140,80v41.21l34.17,20.5a12,12,0,1,1-12.34,20.58l-40-24A12,12,0,0,1,116,128V80a12,12,0,0,1,24,0ZM128,28A99.38,99.38,0,0,0,57.24,57.34c-4.69,4.74-9,9.37-13.24,14V64a12,12,0,0,0-24,0v40a12,12,0,0,0,12,12H72a12,12,0,0,0,0-24H57.77C63,86,68.37,80.22,74.26,74.26a76,76,0,1,1,1.58,109,12,12,0,0,0-16.48,17.46A100,100,0,1,0,128,28Z", 0, 0, 256, 256};
+// Launcher « tiroir » (corbeille à courrier): stroked outline, Paper viewBox 0 0 24 24, stroke 2, round caps/joins.
+inline constexpr Glyph tray{"M4 13.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4.5M4 13.5 6.2 5.6A2 2 0 0 1 8.1 4h7.8a2 2 0 0 1 1.9 1.6L20 13.5M4 13.5h4.5l1.2 2h4.6l1.2-2H20", 0, 0, 24, 24};
+// Agent logos (Simple Icons 13.21.0, CC0), exact Paper paths: Claude #D97757, OpenAI (Codex) white.
+inline constexpr Glyph claude{"M4.452 15.736l4.455-2.5 0.075-0.218-0.075-0.12h-0.218l-0.745-0.046-2.547-0.069-2.207-0.092-2.139-0.114-0.539-0.115-0.504-0.665 0.051-0.333 0.454-0.304 0.648 0.058 1.433 0.097 2.151 0.15 1.559 0.091 2.311 0.241h0.367l0.052-0.149-0.126-0.092-0.098-0.091L6.586 9.956l-2.409-1.594-1.262-0.918-0.682-0.464-0.344-0.436-0.149-0.952 0.619-0.682 0.831 0.573 0.213 0.573 0.843 0.648 1.8 1.393 2.351 1.732 0.344 0.287 0.138-0.098 0.017-0.069-0.155-0.258-1.279-2.311-1.365-2.35-0.607-0.975-0.161-0.585c-0.057-0.241-0.097-0.441-0.097-0.688L5.938 0.793 6.328 0.667l0.94 0.126 0.396 0.344 0.585 1.336 0.946 2.105 1.468 2.861 0.43 0.849 0.229 0.786 0.086 0.241h0.149v-0.138l0.121-1.611 0.223-1.979 0.218-2.546 0.075-0.717 0.355-0.86 0.705-0.464 0.551 0.264 0.453 0.648-0.631 0.418-0.269 1.749-0.528 2.741-0.344 1.835h0.201l0.229-0.23 0.929-1.232 1.559-1.949 0.688-0.774 0.803-0.855 0.516-0.407h0.974l0.717 1.066-0.321 1.102-1.004 1.273-0.831 1.077-1.193 1.606-0.746 1.284 0.069 0.104 0.178-0.018 2.694-0.573 1.457-0.264 1.737-0.298 0.786 0.367 0.86 0.373-0.31 0.762-1.858 0.459-2.178 0.436-3.246 0.768-0.401 0.029 0.459 0.057 1.462 0.138 0.625 0.034h1.531l2.851 0.212 0.745 0.493 0.447 0.603-0.746 0.459-1.146 0.585-1.548-0.367-3.613-0.861-1.238-0.309h-0.172v0.103l1.032 1.01 1.892 1.708 2.368 2.202 0.12 0.545-0.304 0.429-0.321-0.046-2.081-1.565-0.803-0.705-1.818-1.531h-0.121v0.161l0.419 0.614 2.214 3.325 0.114 1.021-0.16 0.332-0.574 0.201-0.63-0.115-1.296-1.818L13.581 17.628l-1.078-1.835-0.131 0.074-0.637 6.852-0.298 0.35-0.688 0.263-0.574-0.435-0.304-0.706 0.305-1.393 0.367-1.818 0.298-1.445 0.269-1.794 0.16-0.597-0.011-0.04-0.132 0.017-1.353 1.858-2.059 2.781-1.628 1.744-0.39 0.155-0.677-0.35 0.063-0.625 0.379-0.556 2.254-2.868 1.359-1.777 0.877-1.027-0.006-0.149h-0.051l-5.986 3.887-1.067 0.138-0.458-0.43 0.057-0.705 0.219-0.23 1.8-1.238Z", 0.667f, 1.6f, 21.333f, 21.333f};
+inline constexpr Glyph openai{"M19.806 10.063a5.32 5.32 0 0 0-0.458-4.365 5.374 5.374 0 0 0-5.787-2.578A5.391 5.391 0 0 0 4.428 5.051a5.32 5.32 0 0 0-3.554 2.577 5.374 5.374 0 0 0 0.66 6.309 5.316 5.316 0 0 0 0.454 4.365 5.379 5.379 0 0 0 5.791 2.578A5.32 5.32 0 0 0 11.787 22.667a5.383 5.383 0 0 0 5.13-3.739 5.324 5.324 0 0 0 3.554-2.578 5.383 5.383 0 0 0-0.664-6.287z m-8.019 11.207a3.979 3.979 0 0 1-2.557-0.925l0.126-0.072 4.248-2.451a0.707 0.706 90 0 0 0.349-0.606v-5.988l1.795 1.039a0.063 0.063 0 0 1 0.034 0.046v4.963a4.004 4.004 0 0 1-3.996 3.995z m-8.588-3.666a3.974 3.974 0 0 1-0.475-2.68l0.126 0.076 4.252 2.452a0.686 0.685 0 0 0 0.694 0l5.193-2.995v2.073a0.715 0.071 0 0 1-0.295 0.055L8.658 19.067a3.999 3.999 0 0 1-5.459-1.463zM2.081 8.352a3.987 3.987 0 0 1 2.102-1.754V11.644a0.681 0.681 0 0 0 0.345 0.602l5.168 2.982-1.796 1.039a0.673 0.068 0 0 1-0.063 0l-4.293-2.478A4.004 4.004 0 0 1 2.081 8.331z m14.752 3.428L11.648 8.768 13.439 7.733a0.673 0.068 0 0 1 0.063 0l4.294 2.481a3.995 3.995 0 0 1-0.602 7.204v-5.046a0.702 0.702 0 0 0-0.361-0.593z m1.788-2.688l-0.127-0.075-4.243-2.473a0.69 0.69 90 0 0-0.698 0L8.364 9.538V7.464a0.588 0.059 0 0 1 0.025-0.055l4.293-2.477a3.999 3.999 0 0 1 5.938 4.142zM7.383 12.767l-1.795-1.035a0.715 0.071 0 0 1-0.034-0.05V6.732a3.999 3.999 0 0 1 6.556-3.07l-0.126 0.072L7.737 6.186a0.707 0.706 90 0 0-0.349 0.605z m0.976-2.102l2.313-1.333 2.317 1.333v2.666l-2.308 1.333-2.317-1.333Z", 0, 1.6f, 21.333f, 21.333f};
 // « En cours » ring: a 3/4 arc (Paper WOD-0 288 vb, WOL-0 128 vb: same proportions).
 inline constexpr Glyph ring{"M118.004 63.985a54 54 0 0 1-108 0c0-21.26 12.365-40.67 31.5-49.45A6 6 0 1 1 46.504 25.439C31.624 32.27 22.004 47.399 22.004 63.985a42 42 0 0 0 84 0c0-16.585-9.62-31.715-24.5-38.546A6 6 0 1 1 86.504 14.535C105.639 23.315 118.004 42.725 118.004 63.985Z", 0, 0, 128, 128};
 }
@@ -117,7 +132,7 @@ class Ink {
     std::map<ID2D1RenderTarget*, ID2D1SolidColorBrush*> brushes_;
     struct BitmapKey { ID2D1RenderTarget* target; const void* shot; const void* data; bool operator<(const BitmapKey& o) const { return std::tie(target, shot, data) < std::tie(o.target, o.shot, o.data); } };
     std::map<BitmapKey, ID2D1Bitmap*> bitmaps_;
-    ID2D1RenderTarget* target_ = nullptr; ID2D1SolidColorBrush* brush_ = nullptr;
+    ID2D1RenderTarget* target_ = nullptr; ID2D1SolidColorBrush* brush_ = nullptr; ID2D1StrokeStyle* round_ = nullptr;
     unsigned long long layoutsCreated_ = 0;
 
     static void Metrics(IDWriteFontCollection* collection, const wchar_t* family, float& ascent, float& descent) {
@@ -168,9 +183,10 @@ public:
         for (auto& l : layouts_) Release(l.second); layouts_.clear();
         for (auto& g : geometries_) Release(g.second); geometries_.clear();
         Release(inter_); if (write_ && loader_) write_->UnregisterFontCollectionLoader(loader_); Release(loader_);
-        Release(write_); Release(wic_); Release(factory_); target_ = nullptr; brush_ = nullptr;
+        Release(round_); Release(write_); Release(wic_); Release(factory_); target_ = nullptr; brush_ = nullptr;
     }
     ID2D1Factory* Factory() const { return factory_; }
+    float BaselineOf(const Font& f) const { return Baseline(f); }
     IWICImagingFactory* Wic() const { return wic_; }
     const std::wstring& MonoFamily() const { return mono_; }
     unsigned long long LayoutsCreated() const { return layoutsCreated_; }
@@ -184,6 +200,17 @@ public:
         auto it = brushes_.find(t); if (it != brushes_.end()) { Release(it->second); brushes_.erase(it); }
         for (auto b = bitmaps_.begin(); b != bitmaps_.end();) { if (b->first.target == t) { Release(b->second); b = bitmaps_.erase(b); } else ++b; }
         if (target_ == t) { target_ = nullptr; brush_ = nullptr; }
+    }
+    // Drops the cached thumbnails of a target (new data: the old pixel buffers are gone).
+    void ForgetBitmaps(ID2D1RenderTarget* t) { for (auto b = bitmaps_.begin(); b != bitmaps_.end();) { if (!t || b->first.target == t) { Release(b->second); b = bitmaps_.erase(b); } else ++b; } }
+    // Longest prefix of `text` that fits `lines` lines of `width` with an ellipsis (« … ») appended.
+    std::wstring Clamp(const std::wstring& text, const Font& f, float width, int lines, const std::wstring& before = L"", const std::wstring& after = L"") {
+        if (Lines(before + text + after, f, width) <= lines) return before + text + after;
+        size_t lo = 0, hi = text.size();
+        while (lo < hi) { const size_t mid = (lo + hi + 1) / 2; std::wstring t = text.substr(0, mid); while (!t.empty() && t.back() == L' ') t.pop_back();
+            if (Lines(before + t + L"…" + after, f, width) <= lines) lo = mid; else hi = mid - 1; }
+        std::wstring t = text.substr(0, lo); while (!t.empty() && (t.back() == L' ' || t.back() == L',')) t.pop_back();
+        return before + t + L"…" + after;
     }
     ID2D1RenderTarget* Target() const { return target_; }
     ID2D1SolidColorBrush* Brush(D2D1_COLOR_F c) { brush_->SetColor(c); return brush_; }
@@ -231,6 +258,27 @@ public:
         const float sx = (box.right - box.left) / g.w, sy = (box.bottom - box.top) / g.h;
         target_->SetTransform(D2D1::Matrix3x2F::Translation(-g.x, -g.y) * D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(box.left, box.top) * base);
         target_->FillGeometry(geometry, brush);
+        target_->SetTransform(base);
+    }
+    // Stroked outline glyph (the launcher's tray): SVG stroke-width in glyph units, round caps/joins.
+    void IconStroke(const Glyph& g, D2D1_RECT_F box, D2D1_COLOR_F c, float strokeUnits) {
+        auto* geometry = Geometry(g); if (!geometry || !target_ || c.a <= 0) return;
+        if (!round_) { const auto p = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND); factory_->CreateStrokeStyle(p, nullptr, 0, &round_); }
+        D2D1_MATRIX_3X2_F base; target_->GetTransform(&base);
+        const float sx = (box.right - box.left) / g.w, sy = (box.bottom - box.top) / g.h;
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(-g.x, -g.y) * D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(box.left, box.top) * base);
+        target_->DrawGeometry(geometry, Brush(c), strokeUnits, round_);
+        target_->SetTransform(base);
+    }
+    // A glyph with a halo of `halo` colour around it (Paper « paint-order: stroke », empty state).
+    void IconHalo(const Glyph& g, D2D1_RECT_F box, D2D1_COLOR_F fill, D2D1_COLOR_F halo, float haloUnits) {
+        auto* geometry = Geometry(g); if (!geometry || !target_) return;
+        if (!round_) { const auto p = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND); factory_->CreateStrokeStyle(p, nullptr, 0, &round_); }
+        D2D1_MATRIX_3X2_F base; target_->GetTransform(&base);
+        const float sx = (box.right - box.left) / g.w, sy = (box.bottom - box.top) / g.h;
+        target_->SetTransform(D2D1::Matrix3x2F::Translation(-g.x, -g.y) * D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(box.left, box.top) * base);
+        target_->DrawGeometry(geometry, Brush(halo), haloUnits, round_);
+        target_->FillGeometry(geometry, Brush(fill));
         target_->SetTransform(base);
     }
     // ---- text ----
@@ -350,6 +398,87 @@ struct ScaleScope {
     }
     ~ScaleScope() { t->SetTransform(base); }
 };
+
+// ---- V2 shared pieces ---------------------------------------------------------------------
+enum class AgentKind { Claude = 0, Codex = 1, Other = 2 };
+inline const wchar_t* AgentName(AgentKind a) { return a == AgentKind::Claude ? L"Claude" : a == AgentKind::Codex ? L"Codex" : L"Agent"; }
+// Agent logo in a square box: Claude #D97757, OpenAI (Codex) white, another client: the tree glyph at 60 %.
+inline void Logo(Ink& ink, AgentKind a, D2D1_RECT_F box, float opacity = 1) {
+    if (a == AgentKind::Claude) ink.Icon(Glyphs::claude, box, WithAlpha(Hex(Ink_::claude), opacity));
+    else if (a == AgentKind::Codex) ink.Icon(Glyphs::openai, box, {1, 1, 1, opacity});
+    else ink.Icon(Glyphs::tree, box, {1, 1, 1, .6f * opacity});
+}
+// Raised control (Paper: raised #292929 radius 6): hover -> #333333, press -> #3E3E3E.
+inline D2D1_COLOR_F RaisedFill(const Motion::InteractionVisual& iv, float alpha = 1) {
+    const auto a = Hex(Ink_::raised), h = Hex(Ink_::hover), p = Hex(Ink_::pressed);
+    D2D1_COLOR_F c{Lerp(a.r, h.r, iv.hover), Lerp(a.g, h.g, iv.hover), Lerp(a.b, h.b, iv.hover), alpha};
+    c.r = Lerp(c.r, p.r, iv.press); c.g = Lerp(c.g, p.g, iv.press); c.b = Lerp(c.b, p.b, iv.press); return c;
+}
+// A row of text / glyph / logo / key-cap pieces, measured then drawn left, centred or right in a box.
+struct Piece {
+    enum Kind { Text, Icon, Stroke, Logo, Key } kind = Text;
+    std::wstring text; Font font; D2D1_COLOR_F color{1, 1, 1, 1}; const Glyph* glyph = nullptr; float size = 16, rotate = 0;
+    AgentKind agent = AgentKind::Claude; D2D1_COLOR_F plate{0, 0, 0, 0}; float gapAfter = 6; bool underline = false;
+};
+inline Piece PText(std::wstring t, Font f, D2D1_COLOR_F c, float gap = 6) { Piece p; p.kind = Piece::Text; p.text = std::move(t); p.font = f; p.color = c; p.gapAfter = gap; return p; }
+inline Piece PIcon(const Glyph& g, float size, D2D1_COLOR_F c, float gap = 6, float rotate = 0) { Piece p; p.kind = Piece::Icon; p.glyph = &g; p.size = size; p.color = c; p.gapAfter = gap; p.rotate = rotate; return p; }
+inline Piece PLogo(AgentKind a, float size, float gap = 6) { Piece p; p.kind = Piece::Logo; p.agent = a; p.size = size; p.gapAfter = gap; return p; }
+inline Piece PKey(std::wstring t, D2D1_COLOR_F plate, D2D1_COLOR_F c, float gap = 2) { Piece p; p.kind = Piece::Key; p.text = std::move(t); p.plate = plate; p.color = c; p.gapAfter = gap; return p; }
+inline float PieceWidth(Ink& ink, const Piece& p) {
+    switch (p.kind) { case Piece::Text: return ink.Width(p.text, p.font); case Piece::Key: return KeycapWidth(ink, p.text); default: return p.size; }
+}
+inline float PiecesWidth(Ink& ink, const std::vector<Piece>& ps) {
+    float w = 0; for (size_t i = 0; i < ps.size(); ++i) w += PieceWidth(ink, ps[i]) + (i + 1 < ps.size() ? ps[i].gapAfter : 0); return w;
+}
+inline float Pieces(Ink& ink, const std::vector<Piece>& ps, D2D1_RECT_F r, Align align = Align::Center) {
+    const float total = PiecesWidth(ink, ps), cy = (r.top + r.bottom) / 2;
+    float x = align == Align::Center ? (r.left + r.right - total) / 2 : align == Align::Trailing ? r.right - total : r.left;
+    x = std::floor(x * 2 + .5f) / 2;
+    for (const auto& p : ps) {
+        const float w = PieceWidth(ink, p);
+        switch (p.kind) {
+        case Piece::Text: {
+            const float right = std::min(r.right, x + w + 1);
+            ink.Text(p.text, p.font, {x, r.top, right, r.bottom}, p.color, false, Align::Leading, true);
+            if (p.underline) { const float base = cy - p.font.line / 2 + ink.BaselineOf(p.font) + 3; ink.Fill({x, base - .5f, x + w, base + .5f}, 0, p.color); }
+            break; }
+        case Piece::Icon: ink.Icon(*p.glyph, {x, cy - p.size / 2, x + p.size, cy + p.size / 2}, p.color, p.rotate); break;
+        case Piece::Stroke: ink.IconStroke(*p.glyph, {x, cy - p.size / 2, x + p.size, cy + p.size / 2}, p.color, 2); break;
+        case Piece::Logo: Logo(ink, p.agent, {x, cy - p.size / 2, x + p.size, cy + p.size / 2}, p.color.a); break;
+        case Piece::Key: Keycap(ink, p.text, x, cy, p.plate, p.color); break;
+        }
+        x += w + p.gapAfter;
+    }
+    return total;
+}
+// Close button 26/28 (Paper « Fermer »): glyph at 70 %, hover plate 8 % white.
+inline void CloseButton(Ink& ink, D2D1_RECT_F r, float glyph, const Motion::InteractionVisual& iv, bool focus, bool keyboard, bool reduced) {
+    ScaleScope s(ink.Target(), r, Motion::PressScale(iv.press, reduced));
+    if (iv.hover > 0 || iv.press > 0) ink.Fill(r, 6, {1, 1, 1, .08f * iv.hover + .04f * iv.press});
+    const float cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    ink.Icon(Glyphs::close, {cx - glyph / 2, cy - glyph / 2, cx + glyph / 2, cy + glyph / 2}, {1, 1, 1, .7f + .3f * iv.hover});
+    if (focus) FocusRing(ink, r, 6, keyboard);
+}
+// Rounded clip for scrolling content and morphing cards (pushes a layer; pair with PopClip).
+inline bool PushRoundClip(Ink& ink, D2D1_RECT_F r, float radius, ID2D1Layer*& layer, ID2D1Geometry*& geometry, float opacity = 1) {
+    layer = nullptr; geometry = nullptr; auto* t = ink.Target(); if (!t) return false;
+    ID2D1RoundedRectangleGeometry* g = nullptr;
+    if (FAILED(ink.Factory()->CreateRoundedRectangleGeometry(D2D1::RoundedRect(r, radius, radius), &g))) return false;
+    if (FAILED(t->CreateLayer(nullptr, &layer))) { g->Release(); return false; }
+    geometry = g;
+    t->PushLayer(D2D1::LayerParameters(r, geometry, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), Motion::Clamp(opacity)), layer);
+    return true;
+}
+inline void PopClip(Ink& ink, ID2D1Layer*& layer, ID2D1Geometry*& geometry) { if (layer && ink.Target()) ink.Target()->PopLayer(); Release(layer); Release(geometry); }
+// Draws `paint` with a transform (scale about `origin`, then translate) and an opacity group.
+template<class F> inline void Posed(Ink& ink, const Pose& p, D2D1_POINT_2F origin, F&& paint) {
+    auto* t = ink.Target(); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+    t->SetTransform(D2D1::Matrix3x2F::Scale(p.scale, p.scale, origin) * D2D1::Matrix3x2F::Translation(p.dx, p.dy) * base);
+    ID2D1Layer* group = nullptr; const bool pushed = ink.PushOpacity(p.opacity, group);
+    paint(); if (pushed) ink.PopOpacity(group);
+    t->SetTransform(base);
+}
+inline std::wstring Plural(int n, const wchar_t* one, const wchar_t* many) { return std::to_wstring(n) + L" " + (n == 1 ? one : many); }
 
 // ---- Animator: on-demand, display-paced frames for every annotation surface -------------
 class Animator {
