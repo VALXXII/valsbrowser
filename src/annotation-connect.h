@@ -51,10 +51,13 @@ struct ConnectSetup {
     std::wstring serverName = L"browser-annotations";
     std::wstring removableDrive;             // L"E:" when the browser runs from a removable drive (1.6)
     AppStatus claude, codex;
+    bool disconnectable = false;             // integration: a connected app row offers « Déconnecter » (hooks.disconnect)
+    bool manual = false;                     // integration: open with « Autre app ou réglage manuel » unfolded (settings)
 };
 enum class ConnectEnd { Later, Done, Closed };
 struct ConnectHooks {
     std::function<void(AgentKind)> connect;              // explicit click only: the host configures, then SetStatus()
+    std::function<void(AgentKind)> disconnect;           // « Déconnecter » on a connected row (setup.disconnectable): removes only our entry
     std::function<void(const std::wstring&)> copy;       // the host writes the clipboard
     std::function<void(ConnectEnd)> closed;              // close button / Échap at launch = « Plus tard » (Later), « Terminé » (Done), close later on (Closed)
     std::function<void(const std::wstring&)> announce;
@@ -111,7 +114,7 @@ inline constexpr const wchar_t* manualText = L"Dans votre app, ajoutez un serveu
 inline constexpr const wchar_t* localTitle = L"Reste sur cet ordinateur";
 inline constexpr const wchar_t* localText = L"Vos notes et captures sont enregistrées uniquement sur ce PC, jamais sur des serveurs. Quand votre agent les lit, son fournisseur (Anthropic ou OpenAI) reçoit ce qu'il utilise.";
 }
-enum ConnectHit { CNone = 0, CHeader = 1, CClaude = 2, CCodex = 3, CDone = 4, CManual = 5, CCopyCommand = 6, CCopyJson = 7, CCopyToml = 8, CLocal = 9 };
+enum ConnectHit { CNone = 0, CHeader = 1, CClaude = 2, CCodex = 3, CDone = 4, CManual = 5, CCopyCommand = 6, CCopyJson = 7, CCopyToml = 8, CLocal = 9, CClaudeOff = 10, CCodexOff = 11 };
 enum ConnectBlock { BHeader = 1, BClaude = 10, BClaudeMsg = 11, BCodex = 20, BCodexMsg = 21, BDone = 30, BFooter = 40 };
 struct ConnectView {
     ConnectSetup setup; bool manual = false; int copied = 0, focus = 0; bool keyboard = false, reduced = false; float spinner = 0;
@@ -126,11 +129,13 @@ struct ConnectView {
     bool AnyWorking() const { return setup.claude.state == ConnectState::Working || setup.codex.state == ConnectState::Working; }
     bool DoneVisible() const { return AnyConnected() && !AnyWorking(); }
     bool HasMessage(AgentKind a) const { const auto& s = App(a); return (s.state == ConnectState::Failed || s.state == ConnectState::Connected) && !s.detail.empty(); }
+    bool Disconnectable(AgentKind a) const { return setup.disconnectable && App(a).state == ConnectState::Connected; }
 };
 struct ConnectLayout {
     struct Block { int key; float y, h; size_t state; };
     float height = 0; std::vector<Block> blocks;
     D2D1_RECT_F header{}, headerButton{}, claude{}, codex{}, claudeMsg{}, codexMsg{}, done{}, footer{}, manual{}, manualText{}, command{}, copy{}, json{}, toml{}, formatsLabel{};
+    D2D1_RECT_F claudeOff{}, codexOff{};   // « Déconnecter » inside a connected row (right end)
     const Block* Find(int key) const { for (auto& b : blocks) if (b.key == key) return &b; return nullptr; }
 };
 inline size_t Hash(const std::wstring& s) { return std::hash<std::wstring>{}(s); }
@@ -146,6 +151,8 @@ inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
     auto app = [&](AgentKind a, int key, int msgKey, D2D1_RECT_F& rect, D2D1_RECT_F& msg) {
         const auto& s = v.App(a);
         rect = {bx, y, br, y + button};
+        auto& off = a == AgentKind::Claude ? l.claudeOff : l.codexOff;
+        if (v.Disconnectable(a)) { const float w = 10 + ink.Width(L"Déconnecter", F(12, 16, 500)) + 10; off = {br - 4 - w, y + 4, br - 4, y + button - 4}; } else off = {};
         l.blocks.push_back({key, y, button, size_t(s.state) * 1000003u ^ Hash(AppButtonLabel(a, s))}); y += button;
         if (v.HasMessage(a)) { y += gap; msg = {bx, y, br, y + 16}; l.blocks.push_back({msgKey, y, 16, Hash(s.detail) ^ size_t(s.state)}); y += 16; }
         else msg = {};
@@ -183,6 +190,8 @@ inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
 }
 inline int ConnectHitAt(const ConnectLayout& l, const ConnectView& v, float x, float y) {
     if (Inside(l.headerButton, x, y)) return CHeader;
+    if (v.Disconnectable(AgentKind::Claude) && Inside(l.claudeOff, x, y)) return CClaudeOff;
+    if (v.Disconnectable(AgentKind::Codex) && Inside(l.codexOff, x, y)) return CCodexOff;
     if (Inside(l.claude, x, y)) return CClaude;
     if (Inside(l.codex, x, y)) return CCodex;
     if (v.DoneVisible() && Inside(l.done, x, y)) return CDone;
@@ -203,6 +212,13 @@ inline void PaintAppButton(Ink& ink, const ConnectView& v, AgentKind a, D2D1_REC
     case ConnectState::Connected:
         ink.Stroke(r, 6, Hex(0xFFFFFF14));
         Pieces(ink, {PLogo(a, 16), PText(label, f, {1, 1, 1, 1})}, r);
+        if (v.Disconnectable(a)) {   // quiet text button at the right end; the status keeps the centre
+            const int off = a == AgentKind::Claude ? CClaudeOff : CCodexOff; const auto ov = v.V(off);
+            const D2D1_RECT_F b{r.right - 4 - (10 + ink.Width(L"Déconnecter", F(12, 16, 500)) + 10), r.top + 4, r.right - 4, r.bottom - 4};
+            if (ov.hover > 0 || ov.press > 0) ink.Fill(b, 4, {1, 1, 1, .06f * ov.hover + .04f * ov.press});
+            ink.Text(L"Déconnecter", F(12, 16, 500), b, Hex(0xFFFFFFB3), false, Align::Center, true);
+            if (v.focus == off) FocusRing(ink, b, 4, v.keyboard);
+        }
         break;
     case ConnectState::Failed:
         ink.Fill(r, 6, RaisedFill(iv)); ink.Stroke(r, 6, Hex(0xFF7B6E66));
@@ -306,7 +322,8 @@ inline void PaintConnectStatic(Ink& ink, const ConnectView& v, const ConnectLayo
 }
 
 class ConnectModal : public Animator::Client {
-    static constexpr long long DialogKey = 1, StatusKey = 2, LocalTextKey = 3;
+    // UIA keys: distinct from the ConnectHit ids used as node keys (CHeader = 1…), or the tree nests into itself.
+    static constexpr long long DialogKey = 501, StatusKey = 502, LocalTextKey = 503;
     static constexpr UINT_PTR IntentTimer = 21, CopiedTimer = 22;
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_; ConnectHooks hooks_;
     Layer modal_; HWND veil_ = nullptr;
@@ -407,7 +424,8 @@ class ConnectModal : public Animator::Client {
         if (modal_.uia.Listening()) modal_.uia.ChildrenChanged(DialogKey);
     }
     std::vector<int> Order() const {
-        std::vector<int> o{CHeader, CClaude, CCodex};
+        std::vector<int> o{CHeader};
+        for (AgentKind a : {AgentKind::Claude, AgentKind::Codex}) { o.push_back(a == AgentKind::Claude ? CClaude : CCodex); if (view_.Disconnectable(a)) o.push_back(a == AgentKind::Claude ? CClaudeOff : CCodexOff); }
         if (view_.DoneVisible()) o.push_back(CDone);
         o.push_back(CManual);
         if (view_.manual) { o.push_back(CCopyCommand); o.push_back(CCopyJson); o.push_back(CCopyToml); }
@@ -434,6 +452,10 @@ class ConnectModal : public Animator::Client {
             const AgentKind a = hit == CClaude ? AgentKind::Claude : AgentKind::Codex;
             if (!AppEnabled(view_.App(a))) return;
             if (hooks_.connect) hooks_.connect(a);
+            break; }
+        case CClaudeOff: case CCodexOff: {
+            const AgentKind a = hit == CClaudeOff ? AgentKind::Claude : AgentKind::Codex;
+            if (view_.Disconnectable(a) && hooks_.disconnect) hooks_.disconnect(a);
             break; }
         case CDone: Close(true, ConnectEnd::Done); break;
         case CManual: Change([&] { view_.manual = !view_.manual; view_.copied = 0; }, keyboard); Announce(view_.manual ? L"Réglage manuel affiché" : L"Réglage manuel masqué"); break;
@@ -518,6 +540,8 @@ class ConnectModal : public Animator::Client {
             b.enabled = AppEnabled(s); b.automationId = a == AgentKind::Claude ? L"AnnotationConnectClaude" : L"AnnotationConnectCodex";
             b.status = s.state == ConnectState::Working ? L"En cours" : s.state == ConnectState::Connected ? L"Connecté" : s.state == ConnectState::Failed ? L"Échec" : L"";
             if (view_.HasMessage(a)) b.help = s.detail;
+            if (view_.Disconnectable(a)) { auto& d = node(a == AgentKind::Claude ? CClaudeOff : CCodexOff, Accessibility::Role::Button, L"Déconnecter " + AppLong(a), a == AgentKind::Claude ? layout_.claudeOff : layout_.codexOff);
+                d.help = L"Retire seulement l'entrée du navigateur dans la configuration de " + AppLong(a); d.automationId = a == AgentKind::Claude ? L"AnnotationDisconnectClaude" : L"AnnotationDisconnectCodex"; }
         }
         if (view_.DoneVisible()) { auto& b = node(CDone, Accessibility::Role::Button, L"Terminé", layout_.done); b.accelerator = L"Entrée"; b.automationId = L"AnnotationConnectDone"; }
         { auto& b = node(CManual, Accessibility::Role::Button, L"Autre app ou réglage manuel", layout_.manual); b.expand = view_.manual ? 2 : 1; b.automationId = L"AnnotationConnectManual"; }
@@ -560,7 +584,7 @@ public:
     bool Show(const ConnectSetup& setup, RECT ownerClient, bool reduced, int delayMs = 0) {
         if (!Ensure()) return false;
         const auto now = Motion::Now(); reduced_ = reduced; motion_.SetReducedMotion(reduced); client_ = ownerClient;
-        view_ = ConnectView{}; view_.setup = setup; view_.keyboard = true; Relayout(); before_ = view_; beforeLayout_ = layout_;
+        view_ = ConnectView{}; view_.setup = setup; view_.manual = setup.manual && !setup.launch; view_.keyboard = true; Relayout(); before_ = view_; beforeLayout_ = layout_;
         fromY_.clear(); fromH_ = layout_.height; glide_.Snap(1); caret_.Snap(0); fade_.Reset(0);
         localOpen_ = localHover_ = false; fold_.Snap(0); desc_.Snap(0); hover_ = pressed_ = 0; motion_.ClearInteractions();
         const float group = layout_.height + ConnectSpec::pillGap + LocalCollapsed(I(), setup).height;

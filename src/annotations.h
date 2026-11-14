@@ -64,8 +64,6 @@ constexpr std::size_t MaxStyleValueChars = 200;
 constexpr std::size_t MaxSourceAttributes = 8;
 constexpr std::size_t MaxLabelChars = 80;        // agent label, client label
 constexpr std::size_t MaxEvents = 50;
-constexpr std::size_t MaxProjects = 100;            // V1 compatibility (annotation-mode.h)
-constexpr std::size_t MaxOriginsPerProject = 20;
 constexpr std::uint64_t MaxAnnotationFileBytes = 256 * 1024;
 constexpr std::uint64_t MaxStateFileBytes = 64 * 1024;
 constexpr std::uint64_t MaxProjectsFileBytes = 256 * 1024;
@@ -178,9 +176,6 @@ struct Annotation {
     std::string id;
     std::string site;     // origin "https://example.com" ("" = page without an http(s) origin)
     std::string siteKey;  // folder (filled by WriteAnnotation and on read; ignored on input)
-    // V1 source compatibility (annotation-mode.h until the UI moves to sites): ignored on write, set to
-    // siteKey by WriteAnnotation and on read, so Read(a.project, a.id) keeps working. Do not use in new code.
-    std::string project;
     std::int64_t createdAt = 0, updatedAt = 0;
     std::string note;
     Source source;
@@ -199,17 +194,10 @@ struct State {
     std::vector<Event> events;  // oldest first, <= MaxEvents
 };
 
-// V1 source compatibility only (projects are gone in V2): see Store::LoadProjects.
-struct Project {
-    std::string id, label;
-    std::vector<std::string> origins;  // "scheme://host[:port]"
-};
-
 struct Reader {
     std::string client;   // slug (file name)
     std::string label;    // display name ("Claude Desktop")
     std::string site;     // origin the bridge is restricted to (--site); empty = every site
-    std::string project;  // V1 compatibility: always empty on read
     std::int64_t lastReadAt = 0;
 };
 
@@ -315,14 +303,9 @@ public:
     // True when <root> exists, is a directory and not a reparse point.
     bool RootUsable() const;
 
-    // V1 source compatibility (annotation-mode.h): projects are gone. LoadProjects() always returns an empty
-    // list and SaveProjects() succeeds without writing anything. Remove once the UI uses sites.
-    std::vector<Project> LoadProjects() const { return {}; }
-    Outcome SaveProjects(const std::vector<Project>&) const { return {}; }
-
     // Writes (creates or edits) an annotation. Empty a.id => a new id is generated. The site is a.site
-    // (SiteOrigin applied) or, when a.site is empty, the origin of a.source.url; a.site, a.siteKey and
-    // a.project (= siteKey) are set on success. An edit must keep the site. Sanitizes `a` in place,
+    // (SiteOrigin applied) or, when a.site is empty, the origin of a.source.url; a.site and a.siteKey are
+    // set on success. An edit must keep the site. Sanitizes `a` in place,
     // sets createdAt (kept from the existing file on edit) and updatedAt. png: nullptr keeps the existing
     // capture (if any); otherwise the PNG is validated and written as shot.png. draft=false publishes: a new
     // state.json "open" is written if none exists. annotation.json is written last, so readers never see a
@@ -375,8 +358,9 @@ public:
 
     // Retention (call when the history opens / at launch, never on a timer): drafts older than 7 days, done
     // annotations (resolved / needs_info / dismissed) older than 30 days, trash older than
-    // TrashRetentionSeconds, temporary files left by a crash.
-    PurgeReport Purge() const;
+    // TrashRetentionSeconds, temporary files left by a crash. closedRetentionSeconds: the « Conserver les annotations
+    // terminées » setting (7 / 30 / 90 days); <= 0 = the default ClosedRetentionSeconds.
+    PurgeReport Purge(std::int64_t closedRetentionSeconds = 0) const;
     std::uint64_t StoreBytes() const;
 
     // readers\<client>.json (the bridge throttles to one write / 10 s / client).

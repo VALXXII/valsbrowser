@@ -89,6 +89,7 @@ GUID_TEXT(ICoreWebView2ExecuteScriptCompletedHandler,"{49511172-cc67-4bca-9923-1
 GUID_TEXT(ICoreWebView2FaviconChangedEventHandler,"{2913da94-833d-4de0-8dca-900fc524a1a4}")
 GUID_TEXT(ICoreWebView2FocusChangedEventHandler,"{05ea24bd-6452-4926-9014-4b82b498135d}")
 GUID_TEXT(ICoreWebView2CapturePreviewCompletedHandler,"{697e05e9-3d8f-45fa-96f4-8ffe1ededaf5}")
+GUID_TEXT(ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,"{5c4889f0-5ef6-4c5a-952c-d8f1b92d0574}")
 GUID_TEXT(ICoreWebView2GetFaviconCompletedHandler,"{a2508329-7da8-49d7-8c05-fa125e4aee8d}")
 GUID_TEXT(ICoreWebView2NavigationStartingEventHandler,"{9adbe429-f36d-432b-9ddc-f8881fbd76e3}")
 GUID_TEXT(ICoreWebView2FindStartCompletedHandler,"{6a90ecaf-44b0-5bd9-8f07-1967e17be9fb}")
@@ -191,7 +192,8 @@ std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t u
 NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
-constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061; bool AnnotationModeActive(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
+constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,AnnotateHistoryCommand=3062; bool AnnotationHistoryAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
+#include "annotation-entry.h" // settings section « Annotations et agents » and menus: connect/disconnect, status, folder, clear all
 namespace CM=NativeChrome::ContextMenu; extern std::vector<CM::Item> lastSplitMenu; void TabContextMenu(int tabIndex,int anchor); void AnnotationMenuItems(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args,std::vector<CM::Item>& items); void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab,int choice); bool ResizePlaceholdersUp(); extern std::vector<HWND> splitGrips; void SyncGripLooks(); bool PointerOnGrip(); bool GripsAnimating(); void GripFrame(NativeChrome::Motion::Time now); void Select(int n); void EndSplitDrag(bool restore); void SyncSplitDecor(); void ApplyPages(); bool SplitDragMove(POINT point); bool SplitAnimating(); void SplitFrame(NativeChrome::Motion::Time now);
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
 // user typed (the field may also show an inline completion or an arrowed row).
@@ -1098,6 +1100,7 @@ int Key(UINT key){
         // Ctrl+P likewise: the page opens the same browser print preview itself (no double dialog).
         if(!shift&&key=='P')return GetFocus()==window||GetFocus()==address||(Active()&&Active()->home)?PrintActive:0; // a home tab (frequent sites shown) never prints
         if(!shift&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;
+        if(shift&&key=='H'&&AnnotationHistoryAvailable())return AnnotateHistoryCommand; // Ctrl+Maj+H: historique des annotations
         if(!shift&&key=='H')return 'Y'; // history, as in every desktop browser
     }
     if(!ctrl&&!alt&&!shift&&key==VK_F6)return FocusChrome;

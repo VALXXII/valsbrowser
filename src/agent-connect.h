@@ -45,8 +45,19 @@ struct Environment {
     std::function<std::int64_t()> now;                                   // UTC Unix seconds
     std::function<bool()> mcpbAssociated;                                // .mcpb has an "open" handler
     std::function<bool(const std::wstring& file)> openFile;              // ShellExecuteExW "open"
+    // Test guard (incident of 14 Nov 2026: a test copy of the preview, left open without redirection, wrote into the
+    // user's real configurations). testMode: set by FromProcess when BROWSER_ANNOTATIONS_TEST is set or a WebView2
+    // remote-debugging port is requested (automation). In test mode every write, backup, .mcpb opening and codex CLI
+    // run whose target lies under one of protectedRoots() is refused (Result::Failed, nothing touched).
+    // protectedRoots: the REAL folders, resolved from the Windows known folders (never from the environment
+    // variables a test redirects): Roaming\Claude, Local\Packages (Claude_* MSIX copies), <profile>\.codex.
+    bool testMode = false;
+    std::function<std::vector<std::wstring>()> protectedRoots;
     static Environment FromProcess();
 };
+// Pure guard used by Connect*/Disconnect* (exposed for tests): false + why when env.testMode and `path` is one of the
+// protected roots or inside one.
+bool WriteAllowed(const Environment& env, const std::wstring& path, std::string* why = nullptr);
 
 // What the bridge is and where the store is.
 struct Target {

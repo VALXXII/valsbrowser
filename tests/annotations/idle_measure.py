@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idle cost of the annotation mode (T3), audit protocol (audit-performances-browser, §2.4):
+"""Idle cost of the annotation mode (V2: the launcher is always shown), audit protocol (audit-performances-browser, §2.4):
 host CPU = delta GetProcessTimes (user+kernel) of browser.exe over a 30 s window after a 15 s
 settle, in % of one core; disk = delta GetProcessIoCounters (write operations / bytes) over the
 same window; plus thread count, handles and USER/GDI objects at the end of the window.
@@ -7,17 +7,19 @@ same window; plus thread count, handles and USER/GDI objects at the end of the w
     python tests/annotations/idle_measure.py [--runs 3] [--settle 15] [--window 30]
 
 Variants (each in its own fresh copy, own profile, on the sandbox page — serve.py must run):
-  baseline   build/annotations-baseline  (--no-annotations: the mode compiled out)
-  never      build/annotations-preview   (mode compiled in, never activated)
-  used       build/annotations-preview   (mode activated then left once, before the window)
+  baseline   build/annotations-baseline  (--no-annotations: the mode compiled out, no launcher)
+  never      build/annotations-preview   (launcher shown at rest, mode never activated)
+  used       build/annotations-preview   (mode activated and left, history opened and closed, before the window;
+             annotation-connect-prompt=0 so no modal waits for an answer)
 Only our own browser.exe is measured (its WebView2 processes are not counted, as in the audit).
-Output: build/annotations-v1-qa/idle.json + a Markdown table on stdout.
+Output: build/annotations-v2-qa/idle.json + a Markdown table on stdout.
 """
 from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.wintypes as W
 import json
+import os
 import pathlib
 import shutil
 import statistics
@@ -26,7 +28,7 @@ import sys
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-QA = ROOT / 'build' / 'annotations-v1-qa'
+QA = ROOT / 'build' / 'annotations-v2-qa'
 URL = 'http://127.0.0.1:5173/'
 k32, u32, psapi = ctypes.windll.kernel32, ctypes.windll.user32, ctypes.windll.psapi
 u32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
@@ -75,37 +77,63 @@ def main_window(pid):
     return found[0] if found else None
 
 
-def click_annotate(pid):
-    """Activate then leave the mode once (toolbar button 'Annoter', posted to our own window)."""
-    h = main_window(pid); k = u32.GetDpiForWindow(h) / 96
-    rc = W.RECT(); u32.GetClientRect(h, ctypes.byref(rc)); x = (rc.right / k - 157 + 12); y = 60
-    lp = (int(y * k) << 16) | int(x * k)
-    for _ in range(2):
-        for m, w in ((0x200, 0), (0x201, 1), (0x202, 0)):
-            u32.PostMessageW(h, m, w, lp); time.sleep(0.05)
-        time.sleep(1.5)
+def post_key(h, vk, ctrl=False, shift=False):
+    """Ctrl/Maj state through the browser thread's keyboard state, then WM_KEYDOWN/UP to OUR window only."""
+    tid = u32.GetWindowThreadProcessId(h, None); me = k32.GetCurrentThreadId()
+    attached = u32.AttachThreadInput(me, tid, True)
+    state = (ctypes.c_ubyte * 256)(); u32.GetKeyboardState(state); old = bytes(state)
+    if ctrl: state[0x11] = state[0xA2] = 0x80
+    if shift: state[0x10] = state[0xA0] = 0x80
+    u32.SetKeyboardState(state)
+    u32.PostMessageW(h, 0x100, vk, 1); time.sleep(0.15); u32.PostMessageW(h, 0x101, vk, 0xC0000001); time.sleep(0.15)
+    u32.SetKeyboardState((ctypes.c_ubyte * 256).from_buffer_copy(old))
+    if attached:
+        u32.AttachThreadInput(me, tid, False)
+
+
+def use_once(pid, log):
+    """Mode on and off (Ctrl+Maj+A twice), history open and closed (Ctrl+Maj+H twice)."""
+    h = main_window(pid)
+    for vk in (ord('A'), ord('A'), ord('H')):
+        post_key(h, vk, ctrl=True, shift=True); time.sleep(1.5)
+    # The history panel has the focus: Échap to it closes it (the browser's own keys are not routed to it).
+    class GTI(ctypes.Structure):
+        _fields_ = [('cbSize', W.DWORD), ('flags', W.DWORD), ('hwndActive', W.HWND), ('hwndFocus', W.HWND), ('hwndCapture', W.HWND),
+                    ('hwndMenuOwner', W.HWND), ('hwndMoveSize', W.HWND), ('hwndCaret', W.HWND), ('rcCaret', W.RECT)]
+    g = GTI(); g.cbSize = ctypes.sizeof(GTI)
+    u32.GetGUIThreadInfo(u32.GetWindowThreadProcessId(h, None), ctypes.byref(g))
+    post_key(g.hwndFocus or h, 0x1B); time.sleep(1.5)
+    text = log.read_text(encoding='utf-8', errors='replace')
+    return 'ANNOTATE mode on' in text and 'ANNOTATE mode off' in text and 'history opened' in text and text.count('watching the store') == text.count('store watch stopped')
 
 
 def run(variant, src, settle, window, index):
     app = ROOT / 'build' / f'annotations-idle-{variant}'
     if app.exists():
-        shutil.rmtree(app)
+        for _ in range(20):   # a just-closed copy can keep its exe locked for a moment
+            shutil.rmtree(app, ignore_errors=True)
+            if not app.exists(): break
+            time.sleep(1)
     shutil.copytree(src, app, ignore=shutil.ignore_patterns('profile', 'session', 'sessions', 'annotations', '*.log', 'settings', 'history', 'downloads', 'adblock'))
     (app / 'session').write_text('browser-session-2\n0\n1\n' + json.dumps(URL) + '\n0\n', encoding='utf-8', newline='\n')
-    p = subprocess.Popen([str(app / 'browser.exe')], cwd=str(app))
+    if variant == 'used':   # no launch modal waiting for an answer (the key is read when the settings worker's build has it)
+        (app / 'settings').write_text('browser-settings 1\nannotation-connect-prompt=0\n', encoding='utf-8', newline='\n')
+    # Test copies never reach the real Claude / Codex configurations (incident 14 Nov 2026): guard + redirection.
+    env = dict(os.environ); env['BROWSER_ANNOTATIONS_TEST'] = '1'; env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(app / 'agent-configs')
+    p = subprocess.Popen([str(app / 'browser.exe')], cwd=str(app), env=env)
     log = app / 'prototype.log'; t0 = time.time()
     while time.time() - t0 < 60 and not (log.exists() and 'NAVIGATION OK' in log.read_text(encoding='utf-8', errors='replace')):
         time.sleep(0.2)
     time.sleep(3)
-    if variant == 'used':
-        click_annotate(p.pid)
+    used = use_once(p.pid, log) if variant == 'used' else None
     time.sleep(settle)
     h = open_proc(p.pid); a = sample(h, p.pid); time.sleep(window); b = sample(h, p.pid)
     text = log.read_text(encoding='utf-8', errors='replace')
     r = {'variant': variant, 'run': index, 'cpu_pct_core': round((b['cpu_ms'] - a['cpu_ms']) / (window * 1000) * 100, 3),
          'cpu_ms': round(b['cpu_ms'] - a['cpu_ms'], 1), 'write_ops': b['write_ops'] - a['write_ops'], 'write_bytes': b['write_bytes'] - a['write_bytes'],
          'threads': b['threads'], 'handles': b['handles'], 'user_objects': b['user_objects'], 'gdi_objects': b['gdi_objects'],
-         'store_dir_exists': (app / 'annotations').exists(), 'annotate_log_lines': sum(1 for l in text.splitlines() if l.startswith('ANNOTATE'))}
+         'store_dir_exists': (app / 'annotations').exists(), 'annotate_log_lines': sum(1 for l in text.splitlines() if l.startswith('ANNOTATE')), 'used_ok': used,
+         'watch_running_at_end': text.count('ANNOTATE watching the store') > text.count('ANNOTATE store watch stopped')}
     k32.CloseHandle(h)
     hw = main_window(p.pid)
     if hw:

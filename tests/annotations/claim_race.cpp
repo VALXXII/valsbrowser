@@ -30,7 +30,7 @@ struct Item {
 std::vector<Item> Ids(const BA::Store& store) {
     BA::ListQuery q;  // every status, oldest first: all contenders walk the same order
     std::vector<Item> ids;
-    for (const auto& e : store.List(q).entries) ids.push_back({e.annotation.project, e.annotation.id});
+    for (const auto& e : store.List(q).entries) ids.push_back({e.annotation.siteKey, e.annotation.id});
     return ids;
 }
 

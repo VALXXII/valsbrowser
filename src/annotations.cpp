@@ -1065,19 +1065,20 @@ bool AnnotationFromJson(const StrictJson::Value& v, Annotation& out, std::string
         return false;
     }
     if (major == 1) {  // V1: projects. The folder is the project id; the site comes from the page URL below.
-        if (!GetString(v, "project", a.project, true, error)) return false;
-        if (!IsValidProjectId(a.project)) {
+        std::string project;
+        if (!GetString(v, "project", project, true, error)) return false;
+        if (!IsValidProjectId(project)) {
             if (error) *error = "bad project";
             return false;
         }
-        a.siteKey = a.project;
+        a.siteKey = project;
     } else {
         if (!GetString(v, "site", a.site, true, error)) return false;
         if (a.site != SiteOrigin(a.site)) {
             if (error) *error = "bad site";
             return false;
         }
-        a.siteKey = a.project = SiteKey(a.site);
+        a.siteKey = SiteKey(a.site);
     }
     if (!GetTime(v, "createdAt", a.createdAt, true, error) || !GetTime(v, "updatedAt", a.updatedAt, false, error) ||
         !GetString(v, "note", a.note, false, error))
@@ -1585,7 +1586,7 @@ std::string ConflictMessage(const ClaimFile& c) {
 
 Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft) const {
     a.site = SiteOrigin(a.site.empty() ? RedactUrl(a.source.url) : a.site);
-    a.siteKey = a.project = SiteKey(a.site);
+    a.siteKey = SiteKey(a.site);
     if (!IsValidSiteKey(a.siteKey)) return Fail(Code::Invalid, "Site invalide.");
     if (a.id.empty()) {
         a.id = NewAnnotationId();
@@ -1646,7 +1647,7 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
     a.createdAt = hasExisting ? existing.createdAt : now;
     a.updatedAt = now;
     Sanitize(a);
-    a.siteKey = a.project = SiteKey(a.site);
+    a.siteKey = SiteKey(a.site);
     if (png) {
         if (!AtomicWrite(p.dir + L"\\shot.png", *png)) return abandon(Code::Io, "Écriture de la capture impossible.");
         a.screenshot.present = true;
@@ -2119,8 +2120,9 @@ std::size_t Store::CountClaimed() const {
     return count;
 }
 
-PurgeReport Store::Purge() const {
+PurgeReport Store::Purge(std::int64_t closedRetentionSeconds) const {
     PurgeReport report;
+    const std::int64_t closedRetention = closedRetentionSeconds > 0 ? closedRetentionSeconds : ClosedRetentionSeconds;
     if (!RootUsable()) return report;
     const std::int64_t now = Now(), realNow = RealNow();
     auto sweepTemp = [&](const std::wstring& dir) {
@@ -2150,7 +2152,7 @@ PurgeReport Store::Purge() const {
             Entry e;
             if (Read(project, id, e).ok() && IsDone(e.state.status)) {
                 const std::int64_t closedAt = e.state.resolution && e.state.resolution->at ? e.state.resolution->at : e.state.updatedAt;
-                if (now - closedAt > ClosedRetentionSeconds && RemoveTree(dir)) {
+                if (now - closedAt > closedRetention && RemoveTree(dir)) {
                     ++report.closed;
                     continue;
                 }

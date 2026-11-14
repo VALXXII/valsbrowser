@@ -288,7 +288,7 @@ void TestClaudeConnectFlow(Fixture& f, const std::wstring& mcpbOut) {
     RemoveTree(dir + L"\\Claude Extensions");
     // Readers: recent Claude read => connected even without config.
     CHECK(WriteText(cfg, "{}"));
-    std::vector<BA::Reader> readers = {{"claude-ai", "Claude Desktop", "", "", f.now - 3600}, {"codex-mcp-client", "Codex", "", "", f.now - 8 * 86400}};
+    std::vector<BA::Reader> readers = {{"claude-ai", "Claude Desktop", "", f.now - 3600}, {"codex-mcp-client", "Codex", "", f.now - 8 * 86400}};
     st = AC::ClientStatus(f.env, AC::Client::Claude, f.target, readers);
     CHECK(!st.configured && st.recentlyRead && st.connected() && st.readerLabel == "Claude Desktop" && !st.removableDrive);
     AC::Status cx = AC::ClientStatus(f.env, AC::Client::Codex, f.target, readers);
@@ -438,9 +438,44 @@ void TestCodexCli(Fixture& f, const std::wstring& fakeCodex) {
     CHECK(WriteText(cfg, "model = \"o3\"\n"));
     r = AC::ConnectCodex(f.env, f.target);
     CHECK(r.result == AC::Result::Connected && !r.usedCli);
-    AC::Status st = AC::ClientStatus(f.env, AC::Client::Codex, f.target, {{"codex-mcp-client", "Codex", "", "", f.now}});
+    AC::Status st = AC::ClientStatus(f.env, AC::Client::Codex, f.target, {{"codex-mcp-client", "Codex", "", f.now}});
     CHECK(st.configured && st.recentlyRead && st.readerLabel == "Codex" && !st.stalePath);
     CHECK(AC::DisconnectCodex(f.env, f.target).result == AC::Result::Disconnected && ReadText(cfg) == "model = \"o3\"\n");
+}
+
+// Test guard (incident 14 Nov 2026): with testMode, every write under a protected root is refused and nothing is
+// touched. The "real" folders are SIMULATED here (temporary folders declared as protected), never the user's.
+void TestGuard(Fixture& f) {
+    const std::wstring fake = f.base + L"\\guard";
+    const std::wstring roaming = fake + L"\\Roaming", profile = fake + L"\\Profile";
+    for (const auto& d : {fake, roaming, roaming + L"\\Claude", profile, profile + L"\\.codex", fake + L"\\work"}) CreateDirectoryW(d.c_str(), nullptr);
+    const std::wstring claudeCfg = roaming + L"\\Claude\\claude_desktop_config.json", codexCfg = profile + L"\\.codex\\config.toml";
+    const std::string claudeText = "{\n  \"mcpServers\": {}\n}\n", codexText = "model = \"o3\"\n";
+    CHECK(WriteText(claudeCfg, claudeText) && WriteText(codexCfg, codexText));
+    AC::Environment env = f.env;
+    env.appData = roaming; env.localAppData = fake + L"\\Local"; env.userProfile = profile; env.codexHome.clear();
+    env.testMode = true;
+    env.protectedRoots = [roaming, profile] { return std::vector<std::wstring>{roaming + L"\\Claude", profile + L"\\.codex"}; };
+    f.associated = true; f.opened.clear();
+    AC::Report r = AC::ConnectClaude(env, f.target, fake + L"\\work");
+    CHECK(r.result == AC::Result::Failed && r.message.find("Mode test") != std::string::npos && r.backup.empty());
+    CHECK(f.opened.empty());   // no .mcpb handed to Claude's installer either
+    CHECK(AC::DisconnectClaude(env, f.target).result == AC::Result::Failed);
+    CHECK(AC::ConnectCodex(env, f.target).result == AC::Result::Failed && AC::DisconnectCodex(env, f.target).result == AC::Result::Failed);
+    CHECK(ReadText(claudeCfg) == claudeText && ReadText(codexCfg) == codexText);
+    CHECK(Backups(roaming + L"\\Claude", L"claude_desktop_config.json").empty() && Backups(profile + L"\\.codex", L"config.toml").empty());
+    std::string why;
+    CHECK(!AC::WriteAllowed(env, roaming + L"\\CLAUDE\\x.json", &why) && !why.empty());   // case-insensitive, inside
+    CHECK(AC::WriteAllowed(env, roaming + L"\\Claude2\\x.json"));                       // a sibling is not inside
+    AC::Environment none = env; none.protectedRoots = [] { return std::vector<std::wstring>{}; };
+    CHECK(!AC::WriteAllowed(none, f.base + L"\\anything"));                              // roots unknown: refuse
+    AC::Environment off = env; off.testMode = false;
+    CHECK(AC::WriteAllowed(off, claudeCfg));                                             // the real product (explicit click)
+    // Test mode with a redirected (non-protected) folder works normally.
+    AC::Environment redirected = env; redirected.protectedRoots = [] { return std::vector<std::wstring>{L"C:\\NotHere\\Claude"}; };
+    r = AC::ConnectClaude(redirected, f.target, fake + L"\\work");
+    CHECK(r.result == AC::Result::Connected && f.opened.empty() && ReadText(claudeCfg).find("browser-annotations") != std::string::npos);
+    f.associated = false;
 }
 
 }  // namespace
@@ -461,5 +496,6 @@ int wmain(int argc, wchar_t** argv) {
     TestClaudeConnectFlow(f, mcpbOut);
     TestCodexToml(f);
     TestCodexCli(f, fakeCodex);
+    TestGuard(f);
     return Finish("agent_connect_test");
 }

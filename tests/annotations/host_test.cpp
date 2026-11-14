@@ -56,7 +56,7 @@ static void Envelopes() {
     t = GoodTarget; t.replace(t.find("\"selectionText\":null"), 20, "\"selectionText\":[1]");
     CHECK(AH::CheckMessage(Message(n, 7, "select", Select(t)), n, 7).env.op == AH::Op::Invalid);
     // A hostile page's extra attributes/styles are dropped by the store's allow-lists.
-    BA::Annotation a; a.project = "boutique"; a.target = c.selection.target; BA::Sanitize(a);
+    BA::Annotation a; a.target = c.selection.target; BA::Sanitize(a);
     bool value = false, onclick = false, custom = false;
     for (const auto& v : a.target.attributes) { value |= v.name == "value"; onclick |= v.name == "onclick"; }
     for (const auto& v : a.target.styles) custom |= v.name == "--secret";
@@ -83,23 +83,66 @@ static void Crops() {
     CHECK(stale.ok && stale.y == 95 && stale.h == 123 && stale.markY == 30);
 }
 
-static void Projects() {
+// V2: the engine clip (Page.captureScreenshot) — document coordinates, viewport limits, <= 1600 px.
+static void Clips() {
+    BA::Viewport vp; vp.width = 1000; vp.height = 800; vp.scrollX = 0; vp.scrollY = 420; vp.devicePixelRatio = 1.25;
+    auto p = AH::PlanClip({100, 100, 200, 50}, vp);
+    CHECK(p.ok && p.x == 76 && p.y == 496 && p.width == 248 && p.height == 98 && p.scale == 1);   // scroll added, margin 24
+    CHECK(p.outW == 310 && p.outH == 123 && p.markX == 24 && p.markY == 24 && p.markW == 200 && p.markH == 50 && p.crop == "element+margin");
+    vp.devicePixelRatio = 1.875;   // 150 % zoom at 125 %
+    auto z = AH::PlanClip({100.4, 100.6, 200, 50}, vp);
+    CHECK(z.ok && z.x == 76 && z.width == 249 && z.outW == unsigned(std::lround(249 * 1.875)) && z.markX > 24 && z.markX < 25);
+    auto big = AH::PlanClip({0, 0, 3000, 2000}, BA::Viewport{3000, 2000, 0, 0, 2, 1});
+    CHECK(big.ok && big.scale < .27 && big.outW == 1600 && big.outH <= 1600 && big.crop == "element+margin (viewport edge)");
+    auto edge = AH::PlanClip({-50, 700, 200, 300}, BA::Viewport{1000, 800, 0, 0, 1, 1});
+    CHECK(edge.ok && edge.x == 0 && edge.y == 676 && edge.height == 124 && edge.crop == "element+margin (visible part)");
+    CHECK(!AH::PlanClip({2000, 2000, 10, 10}, BA::Viewport{1000, 800, 0, 0, 1, 1}).ok);   // invisible
+    CHECK(!AH::PlanClip({1, 1, 10, 10}, BA::Viewport{0, 800, 0, 0, 1, 1}).ok);
+    const std::string params = AH::ClipParams(p);
+    CHECK(params.find("\"clip\":{\"x\":76,\"y\":496,\"width\":248,\"height\":98,\"scale\":1}") != std::string::npos || params.find("\"x\":76") != std::string::npos);
+    CHECK(params.find("\"format\":\"png\"") != std::string::npos && params.find("\"captureBeyondViewport\":false") != std::string::npos);
+    // Reply decoding: strict JSON + base64 + PNG signature.
+    std::string png;
+    CHECK(AH::ScreenshotData("{\"data\":\"iVBORw0KGgoAAAANSUhEUg==\"}", png) && png.size() == 16 && png.compare(0, 4, "\x89PNG") == 0);
+    CHECK(!AH::ScreenshotData("{\"data\":\"aGVsbG8gd29ybGQh\"}", png));   // not a PNG
+    CHECK(!AH::ScreenshotData("{\"data\":\"iVBOR*0KGgo=\"}", png));        // bad base64
+    CHECK(!AH::ScreenshotData("{\"error\":1}", png) && !AH::ScreenshotData("[]", png) && !AH::ScreenshotData("{\"data\":\"\"}", png));
+    std::string out;
+    CHECK(AH::Base64Decode("TWFu", out) && out == "Man" && AH::Base64Decode("TWE=", out) && out == "Ma" && AH::Base64Decode("TQ==", out) && out == "M");
+    CHECK(!AH::Base64Decode("TQ=a", out) && !AH::Base64Decode("TWF", out));
+    // The selection counter and the click time travel with « select ».
+    const std::string n = "clm_abcdefghijklmnopqrstuvwxyz";
+    auto c = AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget) + ",\"seq\":3,\"at\":1763112000000"), n, 7);
+    CHECK(c.env.op == AH::Op::Select && c.selection.seq == 3 && c.selection.at == 1763112000000.0);
+    CHECK(AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget) + ",\"seq\":-1"), n, 7).env.op == AH::Op::Invalid);
+    CHECK(AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget) + ",\"seq\":\"3\""), n, 7).env.op == AH::Op::Invalid);
+    CHECK(AH::CheckMessage(Message(n, 7, "select", Select(GoodTarget)), n, 7).selection.seq == -1);
+}
+
+static void Texts() {
+    BA::Target t; t.tag = "button"; t.role = "button"; t.accessibleName = "Payer 48,00 \xE2\x82\xAC";
+    CHECK(AH::ElementLabel(t) == L"Bouton « Payer 48,00 € »");
+    t.tag = "a"; t.role = "link"; t.accessibleName = ""; t.text = "  Mentions\nlégales ";
+    CHECK(AH::ElementLabel(t) == L"Lien « Mentions légales »");
+    t.tag = "div"; t.role = ""; t.text = "";
+    CHECK(AH::ElementLabel(t) == L"Élément div");
+    t.kind = "selection"; t.selectionText = std::string(60, 'x');
+    CHECK(AH::ElementLabel(t).rfind(L"Texte sélectionné « ", 0) == 0 && AH::ElementLabel(t).find(L"…") != std::wstring::npos);
+    CHECK(AH::AgeLabel(30, 0, 1, 14, 11) == L"À l'instant" && AH::AgeLabel(125, 0, 1, 14, 11) == L"2 min" && AH::AgeLabel(7300, 0, 1, 14, 11) == L"2 h");
+    CHECK(AH::AgeLabel(30000, 1, 5, 13, 11) == L"Hier" && AH::AgeLabel(300000, 3, 2, 11, 11) == L"Mardi" && AH::AgeLabel(900000, 10, 2, 4, 11) == L"4 nov.");
+    CHECK(AH::AgentDisplay("Claude Desktop") == L"Claude" && AH::AgentDisplay("codex-mcp-client") == L"Codex" && AH::AgentDisplay("try-mcp (sandbox)") == L"try-mcp (sandbox)" && AH::AgentDisplay("") == L"Un agent");
+    CHECK(AH::AgentKindOf("claude-ai") == 0 && AH::AgentKindOf("Codex") == 1 && AH::AgentKindOf("x") == 2);
+    CHECK(AH::SinceLower(130) == L"depuis 2 min" && AH::SinceLower(10) == L"à l'instant");
+}
+
+static void Origins() {
     CHECK(AH::OriginOf(L"http://127.0.0.1:5173/checkout?x=1#a") == "http://127.0.0.1:5173");
     CHECK(AH::OriginOf(L"HTTPS://User:pw@Example.FR:443/a") == "https://example.fr");
     CHECK(AH::OriginOf(L"http://localhost:80/") == "http://localhost");
     CHECK(AH::OriginOf(L"file:///C:/x.html").empty() && AH::OriginOf(L"about:blank").empty());
-    CHECK(AH::LabelFor("http://127.0.0.1:5173", L"Paiement \u2014 Boutique") == "Boutique");
-    CHECK(AH::LabelFor("http://127.0.0.1:5173", L"Sans séparateur") == "127.0.0.1:5173");
-    std::vector<BA::Project> existing{{"boutique", "Boutique", {"http://localhost:5173"}}};
-    auto p = AH::NewProjectFor("http://127.0.0.1:5173", L"Paiement \u2014 Boutique", existing);
-    CHECK(p.id == "boutique-2" && p.label == "Boutique" && p.origins.size() == 1 && BA::IsValidProjectId(p.id));
-    auto h = AH::NewProjectFor("http://127.0.0.1:5173", L"x", existing, true);
-    CHECK(h.id == "127-0-0-1-5173" && BA::IsValidProjectId(h.id));
-    CHECK(AH::ProjectForOrigin(existing, "http://localhost:5173") == 0 && AH::ProjectForOrigin(existing, "http://localhost:5174") == -1);
-    CHECK(AH::SlugFor("CON") == "con" || !BA::IsValidProjectId("con"));
-    CHECK(BA::IsValidProjectId(AH::SlugFor("CON")) && BA::IsValidProjectId(AH::SlugFor("Été 2026 !")));
+    for (const char* u : {"http://127.0.0.1:5173/a?b", "HTTPS://User:pw@Example.FR:443/a", "http://localhost:80/"})
+        CHECK(AH::OriginOf(AH::Wide(u)) == BA::SiteOrigin(u));   // the host and the store agree on the site key
 }
-
 static void Status() {
     std::vector<BA::Entry> e(3);
     e[0].annotation.id = "a"; e[0].state.status = BA::Status::Claimed; e[0].state.events = {{100, "agent", "open", "claimed", ""}};
@@ -127,7 +170,7 @@ static void Script() {
 }
 
 int main() {
-    Envelopes(); Crops(); Projects(); Status(); Script();
+    Envelopes(); Crops(); Clips(); Origins(); Status(); Texts(); Script();
     std::printf("host_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

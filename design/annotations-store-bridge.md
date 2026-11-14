@@ -101,14 +101,14 @@ Outcome Restore(const std::string& site, const std::string& id) const;       // 
 Outcome DiscardTrash(const std::string& site, const std::string& id) const;  // toast fermé
 std::size_t CountClaimed() const;                                            // compteur du lanceur
 Outcome DeleteSite(const std::string& site) const;                           // DeleteProject = alias
-PurgeReport Purge() const;   // + terminées (needs_info inclus) > 30 j, corbeille > 120 s
+PurgeReport Purge(std::int64_t closedRetentionSeconds = 0) const;   // + terminées (needs_info inclus) > 30 j (ou le réglage 7/30/90 j), corbeille > 120 s
 ```
 
 Liste paginée tous sites, récente d'abord : `ListQuery q; q.progress = Progress::Done; q.newestFirst = true; q.limit = 30;` puis `q.cursor = page.nextCursor` ; regrouper chaque page avec `GroupBySite`.
 
 **Suppression + « Annuler » : corbeille temporaire** (et non suppression différée). `Trash` écrit `trashed.json` (heure de suppression) puis renomme `<siteKey>\<id>` en `trash\<siteKey>\<id>` (un seul `MoveFileExW`, même volume). Raisons : (1) l'annotation disparaît **immédiatement** pour les agents (`list`/`get`/`claim` → introuvable), alors qu'une suppression différée la laisserait servie pendant 6 s ; (2) « Annuler » rend l'entrée intacte (état, bail en cours, capture) par le renommage inverse ; (3) un plantage pendant les 6 s ne laisse rien durablement : `Purge()` vide la corbeille après 120 s (y compris un élément sans marqueur). Si un agent a un fichier de l'entrée ouvert, le renommage échoue → `Busy` après ~1 s de nouvelles tentatives (entrée intacte, l'UI réessaie).
 
-**Compatibilité source V1** (pour que `annotation-mode.h`, réécrit en parallèle par l'autre worker, compile) : `Project`, `LoadProjects()` (toujours vide), `SaveProjects()` (n'écrit rien), `MaxProjects`, `MaxOriginsPerProject`, `IsValidProjectId`, `Annotation::project` (= `siteKey` après écriture/lecture), `Reader::project` (vide). À retirer quand l'UI n'en dépend plus.
+**Compatibilité source V1** : retirée par V2-C (intégration) — `Project`, `LoadProjects()`, `SaveProjects()`, `MaxProjects`, `MaxOriginsPerProject`, `Annotation::project` et `Reader::project` n'existent plus ; `IsValidProjectId` reste (lecture tolérante des dossiers V1).
 
 ## Bridge
 

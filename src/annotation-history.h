@@ -55,6 +55,7 @@ struct HistoryHooks {
     std::function<void(const std::wstring& id)> removeFinal;  // the toast expired: forget it for good
     std::function<void(const std::wstring& id)> detail;       // a detail opened (the host may SetEntryCapture)
     std::function<void(const std::wstring& markdown)> copy;   // « Copier en Markdown »: the host writes the clipboard
+    std::function<void(const std::wstring& id)> copyEntry;    // integration: when set, replaces copy (the host builds the full Markdown from its store)
     std::function<void()> annotate;                           // « Annoter cette page » (empty state)
     std::function<void(bool keyboard)> closed;                // the panel closed itself (close, Échap)
     std::function<void(const std::wstring&)> announce;
@@ -317,7 +318,8 @@ inline void PaintToast(Ink& ink, const Motion::InteractionVisual& iv, bool focus
 
 inline Timing PanelTiming() { return {}; }
 class HistoryPanel : public Animator::Client {
-    static constexpr long long PanelKey = 1, ListKey = 2, ToastKey = 3, UndoKey = 4, EmptyKey = 5, DetailTextKey = 6, ItemBase = 1000;
+    // UIA keys: distinct from the HistoryHit ids used as node keys (HClose = 1…), or the tree nests into itself.
+    static constexpr long long PanelKey = 501, ListKey = 502, ToastKey = 503, UndoKey = 504, EmptyKey = 505, DetailTextKey = 506, ItemBase = 1000;
     static constexpr UINT_PTR ToastTimer = 31;
     HINSTANCE instance_ = nullptr; HWND parent_ = nullptr; HistoryHooks hooks_;
     Layer panel_, toast_; HistoryView view_, before_; HistoryLayout layout_, beforeLayout_;
@@ -455,7 +457,8 @@ class HistoryPanel : public Animator::Client {
     }
     void Copy(int entry) {
         if (entry < 0 || entry >= int(view_.data.entries.size())) return;
-        if (hooks_.copy) hooks_.copy(EntryMarkdown(view_.data.entries[size_t(entry)]));
+        if (hooks_.copyEntry) hooks_.copyEntry(view_.data.entries[size_t(entry)].id);
+        else if (hooks_.copy) hooks_.copy(EntryMarkdown(view_.data.entries[size_t(entry)]));
         Announce(L"Copié en Markdown");
     }
     void Activate(int hit, bool keyboard) {
@@ -663,6 +666,9 @@ public:
     }
     // New data while open (the host watches its store only while the panel is visible).
     void Update(const HistoryData& data) { if (!presence_.IsOpen()) return; Change([&] { view_.data = data; if (!view_.detailId.empty() && view_.Find(view_.detailId) < 0) view_.detailId.clear(); }); I().ForgetBitmaps(nullptr); }
+    // Integration (card « Voir l'annotation »): open straight on one entry's detail.
+    void ShowDetail(const std::wstring& id) { const int i = view_.Find(id); if (i >= 0 && view_.detailId != id) OpenDetail(i, false); }
+    const std::wstring& DetailId() const { return view_.detailId; }
     void SetEntryCapture(const std::wstring& id, const Shot& capture) { const int i = view_.Find(id); if (i < 0) return; view_.data.entries[size_t(i)].capture = capture; I().ForgetBitmaps(nullptr); Render(Motion::Now()); }
     void Hide(bool animate = true) {
         if (!panel_.Window() || !presence_.IsOpen()) return; const auto now = Motion::Now();

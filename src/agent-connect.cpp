@@ -6,6 +6,7 @@
 #include <objbase.h>
 #include <shellapi.h>
 #include <shlwapi.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -750,6 +751,25 @@ bool InstalledExtension(const Environment& env, const std::string& name, Configu
 // ================================================================ environment
 Environment Environment::FromProcess() {
     Environment e;
+    {   const std::wstring args = LowerW(EnvVar(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"));
+        e.testMode = !EnvVar(L"BROWSER_ANNOTATIONS_TEST").empty() || args.find(L"remote-debugging") != std::wstring::npos; }
+    e.protectedRoots = [] {
+        std::vector<std::wstring> roots;
+        auto known = [](REFKNOWNFOLDERID id) {
+            PWSTR p = nullptr; std::wstring out;
+            if (SUCCEEDED(SHGetKnownFolderPath(id, KF_FLAG_DONT_VERIFY, nullptr, &p)) && p) out = p;
+            CoTaskMemFree(p); return out;
+        };
+        // KNOWNFOLDERIDs spelled out (no -luuid needed by the tests and tools that link this file).
+        static const GUID roamingId = {0x3EB685DB, 0x65F9, 0x4CF6, {0xA0, 0x3A, 0xE3, 0xEF, 0x65, 0x72, 0x9F, 0x3D}};
+        static const GUID localId = {0xF1B32785, 0x6FBA, 0x4FCF, {0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91}};
+        static const GUID profileId = {0x5E6C858F, 0x0E22, 0x4760, {0x9A, 0xFE, 0xEA, 0x33, 0x17, 0xB6, 0x71, 0x73}};
+        const std::wstring roaming = known(roamingId), local = known(localId), profile = known(profileId);
+        if (!roaming.empty()) roots.push_back(roaming + L"\\Claude");
+        if (!local.empty()) roots.push_back(local + L"\\Packages");
+        if (!profile.empty()) roots.push_back(profile + L"\\.codex");
+        return roots;
+    };
     e.appData = EnvVar(L"APPDATA");
     e.localAppData = EnvVar(L"LOCALAPPDATA");
     e.userProfile = EnvVar(L"USERPROFILE");
@@ -1180,15 +1200,35 @@ Report RemoveClaudeConfig(const std::wstring& configPath, const std::string& ser
     return Make(Result::Disconnected, "Claude est déconnecté. Redémarrez Claude pour l'appliquer.", configPath, backup);
 }
 
+bool WriteAllowed(const Environment& env, const std::wstring& path, std::string* why) {
+    if (!env.testMode) return true;
+    const std::wstring target = LowerW(StripSlash(FullPath(path)));
+    std::vector<std::wstring> roots = env.protectedRoots ? env.protectedRoots() : std::vector<std::wstring>{};
+    if (roots.empty()) { if (why) *why = "Mode test : dossiers réels inconnus, écriture refusée."; return false; }
+    for (const auto& r : roots) {
+        const std::wstring root = LowerW(StripSlash(FullPath(r)));
+        if (root.empty()) continue;
+        if (target == root || (target.size() > root.size() && target.compare(0, root.size(), root) == 0 && target[root.size()] == L'\\')) {
+            if (why) *why = "Mode test (BROWSER_ANNOTATIONS_TEST ou débogage distant) : écriture refusée dans la vraie configuration de l'utilisateur. Redirigez BROWSER_ANNOTATIONS_CONNECT_ROOT.";
+            return false;
+        }
+    }
+    return true;
+}
+namespace {
+Report Refused(const std::string& why, const std::wstring& file) { return Make(Result::Failed, why, file); }
+}
+
 Report ConnectClaude(const Environment& env, const Target& t, const std::wstring& workDir) {
     const std::wstring config = ClaudeConfigPath(env);
     if (config.empty()) return Make(Result::NoClient, "Claude Desktop n'est pas installé sur cet ordinateur (aucun dossier de configuration).");
+    if (std::string why; !WriteAllowed(env, config, &why)) return Refused(why, config);
     ConfiguredEntry ext;
     if (InstalledExtension(env, t.serverName, &ext) && ext.args.size() == 2 && ext.args[0] == L"--store" && SamePath(ext.args[1], t.storeRoot))
         return Make(Result::AlreadyConnected, "L'extension est déjà installée dans Claude.");
     if (EntryMatches(ReadClaudeEntry(config, t.serverName), t)) return Make(Result::AlreadyConnected, "Claude est déjà configuré.", config);
     std::string why;
-    if (env.mcpbAssociated && env.mcpbAssociated() && !workDir.empty()) {
+    if (!env.testMode && env.mcpbAssociated && env.mcpbAssociated() && !workDir.empty()) {   // test mode: never Claude's installer
         const std::wstring bundle = StripSlash(workDir) + L"\\" + Widen(t.serverName) + L".mcpb";
         if (BuildMcpb(t, bundle, &why) && env.openFile && env.openFile(bundle)) {
             Report rep = Make(Result::PendingInstall, "Cliquez sur Installer dans Claude.", bundle);
@@ -1202,6 +1242,7 @@ Report ConnectClaude(const Environment& env, const Target& t, const std::wstring
 Report DisconnectClaude(const Environment& env, const Target& t) {
     const std::wstring config = ClaudeConfigPath(env);
     if (config.empty()) return Make(Result::NoClient, "Claude Desktop n'est pas installé sur cet ordinateur.");
+    if (std::string why; !WriteAllowed(env, config, &why)) return Refused(why, config);
     Report rep = RemoveClaudeConfig(config, t.serverName, env.now ? env.now() : BA::SystemNow());
     if (rep.ok() && ClaudeExtensionInstalled(env, t.serverName)) {
         rep.result = Result::ManualStep;
@@ -1299,6 +1340,7 @@ Report ConnectCodex(const Environment& env, const Target& t) {
     const std::wstring home = CodexHome(env);
     if (home.empty() || !DirExists(home)) return Make(Result::NoClient, "Codex n'est pas installé sur cet ordinateur (aucun dossier de configuration).");
     const std::wstring config = home + L"\\config.toml";
+    if (std::string why; !WriteAllowed(env, home, &why)) return Refused(why, config);
     const std::int64_t now = env.now ? env.now() : BA::SystemNow();
     // Pre-flight on the current file: same refusals whichever way we write.
     std::string text;
@@ -1332,6 +1374,7 @@ Report DisconnectCodex(const Environment& env, const Target& t) {
     const std::wstring home = CodexHome(env);
     if (home.empty() || !DirExists(home)) return Make(Result::NoClient, "Codex n'est pas installé sur cet ordinateur.");
     const std::wstring config = home + L"\\config.toml";
+    if (std::string why; !WriteAllowed(env, home, &why)) return Refused(why, config);
     const std::int64_t now = env.now ? env.now() : BA::SystemNow();
     if (!ReadCodexEntry(config, t.serverName).present) {
         Report probe = RemoveToml(config, t.serverName, now, false, L"");  // reports InvalidConfig / NotConnected, writes nothing

@@ -1,5 +1,5 @@
 #pragma once
-// Annotation mode — the page script (V1). Injected with ExecuteScript ONLY when the mode is
+// Annotation mode — the page script (V1, V2 capture at the click). Injected with ExecuteScript ONLY when the mode is
 // activated, in the active tab only (never AddScriptToExecuteOnDocumentCreated); it removes
 // itself completely when the mode ends. Contract: plan-annotations-mcp-local/design/
 // annotations-v1-brief.md, plan §1.3/§4/§6.1/§8.
@@ -20,7 +20,9 @@
 //     computed styles (lists given by the host), text <= 2000 characters, never a field value
 //     (input/textarea/select contents, password fields), no cookies/storage/HTML.
 // The host talks to it through window[Symbol.for('browser.annotation')] guarded by the nonce
-// (hide before capture, show, resume, select at a point, select the text selection, exit).
+// (hide before capture, show, resume, select at a point, select the text selection, exit). V2: a selection
+// hides the frame itself in the click's task and sends its counter; the host captures on receipt. « hide »
+// (fallback for a host that asks) answers « hidden » two frames later.
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <string>
@@ -40,7 +42,7 @@ var A = P.accent || '62,103,255';
 var MAX_TEXT = 2000, MAX_MSG = 60000;
 var listeners = [], raf = 0, alive = true;
 var px = -1, py = -1, haveMove = false;
-var cur = null, down = [], frozen = false, shown = false, keyboard = false;
+var cur = null, down = [], frozen = false, shown = false, keyboard = false, seq = 0;
 
 var host = D.createElement('browser-annotation-layer');
 host.setAttribute('aria-hidden', 'true');
@@ -233,16 +235,22 @@ function describe(info, selText) {
       rect: { x: Math.round(r.x * 100) / 100, y: Math.round(r.y * 100) / 100, width: Math.round(r.w * 100) / 100, height: Math.round(r.h * 100) / 100 },
       styles: styles, sourceAttributes: src
     },
-    viewport: { width: innerWidth, height: innerHeight, scrollX: Math.round(scrollX), scrollY: Math.round(scrollY), devicePixelRatio: devicePixelRatio || 1 }
+    viewport: { width: innerWidth, height: innerHeight, scrollX: scrollX, scrollY: scrollY, devicePixelRatio: devicePixelRatio || 1 }
   };
 }
-function sendSelect(info, selText) {
+function sendSelect(info, selText, ev) {
   var m = describe(info, selText);
   if (JSON.stringify(m).length > MAX_MSG) { m.target.text = m.target.text.slice(0, 400); if (m.target.selectionText) m.target.selectionText = m.target.selectionText.slice(0, 400); }
   if (JSON.stringify(m).length > MAX_MSG) { m.target.styles = {}; m.target.path = m.target.path.slice(-4); m.target.selector = m.target.selector.slice(-200); }
   if (JSON.stringify(m).length > MAX_MSG) return;
+  // V2: the capture is taken at the click. The frame is hidden in this very task, before the message: the
+  // host asks the engine for the clipped shot as soon as it gets it (the next frame no longer has the frame).
+  var mine = ++seq; m.seq = mine; conceal(true);
+  // When the user acted (event time on the system clock): the host measures click -> image ready.
+  m.at = ev && ev.timeStamp > 0 && performance.timeOrigin ? performance.timeOrigin + ev.timeStamp : Date.now();
   post(m);
 }
+function conceal(on) { for (var i = 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; }
 
 // ---- drawing
 function place(info) {
@@ -300,7 +308,7 @@ function onClick(e) {
   var info = hit(px, py);
   if (!info) return;
   if (e.altKey) { var p = parentInfo(info); if (p) info = p; }
-  cur = info; down = []; frozen = true; place(cur); sendSelect(cur, null);
+  cur = info; down = []; frozen = true; place(cur); sendSelect(cur, null, e);
 }
 function onKey(e) {
   if (!e.isTrusted || e.ctrlKey || e.metaKey) return;
@@ -309,7 +317,7 @@ function onKey(e) {
   if (frozen) return;
   if (k === 'ArrowUp' && cur && !e.altKey) { stop(e); var p = parentInfo(cur); if (p) { down.push(cur); cur = p; keyboard = true; place(cur); } return; }
   if (k === 'ArrowDown' && cur && !e.altKey) { stop(e); var c = down.length ? down.pop() : childInfo(cur); if (c) { cur = c; keyboard = true; place(cur); } return; }
-  if (k === 'Enter' && cur) { stop(e); keyboard = true; frozen = true; place(cur); sendSelect(cur, null); return; }
+  if (k === 'Enter' && cur) { stop(e); keyboard = true; frozen = true; place(cur); sendSelect(cur, null, e); return; }
 }
 function onFocus(e) {
   if (frozen) return;
@@ -363,12 +371,12 @@ function cmd(op, arg) {
   if (!alive) return;
   if (op === 'exit') { teardown(); return; }
   if (op === 'hide') {
-    host.style.visibility = 'hidden';
+    conceal(true);
     requestAnimationFrame(function () { requestAnimationFrame(function () { if (alive) post({ op: 'hidden', serial: arg }); }); });
     return;
   }
-  if (op === 'show') { host.style.visibility = ''; syncShields(); return; }
-  if (op === 'resume') { host.style.visibility = ''; frozen = false; haveMove = px >= 0; schedule(); if (!haveMove) place(null); return; }
+  if (op === 'show') { conceal(false); syncShields(); return; }
+  if (op === 'resume') { conceal(false); frozen = false; ++seq; haveMove = px >= 0; schedule(); if (!haveMove) place(null); return; }
   if (op === 'point') { selectAtPoint(arg.x, arg.y); return; }
   if (op === 'selection') { if (!selectSelection(arg)) post({ op: 'noselection' }); return; }
 }

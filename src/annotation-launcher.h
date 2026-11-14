@@ -411,6 +411,8 @@ public:
         return ok;
     }
     void UpdateHistory(const HistoryData& data) { history_.Update(data); }
+    void ShowHistoryDetail(const std::wstring& id) { history_.ShowDetail(id); }
+    const std::wstring& HistoryDetailId() const { return history_.DetailId(); }
     void SetHistoryCapture(const std::wstring& id, const Shot& capture) { history_.SetEntryCapture(id, capture); }
     void HideHistory(bool animate = true) { history_.Hide(animate); RenderButton(Motion::Now()); }
     void FocusLauncher() { if (button_.Window() && buttonPresence_.IsOpen()) { keyboard_ = true; SetFocus(button_.Window()); } }
