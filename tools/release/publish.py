@@ -77,6 +77,23 @@ def fetch(url: str, limit: int = 4096) -> bytes:
         return r.read(limit)
 
 
+def parse_manifest(raw: bytes) -> dict:
+    """Same strict format as package.read_manifest (6 LF lines, fixed key order)."""
+    keys = ['browser-update', 'version', 'arch', 'package', 'size', 'sha256']
+    if len(raw) > 1024 or b'\r' in raw or not raw.endswith(b'\n'):
+        return {}
+    lines = raw.decode('utf-8', 'replace')[:-1].split('\n')
+    if len(lines) != len(keys):
+        return {}
+    out = {}
+    for key, line in zip(keys, lines):
+        k, _, v = line.partition(' ')
+        if k != key or not v:
+            return {}
+        out[k] = v
+    return out
+
+
 def verify_dist(dist: Path, info: dict, source_commit: str) -> tuple:
     """Local, offline checks of the packaged assets. Returns (tag, ours, package, manifest, zip)."""
     version = info.get('version', '')
@@ -94,6 +111,11 @@ def verify_dist(dist: Path, info: dict, source_commit: str) -> tuple:
             raise SystemExit(f'missing release asset: {f.name}')
     if sha256(package) != info['packageSha256'] or package.stat().st_size != info['packageSize']:
         raise SystemExit('package changed since packaging')
+    # The manifest is what every client reads: its fields must name exactly this version/package.
+    want = {'browser-update': '1', 'version': version, 'arch': 'x64', 'package': package.name,
+            'size': str(package.stat().st_size), 'sha256': sha256(package)}
+    if parse_manifest(manifest.read_bytes()) != want:
+        raise SystemExit(f'{MANIFEST} does not describe {package.name} for {tag}')
     if (archive.stat().st_size != info.get('zipSize') or archive.stat().st_size > MAX_ZIP
             or sha256(archive) != info.get('zipSha256')):
         raise SystemExit('ZIP changed since packaging')
@@ -161,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         if fetch(url) != manifest.read_bytes():
             raise SystemExit(f'{tag} already exists with a DIFFERENT manifest; releases are immutable.')
         # Same version, same bytes: the public ZIP must already be there, identical (never added later).
-        check_digests(existing, [package, manifest, archive], f'existing {tag}')
+        check_digests(existing, [package, manifest, archive, dist / SUMS], f'existing {tag}')
         if not a.dry_run:
             gh('release', 'edit', tag, '--repo', a.repo, '--latest')
         print(f'{tag} already published with identical assets; latest confirmed.')

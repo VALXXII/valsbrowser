@@ -314,6 +314,40 @@ class PublicZip(unittest.TestCase):
             with self.subTest(path=path.name), self.assertRaises(SystemExit):
                 K.verify_zip(path, stage, files, top)
 
+    def junction_case(self, where):
+        """Unprivileged Windows junction (is_symlink() is False for it): packaging must fail and
+        no ZIP may be written, whether the junction is assets itself or nested inside it."""
+        try:
+            import _winapi
+        except ImportError:
+            self.skipTest('Windows junctions only')
+        private = self.root / 'outside-private'
+        private.mkdir()
+        (private / 'Cookies').write_bytes(b'FAKE private cookie canary')
+        link = self.app / where
+        if where == 'assets':
+            shutil.rmtree(link)
+        _winapi.CreateJunction(str(private), str(link))
+        try:
+            self.assertFalse(link.is_symlink(), 'fixture must be a junction, not a symlink')
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stdout(io.StringIO()):
+                package_dist(self.root, self.app)
+            self.assertIn('reparse', str(cm.exception))
+            dist = self.root / 'dist'
+            self.assertFalse(dist.exists() and any(dist.glob('*.zip')), 'no ZIP may be emitted')
+            staged = self.root / 'dist-payload'
+            self.assertFalse(any(f.read_bytes() == b'FAKE private cookie canary'
+                                 for f in staged.rglob('*') if f.is_file()) if staged.exists() else False)
+        finally:
+            os.rmdir(link)  # removes the junction only, never the target's content
+        self.assertEqual((private / 'Cookies').read_bytes(), b'FAKE private cookie canary')
+
+    def test_nested_junction_in_assets_refused(self):
+        self.junction_case('assets/joined')
+
+    def test_assets_junction_refused(self):
+        self.junction_case('assets')
+
     def test_symlink_in_payload_refused(self):
         try:
             os.symlink(self.app / 'browser.exe', self.app / 'assets/link.ttf')
@@ -414,9 +448,10 @@ class Publisher(unittest.TestCase):
             code = P.main(['--repo', REPO, '--dist', str(self.d), '--source-commit', SHA, *extra])
         return code, out.getvalue()
 
-    def existing_release(self, with_zip=True, zip_bytes=None):
+    def existing_release(self, with_zip=True, zip_bytes=None, with_sums=False):
         assets = []
-        for name in ('browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', 'browser-0.3.7-win-x64.zip'):
+        for name in ('browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', 'browser-0.3.7-win-x64.zip',
+                     *(('SHA256SUMS.txt',) if with_sums else ())):
             if name.endswith('.zip') and not with_zip:
                 continue
             data = zip_bytes if (name.endswith('.zip') and zip_bytes is not None) else (self.d / name).read_bytes()
@@ -497,7 +532,7 @@ class Publisher(unittest.TestCase):
         self.assertIn('ZIP', str(cm.exception))
 
     def test_existing_release_needs_identical_zip(self):
-        fake = FakeGitHub(existing=[self.existing_release()])
+        fake = FakeGitHub(existing=[self.existing_release(with_sums=True)])
         fake.blobs[('v0.3.7', 'update-manifest-win-x64.txt')] = (self.d / 'update-manifest-win-x64.txt').read_bytes()
         code, _ = self.run_publish(fake)
         self.assertEqual(code, 0)
@@ -509,6 +544,49 @@ class Publisher(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.run_publish(fake)
                 self.assertEqual(fake.mutations(), [], 'an existing release is never edited or extended')
+
+    def test_existing_release_without_sums_refused(self):
+        existing = self.existing_release()
+        fake = FakeGitHub(existing=[existing])
+        fake.blobs[('v0.3.7', 'update-manifest-win-x64.txt')] = (self.d / 'update-manifest-win-x64.txt').read_bytes()
+        with self.assertRaises(SystemExit):
+            self.run_publish(fake)
+        self.assertEqual(fake.mutations(), [])
+        sums = (self.d / 'SHA256SUMS.txt').read_bytes()
+        for data in (sums, b'different sums'):
+            with self.subTest(sums=data[:14]):
+                existing = self.existing_release()
+                existing['assets'].append({'name': 'SHA256SUMS.txt', 'digest': 'sha256:' + hashlib.sha256(data).hexdigest()})
+                fake = FakeGitHub(existing=[existing])
+                fake.blobs[('v0.3.7', 'update-manifest-win-x64.txt')] = (self.d / 'update-manifest-win-x64.txt').read_bytes()
+                if data == sums:
+                    self.assertEqual(self.run_publish(fake)[0], 0)
+                else:
+                    with self.assertRaises(SystemExit):
+                        self.run_publish(fake)
+                    self.assertEqual(fake.mutations(), [])
+
+    def test_manifest_must_describe_this_package(self):
+        """A self-consistent artifact (SHA256SUMS regenerated) whose manifest names another
+        version, arch, package, size or hash is refused before any upload."""
+        good = (self.d / 'update-manifest-win-x64.txt').read_bytes()
+        changes = {'version': (b'version 0.3.7', b'version 0.3.6'), 'arch': (b'arch x64', b'arch arm64'),
+                   'package': (b'package browser-0.3.7', b'package browser-0.3.6'),
+                   'size': (b'\nsize ', b'\nsize 1'), 'sha256': (b'sha256 ', b'sha256 0'),
+                   'CRLF': (b'\n', b'\r\n')}
+        for label, (old, new) in changes.items():
+            with self.subTest(label):
+                self.tearDown(); self.setUp()
+                manifest = good.replace(old, new)
+                self.assertNotEqual(manifest, good)
+                (self.d / 'update-manifest-win-x64.txt').write_bytes(manifest)
+                files = ['browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', 'browser-0.3.7-win-x64.zip']
+                (self.d / 'SHA256SUMS.txt').write_bytes(''.join(
+                    f'{hashlib.sha256((self.d / f).read_bytes()).hexdigest()}  {f}\n' for f in files).encode())
+                fake = FakeGitHub()
+                with self.assertRaises(SystemExit):
+                    self.run_publish(fake)
+                self.assertEqual(fake.mutations(), [])
 
     def test_superseded_and_dry_run_do_not_mutate(self):
         fake = FakeGitHub(existing=[{'tag_name': 'v0.3.8', 'draft': False, 'latest': True, 'assets': []}])

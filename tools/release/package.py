@@ -17,7 +17,7 @@
 5. Writes SHA256SUMS.txt (package, manifest, ZIP) and release-info.json.
 """
 from __future__ import annotations
-import argparse, hashlib, json, re, shutil, subprocess, sys, zipfile
+import argparse, hashlib, json, os, re, shutil, stat, subprocess, sys, zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,13 +40,45 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def is_reparse(path: Path) -> bool:
+    """Symlink, junction or any other reparse point (Path.is_symlink() misses junctions)."""
+    st = os.lstat(path)
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, 'st_file_attributes', 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def walk_assets(root: Path) -> list[Path]:
+    """All regular files under root. Every entry is checked with lstat BEFORE it is descended
+    into or copied: a reparse point anywhere (including root) fails packaging."""
+    if is_reparse(root):
+        raise SystemExit(f'Refusing symlink/reparse point in payload: {root}')
+    files, pending = [], [root]
+    while pending:
+        current = pending.pop()
+        for item in sorted(current.iterdir(), key=lambda p: p.name):
+            if is_reparse(item):
+                raise SystemExit(f'Refusing symlink/reparse point in assets: {item}')
+            mode = os.lstat(item).st_mode
+            if stat.S_ISDIR(mode):
+                pending.append(item)
+            elif stat.S_ISREG(mode):
+                files.append(item)
+            else:
+                raise SystemExit(f'Refusing special file in assets: {item}')
+    return sorted(files)
+
+
 def stage(app: Path, staging: Path) -> list[str]:
+    if is_reparse(app):
+        raise SystemExit(f'Refusing symlink/reparse point as app directory: {app}')
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
     copied, skipped = [], []
     for entry in sorted(app.iterdir(), key=lambda p: p.name.lower()):
-        if entry.is_symlink():
+        if is_reparse(entry):
             raise SystemExit(f'Refusing symlink/reparse point in payload: {entry}')
         if entry.name in RUNTIME_DATA or entry.name.startswith('bookmarks.damaged-'):
             skipped.append(entry.name)
@@ -54,17 +86,16 @@ def stage(app: Path, staging: Path) -> list[str]:
         if entry.is_dir():
             if entry.name != 'assets':
                 raise SystemExit(f'Unexpected directory in app payload: {entry.name}')
-            for item in sorted(entry.rglob('*')):
-                if item.is_symlink():
-                    raise SystemExit(f'Refusing symlink in assets: {item}')
-                if item.is_file():
-                    if item.suffix.lower() in FORBIDDEN_SUFFIXES:
-                        raise SystemExit(f'Refusing non-asset file: {item}')
-                    rel = item.relative_to(app)
-                    (staging / rel).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, staging / rel)
-                    copied.append(rel.as_posix())
+            for item in walk_assets(entry):
+                if item.suffix.lower() in FORBIDDEN_SUFFIXES:
+                    raise SystemExit(f'Refusing non-asset file: {item}')
+                rel = item.relative_to(app)
+                (staging / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, staging / rel)
+                copied.append(rel.as_posix())
             continue
+        if not stat.S_ISREG(os.lstat(entry).st_mode):
+            raise SystemExit(f'Refusing special file in app payload: {entry.name}')
         if not TOP_PATTERN.match(entry.name):
             raise SystemExit(f'Unexpected file in app payload: {entry.name}')
         shutil.copy2(entry, staging / entry.name)

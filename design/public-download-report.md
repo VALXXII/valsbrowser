@@ -78,7 +78,8 @@ the `publish` job reads; the staging directory `dist-payload` is outside it.
 
 | Evidence | Command | Result |
 |---|---|---|
-| `test_release_tools.txt` | `python -I tests/update-integration/test_release_tools.py` | 28 tests, OK, 1 skipped (symlink creation needs privilege on this machine) |
+| `test_release_tools.txt` | `python -I tests/update-integration/test_release_tools.py` | 32 tests, OK, 1 skipped (symlink creation needs privilege on this machine; junctions are covered without privilege) |
+| `review-fixes-red-green.txt` | the 4 review-fix tests run against the reviewed b83bee7 code, then with the fix; real v0.3.239 payload repacked again | red: 9 failures (2 junction cases, existing release without SUMS, 6 manifest identity cases); green: 32 OK; real payload: same `.lsrupd` and ZIP SHA-256 as before |
 | `mutation-checks.txt` | 7 deliberate regressions, suite re-run, file restored | all 7 detected |
 | `real-payload-v0.3.239-zip.txt` | public `v0.3.239` `.lsrupd` (SHA256SUMS OK) unpacked as data, run through new `package.py` | `.lsrupd` re-created byte-identical (sha 734a73…), ZIP 13 279 149 bytes, 1625 entries == payload, bytes identical, one top folder, reproducible |
 | `publish-dry-run-real-feed.txt` | `publish.py --dry-run` on that dist against the real feed (read-only) | `verify-existing` → refused: existing v0.3.239 has no ZIP, exit 1 |
@@ -91,13 +92,31 @@ New tests (`PublicZip`, `Publisher` with an in-memory fake GitHub; no network, n
 - SHA256SUMS covers the three assets with correct digests; release-info zip fields; file count.
 - Reproducible ZIP; `write_zip` never overwrites; `verify_zip` rejects extra/missing/altered entries.
 - Packaging fails (no ZIP written) on `browser-annotations-mcp.exe`, `.mcp.json`, `settings`,
-  `profiles/`, `.git/`, `src/` in the app dir. Symlink refusal (skipped without privilege).
+  `profiles/`, `.git/`, `src/` in the app dir. Symlink refusal (skipped without privilege);
+  junction refusal (see review fixes).
 - Publisher: happy path (ZIP uploaded to draft, notes contain link/instructions/hash, published
   latest, public ZIP verified); missing ZIP (3 variants) → exit, zero mutations; tampered ZIP, size,
   SHA256SUMS without ZIP or missing, changed package, dev channel, other commit → exit, zero
   mutations; server ZIP digest mismatch → never un-drafted; public ZIP mismatch → failure; existing
   release: identical → accepted without upload, missing/different ZIP → refused with zero mutations;
   superseded and dry-run → zero mutations.
+
+### Independent review fixes (review of b83bee7)
+
+- **P2, junctions leaked into the ZIP** (reproduced by the reviewer: `Path.is_symlink()` is false
+  for a Windows junction and `rglob` followed it, so an outside `Cookies` file reached the public
+  ZIP). `stage()` now checks every entry with `os.lstat` (`S_ISLNK` or
+  `FILE_ATTRIBUTE_REPARSE_POINT`) **before** descending or copying: the app directory, every root
+  entry, `assets` itself and every nested entry. Special files are refused too. Tests create an
+  unprivileged junction (`_winapi.CreateJunction`) as `assets` and inside it: packaging fails, no
+  ZIP is written, nothing from the target is staged, the target is untouched.
+- **P3, existing release accepted without SHA256SUMS**: verify-existing now requires the server
+  digests of package, manifest, ZIP **and** `SHA256SUMS.txt`; missing or different sums ⇒ refused,
+  zero mutations.
+- **P3, manifest identity**: before any upload the manifest is parsed strictly (6 LF lines, fixed
+  key order) and must equal `browser-update 1`, our version, `x64`, our package name, its real size
+  and SHA-256. Self-consistent artifacts with another version/arch/package/size/hash or CRLF are
+  refused even when SHA256SUMS was regenerated.
 
 Not run here: the native suite `tests/update-integration/run_all.py` (needs the pinned w64devkit,
 absent in this worktree; no native file changed) and the real CI publish.
