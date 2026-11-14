@@ -1315,7 +1315,27 @@ struct Profile { const char* name; std::uint32_t fill; };
 static std::uint32_t FillOf(int hue, float chroma) { const auto f = ProfileColor::AccentFill(hue, chroma); return (std::uint32_t(f.r) << 16) | (std::uint32_t(f.g) << 8) | f.b; }
 static std::vector<Profile> Profiles() {
     return {{"personnel", AccentTone::reference}, {"vert", FillOf(150, .14f)}, {"ambre", FillOf(55, .14f)}, {"rose", FillOf(0, .14f)},
-            {"violet-max", FillOf(300, .16f)}, {"bleu-gris-faible", FillOf(240, .02f)}, {"gris-intensite-0", FillOf(0, 0)}};
+            {"violet-max", FillOf(300, .16f)}, {"bleu-gris-faible", FillOf(240, .02f)}, {"gris-intensite-0", FillOf(0, 0)},
+            {"violet-288-10-review", FillOf(288, .10f)}};   // the independent review's reproducer (BETA 4.32:1 on e204fd6)
+}
+// Contrast row by row (review of e204fd6): the band's background changes from row to row (its gradient lightens
+// downwards), so one background sample and the best text pixel prove nothing. For every device row of `box`, the
+// backdrop is the rendered pixel of that row at `bgX` (a glyph-free column), and every OPAQUE glyph pixel of the row
+// (within 6 levels of the token: its core, not its antialiased edge) is measured against it. Every such row must pass.
+static void MeasureRows(const Canvas& c, float scale, D2D1_RECT_F box, float bgX, std::uint32_t token, const std::string& name, double minimum = 4.5) {
+    const Rgb fg = Solid(token); double worst = 99; int rows = 0, worstRow = -1; Rgb worstBg{}, worstFg{};
+    for (int y = int(box.top * scale); y < int(box.bottom * scale); ++y) {
+        const Rgb bg = Px(c.At(int(bgX * scale), y)); bool any = false; double rowWorst = 99; Rgb rowFg{};
+        for (int x = int(box.left * scale); x < int(box.right * scale); ++x) {
+            const Rgb q = Px(c.At(x, y)); if (!Close(q, fg, 6)) continue;
+            any = true; const double r = Ratio(q, bg); if (r < rowWorst) { rowWorst = r; rowFg = q; }
+        }
+        if (!any) continue;
+        ++rows; if (rowWorst < worst) { worst = rowWorst; worstRow = y; worstBg = bg; worstFg = rowFg; }
+    }
+    contrasts.push_back({name + " — worst glyph row (px " + std::to_string(worstRow) + ")", worst, worst, Hex6(worstFg), Hex6(worstBg)});
+    CHECKM(rows >= 6, "%s: only %d glyph rows found", name.c_str(), rows);
+    CHECKM(worst >= minimum, "%s: row %d glyph %s on %s = %.3f:1 < %.1f", name.c_str(), worstRow, Hex6(worstFg).c_str(), Hex6(worstBg).c_str(), worst, minimum);
 }
 static void SetAccent(std::uint32_t rgb) { Design::Accent::Set(rgb); }
 static Rgb Of(std::uint32_t rgb) { return Solid(rgb); }
@@ -1337,6 +1357,9 @@ static void Static(Ink& ink) {
             const Rgb chip = Px(c.At(int((l.beta.left + 1.5f) * k), int(16 * k)));
             Sample(c, k, l.beta.left + 1.5f, 16, Of(AccentTone::Over(p.fill, .16, AccentTone::Over(tone.gradientEnd, AccentTone::Paper::gradientAlpha * .5, 0x171717))), Name("band BETA chip accent 16 %", p).c_str(), 4);
             MeasureText(c, k, {l.beta.left + 3, l.beta.top + 2, l.beta.right - 3, l.beta.bottom - 2}, chip, (tone.beta << 8) | 0xFF, Name("band « BETA » 12 medium", p).c_str());
+            MeasureRows(c, k, {l.label.left, 0, l.label.right, 32}, l.label.left - 3, tone.label, Name("band « Mode Annotation » per row", p));
+            MeasureRows(c, k, {l.beta.left + 3, l.beta.top, l.beta.right - 3, l.beta.bottom}, l.beta.left + 1.5f, tone.beta, Name("band « BETA » per row", p));
+            Save(ink, c, (L"pc-band-solid-" + tag + L".png").c_str());   // the measured render (texture off)
         }
         // ---- note panel: « Ajouter » at rest and hovered (deepened, never lightened), the focused field border
         for (int hover = 0; hover < 2; ++hover) {
