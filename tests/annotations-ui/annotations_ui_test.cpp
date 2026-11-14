@@ -240,7 +240,7 @@ static void ConfigTests() {
 // ---------------------------------------------------------------------------------------
 static void GeometryTests(Ink& ink) {
     ConnectView v = ConnectState_(SampleSetup());
-    Geo("1.1 modal (launch)", 440, 209, LayoutConnect(ink, v).height);           // 1+78+84+45+1 (Paper 2.0)
+    Geo("1.1 modal (launch)", 440, 192, LayoutConnect(ink, v).height);           // 1+62+84+45+1 (Paper 10P2-0, revised 2026-11-14: no description, a cross)
     ConnectView w = v; w.setup.launch = false; w.setup.claude.state = ConnectState::Working;
     Geo("1.2 modal (en cours)", 440, 228.39f - 36, LayoutConnect(ink, w).height);
     ConnectView c = v; c.setup.claude.state = ConnectState::Connected; c.setup.codex = {ConnectState::Connected, L"Redémarrez Codex pour l'activer"};
@@ -254,6 +254,12 @@ static void GeometryTests(Ink& ink) {
     Geo("1.1 pill « Reste sur cet ordinateur » width", 0, 161, LocalCollapsed(ink, v.setup).width, 2);
     Geo("1.6 pill (disque amovible) width", 0, 389, LocalCollapsed(ink, r.setup).width, 3);
     Geo("1.7 pill unfolded height", 340, 100, LocalExpandedH(ink));
+    // One header for every state (1.1 to 1.7): 62 high, a 28 close button at the same place, no description.
+    {   const auto ref = LayoutConnect(ink, v); const auto* rb = ref.Find(BHeader);
+        CHECK(rb && Near(rb->h, 62, .01) && Near(ref.headerButton.right - ref.headerButton.left, 28, .01) && Near(ref.headerButton.bottom - ref.headerButton.top, 28, .01));
+        for (const ConnectView* s : {&w, &c, &f, &m, &r}) { const auto l = LayoutConnect(ink, *s); const auto* b = l.Find(BHeader);
+            CHECK(b && Near(b->h, rb->h, .01) && b->state == rb->state && Near(l.headerButton.left, ref.headerButton.left, .01) && Near(l.headerButton.top, ref.headerButton.top, .01)); }
+        Geo("1.1-1.7 header", 438, 62, rb->h); }
     NoteView n; n.context = SampleContext(); n.fieldHeight = 40;
     Geo("2.1 note panel (2 lines)", 350, 102, LayoutNote(ink, n).height);
     n.fieldHeight = 0; Geo("2.1 note panel min-height", 350, 84, LayoutNote(ink, n).height);
@@ -282,12 +288,14 @@ static void Captures(Ink& ink) {
     // ---- 1.x connect modal
     ConnectView launch = ConnectState_(SampleSetup());
     {   const auto l = modalBoard(launch, L"1.1-connect-launch.png");
-        Sample(c, k, 40 + 30, 40 + 70, canvasRgb, "1.1 modal surface #171717");
+        Sample(c, k, 40 + 300, 40 + 12, canvasRgb, "1.1 modal surface #171717");
         Sample(c, k, 40 + 30, 40 + l.claude.top + 16, raisedRgb, "1.1 « Connecter avec Claude » raised #292929");
-        Sample(c, k, 40 + 0.25f, 40 + 70, Over(0xFFFFFF14, canvasRgb), "1.1 modal border #FFFFFF14", 6);
-        MeasureText(c, k, {40 + 47, 40 + 21, 40 + 300, 40 + 45}, canvasRgb, 0xFFFFFFFF, "modal title 18/24 white");
-        MeasureText(c, k, {40 + 47, 40 + 47, 40 + 300, 40 + 65}, canvasRgb, 0xFFFFFFB3, "modal subtitle 13/18 #FFFFFFB3");
-        MeasureText(c, k, {40 + l.headerButton.left + 6, 40 + l.headerButton.top + 6, 40 + l.headerButton.left + 60, 40 + l.headerButton.bottom - 6}, canvasRgb, 0xFFFFFFB3, "« Plus tard » 13/16 #FFFFFFB3");
+        Sample(c, k, 40 + 0.25f, 40 + 30, Over(0xFFFFFF14, canvasRgb), "1.1 modal border #FFFFFF14", 6);
+        MeasureText(c, k, {40 + 47, 40 + 21, 40 + 300, 40 + 47}, canvasRgb, 0xFFFFFFFF, "modal title 18/24 white");
+        MeasureText(c, k, {40 + l.headerButton.left + 6, 40 + l.headerButton.top + 6, 40 + l.headerButton.right - 6, 40 + l.headerButton.bottom - 6}, canvasRgb, 0xFFFFFFB3, "close cross 16 at 70 % (non-text, 3:1)", 3);
+        {   // Nothing under the title any more (the description is gone): the band 47..65 is the bare surface.
+            bool bare = true; for (int y = int((40 + 49) * k); y < int((40 + 62) * k); ++y) for (int x = int((40 + 47) * k); x < int((40 + 380) * k); ++x) if (!Close(Px(c.At(x, y)), canvasRgb, 3)) bare = false;
+            CHECKM(bare, "1.1: no description under the title"); }
         MeasureText(c, k, {40 + 150, 40 + l.claude.top + 8, 40 + 260, 40 + l.claude.bottom - 8}, raisedRgb, 0xFFFFFFFF, "« Connecter avec Claude » white on #292929");
         MeasureText(c, k, {40 + 150, 40 + l.manual.top + 3, 40 + 300, 40 + l.manual.bottom - 3}, canvasRgb, 0xFFFFFFB3, "« Autre app ou réglage manuel » 13/18 #FFFFFFB3");
         MeasureText(c, k, {40 + 160, 40 + l.height + 8 + 6, 40 + 300, 40 + l.height + 8 + 22}, canvasRgb, 0xFFFFFF99, "pill « Reste sur cet ordinateur » 12/16 #FFFFFF99");
@@ -645,13 +653,15 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     CHECK(enterFrames >= 5 && enterMs < 600);
     report << L"\"liveModal\":{\"enterMs\":" << enterMs << L",\"frames\":" << enterFrames << L"},";
     SaveLayer(ink, modal.LayerForTest(), L"w3-window-modal-launch.png");
-    {   auto n = modal.NodesForTest(); CHECK(HasNode(n, L"Plus tard") && HasNode(n, L"Connecter avec Claude") && HasNode(n, L"Connecter avec Codex") && HasNode(n, L"Autre app ou réglage manuel") && HasNode(n, L"Reste sur cet ordinateur")); }
-    // Tab order: Plus tard -> Claude -> Codex -> manual -> pill.
+    {   auto n = modal.NodesForTest(); CHECK(HasNode(n, L"Fermer, connecter un agent plus tard") && !HasNode(n, L"Plus tard") && HasNode(n, L"Connecter avec Claude") && HasNode(n, L"Connecter avec Codex") && HasNode(n, L"Autre app ou réglage manuel") && HasNode(n, L"Reste sur cet ordinateur")); }
+    {   auto n = modal.NodesForTest(); bool later = false; for (auto& x : n) if (x.key == CHeader) later = x.automationId == L"AnnotationConnectLater" && x.accelerator == L"Échap"; CHECK(later); }
+    // Tab order: close (« plus tard ») -> Claude -> Codex -> manual -> pill.
     modal.KeyForTest(VK_TAB); CHECK(modal.FocusForTest() == CHeader);
     modal.KeyForTest(VK_TAB); CHECK(modal.FocusForTest() == CClaude);
     modal.KeyForTest(VK_RETURN); CHECK(connects.size() == 1 && connects[0] == AgentKind::Claude);
     modal.SetStatus(AgentKind::Claude, {ConnectState::Working, L""});
-    CHECK(modal.ViewForTest().AnyWorking() && !modal.ViewForTest().LaunchHeader());
+    CHECK(modal.ViewForTest().AnyWorking() && !modal.ViewForTest().ClosesAsLater());
+    {   auto n = modal.NodesForTest(); CHECK(HasNode(n, L"Fermer") && !HasNode(n, L"Fermer, connecter un agent plus tard")); }
     CHECK(lastSaid(L"Cliquez sur Installer dans Claude"));
     Pump(400); CHECK(Animator::Get().Animating());   // the ring turns while working
     modal.SetStatus(AgentKind::Claude, {ConnectState::Connected, L""});
@@ -681,6 +691,13 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     // Launch again: Échap = « Plus tard ».
     modal.Show(SampleSetup(), clientScreen, false); Settle(); modal.KeyForTest(VK_ESCAPE);
     CHECK(ends.back() == ConnectEnd::Later && IsWindowEnabled(host)); CHECK(Settle());
+    // The cross at launch is the same « Plus tard » (same hook, same decline counter on the host side).
+    modal.Show(SampleSetup(), clientScreen, false); Settle(); SaveLayer(ink, modal.LayerForTest(), L"w3b-window-modal-launch-cross.png");
+    {   const size_t before = ends.size(); modal.ActivateForTest(CHeader); CHECK(ends.size() == before + 1 && ends.back() == ConnectEnd::Later && IsWindowEnabled(host)); CHECK(Settle()); }
+    // Opened later (not at launch): the cross is a plain « Fermer » (Closed).
+    {   ConnectSetup later = SampleSetup(); later.launch = false; modal.Show(later, clientScreen, false); Settle();
+        auto n = modal.NodesForTest(); CHECK(HasNode(n, L"Fermer") && !HasNode(n, L"Fermer, connecter un agent plus tard"));
+        modal.KeyForTest(VK_ESCAPE); CHECK(ends.back() == ConnectEnd::Closed); CHECK(Settle()); }
     // Reduced motion: a fade, never scaled.
     modal.Show(SampleSetup(), clientScreen, true); CHECK(Near(modal.PresenceForTest().Sample(Motion::Now(), true).scale, 1, 1e-6)); Settle(); modal.Close(true, ConnectEnd::Closed); Settle();
 

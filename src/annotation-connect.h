@@ -4,11 +4,10 @@
 // manuel déplié), 1.6 ZGK-0 (disque amovible), 1.7 105Y-0 (pastille « local » dépliée); motion
 // « Spéc · Connexion des agents » ZJQ-0 and « Spéc · Lancement » 10X1-0.
 //   Modal 440, canvas #171717, border 1 #FFFFFF14, radius 12.
-//   Header padding 20/20/14, gap 12: tree glyph 20 at 50 % (+2 top in the launch variant), 6,
-//     title 18/24 600(-> bundled Medium) -0.015em white; launch variant (1.1): subtitle 13/18
-//     #FFFFFFB3 (gap 2) and « Plus tard » (h 28, padding 8, gap 6, 13/16 medium #FFFFFFB3 +
-//     key cap « Échap » 11/14 medium #FFFFFFB3 on #FFFFFF14); otherwise a close button 28
-//     (glyph 16 at 70 %).
+//   Header padding 20/20/14, gap 12 (one header for every state, 1.1 included since the
+//     2026-11-14 revision: no description, no « Plus tard » button): tree glyph 20 at 50 %, 6,
+//     title 18/24 600(-> bundled Medium) -0.015em white; close button 28 (glyph 16 at 70 %).
+//     At launch the close button and Échap mean « Plus tard » (ConnectEnd::Later).
 //   Apps padding 0/12/12, gap 8: one full-width button per app, h 32 radius 6, 13/16 medium:
 //     idle raised #292929 « Connecter avec Claude » + logo 16 (Claude #D97757, OpenAI white);
 //     en cours #FFFFFF0A + border #FFFFFF14, ring 14 #FFFFFFB3 + « Cliquez sur Installer dans
@@ -46,7 +45,7 @@ struct AppStatus {
     std::wstring detail;   // Working: the hint (default « Cliquez sur Installer dans Claude »); Failed: the message; Connected: a note (« Redémarrez Codex pour l'activer »)
 };
 struct ConnectSetup {
-    bool launch = true;                      // opened at the mode's activation (1.1): subtitle + « Plus tard »
+    bool launch = true;                      // opened at the mode's activation (1.1): the close button / Échap answer « Plus tard »
     std::wstring command;                    // real path of the bridge (manual setup, copied as is)
     std::vector<std::wstring> args;          // its arguments (e.g. --store <path>)
     std::wstring serverName = L"browser-annotations";
@@ -57,7 +56,7 @@ enum class ConnectEnd { Later, Done, Closed };
 struct ConnectHooks {
     std::function<void(AgentKind)> connect;              // explicit click only: the host configures, then SetStatus()
     std::function<void(const std::wstring&)> copy;       // the host writes the clipboard
-    std::function<void(ConnectEnd)> closed;              // « Plus tard »/Échap (Later), « Terminé » (Done), close button (Closed)
+    std::function<void(ConnectEnd)> closed;              // close button / Échap at launch = « Plus tard » (Later), « Terminé » (Done), close later on (Closed)
     std::function<void(const std::wstring&)> announce;
 };
 
@@ -108,7 +107,6 @@ inline std::wstring AppButtonLabel(AgentKind a, const AppStatus& s) {
 
 namespace ConnectSpec {
 inline constexpr float width = 440, radius = 12, button = 32, gap = 8, pillGap = 8, pillW = 340;
-inline constexpr const wchar_t* subtitle = L"Il recevra vos annotations dès la première.";
 inline constexpr const wchar_t* manualText = L"Dans votre app, ajoutez un serveur local avec cette commande :";
 inline constexpr const wchar_t* localTitle = L"Reste sur cet ordinateur";
 inline constexpr const wchar_t* localText = L"Vos notes et captures sont enregistrées uniquement sur ce PC, jamais sur des serveurs. Quand votre agent les lit, son fournisseur (Anthropic ou OpenAI) reçoit ce qu'il utilise.";
@@ -121,7 +119,9 @@ struct ConnectView {
     Motion::InteractionVisual V(int id) const { auto it = iv.find(id); return it == iv.end() ? Motion::InteractionVisual{} : it->second; }
     const AppStatus& App(AgentKind a) const { return a == AgentKind::Claude ? setup.claude : setup.codex; }
     static bool Resting(ConnectState s) { return s == ConnectState::Idle || s == ConnectState::Reconnect; }
-    bool LaunchHeader() const { return setup.launch && !manual && Resting(setup.claude.state) && Resting(setup.codex.state); }
+    // Closing (cross, Échap) is a « Plus tard » answer: opened at launch and nothing started yet.
+    bool ClosesAsLater() const { return setup.launch && !manual && Resting(setup.claude.state) && Resting(setup.codex.state); }
+    bool LaunchHeader() const { return ClosesAsLater(); }   // V2-B name (the launch header variant is gone)
     bool AnyConnected() const { return setup.claude.state == ConnectState::Connected || setup.codex.state == ConnectState::Connected; }
     bool AnyWorking() const { return setup.claude.state == ConnectState::Working || setup.codex.state == ConnectState::Working; }
     bool DoneVisible() const { return AnyConnected() && !AnyWorking(); }
@@ -137,12 +137,10 @@ inline size_t Hash(const std::wstring& s) { return std::hash<std::wstring>{}(s);
 inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
     using namespace ConnectSpec; ConnectLayout l; const float x0 = 1, inner = width - 2;
     float y = 1;
-    const bool launch = v.LaunchHeader();
-    {   const float h = launch ? 20 + 44 + 14 : 20 + 28 + 14;
+    {   const float h = 20 + 28 + 14;   // one header for every state (1.1 to 1.7)
         l.header = {x0, y, x0 + inner, y + h};
-        if (launch) { const float bw = 8 + ink.Width(L"Plus tard", F(13, 16, 500)) + 6 + KeycapWidth(ink, L"Échap") + 8; l.headerButton = {x0 + inner - 20 - bw, y + 20, x0 + inner - 20, y + 48}; }
-        else l.headerButton = {x0 + inner - 20 - 28, y + 20, x0 + inner - 20, y + 48};
-        l.blocks.push_back({BHeader, y, h, launch ? 1u : 2u}); y += h;
+        l.headerButton = {x0 + inner - 20 - 28, y + 20, x0 + inner - 20, y + 48};
+        l.blocks.push_back({BHeader, y, h, 2u}); y += h;
     }
     const float bx = x0 + 12, br = x0 + inner - 12;
     auto app = [&](AgentKind a, int key, int msgKey, D2D1_RECT_F& rect, D2D1_RECT_F& msg) {
@@ -222,21 +220,10 @@ inline void PaintAppMessage(Ink& ink, const ConnectView& v, AgentKind a, D2D1_RE
     else ink.Text(s.detail, F(12, 16), r, Hex(0xFFFFFF99), false, Align::Center, true);
 }
 inline void PaintConnectHeader(Ink& ink, const ConnectView& v, const ConnectLayout& l) {
-    const bool launch = v.LaunchHeader(); const float x = l.header.left + 20, y = l.header.top + 20;
-    ink.Icon(Glyphs::tree, {x, y + (launch ? 2.f : 4.f), x + 20, y + (launch ? 22.f : 24.f)}, {1, 1, 1, .5f});
-    const float tx = x + 26, right = l.headerButton.left - 12;
-    if (launch) {
-        ink.Text(L"Connecter un agent", F(18, 24, 600, -.015f), {tx, y, right, y + 24}, {1, 1, 1, 1});
-        ink.Text(ConnectSpec::subtitle, F(13, 18), {tx, y + 26, right, y + 44}, Hex(0xFFFFFFB3));
-        const auto iv = v.V(CHeader); const auto& b = l.headerButton;
-        ScaleScope s(ink.Target(), b, Motion::PressScale(iv.press, v.reduced));
-        if (iv.hover > 0 || iv.press > 0) ink.Fill(b, 6, {1, 1, 1, .06f * iv.hover + .04f * iv.press});
-        Pieces(ink, {PText(L"Plus tard", F(13, 16, 500), Hex(0xFFFFFFB3)), PKey(L"Échap", Hex(0xFFFFFF14), Hex(0xFFFFFFB3))}, b);
-        if (v.focus == CHeader) FocusRing(ink, b, 6, v.keyboard);
-    } else {
-        ink.Text(L"Connecter un agent", F(18, 24, 600, -.015f), {tx, y + 2, right, y + 26}, {1, 1, 1, 1});
-        CloseButton(ink, l.headerButton, 16, v.V(CHeader), v.focus == CHeader, v.keyboard, v.reduced);
-    }
+    const float x = l.header.left + 20, y = l.header.top + 20, right = l.headerButton.left - 12;
+    ink.Icon(Glyphs::tree, {x, y + 4, x + 20, y + 24}, {1, 1, 1, .5f});
+    ink.Text(L"Connecter un agent", F(18, 24, 600, -.015f), {x + 26, y + 2, right, y + 26}, {1, 1, 1, 1});
+    CloseButton(ink, l.headerButton, 16, v.V(CHeader), v.focus == CHeader, v.keyboard, v.reduced);
 }
 inline void PaintConnectFooter(Ink& ink, const ConnectView& v, const ConnectLayout& l, float caretTurn) {
     const auto& f = l.footer; ink.Fill({f.left, f.top, f.right, f.top + 1}, 0, Hex(0xFFFFFF0F));
@@ -442,7 +429,7 @@ class ConnectModal : public Animator::Client {
     void Activate(int hit, bool keyboard) {
         view_.keyboard = keyboard;
         switch (hit) {
-        case CHeader: Close(true, view_.LaunchHeader() ? ConnectEnd::Later : ConnectEnd::Closed); break;
+        case CHeader: Close(true, view_.ClosesAsLater() ? ConnectEnd::Later : ConnectEnd::Closed); break;
         case CClaude: case CCodex: {
             const AgentKind a = hit == CClaude ? AgentKind::Claude : AgentKind::Codex;
             if (!AppEnabled(view_.App(a))) return;
@@ -471,7 +458,7 @@ class ConnectModal : public Animator::Client {
     bool Key(WPARAM key) {
         const bool shift = GetKeyState(VK_SHIFT) < 0;
         switch (key) {
-        case VK_ESCAPE: if (localOpen_) { SetLocal(false); return true; } Close(true, view_.LaunchHeader() ? ConnectEnd::Later : ConnectEnd::Closed); return true;
+        case VK_ESCAPE: if (localOpen_) { SetLocal(false); return true; } Close(true, view_.ClosesAsLater() ? ConnectEnd::Later : ConnectEnd::Closed); return true;
         case VK_TAB: Cycle(shift); return true;
         case VK_RETURN: if (view_.focus) Activate(view_.focus, true); else if (view_.DoneVisible()) Activate(CDone, true); return true;
         case VK_SPACE: if (view_.focus) Activate(view_.focus, true); return true;
@@ -519,11 +506,11 @@ class ConnectModal : public Animator::Client {
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> n; if (!open_) return n;
         const auto now = Motion::Now();
-        Accessibility::Node d; d.key = DialogKey; d.role = Accessibility::Role::Group; d.name = L"Connecter un agent"; d.help = view_.LaunchHeader() ? ConnectSpec::subtitle : L"";
+        Accessibility::Node d; d.key = DialogKey; d.role = Accessibility::Role::Group; d.name = L"Connecter un agent";
         d.automationId = L"AnnotationConnect"; d.focusable = false; GetWindowRect(modal_.Window(), &d.bounds); n.push_back(d);
         auto node = [&](long long key, Accessibility::Role role, const std::wstring& name, D2D1_RECT_F r) -> Accessibility::Node& {
             Accessibility::Node x; x.key = key; x.parent = DialogKey; x.role = role; x.name = name; x.bounds = modal_.Screen(r); n.push_back(x); return n.back(); };
-        if (view_.LaunchHeader()) { auto& b = node(CHeader, Accessibility::Role::Button, L"Plus tard", layout_.headerButton); b.accelerator = L"Échap"; b.automationId = L"AnnotationConnectLater"; }
+        if (view_.ClosesAsLater()) { auto& b = node(CHeader, Accessibility::Role::Button, L"Fermer, connecter un agent plus tard", layout_.headerButton); b.accelerator = L"Échap"; b.automationId = L"AnnotationConnectLater"; }
         else { auto& b = node(CHeader, Accessibility::Role::Button, L"Fermer", layout_.headerButton); b.accelerator = L"Échap"; b.automationId = L"AnnotationConnectClose"; }
         for (AgentKind a : {AgentKind::Claude, AgentKind::Codex}) {
             const auto& s = view_.App(a); const int id = a == AgentKind::Claude ? CClaude : CCodex;
@@ -588,7 +575,7 @@ public:
         SetForegroundWindow(modal_.Window()); SetFocus(modal_.Window());
         Animator::Get().Request(this);
         if (modal_.uia.Listening()) modal_.uia.Raise(DialogKey, UIA_Window_WindowOpenedEventId);
-        Announce(view_.LaunchHeader() ? std::wstring(L"Connecter un agent. ") + ConnectSpec::subtitle : L"Connecter un agent");
+        Announce(L"Connecter un agent");
         return true;
     }
     // From the host's connection work (explicit click) or its detection of readers\ / configs.

@@ -46,7 +46,7 @@ enum class AgentKind { Claude, Codex, Other };
 enum class ConnectState { Idle, Working, Connected, Failed, Reconnect };
 struct AppStatus { ConnectState state; std::wstring detail; };   // Working: indication ; Failed: message ; Connected: note (« Redémarrez Codex pour l'activer »)
 struct ConnectSetup {
-  bool launch = true;                 // ouverte à l'activation du mode : sous-titre + « Plus tard (Échap) »
+  bool launch = true;                 // ouverte à l'activation du mode : la croix et Échap valent « Plus tard » (ConnectEnd::Later)
   std::wstring command;               // chemin réel du bridge (réglage manuel)
   std::vector<std::wstring> args;     // ex. {L"--store", L"C:\\…"}
   std::wstring serverName = L"browser-annotations";
@@ -57,7 +57,7 @@ enum class ConnectEnd { Later, Done, Closed };
 struct ConnectHooks {
   std::function<void(AgentKind)> connect;           // clic explicite SEULEMENT ; l'hôte configure hors fil UI puis SetStatus()
   std::function<void(const std::wstring&)> copy;    // l'hôte écrit le presse-papiers (commande, JSON, TOML)
-  std::function<void(ConnectEnd)> closed;           // Later = « Plus tard »/Échap (compteur persistant côté hôte), Done = « Terminé », Closed = croix
+  std::function<void(ConnectEnd)> closed;           // Later = croix/Échap à l'ouverture (compteur de refus côté hôte), Done = « Terminé », Closed = croix ensuite
   std::function<void(const std::wstring&)> announce;
 };
 class ConnectModal {
@@ -70,6 +70,8 @@ class ConnectModal {
 };
 std::wstring ConnectJson(const ConnectSetup&), ConnectToml(const ConnectSetup&);   // textes purs (testés)
 ```
+**Révision Paper du 14 novembre 2026 (1.1, 10OW-0)** : la description « Il recevra vos annotations dès la première. » et le bouton « Plus tard + Échap » sont supprimés ; un seul en-tête (titre + croix 28) pour 1.1 à 1.7, modale de lancement 192 de haut. La croix et Échap valent toujours « Plus tard » (`closed(ConnectEnd::Later)`, même hook, même compteur) tant que la modale a été ouverte au lancement et que rien n'a été lancé (`ConnectView::ClosesAsLater()`, ex-`LaunchHeader()`, gardé en alias). API inchangée.
+
 La fenêtre du navigateur est désactivée pendant l'ouverture (`EnableWindow`) et réactivée avant `closed` ; le voile avale les clics. « Terminé » apparaît dès qu'une app est connectée et qu'aucune n'est en cours. La modale n'écrit jamais rien : `connect` est le seul déclencheur, sur clic.
 
 ### Panneau de note (2.1 → 2.3)
@@ -139,7 +141,7 @@ Toutes ces surfaces sont des fenêtres **enfants** à alpha par pixel au-dessus 
 | Surface | États (captures) |
 | --- | --- |
 | Bandeau | actif (BETA), rappel « Aucun agent connecté · Connecter » (fondu), focus clavier rappel / Quitter, appui 0,96 |
-| Modale | lancement (sous-titre + Plus tard), en cours (anneau tournant), connecté (+ note, + Terminé), échec (contour #FF7B6E66 + message), réglage manuel déplié (commande, Copier, JSON, TOML, « Copié »), disque amovible (Reconnecter + pastille d'avertissement), pastille dépliée, focus clavier |
+| Modale | lancement (même en-tête que les autres états : titre + croix, sans description), en cours (anneau tournant), connecté (+ note, + Terminé), échec (contour #FF7B6E66 + message), réglage manuel déplié (commande, Copier, JSON, TOML, « Copié »), disque amovible (Reconnecter + pastille d'avertissement), pastille dépliée, focus clavier |
 | Note | saisie (champ focalisé, bordure #3E67FF99), texte d'exemple, capture en préparation (anneau), pastille repliée / dépliée, capture impossible, validation (note vide), envoi (« Ajout… »), échec d'écriture (« Réessayer »), focus clavier |
 | Lanceur | repos (tiroir), agent au travail (anneau + compteur accent), annotation non lue (compteur gris), historique ouvert (bordure #3E67FF99), survol, appui, focus |
 | Cartes | 3.1 ajoutée sans agent, 3.2 l'agent s'en occupe, 3.3 l'agent a terminé, « Annotation ajoutée » (agent connecté, part seule après 4 s), focus clavier |
@@ -163,9 +165,9 @@ Indice statique pour chaque état animé : couleur (accent, danger), icône (ann
 
 ## Accessibilité
 
-- UIA (`accessibility.h`) sur chaque surface : bandeau (groupe « Mode Annotation », statut, « Connecter un agent », « Quitter le mode Annotation » + Échap) ; modale (groupe titré + aide, « Plus tard »/« Fermer » + Échap, boutons d'app avec statut En cours / Connecté / Échec et message en aide, « Terminé » + Entrée, « Autre app ou réglage manuel » expand/collapse, « Copier la commande », « Copier au format JSON / TOML », pastille expand/collapse) ; note (groupe, champ nommé « Que faut-il changer ? » + raccourcis + erreur en aide, « Site » en texte, « Ajouter » + Entrée, pastille expand/collapse, lignes Page / Élément / Style, capture) ; lanceur (« Annotations » / « Annotations · 1 en cours », Ctrl+Maj+H, expand) ; cartes (groupe, texte, boutons) ; historique (onglets « Toutes / En cours (n) / Terminées (n) », liste d'éléments avec statut, position, hors-écran, détail, « Supprimer » annulable) ; toast (« Annuler », Ctrl+Z).
+- UIA (`accessibility.h`) sur chaque surface : bandeau (groupe « Mode Annotation », statut, « Connecter un agent », « Quitter le mode Annotation » + Échap) ; modale (groupe titré, croix « Fermer, connecter un agent plus tard » à l'ouverture (automationId `AnnotationConnectLater`) puis « Fermer » (`AnnotationConnectClose`), + Échap, boutons d'app avec statut En cours / Connecté / Échec et message en aide, « Terminé » + Entrée, « Autre app ou réglage manuel » expand/collapse, « Copier la commande », « Copier au format JSON / TOML », pastille expand/collapse) ; note (groupe, champ nommé « Que faut-il changer ? » + raccourcis + erreur en aide, « Site » en texte, « Ajouter » + Entrée, pastille expand/collapse, lignes Page / Élément / Style, capture) ; lanceur (« Annotations » / « Annotations · 1 en cours », Ctrl+Maj+H, expand) ; cartes (groupe, texte, boutons) ; historique (onglets « Toutes / En cours (n) / Terminées (n) », liste d'éléments avec statut, position, hors-écran, détail, « Supprimer » annulable) ; toast (« Annuler », Ctrl+Z).
 - Ordre Tab visuel partout, Échap ferme (d'abord l'élément déplié), focus visible (anneau 1 DIP blanc, 50 % clavier / 10 % pointeur) sur chaque contrôle dessiné, la modale piège le focus (navigateur désactivé).
-- Annonces : « Mode Annotation activé », « Connecter un agent. Il recevra… », « Cliquez sur Installer dans Claude », « Claude Desktop connecté », « Échec : … », « Copié », « Ce que l'agent verra : affiché », « Écrivez ce qu'il faut changer. », « Annotation ajoutée. Aucun agent ne la lit encore. », « Claude s'en occupe, depuis 2 min », « Historique, 4 annotations », « Annotation supprimée. Ctrl+Z pour annuler. », « Suppression annulée ».
+- Annonces : « Mode Annotation activé », « Connecter un agent », « Cliquez sur Installer dans Claude », « Claude Desktop connecté », « Échec : … », « Copié », « Ce que l'agent verra : affiché », « Écrivez ce qu'il faut changer. », « Annotation ajoutée. Aucun agent ne la lit encore. », « Claude s'en occupe, depuis 2 min », « Historique, 4 annotations », « Annotation supprimée. Ctrl+Z pour annuler. », « Suppression annulée ».
 
 ## Écarts assumés avec Paper
 
@@ -186,7 +188,7 @@ python tests/annotations-ui/run.py               # build + tests + captures + bu
 python tests/annotations-ui/run.py --no-window   # sans fenêtres réelles
 python tests/annotations-ui/tables.py            # tables ci-dessous depuis report.json
 ```
-Le harnais prend le premier plan (hôte topmost) pour les vrais clics : ne pas taper au clavier pendant ~15 s. Résultat (Windows 11 26200, 125 %) : **426 vérifications, 0 échec**, sur 4 passes complètes consécutives (et 283/283 sans fenêtres). Aucun échec intermittent observé sur ces passes ; un `WM_TIMER` « étranger » (fenêtre hors annotation) est parfois imprimé pendant le repos, il ne compte pas.
+Le harnais prend le premier plan (hôte topmost) pour les vrais clics : ne pas taper au clavier pendant ~15 s. Résultat (Windows 11 26200, 125 %) : **440 vérifications, 0 échec** (révision 1.1), sur 3 passes complètes consécutives (V2-B initiale : 426/426 sur 4 passes) (et 289/289 sans fenêtres). Aucun échec intermittent observé sur ces passes ; un `WM_TIMER` « étranger » (fenêtre hors annotation) est parfois imprimé pendant le repos, il ne compte pas.
 
 ### Échantillons de mouvement (modèle pur)
 
@@ -208,9 +210,9 @@ Modale : entrée 200.0 ms, sortie 150.0 ms, mouvement réduit 150.0 ms ; fondu c
 | note | enter t=1/2 | 90.0 | 0.9660 | 0.9986 | -0.272 | 0.000 |
 | card | enter t=1/2 | 100.0 | 0.9660 | 0.9986 | 0.000 | 0.000 |
 
-Modale dans une vraie fenêtre : 296 ms, 27 images (horloge compositeur).
+Modale dans une vraie fenêtre : 282 ms, 22 images (horloge compositeur).
 
-Carte dans une vraie fenêtre : 234 ms, 20 images (horloge compositeur).
+Carte dans une vraie fenêtre : 235 ms, 22 images (horloge compositeur).
 
 Repos 1500 ms (card) : images 0, requêtes d'horloge 0, réveils 0, ticks 0, messages postés 0, WM_TIMER des surfaces 0 (autres fenêtres : 0).
 
@@ -220,7 +222,7 @@ Repos 1500 ms (rest) : images 0, requêtes d'horloge 0, réveils 0, ticks 0, mes
 
 | Surface | largeur | Paper | natif |
 | --- | ---: | ---: | ---: |
-| 1.1 modal (launch) | 440 | 209.00 | 209.00 |
+| 1.1 modal (launch) | 440 | 192.00 | 193.00 |
 | 1.2 modal (en cours) | 440 | 192.39 | 193.00 |
 | 1.3 modal (connecté + Terminé) | 440 | 261.00 | 261.00 |
 | 1.4 modal (échec) | 440 | 216.00 | 217.00 |
@@ -230,6 +232,7 @@ Repos 1500 ms (rest) : images 0, requêtes d'horloge 0, réveils 0, ticks 0, mes
 | 1.1 pill « Reste sur cet ordinateur » width | 0 | 161.00 | 159.25 |
 | 1.6 pill (disque amovible) width | 0 | 389.00 | 388.00 |
 | 1.7 pill unfolded height | 340 | 100.00 | 100.00 |
+| 1.1-1.7 header | 438 | 62.00 | 62.00 |
 | 2.1 note panel (2 lines) | 350 | 102.00 | 102.00 |
 | 2.1 note panel min-height | 350 | 84.00 | 84.00 |
 | 2.2 pill unfolded | 350 | 111.19 | 112.00 |
@@ -277,8 +280,7 @@ Repos 1500 ms (rest) : images 0, requêtes d'horloge 0, réveils 0, ticks 0, mes
 | Texte | mesuré | jetons | encre | fond |
 | --- | ---: | ---: | --- | --- |
 | modal title 18/24 white | 17.93:1 | 17.93:1 | `#FFFFFF` | `#171717` |
-| modal subtitle 13/18 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
-| « Plus tard » 13/16 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
+| close cross 16 at 70 % (non-text, 3:1) | 9.14:1 | 9.22:1 | `#B9B9B9` | `#171717` |
 | « Connecter avec Claude » white on #292929 | 14.55:1 | 14.55:1 | `#FFFFFF` | `#292929` |
 | « Autre app ou réglage manuel » 13/18 #FFFFFFB3 | 9.24:1 | 9.22:1 | `#BABABA` | `#171717` |
 | pill « Reste sur cet ordinateur » 12/16 #FFFFFF99 | 7.02:1 | 7.04:1 | `#A2A2A2` | `#171717` |
@@ -325,9 +327,9 @@ Repos 1500 ms (rest) : images 0, requêtes d'horloge 0, réveils 0, ticks 0, mes
 
 Police mono résolue : JetBrains Mono.
 
-### Captures (`build/annotations-ui-qa/v2/`, 78)
+### Captures (`build/annotations-ui-qa/v2/`, 79)
 
-`1.1-connect-launch.png`, `1.2-connect-working.png`, `1.3-connect-connected.png`, `1.4-connect-failed.png`, `1.5-connect-manual.png`, `1.5b-connect-manual-copied.png`, `1.6-connect-removable.png`, `1.7-connect-local-unfolded.png`, `1.1b-connect-focus-keyboard.png`, `1.1-scene-launch.png`, `1.8-scene-band-reminder.png`, `1.1c-band-beta.png`, `2.1-note-panel.png`, `2.1b-note-placeholder.png`, `2.2-note-what-the-agent-sees.png`, `2.2b-note-capture-pending.png`, `2.3-note-capture-unavailable.png`, `2.4-note-empty-validation.png`, `2.5-note-saving.png`, `2.6-note-write-failed.png`, `2.7-note-focus-add-keyboard.png`, `2.1-scene-write-note.png`, `3.1-card-added-no-agent.png`, `3.2-card-agent-working.png`, `3.3-card-agent-done.png`, `3.4-card-added-agent-connected.png`, `3.3b-card-done-focus-keyboard.png`, `3.2b-card-codex-working.png`, `3.0-launcher-rest.png`, `3.0b-launcher-working.png`, `3.0c-launcher-history-open.png`, `3.0d-launcher-focus-keyboard.png`, `3.0e-launcher-hover.png`, `4.1-history-list.png`, `4.1b-history-row-menu.png`, `4.1c-history-filter-open.png`, `4.1d-history-filter-done-keyboard.png`, `4.2-history-detail.png`, `4.2b-history-detail-done.png`, `4.3-history-empty.png`, `4.3b-history-filter-empty.png`, `4.4-history-scrolled.png`, `4.5-history-toast-undo.png`, `4.1-scene-history.png`, `3.2-scene-card-working.png`, `m1-modal-enter-0-50-100-150-200ms.png`, `m2-modal-exit-0-50-100-150ms.png`, `m3-modal-interrupt-at-60ms.png`, `m4-modal-reduced-fade.png`, `m5-button-crossfade-working-to-connected.png`, `m6-local-pill-unfold.png`, `m7-card-from-launcher.png`, `m8-history-back-to-launcher.png`, `m9-note-pill-unfold.png`, `w1-window-band-reminder.png`, `w2-window-modal-entering.png`, `w3-window-modal-launch.png`, `w4-window-modal-crossfade-working-to-connected.png`, `w5-window-modal-connected.png`, `w6-window-modal-failed.png`, `w7-window-modal-manual.png`, `w8-window-modal-local-unfolded.png`, `w9-window-note-entering.png`, `w10-window-note-pill.png`, `w11-window-note-pill-unfolded.png`, `w12-window-note-capture-unavailable.png`, `w13-window-launcher-rest.png`, `w14-window-card-entering.png`, `w15-window-card-no-agent.png`, `w16-window-card-crossfade-working-to-done.png`, `w17-window-card-done.png`, `w18-window-history-entering.png`, `w19-window-history.png`, `w20-window-history-detail-sliding.png`, `w21-window-history-detail.png`, `w22-window-toast-undo.png`, `w23-window-history-scrolled.png`, `w24-window-history-empty.png`
+`1.1-connect-launch.png`, `1.2-connect-working.png`, `1.3-connect-connected.png`, `1.4-connect-failed.png`, `1.5-connect-manual.png`, `1.5b-connect-manual-copied.png`, `1.6-connect-removable.png`, `1.7-connect-local-unfolded.png`, `1.1b-connect-focus-keyboard.png`, `1.1-scene-launch.png`, `1.8-scene-band-reminder.png`, `1.1c-band-beta.png`, `2.1-note-panel.png`, `2.1b-note-placeholder.png`, `2.2-note-what-the-agent-sees.png`, `2.2b-note-capture-pending.png`, `2.3-note-capture-unavailable.png`, `2.4-note-empty-validation.png`, `2.5-note-saving.png`, `2.6-note-write-failed.png`, `2.7-note-focus-add-keyboard.png`, `2.1-scene-write-note.png`, `3.1-card-added-no-agent.png`, `3.2-card-agent-working.png`, `3.3-card-agent-done.png`, `3.4-card-added-agent-connected.png`, `3.3b-card-done-focus-keyboard.png`, `3.2b-card-codex-working.png`, `3.0-launcher-rest.png`, `3.0b-launcher-working.png`, `3.0c-launcher-history-open.png`, `3.0d-launcher-focus-keyboard.png`, `3.0e-launcher-hover.png`, `4.1-history-list.png`, `4.1b-history-row-menu.png`, `4.1c-history-filter-open.png`, `4.1d-history-filter-done-keyboard.png`, `4.2-history-detail.png`, `4.2b-history-detail-done.png`, `4.3-history-empty.png`, `4.3b-history-filter-empty.png`, `4.4-history-scrolled.png`, `4.5-history-toast-undo.png`, `4.1-scene-history.png`, `3.2-scene-card-working.png`, `m1-modal-enter-0-50-100-150-200ms.png`, `m2-modal-exit-0-50-100-150ms.png`, `m3-modal-interrupt-at-60ms.png`, `m4-modal-reduced-fade.png`, `m5-button-crossfade-working-to-connected.png`, `m6-local-pill-unfold.png`, `m7-card-from-launcher.png`, `m8-history-back-to-launcher.png`, `m9-note-pill-unfold.png`, `w1-window-band-reminder.png`, `w2-window-modal-entering.png`, `w3-window-modal-launch.png`, `w4-window-modal-crossfade-working-to-connected.png`, `w5-window-modal-connected.png`, `w6-window-modal-failed.png`, `w7-window-modal-manual.png`, `w8-window-modal-local-unfolded.png`, `w3b-window-modal-launch-cross.png`, `w9-window-note-entering.png`, `w10-window-note-pill.png`, `w11-window-note-pill-unfolded.png`, `w12-window-note-capture-unavailable.png`, `w13-window-launcher-rest.png`, `w14-window-card-entering.png`, `w15-window-card-no-agent.png`, `w16-window-card-crossfade-working-to-done.png`, `w17-window-card-done.png`, `w18-window-history-entering.png`, `w19-window-history.png`, `w20-window-history-detail-sliding.png`, `w21-window-history-detail.png`, `w22-window-toast-undo.png`, `w23-window-history-scrolled.png`, `w24-window-history-empty.png`
 
 
 ## Historique
