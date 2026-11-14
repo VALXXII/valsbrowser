@@ -6,7 +6,7 @@
 //   Left: the mark (Paper renders it through a « Heatmap » shader 31x29: natively the same
 //   glyph, 18x17, filled with the shader's #C0DAFF -> #2F63E7 ramp) + 6 + « Mode Annotation »
 //   Inter Display 14/20 #5B84FF + 6 + « BETA » chip (h 18, radius 3, accent 16 %, padding 5,
-//   12/20 medium #5B84FF -> #6A8FFF for 4.5:1, see BannerSpec::betaLabel).
+//   12/20 medium #5B84FF -> #6A8FFF for 4.5:1, see AccentTone::Paper::beta).
 //   Right: [1.8 reminder: h 22, radius 6, #FFFFFF14, padding 8, gap 6: « Aucun agent
 //   connecté » 12/16 #FFFFFFCC + « Connecter » 12/16 medium white, underline 1 px offset 3]
 //   + 12 + « Quitter » button h 24, radius 3, padding 8/4, gap 8: 13/16 medium #FFFFFFE6 and
@@ -24,8 +24,12 @@
 // the reminder while it shows (zones from the real label rectangles). It starts 220 ms after the entry (the band has
 // landed) and grows in over 400 ms; 30 frames/s at most; its clock stops while the window is minimised, hidden or in
 // the background, and at the exit: zero wake-up outside the mode. Reduced motion: the base texture, still.
+// Profile colour (design/annotation-profile-color-plan.md): every blue above is a tone of the reference accent #3E67FF;
+// the band paints the tones of the window's accent instead (src/annotation-accent.h: same OKLCH move, text tones
+// floored at 4.5:1 on their measured backdrop). The neutral « Personnel » profile keeps the exact Paper values.
 #include "annotation-kit.h"
 #include "annotation-dither.h"
+#include "annotation-accent.h"
 
 namespace NativeChrome { namespace Annotations {
 namespace BannerSpec {
@@ -33,17 +37,17 @@ inline constexpr float height = 32, padLeft = 12, padRight = 8, logoW = 31, logo
 inline constexpr float markW = 18, markH = 17;          // Paper WO9-0 mark size inside the 31x29 slot
 inline constexpr float quitH = 24, quitPadL = 8, quitPadR = 4, quitGap = 8, quitRadius = 3;
 inline constexpr float remindH = 22, remindPad = 8, remindGap = 6, remindRadius = 6;   // Paper 1.8 (10SY-0)
-inline constexpr std::uint32_t label = 0x5B84FFFF, border = 0x3E67FF3D, gradientEnd = 0x233FD6FF;
+// Colours: AccentTone::Paper (label #5B84FF, border #3E67FF3D, gradient end #233FD6) carried to the window's accent.
 // « BETA » on its accent-16 % chip: Paper #5B84FF measures 4.14:1 there (12 px needs 4.5:1), so it is
 // lifted to #6A8FFF (4.66:1); « Mode Annotation » keeps #5B84FF on the band (4.87:1).
-inline constexpr std::uint32_t betaLabel = 0x6A8FFFFF;
-inline constexpr float gradientAlpha = .32f;
+inline constexpr float gradientAlpha = AccentTone::Paper::gradientAlpha;
 }
 enum BannerHit { BannerNone = 0, BannerRemind = 1, BannerQuit = 2 };
 struct BannerVisual {
     Motion::InteractionVisual quit, remind; bool focus = false, keyboard = false, reduced = false;
     int focusItem = BannerQuit; bool beta = true; float reminder = 0;   // reminder: 0 hidden .. 1 shown (fade)
     bool texture = false; double waveSeconds = 0; float waveAmp = 0;     // V3-B: the dithered background (off in the static boards)
+    std::uint32_t accent = AccentTone::reference;                        // the window's accent (0xRRGGBB) as presented
 };
 struct BannerLayout { D2D1_RECT_F logo{}, label{}, beta{}, quit{}, remind{}; float keycapX = 0; };
 inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true) {
@@ -66,11 +70,11 @@ inline Dither::Zones WaveZones(const BannerLayout& l, bool beta, float reminder)
     return z;
 }
 // The texture as a bitmap at the target's pixel density (dots snapped to device pixels), drawn at (0, 0).
-inline int PaintBandTexture(Ink& ink, float w, float h, double seconds, float amp, const Dither::Zones& z) {
+inline int PaintBandTexture(Ink& ink, float w, float h, double seconds, float amp, const Dither::Zones& z, const AccentTone::Band& tones = AccentTone::Band{}) {
     auto* t = ink.Target(); float dx = 96, dy = 96; t->GetDpi(&dx, &dy); const float scale = dx / 96.f;
     const int pw = std::max(1, int(std::lround(w * scale))), ph = std::max(1, int(std::lround(h * scale)));
     static thread_local std::vector<std::uint32_t> buffer; buffer.assign(size_t(pw) * ph, 0);
-    const int dots = Dither::RasterBand({buffer.data(), pw, pw, ph}, scale, seconds, amp, z);
+    const int dots = Dither::RasterBand({buffer.data(), pw, pw, ph}, scale, seconds, amp, z, tones.waveDim, tones.waveBright);
     ID2D1Bitmap* bitmap = nullptr;
     const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dx, dy);
     if (SUCCEEDED(t->CreateBitmap(D2D1::SizeU(UINT32(pw), UINT32(ph)), buffer.data(), UINT32(pw * 4), props, &bitmap)))
@@ -81,14 +85,15 @@ inline int PaintBandTexture(Ink& ink, float w, float h, double seconds, float am
 // vertical gradient, the dots (the bitmap PaintBandTexture draws 1:1), the bottom border over them. `d` = the device
 // rect to write (inside the text-free span: no text, no chip, no focus ring can be there); w / h = the band (DIP),
 // k = px per DIP. Equal to the Direct2D render within 2 levels (harness: v3b span vs full frame).
-inline void RasterBandSpan(std::uint32_t* px, int stride, RECT d, float w, float h, float k, double seconds, float amp, const Dither::Zones& z) {
+inline void RasterBandSpan(std::uint32_t* px, int stride, RECT d, float w, float h, float k, double seconds, float amp, const Dither::Zones& z, const AccentTone::Band& tones = AccentTone::Band{}) {
     using namespace BannerSpec;
     const float cr = 0x17 / 255.f, cg = 0x17 / 255.f, cb = 0x17 / 255.f;
-    const float er = 0x23 / 255.f, eg = 0x3F / 255.f, eb = 0xD6 / 255.f;
+    const float er = ((tones.gradientEnd >> 16) & 255) / 255.f, eg = ((tones.gradientEnd >> 8) & 255) / 255.f, eb = (tones.gradientEnd & 255) / 255.f;
+    const std::uint32_t border = tones.border;
     const int pw = std::max(1, int(std::lround(w * k))), ph = std::max(1, int(std::lround((h - 1) * k)));   // the texture bitmap (PaintBandTexture)
     const float texW = pw / k, texH = ph / k; const double phase = Dither::Phase(seconds);
     const int cp = Dither::CellPx(Dither::Wave::cell, k), dot = cp - Dither::GapPx(k);
-    const std::uint32_t dim = Dither::Premul(Dither::Wave::dim, Dither::Wave::opacity), bright = Dither::Premul(Dither::Wave::bright, Dither::Wave::opacity);
+    const std::uint32_t dim = Dither::Premul(tones.waveDim, Dither::Wave::opacity), bright = Dither::Premul(tones.waveBright, Dither::Wave::opacity);
     const float borderTop = (h - 1) * k, borderBottom = h * k;
     // one field evaluation per cell (not per dot pixel): the dot colours of the current cell row, 0 = no dot
     const int c0 = int(d.left) / cp, c1 = std::min(pw - 1, int(d.right) - 1) / cp; static thread_local std::vector<std::uint32_t> cells; int cellRow = -1;
@@ -126,23 +131,25 @@ inline int BannerHitAt(const BannerLayout& l, bool reminder, float x, float y) {
 inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const std::function<void()>& backdrop = {}) {
     using namespace BannerSpec;
     auto* t = ink.Target(); const auto l = LayoutBanner(ink, w, v.beta);
+    const auto& tone = AccentTone::BandCached(v.accent);
+    auto rgb = [](std::uint32_t c, float a = 1) { return D2D1_COLOR_F{((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a}; };
     ink.Fill({0, 0, w, h}, 0, Hex(Ink_::canvas));
-    const auto end = Hex(gradientEnd);
+    const auto end = rgb(tone.gradientEnd);
     ID2D1GradientStopCollection* stops = nullptr; ID2D1LinearGradientBrush* gradient = nullptr;
     const D2D1_GRADIENT_STOP s[2] = {{0, {end.r, end.g, end.b, 0}}, {1, {end.r, end.g, end.b, gradientAlpha}}};
     if (SUCCEEDED(t->CreateGradientStopCollection(s, 2, &stops)) && SUCCEEDED(t->CreateLinearGradientBrush({{0, 0}, {0, h}}, stops, &gradient))) t->FillRectangle({0, 0, w, h}, gradient);
     Release(gradient); Release(stops);
-    if (v.texture) PaintBandTexture(ink, w, h - 1, v.waveSeconds, v.waveAmp, WaveZones(l, v.beta, v.reminder));
+    if (v.texture) PaintBandTexture(ink, w, h - 1, v.waveSeconds, v.waveAmp, WaveZones(l, v.beta, v.reminder), tone);
     if (backdrop) { t->PushAxisAlignedClip({0, 0, w, h}, D2D1_ANTIALIAS_MODE_ALIASED); backdrop(); t->PopAxisAlignedClip(); }
-    ink.Fill({0, h - 1, w, h}, 0, Hex(border));
+    ink.Fill({0, h - 1, w, h}, 0, Hex(tone.border));
     {   // Mark with the shader's ramp.
         const D2D1_RECT_F m{(l.logo.left + l.logo.right - markW) / 2, (l.logo.top + l.logo.bottom - markH) / 2, (l.logo.left + l.logo.right + markW) / 2, (l.logo.top + l.logo.bottom + markH) / 2};
-        const D2D1_GRADIENT_STOP ramp[3] = {{0, D2D1::ColorF(0xD1DFFF)}, {.55f, D2D1::ColorF(0x3296FF)}, {1, D2D1::ColorF(0x2F63E7)}};
+        const D2D1_GRADIENT_STOP ramp[3] = {{0, rgb(tone.markLight)}, {.55f, rgb(tone.markMid)}, {1, rgb(tone.markDeep)}};
         if (SUCCEEDED(t->CreateGradientStopCollection(ramp, 3, &stops)) && SUCCEEDED(t->CreateLinearGradientBrush({{m.left, m.top}, {m.right, m.bottom}}, stops, &gradient))) ink.IconBrush(Glyphs::mark, m, gradient);
         Release(gradient); Release(stops);
     }
-    ink.Text(L"Mode Annotation", F(14, 20), {l.label.left, 0, l.label.right + 40, h}, Hex(label), false, Align::Leading, true);
-    if (v.beta) { ink.Fill(l.beta, 3, Accent(.16f)); ink.Text(L"BETA", F(12, 20, 500), l.beta, Hex(betaLabel), false, Align::Center, true); }
+    ink.Text(L"Mode Annotation", F(14, 20), {l.label.left, 0, l.label.right + 40, h}, rgb(tone.label), false, Align::Leading, true);
+    if (v.beta) { ink.Fill(l.beta, 3, rgb(tone.fill, AccentTone::Paper::betaChip)); ink.Text(L"BETA", F(12, 20, 500), l.beta, rgb(tone.beta), false, Align::Center, true); }
     if (v.reminder > 0) {   // « Aucun agent connecté · Connecter » (1.8): fades in, press 0.96
         ID2D1Layer* group = nullptr; const bool pushed = ink.PushOpacity(v.reminder, group);
         {
@@ -223,6 +230,7 @@ class Banner : public Animator::Client {
         if (!layer_.Window()) return;
         const float opacity = presence_.Progress(now), dy = BannerOffset(opacity, reduced_);
         BannerVisual v; v.quit = motion_.Visual(BannerQuit, now); v.remind = motion_.Visual(BannerRemind, now); v.focus = focus_; v.keyboard = keyboard_;
+        v.accent = AccentRgb24();   // the window accent as presented (it follows the profile fade)
         v.reduced = reduced_; v.focusItem = focusItem_; v.beta = beta_; v.reminder = Motion::Clamp(reminder_.Value(now));
         v.texture = true; v.waveSeconds = WaveSeconds(now); v.waveAmp = Dither::Amplitude(std::chrono::duration<double, std::milli>(now - enteredAt_).count(), reduced_);
         if (v.waveAmp > 0 && presence_.IsOpen()) ++waveFrames_;
@@ -245,7 +253,8 @@ class Banner : public Animator::Client {
         if (waveOnly && !raiseNext_ && opacity >= 1 && dy == 0) {
             const auto z = WaveZones(Layout(), beta_, v.reminder); const float k = layer_.Scale(), w = Width(), h = BannerSpec::height;
             const RECT span{LONG(std::ceil(z.left * k)), 0, LONG(std::floor(z.right * k)), LONG(std::lround(h * k))};
-            if (z.right > z.left) done = layer_.PresentRegion(rect_, span, [&](std::uint32_t* px, int stride, RECT d) { RasterBandSpan(px, stride, d, w, h, k, v.waveSeconds, v.waveAmp, z); });
+            const auto& tones = AccentTone::BandCached(v.accent);
+            if (z.right > z.left) done = layer_.PresentRegion(rect_, span, [&](std::uint32_t* px, int stride, RECT d) { RasterBandSpan(px, stride, d, w, h, k, v.waveSeconds, v.waveAmp, z, tones); });
         }
         if (!done) layer_.Present(rect_, raiseNext_);
         raiseNext_ = false;
@@ -324,6 +333,9 @@ public:
     HWND Window() const { return layer_.Window(); }
     bool Visible() const { return presence_.IsOpen(); }
     bool ReminderVisible() const { return reminderOn_; }
+    // The window's accent changed (profile colour edit, its 120 ms fade, a profile switch): one full repaint with the
+    // accent as presented now. No clock: the caller (the profile fade's own timer) calls it once per step.
+    void AccentChanged() { if (layer_.Window() && presence_.Visible(Motion::Now())) Render(Motion::Now()); }
     // rect: the band in the parent's client pixels (full width, 32 DIP high, under the toolbar).
     bool Show(RECT rect, bool reduced) {
         if (!Ink::Shared(root_)) return false;

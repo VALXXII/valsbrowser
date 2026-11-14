@@ -3,7 +3,7 @@
 // Paper « MCP - Design UI UX »: 3.1 10GJ-0 (ajoutée, aucun agent), 3.2 10H4-0 (l'agent s'en occupe),
 // 3.3 10HO-0 (l'agent a terminé), 4.1 10Z6-0 (historique ouvert); « Spéc · Historique » 1167-0.
 //   Launcher 40x40 at right 16 / bottom 16, canvas #171717, radius 10, border 1: rest #FFFFFF1F,
-//     an agent working #3E67FF66, history open #3E67FF99. Icon: the tray (« tiroir », stroked
+//     an agent working #3E67FF66, history open #3E67FF99 (the window accent at 40 / 60 %). Icon: the tray (« tiroir », stroked
 //     outline 18, #FFFFFFE6); while an agent works: the ring 24 accent, turning. Badge at
 //     (right -6, top -6): h 18, min 18, padding 5, radius 6, 11/14 600 tabular white; accent
 //     while an agent works, raised #292929 otherwise. UIA « Annotations » (+ « n en cours »).
@@ -62,7 +62,7 @@ inline void PaintLauncher(Ink& ink, const LauncherVisual& v, float opacity = 1, 
     const float c = Design::Surface::canvas + (Design::Surface::tabHover - Design::Surface::canvas) * v.iv.hover;
     ink.Fill(b, radius, {c, c, c, 1});
     const bool working = v.state == LauncherState::Working;
-    ink.Stroke(b, radius, v.expanded ? Hex(0x3E67FF99) : working ? Hex(0x3E67FF66) : Hex(0xFFFFFF1F), 1);
+    ink.Stroke(b, radius, v.expanded ? Accent(.6f) : working ? Accent(.4f) : Hex(0xFFFFFF1F), 1);
     const float cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2;
     if (working) ink.Icon(Glyphs::ring, {cx - 12, cy - 12, cx + 12, cy + 12}, Accent(), v.spinner);
     else ink.IconStroke(Glyphs::tray, {cx - 9, cy - 9, cx + 9, cy + 9}, Hex(0xFFFFFFE6), 2);
@@ -373,6 +373,13 @@ public:
     bool Visible() const { return buttonPresence_.IsOpen(); }
     bool CardVisible() const { return cardPresence_.IsOpen(); }
     bool HistoryVisible() const { return history_.Visible(); }
+    // The window's accent changed: every visible part repaints with the accent as presented (no clock of its own).
+    void AccentChanged() {
+        const auto now = Motion::Now();
+        if (button_.Window() && buttonPresence_.Visible(now)) RenderButton(now);
+        if (card_.Window() && cardPresence_.Visible(now)) RenderCard(now);
+        history_.AccentChanged();
+    }
     HWND LauncherWindow() const { return button_.Window(); }
     HWND CardWindow() const { return card_.Window(); }
     HWND HistoryWindow() const { return history_.Window(); }

@@ -65,11 +65,16 @@ constexpr UINT_PTR ProfileAnimTimerId=0x5049; constexpr float AccentFadeMs=120;
 struct AccentTween{bool active=false;NativeChrome::Design::Rgb fromFill{},toFill{},fromInk{},toInk{};ULONGLONG start=0;} accentTween;
 NativeChrome::Design::Rgb RgbOf(unsigned long v){return {((v>>16)&255)/255.f,((v>>8)&255)/255.f,(v&255)/255.f};}
 NativeChrome::Design::Rgb Mix(NativeChrome::Design::Rgb a,NativeChrome::Design::Rgb b,float t){return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};}
+// The annotation mode's surfaces (band, note, launcher, history, connect modal, page frame) follow the accent too:
+// AnnotationAccentChanged (annotation-mode.h) at each change and at each step of the fade, no clock of its own.
+void AnnotationAccentChanged();
 void SetAccents(unsigned long fill,unsigned long ink,bool animate){
     namespace A=NativeChrome::Design::Accent;
-    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);accentTween.active=false;return;}
+    A::SettledCurrent()=RgbOf(fill);
+    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);accentTween.active=false;AnnotationAccentChanged();return;}
     accentTween.fromFill=A::Get();accentTween.fromInk=A::Ink();accentTween.toFill=RgbOf(fill);accentTween.toInk=RgbOf(ink);
     accentTween.start=GetTickCount64();accentTween.active=true;if(window)SetTimer(window,ProfileAnimTimerId,15,nullptr);
+    AnnotationAccentChanged();
 }
 void ProfileAnimTick(){
     namespace A=NativeChrome::Design::Accent;
@@ -77,6 +82,7 @@ void ProfileAnimTick(){
         const float u=std::clamp((GetTickCount64()-accentTween.start)/AccentFadeMs,0.f,1.f),t=NativeChrome::Motion::Eased(u,NativeChrome::Motion::Curve::EaseOut);
         A::Current()=Mix(accentTween.fromFill,accentTween.toFill,t);A::InkCurrent()=Mix(accentTween.fromInk,accentTween.toInk,t);
         if(u>=1)accentTween.active=false;
+        AnnotationAccentChanged();
     }
     const bool button=chrome.ProfileButtonAnimating(NativeChrome::Motion::Now());
     InvalidateChrome();

@@ -60,21 +60,26 @@ var NONCE = String(P.nonce), STAMP = P.navStamp, D = document;
 var STYLE_PROPS = P.styles || [], ATTRS = P.attrs || [];
 var reduced = !!P.reduced;
 try { if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) reduced = true; } catch (e) {}
-var A = P.accent || '62,103,255';
+// The window's profile accent « r,g,b » (ints). Replaced live by the « accent » command (profile colour edit, the
+// value the host settles on, never a step of its fade); only these rules and the cursor's dot change.
+function rgbList(v) { var m = /^(\d{1,3}),(\d{1,3}),(\d{1,3})$/.exec(String(v || '')); return m && +m[1] < 256 && +m[2] < 256 && +m[3] < 256 ? m[1] + ',' + m[2] + ',' + m[3] : ''; }
+var A = rgbList(P.accent) || '62,103,255';
 // V3-B cursor: the host's SVG at its pixel size, shown 1:1 on screen. The image-set resolution is the SCREEN's scale
 // (the host's DPI, not devicePixelRatio: custom cursors are not zoomed with the page), so a 48 px image at 125 % is
 // 48 device px at any page zoom. The hot spot is in the image's CSS coordinates (pixels / resolution).
 var CUR = P.cursor || {}, CURSOR = 'default', CURSOR_W = 'default';
-(function () {
-  var px = Math.max(16, Math.min(128, +CUR.size || 32)), svg = String(CUR.svg || ''), k = px / 32;
-  if (!svg) return;
+function buildCursor(svg) {
+  var px = Math.max(16, Math.min(128, +CUR.size || 32)), k = px / 32;
+  svg = String(svg || '');
+  if (!svg) { CURSOR = CURSOR_W = 'default'; return; }
   svg = svg.replace("width='32' height='32'", "width='" + px + "' height='" + px + "'");
   var url = 'url("data:image/svg+xml,' + encodeURIComponent(svg).replace(/'/g, '%27') + '")';
   var r = Math.max(0.25, Math.min(8, +CUR.scale || 1));
   var hx = ((+CUR.hx || 16) * k / r).toFixed(2), hy = ((+CUR.hy || 16) * k / r).toFixed(2);
   var set = '(' + url + ' ' + r.toFixed(4) + 'x) ' + hx + ' ' + hy + ',default';
   CURSOR_W = '-webkit-image-set' + set; CURSOR = 'image-set' + set;
-})();
+}
+buildCursor(CUR.svg);
 function cursorDecl(important) { var imp = important ? ' !important' : ''; return 'cursor:' + CURSOR_W + imp + ';cursor:' + CURSOR + imp; }
 var sheet = null, adopted = [];
 function adopt(rootNode) {
@@ -92,22 +97,30 @@ host.setAttribute('aria-hidden', 'true');
 host.style.cssText = 'all:initial;position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
 var root = host.attachShadow({ mode: 'closed' });
 var T = 'transform 120ms cubic-bezier(0.2,0,0,1),opacity 120ms ease-out';
+// The accent rules (frame fill 8 %, edges, label, padding hatches and their labels), rebuilt by the « accent » command.
+function accentCss() {
+  return '.f{width:100px;height:100px;background:rgba(' + A + ',0.08)}' +
+    '.h,.v{background:rgb(' + A + ')}' +
+    '.l{background:rgb(' + A + ')}' +
+    '.pb{background:repeating-linear-gradient(135deg,rgba(' + A + ',.4) 0 1px,transparent 1px 5px),rgba(' + A + ',.08)}' +
+    '.pl{background:rgb(' + A + ')}' +
+    '.s{' + cursorDecl(false) + '}';   // the iframe shields carry the cursor (its dot is the accent)
+}
 root.innerHTML = '<style>' +
   '.x{position:fixed;left:0;top:0;transform-origin:0 0;opacity:0;pointer-events:none;will-change:transform,opacity}' +
   '.on{transition:' + (reduced ? 'opacity 120ms ease-out' : T) + '}' +
   '.mv{transition:opacity 120ms ease-out}' +
-  '.f{width:100px;height:100px;background:rgba(' + A + ',0.08)}' +
-  '.h,.v{background:rgb(' + A + ')}.h{width:100px;height:2px}.v{width:2px;height:100px}' +
-  '.l{font:500 11px/16px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;background:rgb(' + A + ');' +
+  '.h{width:100px;height:2px}.v{width:2px;height:100px}' +
+  '.l{font:500 11px/16px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;' +
   'padding:2px 6px;border-radius:4px;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}' +
-  '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;' + cursorDecl(false) + ';background:transparent}' +
+  '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;background:transparent}' +
   '.i,.j{position:fixed;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none}.i.on,.j.on{transition:opacity 120ms ease-out}' +
   '.pb,.gb,.pl,.gl{position:fixed;left:0;top:0;box-sizing:border-box}' +
-  '.pb{background:repeating-linear-gradient(135deg,rgba(' + A + ',.4) 0 1px,transparent 1px 5px),rgba(' + A + ',.08)}' +
   '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
   '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;white-space:nowrap;letter-spacing:0}' +
-  '.pl{background:rgb(' + A + ')}.gl{background:#D63E92}' +
-  '</style><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div>';
+  '.gl{background:#D63E92}' +
+  '</style><style class="a"></style><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div>';
+var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
 var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4], label = parts[5];
 var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb');
@@ -620,6 +633,13 @@ function cmd(op, arg) {
   }
   if (op === 'resume') { conceal(false); frozen = false; ++seq; haveMove = px >= 0; schedule(); if (!haveMove) place(null); return; }
   if (op === 'point') { selectAtPoint(arg.x, arg.y); return; }
+  if (op === 'accent') {   // { accent: 'r,g,b', svg: cursor } — colours only: no move, no transition, no new selection
+    var a = rgbList(arg && arg.accent); if (!a) return;
+    A = a;
+    if (arg.svg) { buildCursor(arg.svg); if (sheet) { try { sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) {} } }
+    accentStyle.textContent = accentCss();
+    return;
+  }
   if (op === 'selection') { if (!selectSelection(arg)) post({ op: 'noselection' }); return; }
 }
 

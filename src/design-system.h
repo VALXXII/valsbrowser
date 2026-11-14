@@ -57,8 +57,13 @@ namespace Accent {
 inline constexpr unsigned long defaultRgb=0x3E67FF;
 inline constexpr float caretOpacity=.9f;   // Paper #3E67FFE6 / #FF7B6EE6
 inline Rgb& Current(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
-inline void Set(unsigned long rgb){Current()={((rgb>>16)&255)/255.f,((rgb>>8)&255)/255.f,(rgb&255)/255.f};}
+// Settled: the fill the window is going to (the stored profile colour), never a step of the 120 ms profile fade.
+// Current()/Get() is the fill ON SCREEN (it follows the fade); what must not move with the fade (a value handed to a
+// page script, a capture's fill removal) reads Settled(). SetAccents (profiles-integration.h) keeps both.
+inline Rgb& SettledCurrent(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
+inline void Set(unsigned long rgb){Current()={((rgb>>16)&255)/255.f,((rgb>>8)&255)/255.f,(rgb&255)/255.f};SettledCurrent()=Current();}
 inline Rgb Get(){return Current();}
+inline Rgb Settled(){return SettledCurrent();}
 // Ink: the accent as a foreground on the dark chrome (progress, download ring and ripple, checks).
 // The reference blue by default; a coloured profile sets its OKLCH L .78 ink (Paper p-I-0 P07).
 inline Rgb& InkCurrent(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
