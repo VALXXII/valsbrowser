@@ -39,8 +39,13 @@ def compile_exe(name, sources, extra=()):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    compile_exe("update-helper.exe", ["src/update-helper.cpp", "src/update-package.cpp"], ["-mwindows"])
-    for name, version, crash in [("fake-0.3.1.exe", "0.3.1", 0), ("fake-0.3.2.exe", "0.3.2", 0), ("fake-0.3.2-crash.exe", "0.3.2", 1)]:
+    # Fixture helper: same source, plus test-only fault points (BROWSER_HELPER_FAULT, see src/update-helper.cpp).
+    compile_exe("update-helper.exe", ["src/update-helper.cpp", "src/update-package.cpp"], ["-mwindows", "-DUPDATE_HELPER_FAULTS"])
+    # Real MCP bridges (src/mcp-bridge.cpp) with distinct bytes per version: live agent processes in install_test.
+    for version in ("0.3.1", "0.3.2", "0.3.3"):
+        compile_exe(f"bridge-{version}.exe", ["src/mcp-bridge.cpp", "src/annotations.cpp"], [f'-DBROWSER_VERSION_TEXT="{version}"'])
+    for name, version, crash in [("fake-0.3.1.exe", "0.3.1", 0), ("fake-0.3.2.exe", "0.3.2", 0), ("fake-0.3.2-crash.exe", "0.3.2", 1),
+                                 ("fake-0.3.3.exe", "0.3.3", 0)]:
         compile_exe(name, ["tests/update-core/fake_browser.cpp", *CORE],
                     ["-mwindows", f'-DFAKE_VERSION=L"{version}"', f"-DFAKE_CRASH={crash}"])
     compile_exe("update_core_test.exe", ["tests/update-core/update_core_test.cpp", *CORE])

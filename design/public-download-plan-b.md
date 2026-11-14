@@ -129,3 +129,61 @@ pipes): claim before update, install with migration (writes during window refuse
 running process resolves on `<root>\data` with the original token; no-ack rollback ⇒ same process
 back on the portable store with nothing lost; helper killed mid-copy ⇒ gate released, retry
 re-migrates; two further updates ⇒ redirect still valid, store intact.
+
+## Items 4 + 6 — revision after root review (commit point, recovery, atomic resolution)
+
+Root conditions (2026-11-14): (1) the shared gate must cover root resolution **and** every operation
+that depends on it (reads with effects such as `WriteReader`/seen included), no try-open-then-reopen;
+(2) a helper killed after data publish / `current` switch but before ack must not let anything
+redirect to a copy that a rollback or retry would discard: a **durable commit** is required,
+distinct from `migrated-from.txt`, with bounded recovery.
+
+**Files.** `<exeDir>\annotations.write-gate` (gate, outside the store). Commit record
+`<root>\data\annotations-migration` = `browser-annotations-migration 1` / `state committed` /
+`from <exeDir>` / `nonce <n>` (atomic write). Source mirror `<exeDir>\annotations.migrated` =
+same content, written after the data record.
+
+**Every store request of a portable-capable writer** (bridge tool call — all of them, reads
+included — and every mutating `BA::Store` call of the browser on a portable default store):
+open the gate shared → resolve the root **while holding it** → run the operation → close. The
+helper's exclusive open therefore waits for in-flight requests and blocks new ones; a request can
+never resolve "source" and then write after the copy (the copy only starts once the helper holds
+the gate, and the root decision is re-taken under the gate for every request). Gate busy ⇒
+`Busy` outcome « migration en cours, réessayez » (retryable `isError`, nothing changed).
+
+**Resolution under the gate** (bridge only; release, non-preview builds; no custom `--store`):
+redirect to `<root>\data\annotations` iff the commit record exists, says `committed`, names
+exactly this portable folder, and the `PortableForwardTarget` conditions hold (valid non-zero
+`current` with its `browser.exe`, last result not failed for it, root/data/versions not reparse,
+local drive). Otherwise serve the portable store. A portable **browser** process writing after
+commit (source mirror present) gets `Busy` « données déplacées vers la version installée » —
+never a silent write to an abandoned store.
+
+**Installed side before commit.** A `BA::Store` whose root is `<root>\data\annotations` while
+`<root>\data\migrated-from.txt` exists and the commit record does not say committed refuses
+mutations with `Busy` (reads allowed: the copy equals the frozen source). Old installs migrated
+before this feature are committed by recovery on the first launcher start (below).
+
+**Commit point (helper).** Install with portable previous: take the gate exclusively (bounded
+wait, else `abortBeforeSwitch("annotations-busy")`) → copy `annotations\` with the profile →
+publish `data` → switch → launch → **ack** ⇒ write the commit record, then the source mirror,
+then release the gate. No ack ⇒ rollback deletes the migrated `data` (existing code) while the
+gate is still held, no record ⇒ the source stays authoritative.
+
+**Bounded recovery** (`RecoverAnnotationsMigration`, helper: every launcher start and every
+install start, before anything else): if `data\migrated-from.txt` exists and no committed record:
+take the source gate exclusively (skip this start if busy); if the source has no `annotations\`
+⇒ write the record (nothing to move); else replace `data\annotations` by a fresh copy of the
+source (copy to a temp dir, swap by rename; the installed store refused mutations, so nothing is
+lost), then write the record and the mirror. A half-written record/copy is redone at the next
+start; the source is never modified except for the mirror file.
+
+**Tests to add** (helper e2e with live portable bridge + store unit tests): barrier race
+(request holds the gate, helper waits; helper holds, request Busy, nothing written); kill after
+data publish / after switch / after ack-before-record ⇒ no redirect, installed store Busy, live
+bridge keeps serving the source with its claims; launcher recovery re-copies including writes made
+after the crash, then the same live bridge redirects with the original token; rollback ⇒ no
+redirect ever; two later updates ⇒ redirect still valid; false references (other folder, prefix
+match, UNC, reparse, invalid/failed current, custom `--store`, preview/dev build) ⇒ no redirect;
+`DefaultStoreRoot` for `<app>\assets\bin` (portable ⇒ `<app>\annotations`), for
+`versions\<v>\assets\bin` and `<root>\bin` (⇒ `<root>\data\annotations`), dev sibling unchanged.

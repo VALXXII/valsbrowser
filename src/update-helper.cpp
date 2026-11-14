@@ -10,6 +10,7 @@
 #include <shlobj.h>
 
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -143,6 +144,125 @@ bool LocalDrivePath(const std::wstring& path) {
     return type == DRIVE_FIXED || type == DRIVE_REMOVABLE;
 }
 
+// ---------------------------------------------------------------- test faults
+// Fault injection for the install fixture (tests/update-core) ONLY: compiled in with -DUPDATE_HELPER_FAULTS,
+// never by tools/release/build.py. BROWSER_HELPER_FAULT=<point> makes that step fail ("fail") or kills the
+// helper on the spot (points starting with "kill-"), to prove recovery from every intermediate state.
+#ifdef UPDATE_HELPER_FAULTS
+bool Fault(const char* point) {
+    wchar_t v[64];
+    DWORD n = GetEnvironmentVariableW(L"BROWSER_HELPER_FAULT", v, 64);
+    if (!n || n >= 64 || UP::Narrow(std::wstring(v, n)) != point) return false;
+    if (std::string(point).rfind("kill-", 0) == 0) TerminateProcess(GetCurrentProcess(), 77);
+    return true;
+}
+#else
+constexpr bool Fault(const char*) { return false; }
+#endif
+
+// ---------------------------------------------------------------- stable bridge
+// Agents (Claude, Codex) are configured once with <root>\bin\browser-annotations-mcp.exe (src/agent-connect.cpp):
+// version directories are pruned, so the versioned copy (assets\bin\ of the package, the only place existing
+// clients accept) must be published there. Invariant restored by ReconcileBridge(root, v): the bin file is
+// byte-identical to versions\<v>\assets\bin\<bridge>, or absent when v ships none (an older current never keeps a
+// newer, possibly incompatible bridge). A running bridge is never killed or written: its file is renamed aside
+// (allowed while the image is mapped; replacing it in place is not) and deleted later once nothing runs it. The
+// only moment the final name is absent is between that rename and the next one (two renames in a row); a crash
+// there is repaired by the next ReconcileBridge (install start, rollback, every launcher start).
+constexpr const wchar_t* BridgeName = L"browser-annotations-mcp.exe";
+
+class BinLock {  // exclusive <root>\bin\.publish-lock: one reconciler at a time (helper install vs launcher)
+public:
+    BinLock(const std::wstring& bin, DWORD waitMs) {
+        ULONGLONG end = GetTickCount64() + waitMs;
+        for (;;) {
+            h_ = CreateFileW((bin + L"\\.publish-lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+                             FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (h_ != INVALID_HANDLE_VALUE || GetTickCount64() >= end) return;
+            Sleep(100);
+        }
+    }
+    ~BinLock() { if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_); }
+    BinLock(const BinLock&) = delete;
+    BinLock& operator=(const BinLock&) = delete;
+    bool Held() const { return h_ != INVALID_HANDLE_VALUE; }
+private:
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+};
+
+bool RegularFile(const std::wstring& path) {
+    DWORD a = GetFileAttributesW(path.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+}
+
+bool SameBytes(const std::wstring& a, const std::wstring& b) {
+    UP::Digest da{}, db{};
+    std::uint64_t sa = 0, sb = 0;
+    return UP::Sha256File(a, da, sa) && UP::Sha256File(b, db, sb) && sa == sb && da == db;
+}
+
+// Removes leftovers of earlier publications; files still executed by an agent stay until a later pass.
+void CleanBridgeLeftovers(const std::wstring& bin) {
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileExW((bin + L"\\.*-*.exe").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        std::wstring name = fd.cFileName;
+        if (fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        if (name.rfind(L".old-", 0) == 0 || name.rfind(L".new-", 0) == 0) DeleteFileW((bin + L"\\" + name).c_str());
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+}
+
+// Caller holds the BinLock when bin exists. `version` empty: no current version (portable previous).
+bool ReconcileBridge(const std::wstring& root, const std::string& version, const std::string& tag, std::string& error) {
+    const std::wstring bin = root + L"\\bin", final_ = bin + L"\\" + BridgeName;
+    const std::wstring src = version.empty() ? L"" : root + L"\\versions\\" + UP::Widen(version) + L"\\assets\\bin\\" + BridgeName;
+    const bool want = !src.empty() && UP::PathExists(src);
+    if (want && (!RegularFile(src) || UP::IsReparsePoint(Parent(src)))) return error = "bridge source invalid", false;
+    if (UP::PathExists(bin) && (UP::IsReparsePoint(bin) || !UP::IsDirectory(bin))) return error = "bin is not a plain directory", false;
+    const bool present = UP::PathExists(final_);
+    if (want && present && RegularFile(final_) && SameBytes(final_, src)) {
+        CleanBridgeLeftovers(bin);
+        return true;  // already published
+    }
+    if (!want && !present) return true;
+    const std::wstring aside = bin + L"\\.old-" + UP::Widen(tag) + L".exe", fresh = bin + L"\\.new-" + UP::Widen(tag) + L".exe";
+    if (want) {
+        if (!CreateDirectoryW(bin.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return error = "bin create failed", false;
+        if (UP::IsReparsePoint(bin)) return error = "bin is not a plain directory", false;
+        DeleteFileW(fresh.c_str());
+        if (Fault("bin-copy") || !CopyFileW(src.c_str(), fresh.c_str(), TRUE) || !SameBytes(fresh, src)) {
+            DeleteFileW(fresh.c_str());
+            return error = "bridge copy failed", false;
+        }
+    }
+    if (present && (Fault("bin-aside") || !MoveFileExW(final_.c_str(), aside.c_str(), MOVEFILE_WRITE_THROUGH))) {
+        DeleteFileW(fresh.c_str());
+        return error = "bridge in place could not be moved aside", false;
+    }
+    Fault("kill-after-aside");
+    if (want && (Fault("bin-final") || !MoveFileExW(fresh.c_str(), final_.c_str(), MOVEFILE_WRITE_THROUGH))) {
+        if (present) MoveFileExW(aside.c_str(), final_.c_str(), MOVEFILE_WRITE_THROUGH);  // previous file back in place
+        DeleteFileW(fresh.c_str());
+        return error = "bridge publish failed", false;
+    }
+    CleanBridgeLeftovers(bin);
+    return true;
+}
+
+// Best effort for the launcher: repairs an interrupted publication; a busy lock means an install is doing it.
+void LauncherReconcile(const std::wstring& root, const std::string& current) {
+    const std::wstring bin = root + L"\\bin";
+    const bool ships = UP::PathExists(root + L"\\versions\\" + UP::Widen(current) + L"\\assets\\bin\\" + BridgeName);
+    if (!ships && !UP::PathExists(bin)) return;
+    if (!UP::PathExists(bin) && !CreateDirectoryW(bin.c_str(), nullptr)) return;
+    if (UP::IsReparsePoint(bin)) return;
+    BinLock lock(bin, 0);
+    std::string error;
+    if (lock.Held()) ReconcileBridge(root, current, "launch-" + std::to_string(GetCurrentProcessId()), error);
+}
+
 // ---------------------------------------------------------------- launcher
 
 int RunLauncher(int argc, wchar_t** argv) {
@@ -154,6 +274,7 @@ int RunLauncher(int argc, wchar_t** argv) {
         if (UP::ParseVersion(current, v)) {
             std::wstring exe = root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe";
             if (ValidExeAt(exe) && !UP::IsReparsePoint(root + L"\\versions")) {
+                LauncherReconcile(root, current);
                 std::vector<std::wstring> args(argv + 1, argv + argc);
                 PROCESS_INFORMATION pi{};
                 if (Launch(exe, args, pi)) {
@@ -485,8 +606,44 @@ int RunInstall(const std::string& nonce) {
     } else if (!WaitProfileUnlocked(root + L"\\data\\profile", ProfileUnlockMs)) {
         return abortBeforeSwitch("profile-locked", 26);
     }
-    // Switch.
-    if (!UP::AtomicWriteFile(root + L"\\current", p.version + "\n")) return abortBeforeSwitch("current-write", 27);
+    // Stable bridge for agents (<root>\bin, see ReconcileBridge), published BEFORE the new version can start
+    // (src/agent-connect.cpp never falls back to a versioned copy) and kept locked until `current` names the
+    // version it matches, so a concurrent launcher can never revert it in between.
+    const std::wstring bin = root + L"\\bin";
+    const std::string previousBridge = hadCurrent ? oldCurrent : "";
+    const bool bridgeInvolved = UP::PathExists(target + L"\\assets\\bin\\" + BridgeName) || UP::PathExists(bin);
+    auto restoreBridge = [&] {
+        if (!bridgeInvolved) return;
+        BinLock lock(bin, 10000);
+        std::string e;
+        if (!lock.Held() || !ReconcileBridge(root, previousBridge, nonce + "-restore", e))
+            Log("bridge restore failed (" + (lock.Held() ? e : std::string("bin locked")) + "); repaired by the next launcher start");
+    };
+    {
+        std::unique_ptr<BinLock> lock;
+        if (bridgeInvolved) {
+            if (!CreateDirectoryW(bin.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+                return abortBeforeSwitch("bridge-publish bin create failed", 32);
+            if (UP::IsReparsePoint(bin)) return abortBeforeSwitch("bridge-publish bin is not a plain directory", 32);
+            lock = std::make_unique<BinLock>(bin, 10000);
+            if (!lock->Held()) return abortBeforeSwitch("bridge-publish bin locked", 32);
+            std::string e;
+            if (!ReconcileBridge(root, p.version, nonce, e)) {
+                lock.reset();
+                restoreBridge();
+                return abortBeforeSwitch("bridge-publish " + e, 32);
+            }
+            Log("bridge published to bin for " + p.version);
+            Fault("kill-after-publish");
+        }
+        // Switch.
+        if (Fault("current-write") || !UP::AtomicWriteFile(root + L"\\current", p.version + "\n")) {
+            lock.reset();
+            restoreBridge();
+            return abortBeforeSwitch("current-write", 27);
+        }
+    }
+    Fault("kill-after-switch");
     UP::AtomicWriteFile(root + L"\\previous",
                         p.previousKind == "installed" ? "installed " + p.previousVersion + "\n"
                                                       : "portable " + UP::Narrow(p.previousExe) + "\n");
@@ -495,6 +652,7 @@ int RunInstall(const std::string& nonce) {
             UP::AtomicWriteFile(root + L"\\current", oldCurrent + "\n");
         else
             DeleteFileW((root + L"\\current").c_str());
+        restoreBridge();  // after `current`: a launcher reconciling in between follows the restored current
     };
     // Stable launcher (best effort; a launcher being executed right now keeps the old copy).
     std::wstring launcherTemp = root + L"\\browser.exe.new-" + UP::Widen(nonce);
