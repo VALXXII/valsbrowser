@@ -70,9 +70,11 @@ the `publish` job reads; the staging directory `dist-payload` is outside it.
   tested here** on a machine without the runtime; no install was performed.
 - Windows SmartScreen / Mark of the Web will likely warn (unsigned exe); the notes say how to
   continue. Not reproduced here.
-- **Annotations are not in this product.** `src/main.cpp:62-66` compiles the annotation mode out of
-  `--channel release`, and `build.py` builds the MCP bridge for non-release channels only. Lot A
-  alone therefore does **not** deliver the annotation/profile accents to friends; see lot B below.
+- **Annotations:** with lot A alone (at 6c57d88), the release product has no annotation mode. Lot B
+  (below) ships it: release builds compile it in with `BROWSER_RELEASE_ANNOTATIONS` only together
+  with the bridge at `assets/bin/browser-annotations-mcp.exe`.
+- The root published `v0.3.239-portable` (ZIP of the existing stable release, made with lot A's
+  `package.py`, `--latest=false`) as a stop-gap. It has no annotation mode.
 
 ## Tests and evidence (`design/public-download-evidence/`)
 
@@ -131,20 +133,115 @@ absent in this worktree; no native file changed) and the real CI publish.
 - The CI run for PR #70 (started before this change) uses the old publisher and, if it publishes,
   produces a release without ZIP.
 
-## Lot B (annotations + bridge in release) — audit summary
+## Lot B — annotations + MCP bridge in the release product
 
-Root decision: B is required for the final public download. Facts found:
+Branch `VALXXII/release-annotations-bridge` (stacked on A, then merged with `main` 411acbb, which
+holds PR #72 profile colours and PR #73 release wiring). Plan, protocol and the decisions it records:
+`design/public-download-plan-b.md`.
 
-1. `AllowedPayloadPath` (src/update-package.cpp) is identical in v0.3.239 (f66594…) and main: root
-   files are a fixed list (+ `*-LICENSE.txt`/`*-NOTICE.txt`), otherwise `assets/**`. The **old**
-   browser validates the package before staging, so a root-level `browser-annotations-mcp.exe`
-   would make every existing client reject every future update. The only compatible location is
-   under `assets/` (decided: `assets/bin/browser-annotations-mcp.exe`, documented product payload).
-2. The installing helper is the **new** package's `update-helper.exe` (copied from the stage), so
-   helper changes apply from the first update.
-3. `StableBridgePath` looks for `<root>\bin\browser-annotations-mcp.exe`, but nothing creates
-   `<root>\bin`; the helper keeps only current + previous versions, so a versioned path in an agent
-   config breaks after two updates.
-4. Server name is fixed to `browser-annotations-preview`; release needs its own.
-5. The gate in `src/main.cpp` must only open together with the bridge.
-The plan for B is `design/public-download-plan-b.md`; B is a separate commit/PR.
+### Payload and compatibility (items 1–2)
+
+- `build.py`: a release build places the bridge at **`assets/bin/browser-annotations-mcp.exe`** and
+  passes `-DBROWSER_RELEASE_ANNOTATIONS` only in that case (PR #73's gate in `src/main.cpp`). Release +
+  bridge off, and bridge on + `--no-annotations`, are refused; `--no-annotations` stays available as
+  a measurement baseline (no bridge). Dev builds keep the bridge next to `browser.exe`.
+- `package.py`: any executable under `assets/` is refused except that exact path and case, which must
+  be a PE32+ x64 **console** image. `run_all.py --app`: a release app has no root bridge, and ships
+  the bridge iff `browser.exe` contains the annotation mode.
+- **Why `assets/bin`:** an installed client validates an update with its **own** `AllowedPayloadPath`
+  (identical from v0.3.239 to now): fixed root names + licences, else `assets/**`. A root-level bridge
+  would make every existing client reject every future update. `tests/update-integration/old_validator.py`
+  compiles v0.3.239's validator from git (f66594) and proves: bridge at `assets/bin` accepted and
+  staged byte-identical (synthetic payload, real 0.3.239 payload, and the real integrated 0.3.285
+  package), root bridge rejected.
+
+### Stable bridge path for agents (item 3)
+
+Agents are configured with `%LOCALAPPDATA%\browser\bin\browser-annotations-mcp.exe` (PR #73's
+lookup never falls back to a versioned copy, which pruning would delete).
+`update-helper.exe` keeps that file **byte-identical to `versions\<current>\assets\bin\…`**, or absent
+when `current` ships none, under an exclusive `bin\.publish-lock`:
+
+- published **before** the new version starts, lock kept until `current` names it; restored on every
+  failure path and on rollback; repaired by the launcher at every start, which reads `current`
+  **under the lock** and launches that same version;
+- a running agent's bridge is never killed or written: Windows refuses to replace a mapped exe (probe:
+  `MoveFileEx` and POSIX rename both fail with error 5), so the old file is renamed aside (allowed,
+  process keeps running) and deleted once unused. The final name is absent only between those two
+  renames; a crash there is repaired by the next launcher start;
+- every object read or written is opened without following a final reparse point and must resolve
+  (`GetFinalPathNameByHandle`) exactly under the install root: a junction anywhere below the root
+  (`versions\<v>\assets`, `bin`, …) is refused; the published bytes are re-read and compared;
+- the install replaces the stable launcher **before** publishing `bin` (busy launcher ⇒ the install
+  aborts before anything is published, and is retried later), so the first upgrade from a launcher
+  that predates the bridge is also repaired by the next launcher start.
+
+### Portable annotations follow the install, live agents never diverge (items 4 + 6)
+
+A friend runs the extracted ZIP (portable: store `<folder>\annotations`) and may connect an agent,
+whose config then names `<folder>\assets\bin\…` and that store. The first installed update moves the
+data to `%LOCALAPPDATA%\browser\data`. Protocol (`src/annotations-migration.h`):
+
+- **Gate** `<folder>\annotations.write-gate`: every bridge request (all of them: list/get also write
+  reader records) holds it **shared for the whole request**, during which the store is re-resolved;
+  every browser store mutation holds it too. The helper holds it **exclusively** from before the copy
+  until the outcome. Meanwhile requests get a retryable « Migration … en cours » and change nothing.
+- **Durable record** `data\annotations-migration`: `copied` is published with the copied data;
+  `committed` is written only **after the new version's startup ack**, then a mirror in the portable
+  folder. Only `committed` naming exactly that folder, plus the browser's own
+  `UpdateCore::PortableForwardTarget` rules (valid non-zero current with its exe, last result not
+  failed, no reparse root/data/versions, local drive), lets a **release** bridge on its **default**
+  portable store serve `data\annotations`. Custom `--store`, installed bridges and dev/preview builds
+  never redirect. Leases, tokens and `--site` are data in the store: they travel with the copy.
+- The installed copy refuses mutations while `copied`; the portable store refuses them once the
+  mirror says it moved (a portable browser process still running there). Rollback discards the copy
+  under the gate (no record ⇒ the source stays authoritative).
+- **Bounded recovery** at every launcher and install start: an uncommitted migration (helper died
+  after ack, before commit) is redone from the source under the exclusive gate (re-copy, swap,
+  commit); an install migrated before the record existed is committed if nothing was moved, else
+  marked `skipped` (its installed store is kept, no redirect).
+
+### Tests and evidence (lot B)
+
+| Evidence | Result |
+|---|---|
+| `test_release_tools.py` | 38 OK, 1 skipped (symlink privilege) |
+| `old-validator-v0.3.239.txt` | v0.3.239 validator: `assets/bin` accepted + byte-identical staging (synthetic and real 0.3.239 payload); root bridge rejected |
+| `b-update-core-tests.txt` (`tests/update-core/run_tests.py`) | update_core_test 315/0; **install_test 491/0** with real live MCP bridge processes — see list below |
+| `b-annotations-tests.txt` (`tests/annotations/run_tests.py --quick`) | store_test 2662/0, json_fuzz 156715/0, host_test 18183/0, agent_connect_test 288/0 (after merge) |
+| `b-item3-helper-mutations.txt`, `b-review-fix-mutations.txt` | 8 deliberate helper regressions, all detected |
+| `b-item3-running-exe-replace-probe.txt` | replacing a running exe fails, rename aside works |
+| `b-integrated-release-0.3.285.txt` | **release CANDIDATE** (`--channel release`, source = B branch d3e81c6 = main 411acbb + B; `--commit 411acbb` was passed only to satisfy `require_on_main` locally, so its stamped identity is NOT its source and it must never be published — the final artifact is rebuilt by CI from the exact merged SHA): `-DBROWSER_RELEASE_ANNOTATIONS`, static check OK, package + ZIP (1630 entries) == app payload == tree staged by the real v0.3.239 validator, bridge only at `assets/bin`, release server name, no preview name |
+| `b-release-bridge-suite.txt` | the annotation MCP suite run against the candidate's bridge (LOCALAPPDATA redirected to a temp dir): all passed (protocol level) |
+| `b-release-candidate-app-e2e.txt` + 3 PNG | **real application run** of isolated copies of the candidate (LOCALAPPDATA redirected, agent-config writes redirected, nothing of the user touched): `tests/annotations/profile_color_e2e.py` 0 failures (annotation mode present, profile colour at entry, live edit and profile switch, band colours on screen, no annotation written); the connect target resolved `<copy>\assets\bin\…`; `tests/update-integration/release_candidate_no_bridge.py` 0 failures (copy without `assets\bin` bridge: mode entry opens the connect modal, « bridge not found » logged, no config written). Modal buttons not clicked (BridgeUsable refusal is unit-tested in agent_connect_test) |
+| `b-run-all-0.3.285.txt` | `tests/update-integration/run_all.py` on the candidate: step « existing fixtures » blocked by the pre-existing `download_panel_test` `-Werror` failure on main (CI broken since PR #69, fix owned elsewhere); peers / integration / app steps run separately (results in the file) |
+
+install_test bridge/migration cases: two updates with the same agent alive (0.3.1 pruned under
+it); rollback; faults at copy / aside / final / current-write then retry; helper killed after
+aside / after publish / after switch then launcher repair + reinstall; portable first install and
+rollback (no bridge left); `bin` junction refused; junction above the bridge source and at `bin` for
+the launcher (nothing outside root read or written); real concurrent launcher during an install
+paused between publish and switch (launcher waits ~4 s, launches and keeps 0.3.2); first transition
+with the launcher compiled from 9f73bdd (kill after publish → repair → ordinary retry; busy launcher
+→ clean abort); migration committed with a live portable release bridge (same process resolves with
+its original token, two later updates); helper killed before commit (no redirect, installed copy
+frozen, agent keeps writing the source, launcher recovery re-copies including those writes, same
+agent resolves with its newest token); rollback never redirects; Busy during the copy window.
+
+### Limitations (lot B)
+
+- **First transition, launcher busy:** if the stable launcher can't be replaced, the install aborts
+  and is retried at the next update check (nothing published). Interrupted first upgrades are covered
+  by the tests above; launchers older than this helper never repair anything themselves.
+- **Gap of two renames:** the stable bridge name is briefly absent while a running copy is renamed
+  aside; an agent starting exactly then fails once and retries. A crash in that gap is repaired at
+  the next launcher start, not before.
+- **After a helper crash,** the gate is released when the kernel closes the dead process's handles
+  (measured ~190 ms after its image was released); requests in between get the retryable Busy.
+- **Store format across versions:** an agent keeps running its old bridge after an update until it
+  restarts it; compatibility between that bridge and the newer browser's store is the store's own
+  versioning contract (unchanged here).
+- **Recovery needs a start:** an uncommitted migration stays « installed copy frozen, source
+  authoritative » until the next launcher or install start.
+- Not exercised: a real public publication of this build, a clean-machine first run, SmartScreen,
+  WebView2 bootstrap, real Claude/Codex clients (the bridge was driven over stdio by the tests).
