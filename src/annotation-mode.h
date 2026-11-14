@@ -144,10 +144,27 @@ void LogMigration() {
         std::to_wstring(m.identical) + L" identical, " + std::to_wstring(m.kept) + L" kept in place (conflict or link), " + std::to_wstring(m.failed) + L" failed" +
         (m.removed ? L"; old folders removed" : L"; old folders kept (see kept / failed)"));
 }
-std::string ServerName() { return "browser-annotations-preview"; }   // dev/preview builds only: never the name of a release install
+// Identity per channel (public download plan B, item 5): a release install and a dev / preview copy coexist in the same
+// Claude / Codex configuration under two names; the release payload carries its bridge in assets\bin, dev / preview
+// builds next to browser.exe (an installed browser always uses <root>\bin, see AgentConnect::LocateBridge).
+#ifdef BROWSER_CHANNEL_RELEASE
+constexpr const char* ServerNameText = AC::DefaultServerName;   // "browser-annotations"
+constexpr AC::BridgeLayout BridgeLayoutOfBuild = AC::BridgeLayout::AssetsBin;
+#else
+constexpr const char* ServerNameText = "browser-annotations-preview";
+constexpr AC::BridgeLayout BridgeLayoutOfBuild = AC::BridgeLayout::Sibling;
+#endif
+// source.instance.channel of an annotation: the build's channel ("release" / "dev"); a design preview build
+// (BROWSER_PREVIEW) and an unstamped build keep the historical "preview".
+#if defined(BROWSER_PREVIEW) || !defined(BROWSER_CHANNEL_TEXT)
+constexpr const char* SourceChannel = "preview";
+#else
+constexpr const char* SourceChannel = BROWSER_CHANNEL_TEXT;
+#endif
+std::string ServerName() { return ServerNameText; }
 std::wstring BrowserExe() { std::wstring exe(32768, L'\0'); const DWORD n = GetModuleFileNameW(nullptr, exe.data(), DWORD(exe.size())); exe.resize(n < exe.size() ? n : 0); return exe; }
 AC::Target ConnectTarget() {
-    AC::Target t; t.bridgeExe = AC::StableBridgePath(BrowserExe()); t.storeRoot = Store().Root(); t.serverName = ServerName();
+    AC::Target t; t.bridgeExe = AC::LocateBridge(BrowserExe(), BridgeLayoutOfBuild).path; t.storeRoot = Store().Root(); t.serverName = ServerName();
 #ifdef BROWSER_VERSION_TEXT
     t.version = BROWSER_VERSION_TEXT;
 #endif
@@ -838,7 +855,7 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     ++serials; s.serial = serials; s.frozen = true; s.cap = Cap::Pending; s.png.clear(); s.saving = false; s.sel = sel; s.pageSeq = sel.seq;
     s.selectedAt = NowMs(); s.clickLagMs = lag;
     BA::Annotation a;
-    a.source.channel = "preview";
+    a.source.channel = SourceChannel;
 #ifdef BROWSER_VERSION_TEXT
     a.source.version = BROWSER_VERSION_TEXT;
 #endif

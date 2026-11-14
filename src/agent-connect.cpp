@@ -861,20 +861,59 @@ Detection Detect(const Environment& env) {
     return d;
 }
 
-std::wstring StableBridgePath(const std::wstring& browserExe, const std::wstring& installRoot) {
+BridgeLocation LocateBridge(const std::wstring& browserExe, BridgeLayout layout, const std::wstring& installRoot) {
     const std::wstring exe = FullPath(browserExe), dir = Parent(exe);
-    const std::wstring sibling = dir + L"\\" + Widen(BridgeFileName);
     std::wstring root = installRoot;
     if (root.empty()) {
         const std::wstring local = EnvVar(L"LOCALAPPDATA");
         if (!local.empty()) root = local + L"\\browser";
     }
     root = FullPath(root);
-    if (!root.empty() && SamePath(Parent(dir), root + L"\\versions")) {
-        const std::wstring stable = root + L"\\bin\\" + Widen(BridgeFileName);
-        if (FileExists(stable)) return stable;
+    BridgeLocation out;
+    if (!root.empty() && SamePath(Parent(dir), root + L"\\versions")) {   // installed: the stable copy, present or not
+        out.path = root + L"\\bin\\" + Widen(BridgeFileName);
+        out.installed = true;
+        return out;
     }
-    return sibling;
+    out.path = dir + (layout == BridgeLayout::AssetsBin ? L"\\assets\\bin\\" : L"\\") + Widen(BridgeFileName);
+    return out;
+}
+std::wstring StableBridgePath(const std::wstring& browserExe, const std::wstring& installRoot) {
+    return LocateBridge(browserExe, BridgeLayout::Sibling, installRoot).path;
+}
+
+bool BridgeUsable(const std::wstring& path, std::string* why) {
+    auto no = [&](const char* reason) { if (why) *why = reason; return false; };
+    const char* missing = "Le relais des annotations (browser-annotations-mcp.exe) est introuvable : rien n'a été modifié. "
+                          "Réessayez après la mise à jour du navigateur, ou réinstallez-le.";
+    const bool drive = path.size() >= 3 && ((path[0] >= L'A' && path[0] <= L'Z') || (path[0] >= L'a' && path[0] <= L'z')) &&
+                       path[1] == L':' && path[2] == L'\\';
+    if (!drive || path.find(L"\\..\\") != std::wstring::npos || path.find(L'/') != std::wstring::npos) return no(missing);
+    const DWORD dirAttr = GetFileAttributesW(Parent(path).c_str());
+    if (dirAttr == INVALID_FILE_ATTRIBUTES || !(dirAttr & FILE_ATTRIBUTE_DIRECTORY)) return no(missing);
+    if (dirAttr & FILE_ATTRIBUTE_REPARSE_POINT) return no("Le dossier du relais des annotations est un lien : refusé, rien n'a été modifié.");
+    // Opened WITHOUT following a reparse point: the attributes below are the file's own.
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return no(missing);
+    BY_HANDLE_FILE_INFORMATION info{};
+    const bool regular = GetFileType(h) == FILE_TYPE_DISK && GetFileInformationByHandle(h, &info) &&
+                         !(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE));
+    unsigned char head[4096] = {};
+    DWORD got = 0;
+    const bool read = regular && ReadFile(h, head, sizeof head, &got, nullptr);
+    CloseHandle(h);
+    if (!regular) return no("Le relais des annotations n'est pas un fichier ordinaire : refusé, rien n'a été modifié.");
+    const char* notPe = "Le relais des annotations n'est pas un programme valide pour cet ordinateur : rien n'a été modifié. Réinstallez le navigateur.";
+    if (!read || got < 0x40 || head[0] != 'M' || head[1] != 'Z') return no(notPe);
+    const std::uint32_t pe = std::uint32_t(head[0x3C]) | (std::uint32_t(head[0x3D]) << 8) | (std::uint32_t(head[0x3E]) << 16) |
+                             (std::uint32_t(head[0x3F]) << 24);
+    // PE signature (4) + file header (20), then the optional header: magic at +0, subsystem at +68.
+    if (pe < 0x40 || pe + 24 + 70 > got) return no(notPe);
+    const unsigned char* p = head + pe;
+    const unsigned machine = p[4] | (p[5] << 8), magic = p[24] | (p[25] << 8), subsystem = p[24 + 68] | (p[24 + 69] << 8);
+    if (p[0] != 'P' || p[1] != 'E' || p[2] || p[3] || machine != 0x8664 || magic != 0x20B || subsystem != 3) return no(notPe);
+    return true;
 }
 
 bool IsOnRemovableDrive(const Environment& env, const std::wstring& path) {
@@ -1223,6 +1262,7 @@ Report ConnectClaude(const Environment& env, const Target& t, const std::wstring
     const std::wstring config = ClaudeConfigPath(env);
     if (config.empty()) return Make(Result::NoClient, "Claude Desktop n'est pas installé sur cet ordinateur (aucun dossier de configuration).");
     if (std::string why; !WriteAllowed(env, config, &why)) return Refused(why, config);
+    if (std::string why; !BridgeUsable(t.bridgeExe, &why)) return Refused(why, t.bridgeExe);   // before any write: never a config to a missing bridge
     ConfiguredEntry ext;
     if (InstalledExtension(env, t.serverName, &ext) && ext.args.size() == 2 && ext.args[0] == L"--store" && SamePath(ext.args[1], t.storeRoot))
         return Make(Result::AlreadyConnected, "L'extension est déjà installée dans Claude.");
@@ -1341,6 +1381,7 @@ Report ConnectCodex(const Environment& env, const Target& t) {
     if (home.empty() || !DirExists(home)) return Make(Result::NoClient, "Codex n'est pas installé sur cet ordinateur (aucun dossier de configuration).");
     const std::wstring config = home + L"\\config.toml";
     if (std::string why; !WriteAllowed(env, home, &why)) return Refused(why, config);
+    if (std::string why; !BridgeUsable(t.bridgeExe, &why)) return Refused(why, t.bridgeExe);   // before the CLI or any write
     const std::int64_t now = env.now ? env.now() : BA::SystemNow();
     // Pre-flight on the current file: same refusals whichever way we write.
     std::string text;

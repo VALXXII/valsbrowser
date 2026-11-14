@@ -59,9 +59,12 @@
 #include "update-core.h"
 #include "update-toast.h"
 #endif
-// Annotation mode (src/annotation-mode.h): identity-stamped dev/preview builds only. --channel release
-// builds (BROWSER_CHANNEL_RELEASE) and the unstamped fixtures keep their exact previous behaviour.
-#if defined(BROWSER_HAS_BUILD_INFO) && !defined(BROWSER_CHANNEL_RELEASE) && !defined(BROWSER_NO_ANNOTATIONS)
+// Annotation mode (src/annotation-mode.h): identity-stamped builds that ship the MCP bridge. Dev / preview builds have
+// it; a --channel release build only when it opts in with BROWSER_RELEASE_ANNOTATIONS, which the release pipeline
+// (tools/release/build.py) passes only once the bridge is in the payload (assets\bin) and published to <root>\bin by the
+// update helper (public download plan B, items 1-6). Without it a release build keeps its exact previous behaviour:
+// no annotation UI ever ships without its bridge. Unstamped fixtures: no annotation mode.
+#if defined(BROWSER_HAS_BUILD_INFO) && !defined(BROWSER_NO_ANNOTATIONS) && (!defined(BROWSER_CHANNEL_RELEASE) || defined(BROWSER_RELEASE_ANNOTATIONS))
 #define BROWSER_ANNOTATIONS 1
 #endif
 #include "profile-store.h"
