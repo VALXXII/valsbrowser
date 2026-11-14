@@ -9,6 +9,9 @@ PATH is not modified.
 Output layout (the application directory, exactly the release payload):
   <out>/browser.exe, <out>/<helper>.exe, WebView2Loader.dll, licences, assets/**,
   version.json
+  + <out>/browser-annotations-mcp.exe (MCP stdio bridge over the annotation store) for
+    non-release builds only: the release payload allowlists (tools/release/package.py,
+    update-package) do not know it yet, so --channel release builds stay unchanged.
 Intermediates (resources object, generated headers) go to <out>-obj so they can
 never leak into a package.
 """
@@ -28,13 +31,19 @@ DEFAULT_REPO = 'VALXXII/browser-releases'
 # Browser translation units. Update engine/toast sources are owned by their peers;
 # the lists below name them exactly as their contracts publish them.
 BROWSER_SOURCES = ['src/main.cpp', 'src/native-lottie.cpp',
-                   'src/update-core.cpp', 'src/update-package.cpp', 'src/update-toast.cpp']
+                   'src/update-core.cpp', 'src/update-package.cpp', 'src/update-toast.cpp',
+                   'src/annotations.cpp']
 BROWSER_LIBS = ['-lole32', '-luuid', '-lcomctl32', '-lshlwapi', '-lgdi32', '-ld2d1', '-ldwrite',
                 '-lwindowscodecs', '-ldwmapi', '-lwinhttp', '-lbcrypt', '-lshell32', '-luser32',
                 '-lkernel32', '-ladvapi32']
 HELPER_SOURCES = ['src/update-helper.cpp', 'src/update-package.cpp']
 HELPER_NAME = 'update-helper.exe'
 HELPER_LIBS = ['-lbcrypt', '-lshlwapi', '-lshell32', '-luser32', '-lkernel32', '-ladvapi32', '-lole32']
+# Annotations MCP bridge: console exe, static, no runtime; JSON parser is in-house (src/strict-json.h),
+# so no third-party licence is added.
+BRIDGE_SOURCES = ['src/mcp-bridge.cpp', 'src/annotations.cpp']
+BRIDGE_NAME = 'browser-annotations-mcp.exe'
+BRIDGE_LIBS = ['-lbcrypt', '-lkernel32']
 WARNINGS = ['-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-type',
             '-Wno-misleading-indentation', '-Wno-missing-field-initializers']
 LICENSES = {  # destination name -> source
@@ -82,7 +91,7 @@ def write_build_info(gen: Path, info: dict, repo: str) -> None:
         encoding='ascii', newline='\n')
 
 
-PAYLOAD_FILES = ['browser.exe', HELPER_NAME, 'WebView2Loader.dll', 'version.json', *LICENSES]
+PAYLOAD_FILES = ['browser.exe', HELPER_NAME, BRIDGE_NAME, 'WebView2Loader.dll', 'version.json', *LICENSES]
 
 
 def clean_payload(out: Path) -> None:
@@ -99,7 +108,7 @@ def clean_payload(out: Path) -> None:
         shutil.rmtree(assets)
 
 
-def build(out: Path, info: dict, repo: str, preview: bool = False) -> None:
+def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: bool = False) -> None:
     for tool in ('g++.exe', 'windres.exe', 'strip.exe'):
         if not (BIN / tool).exists():
             raise SystemExit(f'Missing {BIN / tool}: run setup.ps1 (pinned w64devkit) first.')
@@ -132,7 +141,11 @@ def build(out: Path, info: dict, repo: str, preview: bool = False) -> None:
          *BROWSER_LIBS])
     run([BIN / 'g++.exe', *common, '-mwindows', *HELPER_SOURCES, helper_res, '-o', out / HELPER_NAME,
          *HELPER_LIBS])
-    for exe in ('browser.exe', HELPER_NAME):
+    executables = ['browser.exe', HELPER_NAME]
+    if bridge:  # console subsystem: stdio is the MCP transport
+        run([BIN / 'g++.exe', *common, *BRIDGE_SOURCES, '-o', out / BRIDGE_NAME, *BRIDGE_LIBS])
+        executables.append(BRIDGE_NAME)
+    for exe in executables:
         run([BIN / 'strip.exe', '--strip-debug', out / exe])
     shutil.copy2(SDK / 'x64/WebView2Loader.dll', out / 'WebView2Loader.dll')
     for name, source in LICENSES.items():
@@ -157,6 +170,8 @@ def main() -> int:
                    help='design preview build: no self-update, never forwards to an installed copy')
     p.add_argument('--update-repo', default=DEFAULT_REPO,
                    help='owner/repo whose GitHub releases are the only trusted update feed')
+    p.add_argument('--annotations-bridge', choices=('auto', 'on', 'off'), default='auto',
+                   help=f'build {BRIDGE_NAME} next to browser.exe (auto: every channel except release)')
     a = p.parse_args()
     out = (ROOT / a.out).resolve()
     if ROOT.resolve() not in out.parents:
@@ -168,7 +183,8 @@ def main() -> int:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = version_mod.git('show', '-s', '--format=%ct', info['commit'])
     except subprocess.CalledProcessError:
         BUILD_ENV['SOURCE_DATE_EPOCH'] = '0'
-    build(out, info, a.update_repo, a.preview)
+    bridge = a.annotations_bridge == 'on' or (a.annotations_bridge == 'auto' and info['channel'] != 'release')
+    build(out, info, a.update_repo, a.preview, bridge)
     return 0
 
 

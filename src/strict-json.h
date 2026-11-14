@@ -351,6 +351,12 @@ inline void SerializeString(std::string& out, std::string_view s) {
 inline void SerializeNumber(std::string& out, const Value& v) {
     if (v.integral) { out += std::to_string(v.integer); return; }
     if (!std::isfinite(v.number)) { out += '0'; return; }
+    // Canonical form: an integral value that a double holds exactly (|v| < 2^53) prints as an integer
+    // ("-0.0", "1e3" -> "0", "1000"), so serialize(parse(serialize(x))) == serialize(x).
+    if (v.number == std::floor(v.number) && std::fabs(v.number) < 9007199254740992.0) {
+        out += std::to_string(static_cast<long long>(v.number));
+        return;
+    }
     char buffer[40];
     for (int precision = 15; precision <= 17; ++precision) {  // shortest of 15..17 digits that round-trips
         std::snprintf(buffer, sizeof buffer, "%.*g", precision, v.number);

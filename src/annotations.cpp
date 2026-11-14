@@ -1517,7 +1517,12 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
                 return Fail(Code::LimitReached, "Ce projet contient déjà 500 annotations : supprimez-en avant d'en ajouter.");
         }
         const std::uint64_t incoming = (png ? png->size() : 0) + 64 * 1024;
-        if (StoreBytes() + incoming > MaxStoreBytes) {
+        // Walking the whole store costs O(entries); skip it while the entry count alone cannot reach the cap.
+        std::uint64_t entries = 0;
+        for (const auto& project : ProjectDirs(root_))
+            entries += EntryDirs(root_ + L"\\" + Widen(project)).size() + EntryDirs(root_ + L"\\" + Widen(project) + L"\\drafts").size();
+        constexpr std::uint64_t maxEntryBytes = MaxAnnotationFileBytes + MaxStateFileBytes + MaxShotBytes + 2 * MaxSmallFileBytes;
+        if ((entries + 1) * maxEntryBytes > MaxStoreBytes && StoreBytes() + incoming > MaxStoreBytes) {
             Purge();
             if (StoreBytes() + incoming > MaxStoreBytes)
                 return Fail(Code::LimitReached, "Le magasin d'annotations dépasse 200 Mo : supprimez des annotations.");

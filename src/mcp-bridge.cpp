@@ -272,11 +272,10 @@ struct ToolResult {
     bool isError = false;
 };
 
-ToolResult ToolError(const std::string& message, const char* code = "invalid") {
+ToolResult ToolError(const std::string& message) {
     ToolResult r;
     r.isError = true;
     r.content.Push(Obj({{"type", Str("text")}, {"text", Str(message)}}));
-    (void)code;
     return r;
 }
 ToolResult ToolOk(const std::string& text, Value structured) {
