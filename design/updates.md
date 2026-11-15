@@ -103,7 +103,9 @@ core packer `tools/update-package/make_update_package.py`.
   (`SOURCE_DATE_EPOCH` = commit time for the PE timestamp, `-ffile-prefix-map`), and the packer sorts entries.
 * `/tools/` is ignored by `.gitignore`: `tools/release/` and `tools/update-package/` must be force-added
   (scripts only, never the toolchain) or the workflow cannot run.
-* Assets per release: `browser-0.3.N-win-x64.lsrupd`, `update-manifest-win-x64.txt`, `SHA256SUMS.txt`.
+* Assets per release: `browser-0.3.N-win-x64.lsrupd`, `update-manifest-win-x64.txt`, `SHA256SUMS.txt`, the
+  portable `browser-0.3.N-win-x64.zip` and the first-install `browser-0.3.N-win-x64-setup.exe` (setup stub + the
+  same `.lsrupd` byte for byte; design/windows-setup-plan.md). Clients only ever read the manifest and `.lsrupd`.
   Payload: `browser.exe`, `update-helper.exe`, `WebView2Loader.dll`, `version.json`, licences/notices,
   `assets/**` only.
 

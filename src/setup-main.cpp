@@ -601,7 +601,9 @@ int RelaunchFromTemp() {
     const std::wstring copy = g.env.temp + name;
     if (!CopyFileW(g.self.c_str(), copy.c_str(), TRUE)) return 4;
     std::wstring cmd = L"\"" + copy + L"\" --uninstall --parent " + std::to_wstring(GetCurrentProcessId());
+#ifdef SETUP_TESTING
     if (g.unattended) cmd += L" --unattended";
+#endif
     if (g.removeData) cmd += L" --remove-data";
     STARTUPINFOW si{};
     si.cb = sizeof(si);

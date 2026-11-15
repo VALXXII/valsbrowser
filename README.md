@@ -2,7 +2,9 @@
 
 ## Télécharger (Windows 10/11 x64)
 
-Dernière version publique : https://github.com/VALXXII/browser-releases/releases/latest — télécharger `browser-<version>-win-x64.zip` (les fichiers `.lsrupd` et `update-manifest` servent seulement aux mises à jour automatiques). Clic droit > **Extraire tout…**, ouvrir le dossier extrait et lancer **browser.exe** en gardant tout le dossier. Premier lancement portable (profil dans ce dossier) ; une mise à jour installée passe ensuite dans `%LOCALAPPDATA%\browser` et y copie le profil une fois. WebView2 requis (proposé à l'installation s'il manque). Construction et vérifications du ZIP : [design/public-download-report.md](design/public-download-report.md).
+Dernière version publique : https://github.com/VALXXII/browser-releases/releases/latest — télécharger **`browser-<version>-win-x64-setup.exe`** et l'ouvrir : installation pour votre compte Windows dans `%LOCALAPPDATA%\browser`, sans droits administrateur, raccourci dans le menu Démarrer (Bureau en option), ouverture à la fin (case à cocher). Le même fichier met à jour ou répare une installation existante sans toucher aux données ; désinstallation depuis Paramètres > Applications (données conservées sauf case cochée). Le navigateur se met ensuite à jour tout seul. WebView2 requis (proposé au premier démarrage s'il manque). Conception, contrat et vérifications : [design/windows-setup-plan.md](design/windows-setup-plan.md), [design/windows-setup-report.md](design/windows-setup-report.md).
+
+Version portable (sans installation) : `browser-<version>-win-x64.zip` — clic droit > **Extraire tout…**, lancer **browser.exe** en gardant tout le dossier ; profil dans ce dossier ; une mise à jour installée passe ensuite dans `%LOCALAPPDATA%\browser` et y copie le profil une fois. Les fichiers `.lsrupd` et `update-manifest` servent seulement aux mises à jour automatiques. Construction et vérifications du ZIP : [design/public-download-report.md](design/public-download-report.md).
 
 ## Preview « Éléments & popups » (sandbox des composants)
 
