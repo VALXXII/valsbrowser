@@ -62,7 +62,8 @@ def build():
         (gen / 'build-info.h').write_text(
             '#pragma once\n'
             f'#define BROWSER_VERSION_TEXT "{v}"\n#define BROWSER_VERSION_WIDE L"{v}"\n'
-            f'#define BROWSER_COMMIT_TEXT "{COMMIT}"\n#define BROWSER_CHANNEL_TEXT "dev"\n', encoding='ascii', newline='\n')
+            f'#define BROWSER_COMMIT_TEXT "{COMMIT}"\n#define BROWSER_CHANNEL_TEXT "dev"\n'
+            f'#define BROWSER_FILEVERSION {v.replace(".", ",")},0\n', encoding='ascii', newline='\n')
         res = OUT / f'setup-res-{v}.o'
         run([WINDRES, '-I.', '-Isrc', f'-I{gen}', '-DBROWSER_HAS_BUILD_INFO', 'src/setup.rc', '-O', 'coff', '-o', res], f'windres setup {v}')
         run([GXX, *FLAGS, '-mwindows', f'-I{gen}', '-DSETUP_TESTING', 'src/setup-main.cpp', 'src/setup-core.cpp', *CORE, res,
