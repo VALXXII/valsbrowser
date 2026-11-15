@@ -55,6 +55,14 @@ static std::map<std::wstring, std::string> Tree(const std::wstring& dir, const s
     return out;
 }
 static bool Empty(const std::wstring& dir) { return Tree(dir).empty(); }
+// A directory junction `link` → `target` (mklink /J: no privilege needed), synthetic folders only.
+static bool Junction(const std::wstring& link, const std::wstring& target) {
+    std::wstring cmd = L"cmd.exe /c mklink /J \"" + link + L"\" \"" + target + L"\" >nul";
+    STARTUPINFOW si{sizeof si}; PROCESS_INFORMATION pi{}; std::vector<wchar_t> line(cmd.begin(), cmd.end()); line.push_back(0);
+    if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) return false;
+    WaitForSingleObject(pi.hProcess, 10000); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    return BrowserImport::IsReparse(link);
+}
 // Exact UTF-8 (keeps line breaks, unlike the store's ToUtf8 which flattens them).
 static std::string U8(const std::wstring& w) {
     const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
@@ -245,9 +253,9 @@ int main(int argc, char** argv) {
     OK(ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"children\":[{\"type\":\"url\",\"name\":1}]}}}").roots.empty());
     {
         const std::wstring big = work + L"\\big\\Default"; Put(big + L"\\Bookmarks", std::string(static_cast<std::size_t>(Bound::jsonBytes) + 1, ' '));
-        Source s = chromeDefault; s.dir = big; Options o; o.bookmarks = true; o.tempRoot = temp;
+        Source s = chromeDefault; s.dir = big; s.root = Parent(big); Options o; o.bookmarks = true; o.tempRoot = temp;
         OK(Read(s, o).bookmarks.failure == Failure::TooLarge);
-        Source gone = chromeDefault; gone.dir = work + L"\\gone"; OK(Read(gone, o).bookmarks.failure == Failure::Missing);
+        Source gone = chromeDefault; gone.dir = work + L"\\gone"; gone.root = work; OK(Read(gone, o).bookmarks.failure == Failure::Missing);
         // A JSON nested deeper than the parser allows is refused, never a stack overflow.
         std::string nest = ChromeNode(L"x", "https://x.example/"); for (int i = 0; i < 400; ++i) nest = ChromeFolder(L"f", {nest});
         OK(ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":" + nest + "}}").failure == Failure::TooDeep);
@@ -280,7 +288,7 @@ int main(int argc, char** argv) {
         };
         Options o; o.bookmarks = true; o.tempRoot = temp;
         Source ff; ff.browser = Browser::Firefox; ff.bookmarks = true;
-        ff.dir = work + L"\\ffdeep\\at"; places(ff.dir, static_cast<int>(Bound::nesting) - 2);
+        ff.root = work + L"\\ffdeep"; ff.dir = work + L"\\ffdeep\\at"; places(ff.dir, static_cast<int>(Bound::nesting) - 2);
         const auto fat = Read(ff, o).bookmarks;
         OK(fat.failure == Failure::None && deepest(fat.roots) == std::make_pair(Bound::nesting, std::wstring(L"https://bottom.example/")));
         ff.dir = work + L"\\ffdeep\\over"; places(ff.dir, static_cast<int>(Bound::nesting) - 1);
@@ -324,10 +332,10 @@ int main(int argc, char** argv) {
         const auto r = Read(p2, o); OK(r.history.failure == Failure::None && r.history.visits.size() == 7);
         // Unknown schema → unsupported, never a crash.
         const std::wstring odd = work + L"\\odd\\Default"; { Db d(odd + L"\\History"); d.Exec("CREATE TABLE something(x)"); }
-        Source s = p2; s.dir = odd; OK(Read(s, o).history.failure == Failure::Unsupported);
+        Source s = p2; s.dir = odd; s.root = Parent(odd); OK(Read(s, o).history.failure == Failure::Unsupported);
         // Not a database at all.
         const std::wstring junk = work + L"\\junk\\Default"; Put(junk + L"\\History", std::string(4096, 'Z'));
-        s.dir = junk; OK(Read(s, o).history.failure == Failure::Malformed);
+        s.dir = junk; s.root = Parent(junk); OK(Read(s, o).history.failure == Failure::Malformed);
         OK(Empty(temp));
     }
     {   // Source in use by the browser: a writer handle (as a running browser holds) → Busy, source unchanged.
@@ -371,11 +379,11 @@ int main(int argc, char** argv) {
             CHECK(CopyFileW((live + L"\\places.sqlite").c_str(), (crashed + L"\\places.sqlite").c_str(), FALSE));
             CHECK(CopyFileW((live + L"\\places.sqlite-wal").c_str(), (crashed + L"\\places.sqlite-wal").c_str(), FALSE));
             // While the writer (a running Firefox) is open: Busy, and its -shm/-wal are left alone.
-            Source running = ff; running.dir = live; const auto liveBefore = Tree(live + L"\\..");
+            Source running = ff; running.dir = live; running.root = Parent(live); const auto liveBefore = Tree(live + L"\\..");
             OK(Read(running, both).history.failure == Failure::Busy);
             OK(Tree(live + L"\\..") == liveBefore);
         }
-        Source s2 = ff; s2.dir = crashed;
+        Source s2 = ff; s2.dir = crashed; s2.root = Parent(crashed);
         const auto crashedBefore = Tree(crashed);
         OK(crashedBefore.count(L"\\places.sqlite-wal") && !crashedBefore.count(L"\\places.sqlite-shm"));
         // The source folder refuses new files (deny add-file / add-subfolder ACE): the read needs none.
@@ -432,6 +440,52 @@ int main(int argc, char** argv) {
         const std::wstring link = work + L"\\exports\\link.html";
         if (CreateSymbolicLinkW(link.c_str(), file.c_str(), 0x2 /* ALLOW_UNPRIVILEGED_CREATE */)) OK(Read(HtmlSource(link), o).bookmarks.failure == Failure::Unreadable);
         else std::printf("note: symbolic links unavailable without developer mode; junction case covered by discovery\n");
+    }
+
+    // ---- Read-time substitution (review 934ef4b finding 3): folders pinned again when « Importer » is pressed ------
+    {
+        const std::wstring sub = work + L"\\subst", local = sub + L"\\Local", ud = local + L"\\Google\\Chrome\\User Data", foreign = sub + L"\\foreign";
+        Put(ud + L"\\Default\\Bookmarks", ChromeBookmarks()); ChromiumHistory(ud + L"\\Default\\History");
+        Put(foreign + L"\\Bookmarks", ChromeBookmarks()); ChromiumHistory(foreign + L"\\History");
+        const auto found = DiscoverChromium(Roots{local, L""}, Browser::Chrome);
+        CHECK(found.size() == 1);
+        Options o; o.bookmarks = o.history = true; o.tempRoot = temp;
+        OK(Read(found[0], o).bookmarks.failure == Failure::None);   // the real profile still reads
+        {   // While pinned, the profile folder (and its parents) can be neither renamed nor replaced.
+            Pin pin; OK(pin.Open(found[0].root, found[0].dir) == Failure::None);
+            OK(!MoveFileW(found[0].dir.c_str(), (ud + L"\\moved").c_str()) && !MoveFileW(ud.c_str(), (local + L"\\Google\\Chrome\\moved").c_str()));
+        }
+        // The reviewer's case: after discovery the profile folder becomes a junction to a foreign tree.
+        const auto foreignBefore = Tree(foreign);
+        CHECK(MoveFileW(found[0].dir.c_str(), (ud + L"\\saved").c_str()) && Junction(found[0].dir, foreign));
+        const auto r = Read(found[0], o);
+        OK(r.bookmarks.failure == Failure::Unreadable && r.bookmarks.roots.empty() && r.history.failure == Failure::Unreadable && r.history.visits.empty());
+        OK(Tree(foreign) == foreignBefore && Empty(temp));
+        RemoveDirectoryW(found[0].dir.c_str()); CHECK(MoveFileW((ud + L"\\saved").c_str(), found[0].dir.c_str()));
+        // The browser root itself replaced by a junction.
+        CHECK(MoveFileW(ud.c_str(), (local + L"\\Google\\Chrome\\real").c_str()) && Junction(ud, local + L"\\Google\\Chrome\\real"));
+        OK(Read(found[0], o).bookmarks.failure == Failure::Unreadable);
+        RemoveDirectoryW(ud.c_str()); CHECK(MoveFileW((local + L"\\Google\\Chrome\\real").c_str(), ud.c_str()));
+        OK(Read(found[0], o).bookmarks.failure == Failure::None);   // restored: reads again
+        // Firefox: an intermediate folder (« Profiles ») replaced by a junction; database + sidecars never copied.
+        const std::wstring ffroot = sub + L"\\Roaming\\Mozilla\\Firefox";
+        Places(ffroot + L"\\Profiles\\x.default\\places.sqlite", false);
+        Put(ffroot + L"\\profiles.ini", "[Profile0]\nName=x\nIsRelative=1\nPath=Profiles/x.default\n");
+        const auto ff = DiscoverFirefox(Roots{L"", sub + L"\\Roaming"});
+        CHECK(ff.size() == 1);
+        Places(foreign + L"\\elsewhere\\x.default\\places.sqlite", false);
+        CHECK(MoveFileW((ffroot + L"\\Profiles").c_str(), (ffroot + L"\\Profiles.saved").c_str()) && Junction(ffroot + L"\\Profiles", foreign + L"\\elsewhere"));
+        const auto fr = Read(ff[0], o);
+        OK(fr.bookmarks.failure == Failure::Unreadable && fr.history.failure == Failure::Unreadable && Empty(temp));
+        RemoveDirectoryW((ffroot + L"\\Profiles").c_str()); CHECK(MoveFileW((ffroot + L"\\Profiles.saved").c_str(), (ffroot + L"\\Profiles").c_str()));
+        OK(Read(ff[0], o).bookmarks.failure == Failure::None);
+        // HTML: the chosen file's folder is a junction (the file is reached through it).
+        Put(foreign + L"\\html\\favoris.html", "<DL><DT><A HREF=\"https://x.example/\">x</A></DL>");
+        CHECK(Junction(sub + L"\\via", foreign + L"\\html"));
+        Options h; h.bookmarks = true;
+        OK(Read(HtmlSource(sub + L"\\via\\favoris.html"), h).bookmarks.failure == Failure::Unreadable);
+        OK(Read(HtmlSource(foreign + L"\\html\\favoris.html"), h).bookmarks.failure == Failure::None);
+        RemoveDirectoryW((sub + L"\\via").c_str());
     }
 
     // ---- Commits through the profile store (destination) --------------------------------------------------------

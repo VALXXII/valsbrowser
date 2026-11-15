@@ -80,6 +80,8 @@ enum class Failure {
 struct Source {
     Browser browser = Browser::HtmlFile;
     std::wstring dir;               // profile folder (Chromium, Firefox) or the HTML file
+    std::wstring root;              // the browser's folder (« User Data », « Firefox »); HTML: empty (the file's folder)
+                                    // every folder from it down to `dir` is pinned and checked again at read time
     std::wstring profile;           // folder name (Chromium) or profiles.ini Name (Firefox)
     bool isDefault = false;         // Chromium « Default », Firefox Default=1
     bool bookmarks = false, history = false;   // the data file exists (metadata only)
@@ -146,13 +148,63 @@ inline Failure OpenFailure(DWORD e) {
     if (e == ERROR_SHARING_VIOLATION || e == ERROR_LOCK_VIOLATION) return Failure::Busy;
     return Failure::Unreadable;
 }
+// ---- Read-time pinning (review 934ef4b, finding 3) -----------------------------------------------------------
+// Discovery's checks are not enough: a folder can be replaced by a junction between discovery and « Importer ».
+// At read time every folder from the browser's root down to the profile is opened WITHOUT delete sharing (it can
+// be neither renamed nor replaced while held: the handles carry data access, so sharing applies), each handle must be a real directory (not a reparse point) whose
+// final path is its parent's final path plus its own name, and every source file handle is accepted only if its
+// own final path is the pinned folder's final path plus the expected file name. Whatever a path walk resolved,
+// only a handle that really sits in the pinned folder is read.
+inline std::wstring FinalPath(HANDLE h) {
+    wchar_t buffer[2048]; const DWORD n = GetFinalPathNameByHandleW(h, buffer, 2048, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    return n > 0 && n < 2048 ? std::wstring(buffer, n) : std::wstring();
+}
+inline bool SamePath(const std::wstring& a, const std::wstring& b) { return !a.empty() && a.size() == b.size() && CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL; }
+class Pin {
+public:
+    Pin() = default; Pin(const Pin&) = delete; Pin& operator=(const Pin&) = delete;
+    ~Pin() { for (HANDLE h : held_) CloseHandle(h); }
+    // `dir` must be `root` or below it.
+    Failure Open(std::wstring root, std::wstring dir) {
+        auto trim = [](std::wstring& p) { for (auto& c : p) if (c == L'/') c = L'\\'; while (p.size() > 3 && p.back() == L'\\') p.pop_back(); };
+        trim(root); trim(dir);
+        if (root.empty() || dir.size() < root.size() || _wcsnicmp(dir.c_str(), root.c_str(), root.size()) != 0 || (dir.size() > root.size() && dir[root.size()] != L'\\')) return Failure::Unreadable;
+        std::wstring path = root, expected;
+        std::size_t at = root.size();
+        for (;;) {
+            HANDLE h = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (h == INVALID_HANDLE_VALUE) { const Failure f = OpenFailure(GetLastError()); return f == Failure::Missing ? f : Failure::Unreadable; }
+            held_.push_back(h);
+            BY_HANDLE_FILE_INFORMATION info{};
+            if (!GetFileInformationByHandle(h, &info) || !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) return Failure::Unreadable;
+            const std::wstring final = FinalPath(h);
+            if (final.empty() || (!expected.empty() && !SamePath(final, expected))) return Failure::Unreadable;   // a component resolved elsewhere
+            final_ = final;
+            if (at >= dir.size()) return Failure::None;
+            const std::size_t next = dir.find(L'\\', at + 1);
+            const std::wstring name = dir.substr(at + 1, (next == std::wstring::npos ? dir.size() : next) - at - 1);
+            if (name.empty() || name == L"." || name == L"..") return Failure::Unreadable;
+            expected = final_ + L"\\" + name;
+            path = dir.substr(0, next == std::wstring::npos ? dir.size() : next);
+            at = path.size();
+        }
+    }
+    const std::wstring& Final() const { return final_; }
+    // The open file `h` is the file `name` directly inside the pinned folder.
+    bool Contains(HANDLE h, const std::wstring& name) const { return !final_.empty() && SamePath(FinalPath(h), final_ + L"\\" + name); }
+private:
+    std::vector<HANDLE> held_; std::wstring final_;
+};
+inline std::wstring FileName(const std::wstring& path) { const auto k = path.find_last_of(L"\\/"); return k == std::wstring::npos ? path : path.substr(k + 1); }
+inline std::wstring Parent(const std::wstring& path) { const auto k = path.find_last_of(L"\\/"); return k == std::wstring::npos ? L"" : path.substr(0, k); }
 // Whole file, read-only with full sharing (a JSON/HTML file is replaced by rename, never edited in place).
-inline Failure ReadFileBounded(const std::wstring& path, std::uint64_t limit, std::string& out) {
+// With `pin`: the opened handle must be `path`'s file name directly inside the pinned folder.
+inline Failure ReadFileBounded(const std::wstring& path, std::uint64_t limit, std::string& out, const Pin* pin = nullptr) {
     out.clear();
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (f == INVALID_HANDLE_VALUE) return OpenFailure(GetLastError());
     Failure r = Failure::None; LARGE_INTEGER size{};
-    if (!PlainHandle(f) || !GetFileSizeEx(f, &size)) r = Failure::Unreadable;
+    if (!PlainHandle(f) || !GetFileSizeEx(f, &size) || (pin && !pin->Contains(f, FileName(path)))) r = Failure::Unreadable;
     else if (static_cast<std::uint64_t>(size.QuadPart) > limit) r = Failure::TooLarge;
     else {
         out.resize(static_cast<std::size_t>(size.QuadPart)); DWORD got = 0;
@@ -248,7 +300,7 @@ public:
     ~Snapshot() { Clean(); }
     Snapshot() = default; Snapshot(const Snapshot&) = delete; Snapshot& operator=(const Snapshot&) = delete;
     // `tempRoot` (tests) or the user's temporary folder.
-    Failure Take(const std::wstring& database, const std::wstring& tempRoot = L"") {
+    Failure Take(const std::wstring& database, const std::wstring& tempRoot = L"", const Pin* pin = nullptr) {
         Clean();
         struct Part { const wchar_t* suffix; HANDLE h = INVALID_HANDLE_VALUE; };
         Part parts[] = {{L""}, {L"-wal"}, {L"-journal"}};
@@ -262,7 +314,7 @@ public:
                 r = f; break;
             }
             LARGE_INTEGER size{};
-            if (!PlainHandle(p.h) || !GetFileSizeEx(p.h, &size)) { r = Failure::Unreadable; break; }
+            if (!PlainHandle(p.h) || !GetFileSizeEx(p.h, &size) || (pin && !pin->Contains(p.h, FileName(path)))) { r = Failure::Unreadable; break; }
             total += static_cast<std::uint64_t>(size.QuadPart);
             if (total > Bound::databaseBytes) { r = Failure::TooLarge; break; }
         }
@@ -373,7 +425,7 @@ inline std::vector<Source> DiscoverChromium(const Roots& roots, Browser b) {
     FindClose(find);
     std::sort(names.begin(), names.end());
     for (const auto& [n, name] : names) {
-        Source s; s.browser = b; s.dir = root + L"\\" + name; s.profile = name; s.isDefault = n < 0;
+        Source s; s.browser = b; s.dir = root + L"\\" + name; s.root = root; s.profile = name; s.isDefault = n < 0;
         if (!PlainChain(root, s.dir)) continue;
         s.bookmarks = IsFile(s.dir + L"\\Bookmarks"); s.history = IsFile(s.dir + L"\\History");
         if (s.bookmarks || s.history) out.push_back(std::move(s));
@@ -408,7 +460,7 @@ inline std::vector<Source> DiscoverFirefox(const Roots& roots) {
         if (!e.relative || e.path.empty() || e.path.size() > 260) continue;
         std::wstring rel = e.path; for (auto& c : rel) if (c == L'/') c = L'\\';
         if (rel[0] == L'\\' || rel.find(L':') != std::wstring::npos || rel.find(L"..") != std::wstring::npos) continue;
-        Source s; s.browser = Browser::Firefox; s.dir = root + L"\\" + rel; s.profile = e.name.empty() ? rel : e.name; s.isDefault = e.isDefault;
+        Source s; s.browser = Browser::Firefox; s.dir = root + L"\\" + rel; s.root = root; s.profile = e.name.empty() ? rel : e.name; s.isDefault = e.isDefault;
         if (!PlainChain(root, s.dir)) continue;
         s.bookmarks = s.history = IsFile(s.dir + L"\\places.sqlite");
         if (s.bookmarks) out.push_back(std::move(s));
@@ -694,10 +746,13 @@ inline History_ ReadHistory(Sql::sqlite3* db, Browser b) {
 struct Options { bool bookmarks = false, history = false; std::wstring tempRoot; };
 inline ReadResult Read(const Source& s, const Options& o) {
     ReadResult r;
-    if (!o.bookmarks) r.bookmarks.failure = Failure::None;
+    // Pin the source's folders for the whole read (HTML: the chosen file's own folder).
+    Pin pin;
+    const Failure pinned = s.browser == Browser::HtmlFile ? pin.Open(Parent(s.dir), Parent(s.dir)) : pin.Open(s.root, s.dir);
+    if (pinned != Failure::None) { if (o.bookmarks) r.bookmarks.failure = pinned; if (o.history) r.history.failure = pinned; return r; }
     if (s.browser == Browser::HtmlFile) {
         if (o.bookmarks) {
-            std::string bytes; const Failure f = ReadFileBounded(s.dir, Bound::htmlBytes, bytes);
+            std::string bytes; const Failure f = ReadFileBounded(s.dir, Bound::htmlBytes, bytes, &pin);
             if (f != Failure::None) r.bookmarks.failure = f; else r.bookmarks = ParseHtmlBookmarks(bytes);
             SecureZeroMemory(bytes.data(), bytes.size());
         }
@@ -705,11 +760,11 @@ inline ReadResult Read(const Source& s, const Options& o) {
     }
     if (Chromium(s.browser)) {
         if (o.bookmarks) {
-            std::string bytes; const Failure f = ReadFileBounded(s.dir + L"\\Bookmarks", Bound::jsonBytes, bytes);
+            std::string bytes; const Failure f = ReadFileBounded(s.dir + L"\\Bookmarks", Bound::jsonBytes, bytes, &pin);
             if (f != Failure::None) r.bookmarks.failure = f; else r.bookmarks = ParseChromiumBookmarks(bytes);
         }
         if (o.history) {
-            Snapshot snap; const Failure f = snap.Take(s.dir + L"\\History", o.tempRoot);
+            Snapshot snap; const Failure f = snap.Take(s.dir + L"\\History", o.tempRoot, &pin);
             if (f != Failure::None) r.history.failure = f;
             else { Database db(snap.Path()); if (db.failure() != Failure::None) r.history.failure = db.failure(); else r.history = ReadHistory(db.handle(), s.browser); }
         }
@@ -717,7 +772,7 @@ inline ReadResult Read(const Source& s, const Options& o) {
     }
     // Firefox: one database for both categories, one snapshot, one transaction.
     if (o.bookmarks || o.history) {
-        Snapshot snap; const Failure f = snap.Take(s.dir + L"\\places.sqlite", o.tempRoot);
+        Snapshot snap; const Failure f = snap.Take(s.dir + L"\\places.sqlite", o.tempRoot, &pin);
         if (f != Failure::None) { if (o.bookmarks) r.bookmarks.failure = f; if (o.history) r.history.failure = f; return r; }
         Database db(snap.Path());
         if (db.failure() != Failure::None) { if (o.bookmarks) r.bookmarks.failure = db.failure(); if (o.history) r.history.failure = db.failure(); return r; }
