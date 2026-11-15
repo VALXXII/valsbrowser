@@ -107,6 +107,35 @@ run).
 - Real editor over the offscreen band at **96 and 144 DPI**, 1180 / 560 DIP and a long name
   (`band-*-96-*.png`, `band-*-144-*.png`, `band-long-*`).
 
+## Independent review of `8c5f1ae`: three P2 fixed
+
+Review: root `build/bookmark-inline-rename-independent-review-8c5f1ae.md`. Its external native COM UIA
+client confirmed Edit + Value on the band and in the drawer. Fixes are in a distinct commit on top of
+`8c5f1ae`. Logs: `design/bookmark-inline-rename-evidence/review-8c5f1ae/`.
+
+1. **Ctrl+A** — the stock single-line EDIT does not select all. `InlineRename` now handles Ctrl+A itself
+   (`EM_SETSEL 0,-1`) and drops its WM_CHAR 0x01. During IME composition it leaves Ctrl+A to the IME/EDIT.
+   Every other key is still the EDIT's. Red on `8c5f1ae`: 4 failures (2 checks × 96/144 DPI). Green: the
+   tracked fixture and the reviewer's probe, unchanged.
+2. **Fullscreen** — `FolderLabelBox` refuses band labels while `InFullscreen()`: the chrome is hidden even
+   though `bandShown` and the band metadata stay filled. So `SyncFolderRename` (run from `Layout()`) cancels
+   an active band editor **without writing**, and none starts. A drawer row editor is kept while the drawer
+   is really shown (`Drawer::TitleBox` requires a visible drawer). Root's forthcoming content-only chrome
+   state must be refused in the same function (comment left there). Red on `8c5f1ae`: 2 failures
+   (cancel; start refused). Green: 3 checks.
+3. **DPI change while editing** — `SyncFolderRename` compares the editor's font with the label size at the
+   host's current DPI. On a change it creates the new font, gives it to the same EDIT
+   (`InlineRename::SetFont`: `WM_SETFONT`, margins, re-centring), then deletes the old font. The EDIT, its
+   text, selection and caret are kept. Red on `8c5f1ae`: `-14 -> -14`. Green: `-14 -> -21`, text « Jeux »
+   and selection 1–3 kept, editor on the new title box. The reviewer's DPI probe, unchanged: PASS.
+
+**Fixture foreground (disclosed by the review):** before this commit, `bookmark_rename_test`'s drawer section
+called the production `Drawer::Show`, which calls `SetForegroundWindow`, despite the fixture's « no
+foreground change » note. The fixture compile unit now shims `SetForegroundWindow` (recorded and dropped:
+6 production requests per run) and `GetDpiForWindow` (for the DPI transition). Production behaviour is
+unchanged. `tests/bookmarks/bookmarks_ui_test.cpp` (pre-existing, not mine) still takes the foreground
+through the same path, so it was not rerun for this fix.
+
 ## Limits
 
 - Typography: same family, weight and size, but the editor is GDI text (like the address field while
@@ -114,6 +143,8 @@ run).
   fraction of a pixel per character. The vertical position is the font cell centred on the label line.
 - While editing, the item keeps its width. A longer name scrolls inside the field (`ES_AUTOHSCROLL`, as in
   the long-name capture) and the item takes its new width after the commit.
+- An IME composition in progress during a DPI change gets the new font through `WM_SETFONT` on the same
+  EDIT; not exercised with a real IME session.
 - The drawer's row actions (×) stay drawn at the right of the row while it is renamed; the editor stops
   before them.
 - UIA in the real app: the native COM UIA client sees the editor as an Edit with its Value (fixture). The
@@ -130,7 +161,7 @@ run).
 - `src/chrome.h`: `bandRenaming`, `BandTitleBox()`, two lines in `DrawBandItem`.
 - `src/bookmarks-panel.h`: hooks `editColor` / `relayout`, `renaming_`, `TitleBox()`, `SetRenaming()`,
   `Renaming()`, title skip, `WM_CTLCOLOREDIT`, press → blur, UIA `host.label`.
-- `src/main.cpp`: include; `SyncFolderRename()` in `Layout()` and `BookmarksChanged()`; `Key()` guard; the
+- `src/main.cpp`: include; `FolderRenameFontPx/Font`, fullscreen refusal in `FolderLabelBox`, font refresh in `SyncFolderRename`; `SyncFolderRename()` in `Layout()` and `BookmarksChanged()`; `Key()` guard; the
   rename block after `EditBookmark`; context menu Edit / new folder, band menu new folder, band F2, drawer
   `d.edit` / `d.context` / `editColor` / `relayout`; `WM_CTLCOLOREDIT`; `WM_LBUTTONDOWN` blur; `host.label`.
   No catalog change.
