@@ -33,15 +33,18 @@ import package as K  # noqa: E402
 
 # SetupCore::Error + 10 (src/setup-main.cpp exit codes); 3 = no payload (truncated download).
 E = {'ok': 0, 'nopayload': 3, 'damaged': 11, 'unsafe': 12, 'newer': 13, 'running': 14, 'disk': 15, 'cancelled': 16,
-     'helper': 17, 'start': 18, 'integration': 19}
+     'helper': 17, 'start': 18, 'integration': 19, 'busy': 20}
 VERSIONS = ('0.3.2', '0.3.3')
 failures: list[str] = []
 checks = 0
 
 
+SRC_BASE = [ROOT]  # --src-rev compiles the stub, helper and fakes from another revision (red runs)
+
+
 def run(cmd, label):
     print(f'$ {label}', flush=True)
-    r = subprocess.run([str(c) for c in cmd], cwd=ROOT, capture_output=True, text=True)
+    r = subprocess.run([str(c) for c in cmd], cwd=SRC_BASE[0], capture_output=True, text=True)
     if r.returncode:
         print((r.stdout or '') + (r.stderr or ''))
         sys.exit(f'build failed: {label}')
@@ -164,12 +167,25 @@ class Case:
         check(r.returncode == expect, f'{label or exe.name} exit {r.returncode}, expected {expect}')
         return r.returncode
 
-    def uninstall(self, *args, expect=0, label='uninstall'):
+    def popen_setup(self, exe: Path, *args, fault=None, helper_fault=None):
+        env = dict(self.env)
+        if fault:
+            env['BROWSER_SETUP_FAULT'] = fault
+        if helper_fault:
+            env['BROWSER_HELPER_FAULT'] = helper_fault
+        return subprocess.Popen([str(exe), '--unattended', *args], env=env, cwd=str(self.t))
+
+    def uninstall(self, *args, expect=0, label='uninstall', fault=None, wait=True):
         """<root>/uninstall.exe re-runs from a temp copy and exits at once; the copy reports its exit code."""
         result = self.t / 'uninstall-result.txt'
         result.unlink(missing_ok=True)
-        r = subprocess.run([str(self.root / 'uninstall.exe'), '--unattended', *args], env=self.env, cwd=str(self.t), timeout=60)
+        env = dict(self.env)
+        if fault:
+            env['BROWSER_SETUP_FAULT'] = fault
+        r = subprocess.run([str(self.root / 'uninstall.exe'), '--unattended', *args], env=env, cwd=str(self.t), timeout=60)
         check(r.returncode == 0, f'{label}: in-root uninstaller exit {r.returncode}')
+        if not wait:
+            return
         for _ in range(600):
             if result.exists():
                 break
@@ -226,7 +242,7 @@ def tree(path: Path) -> dict:
     if not path.exists():
         return out
     for p in sorted(path.rglob('*')):
-        if p.is_file() and not p.is_symlink():
+        if p.is_file() and not p.is_symlink() and p.name != 'install.lock':  # (held open while a transaction runs)
             out[p.relative_to(path).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
     return out
 
@@ -250,6 +266,12 @@ kernel32.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p, W
 
 def hold_exclusive(path: Path):
     h = kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)  # GENERIC_READ, no sharing, OPEN_EXISTING
+    assert h and h != W.HANDLE(-1).value, ctypes.get_last_error()
+    return h
+
+
+def hold_exclusive_create(path: Path):
+    h = kernel32.CreateFileW(str(path), 0xC0000000, 0, None, 4, 0x80, None)  # OPEN_ALWAYS, no sharing
     assert h and h != W.HANDLE(-1).value, ctypes.get_last_error()
     return h
 
@@ -567,9 +589,184 @@ def case_helper_refreshes_display_version():
     return c
 
 
+def read_repair_nonce(c: Case) -> str:
+    rec = c.root / 'updates/repair-transaction'
+    return next((l.split(' ', 1)[1] for l in rec.read_text().splitlines() if l.startswith('nonce ')), '') if rec.exists() else ''
+
+
+def case_repair_rollback():
+    """Review P2 #1: a failed or interrupted repair must give back the ORIGINAL same-version files."""
+    c = Case('repair_rollback')
+    c.setup(c.copy_setup('0.3.3', P['0.3.3']), '--no-launch')
+    original = c.root / 'versions/0.3.3/assets/original-canary.txt'
+
+    def plant():
+        original.write_text('original copy')
+
+    def original_back(label):
+        check(original.exists() and original.read_text() == 'original copy', f'{label}: original same-version copy restored')
+        check(not list((c.root / 'versions').glob('.repair*')), f'{label}: no repair leftovers')
+        check(not (c.root / 'updates/repair-transaction').exists(), f'{label}: transaction closed')
+        check((c.root / 'current').read_text().strip() == '0.3.3', f'{label}: current still 0.3.3')
+    s = c.copy_setup('0.3.3', P['0.3.3'])
+    # (bridge faults are no-ops in a same-version repair: the published bridge is already byte-identical)
+    for hf in ('current-write',):
+        plant()
+        c.setup(s, '--no-launch', helper_fault=hf, expect=E['helper'], label=f'repair + helper fault {hf}')
+        original_back(f'repair fault {hf}')
+    plant()
+    c.setup(assemble('0.3.3', P['0.3.3-crash'], c.t / 'crash-repair.exe'), expect=E['start'], label='repair, new copy exits without ack')
+    original_back('repair no-ack')
+    # Helper killed between the aside rename and the move: `current` names a missing directory until recovery.
+    plant()
+    c.setup(s, '--no-launch', helper_fault='kill-after-repair-aside', expect=E['helper'], label='helper killed after repair aside')
+    check(not (c.root / 'versions/0.3.3').exists() and (c.root / 'updates/repair-transaction').exists(), 'kill gap: record kept, target missing')
+    subprocess.run([str(c.root / 'browser.exe'), '--echo', 'after-kill'], env=c.env, timeout=60)  # stable launcher start
+    original_back('launcher recovery after kill gap')
+    for _ in range(50):
+        if any(l.startswith('echo 0.3.3 [after-kill]') for l in c.launches()):
+            break
+        time.sleep(0.1)
+    check(any(l.startswith('echo 0.3.3 [after-kill]') for l in c.launches()), 'launcher then started the restored copy')
+    # Killed after the move (both copies present, no ack): recovery at the next setup rolls back, then repairs.
+    plant()
+    c.setup(s, '--no-launch', helper_fault='kill-after-repair-move', expect=E['helper'], label='helper killed after repair move')
+    check(not original.exists() and (c.root / 'updates/repair-transaction').exists(), 'killed after move: replacement in place, record kept')
+    # The next setup recovers under its lock before anything else (here cancelled right after: recovery only).
+    c.setup(s, '--no-launch', '--test-cancel', expect=E['cancelled'], label='next setup: recovery under the lock, then cancel')
+    original_back('setup recovery after kill post-move')
+    # Same state, but the repaired version acknowledged its start meanwhile: recovery commits instead.
+    plant()
+    c.setup(s, '--no-launch', helper_fault='kill-after-repair-move', expect=E['helper'], label='helper killed after repair move (2)')
+    nonce = read_repair_nonce(c)
+    (c.root / f'updates/ack-{nonce}').write_text('browser-ack 1\nversion 0.3.3\npid 1\n', newline='\n')
+    subprocess.run([str(c.root / 'browser.exe'), '--echo', 'after-ack'], env=c.env, timeout=60)
+    check(not original.exists() and (c.root / 'versions/0.3.3/browser.exe').exists(), 'acknowledged repair committed (fresh copy kept)')
+    check(not list((c.root / 'versions').glob('.repair*')) and not (c.root / 'updates/repair-transaction').exists(), 'commit closed the transaction')
+    # Successful repair still commits (original deleted) and is intact.
+    plant()
+    c.setup(s, '--no-launch', label='successful repair')
+    installed_ok(c, '0.3.3', OUT / 'payload-0.3.3', P['0.3.3'])
+    check(not original.exists() and not list((c.root / 'versions').glob('.repair*')), 'successful repair committed')
+    return c
+
+
+def case_ancestor_junction():
+    """Review P2 #2: a junction ABOVE the root (here: LOCALAPPDATA itself) is never followed by setup or uninstall."""
+    c = Case('ancestor_junction')
+    target = c.t / 'ancestor-target'
+    real = Case.__new__(Case)
+    c.setup(c.copy_setup('0.3.2', P['0.3.2']), '--no-launch')  # a real install in <T>/LocalAppData/browser
+    data_canaries(c.root)
+    shutil.copytree(c.t / 'LocalAppData', target)  # plain copy of that install + data, reached only through a link
+    canary = target / 'browser/data/profile/EBWebView/Default/Cookies'
+    before = tree(target)
+    link = c.t / 'ancestor-link'
+    junction(link, target)
+    linked = dict(c.env, LOCALAPPDATA=str(link))
+    r = subprocess.run([str(link / 'browser/uninstall.exe'), '--unattended', '--remove-data'], env=linked, timeout=60)
+    for _ in range(300):
+        if (c.t / 'uninstall-result.txt').exists():
+            break
+        time.sleep(0.2)
+    code = int((c.t / 'uninstall-result.txt').read_text()) if (c.t / 'uninstall-result.txt').exists() else None
+    check(r.returncode == 0 and code == E['unsafe'], f'uninstall through ancestor junction refused (exit {code})')
+    check(canary.exists() and tree(target) == before, 'junction target untouched (data canary kept)')
+    s = c.copy_setup('0.3.3', P['0.3.3'])
+    r = subprocess.run([str(s), '--unattended', '--no-launch'], env=linked, timeout=120)
+    check(r.returncode == E['unsafe'], f'setup through ancestor junction refused (exit {r.returncode})')
+    check(tree(target) == before, 'setup wrote nothing through the junction')
+    os.rmdir(link)
+    del real
+    return c
+
+
+def case_serialization():
+    """Review P2 #3: one transaction per root across setup, uninstall and helper (also when the setup dies)."""
+    c = Case('serialization')
+    c.setup(c.copy_setup('0.3.2', P['0.3.2']), '--no-launch')
+    canaries = data_canaries(c.root)
+
+    def program():
+        return {k: v for k, v in tree(c.root).items() if not k.startswith(('updates/', 'data/', 'fake-launches'))}
+    # 1. setup paused after staging (lock held) -> uninstall is Busy and changes nothing; the setup then completes.
+    s3 = c.copy_setup('0.3.3', P['0.3.3'])
+    p = c.popen_setup(s3, '--no-launch', fault='pause-after-stage')
+    time.sleep(2.0)
+    before = program()
+    c.uninstall(expect=E['busy'], label='uninstall during a staged setup')
+    check(program() == before, 'busy uninstall changed nothing')
+    p.wait(120)
+    check(p.returncode == 0, f'paused setup completed (exit {p.returncode})')
+    check((c.root / 'current').read_text().strip() == '0.3.3', 'setup result intact')
+    # 2. helper paused right after the repair aside (lock held by the helper) -> uninstall Busy, repair completes.
+    p = c.popen_setup(s3, '--no-launch', helper_fault='pause-after-repair-aside')
+    for _ in range(100):
+        if list((c.root / 'versions').glob('.repair-*')):
+            break
+        time.sleep(0.1)
+    check(bool(list((c.root / 'versions').glob('.repair-*'))), 'repair aside reached')
+    c.uninstall(expect=E['busy'], label='uninstall during a repair')
+    p.wait(120)
+    check(p.returncode == 0, f'repair completed (exit {p.returncode})')
+    installed_ok(c, '0.3.3', OUT / 'payload-0.3.3', P['0.3.3'])
+    # 3. helper in its ack wait and the setup killed: the helper still holds the inherited lock -> Busy.
+    helper_log = c.root / 'updates/helper.log'
+    seen = len(helper_log.read_text()) if helper_log.exists() else 0
+    p = c.popen_setup(s3, helper_fault='pause-in-ack-wait')
+    for _ in range(300):
+        if 'new version launched pid' in (helper_log.read_text()[seen:] if helper_log.exists() else ''):
+            break
+        time.sleep(0.1)
+    p.kill()
+    p.wait()
+    c.uninstall(expect=E['busy'], label='uninstall while the orphaned helper waits for the ack')
+    for _ in range(200):  # the helper finishes on its own
+        if 'reason ack' in (c.root / 'updates/last-result').read_text():
+            break
+        time.sleep(0.2)
+    check('status installed' in (c.root / 'updates/last-result').read_text(), 'orphaned helper finished the repair')
+    time.sleep(1)
+    # 4. two uninstallers: the second is Busy while the first (paused, lock held) runs; the first succeeds.
+    c.uninstall(fault='pause-uninstall', wait=False, label='first uninstaller (paused)')
+    time.sleep(1.5)
+    first = c.t / 'uninstall-result.txt'
+    first_code = None
+    # the second uninstaller writes the same result file: wait for the second, keep reading until the first ends
+    c.uninstall(expect=E['busy'], label='competing uninstaller')
+    for _ in range(300):
+        if first.exists() and first.read_text() == '0':
+            first_code = 0
+            break
+        time.sleep(0.2)
+    check(first_code == 0, 'first uninstaller completed')
+    check(not (c.root / 'versions').exists(), 'uninstalled once')
+    check(all(tree(c.root / 'data').get(k) == v for k, v in canaries.items()), 'data kept')
+    # 5. engine-started helper while a setup holds the lock: clean failure, nothing switched.
+    c.setup(c.copy_setup('0.3.2', P['0.3.2']), '--no-launch', label='reinstall 0.3.2')
+    feed = c.t / 'feed'
+    feed.mkdir(exist_ok=True)
+    shutil.copy(P['0.3.3'], feed / P['0.3.3'].name)
+    shutil.copy(P['0.3.3'].parent / 'update-manifest-win-x64.txt', feed / 'update-manifest-win-x64.txt')
+    h = hold_exclusive_create(c.root / 'install.lock')
+    try:
+        env = dict(c.env, BROWSER_HELPER_LOCK_WAIT_MS='1500')
+        subprocess.run([str(c.root / 'versions/0.3.2/browser.exe'), '--update', str(c.root), str(feed)], env=env, timeout=120)
+        for _ in range(100):
+            if 'install-busy' in (c.root / 'updates/last-result').read_text():
+                break
+            time.sleep(0.2)
+    finally:
+        kernel32.CloseHandle(h)
+    check('install-busy' in (c.root / 'updates/last-result').read_text(), 'engine helper refused while the lock is held')
+    check((c.root / 'current').read_text().strip() == '0.3.2', 'engine install did not switch')
+    return c
+
+
 CASES = [case_fresh_no_launch, case_fresh_launch_ack, case_update_keeps_data_and_repair, case_foreign_shortcuts,
          case_running_browser, case_damaged_setups, case_reparse_roots, case_faults_rollback, case_first_install_rollback,
-         case_uninstall, case_uninstall_data_junction, case_helper_refreshes_display_version]
+         case_uninstall, case_uninstall_data_junction, case_helper_refreshes_display_version,
+         case_repair_rollback, case_ancestor_junction, case_serialization]
 
 
 def main() -> int:
@@ -577,7 +774,16 @@ def main() -> int:
     a.add_argument('--only')
     a.add_argument('--keep', action='store_true')
     a.add_argument('--no-build', action='store_true')
+    a.add_argument('--src-rev', help='compile src/ and tests/update-core/ from this git revision (red runs)')
     args = a.parse_args()
+    if args.src_rev:
+        base = OUT / f'src-{args.src_rev}'
+        shutil.rmtree(base, ignore_errors=True)
+        base.mkdir(parents=True)
+        archive = subprocess.run(['git', 'archive', '--format=tar', args.src_rev, 'src', 'tests/update-core'], cwd=ROOT,
+                                 capture_output=True, check=True).stdout
+        subprocess.run(['tar', '-xf', '-', '-C', str(base)], input=archive, check=True)
+        SRC_BASE[0] = base
     if not args.no_build:
         build()
     for v in VERSIONS:

@@ -95,6 +95,28 @@ NoModify, NoRepair, EstimatedSize). The helper refreshes `DisplayVersion` after 
 if that key exists and its `InstallLocation` is its root. No HKLM, no services, no autostart, no
 default-browser, no agent configuration, no import.
 
+## Transactions (review fixes after eb3031c; `src/install-transaction.h`)
+
+* **One transaction per root.** `<root>\install.lock`, opened with no sharing, is held by the setup (from root
+  creation to the end of integration), by the uninstaller (the `%TEMP%` copy only, so the in-root hand-off never
+  waits on itself) and by every helper install. The setup opens it inheritable and passes exactly that handle to its
+  helper (`STARTUPINFOEX` handle list, plan line `lock-handle <n>`, accepted by the helper only if its final path is
+  this root's lock), so exclusion lasts until the helper exits even if the setup dies. An engine-started helper
+  acquires it itself (waits ≤ 60 s, else `install-busy`, previous browser restarted). Processes started by the helper
+  never inherit it. A competing setup/uninstall gets **Busy** (exit 20, « another installation … in progress »).
+* **Trusted ancestry.** The root's nearest existing ancestor and the root itself must resolve (final path of a
+  handle) to exactly their lexical path (8.3 names expanded): a junction/symlink anywhere above or at the root is
+  refused (Unsafe), never followed. While the lock is held NTFS refuses to rename the root or any ancestor, so the
+  validated path cannot be swapped during the transaction; `data` is re-checked the same way right before removal.
+* **Repair transaction.** `updates\repair-transaction` (nonce, version) is written before the live `versions\<v>`
+  is renamed to `.repair-<nonce>`. Any failure rolls back (replacement → `.repair-failed-<nonce>`, original back);
+  the original is deleted only after a deliberate no-launch success or the new process's ack. A helper killed
+  anywhere leaves the record; the next setup, uninstaller or stable-launcher start (under the lock) commits if the
+  repaired version wrote its ack for that nonce, else restores the original; if a restore cannot complete, the aside
+  and the record are kept and installs/uninstalls refuse until it can.
+* **Result identity.** The helper stamps `updates\last-result` with its nonce (extra line, ignored by older
+  readers); the setup only trusts a result carrying its own nonce and the matching helper exit code.
+
 ## Release pipeline
 
 * `build.py`: builds `browser-setup.exe` (stub) into `<out>-setup\` (never in the app payload).
