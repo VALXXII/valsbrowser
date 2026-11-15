@@ -62,7 +62,7 @@ folder names).
 | d5ca242 | backend: `src/browser-import.h`, `AddressBar::History::Import`, catalogue, plan, `tests/browser-import/browser_import_test.cpp` |
 | c5dfa88 | UI wiring: Settings row + search, `Modal::Select::checks`, `src/browser-import-integration.h`, main.cpp hooks, `--import-sources`, modal test |
 | 2c4b159 | destination pinned at dialog open; « partielle » when entries are left out |
-| (evidence) | E2E script, synthetic source generator, runner `test-browser-import.ps1`, run_all entry, captures, this report |
+| ce96190 | E2E script, synthetic source generator, runner `test-browser-import.ps1`, run_all entry, captures, this report |
 
 ## Tests
 
@@ -75,7 +75,7 @@ folder names).
 | language_settings_test, accessibility_test | pass |
 | annotation_settings_test | 7 agent-connect FAILs, **identical on baseline 18ddbd3** (pre-existing) |
 | `tools/i18n/check_strings.py` | 0 findings |
-| `tools/release/build.py --out build/import-app` | Build OK 0.3.335 (launchable: `build/import-app/browser.exe`) |
+| `tools/release/build.py --out build/import-app` | Build OK at HEAD (launchable: `build/import-app/browser.exe`) |
 
 E2E covers: dialog FR/EN, cancel unchanged, Chrome import (Unicode nested folders, duplicates, javascript:,
 chrome://, hidden rows, search pages, epoch conversion), repeat import byte-identical, source busy (stays open,
