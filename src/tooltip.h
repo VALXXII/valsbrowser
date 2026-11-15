@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // C5 · Info-bulles (Paper « Browser Design », page p-D-0, artboard EP1-0 ; contexte C1 DQF-0,
 // état focus C2 E11-0). Native, non-activating, click-through tooltip that replaces the comctl
 // TOOLTIPS_CLASS of the main toolbar. It never takes focus or clicks (WS_EX_TRANSPARENT |
@@ -362,7 +363,7 @@ public:
     ~Tip() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, Hooks hooks = {}) {
         owner_ = owner; PopupKit::Register(instance, L"LisiereTooltip", Proc);
-        if (!PopupKit::CreatePopup(instance, owner, L"LisiereTooltip", L"Info-bulle", WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, this, Layout::radius)) return false;
+        if (!PopupKit::CreatePopup(instance, owner, L"LisiereTooltip", TR(tooltip_window_name), WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, this, Layout::radius)) return false;
         pump_.Bind(hwnd_, std::move(hooks.wake));
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { std::vector<Accessibility::Node> nodes; if (!shown_) return nodes; Accessibility::Node n; n.key = 1; n.role = Accessibility::Role::Group; n.name = content_.label; n.accelerator = content_.shortcut; n.help = content_.detail; n.automationId = L"Tooltip"; n.focusable = false; GetWindowRect(hwnd_, &n.bounds); nodes.push_back(n); return nodes; };

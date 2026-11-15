@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Annotation mode — shared native kit for the annotation surfaces (banner, note popover,
 // launcher + card, onboarding). Nothing here exists before the mode is first used:
 //  - Ink: one process-wide Direct2D/DirectWrite/WIC set (bundled Inter Display, system
@@ -421,7 +422,7 @@ struct ScaleScope {
 
 // ---- V2 shared pieces ---------------------------------------------------------------------
 enum class AgentKind { Claude = 0, Codex = 1, Other = 2 };
-inline const wchar_t* AgentName(AgentKind a) { return a == AgentKind::Claude ? L"Claude" : a == AgentKind::Codex ? L"Codex" : L"Agent"; }
+inline const wchar_t* AgentName(AgentKind a) { return a == AgentKind::Claude ? L"Claude" : a == AgentKind::Codex ? L"Codex" : TR(agent_generic); }
 // Agent logo in a square box: Claude #D97757, OpenAI (Codex) white, another client: the tree glyph at 60 %.
 inline void Logo(Ink& ink, AgentKind a, D2D1_RECT_F box, float opacity = 1) {
     if (a == AgentKind::Claude) ink.Icon(Glyphs::claude, box, WithAlpha(Hex(Ink_::claude), opacity));

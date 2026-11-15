@@ -20,6 +20,18 @@ static View V(Phase p, std::uint64_t received = 0, std::uint64_t total = 0, doub
     View v; v.phase = p; v.received = received; v.total = total; v.secondsRemaining = eta; v.error = std::move(error); return v;
 }
 
+// French interface (the default): same toast, French copy and French number format.
+static void FrenchModelTests() {
+    CHECK(I18n::Current() == I18n::Locale::Fr);
+    auto a = Describe(V(Phase::Available));
+    CHECK(a.title == L"Nouvelle mise à jour disponible" && a.buttons.size() == 1 && a.buttons[0].action == Action::Download);
+    auto d = Describe(V(Phase::Downloading, 52848230, 209715200, 14));
+    CHECK(d.size == L"50,4/200,0 Mo" && d.eta == L"00:14");
+    CHECK(Describe(V(Phase::Downloading, 3 * 1048576 + 300000, 0, -1)).size == L"3,3 Mo");
+    CHECK(FormatSize(1500ull * 1048576ull, 2000ull * 1048576ull) == L"1,5/2,0 Go");
+    CHECK(Describe(V(Phase::Error)).body != L"The update could not be completed." && !Describe(V(Phase::Error)).body.empty());
+}
+
 static void ModelTests() {
     // Paper texts verbatim.
     auto a = Describe(V(Phase::Available));
@@ -543,6 +555,9 @@ int wmain(int argc, wchar_t** argv) {
     repo = argc > 1 ? argv[1] : L".";
     snapshots = argc > 2 ? argv[2] : repo + L"\\build\\update-toast\\snapshots";
     CreateDirectoryW(snapshots.c_str(), nullptr);
+    FrenchModelTests();
+    // The Paper toast copy, model checks and snapshots are English: pinned explicitly, never the OS language.
+    I18n::SetForProcess(I18n::Locale::En);
     ModelTests();
     MotionTests();
     ClickAndDwellTests();

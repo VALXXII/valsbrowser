@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Local password vault (decision 1, option A for NEW saves). INACTIVE until an independent
 // security review approves it: while `Vault::Active()` is false nothing here is reached from the
 // browser and the engine keeps its own password autosave and suggestions.
@@ -261,10 +262,10 @@ inline Refusal CanFill(const Target& atAction, const Target& now, const std::wst
 // Short state for an explicit request in a refused context (D2): never a banner by itself.
 inline const wchar_t* RefusalText(Refusal r) {
     switch (r) {
-    case Refusal::NotHttps: return L"Mots de passe indisponibles sur une page non sécurisée";
-    case Refusal::ThirdPartyFrame: return L"Mots de passe indisponibles dans un cadre d'un autre site";
-    case Refusal::Stale: return L"La page a changé : recommencez";
-    case Refusal::OtherOrigin: return L"Ce compte appartient à un autre site";
+    case Refusal::NotHttps: return TR(vault_refusal_not_https);
+    case Refusal::ThirdPartyFrame: return TR(vault_refusal_frame);
+    case Refusal::Stale: return TR(vault_refusal_stale);
+    case Refusal::OtherOrigin: return TR(vault_refusal_other_origin);
     default: return L"";
     }
 }
@@ -306,10 +307,10 @@ inline FillOutcome ParseFillResult(long hr, const wchar_t* json) {
 inline const wchar_t* FillOutcomeText(FillOutcome o) {
     switch (o) {
     case FillOutcome::Filled: return L"";
-    case FillOutcome::Origin: return L"La page n'est plus celle de ce site.";
-    case FillOutcome::NoForm: return L"Placez d'abord le curseur dans le formulaire de connexion.";
-    case FillOutcome::NoField: return L"Aucun champ de mot de passe visible dans ce formulaire.";
-    default: return L"Le remplissage n'a pas pu être exécuté dans la page.";
+    case FillOutcome::Origin: return TR(vault_fill_origin);
+    case FillOutcome::NoForm: return TR(vault_fill_no_form);
+    case FillOutcome::NoField: return TR(vault_fill_no_field);
+    default: return TR(vault_fill_failed);
     }
 }
 // Review N13: which navigations a pending capture (B04 offer + its secret) survives. Only the SUBMISSION

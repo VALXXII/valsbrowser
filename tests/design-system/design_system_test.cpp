@@ -103,7 +103,7 @@ int wmain(int argc,wchar_t** argv){
         {   // Decision 7: « Privée » chip (Paper LRZ-0) before the tabs, measured label, tabs shifted by it.
             const float normalFirst=chrome.strip.Surface(0).left;const int normalCapacity=Design::TabStrip::Capacity(1180);
             chrome.privateChip=true;chrome.Paint({L"Google",L"Ggyp Éç"},0,L"https://example.test",false,0,0);
-            const auto c=chrome.PrivateChipRect();const float label=chrome.TextWidth(Design::PrivateChip::label,14,true);
+            const auto c=chrome.PrivateChipRect();const float label=chrome.TextWidth(Design::PrivateChip::label(),14,true);
             Require(c.left==44&&c.top==10&&c.bottom==34&&c.right-c.left==6+16+6+std::ceil(label)+8,"private chip: x 44, y 10, h 24, width 6+16+6+label+8 from DirectWrite");
             Require(std::abs(label-39)<3,"private chip: « Privée » measures about Paper's 39 DIP");
             Require(chrome.strip.Surface(0).left==c.right+6&&normalFirst==44,"private chip: first tab one 6 DIP row gap after the chip");

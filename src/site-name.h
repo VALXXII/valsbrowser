@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Compact site name for small surfaces (split-view drop chip, lifted tab card):
 // "GitHub", not "GitHub · Le changement est constant… · GitHub · GitHub".
 // Deterministic and local: computed from the URL and the document title only, no
@@ -61,12 +62,13 @@ inline bool NumericHost(const std::wstring& host) { return !host.empty() && std:
 inline std::wstring Known(const std::wstring& host, const std::wstring& registrable) {
     struct Entry { const wchar_t* domain; const wchar_t* name; };
     static const Entry table[] = {
+        // i18n-exempt-begin: site brand names (proper nouns, data)
         {L"developer.mozilla.org", L"MDN"}, {L"github.com", L"GitHub"}, {L"gist.github.com", L"GitHub Gist"},
         {L"youtube.com", L"YouTube"}, {L"youtu.be", L"YouTube"}, {L"wikipedia.org", L"Wikipédia"},
         {L"duckduckgo.com", L"DuckDuckGo"}, {L"stackoverflow.com", L"Stack Overflow"}, {L"linkedin.com", L"LinkedIn"},
         {L"x.com", L"X"}, {L"twitter.com", L"X"}, {L"reddit.com", L"Reddit"}, {L"mobbin.com", L"Mobbin"},
         {L"paper.design", L"Paper"}, {L"gitlab.com", L"GitLab"}, {L"openai.com", L"OpenAI"}, {L"anthropic.com", L"Anthropic"},
-        {L"claude.ai", L"Claude"}, {L"notion.so", L"Notion"}, {L"amazon.fr", L"Amazon"}, {L"amazon.com", L"Amazon"},
+        {L"claude.ai", L"Claude"}, {L"notion.so", L"Notion"}, {L"amazon.fr", L"Amazon"}, {L"amazon.com", L"Amazon"},   // i18n-exempt-end
     };
     for (auto& e : table) if (host == e.domain) return e.name;
     for (auto& e : table) if (registrable == e.domain) return e.name;

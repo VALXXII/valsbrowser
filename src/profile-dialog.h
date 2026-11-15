@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // « Nouveau profil » (Paper p-I-0 P03, Modale A1 400 wide, radius 16): title, one line of body,
 // the editor block (profile-editor.h), « Annuler » / « Créer le profil » (the draft profile's accent fill, live).
 // Modal: Run() disables the owner and runs its own loop until the dialog ends; the duplicate check
@@ -25,9 +26,9 @@ namespace Layout {
 inline constexpr float width = 400, pad = 16, gap = 16, radius = 16, title = 20, bodyLine = 20, buttonH = 32, buttonPad = 12, buttonMin = 64, actionsTop = 8, buttonGap = 8;
 }
 struct Spec {
-    std::wstring title = L"Nouveau profil";
-    std::wstring body = L"Historique, cookies, mots de passe et favoris séparés, sur cet appareil. Il s'ouvre dans une nouvelle fenêtre.";
-    std::wstring accept = L"Créer le profil";
+    std::wstring title = TR(profile_new_name);
+    std::wstring body = TR(profile_dialog_body);
+    std::wstring accept = TR(profile_dialog_create);
     Profiles::Profile seed;                                         // default name/icon/colour
     D2D1_COLOR_F accent{0x3E / 255.f, 0x67 / 255.f, 1, 1};           // the opener's accent (not used for the CTA: it previews the draft)
     std::function<Profiles::NameError(const std::wstring&)> validateName;
@@ -51,7 +52,7 @@ class Dialog {
     D2D1_RECT_F ButtonBox(int b) const {
         const float y = height_ - Layout::pad - Layout::buttonH; const float right = Layout::width - Layout::pad;
         const float acceptW = std::max(Layout::buttonMin, const_cast<Chrome&>(chrome_).TextWidth(spec_.accept, 14, true) + 2 * Layout::buttonPad);
-        const float cancelW = std::max(Layout::buttonMin, const_cast<Chrome&>(chrome_).TextWidth(L"Annuler", 14, true) + 2 * Layout::buttonPad);
+        const float cancelW = std::max(Layout::buttonMin, const_cast<Chrome&>(chrome_).TextWidth(TR(common_cancel), 14, true) + 2 * Layout::buttonPad);
         if (b == BtnAccept) return {right - acceptW, y, right, y + Layout::buttonH};
         return {right - acceptW - Layout::buttonGap - cancelW, y, right - acceptW - Layout::buttonGap, y + Layout::buttonH};
     }
@@ -105,7 +106,7 @@ class Dialog {
             if (accept) { const auto a = DraftAccent(); const auto c = Design::Accent::StateColor({a.r, a.g, a.b}, hover_ == b ? 1.f : 0.f, pressed_ == b ? 1.f : 0.f); PopupKit::Fill(chrome_, box, 8, D2D1::ColorF(c.r, c.g, c.b, 1)); }
             else { const float r = Design::Surface::raised + lift; PopupKit::Fill(chrome_, box, 8, D2D1::ColorF(r, r, r, 1)); }
             if (focus_ == b && keyboard_) { auto* br = chrome_.SolidBrush(); br->SetColor(PopupKit::White(.5f)); t->DrawRoundedRectangle(D2D1::RoundedRect({box.left + .5f, box.top + .5f, box.right - .5f, box.bottom - .5f}, 7.5f, 7.5f), br, 1); }   // keyboard only
-            PopupKit::DrawText(chrome_, accept ? spec_.accept : L"Annuler", {box.left, box.top + 7, box.right, box.bottom}, PopupKit::Type{14, 18, -.14f, true}, PopupKit::White(1), false, DWRITE_TEXT_ALIGNMENT_CENTER);
+            PopupKit::DrawText(chrome_, accept ? spec_.accept : std::wstring(TR(common_cancel)), {box.left, box.top + 7, box.right, box.bottom}, PopupKit::Type{14, 18, -.14f, true}, PopupKit::White(1), false, DWRITE_TEXT_ALIGNMENT_CENTER);
         }
         PopupKit::Outline(chrome_, Layout::width, height_, Layout::radius, PopupKit::White(0x14 / 255.f));
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
@@ -188,7 +189,7 @@ private:
             Accessibility::Node g; g.key = 1; g.role = Accessibility::Role::Group; g.name = spec_.title; g.help = spec_.body; g.automationId = L"ProfileDialog"; g.focusable = false; g.bounds = win; nodes.push_back(g);
             auto ed = editor_.Nodes(1000, 1, win); nodes.insert(nodes.end(), ed.begin(), ed.end());
             for (int b : {BtnCancel, BtnAccept}) {
-                const auto r = ButtonBox(b); Accessibility::Node n; n.key = b; n.parent = 1; n.role = Accessibility::Role::Button; n.name = b == BtnAccept ? spec_.accept : L"Annuler"; n.automationId = b == BtnAccept ? L"ProfileDialogAccept" : L"ProfileDialogCancel";
+                const auto r = ButtonBox(b); Accessibility::Node n; n.key = b; n.parent = 1; n.role = Accessibility::Role::Button; n.name = b == BtnAccept ? spec_.accept : std::wstring(TR(common_cancel)); n.automationId = b == BtnAccept ? L"ProfileDialogAccept" : L"ProfileDialogCancel";
                 n.bounds = {win.left + Px(r.left), win.top + Px(r.top), win.left + Px(r.right), win.top + Px(r.bottom)}; nodes.push_back(n);
             }
             if (!error_.empty()) { Accessibility::Node e; e.key = 2; e.parent = 1; e.role = Accessibility::Role::Text; e.name = error_; e.focusable = false; nodes.push_back(e); }

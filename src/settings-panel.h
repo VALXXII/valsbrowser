@@ -39,6 +39,8 @@
 #include "svg-path.h"
 #include "annotation-settings.h"
 #include "profile-editor.h"
+#include "i18n.h"
+#include "ui-language.h"
 
 namespace NativeChrome {
 namespace SettingsUI {
@@ -56,6 +58,7 @@ enum Hit : int {
     CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84,
     CatProfiles = 85, ProfileDelete = 86, ProfileEditorHit = 87, ProfileClearData = 88, ProfileRowBase = 700,   // Réglages › Profils (Paper p-I-0 P02)
     CatAnnotations = 89,   // « Annotations » (85..88 are Profils)
+    LanguageHit = 66,      // « Langue » (root, under Profils): browser-wide interface language, applied at next start
     // « Annotations »: one button per agent row, the manual fallback, the prompt switch, retention, folder, clear all.
     AgentBase = 90, ManualConnect = 92, AnnotationPrompt = 67, AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
@@ -126,11 +129,11 @@ inline constexpr Motion::Milliseconds select = Settle(.26f), toggle = Settle(.2f
 enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site, Profiles, Profile, Annotations };
 inline const wchar_t* Title(View v) {
     switch (v) {
-    case View::Engine: return L"Moteur de recherche"; case View::Tabs: return L"Onglets"; case View::Privacy: return L"Confidentialité";
-    case View::Downloads: return L"Téléchargements"; case View::Display: return L"Affichage et son"; case View::Sites: return L"Autorisations";
-    case View::Profiles: return L"Profils";
-    case View::Annotations: return L"Annotations";
-    default: return L"Réglages";
+    case View::Engine: return TR(settings_engine); case View::Tabs: return TR(settings_tabs); case View::Privacy: return TR(settings_privacy);
+    case View::Downloads: return TR(settings_downloads); case View::Display: return TR(settings_display); case View::Sites: return TR(settings_permissions);
+    case View::Profiles: return TR(settings_profiles);
+    case View::Annotations: return TR(settings_annotations);
+    default: return TR(settings_title);
     }
 }
 // The row that opened a view (focus lands back on it when the view is popped).
@@ -182,7 +185,11 @@ struct LayoutInput {
     int site = -1;                                             // Site view: index into sites
     const std::vector<ProfileItem>* profiles = nullptr;        // Réglages › Profils
     float editorHeight = 0;                                    // Profils › <profil>: the editor block
+    // « Langue » (shown when the host can save the preference): the saved language, and whether the last save failed.
+    bool language = false; I18n::Locale languageSaved = I18n::Locale::Fr; bool languageFailed = false;
 };
+// Phosphor Bold « translate » (official @phosphor-icons/core path, Paper p-K-0), drawn like the Profils glyph.
+inline constexpr const char* TranslateGlyph = "M250.73,210.63l-56-112a12,12,0,0,0-21.46,0l-20.52,41A84.2,84.2,0,0,1,114,126.22,107.48,107.48,0,0,0,139.33,68H160a12,12,0,0,0,0-24H108V32a12,12,0,0,0-24,0V44H32a12,12,0,0,0,0,24h83.13A83.69,83.69,0,0,1,96,110.35,84,84,0,0,1,83.6,91a12,12,0,1,0-21.81,10A107.55,107.55,0,0,0,78,126.24,83.54,83.54,0,0,1,32,140a12,12,0,0,0,0,24,107.47,107.47,0,0,0,64-21.07,108.4,108.4,0,0,0,45.39,19.44l-24.13,48.26a12,12,0,1,0,21.46,10.73L151.41,196h65.17l12.68,25.36a12,12,0,1,0,21.47-10.73ZM163.41,172,184,130.83,204.58,172Z";
 inline std::wstring Host(const std::wstring& origin) {
     std::wstring h = origin; const auto scheme = h.find(L"://"); if (scheme != std::wstring::npos) h = h.substr(scheme + 3);
     while (!h.empty() && h.back() == L'/') h.pop_back();
@@ -211,87 +218,96 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         slots.push_back(s); y += r * (fieldRow + rowGap);
     };
     auto lead = [&](Kind kind, int hit, const wchar_t* icon, const wchar_t* text, std::wstring value) { auto* s = add(kind, hit, row, text, std::move(value)); s->icon = icon; return s; };
-    auto pending = [&](int hit, bool note) { auto lines = described(hit); if (note) lines.push_back(L"Au prochain démarrage."); return lines; };
+    auto pending = [&](int hit, bool note) { auto lines = described(hit); if (note) lines.push_back(TR(language_pending)); return lines; };
     if (view == View::Main) {
         add(Kind::Search, SearchField, field);
         endGroup();
-        lead(Kind::Nav, CatEngine, L"favicon-mask", L"Moteur de recherche", st ? (st->engine == Engine::Custom ? std::wstring(L"Personnalisé") : std::wstring(BrowserSettings::Info(st->engine).name)) : L"");
-        lead(Kind::Value, HomePageHit, L"home-mask", L"Page d'accueil", st ? BrowserSettings::Info(st->newTabPage).label : L"");
+        lead(Kind::Nav, CatEngine, L"favicon-mask", TR(settings_engine), st ? std::wstring(BrowserSettings::Info(st->engine).name) : L"");
+        lead(Kind::Value, HomePageHit, L"home-mask", TR(settings_homepage), st ? BrowserSettings::Info(st->newTabPage).label : L"");
         fieldAt(HomepageField, in.homeReveal);
         // « Profils » is always listed, even with one profile (Paper P02 XTM-0): its value is the
         // current profile, glyph in its ink then its name.
         if (in.profiles && !in.profiles->empty()) {
             const ProfileItem* cur = &in.profiles->front(); for (const auto& p : *in.profiles) if (p.current) cur = &p;
-            auto* s = add(Kind::Nav, CatProfiles, row, L"Profils", cur->name); s->path = ProfileIcons::Bold::userCircle; s->valueGlyph = cur->glyph; s->ink = cur->ink;
+            auto* s = add(Kind::Nav, CatProfiles, row, TR(settings_profiles), cur->name); s->path = ProfileIcons::Bold::userCircle; s->valueGlyph = cur->glyph; s->ink = cur->ink;
+        }
+        // « Langue » (Paper p-K-0): the saved language by its own name; a note while it differs from this
+        // process's language (applied at the next start), or why it could not be saved (danger ink).
+        if (in.language) {
+            std::vector<std::wstring> lines;
+            if (in.languageFailed) lines.push_back(TR(language_save_failed));
+            else if (in.languageSaved != I18n::Current()) lines.push_back(TR(language_pending));
+            auto* s = add(Kind::Value, LanguageHit, lines.empty() ? row : TwoLine(lines.size()), TR(language_label), UiLanguage::Autonym(in.languageSaved));
+            s->path = TranslateGlyph; s->lines = std::move(lines); s->error = in.languageFailed;
         }
         endGroup();
-        lead(Kind::Nav, CatTabs, L"tabs-mask", L"Onglets", st ? (st->restoreTabs ? L"Restaurés" : L"Non restaurés") : L"");
-        lead(Kind::Nav, CatPrivacy, L"shield-mask", L"Confidentialité", st ? BrowserSettings::Info(st->tracking).label : L"");
-        lead(Kind::Nav, CatDownloads, L"downloads-mask", L"Téléchargements", st ? (st->askWhereToSave ? std::wstring(L"Demander") : in.folderName) : L"");
-        lead(Kind::Nav, CatDisplay, L"eye-mask", L"Affichage et son", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
-        if (in.annotations) { auto* s = lead(Kind::Nav, CatAnnotations, nullptr, L"Annotations", in.agents ? AnnotationSettings::Summary(*in.agents, in.agentsKnown) : L""); s->glyph = &AnnotationSettings::Mark; }
+        lead(Kind::Nav, CatTabs, L"tabs-mask", TR(settings_tabs), st ? (st->restoreTabs ? TR(settings_tabs_restored) : TR(settings_tabs_not_restored)) : L"");
+        lead(Kind::Nav, CatPrivacy, L"shield-mask", TR(settings_privacy), st ? BrowserSettings::Info(st->tracking).label : L"");
+        lead(Kind::Nav, CatDownloads, L"downloads-mask", TR(settings_downloads), st ? (st->askWhereToSave ? std::wstring(TR(settings_downloads_ask)) : in.folderName) : L"");
+        lead(Kind::Nav, CatDisplay, L"eye-mask", TR(settings_display), st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
+        if (in.annotations) { auto* s = lead(Kind::Nav, CatAnnotations, nullptr, TR(settings_annotations), in.agents ? AnnotationSettings::Summary(*in.agents, in.agentsKnown) : L""); s->glyph = &AnnotationSettings::Mark; }
         y -= rowGap;
     } else if (view == View::Engine) {
         for (int i = 0; i < BrowserSettings::EngineCount; ++i) { auto* s = add(Kind::Engine, EngineHit(i), row); s->index = i; }
         fieldAt(CustomSearchField, in.customReveal);
         endGroup();
-        twoLine(Suggestions, L"Suggestions de recherche");
+        twoLine(Suggestions, TR(settings_suggestions));
         y -= rowGap;
     } else if (view == View::Tabs) {
-        labelAt(L"Ouverture");
-        twoLine(RestoreTabs, L"Restaurer les onglets");
-        add(Kind::Value, TabPositionHit, row, L"Nouveaux onglets", st ? BrowserSettings::Info(st->tabPosition).label : L"");
+        labelAt(TR(settings_group_opening));
+        twoLine(RestoreTabs, TR(settings_restore_tabs));
+        add(Kind::Value, TabPositionHit, row, TR(settings_new_tabs), st ? BrowserSettings::Info(st->tabPosition).label : L"");
         endGroup();
-        labelAt(L"Fermeture");
-        twoLine(ConfirmClose, L"Confirmer la fermeture");
-        twoLine(CloseWithLastTab, L"Fermer avec le dernier onglet");
+        labelAt(TR(settings_group_closing));
+        twoLine(ConfirmClose, TR(settings_confirm_close));
+        twoLine(CloseWithLastTab, TR(settings_close_with_last_tab));
         endGroup();
-        labelAt(L"Veille");
-        add(Kind::Value, Sleep, row, L"Onglets en veille", st ? BrowserSettings::SleepLabel(st->sleepMinutes) : L"");
-        twoLine(MemorySaver, L"Économiseur de mémoire");
+        labelAt(TR(settings_group_sleep));
+        add(Kind::Value, Sleep, row, TR(settings_sleeping_tabs), st ? BrowserSettings::SleepLabel(st->sleepMinutes) : L"");
+        twoLine(MemorySaver, TR(settings_memory_saver));
         y -= rowGap;
     } else if (view == View::Privacy) {
-        labelAt(L"Protection");
-        add(Kind::Value, Tracking, row, L"Anti-pistage", st ? BrowserSettings::Info(st->tracking).label : L"");
-        twoLine(AdBlock, L"Bloqueur de publicités");
-        twoLine(HttpsOnly, L"HTTPS uniquement");
-        { auto lines = pending(ThirdPartyCookies, in.cookiesPending); auto* s = add(Kind::Switch, ThirdPartyCookies, TwoLine(lines.size()), L"Bloquer les cookies tiers"); s->lines = std::move(lines); }
+        labelAt(TR(settings_group_protection));
+        add(Kind::Value, Tracking, row, TR(settings_tracking), st ? BrowserSettings::Info(st->tracking).label : L"");
+        twoLine(AdBlock, TR(settings_ad_blocker));
+        twoLine(HttpsOnly, TR(settings_https_only));
+        { auto lines = pending(ThirdPartyCookies, in.cookiesPending); auto* s = add(Kind::Switch, ThirdPartyCookies, TwoLine(lines.size()), TR(settings_third_party_cookies)); s->lines = std::move(lines); }
         endGroup();
-        labelAt(L"Formulaires");
-        twoLine(Passwords, L"Mots de passe");
+        labelAt(TR(settings_group_forms));
+        twoLine(Passwords, TR(settings_passwords));
         // E8: the vault's manager, a separate entry from the switch (shown only while the vault is active).
-        if (in.vaultManager) add(Kind::Nav, ManagePasswords, row, L"Gérer les mots de passe", in.vaultCount == SIZE_MAX ? std::wstring(L"Illisible") : std::to_wstring(in.vaultCount));
-        twoLine(Autofill, L"Saisie automatique");
+        if (in.vaultManager) add(Kind::Nav, ManagePasswords, row, TR(settings_manage_passwords), in.vaultCount == SIZE_MAX ? std::wstring(TR(settings_vault_unreadable)) : std::to_wstring(in.vaultCount));
+        twoLine(Autofill, TR(settings_autofill));
         endGroup();
-        labelAt(L"Données");
+        labelAt(TR(settings_group_data));
         if (in.sitesLoaded && in.sites && in.sites->empty()) {
             // Nothing to manage yet: an inert row says why instead of opening an empty view.
-            auto* s = add(Kind::Nav, None, TwoLine(in.noSitesLines.size()), L"Autorisations des sites"); s->lines = in.noSitesLines;
-        } else add(Kind::Nav, Permissions, row, L"Autorisations des sites", in.sitesLoaded && in.sites ? std::to_wstring(in.sites->size()) : L"");
-        twoLine(ClearOnExit, L"Effacer en quittant");
-        add(Kind::Danger, ClearData, row, L"Effacer les données…");
+            auto* s = add(Kind::Nav, None, TwoLine(in.noSitesLines.size()), TR(settings_site_permissions)); s->lines = in.noSitesLines;
+        } else add(Kind::Nav, Permissions, row, TR(settings_site_permissions), in.sitesLoaded && in.sites ? std::to_wstring(in.sites->size()) : L"");
+        twoLine(ClearOnExit, TR(settings_clear_on_exit));
+        add(Kind::Danger, ClearData, row, TR(settings_clear_data));
         y -= rowGap;
     } else if (view == View::Downloads) {
         add(Kind::Folder, Folder, folderRow);
-        twoLine(AskWhere, L"Demander où enregistrer");
+        twoLine(AskWhere, TR(settings_ask_where));
         y -= rowGap;
     } else if (view == View::Display) {
-        labelAt(L"Pages");
-        add(Kind::Value, Zoom, row, L"Zoom des pages", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
-        add(Kind::Value, BookmarksBarHit, row, L"Barre de favoris", st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
-        twoLine(ReduceMotion, L"Réduire les animations");
-        { auto lines = pending(GrayscaleText, in.grayscalePending); auto* s = add(Kind::Switch, GrayscaleText, TwoLine(lines.size()), L"Affichage lissé"); s->lines = std::move(lines); }
+        labelAt(TR(settings_group_pages));
+        add(Kind::Value, Zoom, row, TR(settings_zoom), st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
+        add(Kind::Value, BookmarksBarHit, row, TR(settings_bookmarks_bar), st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
+        twoLine(ReduceMotion, TR(settings_reduce_motion));
+        { auto lines = pending(GrayscaleText, in.grayscalePending); auto* s = add(Kind::Switch, GrayscaleText, TwoLine(lines.size()), TR(settings_grayscale_text)); s->lines = std::move(lines); }
         endGroup();
-        labelAt(L"Son et vidéo");
+        labelAt(TR(settings_group_sound));
         {
-            auto* s = add(Kind::Value, AutoplayHit, in.autoplayPending ? TwoLine(1) : row, L"Lecture automatique", st ? BrowserSettings::Info(st->autoplay).label : L"");
-            if (in.autoplayPending) s->lines = {L"Au prochain démarrage."};
+            auto* s = add(Kind::Value, AutoplayHit, in.autoplayPending ? TwoLine(1) : row, TR(settings_autoplay), st ? BrowserSettings::Info(st->autoplay).label : L"");
+            if (in.autoplayPending) s->lines = {TR(language_pending)};
         }
-        twoLine(MuteBackground, L"Couper le son en arrière-plan");
+        twoLine(MuteBackground, TR(settings_mute_background));
         y -= rowGap;
     } else if (view == View::Annotations) {
         namespace AS = AnnotationSettings;
-        labelAt(L"Agents");
+        labelAt(TR(settings_group_agents));
         for (int i = 0; i < AS::AppCount; ++i) {
             const auto app = AS::AppAt(i); const AS::Agent agent = in.agents ? (*in.agents)[app] : AS::Agent{};
             auto lines = in.agentLines[static_cast<size_t>(i)]; if (lines.empty()) lines.push_back(AS::StatusText(agent, in.now));
@@ -299,23 +315,23 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
             auto* s = add(Kind::Agent, action == AS::Action::None ? None : AgentHit(app), TwoLine(lines.size()), AS::AppName(app), AS::ActionLabel(action));
             s->index = i; s->lines = std::move(lines); s->disabled = !AS::ActionEnabled(agent); s->error = AS::StatusIsError(agent);
         }
-        add(Kind::Nav, ManualConnect, row, L"Autre app ou réglage manuel");
+        add(Kind::Nav, ManualConnect, row, TR(settings_manual_connect));
         endGroup();
-        labelAt(L"Mode Annotation");
-        twoLine(AnnotationPrompt, L"Proposer de connecter un agent");
-        { auto lines = described(ShortcutsNoteKey); const size_t n = std::max<size_t>(1, lines.size()); auto* s = add(Kind::Note, None, n * 20.f, AS::ShortcutsNote); s->lines = std::move(lines); }
+        labelAt(TR(settings_group_annotation_mode));
+        twoLine(AnnotationPrompt, TR(settings_connect_prompt));
+        { auto lines = described(ShortcutsNoteKey); const size_t n = std::max<size_t>(1, lines.size()); auto* s = add(Kind::Note, None, n * 20.f, AS::ShortcutsNote()); s->lines = std::move(lines); }
         endGroup();
-        labelAt(L"Historique");
-        add(Kind::Value, AnnotationRetention, row, L"Conserver les terminées", st ? BrowserSettings::RetentionLabel(st->annotationRetentionDays) : L"");
-        add(Kind::Folder, AnnotationFolder, folderRow, L"Ouvrir le dossier des annotations", in.annotationFolder);
-        { auto* s = add(Kind::Danger, AnnotationClear, row, L"Effacer toutes les annotations…"); s->disabled = in.annotationCount == 0 || in.annotationCount == SIZE_MAX; }
+        labelAt(TR(settings_group_history));
+        add(Kind::Value, AnnotationRetention, row, TR(settings_keep_done), st ? BrowserSettings::RetentionLabel(st->annotationRetentionDays) : L"");
+        add(Kind::Folder, AnnotationFolder, folderRow, TR(settings_open_annotation_folder), in.annotationFolder);
+        { auto* s = add(Kind::Danger, AnnotationClear, row, TR(settings_clear_annotations)); s->disabled = in.annotationCount == 0 || in.annotationCount == SIZE_MAX; }
         y -= rowGap;
     } else if (view == View::Sites) {
         const size_t n = in.sites ? in.sites->size() : 0;
-        if (!in.sitesLoaded) { if (!in.sitesQuiet) add(Kind::Note, None, row, L"Chargement…"); }
-        else if (!n) { add(Kind::Note, None, 2 * descriptionLine, L"Aucun site n'a encore demandé d'accès."); }
+        if (!in.sitesLoaded) { if (!in.sitesQuiet) add(Kind::Note, None, row, TR(settings_loading)); }
+        else if (!n) { add(Kind::Note, None, 2 * descriptionLine, TR(settings_no_sites)); }
         else {
-            labelAt(n == 1 ? L"1 site" : std::to_wstring(n) + L" sites");
+            labelAt(TRP(settings_sites_count, n));
             for (size_t i = 0; i < n; ++i) {
                 auto* s = add(Kind::SiteRow, SiteBase + static_cast<int>(i), siteRow, Host((*in.sites)[i].origin), BrowserSettings::SiteSummary((*in.sites)[i]));
                 s->index = static_cast<int>(i);
@@ -324,7 +340,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         y -= rowGap;
     } else if (view == View::Profiles) {
         const size_t n = in.profiles ? in.profiles->size() : 0;
-        labelAt(n == 1 ? L"1 profil" : std::to_wstring(n) + L" profils");
+        labelAt(TRP(settings_profiles_count, n));
         for (size_t i = 0; i < n; ++i) {   // one line, 40 high, 2 apart (Paper XSN-0)
             const auto& p = (*in.profiles)[i];
             Slot s; s.kind = Kind::ProfileRow; s.hit = ProfileRowBase + static_cast<int>(i); s.index = static_cast<int>(i); s.top = y; s.height = 40;
@@ -335,7 +351,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
     } else if (view == View::Profile) {
         Slot s; s.kind = Kind::Editor; s.hit = ProfileEditorHit; s.top = y; s.height = in.editorHeight; slots.push_back(s); y += s.height;
     } else if (in.sites && in.site >= 0 && in.site < static_cast<int>(in.sites->size())) {
-        labelAt(L"Autorisations");
+        labelAt(TR(settings_permissions));
         const auto& site = (*in.sites)[in.site];
         for (size_t i = 0; i < site.permissions.size(); ++i) {
             const auto& p = site.permissions[i];
@@ -352,68 +368,71 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
 inline std::wstring FolderText(const std::wstring& path) {
     std::wstring p = path; while (p.size() > 3 && (p.back() == L'\\' || p.back() == L'/')) p.pop_back();
     const auto slash = p.find_last_of(L"\\/");
-    if (p.empty()) return L"Téléchargements";
+    if (p.empty()) return TR(settings_downloads_folder_default);
     if (slash == std::wstring::npos || slash + 1 >= p.size()) return p;
     if (slash <= 2) return p; // "C:\Users" stays readable
-    return L"…\\" + p.substr(slash + 1);
+    return L"…\\" + p.substr(slash + 1);   // i18n-exempt: path elision mark
 }
 // Second lines of the two-line switches.
-inline const std::pair<int, const wchar_t*> Descriptions[] = {
-    {Suggestions, L"Propose des recherches et des sites pendant la saisie."},
-    {RestoreTabs, L"Rouvre les onglets de la dernière session."},
-    {ConfirmClose, L"Avant de fermer une fenêtre avec plusieurs onglets."},
-    {CloseWithLastTab, L"Sinon, un onglet vide reste ouvert."},
-    {MemorySaver, L"Allège les onglets en arrière-plan avant leur mise en veille."},
-    {AdBlock, L"Masque les publicités et les traqueurs qu'elles chargent."},
-    {HttpsOnly, L"Prévient avant d'ouvrir un site non sécurisé."},
-    {ThirdPartyCookies, L"Certaines connexions intégrées peuvent ne plus marcher."},
-    {Passwords, L"Propose de les enregistrer, puis les remplit."},
-    {Autofill, L"Remplit nom, adresse et e-mail."},
-    {ClearOnExit, L"À la fermeture, supprime l'historique, les cookies et le cache."},
-    {AskWhere, L"Choisir le dossier à chaque téléchargement."},
-    {ReduceMotion, L"S'ajoute au réglage d'animation de Windows."},
-    {MuteBackground, L"Seul l'onglet affiché peut jouer du son."},
-    {GrayscaleText, L"Adoucit l'affichage des pages, un peu comme sur Mac."},
-    {AnnotationPrompt, L"Au lancement du mode Annotation, tant qu'aucun agent n'est connecté."},
+inline const std::pair<int, I18n::Text> Descriptions[] = {
+    {Suggestions, {I18n::Id::settings_suggestions_note}},
+    {RestoreTabs, {I18n::Id::settings_restore_tabs_note}},
+    {ConfirmClose, {I18n::Id::settings_confirm_close_note}},
+    {CloseWithLastTab, {I18n::Id::settings_close_with_last_tab_note}},
+    {MemorySaver, {I18n::Id::settings_memory_saver_note}},
+    {AdBlock, {I18n::Id::settings_ad_blocker_note}},
+    {HttpsOnly, {I18n::Id::settings_https_only_note}},
+    {ThirdPartyCookies, {I18n::Id::settings_third_party_cookies_note}},
+    {Passwords, {I18n::Id::settings_passwords_note}},
+    {Autofill, {I18n::Id::settings_autofill_note}},
+    {ClearOnExit, {I18n::Id::settings_clear_on_exit_note}},
+    {AskWhere, {I18n::Id::settings_ask_where_note}},
+    {ReduceMotion, {I18n::Id::settings_reduce_motion_note}},
+    {MuteBackground, {I18n::Id::settings_mute_background_note}},
+    {GrayscaleText, {I18n::Id::settings_grayscale_text_note}},
+    {AnnotationPrompt, {I18n::Id::settings_connect_prompt_note}},
 };
 // Settings search: every row a query can reach, with where it lives and the words it answers to.
-struct Searchable { int hit; const wchar_t* title; const wchar_t* path; View view; const wchar_t* keywords; };
+// Titles, paths and keywords are catalog ids (I18n::Text converts at use): the index is never frozen in one language.
+struct Searchable { int hit; I18n::Text title, path; View view; I18n::Text keywords; };
+using I = I18n::Id;
 inline const Searchable SearchIndex[] = {
-    {CatEngine, L"Moteur de recherche", L"Réglages", View::Main, L"google duckduckgo bing qwant ecosia brave personnalise"},
-    {Suggestions, L"Suggestions de recherche", L"Moteur de recherche", View::Engine, L"saisie barre d'adresse"},
-    {HomePageHit, L"Page d'accueil", L"Réglages", View::Main, L"nouvel onglet sites frequents accueil"},
-    {RestoreTabs, L"Restaurer les onglets", L"Onglets › Ouverture", View::Tabs, L"session demarrage"},
-    {TabPositionHit, L"Nouveaux onglets", L"Onglets › Ouverture", View::Tabs, L"position ouvrir"},
-    {ConfirmClose, L"Confirmer la fermeture", L"Onglets › Fermeture", View::Tabs, L"fermer fenetre"},
-    {CloseWithLastTab, L"Fermer avec le dernier onglet", L"Onglets › Fermeture", View::Tabs, L"fenetre"},
-    {Sleep, L"Onglets en veille", L"Onglets › Veille", View::Tabs, L"memoire suspendre performances"},
-    {MemorySaver, L"Économiseur de mémoire", L"Onglets › Veille", View::Tabs, L"ram performances"},
-    {Tracking, L"Anti-pistage", L"Confidentialité › Protection", View::Privacy, L"traqueurs tracking pistage"},
-    {AdBlock, L"Bloqueur de publicités", L"Confidentialité › Protection", View::Privacy, L"pubs annonces ublock"},
-    {HttpsOnly, L"HTTPS uniquement", L"Confidentialité › Protection", View::Privacy, L"securise chiffre http"},
-    {ThirdPartyCookies, L"Bloquer les cookies tiers", L"Confidentialité › Protection", View::Privacy, L"traqueurs"},
-    {Passwords, L"Mots de passe", L"Confidentialité › Formulaires", View::Privacy, L"identifiants connexion"},
-    {Autofill, L"Saisie automatique", L"Confidentialité › Formulaires", View::Privacy, L"formulaires adresse e-mail"},
-    {Permissions, L"Autorisations des sites", L"Confidentialité › Données", View::Privacy, L"camera micro position notifications"},
-    {ClearOnExit, L"Effacer en quittant", L"Confidentialité › Données", View::Privacy, L"cookies historique cache"},
-    {ClearData, L"Effacer les données…", L"Confidentialité › Données", View::Privacy, L"cookies historique cache supprimer"},
-    {Folder, L"Enregistrer dans", L"Téléchargements", View::Downloads, L"dossier emplacement"},
-    {AskWhere, L"Demander où enregistrer", L"Téléchargements", View::Downloads, L"dossier emplacement"},
-    {Zoom, L"Zoom des pages", L"Affichage et son › Pages", View::Display, L"taille agrandir"},
-    {BookmarksBarHit, L"Barre de favoris", L"Affichage et son › Pages", View::Display, L"favoris marque-pages"},
-    {ReduceMotion, L"Réduire les animations", L"Affichage et son › Pages", View::Display, L"mouvement accessibilite"},
-    {GrayscaleText, L"Affichage lissé", L"Affichage et son › Pages", View::Display, L"lisse doux mac police texte antialiasing cleartype nettete"},
-    {AutoplayHit, L"Lecture automatique", L"Affichage et son › Son et vidéo", View::Display, L"video son"},
-    {MuteBackground, L"Couper le son en arrière-plan", L"Affichage et son › Son et vidéo", View::Display, L"muet son"},
+    {CatEngine, {I::settings_engine}, {I::settings_title}, View::Main, {I::search_kw_engine}},
+    {Suggestions, {I::settings_suggestions}, {I::settings_engine}, View::Engine, {I::search_kw_suggestions}},
+    {HomePageHit, {I::settings_homepage}, {I::settings_title}, View::Main, {I::search_kw_homepage}},
+    {LanguageHit, {I::language_label}, {I::settings_title}, View::Main, {I::language_keywords}},
+    {RestoreTabs, {I::settings_restore_tabs}, {I::settings_path_tabs_opening}, View::Tabs, {I::search_kw_restore_tabs}},
+    {TabPositionHit, {I::settings_new_tabs}, {I::settings_path_tabs_opening}, View::Tabs, {I::search_kw_new_tabs}},
+    {ConfirmClose, {I::settings_confirm_close}, {I::settings_path_tabs_closing}, View::Tabs, {I::search_kw_confirm_close}},
+    {CloseWithLastTab, {I::settings_close_with_last_tab}, {I::settings_path_tabs_closing}, View::Tabs, {I::search_kw_close_with_last_tab}},
+    {Sleep, {I::settings_sleeping_tabs}, {I::settings_path_tabs_sleep}, View::Tabs, {I::search_kw_sleep}},
+    {MemorySaver, {I::settings_memory_saver}, {I::settings_path_tabs_sleep}, View::Tabs, {I::search_kw_memory_saver}},
+    {Tracking, {I::settings_tracking}, {I::settings_path_privacy_protection}, View::Privacy, {I::search_kw_tracking}},
+    {AdBlock, {I::settings_ad_blocker}, {I::settings_path_privacy_protection}, View::Privacy, {I::search_kw_ad_blocker}},
+    {HttpsOnly, {I::settings_https_only}, {I::settings_path_privacy_protection}, View::Privacy, {I::search_kw_https_only}},
+    {ThirdPartyCookies, {I::settings_third_party_cookies}, {I::settings_path_privacy_protection}, View::Privacy, {I::search_kw_third_party_cookies}},
+    {Passwords, {I::settings_passwords}, {I::settings_path_privacy_forms}, View::Privacy, {I::search_kw_passwords}},
+    {Autofill, {I::settings_autofill}, {I::settings_path_privacy_forms}, View::Privacy, {I::search_kw_autofill}},
+    {Permissions, {I::settings_site_permissions}, {I::settings_path_privacy_data}, View::Privacy, {I::search_kw_site_permissions}},
+    {ClearOnExit, {I::settings_clear_on_exit}, {I::settings_path_privacy_data}, View::Privacy, {I::search_kw_clear_on_exit}},
+    {ClearData, {I::settings_clear_data}, {I::settings_path_privacy_data}, View::Privacy, {I::search_kw_clear_data}},
+    {Folder, {I::settings_save_in}, {I::settings_downloads}, View::Downloads, {I::search_kw_folder}},
+    {AskWhere, {I::settings_ask_where}, {I::settings_downloads}, View::Downloads, {I::search_kw_folder}},
+    {Zoom, {I::settings_zoom}, {I::settings_path_display_pages}, View::Display, {I::search_kw_zoom}},
+    {BookmarksBarHit, {I::settings_bookmarks_bar}, {I::settings_path_display_pages}, View::Display, {I::search_kw_bookmarks_bar}},
+    {ReduceMotion, {I::settings_reduce_motion}, {I::settings_path_display_pages}, View::Display, {I::search_kw_reduce_motion}},
+    {GrayscaleText, {I::settings_grayscale_text}, {I::settings_path_display_pages}, View::Display, {I::search_kw_grayscale_text}},
+    {AutoplayHit, {I::settings_autoplay}, {I::settings_path_display_sound}, View::Display, {I::search_kw_autoplay}},
+    {MuteBackground, {I::settings_mute_background}, {I::settings_path_display_sound}, View::Display, {I::search_kw_mute_background}},
     // « Annotations » (found only when the annotation mode is compiled in).
-    {CatAnnotations, L"Annotations", L"Réglages", View::Main, L"annoter mcp claude codex agent agents"},
-    {AgentHit(AnnotationSettings::App::Claude), L"Claude Desktop", L"Annotations › Agents", View::Annotations, L"connecter deconnecter anthropic mcp agent"},
-    {AgentHit(AnnotationSettings::App::Codex), L"Codex", L"Annotations › Agents", View::Annotations, L"connecter deconnecter openai mcp agent"},
-    {ManualConnect, L"Autre app ou réglage manuel", L"Annotations › Agents", View::Annotations, L"mcp configuration json toml commande connecter agent"},
-    {AnnotationPrompt, L"Proposer de connecter un agent", L"Annotations › Mode Annotation", View::Annotations, L"plus tard lancement annoter mcp"},
-    {AnnotationRetention, L"Conserver les terminées", L"Annotations › Historique", View::Annotations, L"annotations terminees duree jours supprimer"},
-    {AnnotationFolder, L"Ouvrir le dossier des annotations", L"Annotations › Historique", View::Annotations, L"explorateur fichiers emplacement"},
-    {AnnotationClear, L"Effacer toutes les annotations…", L"Annotations › Historique", View::Annotations, L"supprimer annotations"},
+    {CatAnnotations, {I::settings_annotations}, {I::settings_title}, View::Main, {I::search_kw_annotations}},
+    {AgentHit(AnnotationSettings::App::Claude), {I::brand_claude_desktop}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_claude}},
+    {AgentHit(AnnotationSettings::App::Codex), {I::brand_codex}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_codex}},
+    {ManualConnect, {I::settings_manual_connect}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_manual_connect}},
+    {AnnotationPrompt, {I::settings_connect_prompt}, {I::settings_path_annotations_mode}, View::Annotations, {I::search_kw_connect_prompt}},
+    {AnnotationRetention, {I::settings_keep_done}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_keep_done}},
+    {AnnotationFolder, {I::settings_open_annotation_folder}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_annotation_folder}},
+    {AnnotationClear, {I::settings_clear_annotations}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_clear_annotations}},
 };
 inline bool IsAnnotationEntry(const Searchable& e) { return e.view == View::Annotations || e.hit == CatAnnotations; }
 // Case- and accent-insensitive form for matching ("Économiseur" ~ "economiseur").
@@ -437,9 +456,9 @@ inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool 
     if (q.empty()) return {};
     for (const auto& e : SearchIndex) {
         if (!annotations && IsAnnotationEntry(e)) continue;
-        const size_t at = Folded(e.title).find(q);
+        const size_t at = Folded(I18n::T(e.title.id)).find(q);
         if (at != std::wstring::npos) titled.push_back({&e, at, q.size()});
-        else if (Folded(e.keywords).find(q) != std::wstring::npos) keyed.push_back({&e});
+        else if (Folded(I18n::T(e.keywords.id)).find(q) != std::wstring::npos) keyed.push_back({&e});
     }
     titled.insert(titled.end(), keyed.begin(), keyed.end());
     if (titled.size() > static_cast<size_t>(Layout::maxResults)) titled.resize(static_cast<size_t>(Layout::maxResults));
@@ -448,18 +467,18 @@ inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool 
 // Address fields: placeholder, hint, error.
 struct FieldText { const wchar_t* placeholder; const wchar_t* hint; const wchar_t* error; };
 inline FieldText FieldTexts(int hit) {
-    if (hit == SearchField) return {L"Rechercher un réglage", L"", L""};
-    if (hit == CustomSearchField) return {L"https://exemple.fr/?q=%s", L"%s est remplacé par votre recherche.", L"Ajoutez %s à l'endroit de la recherche."};
-    return {L"exemple.fr", L"S'ouvre dans chaque nouvel onglet.", L"Cette adresse n'est pas valide."};
+    if (hit == SearchField) return {TR(settings_search_placeholder), L"", L""};
+    if (hit == CustomSearchField) return {TR(settings_custom_search_placeholder), TR(settings_custom_search_hint), TR(settings_custom_search_error)};
+    return {TR(settings_homepage_placeholder), TR(settings_homepage_hint), TR(settings_homepage_error)};
 }
-inline constexpr const wchar_t* NoSitesDescription = L"Aucun site n'a encore demandé d'autorisation.";
-inline constexpr const wchar_t* SitesNote = L"Un site demande de nouveau l'accès la prochaine fois.";
+inline const wchar_t* NoSitesDescription() { return TR(settings_no_sites_description); }
+inline const wchar_t* SitesNote() { return TR(settings_sites_note); }
 // « Effacer toutes les annotations… »: the host shows this confirmation (src/modal.h, A6 vocabulary like
 // « Supprimer N favoris ? »): it names the count, focus starts on Annuler, the destructive action is never Entrée.
 inline Modal::Spec ClearAnnotationsSpec(std::size_t count) {
     Modal::Spec s; s.kind = Modal::Kind::Generic; s.scope = Modal::Scope::Window; s.automationId = L"ClearAnnotations";
     s.title = AnnotationSettings::ClearTitle(count); s.body = AnnotationSettings::ClearBody(count);
-    s.buttons = {Modal::Make(Modal::CancelButton, L"Annuler", Modal::Role::Secondary, false, true, true, L"DialogCancel"),
+    s.buttons = {Modal::Make(Modal::CancelButton, TR(common_cancel), Modal::Role::Secondary, false, true, true, L"DialogCancel"),
                  Modal::Make(Modal::AcceptButton, AnnotationSettings::ClearAction(count), Modal::Role::Danger, true, false, false, L"DialogClearAnnotations")};
     return s;
 }
@@ -502,6 +521,10 @@ public:
         std::function<void(std::function<void(std::size_t)>)> countAnnotations;                    // published + drafts (async)
         std::function<void(std::size_t count, bool keyboard)> clearAnnotations;                    // ClearAnnotationsSpec(count), then clear; call AnnotationsChanged()
         std::function<long long()> now;                                                            // UTC seconds (tests); default time()
+        // « Langue » (both optional; no row without saveLanguage). savedLanguage: the preference as stored now;
+        // saveLanguage: write it (true only once it is on disk). The process keeps its language until restarted.
+        std::function<I18n::Locale()> savedLanguage;
+        std::function<bool(I18n::Locale)> saveLanguage;
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
@@ -533,6 +556,7 @@ private:
     HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
+    I18n::Locale languageSaved_ = I18n::Current(); bool languageFailed_ = false;   // « Langue »: preference as saved, last save failed
     // Profiles: the list as last read, the profile open in the detail view and its editor block.
     std::vector<ProfileItem> profiles_; int profileIndex_ = -1; std::wstring profileId_; ProfileEditor::Editor editor_;
     std::vector<std::wstring> profileNoteLines_, lastProfileNoteLines_;
@@ -606,8 +630,9 @@ private:
     float ViewBottom(View v) const { return Height() - FooterHeight(v); }
     LayoutInput Input() const {
         LayoutInput in; in.lines = &lines_;
-        if (state_) { std::wstring f = FolderText(hooks_.downloadFolder ? hooks_.downloadFolder() : state_->downloadFolder); if (f.rfind(L"…\\", 0) == 0) f = f.substr(2); in.folderName = f; } in.noSitesLines = noSitesLines_;
+        if (state_) { std::wstring f = FolderText(hooks_.downloadFolder ? hooks_.downloadFolder() : state_->downloadFolder); if (f.rfind(L"…\\", 0) == 0) f = f.substr(2); in.folderName = f; } in.noSitesLines = noSitesLines_;   // i18n-exempt: path elision mark
         in.customReveal = customRevealValue_; in.homeReveal = homeRevealValue_;
+        in.language = static_cast<bool>(hooks_.saveLanguage); in.languageSaved = languageSaved_; in.languageFailed = languageFailed_;
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
         in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
@@ -675,12 +700,12 @@ private:
     void MeasureDescriptions() {
         if (!pc_->RenderTarget()) pc_->Resize();
         lines_.clear();
-        for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(text, Layout::descriptionWidth);
-        noSitesLines_ = Wrap(NoSitesDescription, Layout::rowRight - 8 - Layout::textLeft);
-        sitesNoteLines_ = Wrap(SitesNote, Layout::rowRight - Layout::textLeft - 4);
-        profileNoteLines_ = Wrap(L"Supprime son historique, ses cookies, ses mots de passe et ses favoris de cet appareil.", Layout::rowRight - Layout::textLeft - 4);
-        lastProfileNoteLines_ = Wrap(L"Il faut au moins un profil. Pour repartir de zéro :", Layout::rowRight - Layout::textLeft - 4);
-        lines_[ShortcutsNoteKey] = Wrap(AnnotationSettings::ShortcutsNote, Layout::rowRight - Layout::textLeft);
+        for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(I18n::T(text.id), Layout::descriptionWidth);
+        noSitesLines_ = Wrap(NoSitesDescription(), Layout::rowRight - 8 - Layout::textLeft);
+        sitesNoteLines_ = Wrap(SitesNote(), Layout::rowRight - Layout::textLeft - 4);
+        profileNoteLines_ = Wrap(TR(settings_profile_delete_note), Layout::rowRight - Layout::textLeft - 4);
+        lastProfileNoteLines_ = Wrap(TR(settings_last_profile_note), Layout::rowRight - Layout::textLeft - 4);
+        lines_[ShortcutsNoteKey] = Wrap(AnnotationSettings::ShortcutsNote(), Layout::rowRight - Layout::textLeft);
         MeasureAgents();
     }
     // Agent status lines: re-wrapped whenever the state or the clock (« il y a … ») may have changed them.
@@ -808,8 +833,12 @@ private:
         Label16(s.text, (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
         pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
         pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
-        // A pending note (engine policy applied at the next launch) under the label.
-        for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::textLeft, s.top + 6 + 22 + k * Layout::descriptionLine, Layout::rowRight - 8, .5f);
+        // A pending note (applied at the next launch) or a save error under the label: aligned with the label
+        // (x 44 when the row has a glyph, Paper p-K-0), danger ink for an error.
+        const float noteLeft = (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft;
+        if (s.error) pc_->ink = D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, 1);
+        for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], noteLeft, s.top + 6 + 22 + k * Layout::descriptionLine, Layout::rowRight - 8, s.error ? 1.f : .5f);
+        pc_->ink = D2D1::ColorF(1, 1, 1, 1);
     }
     // Address field: the value (or its placeholder) in a quiet well, a hint under it.
     // While editing, a native EDIT sits on the text and this paints the frame around it.
@@ -862,7 +891,7 @@ private:
     void ResultCardPaint(float fieldTop, Motion::Time now) {
         const auto card = ResultCard(fieldTop);
         pc_->Round(R(card), Design::Radius::control, Tint(searchFill));
-        if (results_.empty()) { Label14(L"Aucun réglage pour « " + BrowserSettings::TrimText(query_) + L" »", card.left + Layout::resultPadLeft, card.top + 19, card.right - Layout::resultPadRight, .5f); return; }
+        if (results_.empty()) { Label14(TRF(settings_search_no_result, BrowserSettings::TrimText(query_)), card.left + Layout::resultPadLeft, card.top + 19, card.right - Layout::resultPadRight, .5f); return; }
         for (size_t i = 0; i < results_.size(); ++i) {
             const auto& r = results_[i]; const int hit = ResultBase + static_cast<int>(i);
             const Design::Box row{card.left, card.top + i * Layout::resultRow, card.right, card.top + (i + 1) * Layout::resultRow};
@@ -872,14 +901,14 @@ private:
             const int sw = SwitchIndex(r.entry->hit);
             const float right = row.right - Layout::resultPadRight - (sw >= 0 ? Layout::switchWidth : 16) - 16, x = row.left + Layout::resultPadLeft, y = row.top + 8;
             // Title at 70%, the matched span in full white.
-            const std::wstring title = r.entry->title;
+            const std::wstring title = I18n::T(r.entry->title.id);
             if (r.at == std::wstring::npos) Label16(title, x, y, right, .7f + .2f * v.hover);
             else {
                 const std::wstring a = title.substr(0, r.at), m = title.substr(r.at, r.length), b = title.substr(r.at + r.length);
                 const float wa = pc_->TextWidth(a, 16, false, false, -.16f), wm = pc_->TextWidth(m, 16, false, false, -.16f);
                 Label16(a, x, y, x + wa + 1, .7f + .2f * v.hover); Label16(m, x + wa, y, x + wa + wm + 1, 1); Label16(b, x + wa + wm, y, right, .7f + .2f * v.hover);
             }
-            Label14(r.entry->path, x, y + 22, right, .5f);
+            Label14(I18n::T(r.entry->path.id), x, y + 22, right, .5f);
             if (sw >= 0) {
                 // The switch works from the result itself.
                 const float on = Motion::Clamp(switches_[sw].Value(now));
@@ -922,7 +951,7 @@ private:
     // A folder row: « Enregistrer dans » (downloads) or « Ouvrir le dossier des annotations » (s.text / s.value).
     void FolderRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, Layout::folderRow), s.hit);
-        Label16(s.text.empty() ? std::wstring(L"Enregistrer dans") : s.text, Layout::textLeft, s.top + 8, Layout::Trailing(s.top).left - 8, .7f);
+        Label16(s.text.empty() ? std::wstring(TR(settings_save_in)) : s.text, Layout::textLeft, s.top + 8, Layout::Trailing(s.top).left - 8, .7f);
         const std::wstring folder = s.hit != Folder ? s.value : FolderText(hooks_.downloadFolder ? hooks_.downloadFolder() : (state_ ? state_->downloadFolder : L""));
         pc_->Text(folder, {Layout::textLeft, s.top + 30, Layout::Trailing(s.top).left - 8, s.top + 46}, 14, .5f, false, false, -.14f);
         // Closed at rest, it opens on hover: cross-fade on the row's own hover tween.
@@ -987,11 +1016,11 @@ private:
                 const auto v = Interaction(ProfileClearData, now); const auto row = Layout::Row(y);
                 if (v.hover > 0 || v.press > 0) pc_->Round(R(row), Design::Radius::r8, Tint(hoverTint * v.hover + pressTint * v.press));
                 if (focus_ == ProfileClearData) pc_->FocusRing(R(row), Design::Radius::r8);
-                Label16(L"Effacer les données…", Layout::textLeft, y + 6, Layout::rowRight - 32, .9f + .1f * v.hover);
+                Label16(TR(settings_clear_data), Layout::textLeft, y + 6, Layout::rowRight - 32, .9f + .1f * v.hover);
                 const auto chevron = Layout::Chevron(y); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
                 t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
                 pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover); t->SetTransform(base);
-            } else DangerRow(L"Supprimer le profil…", y, ProfileDelete, now, !ProfilesReadOnly());
+            } else DangerRow(TR(settings_delete_profile), y, ProfileDelete, now, !ProfilesReadOnly());
         } else if (view != View::Sites && view != View::Site) {
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
@@ -1003,8 +1032,8 @@ private:
         } else if (view == View::Sites) {
             const auto& lines = sitesNoteLines_;
             for (size_t k = 0; k < lines.size() && k < 2; ++k) Label14(lines[k], Layout::textLeft, top + 13 + k * 20, Layout::rowRight, .5f, 20);
-            DangerRow(L"Tout retirer", top + 13 + 40 + 8, ResetAll, now, !sites_.empty());
-        } else DangerRow(L"Retirer les autorisations", top + 13, ResetSite, now, true);
+            DangerRow(TR(settings_remove_all), top + 13 + 40 + 8, ResetAll, now, !sites_.empty());
+        } else DangerRow(TR(settings_remove_permissions), top + 13, ResetSite, now, true);
     }
     // Scroll edge fades (DIP): reach grows with the content hidden on that side, capped by Layout.
     static std::pair<float, float> FadeReach(float scroll, float max) {
@@ -1019,7 +1048,7 @@ private:
         const float c = Design::Surface::canvas, h = Height();
         pc_->Round({0, 0, Layout::width, h}, 0, c); // opaque page: the view beneath never shows through
         // Header
-        if (view == View::Main) pc_->Text(L"Réglages", R(Layout::Title(false)), 16, .9f, false, true, -.16f);
+        if (view == View::Main) pc_->Text(TR(settings_title), R(Layout::Title(false)), 16, .9f, false, true, -.16f);
         else {
             IconButton(L"back", Layout::BackButton(), Back, now);
             const std::wstring title = view == View::Site ? (site_ >= 0 && site_ < static_cast<int>(sites_.size()) ? Host(sites_[site_].origin) : L"") : view == View::Profile ? editor_.Value().name : Title(view);
@@ -1275,7 +1304,7 @@ private:
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
-    void Announce(const std::wstring& text) { if (uia_.Listening()) uia_.Notify(HitBase + Close, text.c_str(), L"Reglages"); }
+    void Announce(const std::wstring& text) { if (uia_.Listening()) uia_.Notify(HitBase + Close, text.c_str(), L"Reglages"); }   // i18n-exempt: UIA activity id
     // Connecter / Déconnecter / Reconnecter: only on this explicit click; the host does the work (same path,
     // backups and atomic writes as the connect modal) and answers once.
     void AgentAction(AnnotationSettings::App app) {
@@ -1284,12 +1313,12 @@ private:
         const bool connect = AS::ActionFor(a) != AS::Action::Disconnect;
         a.activity = connect ? AS::Activity::Connecting : AS::Activity::Disconnecting; a.failed = false; a.message.clear();
         AnnotationsRelaid();
-        Announce((connect ? L"Connexion de " : L"Déconnexion de ") + std::wstring(AS::AppName(app)) + L"…");
+        Announce(connect ? TRF(settings_announce_connecting, AS::AppName(app)) : TRF(settings_announce_disconnecting, AS::AppName(app)));
         hooks_.connectAgent(app, connect, [this, app, connect](bool ok, std::wstring message) {
             if (!hwnd_) return;
             auto& a = agents_[app]; a.activity = AS::Activity::Idle; a.failed = !ok; a.message = ok && !connect ? L"" : std::move(message);
             AnnotationsRelaid();
-            Announce(!ok ? AS::StatusText(a, NowSeconds()) : std::wstring(AS::AppName(app)) + (connect ? L" connecté" : L" déconnecté"));
+            Announce(!ok ? AS::StatusText(a, NowSeconds()) : (connect ? TRF(settings_announce_connected, AS::AppName(app)) : TRF(settings_announce_disconnected, AS::AppName(app))));
             LoadAnnotations();
         });
     }
@@ -1318,22 +1347,22 @@ private:
         auto button = [&](int hit, const std::wstring& name, Design::Box box, const wchar_t* id) {
             Accessibility::Node n; n.key = HitBase + hit; n.parent = DrawerKey; n.role = Accessibility::Role::Button; n.name = name; n.automationId = id; n.bounds = ScreenOf(box); nodes.push_back(n);
         };
-        if (view != View::Main) { button(Back, L"Retour", Layout::BackButton(), L"SettingsBack"); nodes.back().accelerator = L"Retour arrière"; }
-        button(Close, L"Fermer les réglages", Layout::CloseButton(), L"SettingsClose"); nodes.back().accelerator = L"Échap";
+        if (view != View::Main) { button(Back, TR(common_back), Layout::BackButton(), L"SettingsBack"); nodes.back().accelerator = TR(key_backspace); }
+        button(Close, TR(settings_close), Layout::CloseButton(), L"SettingsClose"); nodes.back().accelerator = TR(key_escape);
         const auto now = Motion::Now();
         if (view != View::Profiles && view != View::Profile) SlotNodes(nodes, view);
         else if (view == View::Profiles) {
-            Accessibility::Node list; list.key = ListKey; list.parent = DrawerKey; list.role = Accessibility::Role::List; list.name = std::to_wstring(profiles_.size()) + (profiles_.size() > 1 ? L" profils" : L" profil"); list.focusable = false; list.automationId = L"ProfileList"; list.bounds = win; nodes.push_back(list);
+            Accessibility::Node list; list.key = ListKey; list.parent = DrawerKey; list.role = Accessibility::Role::List; list.name = TRP(settings_profiles_count, profiles_.size()); list.focusable = false; list.automationId = L"ProfileList"; list.bounds = win; nodes.push_back(list);
             for (const auto& sl : Slots(View::Profiles, now)) {
                 if (sl.kind != Kind::ProfileRow) continue;
-                Accessibility::Node n; n.key = HitBase + sl.hit; n.parent = ListKey; n.role = Accessibility::Role::ListItem; n.name = sl.text + (sl.current ? L", cette fenêtre" : L"");
-                n.selected = sl.current; n.position = sl.index + 1; n.count = static_cast<int>(profiles_.size()); n.automationId = L"ProfileListItem"; n.help = L"Ouvre le détail du profil"; n.bounds = ScreenOf(Layout::Row(sl.top, sl.height)); nodes.push_back(n);
+                Accessibility::Node n; n.key = HitBase + sl.hit; n.parent = ListKey; n.role = Accessibility::Role::ListItem; n.name = sl.current ? TRF(settings_profile_this_window, sl.text) : sl.text;
+                n.selected = sl.current; n.position = sl.index + 1; n.count = static_cast<int>(profiles_.size()); n.automationId = L"ProfileListItem"; n.help = TR(settings_profile_open_detail); n.bounds = ScreenOf(Layout::Row(sl.top, sl.height)); nodes.push_back(n);
             }
         } else if (view == View::Profile) {
             auto ed = editor_.Nodes(EditorBase, DrawerKey, win); nodes.insert(nodes.end(), ed.begin(), ed.end());
             const float y = Height() - FooterHeight(View::Profile) + 13 + (LastProfile() ? lastProfileNoteLines_ : profileNoteLines_).size() * Layout::descriptionLine + 8;
-            if (LastProfile()) button(ProfileClearData, L"Effacer les données…", Layout::Row(y), L"ProfileClearData");
-            else { button(ProfileDelete, L"Supprimer le profil…", Layout::Row(y), L"ProfileDelete"); nodes.back().enabled = !ProfilesReadOnly(); nodes.back().help = L"Supprime son historique, ses cookies, ses mots de passe et ses favoris de cet appareil."; }
+            if (LastProfile()) button(ProfileClearData, TR(settings_clear_data), Layout::Row(y), L"ProfileClearData");
+            else { button(ProfileDelete, TR(settings_delete_profile), Layout::Row(y), L"ProfileDelete"); nodes.back().enabled = !ProfilesReadOnly(); nodes.back().help = TR(settings_profile_delete_note); }
         }
         return nodes;
     }
@@ -1349,11 +1378,11 @@ private:
         const float top = Layout::viewTop - Layout::groupGap / 2, bottom = ViewBottom(view);
         if (view == View::Main && Searching()) {
             const float fieldTop = Layout::viewTop - scrolls_[0].Value(Motion::Now());
-            auto& f = add(SearchField, Role::Edit, L"Rechercher un réglage", Layout::Row(fieldTop, Layout::field)); f.value = query_;
+            auto& f = add(SearchField, Role::Edit, TR(settings_search_placeholder), Layout::Row(fieldTop, Layout::field)); f.value = query_;
             const auto card = ResultCard(fieldTop);
             for (size_t i = 0; i < results_.size(); ++i) {
-                auto& n = add(ResultBase + static_cast<int>(i), Role::Button, results_[i].entry->title, {card.left, card.top + i * Layout::resultRow, card.right, card.top + (i + 1) * Layout::resultRow});
-                n.help = results_[i].entry->path; if (SwitchIndex(results_[i].entry->hit) >= 0) n.toggle = SwitchValue(results_[i].entry->hit) ? 2 : 1;
+                auto& n = add(ResultBase + static_cast<int>(i), Role::Button, I18n::T(results_[i].entry->title.id), {card.left, card.top + i * Layout::resultRow, card.right, card.top + (i + 1) * Layout::resultRow});
+                n.help = I18n::T(results_[i].entry->path.id); if (SwitchIndex(results_[i].entry->hit) >= 0) n.toggle = SwitchValue(results_[i].entry->hit) ? 2 : 1;
             }
             return;
         }
@@ -1364,18 +1393,18 @@ private:
             switch (s.kind) {
             case Kind::Label: n = &add(textKey++, Role::Text, s.text, box); n->focusable = false; break;
             case Kind::Note: n = &add(textKey++, Role::Text, s.text, box); n->focusable = false; break;
-            case Kind::Search: n = &add(s.hit, Role::Edit, L"Rechercher un réglage", box); n->value = query_; break;
-            case Kind::Field: n = &add(s.hit, Role::Edit, s.hit == CustomSearchField ? L"Adresse du moteur personnalisé" : L"Adresse de la page d'accueil", box); n->value = FieldValue(s.hit); n->help = FieldTexts(s.hit).hint; break;
+            case Kind::Search: n = &add(s.hit, Role::Edit, TR(settings_search_placeholder), box); n->value = query_; break;
+            case Kind::Field: n = &add(s.hit, Role::Edit, s.hit == CustomSearchField ? TR(settings_custom_search_name) : TR(settings_homepage_name), box); n->value = FieldValue(s.hit); n->help = FieldTexts(s.hit).hint; break;
             case Kind::Engine: n = &add(s.hit, Role::Button, BrowserSettings::Info(static_cast<Engine>(s.index)).name, box); n->selected = s.index == SelectedIndex(); break;
             case Kind::Switch: n = &add(s.hit, Role::Button, s.text, box); n->toggle = SwitchValue(s.hit) ? 2 : 1; n->help = join(s.lines); break;
             case Kind::Value: n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; n->expand = 1; n->help = join(s.lines); break;
-            case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, L"Profils, " + s.value, box); n->automationId = L"SettingsProfiles"; n->help = L"Gérer les profils de ce navigateur"; }
+            case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, TRF(settings_profiles_name, s.value), box); n->automationId = L"SettingsProfiles"; n->help = TR(settings_profiles_help); }
                 else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; } break;
-            case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(L"Enregistrer dans") : s.text, box);
+            case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(TR(settings_save_in)) : s.text, box);
                 n->help = s.hit == Folder ? (hooks_.downloadFolder ? hooks_.downloadFolder() : L"") : (hooks_.annotationFolder ? hooks_.annotationFolder() : L""); break;
             case Kind::SiteRow: n = &add(s.hit, Role::Button, s.text, box); n->help = s.value; break;
             case Kind::Danger: n = &add(s.hit, Role::Button, s.text, box); n->enabled = !s.disabled; n->focusable = !s.disabled;
-                if (s.hit == AnnotationClear && annotationCount_ != SIZE_MAX) n->help = annotationCount_ == 0 ? std::wstring(L"Aucune annotation") : AnnotationSettings::ClearAction(annotationCount_); break;
+                if (s.hit == AnnotationClear && annotationCount_ != SIZE_MAX) n->help = annotationCount_ == 0 ? std::wstring(TR(settings_no_annotation)) : AnnotationSettings::ClearAction(annotationCount_); break;
             case Kind::ProfileRow: case Kind::Editor: break;   // Profils views: described by UiaNodes
             case Kind::Agent: {
                 // The row reads as one sentence; its button names the app it acts on.
@@ -1391,9 +1420,9 @@ private:
         if (view != View::Sites && view != View::Site) {
             const auto version = hooks_.version ? hooks_.version() : Version{};
             if (!version.text.empty()) add(textKey++, Role::Text, version.text, {Layout::textLeft, h - Layout::padBottom - Layout::slot, Layout::rowRight, h - Layout::padBottom}).focusable = false;
-            if (version.canCheck) add(CheckUpdates, Role::Button, L"Rechercher une mise à jour", Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot)).enabled = !version.checking;
-        } else if (view == View::Sites) { auto& n = add(ResetAll, Role::Button, L"Tout retirer", Layout::Row(footerTop + 13 + 40 + 8)); n.enabled = n.focusable = !sites_.empty(); }
-        else add(ResetSite, Role::Button, L"Retirer les autorisations", Layout::Row(footerTop + 13));
+            if (version.canCheck) add(CheckUpdates, Role::Button, TR(settings_check_updates), Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot)).enabled = !version.checking;
+        } else if (view == View::Sites) { auto& n = add(ResetAll, Role::Button, TR(settings_remove_all), Layout::Row(footerTop + 13 + 40 + 8)); n.enabled = n.focusable = !sites_.empty(); }
+        else add(ResetSite, Role::Button, TR(settings_remove_permissions), Layout::Row(footerTop + 13));
     }
     void AttachUia() {
         Accessibility::Host host; host.window = hwnd_;
@@ -1486,13 +1515,13 @@ private:
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < TrackingCount; ++i) {
                 const auto t = static_cast<BrowserSettings::Tracking>(i);
-                auto item = ContextMenu::Command(i + 1, i == 2 ? std::wstring(Info(t).label) + L" · Recommandé" : Info(t).label, L"", true, state_->tracking == t);
+                auto item = ContextMenu::Command(i + 1, i == 2 ? TRF(settings_choice_recommended, Info(t).label) : std::wstring(Info(t).label), L"", true, state_->tracking == t);
                 item.description = Info(t).description; items.push_back(item);
             }
             const int chosen = Choose(items, hit, keyboard);
             if (chosen > 0 && static_cast<BrowserSettings::Tracking>(chosen - 1) != state_->tracking) { state_->tracking = static_cast<BrowserSettings::Tracking>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::Tracking); }
         } else if (hit == Sleep) {
-            static const wchar_t* notes[SleepCount] = {L"Les onglets restent actifs en arrière-plan.", L"Libère le plus de mémoire.", L"Recommandé.", L"Garde vos onglets prêts plus longtemps."};
+            const wchar_t* notes[SleepCount] = {TR(sleep_never_note), TR(sleep_30_note), TR(sleep_120_note), TR(sleep_360_note)};
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < SleepCount; ++i) { auto item = ContextMenu::Command(i + 1, SleepLabel(SleepChoices[i]), L"", true, state_->sleepMinutes == SleepChoices[i]); item.description = notes[i]; items.push_back(item); }
             const int chosen = Choose(items, hit, keyboard);
@@ -1511,6 +1540,17 @@ private:
             for (int i = 0; i < TabPositionCount; ++i) { const auto p = static_cast<TabPosition>(i); auto item = ContextMenu::Command(i + 1, Info(p).label, L"", true, state_->tabPosition == p); item.description = Info(p).description; items.push_back(item); }
             const int chosen = Choose(items, hit, keyboard);
             if (chosen > 0 && static_cast<TabPosition>(chosen - 1) != state_->tabPosition) { state_->tabPosition = static_cast<TabPosition>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::TabPosition); }
+        } else if (hit == LanguageHit && hooks_.saveLanguage) {
+            // Two autonyms, the saved one checked; nothing switches now (applied at the next start).
+            std::vector<ContextMenu::Item> items;
+            for (int i = 0; i < I18n::LocaleCount; ++i) { const auto l = static_cast<I18n::Locale>(i); items.push_back(ContextMenu::Command(i + 1, UiLanguage::Autonym(l), L"", true, languageSaved_ == l)); }
+            const int chosen = Choose(items, hit, keyboard);
+            if (chosen > 0 && static_cast<I18n::Locale>(chosen - 1) != languageSaved_) {
+                const auto want = static_cast<I18n::Locale>(chosen - 1);
+                if (hooks_.saveLanguage(want)) { languageSaved_ = want; languageFailed_ = false; } else languageFailed_ = true;   // never « saved » on failure
+                if (uia_.Listening()) uia_.ChildrenChanged(DrawerKey);
+                Invalidate();
+            }
         } else if (hit == AutoplayHit) {
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < AutoplayCount; ++i) { const auto a = static_cast<BrowserSettings::Autoplay>(i); auto item = ContextMenu::Command(i + 1, Info(a).label, L"", true, state_->autoplay == a); item.description = Info(a).description; items.push_back(item); }
@@ -1553,8 +1593,8 @@ private:
             if (index < 0 || index >= static_cast<int>(site.permissions.size())) return;
             auto& perm = site.permissions[index];
             static const PermissionState order[] = {PermissionState::Allow, PermissionState::Ask, PermissionState::Block};
-            static const wchar_t* labels[] = {L"Autoriser", L"Demander", L"Bloquer"};
-            static const wchar_t* notes[] = {L"Sans vous demander.", L"Vous choisissez sur le site.", L"Jamais d'accès."};
+            const wchar_t* labels[] = {TR(permission_choice_allow), TR(permission_ask), TR(permission_choice_block)};
+            const wchar_t* notes[] = {TR(permission_choice_allow_note), TR(permission_choice_ask_note), TR(permission_choice_block_note)};
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < 3; ++i) { auto item = ContextMenu::Command(i + 1, labels[i], L"", true, perm.state == order[i]); item.description = notes[i]; items.push_back(item); }
             const int chosen = Choose(items, hit, keyboard);
@@ -1733,13 +1773,13 @@ private:
             t.rect = {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; t.lpszText = const_cast<wchar_t*>(tipTexts_.back().c_str());
             SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
         };
-        add(Close, Layout::CloseButton(), L"Fermer (Échap)");
+        add(Close, Layout::CloseButton(), TR(settings_close_tip));
         const View view = Current();
-        if (view != View::Main) add(Back, Layout::BackButton(), L"Retour");
+        if (view != View::Main) add(Back, Layout::BackButton(), TR(common_back));
         if (view == View::Sites || view == View::Site) return;
-        add(CheckUpdates, Layout::Trailing(Height() - Layout::padBottom - Layout::slot, Layout::slot), L"Rechercher une mise à jour");
+        add(CheckUpdates, Layout::Trailing(Height() - Layout::padBottom - Layout::slot, Layout::slot), TR(settings_check_updates));
         for (const auto& s : Slots(view, Motion::Now())) if (s.kind == Kind::Folder && s.top >= Layout::viewTop - 1 && s.top + s.height <= ViewBottom(view)) {
-            if (s.hit == Folder) add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : L"Changer de dossier");
+            if (s.hit == Folder) add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : std::wstring(TR(settings_change_folder)));
             else add(static_cast<UINT_PTR>(s.hit), Layout::Row(s.top, s.height), hooks_.annotationFolder ? hooks_.annotationFolder() : L"");
         }
     }
@@ -1899,7 +1939,7 @@ public:
         motion_.EnablePolish(); pc_->SetMotion(&motion_); pc_->textCacheLimit = 384;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereSettingsDrawer";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Réglages", WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(settings_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
         NativeUI::StripTooltipShadow(tip_);
@@ -1951,6 +1991,7 @@ public:
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
             LoadAnnotations(); // the « Annotations » row shows the connected agents
+            if (hooks_.savedLanguage) { languageSaved_ = hooks_.savedLanguage(); languageFailed_ = false; }   // « Langue »: the preference as stored now
             if (target != View::Main) { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); }
         }
         { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }

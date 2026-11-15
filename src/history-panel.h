@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Native "History" drawer, opened by the toolbar's History button (or Ctrl+H),
 // beside Downloads. It is the download drawer's twin, docked to the same right
 // edge under the toolbar, below the button that opens it: same 268 DIP column, header, period sections folding on
@@ -42,7 +43,7 @@ inline bool IsRowPart(int hit) { return hit >= RowBase; }
 inline int HitIndex(int hit) { return (hit - RowBase) / 3; }
 inline int HitPart(int hit) { return (hit - RowBase) % 3; } // 0 row, 1 open in new tab, 2 remove
 inline const wchar_t* ActionIcon(int slot) { return slot == 0 ? L"plus" : L"close"; } // "plus": the toolbar's new tab glyph
-inline const wchar_t* ActionTip(int slot) { return slot == 0 ? L"Open in new tab" : L"Remove from history"; }
+inline const wchar_t* ActionTip(int slot) { return slot == 0 ? TR(history_open_new_tab) : TR(downloads_action_remove); }
 
 // Everything a frame depends on; the offscreen fixture builds one directly.
 struct Scene {
@@ -87,7 +88,7 @@ class View {
         chrome_.Icon(L"search", R(Layout::SearchIcon()), Design::Size::icon, Design::Text::secondary);
         const bool clear = !s.query.empty();
         const auto text = R(Layout::SearchText(clear));
-        if (s.query.empty()) chrome_.Text(L"Search history", text, Panel::line, Design::Text::muted, false, false, -.16f);
+        if (s.query.empty()) chrome_.Text(TR(history_search_placeholder), text, Panel::line, Design::Text::muted, false, false, -.16f);
         else {
             // The end of a long query stays in view, like an edit field scrolled to its caret.
             const float w = chrome_.TextWidth(s.query, Panel::line, false, false, -.16f), room = text.right - text.left - 2;
@@ -170,7 +171,7 @@ public:
         target->SetTransform(D2D1::IdentityMatrix());
         chrome_.keyboardModality = s.keyboard;
 
-        chrome_.Text(L"History", R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
+        chrome_.Text(TR(history_title), R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
         const auto cv = Interaction(s, CloseHit);
         chrome_.DrawButton(L"close", R(Panel::Close()), Design::ButtonVariant::Ghost, {cv.hover, cv.press, false, s.focus == CloseHit});
         Search(s);
@@ -327,14 +328,14 @@ private:
     }
     void Announce(int hit) {
         if (!hooks_.announce || !keyboard_) return;
-        if (hit == CloseHit) hooks_.announce(L"Fermer l'historique");
-        else if (hit == SearchHit) hooks_.announce(query_.empty() ? L"Rechercher dans l'historique" : L"Rechercher dans l'historique : " + query_);
-        else if (hit == ClearHit) hooks_.announce(L"Effacer la recherche");
-        else if (IsSection(hit)) hooks_.announce(std::wstring(Downloads::PeriodLabel(HitPeriod(hit))) + (fold_[static_cast<int>(HitPeriod(hit))].Target() > .5f ? L", développé" : L", réduit"));
+        if (hit == CloseHit) hooks_.announce(TR(history_announce_close));
+        else if (hit == SearchHit) hooks_.announce(query_.empty() ? std::wstring(TR(history_announce_search)) : TRF(history_announce_search_query, query_));
+        else if (hit == ClearHit) hooks_.announce(TR(history_announce_clear_search));
+        else if (IsSection(hit)) hooks_.announce(fold_[static_cast<int>(HitPeriod(hit))].Target() > .5f ? TRF(common_section_expanded, Downloads::PeriodLabel(HitPeriod(hit))) : TRF(common_section_collapsed, Downloads::PeriodLabel(HitPeriod(hit))));
         else if (IsRowPart(hit) && HitIndex(hit) < static_cast<int>(entries_.size())) {
             const auto& e = entries_[HitIndex(hit)];
             if (HitPart(hit) == 0) hooks_.announce(e.title + L", " + Detail(e, DownloadsUI::UnixNowMs(), DownloadsUI::LocalOffsetMs()));
-            else hooks_.announce(HitPart(hit) == 1 ? L"Ouvrir dans un nouvel onglet" : L"Supprimer de l'historique");
+            else hooks_.announce(HitPart(hit) == 1 ? TR(history_open_new_tab) : TR(history_announce_delete));
         }
     }
     void SetFocusHit(int hit) { focus_ = hit; Reveal(hit); Interact(hover_, pressed_); Announce(hit); }
@@ -399,7 +400,7 @@ private:
                 const int next = std::min(index, static_cast<int>(entries_.size()) - 1);
                 focus_ = next >= 0 ? RowHit(next) : SearchHit; Reveal(focus_); Interact(hover_, pressed_);
             }
-            if (hooks_.announce) hooks_.announce(L"Supprimé de l'historique");
+            if (hooks_.announce) hooks_.announce(TR(history_announce_deleted));
         }
     }
     void RefreshTips() {
@@ -411,13 +412,13 @@ private:
             t.rect = {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; t.lpszText = const_cast<wchar_t*>(text);
             SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
         };
-        add(CloseHit, Panel::Close(), L"Close (Esc)");
-        if (!query_.empty()) add(ClearHit, Layout::Clear(), L"Clear search");
+        add(CloseHit, Panel::Close(), TR(common_close_tip));
+        if (!query_.empty()) add(ClearHit, Layout::Clear(), TR(history_clear_search));
         const float height = Height();
         for (const auto& slot : SlotsAt(Motion::Now(), true)) {
             if (slot.kind == SlotKind::Section) {
                 if (slot.top >= Layout::viewTop && slot.top + DrawerLayout::sectionHeight <= height)
-                    add(static_cast<UINT_PTR>(SectionHit(static_cast<Period>(slot.index))), DrawerLayout::Caret(slot.top), slot.open > .5f ? L"Collapse" : L"Expand");
+                    add(static_cast<UINT_PTR>(SectionHit(static_cast<Period>(slot.index))), DrawerLayout::Caret(slot.top), slot.open > .5f ? TR(common_collapse) : TR(common_expand));
                 continue;
             }
             if (slot.kind != SlotKind::Row || slot.opacity < .99f || slot.top < Layout::viewTop || slot.top + Panel::tile > height) continue;
@@ -563,7 +564,7 @@ public:
         chrome_.textCacheLimit = 1024; // titles + detail runs of every row at any history size
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereHistoryDrawer";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Historique", WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(history_title), WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
         NativeUI::StripTooltipShadow(tip_);
@@ -600,7 +601,7 @@ public:
         PaintNow(); ValidateRect(hwnd_, nullptr);
         SetForegroundWindow(hwnd_); SetFocus(hwnd_);
         Repoint(); RefreshTips();
-        if (hooks_.announce) hooks_.announce(entries_.empty() ? L"Historique vide" : L"Historique, " + std::to_wstring(entries_.size()) + (entries_.size() > 1 ? L" pages" : L" page"));
+        if (hooks_.announce) hooks_.announce(entries_.empty() ? std::wstring(TR(history_announce_empty)) : TRP(history_announce_pages, entries_.size()));
         if (hooks_.schedule) hooks_.schedule(Motion::Now());
     }
     // Leaves along the path it came in on; `animate` false hides at once.

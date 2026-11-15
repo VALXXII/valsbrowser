@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Undo toast for bookmark removals (Paper "09 · Supprimer et annuler"): bottom-left of
 // the window, 14 DIP inset, #292929 card, radius 8 (DWM-rounded; Paper 10), 1 DIP #FFFFFF0F border, padding
 // 8/12, gap 16: trash glyph 16 (50%), the message (14 medium, white), "Annuler", and a
@@ -24,7 +25,7 @@ inline constexpr float lifeMs = 6000, enterMs = 240, exitMs = 150, reducedMs = 1
 class Toast {
     enum Hit { None = 0, UndoHit = 1, CloseHit = 2 };
     HWND hwnd_ = nullptr, owner_ = nullptr; Chrome chrome_; Motion::State motion_; Accessibility::Bridge uia_;
-    std::wstring text_, action_ = L"Annuler"; std::function<void()> undo_, closed_; bool sticky_ = false;
+    std::wstring text_, action_ = TR(common_undo); std::function<void()> undo_, closed_; bool sticky_ = false;
     bool visible_ = false, leaving_ = false, reduced_ = false, hovered_ = false, keyboard_ = false;
     int hover_ = 0, pressed_ = 0, focus_ = 0; float bottomReserve_ = 0;
     Motion::Time phase_{}; ULONGLONG remaining_ = 0, resumed_ = 0;
@@ -122,7 +123,7 @@ public:
         owner_ = owner; motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarkToast";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE, wc.lpszClassName, L"Favoris", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE, wc.lpszClassName, TR(bookmarks_title), WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
         // Our Direct2D card owns the opaque surface and border; a window region rounds it
         // (ConfigureShadowlessPopup: no DWM rounding, no shadow). Never acrylic/Mica or its non-client frame.
@@ -136,8 +137,8 @@ public:
             std::vector<Accessibility::Node> nodes; if (!visible_) return nodes;
             auto screen = [&](D2D1_RECT_F r) { RECT p{Px(r.left), Px(r.top), Px(r.right), Px(r.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&p), 2); return p; };
             Accessibility::Node g; g.key = 10; g.role = Accessibility::Role::Group; g.name = text_; g.automationId = L"BookmarkUndoToast"; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
-            Accessibility::Node u; u.key = UndoHit; u.parent = 10; u.name = action_; if (action_ == L"Annuler") u.accelerator = L"Ctrl+Z"; u.automationId = L"BookmarkUndo"; u.bounds = screen(UndoBox()); nodes.push_back(u);
-            Accessibility::Node c; c.key = CloseHit; c.parent = 10; c.name = L"Fermer"; c.automationId = L"BookmarkUndoClose"; c.bounds = screen(CloseBox()); nodes.push_back(c);
+            Accessibility::Node u; u.key = UndoHit; u.parent = 10; u.name = action_; if (action_ == TR(common_undo)) u.accelerator = L"Ctrl+Z"; u.automationId = L"BookmarkUndo"; u.bounds = screen(UndoBox()); nodes.push_back(u);
+            Accessibility::Node c; c.key = CloseHit; c.parent = 10; c.name = TR(common_close); c.automationId = L"BookmarkUndoClose"; c.bounds = screen(CloseBox()); nodes.push_back(c);
             return nodes; };
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? focus_ : 0; };
         host.invoke = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
@@ -151,7 +152,7 @@ public:
     // Keeps clear of another bottom-left card (the update toast) by `reserve` DIP.
     void SetBottomReserve(float reserve) { bottomReserve_ = reserve; if (visible_ && !leaving_) Place(1, false); }
     // `sticky`: stays until acted on (a failed save offering "Réessayer").
-    void Show(const std::wstring& text, std::function<void()> undo, bool reduced, const std::wstring& action = L"Annuler", bool sticky = false) {
+    void Show(const std::wstring& text, std::function<void()> undo, bool reduced, const std::wstring& action = TR(common_undo), bool sticky = false) {
         if (!hwnd_) return;
         text_ = text; undo_ = std::move(undo); action_ = action; sticky_ = sticky; reduced_ = reduced; leaving_ = false; focus_ = 0; hover_ = pressed_ = 0; motion_.ClearInteractions(); motion_.SetReducedMotion(reduced);
         const bool was = visible_; visible_ = true; phase_ = Motion::Now();

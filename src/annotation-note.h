@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Note panel (V2) — Paper « MCP - Design UI UX »: 2.1 1075-0 (écrire la note), 2.2 10D3-0 (« Ce que
 // l'agent verra » déplié), 2.3 10NN-0 (capture impossible); motion « Spéc · Annotations » 10IT-0.
 //   Panel 350, canvas #171717, border 1 (#3E67FF99 = the window accent at 60 % while the field has focus, else #FFFFFF1F),
@@ -44,9 +45,9 @@ inline constexpr float thumbW = 96, thumbH = 62;      // capture thumbnail box (
 // V3 (retours §11, Paper 5.7): an image wider than 2.2:1 would be a thin strip in that box: the card stacks instead,
 // the image full width (326 x 64, contain, neutral page colour) above Page / Élément / Style.
 inline constexpr float wideRatio = 2.2f, wideH = 64;
-inline constexpr const wchar_t* placeholder = L"Que faut-il changer ?";
-inline constexpr const wchar_t* pillLabel = L"Ce que l'agent verra";
-inline constexpr const wchar_t* unavailable = L"Capture impossible ici · l'annotation partira sans image";
+inline const wchar_t* placeholder() { return TR(note_placeholder); }
+inline const wchar_t* pillLabel() { return TR(note_pill_label); }
+inline const wchar_t* unavailable() { return TR(note_capture_unavailable); }
 }
 // « localhost:5173 » from « http://localhost:5173/checkout » (or the page itself if it has no scheme).
 inline std::wstring SiteOf(const std::wstring& page) {
@@ -55,7 +56,7 @@ inline std::wstring SiteOf(const std::wstring& page) {
 }
 inline std::wstring NoteSite(const NoteContext& c) { return c.site.empty() ? SiteOf(c.page) : c.site; }
 inline std::wstring NoteElement(const NoteContext& c) { return c.label.empty() ? c.element : c.label; }
-inline std::wstring NoteStyle(const NoteContext& c) { return !c.style.empty() ? c.style : c.styles.empty() ? std::wstring() : std::wstring(L"Taille, couleurs et marges"); }
+inline std::wstring NoteStyle(const NoteContext& c) { return !c.style.empty() ? c.style : c.styles.empty() ? std::wstring() : std::wstring(TR(note_style_summary)); }
 inline std::wstring NotePage(const NoteContext& c) { std::wstring s = c.page; const size_t scheme = s.find(L"://"); return scheme == std::wstring::npos ? s : s.substr(scheme + 3); }
 
 struct NoteView {
@@ -67,7 +68,7 @@ struct NoteView {
     Motion::InteractionVisual V(int id) const { auto it = visuals.find(id); return it == visuals.end() ? Motion::InteractionVisual{} : it->second; }
 };
 struct NoteLayout { float height = 0; D2D1_RECT_F field{}, row{}, site{}, add{}, message{}; };
-inline std::wstring AddLabel(NoteStatus s) { return s == NoteStatus::Saving ? L"Ajout…" : s == NoteStatus::Failed ? L"Réessayer" : L"Ajouter"; }
+inline std::wstring AddLabel(NoteStatus s) { return s == NoteStatus::Saving ? TR(note_adding) : s == NoteStatus::Failed ? TR(downloads_action_retry) : TR(note_add); }
 inline NoteLayout LayoutNote(Ink& ink, const NoteView& v) {
     using namespace NoteSpec; NoteLayout l; const float x0 = 1 + pad, x1 = width - 1 - pad;
     float y = 1 + pad;
@@ -91,7 +92,7 @@ inline void PaintNote(Ink& ink, const NoteView& v, const NoteLayout& l) {
     ink.Fill(all, radius, Hex(Ink_::canvas));
     if (v.drawNote) {
         auto* t = ink.Target(); t->PushAxisAlignedClip(l.field, D2D1_ANTIALIAS_MODE_ALIASED);
-        if (v.note.empty()) ink.Text(placeholder, F(14, 20), l.field, Hex(0xFFFFFF99), true);
+        if (v.note.empty()) ink.Text(placeholder(), F(14, 20), l.field, Hex(0xFFFFFF99), true);
         else ink.Text(v.note, F(14, 20), l.field, Hex(0xFFFFFFE6), true);
         t->PopAxisAlignedClip();
     }
@@ -112,8 +113,8 @@ inline void PaintNote(Ink& ink, const NoteView& v, const NoteLayout& l) {
 // ---- the « Ce que l'agent verra » pill: fold 0 (pill) .. 1 (card) --------------------------
 inline bool PillExpandable(CaptureState c) { return c != CaptureState::Unavailable; }
 inline D2D1_SIZE_F PillCollapsed(Ink& ink, CaptureState c) {
-    if (!PillExpandable(c)) return {8 + 13 + 6 + ink.Width(NoteSpec::unavailable, F(12, 16)) + 8 + 2, 30};
-    return {8 + ink.Width(NoteSpec::pillLabel, F(12, 16)) + 6 + 14 + 8 + 2, 30};
+    if (!PillExpandable(c)) return {8 + 13 + 6 + ink.Width(NoteSpec::unavailable(), F(12, 16)) + 8 + 2, 30};
+    return {8 + ink.Width(NoteSpec::pillLabel(), F(12, 16)) + 6 + 14 + 8 + 2, 30};
 }
 inline bool PillWide(const Shot* shot) { return shot && shot->width && shot->height && float(shot->width) / float(shot->height) > NoteSpec::wideRatio; }
 inline float PillExpandedH(bool wide = false) {
@@ -141,8 +142,8 @@ inline void PaintPill(Ink& ink, const PillView& v, D2D1_RECT_F r) {
     if (a > 0) {
         ID2D1Layer* g = nullptr; const bool pushed = ink.PushOpacity(a, g);
         const D2D1_RECT_F head{r.left, r.top, r.right, r.top + 30};
-        if (PillExpandable(v.capture)) Pieces(ink, {PText(pillLabel, F(12, 16), Hex(0xFFFFFF99)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f})}, head);
-        else Pieces(ink, {PIcon(Glyphs::warningCircle, 13, {1, 1, 1, .8f}), PText(unavailable, F(12, 16), Hex(0xFFFFFFCC))}, head);
+        if (PillExpandable(v.capture)) Pieces(ink, {PText(pillLabel(), F(12, 16), Hex(0xFFFFFF99)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f})}, head);
+        else Pieces(ink, {PIcon(Glyphs::warningCircle, 13, {1, 1, 1, .8f}), PText(unavailable(), F(12, 16), Hex(0xFFFFFFCC))}, head);
         if (pushed) ink.PopOpacity(g);
     }
     if (v.fold > 0) {
@@ -150,13 +151,13 @@ inline void PaintPill(Ink& ink, const PillView& v, D2D1_RECT_F r) {
         const float b = Motion::Clamp(v.fold * 2 - .5f);
         ID2D1Layer* g = nullptr; const bool pushed = ink.PushOpacity(b, g);
         const float top = r.top + 11, x = r.left + 13;
-        Pieces(ink, {PText(pillLabel, F(12, 16, 500), Hex(0xFFFFFFE6)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f}, 6, 180)}, {r.left, top, r.right, top + 16});
+        Pieces(ink, {PText(pillLabel(), F(12, 16, 500), Hex(0xFFFFFFE6)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f}, 6, 180)}, {r.left, top, r.right, top + 16});
         const float cy = top + 16 + 10; const bool wide = PillWide(v.shot);
         float rx = x + thumbW + 12, ry = cy;
         if (wide) { PaintCaptureBox(ink, v.shot, v.capture, {x, cy, r.right - 13, cy + wideH}, 6, v.spinner); rx = x; ry = cy + wideH + 10; }
         else PaintCaptureBox(ink, v.shot, v.capture, {x, cy, x + thumbW, cy + thumbH}, 6, v.spinner);
         const std::wstring values[3] = {NotePage(v.context), NoteElement(v.context), NoteStyle(v.context)};
-        const wchar_t* labels[3] = {L"Page", L"Élément", L"Style"};
+        const wchar_t* labels[3] = {TR(note_ctx_page), TR(note_ctx_element), TR(note_ctx_style)};
         for (int i = 0; i < 3; ++i) {
             ink.Text(labels[i], F(12, 16), {rx, ry, rx + labelW, ry + 16}, Hex(0xFFFFFF99));
             ink.Text(values[i], F(12, 16), {rx + labelW + 8, ry, r.right - 13, ry + 16}, Hex(0xFFFFFFE6));
@@ -306,7 +307,7 @@ class NotePopover : public Animator::Client {
         if (open == pillOpen_) return; pillOpen_ = open; const auto now = Motion::Now();
         (void)keyboard; fold_.Set(open ? 1.f : 0.f, now, reduced_ ? 0 : (open ? Spec::pillUnfold : Spec::noteOut), Curves::out);
         PlacePill(now); Animator::Get().Request(this);
-        Announce(open ? L"Ce que l'agent verra : affiché" : L"Ce que l'agent verra : masqué");
+        Announce(open ? TR(note_pill_shown) : TR(note_pill_hidden));
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
     // ---- interaction
@@ -316,7 +317,7 @@ class NotePopover : public Animator::Client {
         if (view_.status == NoteStatus::Saving) return;
         const std::wstring note = EditText();
         if (note.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
-            view_.message = L"Écrivez ce qu'il faut changer."; view_.fieldError = true; Resize();
+            view_.message = TR(note_need_text); view_.fieldError = true; Resize();
             view_.focus = 0; SetFocus(edit_); Announce(view_.message); return;
         }
         view_.status = NoteStatus::Saving; view_.message.clear(); view_.fieldError = false; Resize();
@@ -369,7 +370,7 @@ class NotePopover : public Animator::Client {
             const LRESULT r = DefSubclassProc(h, m, w, l);
             if (GetWindowTextLengthW(h) == 0) {
                 HDC dc = GetDC(h); RECT c; GetClientRect(h, &c); auto old = SelectObject(dc, self->font_);
-                SetTextColor(dc, HintGray()); SetBkMode(dc, TRANSPARENT); DrawTextW(dc, NoteSpec::placeholder, -1, &c, DT_WORDBREAK | DT_NOPREFIX);
+                SetTextColor(dc, HintGray()); SetBkMode(dc, TRANSPARENT); DrawTextW(dc, NoteSpec::placeholder(), -1, &c, DT_WORDBREAK | DT_NOPREFIX);
                 SelectObject(dc, old); ReleaseDC(h, dc);
             }
             return r; }
@@ -452,24 +453,24 @@ class NotePopover : public Animator::Client {
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> n; if (!open_) return n;
         auto screen = [&](D2D1_RECT_F r) { RECT p{Px(r.left), Px(r.top), Px(r.right), Px(r.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&p), 2); return p; };
-        Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = L"Nouvelle annotation"; g.automationId = L"AnnotationNote"; g.focusable = false;
-        g.status = view_.status == NoteStatus::Saving ? L"Ajout en cours" : view_.message; GetWindowRect(hwnd_, &g.bounds); n.push_back(g);
-        Accessibility::Node site; site.key = SiteKey; site.parent = GroupKey; site.role = Accessibility::Role::Text; site.name = L"Site"; site.value = NoteSite(view_.context);
+        Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = TR(note_title); g.automationId = L"AnnotationNote"; g.focusable = false;
+        g.status = view_.status == NoteStatus::Saving ? TR(note_adding_status) : view_.message; GetWindowRect(hwnd_, &g.bounds); n.push_back(g);
+        Accessibility::Node site; site.key = SiteKey; site.parent = GroupKey; site.role = Accessibility::Role::Text; site.name = TR(note_site); site.value = NoteSite(view_.context);
         site.focusable = false; site.bounds = screen(layout_.site); site.automationId = L"AnnotationSite"; n.push_back(site);
         Accessibility::Node ok; ok.key = NoteAdd; ok.parent = GroupKey; ok.name = AddLabel(view_.status); ok.accelerator = L"Entrée"; ok.enabled = view_.status != NoteStatus::Saving;
         ok.bounds = screen(layout_.add); ok.automationId = L"AnnotationAdd"; n.push_back(ok);
         RECT pr{}; if (pill_.Window()) { const auto r = PillLocal(Motion::Now()); pr = pill_.Screen(r); }
         if (PillExpandable(view_.capture)) {
-            Accessibility::Node p; p.key = NotePill; p.parent = GroupKey; p.name = NoteSpec::pillLabel; p.expand = pillOpen_ ? 2 : 1; p.bounds = pr; p.automationId = L"AnnotationContext"; n.push_back(p);
+            Accessibility::Node p; p.key = NotePill; p.parent = GroupKey; p.name = NoteSpec::pillLabel(); p.expand = pillOpen_ ? 2 : 1; p.bounds = pr; p.automationId = L"AnnotationContext"; n.push_back(p);
             if (pillOpen_) {
                 const std::wstring values[3] = {NotePage(view_.context), NoteElement(view_.context), NoteStyle(view_.context)};
-                const wchar_t* labels[3] = {L"Page", L"Élément", L"Style"};
+                const wchar_t* labels[3] = {TR(note_ctx_page), TR(note_ctx_element), TR(note_ctx_style)};
                 for (int i = 0; i < 3; ++i) { Accessibility::Node r; r.key = PillRowBase + i; r.parent = NotePill; r.role = Accessibility::Role::Text; r.name = labels[i]; r.value = values[i]; r.focusable = false; r.bounds = pr; n.push_back(r); }
-                Accessibility::Node c; c.key = ShotKey; c.parent = NotePill; c.role = Accessibility::Role::Text; c.name = L"Capture"; c.focusable = false; c.bounds = pr;
-                c.value = view_.capture == CaptureState::Pending ? L"En préparation" : L"Incluse"; n.push_back(c);
+                Accessibility::Node c; c.key = ShotKey; c.parent = NotePill; c.role = Accessibility::Role::Text; c.name = TR(note_capture); c.focusable = false; c.bounds = pr;
+                c.value = view_.capture == CaptureState::Pending ? TR(note_capture_pending) : TR(note_capture_included); n.push_back(c);
             }
         } else {
-            Accessibility::Node p; p.key = ShotKey; p.parent = GroupKey; p.role = Accessibility::Role::Text; p.name = NoteSpec::unavailable; p.focusable = false; p.bounds = pr; p.automationId = L"AnnotationCaptureUnavailable"; n.push_back(p);
+            Accessibility::Node p; p.key = ShotKey; p.parent = GroupKey; p.role = Accessibility::Role::Text; p.name = NoteSpec::unavailable(); p.focusable = false; p.bounds = pr; p.automationId = L"AnnotationCaptureUnavailable"; n.push_back(p);
         }
         return n;
     }
@@ -478,7 +479,7 @@ class NotePopover : public Animator::Client {
         if (!Ink::Shared(root_)) return false;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance_; wc.hCursor = LoadCursorW(nullptr, IDC_ARROW); wc.lpszClassName = L"BrowserAnnotationNote";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"Nouvelle annotation", WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner_, nullptr, instance_, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, TR(note_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner_, nullptr, instance_, this);
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(hwnd_, NoteSpec::radius);
@@ -487,7 +488,7 @@ class NotePopover : public Animator::Client {
         SetWindowSubclass(edit_, EditProc, EditSubclass, reinterpret_cast<DWORD_PTR>(this));
         fieldBrush_ = CreateSolidBrush(FieldGray()); MakeFont();
         Layer::Options ghost; ghost.clickThrough = true; ghost.title = L"";
-        Layer::Options pill; pill.title = NoteSpec::pillLabel;
+        Layer::Options pill; pill.title = NoteSpec::pillLabel();
         if (!ghost_.Create(instance_, owner_, ghost) || !pill_.Create(instance_, hwnd_, pill)) return false;
         pill_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return PillHandle(m, w, l, r); };
         Accessibility::Host host; host.window = hwnd_;
@@ -497,7 +498,7 @@ class NotePopover : public Animator::Client {
         host.expand = [this](long long key, bool) { PostMessageW(hwnd_, WM_APP + 2, WPARAM(key), 0); };
         host.label = [this](HWND child, Accessibility::Node& node) {
             if (child != edit_) return false;
-            node.name = NoteSpec::placeholder; node.automationId = L"AnnotationNoteField"; node.accelerator = L"Entrée pour ajouter, Maj+Entrée pour une nouvelle ligne";
+            node.name = NoteSpec::placeholder(); node.automationId = L"AnnotationNoteField"; node.accelerator = TR(note_keys);
             if (view_.fieldError) node.help = view_.message; return true; };
         uia_.Attach(std::move(host));
         motion_.EnablePolish();
@@ -573,7 +574,7 @@ public:
     // The write finished: the panel folds toward the launcher (bottom-right) in 150 ms.
     void Saved() { view_.status = NoteStatus::Editing; origin_ = {NoteSpec::width, layout_.height}; liftX_ = liftY_ = Spec::popoverLift; Close(true); }
     // The write failed: keep the note, say so, offer « Réessayer » (focus on it).
-    void Failed(const std::wstring& message = L"Impossible d'enregistrer l'annotation. Votre note est conservée ; réessayez.") {
+    void Failed(const std::wstring& message = TR(note_save_failed)) {
         if (!hwnd_) return; view_.status = NoteStatus::Failed; view_.message = message; Resize();
         view_.focus = NoteAdd; SetFocus(hwnd_); InvalidateRect(hwnd_, nullptr, FALSE); Announce(message);
     }

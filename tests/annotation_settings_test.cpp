@@ -247,7 +247,7 @@ int wmain(int argc, wchar_t** argv) {
         Check(Find(slots, Kind::Nav, L"Autre app ou réglage manuel") != nullptr, "« Autre app ou réglage manuel »");
         const auto* launcher = Find(slots, Kind::Switch, L"Afficher le lanceur d'annotations"); const auto* prompt = Find(slots, Kind::Switch, L"Proposer de connecter un agent");
         Check(!launcher && prompt && !prompt->lines.empty(), "one switch with its description (V3: no launcher switch)");
-        const auto* note = Find(slots, Kind::Note, AS::ShortcutsNote); Check(note && note->hit == 0, "shortcut reminder: Ctrl+Maj+A, Ctrl+Maj+H (text, not focusable)");
+        const auto* note = Find(slots, Kind::Note, AS::ShortcutsNote()); Check(note && note->hit == 0, "shortcut reminder: Ctrl+Maj+A, Ctrl+Maj+H (text, not focusable)");
         const auto* retention = Find(slots, Kind::Value, L"Conserver les terminées"); Check(retention && retention->value == L"30 jours", "retention: « 30 jours » by default");
         const auto* folder = Find(slots, Kind::Folder, L"Ouvrir le dossier des annotations"); Check(folder && folder->value == L"…\\annotations", "folder row: the store's folder name");
         const auto* clear = Find(slots, Kind::Danger, L"Effacer toutes les annotations…"); Check(clear && !clear->disabled, "« Effacer toutes les annotations… » enabled (3 annotations)");
@@ -296,7 +296,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto* retention = Node(nodes, SettingsUI::AnnotationRetention); Check(retention && retention->expand == 1 && retention->status == L"30 jours", "UIA: retention opens a list, value « 30 jours »");
         const auto* folder = Node(nodes, SettingsUI::AnnotationFolder); Check(folder && folder->help == e.target.storeRoot, "UIA: folder button, full path as help");
         const auto* clear = Node(nodes, SettingsUI::AnnotationClear); Check(clear && clear->enabled && clear->help == L"Effacer 3 annotations", "UIA: clear names the count");
-        Check(NodeNamed(nodes, AS::ShortcutsNote) != nullptr, "UIA: the shortcut reminder is readable");
+        Check(NodeNamed(nodes, AS::ShortcutsNote()) != nullptr, "UIA: the shortcut reminder is readable");
         std::vector<long long> focusables; for (auto& n : nodes) if (n.focusable && n.role != Role::Text && n.role != Role::Group) focusables.push_back(n.key);
         std::vector<long long> order; for (int k : dr.FocusOrderForTest()) order.push_back(SettingsUI::Drawer::UiaKey(k));
         Check(focusables == order, "UIA reading order of the controls = the Tab order");

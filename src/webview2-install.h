@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Evergreen WebView2 Runtime install through Microsoft's bootstrapper, started only by the user
 // from the startup recovery dialog (src/webview2-runtime.h, design/webview2-startup-recovery.md).
 //
@@ -806,7 +807,7 @@ inline LaunchResult RunBootstrapper(const std::wstring& exe, const std::wstring&
     std::unique_lock<std::mutex> held;
     if (gate) held = std::unique_lock<std::mutex>(gate->mutex);
     if (cancelled() || (gate && gate->cancelled)) { r.status = LaunchResult::Cancelled; return r; }
-    std::wstring command = L"\"" + exe + L"\" /silent /install";
+    std::wstring command = L"\"" + exe + L"\" /silent /install";   // i18n-exempt: installer command line
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, dir.c_str(), &si, &pi)) {

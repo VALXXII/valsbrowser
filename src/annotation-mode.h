@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Annotation mode — browser integration (V2). Included once by src/main.cpp, after the page menu (it
 // uses the host's globals: tabs, chrome, accessibility, settings, Log, Layout…).
 // Contract: plan-annotations-mcp-local/design/annotations-v2-brief.md (+ the Paper « Spéc » boards).
@@ -140,9 +141,10 @@ void MigrateOnce() {
 void LogMigration() {
     if (!migrationToLog.exchange(false)) return;
     const auto& m = migration;
+    // i18n-exempt-begin: log lines (English diagnostics)
     Log(L"ANNOTATE per-profile stores merged into " + Store().Root() + L": " + std::to_wstring(m.stores) + L" store(s), " + std::to_wstring(m.moved) + L" moved, " +
         std::to_wstring(m.identical) + L" identical, " + std::to_wstring(m.kept) + L" kept in place (conflict or link), " + std::to_wstring(m.failed) + L" failed" +
-        (m.removed ? L"; old folders removed" : L"; old folders kept (see kept / failed)"));
+        (m.removed ? L"; old folders removed" : L"; old folders kept (see kept / failed)"));   // i18n-exempt-end
 }
 // Identity per channel (public download plan B, item 5): a release install and a dev / preview copy coexist in the same
 // Claude / Codex configuration under two names; the release payload carries its bridge in assets\bin, dev / preview
@@ -217,19 +219,19 @@ void Run(std::function<void()> work, std::function<void()> done) {
 std::shared_ptr<Tab> ModeTab() { return s.active ? s.tab.lock() : nullptr; }
 bool Available(const std::shared_ptr<Tab>& t, std::wstring* why) {
     auto no = [&](const wchar_t* w) { if (why) *why = w; return false; };
-    if (privateWindow) return no(L"indisponible en navigation privée");
-    if (halted || !t || t->closed || !t->view.p || !t->controller.p) return no(L"aucune page");
-    if (t->home) return no(L"ouvrez une page Web pour l'annoter");
-    if (!t->https.shown.empty() || !t->errorPage.shown.empty() || t->sandbox || IsSandboxUri(t->uri)) return no(L"indisponible sur une page interne");
-    if (t->uri.rfind(L"http://", 0) != 0 && t->uri.rfind(L"https://", 0) != 0) return no(L"seules les pages http et https s'annotent");
-    if (InFullscreen() || PageFullscreenActive()) return no(L"indisponible en plein écran");
+    if (privateWindow) return no(TR(annotate_no_private));
+    if (halted || !t || t->closed || !t->view.p || !t->controller.p) return no(TR(annotate_no_page));
+    if (t->home) return no(TR(annotate_open_web_page));
+    if (!t->https.shown.empty() || !t->errorPage.shown.empty() || t->sandbox || IsSandboxUri(t->uri)) return no(TR(annotate_no_internal));
+    if (t->uri.rfind(L"http://", 0) != 0 && t->uri.rfind(L"https://", 0) != 0) return no(TR(annotate_http_only));
+    if (InFullscreen() || PageFullscreenActive()) return no(TR(annotate_no_fullscreen));
     return true;
 }
 void SyncChrome() {
     chrome.annotateShown = true; chrome.annotateActive = s.active;
     std::wstring why; const bool ok = Available(Active(), &why);
     chrome.SetEnabled('N', ok || s.active);
-    chrome.annotateTip = s.active ? L"Quitter le mode Annotation (Ctrl+Maj+A)" : ok ? L"Annoter (Ctrl+Maj+A)" : L"Annoter — " + why;
+    chrome.annotateTip = s.active ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : TRF(annotate_tip_unavailable, why);
     if (!chrome.paintAnnotate) chrome.paintAnnotate = [](ID2D1RenderTarget* t, ID2D1Factory* f, ID2D1SolidColorBrush* b, D2D1_RECT_F box, NativeChrome::Motion::InteractionVisual iv, bool focus) {
         AUI::ToolbarVisual v; v.active = s.active; v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced();
         AUI::PaintToolbarButton(t, f, b, box, v);
@@ -387,8 +389,8 @@ std::wstring Age(std::int64_t unix, std::int64_t now) {
 }
 std::wstring When(std::int64_t unix, std::int64_t now) {
     const auto a = LocalOf(unix), n = LocalOf(now);
-    if (a.dayIndex == n.dayIndex) return L"à " + ClockText(unix);
-    return L"le " + AH::AgeLabel(86400 * 30, 30, 0, a.day, a.month) + L" à " + ClockText(unix);
+    if (a.dayIndex == n.dayIndex) return TRF(when_today, ClockText(unix));
+    return TRF(when_date, AH::AgeLabel(86400 * 30, 30, 0, a.day, a.month), ClockText(unix));
 }
 
 // ---------------------------------------------------------------- agents (connection)
@@ -398,7 +400,7 @@ std::int64_t connectedAt[2] = {0, 0};
 bool RestartNeeded(int app, const AC::Status& st) {
     return st.configured && !st.stalePath && (st.lastReadAt == 0 || (connectedAt[app] && st.lastReadAt < connectedAt[app]));
 }
-std::wstring RestartLine(int app) { return app == 0 ? L"Redémarrez Claude pour l'activer" : L"Redémarrez Codex pour l'activer"; }
+std::wstring RestartLine(int app) { return TRF(agent_restart_to_enable, app == 0 ? L"Claude" : L"Codex"); }
 AUI::AppStatus StatusFor(int app, const AC::Status& st) {
     if (st.connected()) {
         if (st.stalePath || (st.removableDrive && st.configured)) return {AUI::ConnectState::Reconnect, L""};
@@ -440,7 +442,7 @@ void OpenConnect(bool launch, bool manual = false) {
     AUI::ConnectSetup setup; const auto target = ConnectTarget();
     setup.launch = launch; setup.manual = manual; setup.command = target.bridgeExe; setup.args = {L"--store", target.storeRoot}; setup.serverName = AH::Wide(target.serverName);
     setup.removableDrive = agents.removable; setup.claude = StatusFor(0, agents.claude); setup.codex = StatusFor(1, agents.codex); setup.disconnectable = true;
-    if (pendingInstall && !agents.claude.connected()) setup.claude = {AUI::ConnectState::Working, L"Cliquez sur Installer dans Claude"};
+    if (pendingInstall && !agents.claude.connected()) setup.claude = {AUI::ConnectState::Working, TR(connect_click_install_claude)};
     if (GetFileAttributesW(setup.command.c_str()) == INVALID_FILE_ATTRIBUTES) Log(L"ANNOTATE bridge not found: " + setup.command);
     connectLaunch = launch;
     if (connect.Show(setup, ClientScreen(), Reduced(), launch ? 80 : 0)) { if (s.active) banner.SetReminder(false, true); SyncWatch(); RefreshAgents(); Log(std::wstring(L"ANNOTATE connect modal opened (") + (launch ? L"launch" : L"on demand") + (ConnectRedirected() ? L", writes redirected to BROWSER_ANNOTATIONS_CONNECT_ROOT)" : L")")); }
@@ -451,15 +453,15 @@ AUI::AppStatus ConnectOutcome(AUI::AgentKind a, const AC::Report& r) {
     case AC::Result::Connected: return {AUI::ConnectState::Connected, RestartLine(a == AUI::AgentKind::Codex ? 1 : 0)};
     case AC::Result::AlreadyConnected: { const auto& st = a == AUI::AgentKind::Codex ? agents.codex : agents.claude; const int i = a == AUI::AgentKind::Codex ? 1 : 0;
         return {AUI::ConnectState::Connected, RestartNeeded(i, st) ? RestartLine(i) : L""}; }
-    case AC::Result::PendingInstall: return {AUI::ConnectState::Working, L"Cliquez sur Installer dans Claude"};
-    default: return {AUI::ConnectState::Failed, msg.empty() ? L"Connexion impossible" : msg};
+    case AC::Result::PendingInstall: return {AUI::ConnectState::Working, TR(connect_click_install_claude)};
+    default: return {AUI::ConnectState::Failed, msg.empty() ? std::wstring(TR(connect_impossible_cap)) : msg};
     }
 }
 void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)> then = nullptr) {
     const int i = a == AUI::AgentKind::Claude ? 0 : 1;
-    if (a == AUI::AgentKind::Other || connectBusy[i]) { if (then) { AC::Report r; r.result = AC::Result::Failed; r.message = "Une connexion est déjà en cours pour cette app."; then(r); } return; }
+    if (a == AUI::AgentKind::Other || connectBusy[i]) { if (then) { AC::Report r; r.result = AC::Result::Failed; r.message = I18n::U8(I18n::Id::connect_already_running); then(r); } return; }
     connectBusy[i] = true; Store();
-    if (on && connect.Visible()) connect.SetStatus(a, {AUI::ConnectState::Working, a == AUI::AgentKind::Claude ? L"Connexion à Claude…" : L"Connexion à Codex…"});   // « Cliquez sur Installer » only once a .mcpb was opened
+    if (on && connect.Visible()) connect.SetStatus(a, {AUI::ConnectState::Working, TRF(connect_connecting_to, a == AUI::AgentKind::Claude ? L"Claude" : L"Codex")});   // « Cliquez sur Installer » only once a .mcpb was opened
     auto report = std::make_shared<AC::Report>(); const auto target = ConnectTarget(); const std::wstring work = DataRoot() + L"\\annotations-connect";
     Run([a, on, report, target, work] {
             const auto env = ConnectEnv();
@@ -468,8 +470,10 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
         },
         [a, on, i, report, then] {
             connectBusy[i] = false;
+            // i18n-exempt-begin: log line (English diagnostics)
             Log(std::wstring(L"ANNOTATE ") + (on ? L"connect " : L"disconnect ") + (a == AUI::AgentKind::Claude ? L"claude: " : L"codex: ") + AH::Wide(AC::ResultName(report->result)) +
                 L" — " + AH::Wide(report->message) + (report->file.empty() ? L"" : L" [" + report->file + L"]") + (report->backup.empty() ? L"" : L" backup " + report->backup) + (report->usedCli ? L" (codex CLI)" : L""));
+            // i18n-exempt-end
             if (on) {
                 if (report->result == AC::Result::Connected) connectedAt[i] = BA::SystemNow();
                 const auto st = ConnectOutcome(a, *report);
@@ -511,20 +515,20 @@ std::vector<AUI::HistoryEntry::Step> StepsOf(const BA::Entry& e, std::int64_t no
     auto add = [&](std::int64_t at, Step::Kind kind, const std::string& who, std::wstring label, std::wstring quote = L"") {
         Step s; s.kind = kind; s.agent = AUI::AgentKind(AH::AgentKindOf(who)); s.label = std::move(label); s.time = StepTime(at, now); s.quote = std::move(quote); out.emplace_back(at, s); };
     const auto& a = e.annotation;
-    add(a.createdAt, Step::Added, "", a.source.profileName.empty() ? std::wstring(L"Ajoutée") : L"Ajoutée · profil " + AH::Wide(a.source.profileName));
-    if (const auto r = ReadOf(a.id); r.at) add(r.at, Step::Read, r.label, L"Lue par " + AH::AgentDisplay(r.label));
+    add(a.createdAt, Step::Added, "", a.source.profileName.empty() ? std::wstring(TR(step_added)) : TRF(step_added_profile, AH::Wide(a.source.profileName)));
+    if (const auto r = ReadOf(a.id); r.at) add(r.at, Step::Read, r.label, TRF(annotation_agent_read, AH::AgentDisplay(r.label)));
     for (const auto& ev : e.state.events) {
         const std::wstring who = AH::AgentDisplay(ev.actor), quote = AH::Wide(ev.summary);
-        if (ev.to == "claimed") add(ev.at, Step::Claimed, ev.actor, L"Prise en charge par " + who);
+        if (ev.to == "claimed") add(ev.at, Step::Claimed, ev.actor, TRF(step_claimed_by, who));
         else if (ev.from == "claimed" && ev.to == "open") {
-            if (ev.actor == "user") add(ev.at, Step::Released, ev.actor, L"Libérée par vous");
-            else if (ev.summary.empty() || ev.summary == "libérée") add(ev.at, Step::Released, ev.actor, L"Rendue par " + who);
-            else add(ev.at, Step::Unhandled, ev.actor, who + L" n'a pas pu la traiter", quote);
+            if (ev.actor == "user") add(ev.at, Step::Released, ev.actor, TR(step_released_by_you));
+            else if (ev.summary.empty() || ev.summary == "libérée") add(ev.at, Step::Released, ev.actor, TRF(step_given_back_by, who));
+            else add(ev.at, Step::Unhandled, ev.actor, TRF(annotation_agent_unhandled, who), quote);
         }
-        else if (ev.to == "resolved") add(ev.at, Step::Done, ev.actor, L"Terminée par " + who, e.state.resolution && e.state.status == BA::Status::Resolved ? AH::Wide(e.state.resolution->summary) : quote);
-        else if (ev.to == "needs_info") add(ev.at, Step::Question, ev.actor, L"Question de " + who, e.state.resolution && e.state.status == BA::Status::NeedsInfo ? AH::Wide(e.state.resolution->summary) : quote);
-        else if (ev.to == "dismissed") add(ev.at, Step::Dismissed, ev.actor, L"Écartée par " + who, quote);
-        else if (ev.to == "open" && ev.actor == "user" && ev.from != "draft") add(ev.at, Step::Reopened, ev.actor, L"Rouverte");
+        else if (ev.to == "resolved") add(ev.at, Step::Done, ev.actor, TRF(history_done_by, who), e.state.resolution && e.state.status == BA::Status::Resolved ? AH::Wide(e.state.resolution->summary) : quote);
+        else if (ev.to == "needs_info") add(ev.at, Step::Question, ev.actor, TRF(step_question_from, who), e.state.resolution && e.state.status == BA::Status::NeedsInfo ? AH::Wide(e.state.resolution->summary) : quote);
+        else if (ev.to == "dismissed") add(ev.at, Step::Dismissed, ev.actor, TRF(step_dismissed_by, who), quote);
+        else if (ev.to == "open" && ev.actor == "user" && ev.from != "draft") add(ev.at, Step::Reopened, ev.actor, TR(step_reopened));
     }
     std::stable_sort(out.begin(), out.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
     std::vector<Step> steps; for (auto& o : out) steps.push_back(std::move(o.second)); return steps;
@@ -604,9 +608,10 @@ AUI::HistoryEntry HistoryRow(const BA::Entry& e, std::int64_t now) {
     const std::string who = e.state.resolution && BA::IsDone(e.state.status) ? e.state.resolution->by : e.state.claimedBy ? e.state.claimedBy->agent : "";
     h.agent = AUI::AgentKind(AH::AgentKindOf(who)); h.agentName = who.empty() ? L"" : AH::AgentDisplay(who);
     h.age = Age(a.createdAt, now);
-    std::wstring f = L"Ajoutée " + When(a.createdAt, now) + (a.source.profileName.empty() ? L"" : L" · profil " + AH::Wide(a.source.profileName));
-    for (const auto& ev : e.state.events) if (ev.to == "claimed") { f += L" · prise en charge " + When(ev.at, now); break; }
-    if (e.state.resolution && BA::IsDone(e.state.status)) f += (e.state.status == BA::Status::NeedsInfo ? L" · question " : e.state.status == BA::Status::Dismissed ? L" · écartée " : L" · terminée ") + When(e.state.resolution->at, now);
+    std::wstring f = TRF(follow_added, When(a.createdAt, now));
+    if (!a.source.profileName.empty()) f += L" · " + TRF(follow_profile, AH::Wide(a.source.profileName));
+    for (const auto& ev : e.state.events) if (ev.to == "claimed") { f += L" · " + TRF(follow_claimed, When(ev.at, now)); break; }
+    if (e.state.resolution && BA::IsDone(e.state.status)) f += L" · " + (e.state.status == BA::Status::NeedsInfo ? TRF(follow_question, When(e.state.resolution->at, now)) : e.state.status == BA::Status::Dismissed ? TRF(follow_dismissed, When(e.state.resolution->at, now)) : TRF(follow_done, When(e.state.resolution->at, now)));
     h.followUp = f;
     if (e.state.resolution) h.summary = AH::Wide(e.state.resolution->summary);
     if (const auto* back = GivenBack(e)) { h.unhandled = true; h.reason = AH::Wide(back->summary); h.agent = AUI::AgentKind(AH::AgentKindOf(back->actor)); h.agentName = AH::AgentDisplay(back->actor); }
@@ -689,7 +694,7 @@ void HistoryStoreOp(const std::wstring& id, int op) {
             static const wchar_t* names[] = {L"trash", L"restore", L"discard"};
             Log(std::wstring(L"ANNOTATE history ") + names[op] + L" " + AH::Wide(ann) + L": " + AH::Wide(BA::CodeName(result->code)));
             if (!result->ok() && !(op == 2 && result->code == BA::Code::NotFound)) {
-                Announce(op == 0 ? L"Suppression impossible : " + AH::Wide(result->message) : op == 1 ? L"Restauration impossible : " + AH::Wide(result->message) : L"");
+                Announce(op == 0 ? TRF(annotation_delete_failed, AH::Wide(result->message)) : op == 1 ? TRF(annotation_restore_failed, AH::Wide(result->message)) : std::wstring());
                 if (launcher.HistoryVisible()) LoadHistory(false, false);
             }
             if (op == 0 && result->ok() && card != Card::None && cardId == ann) { launcher.HideCard(); card = Card::None; }
@@ -724,6 +729,7 @@ void Attach(const Late& l) {
 void OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r, double selectedAt, double lag, const std::wstring& timing = L"") {
     const double ms = NowMs() - selectedAt;
     if (r.ok) Log(L"ANNOTATE capture " + std::to_wstring(r.width) + L"x" + std::to_wstring(r.height) + L" " + std::to_wstring(r.png.size()) + L" bytes (" + AH::Wide(r.path) +
+                  // i18n-exempt-next: log continuation
                   L") ready " + Ms(ms) + L" ms after the selection message" + (lag >= 0 ? L" (+" + Ms(lag) + L" ms click->host)" : L"") + (timing.empty() ? L"" : L" [" + timing + L"]") + L" utc-ms=" + std::to_wstring(UtcMs()));
     else Log(L"ANNOTATE capture unavailable (" + AH::Wide(r.path) + L"): " + AH::Wide(r.why));
     if (auto it = std::find_if(lates.begin(), lates.end(), [&](const Late& l) { return l.serial == serial; }); it != lates.end()) {
@@ -807,9 +813,11 @@ void Capture(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
             },
             [result, serial, selectedAt, lag, engineAt, engineDone, work, handoff, frameMs, mark] {
                 const double panelMs = shot.serial == serial ? shot.panelMs : -1;
+                // i18n-exempt-begin: timing log text
                 OnCaptured(serial, *result, selectedAt, lag, L"viewport crop " + std::to_wstring(result->cropX) + L"," + std::to_wstring(result->cropY) + L" " + std::to_wstring(result->cropW) + L"x" + std::to_wstring(result->cropH) +
                                                              L"; native frame " + Ms(frameMs) + L" ms, page handoff " + Ms(engineAt - handoff) + L" ms, engine asked after " + Ms(engineAt - selectedAt) +
                                                              L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/crop/fill/encode/thumbnail " + Ms(*work) + L" ms" + (mark->present ? L" (fill removed)" : L"") + L", panel built in " + Ms(panelMs) + L" ms while the engine worked" +
+            // i18n-exempt-end
                                                              L" => image in memory " + Ms(engineDone + *work - selectedAt) + L" ms after the selection; UI hand-off " + Ms(NowMs() - engineDone - *work) + L" ms");
             });
         return S_OK; });
@@ -877,15 +885,15 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         req.context.site = AH::Wide(BA::SiteLabel(s.origin));
         const auto& path = a.target.path; std::wstring el;
         for (size_t i = path.size() > 2 ? path.size() - 2 : 0; i < path.size(); ++i) el += (el.empty() ? L"" : L" > ") + AH::Wide(path[i]);
-        if (sel.frameKind == "cross-origin") el += L" (iframe d'une autre origine)";
+        if (sel.frameKind == "cross-origin") el = TRF(annotation_cross_origin_frame, el);
         req.context.element = Clip(el.empty() ? AH::Wide(a.target.tag) : el, 90);
-        req.context.label = AH::ElementLabel(a.target) + (sel.frameKind == "cross-origin" ? L" (iframe d'une autre origine)" : L"");
+        req.context.label = sel.frameKind == "cross-origin" ? TRF(annotation_cross_origin_frame, AH::ElementLabel(a.target)) : AH::ElementLabel(a.target);
         const std::wstring text = a.target.selectionText ? AH::Wide(*a.target.selectionText) : AH::Wide(a.target.text);
         req.context.text = text.empty() ? L"(aucun)" : L"« " + Clip(text, 80) + L" »";
         req.context.styles = AH::StylesText(a.target.styles);
         req.context.style = AH::StyleSummary(a.target);   // V3-B: « padding 20 · gap 14 (flex) » when the element has them
         const auto plan = AH::PlanClip(r, a.target.viewport);
-        req.context.shotLabel = plan.ok ? L"Recadrée · " + std::to_wstring(plan.outW) + L"×" + std::to_wstring(plan.outH) : L"Hors de la zone visible";
+        req.context.shotLabel = plan.ok ? TRF(annotation_shot_cropped, std::to_wstring(plan.outW), std::to_wstring(plan.outH)) : std::wstring(TR(annotation_shot_offscreen));
     }
     // V3 (retours §2): nothing changes on screen. The native layer draws the page frame's edges and label at the same
     // pixels and waits for the compositor; then the page hides its own (« handoff ») and answers « hidden » in the
@@ -938,7 +946,7 @@ void OnSubmit(const AUI::NoteSubmission& sub) {
             if (!out->result.ok()) {
                 if (late != lates.end()) lates.erase(late);
                 Log(L"ANNOTATE write failed: " + AH::Wide(out->result.message));
-                if (current) { s.saving = false; note.Failed(L"Impossible d'enregistrer l'annotation (" + AH::Wide(out->result.message) + L"). Votre note est conservée ; réessayez."); }
+                if (current) { s.saving = false; note.Failed(TRF(annotation_save_failed_reason, AH::Wide(out->result.message))); }
                 return;
             }
             const auto& e = out->entry; last = e; sessionIds.insert(e.annotation.id);
@@ -1002,7 +1010,7 @@ void EnsureUi() {
         seenUnhandled.erase(ann); seenDone.erase(ann); seenWorking.erase(ann);
         Run([site, ann, r] { std::lock_guard<std::mutex> g(writeLock); *r = Store().Reopen(site, ann); },
             [ann, r] { Log(L"ANNOTATE history reopen " + AH::Wide(ann) + L": " + AH::Wide(BA::CodeName(r->code)));
-                       if (!r->ok()) Announce(L"Impossible de rouvrir : " + AH::Wide(r->message));
+                       if (!r->ok()) Announce(TRF(annotation_reopen_failed, AH::Wide(r->message)));
                        if (launcher.HistoryVisible()) LoadHistory(false, false);
                        RefreshStatus(); });
     };
@@ -1076,7 +1084,7 @@ void Exit(const wchar_t* why, bool pageChanged) {
     card = Card::None;
     chrome.annotationBand = 0; SyncChrome(); Layout();
     LauncherSync();   // the launcher goes back into its corner; its windows are destroyed once it is gone
-    if (pageChanged && hadPopover) Announce(L"La page a changé, sélection annulée");
+    if (pageChanged && hadPopover) Announce(TR(annotation_page_changed));
     SyncWatch();
     Log(std::wstring(L"ANNOTATE mode off (") + why + L")");
 }
@@ -1110,8 +1118,8 @@ void AnnotationLayout() { Ann::Place(); }
 void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); }   // V3-B: the wave's clock
 void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
 void AnnotationNavigation(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"navigation", true); }
-void AnnotationTabChanged() { if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }
-void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }
+void AnnotationTabChanged() { if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }   // i18n-exempt: log reason
+void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }   // i18n-exempt: log reason
 bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessageReceivedEventArgs* a) {
     using namespace Ann;
     if (!s.active || !t || ModeTab() != t || !a) return false;
@@ -1121,7 +1129,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     if (!AH::LooksLikeAnnotation(json)) { Wipe(json); return false; }
     const std::wstring source = TakeString([&] { LPWSTR x = nullptr; a->get_Source(&x); return x; }());
     const std::string utf8 = AH::Utf8(json); Wipe(json);
-    if (t != Active()) { LogOnce(L"inactive tab"); return true; }
+    if (t != Active()) { LogOnce(L"inactive tab"); return true; }   // i18n-exempt: log reason
     if (source != s.source) { LogOnce(L"source"); return true; }
     if (t->navStamp != s.navStamp) { LogOnce(L"navStamp"); return true; }
     const auto c = AH::CheckMessage(utf8, s.nonce, std::int64_t(s.navStamp));
@@ -1134,7 +1142,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     case AH::Op::Hidden: OnHidden(t, c.env.serial); break;
     case AH::Op::Shown: OnShown(c.env.serial); break;
     case AH::Op::Escape: Exit(L"escape"); break;
-    case AH::Op::NoSelection: Announce(L"Aucun texte sélectionné à annoter"); break;
+    case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
     }
     return true;
@@ -1207,10 +1215,10 @@ void AnnotationMenuItems(const std::shared_ptr<Tab>& tab, ICoreWebView2ContextMe
     CoTaskMemFree(text);
     POINT at{}; args->get_Location(&at);
     Ann::menu.valid = true; Ann::menu.at = at; Ann::menu.selection = !Ann::menu.text.empty();
-    std::vector<CM::Item> add{CM::Separator(), CM::Command(AnnotateElementItem, L"Annoter l'élément")};
+    std::vector<CM::Item> add{CM::Separator(), CM::Command(AnnotateElementItem, TR(annotation_menu_element))};
     add.back().shortcut = L"Ctrl+Maj+A";
-    if (Ann::menu.selection) add.push_back(CM::Command(AnnotateSelectionItem, L"Annoter la sélection"));
-    if (Ann::last) add.push_back(CM::Command(AnnotateMarkdownItem, L"Copier la dernière annotation (Markdown)"));
+    if (Ann::menu.selection) add.push_back(CM::Command(AnnotateSelectionItem, TR(annotation_menu_selection)));
+    if (Ann::last) add.push_back(CM::Command(AnnotateMarkdownItem, TR(annotation_menu_copy_last)));
     auto lastGroup = std::find_if(items.rbegin(), items.rend(), [](const CM::Item& m) { return m.separator; });
     auto where = lastGroup == items.rend() ? items.end() : std::prev(lastGroup.base());
     items.insert(where, add.begin(), add.end());
@@ -1221,7 +1229,7 @@ void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab, int choice) {
     if (choice == AnnotateMarkdownItem) {
         if (!Ann::last) return;
         const auto md = AnnotationHost::Wide(BrowserAnnotations::ToMarkdown(*Ann::last, Ann::last->annotation.screenshot.present ? Ann::Store().ShotPath(Ann::last->annotation.siteKey, Ann::last->annotation.id) : L""));
-        if (CopyToClipboard(md)) Ann::Announce(L"Annotation copiée en Markdown");
+        if (CopyToClipboard(md)) Ann::Announce(TR(annotation_copied_markdown));
         return;
     }
     if (!m.valid || !tab || tab != Active()) return;
@@ -1245,7 +1253,7 @@ bool AnnotationHistoryAvailable() { return false; }
 bool AnnotationsCompiled() { return false; }
 std::wstring AnnotationStoreRoot() { return L""; }
 void AnnotationOpenConnect(bool) {}
-void AnnotationConnectAgent(AnnotationApp, bool, std::function<void(bool, const std::wstring&)> done) { if (done) done(false, L"Mode Annotation absent de cette version."); }
+void AnnotationConnectAgent(AnnotationApp, bool, std::function<void(bool, const std::wstring&)> done) { if (done) done(false, TR(annotation_mode_absent)); }
 void AnnotationAgentsStatus(std::function<void(const AnnotationAgentState&, const AnnotationAgentState&)> done) { if (done) done({}, {}); }
 void AnnotationOpenFolder() {}
 void AnnotationCount(std::function<void(std::size_t)> done) { if (done) done(0); }

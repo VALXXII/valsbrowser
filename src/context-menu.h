@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Native context menu: one component for every right click (web pages through
 // WebView2's ContextMenuRequested, tabs, the tab list, the address field),
 // painted with Direct2D from the Paper frame "Clic droit menu — poli": 14 DIP
@@ -564,14 +565,14 @@ class Menu {
         std::vector<Accessibility::Node> nodes; if (index >= depth_ || index >= static_cast<int>(levels_.size())) return nodes;
         const Level& l = *levels_[index]; if (!l.items || !l.hwnd) return nodes;
         RECT window{}; GetWindowRect(l.hwnd, &window); const float k = l.dpi / 96.f;
-        Accessibility::Node menu; menu.key = MenuKey; menu.role = Accessibility::Role::Menu; menu.name = index == 0 ? L"Menu" : L"Sous-menu"; menu.automationId = L"ContextMenu"; menu.focusable = false; menu.bounds = window; nodes.push_back(menu);
+        Accessibility::Node menu; menu.key = MenuKey; menu.role = Accessibility::Role::Menu; menu.name = index == 0 ? TR(menu_name) : TR(menu_submenu_name); menu.automationId = L"ContextMenu"; menu.focusable = false; menu.bounds = window; nodes.push_back(menu);
         int count = 0; for (const auto& item : *l.items) if (!item.separator) ++count;
         int position = 0;
         for (size_t i = 0; i < l.items->size() && i < l.tops.size(); ++i) {
             const Item& item = (*l.items)[i]; if (item.separator) continue;
             Accessibility::Node n; n.key = RowKey(static_cast<int>(i)); n.parent = MenuKey; n.role = Accessibility::Role::MenuItem;
             n.name = Plain(item.label); n.accelerator = item.shortcut; n.help = !item.help.empty() ? item.help : item.description; n.enabled = item.enabled;
-            if (item.checked) n.status = L"Sélectionné";
+            if (item.checked) n.status = TR(menu_item_selected);
             if (!item.children.empty()) n.expand = l.child == static_cast<int>(i) && depth_ > index + 1 ? 2 : 1;
             n.position = ++position; n.count = count; n.automationId = L"MenuItem";
             n.bounds = {window.left + static_cast<LONG>(Layout::pad * k), window.top + static_cast<LONG>(l.tops[i] * k), window.right - static_cast<LONG>(Layout::pad * k), window.top + static_cast<LONG>((l.tops[i] + l.heights[i]) * k)};

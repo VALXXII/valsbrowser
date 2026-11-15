@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Profile editor block (Paper p-I-0: P03 « Modale nouveau profil » Y0D-0, P02 detail XWS-0, P06):
 // name field, 12-icon radio grid, colour (hue + intensity sliders, live preview, free hex).
 // One component, two hosts: the « Nouveau profil » dialog (profile-dialog.h) and Réglages ›
@@ -53,9 +54,9 @@ inline void SetIntensityPercent(Profiles::Profile& p, int percent) {
 }
 inline std::wstring NameErrorText(Profiles::NameError e) {
     switch (e) {
-    case Profiles::NameError::Empty: return L"Donnez un nom au profil.";
-    case Profiles::NameError::TooLong: return L"32 caractères au plus.";
-    case Profiles::NameError::Duplicate: return L"Un profil porte déjà ce nom.";
+    case Profiles::NameError::Empty: return TR(profile_name_empty);
+    case Profiles::NameError::TooLong: return TR(profile_name_max);
+    case Profiles::NameError::Duplicate: return TR(profile_name_duplicate);
     default: return L"";
     }
 }
@@ -297,7 +298,7 @@ public:
         const bool drawer = style_ == Style::Drawer;
         PopupKit::Type labelType{14, 20, 0, drawer}, field{16, 20, -.16f}, help{14, 18}, value{13, 16, 0, true, true};
         // Name
-        PopupKit::DrawText(c, L"Nom", {0, 0, width_, Layout::label}, labelType, PopupKit::White((drawer ? .5f : .7f) * opacity));
+        PopupKit::DrawText(c, TR(bookmark_field_name), {0, 0, width_, Layout::label}, labelType, PopupKit::White((drawer ? .5f : .7f) * opacity));
         const auto nf = NameField();
         PopupKit::Fill(c, nf, 8, PopupKit::White((.08f + (hover_ == Name && focus_ != Name ? .02f : 0)) * opacity));
         // Focused field: keyboard = the 1 px #FFFFFF80 inset ring (Paper P03 « Prêt »); pointer = a discreet
@@ -306,10 +307,10 @@ public:
         if (!name_ || !IsWindowVisible(name_)) PopupKit::DrawText(c, value_.name, {nf.left + Layout::fieldPad, nf.top + 6, nf.right - Layout::fieldPad, nf.bottom}, field, PopupKit::White(opacity));
         const float hy = nf.bottom + Layout::labelGap;
         if (showError_) PopupKit::DrawText(c, NameErrorText(error_), {0, hy, width_, hy + HelpHeight()}, help, D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, opacity), true);
-        else PopupKit::DrawText(c, drawer ? L"32 caractères au plus. Enregistré avec Entrée ou en quittant le champ." : L"32 caractères au plus.", {0, hy, width_, hy + HelpHeight()}, help, PopupKit::White(.5f * opacity), drawer);
+        else PopupKit::DrawText(c, drawer ? TR(profile_name_max_drawer) : TR(profile_name_max), {0, hy, width_, hy + HelpHeight()}, help, PopupKit::White(.5f * opacity), drawer);
         // Icons
         const float iy = NameBlock() + Gap();
-        PopupKit::DrawText(c, L"Icône", {0, iy, width_, iy + Layout::label}, PopupKit::Type{14, 20}, PopupKit::White(.7f * opacity));
+        PopupKit::DrawText(c, TR(profile_icon), {0, iy, width_, iy + Layout::label}, PopupKit::Type{14, 20}, PopupKit::White(.7f * opacity));
         const int selected = IconIndex();
         for (int i = 0; i < ProfileIcons::count; ++i) {
             const auto r = Cell(i); const bool on = i == selected;
@@ -388,21 +389,21 @@ public:
     std::vector<Accessibility::Node> Nodes(long long base, long long parent, RECT hostScreen) const {
         std::vector<Accessibility::Node> out;
         auto bounds = [&](D2D1_RECT_F r) { return RECT{hostScreen.left + static_cast<LONG>((origin_.x + r.left) * scale_), hostScreen.top + static_cast<LONG>((origin_.y + r.top) * scale_), hostScreen.left + static_cast<LONG>((origin_.x + r.right) * scale_), hostScreen.top + static_cast<LONG>((origin_.y + r.bottom) * scale_)}; };
-        Accessibility::Node name; name.key = base + Name; name.parent = parent; name.role = Accessibility::Role::Edit; name.name = L"Nom"; name.value = value_.name; name.help = showError_ ? NameErrorText(error_) : L"32 caractères au plus."; name.automationId = L"ProfileName"; name.bounds = bounds(NameField()); out.push_back(name);
-        Accessibility::Node grid; grid.key = base + Icons; grid.parent = parent; grid.role = Accessibility::Role::List; grid.name = L"Icône"; grid.automationId = L"ProfileIcons"; grid.focusable = false;
+        Accessibility::Node name; name.key = base + Name; name.parent = parent; name.role = Accessibility::Role::Edit; name.name = TR(bookmark_field_name); name.value = value_.name; name.help = showError_ ? NameErrorText(error_) : TR(profile_name_max); name.automationId = L"ProfileName"; name.bounds = bounds(NameField()); out.push_back(name);
+        Accessibility::Node grid; grid.key = base + Icons; grid.parent = parent; grid.role = Accessibility::Role::List; grid.name = TR(profile_icon); grid.automationId = L"ProfileIcons"; grid.focusable = false;
         grid.bounds = bounds({0, IconsTop(), Layout::GridWidth(), IconsTop() + 2 * Layout::cell + Layout::cellGap}); out.push_back(grid);
         const int sel = IconIndex();
         for (int i = 0; i < ProfileIcons::count; ++i) {
-            Accessibility::Node n; n.key = base + 100 + i; n.parent = base + Icons; n.role = Accessibility::Role::ListItem; n.name = ProfileIcons::all[i].label; n.selected = i == sel; n.position = i + 1; n.count = ProfileIcons::count; n.automationId = L"ProfileIcon"; n.bounds = bounds(Cell(i)); out.push_back(n);
+            Accessibility::Node n; n.key = base + 100 + i; n.parent = base + Icons; n.role = Accessibility::Role::ListItem; n.name = I18n::T(ProfileIcons::all[i].label.id); n.selected = i == sel; n.position = i + 1; n.count = ProfileIcons::count; n.automationId = L"ProfileIcon"; n.bounds = bounds(Cell(i)); out.push_back(n);
         }
         for (int which : {Hue, Intensity}) {
             Accessibility::Node s; s.key = base + which; s.parent = parent; s.role = Accessibility::Role::Slider; s.automationId = which == Hue ? L"ProfileHue" : L"ProfileIntensity";
-            s.name = which == Hue ? L"Teinte" : L"Intensité"; s.rangeMin = 0; s.rangeMax = which == Hue ? 359 : 100; s.smallChange = 1; s.largeChange = 10;
+            s.name = which == Hue ? TR(profile_hue) : TR(profile_intensity); s.rangeMin = 0; s.rangeMax = which == Hue ? 359 : 100; s.smallChange = 1; s.largeChange = 10;
             s.rangeValue = which == Hue ? value_.hue : IntensityPercent(value_);
             s.value = which == Hue ? std::to_wstring(value_.hue) + L"°, " + ProfileColor::HueName(value_.hue) : std::to_wstring(IntensityPercent(value_)) + L" %";
             s.bounds = bounds(Lane(which)); out.push_back(s);
         }
-        Accessibility::Node hex; hex.key = base + Hex; hex.parent = parent; hex.role = Accessibility::Role::Edit; hex.name = L"Couleur hexadécimale"; hex.value = ProfileColor::Hex(InkOf(value_)); hex.automationId = L"ProfileHex"; hex.bounds = bounds(HexField()); out.push_back(hex);
+        Accessibility::Node hex; hex.key = base + Hex; hex.parent = parent; hex.role = Accessibility::Role::Edit; hex.name = TR(profile_hex); hex.value = ProfileColor::Hex(InkOf(value_)); hex.automationId = L"ProfileHex"; hex.bounds = bounds(HexField()); out.push_back(hex);
         return out;
     }
     // UIA actions routed by the host for keys of this block.

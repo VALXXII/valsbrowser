@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // C5 · Raccourcis clavier — Ctrl+/ (Paper « Browser Design », p-D-0, artboard EP1-0, panneau
 // EWC-0). Native popover listing the browser's real shortcuts (those main's Key() maps), with a
 // native EDIT filter. Opens centred over the page, focus in the filter; Échap closes and gives
@@ -31,24 +32,32 @@ inline constexpr unsigned Surface = 0x17;   // --color-browser-canvas (Design::S
 }
 struct Shortcut { const wchar_t* label; std::vector<const wchar_t*> keys; };
 struct Section { const wchar_t* title; std::vector<Shortcut> rows; };
-// The shortcuts main's Key() actually handles (src/main.cpp), in Paper's sections.
-inline const std::vector<Section>& Sections() {
-    static const std::vector<Section> list = {
-        {L"Onglets", {
-            {L"Nouvel onglet", {L"Ctrl", L"T"}}, {L"Rouvrir l'onglet fermé", {L"Ctrl", L"Maj", L"T"}}, {L"Fermer l'onglet", {L"Ctrl", L"W"}},
-            {L"Onglet suivant", {L"Ctrl", L"Tab"}}, {L"Onglet précédent", {L"Ctrl", L"Maj", L"Tab"}}, {L"Aller à l'onglet 1 à 9", {L"Ctrl", L"1…9"}},
-            {L"Déplacer l'onglet à gauche", {L"Ctrl", L"Maj", L"PgPréc"}}, {L"Déplacer l'onglet à droite", {L"Ctrl", L"Maj", L"PgSuiv"}}}},
-        {L"Navigation", {
-            {L"Aller à la barre d'adresse", {L"Ctrl", L"L"}}, {L"Aller à la barre d'adresse", {L"Alt", L"D"}}, {L"Passer du contenu au chrome", {L"F6"}},
-            {L"Recharger", {L"Ctrl", L"R"}}, {L"Recharger", {L"F5"}}, {L"Précédent", {L"Alt", L"←"}}, {L"Suivant", {L"Alt", L"→"}}}},
-        {L"Page", {
-            {L"Rechercher dans la page", {L"Ctrl", L"F"}}, {L"Occurrence suivante", {L"F3"}}, {L"Occurrence précédente", {L"Maj", L"F3"}},
-            {L"Imprimer", {L"Ctrl", L"P"}}, {L"Plein écran", {L"F11"}}}},
-        {L"Favoris et historique", {
-            {L"Ajouter aux favoris", {L"Ctrl", L"D"}}, {L"Afficher la barre de favoris", {L"Ctrl", L"Maj", L"B"}}, {L"Ouvrir les favoris", {L"Ctrl", L"Maj", L"O"}},
-            {L"Annuler la dernière modification de favori", {L"Ctrl", L"Z"}}, {L"Historique", {L"Ctrl", L"H"}}}},
-        {L"Aide", {{L"Raccourcis clavier", {L"Ctrl", L"/"}}, {L"Sandbox des composants", {L"Ctrl", L"Maj", L"F12"}}}},
+// The shortcuts main's Key() actually handles (src/main.cpp), in Paper's sections. One list per language,
+// built on first use in that language (labels and key names are catalog text); the panel keeps pointers
+// into it, so each list lives as long as the process (UI thread only).
+inline std::vector<Section> BuildSections() {
+    const wchar_t* shift = TR(key_shift);
+    return {
+        {TR(settings_tabs), {
+            {TR(tab_new), {L"Ctrl", L"T"}}, {TR(cmd_reopen_tab), {L"Ctrl", shift, L"T"}}, {TR(cmd_close_tab), {L"Ctrl", L"W"}},
+            {TR(shortcut_next_tab), {L"Ctrl", L"Tab"}}, {TR(shortcut_previous_tab), {L"Ctrl", shift, L"Tab"}}, {TR(shortcut_go_to_tab), {L"Ctrl", L"1…9"}},
+            {TR(shortcut_move_tab_left), {L"Ctrl", shift, TR(key_page_up)}}, {TR(shortcut_move_tab_right), {L"Ctrl", shift, TR(key_page_down)}}}},
+        {TR(a11y_toolbar), {
+            {TR(shortcut_go_to_address), {L"Ctrl", L"L"}}, {TR(shortcut_go_to_address), {L"Alt", L"D"}}, {TR(shortcut_content_to_chrome), {L"F6"}},
+            {TR(shortcut_reload), {L"Ctrl", L"R"}}, {TR(shortcut_reload), {L"F5"}}, {TR(a11y_back), {L"Alt", L"←"}}, {TR(a11y_forward), {L"Alt", L"→"}}}},
+        {TR(shortcut_section_page), {
+            {TR(find_title), {L"Ctrl", L"F"}}, {TR(find_next), {L"F3"}}, {TR(find_previous), {shift, L"F3"}},
+            {TR(shortcut_print), {L"Ctrl", L"P"}}, {TR(fullscreen_title), {L"F11"}}}},
+        {TR(shortcut_section_bookmarks), {
+            {TR(a11y_add_bookmark), {L"Ctrl", L"D"}}, {TR(bookmarks_bar_show), {L"Ctrl", shift, L"B"}}, {TR(shortcut_open_bookmarks), {L"Ctrl", shift, L"O"}},
+            {TR(shortcut_undo_bookmark), {L"Ctrl", L"Z"}}, {TR(history_title), {L"Ctrl", L"H"}}}},
+        {TR(shortcut_section_help), {{TR(shortcuts_title), {L"Ctrl", L"/"}}, {TR(shortcut_sandbox), {L"Ctrl", shift, L"F12"}}}},
     };
+}
+inline const std::vector<Section>& Sections() {
+    static std::vector<Section> lists[I18n::LocaleCount];
+    auto& list = lists[static_cast<int>(I18n::Current())];
+    if (list.empty()) list = BuildSections();
     return list;
 }
 // Accent- and case-insensitive containment (« echap » finds « Échap »).
@@ -84,7 +93,7 @@ class Panel {
             y += Layout::sectionTop; lines_.push_back({true, sec.title, nullptr, y}); y += Layout::heading;
             for (auto* r : rows) { lines_.push_back({false, r->label, r, y}); y += Layout::row; }
         }
-        if (lines_.empty()) { y += Layout::sectionTop; lines_.push_back({true, L"Aucun raccourci ne correspond.", nullptr, y}); y += Layout::heading; }
+        if (lines_.empty()) { y += Layout::sectionTop; lines_.push_back({true, TR(shortcuts_no_match), nullptr, y}); y += Layout::heading; }
         content_ = y + Layout::bottom; scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_ - ListHeight()));
     }
     float NaturalHeight() const { float y = 0; for (auto& sec : Sections()) y += Layout::sectionTop + Layout::heading + Layout::row * sec.rows.size(); return 1 + ListTop() + y + Layout::bottom; }
@@ -96,7 +105,7 @@ class Panel {
         const auto now = Motion::Now(); chrome_.keyboardModality = keyboard_;
         t->BeginDraw(); t->Clear(PopupKit::Gray(0x17));
         PopupKit::Fill(chrome_, {0, 0, width, height_}, radius, PopupKit::Gray(Surface));
-        PopupKit::DrawText(chrome_, L"Raccourcis clavier", {1 + 16, 13, width - 60, 33}, {16, 20, 0, true}, PopupKit::White(.9f));
+        PopupKit::DrawText(chrome_, TR(shortcuts_title), {1 + 16, 13, width - 60, 33}, {16, 20, 0, true}, PopupKit::White(.9f));
         const auto cb = CloseBox(); const auto cv = motion_.Visual(CloseHit, now); const float lit = std::max(cv.hover, cv.press);
         if (lit > 0) PopupKit::Fill(chrome_, cb, 3, PopupKit::Gray(cv.press > cv.hover ? 0x3E : 0x33, lit));
         glyphs_.Draw(chrome_, PopupKit::Glyphs::close, cb, closeGlyph, PopupKit::White(0xB3 / 255.f));
@@ -154,7 +163,7 @@ class Panel {
         case WM_MOUSEWHEEL: SendMessageW(self->hwnd_, msg, w, l); return 0;
         case WM_PAINT: {
             const LRESULT r = DefSubclassProc(h, msg, w, l);
-            if (GetWindowTextLengthW(h) == 0) { HDC dc = GetDC(h); RECT rc{}; GetClientRect(h, &rc); HGDIOBJ old = SelectObject(dc, self->font_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, Ink(.4f)); DrawTextW(dc, L"Filtrer les raccourcis", -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS); SelectObject(dc, old); ReleaseDC(h, dc); }
+            if (GetWindowTextLengthW(h) == 0) { HDC dc = GetDC(h); RECT rc{}; GetClientRect(h, &rc); HGDIOBJ old = SelectObject(dc, self->font_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, Ink(.4f)); DrawTextW(dc, TR(shortcuts_filter), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS); SelectObject(dc, old); ReleaseDC(h, dc); }
             return r;
         }
         }
@@ -199,7 +208,7 @@ public:
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, std::function<void()> wake = nullptr) {
         owner_ = owner; motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         PopupKit::Register(instance, L"LisiereShortcutsPanel", Proc);
-        if (!PopupKit::CreatePopup(instance, owner, L"LisiereShortcutsPanel", L"Raccourcis clavier", 0, this, Layout::radius, WS_POPUP | WS_CLIPCHILDREN)) return false;
+        if (!PopupKit::CreatePopup(instance, owner, L"LisiereShortcutsPanel", TR(shortcuts_title), 0, this, Layout::radius, WS_POPUP | WS_CLIPCHILDREN)) return false;
         pump_.Bind(hwnd_, std::move(wake));
         edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
         if (!edit_) return false;
@@ -209,14 +218,14 @@ public:
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] {
             std::vector<Accessibility::Node> nodes; if (!visible_) return nodes;
-            Accessibility::Node g; g.key = 100; g.role = Accessibility::Role::List; g.name = L"Raccourcis clavier"; g.automationId = L"ShortcutsPanel"; g.focusable = false; GetWindowRect(hwnd_, &g.bounds); nodes.push_back(g);
-            Accessibility::Node c; c.key = CloseHit; c.parent = 100; c.name = L"Fermer"; c.accelerator = L"Échap"; c.automationId = L"ShortcutsClose"; const auto b = CloseBox(); RECT r{Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2); c.bounds = r; nodes.push_back(c);
+            Accessibility::Node g; g.key = 100; g.role = Accessibility::Role::List; g.name = TR(shortcuts_title); g.automationId = L"ShortcutsPanel"; g.focusable = false; GetWindowRect(hwnd_, &g.bounds); nodes.push_back(g);
+            Accessibility::Node c; c.key = CloseHit; c.parent = 100; c.name = TR(common_close); c.accelerator = TR(key_escape); c.automationId = L"ShortcutsClose"; const auto b = CloseBox(); RECT r{Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2); c.bounds = r; nodes.push_back(c);
             long long key = 1000; int pos = 0, count = 0; for (auto& l : lines_) if (!l.heading) ++count;
             for (auto& l : lines_) { if (l.heading) continue; Accessibility::Node n; n.key = ++key; n.parent = 100; n.role = Accessibility::Role::ListItem; n.name = l.text; std::wstring k; for (auto* p : l.shortcut->keys) k += std::wstring(k.empty() ? L"" : L"+") + p; n.accelerator = k; n.focusable = false; n.position = ++pos; n.count = count; GetWindowRect(hwnd_, &n.bounds); n.offscreen = true; nodes.push_back(n); }
             return nodes; };
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ && closeFocus_ ? CloseHit : 0; };
         host.invoke = [this](long long key) { if (key == CloseHit) PostMessageW(hwnd_, WM_APP + 1, 0, 0); };
-        host.label = [this](HWND child, Accessibility::Node& n) { if (child != edit_) return false; n.name = L"Filtrer les raccourcis"; n.automationId = L"ShortcutsFilter"; return true; };
+        host.label = [this](HWND child, Accessibility::Node& n) { if (child != edit_) return false; n.name = TR(shortcuts_filter); n.automationId = L"ShortcutsFilter"; return true; };
         uia_.Attach(std::move(host));
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }

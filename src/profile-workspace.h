@@ -448,7 +448,7 @@ bool WorkspaceEngineFailed(const std::wstring& where, HRESULT hr, bool hasEngine
             SwitchWorkspace(to);
         }
         std::wstring name = id; if (const auto* p = profileRegistry.Find(id)) name = p->name;
-        VaultNotice(L"Le profil « " + name + L" » n'a pas pu démarrer", L"Ses onglets sont conservés. Choisissez-le de nouveau pour réessayer.");
+        VaultNotice(TRF(workspace_profile_failed, name), TR(workspace_profile_failed_body));
     });
     unownedCallbacks = false;
     return true;
@@ -489,7 +489,7 @@ int WorkspaceQaCommand(const std::wstring& text) {
         Log(L"WSQA cleared downloads (" + a + L") in " + (globalsWorkspace ? globalsWorkspace->id : L"-")); return 1;
     }
     if (verb == L"ops") {   // live download operations per owner
-        std::wstring t = L"WSQA ops";
+        std::wstring t = L"WSQA ops";   // i18n-exempt: QA trace
         for (const auto& [id, e] : downloadOps) { std::wstring state = L"?"; for (auto* w : LiveWorkspaces()) if (w == e->owner) { WorkspaceScope scope(w); if (auto* d = FindDownload(id)) state = DL::FileName(d->path) + L":" + std::to_wstring(static_cast<int>(d->state)); } t += L" [" + std::to_wstring(id) + L" " + (e->owner ? e->owner->id : L"-") + L" " + state + L"]"; }
         Log(t); return 1;
     }

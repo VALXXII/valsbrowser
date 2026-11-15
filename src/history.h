@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Browsing history panel model (toolbar History button, Ctrl+H): the pages kept by
 // AddressBar::History, newest visit first, filtered by the panel's search query
 // and grouped by local calendar period exactly like the download drawer. Pure
@@ -28,7 +29,7 @@ struct Entry {
 inline std::wstring HostOf(const std::wstring& url) {
     AddressBar::Parts p;
     if (!AddressBar::Split(url, p)) return url;
-    if (p.scheme == L"file") return L"Local file";
+    if (p.scheme == L"file") return TR(history_local_file);
     return AddressBar::ReadableHost(p.host);
 }
 inline Entry MakeEntry(const AddressBar::Visit& v) {
@@ -97,13 +98,14 @@ inline std::wstring ClockText(std::int64_t t, std::int64_t offset) {
     return text;
 }
 inline std::wstring DateText(std::int64_t t, std::int64_t now, std::int64_t offset) {
-    static const wchar_t* months[] = {L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun", L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"};
+    using I = I18n::Id;
+    static const I months[] = {I::month_short_1, I::month_short_2, I::month_short_3, I::month_short_4, I::month_short_5, I::month_short_6,
+                               I::month_short_7, I::month_short_8, I::month_short_9, I::month_short_10, I::month_short_11, I::month_short_12};
     const std::int64_t day = 86400000LL;
     const Civil c = CivilFromDays(Downloads::FloorDiv(t + offset, day)), today = CivilFromDays(Downloads::FloorDiv(now + offset, day));
-    wchar_t text[32];
-    if (c.year == today.year) std::swprintf(text, 32, L"%ls %u", months[c.month - 1], c.day);
-    else std::swprintf(text, 32, L"%ls %u, %lld", months[c.month - 1], c.day, static_cast<long long>(c.year));
-    return text;
+    const std::wstring month = I18n::T(months[c.month - 1]), dayText = std::to_wstring(c.day);
+    if (c.year == today.year) return TRF(history_date, month, dayText);           // « 12 mars » / « Mar 12 »
+    return TRF(history_date_year, month, dayText, std::to_wstring(static_cast<long long>(c.year)));
 }
 inline std::wstring WhenText(std::int64_t t, std::int64_t now, std::int64_t offset) {
     if (t <= 0) return L"";
@@ -116,7 +118,7 @@ inline std::wstring Detail(const Entry& e, std::int64_t now, std::int64_t offset
 }
 inline std::wstring EmptyText(const std::wstring& query) {
     const auto q = AddressBar::Trim(query);
-    return q.empty() ? std::wstring(L"No history yet") : L"No results for “" + q + L"”";
+    return q.empty() ? std::wstring(TR(history_empty)) : TRF(history_no_results, q);
 }
 
 // ---- Geometry (DIP) -----------------------------------------------------------

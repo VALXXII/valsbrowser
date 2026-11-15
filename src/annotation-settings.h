@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Réglages › « Annotations » — the pure part (no window, no disk, no store): what each agent row
 // says and offers, the confirmation texts of « Effacer toutes les annotations… », the shortcut reminder and
 // the agent logos. The drawer (src/settings-panel.h) paints it; the host (main.cpp, through
@@ -39,7 +40,7 @@ struct Agents {
 
 enum class Action { None, Connect, Disconnect, Reconnect };
 inline const wchar_t* ActionLabel(Action a) {
-    switch (a) { case Action::Connect: return L"Connecter"; case Action::Disconnect: return L"Déconnecter"; case Action::Reconnect: return L"Reconnecter"; default: return L""; }
+    switch (a) { case Action::Connect: return TR(agent_connect); case Action::Disconnect: return TR(agent_disconnect); case Action::Reconnect: return TR(agent_reconnect); default: return L""; }
 }
 // The row's button. None: no button (not installed, connected through a setup we did not write, unknown yet).
 // While a connection runs, the button stays where it is (same label) and is disabled.
@@ -54,29 +55,29 @@ inline Action ActionFor(const Agent& a) {
 }
 inline bool ActionEnabled(const Agent& a) { return a.activity == Activity::Idle && ActionFor(a) != Action::None; }
 
-// « à l'instant », « il y a 5 min », « il y a 2 h », « hier », « il y a 3 jours ».
+// « à l'instant », « il y a 5 min », « il y a 2 h », « hier », « il y a 3 jours » (English: « just now », « 5 min ago »…).
 inline std::wstring Ago(long long seconds) {
-    if (seconds < 60) return L"à l'instant";
-    if (seconds < 3600) return L"il y a " + std::to_wstring(seconds / 60) + L" min";
-    if (seconds < 86400) return L"il y a " + std::to_wstring(seconds / 3600) + L" h";
-    if (seconds < 2 * 86400) return L"hier";
-    return L"il y a " + std::to_wstring(seconds / 86400) + L" jours";
+    if (seconds < 60) return TR(ago_now);
+    if (seconds < 3600) return TRF(ago_minutes, std::to_wstring(seconds / 60));
+    if (seconds < 86400) return TRF(ago_hours, std::to_wstring(seconds / 3600));
+    if (seconds < 2 * 86400) return TR(ago_yesterday);
+    return TRP(ago_days, seconds / 86400);
 }
 // After a connection, until the app reads the store: same words as the connect modal (1.3).
-inline std::wstring RestartText(App app) { return std::wstring(L"Redémarrez ") + AppShort(app) + L" pour l'activer"; }
+inline std::wstring RestartText(App app) { return TRF(agent_restart_to_enable, AppShort(app)); }
 // The status line under the app's name.
 inline std::wstring StatusText(const Agent& a, long long now) {
-    if (a.activity == Activity::Connecting) return L"Connexion…";
-    if (a.activity == Activity::Disconnecting) return L"Déconnexion…";
-    if (!a.known) return L"Vérification…";
-    if (a.failed) return a.message.empty() ? std::wstring(L"La connexion a échoué. Réessayez.") : a.message;
-    if (a.stalePath) return L"Connecté à un ancien emplacement du navigateur";
-    if (a.connected && a.restart) return std::wstring(L"Connecté · redémarrez ") + AppShort(a.app) + L" pour l'activer";
-    if (a.connected && a.lastReadAt > 0) return L"Connecté · a lu vos annotations " + Ago(now - a.lastReadAt);
-    if (a.connected) return L"Connecté";
+    if (a.activity == Activity::Connecting) return TR(agent_connecting);
+    if (a.activity == Activity::Disconnecting) return TR(agent_disconnecting);
+    if (!a.known) return TR(agent_checking);
+    if (a.failed) return a.message.empty() ? std::wstring(TR(agent_connect_failed)) : a.message;
+    if (a.stalePath) return TR(agent_stale_path);
+    if (a.connected && a.restart) return TRF(agent_connected_restart, AppShort(a.app));
+    if (a.connected && a.lastReadAt > 0) return TRF(agent_connected_read, Ago(now - a.lastReadAt));
+    if (a.connected) return TR(agent_connected);
     if (!a.message.empty()) return a.message;   // e.g. the .mcpb is open: « Cliquez sur Installer dans Claude »
-    if (!a.detected) return L"Non installé";
-    return L"Non connecté";
+    if (!a.detected) return TR(agent_not_installed);
+    return TR(agent_not_connected);
 }
 inline bool StatusIsError(const Agent& a) { return a.activity == Activity::Idle && a.known && a.failed; }
 // The root row's summary: the connected apps, « Aucun agent », or nothing until known.
@@ -84,22 +85,21 @@ inline std::wstring Summary(const Agents& agents, bool known) {
     if (!known) return L"";
     std::wstring s;
     for (int i = 0; i < AppCount; ++i) if (agents[AppAt(i)].connected) s += (s.empty() ? L"" : L", ") + std::wstring(AppShort(AppAt(i)));
-    return s.empty() ? std::wstring(L"Aucun agent") : s;
+    return s.empty() ? std::wstring(TR(agent_none)) : s;
 }
 
 // « Effacer toutes les annotations… »: an irreversible mass action. The confirmation names the count.
-inline std::wstring ClearTitle(std::size_t n) { return n == 1 ? std::wstring(L"Effacer l'annotation ?") : L"Effacer les " + std::to_wstring(n) + L" annotations ?"; }
+inline std::wstring ClearTitle(std::size_t n) { return n == 1 ? std::wstring(TR(annotations_clear_title_single)) : TRF(annotations_clear_title_many, std::to_wstring(n)); }
 inline std::wstring ClearBody(std::size_t n) {
-    return n == 1 ? std::wstring(L"Sa note et sa capture seront supprimées de cet ordinateur, même si un agent la traite. Impossible d'annuler.")
-                  : std::wstring(L"Leurs notes et captures seront supprimées de cet ordinateur, même celles qu'un agent traite. Impossible d'annuler.");
+    return n == 1 ? std::wstring(TR(annotations_clear_body_single)) : std::wstring(TR(annotations_clear_body_many));
 }
-inline std::wstring ClearAction(std::size_t n) { return L"Effacer " + std::to_wstring(n) + (n == 1 ? L" annotation" : L" annotations"); }
+inline std::wstring ClearAction(std::size_t n) { return TRP(annotations_clear_action, n); }
 
-inline constexpr const wchar_t* ShortcutsNote = L"Ctrl+Maj+A lance le mode Annotation, Ctrl+Maj+H ouvre l'historique.";
+inline const wchar_t* ShortcutsNote() { return TR(annotations_shortcuts_note); }
 
 // Retention menu (« Conserver les terminées »): one line each, the recommended one marked.
 inline const wchar_t* RetentionNote(int days) {
-    return days == 7 ? L"Elles quittent vite l'historique." : days == 30 ? L"Recommandé." : L"Pour garder un long historique.";
+    return days == 7 ? TR(retention_7_note) : days == 30 ? TR(sleep_120_note) : TR(retention_90_note);
 }
 
 // Agent logos and the annotation mark: the exact Paper paths of src/annotation-kit.h (Glyphs::claude,

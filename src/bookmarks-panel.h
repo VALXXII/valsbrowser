@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // "Favoris" drawer (Ctrl+Maj+O, "Gérer les favoris"): the History drawer's twin, docked
 // to the same right edge under the toolbar, 268 DIP wide. Header + close, a search
 // field (type anywhere to filter: every word in the title or the address), then the
@@ -92,9 +93,9 @@ private:
     }
     Row MakeRow(const Bookmarks::Node& n, int level) const {
         Row r; r.id = n.id; r.level = level; r.folder = n.kind == Bookmarks::Kind::Folder; r.title = Bookmarks::DisplayTitle(n); r.url = n.url;
-        if (r.folder) { r.count = store_->CountLinks(n.id); r.open = open_.count(n.id) > 0; r.detail = r.count == 0 ? L"Vide" : std::to_wstring(r.count) + (r.count > 1 ? L" favoris" : L" favori"); }
+        if (r.folder) { r.count = store_->CountLinks(n.id); r.open = open_.count(n.id) > 0; r.detail = r.count == 0 ? std::wstring(TR(bookmarks_folder_empty)) : TRP(bookmarks_count, r.count); }
         else { AddressBar::Parts p; r.local = AddressBar::Split(n.url, p) && p.scheme == L"file"; r.detail = HistoryView::HostOf(n.url); r.site = AddressBar::SiteOf(n.url); }
-        if (r.title.empty()) r.title = r.folder ? L"Dossier sans nom" : n.url;
+        if (r.title.empty()) r.title = r.folder ? std::wstring(TR(bookmarks_unnamed_folder)) : n.url;
         return r;
     }
     void Rebuild() {
@@ -151,27 +152,31 @@ private:
         target = std::clamp(target, 0.f, MaxScroll());
         if (target != scroll) { scroll_.Set(target, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : DrawerMotion::scroll); if (hooks_.schedule) hooks_.schedule(now); }
     }
-    std::wstring Spoken(int i) const { const Row& r = rows_[i]; return r.title + L", " + (r.folder ? (r.open ? L"dossier développé, " : L"dossier réduit, ") + r.detail : r.detail) + L", " + std::to_wstring(i + 1) + L" sur " + std::to_wstring(rows_.size()); }
+    std::wstring Spoken(int i) const {
+        const Row& r = rows_[i]; const std::wstring pos = std::to_wstring(i + 1), total = std::to_wstring(rows_.size());
+        if (!r.folder) return TRF(bookmarks_spoken_link, r.title, r.detail, pos, total);
+        return r.open ? TRF(bookmarks_spoken_folder_open, r.title, r.detail, pos, total) : TRF(bookmarks_spoken_folder_closed, r.title, r.detail, pos, total);
+    }
     void SetFocusHit(int hit) {
         focus_ = hit; Reveal(hit); Interact(hover_, pressed_);
         if (uia_.Listening()) uia_.Raise(Key(hit), UIA_AutomationFocusChangedEventId);
         if (!hooks_.announce || !keyboard_) return;
-        if (hit == SearchHit) hooks_.announce(query_.empty() ? L"Rechercher dans les favoris" : L"Rechercher dans les favoris : " + query_);
-        else if (hit == CloseHit) hooks_.announce(L"Fermer les favoris");
+        if (hit == SearchHit) hooks_.announce(query_.empty() ? std::wstring(TR(bookmarks_search)) : TRF(bookmarks_search_query, query_));
+        else if (hit == CloseHit) hooks_.announce(TR(bookmarks_close));
         else if (IsRowPart(hit) && HitIndex(hit) < static_cast<int>(rows_.size())) {
             const int part = HitPart(hit); const Row& r = rows_[HitIndex(hit)];
-            hooks_.announce(part == 0 ? Spoken(HitIndex(hit)) : r.folder || part == 2 ? L"Supprimer" : L"Ouvrir dans un nouvel onglet");
+            hooks_.announce(part == 0 ? Spoken(HitIndex(hit)) : r.folder || part == 2 ? std::wstring(TR(common_delete)) : std::wstring(TR(history_open_new_tab)));
         }
     }
     void SetQuery(std::wstring q) { if (q == query_) return; query_ = std::move(q); if (IsRowPart(focus_)) focus_ = SearchHit; scroll_.Snap(0); Rebuild(); Invalidate(); if (uia_.Listening()) uia_.ChildrenChanged(ListKey); if (hooks_.announce) hooks_.announce(rows_.empty() ? EmptyText() : std::to_wstring(rows_.size()) + (rows_.size() > 1 ? L" résultats" : L" résultat")); }
-    std::wstring EmptyText() const { const auto q = AddressBar::Trim(query_); return q.empty() ? std::wstring(L"Aucun favori") : L"Aucun résultat pour « " + q + L" »"; }
+    std::wstring EmptyText() const { const auto q = AddressBar::Trim(query_); return q.empty() ? std::wstring(TR(bookmarks_empty)) : TRF(history_no_results, q); }
     void Toggle(int i, int force = -1) {
         if (i < 0 || i >= static_cast<int>(rows_.size()) || !rows_[i].folder || !query_.empty()) return;
         const auto id = rows_[i].id; const bool open = force < 0 ? !open_.count(id) : force == 1;
         if (open) open_.insert(id); else open_.erase(id);
         Rebuild(); scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll())); Invalidate();
         if (uia_.Listening()) { uia_.ChildrenChanged(ListKey); uia_.Raise(Key(RowHit(i)), UIA_ExpandCollapseExpandCollapseStatePropertyId); }
-        if (hooks_.announce) hooks_.announce(rows_[i].title + (open ? L", développé" : L", réduit"));
+        if (hooks_.announce) hooks_.announce(open ? TRF(common_section_expanded, rows_[i].title) : TRF(common_section_collapsed, rows_[i].title));
     }
     RECT RowScreen(int i) const { const float top = RowTop(i, scroll_.Value(Motion::Now())); RECT r{Px(Panel::padding - 6), Px(top - 6), Px(Layout::width - Panel::padding + 6), Px(top + Panel::tile + 6)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     void Activate(int hit, bool keyboard, bool newTab = false) {
@@ -232,7 +237,7 @@ private:
         const bool focused = GetFocus() == hwnd_;
         t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); chrome_.keyboardModality = keyboard_;
         auto R = [](Design::Box b) { return D2D1_RECT_F{b.left, b.top, b.right, b.bottom}; };
-        chrome_.Text(L"Favoris", R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
+        chrome_.Text(TR(bookmarks_title), R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
         const auto cv = motion_.Visual(CloseHit, now);
         chrome_.DrawButton(L"close", R(Panel::Close()), Design::ButtonVariant::Ghost, {cv.hover, cv.press, false, focused && focus_ == CloseHit});
         {   // Search field: the History drawer's, with the accent caret.
@@ -241,7 +246,7 @@ private:
             if (focused && focus_ == SearchHit && keyboard_) chrome_.FocusRing(box, Design::Radius::control);
             chrome_.Icon(L"search", R(HistoryView::Layout::SearchIcon()), Design::Size::icon, Design::Text::secondary);
             const auto text = R(HistoryView::Layout::SearchText(!query_.empty()));
-            if (query_.empty()) chrome_.Text(L"Rechercher dans les favoris", text, Panel::line, Design::Text::muted, false, false, -.16f);
+            if (query_.empty()) chrome_.Text(TR(bookmarks_search), text, Panel::line, Design::Text::muted, false, false, -.16f);
             else { const float w = chrome_.TextWidth(query_, Panel::line, false, false, -.16f), shift = std::max(0.f, w - (text.right - text.left - 2));
                 t->PushAxisAlignedClip(text, D2D1_ANTIALIAS_MODE_ALIASED); chrome_.Text(query_, {text.left - shift, text.top, text.left - shift + w + 4, text.bottom}, Panel::line, .9f, false, false, -.16f); t->PopAxisAlignedClip(); }
             if (focused && focus_ == SearchHit) {
@@ -254,7 +259,7 @@ private:
         t->PushAxisAlignedClip(D2D1::RectF(0, HistoryView::Layout::viewTop, Layout::width, h), D2D1_ANTIALIAS_MODE_ALIASED);
         if (rows_.empty()) {
             chrome_.Text(EmptyText(), {Panel::padding, Layout::firstRow, Layout::width - Panel::padding, Layout::firstRow + 20}, Panel::line, Design::Text::muted, false, false, -.16f);
-            if (query_.empty()) chrome_.Text(L"Ctrl+D pour ajouter la page", {Panel::padding, Layout::firstRow + 22, Layout::width - Panel::padding, Layout::firstRow + 42}, 14, Design::Text::disabled);
+            if (query_.empty()) chrome_.Text(TR(bookmarks_empty_hint), {Panel::padding, Layout::firstRow + 22, Layout::width - Panel::padding, Layout::firstRow + 42}, 14, Design::Text::disabled);
         }
         for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
             const float top = RowTop(i, scroll); if (top + Panel::tile < HistoryView::Layout::viewTop - 8 || top > h) continue;
@@ -316,9 +321,9 @@ private:
         std::vector<Accessibility::Node> nodes; if (!visible_ || closing_) return nodes;
         auto screen = [&](D2D1_RECT_F r) { RECT p{Px(r.left), Px(r.top), Px(r.right), Px(r.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&p), 2); return p; };
         auto R = [](Design::Box b) { return D2D1_RECT_F{b.left, b.top, b.right, b.bottom}; };
-        Accessibility::Node close; close.key = CloseKey; close.name = L"Fermer les favoris"; close.accelerator = L"Échap"; close.automationId = L"BookmarksClose"; close.bounds = screen(R(Panel::Close())); nodes.push_back(close);
-        Accessibility::Node search; search.key = SearchKey; search.role = Accessibility::Role::Edit; search.name = L"Rechercher dans les favoris"; search.value = query_; search.automationId = L"BookmarksSearch"; search.bounds = screen(R(HistoryView::Layout::Search())); nodes.push_back(search);
-        Accessibility::Node list; list.key = ListKey; list.role = Accessibility::Role::List; list.name = L"Favoris"; list.automationId = L"BookmarksList"; list.focusable = false; RECT w{}; GetWindowRect(hwnd_, &w); list.bounds = w; nodes.push_back(list);
+        Accessibility::Node close; close.key = CloseKey; close.name = TR(bookmarks_close); close.accelerator = TR(key_escape); close.automationId = L"BookmarksClose"; close.bounds = screen(R(Panel::Close())); nodes.push_back(close);
+        Accessibility::Node search; search.key = SearchKey; search.role = Accessibility::Role::Edit; search.name = TR(bookmarks_search); search.value = query_; search.automationId = L"BookmarksSearch"; search.bounds = screen(R(HistoryView::Layout::Search())); nodes.push_back(search);
+        Accessibility::Node list; list.key = ListKey; list.role = Accessibility::Role::List; list.name = TR(bookmarks_title); list.automationId = L"BookmarksList"; list.focusable = false; RECT w{}; GetWindowRect(hwnd_, &w); list.bounds = w; nodes.push_back(list);
         const float scroll = scroll_.Value(Motion::Now()), h = Height();
         for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
             const Row& r = rows_[i]; const float top = RowTop(i, scroll);
@@ -368,7 +373,7 @@ public:
         owner_ = owner; store_ = store; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 1024;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarksDrawer";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Favoris", WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         Accessibility::Host host; host.window = hwnd_;
@@ -402,7 +407,7 @@ public:
         Paint(); ValidateRect(hwnd_, nullptr); SetForegroundWindow(hwnd_); SetFocus(hwnd_);
         if (uia_.Listening()) { uia_.ChildrenChanged(ListKey); uia_.Raise(SearchKey, UIA_AutomationFocusChangedEventId); }
         std::size_t links = 0; if (store_) links = store_->CountLinks(Bookmarks::BarRoot) + store_->CountLinks(Bookmarks::OtherRoot);
-        if (hooks_.announce) hooks_.announce(links ? L"Favoris, " + std::to_wstring(links) + (links > 1 ? L" favoris" : L" favori") : L"Favoris, aucun favori");
+        if (hooks_.announce) hooks_.announce(links ? TRP(bookmarks_announce_count, links) : std::wstring(TR(bookmarks_announce_none)));
         if (hooks_.schedule) hooks_.schedule(now);
     }
     void Hide(bool keyboard, bool animate) {

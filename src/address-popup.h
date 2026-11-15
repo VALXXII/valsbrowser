@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Suggestion list under the address bar (issue #20, Paper "Adresse · Édition").
 //
 // An owned, never-activated popup (WS_EX_NOACTIVATE + MA_NOACTIVATE): keyboard
@@ -63,8 +64,8 @@ public:
     std::wstring Note(const AddressBar::Suggestion& row) const {
         switch (row.kind) {
         case AddressBar::Kind::Site: return row.title;
-        case AddressBar::Kind::Address: return L"Ouvrir l'adresse";
-        default: return L"Rechercher avec " + engine_;
+        case AddressBar::Kind::Address: return TR(suggest_open_address);
+        default: return TRF(suggest_search_with, engine_);
         }
     }
     // Spoken form of a row for UI Automation.
@@ -78,7 +79,7 @@ public:
         hooks_ = std::move(hooks);
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"BrowserAddressSuggestions";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"Suggestions", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, TR(suggest_window_name), WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
         // No DWM rounding or DWM border (rounding always casts a shadow): a window region
         // rounds it at Layout::radius and PaintRows draws the hairline DWM used to draw.
@@ -200,7 +201,7 @@ private:
         if (!Removable(hover_)) return;
         const auto b = RemoveBox(hover_);
         t.uFlags = TTF_SUBCLASS; t.rect = {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)};
-        t.lpszText = const_cast<wchar_t*>(L"Retirer de l'historique (Maj+Suppr)");
+        t.lpszText = const_cast<wchar_t*>(TR(suggest_remove_tip));
         SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t));
     }
     void Pointer(float x, float y) {

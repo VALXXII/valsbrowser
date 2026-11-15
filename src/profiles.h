@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Profiles (Paper p-I-0, design/profiles-implementation-plan.md): several local profiles, one
 // profile per window. Data model, storage and lifecycle only; no UI. Pure Win32 + C++17.
 //
@@ -38,7 +39,8 @@
 namespace Profiles {
 
 inline constexpr const wchar_t* DefaultId = L"default";
-inline constexpr const wchar_t* DefaultName = L"Personnel";
+// The default profile's name when it is CREATED (stored as data afterwards, never renamed on a language change).
+inline const wchar_t* DefaultName() { return TR(profile_default_name); }
 inline constexpr const wchar_t* DefaultIcon = L"house";
 inline constexpr std::size_t MaxNameLength = 32;     // user-perceived characters (surrogate pairs count once)
 inline constexpr DWORD UndoMilliseconds = 10000;     // Paper P04: « Vous pourrez annuler pendant 10 secondes »
@@ -261,7 +263,7 @@ inline NameError ValidateName(const Registry& reg, const std::wstring& name, con
 }
 inline std::wstring UniqueDefaultName(const Registry& reg) {
     for (int n = 1;; ++n) {
-        const std::wstring candidate = n == 1 ? std::wstring(L"Nouveau profil") : L"Nouveau profil " + std::to_wstring(n);
+        const std::wstring candidate = n == 1 ? std::wstring(TR(profile_new_name)) : TRF(profile_new_name_numbered, TR(profile_new_name), std::to_wstring(n));
         if (ValidateName(reg, candidate, L"") == NameError::None) return candidate;
     }
 }
@@ -283,7 +285,7 @@ inline int FurthestHue(const Registry& reg) {
 
 // ---- Registry -------------------------------------------------------------------------------
 namespace Detail {
-inline Profile DefaultProfile() { Profile p; p.id = DefaultId; p.name = DefaultName; p.icon = DefaultIcon; p.hue = 0; p.intensity = 0; p.neutral = true; return p; }
+inline Profile DefaultProfile() { Profile p; p.id = DefaultId; p.name = DefaultName(); p.icon = DefaultIcon; p.hue = 0; p.intensity = 0; p.neutral = true; return p; }
 inline std::wstring NewId() {
     static unsigned counter = 0; LARGE_INTEGER qpc; QueryPerformanceCounter(&qpc);
     const unsigned long long x = (static_cast<unsigned long long>(qpc.QuadPart) * 0x9E3779B97F4A7C15ull) ^ (static_cast<unsigned long long>(GetCurrentProcessId()) << 32) ^ (++counter * 0xBF58476D1CE4E5B9ull);
@@ -300,7 +302,7 @@ inline void AdoptFolders(const std::wstring& root, Doc& d) {
         if (known) continue;
         Profile p; p.id = id; p.icon = Icons().front(); p.hue = 200; p.intensity = .14f;
         Registry tmp; tmp.items = d.items;
-        do { p.name = L"Profil " + std::to_wstring(n++); } while (ValidateName(tmp, p.name, L"") != NameError::None);
+        do { p.name = TRF(profile_numbered, std::to_wstring(n++)); } while (ValidateName(tmp, p.name, L"") != NameError::None);
         d.items.push_back(p);
     }
 }

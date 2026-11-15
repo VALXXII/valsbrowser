@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // « Connecter un agent » (V2) — Paper « MCP - Design UI UX »: 1.1 10OW-0 (launch), 1.2 ZCC-0 (en
 // cours), 1.3 ZDH-0 (connecté + Terminé), 1.4 ZEI-0 (échec et reprise), 1.5 ZFJ-0 (réglage
 // manuel déplié), 1.6 ZGK-0 (disque amovible), 1.7 105Y-0 (pastille « local » dépliée); motion
@@ -100,19 +101,19 @@ inline std::wstring AppLong(AgentKind a) { return a == AgentKind::Claude ? L"Cla
 inline std::wstring AppButtonLabel(AgentKind a, const AppStatus& s) {
     const std::wstring n = AgentName(a);
     switch (s.state) {
-    case ConnectState::Working: return s.detail.empty() ? (a == AgentKind::Claude ? std::wstring(L"Cliquez sur Installer dans Claude") : L"Connexion à " + n + L"…") : s.detail;
-    case ConnectState::Connected: return n + L" est connecté";
-    case ConnectState::Failed: return L"Réessayer avec " + n;
-    case ConnectState::Reconnect: return L"Reconnecter " + n;
-    default: return L"Connecter avec " + n;
+    case ConnectState::Working: return s.detail.empty() ? (a == AgentKind::Claude ? std::wstring(TR(connect_click_install_claude)) : TRF(connect_connecting_to, n)) : s.detail;
+    case ConnectState::Connected: return TRF(connect_is_connected, n);
+    case ConnectState::Failed: return TRF(connect_retry_with, n);
+    case ConnectState::Reconnect: return TRF(connect_reconnect, n);
+    default: return TRF(connect_with, n);
     }
 }
 
 namespace ConnectSpec {
 inline constexpr float width = 440, radius = 12, button = 32, gap = 8, pillGap = 8, pillW = 340;
-inline constexpr const wchar_t* manualText = L"Dans votre app, ajoutez un serveur local avec cette commande :";
-inline constexpr const wchar_t* localTitle = L"Reste sur cet ordinateur";
-inline constexpr const wchar_t* localText = L"Vos notes et captures sont enregistrées uniquement sur ce PC, jamais sur des serveurs. Quand votre agent les lit, son fournisseur (Anthropic ou OpenAI) reçoit ce qu'il utilise.";
+inline const wchar_t* manualText() { return TR(connect_manual_text); }
+inline const wchar_t* localTitle() { return TR(connect_local_title); }
+inline const wchar_t* localText() { return TR(connect_local_text); }
 }
 enum ConnectHit { CNone = 0, CHeader = 1, CClaude = 2, CCodex = 3, CDone = 4, CManual = 5, CCopyCommand = 6, CCopyJson = 7, CCopyToml = 8, CLocal = 9, CClaudeOff = 10, CCodexOff = 11 };
 enum ConnectBlock { BHeader = 1, BClaude = 10, BClaudeMsg = 11, BCodex = 20, BCodexMsg = 21, BDone = 30, BFooter = 40 };
@@ -130,10 +131,11 @@ struct ConnectView {
     bool DoneVisible() const { return AnyConnected() && !AnyWorking(); }
     // V3 (Paper 5.6): both apps connected and both to restart => one line under the last button,
     // « Redémarrez Claude et Codex pour les activer ».
-    static bool Restart(const AppStatus& s) { return s.state == ConnectState::Connected && s.detail.rfind(L"Redémarrez ", 0) == 0; }
+    // The message agent-connect writes is TR(agent_restart_to_enable): compare with its leading words in this language.
+    static bool Restart(const AppStatus& s) { const std::wstring t = TR(agent_restart_to_enable); const std::wstring lead = t.substr(0, t.find(L"{0}")); return s.state == ConnectState::Connected && !lead.empty() && s.detail.rfind(lead, 0) == 0; }
     bool BothRestart() const { return Restart(setup.claude) && Restart(setup.codex); }
     std::wstring Message(AgentKind a) const {
-        if (BothRestart()) return a == AgentKind::Codex ? std::wstring(L"Redémarrez Claude et Codex pour les activer") : std::wstring();
+        if (BothRestart()) return a == AgentKind::Codex ? std::wstring(TR(connect_restart_both)) : std::wstring();
         const auto& s = App(a); return (s.state == ConnectState::Failed || s.state == ConnectState::Connected) ? s.detail : std::wstring();
     }
     bool HasMessage(AgentKind a) const { return !Message(a).empty(); }
@@ -160,7 +162,7 @@ inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
         const auto& s = v.App(a);
         rect = {bx, y, br, y + button};
         auto& off = a == AgentKind::Claude ? l.claudeOff : l.codexOff;
-        if (v.Disconnectable(a)) { const float w = 10 + ink.Width(L"Déconnecter", F(12, 16, 500)) + 10; off = {br - 4 - w, y + 4, br - 4, y + button - 4}; } else off = {};
+        if (v.Disconnectable(a)) { const float w = 10 + ink.Width(TR(agent_disconnect), F(12, 16, 500)) + 10; off = {br - 4 - w, y + 4, br - 4, y + button - 4}; } else off = {};
         l.blocks.push_back({key, y, button, size_t(s.state) * 1000003u ^ Hash(AppButtonLabel(a, s))}); y += button;
         if (v.HasMessage(a)) { y += gap; msg = {bx, y, br, y + 16}; l.blocks.push_back({msgKey, y, 16, Hash(v.Message(a)) ^ size_t(s.state)}); y += 16; }
         else msg = {};
@@ -172,19 +174,19 @@ inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
     y += 12;
     {   const float top = y;
         if (!v.manual) {
-            const float tw = ink.Width(L"Autre app ou réglage manuel", F(13, 18)) + 6 + 14;
+            const float tw = ink.Width(TR(settings_manual_connect), F(13, 18)) + 6 + 14;
             l.manual = {x0 + inner / 2 - tw / 2 - 4, y + 1 + 12 - 3, x0 + inner / 2 + tw / 2 + 4, y + 1 + 12 + 18 + 3};
             y += 1 + 12 + 18 + 14;
             l.command = l.copy = l.json = l.toml = l.manualText = l.formatsLabel = D2D1_RECT_F{};
         } else {
-            const float tw = ink.Width(L"Autre app ou réglage manuel", F(13, 18, 500)) + 6 + 14;
+            const float tw = ink.Width(TR(settings_manual_connect), F(13, 18, 500)) + 6 + 14;
             l.manual = {x0 + inner / 2 - tw / 2 - 4, y + 1 + 12 - 3, x0 + inner / 2 + tw / 2 + 4, y + 1 + 12 + 18 + 3};
             y += 1 + 12 + 18 + 12;
             l.manualText = {x0 + 20, y, x0 + inner - 20, y + 19}; y += 19 + 12;
-            const float cw = 12 + 14 + 6 + ink.Width(v.copied == CCopyCommand ? L"Copié" : L"Copier", F(13, 16, 500)) + 12;
+            const float cw = 12 + 14 + 6 + ink.Width(v.copied == CCopyCommand ? TR(connect_copied) : TR(cmd_copy), F(13, 16, 500)) + 12;
             l.copy = {x0 + inner - 20 - cw, y, x0 + inner - 20, y + 32}; l.command = {x0 + 20, y, l.copy.left - 8, y + 32}; y += 32 + 12;
-            const float lw = ink.Width(L"Copier au format :", F(12, 16));
-            auto chip = [&](const wchar_t* t, int id) { return 6 + 14 + 4 + ink.Width(v.copied == id ? L"Copié" : t, F(13, 16, 500)) + 6; };
+            const float lw = ink.Width(TR(connect_copy_format), F(12, 16));
+            auto chip = [&](const wchar_t* t, int id) { return 6 + 14 + 4 + ink.Width(v.copied == id ? TR(connect_copied) : t, F(13, 16, 500)) + 6; };
             const float jw = chip(L"JSON", CCopyJson), tw2 = chip(L"TOML", CCopyToml), total = lw + 14 + jw + 6 + tw2;
             float x = x0 + inner / 2 - total / 2;
             l.formatsLabel = {x, y, x + lw, y + 24}; x += lw + 14;
@@ -222,9 +224,9 @@ inline void PaintAppButton(Ink& ink, const ConnectView& v, AgentKind a, D2D1_REC
         Pieces(ink, {PLogo(a, 16), PText(label, f, {1, 1, 1, 1})}, r);
         if (v.Disconnectable(a)) {   // quiet text button at the right end; the status keeps the centre
             const int off = a == AgentKind::Claude ? CClaudeOff : CCodexOff; const auto ov = v.V(off);
-            const D2D1_RECT_F b{r.right - 4 - (10 + ink.Width(L"Déconnecter", F(12, 16, 500)) + 10), r.top + 4, r.right - 4, r.bottom - 4};
+            const D2D1_RECT_F b{r.right - 4 - (10 + ink.Width(TR(agent_disconnect), F(12, 16, 500)) + 10), r.top + 4, r.right - 4, r.bottom - 4};
             if (ov.hover > 0 || ov.press > 0) ink.Fill(b, 4, {1, 1, 1, .06f * ov.hover + .04f * ov.press});
-            ink.Text(L"Déconnecter", F(12, 16, 500), b, Hex(0xFFFFFFB3), false, Align::Center, true);
+            ink.Text(TR(agent_disconnect), F(12, 16, 500), b, Hex(0xFFFFFFB3), false, Align::Center, true);
             if (v.focus == off) FocusRing(ink, b, 4, v.keyboard);
         }
         break;
@@ -246,7 +248,7 @@ inline void PaintAppMessage(Ink& ink, const ConnectView& v, AgentKind a, D2D1_RE
 inline void PaintConnectHeader(Ink& ink, const ConnectView& v, const ConnectLayout& l) {
     const float x = l.header.left + 20, y = l.header.top + 20, right = l.headerButton.left - 12;
     ink.Icon(Glyphs::tree, {x, y + 4, x + 20, y + 24}, {1, 1, 1, .5f});
-    ink.Text(L"Connecter un agent", F(18, 24, 600, -.015f), {x + 26, y + 2, right, y + 26}, {1, 1, 1, 1});
+    ink.Text(TR(annotation_connect_agent), F(18, 24, 600, -.015f), {x + 26, y + 2, right, y + 26}, {1, 1, 1, 1});
     CloseButton(ink, l.headerButton, 16, v.V(CHeader), v.focus == CHeader, v.keyboard, v.reduced);
 }
 inline void PaintConnectFooter(Ink& ink, const ConnectView& v, const ConnectLayout& l, float caretTurn) {
@@ -254,21 +256,21 @@ inline void PaintConnectFooter(Ink& ink, const ConnectView& v, const ConnectLayo
     const auto mv = v.V(CManual);
     {   ScaleScope s(ink.Target(), l.manual, Motion::PressScale(mv.press, v.reduced));
         if (mv.hover > 0) ink.Fill(l.manual, 6, {1, 1, 1, .05f * mv.hover});
-        Pieces(ink, {PText(L"Autre app ou réglage manuel", v.manual ? F(13, 18, 500) : F(13, 18), Hex(v.manual ? 0xFFFFFFE6 : 0xFFFFFFB3)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f}, 6, 180 * caretTurn)}, l.manual);
+        Pieces(ink, {PText(TR(settings_manual_connect), v.manual ? F(13, 18, 500) : F(13, 18), Hex(v.manual ? 0xFFFFFFE6 : 0xFFFFFFB3)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f}, 6, 180 * caretTurn)}, l.manual);
         if (v.focus == CManual) FocusRing(ink, l.manual, 6, v.keyboard); }
     if (!v.manual) return;
-    ink.Text(ConnectSpec::manualText, F(13, 19), l.manualText, Hex(0xFFFFFFB3), false, Align::Center);
+    ink.Text(ConnectSpec::manualText(), F(13, 19), l.manualText, Hex(0xFFFFFFB3), false, Align::Center);
     ink.Fill(l.command, 6, Hex(Ink_::raised));
     const Font mono = Mono(12, 16, true);
     ink.Text(ShortPath(ink, v.setup.command, mono, l.command.right - l.command.left - 20), mono, {l.command.left + 10, l.command.top, l.command.right - 10, l.command.bottom}, Hex(0xFFFFFFCC), false, Align::Leading, true);
     auto chip = [&](int id, D2D1_RECT_F r, const wchar_t* label, float iconAlpha, float pad) {
         const auto iv = v.V(id); ScaleScope s(ink.Target(), r, Motion::PressScale(iv.press, v.reduced));
         ink.Fill(r, 6, RaisedFill(iv)); const bool done = v.copied == id;
-        Pieces(ink, {PIcon(done ? Glyphs::check : Glyphs::copy, 14, {1, 1, 1, done ? 1.f : iconAlpha}, pad == 12 ? 6.f : 4.f), PText(done ? L"Copié" : label, F(13, 16, 500), {1, 1, 1, 1})}, r);
+        Pieces(ink, {PIcon(done ? Glyphs::check : Glyphs::copy, 14, {1, 1, 1, done ? 1.f : iconAlpha}, pad == 12 ? 6.f : 4.f), PText(done ? TR(connect_copied) : label, F(13, 16, 500), {1, 1, 1, 1})}, r);
         if (v.focus == id) FocusRing(ink, r, 6, v.keyboard);
     };
-    chip(CCopyCommand, l.copy, L"Copier", 1, 12);
-    ink.Text(L"Copier au format :", F(12, 16), l.formatsLabel, Hex(0xFFFFFF99), false, Align::Leading, true);
+    chip(CCopyCommand, l.copy, TR(cmd_copy), 1, 12);
+    ink.Text(TR(connect_copy_format), F(12, 16), l.formatsLabel, Hex(0xFFFFFF99), false, Align::Leading, true);
     chip(CCopyJson, l.json, L"JSON", .5f, 6); chip(CCopyToml, l.toml, L"TOML", .5f, 6);
 }
 inline void PaintConnectBlock(Ink& ink, const ConnectView& v, const ConnectLayout& l, int key, float caretTurn) {
@@ -281,7 +283,7 @@ inline void PaintConnectBlock(Ink& ink, const ConnectView& v, const ConnectLayou
     case BDone: {
         const auto iv = v.V(CDone); ScaleScope s(ink.Target(), l.done, Motion::PressScale(iv.press, v.reduced));
         ink.Fill(l.done, 6, AccentButton(iv.hover, iv.press));
-        Pieces(ink, {PText(L"Terminé", F(13, 16, 500), {1, 1, 1, 1}), PKey(L"Entrée", Hex(0x00000038), {1, 1, 1, 1})}, l.done);
+        Pieces(ink, {PText(TR(common_done), F(13, 16, 500), {1, 1, 1, 1}), PKey(TR(key_enter), Hex(0x00000038), {1, 1, 1, 1})}, l.done);
         if (v.focus == CDone) FocusRing(ink, l.done, 6, v.keyboard);
         break; }
     case BFooter: PaintConnectFooter(ink, v, l, caretTurn); break;
@@ -289,9 +291,9 @@ inline void PaintConnectBlock(Ink& ink, const ConnectView& v, const ConnectLayou
 }
 // The « local » pill: geometry for a fold amount (0 collapsed .. 1 unfolded), top-centred at (cx, top).
 struct LocalPill { D2D1_RECT_F rect{}; float radius = 8; };
-inline std::wstring LocalLabel(const ConnectSetup& s) { return s.removableDrive.empty() ? std::wstring(ConnectSpec::localTitle) : L"Navigateur sur disque amovible (" + s.removableDrive + L") · reconnectez si la lettre change"; }
+inline std::wstring LocalLabel(const ConnectSetup& s) { return s.removableDrive.empty() ? std::wstring(ConnectSpec::localTitle()) : TRF(connect_removable_drive, s.removableDrive); }
 inline D2D1_SIZE_F LocalCollapsed(Ink& ink, const ConnectSetup& s) { const float b = s.removableDrive.empty() ? 0.f : 2.f; return {8 + 14 + 6 + ink.Width(LocalLabel(s), F(12, 16)) + 8 + b, 28 + b}; }
-inline float LocalExpandedH(Ink& ink) { return 1 + 10 + 16 + 6 + ink.Height(ConnectSpec::localText, F(12, 18), ConnectSpec::pillW - 26) + 12 + 1; }
+inline float LocalExpandedH(Ink& ink) { return 1 + 10 + 16 + 6 + ink.Height(ConnectSpec::localText(), F(12, 18), ConnectSpec::pillW - 26) + 12 + 1; }
 inline LocalPill LayoutLocal(Ink& ink, const ConnectSetup& s, float cx, float top, float fold) {
     const auto c = LocalCollapsed(ink, s); const float w = Lerp(c.width, ConnectSpec::pillW, fold), h = Lerp(c.height, LocalExpandedH(ink), fold);
     LocalPill p; p.rect = {cx - w / 2, top, cx + w / 2, top + h}; p.radius = Lerp(8, 10, fold); return p;
@@ -310,10 +312,10 @@ inline void PaintLocal(Ink& ink, const ConnectView& v, const LocalPill& p, float
         ID2D1Layer* layer = nullptr; ID2D1Geometry* clip = nullptr; PushRoundClip(ink, p.rect, p.radius, layer, clip);
         const float x = p.rect.left + 12, top = p.rect.top + 11, b = Motion::Clamp(fold * 2 - .6f);
         if (b > 0) { ID2D1Layer* g = nullptr; const bool pushed = ink.PushOpacity(b, g);
-            Pieces(ink, {PIcon(Glyphs::infoLocal, 14, {1, 1, 1, 1}), PText(ConnectSpec::localTitle, F(12, 16, 500), {1, 1, 1, 1})}, {x, top, p.rect.right - 12, top + 16}, Align::Leading);
+            Pieces(ink, {PIcon(Glyphs::infoLocal, 14, {1, 1, 1, 1}), PText(ConnectSpec::localTitle(), F(12, 16, 500), {1, 1, 1, 1})}, {x, top, p.rect.right - 12, top + 16}, Align::Leading);
             if (pushed) ink.PopOpacity(g); }
         if (desc > 0) { const float dy = (1 - desc) * Spec::pillLift;
-            ink.Text(ConnectSpec::localText, F(12, 18), {x, top + 22 + dy, x + ConnectSpec::pillW - 26, top + 22 + dy + 60}, WithAlpha(Hex(0xFFFFFFB3), desc), true); }
+            ink.Text(ConnectSpec::localText(), F(12, 18), {x, top + 22 + dy, x + ConnectSpec::pillW - 26, top + 22 + dy + 60}, WithAlpha(Hex(0xFFFFFFB3), desc), true); }
         PopClip(ink, layer, clip);
     }
     if (focus) FocusRing(ink, p.rect, p.radius, v.keyboard);
@@ -450,7 +452,7 @@ class ConnectModal : public Animator::Client {
         if (hooks_.copy) hooks_.copy(text);
         Change([&] { view_.copied = id; });
         KillTimer(modal_.Window(), CopiedTimer); SetTimer(modal_.Window(), CopiedTimer, 1600, nullptr);
-        Announce(L"Copié");
+        Announce(TR(connect_copied));
     }
     void Activate(int hit, bool keyboard) {
         view_.keyboard = keyboard;
@@ -466,7 +468,7 @@ class ConnectModal : public Animator::Client {
             if (view_.Disconnectable(a) && hooks_.disconnect) hooks_.disconnect(a);
             break; }
         case CDone: Close(true, ConnectEnd::Done); break;
-        case CManual: Change([&] { view_.manual = !view_.manual; view_.copied = 0; }, keyboard); Announce(view_.manual ? L"Réglage manuel affiché" : L"Réglage manuel masqué"); break;
+        case CManual: Change([&] { view_.manual = !view_.manual; view_.copied = 0; }, keyboard); Announce(view_.manual ? TR(connect_manual_shown) : TR(connect_manual_hidden)); break;
         case CCopyCommand: Copy(CCopyCommand, view_.setup.command); break;
         case CCopyJson: Copy(CCopyJson, ConnectJson(view_.setup)); break;
         case CCopyToml: Copy(CCopyToml, ConnectToml(view_.setup)); break;
@@ -536,31 +538,31 @@ class ConnectModal : public Animator::Client {
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> n; if (!open_) return n;
         const auto now = Motion::Now();
-        Accessibility::Node d; d.key = DialogKey; d.role = Accessibility::Role::Group; d.name = L"Connecter un agent";
+        Accessibility::Node d; d.key = DialogKey; d.role = Accessibility::Role::Group; d.name = TR(annotation_connect_agent);
         d.automationId = L"AnnotationConnect"; d.focusable = false; GetWindowRect(modal_.Window(), &d.bounds); n.push_back(d);
         auto node = [&](long long key, Accessibility::Role role, const std::wstring& name, D2D1_RECT_F r) -> Accessibility::Node& {
             Accessibility::Node x; x.key = key; x.parent = DialogKey; x.role = role; x.name = name; x.bounds = modal_.Screen(r); n.push_back(x); return n.back(); };
-        if (view_.ClosesAsLater()) { auto& b = node(CHeader, Accessibility::Role::Button, L"Fermer, connecter un agent plus tard", layout_.headerButton); b.accelerator = L"Échap"; b.automationId = L"AnnotationConnectLater"; }
-        else { auto& b = node(CHeader, Accessibility::Role::Button, L"Fermer", layout_.headerButton); b.accelerator = L"Échap"; b.automationId = L"AnnotationConnectClose"; }
+        if (view_.ClosesAsLater()) { auto& b = node(CHeader, Accessibility::Role::Button, TR(connect_close_later), layout_.headerButton); b.accelerator = TR(key_escape); b.automationId = L"AnnotationConnectLater"; }
+        else { auto& b = node(CHeader, Accessibility::Role::Button, TR(common_close), layout_.headerButton); b.accelerator = TR(key_escape); b.automationId = L"AnnotationConnectClose"; }
         for (AgentKind a : {AgentKind::Claude, AgentKind::Codex}) {
             const auto& s = view_.App(a); const int id = a == AgentKind::Claude ? CClaude : CCodex;
             auto& b = node(id, Accessibility::Role::Button, AppButtonLabel(a, s), a == AgentKind::Claude ? layout_.claude : layout_.codex);
             b.enabled = AppEnabled(s); b.automationId = a == AgentKind::Claude ? L"AnnotationConnectClaude" : L"AnnotationConnectCodex";
-            b.status = s.state == ConnectState::Working ? L"En cours" : s.state == ConnectState::Connected ? L"Connecté" : s.state == ConnectState::Failed ? L"Échec" : L"";
+            b.status = s.state == ConnectState::Working ? TR(demo_in_progress) : s.state == ConnectState::Connected ? TR(agent_connected) : s.state == ConnectState::Failed ? TR(downloads_failed) : L"";
             if (view_.HasMessage(a)) b.help = view_.Message(a);
-            if (view_.Disconnectable(a)) { auto& d = node(a == AgentKind::Claude ? CClaudeOff : CCodexOff, Accessibility::Role::Button, L"Déconnecter " + AppLong(a), a == AgentKind::Claude ? layout_.claudeOff : layout_.codexOff);
-                d.help = L"Retire seulement l'entrée du navigateur dans la configuration de " + AppLong(a); d.automationId = a == AgentKind::Claude ? L"AnnotationDisconnectClaude" : L"AnnotationDisconnectCodex"; }
+            if (view_.Disconnectable(a)) { auto& d = node(a == AgentKind::Claude ? CClaudeOff : CCodexOff, Accessibility::Role::Button, TRF(connect_disconnect_app, AppLong(a)), a == AgentKind::Claude ? layout_.claudeOff : layout_.codexOff);
+                d.help = TRF(connect_disconnect_help, AppLong(a)); d.automationId = a == AgentKind::Claude ? L"AnnotationDisconnectClaude" : L"AnnotationDisconnectCodex"; }
         }
-        if (view_.DoneVisible()) { auto& b = node(CDone, Accessibility::Role::Button, L"Terminé", layout_.done); b.accelerator = L"Entrée"; b.automationId = L"AnnotationConnectDone"; }
-        { auto& b = node(CManual, Accessibility::Role::Button, L"Autre app ou réglage manuel", layout_.manual); b.expand = view_.manual ? 2 : 1; b.automationId = L"AnnotationConnectManual"; }
+        if (view_.DoneVisible()) { auto& b = node(CDone, Accessibility::Role::Button, TR(common_done), layout_.done); b.accelerator = TR(key_enter); b.automationId = L"AnnotationConnectDone"; }
+        { auto& b = node(CManual, Accessibility::Role::Button, TR(settings_manual_connect), layout_.manual); b.expand = view_.manual ? 2 : 1; b.automationId = L"AnnotationConnectManual"; }
         if (view_.manual) {
-            auto& t = node(StatusKey, Accessibility::Role::Text, ConnectSpec::manualText, layout_.command); t.value = view_.setup.command; t.focusable = false;
-            auto& c = node(CCopyCommand, Accessibility::Role::Button, view_.copied == CCopyCommand ? L"Copié" : L"Copier la commande", layout_.copy); c.help = view_.setup.command;
-            node(CCopyJson, Accessibility::Role::Button, view_.copied == CCopyJson ? L"Copié" : L"Copier au format JSON", layout_.json);
-            node(CCopyToml, Accessibility::Role::Button, view_.copied == CCopyToml ? L"Copié" : L"Copier au format TOML", layout_.toml);
+            auto& t = node(StatusKey, Accessibility::Role::Text, ConnectSpec::manualText(), layout_.command); t.value = view_.setup.command; t.focusable = false;
+            auto& c = node(CCopyCommand, Accessibility::Role::Button, view_.copied == CCopyCommand ? TR(connect_copied) : TR(connect_copy_command), layout_.copy); c.help = view_.setup.command;
+            node(CCopyJson, Accessibility::Role::Button, view_.copied == CCopyJson ? TR(connect_copied) : TR(connect_copy_json), layout_.json);
+            node(CCopyToml, Accessibility::Role::Button, view_.copied == CCopyToml ? TR(connect_copied) : TR(connect_copy_toml), layout_.toml);
         }
         const auto pill = Local(now);
-        auto& p = node(CLocal, Accessibility::Role::Button, LocalLabel(view_.setup), pill.rect); p.expand = localOpen_ ? 2 : 1; p.help = ConnectSpec::localText; p.automationId = L"AnnotationLocalPill";
+        auto& p = node(CLocal, Accessibility::Role::Button, LocalLabel(view_.setup), pill.rect); p.expand = localOpen_ ? 2 : 1; p.help = ConnectSpec::localText(); p.automationId = L"AnnotationLocalPill";
         return n;
     }
     bool Ensure() {
@@ -569,7 +571,7 @@ class ConnectModal : public Animator::Client {
         WNDCLASSW wc{}; wc.lpfnWndProc = VeilProc; wc.hInstance = instance_; wc.lpszClassName = L"BrowserAnnotationVeil"; RegisterClassW(&wc);
         veil_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"", WS_POPUP, 0, 0, 1, 1, owner_, nullptr, instance_, nullptr);
         if (veil_) SetLayeredWindowAttributes(veil_, 0, 0, LWA_ALPHA);
-        Layer::Options o; o.activatable = true; o.title = L"Connecter un agent";
+        Layer::Options o; o.activatable = true; o.title = TR(annotation_connect_agent);
         if (!modal_.Create(instance_, owner_, o)) return false;
         modal_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return Handle(m, w, l, r); };
         Accessibility::Host host; host.window = modal_.Window(); host.nodes = [this] { return Nodes(); };
@@ -608,7 +610,7 @@ public:
         SetForegroundWindow(modal_.Window()); SetFocus(modal_.Window());
         Animator::Get().Request(this);
         if (modal_.uia.Listening()) modal_.uia.Raise(DialogKey, UIA_Window_WindowOpenedEventId);
-        Announce(L"Connecter un agent");
+        Announce(TR(annotation_connect_agent));
         return true;
     }
     // From the host's connection work (explicit click) or its detection of readers\ / configs.
@@ -621,7 +623,7 @@ public:
         switch (status.state) {
         case ConnectState::Working: Announce(AppButtonLabel(a, status)); break;
         case ConnectState::Connected: Announce(AppLong(a) + L" connecté" + (status.detail.empty() ? L"" : L". " + status.detail)); if (!view_.focus || view_.focus == CClaude || view_.focus == CCodex) view_.focus = view_.DoneVisible() && view_.keyboard ? CDone : view_.focus; break;
-        case ConnectState::Failed: Announce(L"Échec : " + (status.detail.empty() ? L"connexion impossible" : status.detail)); break;
+        case ConnectState::Failed: Announce(TRF(connect_failed_announce, status.detail.empty() ? std::wstring(TR(connect_impossible)) : status.detail)); break;
         default: break;
         }
     }

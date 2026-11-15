@@ -1,4 +1,5 @@
 #include "update-core.h"
+#include "i18n.h"   // messages shown in the About dialog and the update toast
 
 #include <winhttp.h>
 #include <bcrypt.h>
@@ -419,8 +420,7 @@ BrowserUpdate::View NoteStartup(const Config& config) {
             if (UP::AtomicWriteFile(updates + L"\\last-result", rewritten) && UP::ParseVersion(failed, fv)) {
                 view.phase = Phase::Error;
                 view.version = W(failed);
-                view.error = L"L’installation de la version " + W(failed) +
-                             L" a échoué. La version précédente a été conservée.";
+                view.error = TRF(update_error_install_failed_kept, W(failed));
             }
         }
     }
@@ -697,7 +697,7 @@ void Engine::RunCheck(std::uint64_t gen, bool manual, bool startup) {
             failedOp_ = Op::Check;
             failure_ = Failure::Check;
         }
-        if (manual) Publish(gen, Make(Phase::Error, "", L"Impossible de vérifier les mises à jour."));
+        if (manual) Publish(gen, Make(Phase::Error, "", TR(update_error_check_failed)));
         return;
     }
     state.failures = 0;
@@ -740,11 +740,11 @@ void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
         Publish(gen, v);
     };
     std::wstring downloads = Updates() + L"\\downloads", staging = Updates() + L"\\staging";
-    if (!EnsureDir(downloads) || !EnsureDir(staging)) return fail(L"Impossible de préparer le dossier de mise à jour.");
+    if (!EnsureDir(downloads) || !EnsureDir(staging)) return fail(TR(update_error_prepare_folder));
     std::wstring partial = downloads + L"\\" + W(m.package) + L".partial";
     UP::RemoveTree(partial);
     HANDLE file = CreateFileW(partial.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return fail(L"Impossible d’écrire la mise à jour.");
+    if (file == INVALID_HANDLE_VALUE) return fail(TR(update_error_write));
     UP::Sha256 hash;
     std::uint64_t received = 0, lastPublish = 0, start = Ticks(), rateAt = start, rateBytes = 0;
     double rate = 0;
@@ -784,10 +784,10 @@ void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
     CloseHandle(file);
     auto discard = [&] { DeleteFileW(partial.c_str()); };
     if (r.status == HttpResult::Cancelled || cancel_) return discard();
-    if (writeFailed || !flushed) return discard(), fail(L"Espace disque insuffisant ou écriture impossible.");
-    if (r.status != HttpResult::Ok) return discard(), fail(L"Le téléchargement a échoué.");
+    if (writeFailed || !flushed) return discard(), fail(TR(update_error_disk));
+    if (r.status != HttpResult::Ok) return discard(), fail(TR(update_error_download_failed));
     if (received != m.size || hash.Final() != m.sha256)
-        return discard(), fail(L"Le paquet téléchargé est invalide (taille ou empreinte).");
+        return discard(), fail(TR(update_error_package_digest));
     progress(true);
     std::wstring target = staging + L"\\" + W(m.version);
     std::wstring work = target + L".partial-" + W(RandomHex(8));
@@ -795,15 +795,15 @@ void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
     bool extracted = UP::ExtractPackage(partial, m.version, work, &cancel_, error);
     discard();
     if (cancel_) return void(UP::RemoveTree(work));
-    if (!extracted) return fail(L"Le paquet de mise à jour est invalide.");
+    if (!extracted) return fail(TR(update_error_package_invalid));
     if (UP::PathExists(target) && !UP::RemoveTree(target)) {
         UP::RemoveTree(work);
-        return fail(L"Une ancienne copie de la mise à jour est verrouillée.");
+        return fail(TR(update_error_locked));
     }
     // A scanner/indexer may still hold a file just extracted into `work`: the rename is retried briefly.
     if (!UP::MoveDirectory(work, target, 15 * 1000)) {
         UP::RemoveTree(work);
-        return fail(L"Impossible de préparer la mise à jour.");
+        return fail(TR(update_error_prepare));
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -915,12 +915,12 @@ ActionResult Engine::Perform(Action action) {
     std::wstring stage = Updates() + L"\\staging\\" + W(version);
     std::string error;
     if (version.empty() || !UP::VerifyStagedTree(stage, version, error))
-        return failInstall(L"La mise à jour préparée est invalide.");
+        return failInstall(TR(update_error_prepared_invalid));
     std::string nonce = RandomHex(16);
     std::wstring helperDir = Updates() + L"\\helper";
     std::wstring helper = helperDir + L"\\update-helper-" + W(nonce) + L".exe";
     if (!EnsureDir(helperDir) || !CopyFileW((stage + L"\\update-helper.exe").c_str(), helper.c_str(), TRUE))
-        return failInstall(L"Impossible de lancer l’installation.");
+        return failInstall(TR(update_error_launch_install));
     std::wstring exe = FullPath(config_.exePath);
     DataPaths paths = ResolveDataPaths(exe, root_);
     FILETIME created{}, exited{}, kernel{}, user{};
@@ -933,7 +933,7 @@ ActionResult Engine::Perform(Action action) {
     std::wstring planPath = Updates() + L"\\install-" + W(nonce);
     if (!UP::AtomicWriteFile(planPath, plan)) {
         DeleteFileW(helper.c_str());
-        return failInstall(L"Impossible de lancer l’installation.");
+        return failInstall(TR(update_error_launch_install));
     }
     std::wstring commandLine = L"\"" + helper + L"\" --install " + W(nonce);  // helper path is under root, nonce is hex
     STARTUPINFOW si{};
@@ -947,7 +947,7 @@ ActionResult Engine::Perform(Action action) {
     if (!ok) {
         DeleteFileW(planPath.c_str());
         DeleteFileW(helper.c_str());
-        return failInstall(L"Impossible de lancer l’installation.");
+        return failInstall(TR(update_error_launch_install));
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);

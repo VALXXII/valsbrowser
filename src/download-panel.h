@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Native "Download history" surfaces, painted with Direct2D through their own
 // Chrome instance (shared fonts, icons, helpers):
 //  - Popover: owned, DWM-rounded popup under the toolbar button; the four latest
@@ -238,10 +239,10 @@ public:
             }
             break;
         }
-        case State::Paused: x = Run(L"detail-pause", Bytes(item.received, item.total), x, y, muted); Run(nullptr, L"Paused", x + Panel::groupGap, y, muted); break;
-        case State::Completed: Run(item.missing ? L"warning" : L"check-circle", item.missing ? std::wstring(L"File deleted") : FolderLabel(item.path), x, y, muted); break;
+        case State::Paused: x = Run(L"detail-pause", Bytes(item.received, item.total), x, y, muted); Run(nullptr, TR(downloads_state_paused), x + Panel::groupGap, y, muted); break;
+        case State::Completed: Run(item.missing ? L"warning" : L"check-circle", item.missing ? std::wstring(TR(downloads_state_file_deleted)) : FolderLabel(item.path), x, y, muted); break;
         case State::Failed: Run(L"warning", FailureText(item.reason), x, y, muted); break;
-        case State::Cancelled: Run(L"detail-close", L"Canceled", x, y, muted); break;
+        case State::Cancelled: Run(L"detail-close", TR(downloads_state_canceled), x, y, muted); break;
         }
     }
     Motion::InteractionVisual Interaction(const Scene& scene, int hit) const { return scene.motion ? scene.motion->Visual(hit, scene.now) : Motion::InteractionVisual{}; }
@@ -312,13 +313,13 @@ public:
         chrome_.Icon(L"caret", box, style.iconSize * Motion::PressScale(v.press, scene.motion && scene.motion->ReducedMotion()), style.iconOpacity);
         target->SetTransform(base);
     }
-    float ViewAllWidth() { return chrome_.TextWidth(L"View all", Panel::line, false, false, -.16f); }
+    float ViewAllWidth() { return chrome_.TextWidth(TR(downloads_view_all), Panel::line, false, false, -.16f); }
     void ViewAll(float top, const Scene& scene) {
         const auto v = Interaction(scene, ViewAllHit);
         const float w = ViewAllWidth();
         // Text link: brightens on hover, dims while pressed.
         const float opacity = (Design::Text::muted + (.78f - Design::Text::muted) * v.hover) * (1 - .25f * v.press);
-        chrome_.Text(L"View all", {Panel::padding, top, Panel::padding + w + 2, top + Panel::line}, Panel::line, opacity, false, false, -.16f);
+        chrome_.Text(TR(downloads_view_all), {Panel::padding, top, Panel::padding + w + 2, top + Panel::line}, Panel::line, opacity, false, false, -.16f);
         if (scene.focus == ViewAllHit) { auto b = Panel::ViewAll(top, w); chrome_.FocusRing({b.left, b.top, b.right, b.bottom}, Design::Radius::inset); }
     }
 
@@ -336,7 +337,7 @@ public:
 
         // Header
         const auto title = Panel::Title();
-        chrome_.Text(L"Download history", {title.left, title.top, title.right, title.bottom}, Panel::line, Design::Text::muted, false, true, -.16f);
+        chrome_.Text(TR(downloads_history_title), {title.left, title.top, title.right, title.bottom}, Panel::line, Design::Text::muted, false, true, -.16f);
         const auto close = Panel::Close();
         auto cv = Interaction(scene, CloseHit);
         chrome_.DrawButton(L"close", {close.left, close.top, close.right, close.bottom}, Design::ButtonVariant::Ghost, {cv.hover, cv.press, false, scene.focus == CloseHit});
@@ -347,7 +348,7 @@ public:
         for (const auto& slot : slots) {
             switch (slot.kind) {
             case SlotKind::Empty:
-                chrome_.Text(L"No downloads yet", {Panel::padding, slot.top, Panel::width - Panel::padding, slot.top + Panel::tile}, Panel::line, Design::Text::muted, false, false, -.16f);
+                chrome_.Text(TR(downloads_empty), {Panel::padding, slot.top, Panel::width - Panel::padding, slot.top + Panel::tile}, Panel::line, Design::Text::muted, false, false, -.16f);
                 break;
             case SlotKind::Section:
             case SlotKind::ViewAll: {
@@ -538,13 +539,13 @@ protected:
             t.rect = {Px(b.left + origin.x), Px(b.top + origin.y), Px(b.right + origin.x), Px(b.bottom + origin.y)}; t.lpszText = const_cast<wchar_t*>(text);
             SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
         };
-        add(CloseHit, Panel::Close(), L"Close (Esc)");
+        add(CloseHit, Panel::Close(), TR(common_close_tip));
         if (!items_) return;
         const auto scene = MakeScene(Motion::Now());
         for (const auto& slot : Slots(scene.now)) {
             if (slot.kind == SlotKind::Section) {
                 if (slot.top >= scene.viewTop && slot.top + DrawerLayout::sectionHeight <= scene.viewBottom)
-                    add(static_cast<UINT_PTR>(SectionHit(static_cast<Period>(slot.index))), DrawerLayout::Caret(slot.top), slot.open > .5f ? L"Collapse" : L"Expand");
+                    add(static_cast<UINT_PTR>(SectionHit(static_cast<Period>(slot.index))), DrawerLayout::Caret(slot.top), slot.open > .5f ? TR(common_collapse) : TR(common_expand));
                 continue;
             }
             if (slot.kind != SlotKind::Row || slot.opacity < .99f || slot.top < scene.viewTop || slot.top + Panel::tile > scene.viewBottom) continue;
@@ -574,10 +575,10 @@ protected:
     static std::wstring StatusText(const Item& item) {
         switch (item.state) {
         case State::InProgress: return Bytes(item.received, item.total);
-        case State::Paused: return L"Paused";
-        case State::Completed: return item.missing ? L"File deleted" : L"Completed";
+        case State::Paused: return TR(downloads_state_paused);
+        case State::Completed: return item.missing ? TR(downloads_state_file_deleted) : TR(downloads_state_completed);
         case State::Failed: return FailureText(item.reason);
-        case State::Cancelled: return L"Canceled";
+        case State::Cancelled: return TR(downloads_state_canceled);
         }
         return L"";
     }
@@ -591,13 +592,13 @@ public:
         std::vector<Accessibility::Node> out; if (!hwnd_ || !items_) return out;
         RECT w{}; GetWindowRect(hwnd_, &w); const float k = Dpi() / 96.f; const auto origin = Origin(Motion::Now());
         auto screen = [&](Design::Box b) { return RECT{w.left + static_cast<LONG>((b.left + origin.x) * k), w.top + static_cast<LONG>((b.top + origin.y) * k), w.left + static_cast<LONG>((b.right + origin.x) * k), w.top + static_cast<LONG>((b.bottom + origin.y) * k)}; };
-        Accessibility::Node list; list.key = 3; list.role = Accessibility::Role::List; list.name = L"Download history"; list.automationId = L"DownloadList"; list.focusable = false; list.bounds = w; out.push_back(list);
-        Accessibility::Node close; close.key = CloseHit; close.role = Accessibility::Role::Button; close.name = L"Close"; close.accelerator = L"Esc"; close.automationId = L"DownloadsClose"; close.bounds = screen(Panel::Close()); out.push_back(close);
+        Accessibility::Node list; list.key = 3; list.role = Accessibility::Role::List; list.name = TR(downloads_history_title); list.automationId = L"DownloadList"; list.focusable = false; list.bounds = w; out.push_back(list);
+        Accessibility::Node close; close.key = CloseHit; close.role = Accessibility::Role::Button; close.name = TR(common_close); close.accelerator = TR(key_escape); close.automationId = L"DownloadsClose"; close.bounds = screen(Panel::Close()); out.push_back(close);
         const auto scene = MakeScene(Motion::Now()); int position = 0, count = 0;
         const auto slots = Slots(scene.now);
         for (const auto& slot : slots) if (slot.kind == SlotKind::Row && slot.opacity > .5f) ++count;
         for (const auto& slot : slots) {
-            if (slot.kind == SlotKind::ViewAll) { Accessibility::Node v; v.key = ViewAllHit; v.role = Accessibility::Role::Button; v.name = L"View all"; v.automationId = L"DownloadsViewAll"; v.bounds = screen(Panel::ViewAll(slot.top, const_cast<View&>(view_).ViewAllWidth())); out.push_back(v); continue; }
+            if (slot.kind == SlotKind::ViewAll) { Accessibility::Node v; v.key = ViewAllHit; v.role = Accessibility::Role::Button; v.name = TR(downloads_view_all); v.automationId = L"DownloadsViewAll"; v.bounds = screen(Panel::ViewAll(slot.top, const_cast<View&>(view_).ViewAllWidth())); out.push_back(v); continue; }
             if (slot.kind != SlotKind::Row || slot.opacity <= .5f || slot.index < 0 || slot.index >= static_cast<int>(items_->size())) continue;
             const auto& item = (*items_)[slot.index];
             Accessibility::Node row; row.key = RowKeyBase + item.id; row.parent = 3; row.role = Accessibility::Role::ListItem; row.name = FileName(item.path); row.status = StatusText(item);
@@ -678,7 +679,7 @@ protected:
         chrome_.textCacheLimit = 1024; // every row's name/detail runs + labels, at any history size
         WNDCLASSW wc{}; wc.style = classStyle; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = ClassName();
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Download history", WS_POPUP, 0, 0, Px(width), Px(height), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(downloads_history_title), WS_POPUP, 0, 0, Px(width), Px(height), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
         NativeUI::StripTooltipShadow(tip_);

@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // WebView2 runtime availability at startup: classification of startup failures, discovery
 // overrides, and the recovery state machine shown by the host (design/webview2-startup-recovery.md).
 //
@@ -74,10 +75,10 @@ inline Overrides ReadOverrides(const std::wstring& exeName, EnvReader env = EnvP
         {L"WEBVIEW2_CHANNEL_SEARCH_KIND", L"Software\\Policies\\Microsoft\\Edge\\WebView2\\ChannelSearchKind", L"ChannelSearchKind", false},
     };
     for (const auto& i : items) {
-        if (env(i.variable)) { out.items.push_back({i.variable, L"variable d'environnement", i.blocking}); continue; }
+        if (env(i.variable)) { out.items.push_back({i.variable, TR(wv2_override_env), i.blocking}); continue; }
         for (HKEY root : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
             if ((!exeName.empty() && policy(root, i.policyKey, exeName.c_str())) || policy(root, i.policyKey, L"*")) {
-                out.items.push_back({i.label, root == HKEY_LOCAL_MACHINE ? L"stratégie HKLM" : L"stratégie HKCU", i.blocking});
+                out.items.push_back({i.label, root == HKEY_LOCAL_MACHINE ? TR(wv2_override_hklm) : TR(wv2_override_hkcu), i.blocking});
                 break;
             }
         }
@@ -102,11 +103,11 @@ struct Diagnosis {
 };
 inline const wchar_t* StageName(Stage s) {
     switch (s) {
-    case Stage::Loader: return L"chargement de WebView2Loader.dll";
-    case Stage::Export: return L"fonction du loader";
-    case Stage::Probe: return L"détection du runtime";
-    case Stage::Create: return L"création de l'environnement";
-    case Stage::Callback: return L"démarrage de l'environnement";
+    case Stage::Loader: return TR(wv2_stage_loader);
+    case Stage::Export: return TR(wv2_stage_export);
+    case Stage::Probe: return TR(wv2_stage_probe);
+    case Stage::Create: return TR(wv2_stage_create);
+    case Stage::Callback: return TR(wv2_stage_callback);
     }
     return L"?";
 }
@@ -161,51 +162,44 @@ inline Diagnosis Diagnose(Stage stage, HRESULT hr, const Probe& probe, const Ove
     d.offerInstall = d.cause == Cause::RuntimeMissing || d.cause == Cause::RuntimeInconsistent;
     switch (d.cause) {
     case Cause::RuntimeMissing:
-        d.title = L"WebView2 est introuvable";
-        d.body = L"Le navigateur affiche les pages avec Microsoft Edge WebView2 Runtime, qui n'est pas détecté sur cet ordinateur "
-                 L"(désinstallé ou incomplet). Vous pouvez l'installer depuis Microsoft. Votre profil et vos onglets sont conservés.";
+        d.title = TR(wv2_missing_title);
+        d.body = TR(wv2_missing_body);
         break;
     case Cause::RuntimeInconsistent:
-        d.title = L"WebView2 ne peut pas être ouvert";
-        d.body = L"Microsoft Edge WebView2 Runtime est signalé sur cet ordinateur mais ne peut pas être ouvert : son installation "
-                 L"semble incomplète. Une installation depuis Microsoft peut la rétablir. Votre profil et vos onglets sont conservés.";
+        d.title = TR(wv2_inconsistent_title);
+        d.body = TR(wv2_inconsistent_body);
         break;
     case Cause::OverrideInvalid:
-        d.title = L"WebView2 est imposé par un réglage";
-        d.body = L"Un réglage oblige le navigateur à utiliser un emplacement ou un canal WebView2 précis, introuvable ou non pris en charge"
-                 + (overrides.Any() ? L" : " + overrides.Describe() : std::wstring()) +
-                 L". Le navigateur ne modifie pas ce réglage : corrigez-le (ou demandez à votre administrateur), puis réessayez.";
+        d.title = TR(wv2_override_title);
+        d.body = overrides.Any() ? TRF(wv2_override_body_list, overrides.Describe()) : std::wstring(TR(wv2_override_body));
         break;
     case Cause::LoaderMissing:
-        d.title = L"Fichier du navigateur manquant";
-        d.body = L"WebView2Loader.dll est absent du dossier du navigateur. Réinstallez ou mettez à jour le navigateur, puis réessayez.";
+        d.title = TR(wv2_loader_missing_title);
+        d.body = TR(wv2_loader_missing_body);
         break;
     case Cause::LoaderInvalid:
-        d.title = L"Fichier du navigateur endommagé";
-        d.body = L"WebView2Loader.dll ne peut pas être utilisé. Réinstallez ou mettez à jour le navigateur, puis réessayez.";
+        d.title = TR(wv2_loader_invalid_title);
+        d.body = TR(wv2_loader_invalid_body);
         break;
     case Cause::ProfileUnavailable:
-        d.title = L"Profil inaccessible";
-        d.body = L"Le dossier de profil du navigateur ne peut pas être ouvert (accès refusé ou nom déjà pris). Rien n'a été modifié. "
-                 L"Vérifiez qu'aucun autre programme ne le bloque, puis réessayez.";
+        d.title = TR(wv2_profile_title);
+        d.body = TR(wv2_profile_body);
         break;
     case Cause::OptionsMismatch:
-        d.title = L"Le profil est déjà utilisé";
-        d.body = L"Une autre instance du navigateur utilise ce profil avec d'autres réglages. Fermez-la, puis réessayez.";
+        d.title = TR(wv2_options_title);
+        d.body = TR(wv2_options_body);
         break;
     case Cause::DiskFull:
-        d.title = L"Espace disque insuffisant";
-        d.body = L"WebView2 ne peut pas démarrer faute d'espace disque (ou trop d'anciennes versions en attente de suppression). "
-                 L"Libérez de l'espace, puis réessayez.";
+        d.title = TR(wv2_disk_title);
+        d.body = TR(wv2_disk_body);
         break;
     case Cause::RuntimeStartFailed:
     case Cause::Unknown:
-        d.title = L"WebView2 n'a pas pu démarrer";
-        d.body = L"Le moteur WebView2 n'a pas démarré. Réessayez ; si le problème persiste, redémarrez l'ordinateur.";
+        d.title = TR(wv2_start_title);
+        d.body = TR(wv2_start_body);
         break;
     }
-    d.technical = std::wstring(L"Étape : ") + StageName(stage) + L" · code " + Hex(hr) + L" · version détectée : " +
-                  (d.version.empty() ? L"aucune" : d.version);
+    d.technical = TRF(wv2_technical, StageName(stage), Hex(hr), d.version.empty() ? std::wstring(TR(wv2_version_none)) : d.version);
     return d;
 }
 
@@ -229,24 +223,22 @@ inline std::wstring InstallMessage(const InstallReport& r) {
     using O = InstallReport::Outcome;
     wchar_t code[16]; swprintf(code, 16, L"0x%08lX", static_cast<unsigned long>(r.code));
     switch (r.outcome) {
-    case O::Finished: return r.code == 0 ? L"Le programme d'installation Microsoft a terminé (code 0)."
-                                         : std::wstring(L"Le programme d'installation Microsoft a terminé avec le code ") + code + L".";
-    case O::Cancelled: return L"Installation annulée avant que le programme Microsoft ne s'exécute : rien n'a été installé.";
-    case O::Detached: return L"Le programme d'installation Microsoft a été lancé et continue en arrière-plan.";
-    case O::Busy: return L"Une installation Microsoft de WebView2 lancée par ce navigateur est déjà en cours. Attendez qu'elle se termine, puis Réessayer.";
-    case O::DownloadTimeout: return L"Le téléchargement depuis Microsoft a dépassé 5 minutes : il a été abandonné. Vérifiez la connexion, puis réessayez.";
-    case O::Network: return L"Téléchargement impossible : vérifiez la connexion à Internet (ou le proxy), puis réessayez.";
-    case O::Http: return L"Le serveur de Microsoft a refusé le téléchargement (HTTP " + std::to_wstring(r.code) + L").";
-    case O::Rejected: return L"Le téléchargement a été redirigé vers une adresse non Microsoft : il a été refusé.";
-    case O::TooLarge: return L"Le fichier reçu est trop volumineux pour le programme d'installation attendu : il a été refusé.";
-    case O::Storage: return std::wstring(L"Impossible de préparer le dossier temporaire du téléchargement (") + code + L").";
-    case O::Trust: return std::wstring(L"La signature du programme d'installation n'est pas valide (") + code + L") : il n'a pas été lancé.";
-    case O::Publisher: return L"Le programme d'installation n'est pas signé par Microsoft : il n'a pas été lancé.";
-    case O::Unexpected: return L"Le fichier reçu n'est pas le programme d'installation WebView2 attendu : il n'a pas été lancé.";
-    case O::Launch: return std::wstring(L"Le programme d'installation n'a pas pu être lancé (") + code + L").";
-    case O::Elevation: return L"Le programme d'installation demande des droits d'administrateur ; le navigateur ne les demande pas. "
-                              L"Utilisez la page Microsoft WebView2.";
-    case O::Timeout: return L"Le programme d'installation Microsoft n'a pas terminé en 10 minutes ; il continue peut-être en arrière-plan.";
+    case O::Finished: return r.code == 0 ? std::wstring(TR(wv2_install_finished_ok)) : TRF(wv2_install_finished_code, code);
+    case O::Cancelled: return TR(wv2_install_cancelled);
+    case O::Detached: return TR(wv2_install_detached);
+    case O::Busy: return TR(wv2_install_busy);
+    case O::DownloadTimeout: return TR(wv2_install_download_timeout);
+    case O::Network: return TR(wv2_install_network);
+    case O::Http: return TRF(wv2_install_http, std::to_wstring(r.code));
+    case O::Rejected: return TR(wv2_install_rejected);
+    case O::TooLarge: return TR(wv2_install_too_large);
+    case O::Storage: return TRF(wv2_install_storage, code);
+    case O::Trust: return TRF(wv2_install_trust, code);
+    case O::Publisher: return TR(wv2_install_publisher);
+    case O::Unexpected: return TR(wv2_install_unexpected);
+    case O::Launch: return TRF(wv2_install_launch, code);
+    case O::Elevation: return TR(wv2_install_elevation);
+    case O::Timeout: return TR(wv2_install_timeout);
     }
     return L"";
 }
@@ -343,8 +335,8 @@ public:
         if (!view_.canInstall || view_.phase != Phase::Problem) return false;
         ++installs_;
         view_.phase = Phase::Downloading; view_.canInstall = view_.canRetry = view_.canRelaunch = false;
-        view_.status = L"Téléchargement depuis Microsoft…"; view_.bytes = view_.total = 0; view_.note.clear();
-        view_.statusDetail = L"Quitter annule le téléchargement.";
+        view_.status = TR(wv2_status_downloading); view_.bytes = view_.total = 0; view_.note.clear();
+        view_.statusDetail = TR(wv2_status_quit_cancels);
         Log(L"WEBVIEW2 RECOVERY install requested attempt=" + std::to_wstring(installs_));
         Show();
         if (!h_.startInstall || !h_.startInstall()) {
@@ -359,13 +351,13 @@ public:
         if (phase != Phase::Downloading && phase != Phase::Verifying && phase != Phase::Installing) return;
         view_.phase = phase; view_.bytes = bytes; view_.total = total;
         if (phase == Phase::Downloading) {
-            view_.status = L"Téléchargement depuis Microsoft…";
-            if (total) view_.status += L" " + std::to_wstring(static_cast<unsigned>(bytes * 100 / total)) + L" %";
-        } else if (phase == Phase::Verifying) view_.status = L"Vérification de la signature Microsoft…";
-        else view_.status = L"Installation par Microsoft… (quelques minutes)";
+            view_.status = TR(wv2_status_downloading);
+            if (total) view_.status += L" " + I18n::Percent(static_cast<long long>(bytes * 100 / total));
+        } else if (phase == Phase::Verifying) view_.status = TR(wv2_status_verifying);
+        else view_.status = TR(wv2_status_installing);
         view_.statusDetail = phase == Phase::Installing
-            ? L"Il continue même si vous quittez."
-            : L"Quitter annule le téléchargement.";
+            ? TR(wv2_status_continues)
+            : TR(wv2_status_quit_cancels);
         Show();
     }
     void InstallFinished(const InstallReport& r) {
@@ -378,7 +370,7 @@ public:
         view_.note = InstallMessage(r);
         installerRan_ = installerRan_ || r.outcome == InstallReport::Outcome::Finished || r.outcome == InstallReport::Outcome::Timeout;
         // Whatever the exit code says, only detection decides.
-        view_.phase = Phase::Detecting; view_.status = L"Recherche de WebView2…"; Show();
+        view_.phase = Phase::Detecting; view_.status = TR(wv2_status_detecting); Show();
         Probe p = h_.probe ? h_.probe() : Probe{};
         Log(L"WEBVIEW2 RECOVERY redetect " + (p.attempted ? Hex(p.hr) : std::wstring(L"unavailable")) + L" version=" + (p.version.empty() ? L"-" : p.version));
         view_.phase = Phase::Problem;   // so StartCreate / Problem can run
@@ -394,7 +386,7 @@ public:
         if (!view_.canRelaunch || view_.phase != Phase::Problem) return;
         Log(L"WEBVIEW2 RECOVERY relaunch requested");
         if (h_.relaunch && h_.relaunch()) { view_.phase = Phase::Closed; return; }
-        view_.canRelaunch = false; view_.note = L"Le redémarrage automatique a échoué : fermez puis rouvrez le navigateur."; Show();
+        view_.canRelaunch = false; view_.note = TR(wv2_relaunch_failed_note); Show();
     }
     // Window closing: no callback is honoured afterwards; a running download is cancelled.
     void Shutdown() {
@@ -433,11 +425,9 @@ private:
         // Installer done, runtime still not found: no install button any more; the honest next steps.
         view_.manualPrimary = exhausted_ && view_.diagnosis.offerInstall;
         if (view_.manualPrimary) {
-            view_.diagnosis.body = L"Le programme d'installation Microsoft a terminé, mais Microsoft Edge WebView2 Runtime reste introuvable : "
-                                   L"cette installation ne l'a pas rétabli. Installez-le depuis la page Microsoft WebView2 (ou demandez à votre "
-                                   L"administrateur), puis Réessayer. Votre profil et vos onglets sont conservés.";
+            view_.diagnosis.body = TR(wv2_still_missing_body);
         }
-        if (view_.canRelaunch) view_.note += (view_.note.empty() ? L"" : L" ") + std::wstring(L"Redémarrez le navigateur pour qu'il ouvre le runtime installé.");
+        if (view_.canRelaunch) view_.note += (view_.note.empty() ? L"" : L" ") + std::wstring(TR(wv2_restart_to_use));
         Log(std::wstring(L"WEBVIEW2 STARTUP FAILED stage=") + StageName(stage) + L" code=" + Hex(hr) + L" cause=" + CauseName(view_.diagnosis.cause) +
             L" install=" + (view_.canInstall ? L"offered" : L"no") + (o.Any() ? L" overrides=" + o.Describe() : L""));
         problemShown_ = true;

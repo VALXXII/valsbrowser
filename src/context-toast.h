@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // A7 + C8 + C9 · Toasts contextuels (Paper « Browser Design », p-D-0).
 //   A7 « Toast — limite atteinte » FD6-0 (+ états FGV/FH8/FHK/FHW-0): card layout, 269 DIP.
 //   C8 « Toasts · 360 px » FLE-0 (réussite FLK, échec FLY, en cours FMD, bref FMS, focus FN7-0)
@@ -55,21 +56,21 @@ inline constexpr float border = 0x0D / 255.f;
 // Presets (Paper copy).
 inline Spec TabLimitSpec(int limit) {
     Spec s; s.kind = Kind::Card; s.automationId = L"TabLimitToast"; s.icon = Icon::Info; s.durationMs = 6000;
-    s.message = std::to_wstring(limit) + L" onglets ouverts";
-    s.detail = L"C'est le maximum pour une fenêtre. Fermez-en ou continuez dans une nouvelle fenêtre.";
-    s.action = L"Nouvelle fenêtre"; return s;
+    s.message = TRP(a11y_open_tabs, limit);
+    s.detail = TR(toast_tab_limit_detail);
+    s.action = TR(toast_new_window); return s;
 }
 inline Spec PartialRestoreSpec(int notOpened, int limit) {
     Spec s = TabLimitSpec(limit); s.automationId = L"TabLimitRestoreToast";
-    s.message = std::to_wstring(notOpened) + (notOpened > 1 ? L" onglets non ouverts" : L" onglet non ouvert");
-    s.detail = L"La fenêtre a atteint " + std::to_wstring(limit) + L" onglets pendant la restauration de la session.";
-    s.action = L"Ouvrir dans une nouvelle fenêtre"; return s;
+    s.message = TRP(toast_tabs_not_opened, notOpened);
+    s.detail = TRF(toast_restore_limit_detail, std::to_wstring(limit));
+    s.action = TR(toast_open_in_new_window); return s;
 }
-inline Spec PageSavedSpec(const std::wstring& fileName) { Spec s; s.automationId = L"PageSavedToast"; s.icon = Icon::Success; s.message = L"Page enregistrée"; s.detail = fileName; s.action = L"Afficher"; s.durationMs = 6000; return s; }
-inline Spec SaveFailedSpec(const std::wstring& reason) { Spec s; s.automationId = L"PageSaveFailedToast"; s.icon = Icon::Error; s.error = true; s.message = L"Échec de l'enregistrement"; s.detail = reason; s.action = L"Réessayer"; s.durationMs = 0; return s; }
-inline Spec SavingSpec(float progress, const std::wstring& what = L"Page complète") {
-    Spec s; s.automationId = L"PageSavingToast"; s.icon = Icon::Progress; s.progress = progress; s.message = L"Enregistrement de la page…";
-    s.detail = what + L" · " + std::to_wstring(static_cast<int>(std::lround(std::clamp(progress, 0.f, 1.f) * 100))) + L" %"; s.action = L"Annuler"; s.durationMs = 0; s.closable = false; return s;
+inline Spec PageSavedSpec(const std::wstring& fileName) { Spec s; s.automationId = L"PageSavedToast"; s.icon = Icon::Success; s.message = TR(toast_page_saved); s.detail = fileName; s.action = TR(toast_show); s.durationMs = 6000; return s; }
+inline Spec SaveFailedSpec(const std::wstring& reason) { Spec s; s.automationId = L"PageSaveFailedToast"; s.icon = Icon::Error; s.error = true; s.message = TR(toast_save_failed); s.detail = reason; s.action = TR(downloads_action_retry); s.durationMs = 0; return s; }
+inline Spec SavingSpec(float progress, const std::wstring& what = TR(toast_complete_page)) {
+    Spec s; s.automationId = L"PageSavingToast"; s.icon = Icon::Progress; s.progress = progress; s.message = TR(toast_saving_page);
+    s.detail = what + L" · " + I18n::Percent(static_cast<int>(std::lround(std::clamp(progress, 0.f, 1.f) * 100))); s.action = TR(common_cancel); s.durationMs = 0; s.closable = false; return s;
 }
 inline Spec BriefSpec(const std::wstring& text, Icon icon = Icon::None) { Spec s; s.kind = Kind::Brief; s.automationId = L"BriefToast"; s.message = text; s.icon = icon; s.durationMs = 3000; s.closable = false; return s; }
 
@@ -272,16 +273,16 @@ public:
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, std::function<void()> wake = nullptr) {
         owner_ = owner; motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         PopupKit::Register(instance, L"LisiereContextToast", Proc);
-        if (!PopupKit::CreatePopup(instance, owner, L"LisiereContextToast", L"Notification", WS_EX_NOACTIVATE, this, Layout::radius)) return false;
+        if (!PopupKit::CreatePopup(instance, owner, L"LisiereContextToast", TR(toast_window_name), WS_EX_NOACTIVATE, this, Layout::radius)) return false;
         pump_.Bind(hwnd_, std::move(wake));
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] {
             std::vector<Accessibility::Node> nodes; if (!visible_ || leaving_) return nodes;
             auto screen = [&](D2D1_RECT_F r) { RECT p{Px(r.left), Px(r.top), Px(r.right), Px(r.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&p), 2); return p; };
-            Accessibility::Node g; g.key = 10; g.role = Accessibility::Role::Group; g.name = spec_.message; g.help = spec_.detail; g.status = spec_.error ? L"Erreur" : L"";
+            Accessibility::Node g; g.key = 10; g.role = Accessibility::Role::Group; g.name = spec_.message; g.help = spec_.detail; g.status = spec_.error ? TR(common_error) : L"";
             g.automationId = spec_.automationId; g.focusable = false; GetWindowRect(hwnd_, &g.bounds); nodes.push_back(g);
             if (HasAction()) { Accessibility::Node a; a.key = ActionHit; a.parent = 10; a.name = spec_.action; a.automationId = spec_.automationId + L"Action"; a.bounds = screen(ActionBox()); nodes.push_back(a); }
-            if (HasClose()) { Accessibility::Node c; c.key = CloseHit; c.parent = 10; c.name = L"Fermer"; c.accelerator = L"Échap"; c.automationId = spec_.automationId + L"Close"; c.bounds = screen(CloseBox()); nodes.push_back(c); }
+            if (HasClose()) { Accessibility::Node c; c.key = CloseHit; c.parent = 10; c.name = TR(common_close); c.accelerator = TR(key_escape); c.automationId = spec_.automationId + L"Close"; c.bounds = screen(CloseBox()); nodes.push_back(c); }
             return nodes; };
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? focus_ : 0; };
         host.invoke = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };

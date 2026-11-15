@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // "Favori ajouté" / "Modifier le favori" popover (Paper "Favoris — flow", artboards 02,
 // 07 and 12 as modified by the user on 2026-11-08): a 320 DIP owned popup, radius 8,
 // 1 DIP #FFFFFF0F border, padding 16, gap 16; no title (the window's accessible name
@@ -85,8 +86,8 @@ class Popover {
     float ActionsTop() const { return FolderField() + Layout::field + Layout::gap + Layout::actionsTop; }
     D2D1_RECT_F Field(float top) const { return {Layout::padding, top, Layout::width - Layout::padding, top + Layout::field}; }
     D2D1_RECT_F CloseBox() const { return {Layout::width - Layout::closeInset - Layout::close, Layout::closeInset, Layout::width - Layout::closeInset, Layout::closeInset + Layout::close}; }
-    D2D1_RECT_F DeleteBox() { const float w = chrome_.TextWidth(L"Supprimer", 14, true, false, -.28f) + 20; const float t = ActionsTop(); return {Layout::padding, t, Layout::padding + w, t + Layout::button}; }
-    D2D1_RECT_F DoneBox() { const float w = chrome_.TextWidth(L"Terminé", 14, true, false, -.28f) + 28; const float t = ActionsTop(); return {Layout::width - Layout::padding - w, t, Layout::width - Layout::padding, t + Layout::button}; }
+    D2D1_RECT_F DeleteBox() { const float w = chrome_.TextWidth(TR(common_delete), 14, true, false, -.28f) + 20; const float t = ActionsTop(); return {Layout::padding, t, Layout::padding + w, t + Layout::button}; }
+    D2D1_RECT_F DoneBox() { const float w = chrome_.TextWidth(TR(common_done), 14, true, false, -.28f) + 28; const float t = ActionsTop(); return {Layout::width - Layout::padding - w, t, Layout::width - Layout::padding, t + Layout::button}; }
     static bool Inside(D2D1_RECT_F r, float x, float y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
     int HitAt(float x, float y) {
         if (Inside(CloseBox(), x, y)) return CloseHit;
@@ -140,7 +141,7 @@ class Popover {
             if (url.empty()) {
                 committing_ = true; SetError(true); committing_ = false;
                 SetFocus(url_); SendMessageW(url_, EM_SETSEL, 0, -1);
-                if (hooks_.announce) hooks_.announce(L"Adresse non valide. Exemple : lemonde.fr/international");
+                if (hooks_.announce) hooks_.announce(TR(bookmark_invalid_address_full));
                 return;
             }
         }
@@ -166,12 +167,12 @@ class Popover {
             item.icon = L"folder-closed"; items.push_back(item);
         }
         items.push_back(ContextMenu::Separator());
-        auto add = ContextMenu::Command(100000, L"Nouveau dossier…"); add.icon = L"folder-plus"; items.push_back(add);
+        auto add = ContextMenu::Command(100000, TR(bookmark_new_folder_menu)); add.icon = L"folder-plus"; items.push_back(add);
         RECT r{}; const auto f = Field(FolderField()); r = {Px(f.left), Px(f.top), Px(f.right), Px(f.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2);
         const int chosen = hooks_.choose(items, r, keyboard);
         choosing_ = false;
         if (chosen == 100000 && hooks_.newFolder) {
-            if (const unsigned id = hooks_.newFolder(parent_)) { parent_ = id; parentName_ = L"Nouveau dossier"; if (hooks_.announce) hooks_.announce(L"Dossier « Nouveau dossier » créé"); }
+            if (const unsigned id = hooks_.newFolder(parent_)) { parent_ = id; parentName_ = TR(bookmark_new_folder_name); if (hooks_.announce) hooks_.announce(TRF(bookmark_folder_created, TR(bookmark_new_folder_name))); }
         } else if (chosen > 0 && chosen <= static_cast<int>(folders.size())) {
             parent_ = std::get<0>(folders[chosen - 1]); parentName_ = std::get<2>(folders[chosen - 1]);
         }
@@ -287,20 +288,20 @@ class Popover {
         const auto now = Motion::Now(); const float c = Design::Surface::canvas, h = Height();
         t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1));
         chrome_.keyboardModality = keyboard_;
-        Label(L"Nom", NameField()); FieldFrame(Field(NameField()), name_, false);
+        Label(TR(bookmark_field_name), NameField()); FieldFrame(Field(NameField()), name_, false);
         if (HasAddress()) {
             const bool danger = error_ && shownError_;
-            Label(L"Adresse", UrlField()); FieldFrame(Field(UrlField()), url_, danger);
+            Label(TR(bookmark_field_address), UrlField()); FieldFrame(Field(UrlField()), url_, danger);
             if (danger) {
                 const float y = UrlField() + Layout::field + Layout::helpGap;
                 const D2D1_RECT_F icon{Layout::padding, y + 2, Layout::padding + 14, y + 16};
                 chrome_.Icon(L"danger", icon, 14, 1); chrome_.Icon(L"danger", icon, 14, .8f); // 70%
-                chrome_.Text(L"Adresse non valide.", {Layout::padding + 20, y, Layout::width - Layout::padding, y + 18}, 14, .7f);
-                chrome_.Text(L"Exemple : lemonde.fr/international", {Layout::padding + 20, y + 18, Layout::width - Layout::padding, y + Layout::help}, 14, .7f);
+                chrome_.Text(TR(bookmark_invalid_address), {Layout::padding + 20, y, Layout::width - Layout::padding, y + 18}, 14, .7f);
+                chrome_.Text(TR(bookmark_address_example), {Layout::padding + 20, y + 18, Layout::width - Layout::padding, y + Layout::help}, 14, .7f);
             }
         }
         {   // Dossier: icon, name, caret; a drawn control (focus ring when it holds the keyboard).
-            const auto box = Field(FolderField()); Label(L"Dossier", FolderField());
+            const auto box = Field(FolderField()); Label(TR(bookmark_field_folder), FolderField());
             const auto v = motion_.Visual(FolderHit, now);
             chrome_.Round(box, Design::Radius::control, Design::Surface::raised + (Design::Surface::hover - Design::Surface::raised) * v.hover);
             if (focus_ == FolderHit && GetFocus() == hwnd_) chrome_.FocusRing(box, Design::Radius::control);
@@ -313,11 +314,11 @@ class Popover {
             const auto del = DeleteBox(); const auto dv = motion_.Visual(DeleteHit, now);
             if (dv.hover > 0 || dv.press > 0) chrome_.FillBox(del, Design::Radius::control, D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, .10f * dv.hover + .06f * dv.press));
             if (focus_ == DeleteHit && GetFocus() == hwnd_) chrome_.FocusRing(del, Design::Radius::control);
-            chrome_.ink = chrome_.DangerColor(); chrome_.Text(L"Supprimer", {del.left + 10, del.top, del.right, del.bottom}, 14, 1, false, true, -.28f); chrome_.ink = D2D1::ColorF(1, 1, 1, 1);
+            chrome_.ink = chrome_.DangerColor(); chrome_.Text(TR(common_delete), {del.left + 10, del.top, del.right, del.bottom}, 14, 1, false, true, -.28f); chrome_.ink = D2D1::ColorF(1, 1, 1, 1);
             const auto done = DoneBox(); const auto ov = motion_.Visual(DoneHit, now);
             chrome_.FillBox(done, Design::Radius::control, D2D1::ColorF(1 - .08f * ov.hover - .08f * ov.press, 1 - .08f * ov.hover - .08f * ov.press, 1 - .08f * ov.hover - .08f * ov.press, 1));
             if (focus_ == DoneHit && GetFocus() == hwnd_) { auto* b = chrome_.SolidBrush(); b->SetColor(D2D1::ColorF(1, 1, 1, Design::Focus::Opacity(keyboard_))); t->DrawRoundedRectangle(D2D1::RoundedRect({done.left - 2.5f, done.top - 2.5f, done.right + 2.5f, done.bottom + 2.5f}, Design::Radius::control + 2, Design::Radius::control + 2), b, 1); }
-            chrome_.ink = D2D1::ColorF(c, c, c, 1); chrome_.Text(L"Terminé", {done.left + 14, done.top, done.right, done.bottom}, 14, 1, false, true, -.28f); chrome_.ink = D2D1::ColorF(1, 1, 1, 1);
+            chrome_.ink = D2D1::ColorF(c, c, c, 1); chrome_.Text(TR(common_done), {done.left + 14, done.top, done.right, done.bottom}, 14, 1, false, true, -.28f); chrome_.ink = D2D1::ColorF(1, 1, 1, 1);
         }
         {   // Close: 24x24 at 8/8, 14 DIP glyph at 50%.
             const auto v = motion_.Visual(CloseHit, now);
@@ -338,10 +339,10 @@ class Popover {
         auto button = [&](int key, const wchar_t* name, D2D1_RECT_F r, const std::wstring& value = L"", const wchar_t* id = L"") {
             Accessibility::Node n; n.key = key; n.parent = GroupKey; n.name = name; n.help = value; n.automationId = id; n.bounds = screen(r); nodes.push_back(n);
         };
-        button(FolderHit, L"Dossier", Field(FolderField()), parentName_, L"BookmarkFolder");
-        button(DeleteHit, L"Supprimer", DeleteBox(), L"", L"BookmarkDelete");
-        button(DoneHit, L"Terminé", DoneBox(), L"", L"BookmarkDone");
-        button(CloseHit, L"Fermer", CloseBox(), L"", L"BookmarkClose");
+        button(FolderHit, TR(bookmark_field_folder), Field(FolderField()), parentName_, L"BookmarkFolder");
+        button(DeleteHit, TR(common_delete), DeleteBox(), L"", L"BookmarkDelete");
+        button(DoneHit, TR(common_done), DoneBox(), L"", L"BookmarkDone");
+        button(CloseHit, TR(common_close), CloseBox(), L"", L"BookmarkClose");
         return nodes;
     }
 public:
@@ -351,7 +352,7 @@ public:
         instance_ = instance; owner_ = owner; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarkPopover";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"Favori", WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, TR(bookmark_window_name), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius); // no shadow: region-rounded, never DWM-rounded
@@ -365,8 +366,8 @@ public:
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? focus_ : 0; };
         host.invoke = [this](long long key) { PostMessageW(hwnd_, WM_APP + 2, static_cast<WPARAM>(key), 0); };
         host.label = [this](HWND child, Accessibility::Node& n) {
-            if (child == name_) { n.name = L"Nom"; n.automationId = L"BookmarkName"; return true; }
-            if (child == url_) { n.name = L"Adresse"; n.automationId = L"BookmarkAddress"; if (error_ && shownError_) n.help = L"Adresse non valide. Exemple : lemonde.fr/international"; return true; }
+            if (child == name_) { n.name = TR(bookmark_field_name); n.automationId = L"BookmarkName"; return true; }
+            if (child == url_) { n.name = TR(bookmark_field_address); n.automationId = L"BookmarkAddress"; if (error_ && shownError_) n.help = TR(bookmark_invalid_address_full); return true; }
             return false;
         };
         uia_.Attach(std::move(host));
@@ -378,7 +379,7 @@ public:
     bool Visible() const { return visible_; }
     bool ShowsError() const { return error_ && shownError_; }
     unsigned Editing() const { return visible_ ? request_.id : 0; }
-    std::wstring Title() const { return request_.folder ? L"Renommer le dossier" : request_.added ? L"Favori ajouté" : L"Modifier le favori"; }
+    std::wstring Title() const { return request_.folder ? TR(bookmark_title_rename_folder) : request_.added ? TR(bookmark_title_added) : TR(bookmark_title_edit); }
     // Opens under `anchor` (screen pixels), right edges aligned when `alignRight`
     // (the star), left edges otherwise (a band item); kept 6 DIP inside `bounds`.
     void Show(const Request& request, RECT anchor, RECT bounds, bool alignRight, bool keyboard, bool reduced) {
