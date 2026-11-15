@@ -121,6 +121,7 @@ void StartWorkspaces() {
 }
 Workspace* FindWorkspace(const std::wstring& id) { for (auto& w : workspaces) if (!w->dead && w->id == id) return w.get(); return nullptr; }
 bool WorkspaceBusy(Workspace& w) {
+    if (popups.Pending(&w)) return true;   // a window.open target being created: never evicted by the LRU bound
     WorkspaceScope scope(&w);
     if (!pendingDownloads.empty()) return true;
     for (const auto& d : downloads) if (d.state == DL::State::InProgress || d.state == DL::State::Paused) return true;
@@ -132,6 +133,7 @@ void HidePages() { for (auto& t : pages) if (t && t->controller.p && t->placedVi
 // Cold: session saved, controllers closed, engine released; the window keeps its session claim.
 void MakeCold(Workspace& w) {
     if (w.cold || &w == activeWorkspace) return;
+    popups.CancelOwner(&w);   // forced cold (never through the LRU while pending): its window.open requests settled first
     WorkspaceScope scope(&w);
     SaveSession();
     for (auto& t : pages) if (t) { t->closed = true; t->favicon.Close(); if (t->controller.p) t->controller->Close(); }
@@ -164,6 +166,7 @@ void DisposeWorkspace(Workspace& w, bool keepSession = true) {
         }
         w.dead = true; Log(L"PROFILES cached slot released " + w.id); return;
     }
+    popups.CancelOwner(&w);   // before its pages and environment go: no deferral left pending, no orphan target
     {
         WorkspaceScope scope(&w);
         SaveSession();
@@ -422,6 +425,7 @@ bool WorkspaceEngineFailed(const std::wstring& where, HRESULT hr, bool hasEngine
     if (!w || w->dead || halted) return false;
     wchar_t code[32]; swprintf(code, 32, L"0x%08lX", static_cast<unsigned long>(hr));
     auto cleanup = [&] {
+        popups.CancelOwner(w);   // its pending window.open requests: settled before its pages and engine go
         if (!hasEngine || !environment.p) return;
         SaveSession();
         for (auto& t : pages) if (t) { t->closed = true; t->favicon.Close(); if (t->controller.p) t->controller->Close(); }
