@@ -23,6 +23,10 @@ static const Accessibility::Node* Node(const std::vector<Accessibility::Node>& n
 
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3) { std::printf("usage: language_settings_test <repo root> <capture folder>\n"); return 2; }
+    std::setvbuf(stdout, nullptr, _IONBF, 0);   // CI pipes stdout: a crash must not swallow the checks before it
+    // An apartment of our own, as main.cpp and the other UI fixtures: without it the WIC objects live in the
+    // implicit MTA, which ends with the system's worker threads, and releasing them then crashes (CI runner).
+    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) { std::printf("FAIL native COM initialization\n"); return 1; }
     const std::wstring root = argv[1], shots = argv[2];
     CreateDirectoryW(shots.c_str(), nullptr);
     wchar_t temp[MAX_PATH]; GetTempPathW(MAX_PATH, temp);
@@ -183,6 +187,8 @@ int wmain(int argc, wchar_t** argv) {
 
     DeleteFileW(UiLanguage::PathIn(data).c_str()); RemoveDirectoryW(data.c_str());
     DestroyWindow(owner);
+    earlyChrome.Dispose();   // Direct2D/WIC released before CoUninitialize, as main.cpp disposes its global chrome
+    CoUninitialize();
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
