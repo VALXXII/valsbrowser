@@ -1415,7 +1415,7 @@ I18N(annotation_problem_capture, L"capture refusée (image invalide ou trop gran
 I18N(annotation_problem_not_found, L"annotation introuvable", L"annotation not found")
 I18N(annotation_problem_busy, L"annotations occupées, réessayez dans un instant", L"annotations are busy, try again in a moment")
 I18N(annotation_problem_limit, L"limite des annotations atteinte", L"annotation limit reached")
-I18N(annotation_problem_unsafe, L"dossier des annotations refusé (lien ou jonction)", L"annotations folder refused (link or junction)")
+I18N(annotation_problem_unsafe, L"impossible d’accéder au dossier des annotations en toute sécurité", L"couldn't safely access the annotations folder")
 I18N(annotation_problem_invalid, L"données d'annotation refusées", L"annotation data refused")
 I18N(annotation_problem_conflict, L"un agent la traite en ce moment", L"an agent is working on it right now")
 I18N(annotation_problem_changed, L"elle a changé entre-temps", L"it changed in the meantime")
