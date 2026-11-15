@@ -165,10 +165,12 @@ class Staging(unittest.TestCase):
             (app / 'profile/EBWebView/Cookies').write_bytes(b'canary-cookie')
             (app / 'session').write_text('browser-session-1\n0\n1\n"https://canary.example"\n')
             (app / 'prototype.log').write_text('log')
+            (app / 'ui-language').write_text('browser-ui-language 1\nlanguage=en\n')   # interface language preference
+            (app / 'ui-language.tmp4242').write_text('browser-ui-language 1\n')         # an interrupted atomic write
             before = canary(app)
             files = K.stage(app, Path(tmp) / 'stage')
             self.assertEqual(canary(app), before)
-            self.assertFalse(any('profile' in f or f in ('session', 'prototype.log') for f in files))
+            self.assertFalse(any('profile' in f or f in ('session', 'prototype.log') or f.startswith('ui-language') for f in files))
             self.assertIn('assets/fonts/a.ttf', files)
             self.assertFalse((Path(tmp) / 'stage/profile').exists())
 
