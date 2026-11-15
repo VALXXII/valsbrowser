@@ -74,31 +74,49 @@ static void SaveBmp(const Raster& r, const std::wstring& path) {
 
 static std::wstring Text() { const int n = GetWindowTextLengthW(edit); std::wstring s(n + 1, 0); GetWindowTextW(edit, s.data(), n + 1); s.resize(n); return s; }
 static void Sel(DWORD& a, DWORD& b) { SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&a), reinterpret_cast<LPARAM>(&b)); }
-// The run as the EDIT lays it out: start from EM_POSFROMCHAR, end from the next char (or the run's extent at the end).
-static RECT ExpectedRunOf(DWORD a, DWORD b) {
-    const std::wstring t = Text();
-    const LRESULT p = SendMessageW(edit, EM_POSFROMCHAR, a, 0);
-    HDC dc = GetDC(edit); HGDIOBJ o = SelectObject(dc, font); TEXTMETRICW tm; GetTextMetricsW(dc, &tm);
-    SIZE s{}; GetTextExtentPoint32W(dc, t.c_str() + a, static_cast<int>(b - a), &s); SelectObject(dc, o); ReleaseDC(edit, dc);
-    const int x = static_cast<short>(LOWORD(p)), y = static_cast<short>(HIWORD(p));
-    return {x, y, x + s.cx, y + tm.tmHeight};
+// Oracle: the EDIT's OWN rendering of the same state (forced colours = the native highlight, the
+// helper inactive), repainted through WM_PAINT. Nothing about the geometry is computed here: the
+// native image says which pixels are the highlight (cell = exact COLOR_HIGHLIGHT, glyphs = blends
+// toward COLOR_HIGHLIGHTTEXT), wherever bidi, fallback fonts or scrolling put them.
+static Raster Native() {
+    forcedColors = true; InvalidateRect(edit, nullptr, TRUE); UpdateWindow(edit); Pump();
+    const Raster n = Grab();
+    forcedColors = false; InvalidateRect(edit, nullptr, TRUE); UpdateWindow(edit); Pump();
+    return n;
 }
-static RECT ExpectedRun() { DWORD a, b; Sel(a, b); return ExpectedRunOf(a, b); }
+// Coverage of COLOR_HIGHLIGHTTEXT over COLOR_HIGHLIGHT in a native pixel, -1 if it is not such a blend.
+static double HighlightCoverage(COLORREF c) {
+    const COLORREF H = GetSysColor(COLOR_HIGHLIGHT), T = GetSysColor(COLOR_HIGHLIGHTTEXT);
+    const int h[3] = {GetRValue(H), GetGValue(H), GetBValue(H)}, t[3] = {GetRValue(T), GetGValue(T), GetBValue(T)}, p[3] = {GetRValue(c), GetGValue(c), GetBValue(c)};
+    int k = 0; for (int i = 1; i < 3; ++i) if (std::abs(t[i] - h[i]) > std::abs(t[k] - h[k])) k = i;
+    const double a = double(p[k] - h[k]) / (t[k] - h[k]);
+    if (a < -.01 || a > 1.01) return -1;
+    for (int i = 0; i < 3; ++i) if (std::abs(h[i] + a * (t[i] - h[i]) - p[i]) > 2.5) return -1;
+    return a;
+}
+static int Diff(COLORREF a, COLORREF b) { return (std::max)({std::abs(GetRValue(a) - GetRValue(b)), std::abs(GetGValue(a) - GetGValue(b)), std::abs(GetBValue(a) - GetBValue(b))}); }
 
-struct Measure { int fillPx = 0, highlightPx = 0, fillOutside = 0, runPx = 0, inkOutside = 0; double glyphContrast = 0; RECT hiBox{9999, 9999, -1, -1}; };
-static Measure Analyse(const Raster& r, const RECT& run, COLORREF fill) {
-    Measure m; const COLORREF hi = GetSysColor(COLOR_HIGHLIGHT);
-    RECT clip{0, 0, r.w, r.h}; RECT in{}; IntersectRect(&in, &run, &clip);
-    auto inRun = [&](int x, int y) { return x >= in.left && x < in.right && y >= in.top && y < in.bottom; };
+struct Measure { int cellPx = 0, cellWrong = 0, highlightPx = 0, changedOutside = 0, glyphPx = 0, glyphWrong = 0, unselectedInk = 0; double glyphContrast = 0; RECT box{9999, 9999, -1, -1}; };
+static Measure Analyse(const Raster& ours, const Raster& native, COLORREF fill) {
+    Measure m; const COLORREF H = GetSysColor(COLOR_HIGHLIGHT);
+    // Columns holding the native cell colour: the selected run(s) as the EDIT drew them.
+    std::vector<bool> col(native.w, false);
+    for (int x = 0; x < native.w; ++x) for (int y = 0; y < native.h; ++y) if (native.At(x, y) == H) { col[x] = true; break; }
     double best = 0;
-    for (int y = 0; y < r.h; ++y) for (int x = 0; x < r.w; ++x) {
-        const COLORREF c = r.At(x, y); const bool inside = inRun(x, y);
-        if (c == hi && hi != fill) { ++m.highlightPx; m.hiBox = {std::min(m.hiBox.left, (LONG)x), std::min(m.hiBox.top, (LONG)y), std::max(m.hiBox.right, (LONG)x), std::max(m.hiBox.bottom, (LONG)y)}; }
-        if (inside) { ++m.runPx; if (c == fill) ++m.fillPx; else best = std::max(best, ProfileColor::Contrast(Rgb8(c), Rgb8(fill))); }
-        // A leak is a solid patch (2x2) of the fill outside the run: antialiased glyph edges of the
-        // unselected grey text can hit a grey fill's exact value one pixel at a time, never as a block.
-        else if (c != field && c != fill) ++m.inkOutside;   // the EDIT's own unselected text
-        if (!inside && c == fill && x + 1 < r.w && y + 1 < r.h && r.At(x + 1, y) == fill && r.At(x, y + 1) == fill && r.At(x + 1, y + 1) == fill && !inRun(x + 1, y) && !inRun(x, y + 1)) ++m.fillOutside;
+    for (int y = 0; y < ours.h; ++y) for (int x = 0; x < ours.w; ++x) {
+        const COLORREF o = ours.At(x, y), n = native.At(x, y);
+        if (o == H) { ++m.highlightPx; m.box = {(std::min)(m.box.left, (LONG)x), (std::min)(m.box.top, (LONG)y), (std::max)(m.box.right, (LONG)x), (std::max)(m.box.bottom, (LONG)y)}; }
+        const double a = col[x] ? HighlightCoverage(n) : -1;
+        if (n == H) { ++m.cellPx; if (o != fill) ++m.cellWrong; continue; }
+        if (a >= 0) {   // a glyph pixel inside the native highlight: same coverage, our colours (white text)
+            ++m.glyphPx;
+            const int e[3] = {int(std::lround(GetRValue(fill) + a * (255 - GetRValue(fill)))), int(std::lround(GetGValue(fill) + a * (255 - GetGValue(fill)))), int(std::lround(GetBValue(fill) + a * (255 - GetBValue(fill))))};
+            if (Diff(o, RGB(e[0], e[1], e[2])) > 3) ++m.glyphWrong;
+            best = (std::max)(best, ProfileColor::Contrast(Rgb8(o), Rgb8(fill)));
+            continue;
+        }
+        if (Diff(o, n) > 1) ++m.changedOutside;   // everything else is the EDIT's own pixel (GDI rounding: 1)
+        else if (o != field) ++m.unselectedInk;
     }
     m.glyphContrast = best; return m;
 }
@@ -110,20 +128,20 @@ static void Expect(const std::string& label, bool selected = true, const wchar_t
     const Raster r = Grab(); if (save && !outDir.empty()) SaveBmp(r, outDir + L"/" + save);
     DWORD a1, b1; Sel(a1, b1);
     Check(a0 == a1 && b0 == b1 && before == Text(), label + ": painting leaves selection and text unchanged");
-    const RECT run = selected && a1 != b1 ? ExpectedRun() : RECT{};
-    const Measure m = Analyse(r, run, fillNow);
-    Check(m.highlightPx == 0, label + ": no system-highlight pixel (" + std::to_string(m.highlightPx) + " in x " + std::to_string(m.hiBox.left) + ".." + std::to_string(m.hiBox.right) + " y " + std::to_string(m.hiBox.top) + ".." + std::to_string(m.hiBox.bottom) + "; run x " + std::to_string(run.left) + ".." + std::to_string(run.right) + ")");
-    Check(m.fillOutside == 0, label + ": no profile fill outside the selected run (" + std::to_string(m.fillOutside) + ")");
+    const Raster n = Native();
+    DWORD a2, b2; Sel(a2, b2); Check(a2 == a1 && b2 == b1, label + ": native reference keeps the selection");
+    const Measure m = Analyse(r, n, fillNow);
+    auto box = [&] { return " in x " + std::to_string(m.box.left) + ".." + std::to_string(m.box.right) + " y " + std::to_string(m.box.top) + ".." + std::to_string(m.box.bottom); };
+    Check(m.highlightPx == 0, label + ": no system-highlight pixel (" + std::to_string(m.highlightPx) + box() + ")");
+    Check(m.changedOutside == 0, label + ": nothing outside the native highlight changes (" + std::to_string(m.changedOutside) + ")");
+    Check(m.cellWrong == 0, label + ": every native highlight cell pixel is the profile fill (" + std::to_string(m.cellWrong) + "/" + std::to_string(m.cellPx) + " wrong)");
+    Check(m.glyphWrong == 0, label + ": selected glyphs keep the native coverage in white (" + std::to_string(m.glyphWrong) + "/" + std::to_string(m.glyphPx) + " wrong)");
     if (selected && a1 != b1) {
-        // Visible unselected text on either side of the run: the EDIT must still have drawn it.
-        const RECT all = ExpectedRunOf(0, static_cast<DWORD>(Text().size()));
-        if (run.left > (std::max)(0L, all.left) + 2 || run.right + 2 < (std::min)(static_cast<LONG>(r.w), all.right))
-            Check(m.inkOutside > 0, label + ": unselected text still drawn by the EDIT");
-        Check(m.runPx > 0 && m.fillPx * 2 > m.runPx, label + ": the run is the profile fill (" + std::to_string(m.fillPx) + "/" + std::to_string(m.runPx) + ")");
-        Check(m.glyphContrast >= 4.5, label + ": rendered selected text >= 4.5:1 on the fill (" + std::to_string(m.glyphContrast) + ")");
+        Check(m.cellPx > 0, label + ": the native field shows a highlight to follow");
+        Check(m.glyphPx == 0 || m.glyphContrast >= 4.5, label + ": rendered selected text >= 4.5:1 on the fill (" + std::to_string(m.glyphContrast) + ")");
         const std::wstring hex = ProfileColor::Hex(Rgb8(fillNow)); const std::string hex8(hex.begin(), hex.end());
-        std::printf("  %-52s sel %lu-%lu  fill %s  glyph/fill %.2f:1\n", label.c_str(), static_cast<unsigned long>(a1), static_cast<unsigned long>(b1), hex8.c_str(), m.glyphContrast);
-    }
+        std::printf("  %-52s sel %lu-%lu  fill %s  cell %d px  glyph %d px  text/fill %.2f:1\n", label.c_str(), static_cast<unsigned long>(a1), static_cast<unsigned long>(b1), hex8.c_str(), m.cellPx, m.glyphPx, m.glyphContrast);
+    } else Check(m.cellPx == 0, label + ": no native highlight expected");
 }
 static void Keys(bool ctrl, bool shift) { BYTE k[256]; GetKeyboardState(k); k[VK_CONTROL] = k[VK_LCONTROL] = ctrl ? 0x80 : 0; k[VK_SHIFT] = k[VK_LSHIFT] = shift ? 0x80 : 0; SetKeyboardState(k); }
 static void Key(WORD vk, bool ctrl = false, bool shift = false) { Keys(ctrl, shift); SendMessageW(edit, WM_KEYDOWN, vk, 1); SendMessageW(edit, WM_KEYUP, vk, 0xC0000001); Keys(false, false); }
@@ -202,6 +220,22 @@ int main(int argc, char** argv) {
         SendMessageW(edit, EM_SETSEL, n - 12, n); SendMessageW(edit, EM_SCROLLCARET, 0, 0); Expect("long URL scrolled, end selected" + at, true, d == 96 ? L"after-long-scrolled-96.bmp" : nullptr);
         SendMessageW(edit, EM_SETSEL, 0, -1); Key(VK_LEFT, false, true); Expect("long URL select all then Shift+Left" + at);
         SendMessageW(edit, EM_SETSEL, 18, 24); SendMessageW(edit, EM_SCROLLCARET, 0, 0); Expect("Unicode run" + at);
+        // Independent review counterexamples (2026-11-15), verbatim: an Arabic IDN URL (the logical run is
+        // reordered visually by the EDIT) and a valid maximum-length address (EM_POSFROMCHAR wraps at 16 bits).
+        SetWindowTextW(edit, L"https://مثال.إختبار/مسار");
+        SendMessageW(edit, EM_SETSEL, 8, 12); Expect("Arabic IDN domain selection" + at, true, d == 96 ? L"after-arabic-idn-96.bmp" : nullptr);
+        for (auto r : {std::pair<int, int>{6, 10}, {9, 14}, {13, 19}, {0, 23}}) { SendMessageW(edit, EM_SETSEL, r.first, r.second); Expect("Arabic IDN " + std::to_string(r.first) + "-" + std::to_string(r.second) + at); }
+        Key(VK_HOME); Key(VK_RIGHT, false, true); for (int i = 0; i < 10; ++i) Key(VK_RIGHT, false, true); Expect("Arabic IDN Shift+Right x11 across the bidi boundary" + at);
+        std::wstring maxUrl = L"https://example.com/" + std::wstring(7900, L'W');
+        SetWindowTextW(edit, maxUrl.c_str()); const int maxN = int(maxUrl.size());
+        SendMessageW(edit, EM_SETSEL, maxN - 5, maxN); SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+        SendMessageW(edit, EM_SETSEL, 0, -1);
+        Expect("7919-char URL all selected after end scroll" + at, true, d == 96 ? L"after-max-url-96.bmp" : nullptr);
+        Key(VK_LEFT, false, true); Key(VK_LEFT, true, true); Expect("7919-char URL Shift+Left, Ctrl+Shift+Left" + at);
+        SendMessageW(edit, EM_SETSEL, maxN - 40, maxN - 3); Expect("7919-char URL partial near the end" + at);
+        // Mixed scripts: Latin, accented, CJK, Arabic and Hebrew runs in one URL.
+        SetWindowTextW(edit, L"https://exemple.fr/café/日本語/مرحبا/x?q=שלום&n=12");
+        for (auto r : {std::pair<int, int>{18, 24}, {27, 33}, {30, 40}, {36, 44}}) { SendMessageW(edit, EM_SETSEL, r.first, r.second); Expect("mixed bidi " + std::to_string(r.first) + "-" + std::to_string(r.second) + at, true, d == 96 && r.first == 30 ? L"after-mixed-bidi-96.bmp" : nullptr); }
         // Live colour change (profile switch / fade step): the run repaints in the new colour, no stale old fill.
         SetWindowTextW(edit, L"https://www.wikipedia.org/wiki/Accueil"); SendMessageW(edit, EM_SETSEL, 0, -1); Pump();
         fillNow = Ref(ProfileColor::AccentFill(50, .16f)); selection.Refresh(); Expect("live profile switch teal -> orange" + at);

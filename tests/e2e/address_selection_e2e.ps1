@@ -81,7 +81,10 @@ try {
     @{ name = 'teal profile (screenshot)'; args = '--profile pteal0001 --restore-window wsT'; fill = '#00837E'; png = 'app-after-teal.png' },
     @{ name = 'warm profile (max intensity)'; args = '--profile pwarm0001 --restore-window wsW'; fill = '#BD5800'; png = 'app-after-warm.png' },
     @{ name = 'neutral Personnel (grey, not blue)'; args = '--profile default --restore-window wsN'; fill = '#747474'; png = 'app-after-neutral.png' },
-    @{ name = 'private window (its own reference blue)'; args = '--private'; fill = '#3E67FF'; png = 'app-after-private.png'; value = 'https://exemple.fr/fenetre-privee' }
+    @{ name = 'private window (its own reference blue)'; args = '--private'; fill = '#3E67FF'; png = 'app-after-private.png'; value = 'https://exemple.fr/fenetre-privee' },
+    # Independent review counterexamples: Arabic IDN (visual bidi order), maximum-length URL scrolled to its end.
+    @{ name = 'teal, Arabic IDN 8..12'; args = '--profile pteal0001 --restore-window wsT'; fill = '#00837E'; png = 'app-after-arabic-idn.png'; value = ('https://' + [char]0x645 + [char]0x62B + [char]0x627 + [char]0x644 + '.' + [char]0x625 + [char]0x62E + [char]0x62A + [char]0x628 + [char]0x627 + [char]0x631 + '/' + [char]0x645 + [char]0x633 + [char]0x627 + [char]0x631); from = 8; to = 12; min = 100 },
+    @{ name = 'teal, 7920-char URL select all after end scroll'; args = '--profile pteal0001 --restore-window wsT'; fill = '#00837E'; png = 'app-after-max-url.png'; value = ('https://example.com/' + ('W' * 7900)); scrollEnd = $true }
   )
   foreach ($c in $cases) {
     $p = Start-Process "$root\browser.exe" -ArgumentList $c.args -PassThru
@@ -91,7 +94,9 @@ try {
     if ($c.value) {   # the private home tab has no address: put one in the focused field (WM_SETTEXT), then select it all
       Start-Sleep -Milliseconds 400
       [Selqa]::SendText($edit, 0x000C, [IntPtr]::Zero, $c.value) | Out-Null
-      [Selqa]::SendMessage($edit, 0x00B1, [IntPtr]::Zero, [IntPtr](-1)) | Out-Null   # EM_SETSEL 0,-1
+      if ($c.scrollEnd) { $n = $c.value.Length; [Selqa]::SendMessage($edit, 0x00B1, [IntPtr]($n - 5), [IntPtr]$n) | Out-Null; [Selqa]::SendMessage($edit, 0x00B7, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }   # EM_SCROLLCARET
+      $from = if ($null -ne $c.from) { [IntPtr]$c.from } else { [IntPtr]::Zero }; $to = if ($null -ne $c.to) { [IntPtr]$c.to } else { [IntPtr](-1) }
+      [Selqa]::SendMessage($edit, 0x00B1, $from, $to) | Out-Null   # EM_SETSEL
     }
     Start-Sleep -Milliseconds 700
     Check ($edit -ne [IntPtr]::Zero) "$($c.name): native address EDIT found"
@@ -99,7 +104,7 @@ try {
     $f = [System.Drawing.ColorTranslator]::FromHtml($c.fill)
     $r = ([Selqa]::Analyse($bmp, $f)) -split ' '; $bmp.Dispose()
     "     $($c.name): fill $($c.fill) pixels=$($r[0]) x $($r[3])..$($r[4]); system-highlight pixels=$($r[1]); brightest selected text vs fill $($r[2]):1"
-    Check ([int]$r[0] -gt 200) "$($c.name): selection painted in the profile fill $($c.fill)"
+    Check ([int]$r[0] -gt $(if ($c.min) { $c.min } else { 200 })) "$($c.name): selection painted in the profile fill $($c.fill)"
     Check ([int]$r[1] -eq 0) "$($c.name): no system-highlight pixel"
     Check ([double]::Parse($r[2], [Globalization.CultureInfo]::InvariantCulture) -ge 4.5) "$($c.name): rendered selected text >= 4.5:1 on the fill"
     Stop-Process -Id $p.Id -Force; Start-Sleep 2

@@ -1,6 +1,9 @@
 #pragma once
 #include <windows.h>
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <vector>
 #include <string>
 #include <dwmapi.h>
 #include <commctrl.h>
@@ -61,18 +64,26 @@ public:
     }
 };
 // Selection highlight of a native single-line EDIT in a colour of ours (the address field follows
-// the window's profile). The EDIT has no per-control selection colour: it paints the selected run
+// the window's profile). The EDIT has no per-control selection colour: it paints the selected text
 // in the system COLOR_HIGHLIGHT / COLOR_HIGHLIGHTTEXT, during WM_PAINT and also directly (EM_SETSEL,
-// mouse drag, double-click: measured, design/profile-address-selection-report.md). Before EVERY
-// draw it asks its parent for colours (WM_CTLCOLOREDIT, same HDC). So:
-//   1. Clip(), from the parent's WM_CTLCOLOREDIT: excludes the selected run's cell from that DC,
-//      the system highlight never reaches the screen;
-//   2. the subclass installed by Attach() paints that cell itself once the EDIT's draw is over
-//      (WM_PAINT into our BeginPaint DC; any other message on a fresh DC with the caret hidden).
-// Nothing else changes: selection range, caret, text, IME, undo, clipboard and UIA stay the
-// EDIT's own. The run is measured like the EDIT draws it: start = EM_POSFROMCHAR, width = the
-// run's extent in the field's font, one line high, clipped to the formatting rectangle.
-// High contrast (forced colours): Clip/Paint do nothing, Windows keeps the system highlight.
+// mouse drag, double-click), and asks its parent for colours (WM_CTLCOLOREDIT, same HDC) before
+// EVERY draw. Measured (design/profile-address-selection-report.md): its highlight geometry is its
+// own Uniscribe layout (bidi runs reordered visually, fallback fonts, scroll offset, one inclusive
+// column) and cannot be recomputed exactly outside it; EM_POSFROMCHAR also wraps at 16 bits on long
+// scrolled text. So the geometry is never recomputed here — the EDIT draws it:
+//   1. Clip(), from the parent's WM_CTLCOLOREDIT while a selection is visible: excludes the whole
+//      client area from that DC, so nothing the EDIT draws there reaches the screen;
+//   2. once the EDIT's draw is over, Compose() asks the EDIT to draw itself again (WM_PRINTCLIENT,
+//      documented) into a memory DIB of the client size — exactly what it would have shown, native
+//      shaping, bidi, scroll and highlight included — then remaps ONLY the highlight pixels and copies
+//      the result to the screen DC (WM_PAINT: our BeginPaint DC; direct draws: GetDC, caret hidden).
+// Remap: a highlight pixel is COLOR_HIGHLIGHT (the cell) or an antialiased blend toward
+// COLOR_HIGHLIGHTTEXT (a glyph inside it), i.e. p = H + a (T - H) channel by channel. It becomes
+// fill + a (text - fill): the same coverage, our colours. Only columns that contain the exact cell
+// colour H (plus columns entirely made of such blends between them) are touched, so unselected text
+// and the field never change. Nothing is read from the screen.
+// Selection range, caret, text, IME, undo, clipboard and UIA stay the EDIT's own.
+// High contrast (forced colours), or a system pair the remap cannot separate: native highlight.
 class EditSelection {
 public:
     struct Colors { COLORREF fill = 0, text = 0; };
@@ -89,82 +100,114 @@ public:
     }
     // From the parent's WM_CTLCOLOREDIT for this edit.
     void Clip(HWND edit, HDC dc) {
-        if (edit != edit_ || !Active()) return;
-        RECT run{};
-        if (!Run(dc, run, nullptr)) return;
-        ExcludeClipRect(dc, run.left, run.top, run.right, run.bottom);
+        if (edit != edit_ || composing_ || !Active() || !HasSelection()) return;
+        if (bypass_) return;   // until the next WM_PAINT is over (Compose could not allocate)
+        RECT client{}; GetClientRect(edit_, &client);
+        ExcludeClipRect(dc, client.left, client.top, client.right, client.bottom);
         drew_ = true;
     }
-    // The colour changed (profile switch, a step of the profile fade): repaint the run now.
-    void Refresh() { if (edit_ && Active()) { RECT run{}; HDC dc = GetDC(edit_); const bool has = Run(dc, run, nullptr); ReleaseDC(edit_, dc); if (has) InvalidateRect(edit_, &run, FALSE); } }
-    // Paints the selected run on `dc` (the edit's client coordinates). Exposed for tests (WM_PRINT).
-    bool Paint(HDC dc) {
-        if (!Active()) return false;
-        std::wstring text;
-        RECT run{};
-        if (!Run(dc, run, &text)) return false;
-        DWORD start = 0, end = 0;
-        SendMessageW(edit_, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
-        RECT format{};
-        SendMessageW(edit_, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&format));
-        const Colors c = colors_();
-        const int saved = SaveDC(dc);
-        IntersectClipRect(dc, format.left, format.top, format.right, format.bottom);
-        if (HFONT font = reinterpret_cast<HFONT>(SendMessageW(edit_, WM_GETFONT, 0, 0))) SelectObject(dc, font);
-        SetBkColor(dc, c.fill); SetTextColor(dc, c.text); SetBkMode(dc, OPAQUE);
-        ExtTextOutW(dc, run.left, run.top, ETO_OPAQUE | ETO_CLIPPED, &run, text.c_str() + start, end - start, nullptr);
-        RestoreDC(dc, saved);
+    // The colour changed (profile switch, a step of the profile fade): repaint now.
+    void Refresh() { if (edit_ && Active() && HasSelection()) InvalidateRect(edit_, nullptr, FALSE); }
+    // Draws the field (EDIT's own rendering, selection in our colours) on `dc`, client coordinates.
+    // Called whenever Clip() kept the EDIT's own draw off the screen: the field is always redrawn here,
+    // even if the selection is gone by now (Ctrl+Shift+Left collapsing it while the EDIT was drawing).
+    bool Compose(HDC dc) {
+        if (!edit_) return false;
+        RECT client{}; GetClientRect(edit_, &client);
+        const int w = client.right, h = client.bottom;
+        if (w <= 0 || h <= 0) return false;
+        BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(bi.bmiHeader); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bitmap = mem ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+        if (!bitmap || !bits) {   // no memory: let the EDIT repaint itself natively once (system highlight) rather than leave a stale frame
+            if (bitmap) DeleteObject(bitmap);
+            if (mem) DeleteDC(mem);
+            bypass_ = true; InvalidateRect(edit_, nullptr, TRUE); return false;
+        }
+        HGDIOBJ old = SelectObject(mem, bitmap);
+        composing_ = true;
+        SendMessageW(edit_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(mem), PRF_CLIENT | PRF_ERASEBKGND);
+        composing_ = false;
+        GdiFlush();
+        if (Active() && HasSelection()) Remap(static_cast<DWORD*>(bits), w, h, colors_());
+        BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old); DeleteObject(bitmap); DeleteDC(mem);
         return true;
     }
-    bool Active() const { return edit_ && GetFocus() == edit_ && !forced_(); }
+    bool Active() const {
+        if (!edit_ || GetFocus() != edit_ || forced_()) return false;
+        const COLORREF H = GetSysColor(COLOR_HIGHLIGHT), T = GetSysColor(COLOR_HIGHLIGHTTEXT);
+        return Spread(H, T) >= minSpread;
+    }
+    // The remap, exposed for tests: `px` is a top-down 0x00RRGGBB client image.
+    static void Remap(DWORD* px, int w, int h, Colors c) {
+        const COLORREF H = GetSysColor(COLOR_HIGHLIGHT), T = GetSysColor(COLOR_HIGHLIGHTTEXT);
+        const int hc[3] = {GetRValue(H), GetGValue(H), GetBValue(H)}, tc[3] = {GetRValue(T), GetGValue(T), GetBValue(T)};
+        const int fc[3] = {GetRValue(c.fill), GetGValue(c.fill), GetBValue(c.fill)}, xc[3] = {GetRValue(c.text), GetGValue(c.text), GetBValue(c.text)};
+        int k = 0; for (int i = 1; i < 3; ++i) if (std::abs(tc[i] - hc[i]) > std::abs(tc[k] - hc[k])) k = i;   // the channel that separates H from T best
+        auto channels = [](DWORD v, int out[3]) { out[0] = (v >> 16) & 255; out[1] = (v >> 8) & 255; out[2] = v & 255; };
+        auto isCell = [&](DWORD v) { int p[3]; channels(v, p); return p[0] == hc[0] && p[1] == hc[1] && p[2] == hc[2]; };
+        // Coverage of T over H, or -1 when the pixel is not such a blend (tolerance: GDI rounding).
+        auto coverage = [&](DWORD v) -> double {
+            int p[3]; channels(v, p);
+            const double a = static_cast<double>(p[k] - hc[k]) / (tc[k] - hc[k]);
+            if (a < -.01 || a > 1.01) return -1;
+            for (int i = 0; i < 3; ++i) if (std::abs(hc[i] + a * (tc[i] - hc[i]) - p[i]) > 2.5) return -1;
+            return std::clamp(a, 0.0, 1.0);
+        };
+        // Columns: 2 = holds the cell colour, 1 = only blends (a glyph column inside the cell), 0 = other.
+        std::vector<int> kind(w, 0);
+        for (int x = 0; x < w; ++x) {
+            bool cell = false, any = false;
+            for (int y = 0; y < h; ++y) {
+                const DWORD v = px[y * w + x] & 0xFFFFFF;
+                if (isCell(v)) cell = true;
+                const bool blend = coverage(v) >= 0;
+                any = any || blend;
+            }
+            kind[x] = cell ? 2 : any ? 1 : 0;
+        }
+        // Selected columns: runs of cell / blend columns that contain at least one cell column.
+        std::vector<bool> selected(w, false);
+        for (int x = 0; x < w;) {
+            if (!kind[x]) { ++x; continue; }
+            int end = x; bool cell = false;
+            while (end < w && kind[end]) { cell = cell || kind[end] == 2; ++end; }
+            if (cell) for (int i = x; i < end; ++i) selected[i] = true;
+            x = end;
+        }
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+            if (!selected[x]) continue;
+            DWORD& v = px[y * w + x];
+            const double a = coverage(v & 0xFFFFFF);
+            if (a < 0) continue;
+            int o[3]; for (int i = 0; i < 3; ++i) o[i] = static_cast<int>(std::lround(fc[i] + a * (xc[i] - fc[i])));
+            v = (static_cast<DWORD>(o[0]) << 16) | (static_cast<DWORD>(o[1]) << 8) | static_cast<DWORD>(o[2]);
+        }
+    }
 private:
     static constexpr UINT_PTR subclassId = 0x5E1C;
+    static constexpr int minSpread = 96;   // H and T must differ enough on one channel to measure coverage
     HWND edit_ = nullptr; ColorSource colors_ = nullptr; Policy forced_ = SystemForcedColors;
-    bool drew_ = false; int depth_ = 0;
-    // The selected run's cell, in client pixels; false when nothing is selected.
-    bool Run(HDC dc, RECT& run, std::wstring* out) const {
-        DWORD start = 0, end = 0;
-        SendMessageW(edit_, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
-        const int length = GetWindowTextLengthW(edit_);
-        if (start >= end || static_cast<int>(end) > length) return false;
-        std::wstring text(length + 1, L'\0');
-        GetWindowTextW(edit_, text.data(), length + 1); text.resize(length);
-        const LRESULT pos = SendMessageW(edit_, EM_POSFROMCHAR, start, 0);
-        if (pos == -1) return false;
-        HDC measure = dc ? dc : GetDC(edit_);
-        HGDIOBJ old = nullptr;
-        if (HFONT font = reinterpret_cast<HFONT>(SendMessageW(edit_, WM_GETFONT, 0, 0))) old = SelectObject(measure, font);
-        TEXTMETRICW tm{}; GetTextMetricsW(measure, &tm);
-        SIZE size{}; GetTextExtentPoint32W(measure, text.c_str() + start, static_cast<int>(end - start), &size);
-        if (old) SelectObject(measure, old);
-        if (!dc) ReleaseDC(edit_, measure);
-        const int x = static_cast<short>(LOWORD(pos)), y = static_cast<short>(HIWORD(pos));
-        run = {x, y, x + size.cx, y + tm.tmHeight};
-        // The EDIT's own highlight reaches the next character's position inclusive (measured: one
-        // pixel past the run's extent where the font's rounding differs, e.g. ":/" in Inter).
-        if (static_cast<int>(end) < length) {
-            const LRESULT next = SendMessageW(edit_, EM_POSFROMCHAR, end, 0);
-            if (next != -1) run.right = (std::max)(run.right, static_cast<LONG>(static_cast<short>(LOWORD(next)) + 1));
-        }
-        if (out) *out = std::move(text);
-        return true;
-    }
+    bool drew_ = false, composing_ = false, bypass_ = false; int depth_ = 0;
+    static int Spread(COLORREF a, COLORREF b) { return (std::max)({std::abs(GetRValue(a) - GetRValue(b)), std::abs(GetGValue(a) - GetGValue(b)), std::abs(GetBValue(a) - GetBValue(b))}); }
+    bool HasSelection() const { DWORD start = 0, end = 0; SendMessageW(edit_, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end)); return start != end; }
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
         auto* self = reinterpret_cast<EditSelection*>(data);
         if (msg == WM_NCDESTROY) { RemoveWindowSubclass(h, Proc, subclassId); self->edit_ = nullptr; return DefSubclassProc(h, msg, w, l); }
+        if (self->composing_) return DefSubclassProc(h, msg, w, l);   // our own WM_PRINTCLIENT pass
         if (msg == WM_PAINT && !w) {
-            // Our own BeginPaint: the EDIT paints into this DC (wParam), the run follows in the same
-            // frame; BeginPaint/EndPaint hide and restore the caret around both.
-            // Saved around the EDIT's paint: Clip()'s exclusion must not outlive it on this DC.
-            // BeginPaint's erase (WM_ERASEBKGND) counts as part of this paint too.
+            // Our own BeginPaint (it hides the caret until EndPaint): the EDIT paints into this DC
+            // (clipped out by Clip() while a selection is visible), then the composed field.
             ++self->depth_;
             PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
             const int saved = SaveDC(dc);
             const LRESULT r = DefSubclassProc(h, msg, reinterpret_cast<WPARAM>(dc), l);
             RestoreDC(dc, saved);
             --self->depth_;
-            self->drew_ = false;
-            self->Paint(dc);
+            if (self->drew_) { self->drew_ = false; self->Compose(dc); }
+            self->bypass_ = false;
             EndPaint(h, &ps);
             return r;
         }
@@ -173,10 +216,10 @@ private:
         ++self->depth_;
         const LRESULT r = DefSubclassProc(h, msg, w, l);
         --self->depth_;
-        if (print) { if (saved) RestoreDC(reinterpret_cast<HDC>(w), saved); if (self->drew_) { self->drew_ = false; self->Paint(reinterpret_cast<HDC>(w)); } return r; }
+        if (print) { if (saved) RestoreDC(reinterpret_cast<HDC>(w), saved); if (self->drew_) { self->drew_ = false; self->Compose(reinterpret_cast<HDC>(w)); } return r; }
         if (self->depth_ == 0 && self->drew_ && IsWindow(h)) {
             self->drew_ = false;
-            HideCaret(h); HDC dc = GetDC(h); self->Paint(dc); ReleaseDC(h, dc); ShowCaret(h);
+            HideCaret(h); HDC dc = GetDC(h); self->Compose(dc); ReleaseDC(h, dc); ShowCaret(h);
         }
         return r;
     }
