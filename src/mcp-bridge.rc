@@ -1,0 +1,10 @@
+#include <windows.h>
+// browser-annotations-mcp.exe: the console MCP bridge over the annotation store. Version and
+// publisher only (no icon): it runs as a child process of the agent client, never in a window.
+#ifdef BROWSER_HAS_BUILD_INFO
+#include "build-info.h"
+#endif
+#define VI_DESCRIPTION "browser annotations MCP bridge"
+#define VI_INTERNAL "browser-annotations-mcp"
+#define VI_ORIGINAL "browser-annotations-mcp.exe"
+#include "version-info.rc"
