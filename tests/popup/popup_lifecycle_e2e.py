@@ -276,8 +276,13 @@ def main() -> int:
         if run is None:
             raise StopIteration
         first = run.connect(lambda t: True, 35)
-        first.call('Page.navigate', {'url': base + '/opener'})
-        op = run.connect(lambda t: t.get('url', '') == base + '/opener', 15)
+        op = None
+        for attempt in range(3):   # setup only (no popup yet): a fresh profile's first load can be aborted (engine
+            first.call('Page.navigate', {'url': base + '/opener'})   # CONNECTION_ABORTED around its first-run setup)
+            op = run.connect(lambda t: t.get('url', '') == base + '/opener', 12)
+            if op:
+                break
+        res['profile_setup_attempts'] = attempt + 1
         wait(lambda: ev(op, 'document.readyState') == 'complete', 8)
         th, box = background(lambda: ev(op, "(()=>{window.r=window.open(location.origin+'/target?n=V','v');return r===null?'null':'ref'})()"))
         held = wait(lambda: 'POPUP QA held before assignment' in run.log(), 6)
