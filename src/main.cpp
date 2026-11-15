@@ -461,7 +461,11 @@ int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->grou
 SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();c.left=View::inset;c.right=std::max(c.left,chrome.width-View::inset);c.bottom=chrome.height-View::inset;if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
-    SplitView v;v.group=VisibleGroup();if(!v.group)return v;v.members=Members(v.group);const auto o=splitGroups[v.group];
+    // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
+    // grips, rails, separator hit and F6 panel cycle follow this (they all read CurrentSplit). The group itself (its
+    // members, order, orientation, weights) is untouched and comes back as it was when the page leaves fullscreen.
+    // Browser fullscreen (F11) alone keeps the split.
+    SplitView v;if(PageFullscreenActive())return v;v.group=VisibleGroup();if(!v.group)return v;v.members=Members(v.group);const auto o=splitGroups[v.group];
     // Minimum in CSS px seen by the site, converted with the page zoom (DIP = CSS px x zoom).
     v.min=SV::MinExtent(o,PageZoom());std::vector<std::uint64_t> recency;
     for(int i=0;i<(int)v.members.size();++i){v.weights.push_back(v.members[i]->weight);recency.push_back(v.members[i]->usedAt);if(v.members[i]==Active())v.active=i;}

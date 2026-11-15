@@ -140,3 +140,81 @@ Results:
   anchors; behaviour unchanged, not reviewed here.
 - **Ctrl+L in F11** now does nothing (no address field over the page). Revealing the chrome on demand would be a new
   product feature and was out of scope.
+
+## Addendum — page fullscreen inside a split view (independent review of 27990dc)
+
+The independent review found a confirmed blocker in 27990dc. In a restored two-page split, a page that took
+fullscreen kept only its half of the monitor:
+- the blue host was at 0..1918 and the green host at 1923..3840, with the grip still live over the gap;
+- the fullscreen element saw 1535×1728 CSS px at 1.25 DPR.
+
+The tooltip concern was cleared by the review's runtime probe and is not touched here.
+
+### Cause
+
+1. `CurrentSplit()` kept presenting the group. `ApplyPages`, the grips, rails, separator hit and the F6 panel list
+   all read it.
+2. When F11 was on, a page leaving fullscreen did not re-layout. `SetPageFullscreen` called `ApplyFullscreen` only
+   when `InFullscreen()` changed, and it does not change while F11 is on.
+   - The first fix attempt revealed this: the page came back alone, instead of the F11 split (`08c`).
+
+### Fix (commit after 27990dc)
+
+- `src/main.cpp` `CurrentSplit()`: while `PageFullscreenActive()` (the active tab's page asked for fullscreen), it
+  presents no group.
+  - Only that page is shown, at the whole `ContentBox()`.
+  - Other panels, grips, rails, separator hit and F6 panels go with the presentation.
+  - Members, order, orientation, weights and `splitGroups` are untouched, so the exact split returns on exit.
+  - F11 alone keeps the split.
+  - A fullscreen flag on a non-active panel never collapses it.
+- `src/elements-integration.h` `SetPageFullscreen`: when the page leaves while F11 stays, it calls `Layout()`, so the
+  F11 split returns. The hint is not re-shown.
+
+### Tests
+
+**Native — `tests/ui/split_ui_test.cpp`, section 15** (real `WndProc` / `ApplyPages` / `SetPageFullscreen` state, no
+WebView2):
+- page fullscreen alone: one shown page, no split decor, handles, rails, grips, F6 panels or separator hit at the old
+  gap, group data intact;
+- exact split on exit;
+- F11 keeps the split;
+- F11 + page fullscreen, then page exit through `SetPageFullscreen`: the F11 split;
+- F11 exit: the windowed split;
+- a non-active panel's flag: no change.
+
+| Run | Result |
+| --- | --- |
+| `07a` — 27990dc `main.cpp` | RED |
+| `07b` — 27990dc `elements-integration.h`, nested exit | RED |
+| `07c` | GREEN |
+
+**Real app — `tests/e2e/fullscreen_e2e.py --split`.** The session restores blue + green as a row group. The click is
+posted to the left panel's own render widget.
+
+States covered: page fullscreen then Échap; F11; F11 + page fullscreen; page off; F11 off.
+
+What it checks:
+- window equals the monitor;
+- a single page host equals the client area;
+- page viewport × DPR equals the client size;
+- no `BrowserSplitGrip` window;
+- `PrintWindow`: the right half shows the fullscreen page;
+- no chrome in UIA;
+- the exact previous hosts, grips and window rect on each exit.
+
+| Run | Result |
+| --- | --- |
+| `08a` | **invalid**: the group was not written to the session (script edit miss); kept, not counted |
+| `08b` — 27990dc | **8 failures** (the review's numbers: 1535×1728, two hosts, live grip, green on the right half) |
+| `08c` — first fix | 1 failure: nested exit |
+| `08d` — final | **21 / 21** |
+
+Regression runs on the final build:
+- `09` — single-page fullscreen e2e: 105 / 105;
+- `10` — split-view suite including its native WebView2 `--split-test`: PASS.
+
+### Limits
+
+- Same as above: one monitor at 125 %.
+- Column (stacked) groups and 3-panel groups: native fixture is source-level only, the real-app split is a 2-panel row.
+- A hidden panel starts its sleep clock while another page is fullscreen. It resumes when shown, as for any hidden tab.

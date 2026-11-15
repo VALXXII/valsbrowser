@@ -4,7 +4,8 @@ must give the page the whole monitor; no tab strip, toolbar, bookmarks or annota
 testing, in keyboard focus or in UI Automation; leaving restores the window (windowed bounds or maximized) and the
 chrome.
 
-    python -I tests/e2e/fullscreen_e2e.py [--app build/fullscreen-fix]   # report in build/fullscreen-e2e/report.txt
+    python -I tests/e2e/fullscreen_e2e.py [--app build/fullscreen-fix] [--split]   # report in build/fullscreen-e2e/report.txt
+    --split: the two fixture pages restored as a side-by-side group (page fullscreen alone, F11 keeps the split).
 
 Drives ONLY its own throwaway copy of a dev build (build/fullscreen-e2e-app: payload copied, portable data next to the
 exe). Pages come from a server of this script on 127.0.0.1. The WebView2 remote debugging port (loopback) is enabled
@@ -254,13 +255,90 @@ def check_restored(h, pid, prefix, before, zoomed, what):
     check(bool(mt) and not mt['fs'], f'{what}: no element left in fullscreen')
 
 
-def run(app_src):
+def grips(h):
+    n = []
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def cb(c, _):
+        name = ctypes.create_unicode_buffer(64); user32.GetClassNameW(c, name, 64)
+        if name.value == 'BrowserSplitGrip' and user32.IsWindowVisible(c):
+            n.append(c)
+        return True
+    user32.EnumChildWindows(h, cb, 0)
+    return len(n)
+
+
+def widget_at_left(h):
+    """The render widget of the left panel (the blue page in the split fixture)."""
+    found = []
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def cb(c, _):
+        name = ctypes.create_unicode_buffer(64); user32.GetClassNameW(c, name, 64)
+        if name.value == 'Chrome_RenderWidgetHostHWND' and user32.IsWindowVisible(c):
+            found.append((rect(c)[0], c))
+        return True
+    user32.EnumChildWindows(h, cb, 0)
+    return min(found)[1] if found else None
+
+
+def click_fs_left(h):
+    rw = widget_at_left(h)
+    if not rw:
+        return False
+    k = user32.GetDpiForWindow(h) / 96.0; lp = (int(70 * k) << 16) | int(120 * k)
+    user32.PostMessageW(rw, 0x200, 0, lp); time.sleep(0.05); user32.PostMessageW(rw, 0x201, 1, lp); time.sleep(0.05); user32.PostMessageW(rw, 0x202, 0, lp)
+    return True
+
+
+def split_alone(h, pid, blue, what):
+    m = monitor(h); cs = client_screen(h)
+    check(rect(h) == m, f'{what}: the window covers its monitor')
+    hosts = page_hosts(h)
+    check(hosts == [cs], f'{what}: only the fullscreen page is shown, over the whole client area {hosts} vs {cs}')
+    mt = metrics(blue)
+    check(bool(mt) and mt['fs'] and abs(mt['w'] * mt['dpr'] - (cs[2] - cs[0])) <= 2 and abs(mt['h'] * mt['dpr'] - (cs[3] - cs[1])) <= 2,
+          f'{what}: the page in fullscreen sees the whole monitor ({mt and (mt["w"], mt["h"], mt["dpr"])})')
+    check(grips(h) == 0, f'{what}: no split grip left over the page')
+    right = pixel(h, (cs[2] - cs[0]) * 3 // 4, (cs[3] - cs[1]) // 2)
+    check(near(right, BLUE), f'{what}: own-window render: the right half shows the fullscreen page, not the other panel ({right})')
+    check(not (set(uia_children(pid)) & CHROME_IDS), f'{what}: no chrome control exposed to UI Automation')
+
+
+def split_steps(h, pid, blue, green):
+    check(bool(wait(lambda: metrics(green), 15)), 'split: the green panel is loaded too')
+    time.sleep(1.0)
+    if user32.IsZoomed(h):
+        post(h, MaximizeCommand); time.sleep(1)
+    windowed = rect(h); split0 = page_hosts(h); g0 = grips(h)
+    check(len(split0) == 2 and g0 >= 1, f'split setup: two panels side by side {split0}, {g0} grip(s)')
+    # Page fullscreen from the left (active) panel, then Échap.
+    click_fs_left(h)
+    check(bool(wait(lambda: (metrics(blue) or {}).get('fs'), 5)), 'split: requestFullscreen accepted on a user click in the left panel')
+    time.sleep(1.5)
+    split_alone(h, pid, blue, 'split, page fullscreen')
+    post(h, ExitFullscreenCommand); time.sleep(1.5)
+    check(rect(h) == windowed and page_hosts(h) == split0 and grips(h) == g0 and not (metrics(blue) or {}).get('fs', True),
+          f'split, Échap: the exact split comes back {page_hosts(h)} == {split0}, grips {grips(h)}, window {rect(h)}')
+    # F11 keeps the split; page fullscreen inside it; leaving the page returns to the F11 split; F11 off: windowed split.
+    post(h, FullscreenCommand); time.sleep(1.5)
+    f11 = page_hosts(h)
+    check(rect(h) == monitor(h) and len(f11) == 2 and grips(h) >= 1, f'split, F11: the split stays, over the whole monitor {f11}')
+    click_fs_left(h); wait(lambda: (metrics(blue) or {}).get('fs'), 5); time.sleep(1.5)
+    split_alone(h, pid, blue, 'split, F11 + page fullscreen')
+    post(h, ExitFullscreenCommand); time.sleep(1.5)
+    check(rect(h) == monitor(h) and page_hosts(h) == f11 and grips(h) >= 1, f'split, F11 + page off: back to the F11 split {page_hosts(h)} == {f11}')
+    post(h, FullscreenCommand); time.sleep(1.5)
+    check(rect(h) == windowed and page_hosts(h) == split0 and grips(h) == g0 and {'Toolbar', 'Tabs', 'Settings'} <= set(uia_children(pid)),
+          f'split, F11 off: the windowed split and the chrome come back {page_hosts(h)} == {split0}')
+
+
+def run(app_src, split=False):
     shutil.rmtree(APP, ignore_errors=True); APP.mkdir(parents=True)
     for f in app_src.iterdir():
         if f.name in ('profile', 'session', 'sessions', 'profiles', 'windows', 'prototype.log', 'downloads', 'bookmarks', 'settings', 'history', 'annotations', 'ui-language', 'profiles.txt'):
             continue
         (shutil.copytree(f, APP / f.name) if f.is_dir() else shutil.copy2(f, APP / f.name))
-    (APP / 'session').write_text(f'browser-session-2\n0\n2\n"{BASE}/blue"\n"{BASE}/green"\n0\n', encoding='utf-8', newline='\n')
+    groups = '1\n0 2 0 1 1 1\n' if split else '0\n'   # --split: the two pages restored as a side-by-side group
+    (APP / 'session').write_text(f'browser-session-2\n0\n2\n"{BASE}/blue"\n"{BASE}/green"\n{groups}', encoding='utf-8', newline='\n')
     (APP / 'settings').write_text('browser-settings 1\nrestore-tabs=1\n', encoding='utf-8', newline='\n')
     srv = socketserver.ThreadingTCPServer(('127.0.0.1', WEB), Handler); threading.Thread(target=srv.serve_forever, daemon=True).start()
     env = dict(__import__('os').environ)
@@ -271,79 +349,82 @@ def run(app_src):
         check(bool(h), 'the throwaway copy starts')
         blue, green = f'{BASE}/blue', f'{BASE}/green'
         check(bool(wait(lambda: ws_for(blue), 20)) and bool(wait(lambda: metrics(blue), 10)), 'the blue fixture page is loaded')
-        time.sleep(1.5)
-        if user32.IsZoomed(h):
-            post(h, MaximizeCommand); time.sleep(1)
-        windowed = rect(h)
-        log(f'     windowed bounds {windowed}, monitor {monitor(h)}, dpi {user32.GetDpiForWindow(h)}')
-        # F11, three times in a row, windowed.
-        for i in (1, 2, 3):
+        if split:
+            split_steps(h, proc.pid, blue, green)
+        else:
+            time.sleep(1.5)
+            if user32.IsZoomed(h):
+                post(h, MaximizeCommand); time.sleep(1)
+            windowed = rect(h)
+            log(f'     windowed bounds {windowed}, monitor {monitor(h)}, dpi {user32.GetDpiForWindow(h)}')
+            # F11, three times in a row, windowed.
+            for i in (1, 2, 3):
+                post(h, FullscreenCommand); time.sleep(1.2)
+                check_full(h, proc.pid, blue, BLUE, f'F11 #{i} (windowed)')
+                post(h, FullscreenCommand); time.sleep(1.2)
+                check_restored(h, proc.pid, blue, windowed, False, f'F11 #{i} off (windowed)')
+            # Page fullscreen (trusted click on the fixture's button), left with the Échap command.
+            click_fs(h)
+            check(bool(wait(lambda: (metrics(blue) or {}).get('fs'), 5)), 'page: requestFullscreen accepted on a user click')
+            time.sleep(1.2)
+            check_full(h, proc.pid, blue, BLUE, 'page fullscreen (windowed)')
+            mt = metrics(blue)
+            check(bool(mt) and mt['focus'], 'page fullscreen: the page keeps focus (document.hasFocus())')
+            post(h, ExitFullscreenCommand); time.sleep(1.5)
+            check_restored(h, proc.pid, blue, windowed, False, 'page fullscreen off by Échap (windowed)')
+            # Maximized: F11 and page fullscreen both come back maximized.
+            post(h, MaximizeCommand); time.sleep(1.2)
+            maxed = rect(h)
+            check(bool(user32.IsZoomed(h)), f'maximized for the next checks {maxed}')
             post(h, FullscreenCommand); time.sleep(1.2)
-            check_full(h, proc.pid, blue, BLUE, f'F11 #{i} (windowed)')
+            check_full(h, proc.pid, blue, BLUE, 'F11 (maximized)')
             post(h, FullscreenCommand); time.sleep(1.2)
-            check_restored(h, proc.pid, blue, windowed, False, f'F11 #{i} off (windowed)')
-        # Page fullscreen (trusted click on the fixture's button), left with the Échap command.
-        click_fs(h)
-        check(bool(wait(lambda: (metrics(blue) or {}).get('fs'), 5)), 'page: requestFullscreen accepted on a user click')
-        time.sleep(1.2)
-        check_full(h, proc.pid, blue, BLUE, 'page fullscreen (windowed)')
-        mt = metrics(blue)
-        check(bool(mt) and mt['focus'], 'page fullscreen: the page keeps focus (document.hasFocus())')
-        post(h, ExitFullscreenCommand); time.sleep(1.5)
-        check_restored(h, proc.pid, blue, windowed, False, 'page fullscreen off by Échap (windowed)')
-        # Maximized: F11 and page fullscreen both come back maximized.
-        post(h, MaximizeCommand); time.sleep(1.2)
-        maxed = rect(h)
-        check(bool(user32.IsZoomed(h)), f'maximized for the next checks {maxed}')
-        post(h, FullscreenCommand); time.sleep(1.2)
-        check_full(h, proc.pid, blue, BLUE, 'F11 (maximized)')
-        post(h, FullscreenCommand); time.sleep(1.2)
-        check_restored(h, proc.pid, blue, maxed, True, 'F11 off (maximized)')
-        click_fs(h); wait(lambda: (metrics(blue) or {}).get('fs'), 5); time.sleep(1.2)
-        check_full(h, proc.pid, blue, BLUE, 'page fullscreen (maximized)')
-        post(h, ExitFullscreenCommand); time.sleep(1.5)
-        check_restored(h, proc.pid, blue, maxed, True, 'page fullscreen off (maximized)')
-        # Another tab chosen during a page fullscreen: the page leaves it, the window comes back.
-        click_fs(h); wait(lambda: (metrics(blue) or {}).get('fs'), 5); time.sleep(1.0)
-        post(h, SelectTabBase + 1); time.sleep(2.0)
-        check(not (metrics(blue) or {}).get('fs', True), 'tab change: the page that was fullscreen left it')
-        check_restored(h, proc.pid, green, maxed, True, 'tab change during page fullscreen')
-        # F11 on the other tab, then a tab change inside browser fullscreen: still full, the new page fills it.
-        post(h, FullscreenCommand); time.sleep(1.2)
-        check_full(h, proc.pid, green, GREEN, 'F11 on the green tab')
-        post(h, SelectTabBase); time.sleep(1.5)
-        check_full(h, proc.pid, blue, BLUE, 'F11 then Ctrl+1: the blue tab fills the screen')
-        tabs = len([t for t in targets() if t.get('type') == 'page'])
-        user32.PostMessageW(h, 0x0201, 1, (20 << 16) | 200); user32.PostMessageW(h, 0x0202, 0, (20 << 16) | 200)   # where the tab strip was
-        time.sleep(1.0)
-        check(len([t for t in targets() if t.get('type') == 'page']) == tabs, 'F11: a click where the tab strip was hits no hidden chrome control')
-        # Chrome shortcuts inside fullscreen: Ctrl+L / F6 have no chrome to reach; the page keeps the keyboard.
-        post(h, ord('L')); time.sleep(0.8)
-        check(not visible_edit(h), 'F11: Ctrl+L shows no address field over the page')
-        post(h, 3000); time.sleep(0.8)   # FocusChrome (F6)
-        mt = metrics(blue)
-        check(bool(mt) and mt['focus'] and not visible_edit(h), 'F11: F6 keeps the keyboard in the page (document.hasFocus())')
-        check(not (set(uia_children(proc.pid)) & CHROME_IDS), 'F11: still no chrome in UI Automation after Ctrl+L / F6')
-        post(h, FullscreenCommand); time.sleep(1.2)
-        check_restored(h, proc.pid, blue, maxed, True, 'F11 off after the tab change')
-        # A new (home) tab, its address field being edited when F11 comes: the field and the chrome leave, only the
-        # canvas / home page shows; F11 again brings everything back.
-        before = len([t for t in targets() if t.get('type') == 'page'])
-        post(h, ord('T')); time.sleep(1.5)
-        check(visible_edit(h), 'home tab: Ctrl+T opens the address field (setup)')
-        post(h, FullscreenCommand); time.sleep(1.2)
-        cs = client_screen(h)
-        check(rect(h) == monitor(h), 'F11 on a home tab: the window covers its monitor')
-        check(not visible_edit(h), 'F11 on a home tab: the address field being edited is closed')
-        top = pixel(h, (cs[2] - cs[0]) // 2, 20)
-        check(near(top, (23, 23, 23)), f'F11 on a home tab: only the canvas where the chrome was (y 20: {top})')
-        check(not (set(uia_children(proc.pid)) & CHROME_IDS), 'F11 on a home tab: no chrome control exposed to UI Automation')
-        user32.PostMessageW(h, 0x0201, 1, (20 << 16) | 200); user32.PostMessageW(h, 0x0202, 0, (20 << 16) | 200)
-        time.sleep(1.0)
-        check(len([t for t in targets() if t.get('type') == 'page']) <= before + 1, 'F11 on a home tab: a click where the tab strip was opens nothing')
-        post(h, FullscreenCommand); time.sleep(1.2)
-        check(rect(h) == maxed and bool(user32.IsZoomed(h)) and {'Toolbar', 'Tabs', 'Settings'} <= set(uia_children(proc.pid)),
-              'F11 off on the home tab: maximized again, chrome back')
+            check_restored(h, proc.pid, blue, maxed, True, 'F11 off (maximized)')
+            click_fs(h); wait(lambda: (metrics(blue) or {}).get('fs'), 5); time.sleep(1.2)
+            check_full(h, proc.pid, blue, BLUE, 'page fullscreen (maximized)')
+            post(h, ExitFullscreenCommand); time.sleep(1.5)
+            check_restored(h, proc.pid, blue, maxed, True, 'page fullscreen off (maximized)')
+            # Another tab chosen during a page fullscreen: the page leaves it, the window comes back.
+            click_fs(h); wait(lambda: (metrics(blue) or {}).get('fs'), 5); time.sleep(1.0)
+            post(h, SelectTabBase + 1); time.sleep(2.0)
+            check(not (metrics(blue) or {}).get('fs', True), 'tab change: the page that was fullscreen left it')
+            check_restored(h, proc.pid, green, maxed, True, 'tab change during page fullscreen')
+            # F11 on the other tab, then a tab change inside browser fullscreen: still full, the new page fills it.
+            post(h, FullscreenCommand); time.sleep(1.2)
+            check_full(h, proc.pid, green, GREEN, 'F11 on the green tab')
+            post(h, SelectTabBase); time.sleep(1.5)
+            check_full(h, proc.pid, blue, BLUE, 'F11 then Ctrl+1: the blue tab fills the screen')
+            tabs = len([t for t in targets() if t.get('type') == 'page'])
+            user32.PostMessageW(h, 0x0201, 1, (20 << 16) | 200); user32.PostMessageW(h, 0x0202, 0, (20 << 16) | 200)   # where the tab strip was
+            time.sleep(1.0)
+            check(len([t for t in targets() if t.get('type') == 'page']) == tabs, 'F11: a click where the tab strip was hits no hidden chrome control')
+            # Chrome shortcuts inside fullscreen: Ctrl+L / F6 have no chrome to reach; the page keeps the keyboard.
+            post(h, ord('L')); time.sleep(0.8)
+            check(not visible_edit(h), 'F11: Ctrl+L shows no address field over the page')
+            post(h, 3000); time.sleep(0.8)   # FocusChrome (F6)
+            mt = metrics(blue)
+            check(bool(mt) and mt['focus'] and not visible_edit(h), 'F11: F6 keeps the keyboard in the page (document.hasFocus())')
+            check(not (set(uia_children(proc.pid)) & CHROME_IDS), 'F11: still no chrome in UI Automation after Ctrl+L / F6')
+            post(h, FullscreenCommand); time.sleep(1.2)
+            check_restored(h, proc.pid, blue, maxed, True, 'F11 off after the tab change')
+            # A new (home) tab, its address field being edited when F11 comes: the field and the chrome leave, only the
+            # canvas / home page shows; F11 again brings everything back.
+            before = len([t for t in targets() if t.get('type') == 'page'])
+            post(h, ord('T')); time.sleep(1.5)
+            check(visible_edit(h), 'home tab: Ctrl+T opens the address field (setup)')
+            post(h, FullscreenCommand); time.sleep(1.2)
+            cs = client_screen(h)
+            check(rect(h) == monitor(h), 'F11 on a home tab: the window covers its monitor')
+            check(not visible_edit(h), 'F11 on a home tab: the address field being edited is closed')
+            top = pixel(h, (cs[2] - cs[0]) // 2, 20)
+            check(near(top, (23, 23, 23)), f'F11 on a home tab: only the canvas where the chrome was (y 20: {top})')
+            check(not (set(uia_children(proc.pid)) & CHROME_IDS), 'F11 on a home tab: no chrome control exposed to UI Automation')
+            user32.PostMessageW(h, 0x0201, 1, (20 << 16) | 200); user32.PostMessageW(h, 0x0202, 0, (20 << 16) | 200)
+            time.sleep(1.0)
+            check(len([t for t in targets() if t.get('type') == 'page']) <= before + 1, 'F11 on a home tab: a click where the tab strip was opens nothing')
+            post(h, FullscreenCommand); time.sleep(1.2)
+            check(rect(h) == maxed and bool(user32.IsZoomed(h)) and {'Toolbar', 'Tabs', 'Settings'} <= set(uia_children(proc.pid)),
+                  'F11 off on the home tab: maximized again, chrome back')
     finally:
         try:
             h = main_window(proc.pid)
@@ -361,6 +442,6 @@ def run(app_src):
 
 if __name__ == '__main__':
     sys.stdout.reconfigure(encoding='utf-8')
-    ap = argparse.ArgumentParser(); ap.add_argument('--app', default='build/fullscreen-fix')
+    ap = argparse.ArgumentParser(); ap.add_argument('--app', default='build/fullscreen-fix'); ap.add_argument('--split', action='store_true')
     a = ap.parse_args()
-    sys.exit(run((ROOT / a.app).resolve()))
+    sys.exit(run((ROOT / a.app).resolve(), a.split))

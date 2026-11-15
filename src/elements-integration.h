@@ -660,6 +660,7 @@ void ApplyFullscreen(bool wasFull){
 void SetPageFullscreen(const std::shared_ptr<Tab>& t,bool on){
     if(on&&t!=Active())return;const bool was=InFullscreen();fullscreen.page=on;
     Log(std::wstring(L"FULLSCREEN page ")+(on?L"on":L"off"));if(was!=InFullscreen()||on)ApplyFullscreen(was);
+    else Layout();   // the page left while F11 stays: the window keeps its size, its pages (a split) come back
 }
 bool PageFullscreenActive(){auto t=Active();return fullscreen.page&&t&&t->pageFullscreen;}
 // Échap / F11 during a page's fullscreen: the page leaves it (its fullscreenchange fires; the
