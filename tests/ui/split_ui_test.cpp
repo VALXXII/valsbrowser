@@ -237,6 +237,46 @@ int main() {
         QuitGroup(v.group);
     }
 
+    // 15. A page element in fullscreen inside a split: presented alone at the whole ContentBox; no other panel, grip,
+    //     rail, separator hit or F6 panel. The group (members, order, orientation, weights) is untouched and comes
+    //     back exactly. F11 alone keeps the split; F11 + page fullscreen returns to the F11 split.
+    {
+        splitGroups.clear(); for (auto& t : pages) t->group = 0; current = 0; ApplyPages();
+        SV::Target t; t.kind = SV::Kind::Split; t.side = SV::Side::Right; t.orientation = SV::Orientation::Row;
+        ApplySplitTarget(pages[1], t, pages[0], CurrentSplit());
+        auto v0 = CurrentSplit(); assert(v0.group && v0.members.size() == 2 && chrome.split.shown && chrome.split.handles.size() == 1);
+        v0.members[0]->weight = 1.6f; v0.members[1]->weight = .4f; ApplyPages(); v0 = CurrentSplit();
+        const auto a = v0.members[v0.active], b = v0.members[v0.active == 0 ? 1 : 0];
+        const auto members = v0.members; const auto weights = v0.weights; const float wa = a->weight, wb = b->weight; const auto boxes = v0.a.slots; const auto orient = splitGroups[v0.group];
+        const auto order = pages; assert(a == Active() && a->shown && b->shown && ShownPanels().size() == 2);
+        auto same = [&](const SplitView& v) { if (v.group != v0.group || v.members != members || v.weights != weights || v.a.slots.size() != boxes.size()) return false;
+            for (size_t i = 0; i < boxes.size(); ++i) { const auto& p = v.a.slots[i].box; const auto& q = boxes[i].box; if (p.left != q.left || p.top != q.top || p.right != q.right || p.bottom != q.bottom || v.a.slots[i].member != boxes[i].member) return false; }
+            return true; };
+        auto alone = [&](const char* what) {
+            const auto v = CurrentSplit(); (void)what;
+            assert(!v.group && a->shown && !b->shown && Shown() == 1);
+            assert(!chrome.split.shown && chrome.split.handles.empty() && chrome.split.rails.empty() && splitGrips.empty() && ShownPanels().empty());
+            assert(SeparatorAt((boxes[0].box.right + boxes[1].box.left) / 2, 400, v) < 0);   // the former gap is no separator
+            assert(a->group == v0.group && b->group == v0.group && splitGroups[v0.group] == orient && pages == order && a->weight == wa && b->weight == wb && wa != wb);
+        };
+        // Page fullscreen (windowed): the requesting active page alone, at the ContentBox.
+        a->pageFullscreen = true; fullscreen.page = true; ApplyPages(); SyncSplitDecor(); alone("page");
+        // Leaving: the exact split again (same members, order, weights and boxes).
+        a->pageFullscreen = false; fullscreen.page = false; ApplyPages(); SyncSplitDecor();
+        assert(same(CurrentSplit()) && a->shown && b->shown && chrome.split.shown && chrome.split.handles.size() == 1 && ShownPanels().size() == 2);
+        // F11 alone keeps the split.
+        fullscreen.browser = true; ApplyPages(); SyncSplitDecor(); assert(CurrentSplit().group == v0.group && a->shown && b->shown);
+        // F11 + page fullscreen: alone; page leaves: the F11 split; F11 leaves: the windowed split.
+        a->pageFullscreen = true; fullscreen.page = true; ApplyPages(); SyncSplitDecor(); alone("nested");
+        a->pageFullscreen = false; SetPageFullscreen(a, false);   // the engine's « left fullscreen », F11 still on: the host re-lays out
+        assert(!fullscreen.page && fullscreen.browser && CurrentSplit().group == v0.group && a->shown && b->shown && chrome.split.shown);
+        fullscreen.browser = false; ApplyPages(); SyncSplitDecor(); assert(same(CurrentSplit()) && Shown() == 2);
+        // Only the page that asked: the flag on the hidden (non-active) panel never collapses the split.
+        b->pageFullscreen = true; fullscreen.page = true; ApplyPages(); assert(CurrentSplit().group == v0.group && Shown() == 2);
+        b->pageFullscreen = false; fullscreen.page = false; ApplyPages();
+        QuitGroup(v0.group);
+    }
+
     pages.clear(); DestroyWindow(window); window = nullptr;
-    std::puts("PASS: reorder vs lift, split right, Escape restore, insert, refusal, replace keeps tabs, rails on shrink + reopen, keyboard and pointer resize, close hand-over, menu stacking, reverse, F6 panels, session groups, single tab, menu V2 (target header, other sites, homonyms, full group reason, replace, off-screen group), rounded page corners");
+    std::puts("PASS: reorder vs lift, split right, Escape restore, insert, refusal, replace keeps tabs, rails on shrink + reopen, keyboard and pointer resize, close hand-over, menu stacking, reverse, F6 panels, page fullscreen alone in a split, session groups, single tab, menu V2 (target header, other sites, homonyms, full group reason, replace, off-screen group), rounded page corners");
 }

@@ -337,7 +337,7 @@ void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static 
 void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
-void FocusAddress(){editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
+void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
 std::vector<std::wstring> Titles(){std::vector<std::wstring> titles;for(auto& t:pages)titles.push_back(t->title);return titles;}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site);
 // What the field reads: the active tab's address and security outside editing; while
@@ -348,7 +348,7 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
 void SyncVaultKey();
-void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -362,7 +362,7 @@ std::vector<int> ShownPanels();bool FocusContextToast();
 void ToggleChromeFocus(bool back=false){
     // F6 cycle: page -> toolbar -> update toast (when one is shown) -> page. In a split
     // view the pages come first, in panel order (Shift+F6 walks back).
-    if(UpdateToastHasFocus()){FocusPage();return;}
+    if(UpdateToastHasFocus()||InFullscreen()){FocusPage();return;}   // fullscreen: no chrome to cycle through
     auto panels=ShownPanels();
     if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();return;}
     if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);return;}}}
@@ -466,7 +466,11 @@ int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->grou
 SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();c.left=View::inset;c.right=std::max(c.left,chrome.width-View::inset);c.bottom=chrome.height-View::inset;if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
-    SplitView v;v.group=VisibleGroup();if(!v.group)return v;v.members=Members(v.group);const auto o=splitGroups[v.group];
+    // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
+    // grips, rails, separator hit and F6 panel cycle follow this (they all read CurrentSplit). The group itself (its
+    // members, order, orientation, weights) is untouched and comes back as it was when the page leaves fullscreen.
+    // Browser fullscreen (F11) alone keeps the split.
+    SplitView v;if(PageFullscreenActive())return v;v.group=VisibleGroup();if(!v.group)return v;v.members=Members(v.group);const auto o=splitGroups[v.group];
     // Minimum in CSS px seen by the site, converted with the page zoom (DIP = CSS px x zoom).
     v.min=SV::MinExtent(o,PageZoom());std::vector<std::uint64_t> recency;
     for(int i=0;i<(int)v.members.size();++i){v.weights.push_back(v.members[i]->weight);recency.push_back(v.members[i]->usedAt);if(v.members[i]==Active())v.active=i;}
@@ -515,7 +519,7 @@ RECT PixelRect(const SV::Box& b){return {S(b.left),S(b.top),S(b.right),S(b.botto
 void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
-    const float top=chrome.ContentTop();namespace View=NativeChrome::Design::Viewport;RECT full{S(View::inset),S(top),S(chrome.width-View::inset),std::max(S(top),S(chrome.height-View::inset))}; /* Paper V3 Viewbox: 2 DIP outline */const ULONGLONG now=GetTickCount64();
+    RECT full=PixelRect(ContentBox()); /* Paper V3 Viewbox (2 DIP outline, under the chrome); the whole window in fullscreen */const ULONGLONG now=GetTickCount64();
     // A page that grows shows the parent's surface wherever Chromium has not rendered
     // the new size yet. With WS_CLIPCHILDREN the parent never paints under its pages,
     // so that surface held stale handles/rings or never-painted black (the trails seen
@@ -3957,6 +3961,7 @@ bool AddressOpen(){return editing&&address&&IsWindowVisible(address);}
 std::vector<Accessibility::Node> AccessibleNodes(){
     using Accessibility::Node;using Accessibility::Role;namespace TS=NativeChrome::Design::TabStrip;
     std::vector<Node> nodes;
+    if(InFullscreen())return nodes;   // the page alone: no tab strip, toolbar or band to read or focus
     auto screen=[](D2D1_RECT_F r){RECT p{S(r.left),S(r.top),S(r.right),S(r.bottom)};MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;};
     auto region=[](int id)->const NativeChrome::Region*{for(auto& r:chrome.regions)if(r.id==id)return &r;return nullptr;};
     auto button=[&](int id,long long parent){

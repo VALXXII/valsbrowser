@@ -166,6 +166,26 @@ int wmain(int argc,wchar_t** argv){
             Check(SUCCEEDED(r.SavePng(name.c_str())),"toolbar sample exported");}
     }
     std::puts("toolbar without the private button: geometry, hit, focus at 560/1180 DIP, 96/144 DPI, normal/private, audio/annotation");
+    // Fullscreen (contentOnly): the page alone. No region (hit, tooltip, focus, UI Automation all read them), nothing
+    // drawn but the canvas; leaving it brings every control back. 96 / 144 DPI, normal / private, 1180 and 560 DIP.
+    for(UINT dpi:{96u,144u})for(float w:{560.f,1180.f})for(bool priv:{false,true}){
+        Chrome r;Check(SUCCEEDED(r.InitOffscreen(root,dpi,w,300)),"fullscreen renderer");
+        if(priv){r.profileButton.shown=true;r.profileButton.privateWindow=true;r.profileButton.name=L"Fenêtre privée";}
+        r.annotateShown=true;r.audioShown=true;r.address=AddressBar::Describe(L"https://exemple.test/page",false);
+        r.Paint({L"Exemple",L"Autre"},0,L"",false,0,0);const size_t normal=r.regions.size();
+        const UINT32 tabPixel=r.SurfacePixel(Design::TabStrip::Surface(0).left+8,16)&0xffffff,fieldPixel=r.SurfacePixel(r.bar.left+4,60)&0xffffff;
+        Check(normal>10&&r.Hit(w-18,60)=='S'&&!r.FocusOrder().empty(),"fullscreen setup: the chrome has its controls");
+        r.contentOnly=true;r.Paint({L"Exemple",L"Autre"},0,L"",false,0,0);
+        Check(r.regions.empty()&&r.FocusOrder().empty(),"fullscreen: no chrome region, nothing to focus or expose");
+        bool hit=false;for(float y:{4.f,20.f,44.f,60.f,76.f,100.f})for(float x=0;x<w;x+=12)if(r.Hit(x,y))hit=true;
+        Check(!hit,"fullscreen: no chrome hit anywhere in the former chrome rows");
+        const UINT32 canvas=0x171717;bool clean=true;for(float y:{4.f,16.f,30.f,48.f,60.f,72.f,90.f})for(float x=2;x<w;x+=17)if((r.SurfacePixel(x,y)&0xffffff)!=canvas)clean=false;
+        Check(clean&&tabPixel!=canvas&&fieldPixel!=canvas,"fullscreen: only the canvas is painted (no tab, field or button pixel)");
+        if(dpi==144&&w==1180){Check(SUCCEEDED(r.SavePng((output+L"\\fullscreen-content-only"+(priv?L"-private":L"")+L".png").c_str())),"fullscreen sample exported");}
+        r.contentOnly=false;r.Paint({L"Exemple",L"Autre"},0,L"",false,0,0);
+        Check(r.regions.size()==normal&&r.Hit(w-18,60)=='S'&&(r.SurfacePixel(Design::TabStrip::Surface(0).left+8,16)&0xffffff)==tabPixel,"fullscreen left: every control and pixel is back");
+    }
+    std::puts("fullscreen content only: no region, hit, focus or chrome pixel; restored after (96/144 DPI, 560/1180 DIP, normal/private)");
     DestroyWindow(h);for(auto name:FontFiles)RemoveFontResourceExW((root+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();
     Check(!GetModuleHandleW(L"WebView2Loader.dll"),"native test completed without loading WebView2");
     std::printf("PASS: %d native UI checks; no browser/WebView2 loaded or launched.\n",checks);return 0;
