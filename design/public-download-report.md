@@ -185,21 +185,29 @@ data to `%LOCALAPPDATA%\browser\data`. Protocol (`src/annotations-migration.h`):
 - **Gate** `<folder>\annotations.write-gate`: every bridge request (all of them: list/get also write
   reader records) holds it **shared for the whole request**, during which the store is re-resolved;
   every browser store mutation holds it too. The helper holds it **exclusively** from before the copy
-  until the outcome. Meanwhile requests get a retryable « Migration … en cours » and change nothing.
-- **Durable record** `data\annotations-migration`: `copied` is published with the copied data;
-  `committed` is written only **after the new version's startup ack**, then a mirror in the portable
-  folder. Only `committed` naming exactly that folder, plus the browser's own
+  until the outcome. **Fail-closed**: only a gate actually held on a plain file counts; Busy (the other
+  side holds it) and Failed (any other open error, a directory, a reparse point) both refuse — the
+  agent gets an explicit error and nothing is read or written, the helper aborts before copying.
+  Only a store with no gate at all (custom `--store`) runs without one.
+- **One authoritative commit.** During the copy the helper writes a **source pointer**
+  `<folder>\annotations.migrated` (« root <install root> »), which carries no state. The durable record
+  `data\annotations-migration` says `copied` with the copied data and becomes `committed` in **one
+  write, only after the new version's startup ack**. The source store is frozen exactly when its
+  pointer names a root whose record is `committed` for this folder; a **release** bridge on its
+  **default** portable store redirects only under that same condition **and** the browser's own
   `UpdateCore::PortableForwardTarget` rules (valid non-zero current with its exe, last result not
-  failed, no reparse root/data/versions, local drive), lets a **release** bridge on its **default**
-  portable store serve `data\annotations`. Custom `--store`, installed bridges and dev/preview builds
-  never redirect. Leases, tokens and `--site` are data in the store: they travel with the copy.
-- The installed copy refuses mutations while `copied`; the portable store refuses them once the
-  mirror says it moved (a portable browser process still running there). Rollback discards the copy
-  under the gate (no record ⇒ the source stays authoritative).
-- **Bounded recovery** at every launcher and install start: an uncommitted migration (helper died
-  after ack, before commit) is redone from the source under the exclusive gate (re-copy, swap,
-  commit); an install migrated before the record existed is committed if nothing was moved, else
-  marked `skipped` (its installed store is kept, no redirect).
+  failed, no reparse root/data/versions, local drive). So a redirect always implies a frozen source,
+  there is no partially written commit to repair, and a stale pointer (rollback, failed retry)
+  freezes nothing. Custom `--store`, installed bridges and dev/preview builds never redirect. Leases,
+  tokens and `--site` are data in the store: they travel with the copy.
+- The installed copy refuses mutations while `copied`. Rollback discards the copy under the gate (no
+  record ⇒ the source stays authoritative and writable).
+- **Bounded recovery** at every launcher start, install start and after an ack: an uncommitted
+  migration (helper died or the commit write failed) is redone from the source under the **held**
+  exclusive gate (re-copy, swap, commit) **only when the installed version is usable** (valid
+  launchable current, its install not failed); otherwise nothing changes and the source stays writable.
+  A committed record whose pointer disappeared gets its pointer back. An install migrated before the
+  record existed is committed if nothing was moved, else marked `skipped` (no redirect).
 
 ### Tests and evidence (lot B)
 
@@ -242,6 +250,13 @@ agent resolves with its newest token); rollback never redirects; Busy during the
   restarts it; compatibility between that bridge and the newer browser's store is the store's own
   versioning contract (unchanged here).
 - **Recovery needs a start:** an uncommitted migration stays « installed copy frozen, source
-  authoritative » until the next launcher or install start.
+  authoritative and writable » until a launcher or install start finds a usable install.
+- **Unusable gate (fail-closed):** if `annotations.write-gate` cannot be opened as a plain file (e.g. a
+  directory planted there), source mutations and agent requests are refused and the first install
+  aborts with `annotations-gate-unusable` until it is a plain file again; nothing is lost.
+- **Pointer and install root must agree:** a bridge started with a different LOCALAPPDATA than the one
+  whose install the pointer names does not redirect, while the source is frozen (data safe in the
+  installed copy, agent gets Busy). A record committed with its pointer deleted is repaired at the next
+  start; source writes made in between are not merged.
 - Not exercised: a real public publication of this build, a clean-machine first run, SmartScreen,
   WebView2 bootstrap, real Claude/Codex clients (the bridge was driven over stdio by the tests).

@@ -824,6 +824,10 @@ struct PortableAgent {
         return at == std::string::npos ? "" : text.substr(at + 9, text.find('"', at + 9) - at - 9);
     }
     std::wstring Installed() const { return root + L"\\data\\annotations"; }
+    bool PointerNames(const std::wstring& r) const {
+        const std::string t = ReadText(portable + L"\\annotations.migrated");
+        return t == "browser-annotations-source 1\nroot " + UP::Narrow(r) + "\n";
+    }
     std::wstring Source() const { return portable + L"\\annotations"; }
     std::string RecordState() const {
         const std::string t = ReadText(root + L"\\data\\annotations-migration");
@@ -842,7 +846,7 @@ void TestMigrationCommitWithLiveAgent() {
     CHECK(t.Update(feed) == 0);
     CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
     CHECK(t.RecordState() == "committed");
-    CHECK(UP::PathExists(t.Source() + L".migrated"));
+    CHECK(t.PointerNames(t.root));  // source pointer -> this install (written during the copy)
     CHECK(t.LeaseIn(t.Installed()) == token);  // the lease travelled with the copy
     // The SAME running agent, original token: served by the installed store from its next request on.
     const std::string r = t.Resolve(2, token);
@@ -887,7 +891,7 @@ void TestMigrationKillBeforeCommit() {
                     (unsigned long long)(GetTickCount64() - t0));
         CHECK(freed);
     }
-    CHECK(!UP::PathExists(t.Source() + L".migrated"));
+    CHECK(t.PointerNames(t.root));  // present, but freezes nothing: the record is not committed
     // The agent is still on the source: release + claim again there (a write AFTER the copy).
     {
         const std::string rel = t.agent->Tool(2, "browser_annotation_release", "{\"id\":\"" + t.id + "\",\"claim_token\":\"" + first +
@@ -920,7 +924,7 @@ void TestMigrationRollbackNeverRedirects() {
     CHECK(t.Update(feed) == 0);
     CHECK(WaitFor(t.root + L"\\updates\\last-result", "status failed", 60000));
     CHECK(WaitFor(t.portableLog, "start 0.3.1 phase=0", 20000));
-    CHECK(!UP::PathExists(t.root + L"\\data") && !UP::PathExists(t.Source() + L".migrated"));
+    CHECK(!UP::PathExists(t.root + L"\\data"));  // the stale pointer left in the source freezes nothing (no record)
     CHECK(!IsError(t.Resolve(2, token)));
     CHECK(t.StatusIn(t.Source()) == BA::Status::Resolved);
 }
@@ -944,6 +948,86 @@ void TestMigrationBusyDuringCopy() {
     CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
     const std::string token = t.Claim(2);
     CHECK(!token.empty() && t.LeaseIn(t.Installed()) == token && t.LeaseIn(t.Source()).empty());
+}
+
+
+// Review P2 (gate fail-open): an unusable gate (a directory planted at its name) never lets the helper copy without
+// the lock: the install aborts before anything is copied, and the agent gets an explicit error instead of a write.
+void TestMigrationGateUnusable() {
+    PortableAgent t(L"e2e-mig-gate-dir");
+    const std::wstring feed = t.s + L"\\feed";
+    DeleteFileW((t.Source() + L".write-gate").c_str());
+    CHECK(CreateDirectoryW((t.Source() + L".write-gate").c_str(), nullptr));
+    FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    CHECK(t.Update(feed) == 0);
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status failed", 60000));
+    CHECK(ReadText(t.root + L"\\updates\\last-result").find("annotations-gate-unusable") != std::string::npos);
+    CHECK(!UP::PathExists(t.root + L"\\data") && !UP::PathExists(t.root + L"\\current"));
+    const std::string r = t.agent->Tool(1, "browser_annotation_claim", "{\"id\":\"" + t.id + "\"}");
+    CHECK(IsError(r) && r.find("inutilisable") != std::string::npos && t.LeaseIn(t.Source()).empty());
+    RemoveDirectoryW((t.Source() + L".write-gate").c_str());
+    CHECK(!t.Claim(2).empty());  // plain gate again: the source works
+}
+
+// Review P2 (commit split): the commit write fails after the ack. Nothing is half-visible: no redirect, the source
+// stays writable for the same agent; the next launcher start re-copies (newest token) and commits atomically.
+void TestMigrationCommitWriteFails() {
+    PortableAgent t(L"e2e-mig-commit-fails");
+    const std::wstring feed = t.s + L"\\feed";
+    const std::string first = t.Claim(1);
+    FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    SetFault(L"commit-write");
+    CHECK(t.Update(feed) == 0);
+    SetFault(nullptr);
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
+    CHECK(t.RecordState() == "copied" && t.PointerNames(t.root));
+    CHECK(!IsError(t.agent->Tool(2, "browser_annotation_release", "{\"id\":\"" + t.id + "\",\"claim_token\":\"" + first +
+                                                                      "\",\"reason\":\"test\"}")));  // source still the store
+    const std::string second = t.Claim(3);
+    CHECK(!second.empty() && t.LeaseIn(t.Source()) == second);
+    CHECK(Run(t.root + L"\\browser.exe", L"--echo recover", 10000) == 0);
+    CHECK(WaitFor(t.installedLog, "echo 0.3.2 [recover]", 10000));
+    CHECK(t.RecordState() == "committed" && t.LeaseIn(t.Installed()) == second);
+    CHECK(!IsError(t.Resolve(4, second)) && t.StatusIn(t.Installed()) == BA::Status::Resolved);
+    BA::Annotation late;
+    late.site = "https://boutique.test";
+    late.note = "tardive";
+    late.source.url = "https://boutique.test/";
+    CHECK(BA::Store(t.Source()).WriteAnnotation(late, nullptr, false).code == BA::Code::Busy);  // source now frozen
+}
+
+// Review P2 (recovery without a usable install): the first portable install dies after the copy, BEFORE the switch
+// (record « copied », no current). A retry that fails before switching must not commit: the source stays writable
+// for the same running agent. A later valid retry finishes the migration with the newest writes and token.
+void TestMigrationPreSwitchKillThenFailedRetry() {
+    PortableAgent t(L"e2e-mig-preswitch");
+    const std::wstring feed = t.s + L"\\feed";
+    const std::string first = t.Claim(1);
+    FeedWithBridge(feed, Fx(L"fake-0.3.2.exe"), "0.3.2", Fx(L"bridge-0.3.2.exe"));
+    SetFault(L"kill-after-migration");
+    CHECK(t.Update(feed) == 0);
+    SetFault(nullptr);
+    CHECK(WaitFor(t.root + L"\\updates\\helper.log", "portable data migrated", 60000));
+    CHECK(HelperGone(t.root, 60000));
+    CHECK(t.RecordState() == "copied" && !UP::PathExists(t.root + L"\\current"));
+    // Failed retry: the helper starts (recovery runs first), then fails before its switch.
+    SetFault(L"current-write");
+    CHECK(t.Update(feed) == 0);
+    SetFault(nullptr);
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status failed", 60000));
+    CHECK(HelperGone(t.root, 60000));
+    CHECK(t.RecordState() == "copied" && !UP::PathExists(t.root + L"\\current"));  // nothing committed
+    const std::string rel = t.agent->Tool(2, "browser_annotation_release", "{\"id\":\"" + t.id + "\",\"claim_token\":\"" + first +
+                                                                               "\",\"reason\":\"test\"}");
+    CHECK(!IsError(rel));  // the source is still writable (not frozen)
+    const std::string second = t.Claim(3);
+    CHECK(!second.empty() && t.LeaseIn(t.Source()) == second);
+    // Valid retry: installed, then the interrupted migration is finished from the source after the ack.
+    CHECK(t.Update(feed) == 0);
+    CHECK(WaitFor(t.root + L"\\updates\\last-result", "status installed", 60000));
+    CHECK(HelperGone(t.root, 60000));
+    CHECK(t.RecordState() == "committed" && t.LeaseIn(t.Installed()) == second);
+    CHECK(!IsError(t.Resolve(4, second)) && t.StatusIn(t.Installed()) == BA::Status::Resolved);
 }
 
 }  // namespace
@@ -977,5 +1061,8 @@ int wmain(int argc, wchar_t** argv) {
     TestMigrationKillBeforeCommit();
     TestMigrationRollbackNeverRedirects();
     TestMigrationBusyDuringCopy();
+    TestMigrationGateUnusable();
+    TestMigrationCommitWriteFails();
+    TestMigrationPreSwitchKillThenFailedRetry();
     return Report("install_test");
 }

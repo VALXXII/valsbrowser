@@ -187,3 +187,16 @@ redirect ever; two later updates ⇒ redirect still valid; false references (oth
 match, UNC, reparse, invalid/failed current, custom `--store`, preview/dev build) ⇒ no redirect;
 `DefaultStoreRoot` for `<app>\assets\bin` (portable ⇒ `<app>\annotations`), for
 `versions\<v>\assets\bin` and `<root>\bin` (⇒ `<root>\data\annotations`), dev sibling unchanged.
+
+
+## Revision after the independent reviews of d3e81c6 (three confirmed defects, fixed)
+
+1. **Gate fail-open** → `Gate::Open` returns `NotApplicable | Held | Busy | Failed`; Held requires a plain
+   (non-directory, non-reparse) disk file. Store mutations, bridge requests, helper copy and recovery all
+   require Held; only a store without a gate (custom `--store`) is NotApplicable.
+2. **Record/mirror split** → the stateful source mirror is replaced by a stateless source **pointer**
+   written during the copy (before any commit is possible). Source freeze ⇔ pointer names root ∧ record
+   committed for this folder; bridge redirect ⇔ the same ∧ forward rules. One record write commits both.
+3. **Recovery without a usable install** → recovery commits only when the installed version is usable
+   (launchable valid current, last install not failed for it); the ack result is recorded before the
+   post-ack recovery. Otherwise the source stays authoritative and writable.

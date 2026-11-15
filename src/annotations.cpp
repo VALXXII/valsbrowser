@@ -1602,10 +1602,26 @@ std::string ReadRecordText(const std::wstring& path) {
 // Every mutation of a store that a migration may be moving runs with the gate held SHARED (src/annotations-migration.h).
 // Busy when the update helper holds it, when this portable store was moved to the installed version (mirror), or
 // when this is the installed copy of a migration not yet committed.
+// The source folder this store was moved out of, if its pointer and the record it names say so (committed, from
+// exactly this folder): the ONE condition, shared by the store freeze and the bridge redirect.
+bool MovedToInstalled(const std::wstring& storeRoot, std::wstring* installRootOut = nullptr) {
+    const std::string pointed = AM::ParsePointer(ReadRecordText(storeRoot + AM::PointerSuffix));
+    if (pointed.empty()) return false;
+    const std::wstring root = FullPath(Widen(pointed));
+    const AM::Record r = AM::Parse(ReadRecordText(root + L"\\data\\" + AM::RecordName));
+    if (r.state != AM::State::Committed || !SamePath(FullPath(Widen(r.from)), Parent(storeRoot))) return false;
+    if (installRootOut) *installRootOut = root;
+    return true;
+}
+// Every mutation of a store that a migration may be moving runs with the gate HELD shared (src/annotations-migration.h):
+// fail-closed (a gate that cannot be taken or is not a plain file refuses the mutation). Busy when the update helper
+// holds it, when this portable store was moved to the installed version, or when this is the installed copy of a
+// migration not yet committed.
 Outcome GuardMutation(const std::wstring& root, AM::Gate& gate) {
-    gate.Open(AM::GatePath(root), false);
-    if (gate.Busy()) return Fail(Code::Busy, "Migration des annotations en cours : réessayez dans un instant.");
-    if (AM::Parse(ReadRecordText(root + AM::MirrorSuffix)).state == AM::State::Committed)
+    const AM::GateState g = gate.Open(AM::GatePath(root), false);
+    if (g == AM::GateState::Busy) return Fail(Code::Busy, "Migration des annotations en cours : réessayez dans un instant.");
+    if (g == AM::GateState::Failed) return Fail(Code::Unsafe, "Verrou de migration des annotations inutilisable (annotations.write-gate).");
+    if (MovedToInstalled(root))
         return Fail(Code::Busy, "Ces annotations ont été déplacées vers la version installée du navigateur : utilisez-la.");
     const std::wstring data = Parent(root);
     if (LowerW(Leaf(root)) == L"annotations" && Exists(data + L"\\migrated-from.txt") &&
@@ -1627,9 +1643,11 @@ AgentStore ResolveAgentStore(const std::wstring& bridgeExe, const std::wstring& 
     if (!out.eligible) return out;
     out.gate = AM::GatePath(portable);
     if (!allowRedirect) return out;
-    const AM::Record record = AM::Parse(ReadRecordText(root + L"\\data\\" + AM::RecordName));
+    // Same condition as the source freeze (MovedToInstalled), and the pointer must name THIS install root:
+    // whenever a bridge redirects, the source store is frozen.
+    std::wstring pointedRoot;
     const std::wstring app = Parent(portable);
-    if (record.state != AM::State::Committed || !SamePath(FullPath(Widen(record.from)), app)) return out;
+    if (!MovedToInstalled(portable, &pointedRoot) || !SamePath(pointedRoot, root)) return out;
     if (!forwardValid || !forwardValid(app + L"\\browser.exe")) return out;  // same rules as the browser's own forward
     out.root = installed;
     out.redirected = true;

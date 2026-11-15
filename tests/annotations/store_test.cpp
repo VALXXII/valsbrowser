@@ -916,7 +916,7 @@ void TestReopenUnhandled() {
 // ---------------------------------------------------------------- plan B items 4 + 6 (src/annotations-migration.h)
 namespace AM = AnnotationsMigration;
 std::string N(const std::wstring& w) {
-    std::string out(WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), nullptr, 0, nullptr, nullptr), ' ');
+    std::string out(WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), nullptr, 0, nullptr, nullptr), '\0');
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), int(w.size()), out.data(), int(out.size()), nullptr, nullptr);
     return out;
 }
@@ -973,6 +973,7 @@ struct MigrationFixture {
         WriteText(root + L"\\current", "0.3.301\n");
         WriteText(root + L"\\data\\migrated-from.txt", N(app) + "\n");
         Record(AM::State::Committed, N(app));
+        WriteText(app + L"\\annotations.migrated", AM::FormatPointer(N(root)));  // source pointer (helper, during the copy)
     }
     void Record(AM::State s, const std::string& from) {
         AM::Record r;
@@ -1014,6 +1015,9 @@ void TestAgentStoreRedirect() {
         {L"missing-exe", [](MigrationFixture& f) { DeleteFileW((f.root + L"\\versions\\0.3.301\\browser.exe").c_str()); }},
         {L"failed-install", [](MigrationFixture& f) {
              WriteText(f.root + L"\\updates\\last-result", "browser-result 1\nstatus failed\nversion 0.3.301\nreason x\nreported 0\n"); }},
+        {L"no-pointer", [](MigrationFixture& f) { DeleteFileW((f.app + L"\\annotations.migrated").c_str()); }},
+        {L"pointer-other-root", [](MigrationFixture& f) { WriteText(f.app + L"\\annotations.migrated", AM::FormatPointer(N(f.base + L"\\other"))); }},
+        {L"garbage-pointer", [](MigrationFixture& f) { WriteText(f.app + L"\\annotations.migrated", "root x\n"); }},
         {L"reparse-versions", [](MigrationFixture& f) {
              RemoveTree(f.root + L"\\versions");
              CreateDirectoryW((f.base + L"\\elsewhere").c_str(), nullptr);
@@ -1036,6 +1040,82 @@ void TestAgentStoreRedirect() {
         CHECK(!installed.eligible && !installed.redirected && installed.root == f.root + L"\\data\\annotations");
         CHECK(!f.Resolve(L"\\\\server\\share\\annotations").redirected);               // UNC custom store
     }
+}
+
+
+// Review P2 (gate fail-open): a gate that cannot be opened as a plain file is FAILED, never « no gate »: mutations
+// are refused, nothing is written; reads still work; a custom store (no gate) is unaffected.
+void TestGateFailClosed() {
+    FakeClock clock;
+    for (const wchar_t* kind : {L"directory", L"junction"}) {
+        const std::wstring base = TempDir(std::wstring(L"gate-failed-") + kind), store = base + L"\\annotations";
+        BA::Store s(store, clock.Fn());
+        BA::Annotation a = Sample("boutique");
+        CHECK(s.WriteAnnotation(a, nullptr, false).ok());
+        const std::wstring gatePath = store + L".write-gate";
+        CHECK(DeleteFileW(gatePath.c_str()));  // the plain gate file the first write created
+        if (std::wstring(kind) == L"directory") {
+            CHECK(CreateDirectoryW(gatePath.c_str(), nullptr));
+        } else {
+            CreateDirectoryW((base + L"\\elsewhere").c_str(), nullptr);
+            CHECK(CreateJunction(gatePath, base + L"\\elsewhere"));
+        }
+        for (bool exclusive : {false, true}) {
+            AM::Gate g(gatePath, exclusive);
+            CHECK(g.State() == AM::GateState::Failed && !g.Held() && !g.Busy());
+        }
+        BA::Annotation b = Sample("boutique", "autre");
+        const BA::Outcome o = s.WriteAnnotation(b, nullptr, false);
+        CHECK(!o.ok() && o.code == BA::Code::Unsafe);
+        BA::ClaimResult lease;
+        CHECK(!s.Claim(S("boutique"), a.id, "agent", "", lease).ok());
+        BA::Reader r;
+        r.client = "claude";
+        CHECK(!s.WriteReader(r).ok());
+        BA::Entry e;
+        CHECK(s.Read(S("boutique"), a.id, e).ok());
+        RemoveDirectoryW(gatePath.c_str());  // directory, or the junction itself
+        CHECK(s.WriteAnnotation(b, nullptr, false).ok());  // a plain gate again: works
+    }
+    {
+        AM::Gate none(AM::GatePath(L"D:\\x\\custom-store"), false);
+        CHECK(none.State() == AM::GateState::NotApplicable);
+        const std::wstring custom = TempDir(L"gate-custom") + L"\\my-store";
+        BA::Store s(custom, clock.Fn());
+        BA::Annotation a = Sample("boutique");
+        CHECK(s.WriteAnnotation(a, nullptr, false).ok());
+    }
+}
+
+// Review P2 (commit split): every combination of source pointer and installed record. Whenever a bridge redirects to
+// the installed store, the portable source refuses writes; whenever it does not, the source is writable.
+void TestCommitInvariant() {
+    FakeClock clock;
+    const std::vector<std::wstring> pointers = {L"absent", L"this-root", L"other-root", L"garbage"};
+    const std::vector<std::wstring> records = {L"none", L"copied", L"committed", L"committed-other-from", L"skipped"};
+    int n = 0;
+    for (const auto& ptr : pointers)
+        for (const auto& rec : records) {
+            MigrationFixture f(L"invariant-" + std::to_wstring(n++));
+            DeleteFileW((f.app + L"\\annotations.migrated").c_str());
+            DeleteFileW((f.root + L"\\data\\annotations-migration").c_str());
+            if (ptr == L"this-root") WriteText(f.app + L"\\annotations.migrated", AM::FormatPointer(N(f.root)));
+            if (ptr == L"other-root") WriteText(f.app + L"\\annotations.migrated", AM::FormatPointer(N(f.base + L"\\other")));
+            if (ptr == L"garbage") WriteText(f.app + L"\\annotations.migrated", "browser-annotations-source 1\r\nroot x\r\n");
+            if (rec == L"copied") f.Record(AM::State::Copied, N(f.app));
+            if (rec == L"committed") f.Record(AM::State::Committed, N(f.app));
+            if (rec == L"committed-other-from") f.Record(AM::State::Committed, N(f.base + L"\\x"));
+            if (rec == L"skipped") f.Record(AM::State::Skipped, N(f.app));
+            const bool redirected = f.Resolve().redirected;
+            BA::Annotation a = Sample("boutique");
+            const BA::Outcome o = BA::Store(f.app + L"\\annotations", clock.Fn()).WriteAnnotation(a, nullptr, false);
+            const bool frozen = o.code == BA::Code::Busy;
+            const bool expectMoved = ptr == L"this-root" && rec == L"committed";
+            if (redirected != expectMoved || frozen != expectMoved)
+                std::printf("invariant pointer=%ls record=%ls: redirected=%d frozen=%d\n", ptr.c_str(), rec.c_str(), redirected, frozen);
+            CHECK(!redirected || frozen);  // never two writable stores
+            CHECK(redirected == expectMoved && frozen == expectMoved);
+        }
 }
 
 void TestMigrationGuards() {
@@ -1076,13 +1156,15 @@ void TestMigrationGuards() {
         helper.Open(AM::GatePath(portable), true, 300);
         CHECK(helper.Held());  // free once the request ended
     }
-    // Committed mirror in the source: the abandoned store refuses writes (portable browser still running there).
+    // Source pointer + committed record it names: the abandoned store refuses writes (portable browser still running
+    // there). The pointer alone (record absent: rollback, failed retry) freezes nothing.
     AM::Record committed;
     committed.state = AM::State::Committed;
     committed.from = N(base + L"\\app");
-    WriteText(portable + L".migrated", AM::Format(committed));
+    WriteText(portable + L".migrated", AM::FormatPointer(N(base + L"\\root")));
+    WriteText(data + L"\\annotations-migration", AM::Format(committed));
     CHECK(source.Resolve(S("boutique"), a.id, lease.token, "resolved", "fait", "agent").code == BA::Code::Busy);
-    DeleteFileW((portable + L".migrated").c_str());
+    DeleteFileW((data + L"\\annotations-migration").c_str());
     CHECK(source.Release(S("boutique"), a.id, lease.token, "agent", "test").ok());
     // Installed copy before commit (record « copied »): mutations Busy; committed: allowed.
     BA::Store installed(data + L"\\annotations", clock.Fn());
@@ -1236,5 +1318,7 @@ int wmain() {
     TestMigrationRecordFormat();
     TestAgentStoreRedirect();
     TestMigrationGuards();
+    TestGateFailClosed();
+    TestCommitInvariant();
     return Finish("store_test");
 }

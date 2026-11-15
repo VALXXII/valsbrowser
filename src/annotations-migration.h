@@ -14,9 +14,15 @@
 //                                  Only « committed » lets a portable bridge redirect to <root>\data\annotations.
 //                                  « skipped »: an older migration (before this record existed) with an
 //                                  installed store already in use: never redirected.
-//   <app>\annotations.migrated     MIRROR of the committed record in the source folder: a portable browser
-//                                  process still running there refuses to write to the abandoned store.
-// Writers that cannot take the gate (helper holds it) answer Busy « migration en cours, réessayez ».
+//   <app>\annotations.migrated     POINTER (source side): « browser-annotations-source 1 / root <installRoot> »,
+//                                  written by the helper during the copy, under the exclusive gate, BEFORE any
+//                                  record can say « committed ». It carries no state: the source store is frozen
+//                                  (« déplacées ») exactly when the record it points to says « committed » for this
+//                                  folder, and a bridge redirects only when that same pointer names the install root
+//                                  it found. One authoritative write (the record) moves both sides at once: a stale
+//                                  pointer (rollback, failed retry) freezes nothing.
+// Gate states: NotApplicable (no gate for this store: custom --store), Held, Busy (the other side holds it),
+// Failed (any other error, or the object is not a plain file). Everything that needs the gate requires Held.
 #include <windows.h>
 
 #include <cwctype>
@@ -26,7 +32,7 @@ namespace AnnotationsMigration {
 
 constexpr const wchar_t* RecordName = L"annotations-migration";   // in <root>\data
 constexpr const wchar_t* GateSuffix = L".write-gate";             // <storeRoot> + suffix
-constexpr const wchar_t* MirrorSuffix = L".migrated";             // <storeRoot> + suffix
+constexpr const wchar_t* PointerSuffix = L".migrated";            // <storeRoot> + suffix (source side)
 
 enum class State { None, Copied, Committed, Skipped };
 
@@ -75,6 +81,18 @@ inline Record Parse(const std::string& text) {
     return r;
 }
 
+inline std::string FormatPointer(const std::string& installRoot) {
+    return "browser-annotations-source 1\nroot " + installRoot + "\n";
+}
+// Strict: two LF lines, exact header, non-empty root. "" otherwise.
+inline std::string ParsePointer(const std::string& text) {
+    const std::string head = "browser-annotations-source 1\nroot ";
+    if (text.size() > 8192 || text.find('\r') != std::string::npos || text.compare(0, head.size(), head) != 0) return "";
+    if (text.back() != '\n') return "";
+    const std::string root = text.substr(head.size(), text.size() - head.size() - 1);
+    return root.empty() || root.find('\n') != std::string::npos ? "" : root;
+}
+
 // The gate exists only for stores named "annotations" (the default layout); a custom --store keeps none.
 inline std::wstring GatePath(const std::wstring& storeRoot) {
     std::wstring r = storeRoot;
@@ -85,8 +103,9 @@ inline std::wstring GatePath(const std::wstring& storeRoot) {
     return leaf == L"annotations" ? r + GateSuffix : L"";
 }
 
-// RAII gate. Shared: Busy() when the helper holds it exclusively; any other open failure (read-only folder,
-// no gate for a custom store) means no migration can run there either, so the request proceeds.
+enum class GateState { NotApplicable, Held, Busy, Failed };
+
+// RAII gate, fail-closed: only Held means the lock is taken, on a plain (non-directory, non-reparse) disk file.
 class Gate {
 public:
     Gate() = default;
@@ -94,34 +113,41 @@ public:
     ~Gate() { Close(); }
     Gate(const Gate&) = delete;
     Gate& operator=(const Gate&) = delete;
-    void Open(const std::wstring& path, bool exclusive, DWORD waitMs = 0) {
+    GateState Open(const std::wstring& path, bool exclusive, DWORD waitMs = 0) {
         Close();
-        if (path.empty()) return;
+        if (path.empty()) return state_ = GateState::NotApplicable;
         const ULONGLONG end = GetTickCount64() + waitMs;
         for (;;) {
             h_ = CreateFileW(path.c_str(), GENERIC_READ, exclusive ? 0 : FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-            if (h_ != INVALID_HANDLE_VALUE) return;
+            if (h_ != INVALID_HANDLE_VALUE) break;
             const DWORD e = GetLastError();
-            if (e != ERROR_SHARING_VIOLATION && e != ERROR_LOCK_VIOLATION) return;  // not a held gate
-            if (GetTickCount64() >= end) {
-                busy_ = true;
-                return;
-            }
+            if (e != ERROR_SHARING_VIOLATION && e != ERROR_LOCK_VIOLATION) return state_ = GateState::Failed;
+            if (GetTickCount64() >= end) return state_ = GateState::Busy;
             Sleep(50);
         }
+        FILE_ATTRIBUTE_TAG_INFO tag{};
+        if (!GetFileInformationByHandleEx(h_, FileAttributeTagInfo, &tag, sizeof(tag)) ||
+            (tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) || GetFileType(h_) != FILE_TYPE_DISK) {
+            CloseHandle(h_);
+            h_ = INVALID_HANDLE_VALUE;
+            return state_ = GateState::Failed;
+        }
+        return state_ = GateState::Held;
     }
     void Close() {
         if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
         h_ = INVALID_HANDLE_VALUE;
-        busy_ = false;
+        state_ = GateState::NotApplicable;
     }
-    bool Held() const { return h_ != INVALID_HANDLE_VALUE; }
-    bool Busy() const { return busy_; }
+    GateState State() const { return state_; }
+    bool Held() const { return state_ == GateState::Held; }
+    bool Busy() const { return state_ == GateState::Busy; }
+    bool Failed() const { return state_ == GateState::Failed; }
 
 private:
     HANDLE h_ = INVALID_HANDLE_VALUE;
-    bool busy_ = false;
+    GateState state_ = GateState::NotApplicable;
 };
 
 }  // namespace AnnotationsMigration

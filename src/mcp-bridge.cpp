@@ -349,10 +349,11 @@ public:
     // used under it, so the update helper can never copy it between a decision and a write.
     bool HandleLine(const std::string& line) {
         AM::Gate gate;
-        busy_ = false;
-        if (!gatePath_.empty()) {
-            gate.Open(gatePath_, false);
-            busy_ = gate.Busy();
+        busy_ = gateFailed_ = false;
+        if (!gatePath_.empty()) {  // fail-closed: nothing is resolved, read or written unless the gate is HELD
+            const AM::GateState st = gate.Open(gatePath_, false);
+            busy_ = st != AM::GateState::Held;
+            gateFailed_ = st == AM::GateState::Failed;
         }
         if (!busy_) Resolve();
         return Handle(line);
@@ -400,7 +401,8 @@ private:
     }
 
     std::wstring exe_, storeArg_, gatePath_;
-    bool busy_ = false;  // this request: the update helper holds the gate (migration running)
+    bool busy_ = false;        // this request: the gate is not held (helper migrating, or gate unusable)
+    bool gateFailed_ = false;  // this request: the gate could not be opened as a plain file (fail-closed)
     BA::Store store_;
     std::string site_;  // origin from --site ("" = every site)
     bool legacy_ = false;
@@ -558,7 +560,8 @@ private:
         const std::string& tool = name->string;
         if (busy_ && (tool == "browser_annotations_list" || tool == "browser_annotation_get" || tool == "browser_annotation_claim" ||
                       tool == "browser_annotation_resolve" || tool == "browser_annotation_release"))
-            r = ToolError("Migration des annotations vers la version installée en cours : réessayez dans un instant.");
+            r = ToolError(gateFailed_ ? "Verrou de migration des annotations inutilisable (annotations.write-gate) : aucune annotation n'est lue ni modifiée."
+                                      : "Migration des annotations vers la version installée en cours : réessayez dans un instant.");
         else if (tool == "browser_annotations_list") r = List(*args, client);
         else if (tool == "browser_annotation_get") r = Get(*args, client);
         else if (tool == "browser_annotation_claim") r = Claim(*args, client);
