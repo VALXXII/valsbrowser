@@ -17,3 +17,8 @@ if (!(Test-Path 'build/lottie-backend/src/libthorvg-1.a')) { throw 'Run Python b
 if ($LASTEXITCODE -ne 0) { throw 'Import settings test compilation failed.' }
 & "$out/import_settings_test.exe" $PSScriptRoot
 if ($LASTEXITCODE -ne 0) { throw 'Import settings tests failed.' }
+# Import dialog states rendered offscreen by the production modal (native fixture, not the real app); blank renders fail.
+& $Compiler -std=c++17 -static -O2 -Wall -Wextra -Werror -Wno-unknown-pragmas -Wno-cast-function-type -Wno-misleading-indentation -Wno-missing-field-initializers -municode -DTVG_STATIC '-Ideps/thorvg-1.1.3/inc' '-Ideps/webview2/build/native/include' tests/browser-import/import_dialog_render_test.cpp src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o "$out/import_dialog_render_test.exe" -lole32 -luuid -lcomctl32 -lshlwapi -lgdi32 -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -loleaut32 -lshell32 -lmsimg32 -lbcrypt -ladvapi32
+if ($LASTEXITCODE -ne 0) { throw 'Import dialog render test compilation failed.' }
+& "$out/import_dialog_render_test.exe" $PSScriptRoot (Join-Path (Resolve-Path $out).Path 'import-render')
+if ($LASTEXITCODE -ne 0) { throw 'Import dialog render test failed (a blank or missing render).' }

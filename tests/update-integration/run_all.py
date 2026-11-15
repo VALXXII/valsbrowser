@@ -73,6 +73,11 @@ def existing_fixtures() -> None:
     # Settings wiring of the import row and the password manager row (main.cpp hooks + real drawer, synthetic hooks)
     fixture('import_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT])
+    # Import dialog states rendered offscreen by the production modal (native fixture), each PNG checked non-blank
+    import_render = OUT / 'import-render'
+    import_render.mkdir(parents=True, exist_ok=True)
+    fixture('import_dialog_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_dialog_render_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt', '-ladvapi32'], [ROOT, import_render])
     bookmarks_evidence = ROOT / 'build/bookmarks-ui-qa'
     bookmarks_evidence.mkdir(parents=True, exist_ok=True)
     fixture('bookmarks_ui_test', [*LOOSE, '-municode', *TVG, WV2,

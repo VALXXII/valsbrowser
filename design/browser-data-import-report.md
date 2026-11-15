@@ -117,3 +117,22 @@ Note: while reproducing finding 3, my first copy of the reviewer's probe still p
 folder; it recreated a synthetic `Default\Bookmarks` there and rewrote `foreign\Bookmarks` with identical bytes
 before failing. Both were restored (the extra folder removed, identical content, timestamps reset from siblings);
 the probe was then retargeted to this worktree's `build/review-probes/fixtures`.
+
+## Captures (evidence correction after 99959e3)
+
+The screenshots committed in af9636e were entirely black: PrintWindow of the app's own windows returned blank
+bitmaps in that session, and the script saved them without checking. They are preserved, renamed, in
+`design/browser-data-import-evidence/blank-captures-af9636e/`; the valid first-delivery captures are restored in
+`realapp-ce96190/`; layout of the current dialog states (FR/EN: dialog, no-history source, HTML, busy source,
+complete, partial save failure, partial capacity, too deep) is shown by a **native fixture** (production modal
+rendered offscreen, every PNG verified non-blank) in `native-fixture/`. A targeted re-capture of the real app's own
+dialog HWND was still blank (real-app capture unavailable in this session; no OS/display change, no foreground
+change). The E2E now gates every capture (blank → `BLANK-*.png`, « visual UNAVAILABLE », `-RequireVisual` to
+fail). Re-run at 99959e3: functional 58/58, visual 0 ok / 9 blank (`e2e-99959e3/`). See the folder README.
+
+Harness note found on the way: the 13 « render sample » failures of `tests/modal_test.cpp`, identical at baseline,
+come from that test writing to `build/popups/`, which does not exist in this worktree (`test-popups.ps1` normally
+provides it); they are not a rendering defect. Not changed here.
+
+Fixture data: from now on only fresh fixtures of this worktree are used; the earlier accidental touch of the
+reviewer's `import-probe-fixtures` (restored) stays disclosed above as a limit.

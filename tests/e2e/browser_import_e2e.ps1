@@ -1,4 +1,4 @@
-﻿param([string]$Fixture = 'build/import-app', [string]$Evidence = 'design/browser-data-import-evidence')
+﻿param([string]$Fixture = 'build/import-app', [string]$Evidence = 'design/browser-data-import-evidence', [switch]$RequireVisual)
 # « Importer depuis un navigateur » on a REAL browser.exe, French then English (design/browser-data-import-plan.md).
 # A fresh copy of the fixture build runs in its own folder under build/import-e2e with seeded data (bookmark
 # « Mien », one history page) and --import-sources pointing at SYNTHETIC profiles made by
@@ -6,6 +6,10 @@
 # Driven only through UI Automation patterns (Invoke, Toggle, Expand, Value) on the app's own elements and its
 # own file dialog. No SendInput, no SetForegroundWindow, no clipboard, no screen readback: captures are
 # PrintWindow of the app's own windows. Only processes whose image lives in the run folder are touched.
+# Captures are a SEPARATE, visual result: each one is measured (lit pixels, colours, light text); a blank one (PrintWindow
+# returns black when the session does not compose, e.g. display off) is saved as BLANK-<name>.png and reported as
+# « visual unavailable », never under the evidence name. -RequireVisual makes a blank capture fail the run; the
+# functional UIA checks are counted on their own either way.
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 $repo = (Get-Location).Path
@@ -35,7 +39,7 @@ public static class Impqa {
   public static IntPtr Find(uint pid, string cls) { IntPtr found = IntPtr.Zero; EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); var sb = new StringBuilder(128); GetClassName(h, sb, 128); if (p == pid && sb.ToString() == cls && IsWindowVisible(h)) { found = h; return false; } return true; }, IntPtr.Zero); return found; }
   public static List<IntPtr> Visible(uint pid) { var list = new List<IntPtr>(); EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) list.Add(h); return true; }, IntPtr.Zero); return list; }
   // The main window with every visible popup of the process composed at its screen offset (each via PrintWindow).
-  public static void Shot(IntPtr main, uint pid, string path) {
+  public static string Shot(IntPtr main, uint pid, string path) {
     RECT w; GetWindowRect(main, out w);
     using (var all = new Bitmap(w.R - w.L, w.B - w.T)) {
       using (var g = Graphics.FromImage(all)) {
@@ -43,12 +47,29 @@ public static class Impqa {
         foreach (var h in order) { RECT r; GetWindowRect(h, out r); if (r.R <= r.L || r.B <= r.T) continue;
           using (var one = new Bitmap(r.R - r.L, r.B - r.T)) { using (var og = Graphics.FromImage(one)) { var dc = og.GetHdc(); PrintWindow(h, dc, 2); og.ReleaseHdc(dc); } g.DrawImage(one, r.L - w.L, r.T - w.T); } }
       }
+      int lit = 0, light = 0; var seen = new HashSet<int>();
+      for (int y = 0; y < all.Height; y += 2) for (int x = 0; x < all.Width; x += 2) { var c = all.GetPixel(x, y); int v = Math.Max(c.R, Math.Max(c.G, c.B)); if (v > 40) lit++; if (v > 200) light++; if (seen.Count < 512) seen.Add(c.ToArgb()); }
       all.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+      return "lit=" + lit + " light=" + light + " distinct=" + seen.Count;
     }
   }
 }
 "@
 $AE = [System.Windows.Automation.AutomationElement]; $TS = [System.Windows.Automation.TreeScope]
+$script:visualOk = 0; $script:visualBlank = @()
+# A capture of our window, measured; blank → BLANK-<name>.png under <evidence>\blank-captures, never <name>.png.
+function Visual([IntPtr]$main, [int]$procId, [string]$name) {
+  $path = Join-Path $Evidence "$name.png"
+  $q = [Impqa]::Shot($main, [uint32]$procId, $path)
+  $lit = [int]([regex]::Match($q, 'lit=(\d+)').Groups[1].Value); $light = [int]([regex]::Match($q, 'light=(\d+)').Groups[1].Value); $distinct = [int]([regex]::Match($q, 'distinct=(\d+)').Groups[1].Value)
+  if ($lit -gt 2000 -and $light -gt 200 -and $distinct -gt 8) { $script:visualOk++; $line = "visual ok    $name ($q)" }
+  else {
+    $blank = Join-Path $Evidence 'blank-captures'; New-Item -ItemType Directory -Force $blank | Out-Null
+    Move-Item -LiteralPath $path -Destination (Join-Path $blank "BLANK-$name.png") -Force
+    $script:visualBlank += $name; $line = "visual UNAVAILABLE ${name}: blank capture ($q), kept as blank-captures\BLANK-$name.png"
+  }
+  $line; $script:log += $line
+}
 function Cond($prop, $value) { New-Object System.Windows.Automation.PropertyCondition($prop, $value) }
 function Main([int]$procId) { for ($i = 0; $i -lt 80; $i++) { $h = [Impqa]::Find([uint32]$procId, 'LisiereBrowser'); if ($h -ne [IntPtr]::Zero) { return $h }; Start-Sleep -Milliseconds 250 }; throw "no window for $procId" }
 # First element of the process (any of its top-level windows) with this AutomationId (or Name).
@@ -141,7 +162,7 @@ try {
   Check ((ToggleState $fav) -eq 'On' -and $fav.Current.IsEnabled -and $fav.Current.HelpText -eq 'Dans Autres favoris › Importés de Chrome') "FR bookmarks on, destination folder named: $($fav.Current.HelpText)"
   Check ((ToggleState $hist) -eq 'On' -and $hist.Current.IsEnabled) 'FR history on'
   Check ((ToggleState $cook) -eq 'Off' -and !$cook.Current.IsEnabled -and $cook.Current.HelpText -eq 'Non disponibles : reconnectez-vous aux sites.') "FR cookies disabled with the reason: $($cook.Current.HelpText)"
-  [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-1-dialog-chrome.png'))
+  Visual $main $procId 'fr-1-dialog-chrome'
   # Cancel: nothing written.
   $bm0 = Hash $bmFile; $h0 = Hash $hFile
   Invoke (Uia $procId 'DialogCancel'); Check (Gone $procId 'ImportBrowserData') 'FR cancel closes the dialog'
@@ -159,7 +180,7 @@ try {
     Check ($text -like '*Favoris : 6 importés · 1 adresse non prise en charge*') 'FR bookmarks: 6 imported, 1 unsupported (javascript:)'
     Check ($text -like '*Historique : 2 importés · 2 adresses non prises en charge*') 'FR history: 2 imported, 2 unsupported (chrome:, search page); hidden row not offered'
     Check ($text -like '*Cookies : non transférés. Reconnectez-vous aux sites.*') 'FR summary says cookies were not transferred'
-    [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-2-summary-chrome.png'))
+    Visual $main $procId 'fr-2-summary-chrome'
     Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null
   }
   $bm = ReadText $bmFile; $hs = ReadText $hFile
@@ -187,7 +208,7 @@ try {
   Invoke (Uia $procId 'DialogImport'); Start-Sleep -Milliseconds 1500
   $d = Uia $procId 'ImportBrowserData'
   Check ($d -and $d.Current.HelpText -eq 'Historique : fermez Chrome, puis réessayez.') "FR source busy: dialog stays, says to close Chrome: $($d.Current.HelpText)"
-  [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-3-source-busy.png'))
+  Visual $main $procId 'fr-3-source-busy'
   $holder.Close()
   Invoke (Uia $procId 'DialogImport'); $r = Result $procId
   Check ($r -and $r.Current.HelpText -like 'Historique : 0 importé · 2 déjà présents*') 'FR retry after closing the source: imported (nothing duplicated)'
@@ -205,7 +226,7 @@ try {
   if ($r) { $text = $r.Current.HelpText; "     partial: $($r.Current.Name) / $text"
     Check ($r.Current.Name -eq 'Importation partielle') 'FR save failure: « Importation partielle »'
     Check ($text -like '*Favoris : enregistrement impossible, rien n''a changé. Réessayez.*' -and $text -like '*Historique : 1 importé*') 'FR save failure: bookmarks failed honestly, history imported'
-    [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-4-partial-save-failure.png'))
+    Visual $main $procId 'fr-4-partial-save-failure'
     Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null }
   Check ((Hash $bmFile) -eq $bmBefore) 'FR save failure: bookmarks file untouched'
   $d = OpenImport $procId $main 'Confidentialité'; Choose $procId $d 'Depuis' 'Firefox'; Invoke (Uia $procId 'DialogImport'); $r = Result $procId
@@ -254,11 +275,11 @@ try {
   Choose $procId $d 'From' 'Edge'
   $fav, $hist, $cook = Check3 $d @('Bookmarks', 'History', 'Cookies and sign-ins')
   Check (!$hist.Current.IsEnabled -and $hist.Current.HelpText -eq 'No history in this profile.' -and $fav.Current.HelpText -eq 'In Other bookmarks › Imported from Edge') 'EN Edge profile: bookmarks only, history said missing'
-  [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'en-1-dialog-edge.png'))
+  Visual $main $procId 'en-1-dialog-edge'
   Invoke (Uia $procId 'DialogImport'); $r = Result $procId
   if ($r) { $text = $r.Current.HelpText; "     en: $($r.Current.Name) / $text"
     Check ($r.Current.Name -eq 'Import complete' -and $text -like 'Bookmarks: 1 imported*' -and $text -like '*Cookies: not transferred. Sign in to sites again.*') 'EN summary'
-    [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'en-2-summary-edge.png'))
+    Visual $main $procId 'en-2-summary-edge'
     Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null }
   # The Chrome profile imported in French, again in English: same folders, nothing added (stable identity).
   $bmFr = Hash $bmFile; $groups = ([regex]::Matches((ReadText $bmFile), "`t2`tF`t")).Count
@@ -296,7 +317,7 @@ try {
   if ($import) { Invoke $import; Start-Sleep 3 }
   $d = Uia $procId 'ImportBrowserData' '' 10
   Check ($d -and $d.Current.HelpText -eq 'Le profil a changé : rien n''a été importé.') "switch: « Importer » refused, the dialog says why ($(if ($d) { $d.Current.HelpText }))"
-  [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-5-profile-changed.png'))
+  Visual $main $procId 'fr-5-profile-changed'
   $logs = (ReadText "$app\prototype.log").Substring($logStart) + $(if (Test-Path "$app\profiles\ptravail01\browser.log") { ReadText "$app\profiles\ptravail01\browser.log" } else { '' })
   Check ((Hash $bmFile) -eq $bmA -and (Hash "$app\profiles\ptravail01\bookmarks") -eq $bmB -and $logs -match 'IMPORT not started: the profile changed' -and $logs -notmatch 'IMPORT started from Chrome') 'switch: nothing read, nothing written to « Personnel » nor to « Travail »'
   if ($d) { Invoke (Uia $procId 'DialogCancel') }
@@ -309,7 +330,7 @@ try {
   Invoke (Uia $procId 'DialogImport'); $r = Result $procId
   if ($r) { $text = $r.Current.HelpText; "     big: $($r.Current.Name) / $text"
     Check ($r.Current.Name -eq 'Importation partielle' -and $text -match 'Favoris : \d+ importés .*non importés \(limite atteinte\)') 'capacity: « partielle », the store limit reported, never silently cut'
-    [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-6-capacity.png'))
+    Visual $main $procId 'fr-6-capacity'
     Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null }
   else { Check $false 'capacity: summary shown' }
   $bmText = ReadText $bmFile
@@ -342,7 +363,7 @@ try {
   Check (($before.Values -join ',') -eq ($after.Values -join ',')) 'seam switch: nothing written to « Personnel » nor « Travail » (bookmarks, history, folder map)'
   Check ($appLog -match 'IMPORT cancelled: the profile changed' -and $appLog -notmatch 'IMPORT (bookmarks|history) saved') 'seam switch: the read came back after the switch and was dropped'
   Check ((Snapshots $procId).Count -eq 0) 'seam switch: no private snapshot left'
-  [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-7-seam-switch.png'))
+  Visual $main $procId 'fr-7-seam-switch'
   Close $procId $main
 
   # (b) Window closed while the private snapshot exists: nothing written; the copy left by the ended process is
@@ -400,8 +421,11 @@ try {
 } finally {
   Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.ExecutablePath -like "$run\*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
+$visualLine = "visual: $($script:visualOk) capture(s) verified non-blank, $($script:visualBlank.Count) blank (real-app capture unavailable: $($script:visualBlank -join ', '))"
+$visualLine; $script:log += $visualLine
 $script:log | Set-Content -Encoding utf8 (Join-Path $Evidence 'e2e-results.txt')
 if ($script:fails) { "FAILED: $($script:fails)"; exit 1 }
-'browser import e2e: all checks passed'
+if ($RequireVisual -and $script:visualBlank.Count) { 'FAILED: blank captures with -RequireVisual'; exit 1 }
+'browser import e2e: all functional checks passed'
 Start-Sleep -Milliseconds 500
 Remove-Item -LiteralPath $run -Recurse -Force -ErrorAction SilentlyContinue
