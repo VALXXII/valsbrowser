@@ -1467,6 +1467,7 @@ I18N(import_failure_busy, L"fermez {0}, puis réessayez.", L"close {0}, then try
 I18N(import_failure_file_busy, L"le fichier est utilisé par une autre application. Réessayez.", L"the file is in use by another app. Try again.")
 I18N(import_failure_malformed, L"format non reconnu.", L"format not recognised.")
 I18N(import_failure_too_large, L"fichier trop volumineux.", L"file too large.")
+I18N(import_failure_too_deep, L"dossiers imbriqués trop profondément, rien n'a été importé.", L"folders nested too deeply, nothing was imported.")
 I18N(import_failure_unsupported, L"cette version du navigateur n'est pas prise en charge.", L"this browser version isn't supported.")
 I18N(import_failure_no_database, L"non disponible sur cette version de Windows.", L"not available on this version of Windows.")
 I18N(import_failure_unreadable, L"lecture impossible.", L"couldn't read it.")
@@ -1480,3 +1481,5 @@ I18N(import_count_full_one, L"{0} non importé (limite atteinte)", L"{0} not imp
 I18N(import_count_full_other, L"{0} non importés (limite atteinte)", L"{0} not imported (limit reached)")
 I18N(import_count_deep_one, L"{0} non importé (dossiers trop imbriqués)", L"{0} not imported (folders nested too deeply)")
 I18N(import_count_deep_other, L"{0} non importés (dossiers trop imbriqués)", L"{0} not imported (folders nested too deeply)")
+I18N(import_count_unreadable_one, L"{0} entrée illisible", L"{0} unreadable entry")
+I18N(import_count_unreadable_other, L"{0} entrées illisibles", L"{0} unreadable entries")

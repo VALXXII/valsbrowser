@@ -250,7 +250,51 @@ int main(int argc, char** argv) {
         Source gone = chromeDefault; gone.dir = work + L"\\gone"; OK(Read(gone, o).bookmarks.failure == Failure::Missing);
         // A JSON nested deeper than the parser allows is refused, never a stack overflow.
         std::string nest = ChromeNode(L"x", "https://x.example/"); for (int i = 0; i < 400; ++i) nest = ChromeFolder(L"f", {nest});
-        OK(ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":" + nest + "}}").failure == Failure::Malformed);
+        OK(ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":" + nest + "}}").failure == Failure::TooDeep);
+    }
+    // ---- Reader nesting bound (review 934ef4b finding 4): never a silent cut ------------------------------------
+    {
+        // Chromium: the bar root is depth 1; `folders` nested folders under it put the link at depth folders + 2.
+        auto chain = [](int folders) { std::string n = ChromeNode(L"au fond", "https://bottom.example/"); for (int i = 0; i < folders; ++i) n = ChromeFolder(L"f", {n}); return "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {n}) + "}}"; };
+        auto deepest = [](const std::vector<Item>& roots) { std::size_t d = 0; std::wstring url; std::function<void(const Item&, std::size_t)> walk = [&](const Item& it, std::size_t k) { if (!it.folder && k > d) { d = k; url = it.url; } for (const auto& c : it.children) walk(c, k + 1); }; for (const auto& r : roots) walk(r, 1); return std::make_pair(d, url); };
+        const auto at = ParseChromiumBookmarks(chain(static_cast<int>(Bound::nesting) - 2));
+        OK(at.failure == Failure::None && deepest(at.roots) == std::make_pair(Bound::nesting, std::wstring(L"https://bottom.example/")));   // link exactly at the bound: kept
+        BM::Store s; const Counts c = ApplyBookmarks(s, L"Importés de Chrome", at.roots, now);
+        OK(c.deep == 1 && c.imported == 0);   // and the destination's own depth 8 reports it, never hides it
+        OK(ParseChromiumBookmarks(chain(static_cast<int>(Bound::nesting) - 1)).failure == Failure::TooDeep);   // one level more: refused whole
+        // The reviewer's case: 257 nested folders and one link → refused, nothing to commit (no false « terminée »).
+        const auto review = ParseChromiumBookmarks(chain(257));
+        OK(review.failure == Failure::TooDeep && review.roots.empty());
+        // Firefox: toolbar children are depth 2 (as Chromium); a link at depth 256 kept, at 257 refused.
+        auto places = [&](const std::wstring& dir, int folders) {
+            Db d(dir + L"\\places.sqlite");
+            d.Exec("CREATE TABLE moz_places(id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR, visit_count INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0 NOT NULL, last_visit_date INTEGER)");
+            d.Exec("CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER DEFAULT NULL, parent INTEGER, position INTEGER, title LONGVARCHAR, dateAdded INTEGER, guid TEXT)");
+            d.Exec("INSERT INTO moz_places VALUES(1, 'https://bottom.example/', 'b', 1, 0, 1700000000000000)");
+            d.Exec("INSERT INTO moz_bookmarks VALUES(1, 2, NULL, 0, 0, '', 1, 'root________')");
+            d.Exec("INSERT INTO moz_bookmarks VALUES(3, 2, NULL, 1, 0, 'toolbar', 1, 'toolbar_____')");
+            d.Exec("BEGIN");
+            for (int i = 0; i < folders; ++i) d.Exec("INSERT INTO moz_bookmarks VALUES(" + std::to_string(100 + i) + ", 2, NULL, " + std::to_string(i ? 99 + i : 3) + ", 0, 'f', 1, 'g" + std::to_string(i) + "')");
+            d.Exec("INSERT INTO moz_bookmarks VALUES(50, 1, 1, " + std::to_string(folders ? 99 + folders : 3) + ", 0, 'au fond', 1, 'link')");
+            d.Exec("COMMIT");
+        };
+        Options o; o.bookmarks = true; o.tempRoot = temp;
+        Source ff; ff.browser = Browser::Firefox; ff.bookmarks = true;
+        ff.dir = work + L"\\ffdeep\\at"; places(ff.dir, static_cast<int>(Bound::nesting) - 2);
+        const auto fat = Read(ff, o).bookmarks;
+        OK(fat.failure == Failure::None && deepest(fat.roots) == std::make_pair(Bound::nesting, std::wstring(L"https://bottom.example/")));
+        ff.dir = work + L"\\ffdeep\\over"; places(ff.dir, static_cast<int>(Bound::nesting) - 1);
+        const auto fover = Read(ff, o).bookmarks;
+        OK(fover.failure == Failure::TooDeep && fover.roots.empty());
+        // HTML: top-level items are depth 1; `folders` nested folders put the link at depth folders + 1.
+        auto html = [](int folders) { std::string h = "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<DL>"; for (int i = 0; i < folders; ++i) h += "<DT><H3>f</H3><DL>"; h += "<DT><A HREF=\"https://bottom.example/\">x</A>"; for (int i = 0; i <= folders; ++i) h += "</DL>"; return h; };
+        const auto hat = ParseHtmlBookmarks(html(static_cast<int>(Bound::nesting) - 1));
+        OK(hat.failure == Failure::None && deepest(hat.roots) == std::make_pair(Bound::nesting, std::wstring(L"https://bottom.example/")));
+        OK(ParseHtmlBookmarks(html(static_cast<int>(Bound::nesting))).failure == Failure::TooDeep);
+        OK(FailureText(Failure::TooDeep, chromeDefault) == L"dossiers imbriqués trop profondément, rien n'a été importé.");
+        // Damaged entries are counted and shown, not only logged.
+        Counts u; u.imported = 2; u.unreadable = 1; OK(CountsText(u) == L"2 importés · 1 entrée illisible" && u.Left());
+        OK(Empty(temp));
     }
 
     // ---- Chromium history -----------------------------------------------------------------------------------
@@ -381,7 +425,7 @@ int main(int argc, char** argv) {
         OK(legacy.failure == Failure::None && legacy.roots.size() == 1 && legacy.roots[0].title == L"café");
         OK(ParseHtmlBookmarks("just text, no list").failure == Failure::Malformed);
         std::string deep = "<DL>"; for (int i = 0; i < 300; ++i) deep += "<DT><H3>f</H3><DL>"; deep += "<DT><A HREF=\"https://x.example/\">x</A>";
-        OK(ParseHtmlBookmarks(deep).failure == Failure::TooLarge);
+        OK(ParseHtmlBookmarks(deep).failure == Failure::TooDeep);
         Put(work + L"\\exports\\big.html", std::string(static_cast<std::size_t>(Bound::htmlBytes) + 1, 'x'));
         OK(Read(HtmlSource(work + L"\\exports\\big.html"), o).bookmarks.failure == Failure::TooLarge);
         // A reparse point instead of a file is refused.

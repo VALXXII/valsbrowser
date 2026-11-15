@@ -125,10 +125,11 @@ void ImportFinished() {
         if (r.failure != BI::Failure::None) { failed(TR(import_item_bookmarks), BI::FailureText(r.failure, s)); Log(L"IMPORT bookmarks read failed " + std::to_wstring(static_cast<int>(r.failure))); }
         else {
             std::map<BM::Id, BM::Id> remap;
-            const auto c = BI::CommitBookmarks(dataDir, BookmarksFile(), bookmarksBase, bookmarks, BI::FolderTitle(s), r.roots, now, &remap);
+            auto c = BI::CommitBookmarks(dataDir, BookmarksFile(), bookmarksBase, bookmarks, BI::FolderTitle(s), r.roots, now, &remap);
             if (!remap.empty()) bookmarkUndo.clear();   // as SaveBookmarks: ids taken in another window were remapped
+            c.counts.unreadable = r.ignored;
             if (c.Saved()) {
-                anySaved = true; bookmarksSaveFailed = false; if (c.counts.full || c.counts.deep) anyLeft = true;
+                anySaved = true; bookmarksSaveFailed = false; if (c.counts.Left()) anyLeft = true;
                 if (!bookmarks.Find(lastFolder)) lastFolder = BM::BarRoot;
                 lines.push_back(TRF(import_result_bookmarks, BI::CountsText(c.counts)));
                 Log(L"IMPORT bookmarks saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored));
@@ -140,9 +141,9 @@ void ImportFinished() {
         const auto& r = job->result.history;
         if (r.failure != BI::Failure::None) { failed(TR(import_item_history), BI::FailureText(r.failure, s)); Log(L"IMPORT history read failed " + std::to_wstring(static_cast<int>(r.failure))); }
         else {
-            const auto c = BI::CommitHistory(dataDir, HistoryFile(), historyBase, history, r.visits, r.beyond, now, [](const std::wstring& u) { return SearchResultPage(u); });
+            auto c = BI::CommitHistory(dataDir, HistoryFile(), historyBase, history, r.visits, r.beyond, now, [](const std::wstring& u) { return SearchResultPage(u); });
             if (c.Saved()) {
-                anySaved = true; if (c.counts.full) anyLeft = true;
+                anySaved = true; c.counts.unreadable = r.ignored; if (c.counts.Left()) anyLeft = true;
                 lines.push_back(TRF(import_result_history, BI::CountsText(c.counts)));
                 Log(L"IMPORT history saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored));
                 if (!WorkspaceParked()) historyDrawer.Changed();

@@ -72,7 +72,8 @@ enum class Failure {
     Busy,          // the source browser has it open: close it and retry
     Unreadable,    // access denied, I/O error, reparse point, not a regular file
     Malformed,     // not the expected format
-    TooLarge,      // over the bounds
+    TooLarge,      // over the size / count bounds
+    TooDeep,       // folders nested deeper than Bound::nesting: refused whole, never cut
     Unsupported,   // a schema this build does not know
     NoDatabase,    // winsqlite3.dll unavailable on this Windows
 };
@@ -93,7 +94,9 @@ struct ReadResult { Bookmarks_ bookmarks; History_ history; };
 // Per category, what happened to the source's entries. `present` = already in the destination.
 struct Counts {
     std::size_t imported = 0, present = 0, unsupported = 0, full = 0, deep = 0, folders = 0;
-    bool operator==(const Counts& o) const { return imported == o.imported && present == o.present && unsupported == o.unsupported && full == o.full && deep == o.deep && folders == o.folders; }
+    std::size_t unreadable = 0;   // source entries the reader could not use (damaged node, link without address): reported, never hidden
+    bool operator==(const Counts& o) const { return imported == o.imported && present == o.present && unsupported == o.unsupported && full == o.full && deep == o.deep && folders == o.folders && unreadable == o.unreadable; }
+    bool Left() const { return full || deep || unreadable; }   // something of the source did not arrive
 };
 
 // ---- Time --------------------------------------------------------------------------------------------
@@ -434,8 +437,13 @@ inline std::wstring FolderTitle(const Source& s) {
 }
 
 // ---- Chromium « Bookmarks » (JSON) ------------------------------------------------------------------------
-inline void ChromiumNode(const StrictJson::Value& v, std::vector<Item>& into, std::size_t depth, std::size_t& count, std::size_t& ignored) {
-    if (!v.IsObject() || ++count > Bound::items) { ++ignored; return; }
+// Reader bounds are never a silent cut (review 934ef4b, finding 4): a node deeper than Bound::nesting (root = 1)
+// or past Bound::items makes the whole category TooLarge instead of dropping the rest.
+inline void ChromiumNode(const StrictJson::Value& v, std::vector<Item>& into, std::size_t depth, std::size_t& count, std::size_t& ignored, Failure& overflow) {
+    if (overflow != Failure::None) return;
+    if (depth > Bound::nesting) { overflow = Failure::TooDeep; return; }
+    if (++count > Bound::items) { overflow = Failure::TooLarge; return; }
+    if (!v.IsObject()) { ++ignored; return; }
     const auto* type = v.Get("type");
     Item it;
     if (const auto* n = v.Get("name"); n && n->IsString()) it.title = Widen(n->string);
@@ -448,25 +456,32 @@ inline void ChromiumNode(const StrictJson::Value& v, std::vector<Item>& into, st
         into.push_back(std::move(it));
     } else if (type && type->IsString() && type->string == "folder") {
         it.folder = true;
-        if (const auto* c = v.Get("children"); c && c->IsArray() && depth < Bound::nesting)
-            for (const auto& child : c->items) ChromiumNode(child, it.children, depth + 1, count, ignored);
+        if (const auto* c = v.Get("children"); c && c->IsArray())
+            for (const auto& child : c->items) ChromiumNode(child, it.children, depth + 1, count, ignored, overflow);
         into.push_back(std::move(it));
     } else ++ignored;
 }
 inline Bookmarks_ ParseChromiumBookmarks(const std::string& bytes) {
     Bookmarks_ r;
-    StrictJson::Limits limits; limits.maxBytes = Bound::jsonBytes; limits.maxDepth = Bound::nesting * 2 + 8; limits.maxStringBytes = 8u << 20; limits.maxItems = Bound::items * 4; limits.allowBom = true;
-    StrictJson::Value doc;
-    if (!StrictJson::Parse(bytes, doc, nullptr, limits) || !doc.IsObject()) { r.failure = bytes.size() > Bound::jsonBytes ? Failure::TooLarge : Failure::Malformed; return r; }
+    StrictJson::Limits limits; limits.maxBytes = Bound::jsonBytes; limits.maxStringBytes = 8u << 20; limits.maxItems = Bound::items * 4; limits.allowBom = true;
+    // Parser depth: a node at depth d sits at JSON depth 2d + 1, so the reader's own bound is always reached first;
+    // a parser limit hit (deeper, too many items, too long) is still « too large », not « malformed ».
+    limits.maxDepth = Bound::nesting * 2 + 64;
+    StrictJson::Value doc; std::string error;
+    if (!StrictJson::Parse(bytes, doc, &error, limits) || !doc.IsObject()) {
+        const bool bound = bytes.size() > Bound::jsonBytes || error.find("too many") != std::string::npos || error.find("too long") != std::string::npos || error.find("too large") != std::string::npos;
+        r.failure = error.find("too deep") != std::string::npos ? Failure::TooDeep : bound ? Failure::TooLarge : Failure::Malformed; return r;
+    }
     const auto* roots = doc.Get("roots");
     if (!roots || !roots->IsObject()) { r.failure = Failure::Malformed; return r; }
     struct RootName { const char* key; std::wstring title; };
     const RootName names[] = {{"bookmark_bar", TR(bookmarks_bar_root)}, {"other", TR(bookmarks_other_root)}, {"synced", TR(import_root_mobile)}};
-    std::size_t count = 0;
+    std::size_t count = 0; Failure overflow = Failure::None;
     for (const auto& n : names) {
         const auto* node = roots->Get(n.key);
         if (!node || !node->IsObject()) continue;
-        std::vector<Item> one; ChromiumNode(*node, one, 1, count, r.ignored);
+        std::vector<Item> one; ChromiumNode(*node, one, 1, count, r.ignored, overflow);
+        if (overflow != Failure::None) { r = Bookmarks_{}; r.failure = overflow; return r; }
         if (one.empty() || !one[0].folder || one[0].children.empty()) continue;
         one[0].title = n.title;   // the browser's own root names are replaced by ours, in the interface language
         r.roots.push_back(std::move(one[0]));
@@ -571,7 +586,7 @@ inline Bookmarks_ ParseHtmlBookmarks(const std::string& bytes) {
         if (name == L"dl") {
             if (!sawDl && !pendingFolder) { sawDl = true; continue; }   // the outer list is the file itself
             sawDl = true;
-            if (stack.size() > Bound::nesting) { r.failure = Failure::TooLarge; return r; }
+            if (stack.size() > Bound::nesting) { r = Bookmarks_{}; r.failure = Failure::TooDeep; return r; }   // its items would sit deeper than the bound
             Item* parent = stack.back();
             if (pendingFolder) { parent->children.push_back(std::move(*pendingFolder)); pendingFolder.reset(); }
             else { Item anonymous; anonymous.folder = true; parent->children.push_back(std::move(anonymous)); }
@@ -581,13 +596,13 @@ inline Bookmarks_ ParseHtmlBookmarks(const std::string& bytes) {
             if (stack.size() > 1) stack.pop_back();
         } else if (name == L"h3") {
             if (pendingFolder) { stack.back()->children.push_back(std::move(*pendingFolder)); pendingFolder.reset(); }   // an empty folder without <DL>
-            if (++count > Bound::items) { r.failure = Failure::TooLarge; return r; }
+            if (++count > Bound::items || stack.size() > Bound::nesting) { r = Bookmarks_{}; r.failure = stack.size() > Bound::nesting ? Failure::TooDeep : Failure::TooLarge; return r; }   // depth of an item = stack size
             pendingFolder = std::make_unique<Item>(); pendingFolder->folder = true;
             pendingFolder->added = HtmlTime(Html::Number(Html::Attribute(inner, L"add_date")));
             pendingFolder->title = textUntil(L"</h3");
         } else if (name == L"a") {
             if (pendingFolder) { stack.back()->children.push_back(std::move(*pendingFolder)); pendingFolder.reset(); }
-            if (++count > Bound::items) { r.failure = Failure::TooLarge; return r; }
+            if (++count > Bound::items || stack.size() > Bound::nesting) { r = Bookmarks_{}; r.failure = stack.size() > Bound::nesting ? Failure::TooDeep : Failure::TooLarge; return r; }
             Item link; link.url = Clip(AddressBar::Trim(Html::Attribute(inner, L"href")));
             link.added = HtmlTime(Html::Number(Html::Attribute(inner, L"add_date")));
             link.title = textUntil(L"</a");
@@ -618,14 +633,16 @@ inline Bookmarks_ ReadFirefoxBookmarks(Sql::sqlite3* db) {
     }
     if (rc != Sql::DONE) { r.failure = Sql::CodeFailure(rc); return r; }
     std::map<std::wstring, std::int64_t> byGuid; for (const auto& [id, row] : rows) byGuid[row.guid] = id;
-    std::set<std::int64_t> seen;
+    std::set<std::int64_t> seen; bool overflow = false;
+    // `depth`: of the children being filled (the user roots are 1). Past Bound::nesting: TooLarge, never a cut.
     std::function<void(std::int64_t, Item&, std::size_t)> fill = [&](std::int64_t folder, Item& into, std::size_t depth) {
-        const auto k = kids.find(folder); if (k == kids.end()) return;
+        const auto k = kids.find(folder); if (k == kids.end() || overflow) return;
+        if (depth > Bound::nesting) { overflow = true; return; }   // TooDeep
         for (std::int64_t id : k->second) {
             if (!seen.insert(id).second) { ++r.ignored; continue; }   // a cycle in a damaged database
             const Row& row = rows.at(id);
             if (row.type == 1) { if (row.url.empty()) { ++r.ignored; continue; } Item it; it.title = row.title; it.url = Clip(row.url); it.added = row.added; into.children.push_back(std::move(it)); }
-            else if (row.type == 2) { Item it; it.folder = true; it.title = row.title; it.added = row.added; if (depth < Bound::nesting) fill(id, it, depth + 1); into.children.push_back(std::move(it)); }
+            else if (row.type == 2) { Item it; it.folder = true; it.title = row.title; it.added = row.added; fill(id, it, depth + 1); into.children.push_back(std::move(it)); }
             // type 3: separator, not a bookmark
         }
     };
@@ -633,7 +650,8 @@ inline Bookmarks_ ReadFirefoxBookmarks(Sql::sqlite3* db) {
     const RootName names[] = {{L"toolbar_____", TR(bookmarks_bar_root)}, {L"menu________", TR(import_root_menu)}, {L"unfiled_____", TR(bookmarks_other_root)}, {L"mobile______", TR(import_root_mobile)}};
     for (const auto& n : names) {
         const auto g = byGuid.find(n.guid); if (g == byGuid.end()) continue;
-        Item root; root.folder = true; root.title = n.title; seen.insert(g->second); fill(g->second, root, 1);
+        Item root; root.folder = true; root.title = n.title; seen.insert(g->second); fill(g->second, root, 2);
+        if (overflow) { r = Bookmarks_{}; r.failure = Failure::TooDeep; return r; }
         if (!root.children.empty()) r.roots.push_back(std::move(root));
     }
     return r;
@@ -816,6 +834,7 @@ inline std::wstring FailureText(Failure f, const Source& s) {
     case Failure::Busy: return s.browser == Browser::HtmlFile ? std::wstring(TR(import_failure_file_busy)) : TRF(import_failure_busy, BrandName(s.browser));
     case Failure::Malformed: return TR(import_failure_malformed);
     case Failure::TooLarge: return TR(import_failure_too_large);
+    case Failure::TooDeep: return TR(import_failure_too_deep);
     case Failure::Unsupported: return TR(import_failure_unsupported);
     case Failure::NoDatabase: return TR(import_failure_no_database);
     case Failure::Unreadable: return TR(import_failure_unreadable);
@@ -830,6 +849,7 @@ inline std::wstring CountsText(const Counts& c) {
     if (c.unsupported) parts.push_back(TRP(import_count_unsupported, c.unsupported));
     if (c.full) parts.push_back(TRP(import_count_full, c.full));
     if (c.deep) parts.push_back(TRP(import_count_deep, c.deep));
+    if (c.unreadable) parts.push_back(TRP(import_count_unreadable, c.unreadable));
     std::wstring out;
     for (const auto& p : parts) { if (!out.empty()) out += L" · "; out += p; }
     return out;
