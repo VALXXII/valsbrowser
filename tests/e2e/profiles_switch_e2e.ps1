@@ -1,4 +1,4 @@
-param([string]$Fixture = 'build/profiles-switch-qa', [int]$Port = 8768)
+param([string]$Fixture = 'build/profiles-switch-qa', [int]$Port = 8768, [switch]$TransitionsOnly)
 # Same-window profiles: runtime regressions of the independent review (H1, M1, M2, L1-L4, L6) on a REAL
 # browser.exe, its real WebView2 callbacks, UI Automation and its WM_COPYDATA channel. A fresh copy of the
 # fixture build runs in a new temporary root (its profile root); only processes of that copy are touched.
@@ -11,7 +11,7 @@ $root = Join-Path $env:TEMP ("browser-wsqa-" + [Guid]::NewGuid().ToString('N').S
 $script:fails = 0
 function Check([bool]$ok, [string]$what) { if ($ok) { "ok   $what" } else { "FAIL $what"; $script:fails++ } }
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-Add-Type @"
+Add-Type -ReferencedAssemblies System.Drawing @"
 using System; using System.Text; using System.Runtime.InteropServices;
 public static class Wsqa {
   public delegate bool EnumProc(IntPtr h, IntPtr l);
@@ -27,6 +27,24 @@ public static class Wsqa {
     var bytes = Encoding.Unicode.GetBytes(text + "\0"); var mem = Marshal.AllocHGlobal(bytes.Length); Marshal.Copy(bytes, 0, mem, bytes.Length);
     var cds = new CDS { dwData = (IntPtr)0x464F5250, cbData = bytes.Length, lpData = mem }; IntPtr r;
     SendMessageTimeout(h, 0x004A, IntPtr.Zero, ref cds, 2, 5000, out r); Marshal.FreeHGlobal(mem); return r.ToInt64(); }
+  // T (transitions): our own window rendered by PrintWindow (PW_CLIENTONLY | PW_RENDERFULLCONTENT: its DirectComposition
+  // overlay included), one row of the viewport classified: pure stripe colour / white / anything between (a blur or a
+  // cross-fade; a dark unpainted canvas is counted apart). Returns { red%, blue%, green%, mixed%, dark% } of the row.
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+  public static double[] Row(IntPtr h, double at) {
+    RECT c; GetClientRect(h, out c); int w = c.R, ht = c.B; if (w <= 0 || ht <= 0) return new double[] { 0, 0, 0, 0, 100 };
+    using (var bmp = new System.Drawing.Bitmap(w, ht)) {
+      using (var g = System.Drawing.Graphics.FromImage(bmp)) { var dc = g.GetHdc(); PrintWindow(h, dc, 3); g.ReleaseHdc(dc); }
+      int y = (int)(ht * at), red = 0, blue = 0, green = 0, mixed = 0, dark = 0, n = 0;
+      for (int x = w / 10; x < w * 9 / 10; x++) { var p = bmp.GetPixel(x, y); n++;
+        if (p.R > 225 && p.G > 225 && p.B > 225) continue;
+        if (p.R < 64 && p.G < 64 && p.B < 64) { dark++; continue; }
+        if (p.R > 200 && p.G < 80 && p.B < 80) red++; else if (p.B > 200 && p.R < 80 && p.G < 130) blue++; else if (p.G > 140 && p.R < 60 && p.B < 110) green++; else mixed++; }
+      return new double[] { 100.0 * red / n, 100.0 * blue / n, 100.0 * green / n, 100.0 * mixed / n, 100.0 * dark / n };
+    }
+  }
 }
 "@
 $AE = [System.Windows.Automation.AutomationElement]
@@ -90,6 +108,7 @@ $server = Start-Process python -ArgumentList "-I `"$PWD\tests\e2e\profiles_switc
 Start-Sleep 1
 "root: $root"
 try {
+ if (-not $TransitionsOnly) {
   # ==== H1 (same window): a restored cold slot, never shown, is deleted from this window ====================
   Seed; $A = StartA
   Check (WaitLog 'default' 'cached slot restored ptravail01' 5) 'H1: Travail restored as a cached slot of this window (never shown)'
@@ -215,6 +234,86 @@ try {
   Check (-not (Get-Process -Id $A.Id -ErrorAction SilentlyContinue)) 'L2: window A closed'
   Check (-not (Test-Path "$root\profiles\ptravail01\sessions\wqaB")) 'L2: the parked Travail session is removed (another Travail window is open), like the active rule'
   Check (Test-Path "$root\sessions\wqaA") 'L2: the active Personnel session is kept (no other Personnel window)'
+ }
+  # ==== T: content transitions — a blur only on an actual profile switch (design/profile-only-blur-report.md) =====
+  # Personnel: blue stripes (/pat c=3366ee), red stripes (c=ee3333), a third tab; Travail: green, then red.
+  # Tab selections go through the real paths (shortcut commands, UIA SelectionItem, closing / opening a tab); the window
+  # is never brought to the foreground. « qa transition-state » reports the overlay and its capture count.
+  function SeedT([switch]$Reduced) {
+    Seed
+    W "$root\sessions\wqaA" "browser-session-2`n0`n3`n`"$u/pat?c=3366ee`"`n`"$u/pat?c=ee3333`"`n`"$u/show?t3`"`n0`n"
+    W "$root\profiles\ptravail01\sessions\wqaB" "browser-session-2`n0`n2`n`"$u/pat?c=22aa55`"`n`"$u/pat?c=ee3333`"`n0`n"
+    if ($Reduced) { foreach ($p in @("$root", "$root\profiles\ptravail01")) { W "$p\settings" "browser-settings 1`nrestore-tabs=1`nask-where-to-save=0`nreduce-motion=1`n" } }
+  }
+  function TState([int]$procId) { Qa $procId 'transition-state' | Out-Null; Start-Sleep -Milliseconds 150; $l = LastLine 'default' 'WSQA transition active'; $c = [regex]::Match($l, 'captures=(\d+)'); [pscustomobject]@{ Line = $l.Trim(); Active = $l -match 'active=1'; Surfaces = [regex]::Match($l, 'surfaces=(\d+)').Groups[1].Value; Captures = $(if ($c.Success) { [int]$c.Groups[1].Value } else { -1 }) } }
+  function TCount([string]$pattern) { ([regex]::Matches((LogText 'default'), $pattern)).Count }
+  # The worst row of the viewport over ~300 ms after an action: no blur and no cross-fade means no « mixed » pixels.
+  function Frames([int]$procId, [scriptblock]$act, [int]$ms = 320) {
+    $h = Main $procId; & $act; $sw = [Diagnostics.Stopwatch]::StartNew(); $f = @()
+    while ($sw.ElapsedMilliseconds -lt $ms) { $f += ,([Wsqa]::Row($h, 0.86)) }
+    [pscustomobject]@{ Count = $f.Count; MaxMixed = ($f | ForEach-Object { $_[3] } | Measure-Object -Maximum).Maximum; Last = $f[-1] }
+  }
+  $Shortcut = 0x8001; $NextTab = 0x5D; $SelectTabBase = 3010; $CloseTab = 0x57
+  function Cmd([int]$procId, [int]$cmd) { [Wsqa]::PostMessage((Main $procId), $Shortcut, [IntPtr]$cmd, [IntPtr]::Zero) | Out-Null }
+  SeedT; $A = StartA '--workspace-test'
+  $r0 = [Wsqa]::Row((Main $A.Id), 0.86)
+  Check ($r0[1] -gt 20 -and $r0[3] -lt 12) ("T setup: Personnel shows its blue stripes, sharp (blue {0:N0}% mixed {1:N1}%)" -f $r0[1], $r0[3])
+  $s0 = TState $A.Id; $tab0 = TCount 'TRANSITION tab'
+  # T1: ordinary tab switches in one profile: immediate, no capture, no overlay, no blurred / faded frame.
+  $f = Frames $A.Id { Cmd $A.Id ($SelectTabBase + 1) }
+  Check ($f.Last[0] -gt 20 -and $f.MaxMixed -lt 12) ("T1 Ctrl+2: the red tab at once, never blurred or cross-faded ({0} frames, worst mixed {1:N1}%)" -f $f.Count, $f.MaxMixed)
+  $f = Frames $A.Id { Cmd $A.Id $NextTab }; Start-Sleep -Milliseconds 300
+  Check ($f.MaxMixed -lt 12) ("T1 Ctrl+Tab: no blurred / faded frame ({0} frames, worst mixed {1:N1}%)" -f $f.Count, $f.MaxMixed)
+  $ti = @(Elements $A.Id | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::TabItem })
+  $f = Frames $A.Id { $ti[0].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
+  Check ($f.Last[1] -gt 20 -and $f.MaxMixed -lt 12) ("T1 UIA SelectionItem.Select: the blue tab at once ({0} frames, worst mixed {1:N1}%)" -f $f.Count, $f.MaxMixed)
+  Cmd $A.Id ($SelectTabBase + 2); Start-Sleep -Milliseconds 400
+  $f = Frames $A.Id { Cmd $A.Id $CloseTab }   # closing the active (last) tab selects its neighbour: the red one
+  Check ($f.Last[0] -gt 20 -and $f.MaxMixed -lt 12) ("T1 closing the active tab: its neighbour at once ({0} frames, worst mixed {1:N1}%)" -f $f.Count, $f.MaxMixed)
+  Invoke-Uia $A.Id 'NewTab'; Start-Sleep 1; Cmd $A.Id $SelectTabBase; Start-Sleep -Milliseconds 400
+  $s1 = TState $A.Id
+  Check ($s1.Captures -eq $s0.Captures -and -not $s1.Active -and $s1.Surfaces -eq '0') "T1: no capture and no overlay for any tab switch ($($s0.Captures) -> $($s1.Captures) captures; $($s1.Line))"
+  Check ((TCount 'TRANSITION tab') -eq $tab0 -and (TCount 'TRANSITION cancelled') -eq 0) 'T1: no tab transition logged (nothing began, nothing to cancel)'
+  # T2: the profile on screen re-selected: nothing.
+  Qa $A.Id 'switch default' | Out-Null; Start-Sleep -Milliseconds 300
+  Check ((TState $A.Id).Captures -eq $s0.Captures -and (TCount 'TRANSITION profile') -eq 0) 'T2: re-selecting the profile on screen starts no transition'
+  # T3: an actual profile switch keeps its outgoing blur and its incoming phase (cold start of Travail: the restore's
+  # own selections never cancel it).
+  Pick $A.Id 'Travail'
+  Check (WaitLog 'default' 'TRANSITION profile capture .* gpu blur' 5) "T3: profile switch: outgoing capture with the GPU blur ($((LastLine 'default' 'TRANSITION profile').Trim()))"
+  Check (WaitLog 'default' 'TRANSITION (incoming capture|incoming timeout|incoming none)' 8) "T3: then the incoming phase ($((LastLine 'default' 'TRANSITION incoming').Trim()))"
+  Check ((TCount 'TRANSITION cancelled by tab selected') -eq 0) "T3: the cold profile's restored selections did not cancel its transition"
+  Start-Sleep 5; $s3 = TState $A.Id
+  Check ($s3.Captures -gt $s1.Captures -and -not $s3.Active -and $s3.Surfaces -eq '0') "T3: captured, then released when it ended ($($s3.Line))"
+  Pick $A.Id 'Personnel'; Start-Sleep 2
+  $f = Frames $A.Id { Qa $A.Id 'switch ptravail01' | Out-Null } 600
+  Check ($f.MaxMixed -gt 12) ("T3 warm Personnel -> Travail: the composed viewport shows the transition (worst mixed {0:N1}%)" -f $f.MaxMixed)
+  Start-Sleep 1
+  # T4: a tab chosen DURING a profile transition cancels it at once: the chosen tab, sharp; snapshots and timers released.
+  Qa $A.Id 'switch default' | Out-Null; Start-Sleep 1; $cut = (LogText 'default').Length
+  $f = Frames $A.Id { Qa $A.Id 'switch ptravail01' | Out-Null; Cmd $A.Id ($SelectTabBase + 1) } 160
+  $s4 = TState $A.Id; $after = (LogText 'default').Substring($cut)
+  Check ($after -match 'TRANSITION profile' -and $after -match 'TRANSITION cancelled by tab selected') 'T4: the tab selected during the profile transition cancelled it (logged)'
+  Check (-not $s4.Active -and $s4.Surfaces -eq '0') "T4: overlay removed, both snapshots released ($($s4.Line))"
+  Check ($f.Last[0] -gt 20 -and $f.Last[3] -lt 12) ("T4: the chosen tab (red) is on screen, sharp (red {0:N0}% mixed {1:N1}%)" -f $f.Last[0], $f.Last[3])
+  Start-Sleep 3; $late = ((LogText 'default').Substring($cut) -split 'TRANSITION cancelled by tab selected') | Select-Object -Last 1
+  Check (-not ($late -match 'TRANSITION incoming|TRANSITION profile')) 'T4: no readiness poll or end timer ran after the cancel'
+  # T5: rapid profile switches retarget one overlay; everything is released at the end (no idle overlay / wake).
+  Qa $A.Id 'switch default' | Out-Null; Qa $A.Id 'switch ptravail01' | Out-Null; Qa $A.Id 'switch default' | Out-Null
+  Check (WaitLog 'default' 'TRANSITION profile retarget' 3) 'T5: rapid profile switches retarget the running transition'
+  Start-Sleep 4; $s5 = TState $A.Id
+  Check (-not $s5.Active -and $s5.Surfaces -eq '0') "T5: then idle, nothing held ($($s5.Line))"
+  Check (-not ((LogText 'default') -match 'WEBVIEW2 ERROR|Opérations arrêtées')) 'T: never the global halt / error dialog'
+  Procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep 1
+  # T6: the app's « Réduire les animations »: a profile switch is an opacity fade only; a tab switch still nothing.
+  SeedT -Reduced; $A = StartA '--workspace-test'
+  $c6 = (TState $A.Id).Captures
+  $f = Frames $A.Id { Cmd $A.Id ($SelectTabBase + 1) }
+  Check ($f.MaxMixed -lt 12 -and (TState $A.Id).Captures -eq $c6) ("T6 reduced motion: tab switch immediate, no capture (worst mixed {0:N1}%)" -f $f.MaxMixed)
+  Pick $A.Id 'Travail'
+  Check (WaitLog 'default' 'TRANSITION profile capture .* reduced \(opacity only\)' 5) "T6 reduced motion: the profile switch is an opacity fade only ($((LastLine 'default' 'TRANSITION profile').Trim()))"
+  Start-Sleep 5; $s6 = TState $A.Id
+  Check (-not $s6.Active -and $s6.Surfaces -eq '0') "T6: released at the end ($($s6.Line))"
 }
 finally {
   Procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
