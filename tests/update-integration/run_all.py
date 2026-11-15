@@ -130,6 +130,32 @@ def ico_png(path: Path) -> bytes:
     sys.exit(f'{path} has no PNG entry')
 
 
+def version_strings(exe: Path) -> dict:
+    """The StringFileInfo values Windows itself reads (GetFileVersionInfoW), first translation."""
+    import ctypes
+    from ctypes import wintypes as W
+    v = ctypes.windll.version
+    v.GetFileVersionInfoSizeW.argtypes = [W.LPCWSTR, ctypes.POINTER(W.DWORD)]
+    v.GetFileVersionInfoW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p]
+    v.VerQueryValueW.argtypes = [ctypes.c_void_p, W.LPCWSTR, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(W.UINT)]
+    size = v.GetFileVersionInfoSizeW(str(exe), None)
+    if not size:
+        return {}
+    buf = ctypes.create_string_buffer(size)
+    if not v.GetFileVersionInfoW(str(exe), 0, size, buf):
+        return {}
+    ptr, n = ctypes.c_void_p(), W.UINT()
+    if not v.VerQueryValueW(buf, r'\VarFileInfo\Translation', ctypes.byref(ptr), ctypes.byref(n)) or n.value < 4:
+        return {}
+    lang, cp = struct.unpack('<HH', ctypes.string_at(ptr.value, 4))
+    out = {}
+    for key in ('CompanyName', 'FileDescription', 'ProductName', 'LegalCopyright', 'OriginalFilename',
+                'FileVersion', 'ProductVersion', 'InternalName'):
+        if v.VerQueryValueW(buf, rf'\StringFileInfo\{lang:04x}{cp:04x}\{key}', ctypes.byref(ptr), ctypes.byref(n)) and n.value:
+            out[key] = ctypes.wstring_at(ptr.value, n.value).rstrip('\0')
+    return out
+
+
 def check_app(app: Path) -> None:
     print(f'== static checks {app}')
     info = json.loads((app / 'version.json').read_text(encoding='utf-8'))
@@ -152,6 +178,20 @@ def check_app(app: Path) -> None:
                 sys.exit('BROWSER_UPDATE_VERSION string not embedded in browser.exe')
             if info['updateRepository'].encode('utf-16-le') not in data:
                 sys.exit('update repository not embedded in browser.exe')
+    # Publisher metadata (src/version-info.rc): every executable we ship names its publisher, product,
+    # description and copyright, with the stamped version. Unsigned files with empty metadata are what
+    # antivirus heuristics and SmartScreen distrust most; these strings are also what Windows shows.
+    ours = [app / 'browser.exe', app / 'update-helper.exe']
+    ours += [p for p in (app / 'browser-annotations-mcp.exe', app / 'assets/bin/browser-annotations-mcp.exe') if p.is_file()]
+    for exe in ours:
+        strings = version_strings(exe)
+        for key in ('CompanyName', 'FileDescription', 'ProductName', 'LegalCopyright', 'OriginalFilename'):
+            if not strings.get(key):
+                sys.exit(f'{exe.name}: version resource has no {key} (got {strings})')
+        if strings.get('FileVersion') != info['version'] or strings.get('ProductVersion') != info['version']:
+            sys.exit(f'{exe.name}: FileVersion/ProductVersion {strings.get("FileVersion")}/{strings.get("ProductVersion")} != {info["version"]}')
+        if strings['OriginalFilename'].lower() != exe.name.lower():
+            sys.exit(f'{exe.name}: OriginalFilename is {strings["OriginalFilename"]}')
     # App icon policy (tools/release/version.py): release -> live, dev -> preview. Both executables
     # embed exactly that ICO's 256 px image, never the other one, and assets/browser.ico is that ICO.
     sys.path.insert(0, str(ROOT / 'tools/release'))

@@ -158,10 +158,11 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
         shutil.rmtree(obj)
     out.mkdir(parents=True, exist_ok=True)
     write_build_info(obj / 'gen', info, repo)
-    res, helper_res = obj / 'browser-res.o', obj / 'update-helper-res.o'
+    res, helper_res, bridge_res = obj / 'browser-res.o', obj / 'update-helper-res.o', obj / 'mcp-bridge-res.o'
     # Both executables embed the channel's app icon (src/app-icon.rc): the helper is also the
     # stable launcher <root>\browser.exe that the Start Menu shortcut targets.
-    for rc, o in (('src/browser.rc', res), ('src/update-helper.rc', helper_res)):
+    # All three carry the publisher metadata of src/version-info.rc; the bridge has no icon.
+    for rc, o in (('src/browser.rc', res), ('src/update-helper.rc', helper_res), ('src/mcp-bridge.rc', bridge_res)):
         run([BIN / 'windres.exe', '-I.', '-Isrc', f'-I{obj / "gen"}', '-DBROWSER_HAS_BUILD_INFO',
              rc, '-O', 'coff', '-o', o])
     # No PE link timestamp and relative source paths: identical inputs give identical binaries.
@@ -179,7 +180,7 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
          *HELPER_LIBS])
     executables = ['browser.exe', HELPER_NAME]
     if bridge:  # console subsystem: stdio is the MCP transport; linked in <out>-obj, placed below
-        run([BIN / 'g++.exe', *common, *BRIDGE_SOURCES, '-o', obj / BRIDGE_NAME, *BRIDGE_LIBS])
+        run([BIN / 'g++.exe', *common, *BRIDGE_SOURCES, bridge_res, '-o', obj / BRIDGE_NAME, *BRIDGE_LIBS])
         run([BIN / 'strip.exe', '--strip-debug', obj / BRIDGE_NAME])
     for exe in executables:
         run([BIN / 'strip.exe', '--strip-debug', out / exe])
