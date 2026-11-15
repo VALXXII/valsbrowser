@@ -2304,7 +2304,8 @@ void CreateSettingsPanel(){
     hooks.deleteProfile=[](const std::wstring& id,bool keyboard){keyboardModality=keyboard;AskDeleteProfile(id,keyboard);};
     hooks.profilesReadOnly=[]{return profileRegistry.readOnly;};
     hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};
-    if(!privateWindow)hooks.importData=[](bool keyboard){ShowImportDialog(keyboard);};   // a private window imports nothing into its profilehooks.vaultInfo=[]{return VaultInfo();};
+    if(!privateWindow)hooks.importData=[](bool keyboard){ShowImportDialog(keyboard);};   // a private window imports nothing into its profile
+    hooks.vaultInfo=[]{return VaultInfo();};
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
     hooks.downloadFolder=EffectiveDownloadFolder;
