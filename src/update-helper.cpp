@@ -574,8 +574,10 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
     bool ok = true;
     if (UP::IsDirectory(profile)) ok = CopyTree(profile, work + L"\\profile", deadline) || MigrationStepFailed("copy profile");
     // Plain data files next to the profile (session, download history, the browser-wide interface language
-    // preference « ui-language », src/ui-language.h). Transient *.tmp files are not copied.
-    for (const wchar_t* name : {L"session", L"downloads", L"bookmarks", L"bookmarks.bak", L"ui-language"}) {
+    // preference « ui-language », src/ui-language.h, and « bookmark-imports », the stable identities of imported
+    // bookmark folders, src/browser-import.h FolderMap: it travels with « bookmarks » in this same all-or-nothing
+    // copy, so a renamed import folder is still recognised after the move). Transient *.tmp files are not copied.
+    for (const wchar_t* name : {L"session", L"downloads", L"bookmarks", L"bookmarks.bak", L"bookmark-imports", L"ui-language"}) {
         std::wstring file = src + L"\\" + name;
         if (ok && UP::PathExists(file) && !UP::IsDirectory(file) && !UP::IsReparsePoint(file))
             ok = CopyWithRetry(file, work + L"\\" + name, deadline) || MigrationStepFailed("copy " + UP::Narrow(name));

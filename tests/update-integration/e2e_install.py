@@ -191,6 +191,14 @@ def scenario_portable(base: Path, fx: dict):
     (portable / 'bookmarks').write_bytes(saved_bookmarks)
     saved_language = b'browser-ui-language 1\nlanguage=en\n'   # Reglages > Langue chosen in the portable copy
     (portable / 'ui-language').write_bytes(saved_language)
+    # Stable identities of imported bookmark folders (src/browser-import.h FolderMap), default profile and another one;
+    # two candidates for one key (the state a failed or interrupted import leaves) must travel byte for byte.
+    saved_imports = b'browser-bookmark-imports 1\nchromium:Chrome/Default\t9\t1700000000001\nchromium:Chrome/Default\t3\t1700000000000\n'
+    (portable / 'bookmark-imports').write_bytes(saved_imports)
+    (portable / 'bookmark-imports.tmp4242').write_bytes(b'browser-bookmark-imports 1\n')   # an interrupted atomic write
+    other_imports = b'browser-bookmark-imports 1\nfirefox:Firefox/Profiles/x.default\t4\t1700000000002\n'
+    (portable / 'profiles/ptravail01').mkdir(parents=True, exist_ok=True)
+    (portable / 'profiles/ptravail01/bookmark-imports').write_bytes(other_imports)
     rc = run_host(exe, 'install', root, fx['serve'], base / 'host-report.txt')
     check(rc == 0, 'host flow (portable/legacy exe-adjacent data): install requested and clean exit')
     legacy_before = tree_hash(portable / 'profile')  # after host exit, before/while helper migrates
@@ -210,6 +218,10 @@ def scenario_portable(base: Path, fx: dict):
     check((root / 'data/bookmarks.bak').read_bytes()==saved_bookmarks,'portable bookmarks recovery copy is migrated too')
     check((root / 'data/ui-language').read_bytes()==saved_language,'portable interface language preference is copied to the installed data directory')
     check((portable / 'ui-language').read_bytes()==saved_language,'portable interface language preference remains untouched')
+    check((root / 'data/bookmark-imports').read_bytes()==saved_imports,'portable import folder identities are copied with the bookmarks (both candidates)')
+    check((portable / 'bookmark-imports').read_bytes()==saved_imports,'portable import folder identities remain untouched')
+    check(not (root / 'data/bookmark-imports.tmp4242').exists(),'an interrupted identities write (temp file) is not migrated')
+    check((root / 'data/profiles/ptravail01/bookmark-imports').read_bytes()==other_imports,'another profile keeps its import folder identities (profile tree copy)')
     relaunch_legacy(base, root, portable, exe, fx)
 
 
