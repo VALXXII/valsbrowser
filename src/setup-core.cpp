@@ -476,7 +476,7 @@ Result Integrate(const Env& env, const std::wstring& self, const SetupPayload::L
     swprintf(date, 16, L"%04u%02u%02u", t.wYear, t.wMonth, t.wDay);
     std::wstring installDate;
     bool ok = SetupKey::WriteString(key, L"DisplayName", L"browser") && SetupKey::WriteString(key, L"DisplayVersion", W(current)) &&
-              SetupKey::WriteString(key, L"Publisher", L"VALXXII") && SetupKey::WriteString(key, L"DisplayIcon", icon) &&
+              SetupKey::WriteString(key, L"Publisher", L"VALXXII") && SetupKey::WriteString(key, L"DisplayIcon", icon) &&   // i18n-exempt: registry value names
               SetupKey::WriteString(key, L"InstallLocation", root) &&
               SetupKey::WriteString(key, L"UninstallString", L"\"" + uninstaller + L"\"");
     if (ok && !SetupKey::ReadString(key, L"InstallDate", installDate)) ok = SetupKey::WriteString(key, L"InstallDate", date);

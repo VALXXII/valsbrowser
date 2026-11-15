@@ -34,82 +34,8 @@ namespace UP = UpdatePackage;
 namespace {
 
 // ---------------------------------------------------------------- strings
-bool g_en = false;
-struct Text { const wchar_t* fr; const wchar_t* en; };
-const wchar_t* T(const Text& t) { return g_en ? t.en : t.fr; }
-#define S(name, fr, en) const Text name{fr, en};
-S(tInstall, L"Installer browser", L"Install browser")
-S(tUpdate, L"Mettre à jour browser", L"Update browser")
-S(tRepair, L"Réparer browser", L"Repair browser")
-S(tUninstall, L"Désinstaller browser", L"Uninstall browser")
-S(tSubtitle, L"Version %s · pour votre compte Windows, sans droits administrateur", L"Version %s · for your Windows account, no administrator rights")
-S(tBodyFresh, L"browser sera installé dans votre dossier utilisateur (%LOCALAPPDATA%\\browser) et ajouté au menu Démarrer. Il se met ensuite à jour tout seul.",
-  L"browser will be installed in your user folder (%LOCALAPPDATA%\\browser) and added to the Start menu. It then keeps itself up to date.")
-S(tBodyUpdate, L"La version %s installée sera remplacée par celle-ci. Vos profils, onglets, favoris, historique et mots de passe sont conservés.",
-  L"The installed version %s will be replaced by this one. Your profiles, tabs, bookmarks, history and passwords are kept.")
-S(tBodyRepair, L"Cette version est déjà installée. Réparer réinstalle ses fichiers et ses raccourcis ; vos données sont conservées.",
-  L"This version is already installed. Repair reinstalls its files and shortcuts; your data is kept.")
-S(tBodyNewer, L"Une version plus récente (%s) est déjà installée. Rien ne sera modifié.", L"A newer version (%s) is already installed. Nothing will be changed.")
-S(tDesktop, L"Créer un raccourci sur le Bureau", L"Create a desktop shortcut")
-S(tLaunch, L"Ouvrir browser une fois installé", L"Open browser when done")
-S(tBtnInstall, L"Installer", L"Install")
-S(tBtnUpdate, L"Mettre à jour", L"Update")
-S(tBtnRepair, L"Réparer", L"Repair")
-S(tBtnUninstall, L"Désinstaller", L"Uninstall")
-S(tBtnCancel, L"Annuler", L"Cancel")
-S(tBtnClose, L"Fermer", L"Close")
-S(tBtnRetry, L"Réessayer", L"Retry")
-S(tBtnOpen, L"Ouvrir browser", L"Open browser")
-S(tPrepare, L"Vérification et préparation des fichiers…", L"Checking and preparing files…")
-S(tInstalling, L"Installation…", L"Installing…")
-S(tStarting, L"Installation et démarrage de browser…", L"Installing and starting browser…")
-S(tFinishing, L"Création des raccourcis…", L"Creating shortcuts…")
-S(tDone, L"browser est installé. Vous le retrouverez dans le menu Démarrer.", L"browser is installed. You'll find it in the Start menu.")
-S(tDoneStarting, L"browser est installé et démarre. Vous le retrouverez dans le menu Démarrer.", L"browser is installed and starting. You'll find it in the Start menu.")
-S(tForeign, L"Un raccourci « browser » du menu Démarrer vers une autre copie existait déjà : il a été laissé tel quel.",
-  L"A « browser » Start menu shortcut to another copy already existed: it was left as is.")
-S(tWebView2, L"Microsoft Edge WebView2 Runtime n'a pas été détecté. Au premier démarrage, browser proposera de l'installer depuis Microsoft.",
-  L"Microsoft Edge WebView2 Runtime was not detected. On first start, browser will offer to install it from Microsoft.")
-S(eDamaged, L"Ce fichier d'installation est endommagé ou incomplet. Téléchargez-le à nouveau.", L"This setup file is damaged or incomplete. Please download it again.")
-S(eUnsafe, L"Le dossier d'installation contient un lien ou une jonction : l'installation est refusée pour protéger vos fichiers.",
-  L"The install folder contains a link or junction: installation refused to protect your files.")
-S(eNewer, L"Une version plus récente est déjà installée.", L"A newer version is already installed.")
-S(eRunning, L"browser est ouvert. Fermez toutes ses fenêtres, puis cliquez sur Réessayer.", L"browser is open. Close all its windows, then click Retry.")
-S(eDisk, L"Impossible d'écrire les fichiers (disque plein ou dossier protégé). L'installation existante et vos données n'ont pas été modifiées.",
-  L"Files couldn't be written (disk full or protected folder). The existing install and your data were not changed.")
-S(eCancelled, L"Installation annulée. Rien n'a été modifié.", L"Installation canceled. Nothing was changed.")
-S(eHelper, L"L'installation n'a pas pu se terminer. La version précédente et vos données sont intactes.",
-  L"Installation couldn't finish. The previous version and your data are intact.")
-S(eStart, L"browser n'a pas pu démarrer après l'installation ; l'état précédent a été rétabli. Vos données sont intactes.",
-  L"browser couldn't start after installing; the previous state was restored. Your data is intact.")
-S(eIntegration, L"browser est installé, mais les raccourcis ou l'entrée de désinstallation n'ont pas pu être créés. Réessayez.",
-  L"browser is installed, but the shortcuts or the uninstall entry couldn't be created. Please retry.")
-S(eBusy, L"Une autre installation ou désinstallation de browser est en cours. Attendez qu'elle se termine, puis cliquez sur Réessayer.",
-  L"Another installation or uninstallation of browser is in progress. Wait for it to finish, then click Retry.")
-S(tDetail, L"Détail : %s", L"Detail: %s")
-S(tBodyUninstall, L"browser sera retiré de cet ordinateur (programme, raccourcis, entrée « Applications »). Vos données (profils, historique, favoris, mots de passe) restent dans %LOCALAPPDATA%\\browser\\data, sauf si vous cochez la case.",
-  L"browser will be removed from this computer (program, shortcuts, « Apps » entry). Your data (profiles, history, bookmarks, passwords) stays in %LOCALAPPDATA%\\browser\\data unless you tick the box.")
-S(tRemoveData, L"Supprimer aussi mes données de navigation", L"Also delete my browsing data")
-S(tConfirmData, L"Supprimer définitivement vos profils, historique, favoris, mots de passe et sessions ? Cette action est irréversible.",
-  L"Permanently delete your profiles, history, bookmarks, passwords and sessions? This can't be undone.")
-S(tRemoving, L"Désinstallation…", L"Uninstalling…")
-S(tUninstalled, L"browser a été désinstallé.", L"browser has been uninstalled.")
-S(tDataKept, L"Vos données sont conservées dans %LOCALAPPDATA%\\browser\\data.", L"Your data is kept in %LOCALAPPDATA%\\browser\\data.")
-S(tDataRemoved, L"Vos données ont été supprimées.", L"Your data was deleted.")
-S(tLeftovers, L"Certains fichiers encore utilisés (par exemple le pont des annotations lancé par un agent) n'ont pas pu être supprimés ; ils pourront l'être plus tard.",
-  L"Some files still in use (for example the annotations bridge started by an agent) couldn't be removed; they can be removed later.")
-S(eUninstallRunning, L"browser est ouvert. Fermez toutes ses fenêtres, puis cliquez sur Réessayer.", L"browser is open. Close all its windows, then click Retry.")
-S(eUninstallFailed, L"La désinstallation n'a pas pu se faire. Rien n'a été supprimé.", L"Uninstall couldn't be done. Nothing was removed.")
-S(eNotSetup, L"Ce fichier d'installation est endommagé ou incomplet. Téléchargez-le à nouveau depuis la page des versions de browser.",
-  L"This setup file is damaged or incomplete. Please download it again from the browser releases page.")
-#undef S
-
-std::wstring Format(const Text& t, const std::wstring& arg) {
-    std::wstring f = T(t), out;
-    const auto pos = f.find(L"%s");
-    if (pos == std::wstring::npos) return f;
-    return f.substr(0, pos) + arg + f.substr(pos + 2);
-}
+// All window text lives in the browser's catalog (src/i18n-catalog.inc, setup_* ids), in the process language set by
+// PickLanguage (I18n::SetForProcess): the browser-wide preference if installed, else the Windows UI language.
 
 // ---------------------------------------------------------------- state
 constexpr COLORREF Canvas = RGB(23, 23, 23), Raised = RGB(41, 41, 41), Ink = RGB(240, 240, 240), Muted = RGB(160, 160, 160),
@@ -157,11 +83,11 @@ void MakeFonts() {
 }
 
 std::wstring Title() {
-    if (g.uninstall) return T(tUninstall);
+    if (g.uninstall) return TR(setup_uninstall);
     switch (g.inspection.kind) {
-        case SC::Kind::Update: return T(tUpdate);
-        case SC::Kind::Repair: return T(tRepair);
-        default: return T(tInstall);
+        case SC::Kind::Update: return TR(setup_update);
+        case SC::Kind::Repair: return TR(setup_repair);
+        default: return TR(setup_install);
     }
 }
 
@@ -188,16 +114,16 @@ bool WebView2Present() {
 
 std::wstring ErrorText(SC::Error e) {
     switch (e) {
-        case SC::Error::Damaged: return T(eDamaged);
-        case SC::Error::Unsafe: return T(eUnsafe);
-        case SC::Error::Newer: return T(eNewer);
-        case SC::Error::Running: return T(eRunning);
-        case SC::Error::Disk: return T(eDisk);
-        case SC::Error::Cancelled: return T(eCancelled);
-        case SC::Error::StartFailed: return T(eStart);
-        case SC::Error::Integration: return T(eIntegration);
-        case SC::Error::Busy: return T(eBusy);
-        default: return T(eHelper);
+        case SC::Error::Damaged: return TR(setup_error_damaged);
+        case SC::Error::Unsafe: return TR(setup_error_unsafe);
+        case SC::Error::Newer: return TR(setup_error_newer);
+        case SC::Error::Running: return TR(setup_error_running);
+        case SC::Error::Disk: return TR(setup_error_disk);
+        case SC::Error::Cancelled: return TR(setup_error_cancelled);
+        case SC::Error::StartFailed: return TR(setup_error_start);
+        case SC::Error::Integration: return TR(setup_error_integration);
+        case SC::Error::Busy: return TR(setup_error_busy);
+        default: return TR(setup_error_helper);
     }
 }
 
@@ -226,17 +152,17 @@ void SetPage(Page page) {
     Show(g.removeDataBox, options && g.uninstall);
     std::wstring primary, secondary;
     if (options) {
-        primary = g.uninstall ? T(tBtnUninstall) : newer ? T(tBtnClose)
-                  : g.inspection.kind == SC::Kind::Update ? T(tBtnUpdate) : g.inspection.kind == SC::Kind::Repair ? T(tBtnRepair) : T(tBtnInstall);
-        secondary = newer ? L"" : T(tBtnCancel);
+        primary = g.uninstall ? TR(setup_btn_uninstall) : newer ? TR(setup_btn_close)
+                  : g.inspection.kind == SC::Kind::Update ? TR(setup_btn_update) : g.inspection.kind == SC::Kind::Repair ? TR(setup_btn_repair) : TR(setup_btn_install);
+        secondary = newer ? L"" : TR(setup_btn_cancel);
     } else if (page == Page::Working) {
-        secondary = T(tBtnCancel);
+        secondary = TR(setup_btn_cancel);
     } else if (page == Page::Done) {
-        primary = T(tBtnClose);
-        if (!g.uninstall && !g.options.launch) secondary = T(tBtnOpen);
+        primary = TR(setup_btn_close);
+        if (!g.uninstall && !g.options.launch) secondary = TR(setup_btn_open);
     } else {
-        primary = g.error && (g.result.error == SC::Error::Damaged || g.result.error == SC::Error::Newer || g.result.error == SC::Error::Unsafe) ? T(tBtnClose) : T(tBtnRetry);
-        secondary = primary == T(tBtnRetry) ? T(tBtnClose) : L"";
+        primary = g.error && (g.result.error == SC::Error::Damaged || g.result.error == SC::Error::Newer || g.result.error == SC::Error::Unsafe) ? TR(setup_btn_close) : TR(setup_btn_retry);
+        secondary = primary == TR(setup_btn_retry) ? TR(setup_btn_close) : L"";
     }
     SetWindowTextW(g.primary, primary.c_str());
     SetWindowTextW(g.secondary, secondary.c_str());
@@ -248,12 +174,12 @@ void SetPage(Page page) {
 }
 
 std::wstring OptionsBody() {
-    if (g.uninstall) return T(tBodyUninstall);
+    if (g.uninstall) return TR(setup_body_uninstall);
     switch (g.inspection.kind) {
-        case SC::Kind::Update: return Format(tBodyUpdate, W(g.inspection.installed));
-        case SC::Kind::Repair: return T(tBodyRepair);
-        case SC::Kind::Newer: return Format(tBodyNewer, W(g.inspection.installed));
-        default: return T(tBodyFresh);
+        case SC::Kind::Update: return TRF(setup_body_update, W(g.inspection.installed));
+        case SC::Kind::Repair: return TR(setup_body_repair);
+        case SC::Kind::Newer: return TRF(setup_body_newer, W(g.inspection.installed));
+        default: return TR(setup_body_fresh);
     }
 }
 
@@ -272,7 +198,7 @@ void StartWork() {
     g.detail.clear();
     g.note.clear();
     g.cancellable = !g.uninstall;
-    g.status = g.uninstall ? T(tRemoving) : T(tPrepare);
+    g.status = g.uninstall ? TR(setup_removing) : TR(setup_prepare);
     SetPage(Page::Working);
     HWND window = g.window;
     std::thread([window] {
@@ -295,23 +221,23 @@ void Finished() {
         const bool ok = r.error == SC::Error::None;
         g.exitCode = ok ? 0 : int(r.error) + 10;
         if (ok) {
-            g.status = T(tUninstalled);
-            g.note = std::wstring(r.dataKept ? T(tDataKept) : T(tDataRemoved)) + (r.leftovers ? std::wstring(L"\n") + T(tLeftovers) : L"");
+            g.status = TR(setup_uninstalled);
+            g.note = std::wstring(r.dataKept ? TR(setup_data_kept) : TR(setup_data_removed)) + (r.leftovers ? std::wstring(L"\n") + TR(setup_leftovers) : L"");
         } else {
-            g.status = r.error == SC::Error::Running ? T(eUninstallRunning) : r.error == SC::Error::Busy ? T(eBusy) : T(eUninstallFailed);
+            g.status = r.error == SC::Error::Running ? TR(setup_error_uninstall_running) : r.error == SC::Error::Busy ? TR(setup_error_busy) : TR(setup_error_uninstall_failed);
         }
-        g.detail = r.detail.empty() ? L"" : Format(tDetail, W(r.detail));
+        g.detail = r.detail.empty() ? L"" : TRF(setup_detail, W(r.detail));
         return Finish(ok);
     }
     const auto& r = g.result;
     g.exitCode = r.Ok() ? 0 : int(r.error) + 10;
     if (r.Ok()) {
-        g.status = g.options.launch ? T(tDoneStarting) : T(tDone);
-        if (r.startMenuForeign) g.note = T(tForeign);
-        if (!WebView2Present()) g.note += (g.note.empty() ? L"" : L"\n") + std::wstring(T(tWebView2));
+        g.status = g.options.launch ? TR(setup_done_starting) : TR(setup_done);
+        if (r.startMenuForeign) g.note = TR(setup_foreign);
+        if (!WebView2Present()) g.note += (g.note.empty() ? L"" : L"\n") + std::wstring(TR(setup_web_view2));
     } else {
         g.status = ErrorText(r.error);
-        g.detail = r.detail.empty() ? L"" : Format(tDetail, W(r.detail));
+        g.detail = r.detail.empty() ? L"" : TRF(setup_detail, W(r.detail));
     }
     Finish(r.Ok());
 }
@@ -336,7 +262,7 @@ void Primary() {
                 return void(DestroyWindow(g.window));
             }
             if (g.uninstall && g.removeData && !g.unattended &&
-                MessageBoxW(g.window, T(tConfirmData), Title().c_str(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+                MessageBoxW(g.window, TR(setup_confirm_data), Title().c_str(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
                 return;
             return StartWork();
         case Page::Failed:
@@ -385,7 +311,7 @@ void Paint(HWND hwnd) {
     RECT title{pad + Px(52), pad - Px(2), rc.right - pad, pad + Px(28)};
     DrawTextBlock(dc, g.bold, Ink, Title(), title, DT_SINGLELINE);
     RECT sub{pad + Px(52), pad + Px(26), rc.right - pad, pad + Px(46)};
-    DrawTextBlock(dc, g.small, Muted, Format(tSubtitle, W(g.uninstall ? std::string(BROWSER_VERSION_TEXT) : g.layout.version)), sub, DT_SINGLELINE | DT_END_ELLIPSIS);
+    DrawTextBlock(dc, g.small, Muted, TRF(setup_subtitle, W(g.uninstall ? std::string(BROWSER_VERSION_TEXT) : g.layout.version)), sub, DT_SINGLELINE | DT_END_ELLIPSIS);
     RECT body{pad, Px(88), rc.right - pad, Px(176)};
     if (g.page == Page::Options) {
         DrawTextBlock(dc, g.font, Ink, OptionsBody(), body);
@@ -489,7 +415,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const double f = double(lp) / 1000;
             g.progress = step == SC::Step::Prepare ? 0.6 * f : step == SC::Step::Install ? 0.6 + 0.3 * f : 0.9 + 0.1 * f;
             g.cancellable = step == SC::Step::Prepare && f < 1;
-            g.status = step == SC::Step::Prepare ? T(tPrepare) : step == SC::Step::Install ? (g.options.launch ? T(tStarting) : T(tInstalling)) : T(tFinishing);
+            g.status = step == SC::Step::Prepare ? TR(setup_prepare) : step == SC::Step::Install ? (g.options.launch ? TR(setup_starting) : TR(setup_installing)) : TR(setup_finishing);
             EnableWindow(g.secondary, g.cancellable);
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
@@ -550,11 +476,11 @@ int RunWindow(HINSTANCE hi) {
         return CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_TABSTOP | BS_OWNERDRAW | extra, 0, 0, 10, 10, g.window,
                                reinterpret_cast<HMENU>(INT_PTR(id)), hi, nullptr);
     };
-    g.desktop = button(IdDesktop, T(tDesktop));
-    g.launch = button(IdLaunch, T(tLaunch));
-    g.removeDataBox = button(IdRemoveData, T(tRemoveData));
-    g.secondary = button(IdSecondary, T(tBtnCancel));
-    g.primary = button(IdPrimary, T(tBtnInstall));
+    g.desktop = button(IdDesktop, TR(setup_desktop));
+    g.launch = button(IdLaunch, TR(setup_launch));
+    g.removeDataBox = button(IdRemoveData, TR(setup_remove_data));
+    g.secondary = button(IdSecondary, TR(setup_btn_cancel));
+    g.primary = button(IdPrimary, TR(setup_btn_install));
     Layout();
     SetPage(Page::Options);
     ShowWindow(g.window, SW_SHOWNORMAL);
@@ -586,14 +512,15 @@ std::wstring LowerW(std::wstring s) {
 
 void PickLanguage(const std::wstring& root) {
     if (UP::PathExists(root + L"\\data\\ui-language")) {
-        g_en = UiLanguage::Load(root + L"\\data").locale == I18n::Locale::En;
+        I18n::SetForProcess(UiLanguage::Load(root + L"\\data").locale);
         return;
     }
-    g_en = PRIMARYLANGID(GetUserDefaultUILanguage()) != LANG_FRENCH;
+    bool en = PRIMARYLANGID(GetUserDefaultUILanguage()) != LANG_FRENCH;
 #ifdef SETUP_TESTING
     wchar_t v[8];
-    if (GetEnvironmentVariableW(L"BROWSER_SETUP_TEST_LANG", v, 8)) g_en = std::wstring(v) == L"en";
+    if (GetEnvironmentVariableW(L"BROWSER_SETUP_TEST_LANG", v, 8)) en = std::wstring(v) == L"en";
 #endif
+    I18n::SetForProcess(en ? I18n::Locale::En : I18n::Locale::Fr);
 }
 
 // <root>\uninstall.exe must delete its own file: it re-runs from a temp copy, which waits for this process to exit.
@@ -603,7 +530,7 @@ int RelaunchFromTemp() {
     swprintf(name, 64, L"\\browser-uninstall-%08lx%08lx.exe", GetCurrentProcessId(), GetTickCount());
     const std::wstring copy = g.env.temp + name;
     if (!CopyFileW(g.self.c_str(), copy.c_str(), TRUE)) return 4;
-    std::wstring cmd = L"\"" + copy + L"\" --uninstall --parent " + std::to_wstring(GetCurrentProcessId());
+    std::wstring cmd = L"\"" + copy + L"\" --uninstall --parent " + std::to_wstring(GetCurrentProcessId());   // i18n-exempt: command line
 #ifdef SETUP_TESTING
     if (g.unattended) cmd += L" --unattended";
 #endif
@@ -672,7 +599,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
     }
     if (!payload) {
         // Truncated / corrupted download (or a renamed stub): nothing is written anywhere.
-        if (!g.unattended) MessageBoxW(nullptr, T(eNotSetup), L"browser", MB_OK | MB_ICONERROR);
+        if (!g.unattended) MessageBoxW(nullptr, TR(setup_error_not_setup), L"browser", MB_OK | MB_ICONERROR);
         return 3;
     }
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\browser-setup");
