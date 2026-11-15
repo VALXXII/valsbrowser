@@ -85,6 +85,18 @@ The EDIT draws its own selection; only its colours change.
    120 ms fade in `SetAccents`/`ProfileAnimTick` (no new timer) and is clamped by the existing `Reach` so white
    stays ≥ 4.5:1 at every fade step. Private windows never call `SetAccents`: they keep the reference blue.
    `AddressSelectionChanged()` repaints the field when the colour moves.
+4. **Separability gate** (re-review of `9a85a0a`, conditional P2) — the pixel classification above is only
+   sound if no ordinary pixel of the field can look like a highlight pixel. With a legal, non-forced
+   black / white system pair, every grey of the field (`#292929`), its ink (`#949494`) and their antialiased
+   blends lie on the H → T line: the reviewer's exact-production reproduction recoloured 6/6 unselected pixels
+   (`#292929 → #299793`, `#949494 → #94CBC9`). Now `Clip()` records the field's **actual ordinary palette** from
+   the parent's DC (`GetTextColor`, `GetBkColor`) plus the other surface its brush paints (the loading fill,
+   passed by `main.cpp`). `Separable(pair, palette)` is false when H/T differ by < 96 on every channel, when the
+   palette is unknown, or when the ink, a surface, or any of 65 blends of the ink over each surface lies within
+   6 levels (wider than the 2.5 classification tolerance) of the H → T segment. Not separable → `Active()` is
+   false and the EDIT keeps its **native highlight, untouched**; `Remap()` itself also refuses and changes
+   nothing. The system pair is read through an injectable source (`PairSource`, default `GetSysColor`), so tests
+   use synthetic pairs without touching any Windows setting.
 
 Nothing else changes: the selection range, caret (incl. the custom `AccentCaret`), text, IME, undo, clipboard,
 `EM_SETSEL` callers, context menu, UIA value/focus are all the EDIT's own; without a selection the EDIT paints
@@ -122,6 +134,16 @@ accented / CJK / Arabic / Hebrew URL, 4 ranges (one logical range = 3 visual seg
 (no stale teal pixel); 3 fade steps; focus loss (no highlight of any kind) and regain; forced colours (native
 highlight kept, no fill) and back; system `COLOR_HIGHLIGHT` unchanged; two fields, only the focused paints.
 
+**Colour classifier (synthetic, injected pairs, no OS setting):** the reviewer's 12-pixel image verbatim with
+H = black / T = white against the grey palette → remap refused, **0/12 pixels changed** (red on `9a85a0a`: 6/6
+unselected changed, root `color-ambiguity-9a.txt`); 6 ambiguous pairs (black/white, white/black, `#808080`/white,
+field grey/white, dark/light grey, two close blues) → not separable; the Windows default `#0078D7`/white, this
+machine's pair and two coloured pairs stay separable, and on a synthetic row their cells become the fill while
+field, ink and an AA ink pixel stay byte-identical. **Real EDIT with an injected black/white pair** (the real
+EDIT still draws the system blue): helper inactive, field identical to the native rendering (0 changed pixels,
+no fill, native highlight present) at 96/144/192 DPI (`fallback-ambiguous-pair-96.png`), then the real pair
+again passes the full oracle.
+
 | Measured (rendered pixels) | 96 DPI | 144 DPI | 192 DPI |
 |---|---|---|---|
 | Arabic IDN 8..12: cell px → fill / glyph px | 281 / 61 | 783 / 203 | 1515 / 318 |
@@ -145,6 +167,7 @@ highlight kept, no fill) and back; system `COLOR_HIGHLIGHT` unchanged; two field
 ## Evidence (`design/profile-address-selection-evidence/`)
 
 - `before-native-highlight-96.png` — native EDIT (system blue), same field.
+- `fallback-ambiguous-pair-96.png` — injected black/white pair: the field left exactly native.
 - `after-full-teal-96.png`, `after-partial-teal-96.png`, `after-long-scrolled-96.png`,
   `after-arabic-idn-96.png`, `after-max-url-96.png`, `after-mixed-bidi-96.png` — harness, teal.
 - `app-after-*.png` — real `browser.exe` (isolated E2E, below).
@@ -167,17 +190,29 @@ highlight kept, no fill) and back; system `COLOR_HIGHLIGHT` unchanged; two field
   after end scroll 4.62:1.
 - `run_all --ci` after the fix: first run stopped at `bookmarks_ui_test` (keyboard-focus checks then
   0xC0000005, `run_all-ci-fix-run1-bookmarks-focus-failure.txt`); the same binary passed 3/3 alone and the full
-  re-run passed (`run_all-ci.txt`, exit 0). Recorded as a focus-sensitive flake on a shared desktop, not
-  hidden; the bookmarks fixture does not use the address selection path.
+  re-run passed (`run_all-ci.txt`, exit 0). **Cause unresolved**: a repeat pass is not a repair, and no link to
+  the address path was established (the bookmarks fixture does not select address text); both logs kept.
+- `run_all --ci` after the separability gate (2 runs, **neither fully green**): run 1 stopped at
+  `bookmarks_ui_test` (UIA menu exposure / context-menu order checks,
+  `run_all-ci-color-run1-bookmarks-uia-failure.txt`); run 2 passed bookmarks and `address_selection_test`,
+  then stopped at the separate `update-toast` peer suite on `GetForegroundWindow()` / `GetFocus()` assertions
+  (`run_all-ci-color-run2-update-toast-focus-failure.txt`; that suite only compiles `native-ui.h`, it does not
+  use `EditSelection`). Solo A/B alternating base `d060366` and this fix: bookmarks 4/4 vs 4/4 pass,
+  update-toast 5/5 vs 5/5 pass; earlier fix-only solo update-toast runs failed 2/3 while the base comparison
+  was not runnable (`focus-fixtures-ab.txt`). **Unresolved**: no causal link to this change shown, none
+  excluded; not claimed repaired by repetition. `run_all-ci.txt` is the green run of the previous commit
+  (`b6df929`).
   The fixture app is built from this working tree (`tools/release/build.py --out build/address-selection-app`,
   not committed).
 
 ## Limits
 
 - Single-line field only (the address bar); other native EDITs keep the system highlight.
-- The remap needs `COLOR_HIGHLIGHT` and `COLOR_HIGHLIGHTTEXT` to differ by ≥ 96 on one channel (to measure
-  glyph coverage); with a custom system pair closer than that, and in high contrast, the native highlight is
-  kept.
+- The remap needs `COLOR_HIGHLIGHT` and `COLOR_HIGHLIGHTTEXT` to differ by ≥ 96 on one channel and their blend
+  line to stay clear of the field's ordinary palette (separability gate); otherwise — custom pairs such as
+  black/white or greys, and high contrast — the native highlight is kept rather than risk recolouring
+  unselected pixels. The palette is the one the parent declares on the DC (text, background, loading fill); a
+  colour the parent paints without declaring it is outside the guarantee.
 - Glyph coverage is one value for all channels (grayscale antialiasing: the field font is
   `ANTIALIASED_QUALITY`; the probe found no off-line pixel, including fallback Arabic/CJK/Hebrew fonts). A
   sub-pixel (ClearType) glyph pixel would fail the blend test and keep its native colour; the oracle counts
@@ -204,5 +239,5 @@ messages to our own windows.
 - `src/profiles-integration.h`: `SetAccents(fill, ink, selection, animate)`, tween of the selection role,
   `AddressSelectionChanged()` next to `AnnotationAccentChanged()`, `ApplyProfileChrome` passes `FillOf(*p)`.
 - `src/main.cpp`: 4 lines — `addressSelection` + `AddressSelectionColors()` + `AddressSelectionChanged()` after
-  the globals, `addressSelection.Attach(...)` in `WM_CREATE`, `addressSelection.Clip((HWND)l,dc)` in
+  the globals, `addressSelection.Attach(...)` in `WM_CREATE`, `addressSelection.Clip((HWND)l,dc,<loading fill>)` (after the text/background colours) in
   `WM_CTLCOLOREDIT`. No user-visible string changed.
