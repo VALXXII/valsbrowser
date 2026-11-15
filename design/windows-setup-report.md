@@ -114,8 +114,12 @@ EN uninstall window → program and shortcuts removed, data kept.
   has no Start Menu entry for the installed copy.
 * `uninstall.exe` leaves its small temp copy in `%TEMP%` (no admin-only delayed delete). A bridge run by an agent
   during uninstall stays in `bin` (reported); agent configs pointing to it are not edited.
-* A crash exactly between the repair rename and the move leaves `current` naming a missing directory; the launcher
-  reports a broken install and the next setup run installs again (data untouched). Not fault-injected.
+* ~~A crash exactly between the repair rename and the move leaves `current` naming a missing directory; the launcher
+  reports a broken install and the next setup run installs again (data untouched). Not fault-injected.~~
+  **Historical (eb3031c) — superseded and CLOSED:** the independent review then showed a failed repair could also
+  destroy the original copy (red evidence kept: `review/review-windows-setup-install-eb3031c.md`,
+  `review/review-probes-*.txt`, `install-review-red-f8189c2.txt`). Fixed by the durable repair transaction
+  (7a8b7c8): both kill gaps are now fault-injected and recovered; independently closed at e32d7a7 (see below).
 * Size: setup ≈ 3.4× the ZIP (uncompressed package).
 
 ## Follow-up after eb3031c (PR #81 integration + independent review fixes)
@@ -166,3 +170,22 @@ helper while the lock is held → `install-busy`, nothing switched.
 * An unconfirmed repair (new process alive, no ack within 120 s) stays open and is committed by the first recovery
   after that process acked, else rolled back.
 * Not changed: clean machine / SmartScreen / no-WebView2 / release stub execution limits listed above.
+
+## Independent reviews (copies in `design/windows-setup-evidence/review/`)
+
+| Review | Pin | Verdict | Independent runs |
+| --- | --- | --- | --- |
+| Install / helper / uninstall | eb3031c1e6a4 | 3 × P2 (repair rollback, ancestor junction, serialization) | `review-windows-setup-install-eb3031c.md`, `review-probes-first.txt` (first invalid harness runs, kept), `review-probes-second.txt` (reproductions) |
+| Install closure | e32d7a7659cf241594e27f4576769de4f3eb21af | **all 3 CLOSED**, no remaining P1/P2 in scope | `review-windows-setup-install-e32d7a7.md`; exact-pin fixtures 79 checks/0 (`closure-targeted.txt`); 13 extra probes/0 (`closure-extra-first.txt`); root+parent rename denied while the lock is held (`closure-pin.txt`); original ancestor reproduction reversed (canary kept) |
+| Release / payload | eb3031c1e6a4 | 1 × P2 (rerun after failed public verification falsely green) | `release-review-windows-setup-release-eb3031c.md`, `release-proof-rerun.txt` |
+| Release closure | f8189c25744a9929ef2c798700e5004a5b9405e8 | **CLOSED**; PR #81 resource wiring (29a5738) inspected, no P1/P2 | `release-review-windows-setup-release-f8189c2.md`; unchanged original proof now fails as required (`release-proof-rerun-f8189c2.txt`); focused harness exit 0 (`release-proof-fix-focused.txt`); release tools 59 OK (`release-tests-f8189c2.txt`) |
+
+Both closure reviews state their bounds: author numbers (setup 310/0, update-core 539/0, real E2E) were read, not
+rerun by them; the 120 s silent-running timeout and persistent restore-failure retry were source-reviewed only; lock
+identity is not authentication against a same-user process that can rewrite the install anyway.
+
+Practical environment limits (unchanged by the reviews): no clean VM / fresh Windows account, no machine without
+WebView2 (only the setup note is simulated), no real SmartScreen / Mark-of-the-Web prompt, the release stub itself is
+never executed here (it would write the real Start Menu and HKCU uninstall entry), NTFS only, unsigned. Every local
+release-channel candidate (0.3.336, 0.3.340, 0.3.342 and the readiness build below) is stamped with a main commit only
+to pass the local main check: **never publish them**; CI rebuilds the exact merged SHA.
