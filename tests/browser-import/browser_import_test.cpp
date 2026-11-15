@@ -599,11 +599,11 @@ int main(int argc, char** argv) {
             OK(!i1.Saved() && i1.counts == Counts{} && afterFail == seedBytes && mapAfterFail.find("chromium:Chrome/Default\t") != std::string::npos);   // map ahead, bookmarks untouched
             // Another window (same profile, under the same lock discipline) adds a folder that takes the dangling id.
             const FolderMap dangling = FolderMap::Read(mapAfterFail, nullptr);
-            const BM::Id danglingId = dangling.entries.at("chromium:Chrome/Default").id;
+            const BM::Id danglingId = dangling.entries.at("chromium:Chrome/Default").front().id;
             {
                 BM::Store other; std::istringstream in(afterFail); other = BM::Store::Read(in);
                 BM::Id got = BM::NoId; while ((got = other.AddFolder(BM::OtherRoot, BM::End, L"Other window", now + 999)) != BM::NoId && got < danglingId) {}
-                CHECK(got == danglingId && other.Find(danglingId)->added != dangling.entries.at("chromium:Chrome/Default").added);
+                CHECK(got == danglingId && other.Find(danglingId)->added != dangling.entries.at("chromium:Chrome/Default").front().added);
                 std::ostringstream o; other.Write(o); CHECK(ProfileStore::WriteAtomic(bm2, o.str()));
             }
             const auto i2 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, frr, now + 1, &saved);
@@ -623,6 +623,82 @@ int main(int argc, char** argv) {
             const auto i4 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, frr, now + 3, &saved);
             OK(i4.Saved() && i4.counts.present == 1 && i4.counts.imported == 0 && mine2.Find(box2)->title == L"Renamed elsewhere");
             { std::string f; ProfileStore::ReadAll(bm2, f); std::istringstream in(f); bool damaged = true; BM::Store::Read(in, &damaged); OK(!damaged && f.rfind("browser-bookmarks 1\n", 0) == 0); }   // format unchanged
+        }
+    }
+
+    // ---- Existing mapped folder + pending deletion at the map-ahead boundary (review ff1bcbe) ------------------
+    {
+        using I18n::Locale;
+        const std::string json = "{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"name\":\"bar\",\"children\":[{\"type\":\"url\",\"name\":\"s\",\"url\":\"https://fresh.example/one\"}]}}}";
+        I18n::SetForProcess(Locale::Fr); const auto frr = ParseChromiumBookmarks(json).roots;
+        I18n::SetForProcess(Locale::En); const auto enr = ParseChromiumBookmarks(json).roots; I18n::SetForProcess(Locale::Fr);
+        Source chromeD = chromeDefault; chromeD.soleProfile = true;
+        auto groupsOf = [](const BM::Store& s) { std::size_t g = 0; for (BM::Id id : s.Find(BM::OtherRoot)->children) if (s.Find(id)->kind == BM::Kind::Folder) ++g; return g; };
+        auto reload = [](const std::wstring& file, BM::Store& base, BM::Store& mine) { std::string b; ProfileStore::ReadAll(file, b); std::istringstream in(b); mine = BM::Store::Read(in); base = mine; };
+        // Imported, mapped, renamed by the person, then this window deletes the container but that save fails.
+        auto prepare = [&](const std::wstring& data, BM::Store& base, BM::Store& mine, Source& src, BM::Id& box, BM::Id& bar) {
+            MakeDirs(data); bool saved = false;
+            const auto first = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base, mine, src, frr, now, &saved);
+            CHECK(first.Saved() && saved && first.counts.imported == 1);
+            box = mine.Find(BM::OtherRoot)->children[0]; bar = mine.Find(box)->children[0];
+            CHECK(mine.Rename(box, L"Custom container") && mine.Rename(bar, L"Custom root"));
+            { std::ostringstream o; mine.Write(o); CHECK(ProfileStore::WriteAtomic(data + L"\\bookmarks", o.str())); base = mine; }
+            CHECK(mine.Remove(box));   // pending deletion, only in this window's memory
+        };
+        {   // (1) The bookmarks write fails after the map was written.
+            const std::wstring data = work + L"\\boundary-fail"; Source src = chromeD; BM::Store base, mine; BM::Id box = 0, bar = 0;
+            prepare(data, base, mine, src, box, bar);
+            std::string diskBefore; ProfileStore::ReadAll(data + L"\\bookmarks", diskBefore);
+            SetFileAttributesW((data + L"\\bookmarks").c_str(), FILE_ATTRIBUTE_READONLY);
+            bool saved = true; I18n::SetForProcess(Locale::En); src.soleProfile = false;
+            const auto failed = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base, mine, src, enr, now + 1, &saved);
+            SetFileAttributesW((data + L"\\bookmarks").c_str(), FILE_ATTRIBUTE_NORMAL);
+            std::string diskAfter, mapAfter; ProfileStore::ReadAll(data + L"\\bookmarks", diskAfter); ProfileStore::ReadAll(data + L"\\bookmark-imports", mapAfter);
+            const FolderMap m = FolderMap::Read(mapAfter, nullptr);
+            OK(!failed.Saved() && !saved && failed.counts == Counts{} && diskAfter == diskBefore);
+            OK(m.entries.at("chromium:Chrome/Default").size() == 2 && m.entries.at("chromium:Chrome/Default").back().id == box);   // new ahead, old kept
+            // Restart: this window's unsaved deletion is gone, the disk still has the renamed folders.
+            reload(data + L"\\bookmarks", base, mine);
+            const auto again = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base, mine, src, enr, now + 2, &saved);
+            I18n::SetForProcess(Locale::Fr);
+            OK(again.Saved() && saved && again.counts.imported == 0 && again.counts.present == 1 && groupsOf(mine) == 1 && mine.Find(box)->title == L"Custom container" && mine.Find(bar)->title == L"Custom root");
+            std::string mapNow; ProfileStore::ReadAll(data + L"\\bookmark-imports", mapNow);
+            OK(FolderMap::Read(mapNow, nullptr).entries.at("chromium:Chrome/Default").size() == 1);   // the dangling candidate pruned
+            // And French again, sole label: still that one group.
+            const auto fr2 = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base, mine, chromeD, frr, now + 3, &saved);
+            OK(fr2.Saved() && fr2.counts.imported == 0 && fr2.counts.present == 1 && groupsOf(mine) == 1);
+        }
+        {   // (2) Interrupted exactly at the boundary: the committing thread stops right after the map write (the
+            //     profile mutex is abandoned, nothing after the map write runs: the state a crash leaves).
+            const std::wstring data = work + L"\\boundary-crash"; Source src = chromeD; BM::Store base, mine; BM::Id box = 0, bar = 0;
+            prepare(data, base, mine, src, box, bar);
+            std::string diskBefore; ProfileStore::ReadAll(data + L"\\bookmarks", diskBefore);
+            struct Ctx { std::wstring data; BM::Store* base; BM::Store* mine; Source src; const std::vector<Item>* roots; std::int64_t now; } ctx{data, &base, &mine, src, &enr, now + 1};
+            ctx.src.soleProfile = false;
+            MapWrittenForTest() = [] { ExitThread(0); };
+            I18n::SetForProcess(Locale::En);
+            HANDLE t = CreateThread(nullptr, 1u << 20, [](LPVOID p) -> DWORD { auto* c = static_cast<Ctx*>(p); bool saved = false; CommitBookmarks(c->data, c->data + L"\\bookmarks", c->data + L"\\bookmark-imports", *c->base, *c->mine, c->src, *c->roots, c->now, &saved); return 7; }, &ctx, 0, nullptr);
+            WaitForSingleObject(t, 20000); DWORD code = 0; GetExitCodeThread(t, &code); CloseHandle(t);
+            MapWrittenForTest() = nullptr;
+            std::string diskAfter, mapAfter; ProfileStore::ReadAll(data + L"\\bookmarks", diskAfter); ProfileStore::ReadAll(data + L"\\bookmark-imports", mapAfter);
+            OK(code == 0 && diskAfter == diskBefore && FolderMap::Read(mapAfter, nullptr).entries.at("chromium:Chrome/Default").size() == 2);   // stopped between the writes
+            // Restart (fresh stores from disk; the abandoned profile mutex is taken over), English, multi-profile label.
+            BM::Store base2, mine2; reload(data + L"\\bookmarks", base2, mine2);
+            Source src2 = chromeD; src2.soleProfile = false; bool saved = false;
+            const auto again = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base2, mine2, src2, enr, now + 2, &saved);
+            I18n::SetForProcess(Locale::Fr);
+            OK(again.Saved() && saved && again.counts.imported == 0 && again.counts.present == 1 && groupsOf(mine2) == 1 && mine2.Find(box)->title == L"Custom container" && mine2.Find(bar)->title == L"Custom root");
+            // The person's deletion, saved for real this time, then an import: a new group, and the old candidate goes.
+            CHECK(mine2.Remove(box));
+            const auto del = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base2, mine2, src2, frr, now + 3, &saved);
+            OK(del.Saved() && del.counts.imported == 1 && groupsOf(mine2) == 1 && !mine2.Find(box));
+            const auto next = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base2, mine2, src2, frr, now + 4, &saved);
+            std::string mapEnd; ProfileStore::ReadAll(data + L"\\bookmark-imports", mapEnd);
+            OK(next.Saved() && next.counts.present == 1 && next.counts.imported == 0 && FolderMap::Read(mapEnd, nullptr).entries.at("chromium:Chrome/Default").size() == 1);
+        }
+        {   // Map format: candidates in order, duplicates and excess dropped, unknown version untouched (other tests).
+            const FolderMap m = FolderMap::Read("browser-bookmark-imports 1\nk\t5\t1\nk\t6\t2\nk\t5\t1\nk\t7\t3\nk\t8\t4\nk\t9\t5\n", nullptr);
+            OK(m.entries.at("k").size() == FolderMap::Candidates && m.entries.at("k").front().id == 5 && m.Write() == "browser-bookmark-imports 1\nk\t5\t1\nk\t6\t2\nk\t7\t3\nk\t8\t4\n");
         }
     }
 

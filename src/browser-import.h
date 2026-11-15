@@ -557,42 +557,72 @@ inline std::vector<std::wstring> RootTitles(const std::string& key) {
 // a profile (its label changes) or a folder the person renamed or moved still lands in the same place. The entry is
 // trusted only if that folder still exists with the same id, kind and time; otherwise matching falls back to the
 // titles this source could have had (both languages), then creates. The bookmarks file format is unchanged.
+// Each key holds an ORDERED list of candidate folders (preferred first), so a change of identity is never destructive
+// (review ff1bcbe): when an import maps a key to a new folder, the previous folder stays listed after it as long as
+// it still exists in the bookmarks file as read. The map is written before the bookmarks (CommitBookmarks); if the
+// bookmarks write then fails or the process stops in between, the file on disk still holds the old folder and the
+// next import finds it through the older candidate (the new one points at nothing and is skipped). Both states live
+// in the same atomically replaced file: no separate journal. A candidate is dropped only once its folder is gone from
+// both the file as read and the result being written; a stale candidate therefore lasts at most one more commit.
 struct FolderMap {
     struct Entry { Bookmarks::Id id = 0; std::int64_t added = 0; bool operator==(const Entry& o) const { return id == o.id && added == o.added; } };
-    std::map<std::string, Entry> entries;
+    std::map<std::string, std::vector<Entry>> entries;
     static constexpr const char* Header = "browser-bookmark-imports 1";
-    static constexpr std::size_t Limit = 4096;
+    static constexpr std::size_t Limit = 4096, Candidates = 4;
     bool operator==(const FolderMap& o) const { return entries == o.entries; }
     bool operator!=(const FolderMap& o) const { return !(*this == o); }
-    // `known`: false for a file of another version (left untouched, never rewritten).
+    // `known`: false for a file of another version (left untouched, never rewritten). Lines of one key, in file
+    // order, are its candidates in preference order.
     static FolderMap Read(const std::string& bytes, bool* known) {
         FolderMap m; if (known) *known = true;
         if (bytes.empty()) return m;
-        std::size_t start = 0, line = 0;
+        std::size_t start = 0, line = 0, kept = 0;
         while (start < bytes.size()) {
             std::size_t end = bytes.find('\n', start); if (end == std::string::npos) end = bytes.size();
             std::string l = bytes.substr(start, end - start); start = end + 1;
             if (!l.empty() && l.back() == '\r') l.pop_back();
             if (line++ == 0) { if (l != Header) { if (known) *known = false; return FolderMap{}; } continue; }
             const auto a = l.find('\t'), b = a == std::string::npos ? a : l.find('\t', a + 1);
-            if (b == std::string::npos || m.entries.size() >= Limit) continue;   // damaged line: dropped (a hint, never data)
-            try { m.entries[l.substr(0, a)] = Entry{static_cast<Bookmarks::Id>(std::stoul(l.substr(a + 1, b - a - 1))), std::stoll(l.substr(b + 1))}; } catch (...) {}
+            if (b == std::string::npos || kept >= Limit) continue;   // damaged line: dropped (a hint, never data)
+            try {
+                const Entry e{static_cast<Bookmarks::Id>(std::stoul(l.substr(a + 1, b - a - 1))), std::stoll(l.substr(b + 1))};
+                auto& list = m.entries[l.substr(0, a)];
+                if (list.size() < Candidates && std::find(list.begin(), list.end(), e) == list.end()) { list.push_back(e); ++kept; }
+            } catch (...) {}
         }
         return m;
     }
     std::string Write() const {
         std::string out = std::string(Header) + "\n";
-        for (const auto& [k, e] : entries) out += k + "\t" + std::to_string(e.id) + "\t" + std::to_string(e.added) + "\n";
+        for (const auto& [k, list] : entries) for (const auto& e : list) out += k + "\t" + std::to_string(e.id) + "\t" + std::to_string(e.added) + "\n";
         return out;
     }
+    static const Bookmarks::Node* Holds(const Bookmarks::Store& s, const Entry& e) {
+        const Bookmarks::Node* n = s.Find(e.id);
+        return n && n->kind == Bookmarks::Kind::Folder && !Bookmarks::Store::IsRoot(n->id) && n->added == e.added ? n : nullptr;
+    }
+    // The first candidate of `key` whose folder exists in `s` (same id, kind and time).
     const Bookmarks::Node* Valid(const Bookmarks::Store& s, const std::string& key) const {
         const auto it = entries.find(key); if (it == entries.end()) return nullptr;
-        const Bookmarks::Node* n = s.Find(it->second.id);
-        return n && n->kind == Bookmarks::Kind::Folder && !Bookmarks::Store::IsRoot(n->id) && n->added == it->second.added ? n : nullptr;
+        for (const auto& e : it->second) if (const Bookmarks::Node* n = Holds(s, e)) return n;
+        return nullptr;
     }
-    bool Claimed(Bookmarks::Id id, const std::string& except) const { for (const auto& [k, e] : entries) if (e.id == id && k != except) return true; return false; }
-    // Entries whose folder is gone are dropped before writing (the file never grows with stale ids).
-    void Prune(const Bookmarks::Store& s) { for (auto it = entries.begin(); it != entries.end();) it = Valid(s, it->first) ? std::next(it) : entries.erase(it); }
+    bool Claimed(Bookmarks::Id id, const std::string& except) const { for (const auto& [k, list] : entries) if (k != except) for (const auto& e : list) if (e.id == id) return true; return false; }
+    // `e` becomes the preferred candidate of `key`; the others stay after it (bounded).
+    void Prefer(const std::string& key, const Entry& e) {
+        auto& list = entries[key];
+        list.erase(std::remove(list.begin(), list.end(), e), list.end());
+        list.insert(list.begin(), e);
+        if (list.size() > Candidates) list.resize(Candidates);
+    }
+    // Keeps a candidate while its folder exists in either store (the file as read, the result being written).
+    void Prune(const Bookmarks::Store& a, const Bookmarks::Store& b) {
+        for (auto it = entries.begin(); it != entries.end();) {
+            auto& list = it->second;
+            list.erase(std::remove_if(list.begin(), list.end(), [&](const Entry& e) { return !Holds(a, e) && !Holds(b, e); }), list.end());
+            it = list.empty() ? entries.erase(it) : std::next(it);
+        }
+    }
 };
 
 // ---- Chromium « Bookmarks » (JSON) ------------------------------------------------------------------------
@@ -930,7 +960,7 @@ namespace detail {
 inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::string& key, Bookmarks::Id parent, const std::vector<std::wstring>& titles,
                              const std::wstring& create, std::int64_t now, Counts& c) {
     namespace BM = Bookmarks;
-    if (map) if (const BM::Node* n = map->Valid(s, key)) return n->id;
+    if (map) if (const BM::Node* n = map->Valid(s, key)) { map->Prefer(key, FolderMap::Entry{n->id, n->added}); return n->id; }
     BM::Id id = BM::NoId;
     for (BM::Id child : s.Find(parent)->children) {
         const BM::Node* n = s.Find(child);
@@ -943,7 +973,7 @@ inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::str
         if (id == BM::NoId) return BM::NoId;
         ++c.folders;
     }
-    if (map) map->entries[key] = FolderMap::Entry{id, s.Find(id)->added};
+    if (map) map->Prefer(key, FolderMap::Entry{id, s.Find(id)->added});   // the previous candidate stays after it
     return id;
 }
 } // namespace detail
@@ -1002,6 +1032,9 @@ inline Counts ApplyHistory(AddressBar::History& h, const std::vector<Visit>& vis
 // windows' changes are kept and duplicates are judged against what is really on disk. Each category is its
 // own transaction: bookmarks can be saved while history fails (and the reverse); the caller reports each
 // one. A failed commit leaves the file, `base` and `mine` untouched, and a retry is idempotent.
+// Test seam (backend tests only): runs right after the map is written and before the bookmarks are, so a test can
+// stop the thread exactly at that boundary (the state a crash leaves).
+inline std::function<void()>& MapWrittenForTest() { static std::function<void()> hook; return hook; }
 // `identity`: why the bookmarks category was refused although the bookmarks file itself was fine (see CommitBookmarks).
 enum class Identity { Ok, Unwritable, Newer };
 struct Committed { ProfileStore::Result result = ProfileStore::Result::Failed; Counts counts; Identity identity = Identity::Ok; bool Saved() const { return result == ProfileStore::Result::Written || result == ProfileStore::Result::Unchanged; } };
@@ -1035,8 +1068,9 @@ inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring
         return r;
     }, timeoutMs, {"browser-bookmarks 1"}, true, [&](const BM::Store& merged) {
         // Pre-write step: the identities first. A failure here writes nothing at all.
-        for (auto it = map.entries.begin(); it != map.entries.end();) it = map.Valid(merged, it->first) || map.Valid(theirs, it->first) ? std::next(it) : map.entries.erase(it);
+        map.Prune(merged, theirs);
         mapOk = map == before || ProfileStore::WriteAtomic(mapFile, map.Write());
+        if (mapOk && MapWrittenForTest()) MapWrittenForTest()();
         return mapOk;
     });
     if (remap) *remap = ids;
