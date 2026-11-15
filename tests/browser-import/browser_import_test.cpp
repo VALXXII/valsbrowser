@@ -535,26 +535,94 @@ int main(int argc, char** argv) {
             I18n::SetForProcess(Locale::Fr);
             std::string bm2; ProfileStore::ReadAll(bm, bm2);
             OK(c2.result == ProfileStore::Result::Unchanged && c2.counts.present == 6 && bm2 == bmBytes && saved);
-            // Map unwritable (a folder in its place): bookmarks still saved and reported, the map honestly not.
+            // Map unwritable (a folder in its place): identities first, so NOTHING is imported and the category fails.
             DeleteFileW(map.c_str()); CreateDirectoryW(map.c_str(), nullptr);
             Item extra; extra.url = L"https://new.example/"; extra.title = L"n"; auto more = fr; more[0].children.push_back(extra);
+            const BM::Store b3 = base, m3 = mine;
             const auto c3 = CommitBookmarks(data, bm, map, base, mine, chromeD, more, now, &saved);
-            OK(c3.Saved() && !saved && c3.counts.imported == 1 && c3.counts.present == 6);
+            std::string bm3; ProfileStore::ReadAll(bm, bm3);
+            OK(!c3.Saved() && c3.identity == Identity::Unwritable && !saved && c3.counts == Counts{} && bm3 == bmBytes && base == b3 && mine == m3);
             RemoveDirectoryW(map.c_str());
-            // Retry without any map, in English: titles still find everything; the map comes back.
+            // Map lost (deleted outside the browser): titles of either language still find everything; the map comes back.
             I18n::SetForProcess(Locale::En);
             const auto c4 = CommitBookmarks(data, bm, map, base, mine, chromeD, en, now, &saved);
             I18n::SetForProcess(Locale::Fr);
             OK(c4.Saved() && saved && c4.counts.imported == 0 && c4.counts.present == 6 && mine.Find(BM::OtherRoot)->children.size() == 1);
-            // A map of another version is neither used nor rewritten; a stale entry (folder gone) is never trusted.
+            // A map of another version is neither used nor rewritten, and nothing is imported (no identity to keep).
+            std::string bm4; ProfileStore::ReadAll(bm, bm4);
             const std::string future = "browser-bookmark-imports 9\nwhatever\n"; CHECK(ProfileStore::WriteAtomic(map, future));
-            const auto c5 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
-            std::string still; ProfileStore::ReadAll(map, still);
-            OK(c5.Saved() && !saved && still == future && c5.counts.present == 6);
+            const auto c5 = CommitBookmarks(data, bm, map, base, mine, chromeD, more, now, &saved);
+            std::string still, bm5; ProfileStore::ReadAll(map, still); ProfileStore::ReadAll(bm, bm5);
+            OK(!c5.Saved() && c5.identity == Identity::Newer && !saved && still == future && bm5 == bm4);
+            // A stale entry (no such folder) is never trusted and is dropped.
             CHECK(ProfileStore::WriteAtomic(map, "browser-bookmark-imports 1\nchromium:Chrome/Default\t99999\t5\nbroken line\n"));
             const auto c6 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
             std::string rewritten; ProfileStore::ReadAll(map, rewritten);
             OK(c6.Saved() && saved && c6.counts.present == 6 && mine.Find(BM::OtherRoot)->children.size() == 1 && rewritten.find("99999") == std::string::npos);
+        }
+        {   // Review 99959e3: map target locked (deny-delete reader, as an indexer) → refused; then rename + other
+            // language + profile label change → still one group. Fresh folder, synthetic data only.
+            const std::wstring data = work + L"\\durable"; MakeDirs(data);
+            const std::wstring bm = data + L"\\bookmarks", map = data + L"\\bookmark-imports";
+            const std::string json = "{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"name\":\"bar\",\"children\":[{\"type\":\"url\",\"name\":\"s\",\"url\":\"https://fresh.example/one\"}]}}}";
+            I18n::SetForProcess(Locale::Fr); const auto frr = ParseChromiumBookmarks(json).roots;
+            I18n::SetForProcess(Locale::En); const auto enr = ParseChromiumBookmarks(json).roots; I18n::SetForProcess(Locale::Fr);
+            Source src = chromeD; BM::Store base, mine; bool saved = false;
+            CHECK(ProfileStore::WriteAtomic(map, std::string(FolderMap::Header) + "\n"));
+            HANDLE held = CreateFileW(map.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+            CHECK(held != INVALID_HANDLE_VALUE);
+            const auto a = CommitBookmarks(data, bm, map, base, mine, src, frr, now, &saved);
+            CloseHandle(held);
+            OK(!a.Saved() && a.identity == Identity::Unwritable && !saved && !IsFile(bm) && mine.Size() == 0);   // refused, nothing written
+            const auto a2 = CommitBookmarks(data, bm, map, base, mine, src, frr, now, &saved);   // retry once the lock is gone
+            OK(a2.Saved() && saved && a2.counts.imported == 1);
+            const BM::Id box = mine.Find(BM::OtherRoot)->children[0], bar = mine.Find(box)->children[0];
+            CHECK(mine.Rename(box, L"My custom container") && mine.Rename(bar, L"My custom root"));
+            { std::ostringstream o; mine.Write(o); CHECK(ProfileStore::WriteAtomic(bm, o.str())); base = mine; }
+            I18n::SetForProcess(Locale::En); src.soleProfile = false;
+            const auto b = CommitBookmarks(data, bm, map, base, mine, src, enr, now + 100, &saved);
+            I18n::SetForProcess(Locale::Fr);
+            OK(b.Saved() && b.counts.imported == 0 && b.counts.present == 1 && mine.Find(BM::OtherRoot)->children.size() == 1 && mine.Find(box)->title == L"My custom container" && mine.Find(bar)->title == L"My custom root");
+
+            // Interrupted at the durable boundary: identities written, bookmarks NOT (target read-only = a failed write,
+            // the state a crash between the two writes leaves). Nothing is claimed; the dangling entries are never
+            // trusted, not even when another window later creates a folder with the same id; the retry is exact.
+            const std::wstring data2 = work + L"\\durable2"; MakeDirs(data2);
+            const std::wstring bm2 = data2 + L"\\bookmarks", map2 = data2 + L"\\bookmark-imports";
+            BM::Store base2, mine2; Source src2 = chromeD;
+            { BM::Store seed; seed.Add(BM::BarRoot, BM::End, L"mine", L"https://mine.example/", 1); std::ostringstream o; seed.Write(o); CHECK(ProfileStore::WriteAtomic(bm2, o.str())); }
+            std::string seedBytes; ProfileStore::ReadAll(bm2, seedBytes);
+            SetFileAttributesW(bm2.c_str(), FILE_ATTRIBUTE_READONLY);
+            const auto i1 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, frr, now, &saved);
+            SetFileAttributesW(bm2.c_str(), FILE_ATTRIBUTE_NORMAL);
+            std::string afterFail, mapAfterFail; ProfileStore::ReadAll(bm2, afterFail); ProfileStore::ReadAll(map2, mapAfterFail);
+            OK(!i1.Saved() && i1.counts == Counts{} && afterFail == seedBytes && mapAfterFail.find("chromium:Chrome/Default\t") != std::string::npos);   // map ahead, bookmarks untouched
+            // Another window (same profile, under the same lock discipline) adds a folder that takes the dangling id.
+            const FolderMap dangling = FolderMap::Read(mapAfterFail, nullptr);
+            const BM::Id danglingId = dangling.entries.at("chromium:Chrome/Default").id;
+            {
+                BM::Store other; std::istringstream in(afterFail); other = BM::Store::Read(in);
+                BM::Id got = BM::NoId; while ((got = other.AddFolder(BM::OtherRoot, BM::End, L"Other window", now + 999)) != BM::NoId && got < danglingId) {}
+                CHECK(got == danglingId && other.Find(danglingId)->added != dangling.entries.at("chromium:Chrome/Default").added);
+                std::ostringstream o; other.Write(o); CHECK(ProfileStore::WriteAtomic(bm2, o.str()));
+            }
+            const auto i2 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, frr, now + 1, &saved);
+            OK(i2.Saved() && saved && i2.counts.imported == 1 && mine2.Find(danglingId)->title == L"Other window" && mine2.Find(danglingId)->children.empty());   // never adopted
+            OK(Child(mine2, BM::OtherRoot, L"Importés de Chrome") != BM::NoId && Child(mine2, BM::BarRoot, L"mine") != BM::NoId);
+            // Then the person renames the imported folders; another language and label: still exactly one group.
+            const BM::Id box2 = Child(mine2, BM::OtherRoot, L"Importés de Chrome");
+            CHECK(mine2.Rename(box2, L"Renamed after recovery"));
+            { std::ostringstream o; mine2.Write(o); CHECK(ProfileStore::WriteAtomic(bm2, o.str())); base2 = mine2; }
+            I18n::SetForProcess(Locale::En); src2.soleProfile = false;
+            const auto i3 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, enr, now + 2, &saved);
+            I18n::SetForProcess(Locale::Fr);
+            std::size_t groups = 0; for (BM::Id id : mine2.Find(BM::OtherRoot)->children) if (mine2.Find(id)->kind == BM::Kind::Folder && mine2.Find(id)->title != L"Other window") ++groups;
+            OK(i3.Saved() && i3.counts.imported == 0 && i3.counts.present == 1 && groups == 1 && mine2.Find(box2)->title == L"Renamed after recovery");
+            // Another window renames it again between two imports (its own commit under the profile lock): still found.
+            { BM::Store other; std::string cur; ProfileStore::ReadAll(bm2, cur); std::istringstream in(cur); other = BM::Store::Read(in); CHECK(other.Rename(box2, L"Renamed elsewhere")); std::ostringstream o; other.Write(o); ProfileStore::Lock l(data2); CHECK(ProfileStore::WriteAtomic(bm2, o.str())); }
+            const auto i4 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, frr, now + 3, &saved);
+            OK(i4.Saved() && i4.counts.present == 1 && i4.counts.imported == 0 && mine2.Find(box2)->title == L"Renamed elsewhere");
+            { std::string f; ProfileStore::ReadAll(bm2, f); std::istringstream in(f); bool damaged = true; BM::Store::Read(in, &damaged); OK(!damaged && f.rfind("browser-bookmarks 1\n", 0) == 0); }   // format unchanged
         }
     }
 

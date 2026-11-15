@@ -1002,36 +1002,47 @@ inline Counts ApplyHistory(AddressBar::History& h, const std::vector<Visit>& vis
 // windows' changes are kept and duplicates are judged against what is really on disk. Each category is its
 // own transaction: bookmarks can be saved while history fails (and the reverse); the caller reports each
 // one. A failed commit leaves the file, `base` and `mine` untouched, and a retry is idempotent.
-struct Committed { ProfileStore::Result result = ProfileStore::Result::Failed; Counts counts; bool Saved() const { return result == ProfileStore::Result::Written || result == ProfileStore::Result::Unchanged; } };
-// With the stable folder map (`mapFile`, normally <data>\\bookmark-imports): read, applied and written under the SAME
-// profile lock as the bookmarks transaction (the profile mutex is recursive for this thread). The bookmarks commit
-// is the only success claim; the map is written after it and is a validated hint: if writing it fails
-// (`mapSaved` false), the next import still finds the folders by their titles in either language, and an entry is
-// never trusted without its folder's id and time matching the store. A map file of another version is never
-// rewritten (and not used).
+// `identity`: why the bookmarks category was refused although the bookmarks file itself was fine (see CommitBookmarks).
+enum class Identity { Ok, Unwritable, Newer };
+struct Committed { ProfileStore::Result result = ProfileStore::Result::Failed; Counts counts; Identity identity = Identity::Ok; bool Saved() const { return result == ProfileStore::Result::Written || result == ProfileStore::Result::Unchanged; } };
+// With the stable folder map (`mapFile`, normally <data>\\bookmark-imports), one transaction under the profile lock
+// (review 99959e3): the map holding every new or changed source identity is written FIRST, after the merge has fixed
+// the folder ids and before the bookmarks file is written (ProfileStore's pre-write `acceptable` step). If the map
+// cannot be written (locked, unreadable) or is of a newer version (never rewritten), the bookmarks are NOT written and
+// the category fails: an import never succeeds without the identity that keeps later renames and languages
+// idempotent. The order makes an interruption recoverable: map written, bookmarks not (crash, write failure) leaves
+// only entries for folders that do not exist; an entry is trusted only if its folder exists with the same id, kind
+// and `added` time, so such an entry is ignored and replaced by the next import. Entries are pruned only when their
+// folder is gone both from the file as read and from the result. `mapSaved`: the map now holds this import's identities.
 inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring& file, const std::wstring& mapFile, Bookmarks::Store& base, Bookmarks::Store& mine,
                                  const Source& src, const std::vector<Item>& roots, std::int64_t now, bool* mapSaved = nullptr,
                                  std::map<Bookmarks::Id, Bookmarks::Id>* remap = nullptr, DWORD timeoutMs = 5000) {
     namespace BM = Bookmarks;
     Committed c; std::map<BM::Id, BM::Id> ids;
     if (mapSaved) *mapSaved = false;
-    ProfileStore::Lock lock(dataDir, timeoutMs);
+    ProfileStore::Lock lock(dataDir, timeoutMs);   // recursive for this thread: the bookmarks commit below re-enters it
     if (!lock.Held()) { c.result = ProfileStore::Result::Busy; return c; }
     std::string bytes; bool known = true;
-    const bool readable = ProfileStore::ReadAll(mapFile, bytes);
-    const FolderMap before = readable ? FolderMap::Read(bytes, &known) : FolderMap{};
-    FolderMap map = known ? before : FolderMap{};
+    if (!ProfileStore::ReadAll(mapFile, bytes)) { c.identity = Identity::Unwritable; return c; }   // unreadable: never rewritten blind
+    const FolderMap before = FolderMap::Read(bytes, &known);
+    if (!known) { c.identity = Identity::Newer; return c; }   // another version's map: left as is, nothing imported
+    FolderMap map = before; BM::Store theirs;
+    bool mapOk = true;
     c.result = ProfileStore::Commit<BM::Store>(dataDir, file, base, mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) {
         BM::Store r = BM::Store::Merge(b, m, t, &ids);
-        map = known ? before : FolderMap{};   // the merge may run again on a retry: start from the file's map each time
+        map = before; theirs = t;   // the merge may run again: start from the file's map each time
         c.counts = ApplyBookmarks(r, src, roots, now, &map);
         return r;
-    }, timeoutMs, {"browser-bookmarks 1"});
+    }, timeoutMs, {"browser-bookmarks 1"}, true, [&](const BM::Store& merged) {
+        // Pre-write step: the identities first. A failure here writes nothing at all.
+        for (auto it = map.entries.begin(); it != map.entries.end();) it = map.Valid(merged, it->first) || map.Valid(theirs, it->first) ? std::next(it) : map.entries.erase(it);
+        mapOk = map == before || ProfileStore::WriteAtomic(mapFile, map.Write());
+        return mapOk;
+    });
     if (remap) *remap = ids;
+    if (!mapOk) c.identity = Identity::Unwritable;
     if (!c.Saved()) { c.counts = Counts{}; return c; }
-    map.Prune(mine);
-    const bool wrote = readable && known && (map == before || ProfileStore::WriteAtomic(mapFile, map.Write()));
-    if (mapSaved) *mapSaved = wrote;
+    if (mapSaved) *mapSaved = true;
     return c;
 }
 inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring& file, Bookmarks::Store& base, Bookmarks::Store& mine,
