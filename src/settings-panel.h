@@ -1542,15 +1542,21 @@ private:
             if (chosen > 0 && static_cast<TabPosition>(chosen - 1) != state_->tabPosition) { state_->tabPosition = static_cast<TabPosition>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::TabPosition); }
         } else if (hit == LanguageHit && hooks_.saveLanguage) {
             // Two autonyms, the saved one checked; nothing switches now (applied at the next start).
+            // The preference is browser-wide: another window may have saved it since this drawer read it. The
+            // check mark shows what is on disk now, and an explicit choice is always written (atomically), even
+            // when it equals what this drawer last saw: the file may have changed while the menu was open.
+            const auto onDisk = [&] { return hooks_.savedLanguage ? hooks_.savedLanguage() : languageSaved_; };
+            const auto before = languageSaved_; languageSaved_ = onDisk();
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < I18n::LocaleCount; ++i) { const auto l = static_cast<I18n::Locale>(i); items.push_back(ContextMenu::Command(i + 1, UiLanguage::Autonym(l), L"", true, languageSaved_ == l)); }
             const int chosen = Choose(items, hit, keyboard);
-            if (chosen > 0 && static_cast<I18n::Locale>(chosen - 1) != languageSaved_) {
+            bool changed = languageSaved_ != before;
+            if (chosen > 0) {
                 const auto want = static_cast<I18n::Locale>(chosen - 1);
-                if (hooks_.saveLanguage(want)) { languageSaved_ = want; languageFailed_ = false; } else languageFailed_ = true;   // never « saved » on failure
-                if (uia_.Listening()) uia_.ChildrenChanged(DrawerKey);
-                Invalidate();
+                if (hooks_.saveLanguage(want)) { changed |= languageSaved_ != want || languageFailed_; languageSaved_ = want; languageFailed_ = false; }
+                else { languageSaved_ = onDisk(); languageFailed_ = true; changed = true; }   // never « saved » on failure: the value stays what is on disk
             }
+            if (changed) { if (uia_.Listening()) uia_.ChildrenChanged(DrawerKey); Invalidate(); }
         } else if (hit == AutoplayHit) {
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < AutoplayCount; ++i) { const auto a = static_cast<BrowserSettings::Autoplay>(i); auto item = ContextMenu::Command(i + 1, Info(a).label, L"", true, state_->autoplay == a); item.description = Info(a).description; items.push_back(item); }

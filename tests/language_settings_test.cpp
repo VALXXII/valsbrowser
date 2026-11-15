@@ -87,6 +87,37 @@ int wmain(int argc, wchar_t** argv) {
         const auto* row = Hit(dr.SlotsForTest(), SettingsUI::LanguageHit);
         Check(row && row->value == L"Français" && row->lines.empty() && !row->error && UiLanguage::Load(data).locale == Locale::Fr, "back to Français: saved, note and error gone");
     }
+    // Two windows share the browser-wide preference. Drawer A (dr) last saw « Français »; drawer B saves
+    // English while A stays open. A's menu must show what is on disk now, and A's explicit « Français »
+    // must be written (it was ignored before: chosen == A's stale cache, zero saves, disk stayed English).
+    {
+        BrowserSettings::State bs; SettingsUI::Drawer b; Check(b.Create(hi, owner, root, &bs, hooks()), "second drawer (another window) created");
+        open(b); choice = 2; b.ActivateForTest(SettingsUI::LanguageHit, false); b.SettleForTest();
+        Check(UiLanguage::Load(data).locale == Locale::En, "two drawers: B saved English");
+        const int before = saves; menu.clear(); choice = 1; dr.ActivateForTest(SettingsUI::LanguageHit, false); dr.SettleForTest();
+        Check(menu.size() == 2 && !menu[0].checked && menu[1].checked, "two drawers: A's menu checks English, as on disk now (not A's stale Français)");
+        Check(saves == before + 1 && UiLanguage::Load(data).locale == Locale::Fr, "two drawers: A's explicit « Français » is saved, disk says Français");
+        const auto* row = Hit(dr.SlotsForTest(), SettingsUI::LanguageHit);
+        Check(row && row->value == L"Français" && row->lines.empty() && !row->error, "two drawers: A shows Français, no note");
+        b.Hide(false, false); b.Dispose();
+    }
+    // The file changes while A's menu is open (another window saves English then): the choice still wins.
+    {
+        const int before = saves; choice = 1;
+        SettingsUI::Drawer::Hooks h = hooks();
+        h.choose = [&](const std::vector<ContextMenu::Item>& items, RECT, bool) { menu = items; UiLanguage::Save(data, Locale::En); return choice; };
+        BrowserSettings::State cs; SettingsUI::Drawer c; Check(c.Create(hi, owner, root, &cs, h), "third drawer created");
+        open(c); c.ActivateForTest(SettingsUI::LanguageHit, false); c.SettleForTest();
+        Check(menu.size() == 2 && menu[0].checked, "menu open: Français checked (on disk when it opened)");
+        Check(saves == before + 1 && UiLanguage::Load(data).locale == Locale::Fr, "external English save while the menu was open: the explicit « Français » is written");
+        // A failure in that situation keeps what is on disk (English) and says so.
+        failSave = true; const int failedBefore = saves; c.ActivateForTest(SettingsUI::LanguageHit, false); c.SettleForTest(); failSave = false;
+        const auto* row = Hit(c.SlotsForTest(), SettingsUI::LanguageHit);
+        Check(saves == failedBefore + 1 && UiLanguage::Load(data).locale == Locale::En && row && row->value == L"English" && row->error, "failed save after an external change: shows the disk value (English) and the error");
+        c.Hide(false, false); c.Dispose();
+        UiLanguage::Save(data, Locale::Fr);
+    }
+    Check(std::wstring(TR(settings_title)) == L"Réglages", "after all saves the process language is still French (pinned)");
     // Search: the row answers in both languages, in French here.
     {
         const auto en = SettingsUI::SearchSettings(L"english"), fr = SettingsUI::SearchSettings(L"langue");

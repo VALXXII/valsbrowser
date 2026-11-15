@@ -4315,7 +4315,7 @@ std::wstring EngineArgumentsFor(const BrowserSettings::State& s){
 }
 // One user data folder = one set of options (WebView2 refuses a second environment on it with others): while another
 // process holds that profile's engine, its recorded arguments are used (Profiles::AcquireEngineArgs lease).
-std::wstring EngineArgumentsLeased(){const auto wanted=EngineArgumentsFor(settings);if(!profilesEnabled||smoke||privateWindow)return wanted;const auto lease=Profiles::AcquireEngineArgs(profileRoot,profileId,wanted);EngineHeld(profileId);if(!lease.error.empty())Log(L"PROFILES engine args "+lease.error);return lease.arguments;}
+std::wstring EngineArgumentsLeased(){const auto wanted=EngineArgumentsFor(settings);if(!profilesEnabled||smoke||privateWindow)return wanted;const auto lease=Profiles::AcquireEngineArgs(profileRoot,profileId,wanted);EngineHeld(profileId);if(!lease.error.empty())Log(L"PROFILES engine args "+lease.error);if(lease.shared&&lease.arguments.find(I18n::WithEngineLang(L""))==std::wstring::npos)Log(L"UI LANGUAGE engine shared with an open window of this profile: "+lease.arguments+L" (applies when every window of the profile is closed)");return lease.arguments;}
 EngineOptions* NewEngineOptions(){auto options=new EngineOptions();options->language=I18n::Tag();options->extensions=!smoke;options->arguments=EngineArgumentsLeased();return options;}
 HRESULT PrepareLoader(WR::Stage& stage){
     if(!loader){loader=LoadLibraryExW((base+L"\\WebView2Loader.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!loader){stage=WR::Stage::Loader;return HRESULT_FROM_WIN32(GetLastError());}}

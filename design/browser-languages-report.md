@@ -141,6 +141,48 @@ Détail du test de bout en bout (version de suivi, `language-e2e-2.txt`) :
 
 **Note sur la première version (`language-e2e-1.txt`).** Elle mettait la fenêtre au premier plan (`SetForegroundWindow`) et capturait l'écran (`CopyFromScreen`) ; ce n'est plus le cas. Elle écrivait le fichier de préférence elle-même et ne vérifiait que le chrome d'un processus neuf : elle **n'exerçait pas** l'enregistrement par le menu des Réglages. Ce journal reste tel quel, comme trace de ce premier passage.
 
+## Deux fenêtres, même profil (suivi de revue sur 3e2351a)
+
+**Préférence périmée dans un tiroir ouvert (corrigé).** La revue indépendante l'a montré sur 80171f9, et c'était encore le cas dans 3e2351a :
+- un tiroir A a lu « Français » ; un tiroir B enregistre « English » pendant que A reste ouvert ;
+- A ouvre le menu : le menu cochait encore « Français » ;
+- A choisit explicitement « Français » : aucune écriture, car le choix égalait la valeur gardée en mémoire. Le disque restait en anglais.
+
+Correction (`src/settings-panel.h`) :
+- avant d'ouvrir le menu, le tiroir relit la préférence sur le disque, si bien que la coche montre la valeur actuelle ;
+- un choix explicite est toujours écrit (écriture atomique), même s'il paraît égal à la valeur connue, car le fichier a pu changer pendant que le menu était ouvert ;
+- un échec d'écriture montre la valeur réellement sur le disque, avec l'erreur. La langue du processus ne change pas.
+
+Preuves :
+- `tests/language_settings_test.cpp` ajoute deux scénarios : deux tiroirs, puis une écriture extérieure pendant que le menu est ouvert, avec un échec dans ce cas.
+  - Rouge sur les sources de 3e2351a : `stale-preference-red-3e2351a.txt`, 40 vérifications, 4 échecs.
+  - Vert : `stale-preference-green.txt`, 40 vérifications, 0 échec.
+- `test-annotation-settings.ps1` : `settings_test` OK et 116 vérifications, avec les mêmes 7 échecs « Connecter » que la base d060366 (`annotation-settings-stale-fix.txt`).
+- Vrais processus : `tests/e2e/language_concurrent_e2e.py` (`language-concurrent-e2e-3.txt`, 36 vérifications, 0 échec). Deux fenêtres A et B du même profil :
+  - B choisit English ;
+  - le menu de A coche English, ce que B a enregistré ;
+  - A choisit Français et le fichier dit `fr`.
+
+**Langue effective du moteur (mesurée sur des copies isolées).** La lecture se fait à partir de la ligne de commande `--lang=` des processus `msedgewebview2.exe` de la copie de test (lecture WMI seule) et de l'enregistrement `engine-args` du profil :
+
+| Situation | Interface | Moteur (navigateur, rendu, utilitaire) |
+|---|---|---|
+| A et B français ouverts | français | `--lang=fr` |
+| C ouvert en anglais pendant que A et B restent ouverts | anglais | `--lang=fr` (moteur partagé, le bail garde les arguments du premier) |
+| Toutes les fenêtres fermées, puis redémarrage en anglais | anglais | `--lang=en-US` partout |
+
+Constats :
+- Aucune incompatibilité d'options : la langue passée par `EngineOptions` n'empêche pas de partager le moteur.
+- Les pages d'une fenêtre anglaise ouverte dans ces conditions reçoivent donc la langue moteur française (langue envoyée aux sites, interface propre au moteur) jusqu'à ce que toutes les fenêtres du profil soient fermées.
+- La reprise de session peut rouvrir les autres fenêtres au redémarrage ; elles démarrent toutes dans la nouvelle langue.
+
+Comportement retenu, minimal et cohérent avec « Au prochain démarrage. » :
+- pas de nouvelle politique de bail ni de redémarrage forcé ;
+- la langue complète, moteur compris, s'applique au prochain démarrage du profil, c'est-à-dire quand toutes ses fenêtres ont été fermées ;
+- la fenêtre qui démarre sur un moteur partagé dans une autre langue le journalise : `UI LANGUAGE engine shared with an open window of this profile: --lang=fr … (applies when every window of the profile is closed)`. Le test E2E vérifie cette ligne.
+
+Si l'on veut que le moteur suive aussi dans ce cas, la piste la plus étroite serait de faire entrer la langue dans le bail. Une fenêtre d'une autre langue aurait alors besoin de son propre moteur, donc d'un autre dossier de données, ce qui change le stockage du profil. Ce n'est pas fait ici.
+
 ## Limites connues
 
 - **Écrans contrôlés visuellement en anglais** : les Réglages (captures du tiroir, 96 et 144 dpi) et le chrome principal (captures E2E).
@@ -152,5 +194,5 @@ Détail du test de bout en bout (version de suivi, `language-e2e-2.txt`) :
   - les résumés d'événements déjà écrits ;
   - les pages QA internes.
 - **Contrôle de couverture** : il est heuristique. Il attrape les accents, les mots et les libellés capitalisés, mais un mot anglais isolé en minuscules dans un littéral resterait invisible. Les fichiers classés le sont avec une raison relue.
-- **Deux processus de langues différentes sur un même profil** : le bail d'environnement partagé du profil ne contient pas la langue. Une revue indépendante vérifie si un processus anglais ouvert à côté d'un processus français encore actif sur le même profil se heurte à une incompatibilité d'options. Aucune politique de profil ou d'environnement n'a été changée en attendant sa reproduction.
+- **Deux fenêtres de langues différentes sur un même profil** (mesuré, voir « Deux fenêtres, même profil ») : le moteur WebView2 du profil est partagé. Une fenêtre anglaise ouverte pendant qu'une fenêtre française tient ce moteur a une interface anglaise, mais le moteur reste en `--lang=fr` jusqu'à ce que toutes les fenêtres du profil soient fermées. Aucune incompatibilité d'options n'apparaît. La politique du bail est inchangée ; l'écart est journalisé.
 - **Préférence et profils** : la préférence est lue depuis la racine des données avant le choix du profil, donc elle est globale par construction. Aucun E2E dédié avec un second profil n'a été lancé.
