@@ -56,6 +56,26 @@ not listed; symbolic-link refusal of an HTML file is untested without developer 
 
 Main integration: merge 62d3e3f (main cb75fb4, PR #82); see the section at the end.
 
+## Final readiness (full `run_all.py --ci --app`)
+
+Candidate: `python tools/release/build.py --channel release --commit cb75fb48a8c64e5e18465db34bc8c307da43bfdc --out
+build/readiness/app`, built from the sources of **7004566** (= source 9bb0147 + merge 62d3e3f; `git diff 69da5c1..7004566
+-- src tests tools .github` empty) → **0.3.374**, stamped commit cb75fb4 only to pass the local main-ancestry check of
+the release channel: a **local, source-stamped candidate — unpublishable, never uploaded**. CI rebuilds the exact
+merged SHA. Includes `app-setup/browser-setup.exe`.
+
+`python tests/update-integration/run_all.py --ci --app build/readiness/app`: **ALL PASSED on the first run**, 56
+steps, ≈ 27.4 min. Among them: i18n gate 0 findings; the three import fixtures (backend 176, settings wiring 8,
+native render 34); the existing UI fixtures; update-core 315 / 539 / 164 and runtime 153; release tooling; old client
+validator; host integration + mocked install (3 identity-migration checks PASS); Windows setup suite; static
+checks of 0.3.374 (version resources incl. the setup stub). Log, user root masked:
+`browser-data-import-evidence/readiness/run_all-ci-pass-7004566.txt`.
+
+Not in `run_all` (reported as before, not claimed fixed): `tests/modal_test.cpp` (its 13 render-sample checks need a
+`build/popups/` folder the popups runner creates) and `annotation_settings_test` (7 agent-connect checks, identical
+on baseline 18ddbd3). Real-app visual capture remains unavailable (see Final state). No personal profile, app,
+foreground change, OS setting or cookie was used.
+
 ## Historical record
 
 The sections below are the chronological record, kept as written then. **Superseded statements:** (a) the map
