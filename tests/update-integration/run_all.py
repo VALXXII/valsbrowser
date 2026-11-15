@@ -70,6 +70,9 @@ def existing_fixtures() -> None:
     import_work = OUT / 'browser-import-work'
     import_work.mkdir(parents=True, exist_ok=True)
     fixture('browser_import_test', [*STRICT, '-Isrc', 'tests/browser-import/browser_import_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [import_work])
+    # Settings wiring of the import row and the password manager row (main.cpp hooks + real drawer, synthetic hooks)
+    fixture('import_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT])
     bookmarks_evidence = ROOT / 'build/bookmarks-ui-qa'
     bookmarks_evidence.mkdir(parents=True, exist_ok=True)
     fixture('bookmarks_ui_test', [*LOOSE, '-municode', *TVG, WV2,

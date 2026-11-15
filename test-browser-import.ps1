@@ -11,3 +11,9 @@ New-Item -ItemType Directory -Force $out | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Browser import test compilation failed.' }
 & "$out/browser_import_test.exe" (Resolve-Path $out).Path
 if ($LASTEXITCODE -ne 0) { throw 'Browser import tests failed.' }
+# Settings wiring (main.cpp hooks) and the real drawer's Confidentialité rows, synthetic hooks only.
+if (!(Test-Path 'build/lottie-backend/src/libthorvg-1.a')) { throw 'Run Python build-lottie.py before the settings fixture.' }
+& $Compiler -std=c++17 -static -O2 -Wall -Wextra -Werror -Wno-unknown-pragmas -Wno-cast-function-type -Wno-misleading-indentation -Wno-missing-field-initializers -municode -DTVG_STATIC '-Ideps/thorvg-1.1.3/inc' '-Ideps/webview2/build/native/include' tests/browser-import/import_settings_test.cpp src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o "$out/import_settings_test.exe" -lole32 -luuid -lcomctl32 -lshlwapi -lgdi32 -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -loleaut32 -lshell32 -lmsimg32 -lbcrypt
+if ($LASTEXITCODE -ne 0) { throw 'Import settings test compilation failed.' }
+& "$out/import_settings_test.exe" $PSScriptRoot
+if ($LASTEXITCODE -ne 0) { throw 'Import settings tests failed.' }

@@ -260,6 +260,14 @@ try {
     Check ($r.Current.Name -eq 'Import complete' -and $text -like 'Bookmarks: 1 imported*' -and $text -like '*Cookies: not transferred. Sign in to sites again.*') 'EN summary'
     [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'en-2-summary-edge.png'))
     Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null }
+  # The Chrome profile imported in French, again in English: same folders, nothing added (stable identity).
+  $bmFr = Hash $bmFile; $groups = ([regex]::Matches((ReadText $bmFile), "`t2`tF`t")).Count
+  $d = OpenImport $procId $main 'Privacy'; $fav = $d.FindFirst($TS::Descendants, (Cond $AE::NameProperty 'History')); Toggle $fav
+  Invoke (Uia $procId 'DialogImport'); $r = Result $procId
+  if ($r) { $text = $r.Current.HelpText; "     en repeat: $text"
+    Check ($text -like 'Bookmarks: 0 imported · 6 already there · 1 unsupported address*') 'EN repeat of the French Chrome import: everything already there'
+    Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null }
+  Check ((Hash $bmFile) -eq $bmFr -and ([regex]::Matches((ReadText $bmFile), "`t2`tF`t")).Count -eq $groups) 'EN repeat: bookmarks file unchanged, no second « Imported from Chrome » group'
   Close $procId $main
   # ================= Profile switch while the dialog is open =========================================================
   # The dialog names « Personnel » as the destination. Its scrim stops pointer and keyboard, but UI Automation can
@@ -307,6 +315,85 @@ try {
   $bmText = ReadText $bmFile
   Check ((([regex]::Matches($bmText, "`n")).Count - 2) -le 10000 -and $bmText -like "*`tMien`thttps://mine.example/*") 'capacity: at most 10 000 entries, existing bookmarks kept'
   Close $procId $main
+  # ================= Deterministic mid-read events (test seam --import-hold, dev builds only) =======================
+  # The worker parks on Local\browser-import-reached-<pid> / -release-<pid>: right after the read (« read ») or right
+  # after the private database snapshot is taken (« snapshot »). Each case then acts at that exact point.
+  function HoldLaunch([string]$profile, [string]$phase) { $q = Start-Process "$app\browser.exe" -ArgumentList '--profile', $profile, '--import-sources', "`"$sources`"", '--import-hold', $phase -PassThru; $m = Main $q.Id; Start-Sleep 4; return @($q, $m) }
+  function Reached([int]$procId) { for ($i = 0; $i -lt 100; $i++) { try { $e = [System.Threading.EventWaitHandle]::OpenExisting("Local\browser-import-reached-$procId"); $ok = $e.WaitOne(20000); $e.Dispose(); return $ok } catch { Start-Sleep -Milliseconds 100 } }; return $false }
+  function Release([int]$procId) { try { $e = [System.Threading.EventWaitHandle]::OpenExisting("Local\browser-import-release-$procId"); $e.Set() | Out-Null; $e.Dispose(); return $true } catch { return $false } }
+  function Snapshots([int]$procId) { @(Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter "browser-import-$procId-*" -ErrorAction SilentlyContinue) }
+  function SwitchTo([int]$procId, [string]$name) {
+    Invoke (Uia $procId 'ProfileButton'); $t = $null
+    for ($i = 0; $i -lt 30 -and !$t; $i++) { Start-Sleep -Milliseconds 150; foreach ($top in $AE::RootElement.FindAll($TS::Children, (Cond $AE::ProcessIdProperty $procId))) { foreach ($e in $top.FindAll($TS::Descendants, (Cond $AE::AutomationIdProperty 'ProfileMenuProfile'))) { if ($e.Current.Name -like "$name*") { $t = $e } } } }
+    if ($t) { Invoke $t; Start-Sleep 4; return $true }; return $false
+  }
+  W "$app\profiles.txt" "browser-profiles 1`nlast=default`np=default|house|0|0|1|Personnel`np=ptravail01|briefcase|150|140|0|Travail`n"
+  $states = { @{ bmA = Hash $bmFile; hA = Hash $hFile; bmB = Hash "$app\profiles\ptravail01\bookmarks"; hB = Hash "$app\profiles\ptravail01\history"; map = Hash "$app\bookmark-imports" } }
+
+  # (a) Profile switch while the read is parked: the finished read is dropped, nothing written anywhere.
+  $p, $main = HoldLaunch 'default' 'read'; $procId = $p.Id
+  $before = & $states; $logStart = (ReadText "$app\prototype.log").Length
+  $d = OpenImport $procId $main 'Confidentialité'; Invoke (Uia $procId 'DialogImport')
+  $parked = Reached $procId
+  $switched = SwitchTo $procId 'Travail'
+  $released = Release $procId; Start-Sleep 3
+  $after = & $states; $appLog = (ReadText "$app\prototype.log").Substring($logStart)
+  Check ($parked -and $switched -and $released) 'seam switch: read parked, window switched to « Travail », read released'
+  Check (($before.Values -join ',') -eq ($after.Values -join ',')) 'seam switch: nothing written to « Personnel » nor « Travail » (bookmarks, history, folder map)'
+  Check ($appLog -match 'IMPORT cancelled: the profile changed' -and $appLog -notmatch 'IMPORT (bookmarks|history) saved') 'seam switch: the read came back after the switch and was dropped'
+  Check ((Snapshots $procId).Count -eq 0) 'seam switch: no private snapshot left'
+  [Impqa]::Shot($main, [uint32]$procId, (Join-Path $Evidence 'fr-7-seam-switch.png'))
+  Close $procId $main
+
+  # (b) Window closed while the private snapshot exists: nothing written; the copy left by the ended process is
+  #     removed by the next snapshot (next import).
+  $p, $main = HoldLaunch 'default' 'snapshot'; $procId = $p.Id
+  $before = & $states
+  $d = OpenImport $procId $main 'Confidentialité'
+  $fav = $d.FindFirst($TS::Descendants, (Cond $AE::NameProperty 'Favoris')); Toggle $fav   # history only: the database path
+  Invoke (Uia $procId 'DialogImport')
+  $parked = Reached $procId
+  $left = (Snapshots $procId).Count
+  [Impqa]::PostMessage($main, 0x0010, [IntPtr]0, [IntPtr]0) | Out-Null
+  $closed = $false; for ($i = 0; $i -lt 40; $i++) { if (!(Get-Process -Id $procId -ErrorAction SilentlyContinue)) { $closed = $true; break }; Start-Sleep -Milliseconds 250 }
+  $how = if ($closed) { 'closed by WM_CLOSE' } else { Stop-Process -Id $procId -Force; Start-Sleep 1; 'WM_CLOSE refused while the import runs; process ended (crash path)' }
+  "     close during the snapshot: $how"
+  $after = & $states
+  Check ($parked -and $left -eq 1) 'seam close: snapshot taken and parked'
+  Check (($before.Values -join ',') -eq ($after.Values -join ',')) "seam close: nothing written ($how)"
+  Check ((Snapshots $procId).Count -eq 1) 'seam close: the ended process could not clean its copy'
+  $p2, $main2 = Launch ''; $proc2 = $p2.Id
+  $d = OpenImport $proc2 $main2 'Confidentialité'; Invoke (Uia $proc2 'DialogImport'); $r = Result $proc2
+  if ($r) { Invoke (Uia $proc2 'DialogOk'); Gone $proc2 'ImportResult' | Out-Null }
+  Check ((Snapshots $procId).Count -eq 0 -and (Snapshots $proc2).Count -eq 0) 'seam close: the next import removed the stale copy, and its own'
+  Close $proc2 $main2
+
+  # (c) Destination profile deleted while the read is parked (« Travail » imports; the window moves to « Personnel »
+  #     and « Travail » is deleted through Gérer les profils).
+  $p, $main = HoldLaunch 'ptravail01' 'read'; $procId = $p.Id
+  $before = & $states; $logStart = (ReadText "$app\profiles\ptravail01\browser.log" -ErrorAction SilentlyContinue).Length
+  $d = OpenImport $procId $main 'Confidentialité'; Invoke (Uia $procId 'DialogImport')
+  $parked = Reached $procId
+  $switched = SwitchTo $procId 'Personnel'
+  Invoke (Uia $procId 'ProfileButton'); Start-Sleep -Milliseconds 700
+  $manage = Uia $procId 'ProfileMenuManage' '' 10; if ($manage) { Invoke $manage; Start-Sleep -Milliseconds 1300 }
+  $item = $null; foreach ($top in $AE::RootElement.FindAll($TS::Children, (Cond $AE::ProcessIdProperty $procId))) { foreach ($e in $top.FindAll($TS::Descendants, (Cond $AE::AutomationIdProperty 'ProfileListItem'))) { if ($e.Current.Name -like 'Travail*') { $item = $e } } }
+  if ($item) { Invoke $item; Start-Sleep -Milliseconds 1000 }
+  $del = Uia $procId 'ProfileDelete' '' 10; if ($del) { Invoke $del; Start-Sleep -Milliseconds 1100 }
+  $confirm = Uia $procId 'ProfileDeleteConfirm' '' 10
+  $deleteShown = [bool]$confirm
+  if ($confirm) { Invoke $confirm; Start-Sleep 2 }
+  $released = Release $procId; Start-Sleep 3
+  if (!$deleteShown) { $c2 = Uia $procId 'ProfileDeleteConfirm' '' 10; if ($c2) { $d2 = Uia $procId 'DialogCancel' '' 5; Invoke $c2; Start-Sleep 2 } }
+  $after = & $states
+  $travailGone = !(Test-Path "$app\profiles\ptravail01\bookmarks") -and -not ((ReadText "$app\profiles.txt") -match 'ptravail01')
+  "     delete confirmation reachable while the read was parked: $deleteShown; Travail deleted: $travailGone"
+  Check ($parked -and $switched -and $released) 'seam delete: read parked, window moved to « Personnel », read released'
+  Check ($after.bmA -eq $before.bmA -and $after.hA -eq $before.hA -and $after.map -eq $before.map) 'seam delete: nothing written to « Personnel » (bookmarks, history, folder map)'
+  Check (!(Test-Path "$app\profiles\ptravail01\bookmarks") -or (Hash "$app\profiles\ptravail01\bookmarks") -eq $before.bmB) 'seam delete: nothing written to « Travail » (deleted or untouched)'
+  Check ((Snapshots $procId).Count -eq 0) 'seam delete: no private snapshot left'
+  Close $procId $main
+
   Check ((TreeHash $sources) -eq $sourcesBefore) 'synthetic sources byte-identical after every import (no sidecar created)'
   $tmpLeft = @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'browser-import-*' -Directory -ErrorAction SilentlyContinue)
   Check ($tmpLeft.Count -eq 0) 'no private snapshot left in the temporary folder'

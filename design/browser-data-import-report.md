@@ -68,8 +68,8 @@ folder names).
 
 | Test | Result |
 |---|---|
-| `test-browser-import.ps1` (backend, synthetic roots, winsqlite3) | 98 checks pass |
-| `tests/e2e/browser_import_e2e.ps1` on `build/import-app` (real browser.exe, FR + EN, UIA only) | 44/44 pass ([e2e-results.txt](browser-data-import-evidence/e2e-results.txt)) |
+| `test-browser-import.ps1` (backend, synthetic roots, winsqlite3) | 142 checks pass; settings wiring fixture 8/8 |
+| `tests/e2e/browser_import_e2e.ps1` on `build/import-app` (real browser.exe, FR + EN, UIA only) | 58/58 pass ([e2e-results.txt](browser-data-import-evidence/e2e-results.txt)) |
 | `tests/modal_test.cpp` | new « select checks » cases pass; 13 distinct render-sample checks FAIL **identically on baseline 18ddbd3** (pre-existing harness limit) |
 | bookmarks, address, settings, i18n, session, profile_store tests | pass |
 | language_settings_test, accessibility_test | pass |
@@ -86,15 +86,12 @@ snapshot left, log free of URLs/titles/paths.
 
 ## Harness limits and remaining limitations
 
-* A switch landing exactly while the worker reads is guarded by the same check but not reproduced
-  deterministically (a 30 MB read takes well under a second). UIA can still reach the profile menu under the
-  window modal (pre-existing; pointer and keyboard are blocked).
+* Mid-read events are now driven deterministically through a dev-build-only seam (below). UIA can still reach
+  the profile menu under the window modal (pre-existing; pointer and keyboard are blocked).
 * The E2E file dialog is driven by WM_SETTEXT + posted BM_CLICK on its own controls (its UIA tree exposes them
   as panes).
 * Symbolic-link refusal of an HTML file is skipped without developer mode; junctions are covered.
 * Chromium profile labels are folder names (« profil principal », « Profile 2 »), since `Local State` is not read.
-* Bookmark folder titles follow the interface language at import time; importing again after switching
-  language creates a second « Imported from … » folder.
 * Firefox absolute-path profiles are not listed.
 * Personal browsers were never discovered or read in QA (`--import-sources` synthetic roots only).
 
@@ -103,3 +100,20 @@ snapshot left, log free of URLs/titles/paths.
 This worktree adds one hunk to `tests/update-integration/run_all.py` (after `bookmarks_test`): the
 `browser_import_test` fixture with its work folder. Root main has unrelated local WIP in the same file; the hunk
 is independent and should be re-applied on top of it, not by overwriting.
+
+## Independent review 934ef4b: fixes
+
+Review: `review-windows-setup-release/build/review-browser-import-934ef4b.md` (four P2, one evidence gap).
+
+| Finding | Fix | Red (934ef4b) → green |
+|---|---|---|
+| 1. `hooks.vaultInfo` commented out by the import hook's trailing comment (password manager row hidden) | assignment back on its own line; `tests/browser-import/import_settings_test.cpp` checks main.cpp's hooks with comments stripped and the real drawer's rows from synthetic hooks (no vault opened, no credential read) | fixture on 934ef4b's main.cpp: `FAIL hooks.vaultInfo is executable code`; now 8/8 |
+| 2. Folders identified by translated titles (FR→EN, or a source gaining a profile, duplicated groups) | `FolderMap` sidecar `<data>\bookmark-imports` (header-versioned): stable keys (browser + profile folder; Chromium root key / Firefox root GUID) → folder id + `added`; read and written under the same profile lock as the bookmarks transaction, validated on every use, pruned, never rewritten if of another version; missing/stale/unwritable map → titles of both languages, then create. Bookmarks file format unchanged | reviewer's scenario: switched-import 1 / 2 groups → present 6, imported 0, 1 group (backend + real-app EN repeat of the FR Chrome import: file byte-identical) |
+| 3. Folder replaced by a junction between discovery and « Importer » was read | `Pin`: every folder from the browser root to the profile (HTML: the file's folder) opened with data access and no delete sharing, not a reparse point, final path = parent's + name; each source handle (JSON, database, -wal, -journal, HTML) accepted only if its final path is inside | reviewer probe (retargeted to this worktree): `reparse=1 read-failure=0 roots=1` → `read-failure=3 (Unreadable) roots=0`; tests for root, intermediate Firefox folder, HTML folder, held folders not renamable |
+| 4. Reader depth bound silently pruned (257 folders + 1 link → « terminée », nothing imported) | `TooDeep` (refused whole, « dossiers imbriqués trop profondément, rien n'a été importé. ») for JSON, Firefox and HTML; parser limits map to TooDeep/TooLarge; damaged source entries counted as « entrées illisibles » and make the summary « partielle » | reviewer depth probe: `failure=0 … folders=7` → `failure=TooDeep roots=0`; boundary tests at 256 kept / 257 refused for all three formats |
+| Evidence gap: mid-read switch / delete / close | dev-build-only seam `--import-hold read|snapshot` (compiled out of `--channel release`; named events `Local\browser-import-reached/release-<pid>`), plus a sweep of private snapshot folders left by ended processes | E2E: switch while parked → dropped, nothing written to either profile or the map; window closed with the snapshot taken → nothing written, the next import removes the leftover copy; destination profile deleted while parked → nothing written to « Personnel », « Travail » deleted, no snapshot left |
+
+Note: while reproducing finding 3, my first copy of the reviewer's probe still pointed at the reviewer's fixture
+folder; it recreated a synthetic `Default\Bookmarks` there and rewrote `foreign\Bookmarks` with identical bytes
+before failing. Both were restored (the extra folder removed, identical content, timestamps reset from siblings);
+the probe was then retargeted to this worktree's `build/review-probes/fixtures`.
