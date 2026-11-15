@@ -1,0 +1,13 @@
+#include <windows.h>
+// Setup stub (src/setup-main.cpp): the channel's app icon, the asInvoker manifest (src/setup.manifest) and the
+// publisher metadata of src/version-info.rc (PR #81). The stub is published as browser-<v>-win-x64-setup.exe and
+// copied as <root>/uninstall.exe; OriginalFilename names the stub as built (tools/release/build.py SETUP_NAME).
+#ifdef BROWSER_HAS_BUILD_INFO
+#include "build-info.h"
+#endif
+#include "app-icon.rc"
+1 24 "src/setup.manifest"
+#define VI_DESCRIPTION "browser setup"
+#define VI_INTERNAL "browser-setup"
+#define VI_ORIGINAL "browser-setup.exe"
+#include "version-info.rc"
