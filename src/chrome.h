@@ -638,6 +638,7 @@ public:
     std::vector<BandItem> bandItems; bool bandShown=false,bandButtonForced=false;
     bool starred=false;            // the active page is bookmarked: filled star
     int bandOpen=0;                // region whose menu is open: keeps its hover fill, chevron points up
+    int bandRenaming=-1;           // band index renamed in place: hover surface, its title drawn by the editor
     int bandRover=-1;              // band item that takes the band's single Tab stop (roving focus)
     int bandDrag=-1;float bandDragOffset=0; // item being dragged (visible index) and its pointer offset
     int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
@@ -649,6 +650,9 @@ public:
     float AnnotateRight()const{return (audioShown?AudioLeft:127.f)+6;}   // from the right edge: 6 DIP left of Audio/History
     float ContentTop()const{return Design::Vertical::ContentTop(bandShown)+annotationBand;}
     D2D1_RECT_F BandRect(int i)const{return {band.left[i],BookmarksBar::Layout::top,band.left[i]+band.width[i],BookmarksBar::Layout::bottom};}
+    // The title's box inside band item i (DIP): after the 16 DIP icon and its gap, before the folder
+    // chevron; the in-place rename editor sits exactly here (design/bookmark-inline-rename-plan.md).
+    D2D1_RECT_F BandTitleBox(int i)const{namespace L=BookmarksBar::Layout;const auto box=BandRect(i);float right=box.right-L::itemPad;if(i<(int)bandItems.size()&&bandItems[i].folder)right-=L::chevron+L::chevronGap;return {box.left+L::itemPad+Design::Size::icon+L::iconGap,box.top,right,box.bottom};}
     float BandTitleWidth(const BandItem& item){return item.title.empty()?0:TextWidth(item.title,Design::Type::label.size,Design::Type::label.medium,false,Design::Type::label.tracking);}
     void BuildBand(){
         band={};if(!bandShown)return;
@@ -668,7 +672,7 @@ public:
         D2D1_RECT_F box=BandRect(i);const bool dragged=i==bandDrag;
         if(dragged){box.left+=bandDragOffset;box.right+=bandDragOffset;}
         auto v=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
-        if(id==bandOpen||i==bandDropInto)v.hover=1;
+        if(id==bandOpen||i==bandDropInto||i==bandRenaming)v.hover=1;
         const float surface=dragged?Design::Surface::raised:BandSurface(v.hover,v.press);
         if(dragged||v.hover>0||v.press>0)Round(box,Design::Radius::control,surface);
         if(focus==id)FocusRing(box,Design::Radius::control);
@@ -685,7 +689,7 @@ public:
             Icon(L"caret",caret,L::chevron,id==bandOpen?1.f:.64f+.36f*v.hover);
             target->SetTransform(base);right=caret.left-L::chevronGap;
         }
-        if(item.title.empty())return;
+        if(item.title.empty()||i==bandRenaming)return;
         const float left=icon.right+L::iconGap;if(right<=left+1)return;
         const float textWidth=BandTitleWidth(item);
         target->PushAxisAlignedClip(D2D1::RectF(left,box.top,right,box.bottom),D2D1_ANTIALIAS_MODE_ALIASED);

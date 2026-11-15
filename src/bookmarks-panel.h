@@ -57,6 +57,10 @@ public:
         std::function<void(bool)> closed;
         std::function<std::shared_ptr<const FaviconImage>(const std::wstring&)> icon;
         std::function<void(const std::wstring&)> announce;
+        // In-place rename of a row title (design/bookmark-inline-rename-plan.md): the owner's editor
+        // colours its EDIT (0: not ours) and follows the row after every paint (scroll, rebuild, resize).
+        std::function<LRESULT(HDC, HWND)> editColor;
+        std::function<void()> relayout;
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr;
@@ -66,6 +70,7 @@ private:
     std::wstring query_; Lane slide_, scroll_;
     int hover_ = 0, pressed_ = 0, focus_ = 0; bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false;
     int appliedVisible_ = -1; RECT appliedOwner_{};
+    Bookmarks::Id renaming_ = 0;   // its title is drawn by the owner's in-place editor
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
@@ -276,7 +281,7 @@ private:
                 else if (!chrome_.DrawSiteImage(hooks_.icon && !r.site.empty() ? hooks_.icon(r.site) : nullptr, tile)) chrome_.Icon(r.local ? L"file" : L"favicon", tile, Design::Size::icon, 1);
                 const float textLeft = tile.right + Design::Space::md, textRight = shown ? Action(top, Actions(r) == 2 ? 0 : (r.folder ? 0 : 1)).left - 6 : Layout::width - Panel::padding - (r.folder ? 30 : 0);
                 const float titleOpacity = (Design::Text::muted + (.78f - Design::Text::muted) * std::max(v.hover, shown ? 1.f : 0.f)) * (1 - .25f * v.press);
-                chrome_.Text(r.title, {textLeft, top - Panel::nameRaise, textRight, top + Panel::line - Panel::nameRaise}, Panel::line, titleOpacity, false, true, -.16f);
+                if (r.id != renaming_) chrome_.Text(r.title, {textLeft, top - Panel::nameRaise, textRight, top + Panel::line - Panel::nameRaise}, Panel::line, titleOpacity, false, true, -.16f);
                 chrome_.Text(r.detail, {textLeft, top + Panel::line, textRight, top + 2 * Panel::line}, Panel::detailText, Design::Text::muted, true, false, -.14f);
             }
             if (r.folder) {   // chevron: points right folded, down open
@@ -345,7 +350,8 @@ private:
         switch (msg) {
         case WM_GETOBJECT: { LRESULT result; if (uia_.OnGetObject(h, w, l, result)) return result; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); if (renaming_ && hooks_.relayout) hooks_.relayout(); return 0; }
+        case WM_CTLCOLOREDIT: if (hooks_.editColor) { if (const LRESULT brush = hooks_.editColor(reinterpret_cast<HDC>(w), reinterpret_cast<HWND>(l))) return brush; } break;
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
         case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
@@ -353,9 +359,10 @@ private:
         case WM_SETCURSOR: if (LOWORD(l) == HTCLIENT) { POINT p; GetCursorPos(&p); ScreenToClient(h, &p); SetCursor(LoadCursor(nullptr, Hit(p.x * s, p.y * s) == SearchHit ? IDC_IBEAM : IDC_ARROW)); return TRUE; } break;
         case WM_MOUSEMOVE: { if (!tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); tracking_ = true; } const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit != hover_) Interact(hit, pressed_); return 0; }
         case WM_MOUSELEAVE: tracking_ = false; Interact(0, 0); return 0;
-        case WM_LBUTTONDOWN: { keyboard_ = false; const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit == SearchHit) focus_ = SearchHit; if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
+        case WM_LBUTTONDOWN: { if (renaming_) SetFocus(h); /* a press elsewhere ends the in-place rename (blur commits) */ keyboard_ = false; const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit == SearchHit) focus_ = SearchHit; if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
         case WM_LBUTTONUP: { const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s), was = pressed_; if (GetCapture() == h) ReleaseCapture(); Interact(hit, 0); if (was && was == hit) { if (IsRowPart(hit)) focus_ = RowHit(HitIndex(hit)); Activate(hit, false, (w & (MK_CONTROL | MK_SHIFT)) != 0); } return 0; }
         case WM_MBUTTONUP: { const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (IsRowPart(hit) && HitPart(hit) == 0 && !rows_[HitIndex(hit)].folder && hooks_.open) hooks_.open(rows_[HitIndex(hit)].url, true); return 0; }
+        case WM_RBUTTONDOWN: if (renaming_) SetFocus(h); return 0;
         case WM_RBUTTONUP: { const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (IsRowPart(hit) && hooks_.context) { const int i = HitIndex(hit); if (rows_[i].level == 0) return 0; focus_ = RowHit(i); POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &p); hooks_.context(rows_[i].id, p, false); } return 0; }
         case WM_MOUSEWHEEL: { auto now = Motion::Now(); scroll_.Set(std::clamp(scroll_.Target() - GET_WHEEL_DELTA_WPARAM(w) / 120.f * Panel::pitch * 1.5f, 0.f, MaxScroll()), now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : DrawerMotion::scroll); if (hooks_.schedule) hooks_.schedule(now); return 0; }
         case WM_KEYDOWN: case WM_SYSKEYDOWN: if (msg == WM_SYSKEYDOWN && w != VK_UP && w != VK_DOWN && w != VK_F10) break; KeyDown(w); return 0;
@@ -384,6 +391,8 @@ public:
         host.focus = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, 4, static_cast<LPARAM>(key)); };
         host.expand = [this](long long key, bool open) { PostMessageW(hwnd_, WM_APP + 1, open ? 2 : 3, static_cast<LPARAM>(key)); };
         host.setValue = [this](long long key, const std::wstring& value) { if (key == SearchKey) { focus_ = SearchHit; SetQuery(value.substr(0, 256)); } };
+        // The in-place rename EDIT on a row (a child HWND): named like the popover's field.
+        host.label = [this](HWND child, Accessibility::Node& node) { if (!child || !renaming_ || GetParent(child) != hwnd_ || child == hwnd_) return false; node.name = TR(bookmark_field_name); node.automationId = L"BookmarkRename" /* i18n-exempt: UIA id */; return true; };
         uia_.Attach(std::move(host));
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
@@ -421,6 +430,24 @@ public:
     }
     void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }
     // The store changed (add, remove, move, rename, undo).
+    // In-place rename: the title box of the (non-root) row `id`, in drawer client pixels, when the whole
+    // title line is inside the list's visible area; false otherwise (folded away, filtered, scrolled out).
+    bool TitleBox(Bookmarks::Id id, RECT& box) const {
+        if (!hwnd_ || !visible_) return false;
+        const float scroll = scroll_.Value(Motion::Now()), h = Height();
+        for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
+            const Row& r = rows_[i]; if (r.id != id) continue; if (r.level == 0) return false;
+            const float top = RowTop(i, scroll), lineTop = top - Panel::nameRaise, lineBottom = top + Panel::line - Panel::nameRaise;
+            if (lineTop < HistoryView::Layout::viewTop || lineBottom > h) return false;
+            const float left = Tile(r, top).right + Design::Space::md, right = Action(top, Actions(r) == 2 ? 0 : (r.folder ? 0 : 1)).left - 6;
+            if (right <= left + 8) return false;
+            box = {Px(left), Px(lineTop), Px(right), Px(lineBottom)};
+            return true;
+        }
+        return false;
+    }
+    void SetRenaming(Bookmarks::Id id) { if (renaming_ == id) return; renaming_ = id; Invalidate(); }
+    Bookmarks::Id Renaming() const { return renaming_; }
     void Changed() { if (!hwnd_ || !visible_) return; Rebuild(); scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll())); Invalidate(); if (uia_.Listening()) uia_.ChildrenChanged(ListKey); }
     // Keeps a row focused (after a move or an edit).
     void FocusBookmark(Bookmarks::Id id) { for (int i = 0; i < static_cast<int>(rows_.size()); ++i) if (rows_[i].id == id) { keyboard_ = true; SetFocusHit(RowHit(i)); return; } }

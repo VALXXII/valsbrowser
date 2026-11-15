@@ -39,6 +39,7 @@
 #include "bookmark-popover.h"
 #include "bookmark-toast.h"
 #include "bookmarks-panel.h"
+#include "inline-rename.h"
 #include "split-view.h"
 #include "split-overlay.h"
 #include "status-bubble.h"
@@ -376,7 +377,8 @@ void FindInPage(){
     HRESULT hr=find->Start(options.p,completed);completed->Release();Check(hr,L"Find Start");
 }
 void CancelContentTransitionIfMoved();
-void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();chrome.Resize();BuildChrome();auto r=chrome.edit;
+void SyncFolderRename();
+void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();chrome.Resize();BuildChrome();SyncFolderRename();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
     auto placement=chrome.MeasureText(L"Ag",{r.left,44,r.right,76},16,false,false,-.16f);
     const int baseline=S(placement.originY+placement.baseline);int editHeight=std::max(S(22),(int)(metrics.tmHeight+metrics.tmExternalLeading+2));
@@ -1093,11 +1095,12 @@ std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.g
 void Close(){CloseAt(current);}
 void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
     if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
-bool BookmarkPopoverFocus();bool SmokeBookmarks();
+bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     // The bookmark popover's fields keep every key (Ctrl+D, Ctrl+Z… belong to the text there).
     if(BookmarkPopoverFocus())return 0;
+    if(FolderRenameFocus())return 0; // the in-place folder name keeps every key (text undo, Ctrl+W, F5…)
     if(AnnotationSurfaceFocus())return 0; // the note popover, onboarding, launcher and band keep their keys
     // Modal, prompt and find bar fields keep their keys (Ctrl+W must not close the tab under a dialog).
     {int cmd=0;if(ElementSurfaceKey(key,ctrl,alt,shift,cmd))return cmd;}
@@ -3321,6 +3324,7 @@ void BookmarksChanged(){
     if(chrome.bandShown!=was)Layout();else{RefreshTools();InvalidateChrome();}
     bookmarksDrawer.Changed();
     if(accessibility.Listening())accessibility.ChildrenChanged(AccessibleBandKey);
+    SyncFolderRename();
 }
 void PushUndo(std::vector<BookmarkStep> steps,std::wstring done){if(steps.empty())return;if(bookmarkUndo.size()==16)bookmarkUndo.erase(bookmarkUndo.begin());bookmarkUndo.push_back({std::move(steps),std::move(done)});}
 std::wstring UniqueFolderName(BM::Id parent){
@@ -3379,6 +3383,80 @@ void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added
     popoverReturn=returnTo;bookmarksDrawer.holding_=bookmarksDrawer.Visible();
     bookmarkPopover.Show(r,anchor,ClientScreen(),alignRight,keyboard,motion.ReducedMotion());
 }
+// ---- Folder rename in place (design/bookmark-inline-rename-plan.md) -------------------------------
+// The folder's own label becomes a borderless EDIT (NativeUI::InlineRename) on the surface that showed it:
+// the band item or the Favoris drawer row. Keyed by the bookmark id; cancelled when the folder, its label
+// or the profile goes away; anything else (sub-folder in a native menu, behind », links) keeps the popover.
+enum RenameSurface { RenameNone=0, RenameBand, RenameDrawer };
+struct FolderRenameState { BM::Id id=0; int surface=RenameNone; bool keyboard=false; int returnTo=0; std::wstring profile; } folderRenameState;
+NativeUI::InlineRename folderRename; HFONT folderRenameFont=nullptr;
+bool FolderRenameFocus(){HWND f=GetFocus();return f&&folderRename.Owns(f);}
+// The folder label's text box on `surface`, in that surface window's client pixels; false when not shown.
+bool FolderLabelBox(BM::Id id,int surface,RECT& box){
+    if(surface==RenameDrawer)return bookmarksDrawer.TitleBox(id,box);
+    if(surface!=RenameBand||!chrome.bandShown)return false;
+    for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i){if(chrome.bandItems[i].id!=id)continue;if(!chrome.bandItems[i].folder)return false;
+        const auto b=chrome.BandTitleBox(i);if(b.right-b.left<24)return false;box={S(b.left),S(b.top),S(b.right),S(b.bottom)};return true;}
+    return false;
+}
+void MarkFolderRename(){
+    const int was=chrome.bandRenaming;chrome.bandRenaming=-1;
+    if(folderRename.Active()&&folderRenameState.surface==RenameBand)for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==folderRenameState.id)chrome.bandRenaming=i;
+    bookmarksDrawer.SetRenaming(folderRename.Active()&&folderRenameState.surface==RenameDrawer?folderRenameState.id:0);
+    if(was!=chrome.bandRenaming)InvalidateChrome();
+}
+void CommitFolderRename(BM::Id id,const std::wstring& typed,const std::wstring& profile){
+    if(profile!=dataDir){Log(L"BOOKMARKS rename in place dropped: the window changed profile");return;}
+    const auto* n=bookmarks.Find(id);
+    if(!n||n->kind!=BM::Kind::Folder||BM::Store::IsRoot(id)){Log(L"BOOKMARKS rename in place dropped: the folder is gone");return;}
+    const std::wstring title=AddressBar::Trim(typed),old=n->title;
+    if(title.empty()){Log(L"BOOKMARKS rename in place: empty name, the folder keeps its name");return;}
+    if(title==old||!bookmarks.Rename(id,title))return;
+    PushUndo({{BookmarkStep::Renamed,id,0,0,old}},TR(bookmark_undo_edit));SaveBookmarks();BookmarksChanged();
+    // Never « saved » when the file was not written: the sticky retry toast is already showing.
+    AnnounceBookmark(bookmarksSaveFailed?TR(bookmark_save_failed):TR(bookmark_saved));
+}
+void FolderRenameDone(BM::Id id,bool committed,const std::wstring& text){
+    const auto state=folderRenameState;folderRenameState={};MarkFolderRename();
+    if(committed)CommitFolderRename(id,text,state.profile);else Log(L"BOOKMARKS rename in place cancelled");
+    if(!state.keyboard)return;
+    if(state.surface==RenameBand&&GetFocus()==window){
+        int region=0;for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==id)region=NativeChrome::BookmarkBase+i;
+        if(region){keyboardModality=true;keyboardFocus=region;chrome.bandRover=NativeChrome::BookmarkIndex(region);InvalidateChrome();SyncAccessibility();}
+    }
+    if(state.surface==RenameDrawer&&bookmarksDrawer.Visible()&&GetFocus()==bookmarksDrawer.Window())bookmarksDrawer.FocusBookmark(id);
+}
+// Starts the in-place editor on the folder's label on `surface`; false (caller keeps the popover) when the
+// item is not a renamable folder or its label is not on that surface now.
+bool StartFolderRename(BM::Id id,int surface,bool keyboard,int returnTo){
+    const auto* n=bookmarks.Find(id);if(!n||n->kind!=BM::Kind::Folder||BM::Store::IsRoot(id))return false;
+    RECT box{};if(!FolderLabelBox(id,surface,box))return false;
+    HWND host=surface==RenameBand?window:bookmarksDrawer.Window();if(!host)return false;
+    namespace D=NativeChrome::Design;
+    const float size=surface==RenameBand?D::Type::label.size:NativeChrome::Downloads::Panel::line;
+    HFONT font=CreateFontW(-(int)std::lround(size*GetDpiForWindow(host)/96.f),0,0,0,FW_MEDIUM,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display" /* i18n-exempt: font family */);
+    NativeUI::InlineRename::Style style;style.font=font;style.text=D::NativeGray(D::Text::primary);
+    style.back=D::NativeGray(surface==RenameBand?chrome.BandSurface(1,0):D::Surface::canvas);
+    folderRename.Cancel(); // one editor at a time (an earlier one reports its cancel first)
+    folderRenameState={id,surface,keyboard,returnTo,dataDir};
+    const bool ok=folderRename.Begin(host,id,box,n->title,style,TR(bookmark_field_name),[](unsigned long long done,bool committed,const std::wstring& text){FolderRenameDone((BM::Id)done,committed,text);});
+    if(folderRenameFont)DeleteObject(folderRenameFont);folderRenameFont=font;
+    if(!ok){folderRenameState={};return false;}
+    MarkFolderRename();Log(L"BOOKMARKS rename in place");return true;
+}
+// After any change of the store, the layout or the drawer's scroll: follow the label or cancel.
+void SyncFolderRename(){
+    if(!folderRename.Active())return;
+    const auto& s=folderRenameState;const auto* n=bookmarks.Find(s.id);RECT box{};
+    if(s.profile!=dataDir||!n||n->kind!=BM::Kind::Folder||!FolderLabelBox(s.id,s.surface,box)){folderRename.Cancel();return;}
+    MarkFolderRename();const RECT was=folderRename.Box();if(!EqualRect(&was,&box))folderRename.Move(box);
+}
+// Rename / F2 / new folder: in place on `surface` when the folder's label is there, else the popover.
+void RenameOrEdit(BM::Id id,int surface,RECT anchor,bool keyboard,int returnTo){
+    if(StartFolderRename(id,surface,keyboard,returnTo))return;
+    EditBookmark(id,anchor,false,keyboard,false,returnTo);
+}
+int bookmarkMenuSurface=RenameNone; // the surface whose row opened BookmarkContextMenu (drawer), else band/none
 // Ctrl+D / the star: save at once in the last folder used, then the popover; an
 // already saved page opens its most recent bookmark instead of a second one.
 void BookmarkStar(bool keyboard){
@@ -3543,15 +3621,16 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     bookmarksDrawer.holding_=false;chrome.bandOpen=0;InvalidateChrome();
     if(!bookmarks.Find(id))return;
     const RECT edit=region?RegionScreen(region):anchor?*anchor:RECT{at.x,at.y,at.x,at.y};
+    const int surface=region?RenameBand:bookmarkMenuSurface; // a row of a native folder menu: none (popover)
     if(MenuKindOf(cmd)==MenuMoveTo){MoveBookmarkTo(id,MenuBookmark(cmd));return;}
     switch(cmd){
     case OpenTab:OpenBookmarkUrl(n->url,2);break;
     case OpenAll:keyboardModality=contextMenu.LastChoiceKeyboard();OpenAllIn(id);break;
-    case Edit:EditBookmark(id,edit,false,keyboard,false,keyboard?region:0);break;
+    case Edit:if(folder)RenameOrEdit(id,surface,edit,keyboard,keyboard?region:0);else EditBookmark(id,edit,false,keyboard,false,keyboard?region:0);break;
     case Duplicate:DuplicateBookmark(id);break;
     case Copy:if(CopyToClipboard(n->url))AnnounceBookmark(TR(link_copied));break;
     case Delete:RemoveBookmark(id);break;
-    case NewFolderItem:{const BM::Id parent=folder?id:n->parent;const size_t at2=folder?BM::End:bookmarks.IndexOf(id)+1;if(BM::Id made=NewFolder(parent,at2))EditBookmark(made,edit,false,keyboard,false,keyboard?region:0);break;}
+    case NewFolderItem:{const BM::Id parent=folder?id:n->parent;const size_t at2=folder?BM::End:bookmarks.IndexOf(id)+1;if(BM::Id made=NewFolder(parent,at2))RenameOrEdit(made,surface,edit,keyboard,keyboard?region:0);break;}
     case AddHere:lastFolder=id;BookmarkStar(keyboard);break;
     case ToggleBar:ToggleBookmarkBar();break;
     default:break;
@@ -3563,7 +3642,7 @@ void BandContextMenu(POINT at){
     const std::vector<CM::Item> items{CM::Command(AddPage,TR(bookmark_add_page_cmd),L"Ctrl+D",t&&!t->home&&BM::Admissible(t->uri)),CM::Command(NewFolderItem,TR(bookmark_new_folder_menu)),CM::Separator(),CM::Command(ToggleBar,BandToggleLabel(),TR(key_ctrl_shift_b))};
     switch(contextMenu.Track(items,at,nullptr,false,motion.ReducedMotion())){
     case AddPage:lastFolder=BM::BarRoot;BookmarkStar(false);break;
-    case NewFolderItem:if(BM::Id made=NewFolder(BM::BarRoot)){RECT r=RegionScreen(NativeChrome::BookmarkBase+(int)bookmarks.IndexOf(made));if(r.right<=r.left)r={at.x,at.y,at.x,at.y};EditBookmark(made,r,false,false);}break;
+    case NewFolderItem:if(BM::Id made=NewFolder(BM::BarRoot)){RECT r=RegionScreen(NativeChrome::BookmarkBase+(int)bookmarks.IndexOf(made));if(r.right<=r.left)r={at.x,at.y,at.x,at.y};RenameOrEdit(made,RenameBand,r,false,0);}break;
     case ToggleBar:ToggleBookmarkBar();break;
     default:break;
     }
@@ -3595,9 +3674,11 @@ void CreateBookmarkSurfaces(){
     d.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
     d.open=[](const std::wstring& url,bool newTab){bookmarksDrawer.Hide(false,true);OpenBookmarkUrl(url,newTab?2:0);};
     d.remove=[](BM::Id id){RemoveBookmark(id);};
-    d.edit=[](BM::Id id,RECT r){EditBookmark(id,r,false,true);};
+    d.edit=[](BM::Id id,RECT r){const auto* n=bookmarks.Find(id);if(n&&n->kind==BM::Kind::Folder)RenameOrEdit(id,RenameDrawer,r,true,0);else EditBookmark(id,r,false,true);};
+    d.editColor=[](HDC dc,HWND edit)->LRESULT{return folderRename.Owns(edit)?folderRename.Color(dc):0;};
+    d.relayout=[]{SyncFolderRename();};
     d.move=[](BM::Id id,int delta){ShiftBookmark(id,delta);bookmarksDrawer.FocusBookmark(id);};
-    d.context=[](BM::Id id,POINT at,bool keyboard){BookmarkContextMenu(id,at,nullptr,keyboard);if(bookmarksDrawer.Visible()&&!bookmarkPopover.Visible()){SetForegroundWindow(bookmarksDrawer.Window());SetFocus(bookmarksDrawer.Window());}};
+    d.context=[](BM::Id id,POINT at,bool keyboard){bookmarkMenuSurface=RenameDrawer;BookmarkContextMenu(id,at,nullptr,keyboard);bookmarkMenuSurface=RenameNone;if(bookmarksDrawer.Visible()&&!bookmarkPopover.Visible()&&!folderRename.Active()){SetForegroundWindow(bookmarksDrawer.Window());SetFocus(bookmarksDrawer.Window());}};
     d.closed=[](bool keyboard){SyncUpdateToastReserve();if(keyboard&&!halted)FocusPage();};
     d.icon=[](const std::wstring& site){return SiteIcon(site);};
     d.announce=AnnounceBookmark;
@@ -3649,7 +3730,7 @@ bool BandKey(WPARAM w){
     case VK_HOME:return rove(0);
     case VK_END:return rove((int)order.size()-1);
     case VK_DOWN:if(focus=='O'){OverflowMenu(true);return true;}if(chrome.bandItems[index].folder){FolderMenu(index,true);return true;}return false;
-    case VK_F2:if(index>=0){EditBookmark(chrome.bandItems[index].id,RegionScreen(focus),false,true,false,focus);return true;}return false;
+    case VK_F2:if(index>=0){const BM::Id id=chrome.bandItems[index].id;if(chrome.bandItems[index].folder)RenameOrEdit(id,RenameBand,RegionScreen(focus),true,focus);else EditBookmark(id,RegionScreen(focus),false,true,false,focus);return true;}return false;
     case VK_DELETE:if(index>=0){RemoveBookmark(chrome.bandItems[index].id);if(chrome.band.visible>0)rove(std::min(at,chrome.band.visible-1));else ToggleChromeFocus();return true;}return false;
     case VK_ESCAPE:FocusPage();return true;
     case VK_RETURN:if(index>=0){keyboardModality=true;BandActivate(index,ctrl,shift,true);return true;}return false;
@@ -4062,7 +4143,7 @@ void AccessibleAction(int action,long long key){
 }
 Accessibility::Host AccessibleHost(){
     Accessibility::Host host;host.window=window;host.nodes=AccessibleNodes;host.focused=AccessibleFocus;
-    host.label=[](HWND child,Accessibility::Node& node){if(!child||child!=address)return false;node.name=TR(a11y_address);node.accelerator=L"Ctrl+L";node.automationId=L"Address";return true;};
+    host.label=[](HWND child,Accessibility::Node& node){if(child&&folderRename.Owns(child)){node.name=TR(bookmark_field_name);node.automationId=L"BookmarkRename" /* i18n-exempt: UIA id */;return true;}if(!child||child!=address)return false;node.name=TR(a11y_address);node.accelerator=L"Ctrl+L";node.automationId=L"Address";return true;};
     host.invoke=[](long long key){PostMessageW(window,AccessibleMessage,AccessibleInvoke,(LPARAM)key);};
     host.select=[](long long key){PostMessageW(window,AccessibleMessage,AccessibleSelect,(LPARAM)key);};
     host.focus=AccessibleSetFocus;
@@ -4162,7 +4243,7 @@ case WM_MOUSEMOVE:{ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float 
     if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();return 0;}break;
 case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
-case WM_LBUTTONDOWN:{ChromeTipHide();{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}if(y>=SV::liftY&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;}
+case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}if(y>=SV::liftY&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;}
     int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);}
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()){const BM::Id bid=chrome.bandItems[i].id;bandDrag={i,bid,{GET_X_LPARAM(l),GET_Y_LPARAM(l)},GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.BandRect(i).left,false,BM::BarRoot,bookmarks.IndexOf(bid)};}}}return 0;}
 case WM_LBUTTONUP:{if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDrag.active||bandDrag.active;if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active)FinishReorder();CancelTabDrag();BandDragEnd(false);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
@@ -4192,6 +4273,7 @@ case WM_KEYDOWN:if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(
     if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
     if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);return 0;}break;
 case WM_CTLCOLOREDIT:{
+    if(folderRename.Owns((HWND)l))return folderRename.Color((HDC)w);
     using namespace NativeChrome::Design;
     static NativeUI::AddressBackground background;
     HDC dc=(HDC)w;RECT rect;GetClientRect(address,&rect);
