@@ -239,12 +239,12 @@ struct Renders {
         chrome.Paint({L"Musique", L"Jeu"}, 0, L"", false, 0, focus);
         if (shown) {
             const auto r = std::find_if(chrome.regions.begin(), chrome.regions.end(), [](const Region& x) { return x.id == 'V'; });
-            Expect(r != chrome.regions.end() && r->rect.left == 1180 - 157 && r->rect.right == 1180 - 133, "audio button left of History, 6 DIP gap");
-            Expect(chrome.bar.right == 1180 - 163, "address field ends 6 DIP before the audio button");
+            Expect(r != chrome.regions.end() && r->rect.left == 1180 - 127 && r->rect.right == 1180 - 103, "audio button left of History, 6 DIP gap");   // PR76: no toolbar private button, the cluster moved 30 DIP right
+            Expect(chrome.bar.right == 1180 - 133, "address field ends 6 DIP before the audio button");
             const auto y = std::find_if(chrome.regions.begin(), chrome.regions.end(), [](const Region& x) { return x.id == 'Y'; });
-            Expect(y != chrome.regions.end() && y->rect.left == 1180 - 127, "History does not move");
+            Expect(y != chrome.regions.end() && y->rect.left == 1180 - 97, "History does not move");
         } else {
-            Expect(chrome.bar.right == 1180 - 133 && std::none_of(chrome.regions.begin(), chrome.regions.end(), [](const Region& x) { return x.id == 'V'; }), "no audio button before any sound");
+            Expect(chrome.bar.right == 1180 - 103 && std::none_of(chrome.regions.begin(), chrome.regions.end(), [](const Region& x) { return x.id == 'V'; }), "no audio button before any sound");
         }
         return SUCCEEDED(chrome.SavePng((out + L"\\" + name).c_str()));
     }

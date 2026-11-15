@@ -59,7 +59,7 @@ ACCENT = re.compile(r'[À-ÿ«»…’—›]')
 # Diagnostics: logs, traces, and main.cpp's Fail/Check(hr, where) whose « where » is the failing API name
 # (the dialog's own wording around it is catalog text). Free functions only: a member call such as
 # profileDeleteDialog.Fail(...) or p->Check(...) is UI, never a diagnostic.
-LOGISH = re.compile(r'(?<![.>])\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable|SandboxLog)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
+LOGISH = re.compile(r'(?<![.>])\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable|SandboxLog|CancelContentTransition)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
 # A narrow (char) literal that is a French sentence: two or more common French words.
 FRENCH_NARROW = re.compile(r'(?i)(?:\b(?:de|du|des|le|la|les|est|pas|sur|dans|une?|illisible|impossible|cliquez|configuration de)\b.*){2,}')
 TR_CALL = re.compile(r'\bTR[FP]?\(')

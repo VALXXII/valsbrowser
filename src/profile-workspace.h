@@ -304,7 +304,7 @@ void WorkspaceShown() {
     for (auto& t : pages) if (t) t->placedVisible = -1;   // re-placed by ApplyPages
     chrome.tabMotion.Settle(); motion.selection.Settle();
     SyncBookmarkChrome(); DownloadsChanged(); UpdateDownloadIcon(false); historyDrawer.Changed();
-    if (current >= 0 && current < static_cast<int>(pages.size())) Select(current); else { Layout(); Update(); }
+    if (current >= 0 && current < static_cast<int>(pages.size())) { KeepContentTransition keep; Select(current); } else { Layout(); Update(); }   // the profile's own tab: under its switch transition
     InvalidateRect(window, nullptr, FALSE); PumpModal();
     if (!pendingDownloads.empty()) PostMessageW(window, DownloadAskMessage, 0, 0);   // its save dialogs waited while it was hidden
 }
@@ -330,7 +330,7 @@ bool LeaveProfileHere(const std::wstring& id, bool openOther) {
 bool OpenSessionTabHere(const std::wstring& id, const std::wstring& session, int tab) {
     Workspace* w = FindWorkspace(id); if (!w || w->s.windowId != session) return false;
     if (!SwitchWorkspace(id)) return false;
-    if (tab >= 0 && tab < static_cast<int>(pages.size())) Select(tab);
+    if (tab >= 0 && tab < static_cast<int>(pages.size())) { KeepContentTransition keep; Select(tab); }   // part of this switch: its transition stays
     return true;
 }
 // Window close: each parked session follows the active one's rule (L2): kept when the close was not asked by

@@ -403,8 +403,11 @@ void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
 // Tab / profile switch transition (src/content-transition.h; functions defined before profile-workspace.h).
 ContentTransition::Overlay contentTransition; unsigned contentTransitionGeneration=0; constexpr UINT_PTR ContentTransitionTimerId=0x5051;
 constexpr UINT_PTR ContentReadyTimerId=0x5053; void ContentReadyTick();
-void BeginContentTransition(ContentTransition::Kind kind);void RevealContentTransition();void ContentTransitionInput(const wchar_t* what);
-void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;if(WorkspaceParked()){current=n;pages[n]->usedAt=++useClock;return;}const bool transition=n!=current&&current>=0&&current<(int)pages.size()&&pages[current]&&!pages[current]->closed&&pages[current]->controller.p&&pages[n]&&!pages[n]->closed;if(transition)BeginContentTransition(ContentTransition::Kind::Tab); /* before the outgoing page is hidden */editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();AnnotationTabChanged();if(transition)RevealContentTransition();}
+void BeginContentTransition(ContentTransition::Kind kind);void RevealContentTransition();void ContentTransitionInput(const wchar_t* what);void CancelContentTransition(const wchar_t* why);
+// Internal selections that complete a profile switch (its session restored when its engine is ready, the tab chosen
+// in another profile's preview) keep the profile transition; only another selection cancels it.
+int keepContentTransition=0; unsigned selectedSerial=0; /* the tab Select showed last (indices shift on close / move) */ struct KeepContentTransition{KeepContentTransition(){++keepContentTransition;}~KeepContentTransition(){--keepContentTransition;}};
+void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;if(WorkspaceParked()){current=n;pages[n]->usedAt=++useClock;return;}if(pages[n]->serial!=selectedSerial&&!keepContentTransition)CancelContentTransition(L"tab selected");selectedSerial=pages[n]->serial; /* a tab switch is immediate: no blur, no capture; a profile transition still on screen never covers the chosen tab */editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();AnnotationTabChanged();}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
 void MoveTab(int from,int to){
     if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
@@ -1315,7 +1318,7 @@ a:active .i{background:rgba(255,255,255,.06)}
 )CSS"+(reduced?L"":L".i{transition:background-color 120ms ease-out}@media (prefers-reduced-motion:reduce){.i{transition:none}}")
         +L"</style><body><nav aria-label=\""+TR(newtab_frequent)+L"\"><ul>"+tiles+L"</ul></nav></body></html>";
 }
-void RestoreSession(){
+void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come back under its switch transition
     if(privateWindow){NewTab(NewTabTarget());return;} // a private window starts empty and restores nothing
     BrowserSession::State state;
     // "Restaurer les onglets" off: start on a fresh tab (the session is still saved on exit).
@@ -4007,7 +4010,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     // The star: a toggle (On = this page is bookmarked) that also invokes.
     if(auto* r=region('K')){auto label=AccessibleButton('K');Node n;n.key='K';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('K');n.focusable=n.enabled;n.toggle=chrome.starred?2:1;nodes.push_back(std::move(n));}
     if(auto* r=region('N')){auto label=AccessibleButton('N');Node n;n.key='N';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.help=label.help;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('N');n.focusable=n.enabled;n.toggle=chrome.annotateActive?2:1;nodes.push_back(std::move(n));}
-    for(int id:{'V','Y','D','P','S'})button(id,AccessibleToolbar);
+    for(int id:{'V','Y','D','S'})button(id,AccessibleToolbar);
     // Decision 7: the private chip is plain text for UIA (not a button: no focus, no Invoke).
     if(auto* r=region(NativeChrome::Chrome::PrivateChipId)){Node n;n.key=AccessiblePrivateChip;n.role=Role::Text;n.name=TR(a11y_private_chip);n.automationId=L"PrivateWindowChip";n.focusable=false;n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     // "Barre de favoris": every item of the bar root, those behind » listed off screen (still invocable).
@@ -4470,7 +4473,9 @@ HWND PageHostWindow(Tab& t){
 std::vector<HWND> ShownPageWindows(){std::vector<HWND> v;for(auto& t:pages)if(t&&!t->closed&&t->controller.p&&t->placedVisible==1&&PageShown(*t))if(HWND h=PageHostWindow(*t))v.push_back(h);return v;}
 // The first input to a page (a click: WM_PARENTNOTIFY, sent before the page handles it; a key in the page) removes
 // the overlay at once: what the user acts on is what they see. Nothing is consumed or delayed.
-void ContentTransitionInput(const wchar_t* what){if(!contentTransition.Active())return;contentTransition.Cancel();if(workspaceTest)Log(std::wstring(L"TRANSITION cancelled by input: ")+what);}
+// Removes the overlay now, releases both snapshots and the pending readiness / end timers (no idle wake left).
+void CancelContentTransition(const wchar_t* why){if(!contentTransition.Active())return;contentTransition.Cancel();if(window){KillTimer(window,ContentReadyTimerId);KillTimer(window,ContentTransitionTimerId);}if(workspaceTest)Log(std::wstring(L"TRANSITION cancelled by ")+why);}
+void ContentTransitionInput(const wchar_t* what){CancelContentTransition((std::wstring(L"input: ")+what).c_str());}
 RECT ContentTransitionRect(){const auto c=ContentBox();return {S(c.left),S(c.top),S(c.right),S(c.bottom)};}
 // Called just BEFORE the outgoing page is hidden: the snapshot is taken now, the switch then happens at once.
 void BeginContentTransition(ContentTransition::Kind kind){

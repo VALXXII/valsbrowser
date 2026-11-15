@@ -87,9 +87,9 @@ public:
     // DIP rectangle repainted for download-icon-only frames (the 'D' button).
     // The ripple grows well past the button (x4): the rectangle covers its reach,
     // down to the chrome's lower edge (the page covers what lies below).
-    D2D1_RECT_F DownloadIconDirty()const{const float cx=width-85,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
+    D2D1_RECT_F DownloadIconDirty()const{const float cx=width-55,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
     // Audio button (left of History, only while a site has made sound): icon-only frames.
-    static constexpr float AudioRight=133,AudioLeft=157;   // from the window's right edge; the field ends 6 DIP before
+    static constexpr float AudioRight=103,AudioLeft=127;   // from the window's right edge; the field ends 6 DIP before
     bool audioShown=false;   // tooltip resolved at use (TR(chrome_tip_audio)): `chrome` is a global built before the language is pinned
     Audio::IconModel audioIcon;
     D2D1_RECT_F AudioIconDirty()const{return {width-AudioLeft-1,47,width-AudioRight+1,73};}
@@ -647,7 +647,7 @@ public:
     bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip;   // empty until Ann::SyncChrome: AnnotateTip() falls back to the catalog at use
     const wchar_t* AnnotateTip() const { return annotateTip.empty() ? TR(chrome_tip_annotate) : annotateTip.c_str(); }
     std::function<void(ID2D1RenderTarget*,ID2D1Factory*,ID2D1SolidColorBrush*,D2D1_RECT_F,Motion::InteractionVisual,bool focus)> paintAnnotate;
-    float AnnotateRight()const{return (audioShown?AudioLeft:127.f)+6;}   // from the right edge: 6 DIP left of Audio/History
+    float AnnotateRight()const{return (audioShown?AudioLeft:97.f)+6;}   // from the right edge: 6 DIP left of Audio/History
     float ContentTop()const{return Design::Vertical::ContentTop(bandShown)+annotationBand;}
     D2D1_RECT_F BandRect(int i)const{return {band.left[i],BookmarksBar::Layout::top,band.left[i]+band.width[i],BookmarksBar::Layout::bottom};}
     float BandTitleWidth(const BandItem& item){return item.title.empty()?0:TextWidth(item.title,Design::Type::label.size,Design::Type::label.medium,false,Design::Type::label.tracking);}
@@ -943,7 +943,9 @@ public:
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?TR(chrome_tip_edit_bookmark):TR(chrome_tip_add_bookmark)});
         if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},AnnotateTip()});
         if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},TR(chrome_tip_audio)});
-        regions.push_back({'Y',{width-127,48,width-103,72},TR(chrome_tip_history)});regions.push_back({'D',{width-97,48,width-73,72},TR(chrome_tip_downloads)});regions.push_back({'P',{width-67,48,width-43,72},TR(chrome_tip_new_private_window)});regions.push_back({'S',{width-30,48,width-6,72},TR(chrome_tip_settings)});
+        // Right cluster, 24 DIP buttons 6 apart, then the separator and Réglages. No private-window button: « Nouvelle
+        // fenêtre privée » lives in the profile menu and Ctrl+Maj+N (command 'P' unchanged).
+        regions.push_back({'Y',{width-97,48,width-73,72},TR(chrome_tip_history)});regions.push_back({'D',{width-67,48,width-43,72},TR(chrome_tip_downloads)});regions.push_back({'S',{width-30,48,width-6,72},TR(chrome_tip_settings)});
         BuildBand();
     }
     std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(IsBookmark(region.id)||region.id=='O'){if(region.id!=BandStop())continue;}if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
