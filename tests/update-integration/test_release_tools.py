@@ -402,6 +402,9 @@ class FakeGitHub:
         self.corrupt_upload = corrupt_upload  # asset name whose server digest is wrong
         self.corrupt_public = corrupt_public  # asset name served with different bytes
         self.blobs = {}
+        for r in self.releases:  # an existing release serves its files anonymously (its 'files' are not API fields)
+            for name, data in r.get('files', {}).items():
+                self.blobs[(r['tag_name'], name)] = data
 
     def gh(self, *args, check=True, capture=True):
         self.calls.append(args)
@@ -483,7 +486,7 @@ class Publisher(unittest.TestCase):
         return code, out.getvalue()
 
     def existing_release(self, with_zip=True, zip_bytes=None, with_sums=False, with_setup=True):
-        assets = []
+        assets, files = [], {}
         for name in ('browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', 'browser-0.3.7-win-x64.zip',
                      *(('browser-0.3.7-win-x64-setup.exe',) if with_setup else ()),
                      *(('SHA256SUMS.txt',) if with_sums else ())):
@@ -491,7 +494,8 @@ class Publisher(unittest.TestCase):
                 continue
             data = zip_bytes if (name.endswith('.zip') and zip_bytes is not None) else (self.d / name).read_bytes()
             assets.append({'name': name, 'digest': 'sha256:' + hashlib.sha256(data).hexdigest()})
-        return {'tag_name': 'v0.3.7', 'draft': False, 'latest': True, 'assets': assets}
+            files[name] = data
+        return {'tag_name': 'v0.3.7', 'draft': False, 'latest': True, 'assets': assets, 'files': files}
 
     def test_publishes_zip_with_verified_digest_and_instructions(self):
         fake = FakeGitHub(existing=[{'tag_name': 'v0.3.6', 'draft': False, 'latest': True, 'assets': []}])
@@ -925,6 +929,43 @@ class SetupPublisher(Publisher):
                           corrupt_public=SETUP)
         with self.assertRaises(SystemExit):
             self.run_publish(fake)
+
+    def test_rerun_after_failed_public_verification_keeps_failing_until_public_bytes_are_right(self):
+        """Review P2 (eb3031c): a rerun goes through verify-existing, which must verify the anonymous downloads too."""
+        for broken in (SETUP, 'browser-0.3.7-win-x64.zip', 'update-manifest-win-x64.txt'):
+            with self.subTest(broken=broken):
+                fake = FakeGitHub(existing=[{'tag_name': 'v0.3.6', 'draft': False, 'latest': True, 'assets': []}],
+                                  corrupt_public=broken)
+                with self.assertRaises(SystemExit):
+                    self.run_publish(fake)  # first run: published, public check fails
+                self.assertFalse(next(r for r in fake.releases if r['tag_name'] == 'v0.3.7')['draft'])
+                for _ in range(2):  # reruns while the public bytes are still wrong
+                    before = len(fake.mutations())
+                    with self.assertRaises(SystemExit):
+                        self.run_publish(fake)
+                    # never replaces or adds assets on the recovery path (at most re-marks latest)
+                    self.assertTrue(all(c[:2] == ('release', 'edit') for c in fake.mutations()[before:]), fake.mutations())
+                fetched = []
+                real_fetch = fake.fetch
+                fake.fetch = lambda url, limit=4096: (fetched.append(url), real_fetch(url, limit))[1]
+                fake.corrupt_public = None  # the CDN now serves the right bytes
+                code, out = self.run_publish(fake)
+                self.assertEqual(code, 0)
+                self.assertTrue(any(u.endswith('/releases/latest/download/update-manifest-win-x64.txt') for u in fetched))
+                self.assertTrue(any(u.endswith(f'/v0.3.7/{SETUP}') for u in fetched))
+                self.assertTrue(any(u.endswith('/v0.3.7/browser-0.3.7-win-x64.zip') for u in fetched))
+                self.assertIn('verified', out)
+
+    def test_dry_run_verify_existing_never_edits(self):
+        fake = FakeGitHub(existing=[{'tag_name': 'v0.3.6', 'draft': False, 'latest': True, 'assets': []}])
+        self.assertEqual(self.run_publish(fake)[0], 0)
+        before = len(fake.mutations())
+        self.assertEqual(self.run_publish(fake, '--dry-run')[0], 0)
+        self.assertEqual(len(fake.mutations()), before)
+        fake.corrupt_public = SETUP
+        with self.assertRaises(SystemExit):
+            self.run_publish(fake, '--dry-run')  # read-only checks still catch a wrong public setup
+        self.assertEqual(len(fake.mutations()), before)
 
     def test_existing_release_without_setup_refused(self):
         manifest = (self.d / 'update-manifest-win-x64.txt').read_bytes()

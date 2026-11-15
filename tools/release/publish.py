@@ -175,6 +175,32 @@ def check_digests(release: dict, files: list, what: str) -> None:
             raise SystemExit(f'{what}: digest mismatch or missing asset {f.name}: {digests.get(f.name)}')
 
 
+def verify_public(repo: str, tag: str, manifest: Path, archive: Path, setup: Path, latest: bool = True) -> None:
+    """Anonymous downloads must serve exactly our bytes: the latest manifest (when `latest`), the versioned ZIP and the
+    versioned setup. Shared by a fresh publication and by verify-existing (a rerun after a failed check), so a
+    recovery run can never turn green while a public asset is still wrong. Read-only (no asset is ever replaced)."""
+    url = f'https://github.com/{repo}/releases/latest/download/{MANIFEST}'
+    zip_url = f'https://github.com/{repo}/releases/download/{tag}/{archive.name}'
+    setup_url = f'https://github.com/{repo}/releases/download/{tag}/{setup.name}'
+    zip_sha, setup_sha = sha256(archive), sha256(setup)
+    manifest_ok, zip_ok, setup_ok = not latest, False, False
+    for attempt in range(10):
+        try:
+            manifest_ok = manifest_ok or fetch(url) == manifest.read_bytes()
+            zip_ok = zip_ok or hashlib.sha256(fetch(zip_url, MAX_ZIP + 1)).hexdigest() == zip_sha
+            setup_ok = setup_ok or hashlib.sha256(fetch(setup_url, MAX_SETUP + 1)).hexdigest() == setup_sha
+            if manifest_ok and zip_ok and setup_ok:
+                print(f'{tag}: public {"latest manifest, " if latest else ""}setup and ZIP verified.')
+                print(f'Public download: {setup_url}')
+                print(f'Portable ZIP: {zip_url}')
+                return
+        except urllib.error.URLError as e:
+            print('verify retry:', e)
+        time.sleep(6)
+    missing = 'latest manifest' if not manifest_ok else 'ZIP' if not zip_ok else 'setup'
+    raise SystemExit(f'Published, but the public {missing} does not match (check feed manually).')
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--repo', required=True, help='public releases repository owner/name')
@@ -207,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
         check_digests(existing, [package, manifest, archive, setup, dist / SUMS], f'existing {tag}')
         if not a.dry_run:
             gh('release', 'edit', tag, '--repo', a.repo, '--latest')
+        # A rerun after a failed public check lands here: success only once the anonymous downloads are right
+        # (dry run: read-only, latest not edited so only the versioned setup/ZIP are checked).
+        verify_public(a.repo, tag, manifest, archive, setup, latest=not a.dry_run)
         print(f'{tag} already published with identical assets; latest confirmed.')
         return 0
     if a.dry_run:
@@ -228,26 +257,9 @@ def main(argv: list[str] | None = None) -> int:
         print('Superseded while uploading; draft removed, nothing published.')
         return 0
     gh('release', 'edit', tag, '--repo', a.repo, '--draft=false', '--latest')
-    url = f'https://github.com/{a.repo}/releases/latest/download/{MANIFEST}'
-    zip_url = f'https://github.com/{a.repo}/releases/download/{tag}/{archive.name}'
-    setup_url = f'https://github.com/{a.repo}/releases/download/{tag}/{setup.name}'
-    zip_sha, setup_sha = sha256(archive), sha256(setup)
-    manifest_ok = zip_ok = setup_ok = False
-    for attempt in range(10):
-        try:
-            manifest_ok = manifest_ok or fetch(url) == manifest.read_bytes()
-            zip_ok = zip_ok or hashlib.sha256(fetch(zip_url, MAX_ZIP + 1)).hexdigest() == zip_sha
-            setup_ok = setup_ok or hashlib.sha256(fetch(setup_url, MAX_SETUP + 1)).hexdigest() == setup_sha
-            if manifest_ok and zip_ok and setup_ok:
-                print(f'Published {tag}; public latest manifest, setup and ZIP verified.')
-                print(f'Public download: {setup_url}')
-                print(f'Portable ZIP: {zip_url}')
-                return 0
-        except urllib.error.URLError as e:
-            print('verify retry:', e)
-        time.sleep(6)
-    missing = 'latest manifest' if not manifest_ok else 'ZIP' if not zip_ok else 'setup'
-    raise SystemExit(f'Published, but the public {missing} does not match (check feed manually).')
+    verify_public(a.repo, tag, manifest, archive, setup)
+    print(f'Published {tag}.')
+    return 0
 
 
 if __name__ == '__main__':
