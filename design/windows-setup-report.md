@@ -117,3 +117,52 @@ EN uninstall window → program and shortcuts removed, data kept.
 * A crash exactly between the repair rename and the move leaves `current` naming a missing directory; the launcher
   reports a broken install and the next setup run installs again (data untouched). Not fault-injected.
 * Size: setup ≈ 3.4× the ZIP (uncompressed package).
+
+## Follow-up after eb3031c (PR #81 integration + independent review fixes)
+
+Commits on top of eb3031c, in order:
+
+| Commit | What |
+| --- | --- |
+| 60472b1 | `git merge ce3a0de` (main, PR #81) — clean, no conflict. The merge brings exactly PR #81's 6 files (`src/browser.rc`, `src/mcp-bridge.rc`, `src/update-helper.rc`, `src/version-info.rc`, `run_all.py` +40, `build.py` +7/-3); no setup file touched by it. |
+| 29a5738 | Setup × PR #81: `src/setup.rc` includes `version-info.rc` (`browser setup` / `browser-setup.exe`); `run_all.py --app` requires `<app>-setup/browser-setup.exe` for a release app and checks its version strings + channel icon (2 hunks); `run_all` integration step runs `tests/setup/run_tests.py` (temp roots, test HKCU keys; 108–136 s here); setup suite test headers define `BROWSER_FILEVERSION`. |
+| f8189c2 | Release review P2: `publish.py` verify-existing (rerun) runs the same anonymous verification (latest manifest, versioned setup and ZIP) as a fresh publication, after the latest edit; dry run read-only. |
+| 7a8b7c8 | Install review P2 #1 + #3 (helper side): `src/install-transaction.h` (root lock, repair record, recovery), helper repair rollback/commit split, lock adopt/acquire, nonce-stamped `last-result`, fault points. |
+| 29d64dc | Install review P2 #2 + #3 (setup side): trusted ancestry, lock before any mutation + Busy, inherited handle to the helper, uninstall under the lock, data re-check by final path, nonce-checked result. |
+| b69ebc8 | Regression cases + `--src-rev` red runs, plan « Transactions » section, evidence. |
+
+(7a8b7c8 alone pairs with the setup of 29d64dc: setup plans now require `lock-handle`; the two commits are one
+contract split by side for review.)
+
+### Checks (all run here)
+
+| Check | Result |
+| --- | --- |
+| PR #81 stub metadata | release build 0.3.340/0.3.342: `run_all --only app` ALL PASSED; stub strings CompanyName ValXXII, FileDescription « browser setup », OriginalFilename browser-setup.exe, versions = stamp. Red: a stub of another version → `FileVersion … != …`; no stub → `release app has no setup stub` |
+| Release P2 rerun | red on eb3031c-equivalent code: 4 failures (`p2-rerun-red.txt`); green: release tools 59 OK, 1 skipped (`p2-rerun-green.txt`) |
+| Install P2 #1/#2/#3 | same new cases run against the pre-fix sources (`--src-rev f8189c2`): 15 failures — original repair copy lost after `current-write`, kill gaps unrecovered, junction-target data **deleted** through the ancestor link, uninstall removed the install during a staged setup (`install-review-red-f8189c2.txt`). Fixed code: setup suite **310 checks, 0 failures** (`setup-suite-green-fixes.txt`) |
+| update-core (helper changed) | update_core_test 315/0, install_test 539/0 (`update-core-tests-post-fix.txt`) |
+| Real-app E2E | release-channel 0.3.342 of the fixed sources (stamped `--commit ce3a0de` only for the local main check — **never publish**): E2E OK, real helper adopted the setup's lock, results nonce-stamped, real repair committed, bridge MCP OK, uninstall kept data (`e2e-fixes/`) |
+
+New cases: repair rollback under `current-write` and no-ack (original same-version copy back, no leftovers, record
+closed); helper killed after the aside (target missing) → stable launcher recovers then starts the restored copy;
+killed after the move → next setup recovers under its lock; same state with the repaired version's ack → recovery
+commits; successful repair commits. Ancestor junction (LOCALAPPDATA itself a junction to a copy of an install with
+data): uninstall `--remove-data` and setup both refused Unsafe, target tree byte-identical. Serialization: uninstall
+during a setup paused after staging → Busy, no change, setup completes; during a helper paused after the repair
+aside → Busy, repair completes; setup killed while its helper waits for the ack → uninstall Busy (helper keeps the
+inherited lock) and the orphaned helper finishes; two uninstallers → second Busy, first completes; engine-started
+helper while the lock is held → `install-busy`, nothing switched.
+
+### Limits of the fixes
+
+* The lock pins the root and its ancestors; children (`data`, `versions`, …) are re-checked right before removal,
+  but a same-user process racing a swap inside the root during `RemoveTree` is out of scope (same-user malware can
+  modify the install anyway).
+* Old engines (≤ eb3031c helpers) do not take the lock; only helpers from this version on do (the helper that runs
+  an install is always the NEW version's, so every future install participates).
+* A record whose restore keeps failing (e.g. a file of the replacement held open) blocks further installs/uninstalls
+  with « interrupted repair could not be finished » until it can complete; nothing is deleted meanwhile.
+* An unconfirmed repair (new process alive, no ack within 120 s) stays open and is committed by the first recovery
+  after that process acked, else rolled back.
+* Not changed: clean machine / SmartScreen / no-WebView2 / release stub execution limits listed above.
