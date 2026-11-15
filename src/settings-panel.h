@@ -55,8 +55,8 @@ enum Hit : int {
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
     CatEngine = 80, CatTabs = 81, CatPrivacy = 82, CatDownloads = 83, CatDisplay = 84,
     CatProfiles = 85, ProfileDelete = 86, ProfileEditorHit = 87, ProfileClearData = 88, ProfileRowBase = 700,   // Réglages › Profils (Paper p-I-0 P02)
-    CatAnnotations = 89,   // « Annotations et agents » (85..88 are Profils)
-    // « Annotations et agents »: one button per agent row, the manual fallback, the prompt switch, retention, folder, clear all.
+    CatAnnotations = 89,   // « Annotations » (85..88 are Profils)
+    // « Annotations »: one button per agent row, the manual fallback, the prompt switch, retention, folder, clear all.
     AgentBase = 90, ManualConnect = 92, AnnotationPrompt = 67, AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
@@ -108,7 +108,7 @@ inline constexpr Box Icon(float y, float h = row) { return {iconLeft, y + (h - i
 inline constexpr Box Chevron(float y, float h = row) { return {slotRight - 16, y + (h - 24) / 2, slotRight, y + (h + 24) / 2}; }
 // Two-line switch rows wrap their description up to 16 DIP before the switch.
 inline constexpr float descriptionWidth = slotRight - switchWidth - 16 - textLeft;
-// Agent rows (« Annotations et agents »): logo in the icon slot, name on the first line, the action as a
+// Agent rows (« Annotations »): logo in the icon slot, name on the first line, the action as a
 // compact raised button (the update toast's Raised button at the drawer's 24 DIP control height) on the
 // same line, the status wrapped under the name across the row (it starts where the button ends).
 inline constexpr float actionHeight = Design::Size::compact, actionPad = 8;
@@ -129,7 +129,7 @@ inline const wchar_t* Title(View v) {
     case View::Engine: return L"Moteur de recherche"; case View::Tabs: return L"Onglets"; case View::Privacy: return L"Confidentialité";
     case View::Downloads: return L"Téléchargements"; case View::Display: return L"Affichage et son"; case View::Sites: return L"Autorisations";
     case View::Profiles: return L"Profils";
-    case View::Annotations: return L"Annotations et agents";
+    case View::Annotations: return L"Annotations";
     default: return L"Réglages";
     }
 }
@@ -171,7 +171,7 @@ struct LayoutInput {
     const BrowserSettings::State* state = nullptr;
     const std::vector<BrowserSettings::Site>* sites = nullptr; bool sitesLoaded = false;
     bool sitesQuiet = false;   // first load still within its grace period: no « Chargement… » flash
-    // « Annotations et agents » (only when the annotation mode is compiled in: dev / preview builds).
+    // « Annotations » (only when the annotation mode is compiled in: dev / preview builds).
     bool annotations = false;
     const AnnotationSettings::Agents* agents = nullptr; bool agentsKnown = false;
     std::array<std::vector<std::wstring>, AnnotationSettings::AppCount> agentLines;   // wrapped status per app
@@ -229,7 +229,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         lead(Kind::Nav, CatPrivacy, L"shield-mask", L"Confidentialité", st ? BrowserSettings::Info(st->tracking).label : L"");
         lead(Kind::Nav, CatDownloads, L"downloads-mask", L"Téléchargements", st ? (st->askWhereToSave ? std::wstring(L"Demander") : in.folderName) : L"");
         lead(Kind::Nav, CatDisplay, L"eye-mask", L"Affichage et son", st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
-        if (in.annotations) { auto* s = lead(Kind::Nav, CatAnnotations, nullptr, L"Annotations et agents", in.agents ? AnnotationSettings::Summary(*in.agents, in.agentsKnown) : L""); s->glyph = &AnnotationSettings::Mark; }
+        if (in.annotations) { auto* s = lead(Kind::Nav, CatAnnotations, nullptr, L"Annotations", in.agents ? AnnotationSettings::Summary(*in.agents, in.agentsKnown) : L""); s->glyph = &AnnotationSettings::Mark; }
         y -= rowGap;
     } else if (view == View::Engine) {
         for (int i = 0; i < BrowserSettings::EngineCount; ++i) { auto* s = add(Kind::Engine, EngineHit(i), row); s->index = i; }
@@ -405,15 +405,15 @@ inline const Searchable SearchIndex[] = {
     {GrayscaleText, L"Affichage lissé", L"Affichage et son › Pages", View::Display, L"lisse doux mac police texte antialiasing cleartype nettete"},
     {AutoplayHit, L"Lecture automatique", L"Affichage et son › Son et vidéo", View::Display, L"video son"},
     {MuteBackground, L"Couper le son en arrière-plan", L"Affichage et son › Son et vidéo", View::Display, L"muet son"},
-    // « Annotations et agents » (found only when the annotation mode is compiled in).
-    {CatAnnotations, L"Annotations et agents", L"Réglages", View::Main, L"annoter mcp claude codex agent"},
-    {AgentHit(AnnotationSettings::App::Claude), L"Claude Desktop", L"Annotations et agents › Agents", View::Annotations, L"connecter deconnecter anthropic mcp agent"},
-    {AgentHit(AnnotationSettings::App::Codex), L"Codex", L"Annotations et agents › Agents", View::Annotations, L"connecter deconnecter openai mcp agent"},
-    {ManualConnect, L"Autre app ou réglage manuel", L"Annotations et agents › Agents", View::Annotations, L"mcp configuration json toml commande connecter agent"},
-    {AnnotationPrompt, L"Proposer de connecter un agent", L"Annotations et agents › Mode Annotation", View::Annotations, L"plus tard lancement annoter mcp"},
-    {AnnotationRetention, L"Conserver les terminées", L"Annotations et agents › Historique", View::Annotations, L"annotations terminees duree jours supprimer"},
-    {AnnotationFolder, L"Ouvrir le dossier des annotations", L"Annotations et agents › Historique", View::Annotations, L"explorateur fichiers emplacement"},
-    {AnnotationClear, L"Effacer toutes les annotations…", L"Annotations et agents › Historique", View::Annotations, L"supprimer annotations"},
+    // « Annotations » (found only when the annotation mode is compiled in).
+    {CatAnnotations, L"Annotations", L"Réglages", View::Main, L"annoter mcp claude codex agent agents"},
+    {AgentHit(AnnotationSettings::App::Claude), L"Claude Desktop", L"Annotations › Agents", View::Annotations, L"connecter deconnecter anthropic mcp agent"},
+    {AgentHit(AnnotationSettings::App::Codex), L"Codex", L"Annotations › Agents", View::Annotations, L"connecter deconnecter openai mcp agent"},
+    {ManualConnect, L"Autre app ou réglage manuel", L"Annotations › Agents", View::Annotations, L"mcp configuration json toml commande connecter agent"},
+    {AnnotationPrompt, L"Proposer de connecter un agent", L"Annotations › Mode Annotation", View::Annotations, L"plus tard lancement annoter mcp"},
+    {AnnotationRetention, L"Conserver les terminées", L"Annotations › Historique", View::Annotations, L"annotations terminees duree jours supprimer"},
+    {AnnotationFolder, L"Ouvrir le dossier des annotations", L"Annotations › Historique", View::Annotations, L"explorateur fichiers emplacement"},
+    {AnnotationClear, L"Effacer toutes les annotations…", L"Annotations › Historique", View::Annotations, L"supprimer annotations"},
 };
 inline bool IsAnnotationEntry(const Searchable& e) { return e.view == View::Annotations || e.hit == CatAnnotations; }
 // Case- and accent-insensitive form for matching ("Économiseur" ~ "economiseur").
@@ -490,7 +490,7 @@ public:
         std::function<Profiles::NameError(const std::wstring& name, const std::wstring& id)> validateProfileName;
         std::function<void(const std::wstring&, bool keyboard)> deleteProfile;                  // P04 confirmation + undo
         std::function<bool()> profilesReadOnly;                                                   // registry not writable: no edit/delete
-        // ---- « Annotations et agents » (every hook optional; the section exists only when `annotations` says so).
+        // ---- « Annotations » (every hook optional; the section exists only when `annotations` says so).
         // Nothing here touches the store or another app's configuration: the host does, off the UI thread,
         // and answers on the UI thread. See design/annotations-settings.md for the main.cpp wiring.
         std::function<bool()> annotations;                                                         // the annotation mode is compiled in
@@ -517,7 +517,7 @@ private:
     // Search: the query typed in the root's field and what it finds.
     std::wstring query_; std::vector<SearchResult> results_; NativeUI::AccentCaret caret_;
     std::vector<BrowserSettings::Site> sites_; bool sitesLoaded_ = false; int site_ = -1; unsigned loadTicket_ = 0;
-    // « Annotations et agents »: what the host last said, read when the section (or the root) is shown.
+    // « Annotations »: what the host last said, read when the section (or the root) is shown.
     AnnotationSettings::Agents agents_; bool agentsKnown_ = false; unsigned agentsTicket_ = 0, countTicket_ = 0;
     std::array<std::vector<std::wstring>, AnnotationSettings::AppCount> agentLines_;
     std::size_t annotationCount_ = SIZE_MAX;
@@ -754,7 +754,7 @@ private:
         else if (s.path) pc_->PathGlyph(s.path, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover));
         else if (s.glyph) PaintGlyph(*s.glyph, Layout::Icon(s.top), 14, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); // the mark at the masks' optical size
     }
-    // « Annotations et agents » › Agents: logo, name, status; the action as a compact raised button.
+    // « Annotations » › Agents: logo, name, status; the action as a compact raised button.
     float ActionWidth(const std::wstring& label) const { return std::ceil(pc_->TextWidth(label, 14, false, false, -.14f)) + 2 * Layout::actionPad; }
     Design::Box AgentAction(const Slot& s) const { return Layout::Action(s.top, ActionWidth(s.value)); }
     void AgentRow(const Slot& s, Motion::Time now) {
@@ -1246,7 +1246,7 @@ private:
             if (visible_) { auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; RefreshTips(); Invalidate(); Schedule(Motion::Now()); }
         });
     }
-    // ---- « Annotations et agents » ---------------------------------------------------
+    // ---- « Annotations » ---------------------------------------------------
     // Asks the host for the agents' state and the annotation count (both async, off the UI thread there).
     void LoadAnnotations() {
         if (!AnnotationsOn()) return;
@@ -1865,7 +1865,7 @@ public:
     }
     static std::pair<float, float> FadeReachForTest(float scroll, float max) { return FadeReach(scroll, max); }
     bool SitesNoteForTest(Motion::Time now) const { return !sitesLoaded_ && !LoadQuiet(now); }   // « Chargement… » drawn
-    // « Annotations et agents » tests: the laid-out rows, the Tab order, hit testing, the UIA tree, the agents.
+    // « Annotations » tests: the laid-out rows, the Tab order, hit testing, the UIA tree, the agents.
     std::vector<Slot> SlotsForTest() const { return Slots(Current(), Motion::Now(), true); }
     std::vector<int> FocusOrderForTest() const { return FocusOrder(); }
     int HitForTest(float x, float y) const { return HitAt(x, y); }
@@ -1950,7 +1950,7 @@ public:
             MeasureDescriptions();
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
-            LoadAnnotations(); // the « Annotations et agents » row shows the connected agents
+            LoadAnnotations(); // the « Annotations » row shows the connected agents
             if (target != View::Main) { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); }
         }
         { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }
@@ -1967,7 +1967,7 @@ public:
     void ShowSites() { Show(View::Sites); }
     // Opens on Réglages › Profils (profile menu « Gérer les profils… »).
     void ShowProfiles() { RefreshProfiles(); Show(View::Profiles); }
-    // Opens straight on « Annotations et agents » (no-op section when the annotation mode is compiled out).
+    // Opens straight on « Annotations » (no-op section when the annotation mode is compiled out).
     void ShowAnnotations() { if (AnnotationsOn()) Show(View::Annotations); else Show(); }
     // The agents or the store changed outside the drawer (connect modal, clear all done, …): ask again.
     void AnnotationsChanged() { if (hwnd_) LoadAnnotations(); }

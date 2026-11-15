@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Réglages › « Annotations et agents » — short real run in a COPY of the preview build (build/annotations-qa-app,
+"""Réglages › « Annotations » — short real run in a COPY of the preview build (build/annotations-qa-app,
 its own profile, settings and store), driven through UI Automation only (tests/annotations/uia.ps1, scoped to that
 process). Same guards as sandbox_qa_v2.py: BROWSER_ANNOTATIONS_TEST=1, agent configurations redirected to
 build/annotations-v2-qa/agent-configs (BROWSER_ANNOTATIONS_CONNECT_ROOT), the REAL %APPDATA%\\Claude and
@@ -7,7 +7,7 @@ build/annotations-v2-qa/agent-configs (BROWSER_ANNOTATIONS_CONNECT_ROOT), the RE
 
     python -I tests/annotations/settings_walk.py      # -> build/annotations-v2-qa/settings-walk/{report.json,*.png,uia-*.txt}
 
-Steps: open Réglages, open « Annotations et agents », read the section's UIA tree, turn the launcher off then on
+Steps: open Réglages, open « Annotations », read the section's UIA tree, turn the launcher off then on
 (settings file + log + launcher window), Connecter Claude Desktop (redirected config gets our entry, the row says
 Connecté / Déconnecter), Déconnecter (entry removed), close.
 """
@@ -91,9 +91,9 @@ def main():
 
         code, out = uia(pid, '-Name', 'Réglages', '-Invoke')
         step('toolbar « Réglages » invoked through UIA', code == 0, out.strip())
-        step('« Annotations et agents » row in the root', wait_for(pid, 'Annotations et agents'))
+        step('« Annotations » row in the root', wait_for(pid, 'Annotations'))
         shot('01-root')
-        code, out = uia(pid, '-Name', 'Annotations et agents', '-Invoke')
+        code, out = uia(pid, '-Name', 'Annotations', '-Invoke')
         ok = wait_for(pid, 'Proposer de connecter un agent')
         step('section opened', code == 0 and ok, out.strip())
         time.sleep(1.5)   # agents' status (read off the UI thread)

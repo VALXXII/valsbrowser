@@ -1,4 +1,4 @@
-// Réglages › « Annotations et agents » (src/annotation-settings.h, src/settings-panel.h):
+// Réglages › « Annotations » (src/annotation-settings.h, src/settings-panel.h):
 //  - the pure model (status lines, actions, « il y a … », summary, confirmation texts, logos = annotation-kit);
 //  - the real drawer on a hidden owner: rows, Tab order, hit testing, UIA tree (names, roles, states),
 //    switches (prompt re-enabled => « Plus tard » count back to 0), retention menu, folder, clear-all
@@ -84,7 +84,16 @@ static void TestModel() {
     // Search: the section's rows exist only when the mode is compiled in.
     Check(SettingsUI::SearchSettings(L"annotation").empty() && SettingsUI::SearchSettings(L"codex").empty(), "search without the mode: nothing about annotations");
     const auto found = SettingsUI::SearchSettings(L"annotations", true);
-    Check(!found.empty() && found[0].entry->hit == SettingsUI::CatAnnotations, "search with the mode: « Annotations et agents » first");
+    Check(!found.empty() && found[0].entry->hit == SettingsUI::CatAnnotations, "search with the mode: « Annotations » first");
+    {   // The section is titled « Annotations » (user's copy, Paper p-K-0); the agents stay findable by their words.
+        Check(std::wstring(found[0].entry->title) == L"Annotations" && std::wstring(found[0].entry->path) == L"Réglages", "search: « Annotations » · Réglages");
+        bool cat = false; for (const auto& r : SettingsUI::SearchSettings(L"agents", true)) cat = cat || r.entry->hit == SettingsUI::CatAnnotations;
+        Check(cat, "search: « agents » still finds the section");
+        const auto claude = SettingsUI::SearchSettings(L"claude", true);
+        bool path = false; for (const auto& r : claude) if (r.entry->hit == SettingsUI::AgentHit(AS::App::Claude)) path = std::wstring(r.entry->path) == L"Annotations › Agents";
+        Check(path, "search: Claude Desktop under « Annotations › Agents »");
+        for (const auto& r : SettingsUI::SearchSettings(L"annot", true)) Check(std::wstring(r.entry->path).find(L"et agents") == std::wstring::npos && std::wstring(r.entry->title).find(L"et agents") == std::wstring::npos, "search: no « Annotations et agents » left");
+    }
     {   // V3: no launcher switch any more (the launcher only exists in the mode).
         bool none = true; for (const auto& r : SettingsUI::SearchSettings(L"lanceur", true)) if (std::wstring(r.entry->title).find(L"lanceur") != std::wstring::npos) none = false;
         Check(none, "search: no « Afficher le lanceur d'annotations » row (V3)");
@@ -187,38 +196,38 @@ int wmain(int argc, wchar_t** argv) {
     CreateDirectoryW((e.appData + L"\\Claude").c_str(), nullptr);   // Claude Desktop « installed » (its config folder), Codex not
     dr.Show(); dr.SettleForTest();
     {
-        const auto slots = dr.SlotsForTest(); const auto* cat = Find(slots, Kind::Nav, L"Annotations et agents");
-        Check(cat && cat->hit == SettingsUI::CatAnnotations && cat->glyph == &AS::Mark && cat->value == L"Aucun agent", "root: « Annotations et agents » with the annotation mark, « Aucun agent »");
+        const auto slots = dr.SlotsForTest(); const auto* cat = Find(slots, Kind::Nav, L"Annotations");
+        Check(cat && cat->hit == SettingsUI::CatAnnotations && cat->glyph == &AS::Mark && cat->value == L"Aucun agent", "root: « Annotations » with the annotation mark, « Aucun agent »");
         const auto* display = Find(slots, Kind::Nav, L"Affichage et son"); Check(display && cat && cat->top > display->top, "root: after « Affichage et son »");
     }
     shot(L"root");
     {
         SettingsUI::Drawer plain; SettingsUI::Drawer::Hooks ph; BrowserSettings::State ps; Check(plain.Create(hi, owner, root, &ps, ph), "drawer without the mode");
         plain.Show(); plain.SettleForTest(); bool none = true; for (auto& s : plain.SlotsForTest()) none = none && s.hit != SettingsUI::CatAnnotations;
-        Check(none, "mode compiled out: no « Annotations et agents » row"); plain.Hide(false, false); plain.Dispose();
+        Check(none, "mode compiled out: no « Annotations » row"); plain.Hide(false, false); plain.Dispose();
     }
     {   // With Profils (main #69): both sections side by side, distinct hits, both reachable (Tab, UIA, navigation).
         SettingsUI::Drawer both; SettingsUI::Drawer::Hooks bh = h; BrowserSettings::State bs;
         bh.profiles = [] { SettingsUI::ProfileItem a; a.id = L"default"; a.name = L"Personnel"; a.current = true; SettingsUI::ProfileItem b; b.id = L"p2"; b.name = L"Travail"; return std::vector<SettingsUI::ProfileItem>{a, b}; };
         Check(both.Create(hi, owner, root, &bs, bh), "drawer with Profils and Annotations");
         both.ShowProfiles(); both.SettleForTest(); both.KeyForTest(VK_ESCAPE); both.SettleForTest();   // profiles read, back on the root
-        const auto rs = both.SlotsForTest(); const auto* prof = Find(rs, Kind::Nav, L"Profils"); const auto* ann = Find(rs, Kind::Nav, L"Annotations et agents");
-        Check(prof && ann && prof->hit == SettingsUI::CatProfiles && ann->hit == SettingsUI::CatAnnotations && prof->hit != ann->hit && prof->value == L"Personnel", "root: « Profils » (Personnel) and « Annotations et agents », distinct hits");
+        const auto rs = both.SlotsForTest(); const auto* prof = Find(rs, Kind::Nav, L"Profils"); const auto* ann = Find(rs, Kind::Nav, L"Annotations");
+        Check(prof && ann && prof->hit == SettingsUI::CatProfiles && ann->hit == SettingsUI::CatAnnotations && prof->hit != ann->hit && prof->value == L"Personnel", "root: « Profils » (Personnel) and « Annotations », distinct hits");
         const auto order = both.FocusOrderForTest();
         Check(std::find(order.begin(), order.end(), SettingsUI::CatProfiles) != order.end() && std::find(order.begin(), order.end(), SettingsUI::CatAnnotations) != order.end(), "root Tab order reaches both rows");
         const auto nodes = both.AccessibleNodesForTest(); const auto* pn = Node(nodes, SettingsUI::CatProfiles); const auto* an = Node(nodes, SettingsUI::CatAnnotations);
-        Check(pn && pn->automationId == L"SettingsProfiles" && pn->name == L"Profils, Personnel" && an && an->name == L"Annotations et agents" && an->status == L"Aucun agent", "UIA root: « Profils, Personnel » (SettingsProfiles) and « Annotations et agents »");
+        Check(pn && pn->automationId == L"SettingsProfiles" && pn->name == L"Profils, Personnel" && an && an->name == L"Annotations" && an->status == L"Aucun agent", "UIA root: « Profils, Personnel » (SettingsProfiles) and « Annotations »");
         both.ActivateForTest(SettingsUI::CatProfiles, true); both.SettleForTest();
         const auto pnodes = both.AccessibleNodesForTest(); int items = 0; for (auto& n : pnodes) items += n.automationId == L"ProfileListItem";
         Check(both.CurrentViewForTest() == SettingsUI::View::Profiles && items == 2, "« Profils » still opens its list (2 ProfileListItem)");
         both.KeyForTest(VK_ESCAPE); both.SettleForTest(); both.ActivateForTest(SettingsUI::CatAnnotations, true); both.SettleForTest();
-        Check(both.CurrentViewForTest() == SettingsUI::View::Annotations && Node(both.AccessibleNodesForTest(), SettingsUI::AgentBase), "« Annotations et agents » still opens its section");
+        Check(both.CurrentViewForTest() == SettingsUI::View::Annotations && Node(both.AccessibleNodesForTest(), SettingsUI::AgentBase), "« Annotations » still opens its section");
         both.Hide(false, false); both.Dispose();
     }
 
     // ---- The section ---------------------------------------------------------------------------
     dr.ActivateForTest(SettingsUI::CatAnnotations, false); dr.SettleForTest();
-    Check(dr.CurrentViewForTest() == V::Annotations, "row opens the « Annotations et agents » view");
+    Check(dr.CurrentViewForTest() == V::Annotations, "row opens the « Annotations » view");
     if (argc > 3 && std::wstring(argv[3]) == L"--hold") {
         // Real UIA client (test-annotation-settings.ps1): the section stays on screen while it reads and
         // toggles « Proposer de connecter un agent »; the state is printed at the end.
@@ -278,7 +287,7 @@ int wmain(int argc, wchar_t** argv) {
         using Accessibility::Role; const auto nodes = dr.AccessibleNodesForTest();
         const auto* close = Node(nodes, SettingsUI::Close); const auto* back = Node(nodes, SettingsUI::Back);
         Check(close && close->role == Role::Button && close->name == L"Fermer les réglages" && close->accelerator == L"Échap" && back && back->name == L"Retour", "UIA: Retour, Fermer les réglages (Échap)");
-        Check(NodeNamed(nodes, L"Annotations et agents") && NodeNamed(nodes, L"Annotations et agents")->role == Role::Group && NodeNamed(nodes, L"Annotations et agents")->automationId == L"SettingsDrawer", "UIA: the drawer pane is named after the view");
+        Check(NodeNamed(nodes, L"Annotations") && NodeNamed(nodes, L"Annotations")->role == Role::Group && NodeNamed(nodes, L"Annotations")->automationId == L"SettingsDrawer", "UIA: the drawer pane is named after the view");
         const auto* connect = Node(nodes, SettingsUI::AgentBase);
         Check(connect && connect->role == Role::Button && connect->name == L"Connecter Claude Desktop" && connect->help == L"Non connecté" && connect->enabled, "UIA: « Connecter Claude Desktop », status as help");
         Check(NodeNamed(nodes, L"Codex : Non installé") && !NodeNamed(nodes, L"Codex : Non installé")->focusable, "UIA: « Codex : Non installé » read as text");
@@ -309,7 +318,7 @@ int wmain(int argc, wchar_t** argv) {
         Check(all == L"Connecté · a lu vos annotations il y a 5 min", "Claude read the store: « Connecté · a lu vos annotations il y a 5 min »");
     }
     dr.KeyForTest(VK_ESCAPE); dr.SettleForTest();
-    { const auto* cat = Find(dr.SlotsForTest(), Kind::Nav, L"Annotations et agents"); Check(cat && cat->value == L"Claude", "root summary: « Claude »"); }
+    { const auto* cat = Find(dr.SlotsForTest(), Kind::Nav, L"Annotations"); Check(cat && cat->value == L"Claude", "root summary: « Claude »"); }
     dr.Show(V::Annotations); dr.SettleForTest();
     shot(L"claude-connected");
 
@@ -405,7 +414,7 @@ int wmain(int argc, wchar_t** argv) {
     shot(L"focus-connect");
     // Escape / Retour pops back to the root with the focus on the row that opened the section.
     dr.KeyForTest(VK_ESCAPE); dr.SettleForTest();
-    Check(dr.CurrentViewForTest() == V::Main && dr.FocusForTest() == SettingsUI::CatAnnotations, "Échap: back to Réglages, focus on « Annotations et agents »");
+    Check(dr.CurrentViewForTest() == V::Main && dr.FocusForTest() == SettingsUI::CatAnnotations, "Échap: back to Réglages, focus on « Annotations »");
     dr.Hide(false, false); dr.Dispose(); confirm.Dispose(); DestroyWindow(owner);
     RemoveTree(e.base);
     std::printf("\n%d checks, %d failures\n", checks, failures);

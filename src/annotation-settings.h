@@ -1,5 +1,5 @@
 #pragma once
-// Réglages › « Annotations et agents » — the pure part (no window, no disk, no store): what each agent row
+// Réglages › « Annotations » — the pure part (no window, no disk, no store): what each agent row
 // says and offers, the confirmation texts of « Effacer toutes les annotations… », the shortcut reminder and
 // the agent logos. The drawer (src/settings-panel.h) paints it; the host (main.cpp, through
 // src/annotation-entry.h) feeds it the agents' state and does the work behind every callback.

@@ -1,5 +1,5 @@
 ﻿param([string]$DependencyRoot = $PSScriptRoot)
-# Réglages › « Annotations et agents » (src/annotation-settings.h, src/settings-panel.h, src/settings.h):
+# Réglages › « Annotations » (src/annotation-settings.h, src/settings-panel.h, src/settings.h):
 #  1. tests/settings_test.cpp (new keys: defaults, round trip, tolerant read), -Werror like test.ps1;
 #  2. tests/annotation_settings_test.cpp: pure model, the real drawer (rows, Tab order, hit testing, UIA tree,
 #     switches, retention, folder, clear-all confirmation), Connecter / Déconnecter through src/agent-connect.*

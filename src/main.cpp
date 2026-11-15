@@ -206,7 +206,7 @@ NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble s
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
 constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,AnnotateHistoryCommand=3062; bool AnnotationHistoryAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
-#include "annotation-entry.h" // settings section « Annotations et agents » and menus: connect/disconnect, status, folder, clear all
+#include "annotation-entry.h" // settings section « Annotations » and menus: connect/disconnect, status, folder, clear all
 namespace CM=NativeChrome::ContextMenu; extern std::vector<CM::Item> lastSplitMenu; void TabContextMenu(int tabIndex,int anchor); void AnnotationMenuItems(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args,std::vector<CM::Item>& items); void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab,int choice); bool ResizePlaceholdersUp(); extern std::vector<HWND> splitGrips; void SyncGripLooks(); bool PointerOnGrip(); bool GripsAnimating(); void GripFrame(NativeChrome::Motion::Time now); void Select(int n); void EndSplitDrag(bool restore); void SyncSplitDecor(); void ApplyPages(); bool SplitDragMove(POINT point); bool SplitAnimating(); void SplitFrame(NativeChrome::Motion::Time now);
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
 // user typed (the field may also show an inline completion or an arrowed row).
@@ -2232,7 +2232,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
-    // Réglages › « Annotations et agents »: the launcher shows / hides at once; the launch prompt and the
+    // Réglages › « Annotations »: the launcher shows / hides at once; the launch prompt and the
     // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
     case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
@@ -2276,7 +2276,7 @@ void CreateSettingsPanel(){
     hooks.resetSites=ResetSitePermissions;
     // Value rows open the native menu as their list of choices.
     hooks.choose=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.left,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
-    // « Annotations et agents » (design/annotations-settings.md): dev / preview builds with the mode, never in a
+    // « Annotations » (design/annotations-settings.md): dev / preview builds with the mode, never in a
     // private window. The drawer only asks; every disk / other-app access runs in src/annotation-mode.h, off the UI thread.
     namespace AS=AnnotationSettings;
     hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationHistoryAvailable();};

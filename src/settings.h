@@ -180,7 +180,7 @@ struct State {
     bool muteBackground = false;   // only the active tab plays sound
     Autoplay autoplay = Autoplay::Muted;
     bool grayscaleText = false;    // page text in grayscale antialiasing, like the chrome (engine flag)
-    // Annotations et agents (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
+    // Annotations (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
     bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
     int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
     int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices

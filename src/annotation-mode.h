@@ -1150,7 +1150,7 @@ bool AnnotationCommand(int cmd) {
     return false;
 }
 bool AnnotationHistoryAvailable() { return !privateWindow && !halted; }
-// ---- src/annotation-entry.h (settings section « Annotations et agents »)
+// ---- src/annotation-entry.h (settings section « Annotations »)
 std::wstring AnnotationStoreRoot() { return Ann::Store().Root(); }
 void AnnotationOpenConnect(bool manual) { if (!privateWindow && !halted) Ann::OpenConnect(false, manual); }
 void AnnotationConnectAgent(AnnotationApp app, bool on, std::function<void(bool, const std::wstring&)> done) {
