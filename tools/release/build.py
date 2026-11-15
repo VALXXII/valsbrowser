@@ -202,7 +202,8 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
         run([BIN / 'windres.exe', '-I.', '-Isrc', f'-I{obj / "gen"}', '-DBROWSER_HAS_BUILD_INFO', 'src/setup.rc',
              '-O', 'coff', '-o', setup_res])
         run([BIN / 'g++.exe', *common, '-mwindows', *SETUP_SOURCES, setup_res, '-o', stub_dir / SETUP_NAME, *SETUP_LIBS])
-        run([BIN / 'strip.exe', '--strip-debug', stub_dir / SETUP_NAME])
+        # --strip-all: a COFF symbol table after the sections would read as an overlay (package.py refuses it).
+        run([BIN / 'strip.exe', '--strip-all', stub_dir / SETUP_NAME])
     shutil.copy2(SDK / 'x64/WebView2Loader.dll', out / 'WebView2Loader.dll')
     for name, source in LICENSES.items():
         shutil.copy2(ROOT / source, out / name)

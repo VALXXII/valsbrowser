@@ -129,7 +129,7 @@ struct App {
     bool error = false;
     double progress = 0;
     std::atomic<bool> cancel{false};
-    bool working = false, cancellable = false;
+    bool working = false, cancellable = false, testCancel = false;
     SC::Result result;
     SC::UninstallReport uninstallReport;
     HWND window = nullptr, desktop = nullptr, launch = nullptr, removeDataBox = nullptr, primary = nullptr, secondary = nullptr;
@@ -263,7 +263,7 @@ void Finish(bool ok) {
 }
 
 void StartWork() {
-    g.cancel = false;
+    g.cancel = g.testCancel;  // fixtures only (--test-cancel, SETUP_TESTING): as if Cancel was clicked at once
     g.working = true;
     g.progress = 0;
     g.detail.clear();
@@ -609,16 +609,7 @@ int RelaunchFromTemp() {
     if (!CreateProcessW(copy.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, g.env.temp.c_str(), &si, &pi)) return 4;
     AllowSetForegroundWindow(pi.dwProcessId);
     CloseHandle(pi.hThread);
-    int code = 0;
-    if (g.unattended) {  // tests: report the temp copy's result
-        WaitForSingleObject(pi.hProcess, 5 * 60 * 1000);
-        DWORD c = 1;
-        GetExitCodeProcess(pi.hProcess, &c);
-        code = int(c);
-        CloseHandle(pi.hProcess);
-        return code;
-    }
-    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hProcess);  // exit now: the temp copy waits for this process so it can delete this file
     return 0;
 }
 
@@ -639,6 +630,13 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
         else if (a == L"--unattended") g.unattended = true;
         else if (a == L"--desktop") g.options.desktop = true;
         else if (a == L"--no-launch") g.options.launch = false;
+        else if (a == L"--test-cancel") g.testCancel = true;
+        else if (a == L"--shortcut-target" && i + 2 < argc) {  // fixture readback: <lnk> <out file>
+            const std::string target = UP::Narrow(SC::ShortcutTarget(argv[i + 1]));
+            const bool ok = UP::AtomicWriteFile(argv[i + 2], target);
+            LocalFree(argv);
+            return ok ? 0 : 1;
+        }
 #endif
     }
     if (argv) LocalFree(argv);
@@ -661,7 +659,11 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
                 CloseHandle(h);
             }
         }
-        return RunWindow(hi);
+        const int code = RunWindow(hi);
+#ifdef SETUP_TESTING
+        if (g.unattended) UP::AtomicWriteFile(SetupKey::TestRoot() + L"\\uninstall-result.txt", std::to_string(code));
+#endif
+        return code;
     }
     if (!payload) {
         // Truncated / corrupted download (or a renamed stub): nothing is written anywhere.

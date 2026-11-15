@@ -368,6 +368,7 @@ Result Install(const Env& env, const std::wstring& self, const SetupPayload::Lay
     const std::string reason = LastResultField(env, "reason"), resultVersion = LastResultField(env, "version");
     if (resultVersion != version || (r.status != "installed" && r.status != "unconfirmed")) {
         MarkReported(updates);
+        UP::RemoveTree(stage);  // a helper that aborted before its move leaves this setup's staging: not an engine offer
         if (reason == "no-startup-ack") return fail(Error::StartFailed, "the installed browser exited before confirming its start");
         if (reason == "profile-locked" || reason == "target-in-use" || reason.find("busy") != std::string::npos || reason.find("locked") != std::string::npos)
             return fail(Error::Running, "helper: " + reason);
