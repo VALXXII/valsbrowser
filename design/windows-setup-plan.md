@@ -34,7 +34,7 @@ The overlay starts at the end of the last PE section's raw data and ends at the 
 certificate table if one exists (so a later signature does not break it), else at EOF.
 Trailer (last 128 bytes of the overlay, little endian):
 `"BROWSER-SETUP 1\0"(16) | version ASCII NUL-padded(32) | package offset u64 | package size
-u64 | package SHA-256(32) | zero(16) | "BRSETUP!"(8)`. Required: both magics, version parses and
+u64 | package SHA-256(32) | zero(24) | "BRSETUP!"(8)`. Required: both magics, version parses and
 equals the stub's compiled `BROWSER_VERSION_TEXT`, offset == overlay start,
 offset + size + 128 == overlay end, size ≤ `UpdatePackage::MaxPackageBytes`, zero padding.
 Any mismatch ⇒ "this download is damaged, download it again", nothing written outside a temp

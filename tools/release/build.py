@@ -52,6 +52,16 @@ BRIDGE_SOURCES = ['src/mcp-bridge.cpp', 'src/annotations.cpp', 'src/update-core.
 BRIDGE_NAME = 'browser-annotations-mcp.exe'
 RELEASE_BRIDGE = f'assets/bin/{BRIDGE_NAME}'  # same constant in tools/release/package.py
 BRIDGE_LIBS = ['-lwinhttp', '-lbcrypt', '-lkernel32']
+# Setup stub: browser-<version>-win-x64-setup.exe WITHOUT its payload (design/windows-setup-plan.md). Never part of
+# the app payload: written to <out>-setup/, tools/release/package.py appends the .lsrupd it just packed.
+SETUP_SOURCES = ['src/setup-main.cpp', 'src/setup-core.cpp', 'src/update-core.cpp', 'src/update-package.cpp']
+SETUP_NAME = 'browser-setup.exe'
+SETUP_LIBS = ['-lwinhttp', '-lbcrypt', '-lole32', '-luuid', '-lshell32', '-lcomctl32', '-ladvapi32', '-luser32',
+              '-lgdi32', '-lkernel32']
+
+
+def setup_stub_dir(out: Path) -> Path:
+    return out.parent / (out.name + '-setup')
 WARNINGS = ['-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-type',
             '-Wno-misleading-indentation', '-Wno-missing-field-initializers']
 LICENSES = {  # destination name -> source
@@ -183,6 +193,16 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
         run([BIN / 'strip.exe', '--strip-debug', obj / BRIDGE_NAME])
     for exe in executables:
         run([BIN / 'strip.exe', '--strip-debug', out / exe])
+    if not preview:  # setup stub (no self-update in a preview, so no installer either)
+        stub_dir = setup_stub_dir(out)
+        if stub_dir.exists():
+            shutil.rmtree(stub_dir)
+        stub_dir.mkdir(parents=True)
+        setup_res = obj / 'setup-res.o'
+        run([BIN / 'windres.exe', '-I.', '-Isrc', f'-I{obj / "gen"}', '-DBROWSER_HAS_BUILD_INFO', 'src/setup.rc',
+             '-O', 'coff', '-o', setup_res])
+        run([BIN / 'g++.exe', *common, '-mwindows', *SETUP_SOURCES, setup_res, '-o', stub_dir / SETUP_NAME, *SETUP_LIBS])
+        run([BIN / 'strip.exe', '--strip-debug', stub_dir / SETUP_NAME])
     shutil.copy2(SDK / 'x64/WebView2Loader.dll', out / 'WebView2Loader.dll')
     for name, source in LICENSES.items():
         shutil.copy2(ROOT / source, out / name)

@@ -67,9 +67,9 @@ jobs:
         shell: pwsh
         run: python tests/update-integration/run_all.py --app build/release/app --ci
 
-      - name: Package allowlisted payload
+      - name: Package allowlisted payload (.lsrupd, portable ZIP, setup.exe)
         shell: pwsh
-        run: python tools/release/package.py --app build/release/app --out build/release/dist
+        run: python tools/release/package.py --app build/release/app --out build/release/dist --setup-stub build/release/app-setup/browser-setup.exe
 
       - name: Upload release assets (workflow artifact)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

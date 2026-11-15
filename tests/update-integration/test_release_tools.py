@@ -139,6 +139,33 @@ class PublishGuards(unittest.TestCase):
         self.assertEqual(P.parse_tag('v0.3.1'), (0, 3, 1))
 
 
+def fake_setup_stub(identity: str = f'0.3.7 {SHA} release', subsystem: int = 2, manifest: bool = True,
+                    extra: bytes = b'', marker: bytes = b'') -> bytes:
+    """Minimal PE32+ x64 image with one section holding what package.check_setup_stub reads (not runnable)."""
+    data = bytearray(0x400)
+    data[:2] = b'MZ'
+    data[0x3C:0x40] = (0x80).to_bytes(4, 'little')
+    data[0x80:0x84] = b'PE\0\0'
+    data[0x84:0x86] = (0x8664).to_bytes(2, 'little')
+    data[0x86:0x88] = (1).to_bytes(2, 'little')          # one section
+    data[0x94:0x96] = (0xF0).to_bytes(2, 'little')       # SizeOfOptionalHeader
+    opt = 0x80 + 24
+    data[opt:opt + 2] = (0x20B).to_bytes(2, 'little')
+    data[opt + 60:opt + 64] = (0x200).to_bytes(4, 'little')  # SizeOfHeaders
+    data[opt + 68:opt + 70] = subsystem.to_bytes(2, 'little')
+    data[opt + 108:opt + 112] = (16).to_bytes(4, 'little')  # NumberOfRvaAndSizes
+    sec = opt + 0xF0
+    data[sec:sec + 5] = b'.data'
+    data[sec + 16:sec + 20] = (0x200).to_bytes(4, 'little')  # SizeOfRawData
+    data[sec + 20:sec + 24] = (0x200).to_bytes(4, 'little')  # PointerToRawData
+    body = b'browser-setup-identity ' + identity.encode() + b';'
+    if manifest:
+        body += b' <requestedExecutionLevel level="asInvoker" uiAccess="false"/>'
+    body += marker
+    data[0x200:0x200 + len(body)] = body
+    return bytes(data) + extra
+
+
 def make_app(root: Path) -> Path:
     app = root / 'app'
     (app / 'assets/fonts').mkdir(parents=True)
@@ -146,7 +173,11 @@ def make_app(root: Path) -> Path:
                  'WebView2-NOTICE.txt'):
         (app / name).write_bytes(name.encode())
     (app / 'assets/fonts/a.ttf').write_bytes(b'font')
-    (app / 'version.json').write_text(json.dumps({'version': '0.3.7', 'arch': 'x64'}))
+    (app / 'version.json').write_text(json.dumps({'version': '0.3.7', 'arch': 'x64', 'commit': SHA,
+                                                  'channel': 'release'}))
+    # Setup stub as tools/release/build.py places it: <app>-setup/browser-setup.exe (never in the payload).
+    (root / 'app-setup').mkdir()
+    (root / 'app-setup/browser-setup.exe').write_bytes(fake_setup_stub())
     return app
 
 
@@ -261,14 +292,15 @@ class PublicZip(unittest.TestCase):
             self.assertEqual(json.loads(z.read('browser-0.3.7-win-x64/version.json'))['version'], '0.3.7')
         self.assertEqual(sorted(p.name for p in dist.iterdir()), sorted([
             'browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', 'browser-0.3.7-win-x64.zip',
-            'SHA256SUMS.txt', 'release-info.json']))
+            'browser-0.3.7-win-x64-setup.exe', 'SHA256SUMS.txt', 'release-info.json']))
 
     def test_checksums_and_release_info_cover_zip(self):
         dist = package_dist(self.root, self.app)
         archive = dist / 'browser-0.3.7-win-x64.zip'
         sums = (dist / 'SHA256SUMS.txt').read_bytes().decode('ascii')
         lines = dict(reversed(l.split('  ')) for l in sums.splitlines())
-        self.assertEqual(set(lines), {'browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', archive.name})
+        self.assertEqual(set(lines), {'browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', archive.name,
+                                      'browser-0.3.7-win-x64-setup.exe'})
         for name, digest in lines.items():
             self.assertEqual(digest, hashlib.sha256((dist / name).read_bytes()).hexdigest(), name)
         info = json.loads((dist / 'release-info.json').read_text(encoding='utf-8'))
@@ -450,9 +482,10 @@ class Publisher(unittest.TestCase):
             code = P.main(['--repo', REPO, '--dist', str(self.d), '--source-commit', SHA, *extra])
         return code, out.getvalue()
 
-    def existing_release(self, with_zip=True, zip_bytes=None, with_sums=False):
+    def existing_release(self, with_zip=True, zip_bytes=None, with_sums=False, with_setup=True):
         assets = []
         for name in ('browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', 'browser-0.3.7-win-x64.zip',
+                     *(('browser-0.3.7-win-x64-setup.exe',) if with_setup else ()),
                      *(('SHA256SUMS.txt',) if with_sums else ())):
             if name.endswith('.zip') and not with_zip:
                 continue
@@ -473,7 +506,7 @@ class Publisher(unittest.TestCase):
         self.assertIn('browser.exe', fake.notes)
         self.assertIn('Extraire tout', fake.notes)
         self.assertIn(json.loads((self.d / 'release-info.json').read_text())['zipSha256'], fake.notes)
-        self.assertIn(f'Public download: {url}', out)
+        self.assertIn(f'Portable ZIP: {url}', out)
         published = next(r for r in fake.releases if r['tag_name'] == 'v0.3.7')
         self.assertFalse(published['draft'])
         self.assertTrue(published['latest'])
@@ -714,6 +747,196 @@ class ReleaseBridgePayload(unittest.TestCase):
         import make_update_package as M
         self.assertTrue(M.allowed(K.RELEASE_BRIDGE) and M.valid_path(K.RELEASE_BRIDGE))
         self.assertFalse(M.allowed('browser-annotations-mcp.exe'))
+
+
+SETUP = 'browser-0.3.7-win-x64-setup.exe'
+
+
+class SetupAsset(unittest.TestCase):
+    """browser-<v>-win-x64-setup.exe = stub || the .lsrupd byte for byte || trailer (src/setup-payload.h)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.app = make_app(self.root)
+        (self.app / 'profile').mkdir()
+        (self.app / 'profile/Cookies').write_bytes(b'canary-cookie')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def stub_path(self) -> Path:
+        return self.root / 'app-setup/browser-setup.exe'
+
+    def test_setup_embeds_exactly_the_package(self):
+        before = canary(self.app)
+        dist = package_dist(self.root, self.app)
+        self.assertEqual(canary(self.app), before)
+        setup, package = (dist / SETUP).read_bytes(), (dist / 'browser-0.3.7-win-x64.lsrupd').read_bytes()
+        stub = self.stub_path().read_bytes()
+        self.assertEqual(setup[:len(stub)], stub)
+        self.assertEqual(setup[len(stub):len(stub) + len(package)], package)
+        trailer = setup[len(stub) + len(package):]
+        self.assertEqual(len(trailer), 128)
+        self.assertEqual(trailer[:16], b'BROWSER-SETUP 1\0')
+        self.assertEqual(trailer[16:48].rstrip(b'\0'), b'0.3.7')
+        self.assertEqual(int.from_bytes(trailer[48:56], 'little'), len(stub))
+        self.assertEqual(int.from_bytes(trailer[56:64], 'little'), len(package))
+        self.assertEqual(trailer[64:96], hashlib.sha256(package).digest())
+        self.assertEqual(trailer[120:], b'BRSETUP!')
+        self.assertEqual(K.pe_overlay(setup), (len(stub), len(setup), False))
+        # Same payload as the ZIP and the .lsrupd: the setup adds no file and no runtime data.
+        entries = lsrupd_entries(dist / 'browser-0.3.7-win-x64.lsrupd')
+        self.assertEqual(entries, app_files(self.app))
+        self.assertNotIn(b'canary-cookie', setup)
+        info = json.loads((dist / 'release-info.json').read_text(encoding='utf-8'))
+        self.assertEqual((info['setup'], info['setupSize'], info['setupSha256']),
+                         (SETUP, len(setup), hashlib.sha256(setup).hexdigest()))
+        sums = (dist / 'SHA256SUMS.txt').read_text(encoding='ascii').splitlines()
+        self.assertEqual(sums[-1], f'{hashlib.sha256(setup).hexdigest()}  {SETUP}')
+
+    def test_setup_is_reproducible(self):
+        a = (package_dist(self.root, self.app) / SETUP).read_bytes()
+        b = (package_dist(self.root, self.app) / SETUP).read_bytes()
+        self.assertEqual(a, b)
+
+    def test_bad_stub_fails_before_any_output(self):
+        cases = {
+            'missing': None,
+            'other version': fake_setup_stub(f'0.3.6 {SHA} release'),
+            'other commit': fake_setup_stub(f'0.3.7 {"b" * 40} release'),
+            'dev channel': fake_setup_stub(f'0.3.7 {SHA} dev'),
+            'console subsystem': fake_setup_stub(subsystem=3),
+            'no asInvoker manifest': fake_setup_stub(manifest=False),
+            'stub already has an overlay': fake_setup_stub(extra=b'overlay'),
+            'not a PE': b'MZ' + b'\0' * 100,
+            'test build (redirection)': fake_setup_stub(marker='BROWSER_SETUP_TEST_ROOT'.encode('utf-16-le')),
+            'test build (faults)': fake_setup_stub(marker='BROWSER_SETUP_FAULT'.encode('utf-16-le')),
+        }
+        for label, data in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                app = make_app(Path(tmp))
+                stub = Path(tmp) / 'app-setup/browser-setup.exe'
+                stub.unlink()
+                if data is not None:
+                    stub.write_bytes(data)
+                with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+                    package_dist(Path(tmp), app)
+                self.assertFalse((Path(tmp) / 'dist').exists(), 'nothing may be packaged with a bad stub')
+
+    def test_verify_setup_rejects_tampering(self):
+        dist = package_dist(self.root, self.app)
+        info = json.loads((self.app / 'version.json').read_text())
+        good = (dist / SETUP).read_bytes()
+        package = dist / 'browser-0.3.7-win-x64.lsrupd'
+        n = len(self.stub_path().read_bytes())
+        K.verify_setup(dist / SETUP, package, info)
+
+        def flip(data, at):
+            b = bytearray(data)
+            b[at] ^= 1
+            return bytes(b)
+        cases = {
+            'truncated by one byte': good[:-1],
+            'truncated inside the package': good[:n + 10],
+            'stub only': good[:n],
+            'byte flipped in package': flip(good, n + 20),
+            'byte flipped in stub identity': good.replace(b'0.3.7 ' + SHA.encode(), b'0.3.8 ' + SHA.encode()),
+            'trailer hash flipped': flip(good, len(good) - 128 + 70),
+            'trailer version changed': good[:-128] + good[-128:-112] + b'0.3.8'.ljust(32, b'\0') + good[-80:],
+            'trailer offset changed': good[:-80] + (n + 1).to_bytes(8, 'little') + good[-72:],
+            'padding not zero': flip(good, len(good) - 20),
+            'end magic changed': good[:-1] + b'?',
+            'bytes appended': good + b'x',
+        }
+        for label, data in cases.items():
+            with self.subTest(label):
+                bad = self.root / 'bad.exe'
+                bad.write_bytes(data)
+                with self.assertRaises(SystemExit):
+                    K.verify_setup(bad, package, info)
+
+    def test_write_setup_never_overwrites(self):
+        dist = package_dist(self.root, self.app)
+        with self.assertRaises(SystemExit):
+            K.write_setup(self.stub_path(), dist / 'browser-0.3.7-win-x64.lsrupd',
+                          json.loads((self.app / 'version.json').read_text()), dist / SETUP)
+
+
+class SetupPublisher(Publisher):
+    """The setup is a required release asset exactly like the ZIP."""
+
+    def test_notes_lead_with_the_setup(self):
+        fake = FakeGitHub(existing=[{'tag_name': 'v0.3.6', 'draft': False, 'latest': True, 'assets': []}])
+        code, out = self.run_publish(fake)
+        self.assertEqual(code, 0)
+        create = next(c for c in fake.calls if c[:2] == ('release', 'create'))
+        self.assertIn(str(self.d / SETUP), create)
+        url = f'https://github.com/{REPO}/releases/download/v0.3.7/{SETUP}'
+        self.assertIn(url, fake.notes)
+        self.assertLess(fake.notes.index(SETUP), fake.notes.index('browser-0.3.7-win-x64.zip'))
+        self.assertIn('LOCALAPPDATA', fake.notes)
+        self.assertIn(json.loads((self.d / 'release-info.json').read_text())['setupSha256'], fake.notes)
+        self.assertIn(f'Public download: {url}', out)
+
+    def test_missing_or_tampered_setup_never_uploaded(self):
+        def tamper():
+            f = self.d / SETUP
+            f.write_bytes(f.read_bytes()[:-1] + b'?')
+
+        def regenerate_consistently():
+            # A self-consistent artifact (release-info + sums regenerated) whose setup embeds ANOTHER package.
+            f = self.d / SETUP
+            data = bytearray(f.read_bytes())
+            data[-200] ^= 1
+            f.write_bytes(bytes(data))
+            self.edit_info(lambda i: i.update(setupSize=len(data), setupSha256=hashlib.sha256(data).hexdigest()))
+            names = ['browser-0.3.7-win-x64.lsrupd', 'update-manifest-win-x64.txt', 'browser-0.3.7-win-x64.zip', SETUP]
+            (self.d / 'SHA256SUMS.txt').write_text(''.join(
+                f'{hashlib.sha256((self.d / n).read_bytes()).hexdigest()}  {n}\n' for n in names), newline='\n')
+        cases = {
+            'no setup in release-info': lambda: self.edit_info(lambda i: i.pop('setup')),
+            'setup file absent': lambda: (self.d / SETUP).unlink(),
+            'setup of another version': lambda: self.edit_info(lambda i: i.update(setup='browser-0.3.6-win-x64-setup.exe')),
+            'setup bytes changed': tamper,
+            'sums without the setup': lambda: (self.d / 'SHA256SUMS.txt').write_text(
+                ''.join(l + '\n' for l in (self.d / 'SHA256SUMS.txt').read_text().splitlines()[:3]), newline='\n'),
+            'setup embeds another package': regenerate_consistently,
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(self.d)
+                shutil.copytree(self.dist, self.d)
+                mutate()
+                fake = FakeGitHub(existing=[{'tag_name': 'v0.3.6', 'draft': False, 'latest': True, 'assets': []}])
+                with self.assertRaises(SystemExit):
+                    self.run_publish(fake)
+                self.assertEqual(fake.mutations(), [], label)
+
+    def test_server_setup_digest_mismatch_never_published(self):
+        fake = FakeGitHub(existing=[{'tag_name': 'v0.3.6', 'draft': False, 'latest': True, 'assets': []}],
+                          corrupt_upload=SETUP)
+        with self.assertRaises(SystemExit):
+            self.run_publish(fake)
+        self.assertTrue(all(r['draft'] for r in fake.releases if r['tag_name'] == 'v0.3.7'))
+
+    def test_public_setup_mismatch_fails(self):
+        fake = FakeGitHub(existing=[{'tag_name': 'v0.3.6', 'draft': False, 'latest': True, 'assets': []}],
+                          corrupt_public=SETUP)
+        with self.assertRaises(SystemExit):
+            self.run_publish(fake)
+
+    def test_existing_release_without_setup_refused(self):
+        manifest = (self.d / 'update-manifest-win-x64.txt').read_bytes()
+        fake = FakeGitHub(existing=[self.existing_release(with_setup=False, with_sums=True)])
+        fake.blobs[('v0.3.7', 'update-manifest-win-x64.txt')] = manifest
+        with self.assertRaises(SystemExit):
+            self.run_publish(fake)
+        self.assertEqual(fake.mutations(), [])
+        ok = FakeGitHub(existing=[self.existing_release(with_sums=True)])
+        ok.blobs[('v0.3.7', 'update-manifest-win-x64.txt')] = manifest
+        code, _ = self.run_publish(ok)
+        self.assertEqual(code, 0)
 
 
 class Workflow(unittest.TestCase):

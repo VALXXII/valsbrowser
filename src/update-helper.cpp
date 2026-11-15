@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "annotations-migration.h"
+#include "setup-uninstall-key.h"  // DisplayVersion of the setup's per-user uninstall entry, if present
 #include "update-package.h"
 #include "ui-language.h"   // the launcher's only message, in the browser-wide interface language
 
@@ -392,6 +393,11 @@ struct Plan {
     std::wstring previousExe;
     DWORD pid = 0;
     std::uint64_t created = 0;
+    // Written by browser-<v>-win-x64-setup.exe (src/setup-core.cpp) for the helper of the SAME version only; engine
+    // plans have no « origin » line and are parsed exactly as before. A setup plan: previous-kind none (first install),
+    // installed (pid 0 = nothing to wait for) or repair (reinstall of `current` itself); never portable; nothing is
+    // relaunched on failure (the setup reports it); `launch 0` installs without starting the browser.
+    bool setup = false, launch = true;
 };
 
 bool ParsePlan(const std::string& text, const std::wstring& root, const std::string& nonce, Plan& p, std::string& error) {
@@ -402,12 +408,30 @@ bool ParsePlan(const std::string& text, const std::wstring& root, const std::str
     p.previousVersion = Field(lines, "previous-version");
     p.previousKind = Field(lines, "previous-kind");
     p.previousExe = FullPath(UP::Widen(Field(lines, "previous-exe")));
-    UP::Version v, pv;
+    const std::string origin = Field(lines, "origin"), launch = Field(lines, "launch");
+    if (!origin.empty() && origin != "setup") return error = "plan origin", false;
+    p.setup = origin == "setup";
+    if (!launch.empty() && (!p.setup || (launch != "0" && launch != "1"))) return error = "plan launch", false;
+    p.launch = launch != "0";
     if (p.nonce != nonce) return error = "plan nonce", false;
-    if (!UP::ParseVersion(p.version, v) || !UP::ParseVersion(p.previousVersion, pv) || UP::CompareVersion(v, pv) <= 0)
-        return error = "plan version", false;
+    UP::Version v, pv;
+    if (!UP::ParseVersion(p.version, v) || UP::IsZero(v)) return error = "plan version", false;
     unsigned long long pid = std::strtoull(Field(lines, "pid").c_str(), nullptr, 10);
     p.created = std::strtoull(Field(lines, "created").c_str(), nullptr, 10);
+    if (p.setup) {
+        if (Field(lines, "pid") != "0" || Field(lines, "created") != "0") return error = "plan pid", false;  // nothing to wait for
+        if (p.previousKind == "none") {
+            if (!p.previousVersion.empty() || !Field(lines, "previous-exe").empty()) return error = "plan previous", false;
+            return true;
+        }
+        if (!UP::ParseVersion(p.previousVersion, pv)) return error = "plan version", false;
+        const int order = UP::CompareVersion(v, pv);
+        if (p.previousKind == "repair" ? order != 0 : (p.previousKind != "installed" || order <= 0)) return error = "plan kind", false;
+        if (Lower(p.previousExe) != Lower(root + L"\\versions\\" + UP::Widen(p.previousVersion) + L"\\browser.exe"))
+            return error = "installed previous exe outside root", false;
+        return true;
+    }
+    if (!UP::ParseVersion(p.previousVersion, pv) || UP::CompareVersion(v, pv) <= 0) return error = "plan version", false;
     if (!pid || pid > 0xffffffffull || !p.created) return error = "plan pid", false;
     p.pid = DWORD(pid);
     if (p.previousExe.empty()) return error = "plan previous exe", false;
@@ -783,15 +807,25 @@ int RunInstall(const std::string& nonce) {
     std::wstring versions = root + L"\\versions", target = versions + L"\\" + UP::Widen(p.version);
     std::wstring targetExe = target + L"\\browser.exe";
 
-    if (!WaitForBrowser(p)) {
+    if (p.setup) Log("setup install, previous-kind " + p.previousKind + (p.launch ? "" : ", no launch"));
+    if (!p.setup && !WaitForBrowser(p)) {
         WriteResult(updates, "failed", p.version, "browser-did-not-exit");
         return 20;
     }
     RecoverAnnotationsMigration(root, nonce + "-pre");
+    // Repair (setup only): the live versions\<v> is renamed here before the fresh copy takes its place, and renamed
+    // back if the fresh copy does not end up there.
+    const std::wstring repairAside = versions + L"\\.repair-" + UP::Widen(nonce);
+    auto restoreRepairAside = [&] {
+        if (!UP::PathExists(repairAside)) return;
+        if (UP::PathExists(target)) UP::RemoveTree(repairAside);  // the verified fresh copy stays
+        else if (!UP::MoveDirectory(repairAside, target, TransientRenameMs)) Log("repair: previous copy could not be restored");
+    };
     auto abortBeforeSwitch = [&](const std::string& reason, int code) {
         Log("aborted: " + reason);
+        restoreRepairAside();
         WriteResult(updates, "failed", p.version, reason);
-        Relaunch(p.previousExe);
+        if (!p.setup) Relaunch(p.previousExe);  // a setup reports the failure itself
         return code;
     };
     if (!UP::VerifyStagedTree(stage, p.version, error)) return abortBeforeSwitch("stage-invalid " + error, 21);
@@ -801,13 +835,17 @@ int RunInstall(const std::string& nonce) {
     std::string oldCurrent;
     bool hadCurrent = UP::ReadSmallFile(root + L"\\current", 64, oldCurrent);
     while (!oldCurrent.empty() && (oldCurrent.back() == '\n' || oldCurrent.back() == '\r')) oldCurrent.pop_back();
-    if (UP::PathExists(target)) {
+    if (p.previousKind == "repair") {
+        if (!hadCurrent || oldCurrent != p.version) return abortBeforeSwitch("repair-not-current", 23);
+        if (UP::PathExists(target) && (Fault("repair-aside") || !UP::MoveDirectory(target, repairAside, TransientRenameMs)))
+            return abortBeforeSwitch("target-in-use", 23);
+    } else if (UP::PathExists(target)) {
         if (hadCurrent && oldCurrent == p.version) return abortBeforeSwitch("target-is-current", 23);
         std::wstring trash = versions + L"\\.trash-" + UP::Widen(nonce);
         if (!UP::MoveDirectory(target, trash, TransientRenameMs)) return abortBeforeSwitch("target-in-use", 23);
         UP::RemoveTree(trash);
     }
-    if (!UP::MoveDirectory(stage, target, TransientRenameMs)) return abortBeforeSwitch("move-failed", 24);
+    if (Fault("move") || !UP::MoveDirectory(stage, target, TransientRenameMs)) return abortBeforeSwitch("move-failed", 24);
     if (!UP::VerifyStagedTree(target, p.version, error)) {
         UP::MoveDirectory(target, stage, TransientRenameMs);
         return abortBeforeSwitch("installed-tree-invalid " + error, 25);
@@ -879,9 +917,10 @@ int RunInstall(const std::string& nonce) {
         }
     }
     Fault("kill-after-switch");
-    UP::AtomicWriteFile(root + L"\\previous",
-                        p.previousKind == "installed" ? "installed " + p.previousVersion + "\n"
-                                                      : "portable " + UP::Narrow(p.previousExe) + "\n");
+    if (p.previousKind == "installed" || p.previousKind == "portable")  // a setup first install / repair keeps it
+        UP::AtomicWriteFile(root + L"\\previous",
+                            p.previousKind == "installed" ? "installed " + p.previousVersion + "\n"
+                                                          : "portable " + UP::Narrow(p.previousExe) + "\n");
     auto restore = [&] {
         if (hadCurrent)
             UP::AtomicWriteFile(root + L"\\current", oldCurrent + "\n");
@@ -902,6 +941,24 @@ int RunInstall(const std::string& nonce) {
         DeleteFileW(iconTemp.c_str());
     for (const wchar_t* name : {L"\\browser.exe", L"\\browser.ico"})
         SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, (root + name).c_str(), nullptr);
+    // Versions kept by Prune: current + the previous installed version (a repair keeps the one recorded before).
+    std::string keepPrevious = p.previousKind == "installed" ? p.previousVersion : "";
+    if (p.previousKind == "repair") {
+        std::string prev;
+        if (UP::ReadSmallFile(root + L"\\previous", 4096, prev) && prev.rfind("installed ", 0) == 0) {
+            keepPrevious = prev.substr(10);
+            while (!keepPrevious.empty() && (keepPrevious.back() == '\n' || keepPrevious.back() == '\r')) keepPrevious.pop_back();
+        }
+    }
+    if (p.setup && !p.launch) {  // installed without starting it (setup option); the setup integrates and reports
+        WriteResult(updates, "installed", p.version, "setup-no-launch");
+        restoreRepairAside();
+        RecoverAnnotationsMigration(root, nonce + "-post");
+        Prune(root, p.version, keepPrevious, nonce);
+        SetupKey::RefreshDisplayVersion(root, p.version);
+        Log("installed " + p.version + " (not launched)");
+        return 0;
+    }
     std::wstring pending = updates + L"\\pending", ack = updates + L"\\ack-" + UP::Widen(nonce);
     DeleteFileW(ack.c_str());
     if (!UP::AtomicWriteFile(pending, "browser-pending 1\nnonce " + nonce + "\nversion " + p.version + "\n")) {
@@ -953,7 +1010,9 @@ int RunInstall(const std::string& nonce) {
         } else {
             RecoverAnnotationsMigration(root, nonce + "-post");  // an earlier interrupted migration, now that the install is usable
         }
-        Prune(root, p.version, p.previousKind == "installed" ? p.previousVersion : "", nonce);
+        restoreRepairAside();
+        Prune(root, p.version, keepPrevious, nonce);
+        SetupKey::RefreshDisplayVersion(root, p.version);
         Log("installed " + p.version);
         return 0;
     }
@@ -963,17 +1022,20 @@ int RunInstall(const std::string& nonce) {
         restore();
         std::wstring failed = versions + L"\\.failed-" + UP::Widen(nonce);
         if (UP::MoveDirectory(target, failed, TransientRenameMs)) UP::RemoveTree(failed);
+        restoreRepairAside();  // repair: the previous copy of the same version returns
         if (migrated && WaitProfileUnlocked(root + L"\\data\\profile", ProfileUnlockMs)) {
             // The copy made by this run is discarded so a later retry re-migrates the (still authoritative) portable data.
             std::wstring dropped = root + L"\\data.rolledback-" + UP::Widen(nonce);
             if (UP::MoveDirectory(root + L"\\data", dropped, TransientRenameMs)) UP::RemoveTree(dropped);
         }
         WriteResult(updates, "failed", p.version, "no-startup-ack");
-        Relaunch(p.previousExe);
+        if (!p.setup) Relaunch(p.previousExe);
         return 30;
     }
     // Still running but silent: do not kill it. The browser acknowledges itself later via the pending record.
+    restoreRepairAside();
     WriteResult(updates, "unconfirmed", p.version, "ack-timeout");
+    SetupKey::RefreshDisplayVersion(root, p.version);
     Log("ack timeout; new version left running");
     return 31;
 }
