@@ -26,6 +26,8 @@
 #include <string>
 
 #include "annotations.h"
+#include "annotations-migration.h"
+#include "update-core.h"
 #ifdef BROWSER_HAS_BUILD_INFO
 #include "build-info.h"
 #endif
@@ -34,6 +36,7 @@
 #endif
 
 namespace BA = BrowserAnnotations;
+namespace AM = AnnotationsMigration;
 namespace SJ = StrictJson;
 using SJ::Value;
 
@@ -323,12 +326,54 @@ std::string Summary(const BA::Outcome& o) {
     return o.message.empty() ? std::string("Erreur : ") + BA::CodeName(o.code) : o.message;
 }
 
+// Portable -> installed migration (src/annotations-migration.h, design/public-download-plan-b.md): only a release
+// bridge follows a committed migration; dev and preview bridges keep their folder (isolated stores).
+#if defined(BROWSER_CHANNEL_RELEASE) && !defined(BROWSER_PREVIEW)
+constexpr bool RedirectToInstalled = true;
+#else
+constexpr bool RedirectToInstalled = false;
+#endif
+
 class Bridge {
 public:
-    Bridge(std::wstring storeRoot, std::string site) : store_(std::move(storeRoot)), site_(std::move(site)) {}
+    // exe: this bridge's path; storeArg: --store as given ("" = default). The served store is re-resolved for
+    // every request with the migration gate held (see HandleLine).
+    Bridge(std::wstring exe, std::wstring storeArg, std::string site)
+        : exe_(std::move(exe)), storeArg_(std::move(storeArg)),
+          store_(BA::ResolveAgentStore(exe_, storeArg_, false, nullptr).root), site_(std::move(site)) {
+        gatePath_ = BA::ResolveAgentStore(exe_, storeArg_, false, nullptr).gate;
+    }
+    const std::wstring& StoreRoot() const { return store_.Root(); }
 
-    // Returns false when stdout is gone.
+    // Returns false when stdout is gone. The gate is held SHARED for the whole request: the store is resolved and
+    // used under it, so the update helper can never copy it between a decision and a write.
     bool HandleLine(const std::string& line) {
+        AM::Gate gate;
+        busy_ = gateFailed_ = false;
+        if (!gatePath_.empty()) {  // fail-closed: nothing is resolved, read or written unless the gate is HELD
+            const AM::GateState st = gate.Open(gatePath_, false);
+            busy_ = st != AM::GateState::Held;
+            gateFailed_ = st == AM::GateState::Failed;
+        }
+        if (!busy_) Resolve();
+        return Handle(line);
+    }
+
+private:
+    void Resolve() {
+        const BA::AgentStore a = BA::ResolveAgentStore(exe_, storeArg_, RedirectToInstalled,
+                                                       [](const std::wstring& portableExe) {
+                                                           return !UpdateCore::PortableForwardTarget(portableExe).empty();
+                                                       });
+        if (_wcsicmp(BA::Store(a.root).Root().c_str(), store_.Root().c_str()) == 0) return;
+        store_ = BA::Store(a.root);
+        seen_.clear();  // per-store caches
+        seenLoaded_.clear();
+        readerWrites_.clear();
+        Log(std::string(a.redirected ? "migrated: now serving the installed store " : "serving store ") + Narrow(store_.Root()));
+    }
+
+    bool Handle(const std::string& line) {
         Value msg;
         std::string error;
         SJ::Limits limits;
@@ -355,7 +400,9 @@ public:
         return Send(Dispatch(*id, method->string, *params));
     }
 
-private:
+    std::wstring exe_, storeArg_, gatePath_;
+    bool busy_ = false;        // this request: the gate is not held (helper migrating, or gate unusable)
+    bool gateFailed_ = false;  // this request: the gate could not be opened as a plain file (fail-closed)
     BA::Store store_;
     std::string site_;  // origin from --site ("" = every site)
     bool legacy_ = false;
@@ -511,7 +558,11 @@ private:
         if (!args || args->IsNull()) args = &none;
         ToolResult r;
         const std::string& tool = name->string;
-        if (tool == "browser_annotations_list") r = List(*args, client);
+        if (busy_ && (tool == "browser_annotations_list" || tool == "browser_annotation_get" || tool == "browser_annotation_claim" ||
+                      tool == "browser_annotation_resolve" || tool == "browser_annotation_release"))
+            r = ToolError(gateFailed_ ? "Verrou de migration des annotations inutilisable (annotations.write-gate) : aucune annotation n'est lue ni modifiée."
+                                      : "Migration des annotations vers la version installée en cours : réessayez dans un instant.");
+        else if (tool == "browser_annotations_list") r = List(*args, client);
         else if (tool == "browser_annotation_get") r = Get(*args, client);
         else if (tool == "browser_annotation_claim") r = Claim(*args, client);
         else if (tool == "browser_annotation_resolve") r = Resolve(*args, client);
@@ -548,6 +599,7 @@ private:
     // ids: annotations this call showed to the agent (list / get). A newly read id is written at once (the browser's
     // « Lue par … »); otherwise at most one write every 10 s per client.
     void NoteReader(const ClientIdentity& client, const std::vector<std::string>& ids = {}) {
+        if (busy_) return;  // migration running: nothing is written, the next request records it
         BA::Reader r;
         r.client = BA::ClientSlug(client.known ? client.name : "");
         r.label = !client.title.empty() ? client.title : (client.known ? client.name : r.client);
@@ -825,14 +877,11 @@ int wmain(int argc, wchar_t** argv) {
         } else if (a == L"--help" || a == L"-h") return Usage(nullptr), 0;
         else return Usage(("unknown argument: " + Narrow(a)).c_str());
     }
-    if (store.empty()) {
-        wchar_t exe[4096];
-        const DWORD n = GetModuleFileNameW(nullptr, exe, 4096);
-        if (!n || n >= 4096) return Usage("cannot resolve the executable path");
-        store = BA::DefaultStoreRoot(std::wstring(exe, n));
-    }
-    Bridge bridge(store, site);
-    Log(std::string("started ") + BROWSER_VERSION_TEXT + " store=" + Narrow(BA::Store(store).Root()) +
+    wchar_t exe[4096];
+    const DWORD n = GetModuleFileNameW(nullptr, exe, 4096);
+    if (!n || n >= 4096) return Usage("cannot resolve the executable path");
+    Bridge bridge(std::wstring(exe, n), store, site);  // store "" = default, resolved like the browser (DefaultStoreRoot)
+    Log(std::string("started ") + BROWSER_VERSION_TEXT + " store=" + Narrow(bridge.StoreRoot()) +
         (site.empty() ? "" : " site=" + site));
 
     std::string pending;

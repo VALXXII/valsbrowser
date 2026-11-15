@@ -13,7 +13,11 @@ Guards (the feed must never move backwards, also for fresh installs that read
   * assets are uploaded to a DRAFT, their server-side SHA-256 digests are checked,
     the newest version is re-read right before the draft is published as latest;
   * finally the anonymous public URL releases/latest/download/<manifest> must serve
-    exactly our manifest.
+    exactly our manifest, and the versioned public ZIP URL exactly our ZIP.
+Public first-run download: browser-<version>-win-x64.zip (built by package.py from the
+same staged payload as the .lsrupd) is a REQUIRED asset. It must match release-info.json
+and SHA256SUMS.txt before anything is uploaded, its server digest is checked on the
+draft and on an already existing release; a release without it is never accepted.
 `--dry-run` performs only read-only queries and prints the plan.
 """
 from __future__ import annotations
@@ -23,6 +27,8 @@ from pathlib import Path
 VERSION_RE = re.compile(r'^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$')
 REPO_RE = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
 MANIFEST = 'update-manifest-win-x64.txt'
+SUMS = 'SHA256SUMS.txt'
+MAX_ZIP = 512 * 1024 * 1024
 
 
 def parse_tag(tag: str):
@@ -65,32 +71,103 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def fetch(url: str) -> bytes:
+def fetch(url: str, limit: int = 4096) -> bytes:
     req = urllib.request.Request(url, headers={'User-Agent': 'browser-release-verifier'})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read(4096)
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return r.read(limit)
 
 
-def main() -> int:
+def parse_manifest(raw: bytes) -> dict:
+    """Same strict format as package.read_manifest (6 LF lines, fixed key order)."""
+    keys = ['browser-update', 'version', 'arch', 'package', 'size', 'sha256']
+    if len(raw) > 1024 or b'\r' in raw or not raw.endswith(b'\n'):
+        return {}
+    lines = raw.decode('utf-8', 'replace')[:-1].split('\n')
+    if len(lines) != len(keys):
+        return {}
+    out = {}
+    for key, line in zip(keys, lines):
+        k, _, v = line.partition(' ')
+        if k != key or not v:
+            return {}
+        out[k] = v
+    return out
+
+
+def verify_dist(dist: Path, info: dict, source_commit: str) -> tuple:
+    """Local, offline checks of the packaged assets. Returns (tag, ours, package, manifest, zip)."""
+    version = info.get('version', '')
+    tag = f'v{version}'
+    ours = parse_tag(tag)
+    if not ours or info.get('commit') != source_commit or info.get('channel') != 'release':
+        raise SystemExit('release-info does not match this workflow run')
+    if info.get('package') != f'browser-{version}-win-x64.lsrupd':
+        raise SystemExit('release-info package name does not match its version')
+    if info.get('zip') != f'browser-{version}-win-x64.zip':
+        raise SystemExit('release-info has no public ZIP for this version (re-run package.py)')
+    package, manifest, archive = dist / info['package'], dist / MANIFEST, dist / info['zip']
+    for f in (package, manifest, archive, dist / SUMS):
+        if not f.is_file() or f.is_symlink():
+            raise SystemExit(f'missing release asset: {f.name}')
+    if sha256(package) != info['packageSha256'] or package.stat().st_size != info['packageSize']:
+        raise SystemExit('package changed since packaging')
+    # The manifest is what every client reads: its fields must name exactly this version/package.
+    want = {'browser-update': '1', 'version': version, 'arch': 'x64', 'package': package.name,
+            'size': str(package.stat().st_size), 'sha256': sha256(package)}
+    if parse_manifest(manifest.read_bytes()) != want:
+        raise SystemExit(f'{MANIFEST} does not describe {package.name} for {tag}')
+    if (archive.stat().st_size != info.get('zipSize') or archive.stat().st_size > MAX_ZIP
+            or sha256(archive) != info.get('zipSha256')):
+        raise SystemExit('ZIP changed since packaging')
+    sums = (dist / SUMS).read_bytes().decode('ascii')
+    expected = ''.join(f'{sha256(f)}  {f.name}\n' for f in (package, manifest, archive))
+    if sums != expected:
+        raise SystemExit(f'{SUMS} does not cover exactly the package, manifest and ZIP bytes')
+    return tag, ours, package, manifest, archive
+
+
+def release_notes(info: dict, repo: str, source_commit: str) -> str:
+    v, z = info['version'], info['zip']
+    top = z[:-len('.zip')]
+    return (f'## Télécharger browser {v} (Windows 10/11 x64)\n\n'
+            f'**[{z}](https://github.com/{repo}/releases/download/v{v}/{z})** · '
+            f'dernière version toujours ici : https://github.com/{repo}/releases/latest\n\n'
+            f'1. Télécharger le ZIP, puis clic droit > **Extraire tout…** (ne pas lancer depuis le ZIP).\n'
+            f'2. Ouvrir le dossier `{top}` et lancer **browser.exe**. Garder tout le dossier '
+            f'(`assets`, `WebView2Loader.dll`, `update-helper.exe`) à côté du programme.\n'
+            f'3. Windows SmartScreen peut avertir (programme non signé) : *Informations complémentaires* > '
+            f'*Exécuter quand même*.\n\n'
+            f'Premier lancement : version portable, le profil est créé dans ce dossier. Le navigateur vérifie '
+            f'ensuite les mises à jour ; installer une mise à jour place l\'application dans '
+            f'`%LOCALAPPDATA%\\browser` et y copie une fois le profil portable. Le moteur Microsoft Edge '
+            f'WebView2 (fourni avec Windows 11) est requis ; s\'il manque, le navigateur propose de l\'installer.\n\n'
+            f'Les fichiers `.lsrupd` et `update-manifest-win-x64.txt` servent uniquement aux mises à jour automatiques.\n\n'
+            f'Automatic build {v} of VALXXII/browser main, commit {source_commit}.\n\n'
+            f'ZIP SHA-256: {info["zipSha256"]}\n'
+            f'Package SHA-256: {info["packageSha256"]}\n')
+
+
+def check_digests(release: dict, files: list, what: str) -> None:
+    digests = {x.get('name'): x.get('digest') for x in release.get('assets', [])}
+    for f in files:
+        if digests.get(f.name) != 'sha256:' + sha256(f):
+            raise SystemExit(f'{what}: digest mismatch or missing asset {f.name}: {digests.get(f.name)}')
+
+
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--repo', required=True, help='public releases repository owner/name')
     p.add_argument('--dist', required=True)
     p.add_argument('--source-commit', required=True)
     p.add_argument('--dry-run', action='store_true')
-    a = p.parse_args()
+    a = p.parse_args(argv)
     if not REPO_RE.match(a.repo):
         raise SystemExit('bad --repo')
     if not re.fullmatch(r'[0-9a-f]{40}', a.source_commit):
         raise SystemExit('bad --source-commit')
     dist = Path(a.dist)
     info = json.loads((dist / 'release-info.json').read_text(encoding='utf-8'))
-    tag = f'v{info["version"]}'
-    ours = parse_tag(tag)
-    if not ours or info['commit'] != a.source_commit or info['channel'] != 'release':
-        raise SystemExit('release-info does not match this workflow run')
-    package, manifest = dist / info['package'], dist / MANIFEST
-    if sha256(package) != info['packageSha256'] or package.stat().st_size != info['packageSize']:
-        raise SystemExit('package changed since packaging')
+    tag, ours, package, manifest, archive = verify_dist(dist, info, a.source_commit)
     if not a.dry_run and not os.environ.get('GH_TOKEN'):
         raise SystemExit('GH_TOKEN (UPDATES_RELEASE_TOKEN) is required to publish')
 
@@ -105,40 +182,47 @@ def main() -> int:
         url = f'https://github.com/{a.repo}/releases/download/{tag}/{MANIFEST}'
         if fetch(url) != manifest.read_bytes():
             raise SystemExit(f'{tag} already exists with a DIFFERENT manifest; releases are immutable.')
+        # Same version, same bytes: the public ZIP must already be there, identical (never added later).
+        check_digests(existing, [package, manifest, archive, dist / SUMS], f'existing {tag}')
         if not a.dry_run:
             gh('release', 'edit', tag, '--repo', a.repo, '--latest')
         print(f'{tag} already published with identical assets; latest confirmed.')
         return 0
     if a.dry_run:
-        print(f'DRY RUN: would create draft {tag}, upload {package.name}, {MANIFEST}, SHA256SUMS.txt, then publish as latest.')
+        print(f'DRY RUN: would create draft {tag}, upload {package.name}, {MANIFEST}, {archive.name}, {SUMS}, then publish as latest.')
         return 0
     if existing and existing.get('draft'):
         gh('release', 'delete', tag, '--repo', a.repo, '--yes')  # leftover draft of a failed run, never public
-    notes = (f'Automatic build {info["version"]} of VALXXII/browser main, commit {a.source_commit}.\n\n'
-             f'Package SHA-256: {info["packageSha256"]}\n')
+    notes = release_notes(info, a.repo, a.source_commit)
     gh('release', 'create', tag, '--repo', a.repo, '--draft', '--title', f'browser {info["version"]}',
-       '--notes', notes, str(package), str(manifest), str(dist / 'SHA256SUMS.txt'))
+       '--notes', notes, str(package), str(manifest), str(archive), str(dist / SUMS))
     # Draft releases are not reachable by tag; find it in the list.
-    draft = next(r for r in releases(a.repo) if r.get('tag_name') == tag and r.get('draft'))
-    digests = {x['name']: x.get('digest') for x in draft.get('assets', [])}
-    for f in (package, manifest):
-        if digests.get(f.name) != 'sha256:' + sha256(f):
-            raise SystemExit(f'Uploaded digest mismatch for {f.name}: {digests.get(f.name)}')
+    draft = next((r for r in releases(a.repo) if r.get('tag_name') == tag and r.get('draft')), None)
+    if draft is None:
+        raise SystemExit(f'draft {tag} not found after upload')
+    check_digests(draft, [package, manifest, archive, dist / SUMS], 'uploaded draft')
     if decide(ours, published_versions(releases(a.repo)), False) != 'publish':
         gh('release', 'delete', tag, '--repo', a.repo, '--yes')
         print('Superseded while uploading; draft removed, nothing published.')
         return 0
     gh('release', 'edit', tag, '--repo', a.repo, '--draft=false', '--latest')
     url = f'https://github.com/{a.repo}/releases/latest/download/{MANIFEST}'
+    zip_url = f'https://github.com/{a.repo}/releases/download/{tag}/{archive.name}'
+    zip_sha = sha256(archive)
+    manifest_ok = zip_ok = False
     for attempt in range(10):
         try:
-            if fetch(url) == manifest.read_bytes():
-                print(f'Published {tag}; public latest manifest verified.')
+            manifest_ok = manifest_ok or fetch(url) == manifest.read_bytes()
+            zip_ok = zip_ok or hashlib.sha256(fetch(zip_url, MAX_ZIP + 1)).hexdigest() == zip_sha
+            if manifest_ok and zip_ok:
+                print(f'Published {tag}; public latest manifest and ZIP verified.')
+                print(f'Public download: {zip_url}')
                 return 0
         except urllib.error.URLError as e:
             print('verify retry:', e)
         time.sleep(6)
-    raise SystemExit('Published, but the public latest manifest does not match (check feed manually).')
+    raise SystemExit(f'Published, but the public {"ZIP" if manifest_ok else "latest manifest"} does not match '
+                     '(check feed manually).')
 
 
 if __name__ == '__main__':

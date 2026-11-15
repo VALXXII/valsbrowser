@@ -39,12 +39,28 @@ def compile_exe(name, sources, extra=()):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    compile_exe("update-helper.exe", ["src/update-helper.cpp", "src/update-package.cpp"], ["-mwindows"])
-    for name, version, crash in [("fake-0.3.1.exe", "0.3.1", 0), ("fake-0.3.2.exe", "0.3.2", 0), ("fake-0.3.2-crash.exe", "0.3.2", 1)]:
+    # Fixture helper: same source, plus test-only fault points (BROWSER_HELPER_FAULT, see src/update-helper.cpp).
+    compile_exe("update-helper.exe", ["src/update-helper.cpp", "src/update-package.cpp"], ["-mwindows", "-DUPDATE_HELPER_FAULTS"])
+    # Launcher as shipped BEFORE plan B (release tooling 9f73bdd): first-transition tests (install_test).
+    pre = OUT / "preB"
+    for rel in ("src/update-helper.cpp", "src/update-package.cpp", "src/update-package.h"):
+        text = subprocess.run(["git", "show", f"9f73bdd3a5950fd2cee15f9a5ba2f7137ede34e9:{rel}"], cwd=ROOT, check=True,
+                              capture_output=True, text=True, encoding="utf-8").stdout
+        (pre / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pre / rel).write_text(text, encoding="utf-8", newline="\n")
+    run([GXX, *[f for f in FLAGS if f != "-Isrc"], "-mwindows", f"-I{pre / 'src'}", str(pre / "src/update-helper.cpp"),
+         str(pre / "src/update-package.cpp"), "-o", str(OUT / "update-helper-preB.exe"), *LIBS], "compile update-helper-preB.exe")
+    # Real MCP bridges (src/mcp-bridge.cpp) with distinct bytes per version: live agent processes in install_test.
+    for version in ("0.3.1", "0.3.2", "0.3.3"):
+        compile_exe(f"bridge-{version}.exe", ["src/mcp-bridge.cpp", "src/annotations.cpp", *CORE], [f'-DBROWSER_VERSION_TEXT="{version}"'])
+    # Release-flavoured bridge (follows a committed portable->installed migration): portable agent in install_test.
+    compile_exe("bridge-release.exe", ["src/mcp-bridge.cpp", "src/annotations.cpp", *CORE], ["-DBROWSER_CHANNEL_RELEASE"])
+    for name, version, crash in [("fake-0.3.1.exe", "0.3.1", 0), ("fake-0.3.2.exe", "0.3.2", 0), ("fake-0.3.2-crash.exe", "0.3.2", 1),
+                                 ("fake-0.3.3.exe", "0.3.3", 0)]:
         compile_exe(name, ["tests/update-core/fake_browser.cpp", *CORE],
                     ["-mwindows", f'-DFAKE_VERSION=L"{version}"', f"-DFAKE_CRASH={crash}"])
     compile_exe("update_core_test.exe", ["tests/update-core/update_core_test.cpp", *CORE])
-    compile_exe("install_test.exe", ["tests/update-core/install_test.cpp", *CORE])
+    compile_exe("install_test.exe", ["tests/update-core/install_test.cpp", "src/annotations.cpp", *CORE])
     compile_exe("interop_check.exe", ["tests/update-core/interop_check.cpp", "src/update-package.cpp"])
     if failures:
         return finish()

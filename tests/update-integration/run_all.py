@@ -105,6 +105,8 @@ def peer_suites() -> None:
 
 def integration() -> None:
     run('release tooling tests', [sys.executable, '-I', HERE / 'test_release_tools.py'])
+    # v0.3.239's own package validator (from git history) accepts the assets/bin bridge, refuses a root one
+    run('old client validator accepts the release bridge payload', [sys.executable, HERE / 'old_validator.py'])
     run('host integration + mocked end-to-end install', [sys.executable, HERE / 'e2e_install.py'])
 
 
@@ -152,6 +154,19 @@ def check_app(app: Path) -> None:
         data = (app / exe).read_bytes()
         if ico_png(want) not in data or ico_png(other) in data:
             sys.exit(f'{exe} does not embed {want.name} (channel {info["channel"]})')
+    # Annotations MCP bridge (tools/release/build.py bridge_location): a release ships it at exactly
+    # assets/bin/ (the only place existing clients accept), never at the root, and ships it iff the
+    # annotation mode is compiled into browser.exe (no UI without bridge, no orphan bridge).
+    import package as K
+    bridge = app / K.RELEASE_BRIDGE
+    if info['channel'] == 'release':
+        if (app / 'browser-annotations-mcp.exe').exists():
+            sys.exit('release app has a root-level bridge (existing clients would reject the update)')
+        annotations = 'ANNOTATE '.encode('utf-16-le') in (app / 'browser.exe').read_bytes()
+        if bridge.is_file() != annotations:
+            sys.exit(f'release app: bridge present={bridge.is_file()} but annotation mode compiled in={annotations}')
+    if bridge.is_file():
+        K.check_console_x64(bridge)
     for required in ('WebView2Loader.dll', 'assets/fonts/InterDisplay-Regular.ttf', 'WebView2-LICENSE.txt'):
         if not (app / required).is_file():
             sys.exit(f'missing {required}')

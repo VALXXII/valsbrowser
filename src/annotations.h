@@ -284,6 +284,21 @@ MergeReport MigrateProfileStores(const std::wstring& dataRoot);
 // installRoot defaults to %LOCALAPPDATA%\browser.
 std::wstring DefaultStoreRoot(const std::wstring& exePath, const std::wstring& installRoot = L"");
 
+// Store an agent's bridge serves (plan B items 4 + 6, src/annotations-migration.h). Call with the gate of
+// `gate` held SHARED and keep it for the whole request. Redirects the DEFAULT portable store of a release bridge
+// (no --store, or --store equal to it) to <installRoot>\data\annotations only when the durable migration record
+// says « committed » for exactly that portable folder AND forwardValid(<portable folder>\browser.exe) — the
+// browser's own portable forward rules (UpdateCore::PortableForwardTarget non-empty). Never redirects a custom
+// --store, an installed bridge, or when allowRedirect is false (dev / preview builds). Reads only.
+struct AgentStore {
+    std::wstring root;      // store to serve
+    std::wstring gate;      // gate to hold for every request ("" when not eligible)
+    bool eligible = false;  // default portable store of this bridge
+    bool redirected = false;
+};
+AgentStore ResolveAgentStore(const std::wstring& bridgeExe, const std::wstring& storeArg, bool allowRedirect,
+                             const std::function<bool(const std::wstring&)>& forwardValid, const std::wstring& installRoot = L"");
+
 // ---------------------------------------------------------------- store operations (all BLOCK on file I/O)
 enum class Code {
     Ok,

@@ -9,13 +9,17 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "annotations-migration.h"
 #include "update-package.h"
 
 namespace UP = UpdatePackage;
+namespace AM = AnnotationsMigration;
 
 namespace {
 
@@ -143,26 +147,236 @@ bool LocalDrivePath(const std::wstring& path) {
     return type == DRIVE_FIXED || type == DRIVE_REMOVABLE;
 }
 
-// ---------------------------------------------------------------- launcher
+// ---------------------------------------------------------------- test faults
+// Fault injection for the install fixture (tests/update-core) ONLY: compiled in with -DUPDATE_HELPER_FAULTS,
+// never by tools/release/build.py. BROWSER_HELPER_FAULT=<point> makes that step fail ("fail") or kills the
+// helper on the spot (points starting with "kill-"), to prove recovery from every intermediate state.
+#ifdef UPDATE_HELPER_FAULTS
+bool Fault(const char* point) {
+    wchar_t v[64];
+    DWORD n = GetEnvironmentVariableW(L"BROWSER_HELPER_FAULT", v, 64);
+    if (!n || n >= 64 || UP::Narrow(std::wstring(v, n)) != point) return false;
+    if (std::string(point).rfind("kill-", 0) == 0) TerminateProcess(GetCurrentProcess(), 77);
+    return true;
+}
+#else
+constexpr bool Fault(const char*) { return false; }
+#endif
 
-int RunLauncher(int argc, wchar_t** argv) {
-    std::wstring root = Parent(SelfPath());
+// ---------------------------------------------------------------- stable bridge
+// Agents (Claude, Codex) are configured once with <root>\bin\browser-annotations-mcp.exe (src/agent-connect.cpp):
+// version directories are pruned, so the versioned copy (assets\bin\ of the package, the only place existing
+// clients accept) must be published there. Invariant restored by ReconcileBridge(root, v): the bin file is
+// byte-identical to versions\<v>\assets\bin\<bridge>, or absent when v ships none (an older current never keeps a
+// newer, possibly incompatible bridge). A running bridge is never killed or written: its file is renamed aside
+// (allowed while the image is mapped; replacing it in place is not) and deleted later once nothing runs it. The
+// only moment the final name is absent is between that rename and the next one (two renames in a row); a crash
+// there is repaired by the next ReconcileBridge (install start, rollback, every launcher start).
+constexpr const wchar_t* BridgeName = L"browser-annotations-mcp.exe";
+
+class BinLock {  // exclusive <root>\bin\.publish-lock: one reconciler at a time (helper install vs launcher)
+public:
+    BinLock(const std::wstring& bin, DWORD waitMs) {
+        ULONGLONG end = GetTickCount64() + waitMs;
+        for (;;) {
+            h_ = CreateFileW((bin + L"\\.publish-lock").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
+                             FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (h_ != INVALID_HANDLE_VALUE || GetTickCount64() >= end) return;
+            Sleep(100);
+        }
+    }
+    ~BinLock() { if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_); }
+    BinLock(const BinLock&) = delete;
+    BinLock& operator=(const BinLock&) = delete;
+    bool Held() const { return h_ != INVALID_HANDLE_VALUE; }
+private:
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+};
+
+bool SameBytes(const std::wstring& a, const std::wstring& b) {
+    UP::Digest da{}, db{};
+    std::uint64_t sa = 0, sb = 0;
+    return UP::Sha256File(a, da, sa) && UP::Sha256File(b, db, sb) && sa == sb && da == db;
+}
+
+// Removes leftovers of earlier publications; files still executed by an agent stay until a later pass.
+void CleanBridgeLeftovers(const std::wstring& bin) {
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileExW((bin + L"\\.*-*.exe").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        std::wstring name = fd.cFileName;
+        if (fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        if (name.rfind(L".old-", 0) == 0 || name.rfind(L".new-", 0) == 0) DeleteFileW((bin + L"\\" + name).c_str());
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+}
+
+// Caller holds the BinLock when bin exists. `version` empty: no current version (portable previous).
+// Final path of an open handle, lower-case, without the \\?\ prefix ("" on failure).
+std::wstring FinalPath(HANDLE h) {
+    std::wstring buffer(32768, L'\0');
+    DWORD n = GetFinalPathNameByHandleW(h, buffer.data(), DWORD(buffer.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (!n || n >= buffer.size()) return L"";
+    buffer.resize(n);
+    if (buffer.rfind(L"\\\\?\\UNC\\", 0) == 0) buffer = L"\\\\" + buffer.substr(8);
+    else if (buffer.rfind(L"\\\\?\\", 0) == 0) buffer = buffer.substr(4);
+    return Lower(buffer);
+}
+
+// Opens `rel` under `root` without following a final reparse point and checks that the object actually opened is
+// exactly <final path of root>\rel: a junction or symlink ANYWHERE between root and the object (assets, bin,
+// versions\<v>, ...) changes the final path and is refused. Root itself may be reached through a link above it
+// (the user's profile path), never below it.
+class RootedHandle {
+public:
+    RootedHandle(const std::wstring& root, const std::wstring& rel, bool directory, DWORD access = GENERIC_READ) {
+        HANDLE r = CreateFileW(root.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                               OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (r == INVALID_HANDLE_VALUE) return;
+        const std::wstring rootFinal = FinalPath(r);
+        CloseHandle(r);
+        if (rootFinal.empty()) return;
+        h_ = CreateFileW((root + L"\\" + rel).c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) return;
+        FILE_ATTRIBUTE_TAG_INFO tag{};
+        const bool kindOk = GetFileInformationByHandleEx(h_, FileAttributeTagInfo, &tag, sizeof(tag)) &&
+                            !(tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+                            bool(tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == directory;
+        if (!kindOk || FinalPath(h_) != rootFinal + L"\\" + Lower(rel)) {
+            CloseHandle(h_);
+            h_ = INVALID_HANDLE_VALUE;
+        }
+    }
+    ~RootedHandle() { if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_); }
+    RootedHandle(const RootedHandle&) = delete;
+    RootedHandle& operator=(const RootedHandle&) = delete;
+    bool Ok() const { return h_ != INVALID_HANDLE_VALUE; }
+    HANDLE Get() const { return h_; }
+private:
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+};
+
+bool ReadAll(HANDLE h, std::string& out, std::uint64_t max) {
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(h, &size) || size.QuadPart < 0 || std::uint64_t(size.QuadPart) > max) return false;
+    out.assign(std::size_t(size.QuadPart), '\0');
+    std::size_t done = 0;
+    while (done < out.size()) {
+        DWORD got = 0;
+        const DWORD want = DWORD(std::min<std::size_t>(out.size() - done, 1 << 20));
+        if (!ReadFile(h, out.data() + done, want, &got, nullptr) || got == 0) return false;
+        done += got;
+    }
+    return true;
+}
+
+// Caller holds the BinLock. `version` empty: no current version (portable previous). Every object read or written is
+// opened through RootedHandle (no reparse point anywhere under root); the bytes published are the bytes read from the
+// verified source handle, and the published file is re-read through a verified handle and compared.
+bool ReconcileBridge(const std::wstring& root, const std::string& version, const std::string& tag, std::string& error) {
+    const std::wstring bin = root + L"\\bin", final_ = bin + L"\\" + BridgeName;
+    const std::wstring srcRel = version.empty() ? L"" : L"versions\\" + UP::Widen(version) + L"\\assets\\bin\\" + BridgeName;
+    const bool want = !srcRel.empty() && UP::PathExists(root + L"\\" + srcRel);
+    std::string bytes;
+    if (want) {
+        RootedHandle source(root, srcRel, false);
+        if (!source.Ok() || !ReadAll(source.Get(), bytes, 256ull << 20)) return error = "bridge source invalid", false;
+    }
+    if (UP::PathExists(bin) && !RootedHandle(root, L"bin", true).Ok()) return error = "bin is not a plain directory", false;
+    const UP::Digest digest = UP::Sha256Of(bytes);
+    auto publishedIs = [&](const std::wstring& rel) {
+        RootedHandle h(root, rel, false);
+        std::string got;
+        return h.Ok() && ReadAll(h.Get(), got, 256ull << 20) && got.size() == bytes.size() && UP::Sha256Of(got) == digest;
+    };
+    const bool present = UP::PathExists(final_);
+    if (want && present && publishedIs(L"bin\\" + std::wstring(BridgeName))) {
+        CleanBridgeLeftovers(bin);
+        return true;  // already published
+    }
+    if (!want && !present) return true;
+    const std::wstring asideName = L".old-" + UP::Widen(tag) + L".exe", freshName = L".new-" + UP::Widen(tag) + L".exe";
+    const std::wstring aside = bin + L"\\" + asideName, fresh = bin + L"\\" + freshName;
+    if (want) {
+        if (!CreateDirectoryW(bin.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return error = "bin create failed", false;
+        if (!RootedHandle(root, L"bin", true).Ok()) return error = "bin is not a plain directory", false;
+        DeleteFileW(fresh.c_str());
+        bool written = false;
+        if (!Fault("bin-copy")) {
+            HANDLE out = CreateFileW(fresh.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (out != INVALID_HANDLE_VALUE) {
+                DWORD put = 0;
+                written = bytes.empty() || (WriteFile(out, bytes.data(), DWORD(bytes.size()), &put, nullptr) && put == bytes.size());
+                written = written && FlushFileBuffers(out);
+                CloseHandle(out);
+            }
+        }
+        if (!written || !publishedIs(L"bin\\" + freshName)) {
+            DeleteFileW(fresh.c_str());
+            return error = "bridge copy failed", false;
+        }
+    }
+    if (present && (Fault("bin-aside") || !MoveFileExW(final_.c_str(), aside.c_str(), MOVEFILE_WRITE_THROUGH))) {
+        DeleteFileW(fresh.c_str());
+        return error = "bridge in place could not be moved aside", false;
+    }
+    Fault("kill-after-aside");
+    if (want && (Fault("bin-final") || !MoveFileExW(fresh.c_str(), final_.c_str(), MOVEFILE_WRITE_THROUGH) ||
+                 !publishedIs(L"bin\\" + std::wstring(BridgeName)))) {
+        if (UP::PathExists(final_) && !UP::PathExists(fresh)) MoveFileExW(final_.c_str(), fresh.c_str(), 0);
+        if (present) MoveFileExW(aside.c_str(), final_.c_str(), MOVEFILE_WRITE_THROUGH);  // previous file back in place
+        DeleteFileW(fresh.c_str());
+        return error = "bridge publish failed", false;
+    }
+    CleanBridgeLeftovers(bin);
+    return true;
+}
+
+// ---------------------------------------------------------------- launcher
+void RecoverAnnotationsMigration(const std::wstring& root, const std::string& tag);  // install section
+bool WriteSourcePointer(const std::wstring& root, const std::wstring& src);           // install section
+
+
+// Reads <root>\current: the version if valid and its browser.exe is launchable, else "".
+std::string LaunchableCurrent(const std::wstring& root) {
     std::string current;
     UP::Version v;
-    if (UP::ReadSmallFile(root + L"\\current", 64, current)) {
-        while (!current.empty() && (current.back() == '\n' || current.back() == '\r')) current.pop_back();
-        if (UP::ParseVersion(current, v)) {
-            std::wstring exe = root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe";
-            if (ValidExeAt(exe) && !UP::IsReparsePoint(root + L"\\versions")) {
-                std::vector<std::wstring> args(argv + 1, argv + argc);
-                PROCESS_INFORMATION pi{};
-                if (Launch(exe, args, pi)) {
-                    AllowSetForegroundWindow(pi.dwProcessId);
-                    CloseHandle(pi.hThread);
-                    CloseHandle(pi.hProcess);
-                    return 0;
-                }
+    if (!UP::ReadSmallFile(root + L"\\current", 64, current)) return "";
+    while (!current.empty() && (current.back() == '\n' || current.back() == '\r')) current.pop_back();
+    if (!UP::ParseVersion(current, v) || UP::IsReparsePoint(root + L"\\versions")) return "";
+    return ValidExeAt(root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe") ? current : "";
+}
+
+int RunLauncher(int argc, wchar_t** argv) {
+    const std::wstring root = Parent(SelfPath()), bin = root + L"\\bin";
+    RecoverAnnotationsMigration(root, "launch-" + std::to_string(GetCurrentProcessId()));
+    // The stable bridge is reconciled and the browser launched for the SAME `current`, read under the bin lock: an
+    // install switching `current` holds that lock from its publication to its switch, so this launcher either sees
+    // the old state before it, or the new one after it — never a stale value. Busy lock (install in progress past
+    // the timeout): launch without touching bin; the install reconciles it.
+    std::string current = LaunchableCurrent(root);
+    std::unique_ptr<BinLock> lock;
+    if (!current.empty() && (UP::PathExists(bin) || UP::PathExists(root + L"\\versions\\" + UP::Widen(current) + L"\\assets\\bin\\" + BridgeName))) {
+        if ((UP::PathExists(bin) || CreateDirectoryW(bin.c_str(), nullptr)) && RootedHandle(root, L"bin", true).Ok()) {
+            lock = std::make_unique<BinLock>(bin, 15000);
+            if (lock->Held()) {
+                current = LaunchableCurrent(root);  // re-read under the lock
+                std::string error;
+                if (!current.empty()) ReconcileBridge(root, current, "launch-" + std::to_string(GetCurrentProcessId()), error);
+                if (Fault("pause-launcher-locked")) Sleep(4000);
             }
+        }
+    }
+    if (!current.empty()) {
+        std::vector<std::wstring> args(argv + 1, argv + argc);
+        PROCESS_INFORMATION pi{};
+        if (Launch(root + L"\\versions\\" + UP::Widen(current) + L"\\browser.exe", args, pi)) {  // still under the lock
+            AllowSetForegroundWindow(pi.dwProcessId);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return 0;
         }
     }
     MessageBoxW(nullptr, L"Installation introuvable ou endommagée.", L"browser", MB_OK | MB_ICONERROR);
@@ -307,6 +521,7 @@ bool MigrationStepFailed(const std::string& step) {
 // One-time copy of portable <exeDir>\profile + session into <root>\data, plus the profile registry
 // (profiles.txt and its recovery copies) and the other profiles' folders (profiles\, trash included).
 // Existing data is never overwritten; the source is never modified.
+// The caller holds the source's annotation gate EXCLUSIVELY (no writer can touch <src>\annotations meanwhile).
 bool MigratePortable(const std::wstring& root, const Plan& p, const std::string& nonce, bool& migrated) {
     migrated = false;
     std::wstring data = root + L"\\data";
@@ -378,6 +593,21 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
         }
     }
     if (ok && UP::IsDirectory(profiles)) ok = CopyTree(profiles, work + L"\\profiles", deadline) || MigrationStepFailed("copy profiles");
+    // Annotation store (src/annotations-migration.h): copied frozen, recorded « copied »; « committed » only after ack.
+    const std::wstring annotations = src + L"\\annotations";
+    if (ok && UP::IsReparsePoint(annotations)) ok = MigrationStepFailed("annotations store is a reparse point");
+    if (ok && UP::IsDirectory(annotations))
+        ok = CopyTree(annotations, work + L"\\annotations", GetTickCount64() + 60000) || MigrationStepFailed("copy annotations");
+    if (ok) {
+        AM::Record record;
+        record.state = AM::State::Copied;
+        record.from = UP::Narrow(src);
+        record.nonce = nonce;
+        ok = UP::AtomicWriteFile(work + L"\\" + AM::RecordName, AM::Format(record)) || MigrationStepFailed("write annotations record");
+    }
+    if (ok) {  // source pointer before anything can be committed (freezes nothing by itself)
+        ok = WriteSourcePointer(root, src) || MigrationStepFailed("write annotations source pointer");
+    }
     if (ok) ok = UP::AtomicWriteFile(work + L"\\migrated-from.txt", UP::Narrow(src) + "\n") || MigrationStepFailed("write migrated-from.txt");
     int attempts = 0;
     if (ok) ok = UP::MoveDirectory(work, data, TransientRenameMs, &attempts) || MigrationStepFailed("publish data");
@@ -432,6 +662,106 @@ void Prune(const std::wstring& root, const std::string& keep1, const std::string
     }
 }
 
+// Durable commit of the annotation migration: the record first (lets a portable bridge redirect), then the mirror in
+// the source folder (a portable browser still running there stops writing). Only after the new version's ack.
+// The source pointer (<src>\annotations.migrated -> root). Written during the copy, before any commit can exist; the
+// source store is frozen and a bridge redirects only when it AND a committed record agree (src/annotations.cpp
+// MovedToInstalled), so the commit below is one write that moves both sides at once.
+bool WriteSourcePointer(const std::wstring& root, const std::wstring& src) {
+    if (!UP::IsDirectory(src) || UP::IsReparsePoint(src)) return false;
+    const std::wstring pointer = src + L"\\annotations" + AM::PointerSuffix;
+    std::string text;
+    if (UP::ReadSmallFile(pointer, 8192, text) && AM::ParsePointer(text) == UP::Narrow(root)) return true;
+    return !Fault("pointer-write") && UP::AtomicWriteFile(pointer, AM::FormatPointer(UP::Narrow(root)));
+}
+
+// Durable commit: caller holds the source gate EXCLUSIVELY and has checked that the installed version is usable.
+bool CommitAnnotations(const std::wstring& root, const std::wstring& src, const std::string& nonce) {
+    if (!WriteSourcePointer(root, src)) return false;  // never a committed record without its pointer
+    AM::Record record;
+    record.state = AM::State::Committed;
+    record.from = UP::Narrow(src);
+    record.nonce = nonce;
+    return !Fault("commit-write") && UP::AtomicWriteFile(root + L"\\data\\" + AM::RecordName, AM::Format(record));
+}
+
+// The installed side is a durable, usable outcome: valid launchable `current` whose install did not fail.
+bool InstallUsable(const std::wstring& root) {
+    const std::string current = LaunchableCurrent(root);
+    if (current.empty()) return false;
+    std::string result;
+    if (UP::ReadSmallFile(root + L"\\updates\\last-result", 4096, result)) {
+        const auto lines = Lines(result);
+        if (!lines.empty() && lines[0] == "browser-result 1" && Field(lines, "status") == "failed" && Field(lines, "version") == current)
+            return false;
+    }
+    return true;
+}
+
+// Bounded recovery (every launcher start, install start and after an ack): a migration whose helper died before the
+// commit (record « copied ») is finished from the source ONLY when the installed version is usable (InstallUsable);
+// otherwise nothing changes and the source stays authoritative and writable (the pointer alone freezes nothing). The
+// installed copy refused mutations meanwhile, so it is replaced by a fresh copy taken under the HELD exclusive gate,
+// then committed. A committed record whose source pointer is missing gets its pointer back. A migration made before
+// the record existed is committed when nothing was moved yet, else marked « skipped » (no redirect).
+void RecoverAnnotationsMigration(const std::wstring& root, const std::string& tag) {
+    const std::wstring data = root + L"\\data", recordPath = data + L"\\" + AM::RecordName;
+    std::string from, text;
+    if (UP::IsReparsePoint(data) || !UP::ReadSmallFile(data + L"\\migrated-from.txt", 4096, from)) return;
+    while (!from.empty() && (from.back() == '\n' || from.back() == '\r')) from.pop_back();
+    const AM::Record record = UP::ReadSmallFile(recordPath, 8192, text) ? AM::Parse(text) : AM::Record{};
+    if (record.state == AM::State::Skipped || from.empty()) return;
+    const std::wstring src = UP::Widen(from), store = src + L"\\annotations", installed = data + L"\\annotations";
+    if (record.state == AM::State::Committed) {  // pointer repair only (never a state change)
+        AM::Gate gate(AM::GatePath(store), true);
+        if (gate.Held() && WriteSourcePointer(root, src)) return;
+        return;  // next start
+    }
+    if (record.state == AM::State::None && UP::PathExists(installed)) {
+        AM::Record skipped;
+        skipped.state = AM::State::Skipped;
+        skipped.from = from;
+        skipped.nonce = tag;
+        UP::AtomicWriteFile(recordPath, AM::Format(skipped));
+        return;
+    }
+    if (!InstallUsable(root)) return;  // no usable installed outcome: the source stays authoritative and writable
+    AM::Gate gate(AM::GatePath(store), true);
+    if (!gate.Held() || UP::IsReparsePoint(store) || UP::IsReparsePoint(installed)) return;  // next start
+    if (UP::IsDirectory(store)) {
+        const std::wstring fresh = data + L"\\annotations.recover-" + UP::Widen(tag), old = data + L"\\annotations.old-" + UP::Widen(tag);
+        UP::RemoveTree(fresh);
+        if (!CopyTree(store, fresh, GetTickCount64() + 60000)) {
+            UP::RemoveTree(fresh);
+            return;
+        }
+        if (UP::PathExists(installed) && !MoveFileExW(installed.c_str(), old.c_str(), 0)) {
+            UP::RemoveTree(fresh);
+            return;
+        }
+        if (!MoveFileExW(fresh.c_str(), installed.c_str(), 0)) {
+            if (UP::PathExists(old)) MoveFileExW(old.c_str(), installed.c_str(), 0);
+            UP::RemoveTree(fresh);
+            return;
+        }
+        UP::RemoveTree(old);
+    }
+    if (CommitAnnotations(root, src, tag)) Log("annotations migration recovered and committed from " + from);
+}
+
+bool InstallLauncher(const std::wstring& root, const std::wstring& target, const std::string& nonce) {
+    const std::wstring launcher = root + L"\\browser.exe", temp = root + L"\\browser.exe.new-" + UP::Widen(nonce);
+    const std::wstring helper = target + L"\\update-helper.exe";
+    if (UP::PathExists(launcher) && SameBytes(launcher, helper)) return true;
+    if (!CopyFileW(helper.c_str(), temp.c_str(), FALSE)) return false;
+    if (Fault("launcher-busy") ||
+        !MoveFileExW(temp.c_str(), launcher.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(temp.c_str());
+        return false;
+    }
+    return SameBytes(launcher, helper);
+}
+
 int RunInstall(const std::string& nonce) {
     std::wstring self = SelfPath(), helperDir = Parent(self), updates = Parent(helperDir), root = Parent(updates);
     if (Lower(Leaf(helperDir)) != L"helper" || Lower(Leaf(updates)) != L"updates" || root.size() < 4) return 10;
@@ -454,6 +784,7 @@ int RunInstall(const std::string& nonce) {
         WriteResult(updates, "failed", p.version, "browser-did-not-exit");
         return 20;
     }
+    RecoverAnnotationsMigration(root, nonce + "-pre");
     auto abortBeforeSwitch = [&](const std::string& reason, int code) {
         Log("aborted: " + reason);
         WriteResult(updates, "failed", p.version, reason);
@@ -480,13 +811,71 @@ int RunInstall(const std::string& nonce) {
     }
     // Data: never start the new version on a live or half-copied profile.
     bool migrated = false;
+    // Held from before the copy until this function returns (ack + commit, or rollback): a portable bridge or
+    // browser writing the source store waits or gets Busy; if this helper dies, the handle goes with it and the
+    // record stays « copied » (recovered later, never redirected to).
+    AM::Gate annotationsGate;
+    const std::wstring portableDir = Parent(p.previousExe);
+    if (p.previousKind == "portable" && !UP::PathExists(root + L"\\data")) {
+        const AM::GateState g = annotationsGate.Open(AM::GatePath(portableDir + L"\\annotations"), true, 30000);
+        if (g != AM::GateState::Held)
+            return abortBeforeSwitch(g == AM::GateState::Busy ? "annotations-busy" : "annotations-gate-unusable", 26);
+    }
     if (p.previousKind == "portable") {
         if (!MigratePortable(root, p, nonce, migrated)) return abortBeforeSwitch("migration-failed", 26);
+        Fault("kill-after-migration");
+        if (Fault("pause-after-migration")) Sleep(4000);  // gate held: agents' requests must get Busy
     } else if (!WaitProfileUnlocked(root + L"\\data\\profile", ProfileUnlockMs)) {
         return abortBeforeSwitch("profile-locked", 26);
     }
-    // Switch.
-    if (!UP::AtomicWriteFile(root + L"\\current", p.version + "\n")) return abortBeforeSwitch("current-write", 27);
+    // Stable bridge for agents (<root>\bin, see ReconcileBridge), published BEFORE the new version can start
+    // (src/agent-connect.cpp never falls back to a versioned copy) and kept locked until `current` names the
+    // version it matches, so a concurrent launcher can never revert it in between.
+    const std::wstring bin = root + L"\\bin";
+    const std::string previousBridge = hadCurrent ? oldCurrent : "";
+    const bool bridgeInvolved = UP::PathExists(target + L"\\assets\\bin\\" + BridgeName) || UP::PathExists(bin);
+    auto restoreBridge = [&] {
+        if (!bridgeInvolved) return;
+        BinLock lock(bin, 10000);
+        std::string e;
+        if (!lock.Held() || !ReconcileBridge(root, previousBridge, nonce + "-restore", e))
+            Log("bridge restore failed (" + (lock.Held() ? e : std::string("bin locked")) + "); repaired by the next launcher start");
+    };
+    {
+        std::unique_ptr<BinLock> lock;
+        if (bridgeInvolved) {
+            if (!CreateDirectoryW(bin.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+                return abortBeforeSwitch("bridge-publish bin create failed", 32);
+            if (UP::IsReparsePoint(bin)) return abortBeforeSwitch("bridge-publish bin is not a plain directory", 32);
+            lock = std::make_unique<BinLock>(bin, 10000);
+            if (!lock->Held()) return abortBeforeSwitch("bridge-publish bin locked", 32);
+            // The stable launcher is what repairs an interrupted publication (RunLauncher). An install from a version
+            // whose launcher predates the bridge would leave a launcher that cannot: it is replaced FIRST, and
+            // strictly (a busy launcher aborts this install, retried later). It stays compatible with the previous
+            // `current` if this install aborts.
+            if (!InstallLauncher(root, target, nonce)) {
+                lock.reset();
+                return abortBeforeSwitch("bridge-publish launcher busy", 32);
+            }
+            Fault("kill-after-launcher");
+            std::string e;
+            if (!ReconcileBridge(root, p.version, nonce, e)) {
+                lock.reset();
+                restoreBridge();
+                return abortBeforeSwitch("bridge-publish " + e, 32);
+            }
+            Log("bridge published to bin for " + p.version);
+            Fault("kill-after-publish");
+            if (Fault("pause-after-publish")) Sleep(4000);  // lock held: a concurrent launcher must wait
+        }
+        // Switch.
+        if (Fault("current-write") || !UP::AtomicWriteFile(root + L"\\current", p.version + "\n")) {
+            lock.reset();
+            restoreBridge();
+            return abortBeforeSwitch("current-write", 27);
+        }
+    }
+    Fault("kill-after-switch");
     UP::AtomicWriteFile(root + L"\\previous",
                         p.previousKind == "installed" ? "installed " + p.previousVersion + "\n"
                                                       : "portable " + UP::Narrow(p.previousExe) + "\n");
@@ -495,6 +884,7 @@ int RunInstall(const std::string& nonce) {
             UP::AtomicWriteFile(root + L"\\current", oldCurrent + "\n");
         else
             DeleteFileW((root + L"\\current").c_str());
+        restoreBridge();  // after `current`: a launcher reconciling in between follows the restored current
     };
     // Stable launcher (best effort; a launcher being executed right now keeps the old copy).
     std::wstring launcherTemp = root + L"\\browser.exe.new-" + UP::Widen(nonce);
@@ -552,7 +942,14 @@ int RunInstall(const std::string& nonce) {
     if (acked) {
         DeleteFileW(pending.c_str());
         DeleteFileW(ack.c_str());
+        // The ack is recorded first: it is what makes the installed side usable (InstallUsable reads last-result).
         WriteResult(updates, "installed", p.version, "ack");
+        if (migrated) {
+            Fault("kill-before-commit");
+            if (!CommitAnnotations(root, portableDir, nonce)) Log("annotations commit failed; recovered at the next launcher start");
+        } else {
+            RecoverAnnotationsMigration(root, nonce + "-post");  // an earlier interrupted migration, now that the install is usable
+        }
         Prune(root, p.version, p.previousKind == "installed" ? p.previousVersion : "", nonce);
         Log("installed " + p.version);
         return 0;
