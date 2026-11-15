@@ -5,3 +5,7 @@
 #include "build-info.h"
 #endif
 #include "app-icon.rc"
+#define VI_DESCRIPTION "browser launcher and updater"
+#define VI_INTERNAL "update-helper"
+#define VI_ORIGINAL "update-helper.exe"
+#include "version-info.rc"
