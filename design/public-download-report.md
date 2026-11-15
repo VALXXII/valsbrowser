@@ -215,13 +215,15 @@ data to `%LOCALAPPDATA%\browser\data`. Protocol (`src/annotations-migration.h`):
 |---|---|
 | `test_release_tools.py` | 38 OK, 1 skipped (symlink privilege) |
 | `old-validator-v0.3.239.txt` | v0.3.239 validator: `assets/bin` accepted + byte-identical staging (synthetic and real 0.3.239 payload); root bridge rejected |
-| `b-update-core-tests.txt` (`tests/update-core/run_tests.py`) | update_core_test 315/0; **install_test 492/0** with real live MCP bridge processes — see list below |
-| `b-annotations-tests.txt` (`tests/annotations/run_tests.py --quick`) | store_test 2662/0, json_fuzz 156715/0, host_test 18183/0, agent_connect_test 288/0 (after merge) |
+| `b-update-core-tests.txt` (`tests/update-core/run_tests.py`) | update_core_test 315/0; **install_test 539/0** with real live MCP bridge processes — see list below |
+| `b-annotations-tests.txt` (`tests/annotations/run_tests.py --quick`) | store_test 2727/0, json_fuzz 156715/0, host_test 18183/0, agent_connect_test 288/0 (after merge) |
 | `b-item3-helper-mutations.txt`, `b-review-fix-mutations.txt`, `b-items46-mutations.txt` | 15 deliberate regressions (helper, bridge, store), all detected (one first survived and got a test, see file) |
+| `b-review-fixes-red-green.txt` | the three defects of the independent reviews of d3e81c6 (gate fail-open, record/mirror split, recovery without a usable install) re-introduced one at a time into the fixed code: each makes the new tests fail; fixed code green (store_test 2727/0, install_test 539/0). One sub-check (directory/reparse object accepted as held) is not observable without the symlink privilege, see file |
 | `b-item3-running-exe-replace-probe.txt` | replacing a running exe fails, rename aside works |
-| `b-integrated-release-0.3.285.txt` | **release CANDIDATE** (`--channel release`, source = B branch d3e81c6 = main 411acbb + B; `--commit 411acbb` was passed only to satisfy `require_on_main` locally, so its stamped identity is NOT its source and it must never be published — the final artifact is rebuilt by CI from the exact merged SHA): `-DBROWSER_RELEASE_ANNOTATIONS`, static check OK, package + ZIP (1630 entries) == app payload == tree staged by the real v0.3.239 validator, bridge only at `assets/bin`, release server name, no preview name |
+| `b-candidate-0.3.288.txt` + 3 PNG | **current release CANDIDATE 0.3.288**, built from the fixed source (head named in the file), same stamping caveat as below: static check, package + ZIP == payload == v0.3.239-validator staging, real app E2E on isolated copies (profile colour, no-bridge refusal), MCP suite on its bridge, run_all integration |
+| `b-integrated-release-0.3.285.txt` | **superseded** (source d3e81c6, before the review fixes) **release CANDIDATE** (`--channel release`, source = B branch d3e81c6 = main 411acbb + B; `--commit 411acbb` was passed only to satisfy `require_on_main` locally, so its stamped identity is NOT its source and it must never be published — the final artifact is rebuilt by CI from the exact merged SHA): `-DBROWSER_RELEASE_ANNOTATIONS`, static check OK, package + ZIP (1630 entries) == app payload == tree staged by the real v0.3.239 validator, bridge only at `assets/bin`, release server name, no preview name |
 | `b-release-bridge-suite.txt` | the annotation MCP suite run against the candidate's bridge (LOCALAPPDATA redirected to a temp dir): all passed (protocol level) |
-| `b-release-candidate-app-e2e.txt` + 3 PNG | **real application run** of isolated copies of the candidate (LOCALAPPDATA redirected, agent-config writes redirected, nothing of the user touched): `tests/annotations/profile_color_e2e.py` 0 failures (annotation mode present, profile colour at entry, live edit and profile switch, band colours on screen, no annotation written); the connect target resolved `<copy>\assets\bin\…`; `tests/update-integration/release_candidate_no_bridge.py` 0 failures (copy without `assets\bin` bridge: mode entry opens the connect modal, « bridge not found » logged, no config written). Modal buttons not clicked (BridgeUsable refusal is unit-tested in agent_connect_test) |
+| `b-release-candidate-app-e2e.txt` + 3 PNG | (superseded candidate 0.3.285) **real application run** of isolated copies of the candidate (LOCALAPPDATA redirected, agent-config writes redirected, nothing of the user touched): `tests/annotations/profile_color_e2e.py` 0 failures (annotation mode present, profile colour at entry, live edit and profile switch, band colours on screen, no annotation written); the connect target resolved `<copy>\assets\bin\…`; `tests/update-integration/release_candidate_no_bridge.py` 0 failures (copy without `assets\bin` bridge: mode entry opens the connect modal, « bridge not found » logged, no config written). Modal buttons not clicked (BridgeUsable refusal is unit-tested in agent_connect_test) |
 | `b-run-all-0.3.285.txt` | `tests/update-integration/run_all.py` on the candidate: step « existing fixtures » blocked by the pre-existing `download_panel_test` `-Werror` failure on main (CI broken since PR #69, fix owned elsewhere); peers / integration / app steps run separately (results in the file) |
 
 install_test bridge/migration cases: two updates with the same agent alive (0.3.1 pruned under
@@ -234,7 +236,11 @@ with the launcher compiled from 9f73bdd (kill after publish → repair → ordin
 → clean abort); migration committed with a live portable release bridge (same process resolves with
 its original token, two later updates); helper killed before commit (no redirect, installed copy
 frozen, agent keeps writing the source, launcher recovery re-copies including those writes, same
-agent resolves with its newest token); rollback never redirects; Busy during the copy window.
+agent resolves with its newest token); rollback never redirects; Busy during the copy window (reads included); an unusable gate (directory) aborts the
+install before copying and the agent gets an explicit error; the commit write failing leaves the source writable
+until launcher recovery commits with the newest token; the first portable install killed before its switch
+followed by a failed retry keeps the source writable, and a later valid retry finishes the migration with the newest
+token.
 
 ### Limitations (lot B)
 
