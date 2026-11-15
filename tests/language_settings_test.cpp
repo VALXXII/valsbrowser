@@ -92,6 +92,18 @@ int wmain(int argc, wchar_t** argv) {
     }
     Check(ContextMenu::Menu::KeysForTest(L"Ctrl+Shift+I") == std::vector<std::wstring>{L"Ctrl", L"Maj", L"I"} &&
           ContextMenu::Menu::KeysForTest(TR(key_ctrl_shift_t)) == std::vector<std::wstring>{L"Ctrl", L"Maj", L"T"}, "French: context menu caps « Ctrl » « Maj » for the engine's « Shift » too");
+    // The engine names arrows in words (« Alt+Flèche gauche », « Alt+Left Arrow »): the caps show the glyph.
+    Check(ContextMenu::Menu::KeysForTest(L"Alt+Flèche gauche") == std::vector<std::wstring>{L"Alt", L"←"} &&
+          ContextMenu::Menu::KeysForTest(L"Alt+Flèche droite") == std::vector<std::wstring>{L"Alt", L"→"} &&
+          ContextMenu::Menu::KeysForTest(L"Alt+Fleche vers la gauche") == std::vector<std::wstring>{L"Alt", L"←"} &&
+          ContextMenu::Menu::KeysForTest(L"Ctrl+Flèche haut") == std::vector<std::wstring>{L"Ctrl", L"↑"} &&
+          ContextMenu::Menu::KeysForTest(L"Ctrl+Flèche bas") == std::vector<std::wstring>{L"Ctrl", L"↓"} &&
+          ContextMenu::Menu::KeysForTest(L"Alt+Left Arrow") == std::vector<std::wstring>{L"Alt", L"←"} &&
+          ContextMenu::Menu::KeysForTest(L"Alt+Right arrow") == std::vector<std::wstring>{L"Alt", L"→"} &&
+          ContextMenu::Menu::KeysForTest(L"Alt+Arrow Left") == std::vector<std::wstring>{L"Alt", L"←"} &&
+          ContextMenu::Menu::KeysForTest(L"Alt+Left") == std::vector<std::wstring>{L"Alt", L"←"} &&
+          ContextMenu::Menu::KeysForTest(L"Ctrl+Page down") == std::vector<std::wstring>{L"Ctrl", L"Page down"},
+          "context menu caps: the engine's arrow names (« Flèche gauche », « Left Arrow ») become ← → ↑ ↓, other words stay");
     // Two windows share the browser-wide preference. Drawer A (dr) last saw « Français »; drawer B saves
     // English while A stays open. A's menu must show what is on disk now, and A's explicit « Français »
     // must be written (it was ignored before: chosen == A's stale cache, zero saves, disk stayed English).

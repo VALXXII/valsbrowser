@@ -168,6 +168,20 @@ class Menu {
         }
         return *levels_[index];
     }
+    // A key name in lower case, with the engine's arrow wording dropped: « Flèche gauche »,
+    // « Flèche vers la gauche », « Left Arrow », « Arrow Left » -> « gauche » / « left ».
+    // Any other multi-word name (« Page down ») comes back whole, so it never reads as an arrow.
+    static std::wstring ArrowWord(const std::wstring& key) {
+        std::wstring low = key; for (auto& ch : low) ch = static_cast<wchar_t>(towlower(ch));
+        std::vector<std::wstring> words; std::wstring word; bool arrow = false;
+        for (size_t i = 0; i <= low.size(); ++i) {
+            if (i < low.size() && low[i] != L' ') { word += low[i]; continue; }
+            if (word == L"flèche" || word == L"fleche" || word == L"arrow") arrow = true;   // i18n-exempt: engine key names parsed, never shown
+            else if (!word.empty() && !(arrow && (word == L"vers" || word == L"la" || word == L"le"))) words.push_back(word);
+            word.clear();
+        }
+        return arrow && words.size() == 1 ? words[0] : low;
+    }
     // "Ctrl+Maj+T" -> {Ctrl, Maj, T}; the engine's arrow names become arrows.
     static std::vector<std::wstring> Keys(const std::wstring& shortcut) {
         std::vector<std::wstring> keys; size_t start = 0;
@@ -175,7 +189,7 @@ class Menu {
             size_t plus = shortcut.find(L'+', start);
             if (plus == start && plus + 1 == shortcut.size()) plus = std::wstring::npos; // a literal "+" key
             std::wstring key = shortcut.substr(start, plus == std::wstring::npos ? std::wstring::npos : plus - start);
-            std::wstring low = key; for (auto& ch : low) ch = static_cast<wchar_t>(towlower(ch));
+            std::wstring low = ArrowWord(key);
             if (low == L"left" || low == L"arrowleft" || low == L"gauche") key = L"\u2190";
             else if (low == L"right" || low == L"arrowright" || low == L"droite") key = L"\u2192";
             else if (low == L"up" || low == L"arrowup" || low == L"haut") key = L"\u2191";
