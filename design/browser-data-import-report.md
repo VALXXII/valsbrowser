@@ -1,9 +1,71 @@
 # Import from a browser: report
 
-Task task_fb373e25a2ec, worktree `browser-data-import` (base `main` 18ddbd3). Plan and rules:
-[browser-data-import-plan.md](browser-data-import-plan.md). Evidence: [browser-data-import-evidence/](browser-data-import-evidence/).
+Branch `VALXXII/browser-data-import` (worktree `browser-data-import`). Plan: [browser-data-import-plan.md](browser-data-import-plan.md).
+Evidence: [browser-data-import-evidence/](browser-data-import-evidence/) (its README says what each folder proves).
 
-## What ships
+## Final state (source 9bb0147, reviewed at 69da5c1)
+
+**What ships.** Réglages › Confidentialité › Données › « Importer depuis un navigateur… » / « Import from a browser… »
+(and the settings search; absent in a private window), FR and EN. Sources: Chrome, Edge, Brave (`Default`, `Profile N`:
+bookmarks JSON + `History`), Firefox (relative `profiles.ini` profiles: `places.sqlite` bookmarks + history), and an
+HTML bookmark file (Netscape export). **Cookies and sign-ins are not imported** from any source (see « Cookies »
+below): the dialog shows them unavailable and every summary says « Cookies : non transférés. Reconnectez-vous aux
+sites. ».
+
+**Current contract.**
+* Append only, into « Autres favoris › Importés de <source> » with the source roots as sub-folders; repeats and
+  limits (10 000 bookmarks, 8 levels, 1 000 history pages) are counted and shown, never silently cut; history keeps
+  max count / last visit, never evicts.
+* Reading: discovery reads metadata only; on « Importer » the folder chain from the browser root is pinned (no
+  delete sharing, no reparse point, final paths checked on every source handle); SQLite sources are copied under
+  read-only sharing to a private snapshot (a running browser → « fermez <browser>, puis réessayez »); readers are
+  bounded (32 MiB, nesting 256 → refused whole as too deep).
+* Destination: the profile named in the dialog is pinned when it opens and checked when « Importer » is pressed and
+  when the read returns; another profile on screen (switch, deletion, window closed) → nothing written.
+* Each category is its own profile-store transaction; a failure writes nothing and is reported per category.
+* **Folder identity** (`<profile>\bookmark-imports`, header `browser-bookmark-imports 1`): stable keys (browser +
+  profile folder; Chromium root key or Firefox root GUID) → ordered candidate folders (id + `added`, at most 4 per
+  key). It is a **prerequisite**, not a hint: written in the bookmarks transaction's pre-write step, after the
+  merge fixed the ids and **before** the bookmarks file, under the profile lock. A new identity goes first and the
+  previous one stays while its folder exists in the file as read, so a failed or interrupted bookmarks write
+  resolves to the right folder on restart. The map to be written must fit the reader's bound (2 × the bookmark
+  node limit = 20 000 records) and read back identical (`Fits`), otherwise nothing is written (« trop de dossiers
+  importés à suivre »). A map that is unreadable, locked, of a newer version, over the bound, with a 5th candidate
+  or a damaged line is never used half-read nor rewritten: the bookmarks import is refused with its reason. Titles
+  (either language) are used only to adopt an existing folder that no valid candidate names.
+* Lifecycle: the portable → installed update copies `bookmark-imports` with `bookmarks`; `package.py` never packages
+  it (or its `.tmp*`).
+* Logs carry counts and the brand only, never URLs, titles or paths.
+
+**Limits that remain (honest).** Cookies/sign-ins not transferred. Real-app visual capture is unavailable in the
+session used for the late evidence (PrintWindow returns black): the UI is shown by the first-delivery captures
+(`realapp-ce96190/`) and a native offscreen fixture of the production modal (`native-fixture/`), behaviour by the
+UIA E2E. Chromium profiles are labelled by folder name (`Local State` is not read); Firefox absolute-path profiles are
+not listed; symbolic-link refusal of an HTML file is untested without developer mode (junctions are tested).
+
+**Independent reviews (all P2 closed).** Records copied, user root masked, in
+`browser-data-import-evidence/independent-reviews/`.
+
+| Review pin | Verdict | Fixed by |
+|---|---|---|
+| 934ef4b | 4 × P2: vault hook commented out, title-based identity, read-time junction, silent depth pruning | 97bd81d, 400e8e4, a97fe13, 11a2bb8 (+ seam 2adb5f4) |
+| 99959e3 | 3 closed; identity lost when the map write failed after the bookmarks | af02996 (map before bookmarks) |
+| ff1bcbe | locked map closed; existing identity replaced before a failed bookmarks write | 2030f27 (ordered candidates); lifecycle 76fe51f |
+| 2ed598c | recovery closed; writer could persist more records than the reader kept | 9bb0147 (Fits, 20 000, fail closed) |
+| 69da5c1 | **CLOSED**, no remaining P1/P2 | — |
+
+Main integration: merge 62d3e3f (main cb75fb4, PR #82); see the section at the end.
+
+## Historical record
+
+The sections below are the chronological record, kept as written then. **Superseded statements:** (a) the map
+« written after the bookmarks », « a validated hint », `mapSaved` false while bookmarks saved, and « title fallback »
+as a recovery path (934ef4b fixes) → replaced by the map-first prerequisite (af02996); (b) one identity per key →
+ordered candidates (2030f27); (c) the reader limit of 4 096 records and silently dropped lines → 20 000 with `Fits`,
+fail closed (9bb0147); (d) screenshot files named in early sections → see the evidence README (blank captures are
+kept as failures); (e) test counts are those of their date (final: backend 176, see the readiness run).
+
+## What ships (first delivery, ce96190)
 
 Réglages › Confidentialité › Données › **Importer depuis un navigateur…** / **Import from a browser…** (also
 found by the settings search; absent in a private window). One window dialog built from the existing modal
@@ -108,7 +170,7 @@ Review: `review-windows-setup-release/build/review-browser-import-934ef4b.md` (f
 | Finding | Fix | Red (934ef4b) → green |
 |---|---|---|
 | 1. `hooks.vaultInfo` commented out by the import hook's trailing comment (password manager row hidden) | assignment back on its own line; `tests/browser-import/import_settings_test.cpp` checks main.cpp's hooks with comments stripped and the real drawer's rows from synthetic hooks (no vault opened, no credential read) | fixture on 934ef4b's main.cpp: `FAIL hooks.vaultInfo is executable code`; now 8/8 |
-| 2. Folders identified by translated titles (FR→EN, or a source gaining a profile, duplicated groups) | `FolderMap` sidecar `<data>\bookmark-imports` (header-versioned): stable keys (browser + profile folder; Chromium root key / Firefox root GUID) → folder id + `added`; read and written under the same profile lock as the bookmarks transaction, validated on every use, pruned, never rewritten if of another version; missing/stale/unwritable map → titles of both languages, then create. Bookmarks file format unchanged | reviewer's scenario: switched-import 1 / 2 groups → present 6, imported 0, 1 group (backend + real-app EN repeat of the FR Chrome import: file byte-identical) |
+| 2. *(superseded in part: map timing and capacity, see Final state)* Folders identified by translated titles (FR→EN, or a source gaining a profile, duplicated groups) | `FolderMap` sidecar `<data>\bookmark-imports` (header-versioned): stable keys (browser + profile folder; Chromium root key / Firefox root GUID) → folder id + `added`; read and written under the same profile lock as the bookmarks transaction, validated on every use, pruned, never rewritten if of another version; missing/stale/unwritable map → titles of both languages, then create. Bookmarks file format unchanged | reviewer's scenario: switched-import 1 / 2 groups → present 6, imported 0, 1 group (backend + real-app EN repeat of the FR Chrome import: file byte-identical) |
 | 3. Folder replaced by a junction between discovery and « Importer » was read | `Pin`: every folder from the browser root to the profile (HTML: the file's folder) opened with data access and no delete sharing, not a reparse point, final path = parent's + name; each source handle (JSON, database, -wal, -journal, HTML) accepted only if its final path is inside | reviewer probe (retargeted to this worktree): `reparse=1 read-failure=0 roots=1` → `read-failure=3 (Unreadable) roots=0`; tests for root, intermediate Firefox folder, HTML folder, held folders not renamable |
 | 4. Reader depth bound silently pruned (257 folders + 1 link → « terminée », nothing imported) | `TooDeep` (refused whole, « dossiers imbriqués trop profondément, rien n'a été importé. ») for JSON, Firefox and HTML; parser limits map to TooDeep/TooLarge; damaged source entries counted as « entrées illisibles » and make the summary « partielle » | reviewer depth probe: `failure=0 … folders=7` → `failure=TooDeep roots=0`; boundary tests at 256 kept / 257 refused for all three formats |
 | Evidence gap: mid-read switch / delete / close | dev-build-only seam `--import-hold read|snapshot` (compiled out of `--channel release`; named events `Local\browser-import-reached/release-<pid>`), plus a sweep of private snapshot folders left by ended processes | E2E: switch while parked → dropped, nothing written to either profile or the map; window closed with the snapshot taken → nothing written, the next import removes the leftover copy; destination profile deleted while parked → nothing written to « Personnel », « Travail » deleted, no snapshot left |
@@ -212,7 +274,7 @@ main's own changes (same line counts); the import sources are byte-identical to 
 build OK, backend 161, wiring 8/8, render 34/34, release tools 59 OK, `e2e_install.py` with the combined helper all
 pass including the identity canaries. Full run_all and the setup suite were deliberately not repeated.
 
-**Capacity fix 9bb0147 (source).** The reader kept at most 4 096 records while the writer emitted all; a larger map
+**Capacity fix 9bb0147 (source; current contract).** The reader kept at most 4 096 records while the writer emitted all; a larger map
 silently lost identities. Now the map to be written must fit the reader's bounds and read back identical, checked
 before any write (else « trop de dossiers importés à suivre », nothing written); the reader never returns a partial
 map (over the bound, a 5th candidate, a damaged line → « données d'import illisibles », refused, file untouched); the
