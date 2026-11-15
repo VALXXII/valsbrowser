@@ -17,9 +17,16 @@
 #include "browser-import.h"
 
 namespace BI = BrowserImport;
+// The destination named in the dialog: pinned when the dialog opens, checked again when « Importer » is pressed and
+// when the read comes back. If this window shows another profile at either moment, nothing is written.
+struct ImportDestination {
+    Workspace* owner = nullptr; std::wstring profile, data;
+    static ImportDestination Now() { return {WorkspaceNow(), profileId, dataDir}; }
+    bool Current() const { return !WorkspaceDead(owner) && WorkspaceNow() == owner && !WorkspaceParked() && profileId == profile && dataDir == data; }
+};
 struct ImportJob {
     BI::Source source; BI::Options options; BI::ReadResult result;
-    Workspace* owner = nullptr; std::wstring profile, data;   // the destination as it was when « Importer » was pressed
+    ImportDestination destination;
 };
 std::shared_ptr<ImportJob> importRunning;        // the worker's job (UI thread owns the pointer)
 std::shared_ptr<ImportJob> importFinished;        // handed back by the worker, under importLock
@@ -66,8 +73,9 @@ DWORD WINAPI ImportWorker(LPVOID param) {
     if (target) PostMessageW(target, ImportMessage, 0, 0);
     return 0;
 }
-void StartImport(const std::vector<BI::Source>& sources) {
+void StartImport(const std::vector<BI::Source>& sources, const ImportDestination& destination) {
     if (importRunning || !modalOpen) return;
+    if (!destination.Current()) { Log(L"IMPORT not started: the profile changed since the dialog opened"); modal.SetError(TR(import_profile_changed)); return; }
     const MD::Result now = modal.Snapshot();
     if (now.select < 0 || now.select >= static_cast<int>(sources.size())) return;
     BI::Source source = sources[static_cast<std::size_t>(now.select)];
@@ -77,10 +85,11 @@ void StartImport(const std::vector<BI::Source>& sources) {
     if (source.browser == BI::Browser::HtmlFile) {
         source.dir = PickBookmarksFile();
         if (source.dir.empty()) return;   // cancelled: the dialog stays as it was
+        if (!destination.Current()) { modal.SetError(TR(import_profile_changed)); return; }   // switched while the file dialog was open
     }
     auto job = std::make_shared<ImportJob>();
     job->source = source; job->options.bookmarks = bookmarks; job->options.history = history;
-    job->owner = WorkspaceNow(); job->profile = profileId; job->data = dataDir;
+    job->destination = destination;
     modal.SetBusy(true, TR(import_busy));
     importRunning = job;
     auto* param = new std::shared_ptr<ImportJob>(job);
@@ -99,16 +108,15 @@ void ImportFinished() {
     if (!job || job != importRunning) return;
     importRunning.reset();
     const bool dialog = modalOpen && importDialogOpen;
-    // The destination is the profile shown when « Importer » was pressed; if this window shows another one now,
-    // nothing is written.
-    if (WorkspaceDead(job->owner) || WorkspaceNow() != job->owner || WorkspaceParked() || profileId != job->profile || dataDir != job->data) {
+    // The destination is the profile named in the dialog; if this window shows another one now, nothing is written.
+    if (!job->destination.Current()) {
         Log(L"IMPORT cancelled: the profile changed, nothing written");
         if (dialog) { modal.SetBusy(false); modal.SetError(TR(import_profile_changed)); }
         return;
     }
     if (!dialog) { Log(L"IMPORT cancelled: dialog closed, nothing written"); return; }
     const BI::Source& s = job->source; const auto now = NativeChrome::DownloadsUI::UnixNowMs();
-    std::vector<std::wstring> lines; bool anySaved = false, anyFailed = false; std::wstring firstError;
+    std::vector<std::wstring> lines; bool anySaved = false, anyFailed = false, anyLeft = false; std::wstring firstError;   // anyLeft: entries not imported (limit, depth)
     auto failed = [&](const wchar_t* category, const std::wstring& why) {
         anyFailed = true; const std::wstring line = TRF(import_result_failed, category, why); lines.push_back(line); if (firstError.empty()) firstError = line;
     };
@@ -120,7 +128,7 @@ void ImportFinished() {
             const auto c = BI::CommitBookmarks(dataDir, BookmarksFile(), bookmarksBase, bookmarks, BI::FolderTitle(s), r.roots, now, &remap);
             if (!remap.empty()) bookmarkUndo.clear();   // as SaveBookmarks: ids taken in another window were remapped
             if (c.Saved()) {
-                anySaved = true; bookmarksSaveFailed = false;
+                anySaved = true; bookmarksSaveFailed = false; if (c.counts.full || c.counts.deep) anyLeft = true;
                 if (!bookmarks.Find(lastFolder)) lastFolder = BM::BarRoot;
                 lines.push_back(TRF(import_result_bookmarks, BI::CountsText(c.counts)));
                 Log(L"IMPORT bookmarks saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored));
@@ -134,7 +142,7 @@ void ImportFinished() {
         else {
             const auto c = BI::CommitHistory(dataDir, HistoryFile(), historyBase, history, r.visits, r.beyond, now, [](const std::wstring& u) { return SearchResultPage(u); });
             if (c.Saved()) {
-                anySaved = true;
+                anySaved = true; if (c.counts.full) anyLeft = true;
                 lines.push_back(TRF(import_result_history, BI::CountsText(c.counts)));
                 Log(L"IMPORT history saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored));
                 if (!WorkspaceParked()) historyDrawer.Changed();
@@ -148,11 +156,12 @@ void ImportFinished() {
     if (s.browser != BI::Browser::HtmlFile) lines.push_back(TR(import_result_cookies));
     modal.Finish(MD::AcceptButton);
     MD::Spec r; r.kind = MD::Kind::Generic; r.scope = MD::Scope::Window; r.automationId = L"ImportResult";
-    r.title = anyFailed ? TR(import_partial_title) : TR(import_done_title);
+    const bool partial = anyFailed || anyLeft;
+    r.title = partial ? TR(import_partial_title) : TR(import_done_title);
     for (const auto& l : lines) { if (!r.body.empty()) r.body += L"\n"; r.body += l; }
     r.buttons = {MD::Make(MD::AcceptButton, TR(common_ok), MD::Role::Primary, true, true, true, L"DialogOk")};
     AskModal(std::move(r), nullptr, [](const MD::Result&) {});
-    accessibility.Notify('S', (anyFailed ? TR(import_partial_title) : TR(import_done_title)), L"Import");   // i18n-exempt: UIA activity id
+    accessibility.Notify('S', (partial ? TR(import_partial_title) : TR(import_done_title)), L"Import");   // i18n-exempt: UIA activity id
 }
 void ShowImportDialog(bool keyboard) {
     if (smoke || privateWindow || importDialogOpen || importRunning) return;
@@ -169,7 +178,7 @@ void ShowImportDialog(bool keyboard) {
     s.buttons = {MD::Make(MD::CancelButton, TR(common_cancel), MD::Role::Secondary, false, true, false, L"DialogCancel"),
                  MD::Make(MD::AcceptButton, TR(import_action), MD::Role::Primary, true, false, true, L"DialogImport")};
     s.buttons[1].closes = false;
-    s.onButton = [sources](int id) { if (id == MD::AcceptButton) StartImport(*sources); };
+    s.onButton = [sources, destination = ImportDestination::Now()](int id) { if (id == MD::AcceptButton) StartImport(*sources, destination); };
     importDialogOpen = true;
     AskModal(std::move(s), nullptr, [](const MD::Result&) { importDialogOpen = false; });
 }
