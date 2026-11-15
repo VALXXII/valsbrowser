@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <algorithm>
 #include <cmath>
 
@@ -88,6 +89,13 @@ inline Rgb Reach(Rgb fill,float k){Rgb c=Deepen(fill,k);while(WhiteContrast(c)<m
 inline States StatesOf(Rgb fill){return {fill,Reach(fill,hoverDeepen),Reach(fill,pressedDeepen)};}
 // The colour painted for hover / press progress (0..1, animated): rest -> hover, then -> pressed.
 inline Rgb StateColor(Rgb fill,float hover,float press){const auto s=StatesOf(fill);return Mix(Mix(s.rest,s.hover,hover),s.pressed,press);}
+// Text selection in the address field (user request 2026-11-15): the window's profile colour as a FILL under white
+// text. Unlike Current() it never falls back to the reference blue for the neutral « Personnel »: that profile
+// selects in its own grey (#747474, ProfileColor::NeutralFill). Private windows / no profile keep the reference
+// blue (their own identity). Follows the 120 ms profile fade with the fill (profiles-integration.h SetAccents);
+// read per paint through Selection(), clamped so white stays >= 4.5:1 at every step of the fade.
+inline Rgb& SelectionCurrent(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
+inline Rgb Selection(){return Reach(SelectionCurrent(),0);}
 }
 inline Rgb DangerRgb(){return {Danger::r,Danger::g,Danger::b};}
 // Vertical chrome (Paper "Favoris — flow", 2026-11-08): the page starts right under the
@@ -262,7 +270,7 @@ namespace PrivateChip {
 inline constexpr float height=24, padLeft=6, padRight=8, gap=6, radius=6, glyph=Size::icon, bottom=TabStrip::bottom-4, top=bottom-height;
 inline constexpr float left=TabStrip::left+Space::tabGap;   // 44, the first tab's place in a normal window
 inline constexpr float tintR=62/255.f, tintG=103/255.f, tintB=1, tintA=.16f;
-inline constexpr const wchar_t* label=L"Privée";
+inline const wchar_t* label() { return TR(chrome_private_chip); }   // « Privée » / « Private »
 inline constexpr const char* eyeSlash="M56.88,31.93A12,12,0,1,0,39.12,48.07l16,17.65C20.67,88.66,5.72,121.58,5,123.13a12.08,12.08,0,0,0,0,9.75c.37.82,9.13,20.26,28.49,39.61C59.37,198.34,92,212,128,212a131.34,131.34,0,0,0,51-10l20.09,22.1a12,12,0,0,0,17.76-16.14ZM128,188c-29.59,0-55.47-10.73-76.91-31.88A130.69,130.69,0,0,1,29.52,128c5.27-9.31,18.79-29.9,42.84-44.29l90,99A109.33,109.33,0,0,1,128,188Zm123-55.12c-.36.81-9,20-28,39.16a12,12,0,1,1-17-16.9A130.48,130.48,0,0,0,226.48,128a130.36,130.36,0,0,0-21.57-28.12C183.46,78.73,157.59,68,128,68c-3.35,0-6.7.14-10,.42a12,12,0,1,1-2-23.91c3.93-.34,8-.51,12-.51,36,0,68.63,13.67,94.49,39.52,19.35,19.35,28.11,38.8,28.48,39.61A12.08,12.08,0,0,1,251,132.88Z";
 inline float Width(float labelWidth){return padLeft+glyph+gap+std::ceil(labelWidth)+padRight;}
 inline Box Rect(float labelWidth){return {left,top,left+Width(labelWidth),bottom};}

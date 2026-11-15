@@ -346,9 +346,15 @@ int main(){
             Expect(DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS))==L"Bloqué · fichier dangereux"
                 &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · vérification de sécurité impossible"
                 &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))==L"Bloqué · règle de sécurité"
-                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED))==L"Failed · Offline","E6: blocked rows in French, by reason");
-            // E2: the toast's progress format, no invented total.
-            Expect(BrowserUpdate::ToastModel::FormatSize(52848230,209715200)==L"50.4/200.0MB"&&BrowserUpdate::ToastModel::FormatSize(52848230,0)==L"50.4MB","E2: one decimal, unknown total = received only (no %)");
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED))==L"Échec · Hors ligne","E6: blocked rows in French, by reason");
+            // E2: the toast's progress format, no invented total (French interface: decimal comma, « Mo »).
+            Expect(BrowserUpdate::ToastModel::FormatSize(52848230,209715200)==L"50,4/200,0 Mo"&&BrowserUpdate::ToastModel::FormatSize(52848230,0)==L"50,4 Mo","E2: one decimal, unknown total = received only (no %)");
+            // The same rows and format in an English interface (the Paper copy), from the same stored codes.
+            I18n::SetForProcess(I18n::Locale::En);
+            Expect(DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS))==L"Blocked · dangerous file"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED))==L"Failed · Offline"
+                &&BrowserUpdate::ToastModel::FormatSize(52848230,209715200)==L"50.4/200.0MB","E6/E2 in English: « Blocked · dangerous file », « Failed · Offline », « 50.4/200.0MB »");
+            I18n::SetForProcess(I18n::Locale::Fr);
         }
         // A2/A4/A6 real variants on the production modal surface.
         {
@@ -376,7 +382,7 @@ int main(){
             // Closing with a download running (one tab): always asked, destructive wording.
             NativeChrome::Downloads::Item d;d.id=777001;d.path=L"C:\\fixture\\rapport.pdf";d.state=NativeChrome::Downloads::State::InProgress;d.received=52848230;d.total=209715200;downloads.insert(downloads.begin(),d);
             const bool allowed=CloseWindowAllowed(false,nullptr);run();
-            Expect(!allowed&&modalOpen&&modalActive.spec.kind==MD::Kind::CloseWindow&&!modalActive.spec.infos.empty()&&modalActive.spec.infos[0].text==L"rapport.pdf"&&modalActive.spec.infos[0].trailing==L"50.4/200.0MB","close with a running download: A6 download variant with the real file");
+            Expect(!allowed&&modalOpen&&modalActive.spec.kind==MD::Kind::CloseWindow&&!modalActive.spec.infos.empty()&&modalActive.spec.infos[0].text==L"rapport.pdf"&&modalActive.spec.infos[0].trailing==L"50,4/200,0 Mo","close with a running download: A6 download variant with the real file");
             Expect(modalActive.spec.buttons[1].label==L"Fermer et annuler le téléchargement","close with a download: destructive action named");
             finish(MD::CancelButton);
             downloads.erase(downloads.begin());

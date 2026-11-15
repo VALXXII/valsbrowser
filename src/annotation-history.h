@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // History panel (V2) — Paper « MCP - Design UI UX »: 4.1 10Z6-0 (ouvert depuis le lanceur), 4.2 114Q-0
 // (détail), 4.3 115M-0 (vide); rules + motion « Spéc · Historique » 1167-0.
 //   Panel 360 at right 16 / bottom 64 of the page (8 above the launcher), canvas #171717, border
@@ -58,7 +59,7 @@ struct HistoryEntry {
                   AgentKind agent = AgentKind::Other; std::wstring label, time, quote; };
     std::vector<Step> steps;                // the detail's « Suivi », oldest first (empty: followUp as plain text)
 };
-inline constexpr const wchar_t* UnhandledHelp = L"Pour qu'un agent modifie le site, ouvrez Claude Code ou Codex dans le dossier du projet, puis rouvrez l'annotation.";
+inline const wchar_t* UnhandledHelp() { return TR(history_unhandled_help); }
 struct HistoryData { std::wstring currentSite; std::vector<HistoryEntry> entries; };   // most recent first
 enum class HistoryFilter { All = 0, Open = 1, Done = 2 };
 struct HistoryHooks {
@@ -78,19 +79,19 @@ inline bool Unhandled(const HistoryEntry& e) { return e.status == EntryStatus::P
 inline bool ReadOnly(const HistoryEntry& e) { return e.status == EntryStatus::Pending && !e.unhandled && !e.readBy.empty(); }
 inline std::wstring StatusLine(const HistoryEntry& e) {
     const std::wstring a = e.agentName.empty() ? std::wstring(AgentName(e.agent)) : e.agentName;
-    if (e.status == EntryStatus::Done) return L"Terminée par " + a;
+    if (e.status == EntryStatus::Done) return TRF(history_done_by, a);
     if (e.status == EntryStatus::Working) return a;
-    if (Unhandled(e)) return a + L" n'a pas pu la traiter";
-    if (ReadOnly(e)) return L"Lue par " + e.readBy;
-    return L"En attente";
+    if (Unhandled(e)) return TRF(annotation_agent_unhandled, a);
+    if (ReadOnly(e)) return TRF(annotation_agent_read, e.readBy);
+    return TR(history_waiting);
 }
 inline std::wstring StatusTitle(const HistoryEntry& e) {
     const std::wstring a = e.agentName.empty() ? std::wstring(AgentName(e.agent)) : e.agentName;
-    if (e.status == EntryStatus::Done) return a + L" a terminé";
-    if (e.status == EntryStatus::Working) return a + L" s'en occupe";
-    if (Unhandled(e)) return a + L" n'a pas pu la traiter";
-    if (ReadOnly(e)) return L"Lue par " + e.readBy + (e.readAge.empty() ? L"" : L" · " + e.readAge);
-    return L"En attente d'un agent";
+    if (e.status == EntryStatus::Done) return TRF(annotation_agent_done, a);
+    if (e.status == EntryStatus::Working) return TRF(annotation_agent_working, a);
+    if (Unhandled(e)) return TRF(annotation_agent_unhandled, a);
+    if (ReadOnly(e)) return e.readAge.empty() ? TRF(annotation_agent_read, e.readBy) : TRF(annotation_agent_read, e.readBy) + L" · " + e.readAge;
+    return TR(history_waiting_agent);
 }
 inline std::wstring StepsText(const HistoryEntry& e) {
     std::wstring t; for (const auto& s : e.steps) t += (t.empty() ? L"" : L" · ") + s.label + L" " + s.time + (s.quote.empty() ? L"" : L" « " + s.quote + L" »"); return t;
@@ -111,7 +112,7 @@ namespace HistorySpec {
 inline constexpr float width = 360, radius = 12, header = 50, filters = 32, filtersGap = 6, section = 30, row = 52, listPad = 4, inset = 16, bottom = 64;
 inline constexpr float detailHeader = 48, capture = 150, emptyBody = 96, emptyAction = 56, filterEmpty = 72;
 inline constexpr float toastH = 40, launcher = 40, gap = 8;
-inline constexpr const wchar_t* empty = L"Aucune annotation pour l'instant...";
+inline const wchar_t* empty() { return TR(history_annotations_empty); }
 }
 enum HistoryHit { HNone = 0, HClose = 1, HFilters = 2, HList = 3, HBack = 5, HCopy = 6, HDelete = 7, HAnnotate = 8, HMenuCopy = 9, HMenuDelete = 10, HReopen = 11, HFilter0 = 20, HRowBase = 1000, HMoreBase = 100000 };
 struct HistoryItem { bool section = false; int entry = -1; std::wstring site; bool current = false; int count = 0; float y = 0, h = 0; };
@@ -142,14 +143,14 @@ inline HistoryLayout LayoutHistory(Ink& ink, const HistoryView& v) {
             float fh = 10 + 16 + 8;   // « Suivi » 12/16 medium, then the steps
             for (size_t i = 0; i < e.steps.size(); ++i) { fh += 16; if (!e.steps[i].quote.empty()) fh += 4 + ink.Height(L"« " + e.steps[i].quote + L" »", F(13, 18), inner - 24 - 24 - 26 - 40); if (i + 1 < e.steps.size()) fh += 10; }
             fh += 12; l.follow = {x0 + 12, y, x0 + inner - 12, y + fh}; y += fh + 12;
-            if (Unhandled(e)) { const float hh = 20 + ink.Height(UnhandledHelp, F(13, 18), inner - 24 - 24); l.help = {x0 + 12, y, x0 + inner - 12, y + hh}; y += hh + 12; }
+            if (Unhandled(e)) { const float hh = 20 + ink.Height(UnhandledHelp(), F(13, 18), inner - 24 - 24); l.help = {x0 + 12, y, x0 + inner - 12, y + hh}; y += hh + 12; }
         } else {
             const std::wstring follow = e.status == EntryStatus::Done && !e.summary.empty() ? e.summary : e.followUp;
             const float fh = 10 + 18 + (follow.empty() ? 0 : 6 + ink.Height(follow, F(12, 17), inner - 24 - 24)) + 10;
             l.follow = {x0 + 12, y, x0 + inner - 12, y + fh}; y += fh + 12;
         }
         if (Unhandled(e)) {   // V3-B: Rouvrir · Copier en Markdown … Supprimer, each hugging its text
-            const float rw = 20 + ink.Width(L"Rouvrir", F(12, 16, 500)), cw = 20 + ink.Width(L"Copier en Markdown", F(12, 16, 500)), dw = 20 + ink.Width(L"Supprimer", F(12, 16, 500));
+            const float rw = 20 + ink.Width(TR(annotation_reopen), F(12, 16, 500)), cw = 20 + ink.Width(TR(history_copy_markdown), F(12, 16, 500)), dw = 20 + ink.Width(TR(common_delete), F(12, 16, 500));
             l.reopen = {x0 + 12, y, x0 + 12 + rw, y + 30}; l.copy = {l.reopen.right + 8, y, l.reopen.right + 8 + cw, y + 30}; l.del = {x0 + inner - 12 - dw, y, x0 + inner - 12, y + 30};
         } else { const float bw = (inner - 24 - 8) / 2; l.copy = {x0 + 12, y, x0 + 12 + bw, y + 30}; l.del = {l.copy.right + 8, y, x0 + inner - 12, y + 30}; }
         y += 30 + 12;
@@ -251,14 +252,14 @@ inline void PaintMenu(Ink& ink, const HistoryView& v, D2D1_RECT_F m) {
     const D2D1_RECT_F a{m.left + 4, m.top + 4, m.right - 4, m.top + 34}, b{m.left + 4, m.top + 34, m.right - 4, m.top + 64};
     if (v.menuHot == HMenuCopy) ink.Fill(a, 6, {1, 1, 1, .08f});
     if (v.menuHot == HMenuDelete) ink.Fill(b, 6, WithAlpha(Hex(Ink_::danger), .12f));
-    Pieces(ink, {PIcon(Glyphs::copy, 14, {1, 1, 1, .6f}, 8), PText(L"Copier en Markdown", F(13, 16), {1, 1, 1, .9f})}, {a.left + 10, a.top, a.right, a.bottom}, Align::Leading);
-    Pieces(ink, {PIcon(Glyphs::close, 14, Hex(Ink_::danger), 8), PText(L"Supprimer", F(13, 16), Hex(Ink_::danger))}, {b.left + 10, b.top, b.right, b.bottom}, Align::Leading);
+    Pieces(ink, {PIcon(Glyphs::copy, 14, {1, 1, 1, .6f}, 8), PText(TR(history_copy_markdown), F(13, 16), {1, 1, 1, .9f})}, {a.left + 10, a.top, a.right, a.bottom}, Align::Leading);
+    Pieces(ink, {PIcon(Glyphs::close, 14, Hex(Ink_::danger), 8), PText(TR(common_delete), F(13, 16), Hex(Ink_::danger))}, {b.left + 10, b.top, b.right, b.bottom}, Align::Leading);
     if (v.keyboard && v.menuHot) FocusRing(ink, Inflate(v.menuHot == HMenuCopy ? a : b, -1), 5, true);
     ink.Stroke(m, 8, Hex(0xFFFFFF14), 1);
 }
 inline void PaintSegmented(Ink& ink, const HistoryView& v, const HistoryLayout& l) {
     ink.Fill(l.filters, 8, Hex(Ink_::raised));
-    const wchar_t* names[3] = {L"Toutes", L"En cours", L"Terminées"};
+    const wchar_t* names[3] = {TR(history_filter_all), TR(history_filter_working), TR(history_filter_done)};
     for (int i = 0; i < 3; ++i) {
         const bool on = int(v.filter) == i; const auto iv = v.V(HFilter0 + i);
         if (on) ink.Fill(l.segment[i], 6, Hex(Ink_::pressed)); else if (iv.hover > 0) ink.Fill(l.segment[i], 6, {1, 1, 1, .04f * iv.hover});
@@ -274,7 +275,7 @@ inline void PaintSegmented(Ink& ink, const HistoryView& v, const HistoryLayout& 
 inline void PaintSteps(Ink& ink, const HistoryEntry& e, const HistoryLayout& l) {
     using Step = HistoryEntry::Step;
     const float x = l.follow.left + 12, r = l.follow.right - 12; float y = l.follow.top + 10;
-    ink.Text(L"Suivi", F(12, 16, 500), {x, y, r, y + 16}, Hex(0xFFFFFF99)); y += 16 + 8;
+    ink.Text(TR(history_tracking), F(12, 16, 500), {x, y, r, y + 16}, Hex(0xFFFFFF99)); y += 16 + 8;
     for (size_t i = 0; i < e.steps.size(); ++i) {
         const auto& s = e.steps[i]; const float cy = y + 8;
         const D2D1_RECT_F icon{x + 2, cy - 6, x + 14, cy + 6};
@@ -324,31 +325,31 @@ inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout
         const std::wstring follow = e.status == EntryStatus::Done && !e.summary.empty() ? e.summary : e.followUp;
         if (!follow.empty()) ink.Text(follow, F(12, 17), {fx, fy + 24, fr, l.follow.bottom - 10}, Hex(0xFFFFFF99), true);
         }
-        if (l.help.bottom > l.help.top) { ink.Fill(l.help, 8, Hex(0xFFFFFF0D)); ink.Text(UnhandledHelp, F(13, 18), {l.help.left + 12, l.help.top + 10, l.help.right - 12, l.help.bottom - 10}, Hex(0xFFFFFFCC), true); }
+        if (l.help.bottom > l.help.top) { ink.Fill(l.help, 8, Hex(0xFFFFFF0D)); ink.Text(UnhandledHelp(), F(13, 18), {l.help.left + 12, l.help.top + 10, l.help.right - 12, l.help.bottom - 10}, Hex(0xFFFFFFCC), true); }
         if (l.reopen.right > l.reopen.left) {   // V3-B « Rouvrir »
             const auto iv = v.V(HReopen); ScaleScope s(ink.Target(), l.reopen, Motion::PressScale(iv.press, v.reduced));
-            ink.Fill(l.reopen, 6, RaisedFill(iv)); ink.Text(L"Rouvrir", F(12, 16, 500), l.reopen, {1, 1, 1, 1}, false, Align::Center, true);
+            ink.Fill(l.reopen, 6, RaisedFill(iv)); ink.Text(TR(annotation_reopen), F(12, 16, 500), l.reopen, {1, 1, 1, 1}, false, Align::Center, true);
             if (v.focus == HReopen) FocusRing(ink, l.reopen, 6, v.keyboard); }
         {   const auto iv = v.V(HCopy); ScaleScope s(ink.Target(), l.copy, Motion::PressScale(iv.press, v.reduced));
-            ink.Fill(l.copy, 6, RaisedFill(iv)); ink.Text(L"Copier en Markdown", F(12, 16, 500), l.copy, {1, 1, 1, 1}, false, Align::Center, true);
+            ink.Fill(l.copy, 6, RaisedFill(iv)); ink.Text(TR(history_copy_markdown), F(12, 16, 500), l.copy, {1, 1, 1, 1}, false, Align::Center, true);
             if (v.focus == HCopy) FocusRing(ink, l.copy, 6, v.keyboard); }
         {   const auto iv = v.V(HDelete); ScaleScope s(ink.Target(), l.del, Motion::PressScale(iv.press, v.reduced));
-            ink.Fill(l.del, 6, WithAlpha(Hex(Ink_::danger), .1f + .06f * iv.hover + .04f * iv.press)); ink.Text(L"Supprimer", F(12, 16, 500), l.del, Hex(Ink_::danger), false, Align::Center, true);
+            ink.Fill(l.del, 6, WithAlpha(Hex(Ink_::danger), .1f + .06f * iv.hover + .04f * iv.press)); ink.Text(TR(common_delete), F(12, 16, 500), l.del, Hex(Ink_::danger), false, Align::Center, true);
             if (v.focus == HDelete) FocusRing(ink, l.del, 6, v.keyboard); }
         return;
     }
     // Header.
     ink.Icon(Glyphs::history, {17, 1 + 14 + 5, 33, 1 + 14 + 21}, {1, 1, 1, .5f});
-    ink.Text(L"Historique", F(16, 20, 600), {41, 1 + 14, l.close.left - 8, 1 + 40}, {1, 1, 1, 1}, false, Align::Leading, true);
+    ink.Text(TR(history_title), F(16, 20, 600), {41, 1 + 14, l.close.left - 8, 1 + 40}, {1, 1, 1, 1}, false, Align::Leading, true);
     CloseButton(ink, l.close, 14, v.V(HClose), v.focus == HClose, v.keyboard, v.reduced);
     if (l.empty) {
         const float cx = width / 2, top = 1 + header + 20;
         ink.IconHalo(Glyphs::mark, {cx - 16 + 5, top + 4.6f, cx - 16 + 5 + 22, top + 4.6f + 20.73f}, {1, 1, 1, .5f}, {0, 0, 0, 0}, 0);
         ink.IconHalo(Glyphs::close, {cx - 16 + 11, top + 7.2f, cx - 16 + 31, top + 27.2f}, Hex(0x8B8B8BFF), Hex(Ink_::canvas), 22 * 256.f / 160.f);
-        ink.Text(empty, F(14, 20, 500), {1, top + 36, 1 + inner, top + 56}, Hex(0xFFFFFF80), false, Align::Center);
+        ink.Text(empty(), F(14, 20, 500), {1, top + 36, 1 + inner, top + 56}, Hex(0xFFFFFF80), false, Align::Center);
         const auto iv = v.V(HAnnotate); ScaleScope s(ink.Target(), l.annotate, Motion::PressScale(iv.press, v.reduced));
         ink.Fill(l.annotate, 6, AccentButton(iv.hover, iv.press));
-        Pieces(ink, {PText(L"Annoter cette page", F(13, 16, 500), {1, 1, 1, 1}), PKey(L"Ctrl", Hex(0x00000038), {1, 1, 1, 1}), PKey(L"Maj", Hex(0x00000038), {1, 1, 1, 1}), PKey(L"A", Hex(0x00000038), {1, 1, 1, 1})}, l.annotate);
+        Pieces(ink, {PText(TR(history_annotate_page), F(13, 16, 500), {1, 1, 1, 1}), PKey(L"Ctrl", Hex(0x00000038), {1, 1, 1, 1}), PKey(TR(key_shift), Hex(0x00000038), {1, 1, 1, 1}), PKey(L"A", Hex(0x00000038), {1, 1, 1, 1})}, l.annotate);
         if (v.focus == HAnnotate) FocusRing(ink, l.annotate, 6, v.keyboard);
         return;
     }
@@ -356,13 +357,13 @@ inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout
     const D2D1_RECT_F list{1, l.listTop, 1 + inner, l.listTop + l.viewport};
     ink.Fill({list.left, list.top, list.right, list.top + 1}, 0, Hex(0xFFFFFF0F));
     auto* t = ink.Target(); t->PushAxisAlignedClip({list.left, list.top + 1, list.right, list.bottom}, D2D1_ANTIALIAS_MODE_ALIASED);
-    if (l.filterEmpty) ink.Text(v.filter == HistoryFilter::Done ? L"Aucune annotation terminée" : L"Aucune annotation en cours", F(13, 18), {list.left, list.top + 1, list.right, list.top + 1 + HistorySpec::filterEmpty}, Hex(0xFFFFFF80), false, Align::Center, true);
+    if (l.filterEmpty) ink.Text(v.filter == HistoryFilter::Done ? TR(history_none_done) : TR(history_none_working), F(13, 18), {list.left, list.top + 1, list.right, list.top + 1 + HistorySpec::filterEmpty}, Hex(0xFFFFFF80), false, Align::Center, true);
     for (auto& it : l.items) {
         const float top = l.listTop + it.y - v.scroll; if (top > list.bottom || top + it.h < list.top) continue;
         if (it.section) {
             const D2D1_RECT_F r{list.left + 4 + 10, top + 10, list.right - 4 - 10, top + 26};
             Font n = F(11, 14); n.tabular = true;
-            std::vector<Piece> p{PText(it.site, F(12, 16, 500), Hex(0xFFFFFFB3))}; if (it.current) p.push_back(PText(L"· cette page", F(11, 14), Hex(0xFFFFFF80)));
+            std::vector<Piece> p{PText(it.site, F(12, 16, 500), Hex(0xFFFFFFB3))}; if (it.current) p.push_back(PText(TR(history_this_page), F(11, 14), Hex(0xFFFFFF80)));
             Pieces(ink, p, r, Align::Leading);
             ink.Text(std::to_wstring(it.count), n, r, Hex(0xFFFFFF80), false, Align::Trailing, true);
         } else PaintHistoryRow(ink, v, v.data.entries[size_t(it.entry)], {list.left + 4, top, list.right - 4, top + it.h}, it.entry);
@@ -382,15 +383,15 @@ inline void PaintHistory(Ink& ink, const HistoryView& v, const HistoryLayout& l,
     PopClip(ink, layer, clip);
     ink.Stroke(all, HistorySpec::radius, Hex(0xFFFFFF14), 1);
 }
-inline float ToastWidth(Ink& ink) { return 1 + 12 + ink.Width(L"Annotation supprimée", F(13, 16)) + 12 + 10 + ink.Width(L"Annuler", F(13, 16, 500)) + 10 + 6 + 1; }
-inline D2D1_RECT_F ToastUndo(Ink& ink) { const float w = ToastWidth(ink), bw = 10 + ink.Width(L"Annuler", F(13, 16, 500)) + 10; return {w - 1 - 6 - bw, 6, w - 1 - 6, 34}; }
+inline float ToastWidth(Ink& ink) { return 1 + 12 + ink.Width(TR(history_annotation_deleted), F(13, 16)) + 12 + 10 + ink.Width(TR(common_undo), F(13, 16, 500)) + 10 + 6 + 1; }
+inline D2D1_RECT_F ToastUndo(Ink& ink) { const float w = ToastWidth(ink), bw = 10 + ink.Width(TR(common_undo), F(13, 16, 500)) + 10; return {w - 1 - 6 - bw, 6, w - 1 - 6, 34}; }
 inline void PaintToast(Ink& ink, const Motion::InteractionVisual& iv, bool focus, bool keyboard, bool reduced) {
     const float w = ToastWidth(ink); const D2D1_RECT_F all{0, 0, w, HistorySpec::toastH};
     ink.Fill(all, 10, Hex(Ink_::canvas));
-    ink.Text(L"Annotation supprimée", F(13, 16), {13, 0, w, HistorySpec::toastH}, Hex(0xFFFFFFE6), false, Align::Leading, true);
+    ink.Text(TR(history_annotation_deleted), F(13, 16), {13, 0, w, HistorySpec::toastH}, Hex(0xFFFFFFE6), false, Align::Leading, true);
     const auto b = ToastUndo(ink);
     {   ScaleScope s(ink.Target(), b, Motion::PressScale(iv.press, reduced)); ink.Fill(b, 6, RaisedFill(iv));
-        ink.Text(L"Annuler", F(13, 16, 500), b, {1, 1, 1, 1}, false, Align::Center, true); if (focus) FocusRing(ink, b, 6, keyboard); }
+        ink.Text(TR(common_undo), F(13, 16, 500), b, {1, 1, 1, 1}, false, Align::Center, true); if (focus) FocusRing(ink, b, 6, keyboard); }
     ink.Stroke(all, 10, Hex(0xFFFFFF14), 1);
 }
 
@@ -509,7 +510,7 @@ class HistoryPanel : public Animator::Client {
         I().ForgetBitmaps(nullptr);
         if (hooks_.remove) hooks_.remove(deletedId_);
         ShowToast();
-        Announce(L"Annotation supprimée. Ctrl+Z pour annuler.");
+        Announce(TR(history_announce_deleted_undo));
     }
     void Undo() {
         if (deletedAt_ < 0) return;
@@ -519,7 +520,7 @@ class HistoryPanel : public Animator::Client {
         deletedAt_ = -1; deletedId_.clear(); I().ForgetBitmaps(nullptr);
         if (hooks_.undo) hooks_.undo(id);
         Reveal(at); RenderToast(now); Animator::Get().Request(this);
-        Announce(L"Suppression annulée");
+        Announce(TR(history_announce_delete_undone));
     }
     void FinalizeDeleted() {
         if (deletedAt_ < 0) return; const std::wstring id = deletedId_; deletedAt_ = -1; deletedId_.clear();
@@ -540,18 +541,18 @@ class HistoryPanel : public Animator::Client {
         if (entry < 0 || entry >= int(view_.data.entries.size())) return;
         if (hooks_.copyEntry) hooks_.copyEntry(view_.data.entries[size_t(entry)].id);
         else if (hooks_.copy) hooks_.copy(EntryMarkdown(view_.data.entries[size_t(entry)]));
-        Announce(L"Copié en Markdown");
+        Announce(TR(history_announce_copied));
     }
     void Activate(int hit, bool keyboard) {
         view_.keyboard = keyboard;
         if (hit >= HMoreBase) { view_.menuEntry = view_.menuEntry == hit - HMoreBase ? -1 : hit - HMoreBase; view_.menuHot = keyboard ? HMenuCopy : 0; Render(Motion::Now()); return; }
         if (hit >= HRowBase) { OpenDetail(hit - HRowBase, keyboard); return; }
-        if (hit >= HFilter0 && hit < HFilter0 + 3) { Change([&] { view_.filter = HistoryFilter(hit - HFilter0); view_.scroll = 0; view_.selected = -1; }); Announce(std::wstring(L"Filtre : ") + (hit == HFilter0 ? L"Toutes" : hit == HFilter0 + 1 ? L"En cours" : L"Terminées")); return; }
+        if (hit >= HFilter0 && hit < HFilter0 + 3) { Change([&] { view_.filter = HistoryFilter(hit - HFilter0); view_.scroll = 0; view_.selected = -1; }); Announce(TRF(history_announce_filter, hit == HFilter0 ? TR(history_filter_all) : hit == HFilter0 + 1 ? TR(history_filter_working) : TR(history_filter_done))); return; }
         switch (hit) {
         case HClose: Hide(true); if (hooks_.closed) hooks_.closed(keyboard); break;
         case HBack: CloseDetail(keyboard); break;
         case HCopy: Copy(view_.Find(view_.detailId)); break;
-        case HReopen: if (hooks_.reopen && !view_.detailId.empty()) { hooks_.reopen(view_.detailId); Announce(L"Annotation rouverte"); } break;
+        case HReopen: if (hooks_.reopen && !view_.detailId.empty()) { hooks_.reopen(view_.detailId); Announce(TR(history_announce_reopened)); } break;
         case HDelete: Delete(view_.Find(view_.detailId), keyboard); break;
         case HAnnotate: Hide(true); if (hooks_.annotate) hooks_.annotate(); break;
         case HMenuCopy: { const int e = view_.menuEntry; view_.menuEntry = -1; Copy(e); Render(Motion::Now()); break; }
@@ -660,49 +661,49 @@ class HistoryPanel : public Animator::Client {
         std::vector<Accessibility::Node> n; if (!presence_.IsOpen()) return n;
         const auto now = Motion::Now(); const RECT rect = PanelRect(now); const float top = (rect.bottom - rect.top) / panel_.Scale() - 4 - H(now);
         auto at = [&](D2D1_RECT_F r) { r.top += top; r.bottom += top; return panel_.Screen(r); };
-        Accessibility::Node p; p.key = PanelKey; p.role = Accessibility::Role::Group; p.name = L"Historique"; p.automationId = L"AnnotationHistory"; p.focusable = false; GetWindowRect(panel_.Window(), &p.bounds); n.push_back(p);
+        Accessibility::Node p; p.key = PanelKey; p.role = Accessibility::Role::Group; p.name = TR(history_title); p.automationId = L"AnnotationHistory"; p.focusable = false; GetWindowRect(panel_.Window(), &p.bounds); n.push_back(p);
         auto add = [&](long long key, Accessibility::Role role, const std::wstring& name, D2D1_RECT_F r, long long parent = PanelKey) -> Accessibility::Node& {
             Accessibility::Node x; x.key = key; x.parent = parent; x.role = role; x.name = name; x.bounds = at(r); n.push_back(x); return n.back(); };
         if (layout_.detail) {
             const int d = view_.Find(view_.detailId); if (d < 0) return n; const auto& e = view_.data.entries[size_t(d)];
-            add(HBack, Accessibility::Role::Button, L"Retour à l'historique", layout_.back).accelerator = L"Échap";
-            add(HClose, Accessibility::Role::Button, L"Fermer l'historique", layout_.close);
-            auto& t = add(DetailTextKey, Accessibility::Role::Text, e.page, layout_.note); t.value = e.note; t.status = StatusTitle(e) + L" · " + e.age; t.help = e.steps.empty() ? e.followUp : StepsText(e) + (Unhandled(e) ? std::wstring(L". ") + UnhandledHelp : L""); t.focusable = false;
-            if (layout_.reopen.right > layout_.reopen.left) add(HReopen, Accessibility::Role::Button, L"Rouvrir", layout_.reopen).help = L"Remettre l'annotation en attente pour un agent";
-            add(HCopy, Accessibility::Role::Button, L"Copier en Markdown", layout_.copy);
-            add(HDelete, Accessibility::Role::Button, L"Supprimer", layout_.del).help = L"Annulable pendant 6 secondes";
+            add(HBack, Accessibility::Role::Button, TR(history_back), layout_.back).accelerator = TR(key_escape);
+            add(HClose, Accessibility::Role::Button, TR(history_announce_close), layout_.close);
+            auto& t = add(DetailTextKey, Accessibility::Role::Text, e.page, layout_.note); t.value = e.note; t.status = StatusTitle(e) + L" · " + e.age; t.help = e.steps.empty() ? e.followUp : StepsText(e) + (Unhandled(e) ? std::wstring(L". ") + UnhandledHelp() : L""); t.focusable = false;
+            if (layout_.reopen.right > layout_.reopen.left) add(HReopen, Accessibility::Role::Button, TR(annotation_reopen), layout_.reopen).help = TR(history_reopen_help);
+            add(HCopy, Accessibility::Role::Button, TR(history_copy_markdown), layout_.copy);
+            add(HDelete, Accessibility::Role::Button, TR(common_delete), layout_.del).help = TR(history_delete_help);
             return n;
         }
-        add(HClose, Accessibility::Role::Button, L"Fermer l'historique", layout_.close).accelerator = L"Échap";
+        add(HClose, Accessibility::Role::Button, TR(history_announce_close), layout_.close).accelerator = TR(key_escape);
         if (layout_.empty) {
-            auto& t = add(EmptyKey, Accessibility::Role::Text, HistorySpec::empty, {1, 1 + HistorySpec::header, HistorySpec::width - 1, 1 + HistorySpec::header + HistorySpec::emptyBody}); t.focusable = false;
-            add(HAnnotate, Accessibility::Role::Button, L"Annoter cette page", layout_.annotate).accelerator = L"Ctrl+Maj+A";
+            auto& t = add(EmptyKey, Accessibility::Role::Text, HistorySpec::empty(), {1, 1 + HistorySpec::header, HistorySpec::width - 1, 1 + HistorySpec::header + HistorySpec::emptyBody}); t.focusable = false;
+            add(HAnnotate, Accessibility::Role::Button, TR(history_annotate_page), layout_.annotate).accelerator = TR(key_ctrl_shift_a);
             return n;
         }
-        auto& tabs = add(HFilters, Accessibility::Role::Tab, L"Filtres", layout_.filters); tabs.focusable = false;
-        const wchar_t* names[3] = {L"Toutes", L"En cours", L"Terminées"};
+        auto& tabs = add(HFilters, Accessibility::Role::Tab, TR(history_filters), layout_.filters); tabs.focusable = false;
+        const wchar_t* names[3] = {TR(history_filter_all), TR(history_filter_working), TR(history_filter_done)};
         for (int i = 0; i < 3; ++i) { auto& s = add(HFilter0 + i, Accessibility::Role::TabItem, std::wstring(names[i]) + (i ? L" (" + std::to_wstring(view_.Count(HistoryFilter(i))) + L")" : L""), layout_.segment[i], HFilters); s.selected = int(view_.filter) == i; s.position = i + 1; s.count = 3; }
-        auto& list = add(ListKey, Accessibility::Role::List, L"Annotations", {1, layout_.listTop, HistorySpec::width - 1, layout_.listTop + layout_.viewport}); list.focusable = false;
+        auto& list = add(ListKey, Accessibility::Role::List, TR(settings_annotations), {1, layout_.listTop, HistorySpec::width - 1, layout_.listTop + layout_.viewport}); list.focusable = false;
         const auto rows = Rows(); int pos = 0;
         for (auto& it : layout_.items) {
             if (it.section) continue; const auto& e = view_.data.entries[size_t(it.entry)];
             const float y = layout_.listTop + it.y - view_.scroll;
             auto& r = add(ItemBase + it.entry, Accessibility::Role::ListItem, e.note, {5, y, HistorySpec::width - 5, y + it.h}, ListKey);
             r.status = StatusLine(e) + L" · " + e.age; r.help = e.site; r.selected = view_.selected == it.entry; r.position = ++pos; r.count = int(rows.size());
-            r.offscreen = y + it.h < layout_.listTop || y > layout_.listTop + layout_.viewport; r.accelerator = L"Entrée : détail, Suppr : supprimer";
+            r.offscreen = y + it.h < layout_.listTop || y > layout_.listTop + layout_.viewport; r.accelerator = TR(history_row_keys);
         }
         return n;
     }
     std::vector<Accessibility::Node> ToastNodes() {
         std::vector<Accessibility::Node> n; if (!toastPresence_.IsOpen()) return n;
-        Accessibility::Node g; g.key = ToastKey; g.role = Accessibility::Role::Group; g.name = L"Annotation supprimée"; g.focusable = false; GetWindowRect(toast_.Window(), &g.bounds); n.push_back(g);
-        Accessibility::Node u; u.key = UndoKey; u.parent = ToastKey; u.name = L"Annuler"; u.accelerator = L"Ctrl+Z"; u.bounds = toast_.Screen(ToastUndo(I())); u.automationId = L"AnnotationUndo"; n.push_back(u);
+        Accessibility::Node g; g.key = ToastKey; g.role = Accessibility::Role::Group; g.name = TR(history_annotation_deleted); g.focusable = false; GetWindowRect(toast_.Window(), &g.bounds); n.push_back(g);
+        Accessibility::Node u; u.key = UndoKey; u.parent = ToastKey; u.name = TR(common_undo); u.accelerator = L"Ctrl+Z"; u.bounds = toast_.Screen(ToastUndo(I())); u.automationId = L"AnnotationUndo"; n.push_back(u);
         return n;
     }
     bool Ensure() {
         if (panel_.Window()) return true;
-        Layer::Options o; o.child = true; o.tabStop = true; o.title = L"Historique";
-        Layer::Options t; t.child = true; t.tabStop = true; t.title = L"Annotation supprimée";
+        Layer::Options o; o.child = true; o.tabStop = true; o.title = TR(history_title);
+        Layer::Options t; t.child = true; t.tabStop = true; t.title = TR(history_annotation_deleted);
         if (!panel_.Create(instance_, parent_, o) || !toast_.Create(instance_, parent_, t)) return false;
         panel_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return PanelHandle(m, w, l, r); };
         toast_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return ToastHandle(m, w, l, r); };
@@ -746,7 +747,7 @@ public:
         presence_.Show(now, true, reduced); Render(now); Animator::Get().Request(this);
         if (keyboard) { view_.focus = layout_.empty ? HAnnotate : HList; SetFocus(panel_.Window()); }
         if (panel_.uia.Listening()) { panel_.uia.ChildrenChanged(PanelKey); if (!was) panel_.uia.Raise(PanelKey, UIA_Window_WindowOpenedEventId); }
-        if (!was) Announce(data.entries.empty() ? std::wstring(L"Historique. ") + HistorySpec::empty : L"Historique, " + Plural(int(data.entries.size()), L"annotation", L"annotations"));
+        if (!was) Announce(data.entries.empty() ? TRF(history_announce_empty_panel, HistorySpec::empty()) : TRP(history_announce_count, data.entries.size()));
         return true;
     }
     // New data while open (the host watches its store only while the panel is visible).

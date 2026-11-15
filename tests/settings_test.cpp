@@ -15,7 +15,7 @@ int main(){
         State s;s.bookmarksBar=bar;s.accent=0xA054CB;std::stringstream io;Write(io,s);assert(Read(io)==s);
     }
     {std::istringstream invalid("browser-settings 1\nbookmarks-bar=invalid\naccent=#XYZXYZ\n");assert(Read(invalid)==State{});}
-    // Annotations et agents: prompt on, no « Plus tard », 30 days by default (V3: no launcher setting).
+    // Annotations: prompt on, no « Plus tard », 30 days by default (V3: no launcher setting).
     {State d;assert(d.annotationConnectPrompt&&d.annotationConnectDeclines==0&&d.annotationRetentionDays==30&&ConnectPromptActive(d));
      // Round trip of every value.
      for(int days:RetentionChoices)for(int n=0;n<=MaxConnectDeclines;++n){State s;s.annotationConnectPrompt=!(n%2);s.annotationConnectDeclines=n;s.annotationRetentionDays=days;std::stringstream io;Write(io,s);assert(Read(io)==s);}

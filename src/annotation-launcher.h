@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Launcher (40 DIP, bottom-right of the page area), its cards and its history panel (V2).
 // Paper « MCP - Design UI UX »: 3.1 10GJ-0 (ajoutée, aucun agent), 3.2 10H4-0 (l'agent s'en occupe),
 // 3.3 10HO-0 (l'agent a terminé), 4.1 10Z6-0 (historique ouvert); « Spéc · Historique » 1167-0.
@@ -79,11 +80,11 @@ inline void PaintLauncher(Ink& ink, const LauncherVisual& v, float opacity = 1, 
     t->SetTransform(base);
 }
 struct CardLayout { float height = 0; D2D1_RECT_F header{}, close{}, body{}, actions{}, primary{}, secondary{}; std::wstring bodyText; };
-inline const wchar_t* NoAgentBody() { return L"Aucun agent ne la lit encore."; }
+inline const wchar_t* NoAgentBody() { return TR(annotation_no_agent_reads); }
 inline std::wstring CardTitle(const CardContent& c) {
     const std::wstring a = c.agent.empty() ? std::wstring(AgentName(c.agentKind)) : c.agent;
-    switch (c.kind) { case CardKind::Working: return a + L" s'en occupe"; case CardKind::Done: return a + L" a terminé"; case CardKind::Read: return L"Lue par " + a;
-                      case CardKind::Unhandled: return a + L" n'a pas pu la traiter"; default: return L"Annotation ajoutée"; }
+    switch (c.kind) { case CardKind::Working: return TRF(annotation_agent_working, a); case CardKind::Done: return TRF(annotation_agent_done, a); case CardKind::Read: return TRF(annotation_agent_read, a);
+                      case CardKind::Unhandled: return TRF(annotation_agent_unhandled, a); default: return TR(annotation_added); }
 }
 inline CardLayout LayoutCard(Ink& ink, const CardContent& c) {
     using namespace LauncherSpec; CardLayout l; const float x0 = 1, inner = cardW - 2;
@@ -132,9 +133,9 @@ inline void PaintCardContent(Ink& ink, const CardContent& c, const CardLayout& l
     CloseButton(ink, l.close, 14, v.V(CardClose), v.focus == CardClose, v.keyboard, v.reduced);
     if (c.kind == CardKind::Added) return;
     ink.Text(l.bodyText, F(13, 19), l.body, Hex(0xFFFFFFB3), true);
-    if (c.kind == CardKind::NoAgent) CardButton(ink, v, CardConnect, l.primary, {PIcon(Glyphs::tree, 16, {1, 1, 1, .6f}), PText(L"Connecter un agent", F(13, 16, 500), {1, 1, 1, 1})});
-    else if (c.kind == CardKind::Working || c.kind == CardKind::Read || c.kind == CardKind::Unhandled) CardButton(ink, v, CardOpen, l.primary, {PText(L"Voir l'annotation", F(13, 16, 500), {1, 1, 1, 1})});
-    else { CardButton(ink, v, CardReload, l.primary, {PText(L"Recharger la page", F(13, 16, 500), {1, 1, 1, 1})}); CardButton(ink, v, CardReopen, l.secondary, {PText(L"Rouvrir", F(13, 16, 500), {1, 1, 1, 1})}); }
+    if (c.kind == CardKind::NoAgent) CardButton(ink, v, CardConnect, l.primary, {PIcon(Glyphs::tree, 16, {1, 1, 1, .6f}), PText(TR(annotation_connect_agent), F(13, 16, 500), {1, 1, 1, 1})});
+    else if (c.kind == CardKind::Working || c.kind == CardKind::Read || c.kind == CardKind::Unhandled) CardButton(ink, v, CardOpen, l.primary, {PText(TR(annotation_view), F(13, 16, 500), {1, 1, 1, 1})});
+    else { CardButton(ink, v, CardReload, l.primary, {PText(TR(annotation_reload_page), F(13, 16, 500), {1, 1, 1, 1})}); CardButton(ink, v, CardReopen, l.secondary, {PText(TR(annotation_reopen), F(13, 16, 500), {1, 1, 1, 1})}); }
 }
 inline void PaintCard(Ink& ink, const CardContent& c, const CardLayout& l, const CardVisual& v) {
     const D2D1_RECT_F all{0, 0, LauncherSpec::cardW, l.height};
@@ -145,8 +146,8 @@ inline void PaintCard(Ink& ink, const CardContent& c, const CardLayout& l, const
 inline std::wstring CardAnnouncement(const CardContent& c) {
     switch (c.kind) {
     case CardKind::Working: return CardTitle(c) + (c.since.empty() ? L"" : L", " + c.since);
-    case CardKind::NoAgent: return std::wstring(L"Annotation ajoutée. ") + NoAgentBody();
-    case CardKind::Added: return L"Annotation ajoutée";
+    case CardKind::NoAgent: return TRF(annotation_added_sentence, NoAgentBody());
+    case CardKind::Added: return TR(annotation_added);
     case CardKind::Done: return CardTitle(c) + L" : " + (c.summary.empty() ? c.note : c.summary);
     case CardKind::Read: return CardTitle(c);
     case CardKind::Unhandled: return CardTitle(c) + (c.summary.empty() ? L"" : L" : " + c.summary);
@@ -314,8 +315,8 @@ class Launcher : public Animator::Client {
     }
     std::vector<Accessibility::Node> ButtonNodes() {
         std::vector<Accessibility::Node> n; if (!buttonPresence_.IsOpen()) return n;
-        Accessibility::Node b; b.key = ButtonKey; b.name = state_ == LauncherState::Working && count_ > 0 ? L"Annotations · " + std::to_wstring(count_) + L" en cours" : std::wstring(L"Annotations");
-        b.automationId = L"AnnotationLauncher"; b.accelerator = L"Ctrl+Maj+H"; b.help = L"Historique des annotations";
+        Accessibility::Node b; b.key = ButtonKey; b.name = state_ == LauncherState::Working && count_ > 0 ? TRF(annotation_launcher_working, std::to_wstring(count_)) : std::wstring(TR(settings_annotations));
+        b.automationId = L"AnnotationLauncher"; b.accelerator = TR(key_ctrl_shift_h); b.help = TR(annotation_history_title);
         b.expand = history_.Visible() ? 2 : 1; b.bounds = button_.Screen(LauncherBox()); n.push_back(b); return n;
     }
     std::vector<Accessibility::Node> CardNodes() {
@@ -328,10 +329,10 @@ class Launcher : public Animator::Client {
         t.value = content_.kind == CardKind::Working || content_.kind == CardKind::Read ? content_.note : content_.kind == CardKind::Done || content_.kind == CardKind::Unhandled ? (content_.summary.empty() ? content_.note : content_.summary) : content_.kind == CardKind::NoAgent ? NoAgentBody() : L"";
         t.bounds = at(cardLayout_.header); n.push_back(t);
         auto add = [&](int hit, const wchar_t* name, D2D1_RECT_F r) { Accessibility::Node b; b.key = 100 + hit; b.parent = CardKey; b.name = name; b.bounds = at(r); b.automationId = name; n.push_back(b); };
-        if (content_.kind == CardKind::NoAgent) add(CardConnect, L"Connecter un agent", cardLayout_.primary);
-        if (content_.kind == CardKind::Working || content_.kind == CardKind::Read || content_.kind == CardKind::Unhandled) add(CardOpen, L"Voir l'annotation", cardLayout_.primary);
-        if (content_.kind == CardKind::Done) { add(CardReload, L"Recharger la page", cardLayout_.primary); add(CardReopen, L"Rouvrir", cardLayout_.secondary); }
-        add(CardClose, L"Fermer", cardLayout_.close);
+        if (content_.kind == CardKind::NoAgent) add(CardConnect, TR(annotation_connect_agent), cardLayout_.primary);
+        if (content_.kind == CardKind::Working || content_.kind == CardKind::Read || content_.kind == CardKind::Unhandled) add(CardOpen, TR(annotation_view), cardLayout_.primary);
+        if (content_.kind == CardKind::Done) { add(CardReload, TR(annotation_reload_page), cardLayout_.primary); add(CardReopen, TR(annotation_reopen), cardLayout_.secondary); }
+        add(CardClose, TR(common_close), cardLayout_.close);
         return n;
     }
     // History alone (Ctrl+Maj+H outside the mode): no launcher window.
@@ -349,8 +350,8 @@ class Launcher : public Animator::Client {
     bool Ensure() {
         if (!EnsureHistory()) return false;
         if (button_.Window()) return true;
-        Layer::Options b; b.child = true; b.tabStop = true; b.title = L"Annotations";
-        Layer::Options c; c.child = true; c.tabStop = true; c.title = L"Annotation";
+        Layer::Options b; b.child = true; b.tabStop = true; b.title = TR(settings_annotations);
+        Layer::Options c; c.child = true; c.tabStop = true; c.title = TR(annotation_single);
         if (!card_.Create(instance_, parent_, c) || !button_.Create(instance_, parent_, b)) return false;
         button_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return ButtonHandle(m, w, l, r); };
         card_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return CardHandle(m, w, l, r); };

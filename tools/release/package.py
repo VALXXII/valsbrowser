@@ -28,7 +28,8 @@ TOP_PATTERN = re.compile(r'^(browser\.exe|update-helper\.exe|WebView2Loader\.dll
 # Runtime data that may sit beside a portable exe; never packaged, never touched.
 RUNTIME_DATA = {'profile', 'session', 'session.tmp', 'downloads', 'downloads.tmp',
                 'bookmarks', 'bookmarks.bak', 'bookmarks.tmp', 'prototype.log', 'browser.log',
-                'annotations'}  # annotation store of a portable/preview build (never packaged)
+                'annotations',  # annotation store of a portable/preview build (never packaged)
+                'ui-language'}  # browser-wide interface language preference (src/ui-language.h)
 FORBIDDEN_SUFFIXES = ('.o', '.obj', '.a', '.pdb', '.log', '.tmp', '.partial', '.cpp', '.h', '.py', '.ps1')
 # Executable code under assets/ is refused, with ONE documented exception: the annotations MCP
 # bridge (tools/release/build.py RELEASE_BRIDGE). assets/** is the only location every existing
@@ -101,7 +102,7 @@ def stage(app: Path, staging: Path) -> list[str]:
     for entry in sorted(app.iterdir(), key=lambda p: p.name.lower()):
         if is_reparse(entry):
             raise SystemExit(f'Refusing symlink/reparse point in payload: {entry}')
-        if entry.name in RUNTIME_DATA or entry.name.startswith('bookmarks.damaged-'):
+        if entry.name in RUNTIME_DATA or entry.name.startswith(('bookmarks.damaged-', 'ui-language.tmp')):
             skipped.append(entry.name)
             continue
         if entry.is_dir():

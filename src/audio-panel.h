@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // "Son des sites": popover under the toolbar's audio button (chrome.h 'V') and, from its
 // "Voir tout (N)" button, a drawer docked on the window's right edge under the chrome.
 // Paper « Browser Design », page « Son des sites — volume par site » (p-G-0): popover
@@ -56,8 +57,8 @@ inline constexpr char info[] = "M108,84a16,16,0,1,1,16,16A16,16,0,0,1,108,84Zm12
 inline const char* ForPercent(int percent) { return percent <= 0 ? off : percent < 50 ? low : high; }
 }
 // Paper copy (TJ1-0) for « Sons et musiques ».
-inline constexpr wchar_t SoundsLabel[] = L"Sons et musiques";
-inline constexpr wchar_t SoundsTip[] = L"Ce site peut jouer des sons ou de la musique, mais rien ne joue pour l’instant.";
+inline const wchar_t* SoundsLabel() { return TR(audio_sounds_label); }
+inline const wchar_t* SoundsTip() { return TR(audio_sounds_tip); }
 
 namespace Layout {
 inline constexpr float width = 320, border = 1, padding = 16, inset = border + padding, right = width - inset; // content 17..303
@@ -132,7 +133,7 @@ class View {
 public:
     explicit View(Chrome& chrome) : chrome_(chrome) {}
     static D2D1_RECT_F R(Design::Box b) { return {b.left, b.top, b.right, b.bottom}; }
-    float SoundsWidth() { return chrome_.TextWidth(SoundsLabel, 13, false, false, -.08f); }
+    float SoundsWidth() { return chrome_.TextWidth(SoundsLabel(), 13, false, false, -.08f); }
     D2D1_RECT_F InfoBox(float top) { const float x = Layout::textLeft + SoundsWidth() + Design::Space::xs, y = top + 30; return {x, y - 7, x + 14, y + 7}; }
     void Tile(const Item& item, float top) {
         const auto box = R(Layout::Tile(top));
@@ -172,7 +173,7 @@ public:
         chrome_.Text(row.title, {Layout::textLeft, top, titleRight, top + 20}, 14, Design::Text::primary, false, true, -.14f);
         if (ShowsArtist(row)) chrome_.Text(row.artist.empty() ? row.site : row.artist, {Layout::textLeft, top + 20, Layout::right, top + Layout::tile}, 13, Design::Text::secondary, false, false, -.08f);
         else {
-            chrome_.Text(SoundsLabel, {Layout::textLeft, top + 20, Layout::right, top + Layout::tile}, 13, Design::Text::secondary, false, false, -.08f);
+            chrome_.Text(SoundsLabel(), {Layout::textLeft, top + 20, Layout::right, top + Layout::tile}, 13, Design::Text::secondary, false, false, -.08f);
             const auto iv = Interaction(s, InfoHit(index)); const auto box = InfoBox(top);
             chrome_.PathGlyph(Glyph::info, box, 14, D2D1::ColorF(1, 1, 1, .5f + .4f * iv.hover));
             if (s.focus == InfoHit(index) && s.focused) chrome_.FocusRing({box.left - 3, box.top - 3, box.right + 3, box.bottom + 3}, Design::Radius::inset + 2);
@@ -217,7 +218,7 @@ public:
         const auto& items = *s.items; const int n = static_cast<int>(items.size());
         const int shown = s.drawer ? n : std::min(n, Layout::popoverRows);
         if (s.drawer) t->PushAxisAlignedClip(D2D1::RectF(0, 0, Layout::width, h), D2D1_ANTIALIAS_MODE_ALIASED);
-        if (n == 0) chrome_.Text(L"Aucun site n'a émis de son récemment.", {Layout::inset, Layout::RowTop(0, s.drawer), Layout::right - Layout::control, Layout::RowTop(0, s.drawer) + Layout::EmptyHeight}, 14, Design::Text::muted, false, false, -.14f);
+        if (n == 0) chrome_.Text(TR(audio_empty), {Layout::inset, Layout::RowTop(0, s.drawer), Layout::right - Layout::control, Layout::RowTop(0, s.drawer) + Layout::EmptyHeight}, 14, Design::Text::muted, false, false, -.14f);
         for (int i = 0; i < shown; ++i) {
             const float top = Layout::RowTop(i, s.drawer, s.scroll);
             if (top > h || top + Layout::pitch < 0) continue;
@@ -229,7 +230,7 @@ public:
             const auto box = R(Layout::ViewAllBox(n)); const auto v = Interaction(s, ViewAllHit);
             chrome_.Round(box, Design::Radius::control, Design::Surface::raised + (Design::Surface::hover - Design::Surface::raised) * v.hover + (Design::Surface::pressed - Design::Surface::hover) * v.press);
             if (s.focus == ViewAllHit && s.focused) chrome_.FocusRing(box, Design::Radius::control);
-            const auto label = L"Voir tout (" + std::to_wstring(n) + L")"; const float w = chrome_.TextWidth(label, 14, true, true, -.14f);
+            const auto label = TRF(audio_view_all, std::to_wstring(n)); const float w = chrome_.TextWidth(label, 14, true, true, -.14f);
             const float x = (box.left + box.right - w) / 2;
             chrome_.Text(label, {x, box.top, x + w + 1, box.bottom}, 14, Design::Text::secondary, true, true, -.14f);
         }
@@ -361,7 +362,7 @@ class Popover {
         const auto& row = items_[index].row; auto it = remembered_.find(row.site);
         const int next = Audio::ToggleMute(row.percent, it == remembered_.end() ? 0 : it->second);
         SetPercent(index, next, true);
-        if (uia_.Listening()) uia_.Notify(MuteHit(index), next == 0 ? (L"Son coupé pour " + row.site).c_str() : (L"Son rétabli pour " + row.site + L", " + std::to_wstring(next) + L" %").c_str(), L"AudioMute");
+        if (uia_.Listening()) uia_.Notify(MuteHit(index), next == 0 ? TRF(audio_announce_muted, row.site).c_str() : TRF(audio_announce_unmuted, row.site, I18n::Percent(next)).c_str(), L"AudioMute");
     }
     void Activate(int hit, bool keyboard) {
         if (hit == CloseHit) { Close(keyboard); return; }
@@ -381,7 +382,7 @@ class Popover {
         tipFor_ = InfoHit(i);
         // Kept inside the browser window (Paper TJ0-0 sits within it), like the toolbar's tips.
         RECT bounds{}; GetWindowRect(owner_, &bounds);
-        if (now) tip_.Show(Tooltip::Content{SoundsTip, L"", L""}, target, &bounds); else tip_.Hover(Tooltip::Content{SoundsTip, L"", L""}, target, &bounds);
+        if (now) tip_.Show(Tooltip::Content{SoundsTip(), L"", L""}, target, &bounds); else tip_.Hover(Tooltip::Content{SoundsTip(), L"", L""}, target, &bounds);
     }
     // The tip follows the info glyph under the pointer, or the keyboard focus on it.
     void SyncTip(bool keyboardMoved) {
@@ -493,18 +494,18 @@ class Popover {
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!visible_) return nodes;
         auto screen = [&](Design::Box b) { return ScreenBox(View::R(b)); };
-        Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = L"Son des sites"; g.automationId = drawer_ ? L"AudioDrawer" : L"AudioPanel"; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
+        Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = TR(chrome_tip_audio); g.automationId = drawer_ ? L"AudioDrawer" : L"AudioPanel"; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
         for (int i = 0; i < Shown(); ++i) {
             const auto& r = items_[i].row; const float top = Layout::RowTop(i, drawer_, scroll_);
             const bool off = drawer_ && (top + Layout::rowHeight < 0 || top > HeightDip());
-            Accessibility::Node row; row.key = RowHit(i); row.parent = GroupKey; row.name = L"Afficher l'onglet : " + r.title; row.help = ShowsArtist(r) ? (r.artist.empty() ? r.site : r.artist + L", " + r.site) : std::wstring(SoundsLabel) + L", " + r.site; row.automationId = L"AudioRow" + std::to_wstring(i); row.bounds = screen(Layout::RowArea(top)); row.position = i + 1; row.count = Count(); row.offscreen = off; nodes.push_back(row);
-            if (!ShowsArtist(r)) { Accessibility::Node info; info.key = InfoHit(i); info.parent = GroupKey; info.name = L"À propos de « Sons et musiques »"; info.help = SoundsTip; info.automationId = L"AudioInfo" + std::to_wstring(i); info.bounds = ScreenBox(view_.InfoBox(top)); info.offscreen = off; nodes.push_back(info); }
-            Accessibility::Node mute; mute.key = MuteHit(i); mute.parent = GroupKey; mute.name = L"Couper le son de " + r.site; mute.toggle = r.percent == 0 ? 2 : 1; mute.automationId = L"AudioMute" + std::to_wstring(i); mute.bounds = screen(Layout::Mute(top)); mute.offscreen = off; nodes.push_back(mute);
-            Accessibility::Node slider; slider.key = SliderHit(i); slider.parent = GroupKey; slider.role = Accessibility::Role::Slider; slider.name = L"Volume de " + r.site; slider.help = L"Volume appliqué par le navigateur, indépendant du réglage du site";
+            Accessibility::Node row; row.key = RowHit(i); row.parent = GroupKey; row.name = TRF(audio_row_show_tab, r.title); row.help = ShowsArtist(r) ? (r.artist.empty() ? r.site : r.artist + L", " + r.site) : std::wstring(SoundsLabel()) + L", " + r.site; row.automationId = L"AudioRow" + std::to_wstring(i); row.bounds = screen(Layout::RowArea(top)); row.position = i + 1; row.count = Count(); row.offscreen = off; nodes.push_back(row);
+            if (!ShowsArtist(r)) { Accessibility::Node info; info.key = InfoHit(i); info.parent = GroupKey; info.name = TRF(audio_about, SoundsLabel()); info.help = SoundsTip(); info.automationId = L"AudioInfo" + std::to_wstring(i); info.bounds = ScreenBox(view_.InfoBox(top)); info.offscreen = off; nodes.push_back(info); }
+            Accessibility::Node mute; mute.key = MuteHit(i); mute.parent = GroupKey; mute.name = TRF(audio_mute_site, r.site); mute.toggle = r.percent == 0 ? 2 : 1; mute.automationId = L"AudioMute" + std::to_wstring(i); mute.bounds = screen(Layout::Mute(top)); mute.offscreen = off; nodes.push_back(mute);
+            Accessibility::Node slider; slider.key = SliderHit(i); slider.parent = GroupKey; slider.role = Accessibility::Role::Slider; slider.name = TRF(audio_volume_site, r.site); slider.help = TR(audio_volume_help);
             slider.rangeValue = r.percent; slider.rangeMin = 0; slider.rangeMax = 100; slider.smallChange = Audio::Step; slider.largeChange = Audio::PageStep; slider.automationId = L"AudioVolume" + std::to_wstring(i); slider.bounds = screen(Layout::Lane(top)); slider.offscreen = off; nodes.push_back(slider);
         }
-        if (!drawer_ && Count() > Layout::popoverRows) { Accessibility::Node all; all.key = ViewAllHit; all.parent = GroupKey; all.name = L"Voir tout (" + std::to_wstring(Count()) + L")"; all.help = L"Ouvre la liste de tous les sites dans un panneau latéral"; all.automationId = L"AudioViewAll"; all.bounds = screen(Layout::ViewAllBox(Count())); nodes.push_back(all); }
-        Accessibility::Node close; close.key = CloseHit; close.parent = GroupKey; close.name = L"Fermer"; close.accelerator = L"Échap"; close.automationId = L"AudioClose"; close.bounds = screen(Layout::Close(drawer_)); nodes.push_back(close);
+        if (!drawer_ && Count() > Layout::popoverRows) { Accessibility::Node all; all.key = ViewAllHit; all.parent = GroupKey; all.name = TRF(audio_view_all, std::to_wstring(Count())); all.help = TR(audio_view_all_help); all.automationId = L"AudioViewAll"; all.bounds = screen(Layout::ViewAllBox(Count())); nodes.push_back(all); }
+        Accessibility::Node close; close.key = CloseHit; close.parent = GroupKey; close.name = TR(common_close); close.accelerator = TR(key_escape); close.automationId = L"AudioClose"; close.bounds = screen(Layout::Close(drawer_)); nodes.push_back(close);
         return nodes;
     }
 public:
@@ -514,7 +515,7 @@ public:
         owner_ = owner; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereAudioPanel";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"Son des sites", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, TR(chrome_tip_audio), WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius);

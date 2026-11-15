@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Modal dialog (Paper « Éléments & popups », page p-D-0, artboards A1–A9) and the small
 // drawing kit shared with origin-prompt.h and password-demo.h.
 //
@@ -354,7 +355,7 @@ struct DangerCard { std::wstring title, subtitle, text; bool shown = false; };  
 struct Source { std::wstring title; int category = 0, art = 0; };
 struct SourcePicker {
     std::vector<std::wstring> categories; std::vector<Source> items; int category = 0, selected = -1;
-    std::wstring empty = L"Aucune source disponible dans cette catégorie.";
+    std::wstring empty = TR(share_no_source);
     bool shown = false; int acceptId = 1;   // Modal::AcceptButton
 };
 struct Spec {
@@ -1210,7 +1211,7 @@ private:
         for (const auto& b : blocks_) {
             const float left = b.r.left, right = b.r.right, cw = right - left;
             switch (b.type) {
-            case B::Badge: kit_.Badge(left, b.r.top, L"Démonstration"); break;
+            case B::Badge: kit_.Badge(left, b.r.top, TR(demo_badge)); break;
             case B::Head: PaintHead(b, now); break;
             case B::Message: {
                 const D2D1_RECT_F clip = b.r;
@@ -1252,7 +1253,7 @@ private:
                     const float tw = row.trailing.empty() ? 0 : kit_.Width(row.trailing, DialogKit::Type::detail);
                     const float tail = (tw > 0 ? tw + 16 : 0) + (row.toggle >= 0 ? 28 + 12 : 0);
                     kit_.Text(row.label, DialogKit::Type::field, left + 36, ry + 6, cw - 36 - tail, DialogKit::White(row.toggle == 0 ? P::muted : 1.f));
-                    if (tw > 0) kit_.Text(row.trailing, DialogKit::Type::detail, right - 8 - tw - (row.toggle >= 0 ? 28 + 8 : 0), ry + 7, tw + 1, row.trailing == L"En cours" ? DialogKit::AccentColor() : DialogKit::White(P::origin));
+                    if (tw > 0) kit_.Text(row.trailing, DialogKit::Type::detail, right - 8 - tw - (row.toggle >= 0 ? 28 + 8 : 0), ry + 7, tw + 1, row.trailing == TR(demo_in_progress) ? DialogKit::AccentColor() : DialogKit::White(P::origin));
                     ry += 36;
                 }
                 break;
@@ -1459,7 +1460,7 @@ private:
         if (!spec_.danger.text.empty()) s += (s.empty() ? L"" : L". ") + spec_.danger.text;
         return s;
     }
-    std::wstring AccessibleName() const { if (!spec_.title.empty()) return spec_.title; if (!spec_.origin.empty()) return spec_.origin; if (spec_.danger.shown) return spec_.danger.title; if (!spec_.accountsTitle.empty()) return spec_.accountsTitle; return L"Dialogue"; }
+    std::wstring AccessibleName() const { if (!spec_.title.empty()) return spec_.title; if (!spec_.origin.empty()) return spec_.origin; if (spec_.danger.shown) return spec_.danger.title; if (!spec_.accountsTitle.empty()) return spec_.accountsTitle; return TR(dialog_name); }
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!open_) return nodes;
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = AccessibleName();
@@ -1468,12 +1469,12 @@ private:
         if (spec_.danger.shown && error_.empty()) g.help = DangerSpoken();   // R1: the full reason, never the ellipsised line
         g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
         auto add = [&](int key, const std::wstring& name, D2D1_RECT_F r, bool enabled, const std::wstring& id = L"") { Accessibility::Node n; n.key = key; n.parent = GroupKey; n.name = name; n.bounds = ScreenOf(r); n.enabled = enabled; n.automationId = id; nodes.push_back(n); return nodes.size() - 1; };
-        for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].reveal) { const auto at = add(RevealHit(i), L"Afficher le mot de passe", Find(RevealHit(i)), !busy_); nodes[at].toggle = i < revealed_.size() && revealed_[i] ? 2 : 1; }
+        for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].reveal) { const auto at = add(RevealHit(i), TR(dialog_show_password), Find(RevealHit(i)), !busy_); nodes[at].toggle = i < revealed_.size() && revealed_[i] ? 2 : 1; }
         if (spec_.sources.shown) {
             const auto& sp = spec_.sources;
             for (size_t i = 0; i < sp.categories.size(); ++i) { const auto at = add(CategoryHit(i), sp.categories[i], Find(CategoryHit(i)), !busy_, L"ShareCategory"); nodes[at].role = Accessibility::Role::TabItem; nodes[at].selected = static_cast<int>(i) == sp.category; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(sp.categories.size()); }
             const auto vis = VisibleSources();
-            for (size_t k = 0; k < vis.size(); ++k) { const size_t i = vis[k]; const auto at = add(SourceHit(i), sp.items[i].title, Find(SourceHit(i)), !busy_, L"ShareSource"); nodes[at].role = Accessibility::Role::ListItem; nodes[at].selected = static_cast<int>(i) == sp.selected; nodes[at].position = static_cast<int>(k) + 1; nodes[at].count = static_cast<int>(vis.size()); nodes[at].help = L"Aperçu fictif (démonstration)"; }
+            for (size_t k = 0; k < vis.size(); ++k) { const size_t i = vis[k]; const auto at = add(SourceHit(i), sp.items[i].title, Find(SourceHit(i)), !busy_, L"ShareSource"); nodes[at].role = Accessibility::Role::ListItem; nodes[at].selected = static_cast<int>(i) == sp.selected; nodes[at].position = static_cast<int>(k) + 1; nodes[at].count = static_cast<int>(vis.size()); nodes[at].help = TR(share_fictitious_preview); }
         }
         for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle >= 0) {
             const auto at = add(RowHit(i), spec_.rows[i].label, Find(RowHit(i)), spec_.rows[i].toggle == 1 && !busy_, L"SitePermissionToggle");
@@ -1488,7 +1489,7 @@ private:
         if (!spec_.checkLabel.empty()) { const auto at = add(SimpleCheckHit, spec_.checkLabel, Find(SimpleCheckHit), !busy_); nodes[at].toggle = spec_.checkValue ? 2 : 1; }
         if (spec_.danger.shown) { Accessibility::Node c; c.key = DangerKey; c.parent = GroupKey; c.role = Accessibility::Role::Group; c.focusable = false; c.name = spec_.danger.title + (spec_.danger.subtitle.empty() ? L"" : L" — " + spec_.danger.subtitle); c.help = spec_.danger.text; c.automationId = L"DangerousDownloadCard"; for (const auto& bl : blocks_) if (bl.type == B::Danger) c.bounds = ScreenOf(bl.r); nodes.push_back(c); }
         for (size_t i = 0; i < spec_.buttons.size(); ++i) { const auto at = add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId); if (spec_.danger.shown) nodes[at].help = DangerSpoken(); }
-        if (spec_.closeButton) add(CloseHit, L"Fermer", Find(CloseHit), true, L"DialogClose");
+        if (spec_.closeButton) add(CloseHit, TR(common_close), Find(CloseHit), true, L"DialogClose");
         return nodes;
     }
 public:
@@ -1499,7 +1500,7 @@ public:
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"BrowserModalDialog"; RegisterClassW(&wc);
         WNDCLASSW sc{}; sc.lpfnWndProc = ScrimProc; sc.hInstance = instance; sc.hCursor = LoadCursor(nullptr, IDC_ARROW); sc.lpszClassName = L"BrowserModalScrim"; RegisterClassW(&sc);
         scrim_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE, sc.lpszClassName, L"", WS_POPUP, 0, 0, 1, 1, owner, nullptr, instance, this);
-        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, L"Dialogue", WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, TR(dialog_name), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner, nullptr, instance, this);
         if (!hwnd_ || !scrim_) return false;
         SetLayeredWindowAttributes(scrim_, 0, 0, LWA_ALPHA); SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(scrim_, 0);
@@ -1677,15 +1678,15 @@ inline Button Make(int id, std::wstring label, Role role, bool isDefault, bool i
 // A2 alert(): OK only (Entrée and Échap both answer OK); the blocking check appears from the
 // 2nd dialog of the same site in the same tab session (`repeated`).
 inline Spec AlertSpec(const std::wstring& origin, const std::wstring& message, bool repeated = false) {
-    Spec s; s.kind = Kind::Alert; s.scope = Scope::Page; s.automationId = L"ScriptAlert"; s.origin = origin + L" indique"; s.message = message;
-    if (repeated) s.checkLabel = L"Empêcher ce site d'ouvrir d'autres dialogues";
+    Spec s; s.kind = Kind::Alert; s.scope = Scope::Page; s.automationId = L"ScriptAlert"; s.origin = TRF(script_alert_origin_says, origin); s.message = message;
+    if (repeated) s.checkLabel = TR(js_dialog_block_more);
     s.buttons = {Make(AcceptButton, L"OK", Role::Primary, true, true, true, L"DialogOk")};
     return s;
 }
 // A2 confirm(): OK = default (Entrée), Annuler = Échap, focus on OK.
 inline Spec ConfirmSpec(const std::wstring& origin, const std::wstring& message, bool repeated = false) {
     Spec s = AlertSpec(origin, message, repeated); s.kind = Kind::Confirm; s.automationId = L"ScriptConfirm";
-    s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, false, L"DialogCancel"), Make(AcceptButton, L"OK", Role::Primary, true, false, true, L"DialogOk")};
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, false, L"DialogCancel"), Make(AcceptButton, TR(common_ok), Role::Primary, true, false, true, L"DialogOk")};
     return s;
 }
 // A3 prompt(): value selected at opening, no browser validation (empty is a valid answer).
@@ -1699,30 +1700,31 @@ inline Spec PromptSpec(const std::wstring& origin, const std::wstring& message, 
 inline Spec InputSpec(const std::wstring& title, const std::wstring& subtitle, const std::wstring& value, const std::wstring& action, std::function<std::wstring(const std::vector<std::wstring>&)> validate) {
     Spec s; s.kind = Kind::Generic; s.scope = Scope::Window; s.automationId = L"BrowserInput"; s.title = title; s.body = subtitle;
     Field f; f.value = value; f.automationId = L"DialogInputField"; s.fields.push_back(f); s.validate = std::move(validate);
-    s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, false, L"DialogCancel"), Make(AcceptButton, action, Role::Primary, true, false, false, L"DialogAccept")};
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, false, L"DialogCancel"), Make(AcceptButton, action, Role::Primary, true, false, false, L"DialogAccept")};
     return s;
 }
 // A4/A6 beforeunload: the browser's text, never the site's. Focus on « Rester sur la page »;
 // the destructive action is never the Entrée default.
 inline Spec BeforeUnloadSpec(const std::wstring& origin, bool reload) {
     Spec s; s.kind = Kind::BeforeUnload; s.scope = Scope::Page; s.automationId = L"BeforeUnload";
-    s.title = reload ? L"Actualiser ce site ?" : L"Quitter ce site ?";
-    s.body = L"Les modifications non enregistrées sur " + origin + L" pourraient être perdues.";
-    s.buttons = {Make(CancelButton, L"Rester sur la page", Role::Secondary, false, true, true, L"DialogStay"), Make(AcceptButton, reload ? L"Actualiser" : L"Quitter", Role::Danger, true, false, false, L"DialogLeave")};
+    s.title = reload ? TR(leave_title_reload) : TR(leave_title);
+    s.body = TRF(leave_body, origin);
+    s.buttons = {Make(CancelButton, TR(leave_stay), Role::Secondary, false, true, true, L"DialogStay"), Make(AcceptButton, reload ? TR(cmd_reload) : TR(leave_action), Role::Danger, true, false, false, L"DialogLeave")};
     return s;
 }
 // A5. `details`: per category (history, cookies, cache, downloads, permissions); empty keeps
 // Paper's static lines. Accepting is AcceptButton; to show the busy footer, set
 // buttons[1].closes = false + onButton, call SetBusy(true, L"Effacement…") then Finish().
-inline const std::vector<std::wstring>& ClearDataPeriods() { static const std::vector<std::wstring> p{L"Dernière heure", L"Dernières 24 heures", L"7 derniers jours", L"4 dernières semaines", L"Depuis toujours"}; return p; }
+// Built at each call in the process language (never a static frozen in another language).
+inline std::vector<std::wstring> ClearDataPeriods() { return {TR(clear_period_hour), TR(clear_period_day), TR(clear_period_week), TR(clear_period_four_weeks), TR(clear_period_all)}; }
 inline Spec ClearDataSpec(std::vector<std::wstring> details = {}, int period = 1, std::vector<bool> chosen = {true, true, true, false, false}) {
     Spec s; s.kind = Kind::ClearData; s.scope = Scope::Window; s.automationId = L"ClearBrowsingData";
-    s.title = L"Effacer les données"; s.body = L"Sur cet appareil uniquement. Les onglets ouverts sont conservés.";
-    s.hasSelect = true; s.select.label = L"Période"; s.select.options = ClearDataPeriods(); s.select.index = std::clamp(period, 0, 4);
-    const wchar_t* labels[] = {L"Historique de navigation", L"Cookies et données des sites", L"Images et fichiers en cache", L"Historique des téléchargements", L"Autorisations des sites"};
-    const wchar_t* fixed[] = {L"", L"Vous serez déconnecté de la plupart des sites.", L"", L"Les fichiers restent sur le disque.", L"Caméra, micro, notifications…"};
+    s.title = TR(clear_data_window); s.body = TR(clear_data_device_only);
+    s.hasSelect = true; s.select.label = TR(clear_data_period); s.select.options = ClearDataPeriods(); s.select.index = std::clamp(period, 0, 4);
+    const wchar_t* labels[] = {TR(clear_item_history), TR(clear_item_cookies), TR(clear_item_cache), TR(clear_item_downloads), TR(settings_site_permissions)};
+    const wchar_t* fixed[] = {L"", TR(clear_item_cookies_note), L"", TR(clear_item_downloads_note), TR(clear_item_permissions_note)};
     for (size_t i = 0; i < 5; ++i) { Check c; c.label = labels[i]; c.detail = i < details.size() && !details[i].empty() ? details[i] : fixed[i]; c.value = i < chosen.size() && chosen[i]; s.checks.push_back(c); }
-    s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, L"Effacer les données", Role::Danger, true, false, false, L"DialogClearData")};
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(clear_data_window), Role::Danger, true, false, false, L"DialogClearData")};
     return s;
 }
 // A6 « Fermer la fenêtre » (from 2 tabs). With a download in progress the check disappears and
@@ -1730,13 +1732,13 @@ inline Spec ClearDataSpec(std::vector<std::wstring> details = {}, int period = 1
 inline Spec CloseWindowSpec(int tabs, const std::wstring& download = L"", const std::wstring& progress = L"") {
     Spec s; s.kind = Kind::CloseWindow; s.scope = Scope::Window; s.automationId = L"CloseWindow";
     s.width = 420;   // Paper EY9-0 (comment c-npdt3g): this confirmation only; other dialogs keep 400
-    s.title = L"Fermer " + std::to_wstring(tabs) + L" onglets ?";
+    s.title = TRP(close_window_title, tabs);
     if (download.empty()) {
-        s.body = L"Rouvrez-les depuis l'historique ou avec"; s.bodyKeys = {L"Ctrl", L"Maj", L"T"}; s.checkLabel = L"Ne plus demander"; s.checkInActions = true;
-        s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, L"Fermer la fenêtre", Role::Primary, true, false, false, L"DialogCloseWindow")};
+        s.body = TR(close_window_reopen_with); s.bodyKeys = {L"Ctrl", TR(key_shift), L"T"}; s.checkLabel = TR(common_dont_ask_again); s.checkInActions = true;
+        s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(chrome_tip_close_window), Role::Primary, true, false, false, L"DialogCloseWindow")};
     } else {
-        s.body = L"Un téléchargement est en cours et sera annulé."; s.infos.push_back({download, progress});
-        s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, L"Fermer et annuler le téléchargement", Role::Danger, true, false, false, L"DialogCloseWindow")};
+        s.body = TR(close_window_download_running); s.infos.push_back({download, progress});
+        s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(close_window_cancel_download), Role::Danger, true, false, false, L"DialogCloseWindow")};
     }
     return s;
 }
@@ -1744,23 +1746,24 @@ inline Spec CloseWindowSpec(int tabs, const std::wstring& download = L"", const 
 inline Spec OpenManyTabsSpec(int count, const std::wstring& folder = L"", int open = -1, int existing = 0, int limit = 128) {
     if (open < 0 || open > count) open = count;
     Spec s; s.kind = Kind::OpenManyTabs; s.scope = Scope::Window; s.automationId = L"OpenManyTabs";
-    const std::wstring name = folder.empty() ? L"" : L" « " + folder + L" »";
+    const std::wstring o = std::to_wstring(open), c = std::to_wstring(count);
     if (open < count) {
-        s.title = L"Ouvrir " + std::to_wstring(open) + L" des " + std::to_wstring(count) + L" favoris ?";
-        s.body = L"Cette fenêtre compte déjà " + std::to_wstring(existing) + L" onglets et en accepte " + std::to_wstring(limit) + L" au maximum. Les " + std::to_wstring(count - open) + L" derniers favoris" + (folder.empty() ? L"" : L" de" + name) + L" ne seront pas ouverts.";
+        s.title = TRF(open_many_partial_title, o, c);
+        const std::wstring e = std::to_wstring(existing), l = std::to_wstring(limit), rest = std::to_wstring(count - open);
+        s.body = folder.empty() ? TRF(open_many_partial_body, e, l, rest) : TRF(open_many_partial_body_folder, e, l, rest, folder);
     } else {
-        s.title = L"Ouvrir " + std::to_wstring(count) + L" favoris ?";
-        s.body = (folder.empty() ? std::wstring(L"Ces favoris s'ouvriront") : L"Le dossier" + name + L" s'ouvrira") + L" dans " + std::to_wstring(count) + L" nouveaux onglets. Les pages se chargent quand vous les affichez.";
+        s.title = TRF(open_many_title, c);
+        s.body = folder.empty() ? TRF(open_many_body, c) : TRF(open_many_body_folder, c, folder);
     }
-    s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, L"Ouvrir " + std::to_wstring(open) + L" onglets", Role::Primary, true, false, false, L"DialogOpenTabs")};
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TRF(open_many_action, o), Role::Primary, true, false, false, L"DialogOpenTabs")};
     return s;
 }
 // Not drawn in Paper (task A6 « supprimer favoris »): A6 vocabulary, destructive action.
 inline Spec DeleteBookmarksSpec(int count) {
     Spec s; s.kind = Kind::DeleteBookmarks; s.scope = Scope::Window; s.automationId = L"DeleteBookmarks";
-    s.title = count > 1 ? L"Supprimer " + std::to_wstring(count) + L" favoris ?" : L"Supprimer ce favori ?";
-    s.body = L"Vous pourrez annuler juste après depuis la notification.";
-    s.buttons = {Make(CancelButton, L"Annuler", Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, L"Supprimer", Role::Danger, true, false, false, L"DialogDelete")};
+    s.title = count > 1 ? TRF(delete_bookmarks_title, std::to_wstring(count)) : std::wstring(TR(delete_bookmark_title));
+    s.body = TR(delete_bookmarks_body);
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(common_delete), Role::Danger, true, false, false, L"DialogDelete")};
     return s;
 }
 // A8 states (same vocabulary as the update toast).
@@ -1770,35 +1773,35 @@ enum AboutState { AboutUpToDate = 0, AboutReady = 1, AboutOffline = 2, AboutChec
 inline Status AboutStatus(int state, const std::wstring& detail = L"", const std::wstring& next = L"") {
     Status st;
     switch (state) {
-    case AboutReady: st.icon = StatusIcon::Download; st.title = L"Version " + next + L" prête"; st.detail = detail.empty() ? L"S'installe au redémarrage" : detail; st.button = Make(AboutRestartButton, L"Redémarrer", Role::Primary, false, false, false, L"AboutRestart"); st.hasButton = true; break;
-    case AboutOffline: st.icon = StatusIcon::Warning; st.title = L"Vérification impossible"; st.detail = detail.empty() ? L"Aucune connexion internet" : detail; st.button = Make(AboutCheckButton, L"Réessayer", Role::Quiet, false, false, false, L"AboutRetry"); st.button.closes = false; st.hasButton = true; break;
-    case AboutChecking: st.icon = StatusIcon::Busy; st.title = L"Recherche de mises à jour…"; st.detail = detail; st.button = Make(AboutCheckButton, L"Rechercher", Role::Quiet, false, false, false, L"AboutCheck"); st.button.closes = false; st.button.disabled = true; st.hasButton = true; break;
-    default: st.icon = StatusIcon::Check; st.title = L"browser est à jour"; st.detail = detail; st.button = Make(AboutCheckButton, L"Rechercher", Role::Quiet, false, false, false, L"AboutCheck"); st.button.closes = false; st.hasButton = true; break;
+    case AboutReady: st.icon = StatusIcon::Download; st.title = TRF(about_version_ready, next); st.detail = detail.empty() ? std::wstring(TR(about_installs_on_restart)) : detail; st.button = Make(AboutRestartButton, TR(about_restart), Role::Primary, false, false, false, L"AboutRestart"); st.hasButton = true; break;
+    case AboutOffline: st.icon = StatusIcon::Warning; st.title = TR(about_check_impossible); st.detail = detail.empty() ? std::wstring(TR(about_no_connection)) : detail; st.button = Make(AboutCheckButton, TR(downloads_action_retry), Role::Quiet, false, false, false, L"AboutRetry"); st.button.closes = false; st.hasButton = true; break;
+    case AboutChecking: st.icon = StatusIcon::Busy; st.title = TR(about_checking); st.detail = detail; st.button = Make(AboutCheckButton, TR(about_check), Role::Quiet, false, false, false, L"AboutCheck"); st.button.closes = false; st.button.disabled = true; st.hasButton = true; break;
+    default: st.icon = StatusIcon::Check; st.title = TR(about_up_to_date); st.detail = detail; st.button = Make(AboutCheckButton, TR(about_check), Role::Quiet, false, false, false, L"AboutCheck"); st.button.closes = false; st.hasButton = true; break;
     }
     return st;
 }
 inline Spec AboutSpec(const std::wstring& version, int state, const std::wstring& detail = L"", const std::wstring& next = L"") {
     Spec s; s.kind = Kind::About; s.scope = Scope::Window; s.automationId = L"AboutBrowser";
     s.appTile = true; s.closeButton = true; s.title = L"browser";
-    s.body = (version.rfind(L"Version ", 0) == 0 ? version : L"Version " + version) + L" · Windows 64 bits";
+    s.body = TRF(about_version_line, version.rfind(L"Version ", 0) == 0 ? version.substr(8) : version);   // i18n-exempt: legacy « Version » prefix in the given text
     s.status = AboutStatus(state, detail, next); s.hasStatus = true;
-    s.links = {{AboutNotesLink, L"Notes de version"}, {AboutLicensesLink, L"Licences des composants tiers"}, {AboutReportLink, L"Signaler un problème"}};
-    s.footnote = L"Moteur Microsoft Edge WebView2 · runtime système";
+    s.links = {{AboutNotesLink, TR(about_release_notes)}, {AboutLicensesLink, TR(about_licenses)}, {AboutReportLink, TR(about_report)}};
+    s.footnote = TR(about_engine_footnote);
     return s;
 }
 // A9: the shipped « indisponible » modal; `future` (the concept) marks the future idea as Démonstration.
 inline Spec PrivateSpec(bool future = false) {
     Spec s; s.kind = Kind::Private; s.scope = Scope::Window; s.automationId = L"PrivateBrowsing";
     if (!future) {
-        s.title = L"Navigation privée indisponible";
-        s.body = L"Cette version n'a pas encore de fenêtre privée. Vos onglets utilisent le profil habituel : cookies, cache et historique sont conservés.";
-        s.footnote = L"Aucun onglet n'a été ouvert.";
+        s.title = TR(private_unavailable_title);
+        s.body = TR(private_unavailable_body);
+        s.footnote = TR(private_unavailable_footnote);
     } else {
-        s.demo = true; s.title = L"Fenêtre privée — concept";
-        s.body = L"Une fenêtre privée utiliserait un environnement WebView2 éphémère (dossier temporaire supprimé à la fermeture), sans cookies partagés avec le profil habituel, repérée par la puce « Privée » dans la barre d'onglets.";
-        s.footnote = L"Concept futur, non implémenté : aucune fenêtre n'a été ouverte.";
+        s.demo = true; s.title = TR(private_concept_title);
+        s.body = TR(private_concept_body);
+        s.footnote = TR(private_concept_footnote);
     }
-    s.buttons = {Make(PrivateClearDataButton, L"Effacer les données…", Role::Quiet, false, false, false, L"PrivateClearData"), Make(AcceptButton, L"Compris", Role::Primary, true, true, true, L"DialogOk")};
+    s.buttons = {Make(PrivateClearDataButton, TR(settings_clear_data), Role::Quiet, false, false, false, L"PrivateClearData"), Make(AcceptButton, TR(common_got_it), Role::Primary, true, true, true, L"DialogOk")};
     return s;
 }
 } // namespace Modal

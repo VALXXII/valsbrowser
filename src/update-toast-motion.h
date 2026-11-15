@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Pure model of the native update toast: Paper geometry, texts, formatting, click
 // arbitration and presentation-value motion. No HWND, Direct2D or clock access, so
 // everything here is deterministic and unit-tested (tests/update-toast).
@@ -56,11 +57,8 @@ struct Content {
     std::vector<Button> buttons;
 };
 
-inline std::wstring OneDecimal(double value) {
-    wchar_t text[32];
-    std::swprintf(text, 32, L"%.1f", value);
-    return text;
-}
+// One decimal in the interface language: « 50.4 » in English, « 50,4 » in French.
+inline std::wstring OneDecimal(double value) { return I18n::Decimal(value, 1); }
 // Always one decimal, including .0, so live statistics keep their precision/shape.
 // Binary megabytes, as Windows Explorer labels them. Units
 // switch to GB from 1000 MB on the total so the row stays short.
@@ -68,7 +66,8 @@ inline std::wstring FormatSize(std::uint64_t received, std::uint64_t total) {
     const double mb = 1024.0 * 1024.0, gb = mb * 1024.0;
     const bool giga = (total ? total : received) >= 1000 * mb;
     const double unit = giga ? gb : mb;
-    const wchar_t* suffix = giga ? L"GB" : L"MB";
+    // English keeps the Paper copy « 50.4/200.0MB »; French writes « 50,4/200,0 Mo ».
+    const std::wstring suffix = std::wstring(I18n::Current() == I18n::Locale::Fr ? L" " : L"") + (giga ? TR(size_unit_gb) : TR(size_unit_mb));
     if (!total) return OneDecimal(received / unit) + suffix;
     if (received > total) received = total;
     return OneDecimal(received / unit) + L"/" + OneDecimal(total / unit) + suffix;
@@ -93,24 +92,24 @@ inline Content Describe(const View& v) {
     switch (v.phase) {
     case Phase::Hidden: case Phase::Checking: return c;
     case Phase::Available:
-        c = {Kind::Available, Glyph::Info, L"New update available", L"A new update is ready to be downloaded."};
-        c.buttons = {{L"Download", Action::Download}}; return c;
+        c = {Kind::Available, Glyph::Info, TR(update_toast_available), TR(update_toast_available_body)};
+        c.buttons = {{TR(updates_download), Action::Download}}; return c;
     case Phase::Downloading:
-        c = {Kind::Downloading, Glyph::Download, L"Downloading...", L""};
+        c = {Kind::Downloading, Glyph::Download, TR(update_toast_downloading), L""};
         c.stats = true; c.size = FormatSize(v.received, v.total); c.eta = FormatEta(v.secondsRemaining);
         c.progress = v.total ? (float)std::min(1.0, (double)v.received / (double)v.total) : -1.f;
-        c.buttons = {{L"Cancel", Action::Cancel}}; return c;
+        c.buttons = {{TR(common_cancel), Action::Cancel}}; return c;
     case Phase::Ready:
-        c = {Kind::Ready, Glyph::Info, L"Ready for install", L"The update is ready to be installed."};
-        c.buttons = {{L"Restart and install", Action::RestartInstall}}; return c;
+        c = {Kind::Ready, Glyph::Info, TR(update_toast_ready), TR(update_toast_ready_body)};
+        c.buttons = {{TR(update_toast_restart_install), Action::RestartInstall}}; return c;
     case Phase::Installing:  // extension: no Paper board; Installed layout, no action.
-        c = {Kind::Installing, Glyph::Download, L"Installing...", L"The update is being installed."}; return c;
+        c = {Kind::Installing, Glyph::Download, TR(update_toast_installing), TR(update_toast_installing_body)}; return c;
     case Phase::Installed:
-        c = {Kind::Installed, Glyph::CheckCircle, L"Update installed", L"The new update has been successfully installed."}; return c;
+        c = {Kind::Installed, Glyph::CheckCircle, TR(update_toast_installed), TR(update_toast_installed_body)}; return c;
     case Phase::Error:       // extension: Paper visual language, two-button row (Paper row gap 8).
-        c = {Kind::Error, Glyph::Info, L"Update failed",
-             v.error.empty() ? std::wstring(L"The update could not be completed.") : ClipError(v.error)};
-        c.buttons = {{L"Dismiss", Action::Dismiss}, {L"Retry", Action::Retry}}; return c;
+        c = {Kind::Error, Glyph::Info, TR(update_toast_failed),
+             v.error.empty() ? std::wstring(TR(update_toast_failed_body)) : ClipError(v.error)};
+        c.buttons = {{TR(update_toast_dismiss), Action::Dismiss}, {TR(downloads_action_retry), Action::Retry}}; return c;
     }
     return c;
 }

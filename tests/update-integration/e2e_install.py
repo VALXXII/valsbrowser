@@ -164,6 +164,8 @@ def scenario_installed(base: Path, fx: dict):
     make_history(root / 'data/downloads')
     saved_bookmarks=b'browser-bookmarks 1\n3\t1\tL\t1\tCanary\thttps://bookmarks.example/\nend\t1\n'
     (root / 'data/bookmarks').write_bytes(saved_bookmarks)
+    saved_language = b'browser-ui-language 1\nlanguage=en\n'   # Reglages > Langue (src/ui-language.h)
+    (root / 'data/ui-language').write_bytes(saved_language)
     before = tree_hash(root / 'data/profile')
     rc = run_host(app / 'browser.exe', 'install', root, fx['serve'], base / 'host-report.txt')
     check(rc == 0, 'host flow (installed): Available -> Download -> Ready -> RestartInstall -> session saved -> clean exit')
@@ -173,6 +175,8 @@ def scenario_installed(base: Path, fx: dict):
     check(tree_hash(root / 'data/profile') == before, 'stable profile byte-identical after install (canary hash)')
     check_history(root / 'data/downloads', 'installed')
     check((root / 'data/bookmarks').read_bytes()==saved_bookmarks,'installed bookmarks survive the update byte-for-byte')
+    check((root / 'data/ui-language').read_bytes()==saved_language,'installed interface language preference survives the update byte-for-byte')
+    check(not (app / 'ui-language').exists(), 'no language preference written inside the version directory')
     check(not (app / 'downloads').exists(), 'no download history written inside the version directory')
 
 
@@ -185,6 +189,8 @@ def scenario_portable(base: Path, fx: dict):
     make_history(portable / 'downloads')
     saved_bookmarks=b'browser-bookmarks 1\n3\t1\tL\t1\tCanary\thttps://bookmarks.example/\nend\t1\n'
     (portable / 'bookmarks').write_bytes(saved_bookmarks)
+    saved_language = b'browser-ui-language 1\nlanguage=en\n'   # Reglages > Langue chosen in the portable copy
+    (portable / 'ui-language').write_bytes(saved_language)
     rc = run_host(exe, 'install', root, fx['serve'], base / 'host-report.txt')
     check(rc == 0, 'host flow (portable/legacy exe-adjacent data): install requested and clean exit')
     legacy_before = tree_hash(portable / 'profile')  # after host exit, before/while helper migrates
@@ -202,6 +208,8 @@ def scenario_portable(base: Path, fx: dict):
     check((root / 'data/bookmarks').read_bytes()==saved_bookmarks,'portable bookmarks are copied to the installed data directory')
     check((portable / 'bookmarks').read_bytes()==saved_bookmarks,'portable bookmarks remain untouched')
     check((root / 'data/bookmarks.bak').read_bytes()==saved_bookmarks,'portable bookmarks recovery copy is migrated too')
+    check((root / 'data/ui-language').read_bytes()==saved_language,'portable interface language preference is copied to the installed data directory')
+    check((portable / 'ui-language').read_bytes()==saved_language,'portable interface language preference remains untouched')
     relaunch_legacy(base, root, portable, exe, fx)
 
 

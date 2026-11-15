@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Profile menu (Paper p-I-0, P01 « Menu des profils » XMC-0 and « Aperçu des onglets » YTO-0).
 // Opened by the profile button that replaced the brand flower (chrome region 900), by
 // Ctrl+Maj+M, and by Entrée / Espace / ↓ on the focused button.
@@ -68,10 +69,10 @@ inline constexpr unsigned border = 0x0F;
 }
 
 // The French plural used by the windows lane and the accessible row name.
-inline std::wstring WindowsPhrase(int n) { return std::to_wstring(n) + (n > 1 ? L" fenêtres ouvertes" : L" fenêtre ouverte"); }
+inline std::wstring WindowsPhrase(int n) { return TRP(profile_open_windows, n); }
 inline std::wstring RowName(const Profile& p) {
-    std::wstring s = p.name; if (p.current) s += L", cette fenêtre";
-    s += p.windows > 0 ? L", " + WindowsPhrase(p.windows) : L", aucune fenêtre ouverte"; return s;
+    std::wstring s = p.current ? TRF(settings_profile_this_window, p.name) : p.name;
+    return TRF(a11y_status_and_prefix, s, p.windows > 0 ? WindowsPhrase(p.windows) : std::wstring(TR(profile_no_window)));
 }
 // « + 8 autres onglets · 2 autres fenêtres » (only the parts that are hidden).
 inline std::wstring OverflowLine(const Profile& p, int shown) {
@@ -79,8 +80,8 @@ inline std::wstring OverflowLine(const Profile& p, int shown) {
     std::vector<std::wstring> seen; for (int i = 0; i < shown && i < static_cast<int>(p.tabs.size()); ++i) if (std::find(seen.begin(), seen.end(), p.tabs[i].session) == seen.end()) seen.push_back(p.tabs[i].session);
     const int otherWindows = std::max(0, p.windows - static_cast<int>(seen.size()));
     std::wstring s;
-    if (hidden > 0) s = L"+ " + std::to_wstring(hidden) + (hidden > 1 ? L" autres onglets" : L" autre onglet");
-    if (hidden > 0 && otherWindows > 0) s += L" · " + std::to_wstring(otherWindows) + (otherWindows > 1 ? L" autres fenêtres" : L" autre fenêtre");
+    if (hidden > 0) s = TRP(profile_more_tabs, hidden);
+    if (hidden > 0 && otherWindows > 0) s += L" · " + TRP(profile_other_windows, otherWindows);
     return s;
 }
 inline std::wstring Initial(const Tab& t) {
@@ -130,11 +131,11 @@ private:
     }
     std::wstring Label(const Row& r) const {
         switch (r.kind) {
-        case Kind::TabList: return L"Liste des onglets (" + std::to_wstring(model_ ? model_->tabCount : 0) + L")…";
+        case Kind::TabList: return TRF(profile_menu_tab_list, std::to_wstring(model_ ? model_->tabCount : 0));
         case Kind::Profile: return model_->profiles[r.profile].name;
-        case Kind::Create: return L"Nouveau profil…";
-        case Kind::Private: return L"Nouvelle fenêtre privée";
-        case Kind::Manage: return L"Gérer les profils…";
+        case Kind::Create: return TR(profile_menu_new);
+        case Kind::Private: return TR(a11y_new_private_window);
+        case Kind::Manage: return TR(profile_menu_manage);
         default: return L"";
         }
     }
@@ -479,7 +480,7 @@ public:
     std::vector<Accessibility::Node> MenuNodes() const {
         std::vector<Accessibility::Node> nodes; if (!model_) return nodes;
         RECT window{}; if (menu_.hwnd) GetWindowRect(menu_.hwnd, &window); const float k = (menu_.dpi ? menu_.dpi : 96) / 96.f;   // no window: the test tree
-        Accessibility::Node m; m.key = MenuKey; m.role = Accessibility::Role::Menu; m.name = L"Profils"; m.automationId = L"ProfileMenu"; m.focusable = false; m.bounds = window; nodes.push_back(m);
+        Accessibility::Node m; m.key = MenuKey; m.role = Accessibility::Role::Menu; m.name = TR(settings_profiles); m.automationId = L"ProfileMenu"; m.focusable = false; m.bounds = window; nodes.push_back(m);
         int count = 0; for (const auto& r : rows_) if (Selectable(r)) ++count;
         int position = 0;
         for (size_t i = 0; i < rows_.size(); ++i) {
@@ -488,11 +489,11 @@ public:
             n.name = r.kind == Kind::Profile ? RowName(model_->profiles[r.profile]) : Label(r);
             if (r.kind == Kind::TabList) n.automationId = L"ProfileMenuTabList";
             else if (r.kind == Kind::Create) n.automationId = L"ProfileMenuCreate";
-            else if (r.kind == Kind::Private) { n.automationId = L"ProfileMenuPrivate"; n.accelerator = L"Ctrl+Maj+N"; n.help = L"Historique, cookies et session non conservés ; hors des profils"; }
+            else if (r.kind == Kind::Private) { n.automationId = L"ProfileMenuPrivate"; n.accelerator = TR(key_ctrl_shift_n); n.help = TR(profile_menu_private_help); }
             else if (r.kind == Kind::Manage) n.automationId = L"ProfileMenuManage";
             else {
-                const Profile& p = model_->profiles[r.profile]; n.automationId = L"ProfileMenuProfile"; if (p.current) n.status = L"Sélectionné";
-                n.accelerator = L"Maj+F10";   // its context menu: « Ouvrir dans une nouvelle fenêtre »
+                const Profile& p = model_->profiles[r.profile]; n.automationId = L"ProfileMenuProfile"; if (p.current) n.status = TR(menu_item_selected);
+                n.accelerator = TR(key_shift_f10);   // its context menu: « Ouvrir dans une nouvelle fenêtre »
                 if (!p.tabs.empty()) {   // the preview, also exposed as the row's description
                     std::wstring help; const int shown = std::min<int>(Layout::maxPreview, static_cast<int>(p.tabs.size()));
                     for (int t = 0; t < shown; ++t) help += (t ? L" ; " : L"") + (p.tabs[t].title.empty() ? p.tabs[t].site : p.tabs[t].title);
@@ -505,7 +506,7 @@ public:
             nodes.push_back(std::move(n));
             if (profile) {   // the row's context action as a real Invoke target (Shift+F10 / Menu / right-click open the same)
                 Accessibility::Node a; a.key = NewWindowKey(static_cast<int>(i)); a.parent = RowKey(static_cast<int>(i)); a.role = Accessibility::Role::Button;
-                a.name = L"Ouvrir dans une nouvelle fenêtre"; a.automationId = L"ProfileMenuNewWindow"; a.help = L"Ouvre ce profil dans une autre fenêtre"; a.focusable = false; a.bounds = rowBounds;
+                a.name = TR(toast_open_in_new_window); a.automationId = L"ProfileMenuNewWindow"; a.help = TR(profile_menu_new_window_help); a.focusable = false; a.bounds = rowBounds;
                 nodes.push_back(std::move(a));
             }
         }
@@ -514,7 +515,7 @@ public:
     std::vector<Accessibility::Node> PreviewNodes() const {
         std::vector<Accessibility::Node> nodes; const Profile* p = ProfileAt(previewRow_); if (!preview_.hwnd || !p) return nodes;
         RECT window{}; GetWindowRect(preview_.hwnd, &window); const float k = preview_.dpi / 96.f;
-        Accessibility::Node m; m.key = MenuKey; m.role = Accessibility::Role::Menu; m.name = L"Onglets de " + p->name; m.automationId = L"ProfileTabPreview"; m.focusable = false; m.bounds = window; nodes.push_back(m);
+        Accessibility::Node m; m.key = MenuKey; m.role = Accessibility::Role::Menu; m.name = TRF(profile_tabs_of, p->name); m.automationId = L"ProfileTabPreview"; m.focusable = false; m.bounds = window; nodes.push_back(m);
         const int n = PreviewCount();
         for (int i = 0; i < n; ++i) {
             Accessibility::Node t; t.key = RowKey(i); t.parent = MenuKey; t.role = Accessibility::Role::MenuItem; t.position = i + 1; t.count = n;

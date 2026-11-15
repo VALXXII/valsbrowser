@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Native context menu: one component for every right click (web pages through
 // WebView2's ContextMenuRequested, tabs, the tab list, the address field),
 // painted with Direct2D from the Paper frame "Clic droit menu — poli": 14 DIP
@@ -167,6 +168,20 @@ class Menu {
         }
         return *levels_[index];
     }
+    // A key name in lower case, with the engine's arrow wording dropped: « Flèche gauche »,
+    // « Flèche vers la gauche », « Left Arrow », « Arrow Left » -> « gauche » / « left ».
+    // Any other multi-word name (« Page down ») comes back whole, so it never reads as an arrow.
+    static std::wstring ArrowWord(const std::wstring& key) {
+        std::wstring low = key; for (auto& ch : low) ch = static_cast<wchar_t>(towlower(ch));
+        std::vector<std::wstring> words; std::wstring word; bool arrow = false;
+        for (size_t i = 0; i <= low.size(); ++i) {
+            if (i < low.size() && low[i] != L' ') { word += low[i]; continue; }
+            if (word == L"flèche" || word == L"fleche" || word == L"arrow") arrow = true;   // i18n-exempt: engine key names parsed, never shown
+            else if (!word.empty() && !(arrow && (word == L"vers" || word == L"la" || word == L"le"))) words.push_back(word);
+            word.clear();
+        }
+        return arrow && words.size() == 1 ? words[0] : low;
+    }
     // "Ctrl+Maj+T" -> {Ctrl, Maj, T}; the engine's arrow names become arrows.
     static std::vector<std::wstring> Keys(const std::wstring& shortcut) {
         std::vector<std::wstring> keys; size_t start = 0;
@@ -174,12 +189,12 @@ class Menu {
             size_t plus = shortcut.find(L'+', start);
             if (plus == start && plus + 1 == shortcut.size()) plus = std::wstring::npos; // a literal "+" key
             std::wstring key = shortcut.substr(start, plus == std::wstring::npos ? std::wstring::npos : plus - start);
-            std::wstring low = key; for (auto& ch : low) ch = static_cast<wchar_t>(towlower(ch));
+            std::wstring low = ArrowWord(key);
             if (low == L"left" || low == L"arrowleft" || low == L"gauche") key = L"\u2190";
             else if (low == L"right" || low == L"arrowright" || low == L"droite") key = L"\u2192";
             else if (low == L"up" || low == L"arrowup" || low == L"haut") key = L"\u2191";
             else if (low == L"down" || low == L"arrowdown" || low == L"bas") key = L"\u2193";
-            else if (low == L"shift") key = L"Maj";
+            else if (low == L"shift" || low == L"maj") key = TR(key_shift);   // the cap reads in the interface language
             if (!key.empty()) keys.push_back(key);
             if (plus == std::wstring::npos) break;
             start = plus + 1;
@@ -564,14 +579,14 @@ class Menu {
         std::vector<Accessibility::Node> nodes; if (index >= depth_ || index >= static_cast<int>(levels_.size())) return nodes;
         const Level& l = *levels_[index]; if (!l.items || !l.hwnd) return nodes;
         RECT window{}; GetWindowRect(l.hwnd, &window); const float k = l.dpi / 96.f;
-        Accessibility::Node menu; menu.key = MenuKey; menu.role = Accessibility::Role::Menu; menu.name = index == 0 ? L"Menu" : L"Sous-menu"; menu.automationId = L"ContextMenu"; menu.focusable = false; menu.bounds = window; nodes.push_back(menu);
+        Accessibility::Node menu; menu.key = MenuKey; menu.role = Accessibility::Role::Menu; menu.name = index == 0 ? TR(menu_name) : TR(menu_submenu_name); menu.automationId = L"ContextMenu"; menu.focusable = false; menu.bounds = window; nodes.push_back(menu);
         int count = 0; for (const auto& item : *l.items) if (!item.separator) ++count;
         int position = 0;
         for (size_t i = 0; i < l.items->size() && i < l.tops.size(); ++i) {
             const Item& item = (*l.items)[i]; if (item.separator) continue;
             Accessibility::Node n; n.key = RowKey(static_cast<int>(i)); n.parent = MenuKey; n.role = Accessibility::Role::MenuItem;
             n.name = Plain(item.label); n.accelerator = item.shortcut; n.help = !item.help.empty() ? item.help : item.description; n.enabled = item.enabled;
-            if (item.checked) n.status = L"Sélectionné";
+            if (item.checked) n.status = TR(menu_item_selected);
             if (!item.children.empty()) n.expand = l.child == static_cast<int>(i) && depth_ > index + 1 ? 2 : 1;
             n.position = ++position; n.count = count; n.automationId = L"MenuItem";
             n.bounds = {window.left + static_cast<LONG>(Layout::pad * k), window.top + static_cast<LONG>(l.tops[i] * k), window.right - static_cast<LONG>(Layout::pad * k), window.top + static_cast<LONG>((l.tops[i] + l.heights[i]) * k)};
@@ -632,6 +647,7 @@ public:
         return c;
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
+    static std::vector<std::wstring> KeysForTest(const std::wstring& shortcut) { return Keys(shortcut); }
     std::vector<Accessibility::Node> AccessibleNodes(int index) const { return Nodes(index); }
     // fromChecked: a keyboard-opened list (a select's options) starts on its checked row, not the first.
     int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false, bool fromChecked = false) {

@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "../../src/agent-connect.h"
+#include "../../src/i18n.h"
 #include "annotations_test_util.h"
 
 #include <shellapi.h>  // after windows.h
@@ -459,6 +460,39 @@ void TestCodexCli(Fixture& f, const std::wstring& fakeCodex) {
 
 // Test guard (incident 14 Nov 2026): with testMode, every write under a protected root is refused and nothing is
 // touched. The "real" folders are SIMULATED here (temporary folders declared as protected), never the user's.
+// A configuration file that exists but cannot be read (held open without sharing by another program):
+// nothing is written, and the message the Settings row and the connect panel show is in the interface
+// language (it was a narrow French literal in both languages). Temporary folders only (redirected roots).
+void TestUnreadableConfig(Fixture& f) {
+    const std::wstring dir = f.appData + L"\\Claude", claude = dir + L"\\claude_desktop_config.json", codex = f.codexHome + L"\\config.toml";
+    CreateDirectoryW(dir.c_str(), nullptr); CreateDirectoryW(f.codexHome.c_str(), nullptr);
+    const std::string body = "{\"mcpServers\": {}}", toml = "model = \"o3\"\n";
+    CHECK(WriteText(claude, body) && WriteText(codex, toml));
+    const auto claudeBackups = Backups(dir, L"claude_desktop_config.json"), codexBackups = Backups(f.codexHome, L"config.toml");
+    HANDLE lockClaude = CreateFileW(claude.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE lockCodex = CreateFileW(codex.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(lockClaude != INVALID_HANDLE_VALUE && lockCodex != INVALID_HANDLE_VALUE);
+    for (const auto locale : {I18n::Locale::Fr, I18n::Locale::En}) {
+        I18n::SetForProcess(locale);
+        const bool en = locale == I18n::Locale::En;
+        const std::string claudeMsg = en ? "Claude\xE2\x80\x99s configuration can\xE2\x80\x99t be read." : "Configuration de Claude illisible.";
+        const std::string codexMsg = en ? "Codex\xE2\x80\x99s configuration can\xE2\x80\x99t be read." : "Configuration de Codex illisible.";
+        AC::Report r = AC::MergeClaudeConfig(claude, f.target, f.now);
+        CHECK(r.result == AC::Result::Failed && r.message == claudeMsg);
+        r = AC::RemoveClaudeConfig(claude, f.target.serverName, f.now);
+        CHECK(r.result == AC::Result::Failed && r.message == claudeMsg);
+        r = AC::MergeCodexToml(codex, f.target, f.now);
+        CHECK(r.result == AC::Result::Failed && r.message == codexMsg);
+        r = AC::RemoveCodexToml(codex, f.target.serverName, f.now);
+        CHECK(r.result == AC::Result::Failed && r.message == codexMsg);
+    }
+    I18n::SetForProcess(I18n::Locale::Fr);
+    CloseHandle(lockClaude); CloseHandle(lockCodex);
+    CHECK(ReadText(claude) == body && ReadText(codex) == toml);   // nothing written
+    CHECK(Backups(dir, L"claude_desktop_config.json") == claudeBackups && Backups(f.codexHome, L"config.toml") == codexBackups);   // no new backup
+    DeleteFileW(claude.c_str()); DeleteFileW(codex.c_str());
+}
+
 void TestGuard(Fixture& f) {
     const std::wstring fake = f.base + L"\\guard";
     const std::wstring roaming = fake + L"\\Roaming", profile = fake + L"\\Profile";
@@ -674,6 +708,7 @@ int wmain(int argc, wchar_t** argv) {
     TestBridgeUsable(f);
     TestConnectRefusesMissingBridge(f);
     TestGlobalStorePath(f);
+    TestUnreadableConfig(f);
     TestGuard(f);
     return Finish("agent_connect_test");
 }

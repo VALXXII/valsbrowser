@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // « Mode Annotation » band under the toolbar + the toolbar « Annoter » button state.
 // Paper (file 01M6Q7YT14ZKMGET54ASPNGQEC, p-H-0, « Bandeau — Mode Annotation », 1.1 / 1.8):
 //   height 32; background linear-gradient(180deg, #3E67FF00 -> #233FD6 at 32 %) over the
@@ -53,12 +54,12 @@ struct BannerLayout { D2D1_RECT_F logo{}, label{}, beta{}, quit{}, remind{}; flo
 inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true) {
     using namespace BannerSpec; BannerLayout l;
     l.logo = {padLeft, (height - logoH) / 2, padLeft + logoW, (height + logoH) / 2};
-    l.label = {l.logo.right + logoGap, 6, l.logo.right + logoGap + ink.Width(L"Mode Annotation", F(14, 20)), 26};
+    l.label = {l.logo.right + logoGap, 6, l.logo.right + logoGap + ink.Width(TR(settings_group_annotation_mode), F(14, 20)), 26};
     if (beta) { const float bw = ink.Width(L"BETA", F(12, 20, 500)) + 10; l.beta = {l.label.right + logoGap, (height - 18) / 2, l.label.right + logoGap + bw, (height + 18) / 2}; }
-    const float quitW = quitPadL + ink.Width(L"Quitter", F(13, 16, 500)) + quitGap + KeycapWidth(ink, L"Échap", 400) + quitPadR;
+    const float quitW = quitPadL + ink.Width(TR(engine_quit), F(13, 16, 500)) + quitGap + KeycapWidth(ink, TR(key_escape), 400) + quitPadR;
     l.quit = {w - padRight - quitW, (height - quitH) / 2, w - padRight, (height + quitH) / 2};
-    l.keycapX = l.quit.right - quitPadR - KeycapWidth(ink, L"Échap", 400);
-    const float rw = remindPad + ink.Width(L"Aucun agent connecté", F(12, 16)) + remindGap + ink.Width(L"Connecter", F(12, 16, 500)) + remindPad;
+    l.keycapX = l.quit.right - quitPadR - KeycapWidth(ink, TR(key_escape), 400);
+    const float rw = remindPad + ink.Width(TR(annotation_no_agent_connected), F(12, 16)) + remindGap + ink.Width(TR(agent_connect), F(12, 16, 500)) + remindPad;
     l.remind = {l.quit.left - gap - rw, (height - remindH) / 2, l.quit.left - gap, (height + remindH) / 2};
     return l;
 }
@@ -148,15 +149,15 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
         if (SUCCEEDED(t->CreateGradientStopCollection(ramp, 3, &stops)) && SUCCEEDED(t->CreateLinearGradientBrush({{m.left, m.top}, {m.right, m.bottom}}, stops, &gradient))) ink.IconBrush(Glyphs::mark, m, gradient);
         Release(gradient); Release(stops);
     }
-    ink.Text(L"Mode Annotation", F(14, 20), {l.label.left, 0, l.label.right + 40, h}, rgb(tone.label), false, Align::Leading, true);
+    ink.Text(TR(settings_group_annotation_mode), F(14, 20), {l.label.left, 0, l.label.right + 40, h}, rgb(tone.label), false, Align::Leading, true);
     if (v.beta) { ink.Fill(l.beta, 3, rgb(tone.fill, AccentTone::Paper::betaChip)); ink.Text(L"BETA", F(12, 20, 500), l.beta, rgb(tone.beta), false, Align::Center, true); }
     if (v.reminder > 0) {   // « Aucun agent connecté · Connecter » (1.8): fades in, press 0.96
         ID2D1Layer* group = nullptr; const bool pushed = ink.PushOpacity(v.reminder, group);
         {
             ScaleScope scale(t, l.remind, Motion::PressScale(v.remind.press, v.reduced));
             ink.Fill(l.remind, remindRadius, {1, 1, 1, (20 / 255.f) + .04f * v.remind.hover + .03f * v.remind.press});
-            Piece connect = PText(L"Connecter", F(12, 16, 500), {1, 1, 1, 1}); connect.underline = true;
-            Pieces(ink, {PText(L"Aucun agent connecté", F(12, 16), Hex(0xFFFFFFCC), remindGap), connect}, l.remind);
+            Piece connect = PText(TR(agent_connect), F(12, 16, 500), {1, 1, 1, 1}); connect.underline = true;
+            Pieces(ink, {PText(TR(annotation_no_agent_connected), F(12, 16), Hex(0xFFFFFFCC), remindGap), connect}, l.remind);
             if (v.focus && v.focusItem == BannerRemind) FocusRing(ink, l.remind, remindRadius, v.keyboard);
         }
         if (pushed) ink.PopOpacity(group);
@@ -165,8 +166,8 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
         ScaleScope scale(t, l.quit, Motion::PressScale(v.quit.press, v.reduced));
         const float plate = .08f * v.quit.hover + .04f * v.quit.press;
         ink.Fill(l.quit, quitRadius, {1, 1, 1, plate});
-        ink.Text(L"Quitter", F(13, 16, 500), {l.quit.left + quitPadL, l.quit.top, l.keycapX, l.quit.bottom}, Hex(0xFFFFFFE6), false, Align::Leading, true);
-        Keycap(ink, L"Échap", l.keycapX, (l.quit.top + l.quit.bottom) / 2, Hex(0xFFFFFF14), Hex(0xFFFFFFB3), 400);
+        ink.Text(TR(engine_quit), F(13, 16, 500), {l.quit.left + quitPadL, l.quit.top, l.keycapX, l.quit.bottom}, Hex(0xFFFFFFE6), false, Align::Leading, true);
+        Keycap(ink, TR(key_escape), l.keycapX, (l.quit.top + l.quit.bottom) / 2, Hex(0xFFFFFF14), Hex(0xFFFFFFB3), 400);
         if (v.focus && v.focusItem == BannerQuit) FocusRing(ink, l.quit, quitRadius, v.keyboard);
     }
 }
@@ -198,8 +199,8 @@ inline void PaintToolbarButton(ID2D1RenderTarget* t, ID2D1Factory* factory, ID2D
 }
 // UIA for the toolbar button (T3 adds it to its toolbar nodes).
 inline Accessibility::Node ToolbarNode(long long key, long long parent, RECT bounds, bool active) {
-    Accessibility::Node n; n.key = key; n.parent = parent; n.role = Accessibility::Role::Button; n.name = L"Annoter";
-    n.accelerator = L"Ctrl+Maj+A"; n.toggle = active ? 2 : 1; n.automationId = L"AnnotateButton"; n.bounds = bounds; return n;
+    Accessibility::Node n; n.key = key; n.parent = parent; n.role = Accessibility::Role::Button; n.name = TR(a11y_annotate);
+    n.accelerator = TR(key_ctrl_shift_a); n.toggle = active ? 2 : 1; n.automationId = L"AnnotateButton"; n.bounds = bounds; return n;
 }
 
 struct BannerHooks {
@@ -313,15 +314,15 @@ class Banner : public Animator::Client {
     }
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> n; if (!presence_.IsOpen()) return n;
-        Accessibility::Node g; g.key = RootKey; g.role = Accessibility::Role::Group; g.name = L"Mode Annotation"; g.status = reminderOn_ ? L"Activé · aucun agent connecté" : L"Activé";
-        g.help = L"Cliquez un élément de la page pour l'annoter."; g.automationId = L"AnnotationBanner"; g.focusable = false;
+        Accessibility::Node g; g.key = RootKey; g.role = Accessibility::Role::Group; g.name = TR(settings_group_annotation_mode); g.status = reminderOn_ ? TR(annotation_banner_on_no_agent) : TR(annotation_banner_on);
+        g.help = TR(annotation_banner_help); g.automationId = L"AnnotationBanner"; g.focusable = false;
         GetWindowRect(layer_.Window(), &g.bounds); n.push_back(g);
         const auto l = Layout();
         if (reminderOn_) {
-            Accessibility::Node c; c.key = RemindKey; c.parent = RootKey; c.name = L"Connecter un agent"; c.help = L"Aucun agent connecté";
+            Accessibility::Node c; c.key = RemindKey; c.parent = RootKey; c.name = TR(annotation_connect_agent); c.help = TR(annotation_no_agent_connected);
             c.automationId = L"AnnotationConnectReminder"; c.bounds = layer_.Screen(l.remind); n.push_back(c);
         }
-        Accessibility::Node q; q.key = QuitKey; q.parent = RootKey; q.name = L"Quitter le mode Annotation"; q.accelerator = L"Échap";
+        Accessibility::Node q; q.key = QuitKey; q.parent = RootKey; q.name = TR(annotation_quit_mode); q.accelerator = TR(key_escape);
         q.automationId = L"AnnotationQuit"; q.bounds = layer_.Screen(l.quit); n.push_back(q);
         return n;
     }
@@ -340,7 +341,7 @@ public:
     bool Show(RECT rect, bool reduced) {
         if (!Ink::Shared(root_)) return false;
         if (!layer_.Window()) {
-            Layer::Options o; o.child = true; o.title = L"Mode Annotation"; o.tabStop = true;
+            Layer::Options o; o.child = true; o.title = TR(settings_group_annotation_mode); o.tabStop = true;
             if (!layer_.Create(instance_, parent_, o)) return false;
             layer_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return Handle(m, w, l, r); };
             Accessibility::Host host; host.window = layer_.Window();
@@ -356,8 +357,8 @@ public:
         raiseNext_ = true;
         presence_.Show(now, true, reduced); Render(now); Animator::Get().Request(this);
         if (!was) {
-            if (hooks_.announce) hooks_.announce(L"Mode Annotation activé");
-            else layer_.uia.Notify(RootKey, L"Mode Annotation activé", L"AnnotationModeOn");
+            if (hooks_.announce) hooks_.announce(TR(annotation_mode_on));
+            else layer_.uia.Notify(RootKey, TR(annotation_mode_on), L"AnnotationModeOn");
         }
         return true;
     }

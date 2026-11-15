@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Origin prompts (Paper p-D-0, B01–B08): requests that come from a site, drawn by the
 // browser. One Modal::Dialog surface (same material, zero shadow) in two placements:
 //   * anchored popover under the address bar's origin indicator (B01/B02 permissions,
@@ -70,50 +71,50 @@ struct Result { Action action = Action::Dismiss; bool remember = false; std::wst
 namespace Text {
 inline std::wstring Noun(int p) {
     switch (p) {
-    case Permission::Camera: return L"Caméra"; case Permission::Microphone: return L"Micro"; case Permission::Geolocation: return L"Position";
-    case Permission::Notifications: return L"Notifications"; case Permission::ClipboardRead: return L"Presse-papiers"; case Permission::Midi: return L"Appareils MIDI";
-    case Permission::MultipleDownloads: return L"Téléchargements multiples"; case Permission::OtherSensors: return L"Capteurs de mouvement";
-    case Permission::FileReadWrite: return L"Fichiers"; case Permission::Autoplay: return L"Lecture automatique"; case Permission::LocalFonts: return L"Polices installées";
-    case Permission::WindowManagement: return L"Gestion des fenêtres"; case Permission::PersistentStorage: return L"Stockage persistant"; default: return L"Autorisation";
+    case Permission::Camera: return TR(perm_noun_camera); case Permission::Microphone: return TR(perm_noun_microphone); case Permission::Geolocation: return TR(perm_noun_location);
+    case Permission::Notifications: return TR(perm_noun_notifications); case Permission::ClipboardRead: return TR(perm_noun_clipboard); case Permission::Midi: return TR(perm_noun_midi);
+    case Permission::MultipleDownloads: return TR(perm_noun_downloads); case Permission::OtherSensors: return TR(perm_noun_sensors);
+    case Permission::FileReadWrite: return TR(perm_noun_files); case Permission::Autoplay: return TR(perm_noun_autoplay); case Permission::LocalFonts: return TR(perm_noun_fonts);
+    case Permission::WindowManagement: return TR(perm_noun_windows); case Permission::PersistentStorage: return TR(perm_noun_storage); default: return TR(perm_noun_generic);
     }
 }
 // Single-permission titles. Paper exports: position, notifications, clipboard (B02); the others
 // follow the same « <site> veut … » grammar.
 inline std::wstring Title(const std::wstring& o, int p) {
     switch (p) {
-    case Permission::Camera: return o + L" veut utiliser votre caméra";
-    case Permission::Microphone: return o + L" veut utiliser votre micro";
-    case Permission::Geolocation: return o + L" veut connaître votre position";
-    case Permission::Notifications: return o + L" veut vous envoyer des notifications";
-    case Permission::ClipboardRead: return o + L" veut lire votre presse‑papiers";
-    case Permission::Midi: return o + L" veut contrôler vos appareils MIDI";
-    case Permission::MultipleDownloads: return o + L" veut télécharger plusieurs fichiers";
-    case Permission::OtherSensors: return o + L" veut utiliser les capteurs de mouvement";
-    case Permission::FileReadWrite: return o + L" veut modifier des fichiers sur cet appareil";
-    case Permission::Autoplay: return o + L" veut lire du son automatiquement";
-    case Permission::LocalFonts: return o + L" veut utiliser les polices installées";
-    case Permission::WindowManagement: return o + L" veut gérer les fenêtres sur vos écrans";
-    case Permission::PersistentStorage: return o + L" veut protéger son stockage local";
-    default: return o + L" demande une autorisation";
+    case Permission::Camera: return TRF(perm_title_camera, o);
+    case Permission::Microphone: return TRF(perm_title_microphone, o);
+    case Permission::Geolocation: return TRF(perm_title_location, o);
+    case Permission::Notifications: return TRF(perm_title_notifications, o);
+    case Permission::ClipboardRead: return TRF(perm_title_clipboard, o);
+    case Permission::Midi: return TRF(perm_title_midi, o);
+    case Permission::MultipleDownloads: return TRF(perm_title_downloads, o);
+    case Permission::OtherSensors: return TRF(perm_title_sensors, o);
+    case Permission::FileReadWrite: return TRF(perm_title_files, o);
+    case Permission::Autoplay: return TRF(perm_title_autoplay, o);
+    case Permission::LocalFonts: return TRF(perm_title_fonts, o);
+    case Permission::WindowManagement: return TRF(perm_title_windows, o);
+    case Permission::PersistentStorage: return TRF(perm_title_storage, o);
+    default: return TRF(perm_title_generic, o);
     }
 }
 inline std::wstring Subtitle(int p) {
     switch (p) {
-    case Permission::Geolocation: return L"Position fournie par Windows, à quelques centaines de mètres près.";
-    case Permission::Notifications: return L"Le site pourra afficher des alertes en dehors de la page.";   // no proof for « même onglet fermé » (design/origin-prompt-help.md §2)
-    case Permission::ClipboardRead: return L"Le site verra le texte et les images que vous avez copiés.";
-    case Permission::MultipleDownloads: return L"Le site pourra enregistrer plusieurs fichiers à la suite.";
-    case Permission::Midi: return L"Le site pourra envoyer des messages système à vos instruments.";
-    case Permission::Camera: return L"Le site pourra filmer avec votre caméra.";
-    case Permission::Microphone: return L"Le site pourra enregistrer le son de votre micro.";
-    case Permission::OtherSensors: return L"Accéléromètre, gyroscope et autres capteurs de l'appareil.";
-    case Permission::FileReadWrite: return L"Lecture et écriture de fichiers ou de dossiers de cet appareil.";
-    case Permission::Autoplay: return L"Le son et la vidéo pourront démarrer sans clic de votre part.";
-    case Permission::LocalFonts: return L"Le site verra les polices installées sur cet appareil.";
-    case Permission::WindowManagement: return L"Le site pourra ouvrir et placer des fenêtres sur vos écrans.";
-    case Permission::PersistentStorage: return L"Protège les données locales du site quand le navigateur libère de l'espace. Les mots de passe sont gérés séparément.";
-    case Permission::Unknown: return L"Le moteur ne précise pas de quoi il s'agit.";
-    default: return L"Type non reconnu par ce navigateur (code moteur " + std::to_wstring(p) + L").";   // a newer engine kind: never guessed
+    case Permission::Geolocation: return TR(perm_sub_location);
+    case Permission::Notifications: return TR(perm_sub_notifications);   // no proof for « même onglet fermé » (design/origin-prompt-help.md §2)
+    case Permission::ClipboardRead: return TR(perm_sub_clipboard);
+    case Permission::MultipleDownloads: return TR(perm_sub_downloads);
+    case Permission::Midi: return TR(perm_sub_midi);
+    case Permission::Camera: return TR(perm_sub_camera);
+    case Permission::Microphone: return TR(perm_sub_microphone);
+    case Permission::OtherSensors: return TR(perm_sub_sensors);
+    case Permission::FileReadWrite: return TR(perm_sub_files);
+    case Permission::Autoplay: return TR(perm_sub_autoplay);
+    case Permission::LocalFonts: return TR(perm_sub_fonts);
+    case Permission::WindowManagement: return TR(perm_sub_windows);
+    case Permission::PersistentStorage: return TR(perm_sub_storage);
+    case Permission::Unknown: return TR(perm_sub_unknown);
+    default: return TRF(perm_sub_unrecognized, std::to_wstring(p));   // a newer engine kind: never guessed
     }
 }
 inline const char* Glyph(int p) {
@@ -142,28 +143,28 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         const bool many = s.permissions.size() > 1;
         const int p = s.permissions.empty() ? Permission::Unknown : s.permissions[0];
         if (many) {
-            m.title = s.origin + L" veut utiliser";
-            for (int q : s.permissions) m.rows.push_back({Text::Glyph(q), Text::Noun(q), q == Permission::Geolocation ? L"Approximative" : L""});
+            m.title = TRF(perm_title_many, s.origin);
+            for (int q : s.permissions) m.rows.push_back({Text::Glyph(q), Text::Noun(q), q == Permission::Geolocation ? TR(perm_approximate) : L""});
         } else { m.title = Text::Title(s.origin, p); m.subtitle = Text::Subtitle(p); m.headGlyph = Text::Glyph(p); }
         const bool always = !many && p == Permission::Notifications;   // B02: notifications are always remembered
         // Paper B02 (user edit 2026-11-12): notifications = title, subtitle, buttons; no note, no check (always remembered).
-        if (!always) { m.checkLabel = L"Mémoriser pour ce site"; m.originCheck = true; }
+        if (!always) { m.checkLabel = TR(perm_remember); m.originCheck = true; }
         m.stretchButtons = true; m.softButtons = true;
-        m.buttons = {button(Id::Cancel, L"Bloquer", Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, L"Autoriser", Role::Primary, true, false, false, L"PermissionAllow")};
+        m.buttons = {button(Id::Cancel, TR(permission_choice_block), Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, TR(permission_choice_allow), Role::Primary, true, false, false, L"PermissionAllow")};
         m.checkValue = always;
         break;
     }
     case Kind::BasicAuth: {
         // Popover title role 16/20 Medium (user override of Paper's 20/24 SemiBold, as B06).
-        m.automationId = L"HttpAuthentication"; m.scope = Scope::Page; m.title = L"Connexion requise";
-        m.subtitle = s.origin + L" demande un identifiant.";
+        m.automationId = L"HttpAuthentication"; m.scope = Scope::Page; m.title = TR(auth_title);
+        m.subtitle = TRF(auth_subtitle, s.origin);
         if (!s.detail.empty()) m.subtitle += L" « " + s.detail + L" »";   // the site's words, quoted (B06 note)
-        if (s.insecure) m.notices.push_back({DialogKit::Glyph::lockOpen, L"Connexion non sécurisée : ces identifiants seront envoyés en clair.", true});
-        Field user; user.label = L"Identifiant"; user.value = s.user; user.automationId = L"AuthUser"; user.maxLength = 1024;
-        Field pass; pass.label = L"Mot de passe"; pass.password = true; pass.automationId = L"AuthPassword"; pass.maxLength = 1024;
+        if (s.insecure) m.notices.push_back({DialogKit::Glyph::lockOpen, TR(auth_insecure), true});
+        Field user; user.label = TR(auth_user); user.value = s.user; user.automationId = L"AuthUser"; user.maxLength = 1024;
+        Field pass; pass.label = TR(settings_passwords_singular); pass.password = true; pass.automationId = L"AuthPassword"; pass.maxLength = 1024;
         m.fields = {user, pass};
         m.softButtons = true;
-        m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, false, true, false, L"AuthCancel"), button(Id::Accept, L"Se connecter", Role::Primary, true, false, false, L"AuthSubmit")};
+        m.buttons = {button(Id::Cancel, TR(common_cancel), Role::Secondary, false, true, false, L"AuthCancel"), button(Id::Accept, TR(auth_sign_in), Role::Primary, true, false, false, L"AuthSubmit")};
         break;
     }
     case Kind::ExternalApp: {
@@ -171,121 +172,120 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         m.automationId = L"ExternalApplication"; m.scope = Scope::Page; m.tileGlyph = DialogKit::Glyph::external; m.softButtons = true;
         std::wstring scheme = s.detail.substr(0, s.detail.find(L':'));
         if (!s.frame.empty()) {
-            m.title = L"Ouvrir une application ?";
-            m.subtitle = L"Un contenu intégré à " + s.origin + L", venant de " + s.frame + L", veut ouvrir un lien " + scheme + L".";
-            m.notices.push_back({DialogKit::Glyph::info, L"Si vous ne l'attendiez pas, annulez. Ce choix ne peut pas être mémorisé pour un contenu intégré.", false});
+            m.title = TR(external_title);
+            m.subtitle = TRF(external_frame_subtitle, s.origin, s.frame, scheme);
+            m.notices.push_back({DialogKit::Glyph::info, TR(external_frame_notice), false});
             // B06 note: « Annuler » is the default when a third-party frame asks.
-            m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, true, true, true, L"ExternalCancel"), button(Id::Accept, L"Ouvrir", Role::Secondary, false, false, false, L"ExternalOpen")};
+            m.buttons = {button(Id::Cancel, TR(common_cancel), Role::Secondary, true, true, true, L"ExternalCancel"), button(Id::Accept, TR(downloads_action_open), Role::Secondary, false, false, false, L"ExternalOpen")};
         } else {
-            m.title = s.app.empty() ? L"Ouvrir une application ?" : L"Ouvrir " + s.app + L" ?";
-            m.subtitle = s.origin + L" veut ouvrir une application installée sur cet ordinateur.";
-            if (!scheme.empty()) { m.checkLabel = L"Toujours autoriser ce site à ouvrir les liens " + scheme; m.originCheck = true; m.checkInHeadLane = true; }
-            const std::wstring short_ = s.app.empty() ? L"Ouvrir" : L"Ouvrir " + s.app.substr(0, s.app.find(L' '));
-            m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, false, true, false, L"ExternalCancel"), button(Id::Accept, short_, Role::Primary, true, false, true, L"ExternalOpen")};
+            m.title = s.app.empty() ? std::wstring(TR(external_title)) : TRF(external_title_app, s.app);
+            m.subtitle = TRF(external_subtitle, s.origin);
+            if (!scheme.empty()) { m.checkLabel = TRF(external_always, scheme); m.originCheck = true; m.checkInHeadLane = true; }
+            const std::wstring short_ = s.app.empty() ? std::wstring(TR(downloads_action_open)) : TRF(external_open_app, s.app.substr(0, s.app.find(L' ')));
+            m.buttons = {button(Id::Cancel, TR(common_cancel), Role::Secondary, false, true, false, L"ExternalCancel"), button(Id::Accept, short_, Role::Primary, true, false, true, L"ExternalOpen")};
         }
         break;
     }
     case Kind::DangerousDownload: {
         m.automationId = L"DangerousDownload"; m.scope = Scope::Anchor; m.anchorRight = true; m.width = 360; m.gap = 12;
-        m.title = L"Téléchargements";
-        m.danger = {s.detail, s.blockedTitle.empty() ? L"Bloqué : fichier dangereux" : s.blockedTitle, s.reason.empty() ? L"Microsoft Defender SmartScreen le signale comme malveillant. Il n'a pas été ouvert." : s.reason, true};
+        m.title = TR(settings_downloads);
+        m.danger = {s.detail, s.blockedTitle.empty() ? std::wstring(TR(download_danger_title)) : s.blockedTitle, s.reason.empty() ? std::wstring(TR(download_danger_reason)) : s.reason, true};
         m.stretchButtons = false;
-        Button del = button(Id::Accept, L"Supprimer le fichier", Role::Danger, false, false, true, L"DownloadDelete");
+        Button del = button(Id::Accept, TR(download_delete_file), Role::Danger, false, false, true, L"DownloadDelete");
         // Decision 4: only a malware verdict can be contested at Microsoft; otherwise the one real extra
         // action, « Copier le lien », is a direct Quiet button (Paper KV2-0 / KVQ-0), no one-row menu.
-        Button more = s.reportable ? button(Id::More, L"Plus d'options", Role::Quiet, false, false, false, L"DownloadMore")
-                                   : button(Id::CopyLink, L"Copier le lien", Role::Quiet, false, false, false, L"DownloadCopyLink");
+        Button more = s.reportable ? button(Id::More, TR(download_more_options), Role::Quiet, false, false, false, L"DownloadMore")
+                                   : button(Id::CopyLink, TR(chrome_tip_copy_link), Role::Quiet, false, false, false, L"DownloadCopyLink");
         more.closes = false;
         m.buttons = {del, more}; m.stretchButtons = true;
         break;
     }
     case Kind::KeepFile: {   // B08: confirmation after « Conserver quand même… »
-        m.automationId = L"KeepDangerousFile"; m.scope = Scope::Page; m.title = L"Conserver ce fichier dangereux ?";
-        m.body = L"Il pourrait voler vos données ou endommager Windows. Il ne sera pas ouvert automatiquement.";
+        m.automationId = L"KeepDangerousFile"; m.scope = Scope::Page; m.title = TR(keep_danger_title);
+        m.body = TR(keep_danger_body);
         if (!s.detail.empty()) m.infos.push_back({s.detail, L""});
-        m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, true, true, true, L"KeepCancel"), button(Id::Accept, L"Conserver", Role::Danger, false, false, false, L"KeepConfirm")};
+        m.buttons = {button(Id::Cancel, TR(common_cancel), Role::Secondary, true, true, true, L"KeepCancel"), button(Id::Accept, TR(keep_danger_action), Role::Danger, false, false, false, L"KeepConfirm")};
         break;
     }
     case Kind::ClientCertificate: {   // B08: ICoreWebView2_5::ClientCertificateRequested, the engine's mutually trusted certificates
-        m.automationId = L"ClientCertificate"; m.scope = Scope::Page; m.title = L"Choisir un certificat";
-        m.subtitle = s.origin + L" demande un certificat pour vous identifier.";
-        m.accountsTitle = L"Certificats disponibles";
+        m.automationId = L"ClientCertificate"; m.scope = Scope::Page; m.title = TR(cert_title);
+        m.subtitle = TRF(cert_subtitle, s.origin);
+        m.accountsTitle = TR(cert_available);
         for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, a.disabled});   // issuer line: plain text, no dot tracking; expired = disabled
         // E1 (planche validée): rows only select (radios); « Envoyer » alone transmits, disabled until a
         // valid, non-expired certificate is selected; « Ne pas envoyer » / Échap continue without one.
         m.accountsSelect = true; m.accountSelected = -1;
-        m.buttons = {button(Id::Cancel, L"Ne pas envoyer", Role::Secondary, false, true, false, L"CertificateCancel"), button(Id::Accept, L"Envoyer", Role::Primary, true, false, false, L"CertificateSend")};
+        m.buttons = {button(Id::Cancel, TR(cert_dont_send), Role::Secondary, false, true, false, L"CertificateCancel"), button(Id::Accept, TR(cert_send), Role::Primary, true, false, false, L"CertificateSend")};
         m.buttons[1].disabled = true;
         break;
     }
     case Kind::ScreenShare: {   // B08 concept (Démonstration): the engine's picker cannot be replaced
         // Same 16/20 title as every popover: the 640 DIP picker's hierarchy comes from its thumbnails.
-        m.automationId = L"ScreenShare"; m.scope = Scope::Page; m.title = L"Partager avec " + s.origin; m.demo = true;
+        m.automationId = L"ScreenShare"; m.scope = Scope::Page; m.title = TRF(share_title, s.origin); m.demo = true;
         // A larger picker with thumbnails (user request 2026-11-09): pick a category, select a source,
         // then « Partager ». Thumbnails are drawn locally for the demonstration: nothing is captured.
         m.width = 640;
-        m.sources.shown = true; m.sources.categories = s.sources.empty() ? std::vector<std::wstring>{L"Onglets", L"Fenêtres", L"Écrans"} : s.sources;
+        m.sources.shown = true; m.sources.categories = s.sources.empty() ? std::vector<std::wstring>{TR(settings_tabs), TR(share_windows), TR(share_screens)} : s.sources;
         m.sources.items = s.shareSources; m.sources.category = 0; m.sources.selected = -1; m.sources.acceptId = Id::Accept;
         for (size_t c = 0; c < m.sources.categories.size(); ++c) { bool any = false; for (auto& i : m.sources.items) any = any || i.category == static_cast<int>(c); if (any) { m.sources.category = static_cast<int>(c); break; } }
-        m.notices.push_back({DialogKit::Glyph::info, L"Aperçus fictifs dessinés pour la démonstration : rien n'est capturé ni partagé.", false});
+        m.notices.push_back({DialogKit::Glyph::info, TR(share_demo_notice), false});
         m.softButtons = true;
-        Button share = button(Id::Accept, L"Partager", Role::Primary, true, false, false, L"ShareConfirm"); share.disabled = true;   // until a source is selected
-        m.buttons = {button(Id::Cancel, L"Annuler", Role::Secondary, false, true, false, L"ShareCancel"), share};
+        Button share = button(Id::Accept, TR(share_action), Role::Primary, true, false, false, L"ShareConfirm"); share.disabled = true;   // until a source is selected
+        m.buttons = {button(Id::Cancel, TR(common_cancel), Role::Secondary, false, true, false, L"ShareCancel"), share};
         break;
     }
     case Kind::SiteStatus: {   // B02 EAC-0 / EBA-0: opened from the address-bar chip, never asks anything
         m.automationId = L"SitePermissions"; m.scope = Scope::Anchor; m.width = 340; m.demo = s.demo;
         const bool inUse = !s.active.empty();
-        m.title = inUse ? s.origin + L" utilise" : !s.granted.empty() ? s.origin + L" peut utiliser" : s.origin + L" : accès refusé";
-        m.subtitle = s.demo ? (inUse ? L"Utilisation simulée par la sandbox (démonstration)." : L"Démonstration : rien n'est accordé à un vrai site.")
-                            : L"Le moteur ne signale pas l'utilisation en cours : seule l'autorisation est affichée.";
+        m.title = inUse ? TRF(site_status_uses, s.origin) : !s.granted.empty() ? TRF(site_status_may_use, s.origin) : TRF(site_status_refused, s.origin);
+        m.subtitle = s.demo ? std::wstring(inUse ? TR(site_status_demo_in_use) : TR(site_status_demo)) : std::wstring(TR(site_status_engine_note));
         for (int k : s.granted) {
-            Row r{Text::Glyph(k), Text::Noun(k), std::find(s.active.begin(), s.active.end(), k) != s.active.end() ? L"En cours" : L"", 1};
+            Row r{Text::Glyph(k), Text::Noun(k), std::find(s.active.begin(), s.active.end(), k) != s.active.end() ? TR(demo_in_progress) : L"", 1};
             const bool kept = std::find(s.remembered.begin(), s.remembered.end(), k) != s.remembered.end();
-            r.detail = s.demo ? L"Désactiver retire l'autorisation de démonstration." : std::wstring(kept ? L"Mémorisée pour ce site. " : L"Pour cette page. ") + L"Désactiver la retire et recharge la page.";
+            r.detail = s.demo ? std::wstring(TR(site_status_demo_toggle)) : std::wstring(kept ? TR(site_status_kept_toggle) : TR(site_status_page_toggle));
             m.rows.push_back(r);
         }
-        for (int k : s.revoked) { Row r{Text::Glyph(k), Text::Noun(k), L"Retirée", 0}; r.detail = L"Le site devra la redemander."; m.rows.push_back(r); }
-        for (int k : s.blocked) m.rows.push_back(Row{Text::Glyph(k), Text::Noun(k), L"Bloqué", -1});
-        m.links = {{Id::Manage, L"Autorisations du site"}};
+        for (int k : s.revoked) { Row r{Text::Glyph(k), Text::Noun(k), TR(site_status_revoked), 0}; r.detail = TR(site_status_revoked_note); m.rows.push_back(r); }
+        for (int k : s.blocked) m.rows.push_back(Row{Text::Glyph(k), Text::Noun(k), TR(permission_blocked), -1});
+        m.links = {{Id::Manage, TR(site_status_manage)}};
         break;
     }
     case Kind::PasswordSave: case Kind::PasswordUpdate: {   // B04, Démonstration: nothing is stored
         const bool update = s.kind == Kind::PasswordUpdate;
         m.automationId = update ? L"PasswordUpdate" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
-        m.title = update ? L"Mettre à jour le mot de passe ?" : L"Enregistrer le mot de passe ?";
-        m.subtitle = s.demo ? L"Pour " + s.origin + L". Démonstration : rien n'est enregistré." : L"Pour " + s.origin + L". Enregistré dans browser, chiffré pour votre session Windows.";
-        Field user; user.label = L"Identifiant"; user.value = s.user; user.automationId = L"PasswordUser"; user.required = true;
-        Field pass; pass.label = L"Mot de passe"; pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
+        m.title = update ? TR(password_update_title) : TR(password_save_title);
+        m.subtitle = s.demo ? TRF(password_subtitle_demo, s.origin) : TRF(password_subtitle, s.origin);
+        Field user; user.label = TR(auth_user); user.value = s.user; user.automationId = L"PasswordUser"; user.required = true;
+        Field pass; pass.label = TR(settings_passwords_singular); pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
         pass.value = !s.demo ? s.secret : s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // real: the submitted password; demo: fictitious
         m.fields = {user, pass};
-        m.validate = [](const std::vector<std::wstring>& v) { return v.empty() || v[0].empty() ? std::wstring(L"Saisissez un identifiant.") : std::wstring(); };
+        m.validate = [](const std::vector<std::wstring>& v) { return v.empty() || v[0].empty() ? std::wstring(TR(password_need_user)) : std::wstring(); };
         // D1: an update from a form without an identifier, with several accounts for this origin: the
         // user picks which one (radio rows, « Mettre à jour » disabled until then); never the last one silently.
         if (!s.demo && update && s.user.empty() && s.accounts.size() > 1) {
-            m.fields = {pass}; m.validate = nullptr; m.accountsTitle = L"Quel compte mettre à jour ?";
+            m.fields = {pass}; m.validate = nullptr; m.accountsTitle = TR(password_which_account);
             for (auto& a : s.accounts) m.accounts.push_back({a.user, a.hint, true, false});
             m.accountsSelect = true; m.accountSelected = -1;
         }
         m.softButtons = true;
-        Button never = button(Id::Never, L"Jamais pour ce site", Role::Quiet, false, false, false, L"PasswordNever"); never.leading = true;
+        Button never = button(Id::Never, TR(password_never_site), Role::Quiet, false, false, false, L"PasswordNever"); never.leading = true;
         if (!s.demo) {   // real path: no « Jamais pour ce site » until a real exclusion list exists (no inert action)
             // Review F3: armed (500 ms, foreground) and, for an update, no default Entrée: replacing a stored
             // password always takes a deliberate click or Tab + Espace on « Mettre à jour ».
             m.armMs = 500;
-            m.buttons = {button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
+            m.buttons = {button(Id::Later, TR(common_later), Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? TR(password_update) : TR(password_save), Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
             if (m.accountsSelect) m.buttons[1].disabled = true;
             break;
         }
-        m.buttons = {never, button(Id::Later, L"Plus tard", Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? L"Mettre à jour" : L"Enregistrer", Role::Primary, true, false, false, L"PasswordSave")};
+        m.buttons = {never, button(Id::Later, TR(common_later), Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? TR(password_update) : TR(password_save), Role::Primary, true, false, false, L"PasswordSave")};
         break;
     }
     case Kind::PasswordFill: {   // B03/B04, Démonstration: fictitious accounts held in memory
         m.automationId = L"PasswordFill"; m.scope = Scope::Anchor; m.width = 360; m.padding = 6; m.gap = 2; m.demo = s.demo;   // real: the vault's accounts for the EFFECTIVE origin, no secret here
         if (!s.demo) m.armMs = 500;   // V5: a row cannot be chosen by a click the page arranged
-        m.accountsTitle = s.accounts.empty() ? L"Aucun compte enregistré pour " + s.origin : L"Comptes enregistrés pour " + s.origin;
+        m.accountsTitle = s.accounts.empty() ? TRF(password_no_account, s.origin) : TRF(password_accounts, s.origin);
         for (auto& a : s.accounts) m.accounts.push_back({a.user, std::wstring(std::max<size_t>(8, std::min<size_t>(14, a.hint.size())), L'\x2022')});
-        m.manageLabel = L"Gérer les mots de passe"; m.manageId = Id::Manage;
+        m.manageLabel = TR(settings_manage_passwords); m.manageId = Id::Manage;
         break;
     }
     }
@@ -331,8 +331,8 @@ public:
     // B07 « Plus d'options » commands (Paper FYS-0): two plain rows, a separator, the danger row.
     enum Command { CopyLink = 1, Report = 2, KeepAnyway = 3 };
     static std::vector<ContextMenu::Item> MoreItems(bool keep = true) {
-        std::vector<ContextMenu::Item> items{ContextMenu::Command(CopyLink, L"Copier le lien du fichier"), ContextMenu::Command(Report, L"Signaler une erreur à Microsoft")};
-        if (keep) { auto k = ContextMenu::Command(KeepAnyway, L"Conserver quand même…"); k.danger = true; items.push_back(ContextMenu::Separator()); items.push_back(k); }
+        std::vector<ContextMenu::Item> items{ContextMenu::Command(CopyLink, TR(download_copy_file_link)), ContextMenu::Command(Report, TR(download_report_microsoft))};
+        if (keep) { auto k = ContextMenu::Command(KeepAnyway, TR(download_keep_anyway)); k.danger = true; items.push_back(ContextMenu::Separator()); items.push_back(k); }
         return items;
     }
     struct Hooks {
@@ -413,7 +413,7 @@ public:
     }
     void Abort() { dialog_.Abort(); }
     void Reposition(RECT anchor) { if (dialog_.Visible()) { if (dialog_.CurrentSpec().scope == Modal::Scope::Anchor) dialog_.SetAnchor(anchor); else if (hasPage_) dialog_.Reposition(page_); else dialog_.Reposition({}); } }
-    void AuthRefused() { if (dialog_.Visible() && spec_.kind == Kind::BasicAuth) dialog_.SetFieldError(1, L"Identifiant ou mot de passe refusé par le site."); }
+    void AuthRefused() { if (dialog_.Visible() && spec_.kind == Kind::BasicAuth) dialog_.SetFieldError(1, TR(auth_refused)); }
     bool Visible() const { return dialog_.Visible(); }
     HWND Window() const { return dialog_.Window(); }
     const Spec& Current() const { return spec_; }

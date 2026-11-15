@@ -735,7 +735,7 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     // Capture impossible: the pill says so and leaves the Tab order.
     req.capture = CaptureState::Unavailable; req.draft = L"brouillon"; note.Show(req, target, pageScreen, true, false); Settle();
     note.KeyForTest(VK_TAB, true); note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NoteField);
-    { auto n = note.NodesForTest(); CHECK(HasNode(n, NoteSpec::unavailable) && !HasNode(n, L"Ce que l'agent verra")); }
+    { auto n = note.NodesForTest(); CHECK(HasNode(n, NoteSpec::unavailable()) && !HasNode(n, L"Ce que l'agent verra")); }
     SaveLayer(ink, note.PillForTest(), L"w12-window-note-capture-unavailable.png");
     note.KeyForTest(VK_ESCAPE, true); CHECK(cancelled == L"brouillon" && cancelledKb && !note.Visible()); Settle();
 

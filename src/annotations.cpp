@@ -527,6 +527,11 @@ Outcome Fail(Code code, std::string message) {
     o.message = std::move(message);
     return o;
 }
+Outcome Fail(Code code, Reason reason, std::string message) {
+    Outcome o = Fail(code, std::move(message));
+    o.reason = reason;
+    return o;
+}
 
 std::string CursorFor(const Entry& e) { return "c1." + std::to_string(e.annotation.createdAt) + "." + e.annotation.id; }
 bool ParseCursor(const std::string& c, std::int64_t& createdAt, std::string& id) {
@@ -1619,14 +1624,14 @@ bool MovedToInstalled(const std::wstring& storeRoot, std::wstring* installRootOu
 // migration not yet committed.
 Outcome GuardMutation(const std::wstring& root, AM::Gate& gate) {
     const AM::GateState g = gate.Open(AM::GatePath(root), false);
-    if (g == AM::GateState::Busy) return Fail(Code::Busy, "Migration des annotations en cours : réessayez dans un instant.");
+    if (g == AM::GateState::Busy) return Fail(Code::Busy, Reason::Migrating, "Migration des annotations en cours : réessayez dans un instant.");
     if (g == AM::GateState::Failed) return Fail(Code::Unsafe, "Verrou de migration des annotations inutilisable (annotations.write-gate).");
     if (MovedToInstalled(root))
-        return Fail(Code::Busy, "Ces annotations ont été déplacées vers la version installée du navigateur : utilisez-la.");
+        return Fail(Code::Busy, Reason::MovedToInstalled, "Ces annotations ont été déplacées vers la version installée du navigateur : utilisez-la.");
     const std::wstring data = Parent(root);
     if (LowerW(Leaf(root)) == L"annotations" && Exists(data + L"\\migrated-from.txt") &&
         AM::Parse(ReadRecordText(data + L"\\" + AM::RecordName)).state == AM::State::Copied)
-        return Fail(Code::Busy, "Migration des annotations en cours : réessayez dans un instant.");
+        return Fail(Code::Busy, Reason::Migrating, "Migration des annotations en cours : réessayez dans un instant.");
     return Outcome{};
 }
 }  // namespace
@@ -1866,7 +1871,7 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
         return Fail(Code::Invalid, "Identifiant d'annotation invalide.");
     }
     std::uint32_t pngW = 0, pngH = 0;
-    if (png && !InspectPng(*png, pngW, pngH)) return Fail(Code::Invalid, "Capture refusée (PNG invalide, > 1,5 Mo ou > 1600 px).");
+    if (png && !InspectPng(*png, pngW, pngH)) return Fail(Code::Invalid, Reason::CaptureRefused, "Capture refusée (PNG invalide, > 1,5 Mo ou > 1600 px).");
     Outcome root = EnsureRoot();
     if (!root.ok()) return root;
     const Paths p = EntryPaths(root_, a.siteKey, a.id, draft);
@@ -1892,7 +1897,7 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
                 RemoveTree(EntryPaths(root_, a.siteKey, e.annotation.id, false).dir);
             }
             if (count() >= MaxAnnotationsPerSite)
-                return Fail(Code::LimitReached, "Ce site a déjà 500 annotations : supprimez-en avant d'en ajouter.");
+                return Fail(Code::LimitReached, Reason::SiteFull, "Ce site a déjà 500 annotations : supprimez-en avant d'en ajouter.");
         }
         const std::uint64_t incoming = (png ? png->size() : 0) + 64 * 1024;
         // Walking the whole store costs O(entries); skip it while the entry count alone cannot reach the cap.
@@ -1903,7 +1908,7 @@ Outcome Store::WriteAnnotation(Annotation& a, const std::string* png, bool draft
         if ((entries + 1) * maxEntryBytes > MaxStoreBytes && StoreBytes() + incoming > MaxStoreBytes) {
             Purge();
             if (StoreBytes() + incoming > MaxStoreBytes)
-                return Fail(Code::LimitReached, "Le magasin d'annotations dépasse 200 Mo : supprimez des annotations.");
+                return Fail(Code::LimitReached, Reason::StoreFull, "Le magasin d'annotations dépasse 200 Mo : supprimez des annotations.");
         }
         if (!CreateDirectoryW(p.dir.c_str(), nullptr)) return Fail(Code::Io, "Création du dossier de l'annotation impossible.");
     } else {

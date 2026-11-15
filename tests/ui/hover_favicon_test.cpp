@@ -27,7 +27,14 @@ int wmain(int argc,wchar_t** argv){
     Chrome chrome;Require(SUCCEEDED(chrome.InitOffscreen(root,96,1180,84)),"native offscreen renderer");
     for(int id:{'R','C'}){
         Motion::State state(false);state.SetInteraction(id,0,T(0));chrome.SetMotion(&state);int previous=41;
-        const float x=id=='R'?99.f:989.f; // standalone Reload {83,115} on the canvas; Copy then the star inside the field (ends at 1180-133)
+        // Sample point from the BUILT hit region, never a hard-coded x (toolbar layout moves, e.g. PR76): Reload at its
+        // centre; Copy 2 DIP inside its left edge, clear of the glyph (the old fixed 989 was exactly that when the field
+        // ended at 1180-133).
+        chrome.Paint({L"Google"},0,L"https://example.test",false,0,0,nullptr,T(0));
+        const auto region=std::find_if(chrome.regions.begin(),chrome.regions.end(),[id](const Region& r){return r.id==id;});
+        Require(region!=chrome.regions.end(),"address hover target has a hit region");
+        const float x=id=='R'?(region->rect.left+region->rect.right)/2:region->rect.left+2;
+        std::printf("%c sample x=%.1f (region %.1f..%.1f)\n",id,x,region->rect.left,region->rect.right);
         for(int ms:{0,1,60,120}){chrome.Paint({L"Google"},0,L"https://example.test",false,id,0,nullptr,T(ms));int color=Gray(chrome.SurfacePixel(x,60));Require(color>=41&&color>=previous,"address hover cannot flash darker than its parent");previous=color;std::printf("%c enter t=%d fill=%d\n",id,ms,color);}
         Require(previous==51,"address hover exact shared target");state.SetInteraction(0,0,T(120));previous=51;
         for(int ms:{121,180,240}){chrome.Paint({L"Google"},0,L"https://example.test",false,0,0,nullptr,T(ms));int color=Gray(chrome.SurfacePixel(x,60));Require(color>=41&&color<=previous,"address leave monotonic toward parent without dark flash");previous=color;std::printf("%c leave t=%d fill=%d\n",id,ms,color);}

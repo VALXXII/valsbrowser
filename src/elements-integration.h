@@ -12,6 +12,7 @@
 // - the sandbox bridge accepts messages only from the sandbox tab, top-level source equal
 //   to DebugSandbox::Url, with this launch's token and an allowlisted command.
 #pragma once
+#include "i18n.h"
 #include "modal.h"
 #include "origin-prompt.h"
 #include "password-demo.h"
@@ -47,11 +48,11 @@ template<class T> struct ComRef { // shared owning reference to event args kept 
 std::wstring TakeString(LPWSTR s){std::wstring r=s?s:L"";if(s)SecureZeroMemory(s,wcslen(s)*sizeof(wchar_t));CoTaskMemFree(s);return r;}   // F6: the engine buffer is wiped (page messages may carry a password)
 // « exemple.com » for a page address; « Cette page » for local documents.
 std::wstring OriginLabel(const std::wstring& uri){
-    const auto scheme=uri.find(L"://");if(scheme==std::wstring::npos)return L"Cette page";
+    const auto scheme=uri.find(L"://");if(scheme==std::wstring::npos)return TR(this_page);
     const auto start=scheme+3;auto end=uri.find_first_of(L"/?#",start);if(end==std::wstring::npos)end=uri.size();
     std::wstring host=uri.substr(start,end-start);const auto at=host.rfind(L'@');if(at!=std::wstring::npos)host.erase(0,at+1);
     if(host.rfind(L"www.",0)==0)host.erase(0,4);
-    return host.empty()?L"Cette page":host;
+    return host.empty()?std::wstring(TR(this_page)):host;
 }
 std::wstring OriginOf(const std::wstring& uri){ // scheme://host[:port], exact comparison key
     const auto scheme=uri.find(L"://");if(scheme==std::wstring::npos)return uri;
@@ -182,11 +183,14 @@ bool RequestChipOpen(){
     if(halted||!promptOpen||promptActive.spec.kind!=OP::Kind::Permission||!originPrompt.Visible())return false;
     auto t=promptActive.tab.lock();return t&&!t->closed&&t==Active();
 }
-std::wstring RequestChipTip(const OP::Spec& s){
-    std::wstring nouns;const auto& p=s.permissions;
-    for(size_t i=0;i<p.size();++i){std::wstring n=OP::Text::Noun(p[i]);if(i)n[0]=towlower(n[0]);nouns+=(i==0?L"":i+1==p.size()?L" et ":L", ")+n;}
-    return s.origin+L" demande : "+(nouns.empty()?std::wstring(L"une autorisation"):nouns)+L" (en attente de votre réponse)";
+// « Caméra, micro et position » / « Camera, microphone and location »: the nouns as one list, in the process language.
+std::wstring NounList(const std::vector<int>& p){
+    std::vector<std::wstring> n;for(size_t i=0;i<p.size();++i){std::wstring w=OP::Text::Noun(p[i]);if(i&&I18n::Current()==I18n::Locale::Fr)w[0]=towlower(w[0]);n.push_back(w);}
+    if(n.empty())return TR(perm_one_permission);
+    std::wstring head=n[0];for(size_t i=1;i+1<n.size();++i)head=TRF(list_comma,head,n[i]);
+    return n.size()==1?head:TRF(list_and,head,n.back());
 }
+std::wstring RequestChipTip(const OP::Spec& s){return TRF(chip_pending_tip,s.origin,NounList(s.permissions));}
 // Per-tab site state behind the chip once a request is answered. Real tabs: what WE granted or
 // blocked for this document (deferral answers) plus what the engine has saved for its origin
 // (ICoreWebView2Profile4::GetNonDefaultPermissionSettings, re-read after each navigation).
@@ -208,10 +212,7 @@ void RecordSiteAnswer(const std::shared_ptr<Tab>& t,const std::wstring& requeste
     SiteRequest::Record(st.g,kinds,allowed);
     for(int k:kinds){if(allowed&&remembered)SiteRequest::Add(st.remembered,k);else SiteRequest::Remove(st.remembered,k);}
 }
-std::wstring Nouns(const std::vector<int>& p){
-    std::wstring nouns;for(size_t i=0;i<p.size();++i){std::wstring n=OP::Text::Noun(p[i]);if(i)n[0]=towlower(n[0]);nouns+=(i==0?L"":i+1==p.size()?L" et ":L", ")+n;}
-    return nouns.empty()?std::wstring(L"une autorisation"):nouns;
-}
+std::wstring Nouns(const std::vector<int>& p){return NounList(p);}
 // What the bar should show for the active tab right now (glyphs empty: nothing).
 struct ChipTarget { std::vector<const char*> glyphs; SiteRequest::State state=SiteRequest::State::Pending; std::wstring tip; };
 ChipTarget ChipFor(){
@@ -221,7 +222,7 @@ ChipTarget ChipFor(){
         const auto shown=SiteRequest::Resolve(st->g);if(shown.kinds.empty())return c;
         c.glyphs=SiteRequest::Glyphs(shown.kinds);c.state=shown.state;
         const std::wstring site=st->demo?std::wstring(L"meet.exemple.test"):OriginLabel(st->requester+L"/");
-        c.tip=site+L" : "+Nouns(shown.kinds)+L" — "+SiteRequest::StateLabel(shown.state)+(st->demo?L" (démonstration)":L"")+L". Afficher les autorisations du site";
+        c.tip=st->demo?TRF(chip_state_tip_demo,site,Nouns(shown.kinds),SiteRequest::StateLabel(shown.state)):TRF(chip_state_tip,site,Nouns(shown.kinds),SiteRequest::StateLabel(shown.state));
     }
     return c;
 }
@@ -422,7 +423,7 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
 // shutdown cancels the request (Cancel). The deferral completes exactly once.
 std::wstring CertificateDate(double seconds){
     if(seconds<=0)return L"";const time_t t=(time_t)seconds;tm local{};if(localtime_s(&local,&t)!=0)return L"";
-    wchar_t b[16];swprintf(b,16,L"%02d/%02d/%04d",local.tm_mday,local.tm_mon+1,local.tm_year+1900);return b;
+    wchar_t d[4],m[4];swprintf(d,4,L"%02d",local.tm_mday);swprintf(m,4,L"%02d",local.tm_mon+1);return TRF(date_numeric,d,m,std::to_wstring(local.tm_year+1900));
 }
 struct CertificateRow { std::wstring name,hint; bool expired=false; };
 CertificateRow DescribeCertificate(ICoreWebView2ClientCertificate* c,double now){
@@ -432,7 +433,8 @@ CertificateRow DescribeCertificate(ICoreWebView2ClientCertificate* c,double now)
     const std::wstring issuer=TakeString([&]{LPWSTR s=nullptr;c->get_Issuer(&s);return s;}());
     double to=0;c->get_ValidTo(&to);row.expired=to>0&&to<now;
     const std::wstring date=CertificateDate(to);
-    row.hint=(issuer.empty()?std::wstring():L"Émis par "+issuer)+(date.empty()?L"":(issuer.empty()?L"":L" · ")+std::wstring(row.expired?L"expiré le ":L"expire le ")+date);
+    const std::wstring expiry=date.empty()?std::wstring():row.expired?TRF(cert_expired_on,date):TRF(cert_expires_on,date);
+    row.hint=issuer.empty()?expiry:expiry.empty()?TRF(cert_issued_by,issuer):TRF(cert_issued_by,issuer)+L" · "+expiry;
     return row;
 }
 HRESULT ClientCertificateRequested(const std::shared_ptr<Tab>& t,ICoreWebView2ClientCertificateRequestedEventArgs* a){
@@ -448,7 +450,7 @@ HRESULT ClientCertificateRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Cl
     Log(L"CERTIFICATE requested "+host+L":"+std::to_wstring(port)+(proxy?L" (proxy)":L"")+L" candidates="+std::to_wstring(count));
     if(!count)return S_OK; // nothing to offer: continue without a certificate (Handled, no selection)
     OP::Spec spec;spec.kind=OP::Kind::ClientCertificate;
-    spec.origin=(proxy?L"Le proxy ":L"")+host+(port&&port!=443?L":"+std::to_wstring(port):L"");
+    spec.origin=host+(port&&port!=443?L":"+std::to_wstring(port):L"");if(proxy)spec.origin=TRF(cert_proxy,spec.origin);
     const double now=(double)time(nullptr);
     for(UINT32 i=0;i<count;++i){Com<ICoreWebView2ClientCertificate> c;if(FAILED(list->GetValueAtIndex(i,&c.p))||!c.p)continue;auto row=DescribeCertificate(c.p,now);spec.accounts.push_back({row.name,row.hint,row.expired});}
     ComRef<ICoreWebView2ClientCertificateCollection> keep(list.p);
@@ -645,6 +647,9 @@ RECT MonitorScreenRect(){MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(MonitorFromW
 void ApplyFullscreen(bool wasFull){
     const bool full=InFullscreen();
     if(full&&!wasFull){fullscreen.saved=GetWindowPlacement(window,&fullscreen.placement)!=FALSE;HideSuggestions();
+        // The chrome leaves with its focus, hover and tooltip: keyboard focus on a toolbar control or in the address
+        // field goes to the page (a page that asked for fullscreen already has it).
+        hover=pressed=0;if(tooltip)SendMessageW(tooltip,TTM_POP,0,0);if(editing||keyboardFocus||GetFocus()==address)FocusPage();
         if(IsZoomed(window))ShowWindow(window,SW_RESTORE);
         const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER);}
     else if(!full&&wasFull){if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
@@ -657,6 +662,7 @@ void ApplyFullscreen(bool wasFull){
 void SetPageFullscreen(const std::shared_ptr<Tab>& t,bool on){
     if(on&&t!=Active())return;const bool was=InFullscreen();fullscreen.page=on;
     Log(std::wstring(L"FULLSCREEN page ")+(on?L"on":L"off"));if(was!=InFullscreen()||on)ApplyFullscreen(was);
+    else Layout();   // the page left while F11 stays: the window keeps its size, its pages (a split) come back
 }
 bool PageFullscreenActive(){auto t=Active();return fullscreen.page&&t&&t->pageFullscreen;}
 // Échap / F11 during a page's fullscreen: the page leaves it (its fullscreenchange fires; the
@@ -733,11 +739,11 @@ void AskClearBrowsingData(bool demo,std::function<void(bool)> result){
     spec.buttons[1].closes=false;
     spec.onButton=[demo,result](int id){
         if(id!=MD::AcceptButton)return;
-        modal.SetBusy(true,L"Effacement…");
+        modal.SetBusy(true,TR(annotations_clearing));
         const MD::Result now=modal.Snapshot();
         if(demo){Defer([result]{if(result)result(true);modal.Finish(MD::AcceptButton);});return;}
         StartClearSelected(now.checks,now.select,[result](HRESULT hr){
-            if(FAILED(hr)){modal.SetBusy(false);modal.SetError(L"L'effacement n'a pas abouti ("+HrText(hr)+L"). Réessayez.");return;}
+            if(FAILED(hr)){modal.SetBusy(false);modal.SetError(TRF(clear_data_failed,HrText(hr)));return;}
             if(result)result(true);modal.Finish(MD::AcceptButton);AnnounceDataCleared();});
     };
     AskModal(std::move(spec),nullptr,[result](const MD::Result& r){if(r.button!=MD::AcceptButton&&result)result(false);});
@@ -755,14 +761,14 @@ bool CloseWindowAllowed(bool demo,std::function<void(bool)> result){
     const DL::Item* running=nullptr;for(const auto& d:downloads)if(d.state==DL::State::InProgress){running=&d;break;}
     // Same-window profiles: a download running in a profile cached in this window is cancelled too.
     const int parkedRunning=demo?0:ParkedDownloadsRunning();
-    DL::Item parkedItem;if(!running&&parkedRunning){parkedItem.path=parkedRunning>1?std::to_wstring(parkedRunning)+L" téléchargements d'un autre profil":L"un téléchargement d'un autre profil";running=&parkedItem;}
+    DL::Item parkedItem;if(!running&&parkedRunning){parkedItem.path=TRP(close_window_other_profile_downloads,parkedRunning);running=&parkedItem;}
     if(!demo&&!running&&(n<=1||!settings.confirmCloseTabs))return true;
     if(modalOpen&&!demo)return false; // one question at a time
     auto spec=running&&!demo?MD::CloseWindowSpec(std::max(n,1),DL::FileName(running->path),BrowserUpdate::ToastModel::FormatSize((std::uint64_t)std::max<std::int64_t>(running->received,0),(std::uint64_t)std::max<std::int64_t>(running->total,0)) /* E2: 1 decimal, total unknown = received only */):MD::CloseWindowSpec(std::max(n,2));
-    if(running&&!demo&&n<=1)spec.title=L"Fermer la fenêtre ?";
+    if(running&&!demo&&n<=1)spec.title=TR(close_window_question);
     // F4: a private window's tabs cannot be reopened (no history, no Ctrl+Maj+T) and « Ne plus demander »
     // is not offered here (its settings write belongs to the normal windows' transaction).
-    if(privateWindow&&!demo&&!running){spec.body=L"Les onglets d'une fenêtre privée ne peuvent pas être rouverts.";spec.bodyKeys.clear();spec.checkLabel.clear();spec.checkInActions=false;}
+    if(privateWindow&&!demo&&!running){spec.body=TR(close_window_private_note);spec.bodyKeys.clear();spec.checkLabel.clear();spec.checkInActions=false;}
     spec.demo=demo;
     AskModal(std::move(spec),nullptr,[demo,result](const MD::Result& r){
         const bool ok=r.button==MD::AcceptButton;if(result)result(ok);
@@ -787,9 +793,9 @@ void ShowPartialRestoreToast(const std::vector<std::wstring>& urls){
 }
 void ShowWindowLaunchFailed(const std::wstring& id){
     NativeChrome::ContextToast::Spec s;s.automationId=L"WindowLaunchFailedToast";s.icon=NativeChrome::ContextToast::Icon::Error;s.error=true;s.durationMs=0;
-    s.message=L"Impossible d'ouvrir une nouvelle fenêtre";
-    s.detail=id.empty()?L"Les onglets n'ont pas pu être transmis.":L"Ses onglets sont conservés et rouvriront au prochain démarrage.";
-    if(!id.empty())s.action=L"Réessayer";
+    s.message=TR(window_launch_failed);
+    s.detail=id.empty()?TR(window_launch_failed_tabs_lost):TR(window_launch_failed_tabs_kept);
+    if(!id.empty())s.action=TR(downloads_action_retry);
     contextToast.Show(s,PageScreenRect(),[id](bool acted){if(acted)RetryWindowLaunch(id);});Log(L"WINDOW launch failed toast");
 }
 // A8. Without a live update engine (preview, portable without feed) the status says so
@@ -822,7 +828,7 @@ void ShowAboutDialog(int demoState){
     live=false; // the preview's engine is compiled with updates off
 #endif
     if(demoState>=0){}
-    else if(!live){spec.status.icon=MD::StatusIcon::None;spec.status.title=L"Mises à jour désactivées";spec.status.detail=L"Build de prévisualisation : aucune recherche automatique";spec.status.hasButton=false;}
+    else if(!live){spec.status.icon=MD::StatusIcon::None;spec.status.title=TR(updates_disabled_title);spec.status.detail=TR(updates_disabled_preview);spec.status.hasButton=false;}
     else spec.status=AboutStatusNow();
     if(demoState>=0)spec.onButton=[](int id){if(id==MD::AboutCheckButton)modal.SetStatus(MD::AboutStatus(MD::AboutChecking));};   // sandbox: nothing is checked
     else spec.onButton=[](int id){AboutUpdateAction(id);RefreshAboutStatus();};
@@ -873,7 +879,7 @@ HRESULT SandboxResource(const std::shared_ptr<Tab>& t,ICoreWebView2WebResourceRe
     Com<ICoreWebView2WebResourceRequest> request;if(FAILED(a->get_Request(&request.p))||!request.p)return S_OK;
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;request->get_Uri(&s);return s;}());
     if(!IsSandboxUri(uri))return S_OK;
-    std::string body;int status=404;const wchar_t* reason=L"Not Found";
+    std::string body;int status=404;const wchar_t* reason=L"Not Found";   // i18n-exempt: HTTP reason phrase
     std::wstring path=uri.substr(wcslen(L"https://")+wcslen(NativeChrome::DebugSandbox::Host));const auto q=path.find_first_of(L"?#");if(q!=std::wstring::npos)path.resize(q);
     if(t&&!t->closed&&t->sandbox&&path==L"/sandbox"){body=NativeChrome::DebugSandbox::Html(SandboxToken(),PageFont(false),PageFont(true));status=200;reason=L"OK";}
     else body="<!doctype html><meta charset=utf-8><title>Introuvable</title>";
@@ -939,7 +945,7 @@ VaultLoad ReadVault(DWORD lockMs){
     if(damaged)return unavailable(L"VAULT file damaged: not opened");
     vault=std::move(read2);vaultBase=vault;vaultLoaded=true;lastWhy.clear();return VaultLoad::Ok;
 }
-std::wstring VaultUnavailableText(VaultLoad r){return r==VaultLoad::Busy?L"Le profil est occupé par une autre fenêtre ; réessayez.":L"Le fichier des mots de passe est illisible, inaccessible ou d'une autre version ; il n'a pas été modifié.";}
+std::wstring VaultUnavailableText(VaultLoad r){return r==VaultLoad::Busy?TR(vault_busy):TR(vault_unreadable);}
 // Explicit user actions (capture answer, fill, choice, manager): always a FRESH read (a removal made in
 // another window is honoured, normal or private), bounded wait, a refusal is said.
 bool LoadVault(const wchar_t* title){const auto r=ReadVault(1000);if(r==VaultLoad::Ok)return true;VaultNotice(title,VaultUnavailableText(r));return false;}
@@ -987,7 +993,7 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     if(vaultCaptureFailed&&VaultStampNow()==vaultCaptureFailedAt){Wipe(secret);return true;}   // N7: still the same unreadable file, already said
     {const auto load=ReadVault(1000);
      if(load!=VaultLoad::Ok){if(load==VaultLoad::Unavailable){vaultCaptureFailed=true;vaultCaptureFailedAt=VaultStampNow();}   // review R2: only a really unreadable file is remembered; busy is retried
-      Wipe(secret);VaultNotice(L"Mot de passe non enregistré",VaultUnavailableText(load));return true;}}   // F5/F11
+      Wipe(secret);VaultNotice(TR(vault_not_saved),VaultUnavailableText(load));return true;}}   // F5/F11
     vaultCaptureFailed=false;
     // Review N3: a newer capture of the tab replaces the pending one (and its secret).
     if(vaultPromptOpen.count(t->serial)||vaultCapture.count(t->serial)){VaultCaptureDrop(t);vaultPromptOpen.erase(t->serial);}
@@ -1004,12 +1010,12 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
     AskPrompt(std::move(s),t,[origin,serial,weak](OP::Result& r){
         vaultPromptOpen.erase(serial);vaultCapture.erase(serial);Log(L"VAULT B04 answer action="+std::to_wstring((int)r.action)+(r.password.empty()?L" (no password)":L""));
         if(r.action==OP::Action::Save&&!r.password.empty()&&!VaultOfferStillValid(weak.lock(),origin)){Log(L"VAULT capture dropped at the answer: the tab is no longer on its origin");Wipe(r.password);return;}   // N13
-        if(r.action==OP::Action::Save&&!r.password.empty()&&LoadVault(L"Mot de passe non enregistré")){   // F11: fresh file at the answer
+        if(r.action==OP::Action::Save&&!r.password.empty()&&LoadVault(TR(vault_not_saved))){   // F11: fresh file at the answer
             const auto saved=vault.Save(origin,r.user,r.password,NativeChrome::DownloadsUI::UnixNowMs());
             const auto res=saved==Vault::Store::Saved::Refused?ProfileStore::Result::Failed:Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
             const bool ok=res==ProfileStore::Result::Written||res==ProfileStore::Result::Unchanged;
             Log(std::wstring(L"VAULT ")+(ok?L"saved":L"NOT saved (refused, busy, damaged or unknown file)"));
-            if(!ok){vault=vaultBase;VaultNotice(L"Mot de passe non enregistré",res==ProfileStore::Result::Busy?L"Le profil est occupé par une autre fenêtre ; réessayez.":L"Le fichier des mots de passe n'a pas pu être écrit ; il n'a pas été modifié.");}   // F5: memory back to the file
+            if(!ok){vault=vaultBase;VaultNotice(TR(vault_not_saved),res==ProfileStore::Result::Busy?TR(vault_busy):TR(vault_write_failed));}   // F5: memory back to the file
         }
         Wipe(r.password);
     },L"vault:"+std::to_wstring(serial));
@@ -1070,11 +1076,11 @@ void VaultKeyActivated(){
 Vault::Target VaultTargetNow(const std::shared_ptr<Tab>& t,bool userAction){const std::wstring src=EngineSource(t);Vault::Target v;v.frameSource=src;v.topSource=src;v.frameId=0;v.navigation=t->navStamp;v.userAction=userAction;return v;}
 void OfferVaultFill(const std::shared_ptr<Tab>& t){
     if(!Vault::Active()||!t||t->closed||!t->view.p)return;
-    if(!LoadVault(L"Mots de passe indisponibles"))return;   // F11: fresh read (normal and private)
+    if(!LoadVault(TR(vault_unavailable)))return;   // F11: fresh read (normal and private)
     const Vault::Target atAction=VaultTargetNow(t,true);const std::wstring origin=Vault::CanonicalOrigin(atAction.topSource);
-    if(atAction.topSource!=t->uri){Log(L"VAULT fill: engine source differs from the tab");VaultNotice(L"Remplissage annulé",Vault::RefusalText(Vault::Refusal::Stale));return;}
+    if(atAction.topSource!=t->uri){Log(L"VAULT fill: engine source differs from the tab");VaultNotice(TR(vault_fill_canceled),Vault::RefusalText(Vault::Refusal::Stale));return;}
     Log(L"VAULT fill: B03 prompt");
-    if(origin.empty()){VaultNotice(L"Mots de passe indisponibles",Vault::RefusalText(Vault::Refusal::NotHttps));return;}   // D2: short state on explicit request only
+    if(origin.empty()){VaultNotice(TR(vault_unavailable),Vault::RefusalText(Vault::Refusal::NotHttps));return;}   // D2: short state on explicit request only
     const auto accounts=vault.For(origin);
     OP::Spec s;s.kind=OP::Kind::PasswordFill;s.demo=false;s.origin=origin;for(const auto& e:accounts)s.accounts.push_back({e.user,L"••••••••"});
     std::vector<std::uint64_t> ids;for(const auto& e:accounts)ids.push_back(e.id);
@@ -1087,33 +1093,33 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
 #ifdef BROWSER_E2E_VAULT_HOST
         foreground=true;   // TEST HOST ONLY
 #endif
-        if(t!=Active()||!foreground||!t->errorPage.shown.empty()||!t->https.shown.empty()){VaultNotice(L"Remplissage annulé",Vault::RefusalText(Vault::Refusal::Stale));return;}
+        if(t!=Active()||!foreground||!t->errorPage.shown.empty()||!t->https.shown.empty()){VaultNotice(TR(vault_fill_canceled),Vault::RefusalText(Vault::Refusal::Stale));return;}
         const auto refusal=Vault::CanFill(atAction,VaultTargetNow(t,false),origin);
         if(refusal!=Vault::Refusal::None){Log(std::wstring(L"VAULT fill refused: ")+Vault::RefusalText(refusal));VaultNotice(L"Remplissage annulé",Vault::RefusalText(refusal));return;}   // F5: said, not only logged
-        if(!LoadVault(L"Remplissage annulé"))return;   // F11: fresh read at the real choice
+        if(!LoadVault(TR(vault_fill_canceled)))return;   // F11: fresh read at the real choice
         const Vault::Entry* e=vault.Find(ids[(size_t)r.choice]);
-        if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(L"Remplissage annulé",L"Ce compte n'est plus enregistré (il a été supprimé, peut-être dans une autre fenêtre).");return;}
+        if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(TR(vault_fill_canceled),TR(vault_account_gone));return;}
         std::wstring secret;if(!vault.Reveal(e->id,origin,secret))return;
         std::wstring script=Vault::FillScript(origin,e->user,secret);Wipe(secret);
         // Only a fixed status word comes back (never a page value or the secret); « rempli » only when the page says so.
         auto done=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{
             const auto o=Vault::ParseFillResult(hr,json);
             if(o==Vault::FillOutcome::Filled){Log(L"VAULT filled (user action, same document, confirmed by the page)");return S_OK;}
-            Log(L"VAULT fill not done: outcome="+std::to_wstring((int)o)+L" hr="+std::to_wstring((long)hr));VaultNotice(L"Remplissage non effectué",Vault::FillOutcomeText(o));return S_OK;});
+            Log(L"VAULT fill not done: outcome="+std::to_wstring((int)o)+L" hr="+std::to_wstring((long)hr));VaultNotice(TR(vault_fill_not_done),Vault::FillOutcomeText(o));return S_OK;});
         const HRESULT hr=t->view->ExecuteScript(script.c_str(),done);done->Release();Wipe(script);
-        if(FAILED(hr)){Log(L"VAULT fill not done: ExecuteScript hr="+std::to_wstring((long)hr));VaultNotice(L"Remplissage non effectué",Vault::FillOutcomeText(Vault::FillOutcome::Failed));}
+        if(FAILED(hr)){Log(L"VAULT fill not done: ExecuteScript hr="+std::to_wstring((long)hr));VaultNotice(TR(vault_fill_not_done),Vault::FillOutcomeText(Vault::FillOutcome::Failed));}
     },L"vaultfill:"+std::to_wstring(t->serial));
 }
 // E8 / B05: the vault manager, real mode of the B05 surface (no decrypted secret, no reveal; removal
 // through Vault::Commit, a failure is said and the row stays). Only while the vault is active.
 std::wstring VaultModified(std::int64_t ms){if(ms<=0)return L"";FILETIME ft;ULARGE_INTEGER u;u.QuadPart=(ULONGLONG)(ms+11644473600000LL)*10000ULL;ft.dwLowDateTime=u.LowPart;ft.dwHighDateTime=u.HighPart;SYSTEMTIME st,lt;FileTimeToSystemTime(&ft,&st);SystemTimeToTzSpecificLocalTime(nullptr,&st,&lt);
-    static const wchar_t* months[]={L"janvier",L"février",L"mars",L"avril",L"mai",L"juin",L"juillet",L"août",L"septembre",L"octobre",L"novembre",L"décembre"};
-    return L"Modifié le "+std::to_wstring(lt.wDay)+L" "+months[(lt.wMonth+11)%12]+L" "+std::to_wstring(lt.wYear);}
+    using I=I18n::Id;static const I months[]={I::month_long_1,I::month_long_2,I::month_long_3,I::month_long_4,I::month_long_5,I::month_long_6,I::month_long_7,I::month_long_8,I::month_long_9,I::month_long_10,I::month_long_11,I::month_long_12};
+    return TRF(vault_modified_on,std::to_wstring(lt.wDay),I18n::T(months[(lt.wMonth+11)%12]),std::to_wstring(lt.wYear));}
 // {shown, count}; count SIZE_MAX = the vault file could not be read (Settings says so instead of « 0 », F5).
 std::pair<bool,std::size_t> VaultInfo(){if(!Vault::Active())return {false,0};const auto c=VaultCached();return {true,c.first?c.second:SIZE_MAX};}   // drawn often: never blocks
 void ShowVaultManager(bool keyboard){
     if(!Vault::Active()||passwordDemo.Visible())return;   // review N8: never re-populated while shown
-    if(!LoadVault(L"Mots de passe indisponibles"))return;   // F11: fresh read, read-only in private
+    if(!LoadVault(TR(vault_unavailable)))return;   // F11: fresh read, read-only in private
     keyboardModality=keyboard;std::vector<NativeChrome::PasswordDemo::Account> rows;std::vector<std::uint64_t> ids;
     for(const auto& e:vault.Entries()){std::wstring host=e.origin.substr(e.origin.find(L"://")+3);NativeChrome::PasswordDemo::Account a{host,e.user,L"",L"",VaultModified(e.updated)};a.id=e.id;rows.push_back(a);ids.push_back(e.id);}
     passwordDemo.SetReal(std::move(rows),[](std::uint64_t id)->bool{   // review F1: the row's own vault id, never a shifting index
@@ -1213,17 +1219,17 @@ std::wstring DangerText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     switch(r){
     // E5: the engine's reason only; never « not saved » (a residual file may exist) and a failed
     // check is not a malware verdict.
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return L"Ce fichier a été signalé comme dangereux. Le téléchargement a été bloqué.";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"Le téléchargement a été bloqué, car sa sécurité n'a pas pu être vérifiée.";
-    default:return L"Une règle de sécurité bloque ce téléchargement.";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return TR(download_blocked_reason_dangerous);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return TR(download_blocked_reason_check);
+    default:return TR(download_blocked_reason_policy);
     }
 }
 OP::Spec DangerousDownloadSpec(const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){
-    OP::Spec s;s.kind=OP::Kind::DangerousDownload;s.origin=OriginLabel(uri);s.detail=DL::FileName(path);if(s.detail.empty())s.detail=L"Fichier";
+    OP::Spec s;s.kind=OP::Kind::DangerousDownload;s.origin=OriginLabel(uri);s.detail=DL::FileName(path);if(s.detail.empty())s.detail=TR(download_file_generic);
     s.reason=DangerText(reason);s.link=uri;
     // Header by the real reason: « dangereux » only for FILE_MALICIOUS (same words as the list row, E6).
     s.reportable=reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS;
-    s.blockedTitle=reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS?L"Fichier dangereux":reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED?L"Vérification de sécurité impossible":L"Téléchargement bloqué";s.keepAvailable=false;s.demo=false;return s;
+    s.blockedTitle=reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS?TR(download_blocked_title_dangerous):reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED?TR(download_blocked_title_check):TR(download_blocked_title_policy);s.keepAvailable=false;s.demo=false;return s;
 }
 void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason){
     auto t=Active();if(halted||!t)return;
@@ -1249,8 +1255,9 @@ void PromptDownloadCommand(OP::Prompt::Command c,const OP::Spec& s){
         return;
     }
     std::wstring line;
+    // i18n-exempt-begin: sandbox log lines (QA journal, not interface text)
     if(c==OP::Prompt::CopyLink){const std::wstring link=L"https://"+s.origin+L"/"+s.detail;line=CopyToClipboard(link)?L"prompt.dangerousDownload → lien copié (démonstration) : "+link:L"prompt.dangerousDownload → copie du lien impossible";}
-    else line=L"prompt.dangerousDownload → signalement simulé (démonstration : rien n'est envoyé à Microsoft)";
+    else line=L"prompt.dangerousDownload → signalement simulé (démonstration : rien n'est envoyé à Microsoft)";   // i18n-exempt-end
     Log(L"SANDBOX "+line);if(t&&!t->closed)SandboxLog(t,line);
 }
 void CreateElementSurfaces(){
@@ -1306,6 +1313,8 @@ void OpenShortcutsPanel(){
 }
 std::map<UINT_PTR,std::function<void()>> sandboxTimers;
 void CALLBACK SandboxTimer(HWND,UINT,UINT_PTR id,DWORD){KillTimer(nullptr,id);auto it=sandboxTimers.find(id);if(it==sandboxTimers.end())return;auto f=std::move(it->second);sandboxTimers.erase(it);if(!halted)f();}
+// i18n-exempt-begin: QA sandbox dispatcher (browser://debug): French review journal and fictitious demo data;
+// the production components it opens are translated.
 void After(UINT ms,std::function<void()> f){UINT_PTR id=SetTimer(nullptr,0,ms,SandboxTimer);if(id)sandboxTimers[id]=std::move(f);}
 std::wstring ModalOutcome(const MD::Result& r){
     std::wstring s=r.button==-1?L"annulée (Échap / abandon)":r.button==MD::CancelButton?L"Annuler":r.button==MD::AcceptButton?L"accepté":L"bouton "+std::to_wstring(r.button);
@@ -1448,6 +1457,7 @@ void SandboxCommand(const std::shared_ptr<Tab>& t,const NativeChrome::DebugSandb
 
 // ---------------------------------------------------------------------------------------
 // C5 in the real toolbar: « Libellé (Raccourci) » becomes label + key caps.
+// i18n-exempt-end
 NativeChrome::Tooltip::Content TipContent(const wchar_t* tip){
     std::wstring s=tip?tip:L"";NativeChrome::Tooltip::Content c{s,L"",L""};
     if(!s.empty()&&s.back()==L')'){const auto open=s.rfind(L" (");

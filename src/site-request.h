@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Pending site requests in the address bar (Paper p-D-0, B01 « Indicateurs — sécurité +
 // permission », B02 « Après la décision »). Pure C++17: tests/site_request_test.cpp uses it.
 //
@@ -79,8 +80,8 @@ inline float ChipWidth(std::size_t glyphs, State s = State::Pending) {
 inline float TextShift(std::size_t glyphs, State s = State::Pending) { return glyphs ? Layout::lead + ChipWidth(glyphs, s) + Layout::trail : 0; }
 // Accessible / tooltip wording of a state.
 inline const wchar_t* StateLabel(State s) {
-    switch (s) { case State::Pending: return L"demande en attente de votre réponse"; case State::Granted: return L"autorisé";
-    case State::Active: return L"en cours d'utilisation"; default: return L"bloqué"; }
+    switch (s) { case State::Pending: return TR(site_request_pending); case State::Granted: return TR(site_request_granted);
+    case State::Active: return TR(site_request_active); default: return TR(site_request_blocked); }
 }
 // Which state the bar shows for the active tab: an open request wins; then what the page may
 // use (Active only when a verified in-use source says so), then what it was refused.

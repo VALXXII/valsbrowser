@@ -32,12 +32,14 @@
 #include "address.h"
 #include "address-popup.h"
 #include "settings-panel.h"
+#include "ui-language.h" // browser-wide interface language: read once at startup, saved from Réglages › Langue
 #include "context-menu.h"
 #include "accessibility.h"
 #include "bookmarks.h"
 #include "bookmark-popover.h"
 #include "bookmark-toast.h"
 #include "bookmarks-panel.h"
+#include "inline-rename.h"
 #include "split-view.h"
 #include "split-overlay.h"
 #include "status-bubble.h"
@@ -165,7 +167,7 @@ struct ErrorPageState { std::wstring shown,token; bool pending=false; int kind=0
     // Server certificate refused by the engine for the request `certUri` (CANCEL, never allowed): the
     // page shows only if the latest top-level navigation then fails for that same URL.
     int certStatus=-1; std::wstring certUri,certIssuer; };
-struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=L"Nouvel onglet",uri; bool closed=false,home=true,refreshing=false,certificateError=false;
+struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=TR(tab_new),uri; bool closed=false,home=true,refreshing=false,certificateError=false;
     ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; HttpsOnlyState https; // hiddenAt: when it last stopped being shown
     // Split view: group id (0 = none), relative size, use order (rails collapse the least
     // recent), on screen now, first navigation done (until then the controller stays hidden).
@@ -190,6 +192,10 @@ bool PageShown(const Tab& t){return !t.home||homeTiles.Has(t);}
 void TabShown(const std::shared_ptr<Tab>& tab);
 HWND window,tabs,address,back,forward,reload,add,closeTab,home;
 HFONT font; HBRUSH paper; HINSTANCE instance; HMODULE loader;
+// Address selection in the window's profile colour, white text (native-ui.h EditSelection; design/profile-address-selection-report.md).
+NativeUI::EditSelection addressSelection;
+NativeUI::EditSelection::Colors AddressSelectionColors(){const auto f=NativeChrome::Design::Accent::Selection();auto b=[](float v){return (int)std::lround(std::clamp(v,0.f,1.f)*255);};return {RGB(b(f.r),b(f.g),b(f.b)),RGB(255,255,255)};}
+void AddressSelectionChanged(){addressSelection.Refresh();}
 // Overlay scrollbar of every shown page (Paper V3 "Scrollbar minimale", see ScrollbarRefresh).
 void ScrollbarRefresh(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake ScrollbarWake(NativeChrome::Motion::Time now);void ScrollbarReset();void ScrollbarSettleHover();void ScrollbarDestroy();void SyncScrollbars();
 Com<ICoreWebView2Environment> environment;
@@ -206,7 +212,7 @@ NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble s
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
 constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,AnnotateHistoryCommand=3062; bool AnnotationHistoryAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
-#include "annotation-entry.h" // settings section « Annotations et agents » and menus: connect/disconnect, status, folder, clear all
+#include "annotation-entry.h" // settings section « Annotations » and menus: connect/disconnect, status, folder, clear all
 namespace CM=NativeChrome::ContextMenu; extern std::vector<CM::Item> lastSplitMenu; void TabContextMenu(int tabIndex,int anchor); void AnnotationMenuItems(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args,std::vector<CM::Item>& items); void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab,int choice); bool ResizePlaceholdersUp(); extern std::vector<HWND> splitGrips; void SyncGripLooks(); bool PointerOnGrip(); bool GripsAnimating(); void GripFrame(NativeChrome::Motion::Time now); void Select(int n); void EndSplitDrag(bool restore); void SyncSplitDecor(); void ApplyPages(); bool SplitDragMove(POINT point); bool SplitAnimating(); void SplitFrame(NativeChrome::Motion::Time now);
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
 // user typed (the field may also show an inline completion or an arrowed row).
@@ -242,7 +248,7 @@ bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(boo
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
 #ifdef BROWSER_UPDATES
-    return std::wstring(L"browser ")+BROWSER_VERSION_WIDE;
+    return std::wstring(L"browser ")+BROWSER_VERSION_WIDE;   // i18n-exempt: product name and version
 #else
     return L"browser";
 #endif
@@ -328,11 +334,11 @@ void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
 // Serialized: the WebView2 install worker reports its real outcome from its own thread. A private window logs nothing.
-void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
-void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
+void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
+void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
-void FocusAddress(){editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
+void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
 std::vector<std::wstring> Titles(){std::vector<std::wstring> titles;for(auto& t:pages)titles.push_back(t->title);return titles;}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site);
 // What the field reads: the active tab's address and security outside editing; while
@@ -343,7 +349,7 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
 void SyncVaultKey();
-void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -357,7 +363,7 @@ std::vector<int> ShownPanels();bool FocusContextToast();
 void ToggleChromeFocus(bool back=false){
     // F6 cycle: page -> toolbar -> update toast (when one is shown) -> page. In a split
     // view the pages come first, in panel order (Shift+F6 walks back).
-    if(UpdateToastHasFocus()){FocusPage();return;}
+    if(UpdateToastHasFocus()||InFullscreen()){FocusPage();return;}   // fullscreen: no chrome to cycle through
     auto panels=ShownPanels();
     if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();return;}
     if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);return;}}}
@@ -375,7 +381,8 @@ void FindInPage(){
     HRESULT hr=find->Start(options.p,completed);completed->Release();Check(hr,L"Find Start");
 }
 void CancelContentTransitionIfMoved();
-void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();chrome.Resize();BuildChrome();auto r=chrome.edit;
+void SyncFolderRename();
+void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();chrome.Resize();BuildChrome();SyncFolderRename();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
     auto placement=chrome.MeasureText(L"Ag",{r.left,44,r.right,76},16,false,false,-.16f);
     const int baseline=S(placement.originY+placement.baseline);int editHeight=std::max(S(22),(int)(metrics.tmHeight+metrics.tmExternalLeading+2));
@@ -396,14 +403,17 @@ void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
            !Check(t->view->get_CanGoForward(&canGoForward),L"get_CanGoForward"))return;
     }
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
-    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(t->title+(privateWindow?L" — browser (navigation privée)":L" — browser")).c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
+    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)).c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
     ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
 }
 // Tab / profile switch transition (src/content-transition.h; functions defined before profile-workspace.h).
 ContentTransition::Overlay contentTransition; unsigned contentTransitionGeneration=0; constexpr UINT_PTR ContentTransitionTimerId=0x5051;
 constexpr UINT_PTR ContentReadyTimerId=0x5053; void ContentReadyTick();
-void BeginContentTransition(ContentTransition::Kind kind);void RevealContentTransition();void ContentTransitionInput(const wchar_t* what);
-void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;if(WorkspaceParked()){current=n;pages[n]->usedAt=++useClock;return;}const bool transition=n!=current&&current>=0&&current<(int)pages.size()&&pages[current]&&!pages[current]->closed&&pages[current]->controller.p&&pages[n]&&!pages[n]->closed;if(transition)BeginContentTransition(ContentTransition::Kind::Tab); /* before the outgoing page is hidden */editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();AnnotationTabChanged();if(transition)RevealContentTransition();}
+void BeginContentTransition(ContentTransition::Kind kind);void RevealContentTransition();void ContentTransitionInput(const wchar_t* what);void CancelContentTransition(const wchar_t* why);
+// Internal selections that complete a profile switch (its session restored when its engine is ready, the tab chosen
+// in another profile's preview) keep the profile transition; only another selection cancels it.
+int keepContentTransition=0; unsigned selectedSerial=0; /* the tab Select showed last (indices shift on close / move) */ struct KeepContentTransition{KeepContentTransition(){++keepContentTransition;}~KeepContentTransition(){--keepContentTransition;}};
+void Select(int n){if(n<0||n>=(int)pages.size()||halted)return;if(WorkspaceParked()){current=n;pages[n]->usedAt=++useClock;return;}if(pages[n]->serial!=selectedSerial&&!keepContentTransition)CancelContentTransition(L"tab selected");selectedSerial=pages[n]->serial; /* a tab switch is immediate: no blur, no capture; a profile transition still on screen never covers the chosen tab */editing=false;ShowWindow(address,SW_HIDE);current=n;ClearChromeMotion();motion.SelectTab((int)pages[n]->serial,NativeChrome::Motion::Now());ScheduleMotion(NativeChrome::Motion::Now());pages[n]->usedAt=++useClock;ApplyPages();Update();auto t=Active();TabShown(t);if(t->controller.p&&PageShown(*t))Check(t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),L"MoveFocus");ElementsTabChanged();AnnotationTabChanged();}
 // Move shared pointers, preserving the active WebView and its asynchronous callbacks.
 void MoveTab(int from,int to){
     if(halted||from<0||to<0||from>=(int)pages.size()||to>=(int)pages.size()||from==to)return;
@@ -442,7 +452,7 @@ void DragTab(POINT point){
 float PageZoom(){return std::max(.25f,settings.zoomPercent/100.f);}
 std::vector<std::shared_ptr<Tab>> Members(int g){std::vector<std::shared_ptr<Tab>> m;if(g)for(auto& t:pages)if(t->group==g)m.push_back(t);return m;}
 int TabIndexOf(const std::shared_ptr<Tab>& t){auto it=std::find(pages.begin(),pages.end(),t);return it==pages.end()?-1:(int)(it-pages.begin());}
-std::wstring TabLabel(const std::shared_ptr<Tab>& t){return !t?L"":t->title.empty()?L"Onglet sans titre":t->title;}
+std::wstring TabLabel(const std::shared_ptr<Tab>& t){return !t?L"":t->title.empty()?std::wstring(TR(tab_untitled)):t->title;}
 // Compact site name for the drag surfaces ("GitHub"); the full document title stays on the
 // tab, in history and in the tab's accessible name.
 std::wstring SiteLabel(const std::shared_ptr<Tab>& t){if(!t)return L"";if(t->home)return TabLabel(t);auto n=NativeChrome::SiteName::Compact(t->title,t->uri);return n.empty()?TabLabel(t):n;}
@@ -458,7 +468,11 @@ int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->grou
 SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();c.left=View::inset;c.right=std::max(c.left,chrome.width-View::inset);c.bottom=chrome.height-View::inset;if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
-    SplitView v;v.group=VisibleGroup();if(!v.group)return v;v.members=Members(v.group);const auto o=splitGroups[v.group];
+    // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
+    // grips, rails, separator hit and F6 panel cycle follow this (they all read CurrentSplit). The group itself (its
+    // members, order, orientation, weights) is untouched and comes back as it was when the page leaves fullscreen.
+    // Browser fullscreen (F11) alone keeps the split.
+    SplitView v;if(PageFullscreenActive())return v;v.group=VisibleGroup();if(!v.group)return v;v.members=Members(v.group);const auto o=splitGroups[v.group];
     // Minimum in CSS px seen by the site, converted with the page zoom (DIP = CSS px x zoom).
     v.min=SV::MinExtent(o,PageZoom());std::vector<std::uint64_t> recency;
     for(int i=0;i<(int)v.members.size();++i){v.weights.push_back(v.members[i]->weight);recency.push_back(v.members[i]->usedAt);if(v.members[i]==Active())v.active=i;}
@@ -507,7 +521,7 @@ RECT PixelRect(const SV::Box& b){return {S(b.left),S(b.top),S(b.right),S(b.botto
 void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
-    const float top=chrome.ContentTop();namespace View=NativeChrome::Design::Viewport;RECT full{S(View::inset),S(top),S(chrome.width-View::inset),std::max(S(top),S(chrome.height-View::inset))}; /* Paper V3 Viewbox: 2 DIP outline */const ULONGLONG now=GetTickCount64();
+    RECT full=PixelRect(ContentBox()); /* Paper V3 Viewbox (2 DIP outline, under the chrome); the whole window in fullscreen */const ULONGLONG now=GetTickCount64();
     // A page that grows shows the parent's surface wherever Chromium has not rendered
     // the new size yet. With WS_CLIPCHILDREN the parent never paints under its pages,
     // so that surface held stale handles/rings or never-painted black (the trails seen
@@ -556,7 +570,7 @@ void SyncGrips(const SplitView& v){
     const size_t n=v.group?v.a.separators.size():0;
     while(splitGrips.size()<n){
         static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=GripProc;wc.hInstance=instance?instance:GetModuleHandleW(nullptr);wc.lpszClassName=L"BrowserSplitGrip";wc.hbrBackground=(HBRUSH)GetStockObject(BLACK_BRUSH);RegisterClassW(&wc);registered=true;}
-        HWND g=CreateWindowExW(WS_EX_LAYERED,L"BrowserSplitGrip",L"Séparateur des panneaux",WS_CHILD,0,0,1,1,window,nullptr,instance?instance:GetModuleHandleW(nullptr),nullptr);if(!g){Log(L"SPLIT grip unavailable "+std::to_wstring(GetLastError()));return;}
+        HWND g=CreateWindowExW(WS_EX_LAYERED,L"BrowserSplitGrip",TR(split_grip_name),WS_CHILD,0,0,1,1,window,nullptr,instance?instance:GetModuleHandleW(nullptr),nullptr);if(!g){Log(L"SPLIT grip unavailable "+std::to_wstring(GetLastError()));return;}
         splitGrips.push_back(g);  // content (and hit-testing) comes with its first UpdateLayeredWindow
     }
     for(size_t i=0;i<splitGrips.size();++i){
@@ -705,24 +719,25 @@ void PlaceNextTo(const std::shared_ptr<Tab>& t,const std::shared_ptr<Tab>& ancho
     int from=TabIndexOf(t),a=TabIndexOf(anchor);if(from<0||a<0||t==anchor)return;int to=after?a+1:a;if(from<to)--to;
     to=std::clamp(to,0,(int)pages.size()-1);if(from!=to)MoveTab(from,to);
 }
-std::wstring SideText(SV::Side s){switch(s){case SV::Side::Left:return L"à gauche de ";case SV::Side::Right:return L"à droite de ";case SV::Side::Top:return L"au-dessus de ";default:return L"en dessous de ";}}
+// Where a drop would put the dragged site, as a whole phrase around the other site's name (« à gauche de X »).
+std::wstring SideText(SV::Side s,const std::wstring& other){switch(s){case SV::Side::Left:return TRF(split_left_of,other);case SV::Side::Right:return TRF(split_right_of,other);case SV::Side::Top:return TRF(split_above,other);default:return TRF(split_below,other);}}
 std::wstring TargetText(const SV::Target& t,const SplitView& v,const std::shared_ptr<Tab>& partner,const std::shared_ptr<Tab>& dragged){
     switch(t.kind){
-    case SV::Kind::Split:return SideText(t.side)+TabLabel(partner);
-    case SV::Kind::Replace:return L"remplacera "+TabLabel(v.members[t.index]);
-    case SV::Kind::Swap:return L"à la place de "+TabLabel(v.members[t.index]);
+    case SV::Kind::Split:return SideText(t.side,TabLabel(partner));
+    case SV::Kind::Replace:return TRF(split_replaces,TabLabel(v.members[t.index]));
+    case SV::Kind::Swap:return TRF(split_instead_of,TabLabel(v.members[t.index]));
     case SV::Kind::Insert:case SV::Kind::Move:{
         const bool row=v.a.orientation==SV::Orientation::Row;const int n=(int)v.members.size();
         auto skip=[&](int i){return i>=0&&i<n&&v.members[i]==dragged;};
         int before=t.index-1,after=t.index;while(skip(before))--before;while(skip(after))++after;
-        if(before>=0&&after<n)return L"entre "+TabLabel(v.members[before])+L" et "+TabLabel(v.members[after]);
-        if(after<n)return (row?L"à gauche de ":L"au-dessus de ")+TabLabel(v.members[after]);
-        if(before>=0)return (row?L"à droite de ":L"en dessous de ")+TabLabel(v.members[before]);
+        if(before>=0&&after<n)return TRF(split_between,TabLabel(v.members[before]),TabLabel(v.members[after]));
+        if(after<n)return SideText(row?SV::Side::Left:SV::Side::Top,TabLabel(v.members[after]));
+        if(before>=0)return SideText(row?SV::Side::Right:SV::Side::Bottom,TabLabel(v.members[before]));
         return L"";}
     default:return L"";}
 }
-std::wstring RefusalTitle(int needed){return needed<=2?L"Pas de place pour deux sites":L"Pas de place pour un "+std::to_wstring(needed)+L"ᵉ site";}
-std::wstring RefusalDetail(SV::Orientation o){return o==SV::Orientation::Row?L"360 px minimum chacun":L"256 px de haut minimum chacun";}
+std::wstring RefusalTitle(int needed){return needed<=2?std::wstring(TR(split_refusal_two)):TRF(split_refusal_nth,std::to_wstring(needed));}
+std::wstring RefusalDetail(SV::Orientation o){return o==SV::Orientation::Row?TR(split_refusal_width):TR(split_refusal_height);}
 // Applies a drop (or the equivalent menu command): one code path for pointer and keyboard.
 // Takes its own references: callers may pass slots of `pages`, which this reorders.
 void ApplySplitTarget(std::shared_ptr<Tab> tab,const SV::Target& target,std::shared_ptr<Tab> partner,const SplitView& v){
@@ -744,7 +759,7 @@ void ApplySplitTarget(std::shared_ptr<Tab> tab,const SV::Target& target,std::sha
     default:return;
     }
     DissolveSmallGroups();tab->usedAt=++useClock;const int i=TabIndexOf(tab);if(i>=0)Select(i);
-    AnnounceSplit(L"Vue partagée : "+TabLabel(tab)+L" "+said);
+    AnnounceSplit(TRF(split_announce_placed,TabLabel(tab),said));
 }
 // ---- Drag overlay animation (springs from src/split-view.h, display-paced frames)
 bool resizePreviewFading();void ClearResizePreviewNow();
@@ -774,7 +789,7 @@ bool SplitDragMove(POINT point){
         tabDrag.lifted=true;tabDrag.target={};chrome.liftedIndex=TabIndexOf(tabDrag.tab);chrome.dragIndex=-1;chrome.dragOffset=0;splitResize=-1;chrome.split.hotHandle=-1;
         splitAnim=SplitAnim{};f.card.shown=true;f.card.title=SiteLabel(tabDrag.tab);f.card.favicon=tabDrag.tab->favicon.image;
         splitAnim.cardOpacity.Snap(1);splitAnim.plateOpacity.Snap(0);splitAnim.last=NativeChrome::Motion::Now();
-        AnnounceSplit(L"Glisser "+SiteLabel(tabDrag.tab)+L". Relâcher à droite, à gauche, en haut ou en bas pour partager la vue.");
+        AnnounceSplit(TRF(split_announce_drag,SiteLabel(tabDrag.tab)));
         SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);
     }else if(y<SV::reattachY){
         // Back above the address row: reordering in the strip resumes.
@@ -800,7 +815,7 @@ bool SplitDragMove(POINT point){
     splitAnim.fade=valid?.20f:.12f;  // the preview answers within ~100 ms, a refusal clears faster
     f.pill.shown=target.kind==SV::Kind::Refuse;if(f.pill.shown){f.pill.x=x+14;f.pill.y=y+22;f.pill.title=RefusalTitle(target.needed);f.pill.detail=RefusalDetail(target.orientation);}
     SetCursor(LoadCursor(nullptr,target.kind==SV::Kind::Refuse?IDC_NO:IDC_ARROW));
-    if(changed&&target.kind!=SV::Kind::None)AnnounceSplit(target.kind==SV::Kind::Refuse?RefusalTitle(target.needed)+L", "+RefusalDetail(target.orientation):SiteLabel(tabDrag.tab)+L" "+TargetText(target,v,partner,tabDrag.tab));
+    if(changed&&target.kind!=SV::Kind::None)AnnounceSplit(target.kind==SV::Kind::Refuse?RefusalTitle(target.needed)+L", "+RefusalDetail(target.orientation):TRF(split_announce_target,SiteLabel(tabDrag.tab),TargetText(target,v,partner,tabDrag.tab)));
     splitAnim.last=NativeChrome::Motion::Now();RenderSplitOverlay();ScheduleMotion(splitAnim.last);
     return true;
 }
@@ -808,7 +823,7 @@ bool SplitDragMove(POINT point){
 void CommitSplitDrag(){
     auto tab=tabDrag.tab;auto target=tabDrag.target;auto v=CurrentSplit();auto partner=v.group?nullptr:SplitPartner(tab);
     if(!tab||target.kind==SV::Kind::None||target.kind==SV::Kind::Refuse||(target.kind==SV::Kind::Split&&!partner)){
-        if(target.kind==SV::Kind::Refuse)AnnounceSplit(L"Glisser annulé : "+RefusalTitle(target.needed));
+        if(target.kind==SV::Kind::Refuse)AnnounceSplit(TRF(split_announce_drag_canceled_reason,RefusalTitle(target.needed)));
         EndSplitDrag(true);return;
     }
     tabDrag.lifted=false;chrome.liftedIndex=-1;
@@ -828,7 +843,7 @@ void EndSplitDrag(bool restore){
             chrome.liftedIndex=i;auto s=chrome.strip.Surface(i);splitAnim.card.Set({s.left,s.top,s.right,s.bottom});
             splitAnim.fade=.30f;splitAnim.plateOpacity.Set(0);splitAnim.frame.pill.shown=false;splitAnim.returning=true;
             splitAnim.last=NativeChrome::Motion::Now();ScheduleMotion(splitAnim.last);
-            if(restore)AnnounceSplit(L"Glisser annulé");
+            if(restore)AnnounceSplit(TR(split_announce_drag_canceled));
         }else FinishSplitAnimation();
     }
     SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);
@@ -837,7 +852,7 @@ void EndSplitDrag(bool restore){
 void FinishReorder(){
     auto t=tabDrag.tab;if(!t||!t->group)return;const int i=TabIndexOf(t);if(i<0)return;
     const bool adjacent=(i>0&&pages[i-1]->group==t->group)||(i+1<(int)pages.size()&&pages[i+1]->group==t->group);
-    if(!adjacent){LeaveGroup(t);DissolveSmallGroups();AnnounceSplit(L"Vue partagée : "+TabLabel(t)+L" redevient un onglet");}
+    if(!adjacent){LeaveGroup(t);DissolveSmallGroups();AnnounceSplit(TRF(split_announce_back_to_tab,TabLabel(t)));}
     ApplyPages();
 }
 // ---- Separators: pointer
@@ -916,11 +931,11 @@ void AnnounceSeparator(){
     auto v=CurrentSplit();if(!v.group||splitResize<0||splitResize>=(int)v.a.separators.size())return;const int s=v.a.separators[splitResize];
     float sum=0;for(auto& slot:v.a.slots)if(!slot.rail)sum+=SV::Extent(slot.box,v.a.orientation);
     const int pct=(int)std::lround(100*SV::Extent(v.a.slots[s].box,v.a.orientation)/std::max(1.f,sum));
-    AnnounceSplit(L"Séparateur, "+TabLabel(v.members[v.a.slots[s].member])+L" "+std::to_wstring(pct)+L" %");
+    AnnounceSplit(TRF(split_announce_divider,TabLabel(v.members[v.a.slots[s].member]),I18n::Percent(pct)));
 }
 bool SplitPointerDown(float x,float y){
     splitResize=-1;auto v=CurrentSplit();if(!v.group)return false;
-    for(size_t i=0;i<chrome.split.rails.size();++i){auto r=chrome.split.rails[i];if(x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom){const int tab=chrome.split.railTabs[i];if(tab>=0){Select(tab);AnnounceSplit(TabLabel(pages[tab])+L" rouvert");}return true;}}
+    for(size_t i=0;i<chrome.split.rails.size();++i){auto r=chrome.split.rails[i];if(x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom){const int tab=chrome.split.railTabs[i];if(tab>=0){Select(tab);AnnounceSplit(TRF(split_announce_reopened,TabLabel(pages[tab])));}return true;}}
     const int hit=SeparatorAt(x,y,v);if(hit<0)return false;
     // Double-click on a separator: equal shares for the whole group.
     const DWORD now=GetTickCount();if(hit==lastSeparator&&now-lastSeparatorClick<=GetDoubleClickTime()){lastSeparatorClick=0;EqualizeSplit(v);return true;}
@@ -983,27 +998,28 @@ void ReverseGroup(int g){
     // Sizes stay where they are on screen; the sites swap places.
     auto active=Active();for(int i=0;i<n;++i){pages[at[i]]=m[n-1-i];m[n-1-i]->weight=w[i];}current=TabIndexOf(active);ApplyPages();Update();
 }
-void QuitGroup(int g){for(auto& t:Members(g))LeaveGroup(t);DissolveSmallGroups();ApplyPages();Update();AnnounceSplit(L"Vue partagée fermée. "+TabLabel(Active()));}
+void QuitGroup(int g){for(auto& t:Members(g))LeaveGroup(t);DissolveSmallGroups();ApplyPages();Update();AnnounceSplit(TRF(split_announce_closed,TabLabel(Active())));}
 // "Placer à … de X" from the tab menu: same targets as the drop zones.
 void PlaceFromMenu(const std::shared_ptr<Tab>& tab,SV::Side side){
     auto v=CurrentSplit();SV::Target t;
     if(v.group){if(tab->group==v.group)return;const int at=v.active+(side==SV::Side::Right||side==SV::Side::Bottom?1:0);t.kind=SV::Kind::Insert;t.index=at;t.orientation=v.a.orientation;ApplySplitTarget(tab,t,nullptr,v);return;}
     t.kind=SV::Kind::Split;t.side=side;t.orientation=SV::OrientationOf(side);ApplySplitTarget(tab,t,SplitPartner(tab),v);
 }
-const wchar_t* HomeHtml=LR"HTML(<!doctype html><html lang="fr"><meta charset="utf-8"><title>Nouvel onglet</title><style>html,body{margin:0;background:#171717;color:white;min-height:100%;color-scheme:dark}</style><body></body></html>)HTML";
+// The blank new tab page, in the process language (lang and title only; nothing else is written in it).
+std::wstring HomeHtml(){return std::wstring(L"<!doctype html><html lang=\"")+(I18n::Current()==I18n::Locale::En?L"en":L"fr")+L"\"><meta charset=\"utf-8\"><title>"+TR(tab_new)+LR"HTML(</title><style>html,body{margin:0;background:#171717;color:white;min-height:100%;color-scheme:dark}</style><body></body></html>)HTML";}
 std::wstring Destination(std::wstring s){auto first=s.find_first_not_of(L" \t\r\n");if(first==std::wstring::npos)return L"";s=s.substr(first,s.find_last_not_of(L" \t\r\n")-first+1);if(s==L"about:blank")return s;if(_wcsicmp(s.c_str(),L"browser://debug")==0||_wcsicmp(s.c_str(),L"browser://sandbox")==0)return NativeChrome::DebugSandbox::Url;
     auto low=s;std::transform(low.begin(),low.end(),low.begin(),towlower);if(low.rfind(L"https://",0)==0||low.rfind(L"http://",0)==0)return s;
     if(s.find_first_of(L" \t")==std::wstring::npos && s.find(L"://")==std::wstring::npos && (s.find(L'.')!=std::wstring::npos||s.rfind(L"localhost",0)==0))return L"https://"+s;
     return BrowserSettings::SearchUrl(settings.engine,AddressBar::PercentEncode(s),settings.customSearch);
 }
-void NewTab(std::wstring uri=L"",int index=-1,std::wstring title=L"Nouvel onglet");
+void NewTab(std::wstring uri=L"",int index=-1,std::wstring title=TR(tab_new));
 // SETTINGS(tabs): where a user-created tab ("+", Ctrl+T, menu) opens; -1 = at the end.
 int UserTabIndex(){return !smoke&&settings.tabPosition==BrowserSettings::TabPosition::NextToActive&&current>=0&&current<(int)pages.size()?current+1:-1;}
 void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closedTabs.back();NewTab(tab.uri,tab.index,tab.title);if(!halted)closedTabs.pop_back();}
 std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
 // SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
 std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();t->uri=uri;if(uri.empty()){const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml);Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();t->uri=uri;if(uri.empty()){const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
 // ---- Address suggestions (issue #20) -----------------------------------------
 // The EDIT keeps focus: typing recomputes the list, the arrows move its active row
 // (the field shows what Enter will open), Escape restores then closes, Enter opens.
@@ -1090,11 +1106,12 @@ std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.g
 void Close(){CloseAt(current);}
 void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
     if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
-bool BookmarkPopoverFocus();bool SmokeBookmarks();
+bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     // The bookmark popover's fields keep every key (Ctrl+D, Ctrl+Z… belong to the text there).
     if(BookmarkPopoverFocus())return 0;
+    if(FolderRenameFocus())return 0; // the in-place folder name keeps every key (text undo, Ctrl+W, F5…)
     if(AnnotationSurfaceFocus())return 0; // the note popover, onboarding, launcher and band keep their keys
     // Modal, prompt and find bar fields keep their keys (Ctrl+W must not close the tab under a dialog).
     {int cmd=0;if(ElementSurfaceKey(key,ctrl,alt,shift,cmd))return cmd;}
@@ -1158,7 +1175,7 @@ std::string SessionText(const std::vector<std::wstring>& urls){BrowserSession::S
 bool LaunchWindow(const std::wstring& id){
     if(smoke)return false;
     std::wstring exe(32768,L'\0');const DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);if(exe.empty())return false;
-    std::wstring cmd=L"\""+exe+L"\" --restore-window "+id+ProfileArgument();const std::wstring dir=std::filesystem::path(exe).parent_path().wstring();
+    std::wstring cmd=L"\""+exe+L"\" --restore-window "+id+ProfileArgument();   /* i18n-exempt: command line */const std::wstring dir=std::filesystem::path(exe).parent_path().wstring();
     STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
     if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,0,nullptr,dir.c_str(),&si,&pi)){Log(L"WINDOW launch failed "+id);return false;}
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);Log(L"WINDOW launched "+id);return true;
@@ -1281,7 +1298,7 @@ std::wstring SiteIconUri(const std::wstring& site){
 }
 std::wstring HomeDocument(){
     homeTiles.serials.erase(std::remove_if(homeTiles.serials.begin(),homeTiles.serials.end(),[](unsigned s){return std::none_of(pages.begin(),pages.end(),[s](const std::shared_ptr<Tab>& t){return t->serial==s;});}),homeTiles.serials.end());
-    if(settings.newTabPage!=BrowserSettings::NewTabPage::FrequentSites)return HomeHtml;
+    if(settings.newTabPage!=BrowserSettings::NewTabPage::FrequentSites)return HomeHtml();
     std::wstring tiles;
     for(const auto& h:AddressBar::TopSites(history,8)){
         const auto site=AddressBar::SiteOf(h.url);if(site.empty()||h.url.size()>2048)continue; // http(s) only
@@ -1291,10 +1308,10 @@ std::wstring HomeDocument(){
         else glyph=L"<img src=\""+icon+L"\" alt=\"\" width=\"32\" height=\"32\">";
         tiles+=L"<li><a href=\""+HtmlEscape(h.url)+L"\" title=\""+HtmlEscape(AddressBar::MatchText(h.url))+L"\"><span class=\"i\">"+glyph+L"</span><span class=\"n\">"+HtmlEscape(name)+L"</span></a></li>";
     }
-    if(tiles.empty())return HomeHtml;
+    if(tiles.empty())return HomeHtml();
     static const std::wstring font=DataUri(base+L"\\assets\\fonts\\InterDisplay-Medium.ttf",L"font/ttf",1024*1024);
     const bool reduced=motion.ReducedMotion();
-    return std::wstring(LR"HTML(<!doctype html><html lang="fr"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'"><title>Nouvel onglet</title><style>)HTML")
+    return std::wstring(L"<!doctype html><html lang=\"")+(I18n::Current()==I18n::Locale::En?L"en":L"fr")+LR"HTML("><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'"><title>)HTML"+TR(tab_new)+LR"HTML(</title><style>)HTML"
         +(font.empty()?L"":L"@font-face{font-family:\"Inter Display\";src:url("+font+L") format(\"truetype\");font-weight:500;font-display:block}")
         +LR"CSS(html,body{margin:0;background:#171717;color:white;min-height:100%;color-scheme:dark}
 body{display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:"Inter Display",Inter,system-ui,sans-serif;font-feature-settings:"cv01","cv02","cv03","cv04","cv13";font-weight:500}
@@ -1310,9 +1327,9 @@ a:active .i{background:rgba(255,255,255,.06)}
 .l{width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.12);color:rgba(255,255,255,.9);font-size:16px;line-height:32px;text-align:center}
 .n{max-width:112px;font-size:14px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 )CSS"+(reduced?L"":L".i{transition:background-color 120ms ease-out}@media (prefers-reduced-motion:reduce){.i{transition:none}}")
-        +L"</style><body><nav aria-label=\"Sites fréquents\"><ul>"+tiles+L"</ul></nav></body></html>";
+        +L"</style><body><nav aria-label=\""+TR(newtab_frequent)+L"\"><ul>"+tiles+L"</ul></nav></body></html>";
 }
-void RestoreSession(){
+void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come back under its switch transition
     if(privateWindow){NewTab(NewTabTarget());return;} // a private window starts empty and restores nothing
     BrowserSession::State state;
     // "Restaurer les onglets" off: start on a fresh tab (the session is still saved on exit).
@@ -1385,23 +1402,25 @@ void LoadDownloads(){
     }
     if(migrated){Log(L"DOWNLOADS history dated from file times");SaveDownloads();}
 }
+// Stored as a stable code (« @download_error_offline »), rendered in the interface language by DL::FailureText:
+// a row saved in one language reads in the other after a switch.
 std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     switch(r){
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE:return L"Disk full";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED:return L"Access denied";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG:return L"Name too long";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE:return L"File too large";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE:return DL::ReasonCode(I18n::Id::download_error_disk_full);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED:return DL::ReasonCode(I18n::Id::download_error_access_denied);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG:return DL::ReasonCode(I18n::Id::download_error_name_too_long);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE:return DL::ReasonCode(I18n::Id::download_error_too_large);
     // E6: three distinct French reasons (the row shows them alone, see DL::FailureText).
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return L"Bloqué · fichier dangereux";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return L"Bloqué · vérification de sécurité impossible";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY:return L"Bloqué · règle de sécurité";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED:return L"Offline";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST:return L"Network error";
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_DOWNLOAD_PROCESS_CRASHED:return L"Interrupted";
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return DL::ReasonCode(I18n::Id::download_blocked_dangerous);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return DL::ReasonCode(I18n::Id::download_blocked_check_failed);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY:return DL::ReasonCode(I18n::Id::download_blocked_policy);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED:return DL::ReasonCode(I18n::Id::download_error_offline);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST:return DL::ReasonCode(I18n::Id::download_error_network);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_DOWNLOAD_PROCESS_CRASHED:return DL::ReasonCode(I18n::Id::download_error_interrupted);
     default:break;
     }
-    if(r>=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED&&r<=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT)return L"Server error";
-    return L"File error";
+    if(r>=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED&&r<=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT)return DL::ReasonCode(I18n::Id::download_error_server);
+    return DL::ReasonCode(I18n::Id::download_error_file);
 }
 void ShowDownloadDrawer();void SyncLatch();
 // Toolbar icon: a run lasts while any download is active; its progress counts
@@ -1432,6 +1451,7 @@ void MotionLabDownloadTick(){
     else{chrome.downloadIcon.Update(false,1,true,now,motion.ReducedMotion());labDownloadRunning=false;KillTimer(window,MotionLabTimerId);}
     InvalidateDownloadIcon();ScheduleMotion(now);
 }
+// i18n-exempt-begin: motion lab (--motion-lab, review tool only): French review notes
 std::wstring MotionLabReplay(NativeChrome::Tuning::Group group){
     namespace T=NativeChrome::Tuning;auto now=NativeChrome::Motion::Now();const bool reduced=motion.ReducedMotion();
     std::wstring done=reduced?L" (mouvement réduit actif : état final sans animation)":L"";
@@ -1452,6 +1472,7 @@ std::wstring MotionLabReplay(NativeChrome::Tuning::Group group){
     InvalidateChrome();ScheduleMotion(now);
     return std::wstring(L"Rejoué : ")+T::GroupName(group)+done;
 }
+// i18n-exempt-end
 void DownloadsChanged(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */downloadPanel.Changed();downloadDrawer.Changed();}
 // Pull the operation's current state into its history row (UI thread, engine events).
 void SyncDownload(int id){
@@ -1534,10 +1555,10 @@ bool AskDownloadPath(std::wstring& path){
     IFileSaveDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileSaveDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog){Log(L"DOWNLOADS save dialog unavailable");return true;}
     FILEOPENDIALOGOPTIONS options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_FORCEFILESYSTEM|FOS_OVERWRITEPROMPT|FOS_PATHMUSTEXIST|FOS_NOREADONLYRETURN);
     // Same type first (keeps the extension when the name is retyped), then anything.
-    std::wstring kind=ext.size()>1?ext.substr(1):L"";for(auto& c:kind)c=(wchar_t)std::towupper(c);const std::wstring label=L"Fichier "+kind,spec=L"*"+ext;
-    const COMDLG_FILTERSPEC types[2]={{label.c_str(),spec.c_str()},{L"Tous les fichiers",L"*.*"}};
+    std::wstring kind=ext.size()>1?ext.substr(1):L"";for(auto& c:kind)c=(wchar_t)std::towupper(c);const std::wstring label=TRF(save_dialog_file_kind,kind),spec=L"*"+ext;
+    const COMDLG_FILTERSPEC types[2]={{label.c_str(),spec.c_str()},{TR(save_dialog_all_files),L"*.*"}};
     if(kind.empty())dialog->SetFileTypes(1,types+1);else{dialog->SetFileTypes(2,types);dialog->SetDefaultExtension(ext.c_str()+1);}
-    dialog->SetTitle(L"Enregistrer le téléchargement");dialog->SetFileName(file.c_str());
+    dialog->SetTitle(TR(save_dialog_title));dialog->SetFileName(file.c_str());
     IShellItem* folder=nullptr;if(SUCCEEDED(SHCreateItemFromParsingName(EffectiveDownloadFolder().c_str(),nullptr,IID_PPV_ARGS(&folder)))&&folder){dialog->SetFolder(folder);folder->Release();}
     bool keep=true;const HRESULT hr=dialog->Show(window);
     if(hr==HRESULT_FROM_WIN32(ERROR_CANCELLED))keep=false;
@@ -1605,7 +1626,7 @@ void DownloadAction(int id,DL::Action action){
     // Pause / Resume / Cancel need the row's live operation. Without it (never expected), the row is not left offering
     // a dead action: it becomes a non-resumable failure (« Remove »), logged.
     case DL::Action::Pause:case DL::Action::Resume:case DL::Action::Retry:case DL::Action::Cancel:
-        if(!op){Log(L"DOWNLOAD action without its operation: "+DL::FileName(item->path));if(item->state==DL::State::InProgress||item->state==DL::State::Paused||item->state==DL::State::Failed){item->state=DL::State::Failed;item->canResume=false;item->reason=L"Download unavailable";SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}break;}
+        if(!op){Log(L"DOWNLOAD action without its operation: "+DL::FileName(item->path));if(item->state==DL::State::InProgress||item->state==DL::State::Paused||item->state==DL::State::Failed){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::downloads_unavailable);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}break;}
         if(action==DL::Action::Pause){if(SUCCEEDED(op->Pause()))entry->userPaused=true;}
         else if(action==DL::Action::Cancel){const HRESULT hr=op->Cancel();Log(L"DOWNLOAD cancel "+DL::FileName(item->path)+(SUCCEEDED(hr)?L"":L" failed"));}
         else if(SUCCEEDED(op->Resume()))entry->userPaused=false;
@@ -1660,7 +1681,7 @@ void SettingChanged(BrowserSettings::Change change);
 void PickDownloadFolder(){
     IFileOpenDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog){Log(L"DOWNLOADS folder picker unavailable");return;}
     FILEOPENDIALOGOPTIONS options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);
-    dialog->SetTitle(L"Enregistrer les téléchargements dans");
+    dialog->SetTitle(TR(folder_dialog_title));
     IShellItem* start=nullptr;if(SUCCEEDED(SHCreateItemFromParsingName(EffectiveDownloadFolder().c_str(),nullptr,IID_PPV_ARGS(&start)))&&start){dialog->SetFolder(start);start->Release();}
     std::wstring chosen;const HRESULT hr=dialog->Show(window);
     if(SUCCEEDED(hr)){IShellItem* item=nullptr;PWSTR path=nullptr;if(SUCCEEDED(dialog->GetResult(&item))&&item&&SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&path))&&path)chosen=path;else Log(L"DOWNLOADS picked folder has no file system path");CoTaskMemFree(path);if(item)item->Release();}
@@ -1716,7 +1737,7 @@ bool ConfirmDialog(const wchar_t* caption,const wchar_t* title,const wchar_t* bo
     HMODULE comctl=GetModuleHandleW(L"comctl32.dll");
     auto taskDialog=comctl?reinterpret_cast<TaskDialogFn>(GetProcAddress(comctl,"TaskDialogIndirect")):nullptr;
     if(taskDialog){
-        TASKDIALOG_BUTTON buttons[]={{IDOK,ok},{IDCANCEL,L"Annuler"}};
+        TASKDIALOG_BUTTON buttons[]={{IDOK,ok},{IDCANCEL,TR(common_cancel)}};
         TASKDIALOGCONFIG config{};config.cbSize=sizeof config;config.hwndParent=window;config.hInstance=instance;
         config.dwFlags=TDF_ALLOW_DIALOG_CANCELLATION|TDF_POSITION_RELATIVE_TO_WINDOW;config.pszWindowTitle=caption;
         config.pszMainIcon=TD_WARNING_ICON;config.pszMainInstruction=title;config.pszContent=body;
@@ -1726,8 +1747,7 @@ bool ConfirmDialog(const wchar_t* caption,const wchar_t* title,const wchar_t* bo
     return MessageBoxW(window,(std::wstring(title)+(body?std::wstring(L"\n\n")+body:L"")).c_str(),caption,MB_OKCANCEL|MB_ICONWARNING|(okDefault?MB_DEFBUTTON1:MB_DEFBUTTON2))==IDOK;
 }
 bool ConfirmClearData(){
-    return ConfirmDialog(L"Effacer les données",L"Effacer les données de navigation ?",
-        L"L'historique, les cookies et données de site, le cache, les formulaires et mots de passe enregistrés de ce profil ainsi que la liste des téléchargements seront effacés. Les fichiers téléchargés restent sur le disque et les onglets ouverts restent ouverts.\n\nCette action est irréversible.",L"Effacer",false);
+    return ConfirmDialog(TR(clear_data_window),TR(clear_data_title),TR(clear_data_body),TR(clear_data_action),false);
 }
 std::wstring HrText(HRESULT hr){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)hr);return code;}
 // Local traces: reopen stack, history, site icons and finished download rows; live downloads (and their ops) stay.
@@ -1830,8 +1850,8 @@ bool ConfirmWindowClose(){
     if(smoke||halted||closeWithoutPrompt||exitClear!=ExitClear::Idle||!settings.confirmCloseTabs)return true;
     const int n=(int)std::count_if(pages.begin(),pages.end(),[](const std::shared_ptr<Tab>& t){return t&&!t->closed;});if(n<=1)return true;
     if(IsIconic(window))ShowWindow(window,SW_RESTORE);
-    const std::wstring title=L"Fermer "+std::to_wstring(n)+L" onglets ?";
-    asking=true;const bool ok=ConfirmDialog(L"Fermer la fenêtre",title.c_str(),settings.restoreTabs?L"Les onglets seront rouverts au prochain démarrage.":nullptr,L"Fermer",true);asking=false;
+    const std::wstring title=TRP(close_window_title,n);
+    asking=true;const bool ok=ConfirmDialog(TR(chrome_tip_close_window),title.c_str(),settings.restoreTabs?TR(close_window_restore_note):nullptr,TR(common_close),true);asking=false;
     if(!ok)Log(L"TABS window close cancelled");
     return ok;
 }
@@ -2024,10 +2044,10 @@ void ShowInsecureInterstitial(const std::shared_ptr<Tab>& t,const std::wstring& 
     std::wstring host,port;size_t end=0;if(!HttpParts(insecure,host,port,end))return;
     GUID guid{};wchar_t token[40]{};if(FAILED(CoCreateGuid(&guid))||!StringFromGUID2(guid,token,40))return;
     auto& h=t->https;h.shown=insecure;h.token=token;h.pending=true;h.upgrade=0;
-    t->uri=insecure;t->home=false;t->title=L"Ce site n'est pas sécurisé";
+    t->uri=insecure;t->home=false;t->title=TR(insecure_title);
     Log(L"HTTPS interstitial "+insecure);
     const bool still=motion.ReducedMotion();
-    std::wstring html=LR"HTML(<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Ce site n'est pas sécurisé</title><style>
+    std::wstring html=std::wstring(L"<!doctype html><html lang=\"")+(I18n::Current()==I18n::Locale::En?L"en":L"fr")+L"\"><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"dark\"><title>"+HtmlText(TR(insecure_title))+LR"HTML(</title><style>
 html,body{margin:0;height:100%;background:#171717;color:rgba(255,255,255,.9);font-family:"Inter Display",Inter,system-ui,sans-serif}
 body{display:flex;align-items:center;justify-content:center;padding:0 16px;box-sizing:border-box}
 main{width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;text-align:center)HTML";
@@ -2041,11 +2061,12 @@ button{height:32px;padding:0 14px;border:0;border-radius:8px;font:inherit;font-s
 button:focus-visible{outline:2px solid rgba(255,255,255,.9);outline-offset:2px}
 #back{background:rgba(255,255,255,.9);color:#171717}#back:hover{background:#fff}
 #go{background:rgba(255,255,255,.08);color:rgba(255,255,255,.9)}#go:hover{background:rgba(255,255,255,.12)}
-</style><main><h1>Ce site n'est pas sécurisé</h1><p>La connexion chiffrée (HTTPS) à <b>)HTML";
-    html+=HtmlText(host);
-    html+=LR"HTML(</b> n'a pas pu être établie. Si vous continuez, ce que vous échangez avec ce site, comme des mots de passe ou des numéros de carte, ne sera pas chiffré et pourra être lu ou modifié par d'autres.</p>
-<div><button id="back" autofocus>Revenir</button><button id="go">Continuer quand même</button></div></main>
-<script>const t=")HTML";
+</style><main><h1>)HTML";
+    html+=HtmlText(TR(insecure_title))+L"</h1><p>";
+    // The host is escaped, then put in bold inside the escaped sentence (never the other way round).
+    html+=I18n::FormatText(HtmlText(TR(insecure_body)).c_str(),{L"<b>"+HtmlText(host)+L"</b>"});
+    html+=L"</p>\n<div><button id=\"back\" autofocus>"+HtmlText(TR(insecure_back))+L"</button><button id=\"go\">"+HtmlText(TR(insecure_continue))+L"</button></div></main>\n";
+    html+=LR"HTML(<script>const t=")HTML";
     html+=token;
     html+=LR"HTML(";const send=a=>window.chrome.webview.postMessage(t+":"+a);back.onclick=()=>send("back");go.onclick=()=>send("continue");</script></html>)HTML";
     Check(t->view->NavigateToString(html.c_str()),L"NavigateToString interstitial");
@@ -2211,7 +2232,7 @@ void ApplyMemorySaver(){
 // "Page personnalisée" applies to the next new tab: an open home tab then shows the blank page.
 void ApplyNewTabPage(){
     Log(std::wstring(L"SETTINGS new tab page ")+(settings.newTabPage==BrowserSettings::NewTabPage::FrequentSites?L"frequent sites":settings.newTabPage==BrowserSettings::NewTabPage::Custom?L"custom":L"blank"));
-    if(halted)return;const auto html=HomeDocument();const bool blank=html==HomeHtml;
+    if(halted)return;const auto html=HomeDocument();const bool blank=html==HomeHtml();
     for(auto& t:std::vector<std::shared_ptr<Tab>>(pages))if(!t->closed&&t->home&&t->view.p&&!(blank&&!homeTiles.Has(*t)))Navigate(t,L"");
 }
 // SETTINGS(updates): footer line and the check-for-updates button.
@@ -2232,7 +2253,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
-    // Réglages › « Annotations et agents »: the launcher shows / hides at once; the launch prompt and the
+    // Réglages › « Annotations »: the launcher shows / hides at once; the launch prompt and the
     // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
     case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
@@ -2240,7 +2261,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::AdBlock:ApplyAdBlock();break;
     case Change::MemorySaver:ApplyMemorySaver();break;
     case Change::NewTabPage:case Change::Homepage:ApplyNewTabPage();break;
-    case Change::BookmarksBar:{const bool shown=chrome.bandShown;BookmarksChanged();if(chrome.bandShown!=shown)accessibility.Notify('K',chrome.bandShown?L"Barre de favoris affichée":L"Barre de favoris masquée",L"Bookmarks");Log(L"SETTINGS bookmarks bar "+std::wstring(BrowserSettings::ShortLabel(settings.bookmarksBar)));break;}
+    case Change::BookmarksBar:{const bool shown=chrome.bandShown;BookmarksChanged();if(chrome.bandShown!=shown)accessibility.Notify('K',chrome.bandShown?TR(bookmarks_bar_shown):TR(bookmarks_bar_hidden),L"Bookmarks" /* i18n-exempt: UIA activity id */);Log(L"SETTINGS bookmarks bar "+std::wstring(BrowserSettings::ShortLabel(settings.bookmarksBar)));break;}
     }
 }
 // The toolbar button of the surface that is (still) open stays latched.
@@ -2274,9 +2295,13 @@ void CreateSettingsPanel(){
     hooks.loadSites=LoadSitePermissions;
     hooks.setPermission=SetSitePermission;
     hooks.resetSites=ResetSitePermissions;
+    // Réglages › Langue: one preference for the whole browser (the global data root, every profile and window).
+    // Saving never switches this process: the next start of a window reads it (src/ui-language.h).
+    hooks.savedLanguage=[]{return UiLanguage::Load(profileRoot.empty()?dataDir:profileRoot).locale;};
+    hooks.saveLanguage=[](I18n::Locale l){const bool ok=UiLanguage::Save(profileRoot.empty()?dataDir:profileRoot,l);Log(std::wstring(L"UI LANGUAGE save ")+(l==I18n::Locale::En?L"en":L"fr")+(ok?L" ok":L" FAILED"));return ok;};
     // Value rows open the native menu as their list of choices.
     hooks.choose=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.left,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
-    // « Annotations et agents » (design/annotations-settings.md): dev / preview builds with the mode, never in a
+    // « Annotations » (design/annotations-settings.md): dev / preview builds with the mode, never in a
     // private window. The drawer only asks; every disk / other-app access runs in src/annotation-mode.h, off the UI thread.
     namespace AS=AnnotationSettings;
     hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationHistoryAvailable();};
@@ -2294,10 +2319,10 @@ void CreateSettingsPanel(){
         auto spec=NativeChrome::SettingsUI::ClearAnnotationsSpec(n);spec.buttons[1].closes=false;
         spec.onButton=[](int id){
             if(id!=MD::AcceptButton)return;
-            modal.SetBusy(true,L"Effacement…");
+            modal.SetBusy(true,TR(annotations_clearing));
             AnnotationClearAll([](bool ok,std::size_t removed){
-                if(!ok){modal.SetBusy(false);modal.SetError(L"Certaines annotations n'ont pas pu être effacées. Réessayez.");}
-                else{modal.Finish(MD::AcceptButton);accessibility.Notify('S',(std::to_wstring(removed)+(removed>1?L" annotations effacées":L" annotation effacée")).c_str(),L"Settings");}
+                if(!ok){modal.SetBusy(false);modal.SetError(TR(annotations_clear_failed));}
+                else{modal.Finish(MD::AcceptButton);accessibility.Notify('S',TRP(annotations_cleared,removed).c_str(),L"Settings");}   // i18n-exempt: UIA activity id
                 settingsDrawer.AnnotationsChanged();});
         };
         AskModal(std::move(spec),nullptr,[](const MD::Result&){});};
@@ -2457,7 +2482,7 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
     }
     RequestFavicon(t);if(halted)return S_OK;
     Log(L"NAVIGATION OK "+t->uri);
-    if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&!SearchResultPage(t->uri)&&history.Record(t->uri,t->title==L"Nouvel onglet"?L"":t->title,NativeChrome::DownloadsUI::UnixNowMs())){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}
+    if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&!SearchResultPage(t->uri)&&history.Record(t->uri,t->title==TR(tab_new)?L"":t->title,NativeChrome::DownloadsUI::UnixNowMs())){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}
     t->revealed=true;ApplyPages();if(t==Active())Update();
     return S_OK;
 }
@@ -2578,6 +2603,7 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
     done->Release();Check(hr,L"CreateCoreWebView2Controller");
 }
 
+// i18n-exempt-begin: smoke / split / menu QA harness (--smoke-test, --split-test): assertions, fixtures, log text
 void SmokeCheck(){if(!smoke||halted)return;auto t=Active();if(!t||!t->view.p){Fail(L"Smoke active view missing",E_FAIL);return;}auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{if(!Check(hr,L"Smoke ExecuteScript callback"))return S_OK;std::wstring expected=testStage<2?L"Nouvel onglet|rgb(23, 23, 23)|":L"Example Domain";if(!json||std::wstring(json).find(expected)==std::wstring::npos){Fail(L"Smoke unexpected document title",E_FAIL);return S_OK;}Log(L"SMOKE document verified stage="+std::to_wstring(testStage)+L" title="+json);PostMessageW(window,WM_APP+3,0,0);return S_OK;});HRESULT hr=t->view->ExecuteScript(testStage<2?L"document.title + '|' + getComputedStyle(document.body).backgroundColor + '|' + document.body.textContent.trim()":L"document.title",cb);cb->Release();Check(hr,L"Smoke ExecuteScript");}
 void SmokeAdvance(){if(halted)return;switch(testStage++){
 case 0:Command('T');break;
@@ -2919,6 +2945,7 @@ void SplitTestStep(){
     }
     ++splitStage;
 }
+// i18n-exempt-end
 void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();SyncStopMorph(NativeChrome::Motion::Now());BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect={S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
 namespace CM=NativeChrome::ContextMenu;
 void AnnounceCopied();
@@ -2944,7 +2971,7 @@ int KeyboardAnchor(){return GetFocus()==window?keyboardFocus:0;}
 std::vector<CM::Item> TabMenuItems(){
     std::vector<CM::Item> items;
     // Titles are verbatim: '&' would read as an access key.
-    for(int i=0;i<(int)pages.size();++i)items.push_back(CM::Command(1000+i,NativeUI::EscapeMenuText(pages[i]->title.empty()?L"Onglet sans titre":pages[i]->title),L"",true,i==current));
+    for(int i=0;i<(int)pages.size();++i)items.push_back(CM::Command(1000+i,NativeUI::EscapeMenuText(pages[i]->title.empty()?std::wstring(TR(tab_untitled)):pages[i]->title),L"",true,i==current));
     return items;
 }
 void TabMenu(int anchor){
@@ -3017,7 +3044,10 @@ std::pair<std::wstring,std::wstring> MenuName(const std::shared_ptr<Tab>& t){
     const int k=(int)(std::find(same.begin(),same.end(),t)-same.begin());return {name,distinct?words[k]:std::to_wstring(k+1)};
 }
 std::wstring MenuLabel(const std::shared_ptr<Tab>& t){auto n=MenuName(t);return n.second.empty()?n.first:n.first+L" "+n.second;}
-std::wstring Ordinal(int n){return n==1?L"1er":std::to_wstring(n)+L"ᵉ";}
+// « 3ᵉ » / « 3rd »: an ordinal as each language writes it (in whole messages below).
+std::wstring Ordinal(int n){
+    if(I18n::Current()==I18n::Locale::En){const int t=n%100,u=n%10;const wchar_t* s=(t>=11&&t<=13)?L"th":u==1?L"st":u==2?L"nd":u==3?L"rd":L"th";return std::to_wstring(n)+s;}   // i18n-exempt: English ordinal suffixes
+    return n==1?std::wstring(TR(ordinal_first_fr)):TRF(ordinal_fr,std::to_wstring(n));}
 SplitView GroupView(int group){
     SplitView v;if(!group||!splitGroups.count(group))return v;v.group=group;v.members=Members(group);const auto o=splitGroups[group];v.min=SV::MinExtent(o,PageZoom());
     std::vector<std::uint64_t> recency;int active=0;for(size_t i=0;i<v.members.size();++i){v.weights.push_back(v.members[i]->weight);recency.push_back(v.members[i]->usedAt);if(v.members[i]->usedAt>v.members[active]->usedAt)active=(int)i;}
@@ -3027,31 +3057,31 @@ SplitView GroupView(int group){
 void SplitPositions(SplitMenu& m,std::vector<CM::Item>& out,const std::shared_ptr<Tab>& source,const std::shared_ptr<Tab>& partner,int group,const std::wstring& with){
     auto add=[&](std::vector<CM::Item>& into,const std::wstring& label,CM::Glyph glyph,bool enabled,const std::wstring& reason,SplitMenuAction a){
         CM::Item item=CM::Command(SplitMenuBase+(int)m.actions.size(),label,L"",enabled);item.glyph=glyph;
-        item.accessible=label+L", "+with+(enabled?L"":L", indisponible : "+reason);item.tag=a.partner?TabIndexOf(a.partner)+1:-a.group;m.actions.push_back(a);into.push_back(item);};
+        item.accessible=enabled?TRF(split_menu_item_spoken,label,with):TRF(split_menu_item_spoken_unavailable,label,with,reason);item.tag=a.partner?TabIndexOf(a.partner)+1:-a.group;m.actions.push_back(a);into.push_back(item);};
     const auto c=ContentBox();
     if(partner){  // a tab on its own: the four sides
         const bool wide=SV::Fits(c.W(),SV::MinExtent(SV::Orientation::Row,PageZoom()),2),tall=SV::Fits(c.H(),SV::MinExtent(SV::Orientation::Column,PageZoom()),2);
-        const std::wstring side=L"Pas de place côte à côte · 360 px minimum",stack=L"Pas de place pour empiler · 256 px minimum";
+        const std::wstring side=TR(split_menu_no_room_side),stack=TR(split_menu_no_room_stack);
         auto act=[&](SV::Side s){SplitMenuAction a;a.kind=SV::Kind::Split;a.partner=partner;a.side=s;return a;};
-        add(out,L"À droite",CM::Glyph::Right,wide,side,act(SV::Side::Right));add(out,L"À gauche",CM::Glyph::Left,wide,side,act(SV::Side::Left));if(!wide)out.push_back(CM::Note(side,false));
-        add(out,L"Au-dessus",CM::Glyph::Top,tall,stack,act(SV::Side::Top));add(out,L"En dessous",CM::Glyph::Bottom,tall,stack,act(SV::Side::Bottom));if(!tall)out.push_back(CM::Note(stack,false));
+        add(out,TR(split_menu_right),CM::Glyph::Right,wide,side,act(SV::Side::Right));add(out,TR(split_menu_left),CM::Glyph::Left,wide,side,act(SV::Side::Left));if(!wide)out.push_back(CM::Note(side,false));
+        add(out,TR(split_menu_top),CM::Glyph::Top,tall,stack,act(SV::Side::Top));add(out,TR(split_menu_bottom),CM::Glyph::Bottom,tall,stack,act(SV::Side::Bottom));if(!tall)out.push_back(CM::Note(stack,false));
         return;
     }
     auto v=GroupView(group);if(!v.group)return;const int n=(int)v.members.size();const bool row=v.a.orientation==SV::Orientation::Row;
     const bool fits=SV::Fits(SV::Extent(c,v.a.orientation),v.min,n+1);
-    const std::wstring reason=L"Pas de place pour un "+Ordinal(n+1)+L" site · "+(row?L"360":L"256")+L" px minimum";
+    const std::wstring reason=TRF(split_menu_no_room_nth,Ordinal(n+1),row?L"360":L"256");
     auto ins=[&](int i){SplitMenuAction a;a.kind=SV::Kind::Insert;a.group=group;a.index=i;return a;};
-    add(out,L"Ajouter au début",row?CM::Glyph::StartRow:CM::Glyph::StartColumn,fits,reason,ins(0));
-    add(out,L"Ajouter à la fin",row?CM::Glyph::EndRow:CM::Glyph::EndColumn,fits,reason,ins(n));
-    if(n>=2){CM::Item between=CM::Command(0,L"Insérer entre",L"",fits);between.accessible=L"Insérer entre, "+with+(fits?L"":L", indisponible : "+reason);
-        for(int i=1;i<n;++i)add(between.children,L"Entre "+MenuLabel(v.members[i-1])+L" et "+MenuLabel(v.members[i]),CM::Glyph::None,fits,reason,ins(i));
+    add(out,TR(split_menu_add_start),row?CM::Glyph::StartRow:CM::Glyph::StartColumn,fits,reason,ins(0));
+    add(out,TR(split_menu_add_end),row?CM::Glyph::EndRow:CM::Glyph::EndColumn,fits,reason,ins(n));
+    if(n>=2){CM::Item between=CM::Command(0,TR(split_menu_insert_between),L"",fits);between.accessible=fits?TRF(split_menu_item_spoken,TR(split_menu_insert_between),with):TRF(split_menu_item_spoken_unavailable,TR(split_menu_insert_between),with,reason);
+        for(int i=1;i<n;++i)add(between.children,TRF(split_menu_between,MenuLabel(v.members[i-1]),MenuLabel(v.members[i])),CM::Glyph::None,fits,reason,ins(i));
         out.push_back(between);}
     if(!fits)out.push_back(CM::Note(reason,false));
     // Replacing is never implicit: its own row, a member list.
-    CM::Item replace=CM::Command(0,L"Remplacer un site");replace.accessible=L"Remplacer un site, "+with;
+    CM::Item replace=CM::Command(0,TR(split_menu_replace));replace.accessible=TRF(split_menu_item_spoken,TR(split_menu_replace),with);
     for(int i=0;i<n;++i){if(v.members[i]==source)continue;SplitMenuAction a;a.kind=SV::Kind::Replace;a.group=group;a.index=i;
         CM::Item item=CM::Command(SplitMenuBase+(int)m.actions.size(),MenuName(v.members[i]).first);item.second=MenuName(v.members[i]).second;item.icons={TabIcon(v.members[i])};item.siteIcon=true;
-        item.accessible=L"Remplacer "+MenuLabel(v.members[i])+L" par "+MenuLabel(source);item.tag=TabIndexOf(v.members[i])+1;m.actions.push_back(a);replace.children.push_back(item);}
+        item.accessible=TRF(split_menu_replace_spoken,MenuLabel(v.members[i]),MenuLabel(source));item.tag=TabIndexOf(v.members[i])+1;m.actions.push_back(a);replace.children.push_back(item);}
     if(!replace.children.empty())out.push_back(replace);
 }
 std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> GroupIcons(int group){std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto& t:Members(group)){if(icons.size()==3)break;icons.push_back(TabIcon(t));}return icons;}
@@ -3062,20 +3092,20 @@ SplitMenu BuildSplitMenu(const std::shared_ptr<Tab>& source){
     std::shared_ptr<Tab> partner;int group=0;
     if(shownGroup){if(source->group!=shownGroup)group=shownGroup;}else if(shown&&shown!=source)partner=shown;
     if(partner||group){
-        const std::wstring with=partner?L"Avec "+MenuLabel(partner):L"Avec la vue partagée, "+std::to_wstring(Members(group).size())+L" sites";
-        m.items.push_back(partner?CM::Header(L"Avec "+MenuName(partner).first+(MenuName(partner).second.empty()?L"":L" "+MenuName(partner).second),L"· affiché",{TabIcon(partner)},TabIndexOf(partner)+1)
-                                 :CM::Header(L"Avec la vue partagée",L"· "+std::to_wstring(Members(group).size())+L" sites",GroupIcons(group),-group));
+        const std::wstring with=partner?TRF(split_menu_with,MenuLabel(partner)):TRP(split_menu_with_group,Members(group).size());
+        m.items.push_back(partner?CM::Header(TRF(split_menu_with,MenuLabel(partner)),TR(split_menu_shown),{TabIcon(partner)},TabIndexOf(partner)+1)
+                                 :CM::Header(TR(split_menu_with_split),TRP(split_menu_sites_second,Members(group).size()),GroupIcons(group),-group));
         SplitPositions(m,m.items,source,partner,group,with);
     }
     // Every other tab or group, in strip order (a group once, at its first member).
-    CM::Item other=CM::Command(0,L"Avec un autre site");other.accessible=L"Avec un autre site";std::set<int> seen;
+    CM::Item other=CM::Command(0,TR(split_menu_other_site));other.accessible=TR(split_menu_other_site);std::set<int> seen;
     for(auto& t:pages){
         if(t->closed||t==source||t==partner)continue;const int g=t->group&&splitGroups.count(t->group)&&Members(t->group).size()>=2?t->group:0;
         if(g){if(g==group||g==source->group||seen.count(g))continue;seen.insert(g);const int n=(int)Members(g).size();
-            CM::Item entry=CM::Command(0,L"Vue partagée");entry.second=L"· "+std::to_wstring(n)+L" sites";entry.icons=GroupIcons(g);entry.accessible=L"Vue partagée, "+std::to_wstring(n)+L" sites";entry.tag=-g;
-            SplitPositions(m,entry.children,source,nullptr,g,L"Avec la vue partagée, "+std::to_wstring(n)+L" sites");if(!entry.children.empty())other.children.push_back(entry);continue;}
+            CM::Item entry=CM::Command(0,TR(split_menu_split_view));entry.second=TRP(split_menu_sites_second,n);entry.icons=GroupIcons(g);entry.accessible=TRP(split_menu_split_view_spoken,n);entry.tag=-g;
+            SplitPositions(m,entry.children,source,nullptr,g,TRP(split_menu_with_group,n));if(!entry.children.empty())other.children.push_back(entry);continue;}
         auto name=MenuName(t);CM::Item entry=CM::Command(0,name.first);entry.second=name.second;entry.icons={TabIcon(t)};entry.siteIcon=true;entry.accessible=MenuLabel(t);entry.tag=TabIndexOf(t)+1;
-        SplitPositions(m,entry.children,source,t,0,L"Avec "+MenuLabel(t));other.children.push_back(entry);
+        SplitPositions(m,entry.children,source,t,0,TRF(split_menu_with,MenuLabel(t)));other.children.push_back(entry);
     }
     // Generic commands and reason rows are flush with the menu's text, never behind an empty
     // glyph slot (Paper p-7-0 V2 realigned, p-3-0 flow); only position rows carry a glyph and its indent.
@@ -3105,20 +3135,20 @@ void TabContextMenu(int tabIndex,int anchor){
     if(v.group&&tab->group==v.group){
         const bool row=v.a.orientation==SV::Orientation::Row;const auto other=row?SV::Orientation::Column:SV::Orientation::Row;
         const bool fits=SV::Fits(SV::Extent(ContentBox(),other),SV::MinExtent(other,PageZoom()),(int)v.members.size());
-        split={CM::Command(ReverseItem,L"Inverser les panneaux"),CM::Command(OrientItem,std::wstring(row?L"Empiler les panneaux":L"Placer côte à côte")+(fits?L"":L" (pas de place)"),L"",fits),
-               CM::Command(ResizeItem,L"Redimensionner les panneaux",L"",!v.a.separators.empty()),CM::Command(QuitItem,L"Quitter la vue partagée")};
+        split={CM::Command(ReverseItem,TR(split_cmd_reverse)),CM::Command(OrientItem,(fits?std::wstring(row?TR(split_cmd_stack):TR(split_cmd_side_by_side)):(row?TRF(split_cmd_no_room,TR(split_cmd_stack)):TRF(split_cmd_no_room,TR(split_cmd_side_by_side)))),L"",fits),
+               CM::Command(ResizeItem,TR(split_cmd_resize),L"",!v.a.separators.empty()),CM::Command(QuitItem,TR(split_cmd_quit))};
     }
     // V2 block: replaces the former four "Placer … de X" rows, same place, no shortcut.
     auto block=BuildSplitMenu(tab);
-    std::vector<CM::Item> items{CM::Command(NewTabItem,L"Nouvel onglet",L"Ctrl+T"),CM::Command(ReloadItem,L"Actualiser",L"Ctrl+R",tab->view.p!=nullptr),CM::Command(CopyItem,L"Copier le lien",L"",link),CM::Separator()};
+    std::vector<CM::Item> items{CM::Command(NewTabItem,TR(tab_new),L"Ctrl+T"),CM::Command(ReloadItem,TR(cmd_reload),L"Ctrl+R",tab->view.p!=nullptr),CM::Command(CopyItem,TR(chrome_tip_copy_link),L"",link),CM::Separator()};
     // A member of the shown group: its commands and "Avec un autre site ›" form one block (Paper 12b).
     if(!split.empty()){items.insert(items.end(),split.begin(),split.end());if(block.items.empty())items.push_back(CM::Separator());}
     if(!block.items.empty()){items.insert(items.end(),block.items.begin(),block.items.end());items.push_back(CM::Separator());}
     lastSplitMenu=block.items;
     const std::vector<CM::Item> rest{
-        CM::Command(PrintItem,L"Imprimer…",L"Ctrl+P",page),CM::Command(PdfItem,L"Enregistrer en PDF",L"",page),CM::Separator(),
-        CM::Command(ReopenItem,L"Rouvrir l'onglet fermé",L"Ctrl+Maj+T",!closedTabs.empty()&&pages.size()<128),CM::Separator(),
-        CM::Command(CloseItem,L"Fermer l'onglet",L"Ctrl+W"),CM::Command(CloseOthersItem,L"Fermer les autres onglets",L"",pages.size()>1)};
+        CM::Command(PrintItem,TR(cmd_print),L"Ctrl+P",page),CM::Command(PdfItem,TR(cmd_save_pdf),L"",page),CM::Separator(),
+        CM::Command(ReopenItem,TR(cmd_reopen_tab),TR(key_ctrl_shift_t),!closedTabs.empty()&&pages.size()<128),CM::Separator(),
+        CM::Command(CloseItem,TR(cmd_close_tab),L"Ctrl+W"),CM::Command(CloseOthersItem,TR(cmd_close_other_tabs),L"",pages.size()>1)};
     items.insert(items.end(),rest.begin(),rest.end());
     contextMenu.onHighlight=SplitMenuHighlight;const int chosen=ShowMenu(items,anchor);contextMenu.onHighlight=nullptr;SplitMenuHighlight(nullptr);
     if(chosen>=SplitMenuBase&&chosen-SplitMenuBase<(int)block.actions.size()){RunSplitMenuAction(tab,block.actions[chosen-SplitMenuBase]);return;}
@@ -3128,7 +3158,7 @@ void TabContextMenu(int tabIndex,int anchor){
     case PlaceTop:PlaceFromMenu(tab,SV::Side::Top);break;
     case PlaceBottom:PlaceFromMenu(tab,SV::Side::Bottom);break;
     case ReverseItem:ReverseGroup(tab->group);break;
-    case OrientItem:if(splitGroups.count(tab->group)){auto& o=splitGroups[tab->group];o=o==SV::Orientation::Row?SV::Orientation::Column:SV::Orientation::Row;ApplyPages();AnnounceSplit(o==SV::Orientation::Row?L"Panneaux côte à côte":L"Panneaux empilés");}break;
+    case OrientItem:if(splitGroups.count(tab->group)){auto& o=splitGroups[tab->group];o=o==SV::Orientation::Row?SV::Orientation::Column:SV::Orientation::Row;ApplyPages();AnnounceSplit(o==SV::Orientation::Row?TR(split_announce_side_by_side):TR(split_announce_stacked));}break;
     case ResizeItem:StartKeyboardResize();break;
     case QuitItem:QuitGroup(tab->group);break;
     case NewTabItem:Command('T');break;
@@ -3147,9 +3177,9 @@ void TabContextMenu(int tabIndex,int anchor){
 void AddressContextMenu(LPARAM at){
     enum{UndoItem=1,CutItem,CopyItem,PasteItem,DeleteItem,SelectAllItem};
     DWORD from=0,to=0;SendMessageW(address,EM_GETSEL,(WPARAM)&from,(LPARAM)&to);const bool selection=to>from;const int length=GetWindowTextLengthW(address);
-    const std::vector<CM::Item> items{CM::Command(UndoItem,L"Annuler",L"Ctrl+Z",SendMessageW(address,EM_CANUNDO,0,0)!=0),CM::Separator(),
-        CM::Command(CutItem,L"Couper",L"Ctrl+X",selection),CM::Command(CopyItem,L"Copier",L"Ctrl+C",selection),CM::Command(PasteItem,L"Coller",L"Ctrl+V",IsClipboardFormatAvailable(CF_UNICODETEXT)!=0),CM::Command(DeleteItem,L"Supprimer",L"Suppr",selection),CM::Separator(),
-        CM::Command(SelectAllItem,L"Tout sélectionner",L"Ctrl+A",length>0&&!(from==0&&(int)to==length))};
+    const std::vector<CM::Item> items{CM::Command(UndoItem,TR(common_undo),L"Ctrl+Z",SendMessageW(address,EM_CANUNDO,0,0)!=0),CM::Separator(),
+        CM::Command(CutItem,TR(cmd_cut),L"Ctrl+X",selection),CM::Command(CopyItem,TR(cmd_copy),L"Ctrl+C",selection),CM::Command(PasteItem,TR(cmd_paste),L"Ctrl+V",IsClipboardFormatAvailable(CF_UNICODETEXT)!=0),CM::Command(DeleteItem,TR(common_delete),TR(key_delete),selection),CM::Separator(),
+        CM::Command(SelectAllItem,TR(cmd_select_all),L"Ctrl+A",length>0&&!(from==0&&(int)to==length))};
     POINT p{GET_X_LPARAM(at),GET_Y_LPARAM(at)};RECT edit{};const bool keyboard=p.x==-1&&p.y==-1;
     if(keyboard){GetWindowRect(address,&edit);p={edit.left,edit.bottom};}
     const int cmd=contextMenu.Track(items,p,keyboard?&edit:nullptr,keyboard,motion.ReducedMotion());
@@ -3178,7 +3208,7 @@ void ReadPageMenu(ICoreWebView2ContextMenuItemCollection* list,std::vector<CM::I
         else{INT32 command=0;item->get_CommandId(&command);commands.push_back(command);m.id=(int)commands.size();}
         text=nullptr;std::wstring name;if(SUCCEEDED(item->get_Name(&text))&&text){name=text;CoTaskMemFree(text);}
         out.push_back(std::move(m));
-        if(name==L"print")out.push_back(CM::Command(PagePdfItem,L"Enregistrer en PDF")); // beside the engine's own print
+        if(name==L"print")out.push_back(CM::Command(PagePdfItem,TR(cmd_save_pdf))); // beside the engine's own print
     }
     while(!out.empty()&&out.back().separator)out.pop_back();
 }
@@ -3192,7 +3222,7 @@ HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenu
     auto& items=pending->items;std::function<bool(const std::vector<CM::Item>&)> has=[&](const std::vector<CM::Item>& v){for(auto& m:v)if(m.id==PagePdfItem||has(m.children))return true;return false;};
     if(!tab->home&&!has(items)){
         auto last=std::find_if(items.rbegin(),items.rend(),[](const CM::Item& m){return m.separator;});auto at=last==items.rend()?items.end():std::prev(last.base());
-        items.insert(at,{CM::Separator(),CM::Command(PagePrintItem,L"Imprimer…"),CM::Command(PagePdfItem,L"Enregistrer en PDF")});
+        items.insert(at,{CM::Separator(),CM::Command(PagePrintItem,TR(cmd_print)),CM::Command(PagePdfItem,TR(cmd_save_pdf))});
     }
     AnnotationMenuItems(tab,args,items); // « Annoter l'élément » / « Annoter la sélection »
     if(FAILED(args->GetDeferral(&pending->deferral.p))||!pending->deferral.p)return S_OK;
@@ -3236,7 +3266,7 @@ struct BookmarkStep { enum Kind { Created, Removed, Moved, Renamed, Readdressed 
 struct BookmarkUndo { std::vector<BookmarkStep> steps; std::wstring done; };
 std::vector<BookmarkUndo> bookmarkUndo;
 std::wstring BookmarksFile(){return dataDir+L"\\bookmarks";}
-void AnnounceBookmark(const std::wstring& text){Log(L"BOOKMARKS "+text);accessibility.Notify('K',text.c_str(),L"Bookmarks");}
+void AnnounceBookmark(const std::wstring& text){Log(L"BOOKMARKS "+text);accessibility.Notify('K',text.c_str(),L"Bookmarks" /* i18n-exempt: UIA activity id */);}
 void SaveBookmarks(){
     if(smoke)return;
     // Transaction under the profile lock: this window's changes (base → mine) replayed onto the file as
@@ -3251,7 +3281,7 @@ void SaveBookmarks(){
     if(r==ProfileStore::Result::UnknownFormat)Log(L"BOOKMARKS file of an unknown format: not overwritten");
     // The data stays in memory; a sticky toast offers to try again.
     Log(L"BOOKMARKS save failed");bookmarksSaveFailed=true;
-    if(bookmarkToast.Window())bookmarkToast.Show(L"Favoris non enregistrés sur le disque",[]{SaveBookmarks();},motion.ReducedMotion(),L"Réessayer",true);
+    if(bookmarkToast.Window())bookmarkToast.Show(TR(bookmark_save_failed),[]{SaveBookmarks();},motion.ReducedMotion(),TR(downloads_action_retry),true);
 }
 std::wstring TimeStamp(){SYSTEMTIME t;GetLocalTime(&t);wchar_t s[32];swprintf(s,32,L"%04u%02u%02u-%02u%02u%02u",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);return s;}
 void LoadBookmarks(){
@@ -3285,7 +3315,7 @@ bool BookmarkedSite(const std::wstring& site){
     return false;
 }
 std::wstring ReadableUrl(const std::wstring& url){AddressBar::Parts p;if(AddressBar::Split(url,p)&&(p.scheme==L"http"||p.scheme==L"https"))return AddressBar::PercentDecode(AddressBar::MatchText(url));return AddressBar::PercentDecode(url);}
-std::wstring FolderSummary(BM::Id id){const auto* n=bookmarks.Find(id);const size_t items=n?n->children.size():0;return L"Dossier, "+std::to_wstring(items)+(items>1?L" éléments":L" élément");}
+std::wstring FolderSummary(BM::Id id){const auto* n=bookmarks.Find(id);const size_t items=n?n->children.size():0;return TRP(bookmarks_folder_summary,items);}
 // The star, the band and the chrome height follow the store and the active page.
 // Returns true when the band appeared or disappeared (the page moves: Layout()).
 bool SyncBookmarkChrome(){
@@ -3307,19 +3337,20 @@ void BookmarksChanged(){
     if(chrome.bandShown!=was)Layout();else{RefreshTools();InvalidateChrome();}
     bookmarksDrawer.Changed();
     if(accessibility.Listening())accessibility.ChildrenChanged(AccessibleBandKey);
+    SyncFolderRename();
 }
 void PushUndo(std::vector<BookmarkStep> steps,std::wstring done){if(steps.empty())return;if(bookmarkUndo.size()==16)bookmarkUndo.erase(bookmarkUndo.begin());bookmarkUndo.push_back({std::move(steps),std::move(done)});}
 std::wstring UniqueFolderName(BM::Id parent){
-    std::wstring name=L"Nouveau dossier";int n=1;const auto* p=bookmarks.Find(parent);if(!p)return name;
-    for(bool clash=true;clash&&n<1000;){clash=false;for(BM::Id c:p->children){auto* x=bookmarks.Find(c);if(x&&x->kind==BM::Kind::Folder&&x->title==name){clash=true;name=L"Nouveau dossier "+std::to_wstring(++n);break;}}}
+    std::wstring name=TR(bookmark_new_folder_name);int n=1;const auto* p=bookmarks.Find(parent);if(!p)return name;
+    for(bool clash=true;clash&&n<1000;){clash=false;for(BM::Id c:p->children){auto* x=bookmarks.Find(c);if(x&&x->kind==BM::Kind::Folder&&x->title==name){clash=true;name=TRF(bookmark_new_folder_numbered,TR(bookmark_new_folder_name),std::to_wstring(++n));break;}}}
     return name;
 }
 // D3: a bookmark added or edited from a private window is a voluntary write: it goes through the same
 // interprocess transaction as a normal window (no history, session or usage trace comes with it).
 BM::Id NewFolder(BM::Id parent,size_t index=BM::End){
     const BM::Id id=bookmarks.AddFolder(parent,index,UniqueFolderName(parent),NativeChrome::DownloadsUI::UnixNowMs());
-    if(!id){AnnounceBookmark(L"Trop de niveaux de dossiers");return 0;}
-    PushUndo({{BookmarkStep::Created,id}},L"Dossier créé");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Dossier « "+bookmarks.Find(id)->title+L" » créé");return id;
+    if(!id){AnnounceBookmark(TR(bookmark_too_deep));return 0;}
+    PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_folder_created));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_folder_created,bookmarks.Find(id)->title));return id;
 }
 void ShowBookmarkToast(const std::wstring& text){
     bookmarkToast.SetBottomReserve(UpdateToastHeight());
@@ -3330,18 +3361,18 @@ void RemoveBookmark(BM::Id id){
     const bool folder=n->kind==BM::Kind::Folder;const std::wstring title=BM::DisplayTitle(*n);const size_t links=folder?bookmarks.CountLinks(id):0;
     auto removed=bookmarks.Remove(id);if(!removed)return;
     BookmarkStep step;step.kind=BookmarkStep::Removed;step.id=id;step.removed=std::move(*removed);
-    PushUndo({std::move(step)},folder?L"Dossier restauré":L"Favori restauré");SaveBookmarks();BookmarksChanged();
-    const std::wstring text=folder?L"Dossier « "+title+L" » supprimé"+(links?L" ("+std::to_wstring(links)+(links>1?L" favoris)":L" favori)"):L""):L"Favori supprimé";
-    ShowBookmarkToast(text);AnnounceBookmark(text+L". Ctrl+Z pour annuler");
+    PushUndo({std::move(step)},folder?TR(bookmark_undo_folder_restored):TR(bookmark_undo_restored));SaveBookmarks();BookmarksChanged();
+    const std::wstring text=folder?(links?TRP(bookmark_folder_deleted_links,links,title):TRF(bookmark_folder_deleted,title)):std::wstring(TR(bookmark_deleted));
+    ShowBookmarkToast(text);AnnounceBookmark(TRF(bookmark_announce_undo_hint,text));
 }
 // Replays the newest entry backwards. Restoring a subtree whose folder is gone lands in "Autres favoris".
 void UndoBookmark(){
-    if(bookmarkUndo.empty()){AnnounceBookmark(L"Rien à annuler");return;}
+    if(bookmarkUndo.empty()){AnnounceBookmark(TR(bookmark_nothing_to_undo));return;}
     auto entry=std::move(bookmarkUndo.back());bookmarkUndo.pop_back();std::wstring note=entry.done;
     for(auto it=entry.steps.rbegin();it!=entry.steps.rend();++it){auto& s=*it;
         switch(s.kind){
         case BookmarkStep::Created:bookmarks.Remove(s.id);break;
-        case BookmarkStep::Removed:if(bookmarks.Restore(s.removed)){const auto* n=bookmarks.Find(s.id);if(n&&n->parent!=s.removed.parent)note+=L" dans Autres favoris";}else note=L"Impossible d'annuler";break;
+        case BookmarkStep::Removed:if(bookmarks.Restore(s.removed)){const auto* n=bookmarks.Find(s.id);if(n&&n->parent!=s.removed.parent)note=TRF(bookmark_undo_moved_to_other_folder,note);}else note=TR(bookmark_undo_failed);break;
         case BookmarkStep::Moved:bookmarks.Move(s.id,s.parent,s.index);break;
         case BookmarkStep::Renamed:bookmarks.Rename(s.id,s.text);break;
         case BookmarkStep::Readdressed:bookmarks.SetUrl(s.id,s.text);break;
@@ -3365,6 +3396,90 @@ void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added
     popoverReturn=returnTo;bookmarksDrawer.holding_=bookmarksDrawer.Visible();
     bookmarkPopover.Show(r,anchor,ClientScreen(),alignRight,keyboard,motion.ReducedMotion());
 }
+// ---- Folder rename in place (design/bookmark-inline-rename-plan.md) -------------------------------
+// The folder's own label becomes a borderless EDIT (NativeUI::InlineRename) on the surface that showed it:
+// the band item or the Favoris drawer row. Keyed by the bookmark id; cancelled when the folder, its label
+// or the profile goes away; anything else (sub-folder in a native menu, behind », links) keeps the popover.
+enum RenameSurface { RenameNone=0, RenameBand, RenameDrawer };
+struct FolderRenameState { BM::Id id=0; int surface=RenameNone; bool keyboard=false; int returnTo=0; std::wstring profile; } folderRenameState;
+NativeUI::InlineRename folderRename; HFONT folderRenameFont=nullptr;
+bool FolderRenameFocus(){HWND f=GetFocus();return f&&folderRename.Owns(f);}
+// The folder label's text box on `surface`, in that surface window's client pixels; false when not shown.
+bool FolderLabelBox(BM::Id id,int surface,RECT& box){
+    if(surface==RenameDrawer)return bookmarksDrawer.TitleBox(id,box); // only while the drawer is really shown
+    // Fullscreen hides the chrome while the band's metadata stays filled: no band label is on screen then.
+    // The content-only chrome (page fullscreen, F11) has no regions or band either.
+    if(surface!=RenameBand||!chrome.bandShown||InFullscreen()||chrome.contentOnly)return false;
+    for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i){if(chrome.bandItems[i].id!=id)continue;if(!chrome.bandItems[i].folder)return false;
+        const auto b=chrome.BandTitleBox(i);if(b.right-b.left<24)return false;box={S(b.left),S(b.top),S(b.right),S(b.bottom)};return true;}
+    return false;
+}
+void MarkFolderRename(){
+    const int was=chrome.bandRenaming;chrome.bandRenaming=-1;
+    if(folderRename.Active()&&folderRenameState.surface==RenameBand)for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==folderRenameState.id)chrome.bandRenaming=i;
+    bookmarksDrawer.SetRenaming(folderRename.Active()&&folderRenameState.surface==RenameDrawer?folderRenameState.id:0);
+    if(was!=chrome.bandRenaming)InvalidateChrome();
+}
+void CommitFolderRename(BM::Id id,const std::wstring& typed,const std::wstring& profile){
+    if(profile!=dataDir){Log(L"BOOKMARKS rename in place dropped: the window changed profile");return;}
+    const auto* n=bookmarks.Find(id);
+    if(!n||n->kind!=BM::Kind::Folder||BM::Store::IsRoot(id)){Log(L"BOOKMARKS rename in place dropped: the folder is gone");return;}
+    const std::wstring title=AddressBar::Trim(typed),old=n->title;
+    if(title.empty()){Log(L"BOOKMARKS rename in place: empty name, the folder keeps its name");return;}
+    if(title==old||!bookmarks.Rename(id,title))return;
+    PushUndo({{BookmarkStep::Renamed,id,0,0,old}},TR(bookmark_undo_edit));SaveBookmarks();BookmarksChanged();
+    // Never « saved » when the file was not written: the sticky retry toast is already showing.
+    AnnounceBookmark(bookmarksSaveFailed?TR(bookmark_save_failed):TR(bookmark_saved));
+}
+void FolderRenameDone(BM::Id id,bool committed,const std::wstring& text){
+    const auto state=folderRenameState;folderRenameState={};MarkFolderRename();
+    if(committed)CommitFolderRename(id,text,state.profile);else Log(L"BOOKMARKS rename in place cancelled");
+    if(!state.keyboard)return;
+    if(state.surface==RenameBand&&GetFocus()==window){
+        int region=0;for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==id)region=NativeChrome::BookmarkBase+i;
+        if(region){keyboardModality=true;keyboardFocus=region;chrome.bandRover=NativeChrome::BookmarkIndex(region);InvalidateChrome();SyncAccessibility();}
+    }
+    if(state.surface==RenameDrawer&&bookmarksDrawer.Visible()&&GetFocus()==bookmarksDrawer.Window())bookmarksDrawer.FocusBookmark(id);
+}
+// The label's font at the host's current DPI: Inter Display Medium, 14 DIP on the band, 16 DIP in the drawer.
+int FolderRenameFontPx(int surface,HWND host){const float size=surface==RenameBand?NativeChrome::Design::Type::label.size:NativeChrome::Downloads::Panel::line;return (int)std::lround(size*GetDpiForWindow(host)/96.f);}
+HFONT FolderRenameFont(int surface,HWND host){return CreateFontW(-FolderRenameFontPx(surface,host),0,0,0,FW_MEDIUM,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display" /* i18n-exempt: font family */);}
+// Starts the in-place editor on the folder's label on `surface`; false (caller keeps the popover) when the
+// item is not a renamable folder or its label is not on that surface now.
+bool StartFolderRename(BM::Id id,int surface,bool keyboard,int returnTo){
+    const auto* n=bookmarks.Find(id);if(!n||n->kind!=BM::Kind::Folder||BM::Store::IsRoot(id))return false;
+    RECT box{};if(!FolderLabelBox(id,surface,box))return false;
+    HWND host=surface==RenameBand?window:bookmarksDrawer.Window();if(!host)return false;
+    namespace D=NativeChrome::Design;
+    HFONT font=FolderRenameFont(surface,host);
+    NativeUI::InlineRename::Style style;style.font=font;style.text=D::NativeGray(D::Text::primary);
+    style.back=D::NativeGray(surface==RenameBand?chrome.BandSurface(1,0):D::Surface::canvas);
+    folderRename.Cancel(); // one editor at a time (an earlier one reports its cancel first)
+    folderRenameState={id,surface,keyboard,returnTo,dataDir};
+    const bool ok=folderRename.Begin(host,id,box,n->title,style,TR(bookmark_field_name),[](unsigned long long done,bool committed,const std::wstring& text){FolderRenameDone((BM::Id)done,committed,text);});
+    if(folderRenameFont)DeleteObject(folderRenameFont);folderRenameFont=font;
+    if(!ok){folderRenameState={};return false;}
+    MarkFolderRename();Log(L"BOOKMARKS rename in place");return true;
+}
+// After any change of the store, the layout or the drawer's scroll: follow the label or cancel.
+void SyncFolderRename(){
+    if(!folderRename.Active())return;
+    const auto& s=folderRenameState;const auto* n=bookmarks.Find(s.id);RECT box{};
+    if(s.profile!=dataDir||!n||n->kind!=BM::Kind::Folder||!FolderLabelBox(s.id,s.surface,box)){folderRename.Cancel();return;}
+    MarkFolderRename();
+    // The host's DPI changed (another monitor): same editor, new font size; text, selection and caret kept.
+    HWND host=folderRename.Host();LOGFONTW current{};
+    if(host&&folderRenameFont&&GetObjectW(folderRenameFont,sizeof(current),&current)&&-current.lfHeight!=FolderRenameFontPx(s.surface,host)){
+        if(HFONT next=FolderRenameFont(s.surface,host)){HFONT old=folderRenameFont;folderRename.SetFont(next);folderRenameFont=next;DeleteObject(old);Log(L"BOOKMARKS rename in place: font follows the new DPI");}
+    }
+    const RECT was=folderRename.Box();if(!EqualRect(&was,&box))folderRename.Move(box);
+}
+// Rename / F2 / new folder: in place on `surface` when the folder's label is there, else the popover.
+void RenameOrEdit(BM::Id id,int surface,RECT anchor,bool keyboard,int returnTo){
+    if(StartFolderRename(id,surface,keyboard,returnTo))return;
+    EditBookmark(id,anchor,false,keyboard,false,returnTo);
+}
+int bookmarkMenuSurface=RenameNone; // the surface whose row opened BookmarkContextMenu (drawer), else band/none
 // Ctrl+D / the star: save at once in the last folder used, then the popover; an
 // already saved page opens its most recent bookmark instead of a second one.
 void BookmarkStar(bool keyboard){
@@ -3373,11 +3488,11 @@ void BookmarkStar(bool keyboard){
     const auto matches=bookmarks.Matching(t->uri);const RECT star=RegionScreen('K');
     if(!matches.empty()){EditBookmark(matches.front(),star,true,keyboard,false,keyboard?'K':0);return;}
     if(!bookmarks.Find(lastFolder)||bookmarks.Find(lastFolder)->kind!=BM::Kind::Folder)lastFolder=BM::BarRoot;
-    std::wstring title=t->title==L"Nouvel onglet"?L"":t->title;
+    std::wstring title=t->title==TR(tab_new)?L"":t->title;
     const BM::Id id=bookmarks.Add(lastFolder,BM::End,title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
-    if(!id){AnnounceBookmark(L"Impossible d'ajouter ce favori");return;}
-    PushUndo({{BookmarkStep::Created,id}},L"Ajout annulé");SaveBookmarks();BookmarksChanged();
-    AnnounceBookmark(L"Favori ajouté à "+bookmarks.Find(lastFolder)->title);
+    if(!id){AnnounceBookmark(TR(bookmark_add_failed));return;}
+    PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();
+    AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(lastFolder)->title));
     EditBookmark(id,RegionScreen('K'),true,keyboard,true,keyboard?'K':0);
 }
 void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& url,unsigned parent){
@@ -3385,10 +3500,10 @@ void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& ur
     const std::wstring oldTitle=n->title,oldUrl=n->url;const BM::Id oldParent=n->parent;const size_t oldIndex=bookmarks.IndexOf(id);
     if(title!=oldTitle&&bookmarks.Rename(id,title))steps.push_back({BookmarkStep::Renamed,id,0,0,oldTitle});
     if(!url.empty()&&url!=oldUrl&&bookmarks.SetUrl(id,url))steps.push_back({BookmarkStep::Readdressed,id,0,0,oldUrl});
-    if(parent&&parent!=oldParent){if(bookmarks.Move(id,parent,BM::End)){steps.push_back({BookmarkStep::Moved,id,oldParent,oldIndex});lastFolder=parent;}else AnnounceBookmark(L"Trop de niveaux de dossiers");}
+    if(parent&&parent!=oldParent){if(bookmarks.Move(id,parent,BM::End)){steps.push_back({BookmarkStep::Moved,id,oldParent,oldIndex});lastFolder=parent;}else AnnounceBookmark(TR(bookmark_too_deep));}
     else if(parent)lastFolder=parent;
     if(steps.empty())return;
-    PushUndo(std::move(steps),L"Modification annulée");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Favori enregistré");
+    PushUndo(std::move(steps),TR(bookmark_undo_edit));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TR(bookmark_saved));
 }
 void PopoverClosed(bool keyboard){
     bookmarksDrawer.holding_=false;
@@ -3414,7 +3529,7 @@ void OpenAllIn(BM::Id folder){
 void OpenUrls(const std::vector<std::wstring>& urls){
     const int previous=current;int at=current;for(auto& u:urls){if(pages.size()>=128)break;NewTab(u,++at);}
     if(previous>=0&&previous<(int)pages.size())Select(previous);
-    AnnounceBookmark(std::to_wstring(urls.size())+L" favoris ouverts dans de nouveaux onglets");
+    AnnounceBookmark(TRP(bookmark_opened_in_tabs,urls.size()));
 }
 // Menu ids: kind << 28 | bookmark id.
 enum MenuKind { MenuOpen=1, MenuOpenAll, MenuAddHere, MenuManage, MenuMoveTo, MenuNewFolder };
@@ -3425,13 +3540,13 @@ BM::Id MenuBookmark(int v){return (BM::Id)((unsigned)v&0x0FFFFFFF);}
 std::vector<CM::Item> BookmarkFolderItems(BM::Id folder,int depth=0){
     std::vector<CM::Item> items;const auto* f=bookmarks.Find(folder);if(!f)return items;
     const size_t links=bookmarks.CountLinks(folder);
-    if(links){auto all=CM::Command(MenuId(MenuOpenAll,folder),L"Ouvrir les "+std::to_wstring(links)+(links>1?L" favoris":L" favori"));all.icon=L"open-out";items.push_back(all);items.push_back(CM::Separator());}
+    if(links){auto all=CM::Command(MenuId(MenuOpenAll,folder),TRP(bookmark_open_all,links));all.icon=L"open-out";items.push_back(all);items.push_back(CM::Separator());}
     for(BM::Id id:f->children){const auto* n=bookmarks.Find(id);if(!n)continue;
-        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?L"Dossier sans nom":n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(id);
+        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(id);
             if(depth<(int)BM::Store::MaxDepth)sub.children=BookmarkFolderItems(id,depth+1);if(sub.children.empty())sub.children.push_back(CM::Command(0,L"(Vide)",L"",false));items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
     if(f->children.empty()){items.push_back(CM::Command(0,L"(Vide)",L"",false));}
-    auto t=Active();if(f->children.empty()&&t&&!t->home&&BM::Admissible(t->uri)){auto add=CM::Command(MenuId(MenuAddHere,folder),L"Ajouter la page ici");add.icon=L"star";items.push_back(add);}
+    auto t=Active();if(f->children.empty()&&t&&!t->home&&BM::Admissible(t->uri)){auto add=CM::Command(MenuId(MenuAddHere,folder),TR(bookmark_add_here));add.icon=L"star";items.push_back(add);}
     return items;
 }
 void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard);
@@ -3459,16 +3574,16 @@ void OverflowMenu(bool keyboard){
     for(size_t i=(size_t)chrome.band.visible;i<bar.size();++i){const auto* n=bookmarks.Find(bar[i]);if(!n)continue;
         if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,n->id);sub.label=NativeUI::EscapeMenuText(n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(n->id);sub.children=BookmarkFolderItems(n->id,1);items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,n->id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
-    if(!bookmarks.Root(BM::OtherRoot).children.empty()){if(!items.empty())items.push_back(CM::Separator());CM::Item other;other.id=MenuId(MenuOpen,BM::OtherRoot);other.label=L"Autres favoris";other.icon=L"folder-closed";other.children=BookmarkFolderItems(BM::OtherRoot,1);items.push_back(other);}
+    if(!bookmarks.Root(BM::OtherRoot).children.empty()){if(!items.empty())items.push_back(CM::Separator());CM::Item other;other.id=MenuId(MenuOpen,BM::OtherRoot);other.label=TR(bookmarks_other_root);other.icon=L"folder-closed";other.children=BookmarkFolderItems(BM::OtherRoot,1);items.push_back(other);}
     if(!items.empty())items.push_back(CM::Separator());
-    auto manage=CM::Command(MenuId(MenuManage,0),L"Gérer les favoris",L"Ctrl+Maj+O");manage.icon=L"star";items.push_back(manage);
+    auto manage=CM::Command(MenuId(MenuManage,0),TR(bookmarks_manage),TR(key_ctrl_shift_o));manage.icon=L"star";items.push_back(manage);
     RunBookmarkMenu(items,'O',keyboard);
 }
 void FolderMenu(int index,bool keyboard){
     if(index<0||index>=(int)chrome.bandItems.size())return;
     RunBookmarkMenu(BookmarkFolderItems(chrome.bandItems[index].id),NativeChrome::BookmarkBase+index,keyboard);
 }
-std::wstring BandToggleLabel(){return BandShown()?L"Masquer la barre de favoris":L"Afficher la barre de favoris";}
+std::wstring BandToggleLabel(){return BandShown()?TR(bookmarks_bar_hide):TR(bookmarks_bar_show);}
 void ToggleBookmarkBar(){
     settings.bookmarksBar=BandShown()?BrowserSettings::BookmarksBar::Never:BrowserSettings::BookmarksBar::Always;
     SettingChanged(BrowserSettings::Change::BookmarksBar);
@@ -3484,20 +3599,20 @@ BM::Id DuplicateBookmark(BM::Id id){
         while(!stack.empty()){auto [from,to]=stack.back();stack.pop_back();const auto* f=bookmarks.Find(from);if(!f)continue;const auto children=f->children;
             for(BM::Id c:children){const auto* x=bookmarks.Find(c);if(!x)continue;BM::Id made=x->kind==BM::Kind::Folder?bookmarks.AddFolder(to,BM::End,x->title,now):bookmarks.Add(to,BM::End,x->title,x->url,now);if(made&&x->kind==BM::Kind::Folder)stack.push_back({c,made});}}
     }
-    PushUndo({{BookmarkStep::Created,copy}},L"Copie annulée");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Copie insérée après l'original");return copy;
+    PushUndo({{BookmarkStep::Created,copy}},TR(bookmark_undo_copy));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TR(bookmark_copy_inserted));return copy;
 }
 void MoveBookmarkTo(BM::Id id,BM::Id parent){
     const auto* n=bookmarks.Find(id);if(!n)return;const BM::Id oldParent=n->parent;const size_t oldIndex=bookmarks.IndexOf(id);
-    if(!bookmarks.Move(id,parent,BM::End)){AnnounceBookmark(L"Impossible de déplacer ici");return;}
-    PushUndo({{BookmarkStep::Moved,id,oldParent,oldIndex}},L"Déplacement annulé");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Déplacé dans "+bookmarks.Find(parent)->title);
+    if(!bookmarks.Move(id,parent,BM::End)){AnnounceBookmark(TR(bookmark_move_failed));return;}
+    PushUndo({{BookmarkStep::Moved,id,oldParent,oldIndex}},TR(bookmark_undo_move));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_moved_into,bookmarks.Find(parent)->title));
 }
 // One step within its folder (Ctrl+Maj+←/→ on the band, Alt+↑/↓ in the drawer).
 void ShiftBookmark(BM::Id id,int delta){
     const auto* n=bookmarks.Find(id);if(!n)return;const BM::Id parent=n->parent;const size_t index=bookmarks.IndexOf(id);
     const size_t count=bookmarks.Find(parent)->children.size();const long long to=(long long)index+delta;if(to<0||to>=(long long)count)return;
     if(!bookmarks.Move(id,parent,(size_t)to))return;
-    PushUndo({{BookmarkStep::Moved,id,parent,index}},L"Déplacement annulé");SaveBookmarks();BookmarksChanged();
-    AnnounceBookmark(L"Déplacé en position "+std::to_wstring(to+1)+L" sur "+std::to_wstring(count));
+    PushUndo({{BookmarkStep::Moved,id,parent,index}},TR(bookmark_undo_move));SaveBookmarks();BookmarksChanged();
+    AnnounceBookmark(TRF(bookmark_moved_position,std::to_wstring(to+1),std::to_wstring(count)));
 }
 std::vector<CM::Item> MoveToItems(BM::Id id){
     std::vector<CM::Item> items;const auto* n=bookmarks.Find(id);
@@ -3509,19 +3624,19 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;const bool folder=n->kind==BM::Kind::Folder;
     enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar};
     std::vector<CM::Item> items;
-    if(folder){const size_t links=bookmarks.CountLinks(id);auto all=CM::Command(OpenAll,L"Ouvrir les "+std::to_wstring(links)+(links>1?L" favoris":L" favori"),L"",links>0);items.push_back(all);}
-    else items.push_back(CM::Command(OpenTab,L"Ouvrir dans un nouvel onglet"));
+    if(folder){const size_t links=bookmarks.CountLinks(id);auto all=CM::Command(OpenAll,TRP(bookmark_open_all,links),L"",links>0);items.push_back(all);}
+    else items.push_back(CM::Command(OpenTab,TR(history_open_new_tab)));
     items.push_back(CM::Separator());
-    items.push_back(CM::Command(Edit,folder?L"Renommer…":L"Modifier…",L"F2"));
-    items.push_back(CM::Command(Duplicate,L"Dupliquer"));
-    if(!folder)items.push_back(CM::Command(Copy,L"Copier le lien"));
+    items.push_back(CM::Command(Edit,folder?TR(cmd_rename):TR(cmd_edit),L"F2"));
+    items.push_back(CM::Command(Duplicate,TR(cmd_duplicate)));
+    if(!folder)items.push_back(CM::Command(Copy,TR(chrome_tip_copy_link)));
     items.push_back(CM::Separator());
-    auto del=CM::Command(Delete,L"Supprimer",L"Suppr");del.danger=true;items.push_back(del);
+    auto del=CM::Command(Delete,TR(common_delete),TR(key_delete));del.danger=true;items.push_back(del);
     items.push_back(CM::Separator());
-    items.push_back(CM::Command(NewFolderItem,L"Nouveau dossier…"));
-    if(folder){auto t=Active();items.push_back(CM::Command(AddHere,L"Ajouter la page ici",L"",t&&!t->home&&BM::Admissible(t->uri)));}
-    CM::Item move;move.label=L"Déplacer vers";move.children=MoveToItems(id);if(move.children.empty())move.enabled=false;items.push_back(move);
-    items.push_back(CM::Command(ToggleBar,BandToggleLabel(),L"Ctrl+Maj+B"));
+    items.push_back(CM::Command(NewFolderItem,TR(bookmark_new_folder_menu)));
+    if(folder){auto t=Active();items.push_back(CM::Command(AddHere,TR(bookmark_add_here),L"",t&&!t->home&&BM::Admissible(t->uri)));}
+    CM::Item move;move.label=TR(cmd_move_to);move.children=MoveToItems(id);if(move.children.empty())move.enabled=false;items.push_back(move);
+    items.push_back(CM::Command(ToggleBar,BandToggleLabel(),TR(key_ctrl_shift_b)));
     const int region=[&]{for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==id)return NativeChrome::BookmarkBase+i;return 0;}();
     if(region){chrome.bandOpen=region;InvalidateChrome();UpdateWindow(window);}
     bookmarksDrawer.holding_=bookmarksDrawer.Visible();
@@ -3529,15 +3644,16 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     bookmarksDrawer.holding_=false;chrome.bandOpen=0;InvalidateChrome();
     if(!bookmarks.Find(id))return;
     const RECT edit=region?RegionScreen(region):anchor?*anchor:RECT{at.x,at.y,at.x,at.y};
+    const int surface=region?RenameBand:bookmarkMenuSurface; // a row of a native folder menu: none (popover)
     if(MenuKindOf(cmd)==MenuMoveTo){MoveBookmarkTo(id,MenuBookmark(cmd));return;}
     switch(cmd){
     case OpenTab:OpenBookmarkUrl(n->url,2);break;
     case OpenAll:keyboardModality=contextMenu.LastChoiceKeyboard();OpenAllIn(id);break;
-    case Edit:EditBookmark(id,edit,false,keyboard,false,keyboard?region:0);break;
+    case Edit:if(folder)RenameOrEdit(id,surface,edit,keyboard,keyboard?region:0);else EditBookmark(id,edit,false,keyboard,false,keyboard?region:0);break;
     case Duplicate:DuplicateBookmark(id);break;
-    case Copy:if(CopyToClipboard(n->url))AnnounceBookmark(L"Lien copié");break;
+    case Copy:if(CopyToClipboard(n->url))AnnounceBookmark(TR(link_copied));break;
     case Delete:RemoveBookmark(id);break;
-    case NewFolderItem:{const BM::Id parent=folder?id:n->parent;const size_t at2=folder?BM::End:bookmarks.IndexOf(id)+1;if(BM::Id made=NewFolder(parent,at2))EditBookmark(made,edit,false,keyboard,false,keyboard?region:0);break;}
+    case NewFolderItem:{const BM::Id parent=folder?id:n->parent;const size_t at2=folder?BM::End:bookmarks.IndexOf(id)+1;if(BM::Id made=NewFolder(parent,at2))RenameOrEdit(made,surface,edit,keyboard,keyboard?region:0);break;}
     case AddHere:lastFolder=id;BookmarkStar(keyboard);break;
     case ToggleBar:ToggleBookmarkBar();break;
     default:break;
@@ -3546,10 +3662,10 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
 // Right click on the band outside an item.
 void BandContextMenu(POINT at){
     enum{AddPage=1,NewFolderItem,ToggleBar};auto t=Active();
-    const std::vector<CM::Item> items{CM::Command(AddPage,L"Ajouter la page",L"Ctrl+D",t&&!t->home&&BM::Admissible(t->uri)),CM::Command(NewFolderItem,L"Nouveau dossier…"),CM::Separator(),CM::Command(ToggleBar,BandToggleLabel(),L"Ctrl+Maj+B")};
+    const std::vector<CM::Item> items{CM::Command(AddPage,TR(bookmark_add_page_cmd),L"Ctrl+D",t&&!t->home&&BM::Admissible(t->uri)),CM::Command(NewFolderItem,TR(bookmark_new_folder_menu)),CM::Separator(),CM::Command(ToggleBar,BandToggleLabel(),TR(key_ctrl_shift_b))};
     switch(contextMenu.Track(items,at,nullptr,false,motion.ReducedMotion())){
     case AddPage:lastFolder=BM::BarRoot;BookmarkStar(false);break;
-    case NewFolderItem:if(BM::Id made=NewFolder(BM::BarRoot)){RECT r=RegionScreen(NativeChrome::BookmarkBase+(int)bookmarks.IndexOf(made));if(r.right<=r.left)r={at.x,at.y,at.x,at.y};EditBookmark(made,r,false,false);}break;
+    case NewFolderItem:if(BM::Id made=NewFolder(BM::BarRoot)){RECT r=RegionScreen(NativeChrome::BookmarkBase+(int)bookmarks.IndexOf(made));if(r.right<=r.left)r={at.x,at.y,at.x,at.y};RenameOrEdit(made,RenameBand,r,false,0);}break;
     case ToggleBar:ToggleBookmarkBar();break;
     default:break;
     }
@@ -3581,9 +3697,11 @@ void CreateBookmarkSurfaces(){
     d.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
     d.open=[](const std::wstring& url,bool newTab){bookmarksDrawer.Hide(false,true);OpenBookmarkUrl(url,newTab?2:0);};
     d.remove=[](BM::Id id){RemoveBookmark(id);};
-    d.edit=[](BM::Id id,RECT r){EditBookmark(id,r,false,true);};
+    d.edit=[](BM::Id id,RECT r){const auto* n=bookmarks.Find(id);if(n&&n->kind==BM::Kind::Folder)RenameOrEdit(id,RenameDrawer,r,true,0);else EditBookmark(id,r,false,true);};
+    d.editColor=[](HDC dc,HWND edit)->LRESULT{return folderRename.Owns(edit)?folderRename.Color(dc):0;};
+    d.relayout=[]{SyncFolderRename();};
     d.move=[](BM::Id id,int delta){ShiftBookmark(id,delta);bookmarksDrawer.FocusBookmark(id);};
-    d.context=[](BM::Id id,POINT at,bool keyboard){BookmarkContextMenu(id,at,nullptr,keyboard);if(bookmarksDrawer.Visible()&&!bookmarkPopover.Visible()){SetForegroundWindow(bookmarksDrawer.Window());SetFocus(bookmarksDrawer.Window());}};
+    d.context=[](BM::Id id,POINT at,bool keyboard){bookmarkMenuSurface=RenameDrawer;BookmarkContextMenu(id,at,nullptr,keyboard);bookmarkMenuSurface=RenameNone;if(bookmarksDrawer.Visible()&&!bookmarkPopover.Visible()&&!folderRename.Active()){SetForegroundWindow(bookmarksDrawer.Window());SetFocus(bookmarksDrawer.Window());}};
     d.closed=[](bool keyboard){SyncUpdateToastReserve();if(keyboard&&!halted)FocusPage();};
     d.icon=[](const std::wstring& site){return SiteIcon(site);};
     d.announce=AnnounceBookmark;
@@ -3612,10 +3730,10 @@ void BandDragEnd(bool cancel){
     if(!drag.active){InvalidateChrome();return;}
     if(cancel){bookmarks.Move(drag.id,drag.parent,drag.from);BookmarksChanged();return;}
     if(into>=0&&into<(int)chrome.bandItems.size()){const BM::Id folder=chrome.bandItems[into].id;
-        if(!bookmarks.Move(drag.id,folder,BM::End)){bookmarks.Move(drag.id,drag.parent,drag.from);AnnounceBookmark(L"Trop de niveaux de dossiers");BookmarksChanged();return;}
-        PushUndo({{BookmarkStep::Moved,drag.id,drag.parent,drag.from}},L"Déplacement annulé");SaveBookmarks();BookmarksChanged();AnnounceBookmark(L"Déplacé dans "+bookmarks.Find(folder)->title);return;}
+        if(!bookmarks.Move(drag.id,folder,BM::End)){bookmarks.Move(drag.id,drag.parent,drag.from);AnnounceBookmark(TR(bookmark_too_deep));BookmarksChanged();return;}
+        PushUndo({{BookmarkStep::Moved,drag.id,drag.parent,drag.from}},TR(bookmark_undo_move));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_moved_into,bookmarks.Find(folder)->title));return;}
     const size_t now=bookmarks.IndexOf(drag.id);
-    if(now!=drag.from){PushUndo({{BookmarkStep::Moved,drag.id,drag.parent,drag.from}},L"Déplacement annulé");SaveBookmarks();AnnounceBookmark(L"Déplacé en position "+std::to_wstring(now+1)+L" sur "+std::to_wstring(bookmarks.Root(BM::BarRoot).children.size()));}
+    if(now!=drag.from){PushUndo({{BookmarkStep::Moved,drag.id,drag.parent,drag.from}},TR(bookmark_undo_move));SaveBookmarks();AnnounceBookmark(TRF(bookmark_moved_position,std::to_wstring(now+1),std::to_wstring(bookmarks.Root(BM::BarRoot).children.size())));}
     BookmarksChanged();
 }
 // Band keyboard (focus on an item or the » button): arrows rove, Ctrl+Maj+arrows move.
@@ -3635,7 +3753,7 @@ bool BandKey(WPARAM w){
     case VK_HOME:return rove(0);
     case VK_END:return rove((int)order.size()-1);
     case VK_DOWN:if(focus=='O'){OverflowMenu(true);return true;}if(chrome.bandItems[index].folder){FolderMenu(index,true);return true;}return false;
-    case VK_F2:if(index>=0){EditBookmark(chrome.bandItems[index].id,RegionScreen(focus),false,true,false,focus);return true;}return false;
+    case VK_F2:if(index>=0){const BM::Id id=chrome.bandItems[index].id;if(chrome.bandItems[index].folder)RenameOrEdit(id,RenameBand,RegionScreen(focus),true,focus);else EditBookmark(id,RegionScreen(focus),false,true,false,focus);return true;}return false;
     case VK_DELETE:if(index>=0){RemoveBookmark(chrome.bandItems[index].id);if(chrome.band.visible>0)rove(std::min(at,chrome.band.visible-1));else ToggleChromeFocus();return true;}return false;
     case VK_ESCAPE:FocusPage();return true;
     case VK_RETURN:if(index>=0){keyboardModality=true;BandActivate(index,ctrl,shift,true);return true;}return false;
@@ -3644,6 +3762,7 @@ bool BandKey(WPARAM w){
 }
 // Smoke run (no file read or written): the whole bookmark flow in memory, through the
 // same functions the pointer and the keyboard use.
+// i18n-exempt-begin: bookmarks smoke fixture (sample titles, assertion text)
 bool SmokeBookmarks(){
     auto fail=[](const wchar_t* what){Fail(std::wstring(L"Smoke bookmarks: ")+what,E_FAIL);return false;};
     auto t=Active();if(!t||!t->controller.p)return fail(L"no tab");
@@ -3682,6 +3801,7 @@ bool SmokeBookmarks(){
     Log(L"SMOKE bookmarks: Ctrl+D saves at once (band shown, page 81 -> 121 DIP), popover Escape keeps it, invalid address stays red until valid, edit + undo, folder move, delete + undo toast, duplicate, overflow at 42 items, drawer search");
     return true;
 }
+// i18n-exempt-end
 bool BookmarkPopoverFocus(){HWND f=GetFocus();return bookmarkPopover.Visible()&&f&&(f==bookmarkPopover.Window()||IsChild(bookmarkPopover.Window(),f));}
 void ExtraCommand(int cmd){auto t=Active();if(AnnotationCommand(cmd))return;if(NativeChrome::IsBookmark(cmd)){BandActivate(NativeChrome::BookmarkIndex(cmd),false,false,KeyboardAnchor()!=0||keyboardModality);return;}switch(cmd){
 case 'K':BookmarkStar(KeyboardAnchor()!=0||keyboardModality);break;
@@ -3715,7 +3835,7 @@ case ShortcutsCommand:OpenShortcutsPanel();break;
 #ifndef BROWSER_UPDATES
 void SyncUpdateToastReserve(){} void CheckForUpdates(){} void SetUpdateToastTop(float){} float UpdateToastHeight(){return 0;} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){return {AboutTitle(),false,false};}
-NativeChrome::Modal::Status AboutStatusNow(){namespace MD=NativeChrome::Modal;auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=L"Mises à jour indisponibles";st.detail=L"Build sans moteur de mise à jour";st.hasButton=false;return st;}
+NativeChrome::Modal::Status AboutStatusNow(){namespace MD=NativeChrome::Modal;auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=TR(updates_unavailable);st.detail=TR(updates_unavailable_build);st.hasButton=false;return st;}
 void AboutUpdateAction(int){}
 void SyncUpdateToastMotion(){}
 #else
@@ -3771,33 +3891,33 @@ bool UpdateCheckAvailable(){return updatesStarted&&!closingForInstall;}
 // A8 « À propos »: the engine's real state (same source as the toast and the Réglages footer).
 NativeChrome::Modal::Status AboutStatusNow(){
     namespace MD=NativeChrome::Modal;using P=BrowserUpdate::Phase;using L=UpdateCore::Engine::LastCheck;
-    if(!UpdateCheckAvailable()){auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=L"Mises à jour indisponibles";st.detail=closingForInstall?L"Installation en cours":L"Recherche automatique désactivée pour ce build";st.hasButton=false;return st;}
+    if(!UpdateCheckAvailable()){auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=TR(updates_unavailable);st.detail=closingForInstall?TR(updates_installing_now):TR(updates_disabled_build);st.hasButton=false;return st;}
     const auto v=updates.View();
     switch(v.phase){
     case P::Checking:return MD::AboutStatus(MD::AboutChecking);
-    case P::Available:{auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::Download;st.title=L"Version "+v.version+L" disponible";st.detail=L"Téléchargement à votre demande";
-        st.button=MD::Make(MD::AboutDownloadButton,L"Télécharger",MD::Role::Primary,false,false,false,L"AboutDownload");st.button.closes=false;return st;}
-    case P::Downloading:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=L"Téléchargement de la version "+v.version+L"…";
+    case P::Available:{auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::Download;st.title=TRF(updates_version_available,v.version);st.detail=TR(updates_download_on_request);
+        st.button=MD::Make(MD::AboutDownloadButton,TR(updates_download),MD::Role::Primary,false,false,false,L"AboutDownload");st.button.closes=false;return st;}
+    case P::Downloading:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=TRF(updates_downloading_version,v.version);
         st.detail=v.total?std::to_wstring(std::min<std::uint64_t>(100,v.received*100/v.total))+L" %":L"";
         // Annuler = the engine's own Action::Cancel (same as the toast); no inert « Rechercher ».
-        st.button=MD::Make(MD::AboutCancelButton,L"Annuler",MD::Role::Quiet,false,false,false,L"AboutCancel");st.button.closes=false;st.hasButton=true;return st;}
+        st.button=MD::Make(MD::AboutCancelButton,TR(common_cancel),MD::Role::Quiet,false,false,false,L"AboutCancel");st.button.closes=false;st.hasButton=true;return st;}
     case P::Ready:{auto st=MD::AboutStatus(MD::AboutReady,L"",v.version);st.button.closes=false;return st;}
-    case P::Installing:case P::Installed:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=L"Installation…";st.hasButton=false;return st;} // no Annuler after the #60 handoff
+    case P::Installing:case P::Installed:{auto st=MD::AboutStatus(MD::AboutChecking);st.title=TR(updates_installing);st.hasButton=false;return st;} // no Annuler after the #60 handoff
     case P::Error:{ // E4: the failed step is named; the action is the engine's real retry
         using F=UpdateCore::Engine::Failure;const F f=updates.LastFailure();
-        auto st=MD::AboutStatus(MD::AboutOffline,L"La recherche de mises à jour a échoué. Réessayez."); // check: cause unknown, never « Aucune connexion » by guess
+        auto st=MD::AboutStatus(MD::AboutOffline,TR(updates_check_failed)); // check: cause unknown, never « Aucune connexion » by guess
         // Download / install failures (contract KS4-0 / KT4-0): « Rechercher à nouveau » = a real Check.
         // F1: after a download failure the engine's Retry downloads again (manifest kept): « Réessayer ».
-        if(f==F::Download){st.title=L"Échec du téléchargement";st.detail=!v.error.empty()&&v.error!=L"Le téléchargement a échoué."?v.error:v.version.empty()?L"La mise à jour n'a pas pu être téléchargée.":L"La version "+v.version+L" n'a pas pu être téléchargée.";st.button.label=L"Réessayer";}
+        if(f==F::Download){st.title=TR(updates_download_failed_title);st.detail=!v.error.empty()&&v.error!=TR(update_error_download_failed)?v.error:v.version.empty()?std::wstring(TR(updates_download_failed)):TRF(updates_download_failed_version,v.version);st.button.label=TR(downloads_action_retry);}
         // F6: install failure: the engine's own message (it says when the previous version was kept), else
         // an install wording; Retry is then a check: « Rechercher à nouveau ».
-        else if(f==F::Install){st.title=L"La mise à jour a échoué";st.detail=v.error.empty()?L"L'installation de la mise à jour n'a pas abouti.":v.error;st.button.label=L"Rechercher à nouveau";}
+        else if(f==F::Install){st.title=TR(updates_install_failed_title);st.detail=v.error.empty()?std::wstring(TR(updates_install_failed)):v.error;st.button.label=TR(updates_check_again);}
         return st;}
     default:{const auto last=updates.LastCheckResult();
-        if(last==L::Failed)return MD::AboutStatus(MD::AboutOffline,L"La recherche de mises à jour a échoué. Réessayez.");
-        if(last==L::UpToDate)return MD::AboutStatus(MD::AboutUpToDate,L"Dernière vérification réussie"); // a real UpToDate result for this version
+        if(last==L::Failed)return MD::AboutStatus(MD::AboutOffline,TR(updates_check_failed));
+        if(last==L::UpToDate)return MD::AboutStatus(MD::AboutUpToDate,TR(updates_last_check_ok)); // a real UpToDate result for this version
         // No positive result yet: never « browser est à jour ».
-        auto st=MD::AboutStatus(MD::AboutUpToDate,L"Vérifiez si une nouvelle version est disponible.");st.icon=MD::StatusIcon::None;st.title=L"Mises à jour";return st;}
+        auto st=MD::AboutStatus(MD::AboutUpToDate,TR(updates_check_prompt));st.icon=MD::StatusIcon::None;st.title=TR(updates_title);return st;}
     }
 }
 void AboutUpdateAction(int button){
@@ -3819,14 +3939,14 @@ NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){
     if(!updatesStarted||!updates.Enabled())return {AboutTitle(),false,false};
     const auto v=updates.View();std::wstring status;
     switch(v.phase){
-    case P::Hidden:{const auto last=updates.LastCheckResult();status=last==L::UpToDate?L"À jour":last==L::Available?L"Disponible":last==L::Failed?L"Vérif. impossible":L"";break;} // F5: the cause is not known: never « Hors ligne »
-    case P::Checking:status=L"Recherche…";break;
-    case P::Available:status=L"Disponible";break;
-    case P::Downloading:status=v.total?L"Téléch. "+std::to_wstring(std::min<std::uint64_t>(100,v.received*100/v.total))+L" %":std::wstring(L"Téléchargement…");break;
-    case P::Ready:status=L"À installer";break;
-    case P::Installing:status=L"Installation…";break;
-    case P::Installed:status=L"Installée";break;
-    case P::Error:status=v.version.empty()?L"Vérif. impossible":L"Échec";break; // empty version = the check itself failed (cause unknown)
+    case P::Hidden:{const auto last=updates.LastCheckResult();status=last==L::UpToDate?TR(updates_status_up_to_date):last==L::Available?TR(updates_status_available):last==L::Failed?TR(updates_status_check_failed):L"";break;} // F5: the cause is not known: never « Hors ligne »
+    case P::Checking:status=TR(updates_status_checking);break;
+    case P::Available:status=TR(updates_status_available);break;
+    case P::Downloading:status=v.total?TRF(updates_status_downloading_percent,I18n::Percent((long long)std::min<std::uint64_t>(100,v.received*100/v.total))):std::wstring(TR(updates_status_downloading));break;
+    case P::Ready:status=TR(updates_status_ready);break;
+    case P::Installing:status=TR(updates_installing);break;
+    case P::Installed:status=TR(updates_status_installed);break;
+    case P::Error:status=v.version.empty()?TR(updates_status_check_failed):TR(downloads_failed);break; // empty version = the check itself failed (cause unknown)
     }
     const bool busy=v.phase==P::Checking||v.phase==P::Downloading||v.phase==P::Installing;
     return {status.empty()?AboutTitle():AboutTitle()+L" · "+status,v.phase==P::Checking,UpdateCheckAvailable()&&!busy};
@@ -3901,26 +4021,28 @@ int AccessibleRegion(long long key){
 struct AccessibleLabel { std::wstring name,accelerator,help; const wchar_t* id; };
 AccessibleLabel AccessibleButton(int id){
     switch(id){
-    case 900:if(chrome.profileButton.shown&&chrome.profileButton.privateWindow)return {L"Fenêtre privée",L"Ctrl+Maj+M",L"Historique, cookies et session non conservés · "+std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"ProfileButton"};
-        if(chrome.profileButton.shown)return {L"Profil : "+chrome.profileButton.name,L"Ctrl+Maj+M",L"Menu des profils · "+std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"ProfileButton"};
-        return {L"Liste des onglets",L"",std::to_wstring(pages.size())+(pages.size()>1?L" onglets ouverts":L" onglet ouvert"),L"TabList"};
-    case 'Y':return {L"Historique",L"Ctrl+H",L"",L"History"};
-    case 'T':return {L"Nouvel onglet",L"Ctrl+T",L"",L"NewTab"};
-    case 'm':return {L"Réduire",L"",L"",L"Minimize"};
-    case 'M':return {window&&IsZoomed(window)?L"Restaurer":L"Agrandir",L"",L"",L"Maximize"};
-    case 'X':return {L"Fermer la fenêtre",L"Alt+F4",L"",L"Close"};
-    case 'B':return {L"Précédent",L"Alt+Flèche gauche",L"",L"Back"};
-    case 'F':return {L"Suivant",L"Alt+Flèche droite",L"",L"Forward"};
-    case 'R':return {chrome.navigationLoading?L"Arrêter le chargement":L"Actualiser",L"Ctrl+R",L"",L"Reload"};
-    case 'C':return {L"Copier le lien",L"",L"",L"CopyLink"};
-    case 'K':return {chrome.starred?L"Modifier le favori":L"Ajouter aux favoris",L"Ctrl+D",L"",L"Bookmark.Star"};
-    case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {L"Autres favoris ("+std::to_wstring(hidden+other)+L")",L"",L"Favoris masqués, Autres favoris et Gérer les favoris",L"Bookmarks.Overflow"};}
-    case 'E':return {L"Ajouter cette page aux favoris",L"Ctrl+D",L"",L"Bookmarks.AddPage"};
-    case 'D':return {L"Téléchargements",L"",L"",L"Downloads"};
-    case 'V':return {AU::ButtonName(AudioRows(NativeChrome::Motion::Now()),audioToolbar.Music()),L"",L"Volume de chaque site, indépendant du réglage du site",L"SiteAudio"};
-    case 'P':return {L"Nouvelle fenêtre privée",L"Ctrl+Maj+N",privateWindow?L"Cette fenêtre est privée : historique, cookies et session ne sont pas conservés":L"S'ouvre dans une fenêtre séparée ; historique, cookies et session n'y sont pas conservés",L"Private"};
-    case 'S':return {L"Réglages",L"",L"",L"Settings"};
-    case 'N':return {L"Annoter",L"Ctrl+Maj+A",chrome.Enabled('N')?L"Mode Annotation : cliquez un élément de la page pour l'annoter":chrome.annotateTip,L"AnnotateButton"};
+    // i18n-exempt-begin: the 4th field of each label is the UIA automation id (stable identifier)
+    case 900:if(chrome.profileButton.shown&&chrome.profileButton.privateWindow)return {TR(a11y_private_window),TR(key_ctrl_shift_m),TRF(a11y_private_window_help,TRP(a11y_open_tabs,pages.size())),L"ProfileButton"};
+        if(chrome.profileButton.shown)return {TRF(a11y_profile,chrome.profileButton.name),TR(key_ctrl_shift_m),TRF(a11y_profile_menu_help,TRP(a11y_open_tabs,pages.size())),L"ProfileButton"};
+        return {TR(a11y_tab_list),L"",TRP(a11y_open_tabs,pages.size()),L"TabList"};
+    case 'Y':return {TR(history_title),L"Ctrl+H",L"",L"History"};
+    case 'T':return {TR(tab_new),L"Ctrl+T",L"",L"NewTab"};
+    case 'm':return {TR(chrome_tip_minimize),L"",L"",L"Minimize"};
+    case 'M':return {window&&IsZoomed(window)?TR(a11y_restore):TR(a11y_maximize),L"",L"",L"Maximize"};
+    case 'X':return {TR(chrome_tip_close_window),L"Alt+F4",L"",L"Close"};
+    case 'B':return {TR(a11y_back),TR(key_alt_left),L"",L"Back"};
+    case 'F':return {TR(a11y_forward),TR(key_alt_right),L"",L"Forward"};
+    case 'R':return {chrome.navigationLoading?TR(a11y_stop):TR(cmd_reload),L"Ctrl+R",L"",L"Reload"};
+    case 'C':return {TR(chrome_tip_copy_link),L"",L"",L"CopyLink"};
+    case 'K':return {chrome.starred?TR(bookmark_title_edit):TR(a11y_add_bookmark),L"Ctrl+D",L"",L"Bookmark.Star"};
+    case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {TRF(a11y_other_bookmarks_count,std::to_wstring(hidden+other)),L"",TR(a11y_other_bookmarks_help),L"Bookmarks.Overflow"};}
+    case 'E':return {TR(chrome_bookmarks_add_page_full),L"Ctrl+D",L"",L"Bookmarks.AddPage"};
+    case 'D':return {TR(chrome_tip_downloads),L"",L"",L"Downloads"};
+    case 'V':return {AU::ButtonName(AudioRows(NativeChrome::Motion::Now()),audioToolbar.Music()),L"",TR(a11y_audio_help),L"SiteAudio"};
+    case 'P':return {TR(a11y_new_private_window),TR(key_ctrl_shift_n),privateWindow?TR(a11y_private_this_window_help):TR(a11y_private_new_window_help),L"Private"};
+    case 'S':return {TR(chrome_tip_settings),L"",L"",L"Settings"};
+    case 'N':return {TR(a11y_annotate),TR(key_ctrl_shift_a),chrome.Enabled('N')?std::wstring(TR(a11y_annotate_help)):std::wstring(chrome.AnnotateTip()),L"AnnotateButton"};
+    // i18n-exempt-end
     default:return {L"",L"",L"",L""};
     }
 }
@@ -3930,6 +4052,7 @@ bool AddressOpen(){return editing&&address&&IsWindowVisible(address);}
 std::vector<Accessibility::Node> AccessibleNodes(){
     using Accessibility::Node;using Accessibility::Role;namespace TS=NativeChrome::Design::TabStrip;
     std::vector<Node> nodes;
+    if(InFullscreen())return nodes;   // the page alone: no tab strip, toolbar or band to read or focus
     auto screen=[](D2D1_RECT_F r){RECT p{S(r.left),S(r.top),S(r.right),S(r.bottom)};MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;};
     auto region=[](int id)->const NativeChrome::Region*{for(auto& r:chrome.regions)if(r.id==id)return &r;return nullptr;};
     auto button=[&](int id,long long parent){
@@ -3938,40 +4061,40 @@ std::vector<Accessibility::Node> AccessibleNodes(){
         n.bounds=screen(r->rect);n.enabled=chrome.Enabled(id);n.focusable=r->focusable&&n.enabled;nodes.push_back(std::move(n));
     };
     button(900,0);
-    Node strip;strip.key=AccessibleStrip;strip.role=Role::Tab;strip.name=L"Onglets";strip.automationId=L"Tabs";strip.focusable=false;
+    Node strip;strip.key=AccessibleStrip;strip.role=Role::Tab;strip.name=TR(settings_tabs);strip.automationId=L"Tabs";strip.focusable=false;
     strip.bounds=screen({chrome.strip.ViewLeft(),TS::regionTop,chrome.strip.ViewRight(),TS::regionBottom});nodes.push_back(strip);
     for(int i=0;i<(int)pages.size();++i){
-        const auto& page=*pages[i];const std::wstring title=page.title.empty()?L"Onglet sans titre":page.title;
+        const auto& page=*pages[i];const std::wstring title=page.title.empty()?std::wstring(TR(tab_untitled)):page.title;
         Node tab;tab.key=AccessibleTabKey(i);tab.parent=AccessibleStrip;tab.role=Role::TabItem;tab.name=title;tab.automationId=L"Tab";
         tab.selected=i==current;tab.position=i+1;tab.count=(int)pages.size();
         if(i<8)tab.accelerator=L"Ctrl+"+std::to_wstring(i+1);else if(i==(int)pages.size()-1)tab.accelerator=L"Ctrl+9";
-        if(page.loading.IsLoading())tab.status=L"Chargement en cours";
-        if(page.sleeping)tab.status+=tab.status.empty()?L"En veille":L", en veille";
+        if(page.loading.IsLoading())tab.status=TR(a11y_tab_loading);
+        if(page.sleeping)tab.status+=tab.status.empty()?std::wstring(TR(a11y_tab_sleeping)):TRF(a11y_status_and,TR(a11y_tab_sleeping_lower));
         if(page.group&&splitGroups.count(page.group)){auto m=Members(page.group);if(m.size()>=2){const int k=(int)(std::find(m.begin(),m.end(),pages[i])-m.begin());
-            std::wstring g=L"vue partagée, "+std::to_wstring(k+1)+L" sur "+std::to_wstring(m.size())+(page.group==VisibleGroup()&&!page.shown?L", replié":L"");tab.status+=tab.status.empty()?g:L", "+g;}}
+            std::wstring g=page.group==VisibleGroup()&&!page.shown?TRF(a11y_tab_split_folded,std::to_wstring(k+1),std::to_wstring(m.size())):TRF(a11y_tab_split,std::to_wstring(k+1),std::to_wstring(m.size()));tab.status+=tab.status.empty()?g:L", "+g;}}
         // Tabs scrolled out of the strip stay listed (and selectable) but off screen.
         if(auto* r=region(NativeChrome::TabBase+i)){tab.bounds=screen(r->rect);tab.focusable=r->focusable;}else{tab.offscreen=true;tab.focusable=false;}
         nodes.push_back(tab);
         if(auto* r=region(NativeChrome::CloseBase+i)){
-            Node close;close.key=AccessibleTabKey(i,true);close.parent=tab.key;close.name=L"Fermer l'onglet "+title;
+            Node close;close.key=AccessibleTabKey(i,true);close.parent=tab.key;close.name=TRF(a11y_close_tab,title);
             if(i==current)close.accelerator=L"Ctrl+W";
             close.automationId=L"CloseTab";close.bounds=screen(r->rect);close.enabled=chrome.Enabled(r->id);nodes.push_back(std::move(close));
         }
     }
     button('T',0);button('m',0);button('M',0);button('X',0);
-    Node bar;bar.key=AccessibleToolbar;bar.role=Role::ToolBar;bar.name=L"Navigation";bar.automationId=L"Toolbar";bar.focusable=false;
+    Node bar;bar.key=AccessibleToolbar;bar.role=Role::ToolBar;bar.name=TR(a11y_toolbar);bar.automationId=L"Toolbar";bar.focusable=false;
     bar.bounds=screen({6,chrome.bar.top,chrome.width-6,chrome.bar.bottom});nodes.push_back(bar);
     button('B',AccessibleToolbar);button('F',AccessibleToolbar);button('R',AccessibleToolbar);
     // Security indicator (left of the address, so read first): icon + label; invoking it
     // opens the address.
     if(auto* r=region('I')){Node n;n.key='I';n.parent=AccessibleToolbar;n.name=chrome.address.tip();n.automationId=L"SiteSecurity";n.bounds=screen(r->rect);n.focusable=false;nodes.push_back(std::move(n));}
     // B01 pending-request chip, right after the security indicator: invoking it focuses the open popover.
-    if(auto* r=region(NativeChrome::Chrome::VaultKeyId)){Node n;n.key=NativeChrome::Chrome::VaultKeyId;n.parent=AccessibleToolbar;n.name=L"Remplir un mot de passe enregistré";n.automationId=L"VaultFill";n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
+    if(auto* r=region(NativeChrome::Chrome::VaultKeyId)){Node n;n.key=NativeChrome::Chrome::VaultKeyId;n.parent=AccessibleToolbar;n.name=TR(chrome_tip_fill_password);n.automationId=L"VaultFill";n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     if(auto* r=region('Q')){Node n;n.key='Q';n.parent=AccessibleToolbar;n.name=chrome.requestTip;n.automationId=L"SitePermissionRequest";n.bounds=screen(r->rect);n.focusable=false;nodes.push_back(std::move(n));}
     // While the real EDIT is open it stands for the address itself (named through
     // AccessibleHost().label), with its own value, text and caret.
     if(auto* r=region('L');r&&!AddressOpen()){
-        Node edit;edit.key='L';edit.parent=AccessibleToolbar;edit.role=Role::Edit;edit.name=L"Adresse ou recherche";edit.accelerator=L"Ctrl+L";edit.automationId=L"Address";
+        Node edit;edit.key='L';edit.parent=AccessibleToolbar;edit.role=Role::Edit;edit.name=TR(a11y_address);edit.accelerator=L"Ctrl+L";edit.automationId=L"Address";
         edit.bounds=screen(r->rect);
         if(auto t=Active();t&&!t->home)edit.value=t->uri;
         nodes.push_back(std::move(edit));
@@ -3979,7 +4102,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     // Suggestion list while the EDIT is open: focus stays in the EDIT, the active row
     // is the selected list item (combobox / aria-activedescendant model).
     if(AddressOpen()&&suggestions.Visible()){
-        Node list;list.key=AccessibleSuggestions;list.parent=AccessibleToolbar;list.role=Role::List;list.name=L"Suggestions";list.automationId=L"AddressSuggestions";list.focusable=false;list.bounds=suggestions.Bounds();nodes.push_back(list);
+        Node list;list.key=AccessibleSuggestions;list.parent=AccessibleToolbar;list.role=Role::List;list.name=TR(suggest_window_name);list.automationId=L"AddressSuggestions";list.focusable=false;list.bounds=suggestions.Bounds();nodes.push_back(list);
         const int n=(int)suggestions.Data().rows.size();
         for(int i=0;i<n;++i){Node item;item.key=AccessibleSuggestionKey(i);item.parent=AccessibleSuggestions;item.role=Role::ListItem;item.name=suggestions.Spoken(i);item.selected=i==suggestions.Active();item.position=i+1;item.count=n;item.focusable=false;item.bounds=suggestions.RowScreen(i);nodes.push_back(std::move(item));}
     }
@@ -3987,16 +4110,16 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     // The star: a toggle (On = this page is bookmarked) that also invokes.
     if(auto* r=region('K')){auto label=AccessibleButton('K');Node n;n.key='K';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('K');n.focusable=n.enabled;n.toggle=chrome.starred?2:1;nodes.push_back(std::move(n));}
     if(auto* r=region('N')){auto label=AccessibleButton('N');Node n;n.key='N';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.help=label.help;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('N');n.focusable=n.enabled;n.toggle=chrome.annotateActive?2:1;nodes.push_back(std::move(n));}
-    for(int id:{'V','Y','D','P','S'})button(id,AccessibleToolbar);
+    for(int id:{'V','Y','D','S'})button(id,AccessibleToolbar);
     // Decision 7: the private chip is plain text for UIA (not a button: no focus, no Invoke).
-    if(auto* r=region(NativeChrome::Chrome::PrivateChipId)){Node n;n.key=AccessiblePrivateChip;n.role=Role::Text;n.name=L"Fenêtre de navigation privée";n.automationId=L"PrivateWindowChip";n.focusable=false;n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
+    if(auto* r=region(NativeChrome::Chrome::PrivateChipId)){Node n;n.key=AccessiblePrivateChip;n.role=Role::Text;n.name=TR(a11y_private_chip);n.automationId=L"PrivateWindowChip";n.focusable=false;n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     // "Barre de favoris": every item of the bar root, those behind » listed off screen (still invocable).
     if(chrome.bandShown){
-        Node band;band.key=AccessibleBandKey;band.role=Role::ToolBar;band.name=L"Barre de favoris";band.automationId=L"BookmarksBar";band.focusable=false;
+        Node band;band.key=AccessibleBandKey;band.role=Role::ToolBar;band.name=TR(bookmarks_bar_root);band.automationId=L"BookmarksBar";band.focusable=false;
         band.bounds=screen({6,BookmarksBar::Layout::top,chrome.width-6,BookmarksBar::Layout::bottom});nodes.push_back(band);
         const int n=(int)chrome.bandItems.size();
         for(int i=0;i<n;++i){const auto& item=chrome.bandItems[i];Node b;b.key=(4LL<<32)|item.id;b.parent=AccessibleBandKey;
-            b.name=item.title.empty()?L"Favori sans titre":item.title;b.automationId=L"Bookmark."+std::to_wstring(item.id);b.position=i+1;b.count=n;
+            b.name=item.title.empty()?std::wstring(TR(a11y_untitled_bookmark)):item.title;b.automationId=L"Bookmark."+std::to_wstring(item.id);b.position=i+1;b.count=n;
             if(item.folder){b.help=FolderSummary(item.id);b.expand=chrome.bandOpen==NativeChrome::BookmarkBase+i?2:1;}
             else if(const auto* node=bookmarks.Find(item.id))b.help=ReadableUrl(node->url);
             if(auto* r=region(NativeChrome::BookmarkBase+i)){b.bounds=screen(r->rect);b.focusable=true;}else{b.offscreen=true;b.focusable=false;}
@@ -4044,7 +4167,7 @@ void AccessibleAction(int action,long long key){
 }
 Accessibility::Host AccessibleHost(){
     Accessibility::Host host;host.window=window;host.nodes=AccessibleNodes;host.focused=AccessibleFocus;
-    host.label=[](HWND child,Accessibility::Node& node){if(!child||child!=address)return false;node.name=L"Adresse ou recherche";node.accelerator=L"Ctrl+L";node.automationId=L"Address";return true;};
+    host.label=[](HWND child,Accessibility::Node& node){if(child&&folderRename.Owns(child)){node.name=TR(bookmark_field_name);node.automationId=L"BookmarkRename" /* i18n-exempt: UIA id */;return true;}if(!child||child!=address)return false;node.name=TR(a11y_address);node.accelerator=L"Ctrl+L";node.automationId=L"Address";return true;};
     host.invoke=[](long long key){PostMessageW(window,AccessibleMessage,AccessibleInvoke,(LPARAM)key);};
     host.select=[](long long key){PostMessageW(window,AccessibleMessage,AccessibleSelect,(LPARAM)key);};
     host.focus=AccessibleSetFocus;
@@ -4061,7 +4184,7 @@ void AnnounceSuggestion(){
     if(!suggestions.Visible()||!accessibility.Listening())return;
     const int i=suggestions.Active(),n=(int)suggestions.Data().rows.size();const long long key=AccessibleSuggestionKey(i);
     accessibility.Raise(key,UIA_SelectionItem_ElementSelectedEventId);
-    const auto text=suggestions.Spoken(i)+L", "+std::to_wstring(i+1)+L" sur "+std::to_wstring(n);
+    const auto text=TRF(suggestion_position,suggestions.Spoken(i),std::to_wstring(i+1),std::to_wstring(n));
     accessibility.Notify(key,text.c_str(),L"AddressSuggestion");
 }
 void SyncAccessibility(){
@@ -4074,11 +4197,11 @@ void SyncAccessibility(){
     if(focus!=accessibleState.focus){accessibleState.focus=focus;accessibility.Raise(focus,UIA_AutomationFocusChangedEventId);}
 }
 void AnnounceSplit(const std::wstring& text){accessibility.Notify(AccessibleTabKey(current),text.c_str(),L"SplitView");}
-void AnnounceCopied(){accessibility.Notify('C',L"Lien copié",L"CopyLink");}
+void AnnounceCopied(){accessibility.Notify('C',TR(link_copied),L"CopyLink");}
 // Raised on the Réglages button: it always exists, unlike drawer rows.
-void AnnounceDataCleared(){accessibility.Notify('S',L"Données effacées",L"ClearData");}
+void AnnounceDataCleared(){accessibility.Notify('S',TR(a11y_data_cleared),L"ClearData");}
 // Raised on the History button that opened the drawer (the drawer is painted, it has no UIA tree of its own).
-void AnnounceHistory(const std::wstring& text){accessibility.Notify('Y',text.c_str(),L"History");}
+void AnnounceHistory(const std::wstring& text){accessibility.Notify('Y',text.c_str(),L"History");}   // i18n-exempt: UIA activity id
 LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
     if(msg==WM_IME_STARTCOMPOSITION)addressKeys.SetComposing(true);
     if(msg==WM_IME_ENDCOMPOSITION)addressKeys.SetComposing(false);
@@ -4102,7 +4225,7 @@ void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NO
 // WebView2 startup recovery (defined before wWinMain): installer worker notifications, shutdown.
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
-case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
+case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);addressSelection.Attach(address,AddressSelectionColors);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(y<44&&!id)return HTCAPTION;return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
 // A click on the B01 request chip must not take activation from its popover (light dismiss
@@ -4144,7 +4267,7 @@ case WM_MOUSEMOVE:{ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float 
     if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();return 0;}break;
 case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
-case WM_LBUTTONDOWN:{ChromeTipHide();{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}if(y>=SV::liftY&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;}
+case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}if(y>=SV::liftY&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;}
     int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);}
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()){const BM::Id bid=chrome.bandItems[i].id;bandDrag={i,bid,{GET_X_LPARAM(l),GET_Y_LPARAM(l)},GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.BandRect(i).left,false,BM::BarRoot,bookmarks.IndexOf(bid)};}}}return 0;}
 case WM_LBUTTONUP:{if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDrag.active||bandDrag.active;if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active)FinishReorder();CancelTabDrag();BandDragEnd(false);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
@@ -4174,6 +4297,7 @@ case WM_KEYDOWN:if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(
     if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
     if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);return 0;}break;
 case WM_CTLCOLOREDIT:{
+    if(folderRename.Owns((HWND)l))return folderRename.Color((HDC)w);
     using namespace NativeChrome::Design;
     static NativeUI::AddressBackground background;
     HDC dc=(HDC)w;RECT rect;GetClientRect(address,&rect);
@@ -4184,6 +4308,7 @@ case WM_CTLCOLOREDIT:{
     SetBkMode(dc,TRANSPARENT);SetBkColor(dc,NativeGray(surface));
     SetDCBrushColor(dc,NativeGray(surface));SetBrushOrgEx(dc,0,0,nullptr);
     SetTextColor(dc,NativeGray(surface+(1-surface)*Text::address));
+    addressSelection.Clip((HWND)l,dc,NativeGray(surface+(1-surface)*alpha));   // after the text/background colours: the field's ordinary palette
     return (LRESULT)background.Brush(rect.right,edge,NativeGray(surface),NativeGray(surface+(1-surface)*alpha));
 }
 case Shortcut:keyboardModality=true;Command((int)w);return 0;
@@ -4283,11 +4408,10 @@ using CreateEnvironmentFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2En
 using ProbeRuntimeFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,ICoreWebView2EnvironmentOptions*,LPWSTR*);
 CreateEnvironmentFn engineCreate=nullptr; ProbeRuntimeFn engineProbe=nullptr;
 std::wstring engineGivenArgs;
-// The engine arguments of one environment, from the settings in the globals (its profile's): French UI, the
+// The engine arguments of one environment, from the settings in the globals (its profile's): interface language, the
 // autoplay policy, grayscale text, third-party cookies; any user-set arguments are kept.
 std::wstring EngineArgumentsFor(const BrowserSettings::State& s){
-    std::wstring value=engineGivenArgs;
-    if(value.find(L"--lang=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--lang=fr");
+    std::wstring value=I18n::WithEngineLang(engineGivenArgs);   // the interface language (fr / en-US), as EngineOptions::put_Language
     // SETTINGS(media): autoplay policy, fixed for the engine's lifetime. Muted autoplay stays allowed under user-gesture-required.
     if(value.find(L"--autoplay-policy=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(s.autoplay==BrowserSettings::Autoplay::Allowed?L"--autoplay-policy=no-user-gesture-required":L"--autoplay-policy=user-gesture-required");
     // SETTINGS(display): grayscale text antialiasing for page content (D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE).
@@ -4298,8 +4422,8 @@ std::wstring EngineArgumentsFor(const BrowserSettings::State& s){
 }
 // One user data folder = one set of options (WebView2 refuses a second environment on it with others): while another
 // process holds that profile's engine, its recorded arguments are used (Profiles::AcquireEngineArgs lease).
-std::wstring EngineArgumentsLeased(){const auto wanted=EngineArgumentsFor(settings);if(!profilesEnabled||smoke||privateWindow)return wanted;const auto lease=Profiles::AcquireEngineArgs(profileRoot,profileId,wanted);EngineHeld(profileId);if(!lease.error.empty())Log(L"PROFILES engine args "+lease.error);return lease.arguments;}
-EngineOptions* NewEngineOptions(){auto options=new EngineOptions();options->extensions=!smoke;options->arguments=EngineArgumentsLeased();return options;}
+std::wstring EngineArgumentsLeased(){const auto wanted=EngineArgumentsFor(settings);if(!profilesEnabled||smoke||privateWindow)return wanted;const auto lease=Profiles::AcquireEngineArgs(profileRoot,profileId,wanted);EngineHeld(profileId);if(!lease.error.empty())Log(L"PROFILES engine args "+lease.error);if(lease.shared&&lease.arguments.find(I18n::WithEngineLang(L""))==std::wstring::npos)Log(L"UI LANGUAGE engine shared with an open window of this profile: "+lease.arguments+L" (applies when every window of the profile is closed)");return lease.arguments;}
+EngineOptions* NewEngineOptions(){auto options=new EngineOptions();options->language=I18n::Tag();options->extensions=!smoke;options->arguments=EngineArgumentsLeased();return options;}
 HRESULT PrepareLoader(WR::Stage& stage){
     if(!loader){loader=LoadLibraryExW((base+L"\\WebView2Loader.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);if(!loader){stage=WR::Stage::Loader;return HRESULT_FROM_WIN32(GetLastError());}}
     if(!WI::Resolve(loader,"CreateCoreWebView2EnvironmentWithOptions",engineCreate)){stage=WR::Stage::Export;return HRESULT_FROM_WIN32(GetLastError());}
@@ -4307,7 +4431,7 @@ HRESULT PrepareLoader(WR::Stage& stage){
     return S_OK;
 }
 WR::Probe ProbeRuntime(){
-    WR::Probe probe;if(!engineProbe)return probe;probe.attempted=true;LPWSTR version=nullptr;auto options=new EngineOptions();options->extensions=!smoke;options->arguments=EngineArgumentsFor(settings); /* a version probe creates no environment: no engine lease (it would never be released) */
+    WR::Probe probe;if(!engineProbe)return probe;probe.attempted=true;LPWSTR version=nullptr;auto options=new EngineOptions();options->language=I18n::Tag();options->extensions=!smoke;options->arguments=EngineArgumentsFor(settings); /* a version probe creates no environment: no engine lease (it would never be released) */
     probe.hr=engineProbe(nullptr,options,&version);options->Release();if(version){probe.version=version;CoTaskMemFree(version);}return probe;
 }
 HRESULT CreateEngine(std::uint64_t generation){
@@ -4352,7 +4476,7 @@ bool StartRelaunchedInstance(){
 bool RelaunchBrowser(){engineRelaunchPending=true;return true;}
 void RunPendingRelaunch(){
     if(!engineRelaunchPending)return;engineRelaunchPending=false;
-    if(!StartRelaunchedInstance())MessageBoxW(nullptr,L"Le navigateur n'a pas pu redémarrer automatiquement. Rouvrez-le.",L"browser",MB_OK|MB_ICONINFORMATION);
+    if(!StartRelaunchedInstance())MessageBoxW(nullptr,TR(relaunch_failed),L"browser",MB_OK|MB_ICONINFORMATION);
 }
 void ShowEngineView(const WR::View& v);
 void OnEngineButton(int id){
@@ -4376,13 +4500,13 @@ MD::Spec EngineSpec(const WR::View& v){
     const bool busy=WR::Busy(v.phase);
     if(busy){s.status.icon=MD::StatusIcon::Busy;s.status.title=v.status;s.status.detail=v.statusDetail;s.hasStatus=true;}
     const auto cause=v.diagnosis.cause;
-    if(!v.manualPrimary&&(cause==WR::Cause::RuntimeMissing||cause==WR::Cause::RuntimeInconsistent||cause==WR::Cause::OverrideInvalid))s.links.push_back({EngineManualLink,L"Page Microsoft WebView2"});
+    if(!v.manualPrimary&&(cause==WR::Cause::RuntimeMissing||cause==WR::Cause::RuntimeInconsistent||cause==WR::Cause::OverrideInvalid))s.links.push_back({EngineManualLink,TR(engine_link_microsoft_page)});
     auto button=[&](int id,const wchar_t* label,MD::Role role,bool enabled,bool closes){MD::Button b;b.id=id;b.label=label;b.role=role;b.disabled=!enabled;b.closes=closes;b.automationId=L"webview2.button."+std::to_wstring(id);s.buttons.push_back(b);};
-    button(EngineQuitButton,L"Quitter",MD::Role::Secondary,true,true);
-    button(EngineRetryButton,L"Réessayer",MD::Role::Secondary,!busy&&v.canRetry,false);
-    if(v.manualPrimary)button(EngineManualButton,L"Ouvrir la page Microsoft",MD::Role::Primary,true,false);
-    else if(v.canRelaunch)button(EngineRelaunchButton,L"Redémarrer le navigateur",MD::Role::Primary,!busy,false);
-    else if(v.diagnosis.offerInstall||busy)button(EngineInstallButton,busy?L"Installation…":L"Installer WebView2",MD::Role::Primary,!busy&&v.canInstall,false);
+    button(EngineQuitButton,TR(engine_quit),MD::Role::Secondary,true,true);
+    button(EngineRetryButton,TR(downloads_action_retry),MD::Role::Secondary,!busy&&v.canRetry,false);
+    if(v.manualPrimary)button(EngineManualButton,TR(engine_open_microsoft_page),MD::Role::Primary,true,false);
+    else if(v.canRelaunch)button(EngineRelaunchButton,TR(engine_relaunch),MD::Role::Primary,!busy,false);
+    else if(v.diagnosis.offerInstall||busy)button(EngineInstallButton,busy?TR(updates_installing):TR(engine_install_webview2),MD::Role::Primary,!busy&&v.canInstall,false);
     for(auto& b:s.buttons)if(!b.disabled&&b.role==MD::Role::Primary){b.isDefault=true;b.initialFocus=true;}
     s.onButton=[](int id){OnEngineButton(id);};
     return s;
@@ -4397,7 +4521,7 @@ void ShowEngineView(const WR::View& v){
     engineDialogOpen=modal.Show(std::move(spec),PageScreenRect(),[](const MD::Result& r){EngineDialogDone(r);});
     if(!engineDialogOpen){ // native dialog unavailable (graphics init failed): plain message, then the official page
         Log(L"WEBVIEW2 RECOVERY dialog unavailable");
-        const auto text=v.diagnosis.body+L"\n\n"+v.diagnosis.technical+(v.diagnosis.offerInstall?L"\n\nOuvrir la page Microsoft WebView2 ?":L"");
+        const auto text=v.diagnosis.body+L"\n\n"+v.diagnosis.technical+(v.diagnosis.offerInstall?TRF(engine_open_page_question_block,TR(engine_open_page_question)):std::wstring());
         if(MessageBoxW(window,text.c_str(),v.diagnosis.title.c_str(),(v.diagnosis.offerInstall?MB_YESNO:MB_OK)|MB_ICONERROR)==IDYES)ShellExecuteW(window,L"open",WI::ManualPageUrl(),nullptr,nullptr,SW_SHOWNORMAL);
         PostMessageW(window,WM_CLOSE,0,0);
     }
@@ -4426,13 +4550,14 @@ void StopEngineStart(){
     const auto state=engineInstaller.Shutdown(1500);
     if(state.stage==WI::Stage::Idle||(state.stage==WI::Stage::Done&&!state.detached))return; // nothing was in flight
     // What really happened to the request at close (the gate decides atomically with the resume).
+    // i18n-exempt-begin: log line assembled below (English diagnostics)
     std::wstring line=std::wstring(L"WEBVIEW2 INSTALL close during ")+WI::StageName(state.stage)+L": ";
     if(state.alreadyResumed)line+=L"the Microsoft installer had already started and keeps running (never killed)";
     else{
         line+=state.terminatedSuspended?L"the created setup was terminated before it ever ran":L"no installer was started";
         line+=state.withdrawalRecorded?L"; withdrawal recorded (no later check will resume it)":L"; withdrawal NOT recorded (no record of ours or lock/write failure)";
     }
-    if(state.detached)line+=L"; worker still busy"+(state.dir.empty()?std::wstring():L", its folder %TEMP%\\"+state.dir+L" may remain if the process ends first");
+    if(state.detached)line+=L"; worker still busy"+(state.dir.empty()?std::wstring():L", its folder %TEMP%\\"+state.dir+L" may remain if the process ends first");   // i18n-exempt-end
     Log(line);
 }
 // ---- tab / profile switch transition (src/content-transition.h) ----------------------------------------------
@@ -4450,7 +4575,9 @@ HWND PageHostWindow(Tab& t){
 std::vector<HWND> ShownPageWindows(){std::vector<HWND> v;for(auto& t:pages)if(t&&!t->closed&&t->controller.p&&t->placedVisible==1&&PageShown(*t))if(HWND h=PageHostWindow(*t))v.push_back(h);return v;}
 // The first input to a page (a click: WM_PARENTNOTIFY, sent before the page handles it; a key in the page) removes
 // the overlay at once: what the user acts on is what they see. Nothing is consumed or delayed.
-void ContentTransitionInput(const wchar_t* what){if(!contentTransition.Active())return;contentTransition.Cancel();if(workspaceTest)Log(std::wstring(L"TRANSITION cancelled by input: ")+what);}
+// Removes the overlay now, releases both snapshots and the pending readiness / end timers (no idle wake left).
+void CancelContentTransition(const wchar_t* why){if(!contentTransition.Active())return;contentTransition.Cancel();if(window){KillTimer(window,ContentReadyTimerId);KillTimer(window,ContentTransitionTimerId);}if(workspaceTest)Log(std::wstring(L"TRANSITION cancelled by ")+why);}
+void ContentTransitionInput(const wchar_t* what){CancelContentTransition((std::wstring(L"input: ")+what).c_str());}
 RECT ContentTransitionRect(){const auto c=ContentBox();return {S(c.left),S(c.top),S(c.right),S(c.bottom)};}
 // Called just BEFORE the outgoing page is hidden: the snapshot is taken now, the switch then happens at once.
 void BeginContentTransition(ContentTransition::Kind kind){
@@ -4506,17 +4633,20 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(ar
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif
     if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+    // Interface language, pinned for this process BEFORE any dialog, window or WebView2 (src/ui-language.h): the
+    // browser-wide preference at the data root (portable: next to the exe; installed: <root>\data). French by default.
+    const UiLanguage::Loaded uiLanguage=UiLanguage::Load(dataDir);I18n::SetForProcess(uiLanguage.locale);
 #ifdef BROWSER_UPDATES
 #ifndef BROWSER_PREVIEW
     if(!smoke&&ForwardToInstalled()){CoUninitialize();return 0;} // before any window, profile or WebView2
 #endif
 #endif
     SelectProfile(args); // after the forward: a forwarded launch never touches this folder's profiles (review M5)
-    Log(L"START browser");Log(std::wstring(L"VAULT state: ")+(Vault::Active()?L"active":L"inactive"));   /* P-I1: what a product run reports */
+    Log(L"START browser");{const char* st=UiLanguage::StatusText(uiLanguage.status);Log(std::wstring(L"UI LANGUAGE ")+(uiLanguage.locale==I18n::Locale::En?L"en":L"fr")+L" ("+std::wstring(st,st+std::strlen(st))+L")");}Log(std::wstring(L"VAULT state: ")+(Vault::Active()?L"active":L"inactive"));   /* P-I1: what a product run reports */
 #ifdef BROWSER_E2E_VAULT_HOST
     Log(L"E2E VAULT HOST: vault active, foreground condition lifted (test host only)");   /* binary marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?L"browser (navigation privée)":L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,L"Initialisation graphique native impossible.",L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif

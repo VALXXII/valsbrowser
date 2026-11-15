@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Bookmarks model (bookmarks bar and folders): an ordered tree of folders and
 // links under two fixed roots, with stable ids, depth and cycle safety,
 // subtree removal with undo snapshots, and a versioned text format. Pure C++17
@@ -118,8 +119,8 @@ public:
     static constexpr std::size_t TitleMax = 1024; // UTF-16 units
 
     Store() {
-        nodes_[BarRoot] = Node{BarRoot, NoId, Kind::Folder, L"Barre de favoris", L"", 0, {}};
-        nodes_[OtherRoot] = Node{OtherRoot, NoId, Kind::Folder, L"Autres favoris", L"", 0, {}};
+        nodes_[BarRoot] = Node{BarRoot, NoId, Kind::Folder, TR(bookmarks_bar_root), L"", 0, {}};   // roots are never written: named in the process language
+        nodes_[OtherRoot] = Node{OtherRoot, NoId, Kind::Folder, TR(bookmarks_other_root), L"", 0, {}};
     }
 
     // ---- Queries -------------------------------------------------------------

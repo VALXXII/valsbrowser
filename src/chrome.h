@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <d2d1_1.h>
 #include <d2d1effects.h>
 #include <dwrite_1.h>
@@ -86,10 +87,10 @@ public:
     // DIP rectangle repainted for download-icon-only frames (the 'D' button).
     // The ripple grows well past the button (x4): the rectangle covers its reach,
     // down to the chrome's lower edge (the page covers what lies below).
-    D2D1_RECT_F DownloadIconDirty()const{const float cx=width-85,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
+    D2D1_RECT_F DownloadIconDirty()const{const float cx=width-55,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
     // Audio button (left of History, only while a site has made sound): icon-only frames.
-    static constexpr float AudioRight=133,AudioLeft=157;   // from the window's right edge; the field ends 6 DIP before
-    bool audioShown=false;std::wstring audioTip=L"Son des sites";
+    static constexpr float AudioRight=103,AudioLeft=127;   // from the window's right edge; the field ends 6 DIP before
+    bool audioShown=false;   // tooltip resolved at use (TR(chrome_tip_audio)): `chrome` is a global built before the language is pinned
     Audio::IconModel audioIcon;
     D2D1_RECT_F AudioIconDirty()const{return {width-AudioLeft-1,47,width-AudioRight+1,73};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
@@ -446,6 +447,9 @@ public:
     std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
     struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
+    // Fullscreen (F11 or a page's element): the page takes the whole window. Nothing of the chrome is drawn, hit,
+    // focused, given a tooltip or exposed to UI Automation (all of these read `regions`); Paint only clears the canvas.
+    bool contentOnly=false;
     // Tab strip: adaptive width + horizontal scroll (DIP). `lockedTab` (0 = off) is set by
     // the host after a pointer close and cleared when the pointer leaves the strip.
     float scroll=0,lockedTab=0;Design::TabStrip::Strip strip;
@@ -611,8 +615,10 @@ public:
         Icon(icon,box,style.iconSize*Motion::PressScale(state.press,motion&&motion->ReducedMotion(),!state.disabled),style.iconOpacity);
     }
     HRESULT PaintStateSheet(){if(!target)return E_UNEXPECTED;target->BeginDraw();target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
-        Text(L"Native components",{24,16,700,48},20,1,false,true);const bool modality=keyboardModality;
+        Text(L"Native components",   /* i18n-exempt: developer specimen page */{24,16,700,48},20,1,false,true);const bool modality=keyboardModality;
+        // i18n-exempt-next: developer specimen page (state names)
         const wchar_t* labels[]={L"Default",L"Hover",L"Pressed",L"Disabled",L"Keyboard focus",L"Pointer focus"};
+        // i18n-exempt-next: developer specimen page (variant names)
         const wchar_t* rows[]={L"Ghost / new tab",L"Raised / navigation",L"Embedded / reload",L"Window controls"};
         Design::ButtonVariant variants[]={Design::ButtonVariant::Ghost,Design::ButtonVariant::Raised,Design::ButtonVariant::Embedded,Design::ButtonVariant::Window};
         for(int col=0;col<6;++col)Text(labels[col],{240.f+col*128,56,364.f+col*128,88},14,.7f);
@@ -624,9 +630,9 @@ public:
             }
         }
         keyboardModality=true;
-        Text(L"Tab surfaces / stable close slot",{24,384,400,416},14,.7f);
+        Text(L"Tab surfaces / stable close slot",   /* i18n-exempt: developer specimen page */{24,384,400,416},14,.7f);
         for(int col=0;col<3;++col){float x=240.f+col*190;D2D1_RECT_F tab{x,432,x+128,464};Round(tab,Design::Radius::control,Design::TabSurface(col==0,col==1?1:0));DrawFavicon(0,{x+8,440,x+24,456});Text(L"Ggyp \u00c9\u00e7",{x+32,432,x+96,464},14,.5f,false,true);if(col!=2)Icon(L"tab-close",{x+100,436,x+124,460});if(col==2)FocusRing(tab,Design::Radius::control);}keyboardModality=modality;
-        Text(L"Production Direct2D + DirectWrite / Phosphor Bold / no WebView2",{24,496,900,528},14,.7f);
+        Text(L"Production Direct2D + DirectWrite / Phosphor Bold / no WebView2",   /* i18n-exempt: developer specimen page */{24,496,900,528},14,.7f);
         return target->EndDraw();
     }
     // ---- Bookmarks (star in the field, optional band under the toolbar) -------------
@@ -635,17 +641,22 @@ public:
     std::vector<BandItem> bandItems; bool bandShown=false,bandButtonForced=false;
     bool starred=false;            // the active page is bookmarked: filled star
     int bandOpen=0;                // region whose menu is open: keeps its hover fill, chevron points up
+    int bandRenaming=-1;           // band index renamed in place: hover surface, its title drawn by the editor
     int bandRover=-1;              // band item that takes the band's single Tab stop (roving focus)
     int bandDrag=-1;float bandDragOffset=0; // item being dragged (visible index) and its pointer offset
     int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
     BookmarksBar::Result band;     // last layout (Build)
     // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
-    bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip=L"Annoter (Ctrl+Maj+A)";
+    bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip;   // empty until Ann::SyncChrome: AnnotateTip() falls back to the catalog at use
+    const wchar_t* AnnotateTip() const { return annotateTip.empty() ? TR(chrome_tip_annotate) : annotateTip.c_str(); }
     std::function<void(ID2D1RenderTarget*,ID2D1Factory*,ID2D1SolidColorBrush*,D2D1_RECT_F,Motion::InteractionVisual,bool focus)> paintAnnotate;
-    float AnnotateRight()const{return (audioShown?AudioLeft:127.f)+6;}   // from the right edge: 6 DIP left of Audio/History
+    float AnnotateRight()const{return (audioShown?AudioLeft:97.f)+6;}   // from the right edge: 6 DIP left of Audio/History
     float ContentTop()const{return Design::Vertical::ContentTop(bandShown)+annotationBand;}
     D2D1_RECT_F BandRect(int i)const{return {band.left[i],BookmarksBar::Layout::top,band.left[i]+band.width[i],BookmarksBar::Layout::bottom};}
+    // The title's box inside band item i (DIP): after the 16 DIP icon and its gap, before the folder
+    // chevron; the in-place rename editor sits exactly here (design/bookmark-inline-rename-plan.md).
+    D2D1_RECT_F BandTitleBox(int i)const{namespace L=BookmarksBar::Layout;const auto box=BandRect(i);float right=box.right-L::itemPad;if(i<(int)bandItems.size()&&bandItems[i].folder)right-=L::chevron+L::chevronGap;return {box.left+L::itemPad+Design::Size::icon+L::iconGap,box.top,right,box.bottom};}
     float BandTitleWidth(const BandItem& item){return item.title.empty()?0:TextWidth(item.title,Design::Type::label.size,Design::Type::label.medium,false,Design::Type::label.tracking);}
     void BuildBand(){
         band={};if(!bandShown)return;
@@ -653,10 +664,10 @@ public:
         for(auto& item:bandItems)items.push_back({BookmarksBar::Layout::Natural(BandTitleWidth(item),item.folder)});
         band=BookmarksBar::Arrange(width,items,bandButtonForced);
         for(int i=0;i<band.visible&&i<BookmarkLimit;++i)regions.push_back({BookmarkBase+i,BandRect(i),bandItems[i].tip.c_str(),i==bandRover||(bandRover<0&&i==0)});
-        if(band.overflow)regions.push_back({'O',{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom},L"Autres favoris et favoris masqués",bandRover<0&&band.visible==0});
-        if(bandItems.empty()&&!band.overflow)regions.push_back({'E',{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom},L"Ajouter cette page aux favoris (Ctrl+D)"});
+        if(band.overflow)regions.push_back({'O',{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom},TR(chrome_tip_bookmarks_overflow),bandRover<0&&band.visible==0});
+        if(bandItems.empty()&&!band.overflow)regions.push_back({'E',{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom},TR(chrome_tip_add_page_bookmark)});
     }
-    float EmptyBandWidth(){return 8+Design::Size::icon+6+TextWidth(L"Ajouter cette page",Design::Type::label.size,true,false,Design::Type::label.tracking)+16+KeyCapsWidth()+8;}
+    float EmptyBandWidth(){return 8+Design::Size::icon+6+TextWidth(TR(chrome_bookmarks_add_page),Design::Type::label.size,true,false,Design::Type::label.tracking)+16+KeyCapsWidth()+8;}
     float KeyCapsWidth(){return 2*12+TextWidth(L"Ctrl",14,false,true)+TextWidth(L"D",14,false,true)+2;}
     // Fill of a band item's own surface (for the title's fade mask).
     float BandSurface(float hover,float press){return Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).fill?Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).surface:Design::Surface::canvas;}
@@ -665,7 +676,7 @@ public:
         D2D1_RECT_F box=BandRect(i);const bool dragged=i==bandDrag;
         if(dragged){box.left+=bandDragOffset;box.right+=bandDragOffset;}
         auto v=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
-        if(id==bandOpen||i==bandDropInto)v.hover=1;
+        if(id==bandOpen||i==bandDropInto||i==bandRenaming)v.hover=1;
         const float surface=dragged?Design::Surface::raised:BandSurface(v.hover,v.press);
         if(dragged||v.hover>0||v.press>0)Round(box,Design::Radius::control,surface);
         if(focus==id)FocusRing(box,Design::Radius::control);
@@ -682,7 +693,7 @@ public:
             Icon(L"caret",caret,L::chevron,id==bandOpen?1.f:.64f+.36f*v.hover);
             target->SetTransform(base);right=caret.left-L::chevronGap;
         }
-        if(item.title.empty())return;
+        if(item.title.empty()||i==bandRenaming)return;
         const float left=icon.right+L::iconGap;if(right<=left+1)return;
         const float textWidth=BandTitleWidth(item);
         target->PushAxisAlignedClip(D2D1::RectF(left,box.top,right,box.bottom),D2D1_ANTIALIAS_MODE_ALIASED);
@@ -711,8 +722,8 @@ public:
             if(style.fill)Round(box,style.radius,style.surface);
             if(style.focus)FocusRing(box,style.radius);
             const float cy=(box.top+box.bottom)/2;Icon(L"star",{box.left+8,cy-8,box.left+24,cy+8},16,1);
-            const float tw=TextWidth(L"Ajouter cette page",Design::Type::label.size,true,false,Design::Type::label.tracking);
-            Text(L"Ajouter cette page",{box.left+30,box.top,box.left+30+tw+2,box.bottom},Design::Type::label.size,Design::Text::secondary+.5f*v.hover,false,true,Design::Type::label.tracking);
+            const float tw=TextWidth(TR(chrome_bookmarks_add_page),Design::Type::label.size,true,false,Design::Type::label.tracking);
+            Text(TR(chrome_bookmarks_add_page),{box.left+30,box.top,box.left+30+tw+2,box.bottom},Design::Type::label.size,Design::Text::secondary+.5f*v.hover,false,true,Design::Type::label.tracking);
             float x=box.left+30+tw+16;for(const wchar_t* key:{L"Ctrl",L"D"}){const float w=TextWidth(key,14,false,true)+12;FillBox({x,cy-10,x+w,cy+10},4,D2D1::ColorF(1,1,1,.06f));keycap=true;Text(key,{x+5,cy-10,x+w,cy+10},14,Design::Text::disabled,true);keycap=false;x+=w+2;}
         }
     }
@@ -845,13 +856,13 @@ public:
         if(focus==900)FocusRing({p.left,p.top,p.right,p.bottom},PB::radius);}
     // A9 « Privée » chip: drawn only, never hovered/focused/clicked (region kept for UIA bounds).
     static constexpr int PrivateChipId=905; bool privateChip=false; ID2D1PathGeometry* eyeSlash=nullptr;
-    Design::Box PrivateChipRect(){return Design::PrivateChip::Rect(TextWidth(Design::PrivateChip::label,14,true));}
+    Design::Box PrivateChipRect(){return Design::PrivateChip::Rect(TextWidth(Design::PrivateChip::label(),14,true));}
     void DrawPrivateChip(){namespace PC=Design::PrivateChip;const auto c=PrivateChipRect();
         FillBox({c.left,c.top,c.right,c.bottom},PC::radius,D2D1::ColorF(PC::tintR,PC::tintG,PC::tintB,PC::tintA));
         const float gx=c.left+PC::padLeft,gy=c.top+(PC::height-PC::glyph)/2;
         if(!eyeSlash&&factory)eyeSlash=DialogKit::SvgGeometry(factory,PC::eyeSlash);
         if(eyeSlash){D2D1_MATRIX_3X2_F old;target->GetTransform(&old);target->SetTransform(D2D1::Matrix3x2F::Scale(PC::glyph/256,PC::glyph/256)*D2D1::Matrix3x2F::Translation(gx,gy)*old);brush->SetColor(D2D1::ColorF(1,1,1,1));target->FillGeometry(eyeSlash,brush);target->SetTransform(old);}
-        const float tx=gx+PC::glyph+PC::gap;Text(PC::label,{tx,c.top,c.right,c.bottom},14,1,false,true,0);
+        const float tx=gx+PC::glyph+PC::gap;Text(PC::label(),{tx,c.top,c.right,c.bottom},14,1,false,true,0);
     }
     void FillBox(D2D1_RECT_F r,float radius,D2D1_COLOR_F c){brush->SetColor(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     void DrawAddress(bool editing,bool indicatorHover){
@@ -860,7 +871,7 @@ public:
         const D2D1_RECT_F line{0,bar.top,0,bar.bottom};
         if(editing){if(!DrawSiteImage(editFavicon,slot))Icon(editIcon?editIcon:address.icon(),slot,Design::Size::icon,A::secondary);return;}
         if(address.security==Security::Empty){Icon(L"search",slot,Design::Size::icon,A::secondary);
-            Text(L"Search, browse, whatever",{bar.left+A::textInset,line.top,right,line.bottom},Design::Type::address.size,Design::Text::address,false,Design::Type::address.medium,Design::Type::address.tracking);return;}
+            Text(TR(chrome_address_placeholder),{bar.left+A::textInset,line.top,right,line.bottom},Design::Type::address.size,Design::Text::address,false,Design::Type::address.medium,Design::Type::address.tracking);return;}
         const bool danger=address.security==Security::CertificateError;
         float x=bar.left+A::textInset;
         if(const wchar_t* chip=address.chip();*chip){
@@ -900,17 +911,17 @@ public:
             if(addressFadeBrush){addressFadeBrush->SetStartPoint({right-A::fade,0});addressFadeBrush->SetEndPoint({right,0});target->FillRectangle(D2D1::RectF(right-A::fade,bar.top+1,right,bar.bottom-1),addressFadeBrush);}
         }
     }
-    void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();
+    void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();if(contentOnly)return;
         namespace TS=Design::TabStrip;
         // Private window: reserve the chip and its 6 DIP row gap before any tab computation (capacity,
         // scroll, drag, hit tests and focus all go through TS::Left()).
-        TS::leading=privateChip?Design::PrivateChip::Width(TextWidth(Design::PrivateChip::label,14,true))+Design::Space::tabGap:0;
+        TS::leading=privateChip?Design::PrivateChip::Width(TextWidth(Design::PrivateChip::label(),14,true))+Design::Space::tabGap:0;
         strip=TS::Layout(width,count,selected,scroll,lockedTab);scroll=strip.scroll;SyncTabMotion(count,now);
-        brandTip=profileButton.shown?(profileButton.privateWindow?std::wstring(L"Fenêtre privée (Ctrl+Maj+M)"):L"Profil : "+profileButton.name+L" (Ctrl+Maj+M)"):L"Liste des onglets ("+std::to_wstring(count)+L") · molette pour changer";
+        brandTip=profileButton.shown?(profileButton.privateWindow?std::wstring(TR(chrome_tip_private_window)):TRF(chrome_tip_profile,profileButton.name)):TRF(chrome_tip_tab_list,std::to_wstring(count));
         auto brand=Design::Brand::Region();regions.push_back({900,{brand.left,brand.top,brand.right,brand.bottom},brandTip.c_str()});
         if(privateChip){const auto c=PrivateChipRect();regions.push_back({PrivateChipId,{c.left,c.top,c.right,c.bottom},nullptr});}
         // Tooltips carry the full title: compact tabs truncate or hide it.
-        tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back(title.empty()?L"Onglet":title);}
+        tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";tips.push_back(title.empty()?std::wstring(TR(chrome_tab_untitled_tip)):title);}
         const float viewRight=ShownViewRight();
         for(auto& item:tabFrame.items){const int i=item.index;if(i<0||i>=count)continue;
             auto surface=ShownSurface(item);if(surface.right-surface.left<.5f||surface.right<=strip.ViewLeft()||surface.left>=viewRight)continue;
@@ -922,24 +933,26 @@ public:
             // expose no close target and take no keyboard focus. A tab still
             // opening exposes its close target once the glyph is fully revealed.
             const bool clear=strip.Clear(i);
-            if(clear&&strip.Closable(i,selected)&&close.right<=surface.right+.01f)regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},L"Fermer cet onglet"});
+            if(clear&&strip.Closable(i,selected)&&close.right<=surface.right+.01f)regions.push_back({CloseBase+i,{close.left,close.top,close.right,close.bottom},TR(chrome_tip_close_tab)});
             regions.push_back({TabBase+i,{region.left,region.top,region.right,region.bottom},tips[i].c_str(),clear});
         }
-        float x=viewRight+Design::Space::tabGap;regions.push_back({'T',{x,6,x+Design::Size::control,38},L"Nouvel onglet (Ctrl+T)"});
-        regions.push_back({'m',{width-118,4,width-86,36},L"Réduire"});regions.push_back({'M',{width-78,4,width-46,36},L"Agrandir / restaurer"});regions.push_back({'X',{width-38,4,width-6,36},L"Fermer la fenêtre"});
-        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},L"Précédent (Alt+←)"});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},L"Suivant (Alt+→)"});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?L"Arrêter le chargement (Ctrl+R)":L"Actualiser (Ctrl+R)"});bar={T::addressLeft,44,width-(annotateShown?AnnotateRight()+24+Design::Space::controlGap:audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
+        float x=viewRight+Design::Space::tabGap;regions.push_back({'T',{x,6,x+Design::Size::control,38},TR(chrome_tip_new_tab)});
+        regions.push_back({'m',{width-118,4,width-86,36},TR(chrome_tip_minimize)});regions.push_back({'M',{width-78,4,width-46,36},TR(chrome_tip_maximize)});regions.push_back({'X',{width-38,4,width-6,36},TR(chrome_tip_close_window)});
+        {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},TR(chrome_tip_back)});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},TR(chrome_tip_forward)});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?TR(chrome_tip_stop):TR(chrome_tip_reload)});bar={T::addressLeft,44,width-(annotateShown?AnnotateRight()+24+Design::Space::controlGap:audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
         request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
         // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
         // B03 (vault, review §5): « Remplir un mot de passe enregistré », left of Copy, only when the host says so.
-        regions.push_back({'L',{bar.left,44,bar.right-(vaultKey?96.f:64.f),76},L"Adresse ou recherche (Ctrl+L / Alt+D)"});
-        if(vaultKey){regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},L"Remplir un mot de passe enregistré"});}
-        regions.push_back({'C',{bar.right-60,48,bar.right-36,72},L"Copier le lien"});
-        regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?L"Modifier le favori (Ctrl+D)":L"Ajouter aux favoris (Ctrl+D)"});
-        if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},annotateTip.c_str()});
-        if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},audioTip.c_str()});
-        regions.push_back({'Y',{width-127,48,width-103,72},L"Historique (Ctrl+H)"});regions.push_back({'D',{width-97,48,width-73,72},L"Téléchargements"});regions.push_back({'P',{width-67,48,width-43,72},L"Nouvelle fenêtre privée (Ctrl+Maj+N)"});regions.push_back({'S',{width-30,48,width-6,72},L"Réglages"});
+        regions.push_back({'L',{bar.left,44,bar.right-(vaultKey?96.f:64.f),76},TR(chrome_tip_address)});
+        if(vaultKey){regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},TR(chrome_tip_fill_password)});}
+        regions.push_back({'C',{bar.right-60,48,bar.right-36,72},TR(chrome_tip_copy_link)});
+        regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?TR(chrome_tip_edit_bookmark):TR(chrome_tip_add_bookmark)});
+        if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},AnnotateTip()});
+        if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},TR(chrome_tip_audio)});
+        // Right cluster, 24 DIP buttons 6 apart, then the separator and Réglages. No private-window button: « Nouvelle
+        // fenêtre privée » lives in the profile menu and Ctrl+Maj+N (command 'P' unchanged).
+        regions.push_back({'Y',{width-97,48,width-73,72},TR(chrome_tip_history)});regions.push_back({'D',{width-67,48,width-43,72},TR(chrome_tip_downloads)});regions.push_back({'S',{width-30,48,width-6,72},TR(chrome_tip_settings)});
         BuildBand();
     }
     std::vector<int> FocusOrder()const{std::set<int> closes;for(auto& region:regions)if(IsClose(region.id))closes.insert(region.id);std::vector<int> order;for(auto& region:regions){if(IsClose(region.id)||!region.focusable)continue;if(IsBookmark(region.id)||region.id=='O'){if(region.id!=BandStop())continue;}if(Enabled(region.id))order.push_back(region.id);if(IsTab(region.id)){int close=CloseBase+TabIndex(region.id);if(closes.count(close)&&Enabled(close))order.push_back(close);}}return order;}
@@ -1018,7 +1031,7 @@ public:
     }
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
     std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly){
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
@@ -1072,6 +1085,7 @@ public:
             const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
             if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
         }
+        }   // !contentOnly
         target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropGhostLayer();DropFade();DropDownloadIcon();DropAudioIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
     }
 };

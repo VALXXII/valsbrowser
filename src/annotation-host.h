@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Annotation mode — pure host logic (V2): page message validation, capture planning (engine clip and
 // viewport crop), origins, small texts (element labels, ages, follow-up lines). No window, no WebView2, no I/O: unit-tested in
 // tests/annotations/host_test.cpp. The integration (src/annotation-mode.h) feeds it.
@@ -345,23 +346,23 @@ inline std::string OriginOf(const std::wstring& url) {
 }
 // ---------------------------------------------------------------- texts
 inline std::wstring SinceText(std::int64_t seconds) {
-    if (seconds < 60) return L"À l'instant";
-    if (seconds < 3600) return L"Depuis " + std::to_wstring(seconds / 60) + L" min";
-    if (seconds < 86400) return L"Depuis " + std::to_wstring(seconds / 3600) + L" h";
-    return L"Depuis " + std::to_wstring(seconds / 86400) + L" j";
+    if (seconds < 60) return TR(age_now_cap);
+    if (seconds < 3600) return TRF(since_minutes_cap, std::to_wstring(seconds / 60));
+    if (seconds < 86400) return TRF(since_hours_cap, std::to_wstring(seconds / 3600));
+    return TRF(since_days_cap, std::to_wstring(seconds / 86400));
 }
 // Short form for the card header (« Il y a 3 min »): the long one does not fit beside the agent's name.
 inline std::wstring AgoShort(std::int64_t seconds) {
-    if (seconds < 60) return L"À l'instant";
-    if (seconds < 3600) return L"Il y a " + std::to_wstring(seconds / 60) + L" min";
-    if (seconds < 86400) return L"Il y a " + std::to_wstring(seconds / 3600) + L" h";
-    return L"Il y a " + std::to_wstring(seconds / 86400) + L" j";
+    if (seconds < 60) return TR(age_now_cap);
+    if (seconds < 3600) return TRF(ago_minutes_cap, std::to_wstring(seconds / 60));
+    if (seconds < 86400) return TRF(ago_hours_cap, std::to_wstring(seconds / 3600));
+    return TRF(ago_days_short_cap, std::to_wstring(seconds / 86400));
 }
 inline std::wstring AgoText(std::int64_t seconds) {
-    if (seconds < 60) return L"il y a quelques secondes";
-    if (seconds < 3600) return L"il y a " + std::to_wstring(seconds / 60) + L" min";
-    if (seconds < 86400) return L"il y a " + std::to_wstring(seconds / 3600) + L" h";
-    return L"il y a " + std::to_wstring(seconds / 86400) + L" j";
+    if (seconds < 60) return TR(ago_seconds);
+    if (seconds < 3600) return TRF(ago_minutes, std::to_wstring(seconds / 60));
+    if (seconds < 86400) return TRF(ago_hours, std::to_wstring(seconds / 3600));
+    return TRF(ago_days_short, std::to_wstring(seconds / 86400));
 }
 inline std::wstring Monogram(const std::wstring& name) {
     for (wchar_t c : name) if (iswalnum(c)) return std::wstring(1, wchar_t(towupper(c)));
@@ -369,29 +370,31 @@ inline std::wstring Monogram(const std::wstring& name) {
 }
 // Card 3.2 « Claude s'en occupe · depuis 2 min » (lower case: it follows the title).
 inline std::wstring SinceLower(std::int64_t seconds) {
-    if (seconds < 60) return L"à l'instant";
-    if (seconds < 3600) return L"depuis " + std::to_wstring(seconds / 60) + L" min";
-    if (seconds < 86400) return L"depuis " + std::to_wstring(seconds / 3600) + L" h";
-    return L"depuis " + std::to_wstring(seconds / 86400) + L" j";
+    if (seconds < 60) return TR(ago_now);
+    if (seconds < 3600) return TRF(since_minutes, std::to_wstring(seconds / 60));
+    if (seconds < 86400) return TRF(since_hours, std::to_wstring(seconds / 3600));
+    return TRF(since_days, std::to_wstring(seconds / 86400));
 }
 // History row age, right-aligned: « 2 min », « 3 h », « Hier », a weekday within the week, else « 12 nov. ».
 // `localDays` = whole local days between the two dates (0 = same day); weekday 0 = dimanche.
 inline std::wstring AgeLabel(std::int64_t seconds, int localDays, int weekday, int day, int month) {
-    static const wchar_t* days[] = {L"Dimanche", L"Lundi", L"Mardi", L"Mercredi", L"Jeudi", L"Vendredi", L"Samedi"};
-    static const wchar_t* months[] = {L"janv.", L"févr.", L"mars", L"avr.", L"mai", L"juin", L"juil.", L"août", L"sept.", L"oct.", L"nov.", L"déc."};
-    if (seconds < 60) return L"À l'instant";
-    if (localDays <= 0 && seconds < 3600) return std::to_wstring(seconds / 60) + L" min";
-    if (localDays <= 0) return std::to_wstring(seconds / 3600) + L" h";
-    if (localDays == 1) return L"Hier";
-    if (localDays < 7 && weekday >= 0 && weekday < 7) return days[weekday];
-    return std::to_wstring(day) + L" " + (month >= 1 && month <= 12 ? months[month - 1] : L"");
+    using I = I18n::Id;
+    static const I days[] = {I::weekday_0, I::weekday_1, I::weekday_2, I::weekday_3, I::weekday_4, I::weekday_5, I::weekday_6};
+    static const I months[] = {I::month_short_1, I::month_short_2, I::month_short_3, I::month_short_4, I::month_short_5, I::month_short_6,
+                               I::month_short_7, I::month_short_8, I::month_short_9, I::month_short_10, I::month_short_11, I::month_short_12};
+    if (seconds < 60) return TR(age_now_cap);
+    if (localDays <= 0 && seconds < 3600) return TRF(age_minutes, std::to_wstring(seconds / 60));
+    if (localDays <= 0) return TRF(age_hours, std::to_wstring(seconds / 3600));
+    if (localDays == 1) return TR(age_yesterday_cap);
+    if (localDays < 7 && weekday >= 0 && weekday < 7) return I18n::T(days[weekday]);
+    return TRF(history_date, month >= 1 && month <= 12 ? std::wstring(I18n::T(months[month - 1])) : std::wstring(), std::to_wstring(day));
 }
 // What the agent is called on cards and rows: « Claude », « Codex », else its own label (clipped).
 inline std::wstring AgentDisplay(const std::string& agent) {
     std::string low; for (char c : agent) low += char(std::tolower(static_cast<unsigned char>(c)));
     if (low.find("claude") != std::string::npos) return L"Claude";
     if (low.find("codex") != std::string::npos) return L"Codex";
-    std::wstring w = Wide(agent); if (w.empty()) return L"Un agent";
+    std::wstring w = Wide(agent); if (w.empty()) return TR(agent_someone);
     if (w.size() > 24) { w.resize(23); w += L"…"; }
     return w;
 }
@@ -403,33 +406,33 @@ inline int AgentKindOf(const std::string& agent) {   // 0 Claude, 1 Codex, 2 oth
 inline std::wstring ElementLabel(const BA::Target& t) {
     const std::string tag = t.tag, role = t.role;
     std::wstring noun;
-    if (t.kind == "selection") noun = L"Texte sélectionné";
-    else if (role == "button" || tag == "button") noun = L"Bouton";
-    else if (role == "link" || tag == "a") noun = L"Lien";
-    else if (tag == "input" || tag == "textarea" || role == "textbox") noun = L"Champ";
-    else if (tag == "select" || role == "combobox" || role == "listbox") noun = L"Liste";
-    else if (tag == "img" || role == "img") noun = L"Image";
-    else if (tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6') noun = L"Titre";
-    else if (tag == "p") noun = L"Paragraphe";
-    else if (tag == "li") noun = L"Élément de liste";
-    else if (tag == "ul" || tag == "ol") noun = L"Liste";
-    else if (tag == "nav") noun = L"Navigation";
-    else if (tag == "form") noun = L"Formulaire";
-    else if (tag == "table") noun = L"Tableau";
-    else if (tag == "canvas") noun = L"Canevas";
-    else if (tag == "iframe" || tag == "frame") noun = L"Cadre";
-    else if (tag == "svg") noun = L"Illustration";
-    else if (tag == "label") noun = L"Étiquette";
-    else if (tag == "header") noun = L"En-tête";
-    else if (tag == "footer") noun = L"Pied de page";
-    else if (tag == "section" || tag == "article" || tag == "main" || tag == "aside") noun = L"Section";
-    else noun = L"Élément " + Wide(tag);
+    if (t.kind == "selection") noun = TR(element_selection);
+    else if (role == "button" || tag == "button") noun = TR(element_button);
+    else if (role == "link" || tag == "a") noun = TR(element_link);
+    else if (tag == "input" || tag == "textarea" || role == "textbox") noun = TR(element_field);
+    else if (tag == "select" || role == "combobox" || role == "listbox") noun = TR(element_list);
+    else if (tag == "img" || role == "img") noun = TR(element_image);
+    else if (tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6') noun = TR(element_heading);
+    else if (tag == "p") noun = TR(element_paragraph);
+    else if (tag == "li") noun = TR(element_list_item);
+    else if (tag == "ul" || tag == "ol") noun = TR(element_list);
+    else if (tag == "nav") noun = TR(a11y_toolbar);
+    else if (tag == "form") noun = TR(element_form);
+    else if (tag == "table") noun = TR(element_table);
+    else if (tag == "canvas") noun = TR(element_canvas);
+    else if (tag == "iframe" || tag == "frame") noun = TR(element_frame);
+    else if (tag == "svg") noun = TR(element_illustration);
+    else if (tag == "label") noun = TR(element_label);
+    else if (tag == "header") noun = TR(element_header);
+    else if (tag == "footer") noun = TR(element_footer);
+    else if (tag == "section" || tag == "article" || tag == "main" || tag == "aside") noun = TR(element_section);
+    else noun = TRF(element_tag, Wide(tag));
     std::wstring name = Wide(t.kind == "selection" && t.selectionText ? *t.selectionText : !t.accessibleName.empty() ? t.accessibleName : t.text);
     for (auto& c : name) if (c == L'\n' || c == L'\r' || c == L'\t') c = L' ';
     while (!name.empty() && iswspace(name.front())) name.erase(name.begin());
     while (!name.empty() && iswspace(name.back())) name.pop_back();
     if (name.size() > 40) { name.resize(39); while (!name.empty() && iswspace(name.back())) name.pop_back(); name += L"…"; }
-    return name.empty() ? noun : noun + L" « " + name + L" »";
+    return name.empty() ? noun : TRF(element_named, noun, name);
 }
 // Short, stable tag of a data directory (source.instance.store): FNV-1a of the lower-case path.
 inline std::string StoreTag(const std::wstring& dataDir) {
@@ -442,7 +445,7 @@ inline std::string StoreTag(const std::wstring& dataDir) {
 inline std::wstring StyleSummary(const BA::Target& t) {
     const std::string sp = BA::SpacingText(t.spacing);
     if (!sp.empty()) return Wide(sp);
-    return t.styles.empty() ? std::wstring() : std::wstring(L"Taille, couleurs et marges");
+    return t.styles.empty() ? std::wstring() : std::wstring(TR(note_style_summary));
 }
 inline std::wstring StylesText(const std::vector<BA::NamedValue>& styles) {
     static const char* keep[] = {"display", "position", "width", "height", "margin", "padding", "font-size", "font-weight", "color", "background-color", "border-radius", "text-align"};
@@ -477,8 +480,8 @@ inline AgentStatus Summarize(const std::vector<BA::Entry>& entries, std::int64_t
     return s;
 }
 inline std::wstring OutcomeHeadline(const BA::Entry& e) {
-    if (e.state.status == BA::Status::NeedsInfo) return L"Question de";
-    if (e.state.status == BA::Status::Dismissed) return L"Écartée par";
-    return L"Résolue par";
+    if (e.state.status == BA::Status::NeedsInfo) return TR(outcome_question_from);
+    if (e.state.status == BA::Status::Dismissed) return TR(outcome_dismissed_by);
+    return TR(outcome_resolved_by);
 }
 } // namespace AnnotationHost

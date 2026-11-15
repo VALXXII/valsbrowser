@@ -1,5 +1,5 @@
 #pragma once
-// Annotation mode — entry points for the rest of the browser (settings section « Annotations et agents »,
+// Annotation mode — entry points for the rest of the browser (settings section « Annotations »,
 // menus). Declared here, defined in src/annotation-mode.h (no-op / empty answers when the feature is compiled
 // out: --channel release and unstamped fixtures). Everything that touches the disk or another app runs off the
 // UI thread; the callbacks come back on the UI thread.

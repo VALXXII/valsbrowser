@@ -17,6 +17,7 @@
 
 #include "annotations-migration.h"
 #include "update-package.h"
+#include "ui-language.h"   // the launcher's only message, in the browser-wide interface language
 
 namespace UP = UpdatePackage;
 namespace AM = AnnotationsMigration;
@@ -379,7 +380,8 @@ int RunLauncher(int argc, wchar_t** argv) {
             return 0;
         }
     }
-    MessageBoxW(nullptr, L"Installation introuvable ou endommagée.", L"browser", MB_OK | MB_ICONERROR);
+    I18n::SetForProcess(UiLanguage::Load(root + L"\\data").locale);   // installed layout: <root>\data (French when absent)
+    MessageBoxW(nullptr, TR(launcher_install_broken), L"browser", MB_OK | MB_ICONERROR);
     return 2;
 }
 
@@ -571,8 +573,9 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
     ULONGLONG deadline = GetTickCount64() + 30000;
     bool ok = true;
     if (UP::IsDirectory(profile)) ok = CopyTree(profile, work + L"\\profile", deadline) || MigrationStepFailed("copy profile");
-    // Plain data files next to the profile (session, download history). Transient *.tmp files are not copied.
-    for (const wchar_t* name : {L"session", L"downloads", L"bookmarks", L"bookmarks.bak"}) {
+    // Plain data files next to the profile (session, download history, the browser-wide interface language
+    // preference « ui-language », src/ui-language.h). Transient *.tmp files are not copied.
+    for (const wchar_t* name : {L"session", L"downloads", L"bookmarks", L"bookmarks.bak", L"ui-language"}) {
         std::wstring file = src + L"\\" + name;
         if (ok && UP::PathExists(file) && !UP::IsDirectory(file) && !UP::IsReparsePoint(file))
             ok = CopyWithRetry(file, work + L"\\" + name, deadline) || MigrationStepFailed("copy " + UP::Narrow(name));

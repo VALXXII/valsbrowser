@@ -304,7 +304,7 @@ void WorkspaceShown() {
     for (auto& t : pages) if (t) t->placedVisible = -1;   // re-placed by ApplyPages
     chrome.tabMotion.Settle(); motion.selection.Settle();
     SyncBookmarkChrome(); DownloadsChanged(); UpdateDownloadIcon(false); historyDrawer.Changed();
-    if (current >= 0 && current < static_cast<int>(pages.size())) Select(current); else { Layout(); Update(); }
+    if (current >= 0 && current < static_cast<int>(pages.size())) { KeepContentTransition keep; Select(current); } else { Layout(); Update(); }   // the profile's own tab: under its switch transition
     InvalidateRect(window, nullptr, FALSE); PumpModal();
     if (!pendingDownloads.empty()) PostMessageW(window, DownloadAskMessage, 0, 0);   // its save dialogs waited while it was hidden
 }
@@ -330,7 +330,7 @@ bool LeaveProfileHere(const std::wstring& id, bool openOther) {
 bool OpenSessionTabHere(const std::wstring& id, const std::wstring& session, int tab) {
     Workspace* w = FindWorkspace(id); if (!w || w->s.windowId != session) return false;
     if (!SwitchWorkspace(id)) return false;
-    if (tab >= 0 && tab < static_cast<int>(pages.size())) Select(tab);
+    if (tab >= 0 && tab < static_cast<int>(pages.size())) { KeepContentTransition keep; Select(tab); }   // part of this switch: its transition stays
     return true;
 }
 // Window close: each parked session follows the active one's rule (L2): kept when the close was not asked by
@@ -448,7 +448,7 @@ bool WorkspaceEngineFailed(const std::wstring& where, HRESULT hr, bool hasEngine
             SwitchWorkspace(to);
         }
         std::wstring name = id; if (const auto* p = profileRegistry.Find(id)) name = p->name;
-        VaultNotice(L"Le profil « " + name + L" » n'a pas pu démarrer", L"Ses onglets sont conservés. Choisissez-le de nouveau pour réessayer.");
+        VaultNotice(TRF(workspace_profile_failed, name), TR(workspace_profile_failed_body));
     });
     unownedCallbacks = false;
     return true;
@@ -464,7 +464,7 @@ bool WorkspaceCanFailAlone() { return globalsWorkspace && !globalsWorkspace->dea
 bool workspaceTest = false, qaControllerFailure = false, qaExpectTerminal = false; int qaEngineFailure = 0;
 std::wstring QaWorkspaceState() {
     std::wstring t = L"globals=" + (globalsWorkspace ? globalsWorkspace->id : L"-") + L" active=" + (activeWorkspace ? activeWorkspace->id : L"-") + L" parked=" + (WorkspaceParked() ? L"1" : L"0") + L" watches=" + std::to_wstring(EngineExitWatchCount());
-    for (auto& w : workspaces) t += L" [" + w->id + (w->dead ? L" dead" : L"") + (w->started ? L" started" : L" slot") + (w->cold ? L" cold" : L"") + L" holds=" + std::to_wstring(EngineHoldCount(w->id)) + L"]";
+    for (auto& w : workspaces) t += L" [" + w->id + (w->dead ? L" dead" : L"") + (w->started ? L" started" : L" slot") + (w->cold ? L" cold" : L"") + L" holds=" + std::to_wstring(EngineHoldCount(w->id)) + L"]";   // i18n-exempt: QA/log description
     return t;
 }
 int WorkspaceQaCommand(const std::wstring& text) {
@@ -489,7 +489,7 @@ int WorkspaceQaCommand(const std::wstring& text) {
         Log(L"WSQA cleared downloads (" + a + L") in " + (globalsWorkspace ? globalsWorkspace->id : L"-")); return 1;
     }
     if (verb == L"ops") {   // live download operations per owner
-        std::wstring t = L"WSQA ops";
+        std::wstring t = L"WSQA ops";   // i18n-exempt: QA trace
         for (const auto& [id, e] : downloadOps) { std::wstring state = L"?"; for (auto* w : LiveWorkspaces()) if (w == e->owner) { WorkspaceScope scope(w); if (auto* d = FindDownload(id)) state = DL::FileName(d->path) + L":" + std::to_wstring(static_cast<int>(d->state)); } t += L" [" + std::to_wstring(id) + L" " + (e->owner ? e->owner->id : L"-") + L" " + state + L"]"; }
         Log(t); return 1;
     }

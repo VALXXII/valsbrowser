@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // C6/C7 · Indication plein écran (Paper « Browser Design », p-D-0: contexte C6 F40-0 / pastille
 // F7E-0; séquence C7 F9K-0: entrée FBJ-0, visible FBV-0, sortie FC8-0, clavier verrouillé FCL-0;
 // fenêtre F11 FF4-0 avec le bouton « Quitter le plein écran » FI8-0).
@@ -39,16 +40,17 @@ inline constexpr float border = 0x14 / 255.f, text = 0xB3 / 255.f, strong = 0xE6
 namespace ExitButton {
 inline constexpr float height = 32, radius = 6, padLeft = 8, padRight = 4, gap = 8, glyphOpacity = .8f, keyHeight = 24, keyPad = 6, margin = 6;
 inline constexpr int revealDelayMs = 300, foldDelayMs = 600;
-inline constexpr const wchar_t* label = L"Quitter le plein écran";
+inline const wchar_t* label() { return TR(fullscreen_exit); }
 inline constexpr const char* glyph = PopupKit::Glyphs::cornersIn;
 }
 // What the pill reads: `strong` is emphasised (the origin), `key` sits in the cap.
 struct Copy { std::wstring strong, lead, prefix, key, trailing; };
 inline Copy CopyFor(bool page, const std::wstring& origin, bool keyboardLocked) {
-    if (!page) return {L"Plein écran", L"", L"", L"F11", L"pour quitter"};
-    const std::wstring who = origin.empty() ? L"Cette page" : origin;
-    if (keyboardLocked) return {who, L" contrôle le clavier", L"Maintenez", L"Échap", L"pour quitter"};
-    return {who, L" est en plein écran", L"", L"Échap", L"pour quitter"};
+    // The origin comes first in both languages (it is the emphasised part): lead follows it.
+    if (!page) return {TR(fullscreen_title), L"", L"", L"F11", TR(fullscreen_to_exit)};
+    const std::wstring who = origin.empty() ? std::wstring(TR(this_page)) : origin;
+    if (keyboardLocked) return {who, TR(fullscreen_lead_keyboard), TR(fullscreen_hold), TR(key_escape), TR(fullscreen_to_exit)};
+    return {who, TR(fullscreen_lead_page), L"", TR(key_escape), TR(fullscreen_to_exit)};
 }
 inline std::wstring Spoken(const Copy& c) { return c.strong + c.lead + L", " + (c.prefix.empty() ? L"" : c.prefix + L" ") + c.key + L" " + c.trailing; }
 
@@ -116,7 +118,7 @@ public:
     ~Hint() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, std::function<void()> wake = nullptr) {
         owner_ = owner; PopupKit::Register(instance, L"LisiereFullscreenHint", Proc);
-        if (!PopupKit::CreatePopup(instance, owner, L"LisiereFullscreenHint", L"Plein écran", WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, this, Layout::radius)) return false;
+        if (!PopupKit::CreatePopup(instance, owner, L"LisiereFullscreenHint", TR(fullscreen_title), WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, this, Layout::radius)) return false;
         pump_.Bind(hwnd_, std::move(wake));
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { std::vector<Accessibility::Node> nodes; if (!visible_) return nodes; Accessibility::Node n; n.key = 1; n.role = Accessibility::Role::Group; n.name = Spoken(copy_); n.automationId = L"FullscreenHint"; n.focusable = false; GetWindowRect(hwnd_, &n.bounds); nodes.push_back(n); return nodes; };

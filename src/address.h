@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Address bar model (issue #20): readable display of the current URL with its
 // security state, the visited-sites history and the suggestions shown while
 // typing. Pure C++17 (no HWND, Direct2D or WebView2) so tests/address_test.cpp
@@ -35,8 +36,8 @@ struct Display {
     // Leading chip label ("Non sécurisé", "Fichier"); empty: icon-only slot.
     const wchar_t* chip() const {
         switch (security) {
-        case Security::Insecure: case Security::CertificateError: return L"Non sécurisé";
-        case Security::File: return L"Fichier";
+        case Security::Insecure: case Security::CertificateError: return TR(address_not_secure);
+        case Security::File: return TR(download_file_generic);
         default: return L"";
         }
     }
@@ -54,10 +55,10 @@ struct Display {
     // Tooltip / accessible description of the indicator.
     const wchar_t* tip() const {
         switch (security) {
-        case Security::Secure: return L"Connexion sécurisée";
-        case Security::Insecure: return L"Connexion non sécurisée : les informations envoyées à ce site (mots de passe, cartes…) peuvent être lues par des tiers.";
-        case Security::CertificateError: return L"Certificat non valide : ce site n'a pas pu prouver son identité. Les informations envoyées peuvent être interceptées.";
-        case Security::File: return L"Fichier local";
+        case Security::Secure: return TR(address_secure_tip);
+        case Security::Insecure: return TR(address_insecure_tip);
+        case Security::CertificateError: return TR(address_cert_error_tip);
+        case Security::File: return TR(history_local_file);
         default: return L"";
         }
     }
@@ -331,7 +332,7 @@ inline std::vector<PopularSite> ReadPopular(std::istream& in) {
     if (!std::getline(in, line)) return sites;
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.rfind("\xEF\xBB\xBF", 0) == 0) line.erase(0, 3);
-    if (line != "# browser popular sites 1") return sites;
+    if (line != "# browser popular sites 1") return sites;   // i18n-exempt: file format header
     while (std::getline(in, line) && sites.size() < 5000) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;

@@ -10,8 +10,11 @@
 #include <vector>
 #include <cwctype>
 #include "downloads.h" // ToUtf8 / FromUtf8
+#include "i18n.h"     // display labels; stored keys never pass through the catalog
 
 namespace BrowserSettings {
+// Display labels are read from the catalog at each call (src/i18n.h): Info() returns values,
+// never a table frozen in one language. Keys and URLs below are stable identifiers.
 // Display order of the panel: the first three are always listed, the rest
 // sit behind "Voir plus…". Custom is last: its URL template is State::customSearch.
 enum class Engine { DuckDuckGo, Google, BraveSearch, Bing, Ecosia, Qwant, Custom };
@@ -21,7 +24,7 @@ struct EngineInfo {
     const char* key;       // persisted identifier
     const wchar_t* search; // query URL prefix; the percent-encoded terms are appended
 };
-inline const EngineInfo& Info(Engine engine) {
+inline EngineInfo Info(Engine engine) {
     static const EngineInfo engines[EngineCount] = {
         {L"DuckDuckGo", "duckduckgo", L"https://duckduckgo.com/?q="},
         {L"Google", "google", L"https://www.google.com/search?q="},
@@ -29,10 +32,12 @@ inline const EngineInfo& Info(Engine engine) {
         {L"Bing", "bing", L"https://www.bing.com/search?q="},
         {L"Ecosia", "ecosia", L"https://www.ecosia.org/search?q="},
         {L"Qwant", "qwant", L"https://www.qwant.com/?q="},
-        {L"Personnalisé", "custom", L""},
+        {nullptr, "custom", L""},   // name: TR(engine_custom)
     };
     const int i = static_cast<int>(engine);
-    return engines[i >= 0 && i < EngineCount ? i : 0];
+    EngineInfo e = engines[i >= 0 && i < EngineCount ? i : 0];
+    if (!e.name) e.name = TR(engine_custom);
+    return e;
 }
 inline bool Primary(Engine engine) { return static_cast<int>(engine) < PrimaryEngines; }
 
@@ -40,57 +45,64 @@ inline bool Primary(Engine engine) { return static_cast<int>(engine) < PrimaryEn
 enum class Tracking { Off, Basic, Balanced, Strict };
 constexpr int TrackingCount = 4;
 struct ChoiceInfo { const wchar_t* label; const wchar_t* description; const char* key; };
-inline const ChoiceInfo& Info(Tracking t) {
-    static const ChoiceInfo levels[TrackingCount] = {
-        {L"Désactivé", L"Aucun blocage. Les sites peuvent vous suivre.", "off"},
-        {L"Basique", L"Bloque les traqueurs malveillants seulement.", "basic"},
-        {L"Équilibré", L"Bloque aussi les traqueurs des sites que vous ne visitez pas.", "balanced"},
-        {L"Strict", L"Bloque presque tout. Certains sites peuvent mal s'afficher.", "strict"},
+// A choice as stored (key) with its catalog ids; Info() resolves the labels in the process language.
+struct ChoiceIds { I18n::Id label, description; const char* key; };
+inline ChoiceInfo Resolve(const ChoiceIds& c) { return {I18n::T(c.label), I18n::T(c.description), c.key}; }
+inline ChoiceInfo Info(Tracking t) {
+    using I = I18n::Id;
+    static const ChoiceIds levels[TrackingCount] = {
+        {I::tracking_off, I::tracking_off_note, "off"},
+        {I::tracking_basic, I::tracking_basic_note, "basic"},
+        {I::tracking_balanced, I::tracking_balanced_note, "balanced"},
+        {I::tracking_strict, I::tracking_strict_note, "strict"},
     };
-    const int i = static_cast<int>(t); return levels[i >= 0 && i < TrackingCount ? i : 2];
+    const int i = static_cast<int>(t); return Resolve(levels[i >= 0 && i < TrackingCount ? i : 2]);
 }
 // Background tabs go to sleep after this many minutes out of sight (0 = never).
 constexpr int SleepChoices[] = {0, 30, 120, 360};
 constexpr int SleepCount = 4;
 inline std::wstring SleepLabel(int minutes) {
-    if (minutes <= 0) return L"Jamais";
-    if (minutes < 60) return L"Après " + std::to_wstring(minutes) + L" min";
-    return L"Après " + std::to_wstring(minutes / 60) + L" h";
+    if (minutes <= 0) return TR(sleep_never);
+    if (minutes < 60) return TRF(sleep_after_minutes, std::to_wstring(minutes));
+    return TRF(sleep_after_hours, std::to_wstring(minutes / 60));
 }
 // Default page zoom, in percent.
 constexpr int ZoomChoices[] = {80, 90, 100, 110, 125, 150};
 constexpr int ZoomCount = 6;
-inline std::wstring ZoomLabel(int percent) { return std::to_wstring(percent) + L" %"; }
+inline std::wstring ZoomLabel(int percent) { return I18n::Percent(percent); }
 // What a new tab shows.
 enum class NewTabPage { Blank, FrequentSites, Custom };
 constexpr int NewTabPageCount = 3;
-inline const ChoiceInfo& Info(NewTabPage p) {
-    static const ChoiceInfo pages[NewTabPageCount] = {
-        {L"Vide", L"Une page sombre, sans rien.", "blank"},
-        {L"Sites fréquents", L"Vos sites les plus visités, en raccourcis.", "frequent"},
-        {L"Page personnalisée", L"L'adresse de votre choix.", "custom"},
+inline ChoiceInfo Info(NewTabPage p) {
+    using I = I18n::Id;
+    static const ChoiceIds pages[NewTabPageCount] = {
+        {I::newtab_blank, I::newtab_blank_note, "blank"},
+        {I::newtab_frequent, I::newtab_frequent_note, "frequent"},
+        {I::newtab_custom, I::newtab_custom_note, "custom"},
     };
-    const int i = static_cast<int>(p); return pages[i >= 0 && i < NewTabPageCount ? i : 0];
+    const int i = static_cast<int>(p); return Resolve(pages[i >= 0 && i < NewTabPageCount ? i : 0]);
 }
 // Where a new tab (Ctrl+T, "+") opens.
 enum class TabPosition { End, NextToActive };
 constexpr int TabPositionCount = 2;
-inline const ChoiceInfo& Info(TabPosition p) {
-    static const ChoiceInfo positions[TabPositionCount] = {
-        {L"À la fin", L"Après tous les onglets ouverts.", "end"},
-        {L"À côté", L"Juste après l'onglet actif.", "next"},
+inline ChoiceInfo Info(TabPosition p) {
+    using I = I18n::Id;
+    static const ChoiceIds positions[TabPositionCount] = {
+        {I::tabpos_end, I::tabpos_end_note, "end"},
+        {I::tabpos_next, I::tabpos_next_note, "next"},
     };
-    const int i = static_cast<int>(p); return positions[i >= 0 && i < TabPositionCount ? i : 0];
+    const int i = static_cast<int>(p); return Resolve(positions[i >= 0 && i < TabPositionCount ? i : 0]);
 }
 // Media autoplay (engine policy: applied when the browser starts).
 enum class Autoplay { Muted, Allowed };
 constexpr int AutoplayCount = 2;
-inline const ChoiceInfo& Info(Autoplay a) {
-    static const ChoiceInfo choices[AutoplayCount] = {
-        {L"Sans son", L"Les vidéos démarrent muettes jusqu'à un clic.", "muted"},
-        {L"Autorisée", L"Les vidéos peuvent démarrer avec le son.", "allowed"},
+inline ChoiceInfo Info(Autoplay a) {
+    using I = I18n::Id;
+    static const ChoiceIds choices[AutoplayCount] = {
+        {I::autoplay_muted, I::autoplay_muted_note, "muted"},
+        {I::autoplay_allowed, I::autoplay_allowed_note, "allowed"},
     };
-    const int i = static_cast<int>(a); return choices[i >= 0 && i < AutoplayCount ? i : 0];
+    const int i = static_cast<int>(a); return Resolve(choices[i >= 0 && i < AutoplayCount ? i : 0]);
 }
 inline std::wstring TrimText(const std::wstring& v) {
     size_t a = 0, b = v.size();
@@ -133,15 +145,16 @@ inline std::wstring HomepageUrl(const std::wstring& raw) {
 // Bookmarks bar under the toolbar: shown once it holds a bookmark (default), always, or never.
 enum class BookmarksBar { Auto, Always, Never };
 constexpr int BookmarksBarCount = 3;
-inline const ChoiceInfo& Info(BookmarksBar b) {
-    static const ChoiceInfo choices[BookmarksBarCount] = {
-        {L"Si elle contient des favoris", L"La barre apparaît dès le premier favori.", "auto"},
-        {L"Toujours", L"La barre reste affichée, même vide.", "always"},
-        {L"Jamais", L"Les favoris restent dans le menu et le tiroir Favoris.", "never"},
+inline ChoiceInfo Info(BookmarksBar b) {
+    using I = I18n::Id;
+    static const ChoiceIds choices[BookmarksBarCount] = {
+        {I::bookmarksbar_auto, I::bookmarksbar_auto_note, "auto"},
+        {I::bookmarksbar_always, I::bookmarksbar_always_note, "always"},
+        {I::bookmarksbar_never, I::bookmarksbar_never_note, "never"},
     };
-    const int i = static_cast<int>(b); return choices[i >= 0 && i < BookmarksBarCount ? i : 0];
+    const int i = static_cast<int>(b); return Resolve(choices[i >= 0 && i < BookmarksBarCount ? i : 0]);
 }
-inline const wchar_t* ShortLabel(BookmarksBar b) { return b == BookmarksBar::Always ? L"Toujours" : b == BookmarksBar::Never ? L"Jamais" : L"Automatique"; }
+inline const wchar_t* ShortLabel(BookmarksBar b) { return b == BookmarksBar::Always ? TR(bookmarksbar_always) : b == BookmarksBar::Never ? TR(bookmarksbar_never) : TR(bookmarksbar_auto_short); }
 // Accent colour (#RRGGBB): groundwork for a future choice; the caret reads it today.
 constexpr std::uint32_t DefaultAccent = 0x3E67FF;
 inline std::string AccentText(std::uint32_t rgb) { char t[8]; const char* hex = "0123456789ABCDEF"; t[0] = '#'; for (int i = 0; i < 6; ++i) t[1 + i] = hex[(rgb >> (20 - 4 * i)) & 15]; t[7] = 0; return t; }
@@ -180,7 +193,7 @@ struct State {
     bool muteBackground = false;   // only the active tab plays sound
     Autoplay autoplay = Autoplay::Muted;
     bool grayscaleText = false;    // page text in grayscale antialiasing, like the chrome (engine flag)
-    // Annotations et agents (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
+    // Annotations (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
     bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
     int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
     int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices
@@ -208,7 +221,7 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
 inline constexpr int RetentionCount = 3;
-inline std::wstring RetentionLabel(int days) { return std::to_wstring(days) + L" jours"; }
+inline std::wstring RetentionLabel(int days) { return TRP(retention_days, days); }
 // « Proposer de connecter un agent au lancement du mode » as the switch shows it: on while the modal would
 // still open by itself (not turned off, and fewer than MaxConnectDeclines « Plus tard »).
 inline bool ConnectPromptActive(const State& s) { return s.annotationConnectPrompt && s.annotationConnectDeclines < MaxConnectDeclines; }
@@ -303,23 +316,22 @@ struct SitePermission { Permission kind = Permission::Other; PermissionState sta
 struct Site { std::wstring origin; std::vector<SitePermission> permissions; };
 inline const wchar_t* PermissionName(Permission p) {
     switch (p) {
-    case Permission::Camera: return L"Caméra";
-    case Permission::Microphone: return L"Micro";
-    case Permission::Location: return L"Position";
-    case Permission::Notifications: return L"Notifications";
-    case Permission::Clipboard: return L"Presse-papiers";
-    default: return L"Autre";
+    case Permission::Camera: return TR(permission_camera);
+    case Permission::Microphone: return TR(permission_microphone);
+    case Permission::Location: return TR(permission_location);
+    case Permission::Notifications: return TR(permission_notifications);
+    case Permission::Clipboard: return TR(permission_clipboard);
+    default: return TR(permission_kind_misc);
     }
 }
-// The value shown in a row agrees with the noun: « Caméra · Autorisée », « Micro · Autorisé ».
+// The value shown in a row agrees with the noun in French: « Caméra · Autorisée », « Micro · Autorisé »
+// (one catalog message per agreement; English has a single form).
 inline std::wstring PermissionValue(Permission p, PermissionState s) {
-    if (s == PermissionState::Ask) return L"Demander";
-    const bool feminine = p == Permission::Camera || p == Permission::Location || p == Permission::Notifications;
-    const bool plural = p == Permission::Notifications;
-    std::wstring word = s == PermissionState::Allow ? L"Autorisé" : L"Bloqué";
-    if (feminine) word += L"e";
-    if (plural) word += L"s";
-    return word;
+    if (s == PermissionState::Ask) return TR(permission_ask);
+    const bool allow = s == PermissionState::Allow;
+    if (p == Permission::Notifications) return allow ? TR(permission_allowed_fem_plural) : TR(permission_blocked_fem_plural);
+    if (p == Permission::Camera || p == Permission::Location) return allow ? TR(permission_allowed_fem) : TR(permission_blocked_fem);
+    return allow ? TR(permission_allowed) : TR(permission_blocked);
 }
 // "Caméra, micro" / "Notifications bloquées": the list's second line for a site.
 inline std::wstring SiteSummary(const Site& site) {
@@ -329,7 +341,7 @@ inline std::wstring SiteSummary(const Site& site) {
         if (perm.state == PermissionState::Allow) { if (!allowed.empty()) { name[0] = static_cast<wchar_t>(towlower(name[0])); allowed += L", "; } allowed += name; }
         else if (perm.state == PermissionState::Block) { if (!blocked.empty()) { name[0] = static_cast<wchar_t>(towlower(name[0])); blocked += L", "; } blocked += name; }
     }
-    if (!blocked.empty()) blocked += L" bloqué" + std::wstring(site.permissions.size() > 1 ? L"s" : L"");
+    if (!blocked.empty()) blocked = site.permissions.size() > 1 ? TRF(permission_summary_blocked_many, blocked) : TRF(permission_summary_blocked, blocked);
     if (allowed.empty()) return blocked;
     return blocked.empty() ? allowed : allowed + L" · " + blocked;
 }

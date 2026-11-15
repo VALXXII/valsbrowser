@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Per-site audio: what plays, how loud, and the toolbar icon that says so.
 //
 // Pure model (no WebView2, no window): the host feeds it the engine's audible flag
@@ -214,10 +215,10 @@ struct Row {
 };
 struct TabView { const TabAudio* audio = nullptr; std::wstring title; bool active = false; };
 inline std::wstring StatusText(Kind kind, bool media, bool muted) {
-    if (muted) return L"Coupé (onglet en arrière-plan)";
+    if (muted) return TR(audio_status_muted_background);
     if (kind == Kind::Media) return L"";
-    if (kind == Kind::Effect) return L"Sons courts";
-    return media ? L"En pause" : L"Silencieux";
+    if (kind == Kind::Effect) return TR(audio_status_short_sounds);
+    return media ? TR(audio_status_paused) : TR(audio_status_silent);
 }
 inline std::vector<Row> Rows(const std::vector<TabView>& tabs, const Volumes& volumes, Time now) {
     struct Pick { int tab; int score; Time first; };
@@ -242,14 +243,14 @@ inline std::vector<Row> Rows(const std::vector<TabView>& tabs, const Volumes& vo
         row.artist = detail;
         row.detail = detail.empty() ? site : detail + L" · " + site;
         row.status = StatusText(row.kind, a.MediaEvidence() || r.session != 0, a.muted && a.audible);
-        if (row.tabs > 1) row.detail += L" · " + std::to_wstring(row.tabs) + L" onglets";
+        if (row.tabs > 1) row.detail += L" · " + TRP(audio_tabs_count, row.tabs);
         ordered.push_back({pick.first, row});
     }
     std::stable_sort(ordered.begin(), ordered.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
     std::vector<Row> rows; for (auto& o : ordered) rows.push_back(std::move(o.second));
     return rows;
 }
-inline std::wstring PercentText(int percent) { return std::to_wstring(ClampPercent(percent)) + L" %"; }
+inline std::wstring PercentText(int percent) { return TRF(audio_percent, std::to_wstring(ClampPercent(percent))); }
 // Keyboard: arrows 1 %, Page keys 10 %, Home/End 0 and 100 %. Returns the new value.
 inline int KeyStep(int percent, int key /* VK_* */) {
     switch (key) {
@@ -267,13 +268,11 @@ inline int ToggleMute(int percent, int remembered) { return percent > 0 ? 0 : (r
 
 // Accessible label of the toolbar button: what plays, never only "audio".
 inline std::wstring ButtonName(const std::vector<Row>& rows, bool music) {
-    if (rows.empty()) return L"Son des sites";
+    if (rows.empty()) return TR(chrome_tip_audio);
     int playing = 0; for (auto& r : rows) if (r.kind != Kind::Silent) ++playing;
-    std::wstring s = L"Son des sites : ";
-    if (music) { for (auto& r : rows) if (r.kind == Kind::Media) { s += r.title + L" (" + r.site + L")"; break; } }
-    else if (playing) s += std::to_wstring(playing) + (playing > 1 ? L" sites émettent des sons courts" : L" site émet des sons courts");
-    else s += std::to_wstring(rows.size()) + (rows.size() > 1 ? L" sites récents, silencieux" : L" site récent, silencieux");
-    return s;
+    if (music) { for (auto& r : rows) if (r.kind == Kind::Media) return TRF(audio_button_music, r.title, r.site); }
+    if (playing) return TRP(audio_button_short_sounds, playing);
+    return TRP(audio_button_recent_silent, rows.size());
 }
 
 // ---- Toolbar icon motion ------------------------------------------------------------------

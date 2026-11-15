@@ -57,6 +57,14 @@ def existing_fixtures() -> None:
     # test-lottie.py: loading, frame clock, lottie, clipboard gate, design system, hover, ui
     run('test-lottie.py (native lottie/ui fixtures)', [sys.executable, ROOT / 'test-lottie.py'])
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
+    # Interface language (design/browser-languages-plan.md): catalog, formats, plurals, the browser-wide
+    # preference (temporary folders only), then Reglages > Langue on the real drawer (FR and EN processes).
+    run('i18n coverage gate (catalog parity, no untranslated interface text)', [sys.executable, ROOT / 'tools/i18n/check_strings.py'])
+    fixture('i18n_test', [*STRICT, 'tests/i18n_test.cpp'])
+    language_evidence = ROOT / 'build/browser-languages/captures/settings'
+    language_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, language_evidence])
     fixture('bookmarks_test', [*STRICT, 'tests/bookmarks_test.cpp'])
     bookmarks_evidence = ROOT / 'build/bookmarks-ui-qa'
     bookmarks_evidence.mkdir(parents=True, exist_ok=True)
@@ -67,6 +75,8 @@ def existing_fixtures() -> None:
     fixture('motion_test', [*STRICT, '-pedantic', 'tests/motion/motion_test.cpp', '-luser32'])
     fixture('polish_test', [*STRICT, 'tests/motion/polish_test.cpp', '-luser32'])
     fixture('address_background_test', [*STRICT, 'tests/address_background_test.cpp', '-lgdi32', '-luser32', '-ldwmapi'])
+    # Address selection in the profile colour: real EDIT pixels, keyboard/mouse/edit, live switch, 96/144/192 DPI
+    fixture('address_selection_test', [*STRICT, 'tests/address_selection_test.cpp', '-lgdi32', '-luser32', '-ldwmapi', '-lcomctl32'])
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])

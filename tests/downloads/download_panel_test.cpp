@@ -332,6 +332,9 @@ static int CancelSurfaceChecks(const std::wstring& root) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+    // This drawer's Paper copy is English: its strings are checked in an English process, set explicitly
+    // (never the OS language). The French wording is checked in tests/i18n_test.cpp.
+    I18n::SetForProcess(I18n::Locale::En);
     ModelChecks();
     IconChecks();
     if (argc >= 3) {

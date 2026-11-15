@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // « Supprimer le profil « X » ? » (Paper p-I-0 P04, current edits: Y6V-0 default, Y7G-0 open windows,
 // Y81-0 in progress, YRQ-0 failure). A dedicated surface: the generic A1 modal does not have its
 // structure (identity glyph in the title, consequences block between hairlines, busy row).
@@ -52,14 +53,14 @@ class Dialog {
     int focus_ = BtnCancel, hover_ = None, pressed_ = None; std::wstring error_;
     Motion::Time opened_{}, left_{}, busySince_{};
     static constexpr UINT_PTR FrameTimer = 1;
-    static constexpr const wchar_t* erasedLabel = L"Effacé de cet appareil";
-    static constexpr const wchar_t* erasedText = L"Historique, cookies et données des sites, mots de passe, favoris, autorisations et réglages de ce profil.";
-    static constexpr const wchar_t* keptLabel = L"Conservé";
-    static constexpr const wchar_t* keptText = L"Les fichiers téléchargés restent sur le disque. Les autres profils ne changent pas.";
+    static const wchar_t* erasedLabel() { return TR(profile_delete_erased); }
+    static const wchar_t* erasedText() { return TR(profile_delete_erased_text); }
+    static const wchar_t* keptLabel() { return TR(profile_delete_kept); }
+    static const wchar_t* keptText() { return TR(profile_delete_kept_text); }
     float Scale() const { return dpi_ / 96.f; }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Scale())); }
-    std::wstring Title() const { return L"Supprimer le profil « " + spec_.name + L" » ?"; }
-    std::wstring DeleteLabel() const { return error_.empty() ? L"Supprimer le profil" : L"Réessayer"; }
+    std::wstring Title() const { return TRF(profile_delete_title, spec_.name); }
+    std::wstring DeleteLabel() const { return error_.empty() ? TR(profile_delete_action) : TR(downloads_action_retry); }
     // Geometry (DIP).
     float BlockTop() const { return Layout::pad + 20 + Layout::gap; }
     float BlockH() const { return 1 + 12 + 20 + 2 + erasedH_ + 12 + 20 + 2 + keptH_ + 12 + 1; }
@@ -67,7 +68,7 @@ class Dialog {
     float NoteTop() const { return BlockTop() + BlockH() + Layout::gap; }
     float ErrorTop() const { return NoteTop() + (spec_.note.empty() ? 0 : noteH_ + Layout::gap); }
     float ActionsTop() const { return ErrorTop() + (error_.empty() ? 0 : errorH_ + Layout::gap) + Layout::actionsTop; }
-    float ButtonW(int b) { return std::max(Layout::buttonMin, std::ceil(chrome_.TextWidth(b == BtnDelete ? DeleteLabel() : L"Annuler", 14, true, false, -.14f)) + 2 * Layout::buttonPad); }
+    float ButtonW(int b) { return std::max(Layout::buttonMin, std::ceil(chrome_.TextWidth(b == BtnDelete ? DeleteLabel() : std::wstring(TR(common_cancel)), 14, true, false, -.14f)) + 2 * Layout::buttonPad); }
     D2D1_RECT_F Box(int b) {
         const float y = ActionsTop(), right = Layout::width - Layout::pad, dw = ButtonW(BtnDelete), cw = ButtonW(BtnCancel);
         if (b == BtnDelete) return {right - dw, y, right, y + Layout::button};
@@ -75,8 +76,8 @@ class Dialog {
     }
     void Measure() {
         PopupKit::Type detail{14, 18}, err{14, 20};
-        erasedH_ = PopupKit::Measure(chrome_, erasedText, Layout::inner, detail, true).height;
-        keptH_ = PopupKit::Measure(chrome_, keptText, Layout::inner, detail, true).height;
+        erasedH_ = PopupKit::Measure(chrome_, erasedText(), Layout::inner, detail, true).height;
+        keptH_ = PopupKit::Measure(chrome_, keptText(), Layout::inner, detail, true).height;
         errorH_ = error_.empty() ? 0 : PopupKit::Measure(chrome_, error_, Layout::inner - 22, err, true).height;
         noteH_ = spec_.note.empty() ? 0 : PopupKit::Measure(chrome_, spec_.note, Layout::inner, err, true).height;
         height_ = ActionsTop() + Layout::button + Layout::pad;
@@ -109,7 +110,7 @@ class Dialog {
         else { const float r = Design::Surface::raised + (hover ? .04f : 0); PopupKit::Fill(chrome_, box, 8, D2D1::ColorF(r, r, r, dim)); }
         if (focus_ == b && !busy_ && keyboard_) { auto* br = chrome_.SolidBrush(); br->SetColor(PopupKit::White(.5f)); chrome_.RenderTarget()->DrawRoundedRectangle(D2D1::RoundedRect({box.left + .5f, box.top + .5f, box.right - .5f, box.bottom - .5f}, 7.5f, 7.5f), br, 1); }
         const D2D1_COLOR_F ink = del ? D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, dim) : PopupKit::White(dim);
-        PopupKit::DrawText(chrome_, del ? DeleteLabel() : L"Annuler", {box.left, box.top + 7, box.right, box.bottom}, PopupKit::Type{14, 18, -.14f, true}, ink, false, DWRITE_TEXT_ALIGNMENT_CENTER);
+        PopupKit::DrawText(chrome_, del ? DeleteLabel() : std::wstring(TR(common_cancel)), {box.left, box.top + 7, box.right, box.bottom}, PopupKit::Type{14, 18, -.14f, true}, ink, false, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
     void Paint() {
         if (!chrome_.RenderTarget()) chrome_.Resize();
@@ -122,10 +123,10 @@ class Dialog {
         // Consequences, between hairlines.
         float y = BlockTop(); const auto hair = PopupKit::White(Layout::hairline / 255.f);
         PopupKit::Fill(chrome_, {L, y, R, y + 1}, 0, hair); y += 1 + 12;
-        PopupKit::DrawText(chrome_, erasedLabel, {L, y, R, y + 20}, PopupKit::Type{14, 20}, PopupKit::White(1)); y += 22;
-        PopupKit::DrawText(chrome_, erasedText, {L, y, R, y + erasedH_}, PopupKit::Type{14, 18}, PopupKit::White(.5f), true); y += erasedH_ + 12;
-        PopupKit::DrawText(chrome_, keptLabel, {L, y, R, y + 20}, PopupKit::Type{14, 20}, PopupKit::White(1)); y += 22;
-        PopupKit::DrawText(chrome_, keptText, {L, y, R, y + keptH_}, PopupKit::Type{14, 18}, PopupKit::White(.5f), true); y += keptH_ + 12;
+        PopupKit::DrawText(chrome_, erasedLabel(), {L, y, R, y + 20}, PopupKit::Type{14, 20}, PopupKit::White(1)); y += 22;
+        PopupKit::DrawText(chrome_, erasedText(), {L, y, R, y + erasedH_}, PopupKit::Type{14, 18}, PopupKit::White(.5f), true); y += erasedH_ + 12;
+        PopupKit::DrawText(chrome_, keptLabel(), {L, y, R, y + 20}, PopupKit::Type{14, 20}, PopupKit::White(1)); y += 22;
+        PopupKit::DrawText(chrome_, keptText(), {L, y, R, y + keptH_}, PopupKit::Type{14, 18}, PopupKit::White(.5f), true); y += keptH_ + 12;
         PopupKit::Fill(chrome_, {L, y, R, y + 1}, 0, hair);
         if (!spec_.note.empty()) PopupKit::DrawText(chrome_, spec_.note, {L, NoteTop(), R, NoteTop() + noteH_}, PopupKit::Type{14, 20}, PopupKit::White(.7f), true);
         // Failure, in line.
@@ -142,7 +143,7 @@ class Dialog {
             t->SetTransform(D2D1::Matrix3x2F::Rotation(turn, {L + 8, ay + 16}) * base);
             glyphs_.Draw(chrome_, Glyph::circleNotch, {L, ay + 8, L + 16, ay + 24}, 16, PopupKit::White(.7f));
             t->SetTransform(base);
-            PopupKit::DrawText(chrome_, L"Suppression…", {L + 24, ay + 7, R, ay + 25}, PopupKit::Type{14, 18, -.14f, true}, PopupKit::White(.7f));
+            PopupKit::DrawText(chrome_, TR(profile_deleting), {L + 24, ay + 7, R, ay + 25}, PopupKit::Type{14, 18, -.14f, true}, PopupKit::White(.7f));
         }
         const float dim = busy_ ? Layout::disabled : 1.f;
         Button(BtnCancel, dim); Button(BtnDelete, dim);
@@ -191,11 +192,11 @@ class Dialog {
         host.nodes = [this] {
             std::vector<Accessibility::Node> nodes; RECT win{}; GetWindowRect(hwnd_, &win);
             Accessibility::Node g; g.key = 1; g.role = Accessibility::Role::Group; g.name = Title(); g.automationId = L"ProfileDeleteDialog"; g.focusable = false; g.bounds = win;
-            g.help = std::wstring(erasedLabel) + L" : " + erasedText + L" " + keptLabel + L" : " + keptText; if (busy_) g.status = L"Suppression…"; nodes.push_back(g);
+            g.help = TRF(profile_delete_help, erasedLabel(), erasedText(), keptLabel(), keptText()); if (busy_) g.status = TR(profile_deleting); nodes.push_back(g);
             if (!error_.empty()) { Accessibility::Node e; e.key = 2; e.parent = 1; e.role = Accessibility::Role::Text; e.name = error_; e.automationId = L"ProfileDeleteError"; e.focusable = false; nodes.push_back(e); }
             for (int b : {BtnCancel, BtnDelete}) {
                 const auto r = Box(b); Accessibility::Node n; n.key = b; n.parent = 1; n.role = Accessibility::Role::Button; n.enabled = !busy_;
-                n.name = b == BtnDelete ? DeleteLabel() : L"Annuler"; n.automationId = b == BtnDelete ? L"ProfileDeleteConfirm" : L"ProfileDeleteCancel";
+                n.name = b == BtnDelete ? DeleteLabel() : std::wstring(TR(common_cancel)); n.automationId = b == BtnDelete ? L"ProfileDeleteConfirm" : L"ProfileDeleteCancel";
                 n.bounds = {win.left + Px(r.left), win.top + Px(r.top), win.left + Px(r.right), win.top + Px(r.bottom)}; nodes.push_back(n);
             }
             return nodes;
@@ -244,7 +245,7 @@ public:
     bool RenderForTest(const std::wstring& root, Spec spec, int state, const wchar_t* png) {
         spec_ = std::move(spec); error_.clear(); busy_ = false; focus_ = BtnCancel; keyboard_ = true;
         if (state == 1) { busy_ = true; busySince_ = Motion::Now(); spec_.reduced = true; }
-        if (state == 2) { error_ = L"Impossible de supprimer ce profil : un de ses fichiers est utilisé par un autre programme. Rien n'a été effacé."; focus_ = BtnDelete; }
+        if (state == 2) { error_ = TR(profile_delete_in_use); focus_ = BtnDelete; }
         // Measure on a provisional surface, then paint at the final height (same Paint path).
         if (FAILED(chrome_.InitOffscreen(root, 96, Layout::width, 600))) return false;
         Measure(); chrome_.Dispose();

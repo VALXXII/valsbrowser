@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // C3/C4 · Pages d'erreur réseau (Paper « Browser Design », p-D-0: contexte C3 E72-0 / bloc EAZ-0;
 // variantes C4 ECL-0: DNS ECY-0, refus EGJ-0, délai EGW-0, reprise EH9-0; notes EOM-0).
 // Self-contained HTML documents that main shows with NavigateToString, like the HTTPS
@@ -137,22 +138,23 @@ inline bool CertificateMatches(int recordedStatus, const std::wstring& requestUr
 // Plain-language cause of a refused server certificate.
 inline std::wstring CertificateCause(int status) {
     switch (status) {
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: return L"son certificat a été émis pour un autre site.";
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return L"son certificat a expiré (ou l'horloge de cet ordinateur est inexacte).";
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return L"son certificat a été révoqué.";
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return L"le certificat présenté contient des erreurs.";
-    default: return L"son certificat n'est pas valide ou n'est pas reconnu.";   // CERTIFICATE_IS_INVALID is generic: no finer cause claimed
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: return TR(error_cert_wrong_name);
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return TR(error_cert_expired);
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return TR(error_cert_revoked);
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return TR(error_cert_client_errors);
+    default: return TR(error_cert_invalid);   // CERTIFICATE_IS_INVALID is generic: no finer cause claimed
     }
 }
 // The engine's own status name (COREWEBVIEW2_WEB_ERROR_STATUS_*): exactly what WebView2 reports,
 // never a guessed Chromium NET:: code (the SDK does not expose it).
 inline const wchar_t* CertificateCode(int status) {
     switch (status) {
+    // i18n-exempt-begin: the engine's own status names, shown as technical codes
     case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: return L"WebView2 : CERTIFICATE_COMMON_NAME_IS_INCORRECT";
     case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED: return L"WebView2 : CERTIFICATE_EXPIRED";
     case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED: return L"WebView2 : CERTIFICATE_REVOKED";
     case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: return L"WebView2 : CLIENT_CERTIFICATE_CONTAINS_ERRORS";
-    default: return L"WebView2 : CERTIFICATE_IS_INVALID";
+    default: return L"WebView2 : CERTIFICATE_IS_INVALID";   // i18n-exempt-end
     }
 }
 inline constexpr int AutoRetryDelaysSeconds[] = {8, 16, 32};
@@ -216,18 +218,19 @@ inline std::wstring HostOf(const std::wstring& url) {
     if (host.size() > 253) host = host.substr(0, 253) + L"…";
     return host.empty() ? url.substr(0, 253) : host;
 }
-struct Copy { std::wstring title, before, after, primary, secondary; Action primaryAction = Action::Retry, secondaryAction = Action::Details; };
+// `body` is a whole sentence: {0} is the host (escaped, then set in bold by Html()), {1} the certificate cause.
+struct Copy { std::wstring title, body, primary, secondary; Action primaryAction = Action::Retry, secondaryAction = Action::Details; };
 inline Copy CopyFor(Kind kind, const std::wstring& host) {
     switch (kind) {
-    case Kind::Offline: return {L"Vous êtes hors ligne", L"Impossible d'ouvrir ", L" : cet ordinateur n'est connecté à aucun réseau. Vérifiez le Wi-Fi ou le câble, la page se rechargera d'elle-même dès le retour de la connexion.", L"Réessayer", L"Paramètres réseau", Action::Retry, Action::NetworkSettings};
-    case Kind::NameNotResolved: return {L"Ce site est introuvable", L"Aucun site ne répond à l'adresse ", L". Vérifiez l'orthographe, ou lancez une recherche avec ces mots.", L"Rechercher « " + host + L" »", L"Réessayer", Action::Search, Action::Retry};
-    case Kind::Refused: return {L"Le site a refusé la connexion", L"", L" ne répond pas. Le serveur est peut-être arrêté, ou un pare-feu bloque l'accès. Réessayez dans un instant.", L"Réessayer", L"Détails techniques"};
-    case Kind::TimedOut: return {L"Le site met trop de temps à répondre", L"", L" est peut-être surchargé. Nous réessayons pour vous, ou vous pouvez relancer tout de suite.", L"Réessayer maintenant", L"Détails techniques"};
-    case Kind::Reset: return {L"La connexion a été interrompue", L"La connexion à ", L" s'est coupée en cours de route. C'est souvent passager : réessayez.", L"Réessayer", L"Détails techniques"};
+    case Kind::Offline: return {TR(error_offline_title), TR(error_offline_body), TR(downloads_action_retry), TR(error_network_settings), Action::Retry, Action::NetworkSettings};
+    case Kind::NameNotResolved: return {TR(error_dns_title), TR(error_dns_body), TRF(error_search_host, host), TR(downloads_action_retry), Action::Search, Action::Retry};
+    case Kind::Refused: return {TR(error_refused_title), TR(error_refused_body), TR(downloads_action_retry), TR(error_details)};
+    case Kind::TimedOut: return {TR(error_timeout_title), TR(error_timeout_body), TR(error_retry_now), TR(error_details)};
+    case Kind::Reset: return {TR(error_reset_title), TR(error_reset_body), TR(downloads_action_retry), TR(error_details)};
     // TLS refused (never bypassed): no « continuer », no http; Retour or a real new attempt.
-    case Kind::Certificate: return {L"La connexion sécurisée n'a pas pu être établie", L"La connexion à ", L" a été bloquée : ", L"Réessayer", L"Retour", Action::Retry, Action::Back};
-    case Kind::Unreachable: return {L"Le site est injoignable", L"Impossible de joindre ", L" : le serveur ne répond pas, ou le réseau en bloque l'accès.", L"Réessayer", L"Détails techniques"};
-    default: return {L"Cette page ne s'est pas chargée", L"Une erreur a empêché l'ouverture de ", L". Réessayez dans un instant.", L"Réessayer", L"Détails techniques"};
+    case Kind::Certificate: return {TR(error_cert_title), TR(error_cert_body), TR(downloads_action_retry), TR(common_back), Action::Retry, Action::Back};
+    case Kind::Unreachable: return {TR(error_unreachable_title), TR(error_unreachable_body), TR(downloads_action_retry), TR(error_details)};
+    default: return {TR(error_generic_title), TR(error_generic_body), TR(downloads_action_retry), TR(error_details)};
     }
 }
 // Button order of the action row: « Réessayer » (whichever button carries it) comes last, on the right.
@@ -240,7 +243,7 @@ inline std::wstring Html(Kind kind, const std::wstring& url, const std::wstring&
     const std::wstring host = HostOf(url); const Copy c = CopyFor(kind, host);
     const bool offline = kind == Kind::Offline, details = c.secondaryAction == Action::Details;
     const int delay = retrying ? 0 : AutoRetryDelay(kind, extras.attempt);
-    std::wstring h = LR"(<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="color-scheme" content="dark">)"
+    std::wstring h = std::wstring(L"<!doctype html><html lang=\"") + (I18n::Current() == I18n::Locale::En ? L"en" : L"fr") + LR"("><meta charset="utf-8"><meta name="color-scheme" content="dark">)"
         LR"(<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:">)";
     h += L"<title>" + WebText::Html(c.title) + L"</title><style>";
     if (!extras.fontRegular.empty()) h += L"@font-face{font-family:\"Inter Display\";src:url(" + extras.fontRegular + L") format(\"truetype\");font-weight:400;font-display:block}";
@@ -269,30 +272,33 @@ button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}
 .track{width:120px;height:2px;border-radius:1px;background:#FFFFFF14;overflow:hidden}.fill{height:2px;border-radius:1px;background:#FFFFFF80;width:0}
 )CSS";
     h += extras.reducedMotion ? L"" : L"main{animation:in 160ms ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}}@media (prefers-reduced-motion:reduce){main{animation:none}}";
-    const std::wstring after = kind == Kind::Certificate ? c.after + CertificateCause(extras.certStatus) : c.after;
-    h += L"</style><main role=\"main\"><h1>" + WebText::Html(c.title) + L"</h1><p>" + WebText::Html(c.before) + L"<b>" + WebText::Html(host) + L"</b>" + WebText::Html(after) + L"</p>";
-    const std::wstring primaryLabel = retrying ? std::wstring(L"Rechargement…") : c.primary;
+    // The sentence is escaped first, then the escaped host (in bold) and cause go into it: page text never becomes markup.
+    const std::wstring body = I18n::FormatText(WebText::Html(c.body).c_str(), {L"<b>" + WebText::Html(host) + L"</b>", WebText::Html(kind == Kind::Certificate ? CertificateCause(extras.certStatus) : std::wstring())});
+    h += L"</style><main role=\"main\"><h1>" + WebText::Html(c.title) + L"</h1><p>" + body + L"</p>";
+    const std::wstring primaryLabel = retrying ? std::wstring(TR(error_reloading)) : c.primary;
     // One row for every variant (user request 2026-11-09): the other action on the left,
     // « Réessayer » on the right, in DOM order so Tab follows what is seen. Labels never wrap
     // (a long « Rechercher « … » » ellipsises, « Réessayer » never shrinks); under 360 px (split
     // view halves) they stack, full width, same order.
-    const std::wstring primaryButton = L"<button id=\"primary\" class=\"primary\" data-action=\"" + std::wstring(ActionName(c.primaryAction)) + L"\"" + (retrying ? L" aria-disabled=\"true\"" : L" autofocus") + L" title=\"" + WebText::Html(primaryLabel) + L"\">" + WebText::Html(primaryLabel) + L"</button>";
+    const std::wstring primaryButton = L"<button id=\"primary\" class=\"primary\" data-action=\"" + std::wstring(ActionName(c.primaryAction)) + L"\"" + (retrying ? L" aria-disabled=\"true\"" : L" autofocus" /* i18n-exempt: HTML attribute */) + L" title=\"" + WebText::Html(primaryLabel) + L"\">" + WebText::Html(primaryLabel) + L"</button>";
     const std::wstring secondaryButton = L"<button id=\"secondary\" class=\"secondary\" data-action=\"" + std::wstring(ActionName(c.secondaryAction)) + L"\"" + (details ? L" aria-expanded=\"false\" aria-controls=\"details\"" : L"") + L">" + WebText::Html(c.secondary) + L"</button>";
     h += L"<div class=\"actions\">" + (RetryLast(c) ? secondaryButton + primaryButton : primaryButton + secondaryButton) + L"</div>";
     if (details) {
-        const std::wstring code = extras.code.empty() ? std::wstring(L"Code inconnu") : extras.code;
+        const std::wstring code = extras.code.empty() ? std::wstring(TR(error_unknown_code)) : extras.code;
         h += L"<div id=\"details\" class=\"details\" hidden><b>" + WebText::Html(code) + L"</b>" + (extras.detail.empty() ? L"" : L"<span>" + WebText::Html(extras.detail) + L"</span>") + L"</div>";
     }
     if (kind == Kind::Certificate) {   // technical facts, escaped and bounded (never page-provided)
         std::wstring issuer = extras.issuer; if (issuer.size() > 200) issuer = issuer.substr(0, 200) + L"…";
-        h += L"<div class=\"details\"><b>" + WebText::Html(CertificateCode(extras.certStatus)) + L"</b>" + (issuer.empty() ? L"" : L"<span>Émis par " + WebText::Html(issuer) + L"</span>") + L"</div>";
+        h += L"<div class=\"details\"><b>" + WebText::Html(CertificateCode(extras.certStatus)) + L"</b>" + (issuer.empty() ? L"" : L"<span>" + WebText::Html(TRF(cert_issued_by, issuer)) + L"</span>") + L"</div>";
     }
-    if (offline) h += std::wstring(L"<div class=\"status") + (extras.restored ? L" back" : L"") + L"\" role=\"status\" aria-live=\"polite\"><i></i><span>" + (extras.restored ? L"Connexion rétablie" : L"En attente du réseau…") + L"</span></div>";
-    if (delay) h += L"<div class=\"retry\" role=\"status\" aria-live=\"polite\"><span id=\"count\">Nouvel essai dans " + std::to_wstring(delay) + L" s</span><div class=\"track\" aria-hidden=\"true\"><div class=\"fill\" id=\"fill\"></div></div></div>";
+    if (offline) h += std::wstring(L"<div class=\"status") + (extras.restored ? L" back" /* i18n-exempt: CSS class */ : L"") + L"\" role=\"status\" aria-live=\"polite\"><i></i><span>" + WebText::Html(extras.restored ? TR(error_connection_back) : TR(error_waiting_network)) + L"</span></div>";
+    if (delay) h += L"<div class=\"retry\" role=\"status\" aria-live=\"polite\"><span id=\"count\">" + WebText::Html(TRF(error_retry_in, std::to_wstring(delay))) + L"</span><div class=\"track\" aria-hidden=\"true\"><div class=\"fill\" id=\"fill\"></div></div></div>";
     h += L"</main><script>\"use strict\";const T=\"" + WebText::Js(token) + L"\";let busy=" + (retrying ? L"true" : L"false") + L";";
+    // Texts the script writes itself, from the catalog (escaped for a JS string).
+    h += L"const RELOADING=\"" + WebText::Js(TR(error_reloading)) + L"\",RETRY_IN=\"" + WebText::Js(TR(error_retry_in)) + L"\";";
     h += LR"JS(const send=a=>{try{window.chrome.webview.postMessage(JSON.stringify({token:T,action:a}))}catch(e){}};
 const P=document.getElementById("primary"),S=document.getElementById("secondary"),D=document.getElementById("details");
-const reload=a=>{if(busy)return;busy=true;if(P.dataset.action==="retry"){P.textContent="Rechargement…";P.setAttribute("aria-disabled","true")}send(a)};
+const reload=a=>{if(busy)return;busy=true;if(P.dataset.action==="retry"){P.textContent=RELOADING;P.setAttribute("aria-disabled","true")}send(a)};
 P.addEventListener("click",()=>{if(P.dataset.action==="retry")reload("retry");else send(P.dataset.action)});
 S.addEventListener("click",()=>{const a=S.dataset.action;if(a==="details"&&D){const open=D.hidden;D.hidden=!open;S.setAttribute("aria-expanded",String(open));send("details")}else if(a==="retry")reload("retry");else send(a)});
 addEventListener("keydown",e=>{if(e.key==="F5"||((e.ctrlKey||e.metaKey)&&(e.key==="r"||e.key==="R"))){e.preventDefault();reload("retry")}});
@@ -300,7 +306,7 @@ addEventListener("keydown",e=>{if(e.key==="F5"||((e.ctrlKey||e.metaKey)&&(e.key=
     if (offline) h += L"addEventListener(\"online\",()=>reload(\"retry\"));";
     if (delay) {
         h += L"{const total=" + std::to_wstring(delay) + L";let left=total;const C=document.getElementById(\"count\"),F=document.getElementById(\"fill\");";
-        h += LR"JS(const tick=()=>{F.style.width=((total-left)/total*120)+"px";C.textContent="Nouvel essai dans "+left+" s";if(left<=0){if(!busy){busy=true;send("autoRetry")}return}left--;setTimeout(tick,1000)};tick()})JS";
+        h += LR"JS(const tick=()=>{F.style.width=((total-left)/total*120)+"px";C.textContent=RETRY_IN.replace("{0}",left);if(left<=0){if(!busy){busy=true;send("autoRetry")}return}left--;setTimeout(tick,1000)};tick()})JS";
     }
     h += L"</script></html>";
     return h;

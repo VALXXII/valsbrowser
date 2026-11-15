@@ -29,7 +29,7 @@ constexpr UINT_PTR ProfileUndoTimerId=0x5046, ProfileCloseWaitTimerId=0x5047, Pr
 UINT ProfilesChangedMessage(){static const UINT m=RegisterWindowMessageW(L"BrowserProfilesChanged");return m;}
 std::wstring ProfileExe(){std::wstring exe(32768,L'\0');const DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return exe;}
 const Profiles::Profile* CurrentProfile(){return profileRegistry.Find(profileId);}
-Profiles::Profile DefaultProfileLook(){Profiles::Profile p;p.id=Profiles::DefaultId;p.name=Profiles::DefaultName;p.icon=Profiles::DefaultIcon;p.hue=0;p.intensity=0;p.neutral=true;return p;}
+Profiles::Profile DefaultProfileLook(){Profiles::Profile p;p.id=Profiles::DefaultId;p.name=Profiles::DefaultName();p.icon=Profiles::DefaultIcon;p.hue=0;p.intensity=0;p.neutral=true;return p;}
 void TabMenu(int anchor);int KeyboardAnchor();void StartWorkspaces();
 // Same-window profiles (profile-workspace.h, end of main.cpp).
 bool SwitchWorkspace(const std::wstring& id);bool LeaveProfileHere(const std::wstring& id,bool openOther);std::vector<Profiles::WindowSlot> ThisWindowSlots();void RestoreWindowSet();int EvictProfileHere(const std::wstring& id);void WriteThisWindowSet();bool OpenSessionTabHere(const std::wstring& id,const std::wstring& session,int tab);void DisposeParkedWorkspaces();void MarkWorkspacePublish();void PublishDirtyWorkspaces();int WorkspaceQaCommand(const std::wstring& text);void EngineHeld(const std::wstring& id);
@@ -62,27 +62,31 @@ D2D1_COLOR_F ProfileInk(const Profiles::Profile& p){return PE::Color(PE::InkOf(p
 // Switching windows never fades (each window already has its accent). The button's own icon / ink
 // transitions live in Chrome::SetProfileButton.
 constexpr UINT_PTR ProfileAnimTimerId=0x5049; constexpr float AccentFadeMs=120;
-struct AccentTween{bool active=false;NativeChrome::Design::Rgb fromFill{},toFill{},fromInk{},toInk{};ULONGLONG start=0;} accentTween;
+struct AccentTween{bool active=false;NativeChrome::Design::Rgb fromFill{},toFill{},fromInk{},toInk{},fromSelection{},toSelection{};ULONGLONG start=0;} accentTween;
 NativeChrome::Design::Rgb RgbOf(unsigned long v){return {((v>>16)&255)/255.f,((v>>8)&255)/255.f,(v&255)/255.f};}
 NativeChrome::Design::Rgb Mix(NativeChrome::Design::Rgb a,NativeChrome::Design::Rgb b,float t){return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};}
 // The annotation mode's surfaces (band, note, launcher, history, connect modal, page frame) follow the accent too:
 // AnnotationAccentChanged (annotation-mode.h) at each change and at each step of the fade, no clock of its own.
 void AnnotationAccentChanged();
-void SetAccents(unsigned long fill,unsigned long ink,bool animate){
+// The address field's selection run (Accent::Selection) repaints with the accent, same steps, no clock of its own.
+void AddressSelectionChanged();
+void SetAccents(unsigned long fill,unsigned long ink,unsigned long selection,bool animate){
     namespace A=NativeChrome::Design::Accent;
     A::SettledCurrent()=RgbOf(fill);
-    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);accentTween.active=false;AnnotationAccentChanged();return;}
+    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);A::SelectionCurrent()=RgbOf(selection);accentTween.active=false;AnnotationAccentChanged();AddressSelectionChanged();return;}
     accentTween.fromFill=A::Get();accentTween.fromInk=A::Ink();accentTween.toFill=RgbOf(fill);accentTween.toInk=RgbOf(ink);
+    accentTween.fromSelection=A::SelectionCurrent();accentTween.toSelection=RgbOf(selection);
     accentTween.start=GetTickCount64();accentTween.active=true;if(window)SetTimer(window,ProfileAnimTimerId,15,nullptr);
-    AnnotationAccentChanged();
+    AnnotationAccentChanged();AddressSelectionChanged();
 }
 void ProfileAnimTick(){
     namespace A=NativeChrome::Design::Accent;
     if(accentTween.active){
         const float u=std::clamp((GetTickCount64()-accentTween.start)/AccentFadeMs,0.f,1.f),t=NativeChrome::Motion::Eased(u,NativeChrome::Motion::Curve::EaseOut);
         A::Current()=Mix(accentTween.fromFill,accentTween.toFill,t);A::InkCurrent()=Mix(accentTween.fromInk,accentTween.toInk,t);
+        A::SelectionCurrent()=Mix(accentTween.fromSelection,accentTween.toSelection,t);
         if(u>=1)accentTween.active=false;
-        AnnotationAccentChanged();
+        AnnotationAccentChanged();AddressSelectionChanged();
     }
     const bool button=chrome.ProfileButtonAnimating(NativeChrome::Motion::Now());
     InvalidateChrome();
@@ -92,7 +96,7 @@ void ApplyProfileChrome(bool animate=false){
     // Private window: the same slot, the incognito identity (Phosphor eye-slash, the existing private glyph) in
     // the reference blue's ink (OKLCH L .78, like every profile ink); the window accent stays the reference
     // blue. No profile, no registry, no sidecar.
-    if(privateWindow){chrome.profileButton.privateWindow=true;chrome.SetProfileButton(L"Fenêtre privée",NativeChrome::Design::PrivateChip::eyeSlash,PE::Color(ProfileColor::Ink(266,.14f)),false);InvalidateChrome();return;}
+    if(privateWindow){chrome.profileButton.privateWindow=true;chrome.SetProfileButton(TR(a11y_private_window),NativeChrome::Design::PrivateChip::eyeSlash,PE::Color(ProfileColor::Ink(266,.14f)),false);InvalidateChrome();return;}
     if(!profilesEnabled){chrome.profileButton.shown=false;return;}
     const Profiles::Profile* p=CurrentProfile();Profiles::Profile fallback=DefaultProfileLook();if(!p)p=&fallback;
     chrome.SetProfileButton(p->name,ProfileIcons::Fill(p->icon.c_str()),ProfileInk(*p),animate);
@@ -101,9 +105,11 @@ void ApplyProfileChrome(bool animate=false){
     // Fill (filled controls under white text) and ink (progress, download ring, checks): one profile colour.
     // A neutral profile keeps the blue FILL (white text needs it) but its ink is its own grey #B3B3B3: the
     // download ring and its check never show a colour the profile doesn't have (user report 2026-11-14).
+    // The address selection is the profile's own fill in every case: the neutral profile selects in its grey
+    // #747474 (FillOf), not in the reference blue its buttons keep.
     const auto ink=PE::InkOf(*p);const unsigned long inkRgb=(unsigned long)((ink.r<<16)|(ink.g<<8)|ink.b);
-    if(p->neutral)SetAccents(NativeChrome::Design::Accent::defaultRgb,inkRgb,animate);
-    else{const auto fill=PE::FillOf(*p);SetAccents((unsigned long)((fill.r<<16)|(fill.g<<8)|fill.b),inkRgb,animate);}
+    const auto own=PE::FillOf(*p);const unsigned long ownRgb=(unsigned long)((own.r<<16)|(own.g<<8)|own.b);
+    SetAccents(p->neutral?NativeChrome::Design::Accent::defaultRgb:ownRgb,inkRgb,ownRgb,animate);
     InvalidateChrome();
 }
 // Sidecar: tab titles/urls of this window for the other windows' menus (count, preview, routing).
@@ -139,7 +145,7 @@ PM::Model ProfileMenuModel(){
                 for(int i=0;i<(int)pages.size();++i){PM::Tab t;t.title=pages[i]->title;t.site=pages[i]->home?L"":SiteHost(pages[i]->uri);t.icon=pages[i]->favicon.image;if(!t.icon&&!t.site.empty())t.icon=SiteIcon(t.site);t.session=w.sessionId;t.index=i;row.tabs.push_back(t);}
                 continue;
             }
-            for(size_t i=0;i<w.urls.size();++i){PM::Tab t;t.title=i<w.titles.size()?w.titles[i]:L"";t.site=SiteHost(w.urls[i]);if(t.title.empty())t.title=t.site.empty()?L"Nouvel onglet":t.site;if(!t.site.empty())t.icon=SiteIcon(t.site);t.session=w.sessionId;t.index=(int)i;row.tabs.push_back(t);}
+            for(size_t i=0;i<w.urls.size();++i){PM::Tab t;t.title=i<w.titles.size()?w.titles[i]:L"";t.site=SiteHost(w.urls[i]);if(t.title.empty())t.title=t.site.empty()?std::wstring(TR(tab_new)):t.site;if(!t.site.empty())t.icon=SiteIcon(t.site);t.session=w.sessionId;t.index=(int)i;row.tabs.push_back(t);}
         }
         if(row.current&&std::none_of(live.begin(),live.end(),[](const Profiles::WindowInfo& w){return w.sessionId==windowId;})){row.windows=std::max(row.windows,1);}
         m.profiles.push_back(std::move(row));
@@ -151,7 +157,7 @@ void OpenProfileDialog(bool keyboard);
 void OpenTabIn(const std::wstring& id,const std::wstring& session,int tab){
     if(id==profileId&&session==windowId){Select(tab);return;}
     if(OpenSessionTabHere(id,session,tab))return;   // a profile cached in this window: switch, then that tab
-    for(const auto& w:Profiles::LiveWindows(profileRoot,id))if(w.sessionId==session&&w.hwnd){AllowSetForegroundWindow(ASFW_ANY);SendProfileCommand(w.hwnd,L"tab "+std::to_wstring(tab));if(IsIconic(w.hwnd))ShowWindow(w.hwnd,SW_RESTORE);SetForegroundWindow(w.hwnd);return;}
+    for(const auto& w:Profiles::LiveWindows(profileRoot,id))if(w.sessionId==session&&w.hwnd){AllowSetForegroundWindow(ASFW_ANY);SendProfileCommand(w.hwnd,L"tab " /* i18n-exempt: window protocol */+std::to_wstring(tab));if(IsIconic(w.hwnd))ShowWindow(w.hwnd,SW_RESTORE);SetForegroundWindow(w.hwnd);return;}
     Profiles::FocusOrLaunch(profileRoot,id,ProfileExe());
 }
 // User requirement (2026-11-14): a click switches THIS window (same HWND, same process); the profile left
@@ -163,7 +169,7 @@ void SwitchProfile(const std::wstring& id){
 // The row's context menu: one explicit action, distinct from the click.
 void OpenProfileInNewWindow(const std::wstring& id){if(Profiles::Launch(ProfileExe(),id))Log(L"PROFILES new window "+id);else Log(L"PROFILES new window failed "+id);}
 void ProfileRowMenu(const std::wstring& id,POINT at,bool keyboard){
-    std::vector<CM::Item> items{CM::Command(1,L"Ouvrir dans une nouvelle fenêtre")};
+    std::vector<CM::Item> items{CM::Command(1,TR(toast_open_in_new_window))};
     const int chosen=contextMenu.Track(items,at,nullptr,keyboard,ReducedMotionPreferred());
     if(chosen==1)OpenProfileInNewWindow(id);
 }
@@ -194,7 +200,7 @@ void ProfileMenuOpen(bool keyboard){
 void OpenProfileDialog(bool keyboard){
     if(!profilesEnabled||profileDialog.Open())return;
     if(!smoke)profileRegistry=Profiles::Load(profileRoot);
-    if(profileRegistry.readOnly){VaultNotice(L"Profils en lecture seule",L"Le fichier des profils n'a pas pu être lu ; rien n'a été modifié.");return;}
+    if(profileRegistry.readOnly){VaultNotice(TR(profiles_read_only),TR(profiles_read_only_body));return;}
     NativeChrome::ProfileDialog::Spec spec;spec.keyboard=keyboard;spec.reduced=ReducedMotionPreferred();
     Profiles::Profile seed;seed.name=Profiles::UniqueDefaultName(profileRegistry);seed.icon=Profiles::FirstUnusedIcon(profileRegistry);seed.hue=Profiles::FurthestHue(profileRegistry);seed.intensity=.14f;seed.neutral=false;
     spec.seed=seed;{const auto a=NativeChrome::Design::Accent::Get();spec.accent=D2D1::ColorF(a.r,a.g,a.b,1);}
@@ -203,7 +209,7 @@ void OpenProfileDialog(bool keyboard){
         if(smoke)return L"";
         Profiles::Registry reg=Profiles::Load(profileRoot);
         const auto made=Profiles::Create(profileRoot,reg,p,&ne);
-        if(made.id.empty())return ne!=Profiles::NameError::None?L"":L"Impossible de créer le profil. Réessayez.";
+        if(made.id.empty())return ne!=Profiles::NameError::None?std::wstring():std::wstring(TR(profile_create_failed));
         profileRegistry=reg;BroadcastProfilesChanged();if(settingsDrawer.Visible())settingsDrawer.Changed();
         if(!Profiles::Launch(ProfileExe(),made.id))Log(L"PROFILES created but its window did not start "+made.id);
         Log(L"PROFILES created "+made.id);return L"";
@@ -232,12 +238,12 @@ PendingDelete profileUndo;
 ProfileTakeOver::Gate takeover;   // a delete this window accepted to take over (see ReserveTakeOver)
 std::wstring pendingDeleteId;ULONGLONG pendingDeleteDeadline=0;bool pendingDeleteKeyboard=false;
 std::wstring DeleteErrorText(const std::wstring& key){
-    if(key==L"in-use")return L"Impossible de supprimer ce profil : un de ses fichiers est utilisé par un autre programme. Rien n'a été effacé.";
-    if(key==L"open-windows")return L"Ses fenêtres n'ont pas pu être fermées. Rien n'a été effacé.";
-    if(key==L"last")return L"Il faut au moins un profil.";
-    if(key==L"busy")return L"Les profils sont occupés par une autre fenêtre. Rien n'a été effacé.";
-    if(key==L"read-only")return L"Le fichier des profils n'a pas pu être lu ; rien n'a été modifié.";
-    return L"Impossible de supprimer ce profil. Rien n'a été effacé.";
+    if(key==L"in-use")return TR(profile_delete_in_use);
+    if(key==L"open-windows")return TR(profile_delete_open_windows);
+    if(key==L"last")return TR(profile_delete_last);
+    if(key==L"busy")return TR(profile_delete_busy);
+    if(key==L"read-only")return TR(profiles_read_only_body);
+    return TR(profile_delete_failed);
 }
 void FinalizeProfileDelete(){
     if(!profileUndo.active)return;KillTimer(window,ProfileUndoTimerId);
@@ -249,22 +255,22 @@ void UndoProfileDelete(){
     if(!profileUndo.active)return;KillTimer(window,ProfileUndoTimerId);
     Profiles::Registry reg=Profiles::Load(profileRoot);
     auto undo=profileUndo;profileUndo=PendingDelete{};
-    if(!Profiles::Undo(profileRoot,reg,undo.tomb)){VaultNotice(L"Le profil n'a pas pu être rétabli",L"Ses données restent de côté ; elles seront effacées plus tard.");if(undo.tomb.hold)CloseHandle(undo.tomb.hold);return;}
+    if(!Profiles::Undo(profileRoot,reg,undo.tomb)){VaultNotice(TR(profile_undo_failed),TR(profile_undo_failed_body));if(undo.tomb.hold)CloseHandle(undo.tomb.hold);return;}
     profileRegistry=reg;BroadcastProfilesChanged();if(settingsDrawer.Visible())settingsDrawer.Changed();
     NativeChrome::ContextToast::Spec s;s.kind=NativeChrome::ContextToast::Kind::Card;s.profileCard=true;s.automationId=L"ProfileRestoredToast";s.icon=NativeChrome::ContextToast::Icon::Success;s.durationMs=undo.tomb.closedSessions.empty()?5000:0;
-    s.message=L"Profil « "+undo.tomb.profile.name+L" » rétabli";
+    s.message=TRF(profile_restored,undo.tomb.profile.name);
     const int n=(int)undo.tomb.closedSessions.size();
-    s.detail=n?L"Ses données et les onglets de "+(n>1?L"ses "+std::to_wstring(n)+L" fenêtres sont intacts ; elles ne se rouvrent pas seules.":std::wstring(L"sa fenêtre sont intacts ; elle ne se rouvre pas seule.")):L"Ses données sont intactes.";
-    if(n)s.action=L"Rouvrir ses fenêtres";
+    s.detail=n?TRP(profile_restored_windows,n):std::wstring(TR(profile_restored_data));
+    if(n)s.action=TR(profile_reopen_windows);
     const auto id=undo.tomb.profile.id;const auto sessions=undo.tomb.closedSessions;
     contextToast.Show(s,PageScreenRect(),[id,sessions](bool acted){if(acted)Profiles::ReopenSessions(ProfileExe(),id,sessions);});
     Log(L"PROFILES undo "+id);
 }
 NativeChrome::ContextToast::Spec DeletedToastSpec(){
     NativeChrome::ContextToast::Spec s;s.kind=NativeChrome::ContextToast::Kind::Card;s.profileCard=true;s.inlineAction=true;s.automationId=L"ProfileDeletedToast";s.icon=NativeChrome::ContextToast::Icon::Success;s.durationMs=0;s.closable=false;
-    s.message=L"Profil « "+profileUndo.tomb.profile.name+L" » supprimé";
+    s.message=TRF(profile_deleted,profileUndo.tomb.profile.name);
     const ULONGLONG now=GetTickCount64();const int left=profileUndo.until>now?(int)((profileUndo.until-now+999)/1000):0;
-    s.detail=L"Effacement définitif dans "+std::to_wstring(left)+L" s.";s.action=L"Annuler";return s;
+    s.detail=TRF(profile_delete_countdown,std::to_wstring(left));s.action=TR(common_undo);return s;
 }
 void ShowDeletedToast(){
     contextToast.Show(DeletedToastSpec(),PageScreenRect(),[](bool acted){if(acted)UndoProfileDelete();});
@@ -282,7 +288,7 @@ void ProfileUndoTick(){
 // The actual delete, once no window of the profile is open (this window is never one of them).
 bool RunProfileDelete(const std::wstring& id,std::wstring& error,std::wstring* keyOut=nullptr){
     // One undo at a time, never finalised behind the user's back (re-review R1): refuse while one is pending.
-    if(profileUndo.active){error=L"Une suppression peut encore être annulée dans la fenêtre qui l'affiche. Rien n'a été effacé ; réessayez après son décompte.";if(keyOut)*keyOut=L"pending";Log(L"PROFILES delete refused "+id+L": an undo is pending");return false;}
+    if(profileUndo.active){error=TR(profile_delete_undo_pending);if(keyOut)*keyOut=L"pending";Log(L"PROFILES delete refused "+id+L": an undo is pending");return false;}
     Profiles::Registry reg=Profiles::Load(profileRoot);Profiles::Tombstone tomb;std::wstring key;
     if(!Profiles::Delete(profileRoot,reg,id,tomb,key)){error=DeleteErrorText(key);if(keyOut)*keyOut=key;Log(L"PROFILES delete refused "+id+L": "+key);return false;}
     profileRegistry=reg;profileUndo.active=true;profileUndo.tomb=tomb;profileUndo.until=GetTickCount64()+Profiles::UndoMilliseconds;profileUndo.windows=(int)tomb.closedSessions.size();
@@ -329,21 +335,21 @@ void AskDeleteProfile(const std::wstring& id,bool keyboard){
     Log(L"PROFILES delete asked "+id);
     if(!profilesEnabled||smoke||profileDeleteDialog.Open())return;
     profileRegistry=Profiles::Load(profileRoot);const Profiles::Profile* p=profileRegistry.Find(id);if(!p)return;
-    if(profileRegistry.items.size()<2){VaultNotice(L"Il faut au moins un profil",L"Créez-en un autre avant de supprimer celui-ci.");return;}
-    if(profileRegistry.readOnly){VaultNotice(L"Profils en lecture seule",DeleteErrorText(L"read-only"));return;}
+    if(profileRegistry.items.size()<2){VaultNotice(TR(profile_minimum_required),TR(profile_minimum_required_body));return;}
+    if(profileRegistry.readOnly){VaultNotice(TR(profiles_read_only),DeleteErrorText(L"read-only"));return;}
     // One undo at a time, never finalised behind the user's back: a second delete waits (review L4).
     // The pending notice is never replaced: it takes the focus (its countdown pauses) so « Annuler » is right there.
     if(profileUndo.active){Log(L"PROFILES delete refused while an undo is pending");if(contextToast.Visible())contextToast.Focus();return;}
-    if(takeover.Busy()){Log(L"PROFILES delete refused while a take-over is in progress");VaultNotice(L"Une suppression est en cours",L"Attendez qu'elle se termine avant de supprimer un autre profil.");return;}
+    if(takeover.Busy()){Log(L"PROFILES delete refused while a take-over is in progress");VaultNotice(TR(profile_delete_in_progress),TR(profile_delete_in_progress_body));return;}
     // Private windows share the default profile's engine folder: « Personnel » waits until they are closed (review M2).
-    if(id==Profiles::DefaultId&&PrivateWindowsOpen()){VaultNotice(L"Fermez d'abord les fenêtres privées",L"Elles utilisent le dossier du profil « "+p->name+L" » ; rien n'a été supprimé.");return;}
+    if(id==Profiles::DefaultId&&PrivateWindowsOpen()){VaultNotice(TR(profile_close_private_first),TRF(profile_close_private_first_body,p->name));return;}
     const Profiles::Profile target=*p;
     NativeChrome::ProfileDeleteDialog::Spec spec;
     // Its windows close for the delete, cancelling any download still running in them (this window's or
     // another process's): a conditional consequence, stated whenever the profile has windows open.
     {const int open=std::max(Profiles::OpenWindowCount(profileRoot,target.id),target.id==profileId?1:0);
-     if(open>1)spec.note=L"Les téléchargements en cours dans ces fenêtres seront annulés.";
-     else if(open==1)spec.note=target.id==profileId?L"Les téléchargements en cours dans cette fenêtre seront annulés.":L"Les téléchargements en cours dans sa fenêtre seront annulés.";}
+     if(open>1)spec.note=TR(profile_delete_downloads_many);
+     else if(open==1)spec.note=target.id==profileId?TR(profile_delete_downloads_this):TR(profile_delete_downloads_its);}
     spec.name=target.name;spec.glyph=ProfileIcons::Fill(target.icon.c_str());spec.ink=ProfileInk(target);spec.keyboard=keyboard;spec.reduced=ReducedMotionPreferred();
     bool closeSelf=false;
     spec.confirm=[target,&closeSelf]{
@@ -367,7 +373,7 @@ void AskDeleteProfile(const std::wstring& id,bool keyboard){
                     const auto answer=SendProfileCommand(w.hwnd,L"delete-profile "+target.id);
                     if(answer==1){sent=true;host=q.id;break;}if(answer==2)busy=true;}}
             if(!sent&&!anyWindow)sent=Profiles::Launch(ProfileExe(),host,L"--delete-profile "+target.id);
-            if(!sent){profileDeleteDialog.Fail(busy?L"Une autre suppression peut encore être annulée dans une autre fenêtre. Rien n'a été effacé ; réessayez après son décompte.":L"Aucune autre fenêtre n'a pu prendre le relais. Rien n'a été effacé.");return;}
+            if(!sent){profileDeleteDialog.Fail(busy?TR(profile_delete_undo_pending_elsewhere):TR(profile_delete_no_takeover));return;}
             Log(L"PROFILES own delete handed over to "+host);closeSelf=true;profileDeleteDialog.Finish();return;
         }
         CloseProfileWindows(target.id);
@@ -383,22 +389,22 @@ void AskDeleteProfile(const std::wstring& id,bool keyboard){
 bool ReserveTakeOver(const std::wstring& id){return takeover.Reserve(id,profileUndo.active,privateWindow||!profilesEnabled||!Profiles::ValidId(id)||id==profileId);}
 void TakeOverProfileDelete(const std::wstring& id){
     if(!takeover.Owns(id)){Log(L"PROFILES take-over ignored "+id+L": not reserved");return;}
-    if(profileUndo.active){takeover.Clear();Log(L"PROFILES take-over refused "+id+L": an undo is pending here");VaultNotice(L"Le profil n'a pas été supprimé",L"Une autre suppression peut encore être annulée ici ; rien n'a été effacé.");return;}   // cannot happen while reserved
+    if(profileUndo.active){takeover.Clear();Log(L"PROFILES take-over refused "+id+L": an undo is pending here");VaultNotice(TR(profile_not_deleted),TR(profile_delete_undo_pending_here));return;}   // cannot happen while reserved
     // Bring this window forward: the undo notice lives here (review M1).
     if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);
     CloseProfileWindows(id);   // whatever is still open of that profile closes, keeping its sessions (review H1)
-    DeleteWhenReleased(id,GetTickCount64()+10000,[](bool ok,const std::wstring& error){takeover.Clear();if(!ok)VaultNotice(L"Le profil n'a pas été supprimé",error);});
+    DeleteWhenReleased(id,GetTickCount64()+10000,[](bool ok,const std::wstring& error){takeover.Clear();if(!ok)VaultNotice(TR(profile_not_deleted),error);});
 }
 
 // ---- messages -----------------------------------------------------------------------------------------
 int ProfileCopyDataMessage(LPARAM l){
     const auto* cd=reinterpret_cast<const COPYDATASTRUCT*>(l);if(!cd||cd->dwData!=ProfileCopyData||!cd->lpData||cd->cbData<sizeof(wchar_t))return 0;
     std::wstring text(static_cast<const wchar_t*>(cd->lpData),cd->cbData/sizeof(wchar_t));while(!text.empty()&&!text.back())text.pop_back();
-    if(text.rfind(L"tab ",0)==0){const int n=_wtoi(text.c_str()+4);Defer([n]{if(n>=0&&n<(int)pages.size())Select(n);if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);});return 1;}
+    if(text.rfind(L"tab " /* i18n-exempt: window protocol */,0)==0){const int n=_wtoi(text.c_str()+4);Defer([n]{if(n>=0&&n<(int)pages.size())Select(n);if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);});return 1;}
     // A profile being deleted leaves this window: switched away if on screen, its cache dropped (session kept
     // for « Rouvrir »); the window itself never closes for it. Private windows belong to no profile (review M2).
     if(text.rfind(L"close-for-delete ",0)==0){if(!privateWindow&&profilesEnabled){const std::wstring id=text.substr(17);Defer([id]{LeaveProfileHere(id,false);});}return 1;}
-    if(text.rfind(L"qa ",0)==0)return WorkspaceQaCommand(text.substr(3));   // --workspace-test only (else 0)
+    if(text.rfind(L"qa " /* i18n-exempt: window protocol */,0)==0)return WorkspaceQaCommand(text.substr(3));   // --workspace-test only (else 0)
     if(text.rfind(Profiles::EvictCommand,0)==0){if(privateWindow||!profilesEnabled)return Profiles::EvictNotApplicable;return EvictProfileHere(text.substr(wcslen(Profiles::EvictCommand)));}
     if(text.rfind(L"delete-profile ",0)==0){const std::wstring id=text.substr(15);if(!ReserveTakeOver(id))return 2;Defer([id]{TakeOverProfileDelete(id);});return 1;}   // reserved before answering
     return 0;

@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // C1/C2 · Rechercher dans la page (Paper « Browser Design », p-D-0: contexte C1 DF0-0 / barre
 // DNM-0, états C2 DR6-0: vide DUL-0, résultat DW5-0, aucun résultat DX1-0, focus clavier E11-0).
 // Native bar anchored 8 DIP inside the top-right corner of the page rectangle. It owns a native
@@ -51,10 +52,10 @@ struct Hooks {
 // Counter copy (Paper C2): empty while idle or searching.
 inline std::wstring CounterText(int active, int count, State state) {
     switch (state) {
-    case State::NoMatch: return L"Aucun résultat";
-    case State::Unavailable: return L"Indisponible";
-    case State::Found: { if (count <= 0) return L"Aucun résultat"; const std::wstring total = count > 999 ? L"999+" : std::to_wstring(count);
-        return std::to_wstring(active < 1 ? 1 : active) + L" sur " + total; }
+    case State::NoMatch: return TR(find_no_result);
+    case State::Unavailable: return TR(find_unavailable);
+    case State::Found: { if (count <= 0) return TR(find_no_result); const std::wstring total = count > 999 ? L"999+" : std::to_wstring(count);
+        return TRF(find_counter, std::to_wstring(active < 1 ? 1 : active), total); }
     default: return L"";
     }
 }
@@ -83,11 +84,11 @@ private:
     bool Enabled(int hit) const { return (hit != PrevHit && hit != NextHit) || (state_ == State::Found && count_ > 0); }
     int HitAt(float x, float y) const { for (int h : {CaseHit, WordHit, PrevHit, NextHit, CloseHit, FieldHit}) if (PopupKit::Contains(HitBox(h), x, y)) return h; return None; }
     static const wchar_t* Name(int hit) {
-        switch (hit) { case CaseHit: return L"Respecter la casse"; case WordHit: return L"Mot entier"; case PrevHit: return L"Occurrence précédente"; case NextHit: return L"Occurrence suivante"; case CloseHit: return L"Fermer"; }
+        switch (hit) { case CaseHit: return TR(find_match_case); case WordHit: return TR(find_whole_word); case PrevHit: return TR(find_previous); case NextHit: return TR(find_next); case CloseHit: return TR(common_close); }
         return L"";
     }
     static const wchar_t* Keys(int hit) {
-        switch (hit) { case CaseHit: return L"Alt+C"; case WordHit: return L"Alt+W"; case PrevHit: return L"Maj+Entrée"; case NextHit: return L"Entrée"; case CloseHit: return L"Échap"; }
+        switch (hit) { case CaseHit: return L"Alt+C"; case WordHit: return L"Alt+W"; case PrevHit: return TR(key_shift_enter); case NextHit: return TR(key_enter); case CloseHit: return TR(key_escape); }
         return L"";
     }
     std::wstring Counter() const { return CounterText(active_, count_, state_); }
@@ -232,7 +233,7 @@ private:
             if (GetWindowTextLengthW(h) == 0) { // Paper placeholder (#FFFFFF66), drawn after the caret position 0
                 HDC dc = GetDC(h); RECT rc{}; GetClientRect(h, &rc); rc.left += self->Px(2);
                 HGDIOBJ old = SelectObject(dc, self->font_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, self->TextColor(Layout::placeholder));
-                DrawTextW(dc, L"Rechercher dans la page", -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+                DrawTextW(dc, TR(find_title), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
                 SelectObject(dc, old); ReleaseDC(h, dc);
             }
             return r;
@@ -275,7 +276,7 @@ private:
     }
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!visible_) return nodes;
-        Accessibility::Node g; g.key = 100; g.role = Accessibility::Role::Group; g.name = L"Rechercher dans la page"; g.automationId = L"FindBar"; g.focusable = false; g.status = Counter(); GetWindowRect(hwnd_, &g.bounds); nodes.push_back(g);
+        Accessibility::Node g; g.key = 100; g.role = Accessibility::Role::Group; g.name = TR(find_title); g.automationId = L"FindBar"; g.focusable = false; g.status = Counter(); GetWindowRect(hwnd_, &g.bounds); nodes.push_back(g);
         for (int hit : {CaseHit, WordHit, PrevHit, NextHit, CloseHit}) {
             Accessibility::Node n; n.key = hit; n.parent = 100; n.name = Name(hit); n.accelerator = Keys(hit); n.bounds = ScreenBox(hit); n.enabled = Enabled(hit);
             static const wchar_t* ids[] = {L"", L"FindMatchCase", L"FindWholeWord", L"FindPrevious", L"FindNext", L"FindClose"}; n.automationId = ids[hit];
@@ -289,7 +290,7 @@ public:
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, Hooks hooks) {
         instance_ = instance; owner_ = owner; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         PopupKit::Register(instance, L"LisiereFindBar", Proc);
-        if (!PopupKit::CreatePopup(instance, owner, L"LisiereFindBar", L"Rechercher dans la page", 0, this, Layout::radius, WS_POPUP | WS_CLIPCHILDREN)) return false;
+        if (!PopupKit::CreatePopup(instance, owner, L"LisiereFindBar", TR(find_title), 0, this, Layout::radius, WS_POPUP | WS_CLIPCHILDREN)) return false;
         pump_.Bind(hwnd_, hooks_.wake);
         edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
         if (!edit_) return false;
@@ -301,7 +302,7 @@ public:
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? focus_ : 0; };
         host.invoke = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
         host.toggle = [this](long long key) { PostMessageW(hwnd_, WM_APP + 1, static_cast<WPARAM>(key), 0); };
-        host.label = [this](HWND child, Accessibility::Node& n) { if (child != edit_) return false; n.name = L"Rechercher dans la page"; n.automationId = L"FindField"; n.status = Counter(); return true; };
+        host.label = [this](HWND child, Accessibility::Node& n) { if (child != edit_) return false; n.name = TR(find_title); n.automationId = L"FindField"; n.status = Counter(); return true; };
         uia_.Attach(std::move(host));
         Tooltip::Hooks tipHooks; tipHooks.wake = [this] { Wake(); };
         tip_.Create(instance, hwnd_, root, tipHooks);

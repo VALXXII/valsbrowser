@@ -6,6 +6,7 @@
 //    per hue as the lightest value that keeps white >= 4.6:1 (WCAG AA 4.5 with margin).
 //  - Neutral: intensity 0, the default « Personnel » grey (#B3B3B3 ink, #747474 fill).
 // Pure C++17, no Win32: unit-tested in tests/profile_color_test.cpp.
+#include "i18n.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -125,8 +126,9 @@ inline bool FromHex(const std::wstring& text, int& hue, float& chroma) {
 
 // Spoken / shown hue name, 30° buckets (Paper P06 caption).
 inline const wchar_t* HueName(int hue) {
-    static const wchar_t* names[12] = {L"rouge", L"orange", L"jaune", L"citron", L"vert", L"émeraude", L"cyan", L"azur", L"bleu", L"violet", L"magenta", L"rose"};
-    return names[Detail::NormalizeHue(hue) / 30];
+    using I18n::Id;   // ids, never text: the name follows the interface language
+    static const Id names[12] = {Id::hue_red, Id::hue_orange, Id::hue_yellow, Id::hue_lime, Id::hue_green, Id::hue_emerald, Id::hue_cyan, Id::hue_azure, Id::hue_blue, Id::hue_violet, Id::hue_magenta, Id::hue_pink};
+    return I18n::T(names[Detail::NormalizeHue(hue) / 30]);
 }
 
 } // namespace ProfileColor

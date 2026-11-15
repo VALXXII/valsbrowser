@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 // Download history: engine-independent model, text formatting, persistence,
 // panel geometry and the row hover reveal. No HWND, Direct2D or WebView2 here.
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <istream>
@@ -53,13 +55,13 @@ inline const wchar_t* IconFor(Action action) {
 }
 inline const wchar_t* TipFor(Action action) {
     switch (action) {
-    case Action::Pause: return L"Pause";
-    case Action::Resume: return L"Resume";
-    case Action::Cancel: return L"Cancel download";
-    case Action::Retry: return L"Retry";
-    case Action::Remove: return L"Remove from history";
-    case Action::ShowInFolder: return L"Show in folder";
-    case Action::Open: return L"Open";
+    case Action::Pause: return TR(downloads_action_pause);
+    case Action::Resume: return TR(downloads_action_resume);
+    case Action::Cancel: return TR(downloads_action_cancel);
+    case Action::Retry: return TR(downloads_action_retry);
+    case Action::Remove: return TR(downloads_action_remove);
+    case Action::ShowInFolder: return TR(downloads_action_show_in_folder);
+    case Action::Open: return TR(downloads_action_open);
     default: return L"";
     }
 }
@@ -72,12 +74,12 @@ inline std::wstring FileName(const std::wstring& path) {
 // "In …/Downloads": the containing folder only, the rest elided.
 inline std::wstring FolderLabel(const std::wstring& path) {
     auto end = path.find_last_of(L"\\/");
-    if (end == std::wstring::npos || end == 0) return L"Downloaded";
+    if (end == std::wstring::npos || end == 0) return TR(downloads_done);
     auto start = path.find_last_of(L"\\/", end - 1);
     std::wstring folder = path.substr(start == std::wstring::npos ? 0 : start + 1, end - (start == std::wstring::npos ? 0 : start + 1));
-    if (folder.empty()) return L"Downloaded";
-    if (folder.back() == L':') return L"In " + folder;  // drive root, e.g. "In D:"
-    return L"In …/" + folder;
+    if (folder.empty()) return TR(downloads_done);
+    if (folder.back() == L':') return TRF(downloads_in_drive, folder);  // drive root, e.g. "In D:"
+    return TRF(downloads_in_folder, folder);
 }
 // Up to three significant figures, trailing ".0" dropped: 50.4, 200, 1.2.
 inline std::wstring Number(double value) {
@@ -87,18 +89,19 @@ inline std::wstring Number(double value) {
     else std::swprintf(text, 32, L"%.1f", tenths);
     std::wstring s = text;
     if (s.size() > 2 && s.compare(s.size() - 2, 2, L".0") == 0) s.resize(s.size() - 2);
+    if (I18n::Current() == I18n::Locale::Fr) for (auto& ch : s) if (ch == L'.') ch = L',';   // « 50,4 »
     return s;
 }
 // Binary units, as Windows Explorer shows them. Both sides share the total's
 // unit ("50.4/200MB"); an unknown total shows the received amount alone.
 inline std::wstring Bytes(std::int64_t received, std::int64_t total) {
-    static const wchar_t* units[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
+    const wchar_t* units[] = {TR(size_unit_b), TR(size_unit_kb), TR(size_unit_mb), TR(size_unit_gb), TR(size_unit_tb)};
     const double reference = static_cast<double>(std::max<std::int64_t>(total > 0 ? total : received, 0));
     int unit = 0; double scale = 1;
     while (unit < 4 && reference >= scale * 1024) { scale *= 1024; ++unit; }
     const double r = std::max<std::int64_t>(received, 0) / scale;
-    if (total <= 0) return Number(r) + units[unit];
-    return Number(std::min(r, total / scale)) + L"/" + Number(total / scale) + units[unit];
+    if (total <= 0) return TRF(size_with_unit, Number(r), units[unit]);
+    return TRF(size_with_unit, Number(std::min(r, total / scale)) + L"/" + Number(total / scale), units[unit]);
 }
 // "00:14", "12:03", "1:02:03". Negative/unknown is empty.
 inline std::wstring Remaining(std::int64_t seconds) {
@@ -138,9 +141,34 @@ inline std::int64_t ParseIsoTime(const std::wstring& text) {
     }
     return ms;
 }
+// Failure reasons the browser generates are stored as a stable code, « @<catalog id> » (the downloads file
+// keeps its format), and rendered in the interface language here. Rows saved before the codes (generated
+// text in French or English) are recognised too; any other text is shown as it was stored.
+inline constexpr I18n::Id GeneratedReasons[] = {
+    I18n::Id::download_error_access_denied, I18n::Id::download_error_disk_full, I18n::Id::download_error_name_too_long,
+    I18n::Id::download_error_too_large, I18n::Id::download_error_offline, I18n::Id::download_error_network,
+    I18n::Id::download_error_interrupted, I18n::Id::download_error_server, I18n::Id::download_error_file,
+    I18n::Id::download_blocked_dangerous, I18n::Id::download_blocked_check_failed, I18n::Id::download_blocked_policy,
+    I18n::Id::downloads_unavailable,
+};
+inline bool BlockedReason(I18n::Id id) {
+    return id == I18n::Id::download_blocked_dangerous || id == I18n::Id::download_blocked_check_failed || id == I18n::Id::download_blocked_policy;
+}
+inline std::wstring ReasonCode(I18n::Id id) { const char* n = I18n::EntryOf(id).name; return L"@" + std::wstring(n, n + std::strlen(n)); }
+inline const I18n::Id* GeneratedReason(const std::wstring& stored) {
+    for (const auto& id : GeneratedReasons) {
+        const auto& e = I18n::EntryOf(id);
+        if (stored == ReasonCode(id) || stored == e.fr || stored == e.en) return &id;
+    }
+    return nullptr;
+}
 inline std::wstring FailureText(const std::wstring& reason) {
-    if (reason.rfind(L"Bloqué", 0) == 0) return reason; // engine security blocks carry their own French wording (E6)
-    return reason.empty() ? L"Failed" : L"Failed · " + reason;
+    if (const I18n::Id* id = GeneratedReason(reason))   // engine security blocks carry their own wording (E6)
+        return BlockedReason(*id) ? std::wstring(I18n::T(*id)) : TRF(downloads_failed_reason, I18n::T(*id));
+    if (!reason.empty() && reason[0] == L'@') return TR(downloads_failed);   // a code from a newer version: never shown raw
+    const auto& blocked = I18n::EntryOf(I18n::Id::downloads_blocked_prefix);
+    if (reason.rfind(blocked.fr, 0) == 0 || reason.rfind(blocked.en, 0) == 0) return reason;
+    return reason.empty() ? std::wstring(TR(downloads_failed)) : TRF(downloads_failed_reason, reason);
 }
 
 
@@ -151,11 +179,11 @@ enum class Period { Today, Yesterday, LastWeek, LastMonth, LastYear };
 constexpr int PeriodCount = 5;
 inline const wchar_t* PeriodLabel(Period period) {
     switch (period) {
-    case Period::Today: return L"Today";
-    case Period::Yesterday: return L"Yesterday";
-    case Period::LastWeek: return L"Last week";
-    case Period::LastMonth: return L"Last month";
-    default: return L"Last year";
+    case Period::Today: return TR(period_today);
+    case Period::Yesterday: return TR(period_yesterday);
+    case Period::LastWeek: return TR(period_last_week);
+    case Period::LastMonth: return TR(period_last_month);
+    default: return TR(period_last_year);
     }
 }
 inline std::int64_t FloorDiv(std::int64_t a, std::int64_t b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); }

@@ -1,6 +1,7 @@
 // Agent connection (annotations V2-A). Contract: src/agent-connect.h.
 // Win32 (kernel32, shell32, shlwapi, ole32) + C++17; no UI, no global state.
 #include "agent-connect.h"
+#include "i18n.h"   // the messages a person reads (settings, connect modal); UTF-8 through I18n::U8
 
 #include <windows.h>
 #include <objbase.h>
@@ -884,8 +885,7 @@ std::wstring StableBridgePath(const std::wstring& browserExe, const std::wstring
 
 bool BridgeUsable(const std::wstring& path, std::string* why) {
     auto no = [&](const char* reason) { if (why) *why = reason; return false; };
-    const char* missing = "Le relais des annotations (browser-annotations-mcp.exe) est introuvable : rien n'a été modifié. "
-                          "Réessayez après la mise à jour du navigateur, ou réinstallez-le.";
+    const std::string missingText = I18n::U8(I18n::Id::agent_bridge_missing); const char* missing = missingText.c_str();
     const bool drive = path.size() >= 3 && ((path[0] >= L'A' && path[0] <= L'Z') || (path[0] >= L'a' && path[0] <= L'z')) &&
                        path[1] == L':' && path[2] == L'\\';
     // One canonical spelling only: no "..", ".", empty component, forward slash or trailing separator (the ancestry
@@ -899,7 +899,7 @@ bool BridgeUsable(const std::wstring& path, std::string* why) {
     }
     // Every folder of the path, from the drive's first folder down to the bridge's own (review of 65adadd: a junction
     // ABOVE bin was followed). GetFileAttributes on a link reports the link itself, never its target.
-    const char* linked = "Le chemin du relais des annotations passe par un lien : refusé, rien n'a été modifié.";
+    const std::string linkedText = I18n::U8(I18n::Id::agent_bridge_linked); const char* linked = linkedText.c_str();
     for (std::size_t at = path.find(L'\\', 3); at != std::wstring::npos; at = path.find(L'\\', at + 1)) {
         const DWORD a = GetFileAttributesW(path.substr(0, at).c_str());
         if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return no(missing);
@@ -929,9 +929,9 @@ bool BridgeUsable(const std::wstring& path, std::string* why) {
     DWORD got = 0;
     const bool read = regular && same && ReadFile(h, head, sizeof head, &got, nullptr);
     CloseHandle(h);
-    if (!regular) return no("Le relais des annotations n'est pas un fichier ordinaire : refusé, rien n'a été modifié.");
+    if (!regular) return no(I18n::U8(I18n::Id::agent_bridge_not_regular).c_str());
     if (!same) return no(linked);
-    const char* notPe = "Le relais des annotations n'est pas un programme valide pour cet ordinateur : rien n'a été modifié. Réinstallez le navigateur.";
+    const std::string notPeText = I18n::U8(I18n::Id::agent_bridge_not_pe); const char* notPe = notPeText.c_str();
     if (!read || got < 0x40 || head[0] != 'M' || head[1] != 'Z') return no(notPe);
     const std::size_t size = std::min<std::size_t>(got, sizeof head);
     const std::size_t pe = std::size_t(head[0x3C]) | (std::size_t(head[0x3D]) << 8) | (std::size_t(head[0x3E]) << 16) |
@@ -964,7 +964,7 @@ std::string ClaudeJsonSnippet(const Target& t) {
 }
 std::string CodexTomlSnippet(const Target& t) { return TomlBlock(t, "\n"); }
 std::wstring CodexAddCommandLine(const Target& t) {
-    return L"codex mcp add " + Widen(t.serverName) + L" -- " + QuoteArg(t.bridgeExe) + L" --store " + QuoteArg(t.storeRoot);
+    return L"codex mcp add " + Widen(t.serverName) + L" -- " + QuoteArg(t.bridgeExe) + L" --store " + QuoteArg(t.storeRoot);   // i18n-exempt: command line
 }
 
 const char* ResultName(Result r) {
@@ -1098,6 +1098,7 @@ std::string McpbManifest(const Target& t) {
     server.Set("entry_point", Value::Str(std::string("server/") + BridgeFileName));
     server.Set("mcp_config", std::move(config));
     Value tools = Value::Arr();
+    // i18n-exempt-begin: .mcpb extension manifest written for Claude Desktop (package metadata, kept stable)
     const char* list[][2] = {
         {"browser_annotations_list", "Lister les annotations ajoutées dans le navigateur, tous sites ou un site."},
         {"browser_annotation_get", "Lire une annotation : note, page, élément, styles et capture."},
@@ -1121,7 +1122,7 @@ std::string McpbManifest(const Target& t) {
     m.Set("display_name", Value::Str("Annotations du navigateur"));
     m.Set("version", Value::Str(t.version.empty() ? "0.0.0" : t.version));
     m.Set("description", Value::Str("Donne à Claude les annotations que vous ajoutez sur les pages web (note, élément, capture). "
-                                     "Tout reste sur cet ordinateur."));
+                                     "Tout reste sur cet ordinateur."));   // i18n-exempt-end
     m.Set("author", std::move(author));
     m.Set("server", std::move(server));
     m.Set("tools", std::move(tools));
@@ -1159,8 +1160,8 @@ bool ClaudeExtensionInstalled(const Environment& env, const std::string& serverN
 Report MergeClaudeConfig(const std::wstring& configPath, const Target& t, std::int64_t now) {
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
-    if (r == Read::TooBig) return Make(Result::InvalidConfig, "Configuration de Claude trop grande : réglage manuel nécessaire.", configPath);
-    if (r == Read::Error) return Make(Result::Failed, "Configuration de Claude illisible.", configPath);
+    if (r == Read::TooBig) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_claude_config_too_big), configPath);
+    if (r == Read::Error) return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_config_unreadable), configPath);
     std::size_t bodyStart = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
     const bool blank = SkipWs(text, bodyStart) >= text.size();
     std::string out;
@@ -1170,12 +1171,12 @@ Report MergeClaudeConfig(const std::wstring& configPath, const Target& t, std::i
         Value doc;
         std::string why;
         if (!SJ::Parse(text, doc, &why, ConfigLimits()) || !doc.IsObject())
-            return Make(Result::InvalidConfig, "Le fichier de configuration de Claude n'est pas un JSON valide : rien n'a été modifié.", configPath);
+            return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_claude_config_invalid), configPath);
         const Value* servers = doc.Get("mcpServers");
         if (servers && !servers->IsObject())
-            return Make(Result::InvalidConfig, "« mcpServers » n'est pas un objet dans la configuration de Claude : rien n'a été modifié.", configPath);
+            return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_claude_servers_not_object), configPath);
         if (servers && EntryMatches(EntryFromJson(servers->Get(t.serverName)), t))
-            return Make(Result::AlreadyConnected, "Claude est déjà configuré.", configPath);
+            return Make(Result::AlreadyConnected, I18n::U8(I18n::Id::agent_claude_already), configPath);
         const std::string nl = NewlineOf(text);
         const std::size_t rootOpen = SkipWs(text, bodyStart);
         std::size_t rootClose = 0;
@@ -1219,29 +1220,29 @@ Report MergeClaudeConfig(const std::wstring& configPath, const Target& t, std::i
     Value check;
     if (!SJ::Parse(out, check, nullptr, ConfigLimits()) || !check.IsObject() || !check.Get("mcpServers") ||
         !EntryMatches(EntryFromJson(check.Get("mcpServers")->Get(t.serverName)), t))
-        return Make(Result::Failed, "Fusion de la configuration de Claude impossible : rien n'a été modifié.", configPath);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_merge_failed), configPath);
     std::wstring backup;
     const bool backupOwned = true;
-    if (!Backup(configPath, now, backup)) return Make(Result::Failed, "Sauvegarde de la configuration de Claude impossible : rien n'a été modifié.", configPath);
+    if (!Backup(configPath, now, backup)) return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_backup_failed), configPath);
     if (!AtomicWrite(configPath, out)) {
         if (backupOwned) DropBackup(backup);
-        return Make(Result::Failed, "Écriture de la configuration de Claude impossible : rien n'a été modifié.", configPath, backup);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_write_failed), configPath, backup);
     }
-    return Make(Result::Connected, "Claude est configuré. Redémarrez Claude pour l'activer.", configPath, backup);
+    return Make(Result::Connected, I18n::U8(I18n::Id::agent_claude_connected), configPath, backup);
 }
 
 Report RemoveClaudeConfig(const std::wstring& configPath, const std::string& serverName, std::int64_t now) {
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
-    if (r == Read::Missing) return Make(Result::NotConnected, "Claude n'était pas configuré.", configPath);
-    if (r != Read::Ok) return Make(Result::Failed, "Configuration de Claude illisible.", configPath);
+    if (r == Read::Missing) return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_claude_not_configured), configPath);
+    if (r != Read::Ok) return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_config_unreadable), configPath);
     const std::size_t bodyStart = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
-    if (SkipWs(text, bodyStart) >= text.size()) return Make(Result::NotConnected, "Claude n'était pas configuré.", configPath);
+    if (SkipWs(text, bodyStart) >= text.size()) return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_claude_not_configured), configPath);
     Value doc;
     if (!SJ::Parse(text, doc, nullptr, ConfigLimits()) || !doc.IsObject())
-        return Make(Result::InvalidConfig, "Le fichier de configuration de Claude n'est pas un JSON valide : rien n'a été modifié.", configPath);
+        return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_claude_config_invalid), configPath);
     const Value* servers = doc.Get("mcpServers");
-    if (!servers || !servers->IsObject() || !servers->Get(serverName)) return Make(Result::NotConnected, "Claude n'était pas configuré.", configPath);
+    if (!servers || !servers->IsObject() || !servers->Get(serverName)) return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_claude_not_configured), configPath);
     std::size_t rootClose = 0;
     const std::vector<Member> root = Members(text, SkipWs(text, bodyStart), rootClose);
     const auto it = std::find_if(root.begin(), root.end(), [](const Member& m) { return m.key == "mcpServers"; });
@@ -1258,27 +1259,28 @@ Report RemoveClaudeConfig(const std::wstring& configPath, const std::string& ser
     }
     Value check;
     if (!SJ::Parse(out, check, nullptr, ConfigLimits()) || !check.IsObject() || check.Get("mcpServers")->Get(serverName))
-        return Make(Result::Failed, "Retrait impossible : rien n'a été modifié.", configPath);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_remove_failed), configPath);
     std::wstring backup;
     const bool backupOwned = true;
-    if (!Backup(configPath, now, backup)) return Make(Result::Failed, "Sauvegarde de la configuration de Claude impossible : rien n'a été modifié.", configPath);
+    if (!Backup(configPath, now, backup)) return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_backup_failed), configPath);
     if (!AtomicWrite(configPath, out)) {
         if (backupOwned) DropBackup(backup);
-        return Make(Result::Failed, "Écriture de la configuration de Claude impossible : rien n'a été modifié.", configPath, backup);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_write_failed), configPath, backup);
     }
-    return Make(Result::Disconnected, "Claude est déconnecté. Redémarrez Claude pour l'appliquer.", configPath, backup);
+    return Make(Result::Disconnected, I18n::U8(I18n::Id::agent_claude_disconnected), configPath, backup);
 }
 
 bool WriteAllowed(const Environment& env, const std::wstring& path, std::string* why) {
     if (!env.testMode) return true;
     const std::wstring target = LowerW(StripSlash(FullPath(path)));
     std::vector<std::wstring> roots = env.protectedRoots ? env.protectedRoots() : std::vector<std::wstring>{};
+    // i18n-exempt-begin: test-mode guard messages (BROWSER_ANNOTATIONS_TEST only)
     if (roots.empty()) { if (why) *why = "Mode test : dossiers réels inconnus, écriture refusée."; return false; }
     for (const auto& r : roots) {
         const std::wstring root = LowerW(StripSlash(FullPath(r)));
         if (root.empty()) continue;
         if (target == root || (target.size() > root.size() && target.compare(0, root.size(), root) == 0 && target[root.size()] == L'\\')) {
-            if (why) *why = "Mode test (BROWSER_ANNOTATIONS_TEST ou débogage distant) : écriture refusée dans la vraie configuration de l'utilisateur. Redirigez BROWSER_ANNOTATIONS_CONNECT_ROOT.";
+            if (why) *why = "Mode test (BROWSER_ANNOTATIONS_TEST ou débogage distant) : écriture refusée dans la vraie configuration de l'utilisateur. Redirigez BROWSER_ANNOTATIONS_CONNECT_ROOT.";   // i18n-exempt-end
             return false;
         }
     }
@@ -1290,18 +1292,18 @@ Report Refused(const std::string& why, const std::wstring& file) { return Make(R
 
 Report ConnectClaude(const Environment& env, const Target& t, const std::wstring& workDir) {
     const std::wstring config = ClaudeConfigPath(env);
-    if (config.empty()) return Make(Result::NoClient, "Claude Desktop n'est pas installé sur cet ordinateur (aucun dossier de configuration).");
+    if (config.empty()) return Make(Result::NoClient, I18n::U8(I18n::Id::agent_claude_not_installed_folder));
     if (std::string why; !WriteAllowed(env, config, &why)) return Refused(why, config);
     if (std::string why; !BridgeUsable(t.bridgeExe, &why)) return Refused(why, t.bridgeExe);   // before any write: never a config to a missing bridge
     ConfiguredEntry ext;
     if (InstalledExtension(env, t.serverName, &ext) && ext.args.size() == 2 && ext.args[0] == L"--store" && SamePath(ext.args[1], t.storeRoot))
-        return Make(Result::AlreadyConnected, "L'extension est déjà installée dans Claude.");
-    if (EntryMatches(ReadClaudeEntry(config, t.serverName), t)) return Make(Result::AlreadyConnected, "Claude est déjà configuré.", config);
+        return Make(Result::AlreadyConnected, I18n::U8(I18n::Id::agent_claude_extension_installed));
+    if (EntryMatches(ReadClaudeEntry(config, t.serverName), t)) return Make(Result::AlreadyConnected, I18n::U8(I18n::Id::agent_claude_already), config);
     std::string why;
     if (!env.testMode && env.mcpbAssociated && env.mcpbAssociated() && !workDir.empty()) {   // test mode: never Claude's installer
         const std::wstring bundle = StripSlash(workDir) + L"\\" + Widen(t.serverName) + L".mcpb";
         if (BuildMcpb(t, bundle, &why) && env.openFile && env.openFile(bundle)) {
-            Report rep = Make(Result::PendingInstall, "Cliquez sur Installer dans Claude.", bundle);
+            Report rep = Make(Result::PendingInstall, I18n::U8(I18n::Id::agent_claude_click_install), bundle);
             return rep;
         }
     }
@@ -1311,12 +1313,12 @@ Report ConnectClaude(const Environment& env, const Target& t, const std::wstring
 
 Report DisconnectClaude(const Environment& env, const Target& t) {
     const std::wstring config = ClaudeConfigPath(env);
-    if (config.empty()) return Make(Result::NoClient, "Claude Desktop n'est pas installé sur cet ordinateur.");
+    if (config.empty()) return Make(Result::NoClient, I18n::U8(I18n::Id::agent_claude_not_installed));
     if (std::string why; !WriteAllowed(env, config, &why)) return Refused(why, config);
     Report rep = RemoveClaudeConfig(config, t.serverName, env.now ? env.now() : BA::SystemNow());
     if (rep.ok() && ClaudeExtensionInstalled(env, t.serverName)) {
         rep.result = Result::ManualStep;
-        rep.message = "Désinstallez « Annotations du navigateur » dans Claude › Réglages › Extensions.";
+        rep.message = I18n::U8(I18n::Id::agent_claude_uninstall_extension);
     }
     return rep;
 }
@@ -1334,14 +1336,14 @@ namespace {
 Report MergeToml(const std::wstring& configPath, const Target& t, std::int64_t now, bool backupFirst, const std::wstring& existingBackup) {
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
-    if (r == Read::TooBig) return Make(Result::InvalidConfig, "Configuration de Codex trop grande : réglage manuel nécessaire.", configPath);
-    if (r == Read::Error) return Make(Result::Failed, "Configuration de Codex illisible.", configPath);
+    if (r == Read::TooBig) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_too_big), configPath);
+    if (r == Read::Error) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_config_unreadable_short), configPath);
     const TomlScan scan = ScanToml(text);
     const TomlPlan plan = PlanToml(text, scan, t.serverName);
-    if (!plan.scanned) return Make(Result::InvalidConfig, "Le fichier config.toml de Codex n'a pas pu être lu : rien n'a été modifié.", configPath);
+    if (!plan.scanned) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_unreadable), configPath);
     if (plan.foreign)
-        return Make(Result::InvalidConfig, "Codex a déjà une entrée « " + t.serverName + " » écrite autrement : réglage manuel nécessaire.", configPath);
-    if (EntryMatches(EntryFromToml(text, scan, t.serverName), t)) return Make(Result::AlreadyConnected, "Codex est déjà configuré.", configPath);
+        return Make(Result::InvalidConfig, I18n::Utf8(TRF(agent_codex_entry_conflict, Widen(t.serverName))), configPath);
+    if (EntryMatches(EntryFromToml(text, scan, t.serverName), t)) return Make(Result::AlreadyConnected, I18n::U8(I18n::Id::agent_codex_already), configPath);
     const std::string nl = NewlineOf(text);
     std::string out = text;
     const std::string block = TomlBlock(t, nl);
@@ -1360,44 +1362,44 @@ Report MergeToml(const std::wstring& configPath, const Target& t, std::int64_t n
     }
     const TomlScan after = ScanToml(out);
     if (!after.ok || PlanToml(out, after, t.serverName).blocks.size() != 1 || !EntryMatches(EntryFromToml(out, after, t.serverName), t))
-        return Make(Result::Failed, "Modification de config.toml impossible : rien n'a été modifié.", configPath);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_edit_failed), configPath);
     std::wstring backup = existingBackup;
     const bool backupOwned = backupFirst;  // a backup handed in by ConnectCodex/DisconnectCodex predates the CLI run: kept
-    if (backupFirst && !Backup(configPath, now, backup)) return Make(Result::Failed, "Sauvegarde de config.toml impossible : rien n'a été modifié.", configPath);
+    if (backupFirst && !Backup(configPath, now, backup)) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_backup_failed), configPath);
     if (!AtomicWrite(configPath, out)) {
         if (backupOwned) DropBackup(backup);
-        return Make(Result::Failed, "Écriture de config.toml impossible : rien n'a été modifié.", configPath, backup);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_write_failed), configPath, backup);
     }
-    return Make(Result::Connected, "Codex est configuré. Redémarrez Codex pour l'activer.", configPath, backup);
+    return Make(Result::Connected, I18n::U8(I18n::Id::agent_codex_connected), configPath, backup);
 }
 
 Report RemoveToml(const std::wstring& configPath, const std::string& serverName, std::int64_t now, bool backupFirst, const std::wstring& existingBackup) {
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
-    if (r == Read::Missing) return Make(Result::NotConnected, "Codex n'était pas configuré.", configPath);
-    if (r != Read::Ok) return Make(Result::Failed, "Configuration de Codex illisible.", configPath);
+    if (r == Read::Missing) return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_codex_not_configured), configPath);
+    if (r != Read::Ok) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_config_unreadable_short), configPath);
     const TomlScan scan = ScanToml(text);
     const TomlPlan plan = PlanToml(text, scan, serverName);
-    if (!plan.scanned) return Make(Result::InvalidConfig, "Le fichier config.toml de Codex n'a pas pu être lu : rien n'a été modifié.", configPath);
+    if (!plan.scanned) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_unreadable), configPath);
     if (plan.blocks.empty()) {
         if (plan.foreign)
-            return Make(Result::InvalidConfig, "L'entrée « " + serverName + " » de Codex est écrite autrement : retirez-la à la main.", configPath);
-        return Make(Result::NotConnected, "Codex n'était pas configuré.", configPath);
+            return Make(Result::InvalidConfig, I18n::Utf8(TRF(agent_codex_entry_manual, Widen(serverName))), configPath);
+        return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_codex_not_configured), configPath);
     }
     const std::string nl = NewlineOf(text);
     std::string out = text;
     for (auto b = plan.blocks.rbegin(); b != plan.blocks.rend(); ++b) EraseBlock(out, b->first, b->second, nl);
     const TomlScan after = ScanToml(out);
     if (!after.ok || !PlanToml(out, after, serverName).blocks.empty())
-        return Make(Result::Failed, "Retrait impossible : rien n'a été modifié.", configPath);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_remove_failed), configPath);
     std::wstring backup = existingBackup;
     const bool backupOwned = backupFirst;  // a backup handed in by ConnectCodex/DisconnectCodex predates the CLI run: kept
-    if (backupFirst && !Backup(configPath, now, backup)) return Make(Result::Failed, "Sauvegarde de config.toml impossible : rien n'a été modifié.", configPath);
+    if (backupFirst && !Backup(configPath, now, backup)) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_backup_failed), configPath);
     if (!AtomicWrite(configPath, out)) {
         if (backupOwned) DropBackup(backup);
-        return Make(Result::Failed, "Écriture de config.toml impossible : rien n'a été modifié.", configPath, backup);
+        return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_write_failed), configPath, backup);
     }
-    return Make(Result::Disconnected, "Codex est déconnecté. Redémarrez Codex pour l'appliquer.", configPath, backup);
+    return Make(Result::Disconnected, I18n::U8(I18n::Id::agent_codex_disconnected), configPath, backup);
 }
 }  // namespace
 
@@ -1408,7 +1410,7 @@ Report RemoveCodexToml(const std::wstring& configPath, const std::string& server
 
 Report ConnectCodex(const Environment& env, const Target& t) {
     const std::wstring home = CodexHome(env);
-    if (home.empty() || !DirExists(home)) return Make(Result::NoClient, "Codex n'est pas installé sur cet ordinateur (aucun dossier de configuration).");
+    if (home.empty() || !DirExists(home)) return Make(Result::NoClient, I18n::U8(I18n::Id::agent_codex_not_installed_folder));
     const std::wstring config = home + L"\\config.toml";
     if (std::string why; !WriteAllowed(env, home, &why)) return Refused(why, config);
     if (std::string why; !BridgeUsable(t.bridgeExe, &why)) return Refused(why, t.bridgeExe);   // before the CLI or any write
@@ -1416,22 +1418,22 @@ Report ConnectCodex(const Environment& env, const Target& t) {
     // Pre-flight on the current file: same refusals whichever way we write.
     std::string text;
     const Read r = ReadAll(config, MaxConfigBytes, text);
-    if (r == Read::TooBig || r == Read::Error) return Make(r == Read::TooBig ? Result::InvalidConfig : Result::Failed, "Configuration de Codex illisible.", config);
+    if (r == Read::TooBig || r == Read::Error) return Make(r == Read::TooBig ? Result::InvalidConfig : Result::Failed, I18n::U8(I18n::Id::agent_codex_config_unreadable_short), config);
     const TomlScan scan = ScanToml(text);
     const TomlPlan plan = PlanToml(text, scan, t.serverName);
-    if (!plan.scanned) return Make(Result::InvalidConfig, "Le fichier config.toml de Codex n'a pas pu être lu : rien n'a été modifié.", config);
+    if (!plan.scanned) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_unreadable), config);
     if (plan.foreign)
-        return Make(Result::InvalidConfig, "Codex a déjà une entrée « " + t.serverName + " » écrite autrement : réglage manuel nécessaire.", config);
-    if (EntryMatches(EntryFromToml(text, scan, t.serverName), t)) return Make(Result::AlreadyConnected, "Codex est déjà configuré.", config);
+        return Make(Result::InvalidConfig, I18n::Utf8(TRF(agent_codex_entry_conflict, Widen(t.serverName))), config);
+    if (EntryMatches(EntryFromToml(text, scan, t.serverName), t)) return Make(Result::AlreadyConnected, I18n::U8(I18n::Id::agent_codex_already), config);
     std::wstring backup;
-    if (!Backup(config, now, backup)) return Make(Result::Failed, "Sauvegarde de config.toml impossible : rien n'a été modifié.", config);
+    if (!Backup(config, now, backup)) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_backup_failed), config);
     const std::wstring cli = FindCodexCli(env);
     bool usedCli = false;
     if (!cli.empty()) {
         usedCli = true;
         const int code = RunHidden(cli, {L"mcp", L"add", Widen(t.serverName), L"--", t.bridgeExe, L"--store", t.storeRoot}, home, home, CliTimeoutMs);
         if (code == 0 && EntryMatches(ReadCodexEntry(config, t.serverName), t)) {
-            Report rep = Make(Result::Connected, "Codex est configuré. Redémarrez Codex pour l'activer.", config, backup);
+            Report rep = Make(Result::Connected, I18n::U8(I18n::Id::agent_codex_connected), config, backup);
             rep.usedCli = true;
             return rep;
         }
@@ -1443,7 +1445,7 @@ Report ConnectCodex(const Environment& env, const Target& t) {
 
 Report DisconnectCodex(const Environment& env, const Target& t) {
     const std::wstring home = CodexHome(env);
-    if (home.empty() || !DirExists(home)) return Make(Result::NoClient, "Codex n'est pas installé sur cet ordinateur.");
+    if (home.empty() || !DirExists(home)) return Make(Result::NoClient, I18n::U8(I18n::Id::agent_codex_not_installed));
     const std::wstring config = home + L"\\config.toml";
     if (std::string why; !WriteAllowed(env, home, &why)) return Refused(why, config);
     const std::int64_t now = env.now ? env.now() : BA::SystemNow();
@@ -1452,12 +1454,12 @@ Report DisconnectCodex(const Environment& env, const Target& t) {
         if (probe.result != Result::Disconnected) return probe;
     }
     std::wstring backup;
-    if (!Backup(config, now, backup)) return Make(Result::Failed, "Sauvegarde de config.toml impossible : rien n'a été modifié.", config);
+    if (!Backup(config, now, backup)) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_backup_failed), config);
     const std::wstring cli = FindCodexCli(env);
     if (!cli.empty()) {
         const int code = RunHidden(cli, {L"mcp", L"remove", Widen(t.serverName)}, home, home, CliTimeoutMs);
         if (code == 0 && !ReadCodexEntry(config, t.serverName).present) {
-            Report rep = Make(Result::Disconnected, "Codex est déconnecté. Redémarrez Codex pour l'appliquer.", config, backup);
+            Report rep = Make(Result::Disconnected, I18n::U8(I18n::Id::agent_codex_disconnected), config, backup);
             rep.usedCli = true;
             return rep;
         }

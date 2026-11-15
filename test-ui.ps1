@@ -29,6 +29,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Tab motion render checks failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Address background harness compilation failed.' }
 & build/native-qa/address_background_test.exe
 if ($LASTEXITCODE -ne 0) { throw 'Address background checks failed.' }
+# Address selection follows the profile colour (native EDIT pixels, 96/144/192 DPI, forced colours).
+New-Item -ItemType Directory -Force build/native-qa/address-selection | Out-Null
+& tools/w64devkit/bin/g++.exe -std=c++17 -Wall -Wextra -Werror -static tests/address_selection_test.cpp -o build/native-qa/address_selection_test.exe -lgdi32 -luser32 -ldwmapi -lcomctl32
+if ($LASTEXITCODE -ne 0) { throw 'Address selection harness compilation failed.' }
+& build/native-qa/address_selection_test.exe build/native-qa/address-selection
+if ($LASTEXITCODE -ne 0) { throw 'Address selection checks failed.' }
 
 # Address bar (issue #20): rest states, editing glyph and suggestion rows, 96/144 DPI.
 New-Item -ItemType Directory -Force build/native-qa/address | Out-Null
