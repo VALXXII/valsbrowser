@@ -1,6 +1,7 @@
 # Local pages for tests/e2e/profiles_switch_e2e.ps1 (127.0.0.1 only).
 #   /tick  title "tick N", N counting up every 400 ms (a parked tab whose title keeps changing)
 #   /show  static title "show"
+#   /opener?c=RRGGBB  opens /pat?c=RRGGBB in a new tab (target=_blank) after 1.2 s, as a link would
 import http.server, sys
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8768
 class H(http.server.BaseHTTPRequestHandler):
@@ -28,6 +29,9 @@ class H(http.server.BaseHTTPRequestHandler):
             body = ("<title>pat %s</title><body style='margin:0;font:700 64px sans-serif;background:repeating-linear-gradient(90deg,#%s 0 40px,#fff 40px 80px)'>"
                     "<div style='padding:60px;color:#111;background:rgba(255,255,255,.7)'>PAGE %s<br>Lorem ipsum dolor sit amet</div></body>") % (c, c, c.upper())
             self.page(body.encode()); return
+        if self.path.startswith('/opener'):
+            c = self.path.split('c=')[-1][:6] if 'c=' in self.path else 'ee3333'
+            self.page(("<title>opener</title><a id=o target=_blank href='/pat?c=%s'>open</a><script>setTimeout(()=>window.open('/pat?c=%s','_blank'),1200)</script>" % (c, c)).encode()); return
         if self.path.startswith('/show'):
             self.page(b"<title>show</title>show"); return
         self.page(b"<title>ok</title>ok")

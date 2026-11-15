@@ -271,13 +271,24 @@ try {
   Cmd $A.Id ($SelectTabBase + 2); Start-Sleep -Milliseconds 400
   $f = Frames $A.Id { Cmd $A.Id $CloseTab }   # closing the active (last) tab selects its neighbour: the red one
   Check ($f.Last[0] -gt 20 -and $f.MaxMixed -lt 12) ("T1 closing the active tab: its neighbour at once ({0} frames, worst mixed {1:N1}%)" -f $f.Count, $f.MaxMixed)
-  Invoke-Uia $A.Id 'NewTab'; Start-Sleep 1; Cmd $A.Id $SelectTabBase; Start-Sleep -Milliseconds 400
   $s1 = TState $A.Id
   Check ($s1.Captures -eq $s0.Captures -and -not $s1.Active -and $s1.Surfaces -eq '0') "T1: no capture and no overlay for any tab switch ($($s0.Captures) -> $($s1.Captures) captures; $($s1.Line))"
   Check ((TCount 'TRANSITION tab') -eq $tab0 -and (TCount 'TRANSITION cancelled') -eq 0) 'T1: no tab transition logged (nothing began, nothing to cancel)'
+  # T1b: OPENING a tab (« + ») blurs the outgoing page out and brings the new tab in (tab timing); switching back stays immediate.
+  $f = Frames $A.Id { Invoke-Uia $A.Id 'NewTab' } 600
+  Check (WaitLog 'default' 'TRANSITION tab capture .* gpu blur' 3) "T1b new tab (+): outgoing capture with the GPU blur ($("$(LastLine 'default' 'TRANSITION tab')".Trim()))"
+  Check ($f.MaxMixed -gt 12) ("T1b new tab (+): the composed viewport shows the transition (worst mixed {0:N1}%)" -f $f.MaxMixed)
+  Start-Sleep 3; $s1b = TState $A.Id
+  Check ($s1b.Captures -gt $s1.Captures -and -not $s1b.Active -and $s1b.Surfaces -eq '0') "T1b: captured, then released when it ended ($($s1b.Line))"
+  Check ((TCount 'TRANSITION cancelled') -eq 0) 'T1b: the new tab''s own selection did not cancel its transition'
+  $tab1 = TCount 'TRANSITION tab'
+  $f = Frames $A.Id { Cmd $A.Id $SelectTabBase }; Start-Sleep -Milliseconds 400
+  Check ($f.Last[1] -gt 20 -and $f.MaxMixed -lt 12 -and (TCount 'TRANSITION tab') -eq $tab1 -and (TState $A.Id).Captures -eq $s1b.Captures) ("T1b: back to the blue tab at once, no capture (worst mixed {0:N1}%)" -f $f.MaxMixed)
+  $s1 = $s1b
   # T2: the profile on screen re-selected: nothing.
+  $begun2 = TCount 'TRANSITION (tab|profile) capture'   # « captures » in transition-state is per transition: count the starts
   Qa $A.Id 'switch default' | Out-Null; Start-Sleep -Milliseconds 300
-  Check ((TState $A.Id).Captures -eq $s0.Captures -and (TCount 'TRANSITION profile') -eq 0) 'T2: re-selecting the profile on screen starts no transition'
+  Check ((TCount 'TRANSITION (tab|profile) capture') -eq $begun2 -and (TCount 'TRANSITION profile') -eq 0 -and -not (TState $A.Id).Active) 'T2: re-selecting the profile on screen starts no transition'
   # T3: an actual profile switch keeps its outgoing blur and its incoming phase (cold start of Travail: the restore's
   # own selections never cancel it).
   Pick $A.Id 'Travail'
@@ -285,7 +296,7 @@ try {
   Check (WaitLog 'default' 'TRANSITION (incoming capture|incoming timeout|incoming none)' 8) "T3: then the incoming phase ($((LastLine 'default' 'TRANSITION incoming').Trim()))"
   Check ((TCount 'TRANSITION cancelled by tab selected') -eq 0) "T3: the cold profile's restored selections did not cancel its transition"
   Start-Sleep 5; $s3 = TState $A.Id
-  Check ($s3.Captures -gt $s1.Captures -and -not $s3.Active -and $s3.Surfaces -eq '0') "T3: captured, then released when it ended ($($s3.Line))"
+  Check ($s3.Captures -ge 1 -and (TCount 'TRANSITION profile capture') -ge 1 -and -not $s3.Active -and $s3.Surfaces -eq '0') "T3: captured, then released when it ended ($($s3.Line))"
   Pick $A.Id 'Personnel'; Start-Sleep 2
   $f = Frames $A.Id { Qa $A.Id 'switch ptravail01' | Out-Null } 600
   Check ($f.MaxMixed -gt 12) ("T3 warm Personnel -> Travail: the composed viewport shows the transition (worst mixed {0:N1}%)" -f $f.MaxMixed)
@@ -315,6 +326,14 @@ try {
   Check (WaitLog 'default' 'TRANSITION profile capture .* reduced \(opacity only\)' 5) "T6 reduced motion: the profile switch is an opacity fade only ($((LastLine 'default' 'TRANSITION profile').Trim()))"
   Start-Sleep 5; $s6 = TState $A.Id
   Check (-not $s6.Active -and $s6.Surfaces -eq '0') "T6: released at the end ($($s6.Line))"
+  # T7: a link opening a new tab (target=_blank, here window.open from /opener 1.2 s after load) gets the same blur;
+  # the opened red page ends selected and sharp.
+  Seed; W "$root\sessions\wqaA" "browser-session-2`n1`n2`n`"$u/pat?c=3366ee`"`n`"$u/opener?c=ee3333`"`n0`n"
+  $A = StartA '--workspace-test'
+  Check (WaitLog 'default' 'TRANSITION tab capture .* gpu blur' 5) "T7 link opened in a new tab: outgoing capture with the GPU blur ($("$(LastLine 'default' 'TRANSITION tab')".Trim()))"
+  Start-Sleep 2; $s7 = TState $A.Id; $r7 = [Wsqa]::Row((Main $A.Id), 0.86)
+  $tabs7 = @(Elements $A.Id | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::TabItem }).Count
+  Check ($tabs7 -eq 3 -and $r7[0] -gt 20 -and $r7[3] -lt 12 -and -not $s7.Active -and $s7.Surfaces -eq '0') ("T7: three tabs, the opened red page on screen, sharp, nothing held (red {0:N0}% mixed {1:N1}%; {2})" -f $r7[0], $r7[3], $s7.Line)
  }
  if (-not $TransitionsOnly) {
   # ==== P: no private-window button in the toolbar (design/private-toolbar-removal-report.md) ==================
