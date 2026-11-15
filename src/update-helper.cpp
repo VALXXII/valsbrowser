@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "annotations-migration.h"
+#include "install-transaction.h"  // root lock + durable repair record (shared with the setup)
 #include "setup-uninstall-key.h"  // DisplayVersion of the setup's per-user uninstall entry, if present
 #include "update-package.h"
 #include "ui-language.h"   // the launcher's only message, in the browser-wide interface language
@@ -32,6 +33,7 @@ constexpr DWORD AckWaitMs = 120 * 1000;
 constexpr DWORD TransientRenameMs = 15 * 1000;
 
 std::wstring g_log;
+std::string g_nonce;  // this install's nonce, stamped on last-result (a setup trusts only its own result)
 
 std::wstring Lower(std::wstring s) {
     CharLowerBuffW(s.data(), DWORD(s.size()));
@@ -164,6 +166,15 @@ bool Fault(const char* point) {
 #else
 constexpr bool Fault(const char*) { return false; }
 #endif
+
+// Engine-started installs wait this long for a running setup/uninstall to finish before failing cleanly.
+DWORD LockWaitMs() {
+#ifdef UPDATE_HELPER_FAULTS
+    wchar_t v[16];
+    if (GetEnvironmentVariableW(L"BROWSER_HELPER_LOCK_WAIT_MS", v, 16)) return DWORD(_wtoi(v));
+#endif
+    return 60 * 1000;
+}
 
 // ---------------------------------------------------------------- stable bridge
 // Agents (Claude, Codex) are configured once with <root>\bin\browser-annotations-mcp.exe (src/agent-connect.cpp):
@@ -354,6 +365,10 @@ std::string LaunchableCurrent(const std::wstring& root) {
 int RunLauncher(int argc, wchar_t** argv) {
     const std::wstring root = Parent(SelfPath()), bin = root + L"\\bin";
     RecoverAnnotationsMigration(root, "launch-" + std::to_string(GetCurrentProcessId()));
+    if (UP::PathExists(InstallTxn::RepairRecord(root))) {  // an interrupted repair: finish it if no install runs now
+        InstallTxn::Lock txn;
+        if (txn.Acquire(root, 0)) InstallTxn::RecoverRepair(root);
+    }
     // The stable bridge is reconciled and the browser launched for the SAME `current`, read under the bin lock: an
     // install switching `current` holds that lock from its publication to its switch, so this launcher either sees
     // the old state before it, or the new one after it — never a stale value. Busy lock (install in progress past
@@ -398,6 +413,8 @@ struct Plan {
     // installed (pid 0 = nothing to wait for) or repair (reinstall of `current` itself); never portable; nothing is
     // relaunched on failure (the setup reports it); `launch 0` installs without starting the browser.
     bool setup = false, launch = true;
+    // Setup plans: the setup's inheritable handle to <root>\install.lock, verified by final path (InstallTxn::Lock).
+    std::uint64_t lockHandle = 0;
 };
 
 bool ParsePlan(const std::string& text, const std::wstring& root, const std::string& nonce, Plan& p, std::string& error) {
@@ -420,6 +437,9 @@ bool ParsePlan(const std::string& text, const std::wstring& root, const std::str
     p.created = std::strtoull(Field(lines, "created").c_str(), nullptr, 10);
     if (p.setup) {
         if (Field(lines, "pid") != "0" || Field(lines, "created") != "0") return error = "plan pid", false;  // nothing to wait for
+        const std::string lock = Field(lines, "lock-handle");
+        p.lockHandle = std::strtoull(lock.c_str(), nullptr, 10);
+        if (lock.empty() || lock.find_first_not_of("0123456789") != std::string::npos || !p.lockHandle) return error = "plan lock", false;
         if (p.previousKind == "none") {
             if (!p.previousVersion.empty() || !Field(lines, "previous-exe").empty()) return error = "plan previous", false;
             return true;
@@ -652,7 +672,8 @@ bool MigratePortable(const std::wstring& root, const Plan& p, const std::string&
 void WriteResult(const std::wstring& updates, const std::string& status, const std::string& version, const std::string& reason) {
     UP::AtomicWriteFile(updates + L"\\last-result", "browser-result 1\nstatus " + status + "\nversion " + version +
                                                        "\nreason " + reason + "\nreported " +
-                                                       (status == "failed" ? "0" : "1") + "\n");
+                                                       (status == "failed" ? "0" : "1") + "\n" +
+                                                       (g_nonce.empty() ? std::string() : "nonce " + g_nonce + "\n"));
 }
 
 void Relaunch(const std::wstring& exe) {
@@ -794,6 +815,7 @@ int RunInstall(const std::string& nonce) {
     if (Lower(Leaf(helperDir)) != L"helper" || Lower(Leaf(updates)) != L"updates" || root.size() < 4) return 10;
     if (UP::IsReparsePoint(root) || UP::IsReparsePoint(updates) || UP::IsReparsePoint(helperDir)) return 11;
     g_log = updates + L"\\helper.log";
+    g_nonce = nonce;
     Log("install " + nonce + " start");
     std::wstring planPath = updates + L"\\install-" + UP::Widen(nonce);
     std::string text, error;
@@ -812,18 +834,46 @@ int RunInstall(const std::string& nonce) {
         WriteResult(updates, "failed", p.version, "browser-did-not-exit");
         return 20;
     }
+    // One install/removal transaction per root (src/install-transaction.h), held until this helper exits: the setup
+    // hands over its own lock; an engine-started helper takes it (a running setup/uninstall makes this update fail
+    // cleanly and the previous browser restart).
+    InstallTxn::Lock txn;
+    if (p.setup ? !txn.Adopt(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(p.lockHandle)), root)
+                : !txn.Acquire(root, LockWaitMs())) {
+        Log(std::string("install lock ") + (p.setup ? "handle invalid" : txn.Busy() ? "busy" : "unusable"));
+        WriteResult(updates, "failed", p.version, txn.Busy() ? "install-busy" : "install-lock-unusable");
+        if (!p.setup) Relaunch(p.previousExe);
+        return 13;
+    }
+    if (Fault("pause-after-lock")) Sleep(4000);
+    if (InstallTxn::RecoverRepair(root) == InstallTxn::RepairOutcome::Kept) {
+        Log("an interrupted repair could not be finished; nothing changed");
+        WriteResult(updates, "failed", p.version, "repair-recovery-pending");
+        if (!p.setup) Relaunch(p.previousExe);
+        return 14;
+    }
     RecoverAnnotationsMigration(root, nonce + "-pre");
-    // Repair (setup only): the live versions\<v> is renamed here before the fresh copy takes its place, and renamed
-    // back if the fresh copy does not end up there.
-    const std::wstring repairAside = versions + L"\\.repair-" + UP::Widen(nonce);
-    auto restoreRepairAside = [&] {
-        if (!UP::PathExists(repairAside)) return;
-        if (UP::PathExists(target)) UP::RemoveTree(repairAside);  // the verified fresh copy stays
-        else if (!UP::MoveDirectory(repairAside, target, TransientRenameMs)) Log("repair: previous copy could not be restored");
+    // Repair (setup only): a durable record is written BEFORE the live versions\<v> is renamed aside. Every failure
+    // rolls back (replacement out, original back); only a deliberate no-launch success or the new process's ack
+    // commits (deletes the original). A kill anywhere leaves the record for InstallTxn::RecoverRepair.
+    const InstallTxn::Repair repair{nonce, p.version};
+    bool repairOpen = false;
+    auto rollbackRepair = [&] {
+        if (!repairOpen) return;
+        if (InstallTxn::RollbackRepair(root, repair) == InstallTxn::RepairOutcome::Kept)
+            Log("repair: original copy kept aside (restore failed); recovered at the next start");
+        else
+            Log("repair: original copy restored");
+        repairOpen = false;
+    };
+    auto commitRepair = [&] {
+        if (!repairOpen) return;
+        if (InstallTxn::CommitRepair(root, repair) == InstallTxn::RepairOutcome::Kept) Log("repair: original copy still in use; removed later");
+        repairOpen = false;
     };
     auto abortBeforeSwitch = [&](const std::string& reason, int code) {
         Log("aborted: " + reason);
-        restoreRepairAside();
+        rollbackRepair();
         WriteResult(updates, "failed", p.version, reason);
         if (!p.setup) Relaunch(p.previousExe);  // a setup reports the failure itself
         return code;
@@ -837,8 +887,14 @@ int RunInstall(const std::string& nonce) {
     while (!oldCurrent.empty() && (oldCurrent.back() == '\n' || oldCurrent.back() == '\r')) oldCurrent.pop_back();
     if (p.previousKind == "repair") {
         if (!hadCurrent || oldCurrent != p.version) return abortBeforeSwitch("repair-not-current", 23);
-        if (UP::PathExists(target) && (Fault("repair-aside") || !UP::MoveDirectory(target, repairAside, TransientRenameMs)))
-            return abortBeforeSwitch("target-in-use", 23);
+        if (UP::PathExists(target)) {
+            if (!InstallTxn::WriteRepair(root, repair)) return abortBeforeSwitch("repair-record", 23);
+            repairOpen = true;
+            if (Fault("repair-aside") || !UP::MoveDirectory(target, InstallTxn::RepairAside(root, nonce), TransientRenameMs))
+                return abortBeforeSwitch("target-in-use", 23);
+            Fault("kill-after-repair-aside");
+            if (Fault("pause-after-repair-aside")) Sleep(4000);
+        }
     } else if (UP::PathExists(target)) {
         if (hadCurrent && oldCurrent == p.version) return abortBeforeSwitch("target-is-current", 23);
         std::wstring trash = versions + L"\\.trash-" + UP::Widen(nonce);
@@ -846,6 +902,7 @@ int RunInstall(const std::string& nonce) {
         UP::RemoveTree(trash);
     }
     if (Fault("move") || !UP::MoveDirectory(stage, target, TransientRenameMs)) return abortBeforeSwitch("move-failed", 24);
+    Fault("kill-after-repair-move");
     if (!UP::VerifyStagedTree(target, p.version, error)) {
         UP::MoveDirectory(target, stage, TransientRenameMs);
         return abortBeforeSwitch("installed-tree-invalid " + error, 25);
@@ -952,7 +1009,7 @@ int RunInstall(const std::string& nonce) {
     }
     if (p.setup && !p.launch) {  // installed without starting it (setup option); the setup integrates and reports
         WriteResult(updates, "installed", p.version, "setup-no-launch");
-        restoreRepairAside();
+        commitRepair();
         RecoverAnnotationsMigration(root, nonce + "-post");
         Prune(root, p.version, keepPrevious, nonce);
         SetupKey::RefreshDisplayVersion(root, p.version);
@@ -973,6 +1030,7 @@ int RunInstall(const std::string& nonce) {
     }
     CloseHandle(pi.hThread);
     Log("new version launched pid " + std::to_string(pi.dwProcessId));
+    if (Fault("pause-in-ack-wait")) Sleep(4000);
     ULONGLONG deadline = GetTickCount64() + AckWaitMs;
     bool acked = false, exited = false;
     for (;;) {
@@ -1010,7 +1068,7 @@ int RunInstall(const std::string& nonce) {
         } else {
             RecoverAnnotationsMigration(root, nonce + "-post");  // an earlier interrupted migration, now that the install is usable
         }
-        restoreRepairAside();
+        commitRepair();
         Prune(root, p.version, keepPrevious, nonce);
         SetupKey::RefreshDisplayVersion(root, p.version);
         Log("installed " + p.version);
@@ -1020,9 +1078,12 @@ int RunInstall(const std::string& nonce) {
         Log("new version exited without startup ack; rolling back");
         DeleteFileW(pending.c_str());
         restore();
-        std::wstring failed = versions + L"\\.failed-" + UP::Widen(nonce);
-        if (UP::MoveDirectory(target, failed, TransientRenameMs)) UP::RemoveTree(failed);
-        restoreRepairAside();  // repair: the previous copy of the same version returns
+        if (repairOpen) {
+            rollbackRepair();  // repair: the original copy of the same version returns
+        } else {
+            std::wstring failed = versions + L"\\.failed-" + UP::Widen(nonce);
+            if (UP::MoveDirectory(target, failed, TransientRenameMs)) UP::RemoveTree(failed);
+        }
         if (migrated && WaitProfileUnlocked(root + L"\\data\\profile", ProfileUnlockMs)) {
             // The copy made by this run is discarded so a later retry re-migrates the (still authoritative) portable data.
             std::wstring dropped = root + L"\\data.rolledback-" + UP::Widen(nonce);
@@ -1033,7 +1094,7 @@ int RunInstall(const std::string& nonce) {
         return 30;
     }
     // Still running but silent: do not kill it. The browser acknowledges itself later via the pending record.
-    restoreRepairAside();
+    if (repairOpen) Log("repair left open: committed on the new version's ack, else rolled back by the next recovery");
     WriteResult(updates, "unconfirmed", p.version, "ack-timeout");
     SetupKey::RefreshDisplayVersion(root, p.version);
     Log("ack timeout; new version left running");
