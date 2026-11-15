@@ -3990,7 +3990,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     // The star: a toggle (On = this page is bookmarked) that also invokes.
     if(auto* r=region('K')){auto label=AccessibleButton('K');Node n;n.key='K';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('K');n.focusable=n.enabled;n.toggle=chrome.starred?2:1;nodes.push_back(std::move(n));}
     if(auto* r=region('N')){auto label=AccessibleButton('N');Node n;n.key='N';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.help=label.help;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('N');n.focusable=n.enabled;n.toggle=chrome.annotateActive?2:1;nodes.push_back(std::move(n));}
-    for(int id:{'V','Y','D','P','S'})button(id,AccessibleToolbar);
+    for(int id:{'V','Y','D','S'})button(id,AccessibleToolbar);
     // Decision 7: the private chip is plain text for UIA (not a button: no focus, no Invoke).
     if(auto* r=region(NativeChrome::Chrome::PrivateChipId)){Node n;n.key=AccessiblePrivateChip;n.role=Role::Text;n.name=L"Fenêtre de navigation privée";n.automationId=L"PrivateWindowChip";n.focusable=false;n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     // "Barre de favoris": every item of the bar root, those behind » listed off screen (still invocable).

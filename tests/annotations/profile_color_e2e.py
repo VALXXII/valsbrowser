@@ -223,11 +223,11 @@ def main(argv):
 
 
 def toggle_mode(h):
-    """The toolbar « Annoter » button (src/chrome.h region 'N': 24 DIP square ending AnnotateRight() = 133 DIP from the
+    """The toolbar « Annoter » button (src/chrome.h region 'N': 24 DIP square ending AnnotateRight() = 103 DIP from the
     right edge, y 48..72), clicked with posted mouse messages to OUR window only: no foreground change, no keyboard
     state, nothing sent to the user's session."""
     r = W.RECT(); user32.GetClientRect(h, ctypes.byref(r))
-    Q.post_click(r.right / Q.scale(h) - 133 - 12, 60, h)
+    Q.post_click(r.right / Q.scale(h) - 103 - 12, 60, h)
 
 
 def rgb_in(css, rgb):

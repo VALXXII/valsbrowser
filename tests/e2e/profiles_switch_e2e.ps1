@@ -1,4 +1,4 @@
-param([string]$Fixture = 'build/profiles-switch-qa', [int]$Port = 8768, [switch]$TransitionsOnly)
+param([string]$Fixture = 'build/profiles-switch-qa', [int]$Port = 8768, [switch]$TransitionsOnly, [switch]$PrivateToolbarOnly)
 # Same-window profiles: runtime regressions of the independent review (H1, M1, M2, L1-L4, L6) on a REAL
 # browser.exe, its real WebView2 callbacks, UI Automation and its WM_COPYDATA channel. A fresh copy of the
 # fixture build runs in a new temporary root (its profile root); only processes of that copy are touched.
@@ -108,7 +108,7 @@ $server = Start-Process python -ArgumentList "-I `"$PWD\tests\e2e\profiles_switc
 Start-Sleep 1
 "root: $root"
 try {
- if (-not $TransitionsOnly) {
+ if (-not $TransitionsOnly -and -not $PrivateToolbarOnly) {
   # ==== H1 (same window): a restored cold slot, never shown, is deleted from this window ====================
   Seed; $A = StartA
   Check (WaitLog 'default' 'cached slot restored ptravail01' 5) 'H1: Travail restored as a cached slot of this window (never shown)'
@@ -235,6 +235,7 @@ try {
   Check (-not (Test-Path "$root\profiles\ptravail01\sessions\wqaB")) 'L2: the parked Travail session is removed (another Travail window is open), like the active rule'
   Check (Test-Path "$root\sessions\wqaA") 'L2: the active Personnel session is kept (no other Personnel window)'
  }
+ if (-not $PrivateToolbarOnly) {
   # ==== T: content transitions — a blur only on an actual profile switch (design/profile-only-blur-report.md) =====
   # Personnel: blue stripes (/pat c=3366ee), red stripes (c=ee3333), a third tab; Travail: green, then red.
   # Tab selections go through the real paths (shortcut commands, UIA SelectionItem, closing / opening a tab); the window
@@ -314,6 +315,40 @@ try {
   Check (WaitLog 'default' 'TRANSITION profile capture .* reduced \(opacity only\)' 5) "T6 reduced motion: the profile switch is an opacity fade only ($((LastLine 'default' 'TRANSITION profile').Trim()))"
   Start-Sleep 5; $s6 = TState $A.Id
   Check (-not $s6.Active -and $s6.Surfaces -eq '0') "T6: released at the end ($($s6.Line))"
+ }
+ if (-not $TransitionsOnly) {
+  # ==== P: no private-window button in the toolbar (design/private-toolbar-removal-report.md) ==================
+  # « Nouvelle fenêtre privée » stays in the profile menu and on Ctrl+Maj+N (command 'P', posted as the shortcut
+  # message to OUR window: no keyboard injection). Private windows launched here are processes of this root copy.
+  Procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep 1
+  Seed; $A = StartA '--workspace-test'
+  function ToolbarNames([int]$procId) { $tb = Uia $procId 'Toolbar'; if (!$tb) { return @() }; @($tb.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.AutomationId }) }   # ids: ASCII, independent of the script's encoding
+  function PrivatePids { @(Procs | Where-Object { $_.CommandLine -match '--private' -and $_.CommandLine -notmatch '--type=' } | ForEach-Object { $_.ProcessId }) }
+  $names = ToolbarNames $A.Id
+  Check (($names -join '|') -match 'History\|Downloads\|Settings$' -and -not ($names -match 'Private')) "P1: UIA toolbar without the private button, ends History, Downloads, Settings ($($names -join ', '))"
+  $dl = (Uia $A.Id 'Downloads').Current.BoundingRectangle; $hi = (Uia $A.Id 'History').Current.BoundingRectangle; $st = (Uia $A.Id 'Settings').Current.BoundingRectangle; $ad = (Uia $A.Id 'Address').Current.BoundingRectangle
+  $dpi = $dl.Width / 24
+  Check ([math]::Abs(($dl.Left - $hi.Right) / $dpi - 6) -lt 0.6 -and [math]::Abs(($st.Left - $dl.Right) / $dpi - 13) -lt 0.6) ("P1: real window: History→Downloads 6 DIP, Downloads→Settings 13 DIP (separator) ({0:N1} / {1:N1})" -f (($dl.Left - $hi.Right) / $dpi), (($st.Left - $dl.Right) / $dpi))
+  Check ($ad.Right -le $hi.Left) 'P1: real window: the address field ends before Historique (no overlap)'
+  $p0 = (PrivatePids).Count
+  Invoke-Uia $A.Id 'ProfileButton'; Start-Sleep -Milliseconds 700
+  $row = Uia $A.Id 'ProfileMenuPrivate'
+  Check ($row -and $row.Current.Name -like 'Nouvelle fen*tre priv*e') "P2: the profile menu keeps its private-window entry ($($row.Current.Name))"
+  $row.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); Start-Sleep 5
+  $p1 = PrivatePids
+  Check ($p1.Count -eq $p0 + 1 -and (WaitLog 'default' 'PRIVATE window launched' 5)) "P2: the profile menu entry opens a private window ($p0 -> $($p1.Count))"
+  if ($p1.Count) {
+    $pv = $p1[0]; $pn = ToolbarNames $pv
+    Check (-not ($pn -match 'Private') -and ($pn -join '|') -match 'Downloads\|Settings$') "P3: private window toolbar has no private button either ($($pn -join ', '))"
+    $pb = Uia $pv 'ProfileButton'; $title = (Get-Process -Id $pv).MainWindowTitle
+    Check ($pb -and $pb.Current.Name -like '*priv*' -and $title -like '*priv*') "P3: the persistent private indication is intact: profile slot ($($pb.Current.Name)), window title ($title)"
+    $p1 | ForEach-Object { Stop-Process -Id $_ -Force }; Start-Sleep 1
+  }
+  [Wsqa]::PostMessage((Main $A.Id), 0x8001, [IntPtr]0x50, [IntPtr]::Zero) | Out-Null; Start-Sleep 5   # Shortcut message, command 'P' (Ctrl+Maj+N)
+  $p2 = PrivatePids
+  Check ($p2.Count -eq 1 -and ([regex]::Matches((LogText 'default'), 'PRIVATE window launched')).Count -eq 2) "P4: command 'P' (Ctrl+Maj+N) still opens a private window ($($p2.Count))"
+  Check (-not ((LogText 'default') -match 'WEBVIEW2 ERROR|Opérations arrêtées')) 'P: never the global halt / error dialog'
+ }
 }
 finally {
   Procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

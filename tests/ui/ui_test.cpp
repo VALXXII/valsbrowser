@@ -128,6 +128,44 @@ int wmain(int argc,wchar_t** argv){
         r.requestGlyphs.clear();r.Paint({L"Meet"},0,L"",false,0,0);
         Check(r.request.right<=r.request.left,"chip: gone with its request");
     }
+    // Toolbar without the private-window button (« Nouvelle fenêtre privée » is in the profile menu and Ctrl+Maj+N):
+    // the right cluster is compacted (24 DIP buttons 6 apart, separator, Réglages), the address field takes the 30 DIP
+    // freed, no hole, no dead zone, no overlap. Normal / private window, audio and annotation on / off, 560 and 1180
+    // DIP, 96 and 144 DPI. The command 'P' itself survives (Ctrl+Maj+N, profile menu).
+    for(UINT dpi:{96u,144u})for(float w:{560.f,1180.f})for(bool priv:{false,true})for(bool audio:{false,true})for(bool annotate:{false,true}){
+        Chrome r;Check(SUCCEEDED(r.InitOffscreen(root,dpi,w,84)),"toolbar renderer");
+        if(priv){r.profileButton.shown=true;r.profileButton.privateWindow=true;r.profileButton.name=L"Fenêtre privée";}r.audioShown=audio;r.annotateShown=annotate;
+        r.address=AddressBar::Describe(L"https://exemple.test/page",false);r.Paint({L"Exemple"},0,L"",false,0,0);
+        auto at=[&](int id)->const D2D1_RECT_F*{for(auto& g:r.regions)if(g.id==id)return &g.rect;return nullptr;};
+        auto same=[](const D2D1_RECT_F* a,D2D1_RECT_F b){return a&&a->left==b.left&&a->top==b.top&&a->right==b.right&&a->bottom==b.bottom;};
+        Check(!at('P'),"toolbar: no private-window button region");
+        Check(r.Enabled('P'),"toolbar: the private-window command stays enabled (shortcut, profile menu)");
+        Check(same(at('S'),{w-30,48,w-6,72}),"toolbar: Réglages unchanged at the right edge");
+        Check(same(at('D'),{w-67,48,w-43,72}),"toolbar: Téléchargements takes the freed slot");
+        Check(same(at('Y'),{w-97,48,w-73,72}),"toolbar: Historique 6 DIP left of Téléchargements");
+        Check(audio==(at('V')!=nullptr)&&(!audio||same(at('V'),{w-127,48,w-103,72})),"toolbar: Son des sites 6 DIP left of Historique");
+        Check(annotate==(at('N')!=nullptr),"toolbar: Annoter only when shown");
+        std::vector<int> cluster;if(annotate)cluster.push_back('N');if(audio)cluster.push_back('V');cluster.push_back('Y');cluster.push_back('D');
+        for(size_t i=0;i+1<cluster.size();++i){const auto* a=at(cluster[i]);const auto* b=at(cluster[i+1]);
+            Check(a&&b&&a->right-a->left==24&&a->bottom-a->top==24&&b->left-a->right==Design::Space::controlGap,"toolbar: 24 DIP buttons, constant 6 DIP gaps");}
+        Check(at('S')->left-at('D')->right==13&&w-37>=at('D')->right&&w-36<=at('S')->left,"toolbar: the separator stays between Téléchargements and Réglages");
+        const float first=at(cluster.front())->left;
+        Check(r.bar.right==first-Design::Space::controlGap,"address field ends 6 DIP before the first toolbar button (no hole)");
+        const float before=annotate?(audio?157.f:127.f)+6+24+Design::Space::controlGap:audio?157.f+Design::Space::controlGap:133.f;
+        Check(r.bar.right==w-before+30,"address field gains exactly the 30 DIP freed by the private button");
+        Check(r.bar.right-r.bar.left>=200,"address field stays usable at the minimum width");
+        Check(!priv||(r.Hit(Design::ProfileButton::Plate().left+4,20)==900&&r.brandTip.rfind(L"Fenêtre privée",0)==0),"private window: the incognito profile slot (the persistent private indication) is intact");
+        for(int id:cluster)Check(r.Hit((at(id)->left+at(id)->right)/2,60)==id,"toolbar: each button hit at its centre");
+        Check(r.Hit(w-55,60)=='D'&&r.Hit(w-85,60)=='Y',"toolbar: the former private / downloads centres hit their new owners");
+        Check(r.Hit(r.bar.right-16,60)=='K',"toolbar: the star sits at the field's new end (no dead zone)");
+        for(auto& g:r.regions)if(g.rect.top>=44&&g.rect.bottom<=76&&g.id!='S'&&std::find(cluster.begin(),cluster.end(),g.id)==cluster.end())Check(g.rect.right<=first,"toolbar: nothing of the field overlaps a toolbar button");
+        auto order=r.FocusOrder();Check(std::find(order.begin(),order.end(),'P')==order.end(),"focus order: no private button");
+        std::vector<int> tail(order.end()-std::min(order.size(),cluster.size()+1),order.end());auto want=cluster;want.push_back('S');
+        Check(tail==want,"focus order: the toolbar ends N?, V?, Historique, Téléchargements, Réglages");
+        if(w==1180||audio==annotate){std::wstring name=output+L"\\toolbar-"+std::to_wstring(dpi)+L"-"+std::to_wstring((int)w)+(priv?L"-private":L"-normal")+(audio?L"-audio":L"")+(annotate?L"-annotate":L"")+L".png";
+            Check(SUCCEEDED(r.SavePng(name.c_str())),"toolbar sample exported");}
+    }
+    std::puts("toolbar without the private button: geometry, hit, focus at 560/1180 DIP, 96/144 DPI, normal/private, audio/annotation");
     DestroyWindow(h);for(auto name:FontFiles)RemoveFontResourceExW((root+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();
     Check(!GetModuleHandleW(L"WebView2Loader.dll"),"native test completed without loading WebView2");
     std::printf("PASS: %d native UI checks; no browser/WebView2 loaded or launched.\n",checks);return 0;
