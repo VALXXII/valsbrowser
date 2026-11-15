@@ -88,7 +88,7 @@ private:
         return L"";
     }
     static const wchar_t* Keys(int hit) {
-        switch (hit) { case CaseHit: return L"Alt+C"; case WordHit: return L"Alt+W"; case PrevHit: return L"Maj+Entrée"; case NextHit: return L"Entrée"; case CloseHit: return L"Échap"; }
+        switch (hit) { case CaseHit: return L"Alt+C"; case WordHit: return L"Alt+W"; case PrevHit: return TR(key_shift_enter); case NextHit: return TR(key_enter); case CloseHit: return TR(key_escape); }
         return L"";
     }
     std::wstring Counter() const { return CounterText(active_, count_, state_); }

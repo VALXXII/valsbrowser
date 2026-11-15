@@ -124,7 +124,7 @@ template<class S> std::int64_t Retention(const S& st) {
 double NowMs() { static LARGE_INTEGER f{}; if (!f.QuadPart) QueryPerformanceFrequency(&f); LARGE_INTEGER c; QueryPerformanceCounter(&c); return double(c.QuadPart) * 1000.0 / double(f.QuadPart); }
 std::wstring Ms(double v) { return std::to_wstring(int(std::lround(v))); }
 long long UtcMs() { FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime; return (long long)(u.QuadPart / 10000ULL) - 11644473600000LL; }
-void Announce(const std::wstring& text) { accessibility.Notify('N', text.c_str(), L"Annotation"); Log(L"ANNOTATE " + text); }
+void Announce(const std::wstring& text) { accessibility.Notify('N', text.c_str(), L"Annotation" /* i18n-exempt: UIA activity id */); Log(L"ANNOTATE " + text); }
 void LogOnce(const std::wstring& what) { if (loggedOnce.find(what) != std::wstring::npos) return; loggedOnce += what + L";"; Log(L"ANNOTATE ignored page message: " + what); }
 // Annotations are GLOBAL (one store for every profile, src/annotations.h): the application's data root
 // (profiles-integration.h `profileRoot`: the folder holding profiles.txt and the default profile's layout),
@@ -483,7 +483,7 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
             } else if (connect.Visible()) {
                 if (report->result == AC::Result::Disconnected || report->result == AC::Result::NotConnected) connect.SetStatus(a, {AUI::ConnectState::Idle, L""});
                 else connect.SetStatus(a, {AUI::ConnectState::Connected, AH::Wide(report->message)});
-                Announce(report->ok() ? AUI::AppLong(a) + L" déconnecté" : AH::Wide(report->message));
+                Announce(report->ok() ? TRF(settings_announce_disconnected, AUI::AppLong(a)) : AH::Wide(report->message));
             }
             SyncWatch(); RefreshAgents();
             if (then) then(*report);
@@ -501,7 +501,7 @@ const BA::Event* GivenBack(const BA::Entry& e) {
     if (e.state.status != BA::Status::Open) return nullptr;
     for (auto it = e.state.events.rbegin(); it != e.state.events.rend(); ++it) {
         if (it->to != "open") continue;
-        if (it->from == "claimed" && it->actor != "user" && !it->summary.empty() && it->summary != "libérée") return &*it;
+        if (it->from == "claimed" && it->actor != "user" && !it->summary.empty() && it->summary != "libérée") return &*it;   // i18n-exempt: stored event summary written by the store (data)
         return nullptr;   // the last return to « open » was something else (plain release, reopened by the user)
     }
     return nullptr;
@@ -522,7 +522,7 @@ std::vector<AUI::HistoryEntry::Step> StepsOf(const BA::Entry& e, std::int64_t no
         if (ev.to == "claimed") add(ev.at, Step::Claimed, ev.actor, TRF(step_claimed_by, who));
         else if (ev.from == "claimed" && ev.to == "open") {
             if (ev.actor == "user") add(ev.at, Step::Released, ev.actor, TR(step_released_by_you));
-            else if (ev.summary.empty() || ev.summary == "libérée") add(ev.at, Step::Released, ev.actor, TRF(step_given_back_by, who));
+            else if (ev.summary.empty() || ev.summary == "libérée" /* i18n-exempt: stored event summary (data) */) add(ev.at, Step::Released, ev.actor, TRF(step_given_back_by, who));
             else add(ev.at, Step::Unhandled, ev.actor, TRF(annotation_agent_unhandled, who), quote);
         }
         else if (ev.to == "resolved") add(ev.at, Step::Done, ev.actor, TRF(history_done_by, who), e.state.resolution && e.state.status == BA::Status::Resolved ? AH::Wide(e.state.resolution->summary) : quote);
@@ -990,7 +990,7 @@ void EnsureUi() {
     lh.reopen = [] {
         const std::string site = cardSite, id = cardId; launcher.HideCard(); card = Card::None; seenDone.erase(id); seenWorking.erase(id);
         auto r = std::make_shared<BA::Outcome>();
-        Run([site, id, r] { std::lock_guard<std::mutex> g(writeLock); *r = Store().Reopen(site, id); }, [id, r] { Log(L"ANNOTATE reopen " + AH::Wide(id) + L": " + AH::Wide(BA::CodeName(r->code))); Announce(r->ok() ? L"Annotation rouverte" : L"Impossible de rouvrir : " + AH::Wide(r->message)); });
+        Run([site, id, r] { std::lock_guard<std::mutex> g(writeLock); *r = Store().Reopen(site, id); }, [id, r] { Log(L"ANNOTATE reopen " + AH::Wide(id) + L": " + AH::Wide(BA::CodeName(r->code))); Announce(r->ok() ? std::wstring(TR(annotation_reopened)) : TRF(annotation_reopen_failed, AH::Wide(r->message))); });
     };
     lh.dismissed = [](bool) { card = Card::None; };
     lh.focusOut = [] { FocusPage(); };
@@ -1044,7 +1044,7 @@ void Activate(const Start& st) {
     const std::string nonce = s.nonce;
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([nonce](HRESULT hr, LPCWSTR result) -> HRESULT {
         if (!s.active || s.nonce != nonce) return S_OK;
-        if (FAILED(hr) || !result || wcscmp(result, L"\"ok\"") != 0) { Log(L"ANNOTATE script injection failed"); Exit(L"injection"); Announce(L"Impossible d'activer le mode Annotation sur cette page"); }
+        if (FAILED(hr) || !result || wcscmp(result, L"\"ok\"") != 0) { Log(L"ANNOTATE script injection failed"); Exit(L"injection"); Announce(TR(annotation_mode_unavailable)); }
         else s.injected = true;
         return S_OK; });
     const ULONGLONG started = GetTickCount64();

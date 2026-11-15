@@ -168,7 +168,7 @@ private:
             hooks_.announce(part == 0 ? Spoken(HitIndex(hit)) : r.folder || part == 2 ? std::wstring(TR(common_delete)) : std::wstring(TR(history_open_new_tab)));
         }
     }
-    void SetQuery(std::wstring q) { if (q == query_) return; query_ = std::move(q); if (IsRowPart(focus_)) focus_ = SearchHit; scroll_.Snap(0); Rebuild(); Invalidate(); if (uia_.Listening()) uia_.ChildrenChanged(ListKey); if (hooks_.announce) hooks_.announce(rows_.empty() ? EmptyText() : std::to_wstring(rows_.size()) + (rows_.size() > 1 ? L" résultats" : L" résultat")); }
+    void SetQuery(std::wstring q) { if (q == query_) return; query_ = std::move(q); if (IsRowPart(focus_)) focus_ = SearchHit; scroll_.Snap(0); Rebuild(); Invalidate(); if (uia_.Listening()) uia_.ChildrenChanged(ListKey); if (hooks_.announce) hooks_.announce(rows_.empty() ? EmptyText() : TRP(bookmarks_results, rows_.size())); }
     std::wstring EmptyText() const { const auto q = AddressBar::Trim(query_); return q.empty() ? std::wstring(TR(bookmarks_empty)) : TRF(history_no_results, q); }
     void Toggle(int i, int force = -1) {
         if (i < 0 || i >= static_cast<int>(rows_.size()) || !rows_[i].folder || !query_.empty()) return;

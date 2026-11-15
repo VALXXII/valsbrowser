@@ -99,6 +99,12 @@ inline std::string U8(Id id) { return Utf8(T(id)); }
 // BCP 47 tag for the engine (EngineOptions::put_Language) and the html lang of built-in pages.
 inline const wchar_t* Tag() { return Current() == Locale::En ? L"en-US" : L"fr-FR"; }
 inline const char* HtmlLang() { return Current() == Locale::En ? "en" : "fr"; }
+// WebView2 engine arguments: « --lang=fr » or « --lang=en-US », matching EngineOptions::put_Language (Tag()).
+// A --lang= the person already passed is kept as given.
+inline std::wstring WithEngineLang(std::wstring args) {
+    if (args.find(L"--lang=") != std::wstring::npos) return args;
+    return args + (args.empty() ? L"" : L" ") + (Current() == Locale::En ? L"--lang=en-US" : L"--lang=fr");
+}
 
 // Numbers as each language writes them. French: decimal comma and a space before % (the
 // existing French UI's « 100 % »); English: decimal point, no space. Digits are never grouped.

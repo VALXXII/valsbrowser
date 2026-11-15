@@ -329,8 +329,8 @@ void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
 // Serialized: the WebView2 install worker reports its real outcome from its own thread. A private window logs nothing.
-void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK",0)==0)PostMessageW(window,WM_APP+2,0,0);}
-void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=where+L" : "+code+L"\nOpérations arrêtées. Aucun correctif automatique.";Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),L"WebView2 — arrêt demandé",MB_OK|MB_ICONERROR);}
+void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
+void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
 void FocusAddress(){editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
@@ -557,7 +557,7 @@ void SyncGrips(const SplitView& v){
     const size_t n=v.group?v.a.separators.size():0;
     while(splitGrips.size()<n){
         static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=GripProc;wc.hInstance=instance?instance:GetModuleHandleW(nullptr);wc.lpszClassName=L"BrowserSplitGrip";wc.hbrBackground=(HBRUSH)GetStockObject(BLACK_BRUSH);RegisterClassW(&wc);registered=true;}
-        HWND g=CreateWindowExW(WS_EX_LAYERED,L"BrowserSplitGrip",L"Séparateur des panneaux",WS_CHILD,0,0,1,1,window,nullptr,instance?instance:GetModuleHandleW(nullptr),nullptr);if(!g){Log(L"SPLIT grip unavailable "+std::to_wstring(GetLastError()));return;}
+        HWND g=CreateWindowExW(WS_EX_LAYERED,L"BrowserSplitGrip",TR(split_grip_name),WS_CHILD,0,0,1,1,window,nullptr,instance?instance:GetModuleHandleW(nullptr),nullptr);if(!g){Log(L"SPLIT grip unavailable "+std::to_wstring(GetLastError()));return;}
         splitGrips.push_back(g);  // content (and hit-testing) comes with its first UpdateLayeredWindow
     }
     for(size_t i=0;i<splitGrips.size();++i){
@@ -918,7 +918,7 @@ void AnnounceSeparator(){
     auto v=CurrentSplit();if(!v.group||splitResize<0||splitResize>=(int)v.a.separators.size())return;const int s=v.a.separators[splitResize];
     float sum=0;for(auto& slot:v.a.slots)if(!slot.rail)sum+=SV::Extent(slot.box,v.a.orientation);
     const int pct=(int)std::lround(100*SV::Extent(v.a.slots[s].box,v.a.orientation)/std::max(1.f,sum));
-    AnnounceSplit(L"Séparateur, "+TabLabel(v.members[v.a.slots[s].member])+L" "+std::to_wstring(pct)+L" %");
+    AnnounceSplit(TRF(split_announce_divider,TabLabel(v.members[v.a.slots[s].member]),I18n::Percent(pct)));
 }
 bool SplitPointerDown(float x,float y){
     splitResize=-1;auto v=CurrentSplit();if(!v.group)return false;
@@ -1610,7 +1610,7 @@ void DownloadAction(int id,DL::Action action){
     // Pause / Resume / Cancel need the row's live operation. Without it (never expected), the row is not left offering
     // a dead action: it becomes a non-resumable failure (« Remove »), logged.
     case DL::Action::Pause:case DL::Action::Resume:case DL::Action::Retry:case DL::Action::Cancel:
-        if(!op){Log(L"DOWNLOAD action without its operation: "+DL::FileName(item->path));if(item->state==DL::State::InProgress||item->state==DL::State::Paused||item->state==DL::State::Failed){item->state=DL::State::Failed;item->canResume=false;item->reason=L"Download unavailable";SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}break;}
+        if(!op){Log(L"DOWNLOAD action without its operation: "+DL::FileName(item->path));if(item->state==DL::State::InProgress||item->state==DL::State::Paused||item->state==DL::State::Failed){item->state=DL::State::Failed;item->canResume=false;item->reason=TR(downloads_unavailable);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}break;}
         if(action==DL::Action::Pause){if(SUCCEEDED(op->Pause()))entry->userPaused=true;}
         else if(action==DL::Action::Cancel){const HRESULT hr=op->Cancel();Log(L"DOWNLOAD cancel "+DL::FileName(item->path)+(SUCCEEDED(hr)?L"":L" failed"));}
         else if(SUCCEEDED(op->Resume()))entry->userPaused=false;
@@ -2245,7 +2245,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::AdBlock:ApplyAdBlock();break;
     case Change::MemorySaver:ApplyMemorySaver();break;
     case Change::NewTabPage:case Change::Homepage:ApplyNewTabPage();break;
-    case Change::BookmarksBar:{const bool shown=chrome.bandShown;BookmarksChanged();if(chrome.bandShown!=shown)accessibility.Notify('K',chrome.bandShown?L"Barre de favoris affichée":L"Barre de favoris masquée",L"Bookmarks");Log(L"SETTINGS bookmarks bar "+std::wstring(BrowserSettings::ShortLabel(settings.bookmarksBar)));break;}
+    case Change::BookmarksBar:{const bool shown=chrome.bandShown;BookmarksChanged();if(chrome.bandShown!=shown)accessibility.Notify('K',chrome.bandShown?TR(bookmarks_bar_shown):TR(bookmarks_bar_hidden),L"Bookmarks" /* i18n-exempt: UIA activity id */);Log(L"SETTINGS bookmarks bar "+std::wstring(BrowserSettings::ShortLabel(settings.bookmarksBar)));break;}
     }
 }
 // The toolbar button of the surface that is (still) open stays latched.
@@ -3250,7 +3250,7 @@ struct BookmarkStep { enum Kind { Created, Removed, Moved, Renamed, Readdressed 
 struct BookmarkUndo { std::vector<BookmarkStep> steps; std::wstring done; };
 std::vector<BookmarkUndo> bookmarkUndo;
 std::wstring BookmarksFile(){return dataDir+L"\\bookmarks";}
-void AnnounceBookmark(const std::wstring& text){Log(L"BOOKMARKS "+text);accessibility.Notify('K',text.c_str(),L"Bookmarks");}
+void AnnounceBookmark(const std::wstring& text){Log(L"BOOKMARKS "+text);accessibility.Notify('K',text.c_str(),L"Bookmarks" /* i18n-exempt: UIA activity id */);}
 void SaveBookmarks(){
     if(smoke)return;
     // Transaction under the profile lock: this window's changes (base → mine) replayed onto the file as
@@ -3299,7 +3299,7 @@ bool BookmarkedSite(const std::wstring& site){
     return false;
 }
 std::wstring ReadableUrl(const std::wstring& url){AddressBar::Parts p;if(AddressBar::Split(url,p)&&(p.scheme==L"http"||p.scheme==L"https"))return AddressBar::PercentDecode(AddressBar::MatchText(url));return AddressBar::PercentDecode(url);}
-std::wstring FolderSummary(BM::Id id){const auto* n=bookmarks.Find(id);const size_t items=n?n->children.size():0;return L"Dossier, "+std::to_wstring(items)+(items>1?L" éléments":L" élément");}
+std::wstring FolderSummary(BM::Id id){const auto* n=bookmarks.Find(id);const size_t items=n?n->children.size():0;return TRP(bookmarks_folder_summary,items);}
 // The star, the band and the chrome height follow the store and the active page.
 // Returns true when the band appeared or disappeared (the page moves: Layout()).
 bool SyncBookmarkChrome(){
@@ -4301,11 +4301,10 @@ using CreateEnvironmentFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,PCWSTR,ICoreWebView2En
 using ProbeRuntimeFn=HRESULT(STDAPICALLTYPE*)(PCWSTR,ICoreWebView2EnvironmentOptions*,LPWSTR*);
 CreateEnvironmentFn engineCreate=nullptr; ProbeRuntimeFn engineProbe=nullptr;
 std::wstring engineGivenArgs;
-// The engine arguments of one environment, from the settings in the globals (its profile's): French UI, the
+// The engine arguments of one environment, from the settings in the globals (its profile's): interface language, the
 // autoplay policy, grayscale text, third-party cookies; any user-set arguments are kept.
 std::wstring EngineArgumentsFor(const BrowserSettings::State& s){
-    std::wstring value=engineGivenArgs;
-    if(value.find(L"--lang=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(L"--lang=fr");
+    std::wstring value=I18n::WithEngineLang(engineGivenArgs);   // the interface language (fr / en-US), as EngineOptions::put_Language
     // SETTINGS(media): autoplay policy, fixed for the engine's lifetime. Muted autoplay stays allowed under user-gesture-required.
     if(value.find(L"--autoplay-policy=")==std::wstring::npos)value+=(value.empty()?L"":L" ")+std::wstring(s.autoplay==BrowserSettings::Autoplay::Allowed?L"--autoplay-policy=no-user-gesture-required":L"--autoplay-policy=user-gesture-required");
     // SETTINGS(display): grayscale text antialiasing for page content (D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE).

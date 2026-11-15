@@ -8,6 +8,7 @@
 #include "../src/ui-language.h"
 #include "../src/settings.h"
 #include "../src/history.h"
+#include "../src/profile-color.h"
 
 static int failures = 0, checks = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) ++failures; std::printf("%s %s\n", ok ? "ok  " : "FAIL", what); }
@@ -112,6 +113,24 @@ int main() {
         Check(HV::EmptyText(L"") == L"No history yet" && HV::EmptyText(L"rust") == L"No results for \u201crust\u201d", "English history empty states (Paper copy)");
         I18n::SetForProcess(Locale::Fr);
         Check(std::wstring(BS::Info(BS::Tracking::Balanced).label) == L"\u00c9quilibr\u00e9", "the same table answers in French again: nothing frozen");
+    }
+
+    // Address bar placeholder, engine language argument, spoken names (both languages).
+    {
+        Check(std::wstring(TR(chrome_address_placeholder)) == L"Rechercher ou saisir une adresse", "French address placeholder");
+        Check(I18n::WithEngineLang(L"") == L"--lang=fr" && I18n::WithEngineLang(L"--foo") == L"--foo --lang=fr", "French engine argument --lang=fr");
+        Check(I18n::WithEngineLang(L"--lang=de --x") == L"--lang=de --x", "a --lang= passed by the person is kept");
+        Check(std::wstring(ProfileColor::HueName(0)) == L"rouge" && std::wstring(ProfileColor::HueName(150)) == L"\u00e9meraude", "French hue names");
+        Check(std::wstring(TR(key_shift_enter)) == L"Maj+Entr\u00e9e" && std::wstring(TR(key_escape)) == L"\u00c9chap", "French key names");
+        Check(TRP(bookmarks_folder_summary, 1) == L"Dossier, 1 \u00e9l\u00e9ment" && TRP(bookmarks_folder_summary, 3) == L"Dossier, 3 \u00e9l\u00e9ments" && TRP(bookmarks_results, 0) == L"0 r\u00e9sultat", "French folder summary and result count");
+        I18n::SetForProcess(Locale::En);
+        Check(std::wstring(TR(chrome_address_placeholder)) == L"Search, browse, whatever", "English address placeholder: the Paper copy");
+        Check(I18n::WithEngineLang(L"") == L"--lang=en-US" && I18n::WithEngineLang(L"--foo") == L"--foo --lang=en-US", "English engine argument --lang=en-US (never --lang=fr beside Language=en-US)");
+        Check(std::wstring(ProfileColor::HueName(0)) == L"red" && std::wstring(ProfileColor::HueName(150)) == L"emerald", "English hue names");
+        Check(std::wstring(TR(key_shift_enter)) == L"Shift+Enter" && std::wstring(TR(key_escape)) == L"Esc" && std::wstring(TR(key_enter)) == L"Enter", "English key names");
+        Check(TRP(bookmarks_folder_summary, 1) == L"Folder, 1 item" && TRP(bookmarks_results, 0) == L"0 results", "English folder summary and result count");
+        Check(TRF(settings_announce_disconnected, L"Claude Desktop") == L"Claude Desktop disconnected" && std::wstring(TR(annotation_reopened)) == L"Annotation reopened", "English annotation announcements");
+        I18n::SetForProcess(Locale::Fr);
     }
 
     std::printf("\n%d checks, %d failures\n", checks, failures);

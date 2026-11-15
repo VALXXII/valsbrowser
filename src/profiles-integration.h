@@ -282,7 +282,7 @@ void ProfileUndoTick(){
 // The actual delete, once no window of the profile is open (this window is never one of them).
 bool RunProfileDelete(const std::wstring& id,std::wstring& error,std::wstring* keyOut=nullptr){
     // One undo at a time, never finalised behind the user's back (re-review R1): refuse while one is pending.
-    if(profileUndo.active){error=L"Une suppression peut encore être annulée dans la fenêtre qui l'affiche. Rien n'a été effacé ; réessayez après son décompte.";if(keyOut)*keyOut=L"pending";Log(L"PROFILES delete refused "+id+L": an undo is pending");return false;}
+    if(profileUndo.active){error=TR(profile_delete_undo_pending);if(keyOut)*keyOut=L"pending";Log(L"PROFILES delete refused "+id+L": an undo is pending");return false;}
     Profiles::Registry reg=Profiles::Load(profileRoot);Profiles::Tombstone tomb;std::wstring key;
     if(!Profiles::Delete(profileRoot,reg,id,tomb,key)){error=DeleteErrorText(key);if(keyOut)*keyOut=key;Log(L"PROFILES delete refused "+id+L": "+key);return false;}
     profileRegistry=reg;profileUndo.active=true;profileUndo.tomb=tomb;profileUndo.until=GetTickCount64()+Profiles::UndoMilliseconds;profileUndo.windows=(int)tomb.closedSessions.size();
@@ -334,7 +334,7 @@ void AskDeleteProfile(const std::wstring& id,bool keyboard){
     // One undo at a time, never finalised behind the user's back: a second delete waits (review L4).
     // The pending notice is never replaced: it takes the focus (its countdown pauses) so « Annuler » is right there.
     if(profileUndo.active){Log(L"PROFILES delete refused while an undo is pending");if(contextToast.Visible())contextToast.Focus();return;}
-    if(takeover.Busy()){Log(L"PROFILES delete refused while a take-over is in progress");VaultNotice(L"Une suppression est en cours",L"Attendez qu'elle se termine avant de supprimer un autre profil.");return;}
+    if(takeover.Busy()){Log(L"PROFILES delete refused while a take-over is in progress");VaultNotice(TR(profile_delete_in_progress),TR(profile_delete_in_progress_body));return;}
     // Private windows share the default profile's engine folder: « Personnel » waits until they are closed (review M2).
     if(id==Profiles::DefaultId&&PrivateWindowsOpen()){VaultNotice(TR(profile_close_private_first),TRF(profile_close_private_first_body,p->name));return;}
     const Profiles::Profile target=*p;
@@ -383,7 +383,7 @@ void AskDeleteProfile(const std::wstring& id,bool keyboard){
 bool ReserveTakeOver(const std::wstring& id){return takeover.Reserve(id,profileUndo.active,privateWindow||!profilesEnabled||!Profiles::ValidId(id)||id==profileId);}
 void TakeOverProfileDelete(const std::wstring& id){
     if(!takeover.Owns(id)){Log(L"PROFILES take-over ignored "+id+L": not reserved");return;}
-    if(profileUndo.active){takeover.Clear();Log(L"PROFILES take-over refused "+id+L": an undo is pending here");VaultNotice(L"Le profil n'a pas été supprimé",L"Une autre suppression peut encore être annulée ici ; rien n'a été effacé.");return;}   // cannot happen while reserved
+    if(profileUndo.active){takeover.Clear();Log(L"PROFILES take-over refused "+id+L": an undo is pending here");VaultNotice(TR(profile_not_deleted),TR(profile_delete_undo_pending_here));return;}   // cannot happen while reserved
     // Bring this window forward: the undo notice lives here (review M1).
     if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);
     CloseProfileWindows(id);   // whatever is still open of that profile closes, keeping its sessions (review H1)

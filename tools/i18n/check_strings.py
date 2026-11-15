@@ -57,7 +57,7 @@ CAPWORD = r'[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:-[a-zà-ÿ]{2,})*[.!?…]?'
 ACCENT = re.compile(r'[À-ÿ«»…’—›]')
 # Diagnostics: logs, traces, and main.cpp's Fail/Check(hr, where) whose « where » is the failing API name
 # (the dialog's own wording around it is catalog text).
-LOGISH = re.compile(r'\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
+LOGISH = re.compile(r'\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable|SandboxLog)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
 TR_CALL = re.compile(r'\bTR[FP]?\(')
 
 
@@ -74,8 +74,8 @@ def looks_textual(text: str) -> bool:
         return False                      # separators and punctuation only (« › », « · »)
     if re.search(r'://|\\\\|^[\w.\-]+\.(png|svg|ico|json|txt|exe|dll|ttf|html?|js|css|ini|lsrupd|mcpb|toml)$', t):
         return False
-    if re.fullmatch(r'[#%]?[\w.\-:/+*=<>()\[\]{}|,;@$^&!?~]*', t) and not re.fullmatch(CAPWORD, t):
-        return False                      # identifiers, keys, formats, single lowercase tokens
+    if re.fullmatch(r'[#%]?[\w.\-:/+*=<>()\[\]{}|,;@$^&!?~]*', t) and not re.fullmatch(CAPWORD, t) and not ACCENT.search(t):
+        return False                      # identifiers, keys, formats, single lowercase ASCII tokens (« déconnecté » is French text)
     if re.fullmatch(r'[a-z0-9]+(-[a-z0-9]+)+ \d+', t):
         return False                      # file format headers (« browser-settings 1 »)
     if not ACCENT.search(t) and (re.search(r'[{};=<>|\\]|=>|%[-+ #0-9.]*[a-z]|\bfunction\b|^\s*[MmLlHhVvCcZz][\d\s.,-]', t) or re.fullmatch(r'[\d\s.,MmLlHhVvCcSsQqTtAaZz-]+', t)):
@@ -103,8 +103,61 @@ def raw_textual(body: str) -> list[str]:
     return found
 
 
+def diagnostic_spans(text: str) -> list[tuple[int, int]]:
+    """Character spans that are diagnostics: the ARGUMENTS of Log(...)/Fail(...)/… calls (to the matching
+    parenthesis, across lines), and « std::cerr … ; » / « throw … ; » statements. Only literals inside a span
+    are skipped: a Log(...) on a line never hides an Announce(...) or any other visible text beside it."""
+    spans = []
+    for m in LOGISH.finditer(text):
+        if m.group(0).endswith('('):
+            depth, i, n = 1, m.end(), len(text)
+            while i < n and depth:
+                ch = text[i]
+                if ch == '"' or (ch == "'" and not text[i - 1].isalnum()):
+                    if ch == '"' and text[i - 1] == 'R' and (i < 2 or not text[i - 2].isalnum() or text[i - 2] == 'L'):
+                        d = text.find('(', i)
+                        end = text.find(')' + text[i + 1:d] + '"', d)
+                        i = (end + len(text[i + 1:d]) + 2) if end >= 0 else n
+                        continue
+                    j = i + 1
+                    while j < n and text[j] != ch and text[j] != '\n':
+                        j += 2 if text[j] == '\\' else 1
+                    i = j + 1
+                    continue
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                i += 1
+            spans.append((m.start(), i))
+        else:                               # std::cerr / throw / Smoke: up to the end of the statement
+            end = text.find(';', m.end())
+            spans.append((m.start(), end if end >= 0 else len(text)))
+    return spans
+
+
 def scan_file(path: Path) -> list[tuple[int, str]]:
-    text = path.read_text(encoding='utf-8', errors='replace')
+    return scan_text(path.read_text(encoding='utf-8', errors='replace'))
+
+
+def self_test() -> list[str]:
+    """The gate's own regressions: a diagnostic call must never hide visible text beside it."""
+    cases = [
+        ('Log(L"ANNOTATE reopen"); Announce(r ? L"Annotation rouverte" : L"Impossible de rouvrir : ");', 2),
+        ('Announce(ok ? AppLong(a) + L" déconnecté" : msg);', 1),
+        ('Log(L"PROFILES refused " + id + L": pending"); VaultNotice(L"Une suppression est en cours", L"Attendez.");', 2),
+        ('Log(L"Opération réussie " +' + chr(10) + '    L"détails");', 0),
+        ('Log(L"x"); // a comment with Accentué text', 0),
+    ]
+    errors = []
+    for src, want in cases:
+        got = len(scan_text(src))
+        if got != want:
+            errors.append(f'self-test: {want} finding(s) expected, {got} found in: {src!r}')
+    return errors
+
+
+def scan_text(text: str) -> list[tuple[int, str]]:
     lines = text.split('\n')
     findings = []
     # Whole regions classified non-UI: « // i18n-exempt-begin: <reason> » … « // i18n-exempt-end ».
@@ -112,6 +165,7 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
     for b in re.finditer(r'//\s*i18n-exempt-begin:\s*\S[^\n]*', text):
         e = text.find('i18n-exempt-end', b.end())
         exempt.append((b.start(), e if e >= 0 else len(text)))
+    diagnostics = diagnostic_spans(text)
     for m in LITERAL.finditer(text):
         if any(a <= m.start() < z for a, z in exempt):
             continue
@@ -123,7 +177,7 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
         prev = lines[line_no - 2] if line_no >= 2 else ''
         if 'i18n-exempt:' in line or 'i18n-exempt-next:' in prev:
             continue
-        if LOGISH.search(line) or line.lstrip().startswith('#include') or line.lstrip().startswith('#define BROWSER'):
+        if any(a <= m.start() < z for a, z in diagnostics) or line.lstrip().startswith('#include') or line.lstrip().startswith('#define BROWSER'):
             continue
         if m.group(2) is not None:      # raw string
             for t in raw_textual(m.group(2)):
@@ -180,7 +234,9 @@ def main() -> int:
     ap.add_argument('--report', action='store_true')
     ap.add_argument('--file', action='append')
     a = ap.parse_args()
-    errors = check_catalog()
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # findings carry French text (cp1252 consoles)
+    errors = self_test() + check_catalog()
     counts = Counter()
     files = sorted(p for p in SRC.iterdir() if p.suffix in ('.h', '.cpp', '.inc'))
     for path in files:

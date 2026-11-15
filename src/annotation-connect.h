@@ -622,7 +622,7 @@ public:
         Change([&] { (a == AgentKind::Claude ? view_.setup.claude : view_.setup.codex) = status; });
         switch (status.state) {
         case ConnectState::Working: Announce(AppButtonLabel(a, status)); break;
-        case ConnectState::Connected: Announce(AppLong(a) + L" connecté" + (status.detail.empty() ? L"" : L". " + status.detail)); if (!view_.focus || view_.focus == CClaude || view_.focus == CCodex) view_.focus = view_.DoneVisible() && view_.keyboard ? CDone : view_.focus; break;
+        case ConnectState::Connected: Announce(TRF(settings_announce_connected, AppLong(a)) + (status.detail.empty() ? L"" : L". " + status.detail)); if (!view_.focus || view_.focus == CClaude || view_.focus == CCodex) view_.focus = view_.DoneVisible() && view_.keyboard ? CDone : view_.focus; break;
         case ConnectState::Failed: Announce(TRF(connect_failed_announce, status.detail.empty() ? std::wstring(TR(connect_impossible)) : status.detail)); break;
         default: break;
         }
