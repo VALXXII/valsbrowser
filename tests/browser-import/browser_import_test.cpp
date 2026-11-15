@@ -554,8 +554,14 @@ int main(int argc, char** argv) {
             const auto c5 = CommitBookmarks(data, bm, map, base, mine, chromeD, more, now, &saved);
             std::string still, bm5; ProfileStore::ReadAll(map, still); ProfileStore::ReadAll(bm, bm5);
             OK(!c5.Saved() && c5.identity == Identity::Newer && !saved && still == future && bm5 == bm4);
+            // A damaged line: the map is never used half-read nor rewritten; nothing imported (review 2ed598c).
+            const std::string broken = "browser-bookmark-imports 1\nchromium:Chrome/Default\t99999\t5\nbroken line\n"; CHECK(ProfileStore::WriteAtomic(map, broken));
+            std::string bmBroken; ProfileStore::ReadAll(bm, bmBroken);
+            const auto c6d = CommitBookmarks(data, bm, map, base, mine, chromeD, more, now, &saved);
+            std::string brokenAfter, bmBrokenAfter; ProfileStore::ReadAll(map, brokenAfter); ProfileStore::ReadAll(bm, bmBrokenAfter);
+            OK(!c6d.Saved() && c6d.identity == Identity::Damaged && c6d.counts == Counts{} && brokenAfter == broken && bmBrokenAfter == bmBroken);
             // A stale entry (no such folder) is never trusted and is dropped.
-            CHECK(ProfileStore::WriteAtomic(map, "browser-bookmark-imports 1\nchromium:Chrome/Default\t99999\t5\nbroken line\n"));
+            CHECK(ProfileStore::WriteAtomic(map, "browser-bookmark-imports 1\nchromium:Chrome/Default\t99999\t5\n"));
             const auto c6 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
             std::string rewritten; ProfileStore::ReadAll(map, rewritten);
             OK(c6.Saved() && saved && c6.counts.present == 6 && mine.Find(BM::OtherRoot)->children.size() == 1 && rewritten.find("99999") == std::string::npos);
@@ -696,10 +702,60 @@ int main(int argc, char** argv) {
             std::string mapEnd; ProfileStore::ReadAll(data + L"\\bookmark-imports", mapEnd);
             OK(next.Saved() && next.counts.present == 1 && next.counts.imported == 0 && FolderMap::Read(mapEnd, nullptr).entries.at("chromium:Chrome/Default").size() == 1);
         }
-        {   // Map format: candidates in order, duplicates and excess dropped, unknown version untouched (other tests).
-            const FolderMap m = FolderMap::Read("browser-bookmark-imports 1\nk\t5\t1\nk\t6\t2\nk\t5\t1\nk\t7\t3\nk\t8\t4\nk\t9\t5\n", nullptr);
-            OK(m.entries.at("k").size() == FolderMap::Candidates && m.entries.at("k").front().id == 5 && m.Write() == "browser-bookmark-imports 1\nk\t5\t1\nk\t6\t2\nk\t7\t3\nk\t8\t4\n");
+        {   // Map format: candidates in order, exact repeats harmless; anything the reader would drop marks it incomplete.
+            bool known = false, complete = false;
+            const FolderMap four = FolderMap::Read("browser-bookmark-imports 1\nk\t5\t1\nk\t6\t2\nk\t5\t1\nk\t7\t3\nk\t8\t4\n", &known, &complete);
+            OK(known && complete && four.entries.at("k").size() == FolderMap::Candidates && four.entries.at("k").front().id == 5 && four.Write() == "browser-bookmark-imports 1\nk\t5\t1\nk\t6\t2\nk\t7\t3\nk\t8\t4\n" && four.Fits());
+            FolderMap::Read("browser-bookmark-imports 1\nk\t5\t1\nk\t6\t2\nk\t7\t3\nk\t8\t4\nk\t9\t5\n", &known, &complete); OK(known && !complete);   // a 5th candidate
+            FolderMap::Read("browser-bookmark-imports 1\nk\t5x\t1\n", &known, &complete); OK(!complete);
+            FolderMap::Read("browser-bookmark-imports 1\n\t5\t1\n", &known, &complete); OK(!complete);
+            // Write -> Read equality: several keys, several candidates, order kept, no aliasing between close keys.
+            FolderMap w; w.Prefer("a", {3, 30}); w.Prefer("a", {4, 40}); w.Prefer("a|bookmark_bar", {5, 50}); w.Prefer("a|bookmark_bar ", {6, 60}); w.Prefer("b", {7, 70});
+            const FolderMap back = FolderMap::Read(w.Write(), &known, &complete);
+            OK(complete && back == w && back.entries.at("a").front().id == 4 && back.entries.at("a").back().id == 3 && back.entries.size() == 4 && w.Fits());
+            FolderMap tab; tab.entries["x\ty"].push_back({1, 1}); OK(!tab.Fits());   // a key the format cannot hold is refused, never aliased
+            // Boundary: exactly Limit records fit and read back complete; one more does not fit / reads incomplete.
+            FolderMap full; for (std::size_t i = 0; i < FolderMap::Limit; ++i) full.entries["k" + std::to_string(i)].push_back({static_cast<BM::Id>(i + 3), 1});
+            OK(full.Records() == FolderMap::Limit && full.Fits());
+            const std::string fullText = full.Write(); FolderMap::Read(fullText, &known, &complete); OK(complete);
+            FolderMap over = full; over.entries["zz"].push_back({99999, 1});
+            OK(!over.Fits());
+            FolderMap::Read(over.Write(), &known, &complete); OK(!complete);
         }
+    }
+
+    // ---- Map capacity (review 2ed598c): 4 096 → 4 098 records, every identity kept across a restart -------------
+    {
+        const std::wstring dir = work + L"\\capacity"; MakeDirs(dir);
+        const std::wstring bm = dir + L"\\bookmarks", mf = dir + L"\\bookmark-imports";
+        BM::Store base, mine; FolderMap map;
+        for (int i = 0; i < 2048; ++i) {   // 2 048 earlier imports, each with a renamed container and root (6 144 nodes)
+            Source s; s.browser = Browser::Chrome; s.profile = L"Profile " + std::to_wstring(i); s.soleProfile = false;
+            const BM::Id id = mine.AddFolder(BM::OtherRoot, BM::End, L"old custom " + std::to_wstring(i), 1), root = mine.AddFolder(id, BM::End, L"old root", 1);
+            CHECK(id != BM::NoId && root != BM::NoId && mine.Add(root, BM::End, L"old link", L"https://bounds.example/", 1) != BM::NoId);
+            map.Prefer(SourceKey(s), {id, 1}); map.Prefer(SourceKey(s) + "|bookmark_bar", {root, 1});
+        }
+        { std::ostringstream o; mine.Write(o); CHECK(ProfileStore::WriteAtomic(bm, o.str())); CHECK(ProfileStore::WriteAtomic(mf, map.Write())); base = mine; }
+        OK(map.Records() == 4096 && mine.Size() == 6144);
+        const auto roots = ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"children\":[{\"type\":\"url\",\"name\":\"new\",\"url\":\"https://bounds.example/\"}]}}}").roots;
+        Source s; s.browser = Browser::Chrome; s.profile = L"Profile 9999"; s.soleProfile = false; bool saved = false;
+        const auto first = CommitBookmarks(dir, bm, mf, base, mine, s, roots, now, &saved);
+        std::string bytes; ProfileStore::ReadAll(mf, bytes); bool known = false, complete = false;
+        const FolderMap reread = FolderMap::Read(bytes, &known, &complete);
+        OK(first.Saved() && saved && mine.Size() == 6147 && reread.Records() == 4098 && complete && reread.Fits());
+        // Restart; Profile 9's root (an old, renamed one) is still identified: nothing duplicated.
+        { std::istringstream in(std::string([&] { std::string b; ProfileStore::ReadAll(bm, b); return b; }())); mine = BM::Store::Read(in); base = mine; }
+        Source p9 = s; p9.profile = L"Profile 9";
+        OK(reread.entries.count(SourceKey(p9) + "|bookmark_bar") == 1);
+        const auto again = CommitBookmarks(dir, bm, mf, base, mine, p9, roots, now + 1, &saved);
+        OK(again.Saved() && again.counts.imported == 0 && again.counts.present == 1 && mine.Size() == 6147);
+        // A map file already over the reader's bound (written by anything else): refused whole, untouched.
+        FolderMap over = reread; for (std::size_t i = 0; over.Records() <= FolderMap::Limit; ++i) over.entries["chromium:Chrome/Extra " + std::to_string(i)].push_back({static_cast<BM::Id>(900000 + i), 1});
+        const std::string overText = over.Write(); CHECK(ProfileStore::WriteAtomic(mf, overText));
+        std::string bmBefore; ProfileStore::ReadAll(bm, bmBefore);
+        const auto refused = CommitBookmarks(dir, bm, mf, base, mine, p9, roots, now + 2, &saved);
+        std::string mfAfter, bmAfter; ProfileStore::ReadAll(mf, mfAfter); ProfileStore::ReadAll(bm, bmAfter);
+        OK(!refused.Saved() && refused.identity == Identity::Damaged && refused.counts == Counts{} && mfAfter == overText && bmAfter == bmBefore);
     }
 
     // ---- Read-time substitution (review 934ef4b finding 3): folders pinned again when « Importer » is pressed ------

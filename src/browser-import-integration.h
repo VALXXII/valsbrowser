@@ -159,7 +159,7 @@ void ImportFinished() {
                 lines.push_back(TRF(import_result_bookmarks, BI::CountsText(c.counts)));
                 Log(L"IMPORT bookmarks saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored));
                 BookmarksChanged();
-            } else { failed(TR(import_item_bookmarks), c.identity == BI::Identity::Newer ? TR(import_map_newer) : TR(import_save_failed)); Log(L"IMPORT bookmarks save failed result=" + std::to_wstring(static_cast<int>(c.result)) + L" identity=" + std::to_wstring(static_cast<int>(c.identity))); }
+            } else { failed(TR(import_item_bookmarks), c.identity == BI::Identity::Newer ? TR(import_map_newer) : c.identity == BI::Identity::Damaged ? TR(import_map_damaged) : c.identity == BI::Identity::Full ? TR(import_map_full) : TR(import_save_failed)); Log(L"IMPORT bookmarks save failed result=" + std::to_wstring(static_cast<int>(c.result)) + L" identity=" + std::to_wstring(static_cast<int>(c.identity))); }
         }
     }
     if (job->options.history) {

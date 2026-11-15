@@ -568,13 +568,21 @@ struct FolderMap {
     struct Entry { Bookmarks::Id id = 0; std::int64_t added = 0; bool operator==(const Entry& o) const { return id == o.id && added == o.added; } };
     std::map<std::string, std::vector<Entry>> entries;
     static constexpr const char* Header = "browser-bookmark-imports 1";
-    static constexpr std::size_t Limit = 4096, Candidates = 4;
+    // Capacity (review 2ed598c). Every record names a distinct folder that exists in the bookmarks file as read or in
+    // the result being written (Prune), and a folder belongs to one key only (Claimed), so valid records can never
+    // exceed twice the bookmark store's own node limit: Limit is that bound. CommitBookmarks still checks, before
+    // writing anything, that the map it would write fits it and reads back identically (Fits), and refuses otherwise.
+    static constexpr std::size_t Limit = 2 * Bookmarks::Store::Limit, Candidates = 4;
     bool operator==(const FolderMap& o) const { return entries == o.entries; }
     bool operator!=(const FolderMap& o) const { return !(*this == o); }
-    // `known`: false for a file of another version (left untouched, never rewritten). Lines of one key, in file
-    // order, are its candidates in preference order.
-    static FolderMap Read(const std::string& bytes, bool* known) {
-        FolderMap m; if (known) *known = true;
+    std::size_t Records() const { std::size_t n = 0; for (const auto& [k, list] : entries) n += list.size(); return n; }
+    // `known`: false for a file of another version (left untouched, never rewritten). `complete`: false when the file
+    // holds anything this reader would have to drop (more than Limit records, more than Candidates for a key, a
+    // damaged line): such a map is never used nor rewritten, the import is refused instead of half-remembered.
+    // Lines of one key, in file order, are its candidates in preference order; an exact repeated line is harmless.
+    static FolderMap Read(const std::string& bytes, bool* known, bool* complete = nullptr) {
+        FolderMap m; if (known) *known = true; if (complete) *complete = true;
+        auto partial = [&] { if (complete) *complete = false; };
         if (bytes.empty()) return m;
         std::size_t start = 0, line = 0, kept = 0;
         while (start < bytes.size()) {
@@ -582,13 +590,17 @@ struct FolderMap {
             std::string l = bytes.substr(start, end - start); start = end + 1;
             if (!l.empty() && l.back() == '\r') l.pop_back();
             if (line++ == 0) { if (l != Header) { if (known) *known = false; return FolderMap{}; } continue; }
+            if (l.empty()) continue;
             const auto a = l.find('\t'), b = a == std::string::npos ? a : l.find('\t', a + 1);
-            if (b == std::string::npos || kept >= Limit) continue;   // damaged line: dropped (a hint, never data)
-            try {
-                const Entry e{static_cast<Bookmarks::Id>(std::stoul(l.substr(a + 1, b - a - 1))), std::stoll(l.substr(b + 1))};
-                auto& list = m.entries[l.substr(0, a)];
-                if (list.size() < Candidates && std::find(list.begin(), list.end(), e) == list.end()) { list.push_back(e); ++kept; }
-            } catch (...) {}
+            if (b == std::string::npos || a == 0) { partial(); continue; }
+            Entry e;
+            try { std::size_t used = 0; const std::string id = l.substr(a + 1, b - a - 1), at = l.substr(b + 1);
+                  const unsigned long v = std::stoul(id, &used); if (used != id.size()) throw 0; e.id = static_cast<Bookmarks::Id>(v);
+                  e.added = std::stoll(at, &used); if (used != at.size()) throw 0; } catch (...) { partial(); continue; }
+            auto& list = m.entries[l.substr(0, a)];
+            if (std::find(list.begin(), list.end(), e) != list.end()) continue;
+            if (list.size() >= Candidates || kept >= Limit) { partial(); continue; }
+            list.push_back(e); ++kept;
         }
         return m;
     }
@@ -596,6 +608,13 @@ struct FolderMap {
         std::string out = std::string(Header) + "\n";
         for (const auto& [k, list] : entries) for (const auto& e : list) out += k + "\t" + std::to_string(e.id) + "\t" + std::to_string(e.added) + "\n";
         return out;
+    }
+    // What would be written is read back whole and identical (keys, candidates, order) within the reader's bounds.
+    bool Fits() const {
+        if (Records() > Limit) return false;
+        for (const auto& [k, list] : entries) if (k.empty() || list.empty() || list.size() > Candidates || k.find_first_of("\t\r\n") != std::string::npos) return false;
+        bool known = false, complete = false; const FolderMap back = Read(Write(), &known, &complete);
+        return known && complete && back == *this;
     }
     static const Bookmarks::Node* Holds(const Bookmarks::Store& s, const Entry& e) {
         const Bookmarks::Node* n = s.Find(e.id);
@@ -1036,7 +1055,7 @@ inline Counts ApplyHistory(AddressBar::History& h, const std::vector<Visit>& vis
 // stop the thread exactly at that boundary (the state a crash leaves).
 inline std::function<void()>& MapWrittenForTest() { static std::function<void()> hook; return hook; }
 // `identity`: why the bookmarks category was refused although the bookmarks file itself was fine (see CommitBookmarks).
-enum class Identity { Ok, Unwritable, Newer };
+enum class Identity { Ok, Unwritable, Newer, Damaged, Full };
 struct Committed { ProfileStore::Result result = ProfileStore::Result::Failed; Counts counts; Identity identity = Identity::Ok; bool Saved() const { return result == ProfileStore::Result::Written || result == ProfileStore::Result::Unchanged; } };
 // With the stable folder map (`mapFile`, normally <data>\\bookmark-imports), one transaction under the profile lock
 // (review 99959e3): the map holding every new or changed source identity is written FIRST, after the merge has fixed
@@ -1057,10 +1076,12 @@ inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring
     if (!lock.Held()) { c.result = ProfileStore::Result::Busy; return c; }
     std::string bytes; bool known = true;
     if (!ProfileStore::ReadAll(mapFile, bytes)) { c.identity = Identity::Unwritable; return c; }   // unreadable: never rewritten blind
-    const FolderMap before = FolderMap::Read(bytes, &known);
+    bool complete = true;
+    const FolderMap before = FolderMap::Read(bytes, &known, &complete);
     if (!known) { c.identity = Identity::Newer; return c; }   // another version's map: left as is, nothing imported
+    if (!complete) { c.identity = Identity::Damaged; return c; }   // never used half-read, never rewritten
     FolderMap map = before; BM::Store theirs;
-    bool mapOk = true;
+    bool mapOk = true, mapFull = false;
     c.result = ProfileStore::Commit<BM::Store>(dataDir, file, base, mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) {
         BM::Store r = BM::Store::Merge(b, m, t, &ids);
         map = before; theirs = t;   // the merge may run again: start from the file's map each time
@@ -1069,12 +1090,13 @@ inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring
     }, timeoutMs, {"browser-bookmarks 1"}, true, [&](const BM::Store& merged) {
         // Pre-write step: the identities first. A failure here writes nothing at all.
         map.Prune(merged, theirs);
+        if (!map.Fits()) { mapFull = true; return false; }   // over the reader's bounds: nothing written at all
         mapOk = map == before || ProfileStore::WriteAtomic(mapFile, map.Write());
         if (mapOk && MapWrittenForTest()) MapWrittenForTest()();
         return mapOk;
     });
     if (remap) *remap = ids;
-    if (!mapOk) c.identity = Identity::Unwritable;
+    if (mapFull) c.identity = Identity::Full; else if (!mapOk) c.identity = Identity::Unwritable;
     if (!c.Saved()) { c.counts = Counts{}; return c; }
     if (mapSaved) *mapSaved = true;
     return c;
