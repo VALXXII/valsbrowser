@@ -20,11 +20,15 @@ Checks (each recorded with its observed values in <out>/result.json):
   child_close   window.close() in the child removes only its tab; the opener sees .closed === true
   refused       file:, data:, javascript: and the debug sandbox origin are refused (null, no new page);
                 about:blank then navigated to the debug sandbox is cancelled
+  https_only    HTTPS-only (on in this copy) still runs in the popup's first load: an http:// popup to a non-exempt host
+                (popup.test, mapped to 127.0.0.1 by --host-resolver-rules: no DNS leaves the machine) shows the host's
+                « not secure » interstitial
+  cert_denied   an invalid certificate (throwaway self-signed, local TLS server) is still refused in the popup's first load
   paymentRequest  typeof PaymentRequest, recorded only (WebView2 disables the Web Payment API; not changed here)
 """
 from __future__ import annotations
 import argparse, ast, base64, ctypes, ctypes.wintypes as W, hashlib, struct, http.server, json, os, shutil, socket, subprocess, sys, threading, time
-import urllib.parse, urllib.request
+import ssl, urllib.parse, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +45,8 @@ if(window.opener)window.opener.postMessage('hello:'+n,location.origin);</script>
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'   # keep-alive with Content-Length: no per-response socket close (local ERR_CONNECTION_ABORTED flakes)
+
     def do_GET(self):
         body = (TARGET if self.path.startswith('/target') else OPENER).encode()
         self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.send_header('Content-Length', str(len(body)))
@@ -66,10 +72,23 @@ def main() -> int:
     shutil.copytree(src / 'assets', app / 'assets')
     srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler); base = f'http://127.0.0.1:{srv.server_port}'
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # Local TLS server with a throwaway self-signed certificate (never trusted anywhere): the certificate must be refused.
+    tls = None
+    try:
+        key, crt = out / 'tls-key.pem', out / 'tls-cert.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(key), '-out', str(crt), '-days', '1',
+                        '-subj', '/CN=127.0.0.1'], check=True, capture_output=True)
+        tls = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(str(crt), str(key))
+        tls.socket = ctx.wrap_socket(tls.socket, server_side=True)
+        threading.Thread(target=tls.serve_forever, daemon=True).start()
+    except (OSError, subprocess.CalledProcessError) as e:
+        print('TLS fixture unavailable:', e, flush=True); tls = None
     port = free_port()
     (app / 'session').write_text(f'browser-session-2\n0\n1\n"{base}/opener"\n0\n', encoding='utf-8', newline='\n')
-    (app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\n', encoding='utf-8', newline='\n')
-    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port} --remote-debugging-address=127.0.0.1')
+    (app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\nconfirm-close-tabs=0\nhttps-only=1\n', encoding='utf-8', newline='\n')
+    env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={port} --remote-debugging-address=127.0.0.1 '
+               '"--host-resolver-rules=MAP popup.test 127.0.0.1"')
     http_open = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     proc = subprocess.Popen([str(app / 'browser.exe')], cwd=app, env=env)
     u32 = ctypes.windll.user32; u32.PostMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
@@ -195,6 +214,24 @@ def main() -> int:
         extra = len(targets()) - before
         check('refused', all(refused.values()) and not debug_pages and not pages_with('javascript:') and pages_with('file:') == [],
               null_returned=refused, debug_pages=debug_pages, new_pages=extra, javascript_open=res['observed_javascript_open'])
+        # ---- HTTPS-only in the popup's first load (http:// to a non-exempt host)
+        ref = ev(op, f"(()=>{{window.rh=window.open('http://popup.test:{srv.server_port}/target?n=T','https');return !!rh}})()")
+        time.sleep(3)
+        hlog = (app / 'prototype.log').read_text(encoding='utf-8', errors='replace') if (app / 'prototype.log').exists() else ''
+        served = [t.get('title') for t in targets() if t.get('title', '').startswith('TARGET T')]
+        check('https_only', ref and 'HTTPS interstitial http://popup.test:' in hlog and not served,
+              reference=ref, interstitial_logged='HTTPS interstitial http://popup.test:' in hlog, target_served=served)
+        # ---- invalid certificate refused in the popup's first load
+        if tls:
+            tport = tls.server_address[1]
+            ref = ev(op, f"(()=>{{window.rk=window.open('https://127.0.0.1:{tport}/target?n=K','cert');return !!rk}})()")
+            time.sleep(3)
+            served = [t.get('title') for t in targets() if t.get('title', '').startswith('TARGET K')]
+            log = (app / 'prototype.log').read_text(encoding='utf-8', errors='replace') if (app / 'prototype.log').exists() else ''
+            check('cert_denied', ref and not served and 'CERTIFICATE error https://127.0.0.1:' in log, reference=ref, target_served=served,
+                  certificate_logged='CERTIFICATE error https://127.0.0.1:' in log)
+        else:
+            check('cert_denied', False, reason='TLS fixture unavailable')
         # ---- an ordinary new tab (Ctrl+T's command, posted to OUR window only) still gets the native home:
         #      its about:blank stays the hidden home document, unlike a script-opened blank page
         own = []
@@ -239,6 +276,8 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             proc.terminate(); proc.wait(timeout=10)
         srv.shutdown(); srv.server_close()
+        if tls:
+            tls.shutdown(); tls.server_close()
         log = app / 'prototype.log'
         res['log_tail'] = [l for l in (log.read_text(encoding='utf-8', errors='replace').splitlines() if log.exists() else [])
                            if 'POPUP' in l or 'ERROR' in l][-40:]

@@ -190,7 +190,7 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     // Script-opened target (window.open): its about:blank is a web document, never the native home, until the user
     // deliberately goes Home (Navigate with an empty address sets blankIsHome again). popupSetup: created for a
     // pending request, not yet assigned: no script removal/reinjection meanwhile (queued in audioReinject).
-    bool blankIsHome=true,scriptOpened=false,popupSetup=false,audioReinject=false,scriptCloseQueued=false; };
+    bool blankIsHome=true,popupSetup=false,audioReinject=false,scriptCloseQueued=false; };
 // NEWTAB: the home tab's last render showed most visited sites (Tab is shared; kept beside it).
 // A home tab stays hidden (the native canvas shows through) unless it shows tiles.
 struct HomeTiles { std::vector<unsigned> serials; bool Has(const Tab& t)const{return std::find(serials.begin(),serials.end(),t.serial)!=serials.end();} void Set(const Tab& t,bool on){serials.erase(std::remove(serials.begin(),serials.end(),t.serial),serials.end());if(on)serials.push_back(t.serial);} } homeTiles;
@@ -2144,6 +2144,7 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
 }
 bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message);bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text);
 ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBarrier(const PopupHost::RequestPtr& popup,const wchar_t* what); // audio-integration.h
+const std::wstring& PopupQa();
 void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup); // audio-integration.h
 #include "elements-integration.h"
 void SyncLatch();
@@ -2542,6 +2543,11 @@ void RegisterE2EDestinationGuards(const std::shared_ptr<Tab>& t){
 }
 #endif
 // ---- window.open targets (design/popup-window-target-report.md) --------------------------------------------
+// --workspace-test only (tests/popup/popup_target_e2e.py): BROWSER_POPUP_QA=script-fail|assign-fail|posthook-fail|delay
+// injects a failure at that stage, or holds every request ~4 s before its assignment. Never read otherwise.
+const std::wstring& PopupQa(){static const std::wstring qa=[]{if(!workspaceTest)return std::wstring();wchar_t b[64]{};const DWORD n=GetEnvironmentVariableW(L"BROWSER_POPUP_QA",b,64);return n&&n<64?std::wstring(b,n):std::wstring();}();return qa;}
+std::vector<std::weak_ptr<PopupHost::Request>> popupQaHeld;void PopupAssign(const PopupHost::RequestPtr& r);
+void CALLBACK PopupQaRelease(HWND,UINT,UINT_PTR id,DWORD){KillTimer(nullptr,id);auto held=std::move(popupQaHeld);popupQaHeld.clear();for(auto& w:held)if(auto r=w.lock())PopupAssign(r);}
 // The engine's own request, retained until Finish: its args (put_NewWindow), its deferral, and the exact environment
 // the opener ran in (the target must be created in it — same profile, same private partition).
 struct PopupCom { ComRef<ICoreWebView2NewWindowRequestedEventArgs> args; DeferralGuard deferral; Com<ICoreWebView2Environment> env; };
@@ -2554,12 +2560,13 @@ void DropPopupTarget(unsigned serial){auto t=TabBySerial(serial);if(!t||t->close
 void PopupAssign(const PopupHost::RequestPtr& r){
     Workspace* owner=static_cast<Workspace*>(const_cast<void*>(r->owner));
     if(r->terminal)return;if(halted||WorkspaceDead(owner)){popups.Finish(r,false);return;}
+    if(PopupQa()==L"delay"&&!r->qaHeld){r->qaHeld=true;popupQaHeld.push_back(r);SetTimer(nullptr,0,4000,PopupQaRelease);Log(L"POPUP QA held before assignment");return;}
     WorkspaceScope scope(owner);
     auto* com=PopupComOf(r);auto t=TabBySerial(r->target);auto opener=TabBySerial(r->opener);
     if(!com||!com->args.p||!t||t->closed||!t->view.p||!opener||opener->closed||environment.p!=com->env.p){Log(L"POPUP target no longer valid: refused");popups.Finish(r,false);return;}
-    if(FAILED(com->args->put_NewWindow(t->view.p))){Log(L"POPUP put_NewWindow failed");popups.Finish(r,false);return;}
+    if(PopupQa()==L"assign-fail"||FAILED(com->args->put_NewWindow(t->view.p))){Log(L"POPUP put_NewWindow failed");popups.Finish(r,false);return;}
     r->assigned=true;
-    bool hooks=RegisterSandboxResources(t);
+    bool hooks=RegisterSandboxResources(t)&&PopupQa()!=L"posthook-fail";
 #ifdef BROWSER_E2E_FIXTURE_HOOK
     RegisterE2EDestinationGuards(t);
 #endif
@@ -2579,6 +2586,8 @@ HRESULT NewWindowRequested(const std::shared_ptr<Tab>& opener,ICoreWebView2NewWi
     BOOL user=FALSE;if(FAILED(a->get_IsUserInitiated(&user)))user=FALSE;
     if(!PopupHost::AdmitInitialUri(uri,IsSandboxUri)){Log(L"POPUP refused: address not admitted");return S_OK;}
     if(!opener||opener->closed||!environment.p)return S_OK;
+    // The debug sandbox (an internal page) never gets a linked web window: its previous behaviour, an unlinked tab.
+    if(opener->sandbox||IsSandboxUri(opener->uri)){if(uri!=L"about:blank")NewTab(uri);Log(L"POPUP from the debug sandbox: unlinked tab");return S_OK;}
     if(pages.size()>=128){if(WorkspaceParked())Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return S_OK;}
     ICoreWebView2Deferral* deferral=nullptr;if(FAILED(a->GetDeferral(&deferral))||!deferral){Log(L"POPUP refused: no deferral");return S_OK;}
     auto com=std::make_shared<PopupCom>();com->deferral.deferral=deferral;com->args=ComRef<ICoreWebView2NewWindowRequestedEventArgs>(a);com->env.set(environment.p);
@@ -2593,7 +2602,7 @@ HRESULT NewWindowRequested(const std::shared_ptr<Tab>& opener,ICoreWebView2NewWi
 void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup);
 void NewTab(std::wstring uri,int index,std::wstring title){CreateTab(std::move(uri),index,std::move(title),nullptr);}
 void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup){if(halted||!environment.p){if(popup)popups.Finish(popup,false);return;}const bool parked=WorkspaceParked(); /* a hidden profile's page opened a window: its tab, never the visible window's hover / toast */if(pages.size()>=128){if(popup)popups.Finish(popup,false);if(parked)Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return;}if(!parked){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=std::make_shared<Tab>();t->sandboxPending=sandboxNextTab&&IsSandboxUri(uri);if(IsSandboxUri(uri)&&!t->sandboxPending)uri.clear(); /* restored session or a page: never the sandbox */sandboxNextTab=false;t->uri=uri;t->home=uri.empty();t->title=std::move(title);
-    if(popup){t->home=false;t->blankIsHome=false;t->scriptOpened=true;t->popupSetup=true;t->sandboxPending=false;popup->target=t->serial;Workspace* owner=static_cast<Workspace*>(const_cast<void*>(popup->owner));const unsigned serial=t->serial;
+    if(popup){t->home=false;t->blankIsHome=false;t->popupSetup=true;t->sandboxPending=false;popup->target=t->serial;Workspace* owner=static_cast<Workspace*>(const_cast<void*>(popup->owner));const unsigned serial=t->serial;
         popup->dropTarget=[owner,serial]{if(halted||WorkspaceDead(owner))return;WorkspaceScope scope(owner);Defer([serial]{DropPopupTarget(serial);});};}
    if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());CancelTabDrag();pages.insert(pages.begin()+index,t);Select(index);std::weak_ptr<Tab> weak=t;
     if(popup)unownedCallbacks=true;   // a window.open target: its completion must run (and clean up) even after its profile left

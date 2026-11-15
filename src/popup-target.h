@@ -21,7 +21,7 @@ namespace PopupHost {
 struct Request {
     const void* owner = nullptr;       // the opener's workspace (profile) — the target is created there, always
     unsigned opener = 0, target = 0;   // tab serials (identity; indexes move)
-    bool terminal = false, assigned = false, userInitiated = false, blank = false;
+    bool terminal = false, assigned = false, userInitiated = false, blank = false, qaHeld = false;
     int waits = 0;                     // readiness barrier: controller setup + each initial document script
     std::function<void()> complete;    // completes and releases the engine deferral (called exactly once)
     std::function<void()> release;     // releases the retained args / captured environment

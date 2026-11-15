@@ -155,7 +155,7 @@ ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBar
     auto* h=Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler,HRESULT,LPCWSTR>([popup,what=std::wstring(what)](HRESULT hr,LPCWSTR)->HRESULT{
         Workspace* owner=static_cast<Workspace*>(const_cast<void*>(popup->owner));
         if(popup->terminal||WorkspaceDead(owner))return S_OK;
-        WorkspaceScope scope(owner);if(FAILED(hr))Log(L"POPUP initial script failed: "+what);popups.Step(popup,SUCCEEDED(hr));return S_OK;});
+        WorkspaceScope scope(owner);if(PopupQa()==L"script-fail")hr=E_FAIL;if(FAILED(hr))Log(L"POPUP initial script failed: "+what);popups.Step(popup,SUCCEEDED(hr));return S_OK;});
     unownedCallbacks=false;PopupHost::Registry::Arm(popup,1);return h;
 }
 // ---- Gains -----------------------------------------------------------------------------------
