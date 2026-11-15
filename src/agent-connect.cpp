@@ -1161,7 +1161,7 @@ Report MergeClaudeConfig(const std::wstring& configPath, const Target& t, std::i
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
     if (r == Read::TooBig) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_claude_config_too_big), configPath);
-    if (r == Read::Error) return Make(Result::Failed, "Configuration de Claude illisible.", configPath);
+    if (r == Read::Error) return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_config_unreadable), configPath);
     std::size_t bodyStart = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
     const bool blank = SkipWs(text, bodyStart) >= text.size();
     std::string out;
@@ -1235,7 +1235,7 @@ Report RemoveClaudeConfig(const std::wstring& configPath, const std::string& ser
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
     if (r == Read::Missing) return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_claude_not_configured), configPath);
-    if (r != Read::Ok) return Make(Result::Failed, "Configuration de Claude illisible.", configPath);
+    if (r != Read::Ok) return Make(Result::Failed, I18n::U8(I18n::Id::agent_claude_config_unreadable), configPath);
     const std::size_t bodyStart = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
     if (SkipWs(text, bodyStart) >= text.size()) return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_claude_not_configured), configPath);
     Value doc;
@@ -1303,7 +1303,7 @@ Report ConnectClaude(const Environment& env, const Target& t, const std::wstring
     if (!env.testMode && env.mcpbAssociated && env.mcpbAssociated() && !workDir.empty()) {   // test mode: never Claude's installer
         const std::wstring bundle = StripSlash(workDir) + L"\\" + Widen(t.serverName) + L".mcpb";
         if (BuildMcpb(t, bundle, &why) && env.openFile && env.openFile(bundle)) {
-            Report rep = Make(Result::PendingInstall, "Cliquez sur Installer dans Claude.", bundle);
+            Report rep = Make(Result::PendingInstall, I18n::U8(I18n::Id::agent_claude_click_install), bundle);
             return rep;
         }
     }
@@ -1337,7 +1337,7 @@ Report MergeToml(const std::wstring& configPath, const Target& t, std::int64_t n
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
     if (r == Read::TooBig) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_too_big), configPath);
-    if (r == Read::Error) return Make(Result::Failed, "Configuration de Codex illisible.", configPath);
+    if (r == Read::Error) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_config_unreadable_short), configPath);
     const TomlScan scan = ScanToml(text);
     const TomlPlan plan = PlanToml(text, scan, t.serverName);
     if (!plan.scanned) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_unreadable), configPath);
@@ -1377,7 +1377,7 @@ Report RemoveToml(const std::wstring& configPath, const std::string& serverName,
     std::string text;
     const Read r = ReadAll(configPath, MaxConfigBytes, text);
     if (r == Read::Missing) return Make(Result::NotConnected, I18n::U8(I18n::Id::agent_codex_not_configured), configPath);
-    if (r != Read::Ok) return Make(Result::Failed, "Configuration de Codex illisible.", configPath);
+    if (r != Read::Ok) return Make(Result::Failed, I18n::U8(I18n::Id::agent_codex_config_unreadable_short), configPath);
     const TomlScan scan = ScanToml(text);
     const TomlPlan plan = PlanToml(text, scan, serverName);
     if (!plan.scanned) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_unreadable), configPath);
@@ -1418,7 +1418,7 @@ Report ConnectCodex(const Environment& env, const Target& t) {
     // Pre-flight on the current file: same refusals whichever way we write.
     std::string text;
     const Read r = ReadAll(config, MaxConfigBytes, text);
-    if (r == Read::TooBig || r == Read::Error) return Make(r == Read::TooBig ? Result::InvalidConfig : Result::Failed, "Configuration de Codex illisible.", config);
+    if (r == Read::TooBig || r == Read::Error) return Make(r == Read::TooBig ? Result::InvalidConfig : Result::Failed, I18n::U8(I18n::Id::agent_codex_config_unreadable_short), config);
     const TomlScan scan = ScanToml(text);
     const TomlPlan plan = PlanToml(text, scan, t.serverName);
     if (!plan.scanned) return Make(Result::InvalidConfig, I18n::U8(I18n::Id::agent_codex_config_unreadable), config);

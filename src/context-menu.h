@@ -180,7 +180,7 @@ class Menu {
             else if (low == L"right" || low == L"arrowright" || low == L"droite") key = L"\u2192";
             else if (low == L"up" || low == L"arrowup" || low == L"haut") key = L"\u2191";
             else if (low == L"down" || low == L"arrowdown" || low == L"bas") key = L"\u2193";
-            else if (low == L"shift") key = L"Maj";
+            else if (low == L"shift" || low == L"maj") key = TR(key_shift);   // the cap reads in the interface language
             if (!key.empty()) keys.push_back(key);
             if (plus == std::wstring::npos) break;
             start = plus + 1;
@@ -633,6 +633,7 @@ public:
         return c;
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
+    static std::vector<std::wstring> KeysForTest(const std::wstring& shortcut) { return Keys(shortcut); }
     std::vector<Accessibility::Node> AccessibleNodes(int index) const { return Nodes(index); }
     // fromChecked: a keyboard-opened list (a select's options) starts on its checked row, not the first.
     int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false, bool fromChecked = false) {

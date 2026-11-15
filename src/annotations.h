@@ -314,9 +314,14 @@ enum class Code {
 };
 const char* CodeName(Code c);  // "ok", "not_found", "invalid", "conflict", ...
 
+// Why an operation failed, when a person can act on it: the browser UI says it in the interface language
+// (the French `message` is kept for agents/MCP and the log). None: the code alone describes it.
+enum class Reason { None, SiteFull, StoreFull, Migrating, MovedToInstalled, CaptureRefused };
+
 struct Outcome {
     Code code = Code::Ok;
-    std::string message;      // French, user/agent readable
+    Reason reason = Reason::None;
+    std::string message;      // French, agent readable (MCP); the browser UI shows its own text from code/reason
     std::string holder;       // Conflict: agent holding the lease
     std::int64_t holderUntil = 0;
     bool ok() const { return code == Code::Ok; }

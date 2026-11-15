@@ -39,7 +39,8 @@ FILES = {
     'trace-erase.h': 'trace/log helpers',
     'accessibility.h': 'UIA provider plumbing (names come from callers)',
     'annotations.cpp': 'annotation store and its Markdown/MCP documents: data written for agents (stable French schema), '
-                       'event summaries stored as data, store error details that the UI always wraps in a translated sentence',
+                       'event summaries stored as data, store error messages for agents (the browser UI never shows them: '
+                       'it maps Outcome::reason / code to catalog text, src/annotation-problem.h)',
 }
 
 # Known non-interface literals: brands, product/engine names, fonts, technical tokens.
@@ -47,8 +48,8 @@ TOKENS = {
     'browser', 'WebView2', 'Microsoft Edge WebView2', 'Inter Display', 'Segoe UI', 'Segoe UI Variable', 'Segoe Fluent Icons',
     'Segoe MDL2 Assets', 'JetBrains Mono', 'DuckDuckGo', 'Google', 'Brave Search', 'Bing', 'Ecosia', 'Qwant', 'Claude',
     'Claude Desktop', 'Codex', 'OpenAI', 'Anthropic', 'GitHub', 'Windows', 'English', 'Français', 'uBlock Origin Lite',
-    'ThorVG', 'Lottie', 'MCP', 'HTTPS', 'HTTP', 'JSON', 'TOML', 'PDF', 'URL', 'Ctrl', 'Alt', 'Shift', 'Maj', 'Tab', 'Esc',
-    'Entrée', 'Échap', 'Espace', 'F11', 'F5', 'F12', 'Microsoft Corporation', 'Consolas', 'Cascadia Mono',
+    'ThorVG', 'Lottie', 'MCP', 'HTTPS', 'HTTP', 'JSON', 'TOML', 'PDF', 'URL', 'Ctrl', 'Alt', 'Tab',   # language-neutral keys only: no Maj/Shift/Entrée/Échap/Espace
+    'F11', 'F5', 'F12', 'Microsoft Corporation', 'Consolas', 'Cascadia Mono',
 }
 
 LITERAL = re.compile(r'(?:\b(?:L|u8|u|U))?R"([^(\s]{0,16})\((.*?)\)\1"|(?:\b(?:L|u8|u|U))?"((?:[^"\\\n]|\\.)*)"|\'(?:[^\'\\\n]|\\.)*\'|//[^\n]*|/\*.*?\*/', re.S)
@@ -56,8 +57,11 @@ WORD = re.compile(r"[A-Za-zÀ-ÿ][A-Za-zà-ÿ'’]+")
 CAPWORD = r'[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:-[a-zà-ÿ]{2,})*[.!?…]?' 
 ACCENT = re.compile(r'[À-ÿ«»…’—›]')
 # Diagnostics: logs, traces, and main.cpp's Fail/Check(hr, where) whose « where » is the failing API name
-# (the dialog's own wording around it is catalog text).
-LOGISH = re.compile(r'\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable|SandboxLog)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
+# (the dialog's own wording around it is catalog text). Free functions only: a member call such as
+# profileDeleteDialog.Fail(...) or p->Check(...) is UI, never a diagnostic.
+LOGISH = re.compile(r'(?<![.>])\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable|SandboxLog)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
+# A narrow (char) literal that is a French sentence: two or more common French words.
+FRENCH_NARROW = re.compile(r'(?i)(?:\b(?:de|du|des|le|la|les|est|pas|sur|dans|une?|illisible|impossible|cliquez|configuration de)\b.*){2,}')
 TR_CALL = re.compile(r'\bTR[FP]?\(')
 
 
@@ -70,6 +74,10 @@ def unescape(s: str) -> str:
 
 def looks_textual(text: str) -> bool:
     t = text.strip()
+    if re.search(r'(^|\+)(Maj|Shift|Entrée|Enter|Échap|Espace|Space|Suppr|Retour arrière)(\+|$)', t):
+        return True                       # a key name that depends on the language (« Ctrl+Maj+A » / « Ctrl+Shift+A »): use the key_* entries
+    if text != t and re.fullmatch(r"[a-zà-ÿ]+(?: [a-zà-ÿ]+)*", t):
+        return True                       # a lowercase word glued into a sentence (L" sur ", L" of "): use a whole template
     if not t or t in TOKENS or not re.search(r'[A-Za-zÀ-ÿ]', t):
         return False                      # separators and punctuation only (« › », « · »)
     if re.search(r'://|\\\\|^[\w.\-]+\.(png|svg|ico|json|txt|exe|dll|ttf|html?|js|css|ini|lsrupd|mcpb|toml)$', t):
@@ -148,6 +156,12 @@ def self_test() -> list[str]:
         ('Log(L"PROFILES refused " + id + L": pending"); VaultNotice(L"Une suppression est en cours", L"Attendez.");', 2),
         ('Log(L"Opération réussie " +' + chr(10) + '    L"détails");', 0),
         ('Log(L"x"); // a comment with Accentué text', 0),
+        ('n.accelerator = L"Ctrl+Maj+A"; k = L"Shift+F10"; e = L"Échap";', 3),
+        ('profileDeleteDialog.Fail(L"Rien n’a été effacé.");', 1),
+        ('Fail(L"CreateCoreWebView2Environment", hr);', 0),
+        ('return Make(Result::Failed, "Configuration de Claude illisible.", configPath);', 1),
+        ('return Error("invalid header"); Log("ANNOTATE store error"); w.Key("message");', 0),
+        ('auto t = name + L", " + std::to_wstring(i) + L" sur " + std::to_wstring(n);', 1),
     ]
     errors = []
     for src, want in cases:
@@ -185,9 +199,14 @@ def scan_text(text: str) -> list[tuple[int, str]]:
             continue
         value = unescape(m.group(3) or '')
         wide = tok.startswith('L"') or tok.startswith('u8"') or tok.startswith('u"') or tok.startswith('U"')
-        if not wide and not ACCENT.search(value):
-            continue                    # narrow ASCII strings: protocol, file formats, internal errors (the UI is wide text)
         before = text[max(0, m.start() - 40):m.start()]
+        if not wide and not ACCENT.search(value):
+            # Narrow ASCII strings are protocol, file formats and internal errors (the UI is wide text), EXCEPT
+            # messages that flow to the UI (agent Report.message through Make/Refused, « .message = ») and
+            # narrow sentences that read as French.
+            to_ui = re.search(r'(\bMake\(\s*[\w:]+\s*,\s*|\bRefused\(\s*|\bmessage\s*=\s*)$', before)
+            if not ((to_ui and looks_textual(value)) or FRENCH_NARROW.search(value)):
+                continue
         if re.search(r'(automationId|lpszClassName|ClassName|className|IID_\w+|activityId)\s*(=|\+)?\s*\(?$|automationId\s*\+\s*$', before.rstrip()):
             continue                    # UIA automation ids and window class names are identifiers
         if looks_textual(value):

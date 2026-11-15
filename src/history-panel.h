@@ -378,7 +378,7 @@ private:
         scroll_.Snap(0);
         if (IsRowPart(focus_) || IsSection(focus_) || (focus_ == ClearHit && query_.empty())) focus_ = SearchHit;
         Repoint(); RefreshTips(); Invalidate();
-        if (hooks_.announce) hooks_.announce(entries_.empty() ? EmptyText(query_) : std::to_wstring(entries_.size()) + (entries_.size() > 1 ? L" pages" : L" page"));
+        if (hooks_.announce) hooks_.announce(entries_.empty() ? EmptyText(query_) : TRP(history_pages_count, entries_.size()));
     }
     void Open(int index, bool newTab) {
         if (index < 0 || index >= static_cast<int>(entries_.size()) || !hooks_.open) return;

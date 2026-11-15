@@ -44,6 +44,7 @@
 
 #ifdef BROWSER_ANNOTATIONS
 #include "annotations.h"
+#include "annotation-problem.h"
 #include "agent-connect.h"
 #include "annotation-ui.h"
 #include "annotation-script.h"
@@ -692,9 +693,9 @@ void HistoryStoreOp(const std::wstring& id, int op) {
         },
         [op, ann, result] {
             static const wchar_t* names[] = {L"trash", L"restore", L"discard"};
-            Log(std::wstring(L"ANNOTATE history ") + names[op] + L" " + AH::Wide(ann) + L": " + AH::Wide(BA::CodeName(result->code)));
+            Log(std::wstring(L"ANNOTATE history ") + names[op] + L" " + AH::Wide(ann) + L": " + AH::Wide(BA::CodeName(result->code)) + (result->message.empty() ? L"" : L" — " + AH::Wide(result->message)));
             if (!result->ok() && !(op == 2 && result->code == BA::Code::NotFound)) {
-                Announce(op == 0 ? TRF(annotation_delete_failed, AH::Wide(result->message)) : op == 1 ? TRF(annotation_restore_failed, AH::Wide(result->message)) : std::wstring());
+                Announce(op == 0 ? TRF(annotation_delete_failed, AnnotationProblem::Text(*result)) : op == 1 ? TRF(annotation_restore_failed, AnnotationProblem::Text(*result)) : std::wstring());   // the store's French message is logged, never shown
                 if (launcher.HistoryVisible()) LoadHistory(false, false);
             }
             if (op == 0 && result->ok() && card != Card::None && cardId == ann) { launcher.HideCard(); card = Card::None; }
@@ -818,7 +819,7 @@ void Capture(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
                                                              L"; native frame " + Ms(frameMs) + L" ms, page handoff " + Ms(engineAt - handoff) + L" ms, engine asked after " + Ms(engineAt - selectedAt) +
                                                              L" ms, engine " + Ms(engineDone - engineAt) + L" ms, decode/crop/fill/encode/thumbnail " + Ms(*work) + L" ms" + (mark->present ? L" (fill removed)" : L"") + L", panel built in " + Ms(panelMs) + L" ms while the engine worked" +
             // i18n-exempt-end
-                                                             L" => image in memory " + Ms(engineDone + *work - selectedAt) + L" ms after the selection; UI hand-off " + Ms(NowMs() - engineDone - *work) + L" ms");
+                                                             L" => image in memory " + Ms(engineDone + *work - selectedAt) + L" ms after the selection; UI hand-off " + Ms(NowMs() - engineDone - *work) + L" ms");   // i18n-exempt: timing log text
             });
         return S_OK; });
     const HRESULT hr = t->view->CallDevToolsProtocolMethod(L"Page.captureScreenshot", AH::Wide(AH::ViewportShotParams()).c_str(), cb); cb->Release();
@@ -946,7 +947,7 @@ void OnSubmit(const AUI::NoteSubmission& sub) {
             if (!out->result.ok()) {
                 if (late != lates.end()) lates.erase(late);
                 Log(L"ANNOTATE write failed: " + AH::Wide(out->result.message));
-                if (current) { s.saving = false; note.Failed(TRF(annotation_save_failed_reason, AH::Wide(out->result.message))); }
+                if (current) { s.saving = false; note.Failed(TRF(annotation_save_failed_reason, AnnotationProblem::Text(out->result))); }
                 return;
             }
             const auto& e = out->entry; last = e; sessionIds.insert(e.annotation.id);
@@ -990,7 +991,7 @@ void EnsureUi() {
     lh.reopen = [] {
         const std::string site = cardSite, id = cardId; launcher.HideCard(); card = Card::None; seenDone.erase(id); seenWorking.erase(id);
         auto r = std::make_shared<BA::Outcome>();
-        Run([site, id, r] { std::lock_guard<std::mutex> g(writeLock); *r = Store().Reopen(site, id); }, [id, r] { Log(L"ANNOTATE reopen " + AH::Wide(id) + L": " + AH::Wide(BA::CodeName(r->code))); Announce(r->ok() ? std::wstring(TR(annotation_reopened)) : TRF(annotation_reopen_failed, AH::Wide(r->message))); });
+        Run([site, id, r] { std::lock_guard<std::mutex> g(writeLock); *r = Store().Reopen(site, id); }, [id, r] { Log(L"ANNOTATE reopen " + AH::Wide(id) + L": " + AH::Wide(BA::CodeName(r->code)) + (r->message.empty() ? L"" : L" — " + AH::Wide(r->message))); Announce(r->ok() ? std::wstring(TR(annotation_reopened)) : TRF(annotation_reopen_failed, AnnotationProblem::Text(*r))); });
     };
     lh.dismissed = [](bool) { card = Card::None; };
     lh.focusOut = [] { FocusPage(); };
@@ -1009,8 +1010,8 @@ void EnsureUi() {
         const std::string site = e->annotation.siteKey, ann = e->annotation.id; auto r = std::make_shared<BA::Outcome>();
         seenUnhandled.erase(ann); seenDone.erase(ann); seenWorking.erase(ann);
         Run([site, ann, r] { std::lock_guard<std::mutex> g(writeLock); *r = Store().Reopen(site, ann); },
-            [ann, r] { Log(L"ANNOTATE history reopen " + AH::Wide(ann) + L": " + AH::Wide(BA::CodeName(r->code)));
-                       if (!r->ok()) Announce(TRF(annotation_reopen_failed, AH::Wide(r->message)));
+            [ann, r] { Log(L"ANNOTATE history reopen " + AH::Wide(ann) + L": " + AH::Wide(BA::CodeName(r->code)) + (r->message.empty() ? L"" : L" — " + AH::Wide(r->message)));
+                       if (!r->ok()) Announce(TRF(annotation_reopen_failed, AnnotationProblem::Text(*r)));
                        if (launcher.HistoryVisible()) LoadHistory(false, false);
                        RefreshStatus(); });
     };
@@ -1216,7 +1217,7 @@ void AnnotationMenuItems(const std::shared_ptr<Tab>& tab, ICoreWebView2ContextMe
     POINT at{}; args->get_Location(&at);
     Ann::menu.valid = true; Ann::menu.at = at; Ann::menu.selection = !Ann::menu.text.empty();
     std::vector<CM::Item> add{CM::Separator(), CM::Command(AnnotateElementItem, TR(annotation_menu_element))};
-    add.back().shortcut = L"Ctrl+Maj+A";
+    add.back().shortcut = TR(key_ctrl_shift_a);
     if (Ann::menu.selection) add.push_back(CM::Command(AnnotateSelectionItem, TR(annotation_menu_selection)));
     if (Ann::last) add.push_back(CM::Command(AnnotateMarkdownItem, TR(annotation_menu_copy_last)));
     auto lastGroup = std::find_if(items.rbegin(), items.rend(), [](const CM::Item& m) { return m.separator; });

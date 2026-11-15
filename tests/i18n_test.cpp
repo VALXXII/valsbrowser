@@ -115,6 +115,35 @@ int main() {
         Check(std::wstring(BS::Info(BS::Tracking::Balanced).label) == L"\u00c9quilibr\u00e9", "the same table answers in French again: nothing frozen");
     }
 
+    // A download's failure reason is a stable code rendered in the interface language; rows saved before the
+    // codes (generated text, either language) read in the current language; other text stays as stored.
+    {
+        namespace DL = NativeChrome::Downloads; using I18n::Id;
+        const std::wstring offline = DL::ReasonCode(Id::download_error_offline), blocked = DL::ReasonCode(Id::download_blocked_dangerous);
+        Check(offline == L"@download_error_offline", "download reason stored as a code");
+        const std::wstring legacyFr = I18n::EntryOf(Id::download_blocked_dangerous).fr, legacyOffline = I18n::EntryOf(Id::download_error_offline).fr;
+        Check(DL::FailureText(blocked).rfind(L"Bloqué", 0) == 0 && DL::FailureText(offline).rfind(L"Échec · ", 0) == 0, "French: codes read in French");
+        I18n::SetForProcess(Locale::En);
+        Check(DL::FailureText(blocked) == L"Blocked · dangerous file", "English: blocked code reads « Blocked · dangerous file »");
+        Check(DL::FailureText(legacyFr) == L"Blocked · dangerous file", "English: a row saved in French (« Bloqué · fichier dangereux ») reads in English, never « Failed · Bloqué »");
+        Check(DL::FailureText(legacyOffline) == std::wstring(L"Failed · ") + I18n::EntryOf(Id::download_error_offline).en, "English: a legacy French generated reason reads in English");
+        Check(DL::FailureText(DL::ReasonCode(Id::downloads_unavailable)) == L"Failed · Download unavailable", "English: « Download unavailable » from its code");
+        Check(DL::FailureText(L"Disk quota exceeded (0x80070070)") == L"Failed · Disk quota exceeded (0x80070070)", "unknown detail kept as stored");
+        Check(DL::FailureText(L"@download_error_from_the_future") == L"Failed", "an unknown code is never shown raw");
+        I18n::SetForProcess(Locale::Fr);
+    }
+
+    // Spoken phrases that used to glue a French word into a sentence (« 2 sur 5 », « … rouvert », « … indique »).
+    {
+        Check(TRF(suggestion_position, L"wikipedia.org", L"2", L"5") == L"wikipedia.org, 2 sur 5" && TRF(split_announce_reopened, L"Docs") == L"Docs rouvert" &&
+              TRF(script_alert_origin_says, L"exemple.fr") == L"exemple.fr indique" && TRP(history_pages_count, 1) == L"1 page", "French positions and announcements");
+        I18n::SetForProcess(Locale::En);
+        Check(TRF(suggestion_position, L"wikipedia.org", L"2", L"5") == L"wikipedia.org, 2 of 5", "English suggestion position « 2 of 5 »");
+        Check(TRF(split_announce_reopened, L"Docs") == L"Docs reopened" && TRF(script_alert_origin_says, L"example.com") == L"example.com says" && TRP(history_pages_count, 3) == L"3 pages", "English: reopened, « says », pages");
+        Check(std::wstring(TR(key_shift_f10)) == L"Shift+F10" && std::wstring(TR(key_ctrl_shift_a)) == L"Ctrl+Shift+A", "English accelerators « Shift+F10 », « Ctrl+Shift+A »");
+        I18n::SetForProcess(Locale::Fr);
+    }
+
     // Address bar placeholder, engine language argument, spoken names (both languages).
     {
         Check(std::wstring(TR(chrome_address_placeholder)) == L"Rechercher ou saisir une adresse", "French address placeholder");

@@ -90,7 +90,7 @@ public:
     D2D1_RECT_F DownloadIconDirty()const{const float cx=width-85,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
     // Audio button (left of History, only while a site has made sound): icon-only frames.
     static constexpr float AudioRight=133,AudioLeft=157;   // from the window's right edge; the field ends 6 DIP before
-    bool audioShown=false;std::wstring audioTip=TR(chrome_tip_audio);
+    bool audioShown=false;   // tooltip resolved at use (TR(chrome_tip_audio)): `chrome` is a global built before the language is pinned
     Audio::IconModel audioIcon;
     D2D1_RECT_F AudioIconDirty()const{return {width-AudioLeft-1,47,width-AudioRight+1,73};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
@@ -644,7 +644,8 @@ public:
     BookmarksBar::Result band;     // last layout (Build)
     // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
-    bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip=TR(chrome_tip_annotate);
+    bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip;   // empty until Ann::SyncChrome: AnnotateTip() falls back to the catalog at use
+    const wchar_t* AnnotateTip() const { return annotateTip.empty() ? TR(chrome_tip_annotate) : annotateTip.c_str(); }
     std::function<void(ID2D1RenderTarget*,ID2D1Factory*,ID2D1SolidColorBrush*,D2D1_RECT_F,Motion::InteractionVisual,bool focus)> paintAnnotate;
     float AnnotateRight()const{return (audioShown?AudioLeft:127.f)+6;}   // from the right edge: 6 DIP left of Audio/History
     float ContentTop()const{return Design::Vertical::ContentTop(bandShown)+annotationBand;}
@@ -940,8 +941,8 @@ public:
         if(vaultKey){regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},TR(chrome_tip_fill_password)});}
         regions.push_back({'C',{bar.right-60,48,bar.right-36,72},TR(chrome_tip_copy_link)});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?TR(chrome_tip_edit_bookmark):TR(chrome_tip_add_bookmark)});
-        if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},annotateTip.c_str()});
-        if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},audioTip.c_str()});
+        if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},AnnotateTip()});
+        if(audioShown)regions.push_back({'V',{width-AudioLeft,48,width-AudioRight,72},TR(chrome_tip_audio)});
         regions.push_back({'Y',{width-127,48,width-103,72},TR(chrome_tip_history)});regions.push_back({'D',{width-97,48,width-73,72},TR(chrome_tip_downloads)});regions.push_back({'P',{width-67,48,width-43,72},TR(chrome_tip_new_private_window)});regions.push_back({'S',{width-30,48,width-6,72},TR(chrome_tip_settings)});
         BuildBand();
     }

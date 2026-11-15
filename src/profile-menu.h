@@ -493,7 +493,7 @@ public:
             else if (r.kind == Kind::Manage) n.automationId = L"ProfileMenuManage";
             else {
                 const Profile& p = model_->profiles[r.profile]; n.automationId = L"ProfileMenuProfile"; if (p.current) n.status = TR(menu_item_selected);
-                n.accelerator = L"Maj+F10";   // its context menu: « Ouvrir dans une nouvelle fenêtre »
+                n.accelerator = TR(key_shift_f10);   // its context menu: « Ouvrir dans une nouvelle fenêtre »
                 if (!p.tabs.empty()) {   // the preview, also exposed as the row's description
                     std::wstring help; const int shown = std::min<int>(Layout::maxPreview, static_cast<int>(p.tabs.size()));
                     for (int t = 0; t < shown; ++t) help += (t ? L" ; " : L"") + (p.tabs[t].title.empty() ? p.tabs[t].site : p.tabs[t].title);

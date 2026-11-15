@@ -457,7 +457,7 @@ class NotePopover : public Animator::Client {
         g.status = view_.status == NoteStatus::Saving ? TR(note_adding_status) : view_.message; GetWindowRect(hwnd_, &g.bounds); n.push_back(g);
         Accessibility::Node site; site.key = SiteKey; site.parent = GroupKey; site.role = Accessibility::Role::Text; site.name = TR(note_site); site.value = NoteSite(view_.context);
         site.focusable = false; site.bounds = screen(layout_.site); site.automationId = L"AnnotationSite"; n.push_back(site);
-        Accessibility::Node ok; ok.key = NoteAdd; ok.parent = GroupKey; ok.name = AddLabel(view_.status); ok.accelerator = L"Entrée"; ok.enabled = view_.status != NoteStatus::Saving;
+        Accessibility::Node ok; ok.key = NoteAdd; ok.parent = GroupKey; ok.name = AddLabel(view_.status); ok.accelerator = TR(key_enter); ok.enabled = view_.status != NoteStatus::Saving;
         ok.bounds = screen(layout_.add); ok.automationId = L"AnnotationAdd"; n.push_back(ok);
         RECT pr{}; if (pill_.Window()) { const auto r = PillLocal(Motion::Now()); pr = pill_.Screen(r); }
         if (PillExpandable(view_.capture)) {

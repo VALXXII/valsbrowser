@@ -151,7 +151,7 @@ void OpenProfileDialog(bool keyboard);
 void OpenTabIn(const std::wstring& id,const std::wstring& session,int tab){
     if(id==profileId&&session==windowId){Select(tab);return;}
     if(OpenSessionTabHere(id,session,tab))return;   // a profile cached in this window: switch, then that tab
-    for(const auto& w:Profiles::LiveWindows(profileRoot,id))if(w.sessionId==session&&w.hwnd){AllowSetForegroundWindow(ASFW_ANY);SendProfileCommand(w.hwnd,L"tab "+std::to_wstring(tab));if(IsIconic(w.hwnd))ShowWindow(w.hwnd,SW_RESTORE);SetForegroundWindow(w.hwnd);return;}
+    for(const auto& w:Profiles::LiveWindows(profileRoot,id))if(w.sessionId==session&&w.hwnd){AllowSetForegroundWindow(ASFW_ANY);SendProfileCommand(w.hwnd,L"tab " /* i18n-exempt: window protocol */+std::to_wstring(tab));if(IsIconic(w.hwnd))ShowWindow(w.hwnd,SW_RESTORE);SetForegroundWindow(w.hwnd);return;}
     Profiles::FocusOrLaunch(profileRoot,id,ProfileExe());
 }
 // User requirement (2026-11-14): a click switches THIS window (same HWND, same process); the profile left
@@ -367,7 +367,7 @@ void AskDeleteProfile(const std::wstring& id,bool keyboard){
                     const auto answer=SendProfileCommand(w.hwnd,L"delete-profile "+target.id);
                     if(answer==1){sent=true;host=q.id;break;}if(answer==2)busy=true;}}
             if(!sent&&!anyWindow)sent=Profiles::Launch(ProfileExe(),host,L"--delete-profile "+target.id);
-            if(!sent){profileDeleteDialog.Fail(busy?L"Une autre suppression peut encore être annulée dans une autre fenêtre. Rien n'a été effacé ; réessayez après son décompte.":L"Aucune autre fenêtre n'a pu prendre le relais. Rien n'a été effacé.");return;}
+            if(!sent){profileDeleteDialog.Fail(busy?TR(profile_delete_undo_pending_elsewhere):TR(profile_delete_no_takeover));return;}
             Log(L"PROFILES own delete handed over to "+host);closeSelf=true;profileDeleteDialog.Finish();return;
         }
         CloseProfileWindows(target.id);
@@ -394,11 +394,11 @@ void TakeOverProfileDelete(const std::wstring& id){
 int ProfileCopyDataMessage(LPARAM l){
     const auto* cd=reinterpret_cast<const COPYDATASTRUCT*>(l);if(!cd||cd->dwData!=ProfileCopyData||!cd->lpData||cd->cbData<sizeof(wchar_t))return 0;
     std::wstring text(static_cast<const wchar_t*>(cd->lpData),cd->cbData/sizeof(wchar_t));while(!text.empty()&&!text.back())text.pop_back();
-    if(text.rfind(L"tab ",0)==0){const int n=_wtoi(text.c_str()+4);Defer([n]{if(n>=0&&n<(int)pages.size())Select(n);if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);});return 1;}
+    if(text.rfind(L"tab " /* i18n-exempt: window protocol */,0)==0){const int n=_wtoi(text.c_str()+4);Defer([n]{if(n>=0&&n<(int)pages.size())Select(n);if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);});return 1;}
     // A profile being deleted leaves this window: switched away if on screen, its cache dropped (session kept
     // for « Rouvrir »); the window itself never closes for it. Private windows belong to no profile (review M2).
     if(text.rfind(L"close-for-delete ",0)==0){if(!privateWindow&&profilesEnabled){const std::wstring id=text.substr(17);Defer([id]{LeaveProfileHere(id,false);});}return 1;}
-    if(text.rfind(L"qa ",0)==0)return WorkspaceQaCommand(text.substr(3));   // --workspace-test only (else 0)
+    if(text.rfind(L"qa " /* i18n-exempt: window protocol */,0)==0)return WorkspaceQaCommand(text.substr(3));   // --workspace-test only (else 0)
     if(text.rfind(Profiles::EvictCommand,0)==0){if(privateWindow||!profilesEnabled)return Profiles::EvictNotApplicable;return EvictProfileHere(text.substr(wcslen(Profiles::EvictCommand)));}
     if(text.rfind(L"delete-profile ",0)==0){const std::wstring id=text.substr(15);if(!ReserveTakeOver(id))return 2;Defer([id]{TakeOverProfileDelete(id);});return 1;}   // reserved before answering
     return 0;

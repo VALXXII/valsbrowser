@@ -58,7 +58,7 @@ inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true) {
     if (beta) { const float bw = ink.Width(L"BETA", F(12, 20, 500)) + 10; l.beta = {l.label.right + logoGap, (height - 18) / 2, l.label.right + logoGap + bw, (height + 18) / 2}; }
     const float quitW = quitPadL + ink.Width(TR(engine_quit), F(13, 16, 500)) + quitGap + KeycapWidth(ink, TR(key_escape), 400) + quitPadR;
     l.quit = {w - padRight - quitW, (height - quitH) / 2, w - padRight, (height + quitH) / 2};
-    l.keycapX = l.quit.right - quitPadR - KeycapWidth(ink, L"Échap", 400);
+    l.keycapX = l.quit.right - quitPadR - KeycapWidth(ink, TR(key_escape), 400);
     const float rw = remindPad + ink.Width(TR(annotation_no_agent_connected), F(12, 16)) + remindGap + ink.Width(TR(agent_connect), F(12, 16, 500)) + remindPad;
     l.remind = {l.quit.left - gap - rw, (height - remindH) / 2, l.quit.left - gap, (height + remindH) / 2};
     return l;
@@ -167,7 +167,7 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
         const float plate = .08f * v.quit.hover + .04f * v.quit.press;
         ink.Fill(l.quit, quitRadius, {1, 1, 1, plate});
         ink.Text(TR(engine_quit), F(13, 16, 500), {l.quit.left + quitPadL, l.quit.top, l.keycapX, l.quit.bottom}, Hex(0xFFFFFFE6), false, Align::Leading, true);
-        Keycap(ink, L"Échap", l.keycapX, (l.quit.top + l.quit.bottom) / 2, Hex(0xFFFFFF14), Hex(0xFFFFFFB3), 400);
+        Keycap(ink, TR(key_escape), l.keycapX, (l.quit.top + l.quit.bottom) / 2, Hex(0xFFFFFF14), Hex(0xFFFFFFB3), 400);
         if (v.focus && v.focusItem == BannerQuit) FocusRing(ink, l.quit, quitRadius, v.keyboard);
     }
 }
@@ -200,7 +200,7 @@ inline void PaintToolbarButton(ID2D1RenderTarget* t, ID2D1Factory* factory, ID2D
 // UIA for the toolbar button (T3 adds it to its toolbar nodes).
 inline Accessibility::Node ToolbarNode(long long key, long long parent, RECT bounds, bool active) {
     Accessibility::Node n; n.key = key; n.parent = parent; n.role = Accessibility::Role::Button; n.name = TR(a11y_annotate);
-    n.accelerator = L"Ctrl+Maj+A"; n.toggle = active ? 2 : 1; n.automationId = L"AnnotateButton"; n.bounds = bounds; return n;
+    n.accelerator = TR(key_ctrl_shift_a); n.toggle = active ? 2 : 1; n.automationId = L"AnnotateButton"; n.bounds = bounds; return n;
 }
 
 struct BannerHooks {

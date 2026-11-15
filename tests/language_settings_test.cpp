@@ -13,6 +13,9 @@
 
 using namespace NativeChrome;
 using SettingsUI::Kind;
+// Built during static initialization, before any language is pinned (as main.cpp's global `chrome`):
+// none of its tooltips may be frozen in the default French.
+static Chrome earlyChrome;
 static int failures = 0, checks = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", what); } else std::printf("ok   %s\n", what); }
 static const SettingsUI::Slot* Hit(const std::vector<SettingsUI::Slot>& slots, int hit) { for (auto& s : slots) if (s.hit == hit) return &s; return nullptr; }
@@ -87,6 +90,8 @@ int wmain(int argc, wchar_t** argv) {
         const auto* row = Hit(dr.SlotsForTest(), SettingsUI::LanguageHit);
         Check(row && row->value == L"Français" && row->lines.empty() && !row->error && UiLanguage::Load(data).locale == Locale::Fr, "back to Français: saved, note and error gone");
     }
+    Check(ContextMenu::Menu::KeysForTest(L"Ctrl+Shift+I") == std::vector<std::wstring>{L"Ctrl", L"Maj", L"I"} &&
+          ContextMenu::Menu::KeysForTest(TR(key_ctrl_shift_t)) == std::vector<std::wstring>{L"Ctrl", L"Maj", L"T"}, "French: context menu caps « Ctrl » « Maj » for the engine's « Shift » too");
     // Two windows share the browser-wide preference. Drawer A (dr) last saw « Français »; drawer B saves
     // English while A stays open. A's menu must show what is on disk now, and A's explicit « Français »
     // must be written (it was ignored before: chosen == A's stale cache, zero saves, disk stayed English).
@@ -133,6 +138,17 @@ int wmain(int argc, wchar_t** argv) {
 
     // ---- English process (set explicitly), French saved: pending the other way ---------------------
     I18n::SetForProcess(Locale::En);
+    {   // A global chrome built before the language was pinned: its toolbar tooltips follow the pinned language.
+        Check(SUCCEEDED(earlyChrome.InitOffscreen(root, 96, 1180, 84)), "global chrome (built before the pin) initialised");
+        earlyChrome.audioShown = true; earlyChrome.annotateShown = true; earlyChrome.Build(1, 0);
+        const wchar_t* audio = nullptr; const wchar_t* annotate = nullptr;
+        for (const auto& r : earlyChrome.regions) { if (r.id == 'V') audio = r.tip; if (r.id == 'N') annotate = r.tip; }
+        Check(audio && std::wstring(audio) == L"Site sound", "English: the site sound tooltip is « Site sound » (was frozen « Son des sites »)");
+        Check(annotate && std::wstring(annotate) == L"Annotate (Ctrl+Shift+A)", "English: the Annotate tooltip before any annotation sync");
+        const auto caps = ContextMenu::Menu::KeysForTest(TR(key_ctrl_shift_t));
+        Check(caps == std::vector<std::wstring>{L"Ctrl", L"Shift", L"T"}, "English: context menu caps « Ctrl » « Shift » « T » (never « Maj »)");
+        Check(ContextMenu::Menu::KeysForTest(L"Ctrl+Shift+I") == std::vector<std::wstring>{L"Ctrl", L"Shift", L"I"}, "English: the engine's own « Ctrl+Shift+I » keeps « Shift »");
+    }
     SettingsUI::Drawer en; BrowserSettings::State es; Check(en.Create(hi, owner, root, &es, hooks()), "English drawer created");
     open(en);
     {

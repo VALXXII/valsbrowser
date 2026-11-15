@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../../src/annotations-migration.h"
+#include "../../src/annotation-problem.h"
 #include "../../src/update-core.h"
 #include "annotations_test_util.h"
 
@@ -727,7 +728,13 @@ void TestTrashRestore() {
     HANDLE h = CreateFileW((EntryDir(store, "boutique", busy.id) + L"\\state.json").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     CHECK(h != INVALID_HANDLE_VALUE);
-    CHECK(store.Trash(S("boutique"), busy.id).code == BA::Code::Busy);
+    const BA::Outcome held = store.Trash(S("boutique"), busy.id);
+    CHECK(held.code == BA::Code::Busy && held.reason == BA::Reason::None);
+    I18n::SetForProcess(I18n::Locale::En);
+    CHECK(TRF(annotation_delete_failed, AnnotationProblem::Text(held)) == L"Couldn’t delete: annotations are busy, try again in a moment");
+    BA::Outcome missing; missing.code = BA::Code::NotFound; missing.message = "Annotation introuvable.";
+    CHECK(AnnotationProblem::Text(missing) == L"annotation not found");
+    I18n::SetForProcess(I18n::Locale::Fr);
     CloseHandle(h);
     CHECK(store.Read(S("boutique"), busy.id, e).ok() && !Exists(EntryDir(store, "boutique", busy.id) + L"\\trashed.json"));
     CHECK(store.Trash(S("boutique"), busy.id).ok());
@@ -808,6 +815,14 @@ void TestCaps() {
     BA::Annotation extra = Sample("p");
     BA::Outcome o = store.WriteAnnotation(extra, nullptr, false);
     CHECK(o.code == BA::Code::LimitReached);
+    // What the browser UI says (never the store's French agent message), in both interface languages.
+    CHECK(o.reason == BA::Reason::SiteFull);
+    I18n::SetForProcess(I18n::Locale::En);
+    CHECK(AnnotationProblem::Text(o) == L"this site already has 500 annotations: delete some before adding more");
+    CHECK(TRF(annotation_save_failed_reason, AnnotationProblem::Text(o)) ==
+          L"Couldn’t save the annotation (this site already has 500 annotations: delete some before adding more). Your note is kept; try again.");
+    I18n::SetForProcess(I18n::Locale::Fr);
+    CHECK(AnnotationProblem::Text(o) == L"ce site a déjà 500 annotations : supprimez-en avant d'en ajouter");
     BA::Annotation other = Sample("q");
     CHECK(store.WriteAnnotation(other, nullptr, false).ok());  // per site
     // One resolved annotation makes room: the oldest closed one is purged.
@@ -826,7 +841,11 @@ void TestCaps() {
     CHECK(h != INVALID_HANDLE_VALUE && SetFilePointerEx(h, size, nullptr, FILE_BEGIN) && SetEndOfFile(h));
     CloseHandle(h);
     BA::Annotation tooMuch = Sample("r");
-    CHECK(store.WriteAnnotation(tooMuch, nullptr, false).code == BA::Code::LimitReached);
+    const BA::Outcome full = store.WriteAnnotation(tooMuch, nullptr, false);
+    CHECK(full.code == BA::Code::LimitReached && full.reason == BA::Reason::StoreFull);
+    I18n::SetForProcess(I18n::Locale::En);
+    CHECK(AnnotationProblem::Text(full) == L"annotations take more than 200 MB: delete some");
+    I18n::SetForProcess(I18n::Locale::Fr);
     DeleteFileW(big.c_str());
     CHECK(store.WriteAnnotation(tooMuch, nullptr, false).ok());
 }
@@ -1137,7 +1156,12 @@ void TestMigrationGuards() {
         const std::string before = ReadText(portable + L"\\" + Wk("boutique") + L"\\" + std::wstring(a.id.begin(), a.id.end()) + L"\\state.json");
         CHECK(source.Resolve(S("boutique"), a.id, lease.token, "resolved", "fait", "agent").code == BA::Code::Busy);
         BA::Annotation b = Sample("boutique", "autre");
-        CHECK(source.WriteAnnotation(b, nullptr, false).code == BA::Code::Busy);
+        const BA::Outcome migrating = source.WriteAnnotation(b, nullptr, false);
+        CHECK(migrating.code == BA::Code::Busy && migrating.reason == BA::Reason::Migrating);
+        I18n::SetForProcess(I18n::Locale::En);
+        CHECK(AnnotationProblem::Text(migrating) == L"annotations are being migrated, try again in a moment");
+        CHECK(TRF(annotation_reopen_failed, AnnotationProblem::Text(migrating)) == L"Couldn’t reopen: annotations are being migrated, try again in a moment");
+        I18n::SetForProcess(I18n::Locale::Fr);
         BA::Reader r;
         r.client = "claude";
         CHECK(source.WriteReader(r).code == BA::Code::Busy);

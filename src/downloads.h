@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <istream>
@@ -140,8 +141,33 @@ inline std::int64_t ParseIsoTime(const std::wstring& text) {
     }
     return ms;
 }
+// Failure reasons the browser generates are stored as a stable code, « @<catalog id> » (the downloads file
+// keeps its format), and rendered in the interface language here. Rows saved before the codes (generated
+// text in French or English) are recognised too; any other text is shown as it was stored.
+inline constexpr I18n::Id GeneratedReasons[] = {
+    I18n::Id::download_error_access_denied, I18n::Id::download_error_disk_full, I18n::Id::download_error_name_too_long,
+    I18n::Id::download_error_too_large, I18n::Id::download_error_offline, I18n::Id::download_error_network,
+    I18n::Id::download_error_interrupted, I18n::Id::download_error_server, I18n::Id::download_error_file,
+    I18n::Id::download_blocked_dangerous, I18n::Id::download_blocked_check_failed, I18n::Id::download_blocked_policy,
+    I18n::Id::downloads_unavailable,
+};
+inline bool BlockedReason(I18n::Id id) {
+    return id == I18n::Id::download_blocked_dangerous || id == I18n::Id::download_blocked_check_failed || id == I18n::Id::download_blocked_policy;
+}
+inline std::wstring ReasonCode(I18n::Id id) { const char* n = I18n::EntryOf(id).name; return L"@" + std::wstring(n, n + std::strlen(n)); }
+inline const I18n::Id* GeneratedReason(const std::wstring& stored) {
+    for (const auto& id : GeneratedReasons) {
+        const auto& e = I18n::EntryOf(id);
+        if (stored == ReasonCode(id) || stored == e.fr || stored == e.en) return &id;
+    }
+    return nullptr;
+}
 inline std::wstring FailureText(const std::wstring& reason) {
-    if (reason.rfind(TR(downloads_blocked_prefix), 0) == 0) return reason; // engine security blocks carry their own wording (E6)
+    if (const I18n::Id* id = GeneratedReason(reason))   // engine security blocks carry their own wording (E6)
+        return BlockedReason(*id) ? std::wstring(I18n::T(*id)) : TRF(downloads_failed_reason, I18n::T(*id));
+    if (!reason.empty() && reason[0] == L'@') return TR(downloads_failed);   // a code from a newer version: never shown raw
+    const auto& blocked = I18n::EntryOf(I18n::Id::downloads_blocked_prefix);
+    if (reason.rfind(blocked.fr, 0) == 0 || reason.rfind(blocked.en, 0) == 0) return reason;
     return reason.empty() ? std::wstring(TR(downloads_failed)) : TRF(downloads_failed_reason, reason);
 }
 

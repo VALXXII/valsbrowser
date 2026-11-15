@@ -1678,7 +1678,7 @@ inline Button Make(int id, std::wstring label, Role role, bool isDefault, bool i
 // A2 alert(): OK only (Entrée and Échap both answer OK); the blocking check appears from the
 // 2nd dialog of the same site in the same tab session (`repeated`).
 inline Spec AlertSpec(const std::wstring& origin, const std::wstring& message, bool repeated = false) {
-    Spec s; s.kind = Kind::Alert; s.scope = Scope::Page; s.automationId = L"ScriptAlert"; s.origin = origin + L" indique"; s.message = message;
+    Spec s; s.kind = Kind::Alert; s.scope = Scope::Page; s.automationId = L"ScriptAlert"; s.origin = TRF(script_alert_origin_says, origin); s.message = message;
     if (repeated) s.checkLabel = TR(js_dialog_block_more);
     s.buttons = {Make(AcceptButton, L"OK", Role::Primary, true, true, true, L"DialogOk")};
     return s;

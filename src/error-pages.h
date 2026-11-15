@@ -280,7 +280,7 @@ button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}
     // « Réessayer » on the right, in DOM order so Tab follows what is seen. Labels never wrap
     // (a long « Rechercher « … » » ellipsises, « Réessayer » never shrinks); under 360 px (split
     // view halves) they stack, full width, same order.
-    const std::wstring primaryButton = L"<button id=\"primary\" class=\"primary\" data-action=\"" + std::wstring(ActionName(c.primaryAction)) + L"\"" + (retrying ? L" aria-disabled=\"true\"" : L" autofocus") + L" title=\"" + WebText::Html(primaryLabel) + L"\">" + WebText::Html(primaryLabel) + L"</button>";
+    const std::wstring primaryButton = L"<button id=\"primary\" class=\"primary\" data-action=\"" + std::wstring(ActionName(c.primaryAction)) + L"\"" + (retrying ? L" aria-disabled=\"true\"" : L" autofocus" /* i18n-exempt: HTML attribute */) + L" title=\"" + WebText::Html(primaryLabel) + L"\">" + WebText::Html(primaryLabel) + L"</button>";
     const std::wstring secondaryButton = L"<button id=\"secondary\" class=\"secondary\" data-action=\"" + std::wstring(ActionName(c.secondaryAction)) + L"\"" + (details ? L" aria-expanded=\"false\" aria-controls=\"details\"" : L"") + L">" + WebText::Html(c.secondary) + L"</button>";
     h += L"<div class=\"actions\">" + (RetryLast(c) ? secondaryButton + primaryButton : primaryButton + secondaryButton) + L"</div>";
     if (details) {
@@ -291,7 +291,7 @@ button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}
         std::wstring issuer = extras.issuer; if (issuer.size() > 200) issuer = issuer.substr(0, 200) + L"…";
         h += L"<div class=\"details\"><b>" + WebText::Html(CertificateCode(extras.certStatus)) + L"</b>" + (issuer.empty() ? L"" : L"<span>" + WebText::Html(TRF(cert_issued_by, issuer)) + L"</span>") + L"</div>";
     }
-    if (offline) h += std::wstring(L"<div class=\"status") + (extras.restored ? L" back" : L"") + L"\" role=\"status\" aria-live=\"polite\"><i></i><span>" + WebText::Html(extras.restored ? TR(error_connection_back) : TR(error_waiting_network)) + L"</span></div>";
+    if (offline) h += std::wstring(L"<div class=\"status") + (extras.restored ? L" back" /* i18n-exempt: CSS class */ : L"") + L"\" role=\"status\" aria-live=\"polite\"><i></i><span>" + WebText::Html(extras.restored ? TR(error_connection_back) : TR(error_waiting_network)) + L"</span></div>";
     if (delay) h += L"<div class=\"retry\" role=\"status\" aria-live=\"polite\"><span id=\"count\">" + WebText::Html(TRF(error_retry_in, std::to_wstring(delay))) + L"</span><div class=\"track\" aria-hidden=\"true\"><div class=\"fill\" id=\"fill\"></div></div></div>";
     h += L"</main><script>\"use strict\";const T=\"" + WebText::Js(token) + L"\";let busy=" + (retrying ? L"true" : L"false") + L";";
     // Texts the script writes itself, from the catalog (escaped for a JS string).

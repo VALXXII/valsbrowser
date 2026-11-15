@@ -183,6 +183,27 @@ Comportement retenu, minimal et cohérent avec « Au prochain démarrage. » :
 
 Si l'on veut que le moteur suive aussi dans ce cas, la piste la plus étroite serait de faire entrer la langue dans le bail. Une fenêtre d'une autre langue aurait alors besoin de son propre moteur, donc d'un autre dossier de données, ce qui change le stockage du profil. Ce n'est pas fait ici.
 
+## Revue de couverture indépendante (suivi sur 75c544b)
+
+La revue de 3e2351a (`review-i18n-coverage-3e2351a.md`, dans le dossier de travail du relecteur) a trouvé du français dans une fenêtre anglaise. Tout est corrigé dans un commit distinct.
+
+| Constat | Correction | Preuve |
+|---|---|---|
+| **P1** : le magasin d'annotations renvoie un message français (quota de 500, 200 Mo, migration, déplacé, introuvable, capture refusée) que l'interface glissait dans une phrase traduite | `Outcome::reason` structuré (`SiteFull`, `StoreFull`, `Migrating`, `MovedToInstalled`, `CaptureRefused`). `src/annotation-problem.h` traduit la raison, ou à défaut le `code`. Le message français reste pour les agents (MCP) et va dans le journal, jamais à l'écran | `store_test` : vrais refus du magasin (quota du site, magasin trop gros, migration, occupé), textes anglais vérifiés ; 2 736 vérifications, 0 échec |
+| **P2-1** : `LOGISH` prenait `profileDeleteDialog.Fail(` pour un journal ; 2 erreurs de suppression de profil en français | traduites ; l'outil ne reconnaît plus que les fonctions libres (`(?<![.>])`) ; auto-test | outil rouge sur 3e2351a |
+| **P2-2** : textes français sans accent (« Configuration de Claude/Codex illisible. », « Cliquez sur Installer dans Claude. ») | catalogue + `I18n::U8` ; l'outil signale les chaînes étroites passées à `Make(`, `Refused(` ou `.message =`, et les phrases françaises étroites | `agent_connect_test` : vrai fichier de configuration verrouillé dans un dossier redirigé, rien d'écrit, pas de nouvelle sauvegarde ; rouge 4 échecs sur 3e2351a, vert 300/0 ; les configurations réelles sont contrôlées avant et après par `run_tests.py` |
+| **P2-3** : noms de touches français (« Échap » du bandeau, « Ctrl+Maj+A », « Entrée », « Maj+F10 », et `Keys()` du menu contextuel qui affichait « Maj » même en anglais) | entrées `key_*` partout ; `Keys()` rend Shift/Maj par `TR(key_shift)` ; l'outil retire Maj/Entrée/Échap/Espace de ses jetons neutres et signale toute combinaison qui dépend de la langue | `language_settings_test` : touches du menu en FR et en EN, y compris « Ctrl+Shift+I » du moteur |
+| **P2-4** : l'infobulle « Son des sites » était figée en français : le `chrome` global est construit avant que la langue soit fixée | infobulles résolues à l'usage (`TR(chrome_tip_audio)`, `AnnotateTip()`). Autres membres `TR(...)` vérifiés : `Tab::title`, `profile-dialog Spec`, `SourcePicker`, tous construits ou remplacés après le démarrage | `language_settings_test` : un `Chrome` global construit avant l'épinglage donne « Site sound » en anglais ; rouge sur 3e2351a |
+| **P3** : la raison d'échec d'un téléchargement était enregistrée comme texte de la langue du moment ; après un changement de langue, « Failed · Bloqué… » | code stable `@<id du catalogue>` dans le même champ (format du fichier inchangé), rendu dans la langue de l'interface. Les anciennes raisons générées (FR ou EN) sont reconnues. Un texte inconnu reste tel qu'enregistré, et un code inconnu n'est jamais affiché brut | `i18n_test` (78/0) ; `elements_integration_test` |
+| Racine : « 2 **sur** 5 » dans l'annonce des suggestions | modèle entier `suggestion_position` ; l'outil signale un mot minuscule collé dans une phrase (`L" sur "`). Il a trouvé 3 autres oublis, traduits : le nombre de pages de l'historique, « … rouvert » (vue partagée), « … indique » (titre des alertes de page) | `i18n_test` |
+
+Autres résultats :
+- L'outil final donne **31 constats sur 3e2351a** (`coverage-gate-red-3e2351a.txt`) et **0** sur les sources corrigées (`coverage-gate-green.txt`).
+- `test-elements-integration.ps1`, qui n'est pas dans `run_all`, échouait depuis b1774e0 (3 attentes anglaises de la copie Paper dans un processus français : « Failed · Offline », « 50.4/200.0MB »). Les attentes sont maintenant explicites : français dans le processus par défaut, et un bloc anglais vérifie la copie Paper. Il passe (`test-elements-integration-coverage-fix.txt`).
+- `tests/annotations-ui/run.py` : un premier passage a donné 3 échecs liés au focus (Tab, copie, molette ; `annotations-ui-coverage-fix.txt`), le second 1 376 vérifications, 0 échec (`annotations-ui-coverage-fix-2.txt`).
+- Build de dev OK, 0 avertissement (`build-dev-11.txt`). E2E en vraies fenêtres : 72 vérifications, 0 échec (`language-e2e-4.txt`).
+- Reste volontairement en français : le nom affiché du paquet `.mcpb` (« Annotations du navigateur »), nom de marque externe documenté, et la page 404 de la sandbox QA.
+
 ## Limites connues
 
 - **Écrans contrôlés visuellement en anglais** : les Réglages (captures du tiroir, 96 et 144 dpi) et le chrome principal (captures E2E).

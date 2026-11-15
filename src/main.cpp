@@ -243,7 +243,7 @@ bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(boo
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
 #ifdef BROWSER_UPDATES
-    return std::wstring(L"browser ")+BROWSER_VERSION_WIDE;
+    return std::wstring(L"browser ")+BROWSER_VERSION_WIDE;   // i18n-exempt: product name and version
 #else
     return L"browser";
 #endif
@@ -922,7 +922,7 @@ void AnnounceSeparator(){
 }
 bool SplitPointerDown(float x,float y){
     splitResize=-1;auto v=CurrentSplit();if(!v.group)return false;
-    for(size_t i=0;i<chrome.split.rails.size();++i){auto r=chrome.split.rails[i];if(x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom){const int tab=chrome.split.railTabs[i];if(tab>=0){Select(tab);AnnounceSplit(TabLabel(pages[tab])+L" rouvert");}return true;}}
+    for(size_t i=0;i<chrome.split.rails.size();++i){auto r=chrome.split.rails[i];if(x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom){const int tab=chrome.split.railTabs[i];if(tab>=0){Select(tab);AnnounceSplit(TRF(split_announce_reopened,TabLabel(pages[tab])));}return true;}}
     const int hit=SeparatorAt(x,y,v);if(hit<0)return false;
     // Double-click on a separator: equal shares for the whole group.
     const DWORD now=GetTickCount();if(hit==lastSeparator&&now-lastSeparatorClick<=GetDoubleClickTime()){lastSeparatorClick=0;EqualizeSplit(v);return true;}
@@ -1388,23 +1388,25 @@ void LoadDownloads(){
     }
     if(migrated){Log(L"DOWNLOADS history dated from file times");SaveDownloads();}
 }
+// Stored as a stable code (« @download_error_offline »), rendered in the interface language by DL::FailureText:
+// a row saved in one language reads in the other after a switch.
 std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     switch(r){
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE:return TR(download_error_disk_full);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED:return TR(download_error_access_denied);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG:return TR(download_error_name_too_long);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE:return TR(download_error_too_large);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE:return DL::ReasonCode(I18n::Id::download_error_disk_full);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED:return DL::ReasonCode(I18n::Id::download_error_access_denied);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG:return DL::ReasonCode(I18n::Id::download_error_name_too_long);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE:return DL::ReasonCode(I18n::Id::download_error_too_large);
     // E6: three distinct French reasons (the row shows them alone, see DL::FailureText).
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return TR(download_blocked_dangerous);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return TR(download_blocked_check_failed);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY:return TR(download_blocked_policy);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED:return TR(download_error_offline);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST:return TR(download_error_network);
-    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_DOWNLOAD_PROCESS_CRASHED:return TR(download_error_interrupted);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS:return DL::ReasonCode(I18n::Id::download_blocked_dangerous);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED:return DL::ReasonCode(I18n::Id::download_blocked_check_failed);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY:return DL::ReasonCode(I18n::Id::download_blocked_policy);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED:return DL::ReasonCode(I18n::Id::download_error_offline);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST:return DL::ReasonCode(I18n::Id::download_error_network);
+    case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN:case COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_DOWNLOAD_PROCESS_CRASHED:return DL::ReasonCode(I18n::Id::download_error_interrupted);
     default:break;
     }
-    if(r>=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED&&r<=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT)return TR(download_error_server);
-    return TR(download_error_file);
+    if(r>=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED&&r<=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT)return DL::ReasonCode(I18n::Id::download_error_server);
+    return DL::ReasonCode(I18n::Id::download_error_file);
 }
 void ShowDownloadDrawer();void SyncLatch();
 // Toolbar icon: a run lasts while any download is active; its progress counts
@@ -1610,7 +1612,7 @@ void DownloadAction(int id,DL::Action action){
     // Pause / Resume / Cancel need the row's live operation. Without it (never expected), the row is not left offering
     // a dead action: it becomes a non-resumable failure (« Remove »), logged.
     case DL::Action::Pause:case DL::Action::Resume:case DL::Action::Retry:case DL::Action::Cancel:
-        if(!op){Log(L"DOWNLOAD action without its operation: "+DL::FileName(item->path));if(item->state==DL::State::InProgress||item->state==DL::State::Paused||item->state==DL::State::Failed){item->state=DL::State::Failed;item->canResume=false;item->reason=TR(downloads_unavailable);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}break;}
+        if(!op){Log(L"DOWNLOAD action without its operation: "+DL::FileName(item->path));if(item->state==DL::State::InProgress||item->state==DL::State::Paused||item->state==DL::State::Failed){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::downloads_unavailable);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}break;}
         if(action==DL::Action::Pause){if(SUCCEEDED(op->Pause()))entry->userPaused=true;}
         else if(action==DL::Action::Cancel){const HRESULT hr=op->Cancel();Log(L"DOWNLOAD cancel "+DL::FileName(item->path)+(SUCCEEDED(hr)?L"":L" failed"));}
         else if(SUCCEEDED(op->Resume()))entry->userPaused=false;
@@ -3937,7 +3939,7 @@ AccessibleLabel AccessibleButton(int id){
     case 'V':return {AU::ButtonName(AudioRows(NativeChrome::Motion::Now()),audioToolbar.Music()),L"",TR(a11y_audio_help),L"SiteAudio"};
     case 'P':return {TR(a11y_new_private_window),TR(key_ctrl_shift_n),privateWindow?TR(a11y_private_this_window_help):TR(a11y_private_new_window_help),L"Private"};
     case 'S':return {TR(chrome_tip_settings),L"",L"",L"Settings"};
-    case 'N':return {TR(a11y_annotate),TR(key_ctrl_shift_a),chrome.Enabled('N')?std::wstring(TR(a11y_annotate_help)):chrome.annotateTip,L"AnnotateButton"};
+    case 'N':return {TR(a11y_annotate),TR(key_ctrl_shift_a),chrome.Enabled('N')?std::wstring(TR(a11y_annotate_help)):std::wstring(chrome.AnnotateTip()),L"AnnotateButton"};
     // i18n-exempt-end
     default:return {L"",L"",L"",L""};
     }
@@ -4079,7 +4081,7 @@ void AnnounceSuggestion(){
     if(!suggestions.Visible()||!accessibility.Listening())return;
     const int i=suggestions.Active(),n=(int)suggestions.Data().rows.size();const long long key=AccessibleSuggestionKey(i);
     accessibility.Raise(key,UIA_SelectionItem_ElementSelectedEventId);
-    const auto text=suggestions.Spoken(i)+L", "+std::to_wstring(i+1)+L" sur "+std::to_wstring(n);
+    const auto text=TRF(suggestion_position,suggestions.Spoken(i),std::to_wstring(i+1),std::to_wstring(n));
     accessibility.Notify(key,text.c_str(),L"AddressSuggestion");
 }
 void SyncAccessibility(){

@@ -464,7 +464,7 @@ bool WorkspaceCanFailAlone() { return globalsWorkspace && !globalsWorkspace->dea
 bool workspaceTest = false, qaControllerFailure = false, qaExpectTerminal = false; int qaEngineFailure = 0;
 std::wstring QaWorkspaceState() {
     std::wstring t = L"globals=" + (globalsWorkspace ? globalsWorkspace->id : L"-") + L" active=" + (activeWorkspace ? activeWorkspace->id : L"-") + L" parked=" + (WorkspaceParked() ? L"1" : L"0") + L" watches=" + std::to_wstring(EngineExitWatchCount());
-    for (auto& w : workspaces) t += L" [" + w->id + (w->dead ? L" dead" : L"") + (w->started ? L" started" : L" slot") + (w->cold ? L" cold" : L"") + L" holds=" + std::to_wstring(EngineHoldCount(w->id)) + L"]";
+    for (auto& w : workspaces) t += L" [" + w->id + (w->dead ? L" dead" : L"") + (w->started ? L" started" : L" slot") + (w->cold ? L" cold" : L"") + L" holds=" + std::to_wstring(EngineHoldCount(w->id)) + L"]";   // i18n-exempt: QA/log description
     return t;
 }
 int WorkspaceQaCommand(const std::wstring& text) {
