@@ -167,3 +167,36 @@ still parked → the returned read was dropped (« Le profil a changé : rien n'
 « Personnel », nothing recreated for « Travail », no snapshot left. Limit: the window had also left « Travail »
 (it was showing « Personnel »), so the UI cannot tell which part of the destination check refused the read; the
 dead-owner branch alone is proven by the reviewer's controlled harness (import999-completion-guard, 4/4).
+
+## Closure review ff1bcbe: existing-identity recovery and lifecycle
+
+Review: `review-windows-setup-release/build/review-browser-import-ff1bcbe.md` — locked-map case CLOSED; one P2 left
+at the map-ahead boundary for an EXISTING mapping.
+
+**Fix (2030f27, source).** Replacing an identity no longer destroys the previous one. A key of `bookmark-imports`
+holds ordered candidate folders (preferred first, at most 4) in the same atomically replaced file: a new identity
+goes first, the previous stays after it while its folder exists in the bookmarks file as read; resolution takes the
+first candidate that exists (same id, kind, `added`) in the actual bookmarks under the profile lock; a candidate is
+pruned only once its folder is gone from both the file as read and the result written. So whether the bookmarks
+write then succeeds (new candidate valid, old one pruned next commit), fails, or the process stops in between (old
+candidate valid on restart), the right folder is found. No separate journal; header unchanged; a map of another
+version is still never used or rewritten and still refuses the import; counts stay zero on any failure.
+
+| Case | ff1bcbe | 2030f27 |
+|---|---|---|
+| Reviewer recovery probe (fresh own copy): existing renamed mapping, pending deletion, bookmarks write fails, restart, EN + label | `imported=1 present=0 groups=2` | `imported=0 present=1 groups=1`, custom names kept |
+| Same, bookmarks write failed (backend) | — | map holds new + old candidate; restart → present, one group; dangling candidate pruned; FR repeat still one group |
+| Same, thread stopped right after the map write (abandoned profile mutex = crash) | — | bookmarks untouched; restart → present, one group, custom names; real deletion later → new group, old candidate pruned |
+
+Backend: 161 checks pass.
+
+**Lifecycle (76fe51f, helper + packaging).** The portable → installed migration now copies `bookmark-imports` with
+`bookmarks` in the same all-or-nothing copy (other profiles already move as whole trees, which carries theirs);
+`package.py` lists it and `bookmark-imports.tmp*` as runtime data, so it is skipped and never in a release payload
+(before, staging aborted on it as an unexpected file). Contract: the import keeps exactly one metadata file per
+profile, `bookmark-imports`, next to `bookmarks`; no pending/journal file; its content has no absolute path (keys
+are browser + profile folder name, Firefox's profile path relative to its root; values are folder ids and times),
+so it stays valid after a move. Copy it whenever `bookmarks` is copied; if it is missing, imports fall back to
+titles (degraded, never wrong). Red/green: e2e_install with the ff1bcbe helper fails (`data/bookmark-imports`
+missing), with 76fe51f passes; staging test passes. The update-helper and package.py hunks are small and separate
+for the WindowsSetup owner's merge. Excerpts: `browser-data-import-evidence/ff1bcbe-followup/results.txt`.
