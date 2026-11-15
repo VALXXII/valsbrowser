@@ -190,6 +190,36 @@ int wmain(int argc, wchar_t** argv) {
         Check(hd.Snapshot().select == 0 && calls == 0 && hd.Visible() && !hd.MenuForTest(), "host hook: ↑ + Entrée from the checked row -> « Dernière heure », no own menu created");
         hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose(); shared.Dispose();
     }
+    {   // Select::checks (« Importer depuis un navigateur… »): choosing a source rebuilds the checks with their
+        // availability; a disabled check is never toggled nor in the Tab order; the error line is cleared.
+        int chosen = 1;
+        Modal::Dialog::Hooks h; h.choose = [&](const std::vector<std::wstring>&, int, RECT, bool) { return chosen; };
+        Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "select checks: Create");
+        auto checksFor = [](int i) {
+            Modal::Check a, b, c; a.label = L"Favoris"; b.label = L"Historique"; c.label = L"Cookies et connexions";
+            a.value = true; b.value = i == 0; b.disabled = i != 0; b.detail = i ? L"Un fichier HTML ne contient que des favoris." : L"";
+            c.disabled = true; c.detail = L"Non disponible";
+            return std::vector<Modal::Check>{a, b, c};
+        };
+        Modal::Spec spec; spec.title = L"Importer depuis un navigateur"; spec.hasSelect = true; spec.select.options = {L"Chrome", L"Fichier de favoris HTML…"};
+        spec.select.checks = checksFor; spec.checks = checksFor(0);
+        spec.buttons = {Modal::Make(Modal::CancelButton, L"Annuler", Modal::Role::Secondary, false, true, false), Modal::Make(Modal::AcceptButton, L"Importer", Modal::Role::Primary, true, false, true)};
+        spec.buttons[1].closes = false; spec.onButton = [&](int) { hd.SetError(L"Choisissez au moins une donnée à importer."); };
+        int calls = 0; hd.Show(spec, Area(), [&](const Modal::Result&) { ++calls; });
+        hd.ActivateForTest(D::CheckHit(2));
+        Check(!hd.Snapshot().checks[2], "select checks: a disabled check (cookies) cannot be ticked");
+        hd.ActivateForTest(D::ButtonHit(1));
+        hd.ActivateForTest(D::SelectHit);
+        const auto snap = hd.Snapshot();
+        Check(snap.select == 1 && snap.checks.size() == 3 && snap.checks[0] && !snap.checks[1] && !snap.checks[2], "select checks: the HTML source has no history");
+        Check(hd.CurrentSpec().checks[1].disabled && hd.CurrentSpec().checks[1].detail == L"Un fichier HTML ne contient que des favoris.", "select checks: availability and its reason follow the source");
+        bool reached = false; for (int k = 0; k < 12; ++k) { hd.KeyForTest(VK_TAB); if (hd.FocusForTest() == D::CheckHit(1) || hd.FocusForTest() == D::CheckHit(2)) reached = true; }
+        Check(!reached, "select checks: disabled checks are not in the Tab order");
+        chosen = 0; hd.ActivateForTest(D::SelectHit);
+        Check(hd.Snapshot().checks[1] && !hd.CurrentSpec().checks[1].disabled, "select checks: back to the browser, history available again");
+        hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose();
+        Check(calls == 1, "select checks: done once");
+    }
     {   // Abort / Dispose / owner destroyed: done({-1}) once.
         int calls = 0, button = -9;
         d.Show(Modal::CloseWindowSpec(12), Area(), [&](const Modal::Result& r) { ++calls; button = r.button; });

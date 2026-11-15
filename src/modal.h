@@ -335,6 +335,7 @@ struct Check { std::wstring label, detail; bool value = false, disabled = false;
 struct Select {
     std::wstring label; std::vector<std::wstring> options; int index = 0;
     std::function<std::vector<std::wstring>(int)> details;   // new check details for an option (A5 counts)
+    std::function<std::vector<Check>(int)> checks;           // or the whole check list for an option (availability per import source)
 };
 enum class StatusIcon { None, Check, Download, Warning, Busy };
 struct Status { StatusIcon icon = StatusIcon::None; std::wstring title, detail; Button button; bool hasButton = false; };
@@ -983,7 +984,13 @@ private:
         if (index < 0 || index >= static_cast<int>(spec_.select.options.size()) || index == spec_.select.index) return;
         spec_.select.index = index;
         if (spec_.select.details) { const auto d = spec_.select.details(index); for (size_t i = 0; i < d.size() && i < spec_.checks.size(); ++i) spec_.checks[i].detail = d[i]; }
+        if (spec_.select.checks) {
+            auto next = spec_.select.checks(index);
+            if (next.size() == spec_.checks.size()) spec_.checks = std::move(next);   // same rows (stable hit ids), new state
+        }
+        error_.clear();
         Relayout();
+        if (uia_.Listening()) for (size_t i = 0; i < spec_.checks.size(); ++i) uia_.Raise(CheckHit(i), UIA_ToggleToggleStatePropertyId);
     }
     void Activate(int hit, bool keyboard) {
         keyboard_ = keyboard;

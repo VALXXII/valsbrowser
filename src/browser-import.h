@@ -364,8 +364,8 @@ inline std::vector<Source> DiscoverChromium(const Roots& roots, Browser b) {
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
         const std::wstring name = fd.cFileName;
-        if (name == L"Default") names.push_back({-1, name});
-        else if (name.rfind(L"Profile ", 0) == 0 && name.size() > 8 && name.size() < 16 && name.find_first_not_of(L"0123456789", 8) == std::wstring::npos) names.push_back({std::wcstol(name.c_str() + 8, nullptr, 10), name});
+        if (name == L"Default") names.push_back({-1, name}); // i18n-exempt: Chromium profile folder name
+        else if (name.rfind(L"Profile ", 0) == 0 && name.size() > 8 && name.size() < 16 && name.find_first_not_of(L"0123456789", 8) == std::wstring::npos) names.push_back({std::wcstol(name.c_str() + 8, nullptr, 10), name}); // i18n-exempt: Chromium profile folder prefix
     } while (FindNextFileW(find, &fd) && names.size() < 256);
     FindClose(find);
     std::sort(names.begin(), names.end());
@@ -399,7 +399,7 @@ inline std::vector<Source> DiscoverFirefox(const Roots& roots) {
         const auto eq = line.find(L'='); if (eq == std::wstring::npos) continue;
         const std::wstring k = line.substr(0, eq), v = line.substr(eq + 1);
         auto& e = entries.back();
-        if (k == L"Name") e.name = v.substr(0, 128); else if (k == L"Path") e.path = v; else if (k == L"IsRelative") e.relative = v == L"1"; else if (k == L"Default") e.isDefault = v == L"1";
+        if (k == L"Name") e.name = v.substr(0, 128); else if (k == L"Path") e.path = v; else if (k == L"IsRelative") e.relative = v == L"1"; else if (k == L"Default") e.isDefault = v == L"1"; // i18n-exempt: profiles.ini keys
     }
     for (const auto& e : entries) {
         if (!e.relative || e.path.empty() || e.path.size() > 260) continue;
