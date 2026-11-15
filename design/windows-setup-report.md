@@ -199,8 +199,11 @@ merged SHA). browser.exe sha256 8b08b4f4…, setup stub cb7f48f1….
 
 | Run | Result | Log (`design/windows-setup-evidence/readiness/`) |
 | --- | --- | --- |
-| 1, a8173bb | **FAILED** at the i18n coverage gate: the setup window kept its own FR/EN table (90 findings). Fix 54215d6: the 49 strings move to `src/i18n-catalog.inc` (`setup_*`), read with TR/TRF; 2 reasoned `i18n-exempt` lines (registry value names, command line) | `run_all-ci-first-failure-a8173bb.log` |
-| 2, 54215d6 | **FAILED** at « old client validator »: its fixture packages an app without the now-required setup stub. Fix 912a41b in the fixture only (synthetic stub with the app's identity / the real built stub); `package.py` unchanged | `run_all-ci-second-failure-54215d6.log` |
-| 3, 912a41b | **ALL PASSED**, 50 steps, ≈ 26.5 min: existing fixtures, i18n gate + tests, update-core 315/0 + 539/0 (+164/0), update-toast, WebView2 recovery, release tooling, old v0.3.239 validator (bridge accepted), host integration + mocked install, **windows setup suite 310/0 (127 s)**, static app checks incl. the setup stub's version resource | `run_all-ci-pass-912a41b.log` |
+| 1, a8173bb | **FAILED** at the i18n coverage gate: the setup window kept its own FR/EN table (90 findings). Fix 54215d6: the 49 strings move to `src/i18n-catalog.inc` (`setup_*`), read with TR/TRF; 2 reasoned `i18n-exempt` lines (registry value names, command line) | `run_all-ci-first-failure-a8173bb.txt` |
+| 2, 54215d6 | **FAILED** at « old client validator »: its fixture packages an app without the now-required setup stub. Fix 912a41b in the fixture only (synthetic stub with the app's identity / the real built stub); `package.py` unchanged | `run_all-ci-second-failure-54215d6.txt` |
+| 3, 912a41b | **ALL PASSED**, 50 steps, ≈ 26.5 min: existing fixtures, i18n gate + tests, update-core 315/0 + 539/0 (+164/0), update-toast, WebView2 recovery, release tooling, old v0.3.239 validator (bridge accepted), host integration + mocked install, **windows setup suite 310/0 (127 s)**, static app checks incl. the setup stub's version resource | `run_all-ci-pass-912a41b.txt` |
+
+The tracked logs are `.txt` copies of the raw run_all output (`*.log` is git-ignored; the raw `.log` files stay local
+only), with the user-profile prefix masked as `%USERPROFILE%`; nothing else is edited.
 
 The UI fixtures in `run_all` drive their own windows only; no personal app, foreground change or OS setting was used.
