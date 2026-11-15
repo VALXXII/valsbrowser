@@ -200,3 +200,26 @@ so it stays valid after a move. Copy it whenever `bookmarks` is copied; if it is
 titles (degraded, never wrong). Red/green: e2e_install with the ff1bcbe helper fails (`data/bookmark-imports`
 missing), with 76fe51f passes; staging test passes. The update-helper and package.py hunks are small and separate
 for the WindowsSetup owner's merge. Excerpts: `browser-data-import-evidence/ff1bcbe-followup/results.txt`.
+
+## Integration with main cb75fb4 (PR #82 Windows setup) and review 2ed598c capacity
+
+**Merge 62d3e3f** (parents 2ed598c, cb75fb4). One conflict, `src/i18n-catalog.inc`: both sides appended a block at
+the end; both kept (import then setup), no id lost or duplicated. `update-helper.cpp` (Setup's install transaction +
+this branch's `bookmark-imports` migration entry), `package.py` (Setup's asset requirements + this branch's runtime
+exclusion), `run_all.py` (Setup/resource checks + the three import fixtures), `test_release_tools.py` and
+`e2e_install.py` merged automatically. Against main each differs only by this branch's hunks; against 2ed598c only by
+main's own changes (same line counts); the import sources are byte-identical to 2ed598c. Focused checks: i18n 0,
+build OK, backend 161, wiring 8/8, render 34/34, release tools 59 OK, `e2e_install.py` with the combined helper all
+pass including the identity canaries. Full run_all and the setup suite were deliberately not repeated.
+
+**Capacity fix 9bb0147 (source).** The reader kept at most 4 096 records while the writer emitted all; a larger map
+silently lost identities. Now the map to be written must fit the reader's bounds and read back identical, checked
+before any write (else « trop de dossiers importés à suivre », nothing written); the reader never returns a partial
+map (over the bound, a 5th candidate, a damaged line → « données d'import illisibles », refused, file untouched); the
+bound is 2 × the bookmark store's node limit, which valid identities cannot exceed (each record a distinct existing
+folder of one key). Reviewer probe: Profile 9's renamed root retained 0 → 1, repeat imported 1 → 0 (present 1).
+Backend 176 checks: the 4 096 → 4 098 production commit + restart + renamed root, boundary at and past the limit,
+write → read equality (keys, candidates, order), over-bound and damaged maps refused untouched.
+Evidence: `browser-data-import-evidence/cb75-integration-and-2ed-capacity/results.txt`.
+
+Visual: real-app capture remains unavailable in this session (see evidence README); not re-attempted.
