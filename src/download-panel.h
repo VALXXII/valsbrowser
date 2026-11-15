@@ -692,7 +692,7 @@ public:
     ULONGLONG hiddenAt = 0;
     // Tests: shown far off screen WITHOUT activation (never takes the user's focus), reveals settled.
     void ShowForTest(float width, float height) {
-        if (!hwnd_) return; visible_ = true; motion_.SetReducedMotion(true);
+        if (!hwnd_) {return;} visible_ = true; motion_.SetReducedMotion(true);
         SetWindowPos(hwnd_, HWND_BOTTOM, -12000, -12000, Px(width), Px(height), SWP_NOACTIVATE | SWP_SHOWWINDOW);
         chrome_.Resize(); UpdateReveals(Motion::Now()); RefreshTips();
     }
