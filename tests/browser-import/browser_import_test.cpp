@@ -1,0 +1,462 @@
+// Import from a browser (src/browser-import.h): discovery, readers, rules and commits on SYNTHETIC roots only.
+// Never reads %LOCALAPPDATA% / %APPDATA%: every root is a folder this test creates under its work folder.
+// Usage: browser_import_test.exe <work folder>   (deleted and recreated; nothing outside it is touched)
+#include "browser-import.h"
+#include <sddl.h>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAILED %s:%d: %s\n", __FILE__, __LINE__, #x); std::exit(1); } } while (0)
+
+using namespace BrowserImport;
+namespace BM = Bookmarks;
+
+static std::wstring work;
+static int checks = 0;
+#define OK(x) do { CHECK(x); ++checks; } while (0)
+
+static void MakeDirs(const std::wstring& path) {
+    for (std::size_t i = 3; i <= path.size(); ++i) if (i == path.size() || path[i] == L'\\') CreateDirectoryW(path.substr(0, i).c_str(), nullptr);
+}
+static void Put(const std::wstring& path, const std::string& bytes) {
+    MakeDirs(path.substr(0, path.rfind(L'\\')));
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(f != INVALID_HANDLE_VALUE); DWORD put = 0; CHECK(WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &put, nullptr) && put == bytes.size()); CloseHandle(f);
+}
+static void RemoveTree(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd{}; HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring n = fd.cFileName; if (n == L"." || n == L"..") continue;
+            const std::wstring p = dir + L"\\" + n;
+            SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) RemoveTree(p);
+            else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) RemoveDirectoryW(p.c_str());   // a junction: never followed
+            else DeleteFileW(p.c_str());
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir.c_str());
+}
+// Every file (name → bytes) and every folder under `dir`: proves a source is left exactly as it was,
+// sidecars (-wal, -shm, -journal) included.
+static std::map<std::wstring, std::string> Tree(const std::wstring& dir, const std::wstring& rel = L"") {
+    std::map<std::wstring, std::string> out; WIN32_FIND_DATAW fd{}; HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        const std::wstring n = fd.cFileName; if (n == L"." || n == L"..") continue;
+        const std::wstring p = dir + L"\\" + n, r = rel + L"\\" + n;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { out[r + L"\\"] = ""; auto sub = Tree(p, r); out.insert(sub.begin(), sub.end()); }
+        else { std::string b; HANDLE f = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr); if (f != INVALID_HANDLE_VALUE) { LARGE_INTEGER s{}; GetFileSizeEx(f, &s); b.resize(static_cast<std::size_t>(s.QuadPart)); DWORD got = 0; if (!b.empty()) ReadFile(f, b.data(), static_cast<DWORD>(b.size()), &got, nullptr); CloseHandle(f); } out[r] = b; }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+static bool Empty(const std::wstring& dir) { return Tree(dir).empty(); }
+// Exact UTF-8 (keeps line breaks, unlike the store's ToUtf8 which flattens them).
+static std::string U8(const std::wstring& w) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<std::size_t>(n), '\0'); WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr); return s;
+}
+
+// ---- SQLite fixtures (winsqlite3, synthetic databases) ----------------------------------------------------
+struct Db {
+    Sql::sqlite3* db = nullptr;
+    explicit Db(const std::wstring& path) { MakeDirs(path.substr(0, path.rfind(L'\\'))); CHECK(Sql::Get().Ready()); CHECK(Sql::Get().open_v2(Sql::FileUri(path, "").c_str(), &db, Sql::OPEN_READWRITE | 0x4 /* CREATE */ | Sql::OPEN_URI, nullptr) == Sql::OK); }
+    ~Db() { if (db) Sql::Get().close(db); }
+    void Exec(const std::string& sql) { char* err = nullptr; const int rc = Sql::Get().exec(db, sql.c_str(), nullptr, nullptr, &err); if (rc != Sql::OK) { std::fprintf(stderr, "SQL %d: %s\n", rc, sql.c_str()); std::exit(1); } }
+};
+// Chromium time (µs since 1601) for a Unix ms value.
+static std::string Chrome(std::int64_t unixMs) { return std::to_string((unixMs + WindowsToUnixMs) * 1000); }
+static void ChromiumHistory(const std::wstring& path, bool hiddenColumn = true) {
+    Db d(path);
+    d.Exec(std::string("CREATE TABLE urls(id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR, visit_count INTEGER DEFAULT 0 NOT NULL, typed_count INTEGER DEFAULT 0 NOT NULL, last_visit_time INTEGER NOT NULL") + (hiddenColumn ? ", hidden INTEGER DEFAULT 0 NOT NULL" : "") + ")");
+    const char* h = hiddenColumn ? ", hidden" : "";
+    auto row = [&](int id, const std::string& url, const std::string& title, int visits, const std::string& last, int hidden) {
+        d.Exec("INSERT INTO urls(id, url, title, visit_count, last_visit_time" + std::string(h) + ") VALUES(" + std::to_string(id) + ", '" + url + "', '" + title + "', " + std::to_string(visits) + ", " + last + (hiddenColumn ? ", " + std::to_string(hidden) : "") + ")");
+    };
+    row(1, "https://example.com/a", U8(L"Accueil é 漢字 🙂"), 7, Chrome(1700000000000), 0);
+    row(2, "https://example.com/b", "Page B", 2, Chrome(1700000500000), 0);
+    row(3, "javascript:alert(1)", "bad", 1, Chrome(1700000600000), 0);
+    row(4, "https://hidden.example/", "hidden", 1, Chrome(1700000700000), 1);
+    row(5, "chrome://settings/", "internal", 3, Chrome(1700000800000), 0);
+    row(6, "https://never.example/", "never", 0, "0", 0);
+    row(7, "file:///C:/notes/x.html", "local", 1, Chrome(1600000000000), 0);
+    row(8, "https://www.google.com/search?q=x", "search", 1, Chrome(1700000900000), 0);
+}
+static void Places(const std::wstring& path, bool wal) {
+    Db d(path);
+    if (wal) d.Exec("PRAGMA journal_mode=WAL");
+    d.Exec("CREATE TABLE moz_places(id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR, visit_count INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0 NOT NULL, last_visit_date INTEGER)");
+    d.Exec("CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER DEFAULT NULL, parent INTEGER, position INTEGER, title LONGVARCHAR, dateAdded INTEGER, guid TEXT)");
+    d.Exec("INSERT INTO moz_places VALUES(1, 'https://mozilla.example/', 'Moz', 4, 0, 1700000000000000)");
+    d.Exec(std::string("INSERT INTO moz_places VALUES(2, 'https://unicode.example/é', '") + U8(L"Été ☀ 🙂") + "', 1, 0, 1700000100000000)");
+    d.Exec("INSERT INTO moz_places VALUES(3, 'place:sort=8', 'smart', 0, 0, NULL)");
+    d.Exec("INSERT INTO moz_places VALUES(4, 'https://hidden.example/', 'h', 1, 1, 1700000200000000)");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(1, 2, NULL, 0, 0, '', 1, 'root________')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(2, 2, NULL, 1, 0, 'menu', 1, 'menu________')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(3, 2, NULL, 1, 1, 'toolbar', 1, 'toolbar_____')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(4, 2, NULL, 1, 2, 'tags', 1, 'tags________')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(5, 2, NULL, 1, 3, 'unfiled', 1, 'unfiled_____')");
+    // Toolbar: positions inserted out of order; a separator; a folder with a Unicode title.
+    d.Exec("INSERT INTO moz_bookmarks VALUES(10, 1, 2, 3, 2, 'second', 1700000000000000, 'a1')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(11, 1, 1, 3, 0, 'first', 1690000000000000, 'a2')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(12, 3, NULL, 3, 1, '', 1, 'a3')");
+    d.Exec(std::string("INSERT INTO moz_bookmarks VALUES(13, 2, NULL, 3, 3, '") + U8(L"Dossier 日本") + "', 1, 'a4')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(14, 1, 1, 13, 0, 'inside', 1, 'a5')");
+    d.Exec("INSERT INTO moz_bookmarks VALUES(15, 1, 3, 2, 0, 'smart', 1, 'a6')");          // menu: place: URL
+    d.Exec("INSERT INTO moz_bookmarks VALUES(16, 1, 1, 4, 0, 'tagged', 1, 'a7')");         // under tags: never imported
+    d.Exec("INSERT INTO moz_bookmarks VALUES(17, 1, NULL, 5, 0, 'no url', 1, 'a8')");       // damaged: no place
+}
+static std::vector<std::wstring> Titles(const BM::Store& s, BM::Id folder) { std::vector<std::wstring> t; for (BM::Id id : s.Find(folder)->children) t.push_back(s.Find(id)->title); return t; }
+static BM::Id Child(const BM::Store& s, BM::Id folder, const std::wstring& title) { for (BM::Id id : s.Find(folder)->children) if (s.Find(id)->title == title) return id; return BM::NoId; }
+
+static std::string Json(const std::wstring& w) { std::string o = "\""; for (char c : U8(w)) { if (c == '"' || c == '\\') o += '\\'; o += c; } return o + "\""; }
+static std::string ChromeNode(const std::wstring& name, const std::string& url, std::int64_t addedMs = 1700000000000) {
+    return "{\"type\":\"url\",\"name\":" + Json(name) + ",\"url\":\"" + url + "\",\"date_added\":\"" + Chrome(addedMs) + "\",\"guid\":\"x\",\"id\":\"1\"}";
+}
+static std::string ChromeFolder(const std::wstring& name, const std::vector<std::string>& kids) {
+    std::string k; for (const auto& c : kids) { if (!k.empty()) k += ","; k += c; }
+    return "{\"type\":\"folder\",\"name\":" + Json(name) + ",\"children\":[" + k + "],\"date_added\":\"" + Chrome(1690000000000) + "\"}";
+}
+static std::string ChromeBookmarks() {
+    std::string deep = ChromeNode(L"au fond", "https://deep.example/");
+    for (int i = 11; i >= 1; --i) deep = ChromeFolder(L"N" + std::to_wstring(i), {deep});
+    const std::string bar = ChromeFolder(L"Bookmarks bar", {
+        ChromeNode(L"Un", "https://one.example/", 1600000000000),
+        ChromeFolder(L"Travail 🛠 é", {ChromeNode(L"Doc", "https://docs.example/"), ChromeNode(L"Doc again", "https://docs.example/"), ChromeNode(L"JS", "javascript:void(0)")}),
+        ChromeFolder(L"Perso", {ChromeNode(L"Doc", "https://docs.example/")}),
+        ChromeNode(L"Deux", "https://two.example/"),
+    });
+    const std::string other = ChromeFolder(L"Other bookmarks", {ChromeNode(L"Trois", "https://three.example/"), deep});
+    const std::string synced = ChromeFolder(L"Mobile bookmarks", {});
+    return "{\"checksum\":\"0\",\"roots\":{\"bookmark_bar\":" + bar + ",\"other\":" + other + ",\"synced\":" + synced + "},\"version\":1}";
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) { std::fprintf(stderr, "usage: browser_import_test <work folder>\n"); return 2; }
+    { std::wstring w; NativeChrome::Downloads::FromUtf8(argv[1], w); for (auto& c : w) if (c == L'/') c = L'\\'; work = w; }
+    // Spaces, accents, CJK, '#' and '%' in every path below: URI escaping and path handling are exercised.
+    work += L"\\run é #% 漢";
+    RemoveTree(work); MakeDirs(work);
+    const std::wstring temp = work + L"\\temp #1 %20"; MakeDirs(temp);
+    CHECK(Sql::Get().Ready());   // winsqlite3.dll from System32
+
+    // ---- Time conversions ----------------------------------------------------------------------------------
+    OK(ChromiumTime((1700000000000LL + WindowsToUnixMs) * 1000) == 1700000000000LL);
+    OK(ChromiumTime(0) == 0 && ChromiumTime(-5) == 0);
+    OK(FirefoxTime(1700000000000000LL) == 1700000000000LL && FirefoxTime(0) == 0);
+    OK(HtmlTime(1700000000) == 1700000000000LL && HtmlTime(1700000000000LL) == 1700000000000LL && HtmlTime(1700000000000000LL) == 1700000000000LL && HtmlTime(-1) == 0);
+    OK(Clamp(5, 3) == 3 && Clamp(-1, 3) == 0);
+
+    // ---- URI escaping ---------------------------------------------------------------------------------------
+    OK(Sql::FileUri(L"C:\\a b\\é#?%\\db", "mode=ro") == "file:///C:/a%20b/%C3%A9%23%3F%25/db?mode=ro");
+
+    // ---- Discovery (metadata only, injected roots) ----------------------------------------------------------
+    const Roots roots{work + L"\\Local", work + L"\\Roaming"};
+    const std::wstring chrome = roots.local + L"\\Google\\Chrome\\User Data", edge = roots.local + L"\\Microsoft\\Edge\\User Data", firefox = roots.roaming + L"\\Mozilla\\Firefox";
+    Put(chrome + L"\\Default\\Bookmarks", ChromeBookmarks());
+    ChromiumHistory(chrome + L"\\Default\\History");
+    ChromiumHistory(chrome + L"\\Profile 2\\History", false);           // older schema: no `hidden`
+    MakeDirs(chrome + L"\\System Profile"); Put(chrome + L"\\System Profile\\Bookmarks", "{}");   // not a person's profile
+    MakeDirs(chrome + L"\\Profile 9");                                    // no data: not listed
+    Put(chrome + L"\\Local State", "{\"never\":\"read\"}");
+    Put(edge + L"\\Default\\Bookmarks", "{\"roots\":{}}");
+    // A junction planted as a profile: never followed.
+    { MakeDirs(work + L"\\elsewhere\\Profile 3"); Put(work + L"\\elsewhere\\Profile 3\\Bookmarks", ChromeBookmarks());
+      std::wstring cmd = L"cmd.exe /c mklink /J \"" + chrome + L"\\Profile 3\" \"" + work + L"\\elsewhere\\Profile 3\" >nul";
+      STARTUPINFOW si{sizeof si}; PROCESS_INFORMATION pi{}; std::vector<wchar_t> line(cmd.begin(), cmd.end()); line.push_back(0);
+      CHECK(CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi));
+      WaitForSingleObject(pi.hProcess, 10000); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+      CHECK(IsReparse(chrome + L"\\Profile 3")); }
+    const std::wstring ffProfile = firefox + L"\\Profiles\\ab cd é#%.default-release";
+    Places(ffProfile + L"\\places.sqlite", false);
+    Put(firefox + L"\\profiles.ini", U8(L"\xFEFF[General]\r\nStartWithLastProfile=1\r\n\r\n[Profile0]\r\nName=default-release\r\nIsRelative=1\r\nPath=Profiles/ab cd é#%.default-release\r\nDefault=1\r\n\r\n"
+        L"[Profile1]\r\nName=escape\r\nIsRelative=1\r\nPath=../../outside\r\n\r\n[Profile2]\r\nName=absolute\r\nIsRelative=0\r\nPath=C:\\Windows\r\n\r\n[Profile3]\r\nName=drive\r\nIsRelative=1\r\nPath=C:/x\r\n"));
+    {
+        // The data files are held open WITHOUT any sharing during discovery: it never opens them.
+        HANDLE lock = CreateFileW((chrome + L"\\Default\\Bookmarks").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        CHECK(lock != INVALID_HANDLE_VALUE);
+        const auto before = Tree(work);
+        const auto found = Discover(roots);
+        OK(Tree(work) == before);
+        CloseHandle(lock);
+        OK(found.size() == 4);
+        OK(found[0].browser == Browser::Chrome && found[0].profile == L"Default" && found[0].isDefault && found[0].bookmarks && found[0].history && !found[0].soleProfile);
+        OK(found[1].browser == Browser::Chrome && found[1].profile == L"Profile 2" && !found[1].bookmarks && found[1].history);
+        OK(found[2].browser == Browser::Edge && found[2].soleProfile && found[2].bookmarks && !found[2].history);
+        OK(found[3].browser == Browser::Firefox && found[3].profile == L"default-release" && found[3].isDefault && found[3].dir == ffProfile && found[3].bookmarks && found[3].history);
+        OK(Label(found[0]) == L"Chrome — profil principal" && Label(found[1]) == L"Chrome — Profile 2" && Label(found[2]) == L"Edge" && Label(found[3]) == L"Firefox");
+        OK(FolderTitle(found[2]) == L"Importés de Edge" && FolderTitle(HtmlSource(L"x")) == L"Importés d'un fichier HTML");
+        OK(Discover(Roots{work + L"\\nothing", L""}).empty());
+    }
+
+    const std::int64_t now = 1800000000000LL;
+    // ---- Chromium bookmarks ----------------------------------------------------------------------------------
+    const Source chromeDefault = DiscoverChromium(roots, Browser::Chrome)[0];
+    Options both; both.bookmarks = both.history = true; both.tempRoot = temp;
+    const auto chromeTreeBefore = Tree(chrome);
+    const ReadResult cr = Read(chromeDefault, both);
+    OK(Tree(chrome) == chromeTreeBefore);          // source untouched, no sidecar created
+    OK(Empty(temp));                               // private snapshot deleted
+    OK(cr.bookmarks.failure == Failure::None && cr.bookmarks.roots.size() == 2);   // empty « synced » skipped
+    OK(cr.bookmarks.roots[0].title == L"Barre de favoris" && cr.bookmarks.roots[1].title == L"Autres favoris");
+    OK(cr.bookmarks.roots[0].children[1].title == L"Travail 🛠 é" && cr.bookmarks.roots[0].children[0].added == 1600000000000LL);
+    {
+        BM::Store s; s.Add(BM::BarRoot, BM::End, L"existing", L"https://mine.example/", 1);
+        const BM::Store original = s;
+        const Counts c = ApplyBookmarks(s, L"Importés de Chrome", cr.bookmarks.roots, now);
+        // 7 links + deep; javascript: unsupported; deep link is under 11 nested folders.
+        OK(c.imported == 6 && c.unsupported == 1 && c.present == 0 && c.deep == 1 && c.full == 0);
+        const BM::Id box = Child(s, BM::OtherRoot, L"Importés de Chrome"); OK(box != BM::NoId);
+        OK((Titles(s, box) == std::vector<std::wstring>{L"Barre de favoris", L"Autres favoris"}));
+        const BM::Id bar = Child(s, box, L"Barre de favoris");
+        OK((Titles(s, bar) == std::vector<std::wstring>{L"Un", L"Travail 🛠 é", L"Perso", L"Deux"}));   // order kept
+        const BM::Id work1 = Child(s, bar, L"Travail 🛠 é");
+        OK((Titles(s, work1) == std::vector<std::wstring>{L"Doc", L"Doc again"}));   // intentional repeat in one folder kept
+        OK(s.Find(Child(s, Child(s, bar, L"Perso"), L"Doc")) != nullptr);          // same URL in another folder kept
+        OK(s.Find(Child(s, bar, L"Un"))->added == 1600000000000LL);
+        // Depth: box (2), Autres favoris (3), N1..N5 (4..8); N6 would be 9 > MaxDepth: its subtree is counted, never flattened.
+        BM::Id f = Child(s, Child(s, box, L"Autres favoris"), L"N1"); int levels = 0; while (f && levels < 20) { ++levels; const BM::Id next = Child(s, f, L"N" + std::to_wstring(levels + 1)); if (!next) break; f = next; }
+        OK(levels == 5 && s.Find(f)->children.empty());
+        OK(s.Find(Child(s, BM::BarRoot, L"existing")) != nullptr);   // nothing replaced
+        // Repeat import: nothing new.
+        const BM::Store once = s;
+        const Counts again = ApplyBookmarks(s, L"Importés de Chrome", cr.bookmarks.roots, now);
+        OK(s == once && again.imported == 0 && again.present == 6 && again.unsupported == 1 && again.deep == 1 && again.folders == 0);
+        // A source that gained one bookmark: only that one is added, at the end of its folder.
+        auto more = cr.bookmarks.roots; Item extra; extra.title = L"Nouveau"; extra.url = L"https://new.example/"; more[0].children.push_back(extra);
+        const Counts third = ApplyBookmarks(s, L"Importés de Chrome", more, now);
+        OK(third.imported == 1 && third.present == 6 && Titles(s, bar).back() == L"Nouveau");
+        (void)original;
+    }
+    {   // Capacity: 4 free nodes → the rest is reported, nothing evicted.
+        BM::Store s; for (std::size_t i = 0; s.Size() < BM::Store::Limit - 4; ++i) CHECK(s.Add(BM::OtherRoot, BM::End, L"x", L"https://fill.example/" + std::to_wstring(i), 1) != BM::NoId);
+        const Counts c = ApplyBookmarks(s, L"Importés de Chrome", cr.bookmarks.roots, now);
+        OK(s.Size() == BM::Store::Limit);
+        OK(c.imported + c.folders == 4 && c.imported + c.full + c.unsupported + c.deep >= 7);
+        OK(c.full > 0);
+    }
+    // Malformed and oversized sources.
+    OK(ParseChromiumBookmarks("{\"roots\": [").failure == Failure::Malformed);
+    OK(ParseChromiumBookmarks("{\"no_roots\":1}").failure == Failure::Malformed);
+    OK(ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"children\":[{\"type\":\"url\",\"name\":1}]}}}").roots.empty());
+    {
+        const std::wstring big = work + L"\\big\\Default"; Put(big + L"\\Bookmarks", std::string(static_cast<std::size_t>(Bound::jsonBytes) + 1, ' '));
+        Source s = chromeDefault; s.dir = big; Options o; o.bookmarks = true; o.tempRoot = temp;
+        OK(Read(s, o).bookmarks.failure == Failure::TooLarge);
+        Source gone = chromeDefault; gone.dir = work + L"\\gone"; OK(Read(gone, o).bookmarks.failure == Failure::Missing);
+        // A JSON nested deeper than the parser allows is refused, never a stack overflow.
+        std::string nest = ChromeNode(L"x", "https://x.example/"); for (int i = 0; i < 400; ++i) nest = ChromeFolder(L"f", {nest});
+        OK(ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":" + nest + "}}").failure == Failure::Malformed);
+    }
+
+    // ---- Chromium history -----------------------------------------------------------------------------------
+    OK(cr.history.failure == Failure::None);
+    OK(cr.history.visits.size() == 6);   // hidden and never-visited rows excluded by the query
+    OK(cr.history.visits[0].url == L"https://www.google.com/search?q=x" && cr.history.visits.back().url == L"file:///C:/notes/x.html");
+    {
+        const Visit* a = nullptr; for (const auto& v : cr.history.visits) if (v.url == L"https://example.com/a") a = &v;
+        OK(a && a->title == L"Accueil é 漢字 🙂" && a->visits == 7 && a->last == 1700000000000LL);
+        AddressBar::History h; h.Record(L"https://example.com/b", L"mine", 1750000000000LL);
+        auto search = [](const std::wstring& u) { return u.rfind(L"https://www.google.com/search", 0) == 0; };
+        const Counts c = ApplyHistory(h, cr.history.visits, cr.history.beyond, now, search);
+        OK(c.imported == 2 && c.present == 1 && c.unsupported == 3 && c.full == 0);   // search, javascript:, chrome:
+        bool kept = false; for (const auto& v : h.Items()) if (v.url == L"https://example.com/b") kept = v.title == L"mine" && v.last == 1750000000000LL && v.visits == 2;
+        OK(kept);   // existing page: title and later visit kept, count = max
+        const AddressBar::History once = h;
+        const Counts again = ApplyHistory(h, cr.history.visits, 0, now, search);
+        OK(h == once && again.imported == 0 && again.present == 3);   // idempotent
+    }
+    {   // Full history: nothing evicted, the rest reported.
+        AddressBar::History h; for (std::size_t i = 0; i < AddressBar::History::Limit; ++i) h.Record(L"https://full.example/" + std::to_wstring(i), L"", 5);
+        const auto before = h; const Counts c = ApplyHistory(h, cr.history.visits, 12, now);
+        OK(h == before && c.imported == 0 && c.full == 12 + 4);
+    }
+    {   // Schema without `hidden` (older/forked Chromium): fallback query.
+        Source p2 = DiscoverChromium(roots, Browser::Chrome)[1]; Options o; o.history = true; o.tempRoot = temp;
+        const auto r = Read(p2, o); OK(r.history.failure == Failure::None && r.history.visits.size() == 7);
+        // Unknown schema → unsupported, never a crash.
+        const std::wstring odd = work + L"\\odd\\Default"; { Db d(odd + L"\\History"); d.Exec("CREATE TABLE something(x)"); }
+        Source s = p2; s.dir = odd; OK(Read(s, o).history.failure == Failure::Unsupported);
+        // Not a database at all.
+        const std::wstring junk = work + L"\\junk\\Default"; Put(junk + L"\\History", std::string(4096, 'Z'));
+        s.dir = junk; OK(Read(s, o).history.failure == Failure::Malformed);
+        OK(Empty(temp));
+    }
+    {   // Source in use by the browser: a writer handle (as a running browser holds) → Busy, source unchanged.
+        Source s = chromeDefault; Options o; o.history = true; o.tempRoot = temp;
+        const auto before = Tree(chrome);
+        { Db holder(s.dir + L"\\History"); holder.Exec("SELECT count(*) FROM urls"); OK(Read(s, o).history.failure == Failure::Busy); }
+        { Db holder(s.dir + L"\\History"); holder.Exec("PRAGMA locking_mode=EXCLUSIVE"); holder.Exec("BEGIN EXCLUSIVE"); OK(Read(s, o).history.failure == Failure::Busy); holder.Exec("COMMIT"); }
+        OK(Tree(chrome) == before && Empty(temp));
+        // Read-only source files: still read, still untouched.
+        SetFileAttributesW((s.dir + L"\\History").c_str(), FILE_ATTRIBUTE_READONLY);
+        OK(Read(s, o).history.visits.size() == 6);
+        SetFileAttributesW((s.dir + L"\\History").c_str(), FILE_ATTRIBUTE_NORMAL);
+        OK(Tree(chrome) == before && Empty(temp));
+    }
+
+    // ---- Firefox (rollback journal, then WAL with committed rows only in the -wal) ------------------------------
+    {
+        const Source ff = DiscoverFirefox(roots)[0];
+        const auto before = Tree(firefox);
+        const auto r = Read(ff, both);
+        OK(Tree(firefox) == before && Empty(temp));
+        OK(r.bookmarks.failure == Failure::None && r.history.failure == Failure::None);
+        OK(r.bookmarks.roots.size() == 2);   // toolbar, menu; tags never; unfiled only had a damaged row
+        OK(r.bookmarks.roots[0].title == L"Barre de favoris" && r.bookmarks.roots[1].title == L"Menu des marque-pages");
+        const auto& tb = r.bookmarks.roots[0].children;
+        OK(tb.size() == 3 && tb[0].title == L"first" && tb[1].title == L"second" && tb[2].folder && tb[2].title == L"Dossier 日本" && tb[2].children[0].title == L"inside");
+        OK(tb[1].url == L"https://unicode.example/é" && tb[0].added == 1690000000000LL);
+        OK(r.bookmarks.ignored == 1);
+        OK(r.history.visits.size() == 2 && r.history.visits[0].title == L"Été ☀ 🙂" && r.history.visits[0].last == 1700000100000LL);
+        BM::Store s; const Counts c = ApplyBookmarks(s, FolderTitle(ff), r.bookmarks.roots, now);
+        OK(c.imported == 3 && c.unsupported == 1);   // place: URL
+
+        // WAL: the database file alone lacks the rows; they are committed in the -wal of a crashed session.
+        const std::wstring live = work + L"\\ffwal\\live", crashed = work + L"\\ffwal\\Profiles\\crashed";
+        MakeDirs(crashed);
+        {
+            Places(live + L"\\places.sqlite", true);
+            Db w(live + L"\\places.sqlite"); w.Exec("PRAGMA wal_autocheckpoint=0");
+            w.Exec("INSERT INTO moz_places VALUES(9, 'https://only-in-wal.example/', 'wal', 1, 0, 1700000300000000)");
+            // Copy database + -wal while the writer is open: the state a crash leaves behind (no -shm copied).
+            CHECK(CopyFileW((live + L"\\places.sqlite").c_str(), (crashed + L"\\places.sqlite").c_str(), FALSE));
+            CHECK(CopyFileW((live + L"\\places.sqlite-wal").c_str(), (crashed + L"\\places.sqlite-wal").c_str(), FALSE));
+            // While the writer (a running Firefox) is open: Busy, and its -shm/-wal are left alone.
+            Source running = ff; running.dir = live; const auto liveBefore = Tree(live + L"\\..");
+            OK(Read(running, both).history.failure == Failure::Busy);
+            OK(Tree(live + L"\\..") == liveBefore);
+        }
+        Source s2 = ff; s2.dir = crashed;
+        const auto crashedBefore = Tree(crashed);
+        OK(crashedBefore.count(L"\\places.sqlite-wal") && !crashedBefore.count(L"\\places.sqlite-shm"));
+        // The source folder refuses new files (deny add-file / add-subfolder ACE): the read needs none.
+        PSECURITY_DESCRIPTOR deny = nullptr, open = nullptr;
+        CHECK(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(D;;0x6;;;WD)(A;OICI;FA;;;WD)", SDDL_REVISION_1, &deny, nullptr));
+        CHECK(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;WD)", SDDL_REVISION_1, &open, nullptr));
+        CHECK(SetFileSecurityW(crashed.c_str(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, deny));
+        CHECK(CreateFileW((crashed + L"\\probe").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr) == INVALID_HANDLE_VALUE);
+        const auto rw = Read(s2, both);
+        CHECK(SetFileSecurityW(crashed.c_str(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, open));
+        LocalFree(deny); LocalFree(open);
+        OK(Tree(crashed) == crashedBefore);    // no -shm created, the -wal not checkpointed into the source
+        OK(Empty(temp));
+        OK(rw.history.failure == Failure::None && rw.history.visits.size() == 3 && rw.history.visits[0].url == L"https://only-in-wal.example/");
+    }
+
+    // ---- HTML bookmark file ---------------------------------------------------------------------------------
+    {
+        const std::string html =
+            "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<!-- This is an automatically generated file. <A HREF=\"https://comment.example/\">no</A> -->\n"
+            "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n"
+            "    <DT><H3 ADD_DATE=\"1600000000\" PERSONAL_TOOLBAR_FOLDER=\"true\">Barre &amp; outils</H3>\n    <DL><p>\n"
+            "        <DT><A HREF=\"https://a.example/?x=1&amp;y=2\" ADD_DATE=\"1700000000\" ICON=\"data:image/png;base64,AAAA\">A &lt;b&gt; <b>gras</b> &#233;t&#xE9; &#128512;</A>\n"
+            "        <DT><H3>Vide</H3>\n        <DL><p>\n        </DL><p>\n"
+            "        <DT><A HREF=\"javascript:alert(1)\">js</A>\n"
+            "    </DL><p>\n"
+            "    <script>document.write('<DT><A HREF=\"https://script.example/\">no</A>')</script>\n"
+            "    <DT><a href='https://lower.example/' add_date=1700000001000>lower</a>\n"
+            "    <DT><A>no href</A>\n"
+            "</DL><p>\n";
+        const std::wstring file = work + L"\\exports\\favoris é#%.html"; Put(file, html);
+        const auto before = Tree(work + L"\\exports");
+        Options o; o.bookmarks = true; o.history = true;
+        const auto r = Read(HtmlSource(file), o);
+        OK(Tree(work + L"\\exports") == before);
+        OK(r.bookmarks.failure == Failure::None && r.history.visits.empty() && r.bookmarks.ignored == 1);
+        OK(r.bookmarks.roots.size() == 2);
+        const auto& bar = r.bookmarks.roots[0];
+        OK(bar.folder && bar.title == L"Barre & outils" && bar.added == 1600000000000LL && bar.children.size() == 3);
+        OK(bar.children[0].url == L"https://a.example/?x=1&y=2" && bar.children[0].title == L"A <b> gras été 😀" && bar.children[0].added == 1700000000000LL);
+        OK(bar.children[1].folder && bar.children[1].title == L"Vide" && bar.children[1].children.empty());
+        OK(r.bookmarks.roots[1].url == L"https://lower.example/" && r.bookmarks.roots[1].added == 1700000001000LL);
+        BM::Store s; const Counts c = ApplyBookmarks(s, FolderTitle(HtmlSource(file)), r.bookmarks.roots, now);
+        OK(c.imported == 2 && c.unsupported == 1 && c.folders == 3);
+        // Windows-1252 legacy export.
+        const auto legacy = ParseHtmlBookmarks("<DL><DT><A HREF=\"https://e.example/\">caf\xE9</A></DL>");
+        OK(legacy.failure == Failure::None && legacy.roots.size() == 1 && legacy.roots[0].title == L"café");
+        OK(ParseHtmlBookmarks("just text, no list").failure == Failure::Malformed);
+        std::string deep = "<DL>"; for (int i = 0; i < 300; ++i) deep += "<DT><H3>f</H3><DL>"; deep += "<DT><A HREF=\"https://x.example/\">x</A>";
+        OK(ParseHtmlBookmarks(deep).failure == Failure::TooLarge);
+        Put(work + L"\\exports\\big.html", std::string(static_cast<std::size_t>(Bound::htmlBytes) + 1, 'x'));
+        OK(Read(HtmlSource(work + L"\\exports\\big.html"), o).bookmarks.failure == Failure::TooLarge);
+        // A reparse point instead of a file is refused.
+        const std::wstring link = work + L"\\exports\\link.html";
+        if (CreateSymbolicLinkW(link.c_str(), file.c_str(), 0x2 /* ALLOW_UNPRIVILEGED_CREATE */)) OK(Read(HtmlSource(link), o).bookmarks.failure == Failure::Unreadable);
+        else std::printf("note: symbolic links unavailable without developer mode; junction case covered by discovery\n");
+    }
+
+    // ---- Commits through the profile store (destination) --------------------------------------------------------
+    {
+        const std::wstring data = work + L"\\profile"; MakeDirs(data);
+        const std::wstring bmFile = data + L"\\bookmarks", hFile = data + L"\\history";
+        // Another window already wrote a bookmark and a page this window has not seen.
+        { BM::Store other; other.Add(BM::BarRoot, BM::End, L"other window", L"https://other.example/", 5); std::ostringstream o; other.Write(o); CHECK(ProfileStore::WriteAtomic(bmFile, o.str())); }
+        { AddressBar::History other; other.Record(L"https://other.example/", L"o", 5); std::ostringstream o; other.Write(o); CHECK(ProfileStore::WriteAtomic(hFile, o.str())); }
+        BM::Store base, mine; AddressBar::History hbase, hmine;
+        auto c1 = CommitBookmarks(data, bmFile, base, mine, L"Importés de Chrome", cr.bookmarks.roots, now);
+        OK(c1.Saved() && c1.counts.imported == 6);
+        OK(Child(mine, BM::BarRoot, L"other window") != BM::NoId && Child(mine, BM::OtherRoot, L"Importés de Chrome") != BM::NoId && base == mine);
+        auto h1 = CommitHistory(data, hFile, hbase, hmine, cr.history.visits, 0, now);
+        OK(h1.Saved() && h1.counts.imported == 4 && hmine.Items().size() == 5);   // other window's page kept
+        // Repeat: nothing new, the file stays identical.
+        std::string bmBytes, hBytes; ProfileStore::ReadAll(bmFile, bmBytes); ProfileStore::ReadAll(hFile, hBytes);
+        auto c2 = CommitBookmarks(data, bmFile, base, mine, L"Importés de Chrome", cr.bookmarks.roots, now);
+        auto h2 = CommitHistory(data, hFile, hbase, hmine, cr.history.visits, 0, now);
+        OK(c2.result == ProfileStore::Result::Unchanged && c2.counts.imported == 0 && c2.counts.present == 6);
+        OK(h2.result == ProfileStore::Result::Unchanged && h2.counts.present == 4);
+        std::string bm2, h2b; ProfileStore::ReadAll(bmFile, bm2); ProfileStore::ReadAll(hFile, h2b);
+        OK(bm2 == bmBytes && h2b == hBytes);
+        // Destination save failure: bookmarks file of an unknown (future) format → nothing written, nothing
+        // claimed; history still commits on its own (partial import, reported per category).
+        const std::string future = "browser-bookmarks 2\nwhatever\n"; CHECK(ProfileStore::WriteAtomic(bmFile, future));
+        const BM::Store bBefore = base, mBefore = mine;
+        Item extra; extra.title = L"new"; extra.url = L"https://new.example/"; std::vector<Item> roots{extra};
+        auto c3 = CommitBookmarks(data, bmFile, base, mine, L"Importés de Chrome", roots, now);
+        std::string stillFuture; ProfileStore::ReadAll(bmFile, stillFuture);
+        OK(c3.result == ProfileStore::Result::UnknownFormat && !c3.Saved() && c3.counts == Counts{} && stillFuture == future && base == bBefore && mine == mBefore);
+        Visit v; v.url = L"https://partial.example/"; v.last = 1700000000000LL;
+        auto h3 = CommitHistory(data, hFile, hbase, hmine, {v}, 0, now);
+        OK(h3.Saved() && h3.counts.imported == 1);
+        // Damaged history file: backed up, never rewritten, import reported as failed.
+        std::string damaged = "browser-history 1\nnot a record\n"; CHECK(ProfileStore::WriteAtomic(hFile, damaged));
+        const auto hb = hbase; auto h4 = CommitHistory(data, hFile, hbase, hmine, {v}, 0, now);
+        std::string after; ProfileStore::ReadAll(hFile, after);
+        OK(!h4.Saved() && after == damaged && hbase == hb);
+        // Profile busy (another window holds the lock past the timeout): nothing written.
+        {
+            CHECK(ProfileStore::WriteAtomic(bmFile, bmBytes));
+            HANDLE m = CreateMutexW(nullptr, TRUE, ProfileStore::MutexName(data).c_str()); CHECK(m);
+            std::string held; ProfileStore::ReadAll(bmFile, held);
+            // The mutex is recursive for this thread: take it from another thread instead.
+            ReleaseMutex(m);
+            HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr), done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            struct Ctx { std::wstring name; HANDLE ready, done; } ctx{ProfileStore::MutexName(data), ready, done};
+            HANDLE t = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD { auto* c = static_cast<Ctx*>(p); HANDLE mm = CreateMutexW(nullptr, FALSE, c->name.c_str()); WaitForSingleObject(mm, INFINITE); SetEvent(c->ready); WaitForSingleObject(c->done, INFINITE); ReleaseMutex(mm); CloseHandle(mm); return 0; }, &ctx, 0, nullptr);
+            WaitForSingleObject(ready, 5000);
+            BM::Store b2, m2; auto busy = CommitBookmarks(data, bmFile, b2, m2, L"x", roots, now, nullptr, 50);
+            SetEvent(done); WaitForSingleObject(t, 5000); CloseHandle(t); CloseHandle(ready); CloseHandle(done); CloseHandle(m);
+            std::string unchanged; ProfileStore::ReadAll(bmFile, unchanged);
+            OK(busy.result == ProfileStore::Result::Busy && unchanged == held);
+        }
+    }
+
+    // ---- Report text ------------------------------------------------------------------------------------------
+    {
+        Counts c; c.imported = 12; c.present = 1; c.full = 2;
+        OK(CountsText(c) == L"12 importés · 1 déjà présent · 2 non importés (limite atteinte)");
+        OK(FailureText(Failure::Busy, chromeDefault) == L"fermez Chrome, puis réessayez.");
+        I18n::SetForProcess(I18n::Locale::En);
+        OK(CountsText(c) == L"12 imported · 1 already there · 2 not imported (limit reached)");
+        OK(FailureText(Failure::Busy, chromeDefault) == L"close Chrome, then try again." && Label(DiscoverChromium(roots, Browser::Chrome)[0]) == L"Chrome – main profile");
+        I18n::SetForProcess(I18n::Locale::Fr);
+    }
+
+    RemoveTree(work);
+    std::printf("browser import: %d checks passed\n", checks);
+    return 0;
+}

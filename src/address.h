@@ -230,6 +230,21 @@ public:
         if (!title.empty()) v->title = title;
         return true;
     }
+    // A page brought from another browser (src/browser-import.h). Never evicts and never replaces:
+    // an existing page keeps its first spelling and title, its count/last visit become the max of
+    // both (so importing the same source twice changes nothing); a new page needs free room.
+    enum class Imported { Added, Present, Full, Refused };
+    Imported Import(const std::wstring& url, const std::wstring& title, int visits, std::int64_t last) {
+        if (!Recordable(url) || last <= 0) return Imported::Refused;
+        if (auto* v = Find(url)) {
+            v->visits = std::max(v->visits, std::max(1, visits)); v->last = std::max(v->last, last);
+            if (v->title.empty() && !title.empty()) v->title = Clean(title);
+            return Imported::Present;
+        }
+        if (items_.size() >= Limit) return Imported::Full;
+        items_.push_back({url, Clean(title), std::max(1, visits), last});
+        return Imported::Added;
+    }
     bool SetTitle(const std::wstring& url, const std::wstring& title) {
         auto* v = Find(url);
         if (!v || title.empty() || v->title == title) return false;
