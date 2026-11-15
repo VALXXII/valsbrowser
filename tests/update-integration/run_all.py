@@ -67,6 +67,18 @@ def existing_fixtures() -> None:
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, language_evidence])
     fixture('bookmarks_test', [*STRICT, 'tests/bookmarks_test.cpp'])
+    # Import from a browser (design/browser-data-import-plan.md): synthetic roots only, Windows' winsqlite3.dll
+    import_work = OUT / 'browser-import-work'
+    import_work.mkdir(parents=True, exist_ok=True)
+    fixture('browser_import_test', [*STRICT, '-Isrc', 'tests/browser-import/browser_import_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [import_work])
+    # Settings wiring of the import row and the password manager row (main.cpp hooks + real drawer, synthetic hooks)
+    fixture('import_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT])
+    # Import dialog states rendered offscreen by the production modal (native fixture), each PNG checked non-blank
+    import_render = OUT / 'import-render'
+    import_render.mkdir(parents=True, exist_ok=True)
+    fixture('import_dialog_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_dialog_render_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt', '-ladvapi32'], [ROOT, import_render])
     bookmarks_evidence = ROOT / 'build/bookmarks-ui-qa'
     bookmarks_evidence.mkdir(parents=True, exist_ok=True)
     fixture('bookmarks_ui_test', [*LOOSE, '-municode', *TVG, WV2,

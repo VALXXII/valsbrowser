@@ -51,7 +51,7 @@ using BrowserSettings::Engine;
 enum Hit : int {
     None = 0, Close = 1, Back = 2, EngineBase = 10, More = 20,
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
-    ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43, ManagePasswords = 44,
+    ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43, ManagePasswords = 44, ImportData = 46,
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
@@ -182,6 +182,7 @@ struct LayoutInput {
     std::size_t annotationCount = SIZE_MAX;                     // SIZE_MAX: not counted yet
     std::wstring annotationFolder;                              // the store root (second line of the folder row)
     bool vaultManager = false; std::size_t vaultCount = 0;   // E8: the vault is active (entry shown) and its account count
+    bool importData = false;                                   // « Importer depuis un navigateur… » (not in a private window)
     int site = -1;                                             // Site view: index into sites
     const std::vector<ProfileItem>* profiles = nullptr;        // Réglages › Profils
     float editorHeight = 0;                                    // Profils › <profil>: the editor block
@@ -284,6 +285,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
             // Nothing to manage yet: an inert row says why instead of opening an empty view.
             auto* s = add(Kind::Nav, None, TwoLine(in.noSitesLines.size()), TR(settings_site_permissions)); s->lines = in.noSitesLines;
         } else add(Kind::Nav, Permissions, row, TR(settings_site_permissions), in.sitesLoaded && in.sites ? std::to_wstring(in.sites->size()) : L"");
+        if (in.importData) add(Kind::Nav, ImportData, row, TR(settings_import_data));
         twoLine(ClearOnExit, TR(settings_clear_on_exit));
         add(Kind::Danger, ClearData, row, TR(settings_clear_data));
         y -= rowGap;
@@ -415,6 +417,7 @@ inline const Searchable SearchIndex[] = {
     {Autofill, {I::settings_autofill}, {I::settings_path_privacy_forms}, View::Privacy, {I::search_kw_autofill}},
     {Permissions, {I::settings_site_permissions}, {I::settings_path_privacy_data}, View::Privacy, {I::search_kw_site_permissions}},
     {ClearOnExit, {I::settings_clear_on_exit}, {I::settings_path_privacy_data}, View::Privacy, {I::search_kw_clear_on_exit}},
+    {ImportData, {I::settings_import_data}, {I::settings_path_privacy_data}, View::Privacy, {I::search_kw_import_data}},
     {ClearData, {I::settings_clear_data}, {I::settings_path_privacy_data}, View::Privacy, {I::search_kw_clear_data}},
     {Folder, {I::settings_save_in}, {I::settings_downloads}, View::Downloads, {I::search_kw_folder}},
     {AskWhere, {I::settings_ask_where}, {I::settings_downloads}, View::Downloads, {I::search_kw_folder}},
@@ -451,11 +454,12 @@ inline std::wstring Folded(const std::wstring& text) {
 }
 // Results: title matches first (with the matched span), then keyword matches.
 struct SearchResult { const Searchable* entry; size_t at = std::wstring::npos, length = 0; };
-inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool annotations = false) {
+inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool annotations = false, bool importData = true) {
     std::vector<SearchResult> titled, keyed; const std::wstring q = Folded(BrowserSettings::TrimText(query));
     if (q.empty()) return {};
     for (const auto& e : SearchIndex) {
         if (!annotations && IsAnnotationEntry(e)) continue;
+        if (!importData && e.hit == ImportData) continue;   // a private window has no import row
         const size_t at = Folded(I18n::T(e.title.id)).find(q);
         if (at != std::wstring::npos) titled.push_back({&e, at, q.size()});
         else if (Folded(I18n::T(e.keywords.id)).find(q) != std::wstring::npos) keyed.push_back({&e});
@@ -494,6 +498,7 @@ public:
         std::function<void(bool keyboard)> managePasswords;          // E8: the vault manager (B05)
         std::function<std::pair<bool, std::size_t>()> vaultInfo;     // E8: {vault active here, account count}
         std::function<void(bool keyboard)> clearData;               // modal confirmation + clear; `keyboard`: how the row was activated (focus ring)
+        std::function<void(bool keyboard)> importData;              // « Importer depuis un navigateur… » (src/browser-import.h); absent: no row
         std::function<void()> checkUpdates;
         std::function<Version()> version;                           // "browser 0.3.x · À jour"
         std::function<std::wstring()> downloadFolder;               // effective folder (default resolved)
@@ -640,6 +645,7 @@ private:
         in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_;
         in.annotations = AnnotationsOn(); in.agents = &agents_; in.agentsKnown = agentsKnown_; in.agentLines = agentLines_; in.now = NowSeconds();
         in.annotationCount = annotationCount_; if (in.annotations && hooks_.annotationFolder) in.annotationFolder = FolderText(hooks_.annotationFolder());
+        in.importData = static_cast<bool>(hooks_.importData);
         if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
     }
     mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
@@ -1249,7 +1255,7 @@ private:
     }
     // Search ---------------------------------------------------------------------------
     void SetQuery(std::wstring q) {
-        query_ = std::move(q); results_ = SearchSettings(query_, AnnotationsOn());
+        query_ = std::move(q); results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData));
         motion_.ClearInteractions(); if (IsResult(focus_)) focus_ = 0;
         Invalidate(); Schedule(Motion::Now());
     }
@@ -1399,7 +1405,7 @@ private:
             case Kind::Switch: n = &add(s.hit, Role::Button, s.text, box); n->toggle = SwitchValue(s.hit) ? 2 : 1; n->help = join(s.lines); break;
             case Kind::Value: n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; n->expand = 1; n->help = join(s.lines); break;
             case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, TRF(settings_profiles_name, s.value), box); n->automationId = L"SettingsProfiles"; n->help = TR(settings_profiles_help); }
-                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; } break;
+                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (s.hit == ImportData) n->automationId = L"SettingsImportData"; } break;
             case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(TR(settings_save_in)) : s.text, box);
                 n->help = s.hit == Folder ? (hooks_.downloadFolder ? hooks_.downloadFolder() : L"") : (hooks_.annotationFolder ? hooks_.annotationFolder() : L""); break;
             case Kind::SiteRow: n = &add(s.hit, Role::Button, s.text, box); n->help = s.value; break;
@@ -1564,7 +1570,7 @@ private:
             if (chosen > 0 && static_cast<BrowserSettings::Autoplay>(chosen - 1) != state_->autoplay) { state_->autoplay = static_cast<BrowserSettings::Autoplay>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::Autoplay); }
         } else if (IsField(hit)) { if (editing_ != hit) StartEdit(hit); return; }
         else if (hit == SearchDismiss) { if (editing_) EndEdit(); ClearSearch(); }
-        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_, AnnotationsOn()); }
+        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData)); }
         else if (hit == CatEngine) Push(View::Engine, now);
         else if (hit == CatTabs) Push(View::Tabs, now);
         else if (hit == CatPrivacy) { LoadSites(); Push(View::Privacy, now); }
@@ -1621,6 +1627,7 @@ private:
         else if (hit == Folder) { if (hooks_.pickFolder) Modal([&] { hooks_.pickFolder(); }); }
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
         else if (hit == ManagePasswords) { if (hooks_.managePasswords) Modal([&] { hooks_.managePasswords(keyboard); }); }
+        else if (hit == ImportData) { if (hooks_.importData) Modal([&] { hooks_.importData(keyboard); }); }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
@@ -2044,7 +2051,7 @@ public:
         plate_.Set(EngineTop(SelectedIndex()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
         SetChecking(hooks_.version && hooks_.version().checking, now);
         if (AnnotationsOn()) MeasureAgents();   // « il y a … » follows the clock
-        if (Searching()) results_ = SearchSettings(query_, AnnotationsOn());
+        if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData));
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }

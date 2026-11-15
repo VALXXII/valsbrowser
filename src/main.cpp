@@ -239,7 +239,7 @@ void ElementsTabChanged(); void ElementsTabClosed(const std::shared_ptr<Tab>& t)
 // B07: a download the engine blocked (malicious / security check / policy).
 void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason);
 void SyncRequestChip(); void ElementsNavigationStarting(const std::shared_ptr<Tab>& t); void VaultNavigationStarting(const std::shared_ptr<Tab>& t,std::uint64_t navigationId,const std::wstring& uri); void VaultNavigationCompleted(const std::shared_ptr<Tab>& t,std::uint64_t navigationId,bool ok); extern int vaultKeyPress; bool VaultKeyArmed(); extern ULONGLONG vaultKeyShownAt; void RequestChipActivated(); bool RequestChipOpen(); void ElementsNavigationCompleted(const std::shared_ptr<Tab>& t,bool ok);
-void OpenSandbox(std::shared_ptr<Tab> in=nullptr); void OpenFindBar(); bool InFullscreen(); void ToggleBrowserFullscreen(); void ShowTabLimitToast(const std::wstring& url=L""); void ShowPartialRestoreToast(const std::vector<std::wstring>& urls); void Defer(std::function<void()> job);
+void OpenSandbox(std::shared_ptr<Tab> in=nullptr); void OpenFindBar(); bool InFullscreen(); void ToggleBrowserFullscreen(); void ShowTabLimitToast(const std::wstring& url=L""); void ShowPartialRestoreToast(const std::vector<std::wstring>& urls); void Defer(std::function<void()> job); void ShowImportDialog(bool keyboard);
 void AskClearBrowsingData(bool demo=false,std::function<void(bool)> result=nullptr); bool CloseWindowAllowed(bool demo=false,std::function<void(bool)> result=nullptr);
 void ShowAboutDialog(); void ShowPrivateDialog(bool future=false); bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd);
 void ElementsFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now);
@@ -2303,7 +2303,9 @@ void CreateSettingsPanel(){
     hooks.validateProfileName=[](const std::wstring& n,const std::wstring& id){return Profiles::ValidateName(profileRegistry,n,id);};
     hooks.deleteProfile=[](const std::wstring& id,bool keyboard){keyboardModality=keyboard;AskDeleteProfile(id,keyboard);};
     hooks.profilesReadOnly=[]{return profileRegistry.readOnly;};
-    hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};hooks.vaultInfo=[]{return VaultInfo();};
+    hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};
+    if(!privateWindow)hooks.importData=[](bool keyboard){ShowImportDialog(keyboard);};   // a private window imports nothing into its profile
+    hooks.vaultInfo=[]{return VaultInfo();};
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
     hooks.downloadFolder=EffectiveDownloadFolder;
@@ -4320,6 +4322,8 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
 // WebView2 startup recovery (defined before wWinMain): installer worker notifications, shutdown.
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
+// « Importer depuis un navigateur… » (src/browser-import-integration.h): the worker's result reaches the UI thread.
+constexpr UINT ImportMessage=WM_APP+43;void ImportFinished();
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
 case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);addressSelection.Attach(address,AddressSelectionColors);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(y<44&&!id)return HTCAPTION;return HTCLIENT;}
@@ -4430,6 +4434,7 @@ case WM_TIMER:
     if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case EngineInstallMessage:OnEngineInstallMessage();return 0;
+case ImportMessage:ImportFinished();return 0;
 // A window that never became ready (WebView2 recovery) never removes its session: it keeps it for the
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */
@@ -4722,9 +4727,10 @@ void ContentReadyTick(){
     SetTimer(window,ContentTransitionTimerId,static_cast<UINT>(contentTransition.RemainingMs())+40,nullptr);
 }
 void CancelContentTransitionIfMoved(){if(contentTransition.Active())contentTransition.Reanchor(ContentTransitionRect());}   // bookmarks bar, chrome layout: re-anchored (offset + clip)
+#include "browser-import-integration.h"
 #include "workspace-failover.h"
 #include "profile-workspace.h"
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */ if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
 #ifdef BROWSER_E2E_VAULT_HOST
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif
