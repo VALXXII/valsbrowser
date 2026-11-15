@@ -136,3 +136,34 @@ provides it); they are not a rendering defect. Not changed here.
 
 Fixture data: from now on only fresh fixtures of this worktree are used; the earlier accidental touch of the
 reviewer's `import-probe-fixtures` (restored) stays disclosed above as a limit.
+
+## Closure review 99959e3: durable identity and deletion evidence
+
+Review: `review-windows-setup-release/build/review-browser-import-99959e3.md` — vault, source pinning and depth
+CLOSED; folder identity remained open when the map could not be written.
+
+**Fix (af02996, source).** The identity map is now a prerequisite of the bookmarks commit: written in the profile
+store's pre-write step (after the merge fixed the ids, before the bookmarks file), one transaction under the profile
+lock. Map unwritable/unreadable, or of a newer version (left untouched) → bookmarks not written, category failed and
+shown as such (no title-fallback success). Order makes interruption recoverable: map ahead of bookmarks leaves only
+entries for non-existent folders, never trusted (id + kind + `added`), replaced on retry. Bookmarks format unchanged.
+
+| Case | Before (99959e3) | After |
+|---|---|---|
+| Reviewer production probe (fresh copy, own folder), map held without delete sharing | `first saved=1 imported=1 mapSaved=0`; after release + rename + EN + label change: `imported=1 present=0 groups=2` | `first saved=0 imported=0 mapSaved=0` (refused, nothing written). The probe then exits 3: it assumes the first import succeeded |
+| Same sequence in the backend suite: refused → retry → rename container and root → EN + multi-profile label | — | retry imported 1; then `present=1 imported=0`, one group, custom names kept |
+| Bookmarks write fails after the map (state of a crash between the writes); another window then creates a folder taking the dangling id | — | nothing claimed, bookmarks untouched; dangling entry never adopted; exact retry; later rename + EN still one group |
+| Another window renames the imported folder between imports | — | still found, its name kept |
+| Map of another version | not used, bookmarks still imported | not used, not rewritten, nothing imported (« données d'import d'une version plus récente ») |
+
+Backend: 151 checks pass (`test-browser-import.ps1`).
+
+**Deletion evidence (E2E phase c, tests only).** The phase now counts as a deletion test only if « Travail » is gone
+from the profile registry while the worker is still parked (checked before the release); otherwise it reports
+« UNVERIFIED » and counts nothing. The fallback that released first and accepted « deleted or untouched » is gone.
+The outcome is read from the import dialog's UIA text (the window's log lived in Travail's folder, deleted with it).
+Targeted run (`e2e-af02996-phase-c/phase-c-results.txt`): confirmation reached, deleted before release, worker
+still parked → the returned read was dropped (« Le profil a changé : rien n'a été importé. »), nothing written to
+« Personnel », nothing recreated for « Travail », no snapshot left. Limit: the window had also left « Travail »
+(it was showing « Personnel »), so the UI cannot tell which part of the destination check refused the read; the
+dead-owner branch alone is proven by the reviewer's controlled harness (import999-completion-guard, 4/4).

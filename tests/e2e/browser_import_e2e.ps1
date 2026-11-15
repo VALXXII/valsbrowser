@@ -389,10 +389,14 @@ try {
   Check ((Snapshots $procId).Count -eq 0 -and (Snapshots $proc2).Count -eq 0) 'seam close: the next import removed the stale copy, and its own'
   Close $proc2 $main2
 
-  # (c) Destination profile deleted while the read is parked (« Travail » imports; the window moves to « Personnel »
-  #     and « Travail » is deleted through Gérer les profils).
+  # (c) Destination profile deleted while the read is parked. « Travail » imports; the window moves to « Personnel »
+  #     and « Travail » is deleted through Gérer les profils, all BEFORE the read is released. Counted as a deletion
+  #     test only if the deletion (Travail gone from profiles.txt) is observed before the release; otherwise
+  #     reported « UNVERIFIED » (not a pass). The dead-owner guard itself is also proven without UI timing by the
+  #     reviewer's controlled harness (import999-completion-guard).
+  function LogText { if (Test-Path "$app\prototype.log") { ReadText "$app\prototype.log" } else { '' } }
   $p, $main = HoldLaunch 'ptravail01' 'read'; $procId = $p.Id
-  $before = & $states; $logStart = (ReadText "$app\profiles\ptravail01\browser.log" -ErrorAction SilentlyContinue).Length
+  $before = & $states; $logStart = (LogText).Length
   $d = OpenImport $procId $main 'Confidentialité'; Invoke (Uia $procId 'DialogImport')
   $parked = Reached $procId
   $switched = SwitchTo $procId 'Personnel'
@@ -402,16 +406,25 @@ try {
   if ($item) { Invoke $item; Start-Sleep -Milliseconds 1000 }
   $del = Uia $procId 'ProfileDelete' '' 10; if ($del) { Invoke $del; Start-Sleep -Milliseconds 1100 }
   $confirm = Uia $procId 'ProfileDeleteConfirm' '' 10
-  $deleteShown = [bool]$confirm
-  if ($confirm) { Invoke $confirm; Start-Sleep 2 }
+  if ($confirm) { Invoke $confirm }
+  # Observed BEFORE releasing the worker: Travail gone from the profile registry. (The window's log lived in Travail's
+  # own folder, removed with it, so the outcome is read from the dialog's UIA text instead.)
+  $deletedFirst = $false
+  for ($i = 0; $i -lt 60 -and !$deletedFirst; $i++) { Start-Sleep -Milliseconds 250; $deletedFirst = -not ((ReadText "$app\profiles.txt") -match 'ptravail01') }
+  $stillParked = $false; try { $e = [System.Threading.EventWaitHandle]::OpenExisting("Local\browser-import-release-$procId"); $stillParked = -not $e.WaitOne(0); $e.Dispose() } catch {}
+  "     delete confirmation reached: $([bool]$confirm); deleted before release: $deletedFirst; worker still parked: $stillParked"
   $released = Release $procId; Start-Sleep 3
-  if (!$deleteShown) { $c2 = Uia $procId 'ProfileDeleteConfirm' '' 10; if ($c2) { $d2 = Uia $procId 'DialogCancel' '' 5; Invoke $c2; Start-Sleep 2 } }
-  $after = & $states
-  $travailGone = !(Test-Path "$app\profiles\ptravail01\bookmarks") -and -not ((ReadText "$app\profiles.txt") -match 'ptravail01')
-  "     delete confirmation reachable while the read was parked: $deleteShown; Travail deleted: $travailGone"
+  $after = & $states; $appLog = (LogText).Substring($logStart)
   Check ($parked -and $switched -and $released) 'seam delete: read parked, window moved to « Personnel », read released'
+  if ($confirm -and $deletedFirst -and $stillParked) {
+    Check $true 'seam delete: « Travail » deleted while the read was still parked'
+    $dlg = Uia $procId 'ImportBrowserData' '' 10
+    Check ($dlg -and $dlg.Current.HelpText -eq 'Le profil a changé : rien n''a été importé.') "seam delete: the read came back to a deleted destination and was dropped ($(if ($dlg) { $dlg.Current.HelpText }))"
+    Check (!(Test-Path "$app\profiles\ptravail01")) 'seam delete: nothing recreated for the deleted « Travail »'
+  } else {
+    $line = 'seam delete: UNVERIFIED (the deletion could not be completed before the release; not counted as a deletion pass)'; $line; $script:log += $line
+  }
   Check ($after.bmA -eq $before.bmA -and $after.hA -eq $before.hA -and $after.map -eq $before.map) 'seam delete: nothing written to « Personnel » (bookmarks, history, folder map)'
-  Check (!(Test-Path "$app\profiles\ptravail01\bookmarks") -or (Hash "$app\profiles\ptravail01\bookmarks") -eq $before.bmB) 'seam delete: nothing written to « Travail » (deleted or untouched)'
   Check ((Snapshots $procId).Count -eq 0) 'seam delete: no private snapshot left'
   Close $procId $main
 
