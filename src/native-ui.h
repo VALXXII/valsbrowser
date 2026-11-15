@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <algorithm>
 #include <string>
 #include <dwmapi.h>
 #include <commctrl.h>
@@ -57,6 +58,127 @@ public:
         // The EDIT placed its own caret already: keep its position, show ours.
         ShowCaret(edit);
         DWORD start=0,end=0;SendMessageW(edit,EM_GETSEL,(WPARAM)&start,(LPARAM)&end);SendMessageW(edit,EM_SETSEL,start,end);
+    }
+};
+// Selection highlight of a native single-line EDIT in a colour of ours (the address field follows
+// the window's profile). The EDIT has no per-control selection colour: it paints the selected run
+// in the system COLOR_HIGHLIGHT / COLOR_HIGHLIGHTTEXT, during WM_PAINT and also directly (EM_SETSEL,
+// mouse drag, double-click: measured, design/profile-address-selection-report.md). Before EVERY
+// draw it asks its parent for colours (WM_CTLCOLOREDIT, same HDC). So:
+//   1. Clip(), from the parent's WM_CTLCOLOREDIT: excludes the selected run's cell from that DC,
+//      the system highlight never reaches the screen;
+//   2. the subclass installed by Attach() paints that cell itself once the EDIT's draw is over
+//      (WM_PAINT into our BeginPaint DC; any other message on a fresh DC with the caret hidden).
+// Nothing else changes: selection range, caret, text, IME, undo, clipboard and UIA stay the
+// EDIT's own. The run is measured like the EDIT draws it: start = EM_POSFROMCHAR, width = the
+// run's extent in the field's font, one line high, clipped to the formatting rectangle.
+// High contrast (forced colours): Clip/Paint do nothing, Windows keeps the system highlight.
+class EditSelection {
+public:
+    struct Colors { COLORREF fill = 0, text = 0; };
+    using ColorSource = Colors (*)();
+    using Policy = bool (*)();   // true: forced colours, leave the native highlight
+    static bool SystemForcedColors() {
+        HIGHCONTRASTW hc{}; hc.cbSize = sizeof(hc);
+        return SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(hc), &hc, 0) && (hc.dwFlags & HCF_HIGHCONTRASTON);
+    }
+    bool Attach(HWND edit, ColorSource colors, Policy forced = SystemForcedColors) {
+        if (!edit || !colors) return false;
+        edit_ = edit; colors_ = colors; forced_ = forced ? forced : SystemForcedColors;
+        return SetWindowSubclass(edit, Proc, subclassId, reinterpret_cast<DWORD_PTR>(this)) != FALSE;
+    }
+    // From the parent's WM_CTLCOLOREDIT for this edit.
+    void Clip(HWND edit, HDC dc) {
+        if (edit != edit_ || !Active()) return;
+        RECT run{};
+        if (!Run(dc, run, nullptr)) return;
+        ExcludeClipRect(dc, run.left, run.top, run.right, run.bottom);
+        drew_ = true;
+    }
+    // The colour changed (profile switch, a step of the profile fade): repaint the run now.
+    void Refresh() { if (edit_ && Active()) { RECT run{}; HDC dc = GetDC(edit_); const bool has = Run(dc, run, nullptr); ReleaseDC(edit_, dc); if (has) InvalidateRect(edit_, &run, FALSE); } }
+    // Paints the selected run on `dc` (the edit's client coordinates). Exposed for tests (WM_PRINT).
+    bool Paint(HDC dc) {
+        if (!Active()) return false;
+        std::wstring text;
+        RECT run{};
+        if (!Run(dc, run, &text)) return false;
+        DWORD start = 0, end = 0;
+        SendMessageW(edit_, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
+        RECT format{};
+        SendMessageW(edit_, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&format));
+        const Colors c = colors_();
+        const int saved = SaveDC(dc);
+        IntersectClipRect(dc, format.left, format.top, format.right, format.bottom);
+        if (HFONT font = reinterpret_cast<HFONT>(SendMessageW(edit_, WM_GETFONT, 0, 0))) SelectObject(dc, font);
+        SetBkColor(dc, c.fill); SetTextColor(dc, c.text); SetBkMode(dc, OPAQUE);
+        ExtTextOutW(dc, run.left, run.top, ETO_OPAQUE | ETO_CLIPPED, &run, text.c_str() + start, end - start, nullptr);
+        RestoreDC(dc, saved);
+        return true;
+    }
+    bool Active() const { return edit_ && GetFocus() == edit_ && !forced_(); }
+private:
+    static constexpr UINT_PTR subclassId = 0x5E1C;
+    HWND edit_ = nullptr; ColorSource colors_ = nullptr; Policy forced_ = SystemForcedColors;
+    bool drew_ = false; int depth_ = 0;
+    // The selected run's cell, in client pixels; false when nothing is selected.
+    bool Run(HDC dc, RECT& run, std::wstring* out) const {
+        DWORD start = 0, end = 0;
+        SendMessageW(edit_, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
+        const int length = GetWindowTextLengthW(edit_);
+        if (start >= end || static_cast<int>(end) > length) return false;
+        std::wstring text(length + 1, L'\0');
+        GetWindowTextW(edit_, text.data(), length + 1); text.resize(length);
+        const LRESULT pos = SendMessageW(edit_, EM_POSFROMCHAR, start, 0);
+        if (pos == -1) return false;
+        HDC measure = dc ? dc : GetDC(edit_);
+        HGDIOBJ old = nullptr;
+        if (HFONT font = reinterpret_cast<HFONT>(SendMessageW(edit_, WM_GETFONT, 0, 0))) old = SelectObject(measure, font);
+        TEXTMETRICW tm{}; GetTextMetricsW(measure, &tm);
+        SIZE size{}; GetTextExtentPoint32W(measure, text.c_str() + start, static_cast<int>(end - start), &size);
+        if (old) SelectObject(measure, old);
+        if (!dc) ReleaseDC(edit_, measure);
+        const int x = static_cast<short>(LOWORD(pos)), y = static_cast<short>(HIWORD(pos));
+        run = {x, y, x + size.cx, y + tm.tmHeight};
+        // The EDIT's own highlight reaches the next character's position inclusive (measured: one
+        // pixel past the run's extent where the font's rounding differs, e.g. ":/" in Inter).
+        if (static_cast<int>(end) < length) {
+            const LRESULT next = SendMessageW(edit_, EM_POSFROMCHAR, end, 0);
+            if (next != -1) run.right = (std::max)(run.right, static_cast<LONG>(static_cast<short>(LOWORD(next)) + 1));
+        }
+        if (out) *out = std::move(text);
+        return true;
+    }
+    static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+        auto* self = reinterpret_cast<EditSelection*>(data);
+        if (msg == WM_NCDESTROY) { RemoveWindowSubclass(h, Proc, subclassId); self->edit_ = nullptr; return DefSubclassProc(h, msg, w, l); }
+        if (msg == WM_PAINT && !w) {
+            // Our own BeginPaint: the EDIT paints into this DC (wParam), the run follows in the same
+            // frame; BeginPaint/EndPaint hide and restore the caret around both.
+            // Saved around the EDIT's paint: Clip()'s exclusion must not outlive it on this DC.
+            // BeginPaint's erase (WM_ERASEBKGND) counts as part of this paint too.
+            ++self->depth_;
+            PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+            const int saved = SaveDC(dc);
+            const LRESULT r = DefSubclassProc(h, msg, reinterpret_cast<WPARAM>(dc), l);
+            RestoreDC(dc, saved);
+            --self->depth_;
+            self->drew_ = false;
+            self->Paint(dc);
+            EndPaint(h, &ps);
+            return r;
+        }
+        const bool print = msg == WM_PRINTCLIENT || msg == WM_PRINT;
+        const int saved = print && w ? SaveDC(reinterpret_cast<HDC>(w)) : 0;
+        ++self->depth_;
+        const LRESULT r = DefSubclassProc(h, msg, w, l);
+        --self->depth_;
+        if (print) { if (saved) RestoreDC(reinterpret_cast<HDC>(w), saved); if (self->drew_) { self->drew_ = false; self->Paint(reinterpret_cast<HDC>(w)); } return r; }
+        if (self->depth_ == 0 && self->drew_ && IsWindow(h)) {
+            self->drew_ = false;
+            HideCaret(h); HDC dc = GetDC(h); self->Paint(dc); ReleaseDC(h, dc); ShowCaret(h);
+        }
+        return r;
     }
 };
 inline std::wstring EscapeMenuText(const std::wstring& text){

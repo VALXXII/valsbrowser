@@ -190,6 +190,10 @@ bool PageShown(const Tab& t){return !t.home||homeTiles.Has(t);}
 void TabShown(const std::shared_ptr<Tab>& tab);
 HWND window,tabs,address,back,forward,reload,add,closeTab,home;
 HFONT font; HBRUSH paper; HINSTANCE instance; HMODULE loader;
+// Address selection in the window's profile colour, white text (native-ui.h EditSelection; design/profile-address-selection-report.md).
+NativeUI::EditSelection addressSelection;
+NativeUI::EditSelection::Colors AddressSelectionColors(){const auto f=NativeChrome::Design::Accent::Selection();auto b=[](float v){return (int)std::lround(std::clamp(v,0.f,1.f)*255);};return {RGB(b(f.r),b(f.g),b(f.b)),RGB(255,255,255)};}
+void AddressSelectionChanged(){addressSelection.Refresh();}
 // Overlay scrollbar of every shown page (Paper V3 "Scrollbar minimale", see ScrollbarRefresh).
 void ScrollbarRefresh(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake ScrollbarWake(NativeChrome::Motion::Time now);void ScrollbarReset();void ScrollbarSettleHover();void ScrollbarDestroy();void SyncScrollbars();
 Com<ICoreWebView2Environment> environment;
@@ -4102,7 +4106,7 @@ void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NO
 // WebView2 startup recovery (defined before wWinMain): installer worker notifications, shutdown.
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
-case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
+case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);addressSelection.Attach(address,AddressSelectionColors);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(y<44&&!id)return HTCAPTION;return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
 // A click on the B01 request chip must not take activation from its popover (light dismiss
@@ -4184,6 +4188,7 @@ case WM_CTLCOLOREDIT:{
     SetBkMode(dc,TRANSPARENT);SetBkColor(dc,NativeGray(surface));
     SetDCBrushColor(dc,NativeGray(surface));SetBrushOrgEx(dc,0,0,nullptr);
     SetTextColor(dc,NativeGray(surface+(1-surface)*Text::address));
+    addressSelection.Clip((HWND)l,dc);
     return (LRESULT)background.Brush(rect.right,edge,NativeGray(surface),NativeGray(surface+(1-surface)*alpha));
 }
 case Shortcut:keyboardModality=true;Command((int)w);return 0;
