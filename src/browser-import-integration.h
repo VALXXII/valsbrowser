@@ -65,9 +65,33 @@ std::wstring PickBookmarksFile() {
     dialog->Release();
     return chosen;
 }
+// ---- Test seam (E2E only; compiled out of release-channel builds) ------------------------------------------------
+// `--import-hold read|snapshot` (with --import-sources): the worker stops right after the read (« read ») or right
+// after the private database snapshot is taken (« snapshot »), sets the named event
+// Local\\browser-import-reached-<pid> and waits for Local\\browser-import-release-<pid> (60 s at most). A test can thus
+// switch profile, delete one or close the window at a known point of the import. No flag: no wait, no event.
+std::wstring importHold;
+#ifndef BROWSER_CHANNEL_RELEASE
+void ImportHoldPoint(const wchar_t* phase) {
+    if (importHold != phase) return;
+    const std::wstring pid = std::to_wstring(GetCurrentProcessId());
+    HANDLE reached = CreateEventW(nullptr, TRUE, FALSE, (L"Local\\browser-import-reached-" + pid).c_str());
+    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, (L"Local\\browser-import-release-" + pid).c_str());
+    if (reached) SetEvent(reached);
+    if (release) WaitForSingleObject(release, 60000);
+    if (reached) CloseHandle(reached);
+    if (release) CloseHandle(release);
+}
+#else
+void ImportHoldPoint(const wchar_t*) {}
+#endif
 DWORD WINAPI ImportWorker(LPVOID param) {
     std::unique_ptr<std::shared_ptr<ImportJob>> job(static_cast<std::shared_ptr<ImportJob>*>(param));
+#ifndef BROWSER_CHANNEL_RELEASE
+    if (importHold == L"snapshot") BI::SnapshotTakenForTest() = [] { ImportHoldPoint(L"snapshot"); };
+#endif
     (*job)->result = BI::Read((*job)->source, (*job)->options);
+    ImportHoldPoint(L"read");
     HWND target = window;
     { std::lock_guard<std::mutex> guard(importLock); importFinished = *job; }
     if (target) PostMessageW(target, ImportMessage, 0, 0);

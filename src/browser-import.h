@@ -291,6 +291,8 @@ private:
 };
 } // namespace Sql
 
+// Test seam (dev builds' E2E only, see browser-import-integration.h): runs once a private snapshot exists.
+inline std::function<void()>& SnapshotTakenForTest() { static std::function<void()> hook; return hook; }
 // A private copy of a SQLite database and its sidecars (-wal, -journal; never -shm, which is only an index
 // rebuilt from the WAL). Every source file is opened with FILE_SHARE_READ only, all of them before the first
 // byte is copied, and held until the last one is copied: if any process has one open for writing the open
@@ -325,6 +327,7 @@ public:
         }
         for (auto& p : parts) if (p.h != INVALID_HANDLE_VALUE) CloseHandle(p.h);
         if (r != Failure::None) Clean();
+        else if (SnapshotTakenForTest()) SnapshotTakenForTest()();
         return r;
     }
     std::wstring Path() const { return folder_.empty() ? L"" : folder_ + L"\\db"; }
@@ -341,6 +344,7 @@ private:
         std::wstring root = tempRoot;
         if (root.empty()) { wchar_t t[MAX_PATH + 1]{}; const DWORD n = GetTempPathW(MAX_PATH + 1, t); if (!n || n > MAX_PATH) return false; root = t; }
         while (!root.empty() && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+        SweepStale(root);
         for (int attempt = 0; attempt < 16; ++attempt) {
             LARGE_INTEGER c{}; QueryPerformanceCounter(&c);
             wchar_t name[64]; swprintf(name, 64, L"\\browser-import-%lu-%llx", GetCurrentProcessId(), static_cast<unsigned long long>(c.QuadPart) + attempt);
@@ -350,6 +354,32 @@ private:
         }
         return false;
     }
+public:
+    // A process that ended during a read (window closed, crash) could not run Clean(): its private copy is removed
+    // here, by the next snapshot. Only « browser-import-<pid>-<hex> » folders of processes no longer running, only
+    // their own four files, never through a reparse point. A live process (or one we cannot query) is left alone.
+    static void SweepStale(const std::wstring& root) {
+        WIN32_FIND_DATAW fd{}; HANDLE find = FindFirstFileExW((root + L"\\browser-import-*").c_str(), FindExInfoBasic, &fd, FindExSearchLimitToDirectories, nullptr, 0);
+        if (find == INVALID_HANDLE_VALUE) return;
+        do {
+            const std::wstring name = fd.cFileName;
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+            const std::size_t dash = name.find(L'-', 15);
+            if (name.rfind(L"browser-import-", 0) != 0 || dash == std::wstring::npos || dash == 15) continue;
+            const std::wstring pid = name.substr(15, dash - 15), tag = name.substr(dash + 1);
+            if (pid.size() > 10 || pid.find_first_not_of(L"0123456789") != std::wstring::npos || tag.empty() || tag.find_first_not_of(L"0123456789abcdef") != std::wstring::npos) continue;
+            const DWORD id = static_cast<DWORD>(std::wcstoul(pid.c_str(), nullptr, 10));
+            if (id == GetCurrentProcessId()) continue;
+            HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, id);
+            if (process) { const bool alive = WaitForSingleObject(process, 0) == WAIT_TIMEOUT; CloseHandle(process); if (alive) continue; }
+            else if (GetLastError() != ERROR_INVALID_PARAMETER) continue;   // exists but not ours to query: leave it
+            const std::wstring dir = root + L"\\" + name;
+            for (const wchar_t* f : {L"", L"-wal", L"-journal", L"-shm"}) DeleteFileW((dir + L"\\db" + f).c_str());
+            RemoveDirectoryW(dir.c_str());   // fails (kept) if anything else is inside
+        } while (FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+private:
     static bool CopyHandle(HANDLE from, const std::wstring& to) {
         HANDLE out = CreateFileW(to.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, nullptr);
         if (out == INVALID_HANDLE_VALUE) return false;

@@ -442,6 +442,20 @@ int main(int argc, char** argv) {
         else std::printf("note: symbolic links unavailable without developer mode; junction case covered by discovery\n");
     }
 
+    // ---- Private copies left by a process that ended mid-read are swept by the next snapshot --------------------
+    {
+        STARTUPINFOW si{sizeof si}; PROCESS_INFORMATION pi{}; wchar_t line[] = L"cmd.exe /c exit 0";
+        CHECK(CreateProcessW(nullptr, line, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi));
+        WaitForSingleObject(pi.hProcess, 10000); const DWORD dead = pi.dwProcessId; CloseHandle(pi.hThread); CloseHandle(pi.hProcess);   // handle closed: the id is free
+        const std::wstring stale = temp + L"\\browser-import-" + std::to_wstring(dead) + L"-1a2b", mine = temp + L"\\browser-import-" + std::to_wstring(GetCurrentProcessId()) + L"-ff", other = temp + L"\\browser-import-notapid-1", extra = temp + L"\\browser-import-" + std::to_wstring(dead) + L"-77";
+        Put(stale + L"\\db", "x"); Put(stale + L"\\db-wal", "y"); Put(mine + L"\\db", "x"); Put(other + L"\\db", "x"); Put(extra + L"\\db", "x"); Put(extra + L"\\keep.txt", "not ours");
+        Source s = chromeDefault; Options o; o.history = true; o.tempRoot = temp;
+        OK(Read(s, o).history.failure == Failure::None);
+        OK(!IsDirectory(stale) && IsDirectory(mine) && IsDirectory(other) && IsDirectory(extra) && IsFile(extra + L"\\keep.txt"));   // only a dead process's own copy files
+        RemoveTree(mine); RemoveTree(other); RemoveTree(extra);
+        OK(Empty(temp));
+    }
+
     // ---- Stable destination folders (review 934ef4b finding 2) --------------------------------------------------
     {
         using I18n::Locale;
