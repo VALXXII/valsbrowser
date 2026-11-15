@@ -3393,8 +3393,10 @@ NativeUI::InlineRename folderRename; HFONT folderRenameFont=nullptr;
 bool FolderRenameFocus(){HWND f=GetFocus();return f&&folderRename.Owns(f);}
 // The folder label's text box on `surface`, in that surface window's client pixels; false when not shown.
 bool FolderLabelBox(BM::Id id,int surface,RECT& box){
-    if(surface==RenameDrawer)return bookmarksDrawer.TitleBox(id,box);
-    if(surface!=RenameBand||!chrome.bandShown)return false;
+    if(surface==RenameDrawer)return bookmarksDrawer.TitleBox(id,box); // only while the drawer is really shown
+    // Fullscreen hides the chrome while the band's metadata stays filled: no band label is on screen then.
+    // (Root's forthcoming content-only chrome state must be refused here the same way.)
+    if(surface!=RenameBand||!chrome.bandShown||InFullscreen())return false;
     for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i){if(chrome.bandItems[i].id!=id)continue;if(!chrome.bandItems[i].folder)return false;
         const auto b=chrome.BandTitleBox(i);if(b.right-b.left<24)return false;box={S(b.left),S(b.top),S(b.right),S(b.bottom)};return true;}
     return false;
@@ -3426,6 +3428,9 @@ void FolderRenameDone(BM::Id id,bool committed,const std::wstring& text){
     }
     if(state.surface==RenameDrawer&&bookmarksDrawer.Visible()&&GetFocus()==bookmarksDrawer.Window())bookmarksDrawer.FocusBookmark(id);
 }
+// The label's font at the host's current DPI: Inter Display Medium, 14 DIP on the band, 16 DIP in the drawer.
+int FolderRenameFontPx(int surface,HWND host){const float size=surface==RenameBand?NativeChrome::Design::Type::label.size:NativeChrome::Downloads::Panel::line;return (int)std::lround(size*GetDpiForWindow(host)/96.f);}
+HFONT FolderRenameFont(int surface,HWND host){return CreateFontW(-FolderRenameFontPx(surface,host),0,0,0,FW_MEDIUM,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display" /* i18n-exempt: font family */);}
 // Starts the in-place editor on the folder's label on `surface`; false (caller keeps the popover) when the
 // item is not a renamable folder or its label is not on that surface now.
 bool StartFolderRename(BM::Id id,int surface,bool keyboard,int returnTo){
@@ -3433,8 +3438,7 @@ bool StartFolderRename(BM::Id id,int surface,bool keyboard,int returnTo){
     RECT box{};if(!FolderLabelBox(id,surface,box))return false;
     HWND host=surface==RenameBand?window:bookmarksDrawer.Window();if(!host)return false;
     namespace D=NativeChrome::Design;
-    const float size=surface==RenameBand?D::Type::label.size:NativeChrome::Downloads::Panel::line;
-    HFONT font=CreateFontW(-(int)std::lround(size*GetDpiForWindow(host)/96.f),0,0,0,FW_MEDIUM,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display" /* i18n-exempt: font family */);
+    HFONT font=FolderRenameFont(surface,host);
     NativeUI::InlineRename::Style style;style.font=font;style.text=D::NativeGray(D::Text::primary);
     style.back=D::NativeGray(surface==RenameBand?chrome.BandSurface(1,0):D::Surface::canvas);
     folderRename.Cancel(); // one editor at a time (an earlier one reports its cancel first)
@@ -3449,7 +3453,13 @@ void SyncFolderRename(){
     if(!folderRename.Active())return;
     const auto& s=folderRenameState;const auto* n=bookmarks.Find(s.id);RECT box{};
     if(s.profile!=dataDir||!n||n->kind!=BM::Kind::Folder||!FolderLabelBox(s.id,s.surface,box)){folderRename.Cancel();return;}
-    MarkFolderRename();const RECT was=folderRename.Box();if(!EqualRect(&was,&box))folderRename.Move(box);
+    MarkFolderRename();
+    // The host's DPI changed (another monitor): same editor, new font size; text, selection and caret kept.
+    HWND host=folderRename.Host();LOGFONTW current{};
+    if(host&&folderRenameFont&&GetObjectW(folderRenameFont,sizeof(current),&current)&&-current.lfHeight!=FolderRenameFontPx(s.surface,host)){
+        if(HFONT next=FolderRenameFont(s.surface,host)){HFONT old=folderRenameFont;folderRename.SetFont(next);folderRenameFont=next;DeleteObject(old);Log(L"BOOKMARKS rename in place: font follows the new DPI");}
+    }
+    const RECT was=folderRename.Box();if(!EqualRect(&was,&box))folderRename.Move(box);
 }
 // Rename / F2 / new folder: in place on `surface` when the folder's label is there, else the popover.
 void RenameOrEdit(BM::Id id,int surface,RECT anchor,bool keyboard,int returnTo){

@@ -50,6 +50,15 @@ public:
         const int h = tm.tmHeight, cy = (box.top + box.bottom) / 2;
         SetWindowPos(edit_, HWND_TOP, box.left, cy - h / 2, (std::max)(1L, box.right - box.left), h, SWP_NOACTIVATE);
     }
+    // A new font for the same label (the host's DPI changed): text, selection and caret stay the EDIT's.
+    // The caller keeps the previous font alive until this returns, then may delete it.
+    void SetFont(HFONT font) {
+        if (!edit_ || !font) return;
+        style_.font = font;
+        SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
+        Move(box_);
+    }
     void Commit() { Finish(true); }
     void Cancel() { Finish(false); }
     bool Active() const { return edit_ != nullptr; }
@@ -99,11 +108,13 @@ private:
         case WM_IME_ENDCOMPOSITION: self->composing_ = false; break;
         case WM_GETDLGCODE: return DefSubclassProc(h, msg, w, l) | DLGC_WANTALLKEYS | DLGC_WANTCHARS | DLGC_WANTARROWS | DLGC_WANTTAB;
         case WM_KEYDOWN:
+            // Ctrl+A: the stock single-line EDIT does not select all; the name does (its WM_CHAR 0x01 is dropped).
+            if (!self->composing_ && w == 'A' && GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0) { SendMessageW(h, EM_SETSEL, 0, -1); return 0; }
             if (!self->composing_ && (w == VK_RETURN || w == VK_TAB)) { self->Commit(); return 0; }
             if (!self->composing_ && w == VK_ESCAPE) { self->Cancel(); return 0; }
             break;
         case WM_CHAR:   // the matching characters of Enter / Escape / Tab (no beep, no tab inserted)
-            if (w == L'\r' || w == L'\n' || w == 27 || w == L'\t') return 0;
+            if (w == L'\r' || w == L'\n' || w == 27 || w == L'\t' || (w == 1 && !self->composing_)) return 0;
             break;
         case WM_KILLFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); PostMessageW(h, FinishMessage, 0, 0); return r; }
         case FinishMessage: if (GetFocus() != h) self->Commit(); return 0;   // still away: blur commits

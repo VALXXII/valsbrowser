@@ -10,7 +10,19 @@
 //  6. Persistence (written then read back) and a failed save never announced as saved.
 //  7. Captures: the real window (system DPI), and the real editor over the offscreen band at 96 / 144 DPI,
 //     1180 and 560 DIP, long name.
+// Test-unit shims (production code unchanged): this fixture never takes the user's foreground — the
+// production Drawer::Show / PopoverClosed call SetForegroundWindow, recorded and dropped here — and it can
+// move its window to another DPI without touching any display setting (GetDpiForWindow answers fixtureDpi).
+#include <windows.h>
+static int foregroundRequests=0;
+static BOOL FixtureSetForegroundWindow(HWND){++foregroundRequests;return TRUE;}
+static UINT fixtureDpi=0;
+static UINT FixtureGetDpiForWindow(HWND h){return fixtureDpi?fixtureDpi:GetDpiForWindow(h);}
+#define SetForegroundWindow FixtureSetForegroundWindow
+#define GetDpiForWindow FixtureGetDpiForWindow
 #include "../../src/main.cpp"
+#undef SetForegroundWindow
+#undef GetDpiForWindow
 #include <cstdio>
 #include <uiautomationclient.h>
 #include <thread>
@@ -248,9 +260,33 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
         if(folderRename.Active()){Type(folderRename.Edit(),L"Jeux (tiroir)");KeyTo(folderRename.Edit(),VK_RETURN,L'\r');}
         Expect(bookmarks.Find(game)->title==L"Jeux (tiroir)"&&bookmarksDrawer.Renaming()==0,"drawer commit renames the folder");
         Sleep(700);bookmarksDrawer.Frame(NativeChrome::Motion::Now());Capture(bookmarksDrawer.Window(),L"drawer-after");
+        // Fullscreen with the drawer really shown: the drawer row's editor stays (only band labels are hidden).
+        bookmarksDrawer.FocusBookmark(game);bookmarksDrawer.KeyForTest(VK_F2);PumpAll();
+        fullscreen.browser=true;SyncFolderRename();
+        Expect(folderRename.Active()&&folderRename.Host()==bookmarksDrawer.Window(),"fullscreen with the drawer shown: the drawer row editor is kept");
+        fullscreen.browser=false;folderRename.Cancel();PumpAll();
         bookmarksDrawer.Hide(false,false);PumpAll();
         bookmarks.Rename(game,L"Game");BookmarksChanged();
     }else Expect(false,"drawer visible");
+
+    // ---- 6b. Fullscreen (independent review P2): the band is hidden while its metadata stays filled ----------
+    { F2OnBand(game);Type(folderRename.Edit(),L"Should cancel");
+      fullscreen.browser=true;Layout();PumpAll();
+      Expect(!folderRename.Active()&&bookmarks.Find(game)->title==L"Game","fullscreen + layout cancels the band editor without writing");
+      Expect(!StartFolderRename(game,RenameBand,true,0),"in fullscreen no band editor starts (its label is not on screen)");
+      fullscreen.browser=false;folderRename.Cancel();Layout();PumpAll(); }
+    // ---- 6c. DPI change while editing (independent review P2): 96 -> 144, same editor, new font size ------
+    { F2OnBand(game);HWND e=folderRename.Edit();Type(e,L"Jeux");SendMessageW(e,EM_SETSEL,1,3);
+      LOGFONTW before{},after{};GetObjectW((HFONT)SendMessageW(e,WM_GETFONT,0,0),sizeof(before),&before);
+      const UINT was=GetDpiForWindow(window);fixtureDpi=was*3/2;UpdateFont();Layout();PumpAll();
+      const bool same=folderRename.Active()&&folderRename.Edit()==e;GetObjectW((HFONT)SendMessageW(e,WM_GETFONT,0,0),sizeof(after),&after);
+      DWORD a=0,b=0;if(same)SendMessageW(e,EM_GETSEL,(WPARAM)&a,(LPARAM)&b);
+      std::printf("     DPI %u -> %u: font height %ld -> %ld\n",was,fixtureDpi,before.lfHeight,after.lfHeight);
+      Expect(same&&after.lfHeight==-(LONG)std::lround(14.f*fixtureDpi/96.f),"DPI change while editing: same editor, font follows (14 DIP at the new DPI)");
+      Expect(same&&Text(e)==L"Jeux"&&a==1&&b==3,"typed text and selection kept across the DPI change");
+      { const RECT got=ClientRectOf(e),want=ExpectedBandBox(game);Expect(got.left==want.left&&got.right==want.right,"editor on the title box at the new DPI"); }
+      KeyTo(e,VK_ESCAPE,27);fixtureDpi=0;UpdateFont();Layout();PumpAll();
+      Expect(bookmarks.Find(game)->title==L"Game","Escape after the DPI change writes nothing"); }
 
     // ---- 7. Persistence and save failure ----------------------------------------------------------
     { namespace fs=std::filesystem;smoke=false;dataDir=out+L"\\profile";fs::remove_all(dataDir);fs::create_directories(dataDir);SaveBookmarks();
@@ -274,6 +310,7 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
         DpiComposite(dpi,560,L"Game",L"560-"+d);
         DpiComposite(dpi,1180,L"Jeux vidéo et émulateurs rétro des années 90",L"long-"+d);}
 
+    std::printf("     foreground requests from production code (dropped by the fixture shim): %d\n",foregroundRequests);
     folderRename.Cancel();bookmarkPopover.Hide();bookmarkToast.HideNow();DestroyWindow(window);
     if(failures){std::fprintf(stderr,"%d folder rename check(s) failed\n",failures);return 1;}
     std::puts("PASS: folder rename in place on the band and the drawer (F2, menu, new folder), Enter/Escape/empty/blur/Tab, shortcuts kept, undo, lifecycle, fallbacks, persistence, save failure, 96/144 DPI captures");

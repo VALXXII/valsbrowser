@@ -68,6 +68,14 @@ int wmain() {
         Key(e, 'Z', 0x1A, true); Expect(Text(e) == L"Jeux vidéo 🎮", "Ctrl+Z again redoes (EDIT's single-level undo)" + at);
         Key(e, VK_HOME); Key(e, VK_RIGHT, 0, true, true); SendMessageW(e, EM_GETSEL, reinterpret_cast<WPARAM>(&a), reinterpret_cast<LPARAM>(&b));
         Expect(a == 0 && b > 0 && b < 6, "Home, Ctrl+Shift+Right: native word selection" + at);
+        // Ctrl+A after a caret move / word selection selects the whole name (independent review P2, verbatim).
+        Key(e, 'A', 1, true); SendMessageW(e, EM_GETSEL, reinterpret_cast<WPARAM>(&a), reinterpret_cast<LPARAM>(&b));
+        Expect(a == 0 && b == Text(e).size(), "Ctrl+A selects the whole name" + at);
+        Key(e, VK_END); Key(e, 'A', 1, true); SendMessageW(e, EM_GETSEL, reinterpret_cast<WPARAM>(&a), reinterpret_cast<LPARAM>(&b));
+        Expect(a == 0 && b == Text(e).size() && Text(e) == L"Jeux vidéo 🎮", "Ctrl+A from the end: whole name, nothing inserted" + at);
+        // During IME composition Ctrl+A is not ours (the IME / EDIT keep it).
+        Key(e, VK_END); SendMessageW(e, WM_IME_STARTCOMPOSITION, 0, 0); Key(e, 'A', 0, true); SendMessageW(e, EM_GETSEL, reinterpret_cast<WPARAM>(&a), reinterpret_cast<LPARAM>(&b));
+        Expect(a == b, "during IME composition Ctrl+A is left to the IME / EDIT" + at); SendMessageW(e, WM_IME_ENDCOMPOSITION, 0, 0);
         Expect(hostKeys == 0, "no key reached the host window" + at);
         Expect(res.calls == 0, "nothing committed while typing" + at);
         // IME composition: Enter / Escape belong to the IME.
