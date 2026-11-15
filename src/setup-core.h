@@ -47,6 +47,7 @@ struct Options {
 
 enum class Error {
     None, Damaged, Unsafe, Newer, Running, Disk, Cancelled, Helper, StartFailed, Integration,
+    Busy,  // another install/uninstall of the same root holds <root>\install.lock
 };
 struct Result {
     Error error = Error::None;

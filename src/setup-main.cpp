@@ -84,6 +84,8 @@ S(eStart, L"browser n'a pas pu démarrer après l'installation ; l'état précé
   L"browser couldn't start after installing; the previous state was restored. Your data is intact.")
 S(eIntegration, L"browser est installé, mais les raccourcis ou l'entrée de désinstallation n'ont pas pu être créés. Réessayez.",
   L"browser is installed, but the shortcuts or the uninstall entry couldn't be created. Please retry.")
+S(eBusy, L"Une autre installation ou désinstallation de browser est en cours. Attendez qu'elle se termine, puis cliquez sur Réessayer.",
+  L"Another installation or uninstallation of browser is in progress. Wait for it to finish, then click Retry.")
 S(tDetail, L"Détail : %s", L"Detail: %s")
 S(tBodyUninstall, L"browser sera retiré de cet ordinateur (programme, raccourcis, entrée « Applications »). Vos données (profils, historique, favoris, mots de passe) restent dans %LOCALAPPDATA%\\browser\\data, sauf si vous cochez la case.",
   L"browser will be removed from this computer (program, shortcuts, « Apps » entry). Your data (profiles, history, bookmarks, passwords) stays in %LOCALAPPDATA%\\browser\\data unless you tick the box.")
@@ -194,6 +196,7 @@ std::wstring ErrorText(SC::Error e) {
         case SC::Error::Cancelled: return T(eCancelled);
         case SC::Error::StartFailed: return T(eStart);
         case SC::Error::Integration: return T(eIntegration);
+        case SC::Error::Busy: return T(eBusy);
         default: return T(eHelper);
     }
 }
@@ -295,7 +298,7 @@ void Finished() {
             g.status = T(tUninstalled);
             g.note = std::wstring(r.dataKept ? T(tDataKept) : T(tDataRemoved)) + (r.leftovers ? std::wstring(L"\n") + T(tLeftovers) : L"");
         } else {
-            g.status = r.error == SC::Error::Running ? T(eUninstallRunning) : T(eUninstallFailed);
+            g.status = r.error == SC::Error::Running ? T(eUninstallRunning) : r.error == SC::Error::Busy ? T(eBusy) : T(eUninstallFailed);
         }
         g.detail = r.detail.empty() ? L"" : Format(tDetail, W(r.detail));
         return Finish(ok);

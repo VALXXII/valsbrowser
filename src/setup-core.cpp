@@ -9,6 +9,7 @@
 #include <memory>
 #include <vector>
 
+#include "install-transaction.h"
 #include "setup-uninstall-key.h"
 #include "update-core.h"
 #include "update-package.h"
@@ -79,6 +80,19 @@ std::string LaunchableCurrent(const std::wstring& root) {
     if (a == INVALID_FILE_ATTRIBUTES || (a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) return "";
     if (UP::IsReparsePoint(root + L"\\versions\\" + W(current))) return "";
     return current;
+}
+
+// The install root (existing or to be created) is reached without any junction/symlink: its nearest existing
+// ancestor resolves to exactly its lexical path. Destructive and creating steps only ever run under a root that
+// passed this AND is pinned by the held InstallTxn::Lock (no ancestor can be swapped while it is held).
+bool AncestryPlain(const std::wstring& root) {
+    std::wstring p = InstallTxn::Absolute(root);
+    while (!p.empty() && GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        const auto pos = p.find_last_of(L'\\');
+        if (pos == std::wstring::npos || pos < 3) return false;
+        p = p.substr(0, pos);
+    }
+    return !p.empty() && InstallTxn::ResolvesToItself(p, true);
 }
 
 bool EnsurePlainDir(const std::wstring& dir) {
@@ -222,7 +236,7 @@ std::string LastResultField(const Env& env, const std::string& key) {
 
 Inspection Inspect(const Env& env, const std::string& version) {
     Inspection r;
-    if (env.root.size() < 4) return r.kind = Kind::Unsafe, r;
+    if (env.root.size() < 4 || !AncestryPlain(env.root)) return r.kind = Kind::Unsafe, r;
     for (const wchar_t* sub : {L"", L"\\versions", L"\\data", L"\\updates", L"\\bin"})
         if (!ReparseFree(env.root + sub)) return r.kind = Kind::Unsafe, r;
     if (UP::PathExists(env.root) && !UP::IsDirectory(env.root)) return r.kind = Kind::Unsafe, r;
@@ -268,11 +282,20 @@ Result Install(const Env& env, const std::wstring& self, const SetupPayload::Lay
     };
     auto report = [&](Step s, double f) { if (progress) progress(s, f); };
     const std::string& version = layout.version;
-    const Inspection inspection = Inspect(env, version);
+    if (Inspect(env, version).kind == Kind::Unsafe) return fail(Error::Unsafe, "install root or one of its folders is not a plain directory");
+    const std::wstring root = env.root, updates = root + L"\\updates", downloads = updates + L"\\downloads", staging = updates + L"\\staging";
+    // One install/removal transaction per root (src/install-transaction.h), inheritable: handed to the helper.
+    if (Fault("mkdir") || !EnsurePlainDir(root)) return fail(Error::Disk, "cannot create " + UP::Narrow(root));
+    InstallTxn::Lock txn;
+    if (!txn.Acquire(root, 0, true))
+        return txn.Busy() ? fail(Error::Busy, "another install or uninstall of this root is running")
+                          : fail(Error::Unsafe, "install root is not a plain directory reached without links");
+    if (InstallTxn::RecoverRepair(root) == InstallTxn::RepairOutcome::Kept)
+        return fail(Error::Helper, "an interrupted repair could not be finished (its original copy is kept)");
+    const Inspection inspection = Inspect(env, version);  // under the lock: what the helper will see
     if (inspection.kind == Kind::Unsafe) return fail(Error::Unsafe, "install root or one of its folders is not a plain directory");
     if (inspection.kind == Kind::Newer) return fail(Error::Newer, "a newer version is installed: " + inspection.installed);
     if (BrowserRunning(env)) return fail(Error::Running, "browser is running");
-    const std::wstring root = env.root, updates = root + L"\\updates", downloads = updates + L"\\downloads", staging = updates + L"\\staging";
     for (const std::wstring& dir : {root, updates, downloads, staging})
         if (Fault("mkdir") || !EnsurePlainDir(dir)) return fail(Error::Disk, "cannot create " + UP::Narrow(dir));
     const std::string nonce = RandomHex(16);
@@ -328,6 +351,7 @@ Result Install(const Env& env, const std::wstring& self, const SetupPayload::Lay
         return fail(Error::Cancelled, "cancelled");
     }
     report(Step::Prepare, 1);
+    if (Fault("pause-after-stage")) Sleep(4000);  // fixtures: a competing uninstall must get Busy here
 
     // 3. The payload's own helper performs the install (same code path as an update).
     if (BrowserRunning(env)) return fail(Error::Running, "browser started meanwhile");
@@ -336,7 +360,8 @@ Result Install(const Env& env, const std::wstring& self, const SetupPayload::Lay
     if (!EnsurePlainDir(helperDir) || !CopyFileW((stage + L"\\update-helper.exe").c_str(), helper.c_str(), TRUE))
         return fail(Error::Disk, "cannot prepare the install helper");
     std::string plan = "browser-install 1\nnonce " + nonce + "\nversion " + version + "\npid 0\ncreated 0\norigin setup\nlaunch " +
-                       (options.launch ? "1" : "0") + "\n";
+                       (options.launch ? "1" : "0") + "\nlock-handle " +
+                       std::to_string(static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(txn.Handle()))) + "\n";
     if (inspection.kind == Kind::Fresh) {
         plan += "previous-kind none\n";
     } else {
@@ -349,10 +374,22 @@ Result Install(const Env& env, const std::wstring& self, const SetupPayload::Lay
         return fail(Error::Disk, "cannot write the install plan");
     }
     std::wstring commandLine = L"\"" + helper + L"\" --install " + W(nonce);
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
+    // The helper inherits exactly one handle, the lock: exclusion lasts until it exits even if this setup dies.
+    SIZE_T attrSize = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
+    std::vector<std::uint8_t> attrBuffer(attrSize);
+    auto attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuffer.data());
+    HANDLE inherit = txn.Handle();
+    STARTUPINFOEXW si{};
+    si.StartupInfo.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(helper.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, helperDir.c_str(), &si, &pi)) {
+    bool started = InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize) &&
+                   UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherit, sizeof(inherit), nullptr, nullptr);
+    si.lpAttributeList = attrs;
+    started = started && CreateProcessW(helper.c_str(), commandLine.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+                                        nullptr, helperDir.c_str(), &si.StartupInfo, &pi);
+    DeleteProcThreadAttributeList(attrs);
+    if (!started) {
         DeleteFileW(planPath.c_str());
         DeleteFileW(helper.c_str());
         return fail(Error::Helper, "cannot start the install helper (error " + std::to_string(GetLastError()) + ")");
@@ -366,9 +403,17 @@ Result Install(const Env& env, const std::wstring& self, const SetupPayload::Lay
     if (waited != WAIT_OBJECT_0) return fail(Error::Helper, "install helper still running");
     r.status = LastResultField(env, "status");
     const std::string reason = LastResultField(env, "reason"), resultVersion = LastResultField(env, "version");
-    if (resultVersion != version || (r.status != "installed" && r.status != "unconfirmed")) {
+    // Success needs the helper's own exit code too: a helper killed mid-way leaves an older last-result behind.
+    const bool consistent = LastResultField(env, "nonce") == nonce &&
+                            ((r.status == "installed" && code == 0) || (r.status == "unconfirmed" && code == 31));
+    if (resultVersion != version || !consistent) {
+        // Only a result stamped with THIS run's nonce describes this run (a killed helper leaves an older one).
+        const bool reported = LastResultField(env, "nonce") == nonce && resultVersion == version;
+        r.status = "failed";
         MarkReported(updates);
         UP::RemoveTree(stage);  // a helper that aborted before its move leaves this setup's staging: not an engine offer
+        if (!reported) return fail(Error::Helper, "helper exit " + std::to_string(code) + " without a result");
+        if (reason == "install-busy") return fail(Error::Busy, "helper: " + reason);
         if (reason == "no-startup-ack") return fail(Error::StartFailed, "the installed browser exited before confirming its start");
         if (reason == "profile-locked" || reason == "target-in-use" || reason.find("busy") != std::string::npos || reason.find("locked") != std::string::npos)
             return fail(Error::Running, "helper: " + reason);
@@ -452,9 +497,16 @@ UninstallReport Uninstall(const Env& env, bool removeData) {
         r.detail = d;
         return r;
     };
-    if (root.size() < 4) return fail(Error::Unsafe, "no install root");
+    if (root.size() < 4 || !AncestryPlain(root)) return fail(Error::Unsafe, "the install root is reached through a link; nothing removed");
     for (const wchar_t* sub : {L"", L"\\versions", L"\\data", L"\\updates", L"\\bin"})
         if (!ReparseFree(root + sub)) return fail(Error::Unsafe, "a folder of the install is a reparse point; nothing removed");
+    InstallTxn::Lock txn;  // same exclusion as installs; pins root and its ancestors while held
+    if (UP::IsDirectory(root) && !txn.Acquire(root, 0))
+        return txn.Busy() ? fail(Error::Busy, "another install or uninstall of this root is running")
+                          : fail(Error::Unsafe, "the install root is reached through a link; nothing removed");
+    if (Fault("pause-uninstall")) Sleep(4000);
+    if (txn.Held() && InstallTxn::RecoverRepair(root) == InstallTxn::RepairOutcome::Kept)
+        return fail(Error::Helper, "an interrupted repair could not be finished; nothing removed");
     if (BrowserRunning(env)) return fail(Error::Running, "browser is running");
     const std::string nonce = RandomHex(8);
     const std::wstring trash = root + L"\\.uninstall-" + W(nonce);
@@ -486,12 +538,16 @@ UninstallReport Uninstall(const Env& env, bool removeData) {
     if (removeData && UP::PathExists(root + L"\\data")) {
         // Only <root>\data itself, a plain directory (checked above); RemoveTree never follows a reparse point inside.
         const std::wstring doomed = root + L"\\.data-removed-" + W(nonce);
-        if (!UP::IsDirectory(root + L"\\data") || UP::IsReparsePoint(root + L"\\data") || !UP::MoveDirectory(root + L"\\data", doomed, RenameMs)) {
+        if (!InstallTxn::ResolvesToItself(root + L"\\data", true) || !UP::MoveDirectory(root + L"\\data", doomed, RenameMs)) {
             r.detail = "data in use: kept";
         } else {
             r.dataKept = false;
             if (!UP::RemoveTree(doomed)) r.leftovers = true;
         }
+    }
+    if (txn.Held()) {
+        txn.Release();
+        DeleteFileW((root + L"\\" + InstallTxn::LockName).c_str());
     }
     RemoveDirectoryW(root.c_str());  // only when empty
     return r;
