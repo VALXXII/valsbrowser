@@ -4188,7 +4188,7 @@ case WM_CTLCOLOREDIT:{
     SetBkMode(dc,TRANSPARENT);SetBkColor(dc,NativeGray(surface));
     SetDCBrushColor(dc,NativeGray(surface));SetBrushOrgEx(dc,0,0,nullptr);
     SetTextColor(dc,NativeGray(surface+(1-surface)*Text::address));
-    addressSelection.Clip((HWND)l,dc);
+    addressSelection.Clip((HWND)l,dc,NativeGray(surface+(1-surface)*alpha));   // after the text/background colours: the field's ordinary palette
     return (LRESULT)background.Brush(rect.right,edge,NativeGray(surface),NativeGray(surface+(1-surface)*alpha));
 }
 case Shortcut:keyboardModality=true;Command((int)w);return 0;

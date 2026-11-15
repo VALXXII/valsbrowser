@@ -23,10 +23,14 @@ static int failures = 0;
 static void Check(bool ok, const std::string& label) { if (!ok) { std::printf("FAIL %s\n", label.c_str()); ++failures; } }
 
 static NativeUI::EditSelection selection;
+static NativeUI::EditSelection* otherSelection = nullptr;
 static COLORREF fillNow = RGB(0, 0, 0);
 static bool forcedColors = false;
 static NativeUI::EditSelection::Colors Colors() { return {fillNow, RGB(255, 255, 255)}; }
 static bool Forced() { return forcedColors; }
+// The system selection pair as the helper sees it: the real one, or a test pair (injected, never set in Windows).
+static bool pairInjected = false; static NativeUI::EditSelection::Pair pairNow{};
+static NativeUI::EditSelection::Pair Pair() { return pairInjected ? pairNow : NativeUI::EditSelection::SystemPair(); }
 static NativeUI::AddressBackground background;
 static HWND parent, edit;
 static HFONT font;
@@ -40,6 +44,7 @@ static LRESULT CALLBACK Parent(HWND h, UINT msg, WPARAM w, LPARAM l) {
         HDC dc = reinterpret_cast<HDC>(w); RECT r; GetClientRect(edit, &r);
         SetBkMode(dc, TRANSPARENT); SetBkColor(dc, field); SetTextColor(dc, ink); SetBrushOrgEx(dc, 0, 0, nullptr);
         selection.Clip(reinterpret_cast<HWND>(l), dc);
+        if (otherSelection) otherSelection->Clip(reinterpret_cast<HWND>(l), dc);
         return reinterpret_cast<LRESULT>(background.Brush(r.right, 0, field, field));
     }
     return DefWindowProcW(h, msg, w, l);
@@ -160,7 +165,7 @@ static void Build(int newDpi) {
     SendMessageW(edit, EM_SETLIMITTEXT, 8192, 0); SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
     font = CreateFontW(-S(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Inter Display");
     SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    Check(selection.Attach(edit, Colors, Forced), "attach");
+    Check(selection.Attach(edit, Colors, Forced, Pair), "attach");
     SetWindowTextW(edit, L"https://www.wikipedia.org/wiki/Accueil");
     SetFocus(edit); Pump(); UpdateWindow(parent); Pump();
     Check(GetFocus() == edit, "field focused");
@@ -172,6 +177,40 @@ int main(int argc, char** argv) {
     WNDCLASSW wc{}; wc.lpfnWndProc = Parent; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"AddressSelectionTest"; RegisterClassW(&wc);
     std::printf("system highlight #%06lX (left untouched)\n", static_cast<unsigned long>(GetSysColor(COLOR_HIGHLIGHT)));
     const DWORD sysBefore = GetSysColor(COLOR_HIGHLIGHT);
+
+    // ---- Colour classifier (independent re-review 2026-11-15): pure pixels, injected pairs, no OS setting. ----
+    {
+        using ES = NativeUI::EditSelection;
+        // The address field's real ordinary palette (main.cpp WM_CTLCOLOREDIT): ink over the field and the loading fill.
+        const ES::Ordinary grey{ink, {field, D::NativeGray(D::Surface::raised + (1 - D::Surface::raised) * D::AddressLoading::opacity)}};
+        const ES::Colors teal{RGB(0x00, 0x83, 0x7E), RGB(255, 255, 255)};
+        // The reviewer's 12-pixel image, verbatim: columns 0 and 3 unselected grey field / ink, 1..2 a black / white run.
+        auto image = [] { return std::vector<DWORD>{0x292929, 0, 0, 0x292929, 0x949494, 0xFFFFFF, 0xFFFFFF, 0x949494, 0x292929, 0, 0, 0x292929}; };
+        const ES::Ordinary reviewer{0x949494, {0x292929, CLR_INVALID}};
+        std::vector<DWORD> px = image(); const std::vector<DWORD> before = px;
+        const bool remapped = ES::Remap(px.data(), 4, 3, teal, {RGB(0, 0, 0), RGB(255, 255, 255)}, reviewer);
+        int changed = 0; for (size_t i = 0; i < px.size(); ++i) changed += px[i] != before[i];
+        Check(!remapped && changed == 0, "black/white pair over a grey field: native fallback, 0/12 pixels changed (" + std::to_string(changed) + ")");
+        std::printf("  classifier: H=black T=white, reviewer image: remap %s, %d/12 pixels changed\n", remapped ? "RAN" : "refused (native)", changed);
+        // Other pairs a user may legally set: each ambiguous against the real field palette -> native.
+        struct Amb { const char* name; ES::Pair pair; };
+        for (const Amb& a : {Amb{"black/white", {RGB(0, 0, 0), RGB(255, 255, 255)}}, Amb{"white/black", {RGB(255, 255, 255), RGB(0, 0, 0)}},
+                             Amb{"grey #808080/white", {RGB(128, 128, 128), RGB(255, 255, 255)}}, Amb{"field grey/white", {field, RGB(255, 255, 255)}},
+                             Amb{"dark grey/light grey", {RGB(0x20, 0x20, 0x20), RGB(0xC0, 0xC0, 0xC0)}}, Amb{"blue/blue (no spread)", {RGB(0, 0x78, 0xD7), RGB(0, 0x60, 0xC0)}}})
+            Check(!ES::Separable(a.pair, grey), std::string("ambiguous pair ") + a.name + " -> native highlight");
+        // Separable pairs: the Windows default and a few coloured ones; ordinary pixels never change, cells do.
+        for (const ES::Pair p : {ES::Pair{RGB(0, 0x78, 0xD7), RGB(255, 255, 255)}, ES::Pair{GetSysColor(COLOR_HIGHLIGHT), GetSysColor(COLOR_HIGHLIGHTTEXT)},
+                                  ES::Pair{RGB(0xC4, 0x2B, 0x1C), RGB(255, 255, 255)}, ES::Pair{RGB(0x10, 0x7C, 0x10), RGB(255, 255, 255)}}) {
+            const bool sep = ES::Separable(p, grey);
+            if (p.highlight == GetSysColor(COLOR_HIGHLIGHT)) Check(sep, "this machine's system pair stays separable (current blue/white green)");
+            if (!sep) continue;
+            const DWORD H = (DWORD(GetRValue(p.highlight)) << 16) | (DWORD(GetGValue(p.highlight)) << 8) | GetBValue(p.highlight);
+            // field, AA ink over field, ink | cell, cell | field
+            std::vector<DWORD> q{0x292929, 0x5E5E5E, 0x949494, H, H, 0x292929};
+            ES::Remap(q.data(), 6, 1, teal, p, grey);
+            Check(q[0] == 0x292929 && q[1] == 0x5E5E5E && q[2] == 0x949494 && q[5] == 0x292929 && q[3] == 0x00837E && q[4] == 0x00837E, "separable pair: cells -> fill, ordinary field / ink / AA unchanged");
+        }
+    }
 
     // Profile fills, as the browser derives them (profile-editor.h FillOf -> Accent::Selection()).
     struct Case { const char* name; ProfileColor::Rgb8 fill; };
@@ -249,6 +288,17 @@ int main(int argc, char** argv) {
         // Focus loss: the EDIT hides its selection; nothing of ours remains.
         SetFocus(parent); Pump(); { const Raster r = Grab(); int fill = 0, hi = 0; for (COLORREF c : r.px) { fill += c == fillNow; hi += c == GetSysColor(COLOR_HIGHLIGHT); } Check(fill == 0 && hi == 0, "focus lost: no highlight of any kind" + at); }
         SetFocus(edit); SendMessageW(edit, EM_SETSEL, 0, -1); Expect("focus regained, select all" + at);
+        // An ambiguous system pair (injected, not set in Windows): the real field is left exactly native.
+        pairInjected = true; pairNow = {RGB(0, 0, 0), RGB(255, 255, 255)};
+        SendMessageW(edit, EM_SETSEL, 0, 0); SendMessageW(edit, EM_SETSEL, 0, -1); Pump();
+        {
+            const Raster ours = Grab(); if (d == 96 && !outDir.empty()) SaveBmp(ours, outDir + L"/fallback-ambiguous-pair-96.bmp");
+            pairInjected = false; const Raster n = Native(); pairInjected = true;
+            int changed = 0, fill = 0, hi = 0; for (size_t i = 0; i < ours.px.size(); ++i) { changed += Diff(ours.px[i], n.px[i]) > 1; fill += ours.px[i] == fillNow; hi += ours.px[i] == GetSysColor(COLOR_HIGHLIGHT); }
+            Check(!selection.Active(), "ambiguous pair: helper inactive" + at);
+            Check(changed == 0 && fill == 0 && hi > 0, "ambiguous pair: field identical to native, no profile fill, native highlight kept (" + std::to_string(changed) + " changed)" + at);
+        }
+        pairInjected = false; SendMessageW(edit, EM_SETSEL, 0, 0); SendMessageW(edit, EM_SETSEL, 0, -1); Expect("real pair again after the ambiguous one" + at);
         // Forced colours (high contrast): native system highlight kept, nothing of ours.
         forcedColors = true; SendMessageW(edit, EM_SETSEL, 0, 0); SendMessageW(edit, EM_SETSEL, 0, -1); Pump();
         { const Raster r = Grab(); if (d == 96 && !outDir.empty()) SaveBmp(r, outDir + L"/before-native-highlight-96.bmp"); int fill = 0, hi = 0; for (COLORREF c : r.px) { fill += c == fillNow; hi += c == GetSysColor(COLOR_HIGHLIGHT); } Check(fill == 0 && hi > 0, "forced colours: native highlight, no profile fill" + at); }
@@ -260,10 +310,10 @@ int main(int argc, char** argv) {
     {
         Build(96); HWND first = edit; fillNow = Ref(ProfileColor::AccentFill(190, .12f)); SendMessageW(first, EM_SETSEL, 0, -1); Expect("window A teal");
         static NativeUI::EditSelection other; HWND second = CreateWindowExW(0, L"EDIT", L"https://example.com", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 200, 30, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
-        other.Attach(second, [] { return NativeUI::EditSelection::Colors{RGB(0x74, 0x74, 0x74), RGB(255, 255, 255)}; }, Forced);
+        otherSelection = &other; other.Attach(second, [] { return NativeUI::EditSelection::Colors{RGB(0x74, 0x74, 0x74), RGB(255, 255, 255)}; }, Forced);
         SetFocus(second); SendMessageW(second, EM_SETSEL, 0, -1); Pump();
         Check(!selection.Active() && other.Active(), "only the focused field paints a selection");
-        DestroyWindow(second); SetFocus(first);
+        DestroyWindow(second); otherSelection = nullptr; SetFocus(first);
     }
     DestroyWindow(parent);
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
