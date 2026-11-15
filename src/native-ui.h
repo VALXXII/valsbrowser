@@ -1,5 +1,9 @@
 #pragma once
 #include <windows.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <vector>
 #include <string>
 #include <dwmapi.h>
 #include <commctrl.h>
@@ -57,6 +61,199 @@ public:
         // The EDIT placed its own caret already: keep its position, show ours.
         ShowCaret(edit);
         DWORD start=0,end=0;SendMessageW(edit,EM_GETSEL,(WPARAM)&start,(LPARAM)&end);SendMessageW(edit,EM_SETSEL,start,end);
+    }
+};
+// Selection highlight of a native single-line EDIT in a colour of ours (the address field follows
+// the window's profile). The EDIT has no per-control selection colour: it paints the selected text
+// in the system COLOR_HIGHLIGHT / COLOR_HIGHLIGHTTEXT, during WM_PAINT and also directly (EM_SETSEL,
+// mouse drag, double-click), and asks its parent for colours (WM_CTLCOLOREDIT, same HDC) before
+// EVERY draw. Measured (design/profile-address-selection-report.md): its highlight geometry is its
+// own Uniscribe layout (bidi runs reordered visually, fallback fonts, scroll offset, one inclusive
+// column) and cannot be recomputed exactly outside it; EM_POSFROMCHAR also wraps at 16 bits on long
+// scrolled text. So the geometry is never recomputed here — the EDIT draws it:
+//   1. Clip(), from the parent's WM_CTLCOLOREDIT while a selection is visible: excludes the whole
+//      client area from that DC, so nothing the EDIT draws there reaches the screen;
+//   2. once the EDIT's draw is over, Compose() asks the EDIT to draw itself again (WM_PRINTCLIENT,
+//      documented) into a memory DIB of the client size — exactly what it would have shown, native
+//      shaping, bidi, scroll and highlight included — then remaps ONLY the highlight pixels and copies
+//      the result to the screen DC (WM_PAINT: our BeginPaint DC; direct draws: GetDC, caret hidden).
+// Remap: a highlight pixel is COLOR_HIGHLIGHT (the cell) or an antialiased blend toward
+// COLOR_HIGHLIGHTTEXT (a glyph inside it), i.e. p = H + a (T - H) channel by channel. It becomes
+// fill + a (text - fill): the same coverage, our colours. Only columns that contain the exact cell
+// colour H (plus columns entirely made of such blends between them) are touched. Nothing is read from
+// the screen.
+// That classification is only sound if no ORDINARY pixel of the field can look like a highlight
+// pixel. Clip() records the field's ordinary palette from the parent's DC (its text colour, its
+// background colour, plus any other surface the parent's brush paints, passed by the caller); the
+// remap runs only if neither those colours nor any antialiased blend between the text and a surface
+// lies within tolerance of the H -> T line (Separable). Otherwise — e.g. a legal black / white system
+// pair against a grey field — the EDIT keeps its native highlight, untouched (independent review
+// 2026-11-15).
+// Selection range, caret, text, IME, undo, clipboard and UIA stay the EDIT's own.
+// High contrast (forced colours), or a system pair the remap cannot separate: native highlight.
+class EditSelection {
+public:
+    struct Colors { COLORREF fill = 0, text = 0; };
+    // The colours the EDIT itself paints when nothing is selected.
+    struct Ordinary { COLORREF ink = CLR_INVALID; COLORREF surfaces[2] = {CLR_INVALID, CLR_INVALID}; };
+    struct Pair { COLORREF highlight = 0, highlightText = 0; };
+    using ColorSource = Colors (*)();
+    using Policy = bool (*)();   // true: forced colours, leave the native highlight
+    using PairSource = Pair (*)();   // the system selection pair (injectable for tests; never set by us)
+    static bool SystemForcedColors() {
+        HIGHCONTRASTW hc{}; hc.cbSize = sizeof(hc);
+        return SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(hc), &hc, 0) && (hc.dwFlags & HCF_HIGHCONTRASTON);
+    }
+    static Pair SystemPair() { return {GetSysColor(COLOR_HIGHLIGHT), GetSysColor(COLOR_HIGHLIGHTTEXT)}; }
+    bool Attach(HWND edit, ColorSource colors, Policy forced = SystemForcedColors, PairSource pair = SystemPair) {
+        if (!edit || !colors) return false;
+        edit_ = edit; colors_ = colors; forced_ = forced ? forced : SystemForcedColors; pair_ = pair ? pair : SystemPair;
+        return SetWindowSubclass(edit, Proc, subclassId, reinterpret_cast<DWORD_PTR>(this)) != FALSE;
+    }
+    // From the parent's WM_CTLCOLOREDIT for this edit, AFTER it set the text and background colours
+    // on `dc`; `otherSurface`: a second colour its returned brush paints (the loading fill), if any.
+    void Clip(HWND edit, HDC dc, COLORREF otherSurface = CLR_INVALID) {
+        if (edit != edit_) return;
+        ordinary_.ink = GetTextColor(dc); ordinary_.surfaces[0] = GetBkColor(dc); ordinary_.surfaces[1] = otherSurface;
+        if (composing_ || !Active() || !HasSelection()) return;
+        if (bypass_) return;   // until the next WM_PAINT is over (Compose could not allocate)
+        RECT client{}; GetClientRect(edit_, &client);
+        ExcludeClipRect(dc, client.left, client.top, client.right, client.bottom);
+        drew_ = true;
+    }
+    // The colour changed (profile switch, a step of the profile fade): repaint now.
+    void Refresh() { if (edit_ && Active() && HasSelection()) InvalidateRect(edit_, nullptr, FALSE); }
+    // Draws the field (EDIT's own rendering, selection in our colours) on `dc`, client coordinates.
+    // Called whenever Clip() kept the EDIT's own draw off the screen: the field is always redrawn here,
+    // even if the selection is gone by now (Ctrl+Shift+Left collapsing it while the EDIT was drawing).
+    bool Compose(HDC dc) {
+        if (!edit_) return false;
+        RECT client{}; GetClientRect(edit_, &client);
+        const int w = client.right, h = client.bottom;
+        if (w <= 0 || h <= 0) return false;
+        BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(bi.bmiHeader); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bitmap = mem ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+        if (!bitmap || !bits) {   // no memory: let the EDIT repaint itself natively once (system highlight) rather than leave a stale frame
+            if (bitmap) DeleteObject(bitmap);
+            if (mem) DeleteDC(mem);
+            bypass_ = true; InvalidateRect(edit_, nullptr, TRUE); return false;
+        }
+        HGDIOBJ old = SelectObject(mem, bitmap);
+        composing_ = true;
+        SendMessageW(edit_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(mem), PRF_CLIENT | PRF_ERASEBKGND);
+        composing_ = false;
+        GdiFlush();
+        if (Active() && HasSelection()) Remap(static_cast<DWORD*>(bits), w, h, colors_(), pair_(), ordinary_);
+        BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old); DeleteObject(bitmap); DeleteDC(mem);
+        return true;
+    }
+    bool Active() const { return edit_ && GetFocus() == edit_ && !forced_() && Separable(pair_(), ordinary_); }
+    // True when highlight pixels can be told apart from every ordinary pixel of the field: H and T far
+    // enough apart to measure coverage, and neither the ink, a surface nor any antialiased blend of the
+    // ink over a surface within a wide tolerance of the H -> T line. Unknown palette: false.
+    static bool Separable(Pair pair, const Ordinary& o) {
+        if (Spread(pair.highlight, pair.highlightText) < minSpread || o.ink == CLR_INVALID || o.surfaces[0] == CLR_INVALID) return false;
+        for (COLORREF s : o.surfaces) {
+            if (s == CLR_INVALID) continue;
+            for (int step = 0; step <= 64; ++step) {
+                const double t = step / 64.0;
+                auto mix = [t](int a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
+                const COLORREF p = RGB(mix(GetRValue(s), GetRValue(o.ink)), mix(GetGValue(s), GetGValue(o.ink)), mix(GetBValue(s), GetBValue(o.ink)));
+                if (Coverage(pair, p, ambiguityTolerance) >= 0) return false;
+            }
+        }
+        return true;
+    }
+    // Coverage of T over H in pixel `p` (0..1), or -1 when `p` is not such a blend within `tolerance`.
+    static double Coverage(Pair pair, COLORREF p, double tolerance = 2.5) {
+        const int h[3] = {GetRValue(pair.highlight), GetGValue(pair.highlight), GetBValue(pair.highlight)};
+        const int t[3] = {GetRValue(pair.highlightText), GetGValue(pair.highlightText), GetBValue(pair.highlightText)};
+        const int c[3] = {GetRValue(p), GetGValue(p), GetBValue(p)};
+        int k = 0; for (int i = 1; i < 3; ++i) if (std::abs(t[i] - h[i]) > std::abs(t[k] - h[k])) k = i;   // the channel that separates H from T best
+        if (t[k] == h[k]) return -1;
+        const double a = static_cast<double>(c[k] - h[k]) / (t[k] - h[k]);
+        const double slack = tolerance / std::abs(t[k] - h[k]);
+        if (a < -slack || a > 1 + slack) return -1;
+        for (int i = 0; i < 3; ++i) if (std::abs(h[i] + a * (t[i] - h[i]) - c[i]) > tolerance) return -1;
+        return std::clamp(a, 0.0, 1.0);
+    }
+    // The remap, exposed for tests: `px` is a top-down 0x00RRGGBB client image of the EDIT drawn with
+    // the selection pair `pair`. Does nothing (false) unless Separable(pair, ordinary).
+    static bool Remap(DWORD* px, int w, int h, Colors c, Pair pair, const Ordinary& ordinary) {
+        if (!Separable(pair, ordinary)) return false;
+        const int fc[3] = {GetRValue(c.fill), GetGValue(c.fill), GetBValue(c.fill)}, xc[3] = {GetRValue(c.text), GetGValue(c.text), GetBValue(c.text)};
+        auto pixel = [](DWORD v) { return RGB((v >> 16) & 255, (v >> 8) & 255, v & 255); };
+        // Columns: 2 = holds the cell colour, 1 = only blends (a glyph column inside the cell), 0 = other.
+        std::vector<int> kind(w, 0);
+        for (int x = 0; x < w; ++x) {
+            bool cell = false, any = false;
+            for (int y = 0; y < h; ++y) {
+                const COLORREF v = pixel(px[y * w + x]);
+                if (v == pair.highlight) cell = true;
+                any = any || Coverage(pair, v) >= 0;
+            }
+            kind[x] = cell ? 2 : any ? 1 : 0;
+        }
+        // Selected columns: runs of cell / blend columns that contain at least one cell column.
+        std::vector<bool> selected(w, false);
+        for (int x = 0; x < w;) {
+            if (!kind[x]) { ++x; continue; }
+            int end = x; bool cell = false;
+            while (end < w && kind[end]) { cell = cell || kind[end] == 2; ++end; }
+            if (cell) for (int i = x; i < end; ++i) selected[i] = true;
+            x = end;
+        }
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+            if (!selected[x]) continue;
+            DWORD& v = px[y * w + x];
+            const double a = Coverage(pair, pixel(v));
+            if (a < 0) continue;
+            int o[3]; for (int i = 0; i < 3; ++i) o[i] = static_cast<int>(std::lround(fc[i] + a * (xc[i] - fc[i])));
+            v = (static_cast<DWORD>(o[0]) << 16) | (static_cast<DWORD>(o[1]) << 8) | static_cast<DWORD>(o[2]);
+        }
+        return true;
+    }
+private:
+    static constexpr UINT_PTR subclassId = 0x5E1C;
+    static constexpr int minSpread = 96;                  // H and T must differ enough on one channel to measure coverage
+    static constexpr double ambiguityTolerance = 6;       // > the 2.5 classification tolerance: margin for GDI rounding
+    HWND edit_ = nullptr; ColorSource colors_ = nullptr; Policy forced_ = SystemForcedColors; PairSource pair_ = SystemPair;
+    Ordinary ordinary_{};
+    bool drew_ = false, composing_ = false, bypass_ = false; int depth_ = 0;
+    static int Spread(COLORREF a, COLORREF b) { return (std::max)({std::abs(GetRValue(a) - GetRValue(b)), std::abs(GetGValue(a) - GetGValue(b)), std::abs(GetBValue(a) - GetBValue(b))}); }
+    bool HasSelection() const { DWORD start = 0, end = 0; SendMessageW(edit_, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end)); return start != end; }
+    static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+        auto* self = reinterpret_cast<EditSelection*>(data);
+        if (msg == WM_NCDESTROY) { RemoveWindowSubclass(h, Proc, subclassId); self->edit_ = nullptr; return DefSubclassProc(h, msg, w, l); }
+        if (self->composing_) return DefSubclassProc(h, msg, w, l);   // our own WM_PRINTCLIENT pass
+        if (msg == WM_PAINT && !w) {
+            // Our own BeginPaint (it hides the caret until EndPaint): the EDIT paints into this DC
+            // (clipped out by Clip() while a selection is visible), then the composed field.
+            ++self->depth_;
+            PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+            const int saved = SaveDC(dc);
+            const LRESULT r = DefSubclassProc(h, msg, reinterpret_cast<WPARAM>(dc), l);
+            RestoreDC(dc, saved);
+            --self->depth_;
+            if (self->drew_) { self->drew_ = false; self->Compose(dc); }
+            self->bypass_ = false;
+            EndPaint(h, &ps);
+            return r;
+        }
+        const bool print = msg == WM_PRINTCLIENT || msg == WM_PRINT;
+        const int saved = print && w ? SaveDC(reinterpret_cast<HDC>(w)) : 0;
+        ++self->depth_;
+        const LRESULT r = DefSubclassProc(h, msg, w, l);
+        --self->depth_;
+        if (print) { if (saved) RestoreDC(reinterpret_cast<HDC>(w), saved); if (self->drew_) { self->drew_ = false; self->Compose(reinterpret_cast<HDC>(w)); } return r; }
+        if (self->depth_ == 0 && self->drew_ && IsWindow(h)) {
+            self->drew_ = false;
+            HideCaret(h); HDC dc = GetDC(h); self->Compose(dc); ReleaseDC(h, dc); ShowCaret(h);
+        }
+        return r;
     }
 };
 inline std::wstring EscapeMenuText(const std::wstring& text){

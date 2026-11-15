@@ -89,6 +89,13 @@ inline Rgb Reach(Rgb fill,float k){Rgb c=Deepen(fill,k);while(WhiteContrast(c)<m
 inline States StatesOf(Rgb fill){return {fill,Reach(fill,hoverDeepen),Reach(fill,pressedDeepen)};}
 // The colour painted for hover / press progress (0..1, animated): rest -> hover, then -> pressed.
 inline Rgb StateColor(Rgb fill,float hover,float press){const auto s=StatesOf(fill);return Mix(Mix(s.rest,s.hover,hover),s.pressed,press);}
+// Text selection in the address field (user request 2026-11-15): the window's profile colour as a FILL under white
+// text. Unlike Current() it never falls back to the reference blue for the neutral « Personnel »: that profile
+// selects in its own grey (#747474, ProfileColor::NeutralFill). Private windows / no profile keep the reference
+// blue (their own identity). Follows the 120 ms profile fade with the fill (profiles-integration.h SetAccents);
+// read per paint through Selection(), clamped so white stays >= 4.5:1 at every step of the fade.
+inline Rgb& SelectionCurrent(){static Rgb value{0x3E/255.f,0x67/255.f,0xFF/255.f};return value;}
+inline Rgb Selection(){return Reach(SelectionCurrent(),0);}
 }
 inline Rgb DangerRgb(){return {Danger::r,Danger::g,Danger::b};}
 // Vertical chrome (Paper "Favoris — flow", 2026-11-08): the page starts right under the

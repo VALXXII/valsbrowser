@@ -62,27 +62,31 @@ D2D1_COLOR_F ProfileInk(const Profiles::Profile& p){return PE::Color(PE::InkOf(p
 // Switching windows never fades (each window already has its accent). The button's own icon / ink
 // transitions live in Chrome::SetProfileButton.
 constexpr UINT_PTR ProfileAnimTimerId=0x5049; constexpr float AccentFadeMs=120;
-struct AccentTween{bool active=false;NativeChrome::Design::Rgb fromFill{},toFill{},fromInk{},toInk{};ULONGLONG start=0;} accentTween;
+struct AccentTween{bool active=false;NativeChrome::Design::Rgb fromFill{},toFill{},fromInk{},toInk{},fromSelection{},toSelection{};ULONGLONG start=0;} accentTween;
 NativeChrome::Design::Rgb RgbOf(unsigned long v){return {((v>>16)&255)/255.f,((v>>8)&255)/255.f,(v&255)/255.f};}
 NativeChrome::Design::Rgb Mix(NativeChrome::Design::Rgb a,NativeChrome::Design::Rgb b,float t){return {a.r+(b.r-a.r)*t,a.g+(b.g-a.g)*t,a.b+(b.b-a.b)*t};}
 // The annotation mode's surfaces (band, note, launcher, history, connect modal, page frame) follow the accent too:
 // AnnotationAccentChanged (annotation-mode.h) at each change and at each step of the fade, no clock of its own.
 void AnnotationAccentChanged();
-void SetAccents(unsigned long fill,unsigned long ink,bool animate){
+// The address field's selection run (Accent::Selection) repaints with the accent, same steps, no clock of its own.
+void AddressSelectionChanged();
+void SetAccents(unsigned long fill,unsigned long ink,unsigned long selection,bool animate){
     namespace A=NativeChrome::Design::Accent;
     A::SettledCurrent()=RgbOf(fill);
-    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);accentTween.active=false;AnnotationAccentChanged();return;}
+    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);A::SelectionCurrent()=RgbOf(selection);accentTween.active=false;AnnotationAccentChanged();AddressSelectionChanged();return;}
     accentTween.fromFill=A::Get();accentTween.fromInk=A::Ink();accentTween.toFill=RgbOf(fill);accentTween.toInk=RgbOf(ink);
+    accentTween.fromSelection=A::SelectionCurrent();accentTween.toSelection=RgbOf(selection);
     accentTween.start=GetTickCount64();accentTween.active=true;if(window)SetTimer(window,ProfileAnimTimerId,15,nullptr);
-    AnnotationAccentChanged();
+    AnnotationAccentChanged();AddressSelectionChanged();
 }
 void ProfileAnimTick(){
     namespace A=NativeChrome::Design::Accent;
     if(accentTween.active){
         const float u=std::clamp((GetTickCount64()-accentTween.start)/AccentFadeMs,0.f,1.f),t=NativeChrome::Motion::Eased(u,NativeChrome::Motion::Curve::EaseOut);
         A::Current()=Mix(accentTween.fromFill,accentTween.toFill,t);A::InkCurrent()=Mix(accentTween.fromInk,accentTween.toInk,t);
+        A::SelectionCurrent()=Mix(accentTween.fromSelection,accentTween.toSelection,t);
         if(u>=1)accentTween.active=false;
-        AnnotationAccentChanged();
+        AnnotationAccentChanged();AddressSelectionChanged();
     }
     const bool button=chrome.ProfileButtonAnimating(NativeChrome::Motion::Now());
     InvalidateChrome();
@@ -101,9 +105,11 @@ void ApplyProfileChrome(bool animate=false){
     // Fill (filled controls under white text) and ink (progress, download ring, checks): one profile colour.
     // A neutral profile keeps the blue FILL (white text needs it) but its ink is its own grey #B3B3B3: the
     // download ring and its check never show a colour the profile doesn't have (user report 2026-11-14).
+    // The address selection is the profile's own fill in every case: the neutral profile selects in its grey
+    // #747474 (FillOf), not in the reference blue its buttons keep.
     const auto ink=PE::InkOf(*p);const unsigned long inkRgb=(unsigned long)((ink.r<<16)|(ink.g<<8)|ink.b);
-    if(p->neutral)SetAccents(NativeChrome::Design::Accent::defaultRgb,inkRgb,animate);
-    else{const auto fill=PE::FillOf(*p);SetAccents((unsigned long)((fill.r<<16)|(fill.g<<8)|fill.b),inkRgb,animate);}
+    const auto own=PE::FillOf(*p);const unsigned long ownRgb=(unsigned long)((own.r<<16)|(own.g<<8)|own.b);
+    SetAccents(p->neutral?NativeChrome::Design::Accent::defaultRgb:ownRgb,inkRgb,ownRgb,animate);
     InvalidateChrome();
 }
 // Sidecar: tab titles/urls of this window for the other windows' menus (count, preview, routing).
