@@ -58,8 +58,27 @@ def synthetic_app(root: Path) -> Path:
     for name in ('browser.exe', 'update-helper.exe', 'WebView2Loader.dll', 'WebView2-NOTICE.txt'):
         (app / name).write_bytes(name.encode() * 64)
     (app / 'assets/fonts/a.ttf').write_bytes(b'font')
-    (app / 'version.json').write_text(json.dumps({'version': '0.3.7', 'arch': 'x64', 'channel': 'release'}))
+    (app / 'version.json').write_text(json.dumps({'version': '0.3.7', 'arch': 'x64', 'channel': 'release',
+                                                  'commit': 'a' * 40}))
     return app
+
+
+def place_setup_stub(app: Path, payload: Path | None) -> None:
+    """package.py requires the setup stub beside the app (<app>-setup/browser-setup.exe, design/windows-setup-plan.md);
+    it is not part of the payload this check is about. A real --payload brings its own built stub; the synthetic app
+    gets the synthetic stub of test_release_tools.py with the app's exact identity."""
+    stub = app.parent / (app.name + '-setup') / 'browser-setup.exe'
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    real = payload.parent / (payload.name + '-setup') / 'browser-setup.exe' if payload else None
+    if real is not None:
+        if not real.is_file():
+            raise SystemExit(f'FAILED: {real} missing (tools/release/build.py builds it next to the app)')
+        shutil.copy2(real, stub)
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import test_release_tools as T
+    info = json.loads((app / 'version.json').read_text(encoding='utf-8'))
+    stub.write_bytes(T.fake_setup_stub(f'{info["version"]} {info["commit"]} {info["channel"]}'))
 
 
 def write_lsrupd(payload: Path, version: str, out: Path) -> tuple[Path, Path]:
@@ -113,6 +132,7 @@ def main() -> int:
         (app / BRIDGE).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(bridge, app / BRIDGE)
         version = json.loads((app / 'version.json').read_text(encoding='utf-8'))['version']
+        place_setup_stub(app, Path(a.payload) if a.payload else None)
         dist = tmp / 'dist'
         sh([sys.executable, '-I', 'tools/release/package.py', '--app', app, '--out', dist])
         pkg, manifest = dist / f'browser-{version}-win-x64.lsrupd', dist / 'update-manifest-win-x64.txt'

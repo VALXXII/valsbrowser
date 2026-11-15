@@ -14,7 +14,11 @@
    staging tree (one top folder browser-<version>-win-x64/, sorted entries, fixed
    timestamps), then re-opens it and checks that its entries are exactly the staged
    files, byte for byte. Nothing else (no readme, no runtime data) is added.
-5. Writes SHA256SUMS.txt (package, manifest, ZIP) and release-info.json.
+5. Writes the public installer browser-<version>-win-x64-setup.exe = setup stub (built by
+   build.py into <app>-setup/, checked: GUI x64 PE, asInvoker manifest, identity string ==
+   version/commit/channel of version.json) || the .lsrupd above, byte for byte || a 128-byte
+   trailer (src/setup-payload.h), then re-reads it (overlay bounds, trailer, embedded bytes).
+6. Writes SHA256SUMS.txt (package, manifest, ZIP, setup) and release-info.json.
 """
 from __future__ import annotations
 import argparse, hashlib, json, os, re, shutil, stat, subprocess, sys, zipfile
@@ -171,6 +175,127 @@ def verify_zip(archive: Path, staging: Path, files: list[str], top: str) -> None
                 raise SystemExit(f'ZIP entry differs from staged bytes: {rel}')
 
 
+# ---------------------------------------------------------------- setup (design/windows-setup-plan.md)
+# browser-<version>-win-x64-setup.exe = setup stub (built by build.py into <app>-setup/) || the .lsrupd, byte for
+# byte || a 128-byte trailer. Same layout as src/setup-payload.h (LocateOverlay / ParseTrailer).
+SETUP_MAGIC = b'BROWSER-SETUP 1\0'
+SETUP_END = b'BRSETUP!'
+SETUP_TRAILER = 128
+SETUP_STUB_NAME = 'browser-setup.exe'
+MAX_PACKAGE = 512 * 1024 * 1024  # UpdatePackage::MaxPackageBytes
+
+
+def setup_name(version: str) -> str:
+    return f'browser-{version}-win-x64-setup.exe'
+
+
+def pe_overlay(data: bytes) -> tuple[int, int, bool]:
+    """(overlay start, overlay end, signed) of a PE32+ x64 image; mirrors SetupPayload::LocateOverlay."""
+    if len(data) < 0x40 or data[:2] != b'MZ':
+        raise SystemExit('setup: not a PE image')
+    pe = int.from_bytes(data[0x3C:0x40], 'little')
+    if pe < 0x40 or pe + 24 > min(len(data), 4096) or data[pe:pe + 4] != b'PE\0\0':
+        raise SystemExit('setup: bad PE header')
+    if int.from_bytes(data[pe + 4:pe + 6], 'little') != 0x8664:
+        raise SystemExit('setup: not x64')
+    sections = int.from_bytes(data[pe + 6:pe + 8], 'little')
+    opt_size = int.from_bytes(data[pe + 20:pe + 22], 'little')
+    opt = pe + 24
+    if opt_size < 152 or opt + opt_size > 4096 or int.from_bytes(data[opt:opt + 2], 'little') != 0x20B:
+        raise SystemExit('setup: not PE32+')
+    if not 0 < sections <= 96 or opt + opt_size + 40 * sections > 4096:
+        raise SystemExit('setup: bad section table')
+    end = int.from_bytes(data[opt + 60:opt + 64], 'little')
+    for i in range(sections):
+        s = opt + opt_size + 40 * i
+        raw, ptr = int.from_bytes(data[s + 16:s + 20], 'little'), int.from_bytes(data[s + 20:s + 24], 'little')
+        if raw and ptr + raw > end:
+            end = ptr + raw
+    if end > len(data):
+        raise SystemExit('setup: image larger than file')
+    overlay_end, signed = len(data), False
+    if int.from_bytes(data[opt + 108:opt + 112], 'little') > 4:
+        cert = int.from_bytes(data[opt + 144:opt + 148], 'little')
+        cert_size = int.from_bytes(data[opt + 148:opt + 152], 'little')
+        if cert or cert_size:
+            if cert < end or cert + cert_size != len(data):
+                raise SystemExit('setup: bad certificate table')
+            overlay_end, signed = cert, True
+    return end, overlay_end, signed
+
+
+def stub_identity(stub: bytes) -> str:
+    """The `kSetupIdentity` string compiled into the stub (src/setup-main.cpp)."""
+    marker = b'browser-setup-identity '
+    if stub.count(marker) != 1:
+        raise SystemExit('setup stub: identity string missing or ambiguous')
+    start = stub.index(marker) + len(marker)
+    end = stub.index(b';', start)
+    return stub[start:end].decode('ascii')
+
+
+def check_setup_stub(stub: bytes, info: dict) -> None:
+    """The stub must be a GUI x64 PE without overlay or signature, built for exactly this version/commit/channel."""
+    start, end, signed = pe_overlay(stub)
+    if start != len(stub) or end != len(stub) or signed:
+        raise SystemExit('setup stub already has an overlay or a signature')
+    pe = int.from_bytes(stub[0x3C:0x40], 'little')
+    if int.from_bytes(stub[pe + 24 + 68:pe + 24 + 70], 'little') != 2:  # IMAGE_SUBSYSTEM_WINDOWS_GUI
+        raise SystemExit('setup stub is not a GUI executable')
+    want = f'{info["version"]} {info["commit"]} {info["channel"]}'
+    if stub_identity(stub) != want:
+        raise SystemExit(f'setup stub identity {stub_identity(stub)!r} != payload {want!r}')
+    if b'requestedExecutionLevel level="asInvoker"' not in stub:
+        raise SystemExit('setup stub has no asInvoker manifest (Windows would elevate a "setup" exe)')
+    # Test builds (-DSETUP_TESTING: folder/registry redirection, fault points, unattended mode) never ship.
+    for marker in ('BROWSER_SETUP_TEST_ROOT', 'BROWSER_SETUP_FAULT', '--unattended'):
+        if marker.encode('utf-16-le') in stub:
+            raise SystemExit(f'setup stub is a test build ({marker})')
+
+
+def setup_trailer(version: str, offset: int, package: bytes) -> bytes:
+    v = version.encode('ascii')
+    if len(v) > 32:
+        raise SystemExit('version too long for the setup trailer')
+    t = SETUP_MAGIC + v.ljust(32, b'\0') + offset.to_bytes(8, 'little') + len(package).to_bytes(8, 'little') \
+        + hashlib.sha256(package).digest() + b'\0' * 24 + SETUP_END
+    assert len(t) == SETUP_TRAILER
+    return t
+
+
+def write_setup(stub_path: Path, package: Path, info: dict, out: Path) -> None:
+    if out.exists():
+        raise SystemExit(f'Refusing to overwrite {out}')
+    if is_reparse(stub_path) or not stub_path.is_file():
+        raise SystemExit(f'setup stub missing or not a regular file: {stub_path}')
+    stub, pkg = stub_path.read_bytes(), package.read_bytes()
+    check_setup_stub(stub, info)
+    if not 0 < len(pkg) <= MAX_PACKAGE:
+        raise SystemExit('package size out of range for the setup')
+    with out.open('xb') as f:
+        f.write(stub + pkg + setup_trailer(info['version'], len(stub), pkg))
+
+
+def verify_setup(setup: Path, package: Path, info: dict) -> None:
+    """Re-reads the setup: overlay bounds, trailer fields, embedded bytes == the .lsrupd, stub identity."""
+    data, pkg = setup.read_bytes(), package.read_bytes()
+    start, end, _ = pe_overlay(data)
+    if end - start < SETUP_TRAILER:
+        raise SystemExit('setup has no embedded package')
+    t = data[end - SETUP_TRAILER:end]
+    if t[:16] != SETUP_MAGIC or t[120:] != SETUP_END or any(t[96:120]):
+        raise SystemExit('setup trailer magic/padding invalid')
+    version = t[16:48].rstrip(b'\0')
+    if b'\0' in version or version.decode('ascii') != info['version']:
+        raise SystemExit('setup trailer version differs')
+    offset, size = int.from_bytes(t[48:56], 'little'), int.from_bytes(t[56:64], 'little')
+    if offset != start or offset + size + SETUP_TRAILER != end or size != len(pkg):
+        raise SystemExit('setup trailer offsets do not match the overlay')
+    if t[64:96] != hashlib.sha256(pkg).digest() or data[offset:offset + size] != pkg:
+        raise SystemExit('setup does not embed exactly the .lsrupd')
+    check_setup_stub(data[:start], info)
+
+
 def read_manifest(path: Path) -> dict:
     raw = path.read_bytes()
     if len(raw) > 1024 or b'\r' in raw:
@@ -192,14 +317,20 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--app', required=True, help='built application directory')
     p.add_argument('--out', required=True, help='release asset directory (recreated)')
+    p.add_argument('--setup-stub', help=f'setup stub built by build.py (default: <app>-setup/{SETUP_STUB_NAME})')
     a = p.parse_args()
     app, out = (ROOT / a.app).resolve(), (ROOT / a.out).resolve()
+    stub = (ROOT / a.setup_stub).resolve() if a.setup_stub else app.parent / (app.name + '-setup') / SETUP_STUB_NAME
     info = json.loads((app / 'version.json').read_text(encoding='utf-8'))
     version = info['version']
     if not re.fullmatch(r'(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})', version):
         raise SystemExit(f'Bad version {version!r}')
     if info.get('arch') != 'x64':
         raise SystemExit('Only x64 payloads are packaged')
+    # The setup is a required asset: its stub is checked before anything is packed.
+    if not stub.is_file() or is_reparse(stub):
+        raise SystemExit(f'setup stub missing: {stub} (built by tools/release/build.py)')
+    check_setup_stub(stub.read_bytes(), info)
     staging = out.parent / (out.name + '-payload')
     files = stage(app, staging)
     if out.exists():
@@ -222,14 +353,20 @@ def main() -> int:
     write_zip(staging, files, archive, top)
     verify_zip(archive, staging, files, top)
     zip_sha = sha256(archive)
+    setup = out / setup_name(version)
+    write_setup(stub, package, info, setup)
+    verify_setup(setup, package, info)
+    setup_sha = sha256(setup)
     (out / 'SHA256SUMS.txt').write_text(
-        ''.join(f'{sha256(f)}  {f.name}\n' for f in (package, manifest, archive)), encoding='ascii', newline='\n')
+        ''.join(f'{sha256(f)}  {f.name}\n' for f in (package, manifest, archive, setup)), encoding='ascii', newline='\n')
     (out / 'release-info.json').write_text(json.dumps({**info, 'package': package.name,
         'packageSize': package.stat().st_size, 'packageSha256': expected['sha256'],
         'zip': archive.name, 'zipSize': archive.stat().st_size, 'zipSha256': zip_sha,
+        'setup': setup.name, 'setupSize': setup.stat().st_size, 'setupSha256': setup_sha,
         'files': len(files)}, indent=2) + '\n', encoding='utf-8', newline='\n')
     print(f'Package OK: {package.name} {expected["size"]} bytes sha256 {expected["sha256"]} ({len(files)} files)')
     print(f'ZIP OK: {archive.name} {archive.stat().st_size} bytes sha256 {zip_sha} (top folder {top}/)')
+    print(f'Setup OK: {setup.name} {setup.stat().st_size} bytes sha256 {setup_sha} (embeds {package.name})')
     return 0
 
 

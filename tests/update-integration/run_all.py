@@ -11,7 +11,8 @@ Steps:
      invoked directly so a Restricted PowerShell policy is irrelevant);
   2. update-core peer tests, update-toast peer tests (their own runners);
   3. integration: release tooling tests, host integration fixture (production
-     main.cpp compiled WITH the update modules), mocked end-to-end temp install;
+     main.cpp compiled WITH the update modules), mocked end-to-end temp install,
+     Windows setup suite (tests/setup/run_tests.py, temp roots and test keys only);
   4. --app: static checks of the built application directory.
 """
 from __future__ import annotations
@@ -118,6 +119,10 @@ def integration() -> None:
     # v0.3.239's own package validator (from git history) accepts the assets/bin bridge, refuses a root one
     run('old client validator accepts the release bridge payload', [sys.executable, HERE / 'old_validator.py'])
     run('host integration + mocked end-to-end install', [sys.executable, HERE / 'e2e_install.py'])
+    # Windows setup (design/windows-setup-plan.md): real test-build stub + real fault-build helper around synthetic
+    # payloads; LOCALAPPDATA, Start Menu, Desktop, Temp and the uninstall key redirected to build/setup-tests/tmp and
+    # HKCU/Software/browser-setup-tests (deleted per case). Never the user's install, shortcuts or Apps entry.
+    run('windows setup suite (isolated roots and keys)', [sys.executable, '-I', ROOT / 'tests/setup/run_tests.py'])
 
 
 def ico_png(path: Path) -> bytes:
@@ -183,6 +188,13 @@ def check_app(app: Path) -> None:
     # antivirus heuristics and SmartScreen distrust most; these strings are also what Windows shows.
     ours = [app / 'browser.exe', app / 'update-helper.exe']
     ours += [p for p in (app / 'browser-annotations-mcp.exe', app / 'assets/bin/browser-annotations-mcp.exe') if p.is_file()]
+    # Setup stub (tools/release/build.py: <app>-setup/browser-setup.exe, not part of the payload): required for a
+    # release app, since package.py turns it into the published browser-<v>-win-x64-setup.exe.
+    setup_stub = app.parent / (app.name + '-setup') / 'browser-setup.exe'
+    if info['channel'] == 'release' and not setup_stub.is_file():
+        sys.exit(f'release app has no setup stub at {setup_stub}')
+    if setup_stub.is_file():
+        ours.append(setup_stub)
     for exe in ours:
         strings = version_strings(exe)
         for key in ('CompanyName', 'FileDescription', 'ProductName', 'LegalCopyright', 'OriginalFilename'):
@@ -200,10 +212,10 @@ def check_app(app: Path) -> None:
     other = V.app_icon('dev' if info['channel'] == 'release' else 'release')
     if (app / 'assets/browser.ico').read_bytes() != want.read_bytes():
         sys.exit(f'assets/browser.ico is not {want.name}')
-    for exe in ('browser.exe', 'update-helper.exe'):
-        data = (app / exe).read_bytes()
+    for exe in [app / 'browser.exe', app / 'update-helper.exe', *([setup_stub] if setup_stub.is_file() else [])]:
+        data = exe.read_bytes()
         if ico_png(want) not in data or ico_png(other) in data:
-            sys.exit(f'{exe} does not embed {want.name} (channel {info["channel"]})')
+            sys.exit(f'{exe.name} does not embed {want.name} (channel {info["channel"]})')
     # Annotations MCP bridge (tools/release/build.py bridge_location): a release ships it at exactly
     # assets/bin/ (the only place existing clients accept), never at the root, and ships it iff the
     # annotation mode is compiled into browser.exe (no UI without bridge, no orphan bridge).
