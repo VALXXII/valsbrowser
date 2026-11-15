@@ -147,17 +147,34 @@ void AudioFrame(NativeChrome::Motion::Time now){
 }
 NativeChrome::Motion::Wake AudioNextWake(NativeChrome::Motion::Time now){return chrome.audioShown?chrome.audioIcon.NextWake(now):NativeChrome::Motion::Wake{};}
 
+// A window.open target's initial document script (scrollbar, vault): one readiness step each (popup-target.h).
+// Unowned: it must settle the request even after its profile left the window. nullptr for an ordinary tab.
+ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBarrier(const PopupHost::RequestPtr& popup,const wchar_t* what){
+    if(!popup||popup->terminal)return nullptr;
+    unownedCallbacks=true;
+    auto* h=Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler,HRESULT,LPCWSTR>([popup,what=std::wstring(what)](HRESULT hr,LPCWSTR)->HRESULT{
+        Workspace* owner=static_cast<Workspace*>(const_cast<void*>(popup->owner));
+        if(popup->terminal||WorkspaceDead(owner))return S_OK;
+        WorkspaceScope scope(owner);if(FAILED(hr))Log(L"POPUP initial script failed: "+what);popups.Step(popup,SUCCEEDED(hr));return S_OK;});
+    unownedCallbacks=false;PopupHost::Registry::Arm(popup,1);return h;
+}
 // ---- Gains -----------------------------------------------------------------------------------
-void InjectAudioScript(const std::shared_ptr<Tab>& t){
+void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup){
     if(!t||t->closed||!t->view.p)return;
+    if(!popup&&t->popupSetup){t->audioReinject=true;return;}   // a window.open target being set up: no removal now, re-injected once assigned
     if(!t->audioScript.empty()){t->view->RemoveScriptToExecuteOnDocumentCreated(t->audioScript.c_str());t->audioScript.clear();}
     std::weak_ptr<Tab> weak=t;const unsigned generation=++t->audioScriptGeneration;
-    auto done=Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler,HRESULT,LPCWSTR>([weak,generation](HRESULT hr,LPCWSTR id)->HRESULT{
-        auto tab=weak.lock();if(!tab||tab->closed||!tab->view.p)return S_OK;
-        if(FAILED(hr)||!id){Log(L"AUDIO script injection failed");return S_OK;}
+    if(popup)unownedCallbacks=true;   // part of a window.open target's readiness: must settle it even after its profile left
+    auto done=Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler,HRESULT,LPCWSTR>([weak,generation,popup](HRESULT hr,LPCWSTR id)->HRESULT{
+        Workspace* popupOwner=popup?static_cast<Workspace*>(const_cast<void*>(popup->owner)):nullptr;
+        if(popup&&(popup->terminal||WorkspaceDead(popupOwner)))return S_OK;
+        std::optional<WorkspaceScope> popupScope;if(popup)popupScope.emplace(popupOwner);
+        auto tab=weak.lock();if(!tab||tab->closed||!tab->view.p){if(popup)popups.Finish(popup,false);return S_OK;}
+        if(FAILED(hr)||!id){Log(L"AUDIO script injection failed");if(popup)popups.Step(popup,false);return S_OK;}
         if(generation!=tab->audioScriptGeneration){tab->view->RemoveScriptToExecuteOnDocumentCreated(id);return S_OK;} // a newer table won
-        tab->audioScript=id;return S_OK;});
-    if(FAILED(t->view->AddScriptToExecuteOnDocumentCreated(AU::Script(audioVolumes).c_str(),done)))Log(L"AUDIO AddScriptToExecuteOnDocumentCreated failed");
+        tab->audioScript=id;if(popup)popups.Step(popup,true);return S_OK;});
+    if(popup){unownedCallbacks=false;PopupHost::Registry::Arm(popup,1);}
+    if(FAILED(t->view->AddScriptToExecuteOnDocumentCreated(AU::Script(audioVolumes).c_str(),done))){Log(L"AUDIO AddScriptToExecuteOnDocumentCreated failed");if(popup)popups.Finish(popup,false);}
     done->Release();
 }
 void PostAudioGain(const std::shared_ptr<Tab>& t){
@@ -175,7 +192,7 @@ void AudioVolumeChanged(const std::wstring& site,int percent,bool commit){
 }
 void AudioSaveDue(){
     KillTimer(window,AudioSaveTimerId);if(!audioScriptDirty)return;audioScriptDirty=false;
-    SaveAudioVolumes();for(auto& t:pages)InjectAudioScript(t);
+    SaveAudioVolumes();for(auto& t:pages)InjectAudioScript(t,nullptr);
 }
 
 // ---- Engine events ---------------------------------------------------------------------------
@@ -202,8 +219,8 @@ void AudioAudibleChanged(const std::shared_ptr<Tab>& t){
     if(t->audio.site.empty())return; // only web sites are listed (their volume is per site)
     if(t->audio.SetAudible(audible!=FALSE,now)){Log(std::wstring(L"AUDIO ")+(audible?L"audible ":L"silent ")+t->audio.site);RefreshAudio();}
 }
-void RegisterAudio(const std::shared_ptr<Tab>& t){
-    InjectAudioScript(t);
+void RegisterAudio(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup){
+    InjectAudioScript(t,popup);
     std::weak_ptr<Tab> weak=t;EventRegistrationToken token{};Com<ICoreWebView2_8> v8;
     if(FAILED(t->view->QueryInterface(IID_ICoreWebView2_8,(void**)&v8.p))||!v8.p){Log(L"AUDIO ICoreWebView2_8 unavailable: sites are not listed");return;}
     auto audible=Callback<ICoreWebView2IsDocumentPlayingAudioChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{if(!halted)AudioAudibleChanged(weak.lock());return S_OK;});

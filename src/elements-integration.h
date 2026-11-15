@@ -1146,30 +1146,41 @@ HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceive
 
 // ---------------------------------------------------------------------------------------
 // Per-tab WebView2 registrations for this section (called from NewTab's controller callback).
-void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* settings){
+// popup (a window.open target): its vault script joins the readiness barrier, the sandbox resource handlers are
+// installed after the target's assignment (RegisterSandboxResources from PopupAssign), and *required is cleared
+// when a security handler could not be registered (the target is refused before it can load).
+bool RegisterSandboxResources(const std::shared_ptr<Tab>& t);
+void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* settings,const PopupHost::RequestPtr& popup,bool* required){
     std::weak_ptr<Tab> weak=t;EventRegistrationToken token{};
+    auto need=[required](HRESULT hr){if(FAILED(hr)&&required)*required=false;return hr;};
     if(settings&&FAILED(settings->put_AreDefaultScriptDialogsEnabled(FALSE)))Log(L"DIALOG default dialogs could not be disabled");
-    if(Vault::Active()&&!privateWindow&&FAILED(t->view->AddScriptToExecuteOnDocumentCreated(VaultCaptureScript,nullptr)))Log(L"VAULT capture script not installed");
+    if(Vault::Active()&&!privateWindow){auto* barrier=PopupScriptBarrier(popup,L"vault");HRESULT added=t->view->AddScriptToExecuteOnDocumentCreated(VaultCaptureScript,barrier);if(barrier){if(FAILED(added))popups.Finish(popup,false);barrier->Release();}if(FAILED(added))Log(L"VAULT capture script not installed");}
     {auto h=Callback<ICoreWebView2ScriptDialogOpeningEventHandler,ICoreWebView2*,ICoreWebView2ScriptDialogOpeningEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ScriptDialogOpeningEventArgs* a)->HRESULT{return ScriptDialogOpening(weak.lock(),a);});
-     if(FAILED(t->view->add_ScriptDialogOpening(h,&token)))Log(L"DIALOG add_ScriptDialogOpening failed");h->Release();}
+     if(FAILED(need(t->view->add_ScriptDialogOpening(h,&token))))Log(L"DIALOG add_ScriptDialogOpening failed");h->Release();}
     {auto h=Callback<ICoreWebView2PermissionRequestedEventHandler,ICoreWebView2*,ICoreWebView2PermissionRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2PermissionRequestedEventArgs* a)->HRESULT{return PermissionRequested(weak.lock(),a);});
-     if(FAILED(t->view->add_PermissionRequested(h,&token)))Log(L"PERMISSION add_PermissionRequested failed");h->Release();}
+     if(FAILED(need(t->view->add_PermissionRequested(h,&token))))Log(L"PERMISSION add_PermissionRequested failed");h->Release();}
     {Com<ICoreWebView2_10> v10;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_10,(void**)&v10.p))&&v10.p){
         auto h=Callback<ICoreWebView2BasicAuthenticationRequestedEventHandler,ICoreWebView2*,ICoreWebView2BasicAuthenticationRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2BasicAuthenticationRequestedEventArgs* a)->HRESULT{return BasicAuthenticationRequested(weak.lock(),a);});
-        if(FAILED(v10->add_BasicAuthenticationRequested(h,&token)))Log(L"AUTH add_BasicAuthenticationRequested failed");h->Release();}else Log(L"AUTH ICoreWebView2_10 unavailable: engine dialog kept");}
+        if(FAILED(need(v10->add_BasicAuthenticationRequested(h,&token))))Log(L"AUTH add_BasicAuthenticationRequested failed");h->Release();}else Log(L"AUTH ICoreWebView2_10 unavailable: engine dialog kept");}
     {Com<ICoreWebView2_5> v5;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_5,(void**)&v5.p))&&v5.p){
         auto h=Callback<ICoreWebView2ClientCertificateRequestedEventHandler,ICoreWebView2*,ICoreWebView2ClientCertificateRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ClientCertificateRequestedEventArgs* a)->HRESULT{return ClientCertificateRequested(weak.lock(),a);});
-        if(FAILED(v5->add_ClientCertificateRequested(h,&token)))Log(L"CERTIFICATE add_ClientCertificateRequested failed");h->Release();}else Log(L"CERTIFICATE ICoreWebView2_5 unavailable: engine dialog kept");}
+        if(FAILED(need(v5->add_ClientCertificateRequested(h,&token))))Log(L"CERTIFICATE add_ClientCertificateRequested failed");h->Release();}else Log(L"CERTIFICATE ICoreWebView2_5 unavailable: engine dialog kept");}
     {Com<ICoreWebView2_18> v18;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_18,(void**)&v18.p))&&v18.p){
         auto h=Callback<ICoreWebView2LaunchingExternalUriSchemeEventHandler,ICoreWebView2*,ICoreWebView2LaunchingExternalUriSchemeEventArgs*>([weak](ICoreWebView2*,ICoreWebView2LaunchingExternalUriSchemeEventArgs* a)->HRESULT{return LaunchingExternalUriScheme(weak.lock(),a);});
-        if(FAILED(v18->add_LaunchingExternalUriScheme(h,&token)))Log(L"EXTERNAL add_LaunchingExternalUriScheme failed");h->Release();}else Log(L"EXTERNAL ICoreWebView2_18 unavailable: engine dialog kept");}
+        if(FAILED(need(v18->add_LaunchingExternalUriScheme(h,&token))))Log(L"EXTERNAL add_LaunchingExternalUriScheme failed");h->Release();}else Log(L"EXTERNAL ICoreWebView2_18 unavailable: engine dialog kept");}
     {auto h=Callback<ICoreWebView2ContainsFullScreenElementChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{
         auto tab=weak.lock();if(!tab||tab->closed||halted||!v)return S_OK;BOOL full=FALSE;v->get_ContainsFullScreenElement(&full);tab->pageFullscreen=full!=FALSE;
         Defer([weak,full]{auto t2=weak.lock();if(t2&&!t2->closed)SetPageFullscreen(t2,full!=FALSE);});return S_OK;});
      if(FAILED(t->view->add_ContainsFullScreenElementChanged(h,&token)))Log(L"FULLSCREEN add_ContainsFullScreenElementChanged failed");h->Release();}
+    if(!popup)RegisterSandboxResources(t);   // a window.open target: after its assignment (Microsoft's contract)
+}
+// Debug sandbox resources (served by the host). Returns false when they could not be installed.
+bool RegisterSandboxResources(const std::shared_ptr<Tab>& t){
+    std::weak_ptr<Tab> weak=t;EventRegistrationToken token{};
     if(SUCCEEDED(t->view->AddWebResourceRequestedFilter((std::wstring(L"https://")+NativeChrome::DebugSandbox::Host+L"/*").c_str(),COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL))){
         auto h=Callback<ICoreWebView2WebResourceRequestedEventHandler,ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2WebResourceRequestedEventArgs* a)->HRESULT{return SandboxResource(weak.lock(),a);});
-        if(FAILED(t->view->add_WebResourceRequested(h,&token)))Log(L"SANDBOX add_WebResourceRequested failed");h->Release();}
+        const HRESULT hr=t->view->add_WebResourceRequested(h,&token);if(FAILED(hr))Log(L"SANDBOX add_WebResourceRequested failed");h->Release();return SUCCEEDED(hr);}
+    return false;
 }
 // A tab is closing (or its renderer died): end everything that waits on it.
 void ElementsTabClosed(const std::shared_ptr<Tab>& t){

@@ -88,6 +88,7 @@ GUID_TEXT(ICoreWebView2SourceChangedEventHandler,"{3c067f9f-5388-4772-8b48-79f7e
 GUID_TEXT(ICoreWebView2HistoryChangedEventHandler,"{c79a420c-efd9-4058-9295-3e8b4bcab645}")
 GUID_TEXT(ICoreWebView2DocumentTitleChangedEventHandler,"{f5f2b923-953e-4042-9f95-f3a118e1afd4}")
 GUID_TEXT(ICoreWebView2NewWindowRequestedEventHandler,"{d4c185fe-c81c-4989-97af-2d3fa7ab5651}")
+GUID_TEXT(ICoreWebView2WindowCloseRequestedEventHandler,"{5c19e9e0-092f-486b-affa-ca8231913039}")
 GUID_TEXT(ICoreWebView2AcceleratorKeyPressedEventHandler,"{b29c7e28-fa79-41a8-8e44-65811c76dcb2}")
 GUID_TEXT(ICoreWebView2ProcessFailedEventHandler,"{79e0aea4-990b-42d9-aa1d-0fcc2e5bc7f1}")
 GUID_TEXT(ICoreWebView2BrowserProcessExitedEventHandler,"{fa504257-a216-4911-a860-fe8825712861}")
@@ -131,6 +132,8 @@ GUID_TEXT(ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,"{3b40
 // Same-window profiles (src/profile-workspace.h): every COM callback and every deferred job runs in the
 // workspace (profile) that was in the globals when it was created — a hidden profile's tab never writes
 // into the profile on screen. Defined in profile-workspace.h (end of this file).
+#include "popup-target.h"   // script-opened windows: the request lifecycle (design/popup-window-target-report.md)
+PopupHost::Registry popups; extern bool unownedCallbacks;
 struct Workspace; Workspace* WorkspaceNow(); bool WorkspaceDead(Workspace* w); bool WorkspaceParked();
 bool WorkspaceEngineFailed(const std::wstring& where,HRESULT hr); bool WorkspaceCanFailAlone(); extern bool workspaceTest; extern bool qaControllerFailure; extern bool qaExpectTerminal;
 bool windowClosing=false; // WM_CLOSE accepted: late engine failures only clean up
@@ -183,7 +186,11 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     std::wstring status;
     // Paper p-D-0 surfaces: network error page, debug sandbox (opened by the user in this tab),
     // page element in fullscreen.
-    ErrorPageState errorPage; bool sandbox=false,sandboxPending=false,pageFullscreen=false; };
+    ErrorPageState errorPage; bool sandbox=false,sandboxPending=false,pageFullscreen=false;
+    // Script-opened target (window.open): its about:blank is a web document, never the native home, until the user
+    // deliberately goes Home (Navigate with an empty address sets blankIsHome again). popupSetup: created for a
+    // pending request, not yet assigned: no script removal/reinjection meanwhile (queued in audioReinject).
+    bool blankIsHome=true,scriptOpened=false,popupSetup=false,audioReinject=false,scriptCloseQueued=false; };
 // NEWTAB: the home tab's last render showed most visited sites (Tab is shared; kept beside it).
 // A home tab stays hidden (the native canvas shows through) unless it shows tiles.
 struct HomeTiles { std::vector<unsigned> serials; bool Has(const Tab& t)const{return std::find(serials.begin(),serials.end(),t.serial)!=serials.end();} void Set(const Tab& t,bool on){serials.erase(std::remove(serials.begin(),serials.end(),t.serial),serials.end());if(on)serials.push_back(t.serial);} } homeTiles;
@@ -334,7 +341,7 @@ void SmokeAdvance();
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
 // Serialized: the WebView2 install worker reports its real outcome from its own thread. A private window logs nothing.
 void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
-void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
+void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;popups.CancelAll(); /* pending window.open requests settled before any modal loop */for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
 void FocusAddress(){editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
@@ -1013,7 +1020,7 @@ void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closed
 std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
 // SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
 std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();t->uri=uri;if(uri.empty()){const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
 // ---- Address suggestions (issue #20) -----------------------------------------
 // The EDIT keeps focus: typing recomputes the list, the arrows move its active row
 // (the field shows what Enter will open), Escape restores then closes, Enter opens.
@@ -1086,13 +1093,19 @@ void CreateSuggestions(){
     hooks.icon=[](const std::wstring& site){return SiteIcon(site);};
     if(!suggestions.Create(instance,window,base,std::move(hooks)))Log(L"ADDRESS suggestions unavailable");
 }
-void CloseAt(int index){if(halted||index<0||index>=(int)pages.size())return;
+// Script: window.close() of a script-opened page (WindowCloseRequested): never the window's last-tab close, it closes
+// only that tab (a hidden profile's page never closes the shared window). Placeholder: a window.open target that
+// never became usable: removed without a recently-closed entry.
+enum class CloseReason { User, Script, Placeholder };
+void CloseAt(int index,CloseReason why=CloseReason::User){if(halted||index<0||index>=(int)pages.size())return;
+    popups.CancelTab(pages[index]->serial); /* a pending window.open whose opener or target closes: settled first */
+    if(index>=(int)pages.size())return;
     // SETTINGS(tabs): "Fermer la fenêtre avec le dernier onglet": the normal window close (session
     // save, clear on exit) with the tab still alive; one tab never asks "Fermer N onglets ?".
-    if(pages.size()==1&&settings.closeWithLastTab&&!smoke){Log(L"TABS last tab closed: closing the window");PostMessageW(window,WM_CLOSE,0,0);return;}
+    if(why==CloseReason::User&&pages.size()==1&&settings.closeWithLastTab&&!smoke){Log(L"TABS last tab closed: closing the window");PostMessageW(window,WM_CLOSE,0,0);return;}
     CancelTabDrag();const bool active=index==current;int next=NativeChrome::SelectionAfterClose((int)pages.size(),current,index);
     {auto closing=pages[index];if(active&&closing->group){auto m=Members(closing->group);auto it=std::find(m.begin(),m.end(),closing);std::shared_ptr<Tab> heir=it!=m.end()&&it+1!=m.end()?*(it+1):it!=m.begin()&&it!=m.end()?*(it-1):nullptr;if(heir){const int j=TabIndexOf(heir);next=j>index?j-1:j;}}}
-    motion.ClearInteractions();hover=pressed=keyboardFocus=0;auto t=pages[index];if(!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}ElementsTabClosed(t);t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);DissolveSmallGroups();RefreshAudio();
+    if(!WorkspaceParked()){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=pages[index];if(why!=CloseReason::Placeholder&&!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}ElementsTabClosed(t);t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);DissolveSmallGroups();RefreshAudio();
     if(pages.empty()){current=-1;NewTab(NewTabTarget());}else if(active)Select(next);else{current=next;motion.SelectTab((int)pages[current]->serial,NativeChrome::Motion::Now());ApplyPages();Update();}
 }
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
@@ -2130,6 +2143,8 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
     return S_OK;
 }
 bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message);bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text);
+ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBarrier(const PopupHost::RequestPtr& popup,const wchar_t* what); // audio-integration.h
+void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup); // audio-integration.h
 #include "elements-integration.h"
 void SyncLatch();
 #include "audio-integration.h"
@@ -2498,65 +2513,8 @@ HRESULT ProcessFailed(const std::shared_ptr<Tab>& t,ICoreWebView2ProcessFailedEv
     return S_OK;
 }
 
-void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environment.p)return;const bool parked=WorkspaceParked(); /* a hidden profile's page opened a window: its tab, never the visible window's hover / toast */if(pages.size()>=128){if(parked)Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return;}if(!parked){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=std::make_shared<Tab>();t->sandboxPending=sandboxNextTab&&IsSandboxUri(uri);if(IsSandboxUri(uri)&&!t->sandboxPending)uri.clear(); /* restored session or a page: never the sandbox */sandboxNextTab=false;t->uri=uri;t->home=uri.empty();t->title=std::move(title);if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());CancelTabDrag();pages.insert(pages.begin()+index,t);Select(index);std::weak_ptr<Tab> weak=t;
-    auto done=Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,HRESULT,ICoreWebView2Controller*>([weak,uri](HRESULT hr,ICoreWebView2Controller* c)->HRESULT{
-        // A tab closed before its controller arrived (e.g. reopened then closed, or the
-        // window closing) may complete with E_ABORT: that is not an engine failure.
-        auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(workspaceTest&&qaControllerFailure&&SUCCEEDED(hr)&&WorkspaceCanFailAlone()){qaControllerFailure=false;if(c)c->Close();c=nullptr;hr=HRESULT_FROM_WIN32(ERROR_INVALID_STATE);Log(L"WSQA controller failure injected");} /* --workspace-test only */if(FAILED(hr)&&WorkspaceEngineFailed(L"CreateController callback",hr))return S_OK; /* a profile started in this window: that profile fails, not the window */if(!Check(hr,L"CreateController callback"))return S_OK;if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
-        Com<ICoreWebView2Settings> settings;Com<ICoreWebView2Settings3> settings3;
-        if(!Check(t->view->get_Settings(&settings.p),L"get_Settings")||
-           !Check(settings->QueryInterface(IID_ICoreWebView2Settings3,(void**)&settings3.p),L"QueryInterface Settings3")||
-           !Check(settings3->put_AreBrowserAcceleratorKeysEnabled(TRUE),L"Enable browser accelerators"))return S_OK;
-        // Link preview: our own bubble (status-bubble.h) replaces the engine's status bar.
-        {Com<ICoreWebView2_12> view12;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_12,(void**)&view12.p))&&view12.p){
-            auto status=Callback<ICoreWebView2StatusBarTextChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;Com<ICoreWebView2_12> v12;LPWSTR text=nullptr;
-                if(v&&SUCCEEDED(v->QueryInterface(IID_ICoreWebView2_12,(void**)&v12.p))&&v12.p&&SUCCEEDED(v12->get_StatusBarText(&text))){SetTabStatus(tab,text?text:L"");CoTaskMemFree(text);}return S_OK;});
-            EventRegistrationToken statusToken{};
-            if(SUCCEEDED(view12->add_StatusBarTextChanged(status,&statusToken))){if(FAILED(settings->put_IsStatusBarEnabled(FALSE)))Log(L"STATUS put_IsStatusBarEnabled failed: engine bubble kept");}
-            else Log(L"STATUS add_StatusBarTextChanged failed: engine bubble kept");status->Release();}
-         else Log(L"STATUS ICoreWebView2_12 unavailable: engine bubble kept");}
-        EventRegistrationToken token{};
-        // Overlay scrollbar (Paper V3): the page script hides the root scrollbar and posts its
-        // metrics; PageMessage hands them to ScrollbarMessageFrom.
-        Check(t->view->AddScriptToExecuteOnDocumentCreated(ScrollbarScript,nullptr),L"AddScriptToExecuteOnDocumentCreated scrollbar");
-        IID faviconInterface;CLSIDFromString(L"{517B2D1D-7DAE-4A66-A4F4-10352FFB9518}",&faviconInterface);
-        if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
-        auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
-        HRESULT faviconResult=t->faviconView->add_FaviconChanged(faviconChanged,&token);faviconChanged->Release();if(!Check(faviconResult,L"add_FaviconChanged"))return S_OK;
-        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
-        HRESULT startingResult=t->view->add_NavigationStarting(starting,&token);starting->Release();if(!Check(startingResult,L"add_NavigationStarting favicon"))return S_OK;
-        auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;AnnotationNavigation(t);++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);t->home=t->uri==L"about:blank";if(!t->https.shown.empty()&&(t->home||t->uri.rfind(L"data:",0)==0)){t->uri=t->https.shown;t->home=false;}if(!t->errorPage.shown.empty()&&(t->home||t->uri.rfind(L"data:",0)==0)){t->uri=t->errorPage.shown;t->home=false;}}t->loading.Committed(NativeChrome::Motion::Now());AudioSiteChanged(t);if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
-        HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
-        auto history=Callback<ICoreWebView2HistoryChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted&&tab==Active())Update();return S_OK;});
-        result=t->view->add_HistoryChanged(history,&token);history->Release();if(!Check(result,L"add_HistoryChanged"))return S_OK;
-        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}}Update();SchedulePublishProfileWindow();return S_OK;});
-        result=t->view->add_DocumentTitleChanged(title,&token);title->Release();if(!Check(result,L"add_DocumentTitleChanged"))return S_OK;
-        auto nav=Callback<ICoreWebView2NavigationCompletedEventHandler,ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs* a)->HRESULT{return NavigationCompleted(weak.lock(),a);});
-        result=t->view->add_NavigationCompleted(nav,&token);nav->Release();if(!Check(result,L"add_NavigationCompleted"))return S_OK;
-        auto popup=Callback<ICoreWebView2NewWindowRequestedEventHandler,ICoreWebView2*,ICoreWebView2NewWindowRequestedEventArgs*>([](ICoreWebView2*,ICoreWebView2NewWindowRequestedEventArgs* a)->HRESULT{if(halted)return S_OK;a->put_Handled(TRUE);LPWSTR uri=nullptr;if(Check(a->get_Uri(&uri),L"NewWindow get_Uri")&&uri){std::wstring s=uri;CoTaskMemFree(uri);if((s.rfind(L"https://",0)==0||s.rfind(L"http://",0)==0)&&!IsSandboxUri(s))NewTab(s);}return S_OK;});
-        result=t->view->add_NewWindowRequested(popup,&token);popup->Release();if(!Check(result,L"add_NewWindowRequested"))return S_OK;
-        auto key=Callback<ICoreWebView2AcceleratorKeyPressedEventHandler,ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs*>([](ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs* a)->HRESULT{if(halted)return S_OK;COREWEBVIEW2_KEY_EVENT_KIND kind;a->get_KeyEventKind(&kind);UINT vk;a->get_VirtualKey(&vk);if(kind==COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN||kind==COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN)ContentTransitionInput(L"key");if(kind==COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN||kind==COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN){int cmd=Key(vk);if(cmd){a->put_Handled(TRUE);PostMessageW(window,Shortcut,cmd,0);}}return S_OK;});
-        result=c->add_AcceleratorKeyPressed(key,&token);key->Release();if(!Check(result,L"add_AcceleratorKeyPressed"))return S_OK;
-        auto gotFocus=Callback<ICoreWebView2FocusChangedEventHandler,ICoreWebView2Controller*,IUnknown*>([weak](ICoreWebView2Controller*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)ActivatePanel(tab);return S_OK;});
-        result=c->add_GotFocus(gotFocus,&token);gotFocus->Release();if(!Check(result,L"add_GotFocus"))return S_OK;
-        auto failed=Callback<ICoreWebView2ProcessFailedEventHandler,ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs* a)->HRESULT{return ProcessFailed(weak.lock(),a);});
-        result=t->view->add_ProcessFailed(failed,&token);failed->Release();if(!Check(result,L"add_ProcessFailed"))return S_OK;
-        // SETTINGS(https): buttons of the "Ce site n'est pas sécurisé" page.
-        {auto message=Callback<ICoreWebView2WebMessageReceivedEventHandler,ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs* a)->HRESULT{return PageMessage(weak.lock(),a);});if(FAILED(t->view->add_WebMessageReceived(message,&token)))Log(L"HTTPS add_WebMessageReceived failed");message->Release();}
-        RegisterElementEvents(t,settings.p);RegisterAudio(t);
-        // Invalid server certificate: the engine keeps its own interstitial; the bar says "Non sécurisé".
-        {Com<ICoreWebView2_14> view14;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&view14.p))&&view14.p){auto cert=Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler,ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=true;Log(L"CERTIFICATE error "+tab->uri);
-            // Never ALWAYS_ALLOW (no bypass): CANCEL refuses the connection; our page replaces the engine's
-            // interstitial only for the top-level navigation (ShowErrorPage checks the navigation id and URL).
 #ifdef BROWSER_E2E_FIXTURE_HOOK
-            if(args&&E2EFixtureAllows(args)){args->put_Action(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW);Log(L"E2E FIXTURE PIN allowed (test host only)");return S_OK;}
-#endif
-            if(args){args->put_Action(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);COREWEBVIEW2_WEB_ERROR_STATUS st{};LPWSTR u=nullptr;
-                if(SUCCEEDED(args->get_ErrorStatus(&st)))tab->errorPage.certStatus=(int)st;if(SUCCEEDED(args->get_RequestUri(&u))&&u){tab->errorPage.certUri=u;CoTaskMemFree(u);}
-                Com<ICoreWebView2Certificate> c;LPWSTR issuer=nullptr;tab->errorPage.certIssuer.clear();if(SUCCEEDED(args->get_ServerCertificate(&c.p))&&c.p&&SUCCEEDED(c->get_Issuer(&issuer))&&issuer){tab->errorPage.certIssuer=issuer;CoTaskMemFree(issuer);}}if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}
-        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();ApplyTabSettings();ApplyMemorySaver();if(!adBlockSynced)ApplyAdBlock();}
-        {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
-#ifdef BROWSER_E2E_FIXTURE_HOOK
+void RegisterE2EDestinationGuards(const std::shared_ptr<Tab>& t){
         {   // test host only: bound every destination to the manifest's exact origin, fail closed
             bool guarded=true;EventRegistrationToken tk{};
             auto nav=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* a)->HRESULT{LPWSTR u=nullptr;if(SUCCEEDED(a->get_Uri(&u))&&u){std::wstring s(u);CoTaskMemFree(u);if(!E2EAllowedUri(s)){a->put_Cancel(TRUE);Log(L"E2E BOUND refused navigation "+s);}}else a->put_Cancel(TRUE);return S_OK;});
@@ -2581,19 +2539,148 @@ void NewTab(std::wstring uri,int index,std::wstring title){if(halted||!environme
                 guarded=SUCCEEDED(v14->ClearServerCertificateErrorActions(cleared));cleared->Release();}
             if(!guarded)E2EHostAbort(L"destination guards unavailable");
         }
+}
 #endif
-        Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;Navigate(t,uri);return S_OK;
+// ---- window.open targets (design/popup-window-target-report.md) --------------------------------------------
+// The engine's own request, retained until Finish: its args (put_NewWindow), its deferral, and the exact environment
+// the opener ran in (the target must be created in it — same profile, same private partition).
+struct PopupCom { ComRef<ICoreWebView2NewWindowRequestedEventArgs> args; DeferralGuard deferral; Com<ICoreWebView2Environment> env; };
+PopupCom* PopupComOf(const PopupHost::RequestPtr& r){return r?static_cast<PopupCom*>(r->com.get()):nullptr;}
+ICoreWebView2Environment* PopupEnvironment(const PopupHost::RequestPtr& r){auto* c=PopupComOf(r);return c?c->env.p:nullptr;}
+// A failed/cancelled target: removed by identity (indexes move), without history and without the last-tab close.
+void DropPopupTarget(unsigned serial){auto t=TabBySerial(serial);if(!t||t->closed)return;const int i=TabIndexOf(t);if(i>=0){Log(L"POPUP target dropped");CloseAt(i,CloseReason::Placeholder);}}
+// Barrier reached: revalidate everything, assign the target exactly once, then the post-assignment hooks (resource
+// handlers: Microsoft's contract), then complete the deferral. Any failure finishes the request as failed.
+void PopupAssign(const PopupHost::RequestPtr& r){
+    Workspace* owner=static_cast<Workspace*>(const_cast<void*>(r->owner));
+    if(r->terminal)return;if(halted||WorkspaceDead(owner)){popups.Finish(r,false);return;}
+    WorkspaceScope scope(owner);
+    auto* com=PopupComOf(r);auto t=TabBySerial(r->target);auto opener=TabBySerial(r->opener);
+    if(!com||!com->args.p||!t||t->closed||!t->view.p||!opener||opener->closed||environment.p!=com->env.p){Log(L"POPUP target no longer valid: refused");popups.Finish(r,false);return;}
+    if(FAILED(com->args->put_NewWindow(t->view.p))){Log(L"POPUP put_NewWindow failed");popups.Finish(r,false);return;}
+    r->assigned=true;
+    bool hooks=RegisterSandboxResources(t);
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+    RegisterE2EDestinationGuards(t);
+#endif
+    if(!hooks){Log(L"POPUP post-assignment handlers failed: target closed");popups.Finish(r,false);return;}
+    t->popupSetup=false;
+    Log(std::wstring(L"POPUP target assigned ")+(r->blank?L"blank":L"web")+L" user="+(r->userInitiated?L"1":L"0"));
+    popups.Finish(r,true);   // completes the deferral: the engine now loads the request in this target
+    if(t->audioReinject){t->audioReinject=false;InjectAudioScript(t,nullptr);}
+    if(r->blank&&!t->closed){t->revealed=true;ApplyPages();if(t==Active())Update();}   // a blank document (and what the opener writes in it) shows without an HTTP NavigationCompleted
+}
+void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup);
+// NewWindowRequested: always handled by the host (never the engine's own unmanaged window). Admitted: HTTP(S) as
+// before, and the exact blank document; refused otherwise (the page gets null). IsUserInitiated is recorded only.
+HRESULT NewWindowRequested(const std::shared_ptr<Tab>& opener,ICoreWebView2NewWindowRequestedEventArgs* a){
+    if(halted||!a)return S_OK;a->put_Handled(TRUE);
+    LPWSTR raw=nullptr;if(!Check(a->get_Uri(&raw),L"NewWindow get_Uri")||!raw)return S_OK;std::wstring uri=raw;CoTaskMemFree(raw);
+    BOOL user=FALSE;if(FAILED(a->get_IsUserInitiated(&user)))user=FALSE;
+    if(!PopupHost::AdmitInitialUri(uri,IsSandboxUri)){Log(L"POPUP refused: address not admitted");return S_OK;}
+    if(!opener||opener->closed||!environment.p)return S_OK;
+    if(pages.size()>=128){if(WorkspaceParked())Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return S_OK;}
+    ICoreWebView2Deferral* deferral=nullptr;if(FAILED(a->GetDeferral(&deferral))||!deferral){Log(L"POPUP refused: no deferral");return S_OK;}
+    auto com=std::make_shared<PopupCom>();com->deferral.deferral=deferral;com->args=ComRef<ICoreWebView2NewWindowRequestedEventArgs>(a);com->env.set(environment.p);
+    auto r=std::make_shared<PopupHost::Request>();r->owner=WorkspaceNow();r->opener=opener->serial;r->userInitiated=user!=FALSE;r->blank=uri==L"about:blank";r->com=com;
+    r->complete=[weakCom=std::weak_ptr<PopupCom>(com)]{if(auto c=weakCom.lock())c->deferral.Complete();};
+    r->ready=[weakReq=std::weak_ptr<PopupHost::Request>(r)]{if(auto q=weakReq.lock())PopupAssign(q);};
+    popups.Add(r);
+    Log(std::wstring(L"POPUP request ")+(r->blank?L"blank":L"web")+L" user="+(user?L"1":L"0"));
+    CreateTab(uri,-1,TR(tab_new),r);
+    return S_OK;
+}
+void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup);
+void NewTab(std::wstring uri,int index,std::wstring title){CreateTab(std::move(uri),index,std::move(title),nullptr);}
+void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup){if(halted||!environment.p){if(popup)popups.Finish(popup,false);return;}const bool parked=WorkspaceParked(); /* a hidden profile's page opened a window: its tab, never the visible window's hover / toast */if(pages.size()>=128){if(popup)popups.Finish(popup,false);if(parked)Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return;}if(!parked){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=std::make_shared<Tab>();t->sandboxPending=sandboxNextTab&&IsSandboxUri(uri);if(IsSandboxUri(uri)&&!t->sandboxPending)uri.clear(); /* restored session or a page: never the sandbox */sandboxNextTab=false;t->uri=uri;t->home=uri.empty();t->title=std::move(title);
+    if(popup){t->home=false;t->blankIsHome=false;t->scriptOpened=true;t->popupSetup=true;t->sandboxPending=false;popup->target=t->serial;Workspace* owner=static_cast<Workspace*>(const_cast<void*>(popup->owner));const unsigned serial=t->serial;
+        popup->dropTarget=[owner,serial]{if(halted||WorkspaceDead(owner))return;WorkspaceScope scope(owner);Defer([serial]{DropPopupTarget(serial);});};}
+   if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());CancelTabDrag();pages.insert(pages.begin()+index,t);Select(index);std::weak_ptr<Tab> weak=t;
+    if(popup)unownedCallbacks=true;   // a window.open target: its completion must run (and clean up) even after its profile left
+    auto done=Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,HRESULT,ICoreWebView2Controller*>([weak,uri,popup](HRESULT hr,ICoreWebView2Controller* c)->HRESULT{
+        // window.open target: validated by hand (unowned callback), then run in the opener's workspace.
+        Workspace* popupOwner=popup?static_cast<Workspace*>(const_cast<void*>(popup->owner)):nullptr;
+        if(popup&&(popup->terminal||WorkspaceDead(popupOwner)||halted)){if(c)c->Close();popups.Finish(popup,false);return S_OK;}
+        std::optional<WorkspaceScope> popupScope;if(popup)popupScope.emplace(popupOwner);
+        struct Settle{PopupHost::RequestPtr r;bool armed=true;~Settle(){if(r&&armed&&!r->terminal)popups.Finish(r,false);}} settle{popup};   // every early return settles the request
+        // A tab closed before its controller arrived (e.g. reopened then closed, or the
+        // window closing) may complete with E_ABORT: that is not an engine failure.
+        auto t=weak.lock();if(!t||t->closed){if(c)c->Close();return S_OK;}if(workspaceTest&&qaControllerFailure&&SUCCEEDED(hr)&&WorkspaceCanFailAlone()){qaControllerFailure=false;if(c)c->Close();c=nullptr;hr=HRESULT_FROM_WIN32(ERROR_INVALID_STATE);Log(L"WSQA controller failure injected");} /* --workspace-test only */if(FAILED(hr)&&WorkspaceEngineFailed(L"CreateController callback",hr))return S_OK; /* a profile started in this window: that profile fails, not the window */if(!Check(hr,L"CreateController callback"))return S_OK;if(!c){Fail(L"CreateController null",E_POINTER);return S_OK;}t->controller.set(c);if(!Check(c->get_CoreWebView2(&t->view.p),L"get_CoreWebView2"))return S_OK;
+        Com<ICoreWebView2Settings> settings;Com<ICoreWebView2Settings3> settings3;
+        if(!Check(t->view->get_Settings(&settings.p),L"get_Settings")||
+           !Check(settings->QueryInterface(IID_ICoreWebView2Settings3,(void**)&settings3.p),L"QueryInterface Settings3")||
+           !Check(settings3->put_AreBrowserAcceleratorKeysEnabled(TRUE),L"Enable browser accelerators"))return S_OK;
+        // Link preview: our own bubble (status-bubble.h) replaces the engine's status bar.
+        {Com<ICoreWebView2_12> view12;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_12,(void**)&view12.p))&&view12.p){
+            auto status=Callback<ICoreWebView2StatusBarTextChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;Com<ICoreWebView2_12> v12;LPWSTR text=nullptr;
+                if(v&&SUCCEEDED(v->QueryInterface(IID_ICoreWebView2_12,(void**)&v12.p))&&v12.p&&SUCCEEDED(v12->get_StatusBarText(&text))){SetTabStatus(tab,text?text:L"");CoTaskMemFree(text);}return S_OK;});
+            EventRegistrationToken statusToken{};
+            if(SUCCEEDED(view12->add_StatusBarTextChanged(status,&statusToken))){if(FAILED(settings->put_IsStatusBarEnabled(FALSE)))Log(L"STATUS put_IsStatusBarEnabled failed: engine bubble kept");}
+            else Log(L"STATUS add_StatusBarTextChanged failed: engine bubble kept");status->Release();}
+         else Log(L"STATUS ICoreWebView2_12 unavailable: engine bubble kept");}
+        EventRegistrationToken token{};
+        // Overlay scrollbar (Paper V3): the page script hides the root scrollbar and posts its
+        // metrics; PageMessage hands them to ScrollbarMessageFrom.
+        {auto* barrier=PopupScriptBarrier(popup,L"scrollbar");HRESULT added=t->view->AddScriptToExecuteOnDocumentCreated(ScrollbarScript,barrier);if(barrier){if(FAILED(added))popups.Finish(popup,false);barrier->Release();}Check(added,L"AddScriptToExecuteOnDocumentCreated scrollbar");}
+        IID faviconInterface;CLSIDFromString(L"{517B2D1D-7DAE-4A66-A4F4-10352FFB9518}",&faviconInterface);
+        if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
+        auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
+        HRESULT faviconResult=t->faviconView->add_FaviconChanged(faviconChanged,&token);faviconChanged->Release();if(!Check(faviconResult,L"add_FaviconChanged"))return S_OK;
+        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
+        HRESULT startingResult=t->view->add_NavigationStarting(starting,&token);starting->Release();if(!Check(startingResult,L"add_NavigationStarting favicon"))return S_OK;
+        auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;AnnotationNavigation(t);++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);t->home=t->uri==L"about:blank"&&t->blankIsHome;if(!t->https.shown.empty()&&(t->home||t->uri.rfind(L"data:",0)==0)){t->uri=t->https.shown;t->home=false;}if(!t->errorPage.shown.empty()&&(t->home||t->uri.rfind(L"data:",0)==0)){t->uri=t->errorPage.shown;t->home=false;}}t->loading.Committed(NativeChrome::Motion::Now());AudioSiteChanged(t);if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
+        HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
+        auto history=Callback<ICoreWebView2HistoryChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted&&tab==Active())Update();return S_OK;});
+        result=t->view->add_HistoryChanged(history,&token);history->Release();if(!Check(result,L"add_HistoryChanged"))return S_OK;
+        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}}Update();SchedulePublishProfileWindow();return S_OK;});
+        result=t->view->add_DocumentTitleChanged(title,&token);title->Release();if(!Check(result,L"add_DocumentTitleChanged"))return S_OK;
+        auto nav=Callback<ICoreWebView2NavigationCompletedEventHandler,ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs* a)->HRESULT{return NavigationCompleted(weak.lock(),a);});
+        result=t->view->add_NavigationCompleted(nav,&token);nav->Release();if(!Check(result,L"add_NavigationCompleted"))return S_OK;
+        auto opened=Callback<ICoreWebView2NewWindowRequestedEventHandler,ICoreWebView2*,ICoreWebView2NewWindowRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NewWindowRequestedEventArgs* a)->HRESULT{return NewWindowRequested(weak.lock(),a);});
+        result=t->view->add_NewWindowRequested(opened,&token);opened->Release();if(!Check(result,L"add_NewWindowRequested"))return S_OK;
+        if(popup){   // window.close() of a script-opened page: only that tab, deferred (never inside the engine's event)
+            auto closing=Callback<ICoreWebView2WindowCloseRequestedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted||tab->scriptCloseQueued)return S_OK;tab->scriptCloseQueued=true;Defer([weak]{auto t2=weak.lock();if(!t2||t2->closed)return;const int i=TabIndexOf(t2);if(i>=0){Log(L"POPUP closed by its page");CloseAt(i,CloseReason::Script);}});return S_OK;});
+            result=t->view->add_WindowCloseRequested(closing,&token);closing->Release();if(FAILED(result)){Log(L"POPUP add_WindowCloseRequested failed: target refused");return S_OK;}}
+        auto key=Callback<ICoreWebView2AcceleratorKeyPressedEventHandler,ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs*>([](ICoreWebView2Controller*,ICoreWebView2AcceleratorKeyPressedEventArgs* a)->HRESULT{if(halted)return S_OK;COREWEBVIEW2_KEY_EVENT_KIND kind;a->get_KeyEventKind(&kind);UINT vk;a->get_VirtualKey(&vk);if(kind==COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN||kind==COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN)ContentTransitionInput(L"key");if(kind==COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN||kind==COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN){int cmd=Key(vk);if(cmd){a->put_Handled(TRUE);PostMessageW(window,Shortcut,cmd,0);}}return S_OK;});
+        result=c->add_AcceleratorKeyPressed(key,&token);key->Release();if(!Check(result,L"add_AcceleratorKeyPressed"))return S_OK;
+        auto gotFocus=Callback<ICoreWebView2FocusChangedEventHandler,ICoreWebView2Controller*,IUnknown*>([weak](ICoreWebView2Controller*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)ActivatePanel(tab);return S_OK;});
+        result=c->add_GotFocus(gotFocus,&token);gotFocus->Release();if(!Check(result,L"add_GotFocus"))return S_OK;
+        auto failed=Callback<ICoreWebView2ProcessFailedEventHandler,ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ProcessFailedEventArgs* a)->HRESULT{return ProcessFailed(weak.lock(),a);});
+        result=t->view->add_ProcessFailed(failed,&token);failed->Release();if(!Check(result,L"add_ProcessFailed"))return S_OK;
+        // SETTINGS(https): buttons of the "Ce site n'est pas sécurisé" page.
+        {auto message=Callback<ICoreWebView2WebMessageReceivedEventHandler,ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2WebMessageReceivedEventArgs* a)->HRESULT{return PageMessage(weak.lock(),a);});if(FAILED(t->view->add_WebMessageReceived(message,&token)))Log(L"HTTPS add_WebMessageReceived failed");message->Release();}
+        {bool required=true;RegisterElementEvents(t,settings.p,popup,&required);RegisterAudio(t,popup);if(popup&&!required){Log(L"POPUP security handlers incomplete: target refused");return S_OK;}}
+        // Invalid server certificate: the engine keeps its own interstitial; the bar says "Non sécurisé".
+        {Com<ICoreWebView2_14> view14;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_14,(void**)&view14.p))&&view14.p){auto cert=Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler,ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ServerCertificateErrorDetectedEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=true;Log(L"CERTIFICATE error "+tab->uri);
+            // Never ALWAYS_ALLOW (no bypass): CANCEL refuses the connection; our page replaces the engine's
+            // interstitial only for the top-level navigation (ShowErrorPage checks the navigation id and URL).
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+            if(args&&E2EFixtureAllows(args)){args->put_Action(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW);Log(L"E2E FIXTURE PIN allowed (test host only)");return S_OK;}
+#endif
+            if(args){args->put_Action(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);COREWEBVIEW2_WEB_ERROR_STATUS st{};LPWSTR u=nullptr;
+                if(SUCCEEDED(args->get_ErrorStatus(&st)))tab->errorPage.certStatus=(int)st;if(SUCCEEDED(args->get_RequestUri(&u))&&u){tab->errorPage.certUri=u;CoTaskMemFree(u);}
+                Com<ICoreWebView2Certificate> c;LPWSTR issuer=nullptr;tab->errorPage.certIssuer.clear();if(SUCCEEDED(args->get_ServerCertificate(&c.p))&&c.p&&SUCCEEDED(c->get_Issuer(&issuer))&&issuer){tab->errorPage.certIssuer=issuer;CoTaskMemFree(issuer);}}if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}
+        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();ApplyTabSettings();ApplyMemorySaver();if(!adBlockSynced)ApplyAdBlock();}
+        {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
+#ifdef BROWSER_E2E_FIXTURE_HOOK
+        if(!popup)RegisterE2EDestinationGuards(t);   // a window.open target: after its assignment (PopupAssign)
+#endif
+        Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;
+        if(popup){settle.armed=false;popups.Step(popup,true);return S_OK;}   // the engine navigates the target itself: never Navigate/NavigateToString here
+        Navigate(t,uri);return S_OK;
     });
-    HRESULT hr=E_FAIL;
+    if(popup){unownedCallbacks=false;PopupHost::Registry::Arm(popup,1);}   // the controller setup itself
+    HRESULT hr=E_FAIL;ICoreWebView2Environment* creating=popup?PopupEnvironment(popup):environment.p;
+    if(!creating){done->Release();if(popup)popups.Finish(popup,false);return;}
     if(privateWindow){
         // InPrivate controller on a dedicated profile name: never the live profile under a private label.
         Com<ICoreWebView2Environment10> env10;Com<ICoreWebView2ControllerOptions> options;
-        if(SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment10,(void**)&env10.p))&&env10.p&&SUCCEEDED(env10->CreateCoreWebView2ControllerOptions(&options.p))&&options.p
+        if(SUCCEEDED(creating->QueryInterface(IID_ICoreWebView2Environment10,(void**)&env10.p))&&env10.p&&SUCCEEDED(env10->CreateCoreWebView2ControllerOptions(&options.p))&&options.p
            &&SUCCEEDED(options->put_IsInPrivateModeEnabled(TRUE))&&SUCCEEDED(options->put_ProfileName(PrivateProfileName)))
             hr=env10->CreateCoreWebView2ControllerWithOptions(window,options.p,done);
-        else{Fail(L"InPrivate controller unavailable: no private window without it",E_NOINTERFACE);done->Release();return;}
-    }else hr=environment->CreateCoreWebView2Controller(window,done);
-    done->Release();Check(hr,L"CreateCoreWebView2Controller");
+        else{if(popup)popups.Finish(popup,false);Fail(L"InPrivate controller unavailable: no private window without it",E_NOINTERFACE);done->Release();return;}
+    }else hr=creating->CreateCoreWebView2Controller(window,done);
+    done->Release();if(FAILED(hr)&&popup)popups.Finish(popup,false);Check(hr,L"CreateCoreWebView2Controller");
 }
 
 // i18n-exempt-begin: smoke / split / menu QA harness (--smoke-test, --split-test): assertions, fixtures, log text
@@ -4240,12 +4327,12 @@ case EngineInstallMessage:OnEngineInstallMessage();return 0;
 // A window that never became ready (WebView2 recovery) never removes its session: it keeps it for the
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */
-case WM_CLOSE:if(!CloseWindowAllowed())return 0;windowClosing=true;contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
+case WM_CLOSE:if(!CloseWindowAllowed())return 0;windowClosing=true;popups.CancelAll(); /* pending window.open requests: settled before the profiles close */contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
 case WM_DESTROY:contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif
-    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();ScrollbarDestroy();PostQuitMessage(0);return 0;
+    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;popups.CancelAll();for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();ScrollbarDestroy();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
 // Every message may move keyboard focus, the selection or the tab set: report the
 // change to UI Automation clients once the message is handled.
