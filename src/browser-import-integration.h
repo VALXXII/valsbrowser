@@ -125,7 +125,9 @@ void ImportFinished() {
         if (r.failure != BI::Failure::None) { failed(TR(import_item_bookmarks), BI::FailureText(r.failure, s)); Log(L"IMPORT bookmarks read failed " + std::to_wstring(static_cast<int>(r.failure))); }
         else {
             std::map<BM::Id, BM::Id> remap;
-            auto c = BI::CommitBookmarks(dataDir, BookmarksFile(), bookmarksBase, bookmarks, BI::FolderTitle(s), r.roots, now, &remap);
+            bool mapSaved = false;   // the stable folder map (src/browser-import.h FolderMap): a hint, never the success claim
+            auto c = BI::CommitBookmarks(dataDir, BookmarksFile(), dataDir + L"\\bookmark-imports", bookmarksBase, bookmarks, s, r.roots, now, &mapSaved, &remap);
+            if (c.Saved() && !mapSaved) Log(L"IMPORT folder map not saved: the next import matches folders by title");
             if (!remap.empty()) bookmarkUndo.clear();   // as SaveBookmarks: ids taken in another window were remapped
             c.counts.unreadable = r.ignored;
             if (c.Saved()) {

@@ -442,6 +442,108 @@ int main(int argc, char** argv) {
         else std::printf("note: symbolic links unavailable without developer mode; junction case covered by discovery\n");
     }
 
+    // ---- Stable destination folders (review 934ef4b finding 2) --------------------------------------------------
+    {
+        using I18n::Locale;
+        const std::string json = ChromeBookmarks();
+        auto parseIn = [&](Locale l) { I18n::SetForProcess(l); auto r = ParseChromiumBookmarks(json); I18n::SetForProcess(Locale::Fr); return r.roots; };
+        const auto fr = parseIn(Locale::Fr), en = parseIn(Locale::En);
+        OK(fr[0].key == "bookmark_bar" && en[0].key == "bookmark_bar" && fr[0].title != en[0].title);   // displayed names differ, identity does not
+        Source chromeD = chromeDefault; chromeD.soleProfile = true;
+        auto importIn = [&](BM::Store& s, FolderMap& m, Locale l, const Source& src, const std::vector<Item>& roots) { I18n::SetForProcess(l); const Counts c = ApplyBookmarks(s, src, roots, now, &m); I18n::SetForProcess(Locale::Fr); return c; };
+        {   // FR → EN → FR: one container, one folder per root, nothing added after the first import.
+            BM::Store s; FolderMap m;
+            const Counts a = importIn(s, m, Locale::Fr, chromeD, fr);
+            const BM::Store once = s;
+            const Counts b = importIn(s, m, Locale::En, chromeD, en);
+            const Counts c = importIn(s, m, Locale::Fr, chromeD, fr);
+            OK(a.imported == 6 && b.imported == 0 && b.present == 6 && b.folders == 0 && c.imported == 0 && c.present == 6 && s == once);
+            OK(s.Find(BM::OtherRoot)->children.size() == 1 && m.entries.size() == 3);   // container + bar + other
+            // The reviewer's probe, in this form: FR import then an EN repeat → present, one group.
+            BM::Store p; FolderMap pm; importIn(p, pm, Locale::Fr, chromeD, fr); const Counts pe = importIn(p, pm, Locale::En, chromeD, en);
+            OK(pe.imported == 0 && pe.present == 6 && p.Find(BM::OtherRoot)->children.size() == 1);
+        }
+        {   // Map lost (or never written): the titles of both languages still find the folders.
+            BM::Store s; FolderMap m1, m2;
+            importIn(s, m1, Locale::Fr, chromeD, fr);
+            const Counts b = importIn(s, m2, Locale::En, chromeD, en);
+            OK(b.imported == 0 && b.present == 6 && b.folders == 0 && s.Find(BM::OtherRoot)->children.size() == 1);
+        }
+        {   // The source gains another profile (its label changes), the person renamed and moved the folders.
+            BM::Store s; FolderMap m;
+            importIn(s, m, Locale::Fr, chromeD, fr);
+            const BM::Id box = s.Find(BM::OtherRoot)->children[0], bar = s.Find(box)->children[0];
+            CHECK(s.Rename(box, L"Mes imports") && s.Rename(bar, L"Ma barre") && s.Move(box, BM::BarRoot, BM::End));
+            Source multi = chromeD; multi.soleProfile = false;   // « Chrome — profil principal » now
+            const BM::Store before = s;
+            const Counts c = importIn(s, m, Locale::En, multi, en);
+            OK(c.imported == 0 && c.present == 6 && c.folders == 0 && s == before);
+            OK(s.Find(box)->title == L"Mes imports" && s.Find(bar)->title == L"Ma barre" && s.Find(box)->parent == BM::BarRoot);   // the person's names and place kept
+            // Another profile of the same browser never adopts that folder, even with the sole-profile title free.
+            Source p2 = multi; p2.profile = L"Profile 2"; p2.isDefault = false; p2.dir = chromeD.root + L"\\Profile 2";
+            const Counts d = importIn(s, m, Locale::Fr, p2, fr);
+            OK(d.imported == 6 && Child(s, BM::OtherRoot, L"Importés de Chrome — Profile 2") != BM::NoId && m.entries.size() == 6);
+            // Deleted by the person: the next import creates it again (and maps the new one).
+            CHECK(s.Remove(box));
+            const Counts e = importIn(s, m, Locale::Fr, multi, fr);
+            OK(e.imported == 6 && Child(s, BM::OtherRoot, L"Importés de Chrome — profil principal") != BM::NoId);
+        }
+        {   // Folders repeated on purpose (same name, same parent) stay distinct across imports and languages.
+            const std::string dup = "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"Dup", {ChromeNode(L"a", "https://a.example/")}), ChromeFolder(L"Dup", {ChromeNode(L"b", "https://b.example/")}), ChromeNode(L"x", "https://x.example/"), ChromeNode(L"x", "https://x.example/")}) + "}}";
+            I18n::SetForProcess(Locale::Fr); const auto dfr = ParseChromiumBookmarks(dup).roots; I18n::SetForProcess(Locale::En); const auto den = ParseChromiumBookmarks(dup).roots; I18n::SetForProcess(Locale::Fr);
+            BM::Store s; FolderMap m;
+            const Counts a = importIn(s, m, Locale::Fr, chromeD, dfr), b = importIn(s, m, Locale::En, chromeD, den);
+            const BM::Id barF = s.Find(s.Find(BM::OtherRoot)->children[0])->children[0];
+            OK(a.imported == 4 && b.imported == 0 && b.present == 4 && (Titles(s, barF) == std::vector<std::wstring>{L"Dup", L"Dup", L"x", L"x"}));
+        }
+        {   // Firefox roots by GUID; HTML (no roots) keeps one container in either language.
+            Item tb; tb.folder = true; tb.key = "toolbar_____"; tb.title = L"Barre de favoris"; Item l; l.url = L"https://f.example/"; l.title = L"f"; tb.children.push_back(l);
+            Item tbEn = tb; tbEn.title = L"Bookmarks bar";
+            Source ffs; ffs.browser = Browser::Firefox; ffs.root = L"C:\\x\\Firefox"; ffs.dir = L"C:\\x\\Firefox\\Profiles\\a.default"; ffs.profile = L"default"; ffs.soleProfile = true;
+            BM::Store s; FolderMap m;
+            importIn(s, m, Locale::Fr, ffs, {tb}); const Counts b = importIn(s, m, Locale::En, ffs, {tbEn});
+            OK(b.present == 1 && b.imported == 0 && m.entries.count("firefox:Firefox/Profiles/a.default|toolbar_____") == 1);
+            Item h; h.url = L"https://h.example/"; h.title = L"h";
+            importIn(s, m, Locale::Fr, HtmlSource(L"C:\\a.html"), {h}); const Counts hb = importIn(s, m, Locale::En, HtmlSource(L"C:\\b.html"), {h});
+            OK(hb.present == 1 && s.Find(BM::OtherRoot)->children.size() == 2);
+        }
+        {   // On disk: the map is written in the same transaction scope, validated, never trusted blindly.
+            const std::wstring data = work + L"\\mapped"; MakeDirs(data);
+            const std::wstring bm = data + L"\\bookmarks", map = data + L"\\bookmark-imports";
+            BM::Store base, mine; bool saved = false;
+            I18n::SetForProcess(Locale::Fr);
+            const auto c1 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
+            std::string mapBytes, bmBytes; ProfileStore::ReadAll(map, mapBytes); ProfileStore::ReadAll(bm, bmBytes);
+            OK(c1.Saved() && saved && c1.counts.imported == 6 && mapBytes.rfind("browser-bookmark-imports 1\n", 0) == 0);
+            { std::istringstream in(bmBytes); bool damaged = true; BM::Store::Read(in, &damaged); OK(!damaged && bmBytes.rfind("browser-bookmarks 1\n", 0) == 0); }   // bookmarks format unchanged
+            I18n::SetForProcess(Locale::En);
+            const auto c2 = CommitBookmarks(data, bm, map, base, mine, chromeD, en, now, &saved);
+            I18n::SetForProcess(Locale::Fr);
+            std::string bm2; ProfileStore::ReadAll(bm, bm2);
+            OK(c2.result == ProfileStore::Result::Unchanged && c2.counts.present == 6 && bm2 == bmBytes && saved);
+            // Map unwritable (a folder in its place): bookmarks still saved and reported, the map honestly not.
+            DeleteFileW(map.c_str()); CreateDirectoryW(map.c_str(), nullptr);
+            Item extra; extra.url = L"https://new.example/"; extra.title = L"n"; auto more = fr; more[0].children.push_back(extra);
+            const auto c3 = CommitBookmarks(data, bm, map, base, mine, chromeD, more, now, &saved);
+            OK(c3.Saved() && !saved && c3.counts.imported == 1 && c3.counts.present == 6);
+            RemoveDirectoryW(map.c_str());
+            // Retry without any map, in English: titles still find everything; the map comes back.
+            I18n::SetForProcess(Locale::En);
+            const auto c4 = CommitBookmarks(data, bm, map, base, mine, chromeD, en, now, &saved);
+            I18n::SetForProcess(Locale::Fr);
+            OK(c4.Saved() && saved && c4.counts.imported == 0 && c4.counts.present == 6 && mine.Find(BM::OtherRoot)->children.size() == 1);
+            // A map of another version is neither used nor rewritten; a stale entry (folder gone) is never trusted.
+            const std::string future = "browser-bookmark-imports 9\nwhatever\n"; CHECK(ProfileStore::WriteAtomic(map, future));
+            const auto c5 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
+            std::string still; ProfileStore::ReadAll(map, still);
+            OK(c5.Saved() && !saved && still == future && c5.counts.present == 6);
+            CHECK(ProfileStore::WriteAtomic(map, "browser-bookmark-imports 1\nchromium:Chrome/Default\t99999\t5\nbroken line\n"));
+            const auto c6 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
+            std::string rewritten; ProfileStore::ReadAll(map, rewritten);
+            OK(c6.Saved() && saved && c6.counts.present == 6 && mine.Find(BM::OtherRoot)->children.size() == 1 && rewritten.find("99999") == std::string::npos);
+        }
+    }
+
     // ---- Read-time substitution (review 934ef4b finding 3): folders pinned again when « Importer » is pressed ------
     {
         const std::wstring sub = work + L"\\subst", local = sub + L"\\Local", ud = local + L"\\Google\\Chrome\\User Data", foreign = sub + L"\\foreign";

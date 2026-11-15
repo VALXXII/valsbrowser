@@ -63,6 +63,7 @@ struct Item {                       // one bookmark or folder, in source order
     std::wstring title, url;
     std::int64_t added = 0;         // Unix ms, 0 = unknown
     std::vector<Item> children;
+    std::string key;                // a source root's stable identity (« bookmark_bar », « toolbar_____ »); empty otherwise
 };
 struct Visit { std::wstring url, title; int visits = 1; std::int64_t last = 0; };   // last: Unix ms
 
@@ -477,16 +478,92 @@ inline std::vector<Source> Discover(const Roots& roots) {
 inline Source HtmlSource(const std::wstring& file) { Source s; s.browser = Browser::HtmlFile; s.dir = file; s.bookmarks = true; return s; }
 
 // What the dialog shows for a source, and the folder its bookmarks land in.
-inline std::wstring Label(const Source& s) {
-    if (s.browser == Browser::HtmlFile) return TR(import_source_html);
-    if (s.soleProfile) return BrandName(s.browser);
-    const std::wstring profile = Chromium(s.browser) && s.isDefault ? std::wstring(TR(import_profile_default)) : s.profile;
-    return TRF(import_source_profile, BrandName(s.browser), profile);
+inline std::wstring LabelIn(I18n::Locale l, const Source& s, bool sole) {
+    using I18n::Id;
+    if (s.browser == Browser::HtmlFile) return I18n::In(l, Id::import_source_html);
+    if (sole) return BrandName(s.browser);
+    const std::wstring profile = Chromium(s.browser) && s.isDefault ? std::wstring(I18n::In(l, Id::import_profile_default)) : s.profile;
+    return I18n::FormatText(I18n::In(l, Id::import_source_profile), {BrandName(s.browser), profile});
 }
-inline std::wstring FolderTitle(const Source& s) {
-    if (s.browser == Browser::HtmlFile) return TR(import_folder_html);
-    return TRF(import_folder, Label(s));
+inline std::wstring FolderTitleIn(I18n::Locale l, const Source& s, bool sole) {
+    if (s.browser == Browser::HtmlFile) return I18n::In(l, I18n::Id::import_folder_html);
+    return I18n::FormatText(I18n::In(l, I18n::Id::import_folder), {LabelIn(l, s, sole)});
 }
+inline std::wstring Label(const Source& s) { return LabelIn(I18n::Current(), s, s.soleProfile); }
+inline std::wstring FolderTitle(const Source& s) { return FolderTitleIn(I18n::Current(), s, s.soleProfile); }
+// Every title the source's folder may carry from an earlier import (both languages, sole profile or not): only a
+// fallback when the stable mapping (FolderMap) has no valid entry.
+inline std::vector<std::wstring> FolderTitles(const Source& s) {
+    std::vector<std::wstring> t;
+    for (I18n::Locale l : {I18n::Locale::Fr, I18n::Locale::En}) for (bool sole : {true, false}) { auto x = FolderTitleIn(l, s, sole); if (std::find(t.begin(), t.end(), x) == t.end()) t.push_back(std::move(x)); }
+    return t;
+}
+// Stable identity of a source (never its displayed label): browser + profile folder (Chromium « Default »,
+// « Profile 2 »; Firefox the profiles.ini relative path); all HTML files share one.
+inline std::string SourceKey(const Source& s) {
+    if (s.browser == Browser::HtmlFile) return "html";
+    std::wstring id = s.profile;
+    if (s.browser == Browser::Firefox && s.dir.size() > s.root.size() + 1 && !s.root.empty()) id = s.dir.substr(s.root.size() + 1);
+    for (auto& c : id) if (c == L'\\' ) c = L'/';
+    std::string key = std::string(Chromium(s.browser) ? "chromium:" : "firefox:") + NativeChrome::Downloads::ToUtf8(std::wstring(BrandName(s.browser)) + L"/" + id);
+    for (auto& c : key) if (c == '|' || c == '\t') c = '_';
+    return key;
+}
+// Displayed title of a source root, in both languages (fallback matching).
+inline std::vector<std::wstring> RootTitles(const std::string& key) {
+    using I18n::Id; Id id;
+    if (key == "bookmark_bar" || key == "toolbar_____") id = Id::bookmarks_bar_root;
+    else if (key == "other" || key == "unfiled_____") id = Id::bookmarks_other_root;
+    else if (key == "synced" || key == "mobile______") id = Id::import_root_mobile;
+    else if (key == "menu________") id = Id::import_root_menu;
+    else return {};
+    return {I18n::In(I18n::Locale::Fr, id), I18n::In(I18n::Locale::En, id)};
+}
+
+// ---- Stable destination folders (review 934ef4b, finding 2) ----------------------------------------------------
+// `<data>\\bookmark-imports`: which destination folder holds a source (key « chromium:Chrome/Default ») and each of
+// its roots (« chromium:Chrome/Default|bookmark_bar »), by folder id + its `added` time (the store's own node
+// identity). Displayed titles never identify anything: a later import in the other language, a source that gained
+// a profile (its label changes) or a folder the person renamed or moved still lands in the same place. The entry is
+// trusted only if that folder still exists with the same id, kind and time; otherwise matching falls back to the
+// titles this source could have had (both languages), then creates. The bookmarks file format is unchanged.
+struct FolderMap {
+    struct Entry { Bookmarks::Id id = 0; std::int64_t added = 0; bool operator==(const Entry& o) const { return id == o.id && added == o.added; } };
+    std::map<std::string, Entry> entries;
+    static constexpr const char* Header = "browser-bookmark-imports 1";
+    static constexpr std::size_t Limit = 4096;
+    bool operator==(const FolderMap& o) const { return entries == o.entries; }
+    bool operator!=(const FolderMap& o) const { return !(*this == o); }
+    // `known`: false for a file of another version (left untouched, never rewritten).
+    static FolderMap Read(const std::string& bytes, bool* known) {
+        FolderMap m; if (known) *known = true;
+        if (bytes.empty()) return m;
+        std::size_t start = 0, line = 0;
+        while (start < bytes.size()) {
+            std::size_t end = bytes.find('\n', start); if (end == std::string::npos) end = bytes.size();
+            std::string l = bytes.substr(start, end - start); start = end + 1;
+            if (!l.empty() && l.back() == '\r') l.pop_back();
+            if (line++ == 0) { if (l != Header) { if (known) *known = false; return FolderMap{}; } continue; }
+            const auto a = l.find('\t'), b = a == std::string::npos ? a : l.find('\t', a + 1);
+            if (b == std::string::npos || m.entries.size() >= Limit) continue;   // damaged line: dropped (a hint, never data)
+            try { m.entries[l.substr(0, a)] = Entry{static_cast<Bookmarks::Id>(std::stoul(l.substr(a + 1, b - a - 1))), std::stoll(l.substr(b + 1))}; } catch (...) {}
+        }
+        return m;
+    }
+    std::string Write() const {
+        std::string out = std::string(Header) + "\n";
+        for (const auto& [k, e] : entries) out += k + "\t" + std::to_string(e.id) + "\t" + std::to_string(e.added) + "\n";
+        return out;
+    }
+    const Bookmarks::Node* Valid(const Bookmarks::Store& s, const std::string& key) const {
+        const auto it = entries.find(key); if (it == entries.end()) return nullptr;
+        const Bookmarks::Node* n = s.Find(it->second.id);
+        return n && n->kind == Bookmarks::Kind::Folder && !Bookmarks::Store::IsRoot(n->id) && n->added == it->second.added ? n : nullptr;
+    }
+    bool Claimed(Bookmarks::Id id, const std::string& except) const { for (const auto& [k, e] : entries) if (e.id == id && k != except) return true; return false; }
+    // Entries whose folder is gone are dropped before writing (the file never grows with stale ids).
+    void Prune(const Bookmarks::Store& s) { for (auto it = entries.begin(); it != entries.end();) it = Valid(s, it->first) ? std::next(it) : entries.erase(it); }
+};
 
 // ---- Chromium « Bookmarks » (JSON) ------------------------------------------------------------------------
 // Reader bounds are never a silent cut (review 934ef4b, finding 4): a node deeper than Bound::nesting (root = 1)
@@ -536,6 +613,7 @@ inline Bookmarks_ ParseChromiumBookmarks(const std::string& bytes) {
         if (overflow != Failure::None) { r = Bookmarks_{}; r.failure = overflow; return r; }
         if (one.empty() || !one[0].folder || one[0].children.empty()) continue;
         one[0].title = n.title;   // the browser's own root names are replaced by ours, in the interface language
+        one[0].key = n.key;       // stable identity of the root (never its displayed name)
         r.roots.push_back(std::move(one[0]));
     }
     return r;
@@ -702,7 +780,7 @@ inline Bookmarks_ ReadFirefoxBookmarks(Sql::sqlite3* db) {
     const RootName names[] = {{L"toolbar_____", TR(bookmarks_bar_root)}, {L"menu________", TR(import_root_menu)}, {L"unfiled_____", TR(bookmarks_other_root)}, {L"mobile______", TR(import_root_mobile)}};
     for (const auto& n : names) {
         const auto g = byGuid.find(n.guid); if (g == byGuid.end()) continue;
-        Item root; root.folder = true; root.title = n.title; seen.insert(g->second); fill(g->second, root, 2);
+        Item root; root.folder = true; root.title = n.title; root.key = NativeChrome::Downloads::ToUtf8(n.guid); seen.insert(g->second); fill(g->second, root, 2);
         if (overflow) { r = Bookmarks_{}; r.failure = Failure::TooDeep; return r; }
         if (!root.children.empty()) r.roots.push_back(std::move(root));
     }
@@ -816,18 +894,61 @@ inline void Into(Bookmarks::Store& s, Bookmarks::Id dest, const std::vector<Item
     }
 }
 } // namespace detail
-// Bookmarks go to « Autres favoris › <folderTitle> » (created when missing, reused when present).
+namespace detail {
+// The folder for `key`: the mapped one if still valid (wherever the person moved or however they renamed it), else
+// an unclaimed folder of `parent` titled one of `titles`, else a new one titled `create`. NoId: no room (counted).
+inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::string& key, Bookmarks::Id parent, const std::vector<std::wstring>& titles,
+                             const std::wstring& create, std::int64_t now, Counts& c) {
+    namespace BM = Bookmarks;
+    if (map) if (const BM::Node* n = map->Valid(s, key)) return n->id;
+    BM::Id id = BM::NoId;
+    for (BM::Id child : s.Find(parent)->children) {
+        const BM::Node* n = s.Find(child);
+        if (n->kind != BM::Kind::Folder || std::find(titles.begin(), titles.end(), n->title) == titles.end() || (map && map->Claimed(child, key))) continue;
+        id = child; break;
+    }
+    if (id == BM::NoId) {
+        if (static_cast<std::size_t>(s.Depth(parent)) + 1 > BM::Store::MaxDepth) return BM::NoId;
+        id = s.AddFolder(parent, BM::End, create, now);
+        if (id == BM::NoId) return BM::NoId;
+        ++c.folders;
+    }
+    if (map) map->entries[key] = FolderMap::Entry{id, s.Find(id)->added};
+    return id;
+}
+} // namespace detail
+// Bookmarks go to « Autres favoris › <folder of the source> », each source root (Barre de favoris, Autres favoris…)
+// in its own sub-folder. With `map`, both are found again by stable identity (see FolderMap); without it, by title.
+inline Counts ApplyBookmarks(Bookmarks::Store& s, const Source& src, const std::vector<Item>& roots, std::int64_t now, FolderMap* map) {
+    namespace BM = Bookmarks;
+    Counts c; std::size_t total = 0; for (const auto& r : roots) total += detail::Links(r);
+    if (roots.empty()) return c;
+    const std::string key = SourceKey(src);
+    std::vector<std::wstring> titles = FolderTitles(src);
+    const std::wstring title = FolderTitle(src);
+    if (std::find(titles.begin(), titles.end(), title) == titles.end()) titles.insert(titles.begin(), title);
+    const BM::Id container = detail::Resolve(s, map, key, BM::OtherRoot, titles, title, now, c);
+    if (container == BM::NoId) { c.full = total; return c; }
+    std::vector<Item> plain;   // entries without a root identity (HTML top level): matched by title inside the container
+    for (const Item& r : roots) {
+        if (r.key.empty() || !r.folder) { plain.push_back(r); continue; }
+        if (!plain.empty()) { detail::Into(s, container, plain, now, c); plain.clear(); }
+        std::vector<std::wstring> rootTitles = RootTitles(r.key);
+        if (std::find(rootTitles.begin(), rootTitles.end(), r.title) == rootTitles.end()) rootTitles.insert(rootTitles.begin(), r.title);
+        const BM::Id folder = detail::Resolve(s, map, key + "|" + r.key, container, rootTitles, r.title, r.added > 0 ? Clamp(r.added, now) : now, c);
+        if (folder == BM::NoId) { (static_cast<std::size_t>(s.Depth(container)) + 1 > BM::Store::MaxDepth ? c.deep : c.full) += detail::Links(r); continue; }
+        detail::Into(s, folder, r.children, now, c);
+    }
+    if (!plain.empty()) detail::Into(s, container, plain, now, c);
+    return c;
+}
+// Title-only form (no mapping): « Autres favoris › <folderTitle> », matched by that exact title.
 inline Counts ApplyBookmarks(Bookmarks::Store& s, const std::wstring& folderTitle, const std::vector<Item>& roots, std::int64_t now) {
     namespace BM = Bookmarks;
     Counts c; std::size_t total = 0; for (const auto& r : roots) total += detail::Links(r);
     if (roots.empty()) return c;
-    BM::Id container = BM::NoId;
-    for (BM::Id id : s.Find(BM::OtherRoot)->children) { const BM::Node* n = s.Find(id); if (n->kind == BM::Kind::Folder && n->title == folderTitle) { container = id; break; } }
-    if (container == BM::NoId) {
-        container = s.AddFolder(BM::OtherRoot, BM::End, folderTitle, now);
-        if (container == BM::NoId) { c.full = total; return c; }
-        ++c.folders;
-    }
+    const BM::Id container = detail::Resolve(s, nullptr, "", BM::OtherRoot, {folderTitle}, folderTitle, now, c);
+    if (container == BM::NoId) { c.full = total; return c; }
     detail::Into(s, container, roots, now, c);
     return c;
 }
@@ -852,6 +973,37 @@ inline Counts ApplyHistory(AddressBar::History& h, const std::vector<Visit>& vis
 // own transaction: bookmarks can be saved while history fails (and the reverse); the caller reports each
 // one. A failed commit leaves the file, `base` and `mine` untouched, and a retry is idempotent.
 struct Committed { ProfileStore::Result result = ProfileStore::Result::Failed; Counts counts; bool Saved() const { return result == ProfileStore::Result::Written || result == ProfileStore::Result::Unchanged; } };
+// With the stable folder map (`mapFile`, normally <data>\\bookmark-imports): read, applied and written under the SAME
+// profile lock as the bookmarks transaction (the profile mutex is recursive for this thread). The bookmarks commit
+// is the only success claim; the map is written after it and is a validated hint: if writing it fails
+// (`mapSaved` false), the next import still finds the folders by their titles in either language, and an entry is
+// never trusted without its folder's id and time matching the store. A map file of another version is never
+// rewritten (and not used).
+inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring& file, const std::wstring& mapFile, Bookmarks::Store& base, Bookmarks::Store& mine,
+                                 const Source& src, const std::vector<Item>& roots, std::int64_t now, bool* mapSaved = nullptr,
+                                 std::map<Bookmarks::Id, Bookmarks::Id>* remap = nullptr, DWORD timeoutMs = 5000) {
+    namespace BM = Bookmarks;
+    Committed c; std::map<BM::Id, BM::Id> ids;
+    if (mapSaved) *mapSaved = false;
+    ProfileStore::Lock lock(dataDir, timeoutMs);
+    if (!lock.Held()) { c.result = ProfileStore::Result::Busy; return c; }
+    std::string bytes; bool known = true;
+    const bool readable = ProfileStore::ReadAll(mapFile, bytes);
+    const FolderMap before = readable ? FolderMap::Read(bytes, &known) : FolderMap{};
+    FolderMap map = known ? before : FolderMap{};
+    c.result = ProfileStore::Commit<BM::Store>(dataDir, file, base, mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) {
+        BM::Store r = BM::Store::Merge(b, m, t, &ids);
+        map = known ? before : FolderMap{};   // the merge may run again on a retry: start from the file's map each time
+        c.counts = ApplyBookmarks(r, src, roots, now, &map);
+        return r;
+    }, timeoutMs, {"browser-bookmarks 1"});
+    if (remap) *remap = ids;
+    if (!c.Saved()) { c.counts = Counts{}; return c; }
+    map.Prune(mine);
+    const bool wrote = readable && known && (map == before || ProfileStore::WriteAtomic(mapFile, map.Write()));
+    if (mapSaved) *mapSaved = wrote;
+    return c;
+}
 inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring& file, Bookmarks::Store& base, Bookmarks::Store& mine,
                                  const std::wstring& folderTitle, const std::vector<Item>& roots, std::int64_t now,
                                  std::map<Bookmarks::Id, Bookmarks::Id>* remap = nullptr, DWORD timeoutMs = 5000) {
