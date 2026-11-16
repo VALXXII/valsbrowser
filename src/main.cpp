@@ -3951,7 +3951,9 @@ constexpr UINT UpdateMessage=WM_APP+9; constexpr UINT_PTR UpdateTimerId=74;
 UpdateCore::Engine updates; BrowserUpdate::Toast updateToast; bool updatesStarted=false,closingForInstall=false;
 DWORD updateTimerDelayMs=0; // armed one-shot delay (0 = none); read by fixtures
 void RefreshAboutStatus();
-void ShowUpdateView(){if(updatesStarted)updateToast.SetView(updates.View());settingsDrawer.Changed();RefreshAboutStatus();}
+// « Nouveautés » replaces the « Mise à jour installée » toast when it opens after this update (user request 2026-11-16).
+bool installedToastReplaced=false;
+void ShowUpdateView(){if(updatesStarted){auto v=updates.View();if(installedToastReplaced&&v.phase==BrowserUpdate::Phase::Installed)v=BrowserUpdate::View{};updateToast.SetView(v);}settingsDrawer.Changed();RefreshAboutStatus();}
 // Periodic checks for a long-running browser: ONE one-shot timer, due-aware and re-armed after every
 // engine notification and every firing. Delay = time to the persisted next-check (6 h TTL / back-off),
 // never below 15 min nor above 6 h, so an idle browser wakes at most a few times per hour and usually
@@ -3988,9 +3990,11 @@ void StartUpdates(UpdateCore::Config config=UpdateConfig()){
     updateToast.SetFocusReleaseHandler([]{FocusPage();});
     updatesStarted=updates.Start(config);
     Log(updatesStarted?L"UPDATE engine started "+config.currentVersion:L"UPDATE engine disabled");
-    ShowUpdateView();ArmUpdateTimer();
     // « Nouveautés » Mini once after a successful update (src/release-notes.h): Installed is set by Start itself.
-    ReleaseNotesAtStartup(updatesStarted&&updates.View().phase==BrowserUpdate::Phase::Installed,config.installRoot.empty()?UpdateCore::DefaultInstallRoot():config.installRoot,config.currentVersion,profileRoot.empty()?dataDir:profileRoot);
+    // When it opens, it takes the place of the « Mise à jour installée » toast.
+    installedToastReplaced=ReleaseNotesAtStartup(updatesStarted&&updates.View().phase==BrowserUpdate::Phase::Installed,config.installRoot.empty()?UpdateCore::DefaultInstallRoot():config.installRoot,config.currentVersion,profileRoot.empty()?dataDir:profileRoot);
+    if(installedToastReplaced)Log(L"UPDATE installed toast replaced by Nouveautés");
+    ShowUpdateView();ArmUpdateTimer();
 }
 bool UpdateCheckAvailable(){return updatesStarted&&!closingForInstall;}
 // A8 « À propos »: the engine's real state (same source as the toast and the Réglages footer).
@@ -4772,7 +4776,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPW
 #endif
     // TEST LAUNCHER ONLY (« Voir la modale Nouveautés.cmd »): opens the Nouveautés Mini at start for review. It never
     // writes the read state and is reachable only through this command-line argument (no menu, no shortcut).
-    if(!smoke&&!privateWindow&&wcsstr(args,L"--release-notes-preview"))Defer([]{Log(L"RELEASE NOTES preview (test launcher)");ShowReleaseNotes(true);});
+    if(!smoke&&!privateWindow&&wcsstr(args,L"--release-notes-preview"))Defer([]{Log(L"RELEASE NOTES preview (test launcher)");ShowReleaseNotes(true,nullptr,false);});
     // Engine arguments are per ENVIRONMENT (EngineArgumentsFor, passed in the environment options): one window
     // hosts several profiles, each with its own flags. The process-wide variable would force the first profile's
     // flags onto every environment, so a user-set value is kept aside (BROWSER_GIVEN_WEBVIEW2_ARGUMENTS, inherited

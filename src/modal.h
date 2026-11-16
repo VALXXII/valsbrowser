@@ -315,7 +315,9 @@ enum class Kind { Generic, Alert, Confirm, Prompt, BeforeUnload, ClearData, Clos
 enum class Role { Primary, Secondary, Danger, Quiet };
 // Page: scrim on `area`, 16 DIP under its top. Window: scrim on the owner's client area,
 // centred. Anchor: no scrim, under Spec::anchor (light dismiss).
-enum class Scope { Page, Window, Anchor };
+// Corner (« Nouveautés », user request 2026-11-16): bottom-right of the owner's client area (14 DIP from its right and
+// bottom edges, like the update toast's bottom-left inset), no scrim, never dismissed by a click elsewhere.
+enum class Scope { Page, Window, Anchor, Corner };
 inline constexpr int CancelButton = 0, AcceptButton = 1;
 inline constexpr int PrivateClearDataButton = 2;                        // A9 « Effacer les données… »
 inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4, AboutDownloadButton = 5, AboutCancelButton = 7;   // A8 status actions (7: engine Cancel while downloading)
@@ -423,6 +425,7 @@ struct Spec {
     std::function<std::wstring(const std::vector<std::wstring>&)> validate; // inline error or ""
     std::function<void(int)> onButton;                         // buttons with closes = false
     std::function<void()> onShown;                             // after Show really put the dialog on screen (not when queued)
+    bool activate = true;                                      // false (Scope::Corner only): shown without taking focus or activation
     Notes notes;                                               // « Nouveautés » (Kind::ReleaseNotes)
     // Input that opened the dialog. Focus always lands on the initial control (Entrée / Échap work);
     // only the RING depends on it: Keyboard shows it at once, Pointer hides it until Tab / arrows /
@@ -513,6 +516,9 @@ private:
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     float Dip(int px) const { return px * 96.f / Dpi(); }
     bool Anchored() const { return spec_.scope == Scope::Anchor; }
+    bool Cornered() const { return spec_.scope == Scope::Corner; }
+    bool Scrimmed() const { return !Anchored() && !Cornered(); }
+    static constexpr float CornerInset = 14, CornerTopReserve = 81;   // update-toast.h edgeInset / topReserve
     float Pad() const { return spec_.padding > 0 ? spec_.padding : P::padding; }
     float Gap() const { return spec_.gap > 0 ? spec_.gap : spec_.appTile ? P::aboutGap : P::gap; }
     float ContentWidth() const { return width_ - 2 * Pad(); }
@@ -849,7 +855,17 @@ private:
     RECT ScopeRect() const { return spec_.scope == Scope::Page ? area_ : OwnerClient(); }
     void Place(bool entering) {
         const float rise = entering && !reduced_ ? P::enterRise * (1 - Fade()) : 0;
-        if (Anchored()) {
+        if (Cornered()) {
+            RECT client = OwnerClient(); MONITORINFO mi{sizeof(mi)};
+            // A maximised custom-frame window extends past the monitor: keep the card on the work area (as the update toast).
+            if (owner_ && GetMonitorInfoW(MonitorFromWindow(owner_, MONITOR_DEFAULTTONEAREST), &mi)) { RECT c{}; if (IntersectRect(&c, &client, &mi.rcWork)) client = c; }
+            const float availW = Dip(client.right - client.left), availH = Dip(client.bottom - client.top);
+            width_ = std::clamp(availW - 2 * CornerInset, P::minWidth, spec_.width > 0 ? spec_.width : P::width);
+            Fit(std::max(120.f, availH - CornerTopReserve - 2 * CornerInset));
+            const int w = Px(width_), h = Px(height_);
+            const int x = client.right - Px(CornerInset) - w, y = client.bottom - Px(CornerInset) - h + Px(rise);
+            SetWindowPos(hwnd_, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);
+        } else if (Anchored()) {
             RECT work{}; MONITORINFO mi{sizeof(mi)};
             if (GetMonitorInfoW(MonitorFromRect(&spec_.anchor, MONITOR_DEFAULTTONEAREST), &mi)) work = mi.rcWork; else work = OwnerClient();
             width_ = spec_.width > 0 ? spec_.width : P::width;
@@ -877,7 +893,7 @@ private:
     float Fade() const { return fade_.Value(Motion::Now()); }
     void ApplyAlpha() {
         const float a = Fade();
-        if (!Anchored()) SetLayeredWindowAttributes(scrim_, 0, static_cast<BYTE>(std::lround(255 * P::scrim * a)), LWA_ALPHA);
+        if (Scrimmed()) SetLayeredWindowAttributes(scrim_, 0, static_cast<BYTE>(std::lround(255 * P::scrim * a)), LWA_ALPHA);
         SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(std::lround(255 * a)), LWA_ALPHA);
     }
     // ---- fields ---------------------------------------------------------------------------------
@@ -1026,8 +1042,8 @@ private:
         closing_ = true; fade_.Set(0, Motion::Now(), Motion::Milliseconds(static_cast<int>(P::exitMs)), false, Motion::Curve::EaseOut);
         EnableWindow(hwnd_, FALSE);
         HWND back = restore_ && IsWindow(restore_) ? restore_ : owner_;
-        if (owner_) SetForegroundWindow(owner_);
-        if (back) SetFocus(back);
+        const bool hadFocus = !Cornered() || GetForegroundWindow() == hwnd_ || GetFocus() == hwnd_;
+        if (hadFocus) { if (owner_) SetForegroundWindow(owner_); if (back) SetFocus(back); }
         if (hooks_.wake) hooks_.wake();
         if (done) done(result);
         for (auto& v : result.values) SecureZeroMemory(v.data(), v.size() * sizeof(wchar_t));
@@ -1225,6 +1241,8 @@ private:
         case WM_ACTIVATE:
             // Anchored popovers dismiss when the user goes elsewhere (not for our own menu).
             if (LOWORD(w) == WA_INACTIVE && open_ && Anchored() && !choosing_) PostMessageW(h, WM_APP + 2, 0, 0);
+            // A corner card shown without activation takes the keyboard once the user activates it (click, Alt+Tab).
+            if (LOWORD(w) != WA_INACTIVE && open_ && Cornered() && GetFocus() != hwnd_) { if (!focus_) focus_ = InitialStop(); SetFocus(hwnd_); }
             return 0;
         case WM_APP + 2: if (open_ && Anchored() && !choosing_ && GetForegroundWindow() != hwnd_) Close(Collect(-1)); return 0;
         case WM_MOUSEMOVE: { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; if (hit != hover_) { hover_ = hit; Interact(); } return 0; }
@@ -1234,7 +1252,7 @@ private:
         case WM_MOUSEWHEEL: Scroll(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3 * DialogKit::Type::message.line); return 0;
         case WM_KEYDOWN: if ((l & (1 << 30)) && (w == VK_RETURN || w == VK_SPACE)) return 0; if (Key(w)) return 0; break;   // review N1: auto-repeat of Entrée / Espace never activates
         case WM_SYSKEYDOWN: if (AltKey(w)) return 0; break;
-        case WM_SETFOCUS: InvalidateRect(h, nullptr, FALSE); return 0;
+        case WM_SETFOCUS: if (open_ && Cornered() && !restore_) { HWND from = reinterpret_cast<HWND>(w); restore_ = from && from != hwnd_ && !IsChild(hwnd_, from) ? from : nullptr; } InvalidateRect(h, nullptr, FALSE); return 0;
         case WM_DPICHANGED: if (open_) { MakeFont(); Place(false); } return 0;
         case WM_APP + 1: Activate(static_cast<int>(w), true); return 0;
         case WM_APP + 3: { const int k = static_cast<int>(w); if (IsCategory(k)) SetCategory(k - 8000, true); else if (IsSource(k)) SelectSource(static_cast<size_t>(k - 8100), true); return 0; }   // UIA Select: never shares
@@ -1765,10 +1783,15 @@ public:
         CreateEdits();
         fade_.Snap(0); fade_.Set(1, Motion::Now(), Motion::Milliseconds(static_cast<int>(P::enterMs)), false, Motion::Curve::EaseOut);
         Place(true); ApplyAlpha();
-        if (!Anchored()) ShowWindow(scrim_, SW_SHOWNOACTIVATE); else ShowWindow(scrim_, SW_HIDE);
-        ShowWindow(hwnd_, SW_SHOW);
-        SetForegroundWindow(hwnd_);
-        FocusStop(InitialStop());
+        if (Scrimmed()) ShowWindow(scrim_, SW_SHOWNOACTIVATE); else ShowWindow(scrim_, SW_HIDE);
+        if (Cornered() && !spec_.activate) {   // the page keeps the keyboard; a click or UIA reaches the card
+            restore_ = nullptr; keyboard_ = false; focus_ = InitialStop();
+            ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        } else {
+            ShowWindow(hwnd_, SW_SHOW);
+            SetForegroundWindow(hwnd_);
+            FocusStop(InitialStop());
+        }
         if (uia_.Listening()) { uia_.ChildrenChanged(GroupKey); uia_.Raise(GroupKey, UIA_Window_WindowOpenedEventId); }
         if (hooks_.wake) hooks_.wake();
         if (open_ && IsWindowVisible(hwnd_) && spec_.onShown) { auto shown = spec_.onShown; shown(); }   // really on screen (not queued)
@@ -2036,9 +2059,11 @@ inline Spec PrivateSpec(bool future = false) {
     return s;
 }
 // « Nouveautés » (Paper p-L-0 142E-0 Mini / 144O-0 Full): 343 DIP, no action row; X / Échap close (-1).
+// It replaces the « Mise à jour installée » toast when it opens after an update (src/main.cpp ShowUpdateView).
 // `collapsed`: the Mini with « Voir tout »; the Full view otherwise (À propos › Notes de version).
+// Placed bottom-right (Scope::Corner, user request 2026-11-16), not modal: the page stays usable.
 inline Spec ReleaseNotesSpec(std::vector<NoteSection> sections, std::wstring spoken, std::wstring logo, bool collapsed) {
-    Spec s; s.kind = Kind::ReleaseNotes; s.scope = Scope::Window; s.automationId = L"ReleaseNotes";
+    Spec s; s.kind = Kind::ReleaseNotes; s.scope = Scope::Corner; s.automationId = L"ReleaseNotes";
     s.title = TR(release_notes_title); s.closeButton = true;
     s.width = NotesPaper::width; s.padding = NotesPaper::pad; s.gap = NotesPaper::gap;
     s.notes.sections = std::move(sections); s.notes.spoken = std::move(spoken); s.notes.logo = std::move(logo);

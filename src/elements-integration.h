@@ -74,7 +74,7 @@ RECT OriginAnchorRect(){
 
 // ---------------------------------------------------------------------------------------
 // Components (created in CreateElementSurfaces, disposed before CoUninitialize).
-MD::Dialog modal; OP::Prompt originPrompt; NativeChrome::FindBar::Bar findBar;
+MD::Dialog modal; MD::Dialog notesCard; /* « Nouveautés »: its own bottom-right card, outside the modal queue (never holds a question back) */ OP::Prompt originPrompt; NativeChrome::FindBar::Bar findBar;
 NativeChrome::ContextToast::Toast contextToast; NativeChrome::FullscreenHint::Hint fullscreenHint;
 NativeChrome::PasswordDemo::Window passwordDemo; NativeChrome::ShortcutsPanel::Panel shortcutsPanel; NativeChrome::Tooltip::Tip sandboxTip; NativeChrome::Tooltip::Tip chromeTip;
 void RequestElementFrame(){ScheduleMotion(NativeChrome::Motion::Now());}
@@ -821,7 +821,7 @@ std::wstring ReleaseNotesUrl(const std::wstring& version){
 bool AboutOpen(){return modalOpen&&modalActive.spec.kind==MD::Kind::About&&!modalActive.spec.demo;}
 // The update engine notified: an open « À propos » shows the new state at once.
 void RefreshAboutStatus(){if(AboutOpen())modal.SetStatus(AboutStatusNow());}
-void ShowReleaseNotes(bool mini,std::function<void()> shown=nullptr);
+void ShowReleaseNotes(bool mini,std::function<void()> shown=nullptr,bool activate=true);
 void ShowAboutDialog(int demoState){
     auto spec=MD::AboutSpec(RunningVersion(),demoState<0?MD::AboutUpToDate:demoState);
     if(demoState>=0)spec.demo=true;
@@ -837,7 +837,7 @@ void ShowAboutDialog(int demoState){
     const bool demo=demoState>=0;
     AskModal(std::move(spec),nullptr,[demo](const MD::Result& r){
         if(r.button==MD::AboutLicensesLink){std::wstring dir=base;ShellExecuteW(window,L"open",dir.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}
-        else if(r.button==MD::AboutNotesLink){Log(L"ABOUT release notes: Nouveautés (full)");Defer([]{ShowReleaseNotes(false);});}
+        else if(r.button==MD::AboutNotesLink){Log(L"ABOUT release notes: Nouveautés (full)");Defer([]{ShowReleaseNotes(false,nullptr,true);});}
         else if(r.button==MD::AboutReportLink){Log(L"ABOUT report a problem");Defer([]{NewTab(IssuesUrl,-1,L"");});}
         else if(!demo&&r.button==MD::AboutRestartButton)AboutUpdateAction(MD::AboutRestartButton);
     });
@@ -845,32 +845,38 @@ void ShowAboutDialog(int demoState){
 void ShowAboutDialog(){ShowAboutDialog(-1);}
 // « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes, never fetched.
 // `mini`: the automatic Mini after an update (« Voir tout » expands it in place); else the Full view.
-// `shown` runs only once the dialog is really on screen (a queued job that never shows never calls it).
+// `activate`: take the keyboard (opened by hand from À propos); the automatic card leaves it to the page.
+// `shown` runs only once the card is really on screen. One card at a time: a new request replaces it.
 std::wstring ReleaseNotesLogo(){return base+L"\\assets\\lottie\\logo-spin.json";}
-void ShowReleaseNotes(bool mini,std::function<void()> shown){
+void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate){
     std::vector<MD::NoteSection> sections;const auto notes=ReleaseNotes::Current();
     for(const auto& s:notes)sections.push_back({s.kind==ReleaseNotes::Kind::Fixed,s.title,s.items});
     auto spec=MD::ReleaseNotesSpec(std::move(sections),ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini);
     spec.onShown=[mini,shown]{Log(std::wstring(L"RELEASE NOTES shown ")+(mini?L"mini":L"full"));if(shown)shown();};
     spec.onButton=[](int id){if(id==MD::Dialog::NotesExpandHit)Log(L"RELEASE NOTES expanded (Voir tout)");};
-    AskModal(std::move(spec),nullptr,[](const MD::Result&){Log(L"RELEASE NOTES closed");});
+    spec.activate=activate;
+    if(halted||!notesCard.Window())return;
+    if(notesCard.Visible())notesCard.Abort();
+    if(!notesCard.Show(std::move(spec),PageScreenRect(),[](const MD::Result&){Log(L"RELEASE NOTES closed");}))Log(L"RELEASE NOTES show failed");
 }
 // Automatic Mini after a successful update, at most once per notes content (ReleaseNotes::Decide).
 // `startupInstalled`: the update engine reported Installed when it started (the helper-launched process).
 // `dataRoot`: the GLOBAL data root (profileRoot, else dataDir) where the read state lives; never a private window's.
-void ReleaseNotesAtStartup(bool startupInstalled,const std::wstring& installRoot,const std::wstring& version,const std::wstring& dataRoot){
-    if(privateWindow||smoke||dataRoot.empty())return;
+// True when the card will open: it then replaces the « Mise à jour installée » toast.
+bool ReleaseNotesAtStartup(bool startupInstalled,const std::wstring& installRoot,const std::wstring& version,const std::wstring& dataRoot){
+    if(privateWindow||smoke||dataRoot.empty())return false;
     std::string previousBytes;ReleaseNotes::Previous previous;
     if(startupInstalled){if(ProfileStore::ReadAll(installRoot+L"\\previous",previousBytes))previous=ReleaseNotes::ParsePrevious(previousBytes);else previous.kind=ReleaseNotes::Previous::Kind::Invalid;}
     const auto state=startupInstalled?ReleaseNotes::Load(dataRoot):ReleaseNotes::State{};
     std::string current;for(wchar_t c:version)current.push_back(c<128?static_cast<char>(c):'?');
     const auto decision=ReleaseNotes::Decide(startupInstalled,previous,current,state);
-    if(!startupInstalled)return; // ordinary launch, other window, dev build: nothing read, nothing logged
+    if(!startupInstalled)return false; // ordinary launch, other window, dev build: nothing read, nothing logged
     {const char* d=ReleaseNotes::DecisionText(decision);const char* st=ReleaseNotes::StatusText(state.status);
      Log(L"RELEASE NOTES startup: "+std::wstring(d,d+std::strlen(d))+L" (state "+std::wstring(st,st+std::strlen(st))+L")");}
-    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return;}
-    if(decision!=ReleaseNotes::Decision::Show)return;
-    Defer([dataRoot]{ShowReleaseNotes(true,[dataRoot]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");});});
+    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return false;}
+    if(decision!=ReleaseNotes::Decision::Show)return false;
+    Defer([dataRoot]{ShowReleaseNotes(true,[dataRoot]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");},false);});
+    return true;
 }
 void ShowPrivateDialog(bool future){AskModal(MD::PrivateSpec(future),nullptr,[future](const MD::Result& r){if(r.button==MD::PrivateClearDataButton)AskClearBrowsingData(future,nullptr);});}
 
@@ -1235,22 +1241,23 @@ bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd){
         if(!ctrl&&!alt&&key==VK_F3){cmd=shift?FindPreviousCommand:FindNextCommand;return true;}
         return true;
     }
-    return InWindow(shortcutsPanel.Window(),f)||InWindow(modal.Window(),f)||InWindow(originPrompt.Window(),f)||InWindow(passwordDemo.Window(),f)||InWindow(contextToast.Window(),f);
+    return InWindow(shortcutsPanel.Window(),f)||InWindow(modal.Window(),f)||InWindow(notesCard.Window(),f)||InWindow(originPrompt.Window(),f)||InWindow(passwordDemo.Window(),f)||InWindow(contextToast.Window(),f);
 }
 void ElementsTabChanged(){ModalTabChanged();PromptTabChanged();FindTabChanged();FullscreenTabChanged();RefreshRequestChip();}
 void RepositionElementSurfaces(){
     if(modal.Visible())modal.Reposition(PageScreenRect());
+    if(notesCard.Visible())notesCard.Reposition(PageScreenRect());
     if(originPrompt.Visible())originPrompt.Reposition(OriginAnchorRect());
     if(findBar.Visible())findBar.Reposition(PageScreenRect());
     if(contextToast.Visible())contextToast.Reposition(PageScreenRect());
     originPrompt.SetPageArea(PageScreenRect());
 }
-void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
+void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);notesCard.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
 NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now){
     using NativeChrome::Motion::Earlier;
-    return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
+    return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),notesCard.NextWake(now)),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
 }
-void ElementsFrame(NativeChrome::Motion::Time now){ChipFrame(now);modal.Frame(now);originPrompt.Frame(now);passwordDemo.Frame(now);shortcutsPanel.Frame(now);sandboxTip.Frame(now);chromeTip.Frame(now);findBar.Frame(now);contextToast.Frame(now);fullscreenHint.Frame(now);}
+void ElementsFrame(NativeChrome::Motion::Time now){ChipFrame(now);modal.Frame(now);notesCard.Frame(now);originPrompt.Frame(now);passwordDemo.Frame(now);shortcutsPanel.Frame(now);sandboxTip.Frame(now);chromeTip.Frame(now);findBar.Frame(now);contextToast.Frame(now);fullscreenHint.Frame(now);}
 // ---------------------------------------------------------------------------------------
 // B07 real path: the engine interrupted a download for safety (ICoreWebView2DownloadOperation
 // InterruptReason FILE_MALICIOUS / FILE_SECURITY_CHECK_FAILED / FILE_BLOCKED_BY_POLICY; SmartScreen
@@ -1308,6 +1315,7 @@ void CreateElementSurfaces(){
     MD::Dialog::Hooks mh;mh.wake=[]{RequestElementFrame();};mh.keyboard=[]{return keyboardModality;};
     mh.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};
     mh.dismiss=[]{contextMenu.Cancel();};
+    {MD::Dialog::Hooks nh;nh.wake=mh.wake;nh.keyboard=mh.keyboard;if(!notesCard.Create(instance,window,root,std::move(nh)))Log(L"RELEASE NOTES card unavailable");}
     if(!modal.Create(instance,window,root,std::move(mh)))Log(L"MODAL unavailable");
     OP::Prompt::Hooks ph;ph.wake=[]{RequestElementFrame();};ph.keyboard=[]{return keyboardModality;};
     // B07 « Plus d'options » and the B08 selects drop the same shared, shadowless menu.
@@ -1341,7 +1349,7 @@ void DisposeElementSurfaces(){
     if(promptOpen)originPrompt.Abort();
     siteStates.clear();chipMotion=ChipMotion{};
     FindDetach();
-    modal.Dispose();originPrompt.Dispose();findBar.Dispose();contextToast.Dispose();fullscreenHint.Dispose();passwordDemo.Dispose();shortcutsPanel.Dispose();sandboxTip.Dispose();chromeTip.Dispose();
+    notesCard.Dispose();modal.Dispose();originPrompt.Dispose();findBar.Dispose();contextToast.Dispose();fullscreenHint.Dispose();passwordDemo.Dispose();shortcutsPanel.Dispose();sandboxTip.Dispose();chromeTip.Dispose();
 }
 
 // ---------------------------------------------------------------------------------------
