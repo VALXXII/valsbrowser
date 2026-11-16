@@ -3739,9 +3739,10 @@ void PromoteToBar(BM::Id id){
     if(!r.remap.empty())bookmarkUndo.clear();
     if(!r.Saved()){Log(L"BOOKMARKS promote to bar: save failed, nothing changed");if(bookmarkToast.Window())bookmarkToast.Show(TR(bookmark_save_failed),[id]{PromoteToBar(id);},motion.ReducedMotion(),TR(downloads_action_retry),true);return;}
     BookmarksChanged();
+    if(r.refused){Log(L"BOOKMARKS promote to bar: the folder changed in another window, nothing moved");const std::wstring t=TR(bookmark_promote_folder_changed);if(bookmarkToast.Window()){bookmarkToast.SetBottomReserve(UpdateToastHeight());bookmarkToast.Show(t,[]{},motion.ReducedMotion(),TR(common_ok));}AnnounceBookmark(t);return;}
     if(r.moved.empty())return;
-    std::vector<BookmarkStep> steps;for(const auto& m:r.moved)steps.push_back({BookmarkStep::Moved,m.id,m.parent,m.index});
-    if(r.removed){BookmarkStep st;st.kind=BookmarkStep::Removed;st.id=id;st.removed=*r.removed;steps.push_back(std::move(st));}   // undone first: the folder comes back before its children
+    std::vector<BookmarkStep> steps;for(const auto& m:r.moved)steps.push_back({BookmarkStep::Moved,m.id,m.parent,m.index});   // committed ids (after remap)
+    if(r.removed){BookmarkStep st;st.kind=BookmarkStep::Removed;st.id=r.folder;st.removed=*r.removed;steps.push_back(std::move(st));}   // undone first: the folder comes back before its children
     PushUndo(std::move(steps),TR(bookmark_undo_move));
     const std::wstring text=TRP(bookmark_promoted_to_bar,r.moved.size());ShowBookmarkToast(text);AnnounceBookmark(TRF(bookmark_announce_undo_hint,text));
 }

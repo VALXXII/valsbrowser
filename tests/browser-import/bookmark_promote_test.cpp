@@ -102,6 +102,36 @@ int wmain(int argc, wchar_t** argv) {
         const auto r2 = BP::Commit(c2.data, c2.file, c2.base, c2.mine, g2, OwnedBy(c2.map));
         OK(r2.Saved() && r2.removed && !Load(c2.file).Find(g2) && Load(c2.file).Find(l2)->parent == BM::BarRoot);
     }
+    {   // 6. Review b7b3ce5: an UNSAVED folder whose id another window took meanwhile. The merge gives it a new id; the
+        // promotion follows it and never empties the other window's folder; the undo uses the committed ids.
+        Case c = Setup(L"remap", BM::Store{}, BI::FolderMap{});
+        const BM::Id intended = c.mine.AddFolder(BM::OtherRoot, BM::End, L"intended", 10);
+        const BM::Id mineLink = c.mine.Add(intended, BM::End, L"mine", L"https://mine.example/", 11);
+        BM::Store theirs; const BM::Id their = theirs.AddFolder(BM::OtherRoot, BM::End, L"other window", 20);
+        const BM::Id theirLink = theirs.Add(their, BM::End, L"theirs", L"https://theirs.example/", 21);
+        CHECK(intended == their && mineLink == theirLink);   // the collision under test
+        CHECK(ProfileStore::WriteAtomic(c.file, Bytes(theirs)));
+        const auto r = BP::Commit(c.data, c.file, c.base, c.mine, intended, [](const BM::Store&, BM::Id) { return false; });
+        const BM::Store disk = Load(c.file);
+        OK(r.Saved() && !r.refused && r.remap.count(intended) && r.folder == r.remap.at(intended) && r.folder != their);
+        OK(disk.Find(their) && disk.Find(their)->title == L"other window" && (Titles(disk, their) == std::vector<std::wstring>{L"theirs"}));   // untouched
+        OK(disk.Find(r.folder)->children.empty() && (Titles(disk, BM::BarRoot) == std::vector<std::wstring>{L"mine"}) && r.moved.size() == 1 && r.moved[0].parent == r.folder);
+        OK(UndoAndSave(c, r) == ProfileStore::Result::Written);
+        const BM::Store back = Load(c.file);
+        OK((Titles(back, r.folder) == std::vector<std::wstring>{L"mine"}) && (Titles(back, their) == std::vector<std::wstring>{L"theirs"}) && back.Find(BM::BarRoot)->children.empty());
+    }
+    {   // 7. The chosen folder was replaced on disk by a different folder under the same id (other `added` time):
+        // refused, nothing moves, the other folder keeps its content.
+        Case c = Setup(L"replaced", seed, map);
+        BM::Store forged; const BM::Id f0 = forged.Add(BM::BarRoot, BM::End, L"mine", L"https://mine.example/", 1);
+        const BM::Id fw = forged.AddFolder(BM::OtherRoot, BM::End, L"Reused", 900); forged.Add(fw, BM::End, L"r", L"https://reuse.example/", 901);
+        CHECK(f0 == mine0 && fw == work1);   // same ids, different folder
+        CHECK(ProfileStore::WriteAtomic(c.file, Bytes(forged)));
+        const auto r = BP::Commit(c.data, c.file, c.base, c.mine, work1, OwnedBy(c.map));
+        const BM::Store disk = Load(c.file);
+        OK(r.Saved() && r.refused && r.moved.empty() && !r.removed && disk.Find(work1)->title == L"Reused" && (Titles(disk, work1) == std::vector<std::wstring>{L"r"}));
+        OK((Titles(disk, BM::BarRoot) == std::vector<std::wstring>{L"mine"}));
+    }
     std::printf("bookmark promote: %d checks passed\n", checks);
     return 0;
 }

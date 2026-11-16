@@ -1492,6 +1492,7 @@ I18N(import_count_moved_other, L"{0} sortis de l'ancien dossier d'import", L"{0}
 I18N(bookmark_promote_to_bar, L"Placer le contenu dans la barre de favoris", L"Move contents to the bookmarks bar")
 I18N(bookmark_promoted_to_bar_one, L"{0} élément placé dans la barre de favoris", L"{0} item moved to the bookmarks bar")
 I18N(bookmark_promoted_to_bar_other, L"{0} éléments placés dans la barre de favoris", L"{0} items moved to the bookmarks bar")
+I18N(bookmark_promote_folder_changed, L"Ce dossier a changé dans une autre fenêtre : rien n'a été déplacé", L"This folder changed in another window: nothing was moved")
 
 // Windows setup / uninstaller window (src/setup-main.cpp; design/windows-setup-plan.md)
 I18N(setup_install, L"Installer browser", L"Install browser")
