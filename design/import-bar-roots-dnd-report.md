@@ -2,7 +2,7 @@
 
 **Branch:** `VALXXII/import-bar-roots-dnd`, local only, based on 1f56554. Nothing has been pushed, merged or released.
 **Task:** task_dabffe90311d / ctx_d8923992c6eb.
-**Launchable build:** `build/import-app/browser.exe` (0.3.388, built from 40dc694, a clean tree).
+**Launchable build:** `build/import-app/browser.exe`, rebuilt from the current branch head (main 4e37034 merged in fbab457, Part 3 fixes 2dfb006 and 7947777).
 
 ## Part 1: imported bookmarks where they belong; correcting v0.3.376
 
@@ -74,7 +74,7 @@
 
 ## Part 3: every browser on this PC, with its logo; Comet
 
-**Status:** awaiting independent review. Pin: **40dc694** (source). 83cdfc0 adds evidence only.
+**Status:** the review of 40dc694 found two P2s, fixed in 2dfb006 (Comet folder order) and 7947777 (logo path held and reparse-free). Awaiting the re-check. 83cdfc0 adds evidence only; it was produced at 40dc694.
 
 **Where the list comes from:**
 - Installed browsers: Windows' own registration, StartMenuInternet under HKCU and HKLM, both views, read through the registry API.
@@ -83,10 +83,10 @@
 
 **Comet:**
 - Listed first, as a Chromium-based adapter.
-- Candidate folders:
-  - `%LOCALAPPDATA%\Comet\User Data`, from the Perplexity Help Center;
-  - `%LOCALAPPDATA%\Perplexity\Comet\User Data`, the vendor folder.
-- The first one holding a profile is used.
+- Folders, in this order (corrected in 2dfb006; 40dc694 wrongly tried the vendor folder first):
+  - PRIMARY: `%LOCALAPPDATA%\Comet\User Data`, from the Perplexity Help Center;
+  - SECONDARY: `%LOCALAPPDATA%\Perplexity\Comet\User Data`, the vendor folder, used only when the primary holds no profile.
+- A stale secondary copy never hides the primary one. The source key stays « chromium:Comet/<profile> » whichever folder is used.
 - **Not verified on this PC:** no personal Comet data was read. Both paths come from documentation.
 
 **Also supported:** Chromium (path from chromium.googlesource docs), alongside Chrome, Edge, Brave and Firefox.
@@ -99,20 +99,29 @@
 
 **Logos:**
 - Read from the browser's own local .exe or .ico as resources only (LoadLibraryEx as data / image resource), so no code runs.
-- Only absolute paths on a local fixed drive, to a regular file that is not a reparse point.
+- Only absolute paths on a local fixed drive, inside at least one folder, to a regular .exe / .dll / .ico.
+- Since 7947777, every folder of the path and the file itself are opened without following reparse points (a junction or link at any level is refused) and held until the loader is done. Folders are held without delete sharing, and the file with read-only sharing, so nothing can be renamed or swapped between the check and the load.
 - UNC, device or relative paths, and any failure, get the neutral glyph.
 - Logos are decorative: UIA names each row by its text.
 
 **Tests:**
-- browser_catalog_test: 37 checks. Synthetic registrations and roots; Comet with two profiles and the documented folder; the fallbacks; a real logo read as data; FR and EN.
+- browser_catalog_test: 48 checks (37 at 40dc694). Covers:
+  - synthetic registrations and roots;
+  - Comet primary and secondary: both present with distinguishable content, each alone, and an empty primary falling back;
+  - the fallbacks;
+  - a junction one and two levels above the logo;
+  - a deterministic swap attempted while held, and the same swap after release;
+  - .exe and .ico positive controls;
+  - no handle leak;
+  - FR and EN.
 - modal_test: 283 checks, including Select rows.
-- Import E2E at 40dc694: all functional checks, 10/10 captures non-blank (`design/browser-data-import-evidence/e2e-40dc694/`, including `fr-1b-source-list.png`).
+- Import E2E at 40dc694: all functional checks, 10/10 captures non-blank (`design/browser-data-import-evidence/e2e-40dc694/`, including `fr-1b-source-list.png`). Rerun at 7947777: all functional checks; the logo still loads.
 
 **Not exercised by tests:** the real registry reader. By design, tests use synthetic registrations only.
 
 ## Not done, by instruction
 
 - The 26-minute run_all, pending the Part 3 review.
-- No push, merge or release.
+- No push, PR or release. The only merge is main 4e37034 into this branch (fbab457).
 - No Paper changes.
 - No cookies.
