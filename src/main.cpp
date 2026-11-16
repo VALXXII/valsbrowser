@@ -4770,6 +4770,9 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPW
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
+    // TEST LAUNCHER ONLY (« Voir la modale Nouveautés.cmd »): opens the Nouveautés Mini at start for review. It never
+    // writes the read state and is reachable only through this command-line argument (no menu, no shortcut).
+    if(!smoke&&!privateWindow&&wcsstr(args,L"--release-notes-preview"))Defer([]{Log(L"RELEASE NOTES preview (test launcher)");ShowReleaseNotes(true);});
     // Engine arguments are per ENVIRONMENT (EngineArgumentsFor, passed in the environment options): one window
     // hosts several profiles, each with its own flags. The process-wide variable would force the first profile's
     // flags onto every environment, so a user-set value is kept aside (BROWSER_GIVEN_WEBVIEW2_ARGUMENTS, inherited
