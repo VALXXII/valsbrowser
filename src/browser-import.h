@@ -1031,6 +1031,18 @@ inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::str
 }
 } // namespace detail
 namespace detail {
+// A source identity is trusted only if it is unique in the whole source (review 9ef33c5): a guid carried by two folders
+// (a damaged or hand-made export) identifies neither, so every one of them loses it and is matched by title like a
+// folder without one; none can adopt another's mapped destination folder. Returns how many were de-keyed.
+inline std::size_t DekeyAmbiguous(std::vector<Item>& roots) {
+    std::map<std::string, std::size_t> seen;
+    std::function<void(const std::vector<Item>&)> count = [&](const std::vector<Item>& items) { for (const Item& it : items) { if (it.folder && it.key.rfind("g:", 0) == 0) ++seen[it.key]; count(it.children); } };
+    count(roots);
+    std::size_t n = 0;
+    std::function<void(std::vector<Item>&)> clear = [&](std::vector<Item>& items) { for (Item& it : items) { if (it.folder && it.key.rfind("g:", 0) == 0 && seen[it.key] > 1) { it.key.clear(); ++n; } clear(it.children); } };
+    clear(roots);
+    return n;
+}
 inline std::size_t Subtree(const Bookmarks::Store& s, Bookmarks::Id id) { std::size_t n = 0; for (Bookmarks::Id x : s.Subtree(id)) if (s.Find(x)->kind == Bookmarks::Kind::Link) ++n; return n; }
 // Moves every child of `from` (same ids, same order) to the end of `to`; counts the links moved.
 inline void MoveChildren(Bookmarks::Store& s, Bookmarks::Id from, Bookmarks::Id to, Counts& c) {
@@ -1061,11 +1073,10 @@ inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string
         const RootRole role = RoleOf(r.key);
         if (role == RootRole::None) continue;
         const BM::Id target = role == RootRole::Bar ? BM::BarRoot : BM::OtherRoot;
-        if (r.key.rfind("html:", 0) == 0) {   // HTML: the old bar folder is the group's folder titled like this file's
-            if (role != RootRole::Bar) continue;
+        if (r.key.rfind("html:", 0) == 0) {   // HTML: the old root folder is the group's folder titled like this file's marked root
             for (BM::Id k : std::vector<BM::Id>(s.Find(box)->children)) {
                 const BM::Node* n = s.Find(k);
-                if (n->kind == BM::Kind::Folder && n->title == r.title) { MoveChildren(s, k, BM::BarRoot, c); if (s.Find(k)->children.empty()) s.Remove(k); break; }
+                if (n->kind == BM::Kind::Folder && n->title == r.title) { MoveChildren(s, k, target, c); if (s.Find(k)->children.empty()) s.Remove(k); break; }
             }
             continue;
         }
@@ -1081,10 +1092,9 @@ inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string
         bool marked = false; for (const Item& r : roots) if (RoleOf(r.key) != RootRole::None) marked = true;
         const BM::Id destination = marked ? BM::OtherRoot : BM::BarRoot;   // where this file's top level now goes
         std::map<std::wstring, std::size_t> wantLinks, wantFolders;
-        for (const Item& r : roots) {
-            if (RoleOf(r.key) == RootRole::Bar) continue;
-            const auto& level = RoleOf(r.key) == RootRole::Other ? r.children : std::vector<Item>{r};
-            for (const Item& it : level) { if (it.folder) ++wantFolders[it.title]; else if (BM::Admissible(it.url)) ++wantLinks[BM::UrlKey(it.url)]; }
+        for (const Item& r : roots) {   // marked roots were handled above (their own old folders); here the unmarked entries
+            if (RoleOf(r.key) != RootRole::None) continue;
+            if (r.folder) ++wantFolders[r.title]; else if (BM::Admissible(r.url)) ++wantLinks[BM::UrlKey(r.url)];
         }
         for (BM::Id k : std::vector<BM::Id>(s.Find(box)->children)) {
             const BM::Node* n = s.Find(k);
@@ -1105,18 +1115,29 @@ inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string
 // guessed as a technical root).
 // With `map`, every folder that has a stable identity (mobile folder, guid-keyed source folders, the HTML group) is
 // found again by it, and an earlier v0.3.376 group of the same source is corrected first (detail::MigrateLegacy).
-inline Counts ApplyBookmarks(Bookmarks::Store& s, const Source& src, const std::vector<Item>& roots, std::int64_t now, FolderMap* map) {
+inline Counts ApplyBookmarks(Bookmarks::Store& s, const Source& src, const std::vector<Item>& rootsIn, std::int64_t now, FolderMap* map) {
     namespace BM = Bookmarks;
     Counts c;
-    if (roots.empty()) return c;
+    if (rootsIn.empty()) return c;
+    std::vector<Item> roots = rootsIn;
+    detail::DekeyAmbiguous(roots);
     const std::string key = SourceKey(src);
     bool semantic = false; for (const Item& r : roots) if (RoleOf(r.key) != RootRole::None) semantic = true;
     if (map) detail::MigrateLegacy(s, *map, key, roots, c);
     if (!semantic) { detail::Into(s, BM::BarRoot, roots, now, c, map, key); return c; }   // HTML without root marks
+    // Everything bound for the same fixed root goes through ONE occurrence-aware pass, in source order (review 9ef33c5):
+    // separate passes would count an intentional repeat (same address twice, same-titled folders) as already present.
+    std::vector<Item> toBar, toOther;
+    for (const Item& r : roots) {
+        const RootRole role = RoleOf(r.key);
+        if (role == RootRole::Bar) toBar.insert(toBar.end(), r.children.begin(), r.children.end());
+        else if (role == RootRole::Other) toOther.insert(toOther.end(), r.children.begin(), r.children.end());
+        else if (role == RootRole::None) toOther.push_back(r);   // an HTML top-level entry beside marked roots
+    }
+    if (!toBar.empty()) detail::Into(s, BM::BarRoot, toBar, now, c, map, key);
+    if (!toOther.empty()) detail::Into(s, BM::OtherRoot, toOther, now, c, map, key);
     for (const Item& r : roots) {
         switch (RoleOf(r.key)) {
-        case RootRole::Bar: detail::Into(s, BM::BarRoot, r.children, now, c, map, key); break;
-        case RootRole::Other: detail::Into(s, BM::OtherRoot, r.children, now, c, map, key); break;
         case RootRole::Mobile: {
             std::vector<std::wstring> rootTitles = RootTitles(r.key);
             if (std::find(rootTitles.begin(), rootTitles.end(), r.title) == rootTitles.end()) rootTitles.insert(rootTitles.begin(), r.title);
@@ -1125,7 +1146,7 @@ inline Counts ApplyBookmarks(Bookmarks::Store& s, const Source& src, const std::
             detail::Into(s, folder, r.children, now, c, map, key);
             break;
         }
-        default: detail::Into(s, BM::OtherRoot, {r}, now, c, map, key); break;   // an HTML top-level entry beside marked roots
+        default: break;   // bar, other and unmarked entries: done above
         }
     }
     return c;

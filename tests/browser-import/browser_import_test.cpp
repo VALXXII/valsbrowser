@@ -838,6 +838,62 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Review 9ef33c5 P2: repeats beside marked roots, ambiguous guids, legacy marked « other » wrapper -----------
+    {
+        using I18n::Locale;
+        {   // Marked bar + intentional repeats at the file's top level (two same links, two same-titled folders).
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><A HREF=\"https://bar.example/\">b</A></DL><p>"
+                                     "<DT><A HREF=\"https://twice.example/\">t1</A><DT><A HREF=\"https://twice.example/\">t2</A>"
+                                     "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://s1.example/\">s1</A></DL><p><DT><H3>Same</H3><DL><p><DT><A HREF=\"https://s2.example/\">s2</A></DL><p></DL><p>";
+            const auto roots = ParseHtmlBookmarks(html).roots;
+            BM::Store s; FolderMap m; const BM::Id keep = s.Add(BM::OtherRoot, BM::End, L"existing", L"https://existing.example/", 1);
+            const Counts a = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+            OK(a.imported == 5 && a.present == 0 && (Titles(s, BM::OtherRoot) == std::vector<std::wstring>{L"existing", L"t1", L"t2", L"Same", L"Same"}) && s.Find(keep)->title == L"existing");
+            const BM::Store once = s; const Counts b = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+            OK(b.imported == 0 && b.present == 5 && s == once);   // repeat: multiplicity kept, nothing added
+        }
+        {   // Two distinct Chromium folders sharing one guid (siblings and nested), each with the same address.
+            const std::string json = "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {
+                ChromeFolder(L"A", {ChromeNode(L"x", "https://same.example/")}, "same"),
+                ChromeFolder(L"B", {ChromeNode(L"x", "https://same.example/"), ChromeFolder(L"C", {ChromeNode(L"y", "https://y.example/")}, "same")}, "same")}) + "}}";
+            const auto roots = ParseChromiumBookmarks(json).roots;
+            OK(ParseChromiumBookmarks(json).failure == Failure::None);
+            Source chromeD = chromeDefault; chromeD.soleProfile = true;
+            BM::Store s; FolderMap m;
+            // An earlier import mapped « same » to a folder the person renamed: an ambiguous source never adopts it.
+            const BM::Id earlier = s.AddFolder(BM::BarRoot, BM::End, L"Earlier", 77); m.Prefer(SourceKey(chromeD) + "|g:same", {earlier, 77});
+            const Counts a = ApplyBookmarks(s, chromeD, roots, now, &m);
+            const BM::Id A = Child(s, BM::BarRoot, L"A"), B = Child(s, BM::BarRoot, L"B");
+            OK(a.imported == 3 && A && B && A != B && Child(s, B, L"C") && s.Find(earlier)->children.empty());   // two folders, two occurrences, C kept
+            const BM::Store once = s; const Counts b = ApplyBookmarks(s, chromeD, roots, now, &m);
+            OK(b.imported == 0 && b.present == 3 && s == once);
+            // Firefox: the same rule (two folders with one guid).
+            Item f1; f1.folder = true; f1.key = "g:dup"; f1.title = L"F1"; Item l1; l1.url = L"https://ff.example/"; l1.title = L"l"; f1.children.push_back(l1);
+            Item f2 = f1; f2.title = L"F2";
+            Item tb; tb.folder = true; tb.key = "toolbar_____"; tb.title = L"Barre de favoris"; tb.children = {f1, f2};
+            Source ffs; ffs.browser = Browser::Firefox; ffs.root = L"C:\\x\\Firefox"; ffs.dir = L"C:\\x\\Firefox\\Profiles\\a"; ffs.profile = L"a";
+            BM::Store t; FolderMap tm; const Counts c = ApplyBookmarks(t, ffs, {tb}, now, &tm);
+            OK(c.imported == 2 && Child(t, BM::BarRoot, L"F1") && Child(t, BM::BarRoot, L"F2") && tm.entries.empty());
+        }
+        {   // v0.3.376 HTML group holding BOTH marked roots as ordinary folders: each moves where it belongs, same ids.
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks Toolbar</H3><DL><p><DT><A HREF=\"https://tb.example/\">tb</A></DL><p>"
+                                     "<DT><H3 UNFILED_BOOKMARKS_FOLDER=\"true\">Other Bookmarks</H3><DL><p><DT><A HREF=\"https://other.example/\">o</A></DL><p>"
+                                     "<DT><A HREF=\"https://menu.example/\">m</A></DL><p>";
+            BM::Store s; FolderMap m;
+            const BM::Id group = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5);
+            const BM::Id oldBar = s.AddFolder(group, BM::End, L"Bookmarks Toolbar", 6), oldOther = s.AddFolder(group, BM::End, L"Other Bookmarks", 6);
+            const BM::Id tb = s.Add(oldBar, BM::End, L"tb", L"https://tb.example/", 7), o = s.Add(oldOther, BM::End, L"o", L"https://other.example/", 7);
+            const BM::Id custom = s.AddFolder(oldOther, BM::End, L"Mine", 8);   // the person's folder in the old wrapper
+            const BM::Id mm = s.Add(group, BM::End, L"m", L"https://menu.example/", 7);
+            m.Prefer("html", {group, 5});
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\ff.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(c.imported == 0 && c.present == 3 && s.Find(tb)->parent == BM::BarRoot && s.Find(o)->parent == BM::OtherRoot && s.Find(mm)->parent == BM::OtherRoot);
+            OK(s.Find(custom) && s.Find(custom)->parent == BM::OtherRoot && !s.Find(oldBar) && !s.Find(oldOther) && !s.Find(group));   // the person's folder moves with the wrapper's content
+            const BM::Store once = s; const Counts again = ApplyBookmarks(s, HtmlSource(L"C:\\ff.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(again.imported == 0 && again.moved == 0 && s == once);
+        }
+    }
+
     // ---- Map capacity (review 2ed598c): 4 096 → 4 098 records, every identity kept across a restart -------------
     {
         const std::wstring dir = work + L"\\capacity"; MakeDirs(dir);
