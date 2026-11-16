@@ -62,6 +62,8 @@ def existing_fixtures() -> None:
     # preference (temporary folders only), then Reglages > Langue on the real drawer (FR and EN processes).
     run('i18n coverage gate (catalog parity, no untranslated interface text)', [sys.executable, ROOT / 'tools/i18n/check_strings.py'])
     fixture('i18n_test', [*STRICT, 'tests/i18n_test.cpp'])
+    # The ad blocker installs from a folder updates never move (src/adblock-folder.h; e2e: tests/e2e/adblock_update_e2e.py).
+    fixture('adblock_folder_test', [*STRICT, 'tests/adblock_folder_test.cpp'])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
