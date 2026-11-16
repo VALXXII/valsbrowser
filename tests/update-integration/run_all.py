@@ -71,6 +71,7 @@ def existing_fixtures() -> None:
     promote_work = OUT / 'bookmark-promote-work'
     promote_work.mkdir(parents=True, exist_ok=True)
     fixture('bookmark_promote_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/bookmark_promote_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [promote_work])
+    fixture('bookmark_move_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/bookmark_move_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [promote_work])
     # Import from a browser (design/browser-data-import-plan.md): synthetic roots only, Windows' winsqlite3.dll
     import_work = OUT / 'browser-import-work'
     import_work.mkdir(parents=True, exist_ok=True)

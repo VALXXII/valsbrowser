@@ -29,3 +29,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Bookmark drag test compilation failed.' }
 & $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -Isrc tests/browser-import/bookmark_promote_test.cpp -o "$out/bookmark_promote_test.exe" -lshell32 -lole32 -ladvapi32
 if ($LASTEXITCODE -ne 0) { throw 'Bookmark promote test compilation failed.' }
 & "$out/bookmark_promote_test.exe" (Resolve-Path $out).Path; if ($LASTEXITCODE -ne 0) { throw 'Bookmark promote tests failed.' }
+# One drop as one transaction (src/bookmark-move.h): other windows, remaps, a refused write, saved undo.
+& $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -Isrc tests/browser-import/bookmark_move_test.cpp -o "$out/bookmark_move_test.exe" -lshell32 -lole32 -ladvapi32
+if ($LASTEXITCODE -ne 0) { throw 'Bookmark move test compilation failed.' }
+& "$out/bookmark_move_test.exe" (Resolve-Path $out).Path; if ($LASTEXITCODE -ne 0) { throw 'Bookmark move tests failed.' }
