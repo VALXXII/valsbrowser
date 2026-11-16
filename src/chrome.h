@@ -645,6 +645,7 @@ public:
     int bandRover=-1;              // band item that takes the band's single Tab stop (roving focus)
     int bandDrag=-1;float bandDragOffset=0; // item being dragged (visible index) and its pointer offset
     int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
+    float bandInsertX=-1;          // a bookmark dragged from a menu or the drawer: x (DIP) of the insertion line, -1 none
     BookmarksBar::Result band;     // last layout (Build)
     // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
@@ -711,6 +712,12 @@ public:
         if(!bandShown)return;
         for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now);
         if(bandDrag>=0&&bandDrag<band.visible&&bandDrag<(int)bandItems.size())DrawBandItem(bandDrag,bandItems[bandDrag],hover,focus,now);
+        {   // Drop feedback for a bookmark dragged in from a menu or the drawer: the folder it would enter is tinted with the
+            // accent; otherwise a 2 DIP accent line marks where it would land. Nothing animates at rest.
+            const auto accent=Design::Accent::Get();
+            if(bandDrag<0&&bandDropInto>=0&&bandDropInto<band.visible)FillBox(BandRect(bandDropInto),Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));
+            if(bandInsertX>=0)FillBox({bandInsertX-1,BookmarksBar::Layout::top+4,bandInsertX+1,BookmarksBar::Layout::bottom-4},1,D2D1::ColorF(accent.r,accent.g,accent.b,1));
+        }
         if(band.overflow){const D2D1_RECT_F box{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom};
             auto v=motion?motion->Visual('O',now):Motion::InteractionVisual{hover=='O'?1.f:0.f,0};if(bandOpen=='O')v.hover=1;
             DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});}
