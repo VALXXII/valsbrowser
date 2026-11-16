@@ -133,6 +133,8 @@ GUID_TEXT(ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,"{3b40
 // Same-window profiles (src/profile-workspace.h): every COM callback and every deferred job runs in the
 // workspace (profile) that was in the globals when it was created — a hidden profile's tab never writes
 // into the profile on screen. Defined in profile-workspace.h (end of this file).
+#include "taskbar-identity.h" // one taskbar identity for every installed version; pins relaunch the stable launcher
+TaskbarIdentity::Identity taskbarIdentity; // installed copies only (ResolveBrowserPaths)
 #include "adblock-folder.h"  // the ad blocker installs from a folder that updates never move
 #include "popup-target.h"   // script-opened windows: the request lifecycle (design/popup-window-target-report.md)
 PopupHost::Registry popups; extern bool unownedCallbacks;
@@ -4086,7 +4088,8 @@ void ResolveBrowserPaths(const std::wstring& installRoot=L""){
     auto paths=UpdateCore::ResolveDataPaths(ExePath(),installRoot);
     if(paths.installed&&!paths.dataDir.empty()&&!paths.profileDir.empty()&&!paths.sessionFile.empty()){
         std::error_code ignored;std::filesystem::create_directories(std::filesystem::path(paths.dataDir),ignored);
-        dataDir=paths.dataDir;profileDir=paths.profileDir;sessionFile=paths.sessionFile;downloadsFile=paths.downloadsFile.empty()?paths.dataDir+L"\\downloads":paths.downloadsFile;settingsFile=paths.dataDir+L"\\settings";if(!paths.logFile.empty())logFile=paths.logFile;}
+        dataDir=paths.dataDir;profileDir=paths.profileDir;sessionFile=paths.sessionFile;downloadsFile=paths.downloadsFile.empty()?paths.dataDir+L"\\downloads":paths.downloadsFile;settingsFile=paths.dataDir+L"\\settings";if(!paths.logFile.empty())logFile=paths.logFile;
+        taskbarIdentity=TaskbarIdentity::ForInstalled(ExePath(),true);TaskbarIdentity::ApplyToProcess(taskbarIdentity);} // before any window
 #else
     (void)installRoot;
 #endif
@@ -4635,7 +4638,7 @@ void OnEngineInstallMessage(){
 }
 void StartEngine(){
     WR::Hooks hooks;hooks.prepare=PrepareLoader;hooks.probe=ProbeRuntime;hooks.create=CreateEngine;
-    hooks.overrides=[]{std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return WR::ReadOverrides(exe.substr(exe.find_last_of(L'\\')+1));};
+    hooks.overrides=[]{std::wstring exe(32768,L'\0');DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return WR::ReadOverridesFor(exe.substr(exe.find_last_of(L'\\')+1),taskbarIdentity.aumid);};
     hooks.startInstall=[]{return engineInstaller.Start(EngineEffects(),[]{PostMessageW(window,EngineInstallMessage,0,0);},[](const WR::InstallReport& r){
         // Worker thread: the real outcome, logged even when the window is already gone.
         Log(std::wstring(L"WEBVIEW2 INSTALL WORKER outcome=")+WR::OutcomeName(r.outcome)+L" code="+WR::Hex(static_cast<HRESULT>(r.code))+(r.pid?L" pid="+std::to_wstring(r.pid):L"")+
@@ -4733,6 +4736,16 @@ void CancelContentTransitionIfMoved(){if(contentTransition.Active())contentTrans
 #include "browser-import-integration.h"
 #include "workspace-failover.h"
 #include "profile-workspace.h"
+// The window carries the identity and relaunches through the stable launcher; our Start Menu and desktop
+// shortcuts to that launcher get the same identity once (setups before 0.3.379 wrote them without it).
+void StampTaskbarIdentity(){
+    if(!taskbarIdentity.active()||!window)return;
+    if(!TaskbarIdentity::ApplyToWindow(window,taskbarIdentity))Log(L"TASKBAR identity not applied to the window");
+    for(const KNOWNFOLDERID* folder:{&FOLDERID_Programs,&FOLDERID_Desktop}){PWSTR dir=nullptr;if(FAILED(SHGetKnownFolderPath(*folder,0,nullptr,&dir))||!dir){CoTaskMemFree(dir);continue;}
+        const std::wstring lnk=std::wstring(dir)+L"\browser.lnk";CoTaskMemFree(dir);
+        const auto r=TaskbarIdentity::StampShortcut(lnk,taskbarIdentity);
+        if(r==TaskbarIdentity::Stamp::Stamped)Log(L"TASKBAR shortcut given the identity: "+lnk);else if(r==TaskbarIdentity::Stamp::Failed)Log(L"TASKBAR shortcut identity could not be written: "+lnk);}
+}
 int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */ if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
 #ifdef BROWSER_E2E_VAULT_HOST
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
@@ -4751,7 +4764,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPW
 #ifdef BROWSER_E2E_VAULT_HOST
     Log(L"E2E VAULT HOST: vault active, foreground condition lifted (test host only)");   /* binary marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();ShowWindow(window,show);UpdateWindow(window);if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif

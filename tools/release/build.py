@@ -56,7 +56,7 @@ BRIDGE_LIBS = ['-lwinhttp', '-lbcrypt', '-lkernel32']
 # the app payload: written to <out>-setup/, tools/release/package.py appends the .lsrupd it just packed.
 SETUP_SOURCES = ['src/setup-main.cpp', 'src/setup-core.cpp', 'src/update-core.cpp', 'src/update-package.cpp']
 SETUP_NAME = 'browser-setup.exe'
-SETUP_LIBS = ['-lwinhttp', '-lbcrypt', '-lole32', '-luuid', '-lshell32', '-lcomctl32', '-ladvapi32', '-luser32',
+SETUP_LIBS = ['-lwinhttp', '-lbcrypt', '-lole32', '-luuid', '-lshell32', '-lshlwapi', '-lcomctl32', '-ladvapi32', '-luser32',
               '-lgdi32', '-lkernel32']
 
 
