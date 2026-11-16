@@ -1275,12 +1275,12 @@ void CreateElementSurfaces(){
     const std::wstring root=base;
     // The Période select (Effacer les données) drops the shared shadowless menu under its field.
     MD::Dialog::Hooks mh;mh.wake=[]{RequestElementFrame();};mh.keyboard=[]{return keyboardModality;};
-    mh.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};
+    mh.choose=[](const MD::Select& select,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,select,anchor,keyboard,motion.ReducedMotion());};
     mh.dismiss=[]{contextMenu.Cancel();};
     if(!modal.Create(instance,window,root,std::move(mh)))Log(L"MODAL unavailable");
     OP::Prompt::Hooks ph;ph.wake=[]{RequestElementFrame();};ph.keyboard=[]{return keyboardModality;};
     // B07 « Plus d'options » and the B08 selects drop the same shared, shadowless menu.
-    ph.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};ph.dismiss=[]{contextMenu.Cancel();};
+    ph.choose=[](const MD::Select& select,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,select,anchor,keyboard,motion.ReducedMotion());};ph.dismiss=[]{contextMenu.Cancel();};
     ph.menu=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.right,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
     ph.download=[](OP::Prompt::Command c,const OP::Spec& s){PromptDownloadCommand(c,s);};
     ph.revoke=[](int kind,const OP::Spec& s){RevokeSitePermission(kind,s);};

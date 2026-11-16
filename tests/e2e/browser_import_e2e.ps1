@@ -120,6 +120,19 @@ function Choose([int]$procId, $dialog, [string]$label, [string]$option) {
   if (!$item) { throw "no option $option" }
   Invoke $item; Start-Sleep -Milliseconds 500
 }
+# Opens the select's list and returns its rows (MenuItem elements), the list left open.
+function MenuRows([int]$procId, $dialog, [string]$label) {
+  $select = $dialog.FindFirst($TS::Descendants, (Cond $AE::NameProperty $label)); if (!$select) { throw "no select $label" }
+  $select.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+  for ($i = 0; $i -lt 40; $i++) {
+    Start-Sleep -Milliseconds 150
+    foreach ($top in $AE::RootElement.FindAll($TS::Children, (Cond $AE::ProcessIdProperty $procId))) {
+      $found = @($top.FindAll($TS::Descendants, (Cond $AE::AutomationIdProperty 'MenuItem')))
+      if ($found.Count) { return $found }
+    }
+  }
+  return @()
+}
 function Check3($dialog, [string[]]$names) { $names | ForEach-Object { $dialog.FindFirst($TS::Descendants, (Cond $AE::NameProperty $_)) } }
 # Waits for the summary dialog, returns its text (the dialog's help: its body).
 function Result([int]$procId) { $r = Uia $procId 'ImportResult' '' 80; if (!$r) { return $null }; Start-Sleep -Milliseconds 300; return $r }
@@ -163,6 +176,19 @@ try {
   Check ((ToggleState $hist) -eq 'On' -and $hist.Current.IsEnabled) 'FR history on'
   Check ((ToggleState $cook) -eq 'Off' -and !$cook.Current.IsEnabled -and $cook.Current.HelpText -eq 'Non disponibles : reconnectez-vous aux sites.') "FR cookies disabled with the reason: $($cook.Current.HelpText)"
   Visual $main $procId 'fr-1-dialog-chrome'
+  # Detected browsers (src/browser-catalog.h, synthetic registrations): every one listed, Comet installed without data and
+  # Opera (not supported) shown disabled with the reason; logos are decorative (no UIA node of their own).
+  $rows = MenuRows $procId $d 'Depuis'
+  $names = @($rows | ForEach-Object { $_.Current.Name })
+  Check (($names -join '|') -eq 'Comet|Chrome|Edge|Firefox|Opera Stable|Fichier de favoris HTML…') "FR source list: every detected browser, Comet first ($($names -join '|'))"
+  $comet = $rows | Where-Object { $_.Current.Name -eq 'Comet' }; $opera = $rows | Where-Object { $_.Current.Name -eq 'Opera Stable' }; $chrome = $rows | Where-Object { $_.Current.Name -eq 'Chrome' }
+  Check ($comet -and !$comet.Current.IsEnabled -and $comet.Current.HelpText -eq 'Installé, aucun favori ni historique trouvé') "FR Comet installed without data: disabled, says why ($($comet.Current.HelpText))"
+  Check ($opera -and !$opera.Current.IsEnabled -and $opera.Current.HelpText -eq 'Installé, pas encore pris en charge') "FR Opera not supported: disabled, says why ($($opera.Current.HelpText))"
+  Check ($chrome -and $chrome.Current.IsEnabled -and @($chrome.FindAll($TS::Children, [System.Windows.Automation.Condition]::TrueCondition)).Count -eq 0) 'FR Chrome enabled; its logo is not a UIA element'
+  Visual $main $procId 'fr-1b-source-list'
+  Invoke $chrome; Start-Sleep -Milliseconds 400
+  Check ($select.Current.HelpText -eq 'Chrome') 'FR list closed on the same source'
+  Check ((ReadText "$app\prototype.log") -match 'IMPORT dialog: 3 profiles, 0 recoverable, 2 browsers unavailable') 'FR log: counts only (no path, no name)'
   # Cancel: nothing written.
   $bm0 = Hash $bmFile; $h0 = Hash $hFile
   Invoke (Uia $procId 'DialogCancel'); Check (Gone $procId 'ImportBrowserData') 'FR cancel closes the dialog'

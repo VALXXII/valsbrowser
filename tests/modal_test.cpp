@@ -181,7 +181,7 @@ int wmain(int argc, wchar_t** argv) {
     {   // Host hook (browser): the shared menu through ChooseFromMenu; keyboard flag and anchor passed.
         ContextMenu::Menu shared; shared.Init(hi, owner, root);
         int hookCalls = 0; bool sawKeyboard = false; int sawCurrent = -1; RECT sawAnchor{};
-        Modal::Dialog::Hooks h; h.dismiss = [&] { shared.Cancel(); }; h.choose = [&](const std::vector<std::wstring>& o, int cur, RECT a, bool kb) { ++hookCalls; sawKeyboard = kb; sawCurrent = cur; sawAnchor = a; return Modal::ChooseFromMenu(shared, o, cur, a, kb, true); };
+        Modal::Dialog::Hooks h; h.dismiss = [&] { shared.Cancel(); }; h.choose = [&](const Modal::Select& sel, RECT a, bool kb) { ++hookCalls; sawKeyboard = kb; sawCurrent = sel.index; sawAnchor = a; return Modal::ChooseFromMenu(shared, sel, a, kb, true); };
         Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "host hook: Create");
         int calls = 0; hd.Show(Modal::ClearDataSpec(), Area(), [&](const Modal::Result&) { ++calls; });
         while (hd.FocusForTest() != D::SelectHit) hd.KeyForTest(VK_TAB);
@@ -193,7 +193,7 @@ int wmain(int argc, wchar_t** argv) {
     {   // Select::checks (« Importer depuis un navigateur… »): choosing a source rebuilds the checks with their
         // availability; a disabled check is never toggled nor in the Tab order; the error line is cleared.
         int chosen = 1;
-        Modal::Dialog::Hooks h; h.choose = [&](const std::vector<std::wstring>&, int, RECT, bool) { return chosen; };
+        Modal::Dialog::Hooks h; h.choose = [&](const Modal::Select&, RECT, bool) { return chosen; };
         Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "select checks: Create");
         auto checksFor = [](int i) {
             Modal::Check a, b, c; a.label = L"Favoris"; b.label = L"Historique"; c.label = L"Cookies et connexions";
@@ -219,6 +219,28 @@ int wmain(int argc, wchar_t** argv) {
         Check(hd.Snapshot().checks[1] && !hd.CurrentSpec().checks[1].disabled, "select checks: back to the browser, history available again");
         hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose();
         Check(calls == 1, "select checks: done once");
+    }
+    {   // Select options with a logo, a glyph fallback, a second line and disabled rows (detected browsers, part 3):
+        // the list carries them; a disabled option can never become the value, whatever the list answers.
+        int chosen = 1;
+        Modal::Dialog::Hooks h; h.choose = [&](const Modal::Select&, RECT, bool) { return chosen; };
+        Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "select rows: Create");
+        Modal::Spec spec; spec.title = L"Importer depuis un navigateur"; spec.hasSelect = true;
+        spec.select.options = {L"Comet", L"Opera", L"Fichier de favoris HTML…"};
+        auto logo = std::make_shared<NativeChrome::FaviconImage>(); logo->width = logo->height = 1; logo->stride = 4; logo->pixels = {0, 0, 255, 255};
+        spec.select.images = {logo, nullptr, nullptr}; spec.select.icons = {L"favicon", L"favicon", L"file"};
+        spec.select.descriptions = {L"", L"Installé, pas encore pris en charge", L""}; spec.select.disabled = {false, true, false};
+        spec.buttons = {Modal::Make(Modal::CancelButton, L"Annuler", Modal::Role::Secondary, false, true, false)};
+        int calls = 0; hd.Show(spec, Area(), [&](const Modal::Result&) { ++calls; });
+        const auto items = Modal::SelectItems(hd.CurrentSpec().select);
+        Check(items.size() == 3 && items[0].image == logo && items[0].enabled && items[0].checked && !items[1].enabled && items[1].description == L"Installé, pas encore pris en charge" && items[2].icon == L"file" && !items[2].image,
+              "select rows: logo, glyph, second line and disabled state reach the list");
+        hd.ActivateForTest(D::SelectHit);
+        Check(hd.Snapshot().select == 0, "select rows: a disabled option is never chosen");
+        chosen = 2; hd.ActivateForTest(D::SelectHit);
+        Check(hd.Snapshot().select == 2, "select rows: an enabled option is chosen");
+        hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose();
+        Check(calls == 1, "select rows: done once");
     }
     {   // Abort / Dispose / owner destroyed: done({-1}) once.
         int calls = 0, button = -9;

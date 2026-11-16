@@ -35,17 +35,19 @@
 
 namespace BrowserImport {
 
-enum class Browser { Chrome, Edge, Brave, Firefox, HtmlFile };
+enum class Browser { Chrome, Edge, Brave, Firefox, HtmlFile, Comet, Chromium };   // append only: values are logged
 inline const wchar_t* BrandName(Browser b) {
     switch (b) {
     case Browser::Chrome: return L"Chrome";     // i18n-exempt: product name
     case Browser::Edge: return L"Edge";         // i18n-exempt: product name
     case Browser::Brave: return L"Brave";       // i18n-exempt: product name
     case Browser::Firefox: return L"Firefox";   // i18n-exempt: product name
+    case Browser::Comet: return L"Comet";       // i18n-exempt: product name
+    case Browser::Chromium: return L"Chromium"; // i18n-exempt: product name
     default: return L"";
     }
 }
-inline bool Chromium(Browser b) { return b == Browser::Chrome || b == Browser::Edge || b == Browser::Brave; }
+inline bool Chromium(Browser b) { return b == Browser::Chrome || b == Browser::Edge || b == Browser::Brave || b == Browser::Comet || b == Browser::Chromium; }
 
 // ---- Bounds (untrusted input) -----------------------------------------------------------------------
 namespace Bound {
@@ -425,15 +427,23 @@ private:
 };
 
 // ---- Discovery (metadata only) ---------------------------------------------------------------------------
-inline std::wstring ChromiumRoot(const Roots& roots, Browser b) {
-    if (roots.local.empty()) return L"";
+// Standard « User Data » folders, from each vendor's documentation (metadata only; nothing else is guessed):
+//  Chrome, Chromium: chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md
+//  Comet (Perplexity, Chromium-based): Perplexity Help Center « Why can't I access Comet? » gives
+//  %LOCALAPPDATA%\Comet\User Data; current Windows builds keep it under the vendor folder,
+//  %LOCALAPPDATA%\Perplexity\Comet\User Data. Both are candidates; the first holding a profile is used.
+inline std::vector<std::wstring> ChromiumRoots(const Roots& roots, Browser b) {
+    if (roots.local.empty()) return {};
     switch (b) {
-    case Browser::Chrome: return roots.local + L"\\Google\\Chrome\\User Data";
-    case Browser::Edge: return roots.local + L"\\Microsoft\\Edge\\User Data";
-    case Browser::Brave: return roots.local + L"\\BraveSoftware\\Brave-Browser\\User Data";
-    default: return L"";
+    case Browser::Chrome: return {roots.local + L"\\Google\\Chrome\\User Data"};
+    case Browser::Edge: return {roots.local + L"\\Microsoft\\Edge\\User Data"};
+    case Browser::Brave: return {roots.local + L"\\BraveSoftware\\Brave-Browser\\User Data"};
+    case Browser::Comet: return {roots.local + L"\\Perplexity\\Comet\\User Data", roots.local + L"\\Comet\\User Data"};
+    case Browser::Chromium: return {roots.local + L"\\Chromium\\User Data"};
+    default: return {};
     }
 }
+inline std::wstring ChromiumRoot(const Roots& roots, Browser b) { const auto r = ChromiumRoots(roots, b); return r.empty() ? L"" : r[0]; }
 inline std::wstring FirefoxRoot(const Roots& roots) { return roots.roaming.empty() ? L"" : roots.roaming + L"\\Mozilla\\Firefox"; }
 inline Roots DefaultRoots() {
     Roots r; PWSTR p = nullptr;
@@ -444,8 +454,8 @@ inline Roots DefaultRoots() {
     return r;
 }
 // Chromium profile folders: « Default » first, then « Profile N » by number.
-inline std::vector<Source> DiscoverChromium(const Roots& roots, Browser b) {
-    std::vector<Source> out; const std::wstring root = ChromiumRoot(roots, b);
+inline std::vector<Source> DiscoverChromiumIn(const std::wstring& root, Browser b) {
+    std::vector<Source> out;
     if (root.empty() || !IsDirectory(root)) return out;
     std::vector<std::pair<long, std::wstring>> names;
     WIN32_FIND_DATAW fd{}; HANDLE find = FindFirstFileExW((root + L"\\*").c_str(), FindExInfoBasic, &fd, FindExSearchLimitToDirectories, nullptr, 0);
@@ -466,6 +476,10 @@ inline std::vector<Source> DiscoverChromium(const Roots& roots, Browser b) {
     }
     for (auto& s : out) s.soleProfile = out.size() == 1;
     return out;
+}
+inline std::vector<Source> DiscoverChromium(const Roots& roots, Browser b) {
+    for (const std::wstring& root : ChromiumRoots(roots, b)) { auto v = DiscoverChromiumIn(root, b); if (!v.empty()) return v; }
+    return {};
 }
 // profiles.ini (metadata: names and folders). Only relative profiles that stay inside the Firefox folder.
 inline std::vector<Source> DiscoverFirefox(const Roots& roots) {
@@ -504,7 +518,7 @@ inline std::vector<Source> DiscoverFirefox(const Roots& roots) {
 }
 inline std::vector<Source> Discover(const Roots& roots) {
     std::vector<Source> out;
-    for (Browser b : {Browser::Chrome, Browser::Edge, Browser::Brave}) { auto v = DiscoverChromium(roots, b); out.insert(out.end(), v.begin(), v.end()); }
+    for (Browser b : {Browser::Comet, Browser::Chrome, Browser::Edge, Browser::Brave, Browser::Chromium}) { auto v = DiscoverChromium(roots, b); out.insert(out.end(), v.begin(), v.end()); }
     auto f = DiscoverFirefox(roots); out.insert(out.end(), f.begin(), f.end());
     return out;
 }

@@ -33,3 +33,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Bookmark promote test compilation failed.' }
 & $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -Isrc tests/browser-import/bookmark_move_test.cpp -o "$out/bookmark_move_test.exe" -lshell32 -lole32 -ladvapi32
 if ($LASTEXITCODE -ne 0) { throw 'Bookmark move test compilation failed.' }
 & "$out/bookmark_move_test.exe" (Resolve-Path $out).Path; if ($LASTEXITCODE -ne 0) { throw 'Bookmark move tests failed.' }
+# Detected browsers with their logos (src/browser-catalog.h): synthetic registrations and roots; logos read as data.
+& $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -Isrc tests/browser-import/browser_catalog_test.cpp -o "$out/browser_catalog_test.exe" -lshell32 -lole32 -ladvapi32 -lgdi32 -luser32
+if ($LASTEXITCODE -ne 0) { throw 'Browser catalog test compilation failed.' }
+& "$out/browser_catalog_test.exe" (Resolve-Path $out).Path; if ($LASTEXITCODE -ne 0) { throw 'Browser catalog tests failed.' }
