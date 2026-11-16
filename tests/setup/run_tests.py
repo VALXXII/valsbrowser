@@ -26,7 +26,7 @@ WINDRES = str(ROOT / 'tools/w64devkit/bin/windres.exe')
 FLAGS = ['-std=c++17', '-O2', '-Wall', '-Wextra', '-Wno-cast-function-type', '-Wno-missing-field-initializers',
          '-static', '-municode', '-Isrc']
 CORE = ['src/update-core.cpp', 'src/update-package.cpp']
-SETUP_LIBS = ['-lwinhttp', '-lbcrypt', '-lole32', '-luuid', '-lshell32', '-lcomctl32', '-ladvapi32', '-luser32', '-lgdi32']
+SETUP_LIBS = ['-lwinhttp', '-lbcrypt', '-lole32', '-luuid', '-lshell32', '-lshlwapi', '-lcomctl32', '-ladvapi32', '-luser32', '-lgdi32']
 COMMIT = '5e' * 20
 sys.path.insert(0, str(ROOT / 'tools/release'))
 import package as K  # noqa: E402

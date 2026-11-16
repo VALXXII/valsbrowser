@@ -65,8 +65,10 @@ inline bool PolicyPresent(HKEY root, const wchar_t* key, const wchar_t* value) {
     return RegGetValueW(root, key, value, RRF_RT_ANY, nullptr, nullptr, &size) == ERROR_SUCCESS;
 }
 // Reads presence only: values are never logged (a folder path can name the user).
-// `exeName` is this process's file name (the documented AppId fallback; no AUMID is set).
-inline Overrides ReadOverrides(const std::wstring& exeName, EnvReader env = EnvPresent, PolicyReader policy = PolicyPresent) {
+// `exeName` is this process's file name (the documented AppId fallback). `appId` is the AppUserModelID an
+// installed copy declares (src/taskbar-identity.h), empty for portable and dev copies: WebView2 honours policies
+// keyed by either, or by "*".
+inline Overrides ReadOverridesFor(const std::wstring& exeName, const std::wstring& appId, EnvReader env = EnvPresent, PolicyReader policy = PolicyPresent) {
     Overrides out;
     struct Item { const wchar_t* variable; const wchar_t* policyKey; const wchar_t* label; bool blocking; };
     static const Item items[] = {
@@ -77,13 +79,17 @@ inline Overrides ReadOverrides(const std::wstring& exeName, EnvReader env = EnvP
     for (const auto& i : items) {
         if (env(i.variable)) { out.items.push_back({i.variable, TR(wv2_override_env), i.blocking}); continue; }
         for (HKEY root : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
-            if ((!exeName.empty() && policy(root, i.policyKey, exeName.c_str())) || policy(root, i.policyKey, L"*")) {
+            if ((!exeName.empty() && policy(root, i.policyKey, exeName.c_str())) || (!appId.empty() && policy(root, i.policyKey, appId.c_str())) ||
+                policy(root, i.policyKey, L"*")) {
                 out.items.push_back({i.label, root == HKEY_LOCAL_MACHINE ? TR(wv2_override_hklm) : TR(wv2_override_hkcu), i.blocking});
                 break;
             }
         }
     }
     return out;
+}
+inline Overrides ReadOverrides(const std::wstring& exeName, EnvReader env = EnvPresent, PolicyReader policy = PolicyPresent) {
+    return ReadOverridesFor(exeName, L"", env, policy);
 }
 
 // ---------------------------------------------------------------- diagnosis
