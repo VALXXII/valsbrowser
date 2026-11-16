@@ -254,6 +254,22 @@ def dpi_of(hwnd):
     return u32.GetDpiForWindow(wt.HWND(hwnd)) or 96
 
 
+def corner_inset(card, owner):
+    """DIP between the card and the owner's client right / bottom edges (the card's corner placement)."""
+    c = wt.RECT(); u32.GetClientRect(owner, ctypes.byref(c)); pt = wt.POINT(c.right, c.bottom); u32.ClientToScreen(owner, ctypes.byref(pt))
+    r = wt.RECT(); u32.GetWindowRect(card, ctypes.byref(r)); s = dpi_of(owner) / 96
+    return (pt.x - r.right) / s, (pt.y - r.bottom) / s
+
+
+def toast_seen(pid, wait):
+    end = time.time() + wait
+    while time.time() < end:
+        if windows(pid, 'BrowserUpdateToast'):
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def size_dip(hwnd):
     r = wt.RECT(); u32.GetWindowRect(hwnd, ctypes.byref(r)); s = dpi_of(hwnd) / 96
     return (r.right - r.left) / s, (r.bottom - r.top) / s
@@ -267,13 +283,21 @@ def scenario_update(name, lang, previous, expect, data=None):
     fix, root, nonce = make_root(name, previous=previous, data=data)
     p, hwnd, log, size = start(fix, root)
     check(hwnd != 0, f'{name}: our window started from the synthetic install root')
-    d = dialog(p.pid, 45)   # the queued Mini shows once the window's profile workspace is up (engine started)
+    d, toast, end = 0, False, time.time() + 45   # the Mini shows once startup settles (first navigation); the toast is watched from launch
+    while time.time() < end and not d:
+        toast = toast or bool(windows(p.pid, 'BrowserUpdateToast')); found = windows(p.pid, 'BrowserModalDialog'); d = found[0] if found else 0
+        time.sleep(0.15)
     check(d != 0, f'{name}: the Nouveautés dialog is on screen after the update')
     state = os.path.join(root, 'data', 'release-notes')
     if d:
         time.sleep(0.6)
         dpi = dpi_of(d); w, h = size_dip(d)
         check(abs(w - 343) <= 1 and abs(h - 218) <= 1, f'{name}: Mini {w:.1f} x {h:.1f} DIP at {dpi} DPI (Paper 343 x 218)')
+        ix, iy = corner_inset(d, hwnd)
+        check(abs(ix - 14) <= 1 and abs(iy - 14) <= 1, f'{name}: bottom-right of the window, {ix:.1f} / {iy:.1f} DIP from its right / bottom edges (14)')
+        check(not windows(p.pid, 'BrowserModalScrim'), f'{name}: no scrim: the window stays usable')
+        check(u32.GetForegroundWindow() != d, f'{name}: shown without taking the keyboard from the page')
+        check(not toast and not toast_seen(p.pid, 3), f'{name}: the « Mise à jour installée » toast is replaced (never shown from launch on)')
         u = ps(PS_DIALOG.format(hwnd=int(d)))
         print('     UIA:', {k: u.get(k) for k in ('name', 'id', 'showall', 'close', 'showallFocus', 'closeFocus', 'offscreen')}, flush=True)
         check(u.get('id') == 'ReleaseNotes' and u.get('name') == expect['title'], f'{name}: UIA dialog {expect["title"]!r} (got {u.get("name")!r})')
@@ -304,6 +328,8 @@ def scenario_update(name, lang, previous, expect, data=None):
         time.sleep(0.6)
         w2, h2 = size_dip(d)
         check(dialog(p.pid, 1) == d and abs(w2 - 343) <= 1 and h2 > 300, f'{name}: Full view in the same dialog: {w2:.1f} x {h2:.1f} DIP (Paper 144O-0 height to content)')
+        ix, iy = corner_inset(d, hwnd)
+        check(abs(ix - 14) <= 1 and abs(iy - 14) <= 1, f'{name}: the Full view stays in the bottom-right corner ({ix:.1f} / {iy:.1f} DIP)')
         u = ps(PS_DIALOG.format(hwnd=int(d)))
         check('showall' not in u and u.get('offscreen') == '0', f'{name}: Full view: no Voir tout, every item on screen')
         shoot(f'{name}-full-{dpi}', d, dpi)
@@ -313,11 +339,12 @@ def scenario_update(name, lang, previous, expect, data=None):
     text = stop(p, hwnd, log, size)
     check('RELEASE NOTES startup: show' in text and 'RELEASE NOTES shown mini' in text and 'RELEASE NOTES seen recorded' in text, f'{name}: log: decision show, shown mini, seen recorded')
     check(text.count('RELEASE NOTES shown') == 1, f'{name}: shown exactly once')
+    check('UPDATE installed toast replaced by Nouveautés' in text, f'{name}: log: installed toast replaced')
     check(os.path.exists(os.path.join(root, 'updates', 'ack-' + nonce)), f'{name}: the startup acknowledgement the helper waits for was written (production NoteStartup)')
     return fix, root
 
 
-def scenario_quiet(name, fix_root=None, previous=None, pending=True, data=None, expect_state=None, expect_log=None):
+def scenario_quiet(name, fix_root=None, previous=None, pending=True, data=None, expect_state=None, expect_log=None, expect_toast=None):
     print(f'-- {name}', flush=True)
     if fix_root:
         fix, root = fix_root
@@ -329,6 +356,9 @@ def scenario_quiet(name, fix_root=None, previous=None, pending=True, data=None, 
     state = os.path.join(root, 'data', 'release-notes'); before = read(state)
     p, hwnd, log, size = start(fix, root)
     check(hwnd != 0, f'{name}: our window started')
+    if expect_toast is not None:
+        seen = toast_seen(p.pid, 15)
+        check(seen == expect_toast, f'{name}: « Mise à jour installée » toast {"shown (nothing replaces it)" if expect_toast else "absent"}')
     d = dialog(p.pid, 25)
     check(d == 0, f'{name}: no Nouveautés dialog (25 s observed)')
     text = stop(p, hwnd, log, size)
@@ -383,7 +413,7 @@ def main():
     first = scenario_update('update-fr', 'fr', 'installed 0.3.379\n', fr)
     scenario_quiet('restart', fix_root=first)
     scenario_quiet('first-install', previous=None, expect_state=SEEN, expect_log='RELEASE NOTES baseline recorded (first install)')
-    scenario_quiet('already-seen', previous='installed 0.3.379\n', data={'release-notes': SEEN}, expect_log='RELEASE NOTES startup: hidden (state ok)')
+    scenario_quiet('already-seen', previous='installed 0.3.379\n', data={'release-notes': SEEN}, expect_log='RELEASE NOTES startup: hidden (state ok)', expect_toast=True)
     scenario_quiet('future-state', previous='installed 0.3.379\n', data={'release-notes': 'browser-release-notes 9\nseen=x\n'}, expect_log='RELEASE NOTES startup: hidden (state unknown-version)')
     scenario_update('update-en', 'en', 'portable C:\\portable\\browser\n', en)
     scenario_update('reduced', 'fr', 'installed 0.3.379\n', dict(fr, reduced=True), data={'settings': 'browser-settings 1\nreduce-motion=1\n'})

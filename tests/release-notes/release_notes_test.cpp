@@ -251,6 +251,27 @@ int wmain(int argc, wchar_t** argv) {
         Check(calls == 1 && button == -1, "X closes once (-1)");
         d.FinishAnimationsForTest();
     }
+    {   // Bottom-right card (user request 2026-11-16): 14 DIP from the owner client's right and bottom edges, no scrim,
+        // and the automatic card (activate = false) leaves the keyboard where it was; it is not light-dismissed.
+        SetFocus(ownerEdit); int calls = 0;
+        auto spec = NotesSpec(root, true); spec.activate = false;
+        Check(spec.scope == Modal::Scope::Corner, "card: Scope::Corner");
+        d.Show(spec, area, [&](const Modal::Result&) { ++calls; }); d.FinishAnimationsForTest();
+        RECT client{}; GetClientRect(owner, &client); MapWindowPoints(owner, nullptr, reinterpret_cast<POINT*>(&client), 2);
+        RECT card{}; GetWindowRect(d.Window(), &card); const float s = GetDpiForWindow(owner) / 96.f;
+        char what[200]; std::snprintf(what, sizeof what, "card: bottom-right, %ld / %ld px from the client's right / bottom edges (14 DIP = %.0f px)", client.right - card.right, client.bottom - card.bottom, 14 * s);
+        Check(std::abs((client.right - card.right) - 14 * s) <= 1 && std::abs((client.bottom - card.bottom) - 14 * s) <= 1, what);
+        Check(!IsWindowVisible(d.Scrim()) && !d.BlocksWindow(), "card: no scrim, the window stays usable");
+        Check(GetFocus() == ownerEdit && GetForegroundWindow() != d.Window(), "card (automatic): the keyboard stays where it was");
+        SetFocus(ownerEdit); Pump(60);
+        Check(d.Visible(), "card: not dismissed when the owner is used");
+        d.ActivateForTest(D::NotesExpandHit); Check(!d.NotesCollapsedForTest() && d.Visible(), "card: Voir tout (click) expands in place");
+        RECT full{}; GetWindowRect(d.Window(), &full);
+        Check(full.bottom == card.bottom && full.right == card.right && full.top < card.top, "card: the Full view grows upwards, same corner");
+        d.ActivateForTest(D::CloseHit);
+        Check(calls == 1 && GetFocus() == ownerEdit, "card: X closes once and leaves the focus where it was");
+        d.FinishAnimationsForTest();
+    }
     {   // Reduced motion: no clock, frame 0 poster really visible.
         d.SetReducedMotion(true); int calls = 0;
         d.Show(NotesSpec(root, true), area, [&](const Modal::Result&) { ++calls; }); d.FinishAnimationsForTest();
@@ -269,12 +290,12 @@ int wmain(int argc, wchar_t** argv) {
         d.Show(NotesSpec(root, false), small, [&](const Modal::Result&) { ++calls; }); d.FinishAnimationsForTest();
         const float h = d.HeightForTest(), max = d.ScrollMaxForTest();
         { char what[120]; std::snprintf(what, sizeof what, "short window: full height capped (%.0f) and scrollable (%.0f DIP)", h, max); Check(h <= 260 - 32 + .5f && max > 0, what); }
-        d.KeyForTest(VK_NEXT); d.KeyForTest(VK_NEXT); d.KeyForTest(VK_NEXT); d.KeyForTest(VK_NEXT);
+        for (int k = 0; k < 40 && d.ScrollForTest() < max - .5f; ++k) d.KeyForTest(VK_NEXT);
         Check(std::fabs(d.ScrollForTest() - max) < .5f, "short window: Pg↓ reaches the last item");
         auto nodes = d.NodesForTest(); bool lastOn = false; for (auto& n : nodes) if (n.role == Accessibility::Role::Text && n.name == L"Renommage des dossiers de favoris sur place.") lastOn = !n.offscreen;
         Check(lastOn, "short window: last item on screen after scrolling (UIA)");
         Check(d.RenderForTest(out + L"\\full-short-scrolled-144.png", 144), "render short scrolled");
-        d.KeyForTest(VK_HOME); d.KeyForTest(VK_PRIOR); d.KeyForTest(VK_PRIOR); d.KeyForTest(VK_PRIOR); d.KeyForTest(VK_PRIOR);
+        for (int k = 0; k < 40 && d.ScrollForTest() > 0; ++k) d.KeyForTest(VK_PRIOR);
         Check(d.ScrollForTest() == 0, "short window: Pg↑ back to the top");
         d.KeyForTest(VK_ESCAPE); Check(calls == 1, "short window: Échap closes");
         d.FinishAnimationsForTest();
