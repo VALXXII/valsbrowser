@@ -11,6 +11,20 @@ Commits locaux, rien de poussé ni fusionné :
 
 Source de vérité : Paper `01M6Q7YT14ZKMGET54ASPNGQEC`, page `p-L-0`, planches `142E-0` « Nouveautés log (Mini) » et `144O-0` « Nouveautés log (Full opened) ». Lecture seule : aucun changement Paper, tokens (`b37eaa4f` avant/après), commentaires ou pages. Les anciennes planches `12VC/12WI` et `13YN` ne sont pas implémentées.
 
+## 0. Révision du 16 novembre (demande utilisateur, après le premier rapport)
+
+Commits `8a33e64` (lanceur de test) puis le commit de révision (voir `git log`). Elle remplace ce que disent les §1 et §3 sur le voile, le centrage et la file des modales.
+
+- **En bas à droite, sans voile, non bloquante.** Nouveau `MD::Scope::Corner` : coin bas droit de la zone client de la fenêtre, 14 DIP des bords droit et bas, ramené dans la zone de travail de l'écran si la fenêtre maximisée déborde. La vue complète grandit vers le haut dans le même coin. Elle n'est pas fermée par un clic ailleurs.
+- **Sa propre fenêtre, hors de la file des modales.** `notesCard`, une seconde `MD::Dialog`, créée, rendue, animée et libérée avec les autres surfaces. Elle ne retient donc jamais une question de page (alert, confirm), la confirmation de fermeture de fenêtre ni un paiement en cours.
+- **Ne vole pas le clavier à l'ouverture automatique** (`Spec::activate = false`). Un clic ou l'UIA l'atteint ; une fois activée, Tab, Entrée et Échap fonctionnent. À la fermeture, le focus n'est rendu que si elle l'avait pris. Ouverte depuis « À propos », elle prend le clavier comme avant.
+- **Remplace « Mise à jour installée ».** Quand la carte va s'ouvrir après une mise à jour, la notification n'est pas montrée : `ShowUpdateView` présente une vue vide à la notification tant que la phase est Installed. Le pied de page des Réglages garde son statut. Quand la carte ne s'ouvre pas (notes déjà vues, première installation), la notification reste comme avant (vérifié en e2e, scénario `already-seen`).
+- **Lanceur de test** `--release-notes-preview` : ouvre la petite version au démarrage, n'écrit jamais l'état de lecture, sans menu ni raccourci. Fichier `Voir la modale Nouveautes.cmd` à côté du build.
+
+Preuves de la révision : `test-release-notes.txt` (235 vérifications, 0 échec, dont position, absence de voile, clavier laissé à la page, fermeture sans vol de focus), `release_notes_e2e-run4-corner.txt` (vrai navigateur, 0 échec : coin à 14,4 DIP à 120 DPI, notification absente depuis le lancement, présente quand les notes sont déjà vues), `test-popups-skippixels-corner.txt` + `modal_test-reruns-corner.txt` (même échec intermittent « Période » au premier passage, puis 3 × 278/0), `test-elements-integration.txt` PASS, `i18n-gate.txt` 0.
+
+Builds : `build/release-notes-coin/` (0.3.384, avec le lanceur) et `build/release-notes-e2e/`.
+
 ## 1. Contrat (validé par le coordinateur au checkpoint)
 
 **Ce qui déclenche la mini.** Elle apparaît une seule fois, après une mise à jour réussie. Toutes ces conditions doivent être vraies :
@@ -117,7 +131,7 @@ Valeurs lues dans `get_jsx` (sans identifiants de nœuds) et `get_computed_style
 2. **Texte.** Il tombe environ 1 DIP plus bas que la capture Paper, uniformément. Les colonnes concordent à ±0,5 DIP et les icônes, séparateurs et bouton sont aux mêmes lignes de pixels. L'écart vient de la boîte de ligne de `Kit::Text`, commune à toutes les modales.
 3. **Anneau de focus.** Après « Voir tout » au clavier, le focus passe sur Fermer et son anneau s'affiche. C'est le comportement des modales existantes ; Paper ne dessine aucun état de focus.
 4. **Fenêtre trop basse pour la vue complète.** Le corps défile (molette, ↑/↓, Pg↑/Pg↓) avec la marque de position discrète déjà utilisée pour les longs messages. Paper ne dessine pas ce cas.
-5. **Scrim.** Comme « À propos » (`Scope::Window`), la modale ajoute le voile noir 40 % des modales navigateur. Paper ne montre pas le contexte.
+5. **Position (demande utilisateur, 16 nov.).** Carte en bas à droite de la fenêtre, à 14 DIP des bords droit et bas (même marge que la notification de mise à jour, qui est en bas à gauche), sans voile, la page reste utilisable. Paper ne montre pas le contexte.
 
 ## 4. Logo Lottie
 
