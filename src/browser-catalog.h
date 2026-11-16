@@ -56,17 +56,42 @@ inline std::pair<std::wstring, int> IconSpec(const std::wstring& spec) {
     if (comma != std::wstring::npos && comma + 1 < s.size() && s.find_first_not_of(L" -0123456789", comma + 1) == std::wstring::npos) { index = std::wcstol(s.c_str() + comma + 1, nullptr, 10); s = AddressBar::Trim(s.substr(0, comma)); }
     return {s, index};
 }
-// A logo may be read only from here (see the header): absolute, local fixed drive, regular file, known type.
-inline bool IconPathAllowed(const std::wstring& path) {
-    if (path.size() < 4 || path.size() > 1024 || path[1] != L':' || path[2] != L'\\' || !std::iswalpha(path[0])) return false;   // no UNC, no \\?\, no relative
-    if (path.find(L"..") != std::wstring::npos || path.find(L'/') != std::wstring::npos) return false;
+// A logo may be read only from here (review 40dc694): an absolute path on a local fixed drive, inside at least one
+// folder, to a regular .exe / .dll / .ico — checked on the OPEN objects, not on names. LogoFile opens every folder of
+// the path from the drive's first folder down without following any reparse point (Pin: each must resolve to itself,
+// so a junction or symbolic link at any level is refused) and the file itself the same way, and HOLDS them: folders
+// without delete sharing (no ancestor can be renamed, deleted or replaced by a junction), the file shared for reading
+// only (it cannot be rewritten, renamed or replaced). The loader then opens that very path while everything is held;
+// all handles close after it. Anything else: no logo (the neutral glyph), the loader never called.
+inline bool LogoPathShape(const std::wstring& path) {
+    if (path.size() < 8 || path.size() > 1024 || path[1] != L':' || path[2] != L'\\' || !std::iswalpha(path[0])) return false;   // no UNC, no \\?\, no relative
+    if (path.find(L':', 2) != std::wstring::npos || path.find(L"..") != std::wstring::npos || path.find(L'/') != std::wstring::npos || path.find(L"\\\\") != std::wstring::npos) return false;   // no stream, no climbing
+    if (path.find(L'\\', 3) == std::wstring::npos) return false;   // directly at the drive root: never a browser's
     const std::wstring ext = Html::Lower(path.substr(path.size() - 4));
     if (ext != L".exe" && ext != L".dll" && ext != L".ico") return false;
     const wchar_t drive[] = {path[0], L':', L'\\', 0};
-    if (GetDriveTypeW(drive) != DRIVE_FIXED) return false;
-    const DWORD a = GetFileAttributesW(path.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && !(a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS));
+    return GetDriveTypeW(drive) == DRIVE_FIXED;
 }
+class LogoFile {
+public:
+    LogoFile() = default; LogoFile(const LogoFile&) = delete; LogoFile& operator=(const LogoFile&) = delete;
+    ~LogoFile() { if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_); }
+    bool Open(const std::wstring& path) {
+        if (!LogoPathShape(path)) return false;
+        const std::wstring folder = Parent(path), first = path.substr(0, path.find(L'\\', 3));
+        if (pin_.Open(first, folder) != Failure::None) return false;
+        file_ = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (file_ == INVALID_HANDLE_VALUE) return false;
+        BY_HANDLE_FILE_INFORMATION info{};
+        if (!PlainHandle(file_) || !GetFileInformationByHandle(file_, &info) || (info.dwFileAttributes & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS))) return false;
+        return pin_.Contains(file_, FileName(path));   // the file itself is where the held folders say
+    }
+private:
+    Pin pin_; HANDLE file_ = INVALID_HANDLE_VALUE;
+};
+inline bool IconPathAllowed(const std::wstring& path) { LogoFile f; return f.Open(path); }
+// Tests only: called after the checks, while everything is held, just before the loader opens the path.
+inline std::function<void(const std::wstring&)>& LogoHeldForTest() { static std::function<void(const std::wstring&)> hook; return hook; }
 // A registered display name, made safe to show: no control characters, bounded.
 inline std::wstring CleanName(const std::wstring& n) {
     std::wstring out; for (wchar_t c : n) { if (c < 0x20 || c == 0x7F || (c >= 0x202A && c <= 0x202E) || (c >= 0x2066 && c <= 0x2069)) continue; out += c; if (out.size() >= 64) break; }
@@ -206,7 +231,9 @@ inline std::shared_ptr<const FaviconImage> IconPixels(HICON icon) {
     return out;
 }
 inline std::shared_ptr<const FaviconImage> LoadLogo(const std::wstring& path, int index, int size = 32) {
-    if (!IconPathAllowed(path)) return nullptr;
+    LogoFile held;   // folders and file held until the end of this function (see LogoFile)
+    if (!held.Open(path)) return nullptr;
+    if (LogoHeldForTest()) LogoHeldForTest()(path);
     HICON icon = nullptr;
     if (Html::Lower(path.substr(path.size() - 4)) == L".ico") {
         icon = static_cast<HICON>(LoadImageW(nullptr, path.c_str(), IMAGE_ICON, size, size, LR_LOADFROMFILE));
@@ -217,7 +244,7 @@ inline std::shared_ptr<const FaviconImage> LoadLogo(const std::wstring& path, in
         if (index < 0) group = MAKEINTRESOURCEW(static_cast<WORD>(-index));
         else {
             struct Find { int want, at = 0; LPCWSTR found = nullptr; std::wstring name; } f{index};
-            EnumResourceNamesW(m, RT_GROUP_ICON, [](HMODULE, LPCWSTR, LPWSTR name, LONG_PTR p) -> BOOL {
+            EnumResourceNamesW(m, MAKEINTRESOURCEW(14) /* RT_GROUP_ICON */, [](HMODULE, LPCWSTR, LPWSTR name, LONG_PTR p) -> BOOL {
                 auto* f = reinterpret_cast<Find*>(p);
                 if (f->at++ != f->want) return TRUE;
                 if (IS_INTRESOURCE(name)) f->found = name; else { f->name = name; f->found = f->name.c_str(); }
@@ -226,10 +253,10 @@ inline std::shared_ptr<const FaviconImage> LoadLogo(const std::wstring& path, in
             if (f.found && !IS_INTRESOURCE(f.found)) { names.push_back(f.name); group = names.back().c_str(); } else group = f.found;
         }
         if (group) {
-            HRSRC dir = FindResourceW(m, group, RT_GROUP_ICON); HGLOBAL dirData = dir ? LoadResource(m, dir) : nullptr;
+            HRSRC dir = FindResourceW(m, group, MAKEINTRESOURCEW(14) /* RT_GROUP_ICON */); HGLOBAL dirData = dir ? LoadResource(m, dir) : nullptr;
             auto* bits = dirData ? static_cast<PBYTE>(LockResource(dirData)) : nullptr;
             const int id = bits ? LookupIconIdFromDirectoryEx(bits, TRUE, size, size, LR_DEFAULTCOLOR) : 0;
-            HRSRC one = id ? FindResourceW(m, MAKEINTRESOURCEW(id), RT_ICON) : nullptr; HGLOBAL oneData = one ? LoadResource(m, one) : nullptr;
+            HRSRC one = id ? FindResourceW(m, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(3) /* RT_ICON */) : nullptr; HGLOBAL oneData = one ? LoadResource(m, one) : nullptr;
             auto* iconBits = oneData ? static_cast<PBYTE>(LockResource(oneData)) : nullptr;
             const DWORD length = one ? SizeofResource(m, one) : 0;
             if (iconBits && length) icon = CreateIconFromResourceEx(iconBits, length, TRUE, 0x00030000, size, size, LR_DEFAULTCOLOR);

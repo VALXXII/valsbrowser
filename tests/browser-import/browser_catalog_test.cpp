@@ -51,6 +51,53 @@ int wmain(int argc, wchar_t** argv) {
         OK(!LoadLogo(std::wstring(windows) + L"\\explorer.exe", 9999));   // no such icon: fallback
     }
 
+    // ---- Logo provenance (review 40dc694): every folder and the file held, no reparse point at any level ------------
+    {
+        wchar_t windows[MAX_PATH]{}; GetWindowsDirectoryW(windows, MAX_PATH);
+        const std::wstring box = work + L"\\logo-box", real = box + L"\\real\\deep";
+        Dirs(real); CHECK(CopyFileW((std::wstring(windows) + L"\\explorer.exe").c_str(), (real + L"\\logo.exe").c_str(), FALSE));
+        CHECK(CopyFileW(self.c_str(), (box + L"\\plain.exe").c_str(), FALSE));
+        // A minimal 16 x 16 32-bit .ico (one entry, opaque blue): the .ico path through the same checks.
+        std::string ico; auto u16 = [&](unsigned v) { ico += char(v & 255); ico += char(v >> 8 & 255); }; auto u32 = [&](unsigned v) { u16(v & 0xFFFF); u16(v >> 16); };
+        u16(0); u16(1); u16(1); ico += char(16); ico += char(16); ico += char(0); ico += char(0); u16(1); u16(32); u32(40 + 16 * 16 * 4 + 16 * 4); u32(22);
+        u32(40); u32(16); u32(32); u16(1); u16(32); u32(0); u32(16 * 16 * 4 + 16 * 4); u32(0); u32(0); u32(0); u32(0);
+        for (int i = 0; i < 16 * 16; ++i) { ico += char(255); ico += char(0); ico += char(0); ico += char(255); }
+        ico += std::string(16 * 4, '\0');
+        Put(real + L"\\logo.ico", ico);
+        const DWORD handlesBefore = [] { DWORD n = 0; GetProcessHandleCount(GetCurrentProcess(), &n); return n; }();
+        OK(IconPathAllowed(real + L"\\logo.exe") && LoadLogo(real + L"\\logo.exe", 0) && LoadLogo(real + L"\\logo.ico", 0));   // positive controls
+        for (int i = 0; i < 20; ++i) { LoadLogo(real + L"\\logo.exe", 0); LoadLogo(real + L"\\logo.ico", 0); LoadLogo(box + L"\\plain.exe", 0); IconPathAllowed(box + L"\\missing.exe"); }
+        DWORD handlesAfter = 0; GetProcessHandleCount(GetCurrentProcess(), &handlesAfter);
+        OK(handlesAfter <= handlesBefore + 2);   // no handle left open by the checks or the loader
+        // Junction one level above the file, then two levels above: refused before any loader call.
+        auto junction = [](const std::wstring& link, const std::wstring& target) { const std::wstring c = L"cmd.exe /c mklink /J \"" + link + L"\" \"" + target + L"\" >nul"; return _wsystem(c.c_str()) == 0; };
+        int loaderCalls = 0; LogoHeldForTest() = [&](const std::wstring&) { ++loaderCalls; };
+        CHECK(junction(box + L"\\one", real) && junction(box + L"\\two", box + L"\\real"));
+        OK(IsReparse(box + L"\\one") && !IconPathAllowed(box + L"\\one\\logo.exe") && !LoadLogo(box + L"\\one\\logo.exe", 0) && !LoadLogo(box + L"\\one\\logo.ico", 0));
+        OK(IsReparse(box + L"\\two") && !IconPathAllowed(box + L"\\two\\deep\\logo.exe") && !LoadLogo(box + L"\\two\\deep\\logo.exe", 0));
+        OK(loaderCalls == 0);   // the loader was never reached through a reparse point
+        RemoveDirectoryW((box + L"\\one").c_str()); RemoveDirectoryW((box + L"\\two").c_str());
+        // Deterministic swap between the checks and the loader: while held, neither the file nor any folder of its path
+        // can be renamed, replaced or turned into a junction; the logo read is the checked one.
+        bool swapped = true;
+        LogoHeldForTest() = [&](const std::wstring& path) {
+            ++loaderCalls;
+            const bool file = MoveFileExW(path.c_str(), (path + L".old").c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+            const bool over = CopyFileW((box + L"\\plain.exe").c_str(), path.c_str(), FALSE) != 0;
+            const bool folder = MoveFileExW(real.c_str(), (real + L"-moved").c_str(), 0) != 0;
+            const bool ancestor = MoveFileExW((box + L"\\real").c_str(), (box + L"\\real-moved").c_str(), 0) != 0;
+            swapped = file || over || folder || ancestor;
+        };
+        const auto held = LoadLogo(real + L"\\logo.exe", 0);
+        OK(loaderCalls == 1 && !swapped && held && held->width == 32);
+        LogoHeldForTest() = nullptr;
+        // Control: once released, the same swap succeeds (the hold is what prevented it), and the replacement — an
+        // executable without icon — gives the neutral glyph.
+        OK(MoveFileExW((real + L"\\logo.exe").c_str(), (real + L"\\logo.exe.old").c_str(), 0) && CopyFileW((box + L"\\plain.exe").c_str(), (real + L"\\logo.exe").c_str(), FALSE));
+        OK(!LoadLogo(real + L"\\logo.exe", 0));
+        OK(!IconPathAllowed(L"C:\\logo.exe") && !IconPathAllowed(real + L"\\logo.exe:stream") && !IconPathAllowed(box + L"\\\\real\\deep\\logo.ico"));
+    }
+
     // ---- Synthetic roots: Comet with two profiles in its PRIMARY folder (a different, stale secondary copy beside it),
     // Brave data without registration ------------------------------------------------------------------------------
     static const std::string kSecondary = R"({"roots":{"bookmark_bar":{"type":"folder","name":"bar","children":[{"type":"url","name":"s","url":"https://secondary.example/"}]}}})";
