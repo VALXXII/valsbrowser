@@ -568,6 +568,18 @@ I18N(about_release_notes, L"Notes de version", L"Release notes")
 I18N(about_licenses, L"Licences des composants tiers", L"Third-party licenses")
 I18N(about_report, L"Signaler un problème", L"Report a problem")
 I18N(about_engine_footnote, L"Moteur Microsoft Edge WebView2 · runtime système", L"Microsoft Edge WebView2 engine · system runtime")
+
+// ---- « Nouveautés » release notes (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0) -------------
+// The items describe what THIS build ships; bump ReleaseNotes::NotesId when they change.
+I18N(release_notes_title, L"Nouveautés", L"What’s new")
+I18N(release_notes_added, L"Ajouts", L"Added")
+I18N(release_notes_fixed, L"Corrections", L"Fixed")
+I18N(release_notes_item_language, L"Français ou anglais, au choix dans réglages.", L"French or English, your choice in Settings.")
+I18N(release_notes_item_address, L"Sélection de l’adresse aux couleurs du profil.", L"Address selection in your profile’s color.")
+I18N(release_notes_item_tabs, L"Changement d’onglet sans flou.", L"Switching tabs without blur.")
+I18N(release_notes_item_fullscreen, L"Le plein écran masque la barre du navigateur.", L"Full screen hides the browser bar.")
+I18N(release_notes_item_rename, L"Renommage des dossiers de favoris sur place.", L"Bookmark folders renamed in place.")
+I18N(release_notes_show_all, L"Voir tout", L"Show all")
 I18N(private_unavailable_title, L"Navigation privée indisponible", L"Private browsing unavailable")
 I18N(private_unavailable_body, L"Cette version n'a pas encore de fenêtre privée. Vos onglets utilisent le profil habituel : cookies, cache et historique sont conservés.", L"This version doesn’t have a private window yet. Your tabs use your usual profile: cookies, cache and history are kept.")
 I18N(private_unavailable_footnote, L"Aucun onglet n'a été ouvert.", L"No tab was opened.")

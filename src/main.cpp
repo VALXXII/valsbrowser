@@ -3989,6 +3989,8 @@ void StartUpdates(UpdateCore::Config config=UpdateConfig()){
     updatesStarted=updates.Start(config);
     Log(updatesStarted?L"UPDATE engine started "+config.currentVersion:L"UPDATE engine disabled");
     ShowUpdateView();ArmUpdateTimer();
+    // « Nouveautés » Mini once after a successful update (src/release-notes.h): Installed is set by Start itself.
+    ReleaseNotesAtStartup(updatesStarted&&updates.View().phase==BrowserUpdate::Phase::Installed,config.installRoot.empty()?UpdateCore::DefaultInstallRoot():config.installRoot,config.currentVersion,profileRoot.empty()?dataDir:profileRoot);
 }
 bool UpdateCheckAvailable(){return updatesStarted&&!closingForInstall;}
 // A8 « À propos »: the engine's real state (same source as the toast and the Réglages footer).

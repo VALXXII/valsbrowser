@@ -24,6 +24,7 @@
 #include "debug-sandbox.h"
 #include "shortcuts-panel.h"
 #include "update-toast-motion.h" // FormatSize: the one validated progress format (toast, A6)
+#include "release-notes.h"     // « Nouveautés »: content, read state, automatic display rule
 #include <deque>
 #include <shellapi.h>
 #include <netlistmgr.h>
@@ -820,6 +821,7 @@ std::wstring ReleaseNotesUrl(const std::wstring& version){
 bool AboutOpen(){return modalOpen&&modalActive.spec.kind==MD::Kind::About&&!modalActive.spec.demo;}
 // The update engine notified: an open « À propos » shows the new state at once.
 void RefreshAboutStatus(){if(AboutOpen())modal.SetStatus(AboutStatusNow());}
+void ShowReleaseNotes(bool mini,std::function<void()> shown=nullptr);
 void ShowAboutDialog(int demoState){
     auto spec=MD::AboutSpec(RunningVersion(),demoState<0?MD::AboutUpToDate:demoState);
     if(demoState>=0)spec.demo=true;
@@ -835,12 +837,41 @@ void ShowAboutDialog(int demoState){
     const bool demo=demoState>=0;
     AskModal(std::move(spec),nullptr,[demo](const MD::Result& r){
         if(r.button==MD::AboutLicensesLink){std::wstring dir=base;ShellExecuteW(window,L"open",dir.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}
-        else if(r.button==MD::AboutNotesLink){const auto url=ReleaseNotesUrl(RunningVersion());Log(L"ABOUT release notes "+url);Defer([url]{NewTab(url,-1,L"");});}
+        else if(r.button==MD::AboutNotesLink){Log(L"ABOUT release notes: Nouveautés (full)");Defer([]{ShowReleaseNotes(false);});}
         else if(r.button==MD::AboutReportLink){Log(L"ABOUT report a problem");Defer([]{NewTab(IssuesUrl,-1,L"");});}
         else if(!demo&&r.button==MD::AboutRestartButton)AboutUpdateAction(MD::AboutRestartButton);
     });
 }
 void ShowAboutDialog(){ShowAboutDialog(-1);}
+// « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes, never fetched.
+// `mini`: the automatic Mini after an update (« Voir tout » expands it in place); else the Full view.
+// `shown` runs only once the dialog is really on screen (a queued job that never shows never calls it).
+std::wstring ReleaseNotesLogo(){return base+L"\\assets\\lottie\\logo-spin.json";}
+void ShowReleaseNotes(bool mini,std::function<void()> shown){
+    std::vector<MD::NoteSection> sections;const auto notes=ReleaseNotes::Current();
+    for(const auto& s:notes)sections.push_back({s.kind==ReleaseNotes::Kind::Fixed,s.title,s.items});
+    auto spec=MD::ReleaseNotesSpec(std::move(sections),ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini);
+    spec.onShown=[mini,shown]{Log(std::wstring(L"RELEASE NOTES shown ")+(mini?L"mini":L"full"));if(shown)shown();};
+    spec.onButton=[](int id){if(id==MD::Dialog::NotesExpandHit)Log(L"RELEASE NOTES expanded (Voir tout)");};
+    AskModal(std::move(spec),nullptr,[](const MD::Result&){Log(L"RELEASE NOTES closed");});
+}
+// Automatic Mini after a successful update, at most once per notes content (ReleaseNotes::Decide).
+// `startupInstalled`: the update engine reported Installed when it started (the helper-launched process).
+// `dataRoot`: the GLOBAL data root (profileRoot, else dataDir) where the read state lives; never a private window's.
+void ReleaseNotesAtStartup(bool startupInstalled,const std::wstring& installRoot,const std::wstring& version,const std::wstring& dataRoot){
+    if(privateWindow||smoke||dataRoot.empty())return;
+    std::string previousBytes;ReleaseNotes::Previous previous;
+    if(startupInstalled){if(ProfileStore::ReadAll(installRoot+L"\\previous",previousBytes))previous=ReleaseNotes::ParsePrevious(previousBytes);else previous.kind=ReleaseNotes::Previous::Kind::Invalid;}
+    const auto state=startupInstalled?ReleaseNotes::Load(dataRoot):ReleaseNotes::State{};
+    std::string current;for(wchar_t c:version)current.push_back(c<128?static_cast<char>(c):'?');
+    const auto decision=ReleaseNotes::Decide(startupInstalled,previous,current,state);
+    if(!startupInstalled)return; // ordinary launch, other window, dev build: nothing read, nothing logged
+    {const char* d=ReleaseNotes::DecisionText(decision);const char* st=ReleaseNotes::StatusText(state.status);
+     Log(L"RELEASE NOTES startup: "+std::wstring(d,d+std::strlen(d))+L" (state "+std::wstring(st,st+std::strlen(st))+L")");}
+    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return;}
+    if(decision!=ReleaseNotes::Decision::Show)return;
+    Defer([dataRoot]{ShowReleaseNotes(true,[dataRoot]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");});});
+}
 void ShowPrivateDialog(bool future){AskModal(MD::PrivateSpec(future),nullptr,[future](const MD::Result& r){if(r.button==MD::PrivateClearDataButton)AskClearBrowsingData(future,nullptr);});}
 
 // ---------------------------------------------------------------------------------------
