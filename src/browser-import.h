@@ -1046,20 +1046,33 @@ inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::str
 }
 } // namespace detail
 namespace detail {
-// Is every entry of folder `id` one of `items` (links by address, folders by title; multiplicity respected)? An empty
-// folder proves nothing.
+// Is every entry of folder `id`, AT EVERY DEPTH, one of `items` (review eb542bc)? Links by address, folders by title
+// AND their own content, recursively, each source entry used once (multiplicity respected). A folder's title alone
+// proves nothing about what is inside it. Same-titled source folders are tried in order and the first one that
+// covers the candidate is taken (greedy: a rare valid pairing it misses is only left in place, never moved). The
+// comparison is bounded by `budget` steps: over it, nothing is proven. An empty folder at the top proves nothing.
+inline bool Covers(const Bookmarks::Store& s, Bookmarks::Id id, const std::vector<Item>& items, std::size_t& budget) {
+    const Bookmarks::Node* n = s.Find(id);
+    if (!n || n->kind != Bookmarks::Kind::Folder) return false;
+    std::map<std::wstring, std::size_t> links;
+    std::map<std::wstring, std::vector<const Item*>> folders;
+    for (const Item& it : items) { if (it.folder) folders[it.title].push_back(&it); else ++links[Bookmarks::UrlKey(it.url)]; }
+    for (Bookmarks::Id k : n->children) {
+        if (budget == 0) return false;
+        --budget;
+        const Bookmarks::Node* c = s.Find(k);
+        if (c->kind != Bookmarks::Kind::Folder) { auto& left = links[Bookmarks::UrlKey(c->url)]; if (left == 0) return false; --left; continue; }
+        auto& same = folders[c->title]; bool matched = false;
+        for (auto& f : same) if (f && Covers(s, k, f->children, budget)) { f = nullptr; matched = true; break; }
+        if (!matched) return false;
+    }
+    return true;
+}
 inline bool ContentOf(const Bookmarks::Store& s, Bookmarks::Id id, const std::vector<Item>& items) {
     const Bookmarks::Node* n = s.Find(id);
     if (!n || n->kind != Bookmarks::Kind::Folder || n->children.empty()) return false;
-    std::map<std::wstring, std::size_t> have;
-    for (const Item& it : items) ++have[it.folder ? L"F" + it.title : L"L" + Bookmarks::UrlKey(it.url)];
-    for (Bookmarks::Id k : n->children) {
-        const Bookmarks::Node* c = s.Find(k);
-        auto& left = have[c->kind == Bookmarks::Kind::Folder ? L"F" + c->title : L"L" + Bookmarks::UrlKey(c->url)];
-        if (left == 0) return false;
-        --left;
-    }
-    return true;
+    std::size_t budget = 200000;   // steps (each visits one bookmark of the person's tree; a repeated attempt counts again)
+    return Covers(s, id, items, budget);
 }
 // The ONE folder among `candidates` whose content is `items`' (see ContentOf); 0 if none or more than one.
 inline Bookmarks::Id Proven(const Bookmarks::Store& s, const std::vector<Bookmarks::Id>& candidates, const std::vector<Item>& items) {

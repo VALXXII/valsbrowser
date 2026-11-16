@@ -969,6 +969,82 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Review eb542bc P2: nested folders are proven by their own content, at every depth -------------------------
+    {
+        auto group = [](BM::Store& s, FolderMap& m) { const BM::Id g = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5); m.Prefer("html", {g, 5}); return g; };
+        const std::string marked = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><H3>Docs</H3><DL><p><DT><A HREF=\"https://different-export.example/\">new</A></DL><p></DL><p></DL><p>";
+        {   // The reviewer's case (marked root): old wrapper › Docs › another export's link. Not this file's: kept, nothing merged.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id wrapper = s.AddFolder(g, BM::End, L"Bookmarks bar", 6), docs = s.AddFolder(wrapper, BM::End, L"Docs", 7);
+            const BM::Id own = s.Add(docs, BM::End, L"private", L"https://old-export.example/", 8);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\different.html"), ParseHtmlBookmarks(marked).roots, now, &m);
+            OK(s.Find(wrapper) && s.Find(wrapper)->parent == g && s.Find(docs)->parent == wrapper && s.Find(own)->parent == docs && s.Find(docs)->children.size() == 1);
+            OK(c.moved == 0 && c.kept == 1 && c.imported == 1);   // the new export's Docs is created on the bar, apart
+            const BM::Id fresh = Child(s, BM::BarRoot, L"Docs"); OK(fresh && fresh != docs && Titles(s, fresh) == std::vector<std::wstring>{L"new"});
+        }
+        {   // Unmarked top-level variant: group › Rent › another export's link vs this file's Rent › other link: kept.
+            const std::string html = "<DL><p><DT><H3>Rent</H3><DL><p><DT><H3>2025</H3><DL><p><DT><A HREF=\"https://new-lease.example/\">n</A></DL><p></DL><p></DL><p>";
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id rent = s.AddFolder(g, BM::End, L"Rent", 6), year = s.AddFolder(rent, BM::End, L"2025", 7);
+            const BM::Id old = s.Add(year, BM::End, L"o", L"https://old-lease.example/", 8);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(s.Find(rent)->parent == g && s.Find(year)->parent == rent && s.Find(old)->parent == year && c.kept == 1 && c.moved == 0 && c.imported == 1);
+        }
+        {   // Repeated same-named child folders: each old one must match a distinct source one by content.
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p>"
+                                     "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://one.example/\">1</A></DL><p>"
+                                     "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://two.example/\">2</A></DL><p></DL><p></DL><p>";
+            const auto roots = ParseHtmlBookmarks(html).roots;
+            {   // both present (v0.3.376 kept the source order): each proven by its own content, same ids and order
+                BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+                const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6);
+                const BM::Id a = s.AddFolder(w, BM::End, L"Same", 7); s.Add(a, BM::End, L"1", L"https://one.example/", 8);
+                const BM::Id b = s.AddFolder(w, BM::End, L"Same", 9); s.Add(b, BM::End, L"2", L"https://two.example/", 10);
+                const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+                OK(!s.Find(w) && s.Find(a)->parent == BM::BarRoot && s.Find(b)->parent == BM::BarRoot && s.Find(BM::BarRoot)->children == (std::vector<BM::Id>{a, b}) && c.kept == 0 && c.moved == 2 && c.imported == 0);
+                // The other order still proves the wrapper (the greedy pass tries every same-titled source folder).
+                BM::Store t; FolderMap tm; const BM::Id tg = group(t, tm); const BM::Id tw = t.AddFolder(tg, BM::End, L"Bookmarks bar", 6);
+                const BM::Id x = t.AddFolder(tw, BM::End, L"Same", 7); t.Add(x, BM::End, L"2", L"https://two.example/", 8);
+                const BM::Id y = t.AddFolder(tw, BM::End, L"Same", 9); t.Add(y, BM::End, L"1", L"https://one.example/", 10);
+                OK(detail::ContentOf(t, tw, roots[0].children));
+            }
+            {   // two old « Same » folders holding the SAME link, the source has it in one « Same » only: not proven
+                BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+                const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6);
+                const BM::Id a = s.AddFolder(w, BM::End, L"Same", 7); s.Add(a, BM::End, L"1", L"https://one.example/", 8);
+                const BM::Id b = s.AddFolder(w, BM::End, L"Same", 9); s.Add(b, BM::End, L"1", L"https://one.example/", 10);
+                const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+                OK(s.Find(w) && s.Find(a)->parent == w && s.Find(b)->parent == w && c.kept == 1 && c.moved == 0);
+            }
+        }
+        {   // Deeper nesting with an extra entry the person added three levels down: kept whole.
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><H3>A</H3><DL><p><DT><H3>B</H3><DL><p><DT><H3>C</H3><DL><p>"
+                                     "<DT><A HREF=\"https://deep.example/\">d</A></DL><p></DL><p></DL><p></DL><p></DL><p>";
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6), A = s.AddFolder(w, BM::End, L"A", 7), B = s.AddFolder(A, BM::End, L"B", 8), C = s.AddFolder(B, BM::End, L"C", 9);
+            s.Add(C, BM::End, L"d", L"https://deep.example/", 10); const BM::Id extra = s.Add(C, BM::End, L"x", L"https://mine.example/", 11);
+            const BM::Store before = s;
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\d.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(s.Find(w)->parent == g && s.Find(A)->parent == w && s.Find(extra)->parent == C && c.kept == 1 && c.moved == 0);
+            // Without the extra entry: proven at every depth, same ids, order kept, repeat adds nothing.
+            BM::Store t = before; t.Remove(extra); FolderMap tm; tm.Prefer("html", {g, 5});
+            const Counts d = ApplyBookmarks(t, HtmlSource(L"C:\\d.html"), ParseHtmlBookmarks(html).roots, now, &tm);
+            OK(!t.Find(w) && t.Find(A)->parent == BM::BarRoot && t.Find(B)->parent == A && t.Find(C)->parent == B && d.kept == 0 && d.moved == 1 && d.imported == 0);
+            const BM::Store once = t; const Counts again = ApplyBookmarks(t, HtmlSource(L"C:\\d.html"), ParseHtmlBookmarks(html).roots, now, &tm);
+            OK(again.imported == 0 && again.moved == 0 && t == once);
+        }
+        {   // Work bound: a huge old subtree is compared within the budget (no unbounded cross-product): it completes.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6);
+            for (int i = 0; i < 300; ++i) { const BM::Id f = s.AddFolder(w, BM::End, L"Same", 7); s.Add(f, BM::End, L"x", L"https://x" + std::to_wstring(i) + L".example/", 8); }
+            std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p>";
+            for (int i = 0; i < 300; ++i) html += "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://y" + std::to_string(i) + ".example/\">y</A></DL><p>";
+            html += "</DL><p></DL><p>";
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\big.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(s.Find(w) && s.Find(w)->children.size() == 300 && c.kept == 1 && c.moved == 0);
+        }
+    }
+
     // ---- Map capacity (review 2ed598c): 4 096 → 4 098 records, every identity kept across a restart -------------
     {
         const std::wstring dir = work + L"\\capacity"; MakeDirs(dir);
