@@ -44,6 +44,17 @@ int main() {
     Check(TaskbarIdentity::StampShortcut(foreign, a) == TaskbarIdentity::Stamp::NotOurs && TaskbarIdentity::ShortcutId(foreign).empty(), "a shortcut to anything else is never touched");
     Check(TaskbarIdentity::StampShortcut((work / L"missing.lnk").wstring(), a) == TaskbarIdentity::Stamp::Missing, "no shortcut: nothing created");
 
+    // The path the browser stamps at start (main.cpp StampTaskbarIdentity builds it with LauncherShortcut): a real
+    // separator, no control character (4e37034 had « \b » = backspace there, so it never found the shortcut).
+    {
+        const std::wstring folder = (work / L"Start Menu").wstring();
+        fs::create_directories(folder, ec);
+        const std::wstring lnk = TaskbarIdentity::LauncherShortcut(folder);
+        bool control = false; for (wchar_t c : lnk) if (c < 0x20) control = true;
+        Check(lnk == folder + L"\\browser.lnk" && !control && fs::path(lnk).filename() == L"browser.lnk" && fs::path(lnk).parent_path() == fs::path(folder), "launcher shortcut path: folder + separator + browser.lnk, no control character");
+        Check(TaskbarIdentity::WriteShortcut(lnk, a.launcher) && TaskbarIdentity::StampShortcut(lnk, a) == TaskbarIdentity::Stamp::Stamped && TaskbarIdentity::ShortcutId(lnk) == a.aumid, "the shortcut at that path (synthetic folder) is found and stamped");
+    }
+
     fs::remove_all(work, ec);
     CoUninitialize();
     std::printf("\n%d checks, %d failures\n", checks, failures);

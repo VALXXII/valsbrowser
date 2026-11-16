@@ -4861,7 +4861,7 @@ void StampTaskbarIdentity(){
     if(!taskbarIdentity.active()||!window)return;
     if(!TaskbarIdentity::ApplyToWindow(window,taskbarIdentity))Log(L"TASKBAR identity not applied to the window");
     for(const KNOWNFOLDERID* folder:{&FOLDERID_Programs,&FOLDERID_Desktop}){PWSTR dir=nullptr;if(FAILED(SHGetKnownFolderPath(*folder,0,nullptr,&dir))||!dir){CoTaskMemFree(dir);continue;}
-        const std::wstring lnk=std::wstring(dir)+L"\browser.lnk";CoTaskMemFree(dir);
+        const std::wstring lnk=TaskbarIdentity::LauncherShortcut(dir);CoTaskMemFree(dir);
         const auto r=TaskbarIdentity::StampShortcut(lnk,taskbarIdentity);
         if(r==TaskbarIdentity::Stamp::Stamped)Log(L"TASKBAR shortcut given the identity: "+lnk);else if(r==TaskbarIdentity::Stamp::Failed)Log(L"TASKBAR shortcut identity could not be written: "+lnk);}
 }
