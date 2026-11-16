@@ -133,6 +133,7 @@ GUID_TEXT(ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,"{3b40
 // Same-window profiles (src/profile-workspace.h): every COM callback and every deferred job runs in the
 // workspace (profile) that was in the globals when it was created — a hidden profile's tab never writes
 // into the profile on screen. Defined in profile-workspace.h (end of this file).
+#include "adblock-folder.h"  // the ad blocker installs from a folder that updates never move
 #include "popup-target.h"   // script-opened windows: the request lifecycle (design/popup-window-target-report.md)
 PopupHost::Registry popups; extern bool unownedCallbacks;
 struct Workspace; Workspace* WorkspaceNow(); bool WorkspaceDead(Workspace* w); bool WorkspaceParked();
@@ -2184,8 +2185,10 @@ void ApplySecuritySettings(){
 // in the profile is an older version's leftover and is removed. One sync at a time.
 bool adBlockSynced=false,adBlockBusy=false,adBlockAgain=false,adBlockNoProfileLogged=false;void ApplyAdBlock();
 const wchar_t* const AdBlockName=L"uBlock Origin Lite";
-std::wstring AdBlockFolder(){return base+L"\\assets\\extensions\\ublock-lite";}
-std::string AdBlockMarker(const std::wstring& id){return Utf8(AdBlockFolder())+"\n"+Utf8(id);}
+// Installed from a folder that survives updates (src/adblock-folder.h): <data root>\extensions\ublock-lite-<version>.
+// Resolved once per launch; the bundled versions\<v>\assets\... folder only when that copy is not possible.
+std::wstring AdBlockSource(){static const std::wstring folder=[]{std::wstring note;const std::wstring f=AdBlockFolder::Stable(base+L"\\assets\\extensions\\ublock-lite",profileRoot.empty()?dataDir:profileRoot,&note);Log(L"SETTINGS adblock source: "+note);return f;}();return folder;}
+std::string AdBlockMarker(const std::wstring& id){return Utf8(AdBlockSource())+"\n"+Utf8(id);}
 void AdBlockDone(){adBlockBusy=false;if(adBlockAgain&&!halted){adBlockAgain=false;ApplyAdBlock();}}
 void AdBlockEnable(ICoreWebView2BrowserExtension* ext,bool on){
     auto done=Callback<ICoreWebView2BrowserExtensionEnableCompletedHandler,HRESULT>([on](HRESULT hr)->HRESULT{
@@ -2193,7 +2196,7 @@ void AdBlockEnable(ICoreWebView2BrowserExtension* ext,bool on){
     HRESULT hr=ext->Enable(on?TRUE:FALSE,done);done->Release();if(FAILED(hr)){Log(L"SETTINGS adblock Enable call failed");AdBlockDone();}
 }
 void AdBlockInstall(ICoreWebView2Profile7* profile){
-    const auto folder=AdBlockFolder();
+    const auto folder=AdBlockSource();
     if(GetFileAttributesW((folder+L"\\manifest.json").c_str())==INVALID_FILE_ATTRIBUTES){Log(L"SETTINGS adblock: extension missing ("+folder+L"); browsing continues without ad blocking");AdBlockDone();return;}
     auto done=Callback<ICoreWebView2ProfileAddBrowserExtensionCompletedHandler,HRESULT,ICoreWebView2BrowserExtension*>([](HRESULT hr,ICoreWebView2BrowserExtension* ext)->HRESULT{
         LPWSTR id=nullptr;
