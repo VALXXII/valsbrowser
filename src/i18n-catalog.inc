@@ -1490,6 +1490,8 @@ I18N(import_count_unreadable_one, L"{0} entrée illisible", L"{0} unreadable ent
 I18N(import_count_unreadable_other, L"{0} entrées illisibles", L"{0} unreadable entries")
 I18N(import_count_moved_one, L"{0} sorti de l'ancien dossier d'import", L"{0} moved out of the old import folder")
 I18N(import_count_moved_other, L"{0} sortis de l'ancien dossier d'import", L"{0} moved out of the old import folder")
+I18N(import_count_kept_one, L"{0} ancien dossier laissé en place (menu du dossier : « Placer le contenu dans la barre de favoris »)", L"{0} old folder left in place (folder menu: « Move contents to the bookmarks bar »)")
+I18N(import_count_kept_other, L"{0} anciens dossiers laissés en place (menu du dossier : « Placer le contenu dans la barre de favoris »)", L"{0} old folders left in place (folder menu: « Move contents to the bookmarks bar »)")
 I18N(bookmark_promote_to_bar, L"Placer le contenu dans la barre de favoris", L"Move contents to the bookmarks bar")
 I18N(bookmark_promoted_to_bar_one, L"{0} élément placé dans la barre de favoris", L"{0} item moved to the bookmarks bar")
 I18N(bookmark_promoted_to_bar_other, L"{0} éléments placés dans la barre de favoris", L"{0} items moved to the bookmarks bar")

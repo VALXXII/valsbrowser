@@ -902,13 +902,69 @@ int main(int argc, char** argv) {
             const BM::Id group = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5);
             const BM::Id oldBar = s.AddFolder(group, BM::End, L"Bookmarks Toolbar", 6), oldOther = s.AddFolder(group, BM::End, L"Other Bookmarks", 6);
             const BM::Id tb = s.Add(oldBar, BM::End, L"tb", L"https://tb.example/", 7), o = s.Add(oldOther, BM::End, L"o", L"https://other.example/", 7);
-            const BM::Id custom = s.AddFolder(oldOther, BM::End, L"Mine", 8);   // the person's folder in the old wrapper
             const BM::Id mm = s.Add(group, BM::End, L"m", L"https://menu.example/", 7);
             m.Prefer("html", {group, 5});
             const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\ff.html"), ParseHtmlBookmarks(html).roots, now, &m);
             OK(c.imported == 0 && c.present == 3 && s.Find(tb)->parent == BM::BarRoot && s.Find(o)->parent == BM::OtherRoot && s.Find(mm)->parent == BM::OtherRoot);
-            OK(s.Find(custom) && s.Find(custom)->parent == BM::OtherRoot && !s.Find(oldBar) && !s.Find(oldOther) && !s.Find(group));   // the person's folder moves with the wrapper's content
+            OK(!s.Find(oldBar) && !s.Find(oldOther) && !s.Find(group) && c.kept == 0);   // proven by content: unambiguous
             const BM::Store once = s; const Counts again = ApplyBookmarks(s, HtmlSource(L"C:\\ff.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(again.imported == 0 && again.moved == 0 && s == once);
+        }
+    }
+
+    // ---- Review b7b3ce5 P2: legacy HTML folders are acted on only with proof from the file's content ----------------
+    {
+        const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><A HREF=\"https://source.example/\">source</A></DL><p>"
+                                 "<DT><H3>Docs</H3><DL><p><DT><A HREF=\"https://doc.example/\">d</A></DL><p></DL><p>";
+        const auto roots = ParseHtmlBookmarks(html).roots;
+        auto group = [](BM::Store& s, FolderMap& m) { const BM::Id g = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5); m.Prefer("html", {g, 5}); return g; };
+        {   // The reviewer's case: the person's « Bookmarks bar » first, the technical one second. Only the proven one moves.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id manual = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); const BM::Id mine = s.Add(manual, BM::End, L"mine", L"https://manual.example/", 7);
+            const BM::Id tech = s.AddFolder(g, BM::End, L"Bookmarks bar", 8); const BM::Id src = s.Add(tech, BM::End, L"source", L"https://source.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(manual) && s.Find(manual)->parent == g && s.Find(mine)->parent == manual);   // the person's folder: untouched
+            OK(!s.Find(tech) && s.Find(src)->parent == BM::BarRoot && c.imported == 1 && c.present == 1 && c.kept == 0);   // « Docs » new
+        }
+        {   // Two candidates that BOTH hold the file's content: ambiguous, both kept, nothing deleted; the import still adds.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id a = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); s.Add(a, BM::End, L"source", L"https://source.example/", 7);
+            const BM::Id b = s.AddFolder(g, BM::End, L"Bookmarks bar", 8); s.Add(b, BM::End, L"source", L"https://source.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(a) && s.Find(b) && s.Find(a)->children.size() == 1 && s.Find(b)->children.size() == 1 && c.kept == 2 && c.moved == 0);
+            OK(CountsText(c).find(L"anciens dossiers laissés en place") != std::wstring::npos);
+        }
+        {   // A different export with the same root name (its old bar held other links): kept as it is.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id old = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); const BM::Id x = s.Add(old, BM::End, L"x", L"https://other-export.example/", 7);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), roots, now, &m);
+            OK(s.Find(old) && s.Find(x)->parent == old && s.Find(old)->children.size() == 1 && c.kept == 1 && c.moved == 0 && s.Find(g));
+        }
+        {   // The technical bar folder holding one extra entry the person added: not proven, kept whole.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id tech = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); s.Add(tech, BM::End, L"source", L"https://source.example/", 7);
+            const BM::Id extra = s.Add(tech, BM::End, L"extra", L"https://extra.example/", 8);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(tech) && s.Find(extra)->parent == tech && s.Find(tech)->children.size() == 2 && c.kept == 1);
+        }
+        {   // An unmarked top-level folder « Docs »: the person's same-titled folder (other content) stays; the proven one moves.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id personal = s.AddFolder(g, BM::End, L"Docs", 6); const BM::Id p = s.Add(personal, BM::End, L"p", L"https://personal.example/", 7);
+            const BM::Id docs = s.AddFolder(g, BM::End, L"Docs", 8); const BM::Id d = s.Add(docs, BM::End, L"d", L"https://doc.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(personal)->parent == g && s.Find(p)->parent == personal && s.Find(docs)->parent == BM::OtherRoot && s.Find(d)->parent == docs && c.kept == 0);
+            // Empty same-titled folder: no proof either way, never moved or removed.
+            BM::Store t; FolderMap tm; const BM::Id tg = group(t, tm); const BM::Id empty = t.AddFolder(tg, BM::End, L"Bookmarks bar", 6);
+            const Counts e = ApplyBookmarks(t, HtmlSource(L"C:\\a.html"), roots, now, &tm);
+            OK(t.Find(empty) && t.Find(empty)->parent == tg && e.kept == 1);
+        }
+        {   // The safe unambiguous case, repeated: idempotent.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id tech = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); const BM::Id src = s.Add(tech, BM::End, L"source", L"https://source.example/", 7);
+            const BM::Id docs = s.AddFolder(g, BM::End, L"Docs", 8); s.Add(docs, BM::End, L"d", L"https://doc.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(!s.Find(g) && s.Find(src)->parent == BM::BarRoot && s.Find(docs)->parent == BM::OtherRoot && c.imported == 0 && c.moved == 2 && c.kept == 0);
+            const BM::Store once = s; const Counts again = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
             OK(again.imported == 0 && again.moved == 0 && s == once);
         }
     }

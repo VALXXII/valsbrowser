@@ -100,7 +100,8 @@ struct Counts {
     std::size_t imported = 0, present = 0, unsupported = 0, full = 0, deep = 0, folders = 0;
     std::size_t unreadable = 0;   // source entries the reader could not use (damaged node, link without address): reported, never hidden
     std::size_t moved = 0;        // entries of an earlier import moved out of its old « Importés de … » group (same ids)
-    bool operator==(const Counts& o) const { return imported == o.imported && present == o.present && unsupported == o.unsupported && full == o.full && deep == o.deep && folders == o.folders && unreadable == o.unreadable && moved == o.moved; }
+    std::size_t kept = 0;         // old HTML import folders left in place: no unambiguous proof they are this file's (review b7b3ce5)
+    bool operator==(const Counts& o) const { return imported == o.imported && present == o.present && unsupported == o.unsupported && full == o.full && deep == o.deep && folders == o.folders && unreadable == o.unreadable && moved == o.moved && kept == o.kept; }
     bool Left() const { return full || deep || unreadable; }   // something of the source did not arrive
 };
 
@@ -1045,6 +1046,27 @@ inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::str
 }
 } // namespace detail
 namespace detail {
+// Is every entry of folder `id` one of `items` (links by address, folders by title; multiplicity respected)? An empty
+// folder proves nothing.
+inline bool ContentOf(const Bookmarks::Store& s, Bookmarks::Id id, const std::vector<Item>& items) {
+    const Bookmarks::Node* n = s.Find(id);
+    if (!n || n->kind != Bookmarks::Kind::Folder || n->children.empty()) return false;
+    std::map<std::wstring, std::size_t> have;
+    for (const Item& it : items) ++have[it.folder ? L"F" + it.title : L"L" + Bookmarks::UrlKey(it.url)];
+    for (Bookmarks::Id k : n->children) {
+        const Bookmarks::Node* c = s.Find(k);
+        auto& left = have[c->kind == Bookmarks::Kind::Folder ? L"F" + c->title : L"L" + Bookmarks::UrlKey(c->url)];
+        if (left == 0) return false;
+        --left;
+    }
+    return true;
+}
+// The ONE folder among `candidates` whose content is `items`' (see ContentOf); 0 if none or more than one.
+inline Bookmarks::Id Proven(const Bookmarks::Store& s, const std::vector<Bookmarks::Id>& candidates, const std::vector<Item>& items) {
+    Bookmarks::Id found = 0;
+    for (Bookmarks::Id k : candidates) if (ContentOf(s, k, items)) { if (found) return 0; found = k; }
+    return found;
+}
 inline std::size_t Subtree(const Bookmarks::Store& s, Bookmarks::Id id) { std::size_t n = 0; for (Bookmarks::Id x : s.Subtree(id)) if (s.Find(x)->kind == Bookmarks::Kind::Link) ++n; return n; }
 // Moves every child of `from` (same ids, same order) to the end of `to`; counts the links moved.
 inline void MoveChildren(Bookmarks::Store& s, Bookmarks::Id from, Bookmarks::Id to, Counts& c) {
@@ -1062,9 +1084,12 @@ inline void DropIfEmpty(Bookmarks::Store& s, FolderMap& map, const std::string& 
 // imported again, its old group is recognised ONLY by provenance — the folder map's validated identity of that source
 // (and, for a native root, of that root) — and its content is moved (same ids, same order) where it now belongs before
 // the new pass dedupes against it. The old group and root folders are removed only if they are mapped and now empty;
-// anything the person added there stays. HTML exports carried no root keys then: inside the mapped HTML group, the
-// folder titled exactly like THIS file's toolbar folder is its old bar, and the group's direct entries that match this
-// file's other top-level entries (links by address and count, folders by title in order) move to « Autres favoris ».
+// anything the person added there stays. HTML exports carried no root keys then, and every HTML file shares one group:
+// a title is no proof (review b7b3ce5). A folder of the group is acted on only with evidence from THIS file's content:
+// it is not empty and every entry in it is one of the source folder's entries (links by address, folders by title,
+// each counted), and exactly ONE folder of the group qualifies for that source folder. Anything else — two candidates,
+// a folder holding something the file does not have (the person's own, or another export with the same root name) —
+// is left exactly as it is and counted in `kept`; « Placer le contenu dans la barre de favoris » does it by hand.
 inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string& source, const std::vector<Item>& roots, Counts& c) {
     namespace BM = Bookmarks;
     const BM::Node* group = map.Valid(s, source);
@@ -1075,11 +1100,12 @@ inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string
         const RootRole role = RoleOf(r.key);
         if (role == RootRole::None) continue;
         const BM::Id target = role == RootRole::Bar ? BM::BarRoot : BM::OtherRoot;
-        if (r.key.rfind("html:", 0) == 0) {   // HTML: the old root folder is the group's folder titled like this file's marked root
-            for (BM::Id k : std::vector<BM::Id>(s.Find(box)->children)) {
-                const BM::Node* n = s.Find(k);
-                if (n->kind == BM::Kind::Folder && n->title == r.title) { MoveChildren(s, k, target, c); if (s.Find(k)->children.empty()) s.Remove(k); break; }
-            }
+        if (r.key.rfind("html:", 0) == 0) {   // HTML: the group's ONE folder titled like this marked root AND holding its content
+            std::vector<BM::Id> same;
+            for (BM::Id k : s.Find(box)->children) { const BM::Node* n = s.Find(k); if (n->kind == BM::Kind::Folder && n->title == r.title) same.push_back(k); }
+            const BM::Id k = Proven(s, same, r.children);
+            if (k) { MoveChildren(s, k, target, c); if (s.Find(k)->children.empty()) s.Remove(k); }
+            else c.kept += same.size();   // nothing proven: every same-titled folder stays as it is
             continue;
         }
         const std::string key = source + "|" + r.key;
@@ -1093,16 +1119,25 @@ inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string
     if (source == "html") {   // the old group's direct entries that are this file's other top-level entries
         bool marked = false; for (const Item& r : roots) if (RoleOf(r.key) != RootRole::None) marked = true;
         const BM::Id destination = marked ? BM::OtherRoot : BM::BarRoot;   // where this file's top level now goes
-        std::map<std::wstring, std::size_t> wantLinks, wantFolders;
+        std::map<std::wstring, std::size_t> wantLinks;
+        std::vector<const Item*> wantFolders;   // this file's unmarked top-level folders, in order
         for (const Item& r : roots) {   // marked roots were handled above (their own old folders); here the unmarked entries
             if (RoleOf(r.key) != RootRole::None) continue;
-            if (r.folder) ++wantFolders[r.title]; else if (BM::Admissible(r.url)) ++wantLinks[BM::UrlKey(r.url)];
+            if (r.folder) wantFolders.push_back(&r); else if (BM::Admissible(r.url)) ++wantLinks[BM::UrlKey(r.url)];
+        }
+        // Links: by address and count. Folders: each source folder takes the ONE group folder of its title holding its
+        // content (a title alone never moves a folder); unproven same-titled folders stay.
+        std::set<BM::Id> moving;
+        for (BM::Id k : s.Find(box)->children) { const BM::Node* n = s.Find(k); if (n->kind == BM::Kind::Link) { auto& want = wantLinks[BM::UrlKey(n->url)]; if (want) { --want; moving.insert(k); } } }
+        for (const Item* f : wantFolders) {
+            std::vector<BM::Id> same;
+            for (BM::Id k : s.Find(box)->children) { const BM::Node* n = s.Find(k); if (n->kind == BM::Kind::Folder && n->title == f->title && !moving.count(k)) same.push_back(k); }
+            if (const BM::Id k = Proven(s, same, f->children)) moving.insert(k);
+            else if (!same.empty()) c.kept += 1;
         }
         for (BM::Id k : std::vector<BM::Id>(s.Find(box)->children)) {
-            const BM::Node* n = s.Find(k);
-            auto& want = n->kind == BM::Kind::Folder ? wantFolders[n->title] : wantLinks[BM::UrlKey(n->url)];
-            if (want == 0) continue;
-            --want; const std::size_t links = Subtree(s, k);
+            if (!moving.count(k)) continue;
+            const std::size_t links = Subtree(s, k);
             if (s.Move(k, destination, BM::End)) c.moved += links;
         }
     }
@@ -1287,6 +1322,7 @@ inline std::wstring CountsText(const Counts& c) {
     if (c.deep) parts.push_back(TRP(import_count_deep, c.deep));
     if (c.unreadable) parts.push_back(TRP(import_count_unreadable, c.unreadable));
     if (c.moved) parts.push_back(TRP(import_count_moved, c.moved));
+    if (c.kept) parts.push_back(TRP(import_count_kept, c.kept));
     std::wstring out;
     for (const auto& p : parts) { if (!out.empty()) out += L" · "; out += p; }
     return out;
