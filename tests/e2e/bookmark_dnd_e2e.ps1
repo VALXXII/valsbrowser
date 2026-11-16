@@ -244,6 +244,30 @@ try {
     [Impqa]::PostMessage($main, $Shortcut, [IntPtr]3032, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 700
     $bm = Bm; Check ($bm.map[10].parent -eq 2) 'into-folder drop undone'
   } else { Check $false 'drawer → bar folder: elements found' }
+  # ---- 4c. Bar drag released over the page: nothing moves, nothing saved (review eb542bc #3) ------------------------
+  $mineBar = BarItem $procId 'Bookmark.3'; $loose = BarItem $procId 'Bookmark.15'
+  if ($mineBar -and $loose) {
+    $before = ReadText "$app\bookmarks"; $c = Center $mineBar; $t = Center $loose
+    [Ptr]::At($main, $WM_MOUSEMOVE, $c[0], $c[1], 0); Start-Sleep -Milliseconds 150
+    [Ptr]::At($main, $WM_LBUTTONDOWN, $c[0], $c[1], $MK_LBUTTON); Start-Sleep -Milliseconds 100
+    [Ptr]::At($main, $WM_MOUSEMOVE, $c[0] + 15, $c[1], $MK_LBUTTON); Start-Sleep -Milliseconds 150
+    [Ptr]::At($main, $WM_MOUSEMOVE, $t[0], $t[1], $MK_LBUTTON); Start-Sleep -Milliseconds 150
+    $preview = ReadText "$app\bookmarks"
+    [Ptr]::At($main, $WM_MOUSEMOVE, $t[0], $t[1] + 300, $MK_LBUTTON); Start-Sleep -Milliseconds 150
+    [Ptr]::At($main, $WM_LBUTTONUP, $t[0], $t[1] + 300, 0); Start-Sleep -Milliseconds 700
+    Check ($preview -eq $before -and (ReadText "$app\bookmarks") -eq $before -and ((ChildrenOf (Bm) 1) -join ',') -eq '3,4,15') 'bar drag released over the page: preview and release leave the file unchanged (3,4,15)'
+    # Reorder within the bar: « mine » onto the right half of « Loose » → after it; one undo brings it back.
+    $mineBar = BarItem $procId 'Bookmark.3'; $loose = BarItem $procId 'Bookmark.15'; $c = Center $mineBar; $t = Center $loose
+    $right = $t[2] + [int]($t[3] * 0.8)
+    [Ptr]::At($main, $WM_MOUSEMOVE, $c[0], $c[1], 0); Start-Sleep -Milliseconds 150
+    [Ptr]::At($main, $WM_LBUTTONDOWN, $c[0], $c[1], $MK_LBUTTON); Start-Sleep -Milliseconds 100
+    [Ptr]::At($main, $WM_MOUSEMOVE, $c[0] + 15, $c[1], $MK_LBUTTON); Start-Sleep -Milliseconds 150
+    [Ptr]::At($main, $WM_MOUSEMOVE, $right, $t[1], $MK_LBUTTON); Start-Sleep -Milliseconds 150
+    [Ptr]::At($main, $WM_LBUTTONUP, $right, $t[1], 0); Start-Sleep -Milliseconds 700
+    Check (((ChildrenOf (Bm) 1) -join ',') -eq '4,15,3') "bar reorder: « mine » after « Loose », saved ($((ChildrenOf (Bm) 1) -join ','))"
+    [Impqa]::PostMessage($main, $Shortcut, [IntPtr]3032, [IntPtr]0) | Out-Null; Start-Sleep -Milliseconds 700
+    Check (((ChildrenOf (Bm) 1) -join ',') -eq '3,4,15') 'bar reorder undone in one step, saved'
+  } else { Check $false 'bar drag: elements found' }
   # ---- 5. Bar → drawer: drop « mine » on the « Autres favoris » label (first in it) --------------------------------------------
   $mineBar = BarItem $procId 'Bookmark.3'; $otherLabel = DrawerRow $procId 'Bookmark.2'
   if ($mineBar -and $otherLabel) {
