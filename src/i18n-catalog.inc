@@ -1475,6 +1475,7 @@ I18N(import_failure_too_deep, L"dossiers imbriqués trop profondément, rien n'a
 I18N(import_failure_unsupported, L"cette version du navigateur n'est pas prise en charge.", L"this browser version isn't supported.")
 I18N(import_failure_no_database, L"non disponible sur cette version de Windows.", L"not available on this version of Windows.")
 I18N(import_failure_unreadable, L"lecture impossible.", L"couldn't read it.")
+I18N(import_failure_ambiguous, L"deux dossiers y portent le même identifiant, rien n'a été importé.", L"two folders in it share the same identifier, nothing was imported.")
 I18N(import_count_imported_one, L"{0} importé", L"{0} imported")
 I18N(import_count_imported_other, L"{0} importés", L"{0} imported")
 I18N(import_count_present_one, L"{0} déjà présent", L"{0} already there")

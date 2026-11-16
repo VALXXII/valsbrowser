@@ -77,6 +77,7 @@ enum class Failure {
     TooDeep,       // folders nested deeper than Bound::nesting: refused whole, never cut
     Unsupported,   // a schema this build does not know
     NoDatabase,    // winsqlite3.dll unavailable on this Windows
+    Ambiguous,     // two folders carry the same source identity (guid): refused whole, nothing imported (review b7b3ce5)
 };
 struct Source {
     Browser browser = Browser::HtmlFile;
@@ -922,6 +923,19 @@ inline History_ ReadHistory(Sql::sqlite3* db, Browser b) {
 }
 
 // ---- Reading a source (after the explicit « Importer ») --------------------------------------------------
+// A source identity (folder guid) must name ONE folder of the source. A damaged or hand-made source where two folders
+// share one cannot say which of them an earlier import's folder belongs to, and any guess (de-keying, matching by
+// title) can fill or empty the wrong folder of the person's (review b7b3ce5): such a source is refused whole, with
+// its reason, and nothing in the destination changes.
+inline bool AmbiguousIds(const std::vector<Item>& roots) {
+    std::set<std::string> seen; bool dup = false;
+    std::function<void(const std::vector<Item>&)> walk = [&](const std::vector<Item>& items) {
+        for (const Item& it : items) { if (dup) return; if (it.folder && it.key.rfind("g:", 0) == 0 && !seen.insert(it.key).second) { dup = true; return; } walk(it.children); }
+    };
+    walk(roots);
+    return dup;
+}
+inline void RefuseAmbiguous(Bookmarks_& b) { if (b.failure == Failure::None && AmbiguousIds(b.roots)) { b = Bookmarks_{}; b.failure = Failure::Ambiguous; } }
 struct Options { bool bookmarks = false, history = false; std::wstring tempRoot; };
 inline ReadResult Read(const Source& s, const Options& o) {
     ReadResult r;
@@ -940,7 +954,7 @@ inline ReadResult Read(const Source& s, const Options& o) {
     if (Chromium(s.browser)) {
         if (o.bookmarks) {
             std::string bytes; const Failure f = ReadFileBounded(s.dir + L"\\Bookmarks", Bound::jsonBytes, bytes, &pin);
-            if (f != Failure::None) r.bookmarks.failure = f; else r.bookmarks = ParseChromiumBookmarks(bytes);
+            if (f != Failure::None) r.bookmarks.failure = f; else { r.bookmarks = ParseChromiumBookmarks(bytes); RefuseAmbiguous(r.bookmarks); }
         }
         if (o.history) {
             Snapshot snap; const Failure f = snap.Take(s.dir + L"\\History", o.tempRoot, &pin);
@@ -955,7 +969,7 @@ inline ReadResult Read(const Source& s, const Options& o) {
         if (f != Failure::None) { if (o.bookmarks) r.bookmarks.failure = f; if (o.history) r.history.failure = f; return r; }
         Database db(snap.Path());
         if (db.failure() != Failure::None) { if (o.bookmarks) r.bookmarks.failure = db.failure(); if (o.history) r.history.failure = db.failure(); return r; }
-        if (o.bookmarks) r.bookmarks = ReadFirefoxBookmarks(db.handle());
+        if (o.bookmarks) { r.bookmarks = ReadFirefoxBookmarks(db.handle()); RefuseAmbiguous(r.bookmarks); }
         if (o.history) r.history = ReadHistory(db.handle(), s.browser);
     }
     return r;
@@ -1031,18 +1045,6 @@ inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::str
 }
 } // namespace detail
 namespace detail {
-// A source identity is trusted only if it is unique in the whole source (review 9ef33c5): a guid carried by two folders
-// (a damaged or hand-made export) identifies neither, so every one of them loses it and is matched by title like a
-// folder without one; none can adopt another's mapped destination folder. Returns how many were de-keyed.
-inline std::size_t DekeyAmbiguous(std::vector<Item>& roots) {
-    std::map<std::string, std::size_t> seen;
-    std::function<void(const std::vector<Item>&)> count = [&](const std::vector<Item>& items) { for (const Item& it : items) { if (it.folder && it.key.rfind("g:", 0) == 0) ++seen[it.key]; count(it.children); } };
-    count(roots);
-    std::size_t n = 0;
-    std::function<void(std::vector<Item>&)> clear = [&](std::vector<Item>& items) { for (Item& it : items) { if (it.folder && it.key.rfind("g:", 0) == 0 && seen[it.key] > 1) { it.key.clear(); ++n; } clear(it.children); } };
-    clear(roots);
-    return n;
-}
 inline std::size_t Subtree(const Bookmarks::Store& s, Bookmarks::Id id) { std::size_t n = 0; for (Bookmarks::Id x : s.Subtree(id)) if (s.Find(x)->kind == Bookmarks::Kind::Link) ++n; return n; }
 // Moves every child of `from` (same ids, same order) to the end of `to`; counts the links moved.
 inline void MoveChildren(Bookmarks::Store& s, Bookmarks::Id from, Bookmarks::Id to, Counts& c) {
@@ -1118,9 +1120,8 @@ inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string
 inline Counts ApplyBookmarks(Bookmarks::Store& s, const Source& src, const std::vector<Item>& rootsIn, std::int64_t now, FolderMap* map) {
     namespace BM = Bookmarks;
     Counts c;
-    if (rootsIn.empty()) return c;
-    std::vector<Item> roots = rootsIn;
-    detail::DekeyAmbiguous(roots);
+    if (rootsIn.empty() || AmbiguousIds(rootsIn)) return c;   // Read refuses such a source; never applied, even if handed one
+    const std::vector<Item>& roots = rootsIn;
     const std::string key = SourceKey(src);
     bool semantic = false; for (const Item& r : roots) if (RoleOf(r.key) != RootRole::None) semantic = true;
     if (map) detail::MigrateLegacy(s, *map, key, roots, c);
@@ -1271,6 +1272,7 @@ inline std::wstring FailureText(Failure f, const Source& s) {
     case Failure::TooDeep: return TR(import_failure_too_deep);
     case Failure::Unsupported: return TR(import_failure_unsupported);
     case Failure::NoDatabase: return TR(import_failure_no_database);
+    case Failure::Ambiguous: return TR(import_failure_ambiguous);
     case Failure::Unreadable: return TR(import_failure_unreadable);
     default: return L"";
     }

@@ -852,28 +852,47 @@ int main(int argc, char** argv) {
             const BM::Store once = s; const Counts b = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
             OK(b.imported == 0 && b.present == 5 && s == once);   // repeat: multiplicity kept, nothing added
         }
-        {   // Two distinct Chromium folders sharing one guid (siblings and nested), each with the same address.
-            const std::string json = "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {
-                ChromeFolder(L"A", {ChromeNode(L"x", "https://same.example/")}, "same"),
-                ChromeFolder(L"B", {ChromeNode(L"x", "https://same.example/"), ChromeFolder(L"C", {ChromeNode(L"y", "https://y.example/")}, "same")}, "same")}) + "}}";
-            const auto roots = ParseChromiumBookmarks(json).roots;
-            OK(ParseChromiumBookmarks(json).failure == Failure::None);
+        {   // Review b7b3ce5: a source where two folders share one guid is REFUSED whole — no de-keying, no title match.
             Source chromeD = chromeDefault; chromeD.soleProfile = true;
-            BM::Store s; FolderMap m;
-            // An earlier import mapped « same » to a folder the person renamed: an ambiguous source never adopts it.
-            const BM::Id earlier = s.AddFolder(BM::BarRoot, BM::End, L"Earlier", 77); m.Prefer(SourceKey(chromeD) + "|g:same", {earlier, 77});
-            const Counts a = ApplyBookmarks(s, chromeD, roots, now, &m);
-            const BM::Id A = Child(s, BM::BarRoot, L"A"), B = Child(s, BM::BarRoot, L"B");
-            OK(a.imported == 3 && A && B && A != B && Child(s, B, L"C") && s.Find(earlier)->children.empty());   // two folders, two occurrences, C kept
-            const BM::Store once = s; const Counts b = ApplyBookmarks(s, chromeD, roots, now, &m);
-            OK(b.imported == 0 && b.present == 3 && s == once);
-            // Firefox: the same rule (two folders with one guid).
+            auto seeded = [&](BM::Store& s, FolderMap& m) {   // an earlier import mapped « same » to « A », renamed by the person
+                const BM::Id earlier = s.AddFolder(BM::BarRoot, BM::End, L"A", 77); s.Add(earlier, BM::End, L"old", L"https://old.example/", 78);
+                s.AddFolder(BM::OtherRoot, BM::End, L"Renamed", 79);
+                m.Prefer(SourceKey(chromeD) + "|g:same", {earlier, 77}); m.Prefer(SourceKey(chromeD) + "|g:other", {s.Find(BM::OtherRoot)->children.back(), 79});
+                return earlier;
+            };
+            auto refused = [&](const std::string& json, const char* what) {
+                const auto parsed = ParseChromiumBookmarks(json);
+                CHECK(parsed.failure == Failure::None);   // well-formed: the refusal is about identity, not syntax
+                OK(AmbiguousIds(parsed.roots));
+                BM::Store s; FolderMap m; seeded(s, m); const BM::Store before = s; const std::string mapBefore = m.Write();
+                const Counts c = ApplyBookmarks(s, chromeD, parsed.roots, now, &m);
+                OK(c.imported == 0 && c.present == 0 && c.moved == 0 && s == before && m.Write() == mapBefore);   // existing data unchanged
+                // Through Read: the category fails with its reason, nothing to apply.
+                const std::wstring dir = work + L"\\ambiguous-" + std::wstring(what, what + std::strlen(what)) + L"\\Default";
+                Put(dir + L"\\Bookmarks", json);
+                Source src = chromeDefault; src.dir = dir; src.root = Parent(dir); Options o; o.bookmarks = true; o.tempRoot = temp;
+                const ReadResult r = Read(src, o);
+                OK(r.bookmarks.failure == Failure::Ambiguous && r.bookmarks.roots.empty());
+            };
+            // same title as the mapped (renamed) target, siblings
+            refused("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"A", {ChromeNode(L"n", "https://new.example/")}, "same"), ChromeFolder(L"B", {}, "same")}) + "}}", "siblings");
+            // nested: a folder and its own child share the guid
+            refused("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"A", {ChromeFolder(L"Inner", {ChromeNode(L"y", "https://y.example/")}, "same")}, "same")}) + "}}", "nested");
+            // across roots, renamed old target's title, and every folder colliding
+            refused("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"Renamed", {}, "other")}) + ",\"other\":" + ChromeFolder(L"other", {ChromeFolder(L"X", {}, "other"), ChromeFolder(L"A", {}, "same"), ChromeFolder(L"A", {}, "same")}) + "}}", "all");
+            // Unique guids: imported normally (the guard is about duplicates only).
+            const auto fine = ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"A", {ChromeNode(L"n", "https://new.example/")}, "same"), ChromeFolder(L"B", {}, "b")}) + "}}");
+            BM::Store s; FolderMap m; const BM::Id earlier = seeded(s, m);
+            OK(!AmbiguousIds(fine.roots) && ApplyBookmarks(s, chromeD, fine.roots, now, &m).imported == 1 && (Titles(s, earlier) == std::vector<std::wstring>{L"old", L"n"}));
+            // Firefox: same rule (two folders with one guid), applied and read the same way.
             Item f1; f1.folder = true; f1.key = "g:dup"; f1.title = L"F1"; Item l1; l1.url = L"https://ff.example/"; l1.title = L"l"; f1.children.push_back(l1);
             Item f2 = f1; f2.title = L"F2";
             Item tb; tb.folder = true; tb.key = "toolbar_____"; tb.title = L"Barre de favoris"; tb.children = {f1, f2};
             Source ffs; ffs.browser = Browser::Firefox; ffs.root = L"C:\\x\\Firefox"; ffs.dir = L"C:\\x\\Firefox\\Profiles\\a"; ffs.profile = L"a";
             BM::Store t; FolderMap tm; const Counts c = ApplyBookmarks(t, ffs, {tb}, now, &tm);
-            OK(c.imported == 2 && Child(t, BM::BarRoot, L"F1") && Child(t, BM::BarRoot, L"F2") && tm.entries.empty());
+            OK(c.imported == 0 && t == BM::Store{} && tm.entries.empty());
+            Bookmarks_ fb; fb.roots = {tb}; RefuseAmbiguous(fb); OK(fb.failure == Failure::Ambiguous && fb.roots.empty());
+            OK(FailureText(Failure::Ambiguous, chromeDefault) == L"deux dossiers y portent le même identifiant, rien n'a été importé.");
         }
         {   // v0.3.376 HTML group holding BOTH marked roots as ordinary folders: each moves where it belongs, same ids.
             const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks Toolbar</H3><DL><p><DT><A HREF=\"https://tb.example/\">tb</A></DL><p>"
