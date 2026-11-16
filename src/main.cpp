@@ -3718,9 +3718,24 @@ std::vector<CM::Item> MoveToItems(BM::Id id){
     return items;
 }
 // A band item's (or menu row's, or drawer row's) own menu, in the order fixed in Paper (c-s207a4).
+// « Placer le contenu dans la barre de favoris » (folder menu): the folder's entries go, same ids and order, to the end
+// of the bar in ONE undoable step and one save. Made for imports of v0.3.376, which nested a browser's bar in
+// « Importés de … › Bookmarks bar »; usable on any folder the person chooses. The emptied folder is removed only if an
+// import created it (src/browser-import-integration.h ImportOwnedFolder); otherwise it stays, empty, as theirs.
+bool ImportOwnedFolder(BM::Id id);
+void PromoteToBar(BM::Id id){
+    const auto* f=bookmarks.Find(id);if(!f||f->kind!=BM::Kind::Folder||BM::Store::IsRoot(id)||f->children.empty())return;
+    const std::vector<BM::Id> kids=f->children;std::vector<BookmarkStep> steps;
+    for(size_t i=0;i<kids.size();++i)if(bookmarks.Move(kids[i],BM::BarRoot,BM::End))steps.push_back({BookmarkStep::Moved,kids[i],id,i});
+    if(steps.empty())return;
+    if(bookmarks.Find(id)->children.empty()&&ImportOwnedFolder(id)){auto removed=bookmarks.Remove(id);if(removed){BookmarkStep s;s.kind=BookmarkStep::Removed;s.id=id;s.removed=std::move(*removed);steps.push_back(std::move(s));}}
+    const size_t moved=steps.size()-(steps.back().kind==BookmarkStep::Removed?1:0);
+    PushUndo(std::move(steps),TR(bookmark_undo_move));SaveBookmarks();BookmarksChanged();
+    const std::wstring text=TRP(bookmark_promoted_to_bar,moved);ShowBookmarkToast(text);AnnounceBookmark(TRF(bookmark_announce_undo_hint,text));
+}
 void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;const bool folder=n->kind==BM::Kind::Folder;
-    enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar};
+    enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar,Promote};
     std::vector<CM::Item> items;
     if(folder){const size_t links=bookmarks.CountLinks(id);auto all=CM::Command(OpenAll,TRP(bookmark_open_all,links),L"",links>0);items.push_back(all);}
     else items.push_back(CM::Command(OpenTab,TR(history_open_new_tab)));
@@ -3734,6 +3749,7 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     items.push_back(CM::Command(NewFolderItem,TR(bookmark_new_folder_menu)));
     if(folder){auto t=Active();items.push_back(CM::Command(AddHere,TR(bookmark_add_here),L"",t&&!t->home&&BM::Admissible(t->uri)));}
     CM::Item move;move.label=TR(cmd_move_to);move.children=MoveToItems(id);if(move.children.empty())move.enabled=false;items.push_back(move);
+    if(folder&&n->parent!=BM::BarRoot)items.push_back(CM::Command(Promote,TR(bookmark_promote_to_bar),L"",!n->children.empty()));
     items.push_back(CM::Command(ToggleBar,BandToggleLabel(),TR(key_ctrl_shift_b)));
     const int region=[&]{for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==id)return NativeChrome::BookmarkBase+i;return 0;}();
     if(region){chrome.bandOpen=region;InvalidateChrome();UpdateWindow(window);}
@@ -3754,6 +3770,7 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     case NewFolderItem:{const BM::Id parent=folder?id:n->parent;const size_t at2=folder?BM::End:bookmarks.IndexOf(id)+1;if(BM::Id made=NewFolder(parent,at2))RenameOrEdit(made,surface,edit,keyboard,keyboard?region:0);break;}
     case AddHere:lastFolder=id;BookmarkStar(keyboard);break;
     case ToggleBar:ToggleBookmarkBar();break;
+    case Promote:PromoteToBar(id);break;
     default:break;
     }
 }

@@ -98,7 +98,8 @@ struct ReadResult { Bookmarks_ bookmarks; History_ history; };
 struct Counts {
     std::size_t imported = 0, present = 0, unsupported = 0, full = 0, deep = 0, folders = 0;
     std::size_t unreadable = 0;   // source entries the reader could not use (damaged node, link without address): reported, never hidden
-    bool operator==(const Counts& o) const { return imported == o.imported && present == o.present && unsupported == o.unsupported && full == o.full && deep == o.deep && folders == o.folders && unreadable == o.unreadable; }
+    std::size_t moved = 0;        // entries of an earlier import moved out of its old « Importés de … » group (same ids)
+    bool operator==(const Counts& o) const { return imported == o.imported && present == o.present && unsupported == o.unsupported && full == o.full && deep == o.deep && folders == o.folders && unreadable == o.unreadable && moved == o.moved; }
     bool Left() const { return full || deep || unreadable; }   // something of the source did not arrive
 };
 
@@ -540,6 +541,17 @@ inline std::string SourceKey(const Source& s) {
     return key;
 }
 // Displayed title of a source root, in both languages (fallback matching).
+// What a source root IS (never guessed from a title): the browser's own bookmarks bar, its « other » / menu roots, or
+// its mobile root. HTML exports name the bar and « other » roots with PERSONAL_TOOLBAR_FOLDER / UNFILED_BOOKMARKS_FOLDER
+// on a top-level folder (Chrome, Edge, Brave, Firefox exports); the parser turns those into keys « html:toolbar » /
+// « html:unfiled ».
+enum class RootRole { None, Bar, Other, Mobile };
+inline RootRole RoleOf(const std::string& key) {
+    if (key == "bookmark_bar" || key == "toolbar_____" || key == "html:toolbar") return RootRole::Bar;
+    if (key == "other" || key == "unfiled_____" || key == "menu________" || key == "html:unfiled") return RootRole::Other;
+    if (key == "synced" || key == "mobile______") return RootRole::Mobile;
+    return RootRole::None;
+}
 inline std::vector<std::wstring> RootTitles(const std::string& key) {
     using I18n::Id; Id id;
     if (key == "bookmark_bar" || key == "toolbar_____") id = Id::bookmarks_bar_root;
@@ -657,7 +669,9 @@ inline void ChromiumNode(const StrictJson::Value& v, std::vector<Item>& into, st
     if (const auto* n = v.Get("name"); n && n->IsString()) it.title = Widen(n->string);
     if (const auto* d = v.Get("date_added"); d && d->IsString() && !d->string.empty() && d->string.size() < 20 && d->string.find_first_not_of("0123456789") == std::string::npos)
         it.added = ChromiumTime(static_cast<std::int64_t>(std::stoull(d->string)));
+    if (const auto* g = v.Get("guid"); g && g->IsString() && !g->string.empty() && g->string.size() <= 64 && g->string.find_first_of("\t\r\n|") == std::string::npos) it.key = "g:" + g->string;
     if (type && type->IsString() && type->string == "url") {
+        it.key.clear();
         const auto* u = v.Get("url");
         if (!u || !u->IsString()) { ++ignored; return; }
         it.url = Widen(u->string);
@@ -808,6 +822,12 @@ inline Bookmarks_ ParseHtmlBookmarks(const std::string& bytes) {
             if (++count > Bound::items || stack.size() > Bound::nesting) { r = Bookmarks_{}; r.failure = stack.size() > Bound::nesting ? Failure::TooDeep : Failure::TooLarge; return r; }   // depth of an item = stack size
             pendingFolder = std::make_unique<Item>(); pendingFolder->folder = true;
             pendingFolder->added = HtmlTime(Html::Number(Html::Attribute(inner, L"add_date")));
+            // The browser's own roots, as its export marks them (any case, any quoting); only at the file's top level, so a
+            // folder deeper in the tree is never taken for a root whatever its title or attributes.
+            if (stack.size() == 1) {
+                if (Html::Lower(Html::Attribute(inner, L"personal_toolbar_folder")) == L"true") pendingFolder->key = "html:toolbar";
+                else if (Html::Lower(Html::Attribute(inner, L"unfiled_bookmarks_folder")) == L"true") pendingFolder->key = "html:unfiled";
+            }
             pendingFolder->title = textUntil(L"</h3");
         } else if (name == L"a") {
             if (pendingFolder) { stack.back()->children.push_back(std::move(*pendingFolder)); pendingFolder.reset(); }
@@ -851,7 +871,7 @@ inline Bookmarks_ ReadFirefoxBookmarks(Sql::sqlite3* db) {
             if (!seen.insert(id).second) { ++r.ignored; continue; }   // a cycle in a damaged database
             const Row& row = rows.at(id);
             if (row.type == 1) { if (row.url.empty()) { ++r.ignored; continue; } Item it; it.title = row.title; it.url = Clip(row.url); it.added = row.added; into.children.push_back(std::move(it)); }
-            else if (row.type == 2) { Item it; it.folder = true; it.title = row.title; it.added = row.added; fill(id, it, depth + 1); into.children.push_back(std::move(it)); }
+            else if (row.type == 2) { Item it; it.folder = true; it.title = row.title; it.added = row.added; if (!row.guid.empty() && row.guid.size() <= 64 && row.guid.find_first_of(L"\t\r\n|") == std::wstring::npos) it.key = "g:" + NativeChrome::Downloads::ToUtf8(row.guid); fill(id, it, depth + 1); into.children.push_back(std::move(it)); }
             // type 3: separator, not a bookmark
         }
     };
@@ -942,7 +962,11 @@ inline ReadResult Read(const Source& s, const Options& o) {
 // ---- Applying to the destination stores (pure; run inside the profile store's merge) ---------------------
 namespace detail {
 inline std::size_t Links(const Item& it) { if (!it.folder) return 1; std::size_t n = 0; for (const auto& c : it.children) n += Links(c); return n; }
-inline void Into(Bookmarks::Store& s, Bookmarks::Id dest, const std::vector<Item>& items, std::int64_t now, Counts& c) {
+inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::string& key, Bookmarks::Id parent, const std::vector<std::wstring>& titles,
+                             const std::wstring& create, std::int64_t now, Counts& c);
+// `map` + `source`: a source folder with a stable id (« g:<guid> ») is found again by identity (renamed or moved by the
+// person, it is still the same folder); folders without one are matched by title, in order, as before.
+inline void Into(Bookmarks::Store& s, Bookmarks::Id dest, const std::vector<Item>& items, std::int64_t now, Counts& c, FolderMap* map = nullptr, const std::string& source = "") {
     namespace BM = Bookmarks;
     // The destination folder as it is before this pass: same-titled folders in order, link counts per URL key.
     std::map<std::wstring, std::vector<BM::Id>> folders; std::map<std::wstring, std::size_t> links;
@@ -955,6 +979,14 @@ inline void Into(Bookmarks::Store& s, Bookmarks::Id dest, const std::vector<Item
         if (it.folder) {
             const std::size_t k = folderSeen[it.title]++;
             BM::Id target = BM::NoId;
+            if (map && !it.key.empty()) {
+                const std::size_t before = c.folders;
+                target = Resolve(s, map, source + "|" + it.key, dest, {it.title}, it.title, it.added > 0 ? Clamp(it.added, now) : now, c);
+                if (target == BM::NoId) { (static_cast<std::size_t>(s.Depth(dest)) + 1 > BM::Store::MaxDepth ? c.deep : c.full) += Links(it); continue; }
+                (void)before;
+                Into(s, target, it.children, now, c, map, source);
+                continue;
+            }
             const auto f = folders.find(it.title);
             if (f != folders.end() && k < f->second.size()) target = f->second[k];
             else {
@@ -963,7 +995,7 @@ inline void Into(Bookmarks::Store& s, Bookmarks::Id dest, const std::vector<Item
                 if (target == BM::NoId) { c.full += Links(it); continue; }
                 ++c.folders;
             }
-            Into(s, target, it.children, now, c);
+            Into(s, target, it.children, now, c, map, source);
             continue;
         }
         if (!BM::Admissible(it.url)) { ++c.unsupported; continue; }
@@ -996,29 +1028,104 @@ inline Bookmarks::Id Resolve(Bookmarks::Store& s, FolderMap* map, const std::str
     return id;
 }
 } // namespace detail
-// Bookmarks go to « Autres favoris › <folder of the source> », each source root (Barre de favoris, Autres favoris…)
-// in its own sub-folder. With `map`, both are found again by stable identity (see FolderMap); without it, by title.
+namespace detail {
+inline std::size_t Subtree(const Bookmarks::Store& s, Bookmarks::Id id) { std::size_t n = 0; for (Bookmarks::Id x : s.Subtree(id)) if (s.Find(x)->kind == Bookmarks::Kind::Link) ++n; return n; }
+// Moves every child of `from` (same ids, same order) to the end of `to`; counts the links moved.
+inline void MoveChildren(Bookmarks::Store& s, Bookmarks::Id from, Bookmarks::Id to, Counts& c) {
+    const std::vector<Bookmarks::Id> kids = s.Find(from)->children;
+    for (Bookmarks::Id k : kids) { const std::size_t links = Subtree(s, k); if (s.Move(k, to, Bookmarks::End)) c.moved += links; }
+}
+// A folder the import created and mapped (`key`), now empty: removed. Never a root, never non-empty. Its map entry stays
+// until a bookmarks write without it has been confirmed, so a failed write cannot lose the old group's identity.
+inline void DropIfEmpty(Bookmarks::Store& s, FolderMap& map, const std::string& key, Bookmarks::Id id) {
+    const Bookmarks::Node* n = s.Find(id);
+    if (!n || Bookmarks::Store::IsRoot(id) || n->kind != Bookmarks::Kind::Folder || !n->children.empty()) return;
+    s.Remove(id); (void)map; (void)key;   // its map entry is pruned only once the bookmarks write confirmed it gone (FolderMap::Prune)
+}
+// v0.3.376 put every import under « Autres favoris › Importés de <source> › <source root> ». When the same source is
+// imported again, its old group is recognised ONLY by provenance — the folder map's validated identity of that source
+// (and, for a native root, of that root) — and its content is moved (same ids, same order) where it now belongs before
+// the new pass dedupes against it. The old group and root folders are removed only if they are mapped and now empty;
+// anything the person added there stays. HTML exports carried no root keys then: inside the mapped HTML group, the
+// folder titled exactly like THIS file's toolbar folder is its old bar, and the group's direct entries that match this
+// file's other top-level entries (links by address and count, folders by title in order) move to « Autres favoris ».
+inline void MigrateLegacy(Bookmarks::Store& s, FolderMap& map, const std::string& source, const std::vector<Item>& roots, Counts& c) {
+    namespace BM = Bookmarks;
+    const BM::Node* group = map.Valid(s, source);
+    if (!group || group->parent != BM::OtherRoot) return;   // only the group v0.3.376 created, where it put it
+    const BM::Id box = group->id;
+    for (const Item& r : roots) {
+        if (r.key.empty()) continue;
+        const RootRole role = RoleOf(r.key);
+        if (role == RootRole::None) continue;
+        const BM::Id target = role == RootRole::Bar ? BM::BarRoot : BM::OtherRoot;
+        if (r.key.rfind("html:", 0) == 0) {   // HTML: the old bar folder is the group's folder titled like this file's
+            if (role != RootRole::Bar) continue;
+            for (BM::Id k : std::vector<BM::Id>(s.Find(box)->children)) {
+                const BM::Node* n = s.Find(k);
+                if (n->kind == BM::Kind::Folder && n->title == r.title) { MoveChildren(s, k, BM::BarRoot, c); if (s.Find(k)->children.empty()) s.Remove(k); break; }
+            }
+            continue;
+        }
+        const std::string key = source + "|" + r.key;
+        const BM::Node* old = map.Valid(s, key);
+        if (!old || old->parent != box) continue;
+        if (role == RootRole::Mobile) { s.Move(old->id, BM::OtherRoot, BM::End); c.moved += Subtree(s, old->id); continue; }   // keeps its own folder
+        const BM::Id oldId = old->id;
+        MoveChildren(s, oldId, target, c);
+        DropIfEmpty(s, map, key, oldId);
+    }
+    if (source == "html") {   // the old group's direct entries that are this file's other top-level entries
+        bool marked = false; for (const Item& r : roots) if (RoleOf(r.key) != RootRole::None) marked = true;
+        const BM::Id destination = marked ? BM::OtherRoot : BM::BarRoot;   // where this file's top level now goes
+        std::map<std::wstring, std::size_t> wantLinks, wantFolders;
+        for (const Item& r : roots) {
+            if (RoleOf(r.key) == RootRole::Bar) continue;
+            const auto& level = RoleOf(r.key) == RootRole::Other ? r.children : std::vector<Item>{r};
+            for (const Item& it : level) { if (it.folder) ++wantFolders[it.title]; else if (BM::Admissible(it.url)) ++wantLinks[BM::UrlKey(it.url)]; }
+        }
+        for (BM::Id k : std::vector<BM::Id>(s.Find(box)->children)) {
+            const BM::Node* n = s.Find(k);
+            auto& want = n->kind == BM::Kind::Folder ? wantFolders[n->title] : wantLinks[BM::UrlKey(n->url)];
+            if (want == 0) continue;
+            --want; const std::size_t links = Subtree(s, k);
+            if (s.Move(k, destination, BM::End)) c.moved += links;
+        }
+    }
+    DropIfEmpty(s, map, source, box);
+}
+} // namespace detail
+// Where imported bookmarks go (v0.3.377): by what each source root IS. The browser's bookmarks bar → straight onto
+// « Barre de favoris »; its « other » / menu roots → straight into « Autres favoris »; its mobile root → one folder
+// « Favoris sur mobile » in « Autres favoris ». The fixed roots are never folders of the map: nothing can delete them.
+// An HTML file whose export marks no root (no PERSONAL_TOOLBAR_FOLDER / UNFILED_BOOKMARKS_FOLDER): its top-level
+// entries go onto the bar as they are, folders staying folders (no « Importés d'un fichier HTML » group, no title
+// guessed as a technical root).
+// With `map`, every folder that has a stable identity (mobile folder, guid-keyed source folders, the HTML group) is
+// found again by it, and an earlier v0.3.376 group of the same source is corrected first (detail::MigrateLegacy).
 inline Counts ApplyBookmarks(Bookmarks::Store& s, const Source& src, const std::vector<Item>& roots, std::int64_t now, FolderMap* map) {
     namespace BM = Bookmarks;
-    Counts c; std::size_t total = 0; for (const auto& r : roots) total += detail::Links(r);
+    Counts c;
     if (roots.empty()) return c;
     const std::string key = SourceKey(src);
-    std::vector<std::wstring> titles = FolderTitles(src);
-    const std::wstring title = FolderTitle(src);
-    if (std::find(titles.begin(), titles.end(), title) == titles.end()) titles.insert(titles.begin(), title);
-    const BM::Id container = detail::Resolve(s, map, key, BM::OtherRoot, titles, title, now, c);
-    if (container == BM::NoId) { c.full = total; return c; }
-    std::vector<Item> plain;   // entries without a root identity (HTML top level): matched by title inside the container
+    bool semantic = false; for (const Item& r : roots) if (RoleOf(r.key) != RootRole::None) semantic = true;
+    if (map) detail::MigrateLegacy(s, *map, key, roots, c);
+    if (!semantic) { detail::Into(s, BM::BarRoot, roots, now, c, map, key); return c; }   // HTML without root marks
     for (const Item& r : roots) {
-        if (r.key.empty() || !r.folder) { plain.push_back(r); continue; }
-        if (!plain.empty()) { detail::Into(s, container, plain, now, c); plain.clear(); }
-        std::vector<std::wstring> rootTitles = RootTitles(r.key);
-        if (std::find(rootTitles.begin(), rootTitles.end(), r.title) == rootTitles.end()) rootTitles.insert(rootTitles.begin(), r.title);
-        const BM::Id folder = detail::Resolve(s, map, key + "|" + r.key, container, rootTitles, r.title, r.added > 0 ? Clamp(r.added, now) : now, c);
-        if (folder == BM::NoId) { (static_cast<std::size_t>(s.Depth(container)) + 1 > BM::Store::MaxDepth ? c.deep : c.full) += detail::Links(r); continue; }
-        detail::Into(s, folder, r.children, now, c);
+        switch (RoleOf(r.key)) {
+        case RootRole::Bar: detail::Into(s, BM::BarRoot, r.children, now, c, map, key); break;
+        case RootRole::Other: detail::Into(s, BM::OtherRoot, r.children, now, c, map, key); break;
+        case RootRole::Mobile: {
+            std::vector<std::wstring> rootTitles = RootTitles(r.key);
+            if (std::find(rootTitles.begin(), rootTitles.end(), r.title) == rootTitles.end()) rootTitles.insert(rootTitles.begin(), r.title);
+            const BM::Id folder = detail::Resolve(s, map, key + "|" + r.key, BM::OtherRoot, rootTitles, r.title, r.added > 0 ? Clamp(r.added, now) : now, c);
+            if (folder == BM::NoId) { c.full += detail::Links(r); break; }
+            detail::Into(s, folder, r.children, now, c, map, key);
+            break;
+        }
+        default: detail::Into(s, BM::OtherRoot, {r}, now, c, map, key); break;   // an HTML top-level entry beside marked roots
+        }
     }
-    if (!plain.empty()) detail::Into(s, container, plain, now, c);
     return c;
 }
 // Title-only form (no mapping): « Autres favoris › <folderTitle> », matched by that exact title.
@@ -1154,6 +1261,7 @@ inline std::wstring CountsText(const Counts& c) {
     if (c.full) parts.push_back(TRP(import_count_full, c.full));
     if (c.deep) parts.push_back(TRP(import_count_deep, c.deep));
     if (c.unreadable) parts.push_back(TRP(import_count_unreadable, c.unreadable));
+    if (c.moved) parts.push_back(TRP(import_count_moved, c.moved));
     std::wstring out;
     for (const auto& p : parts) { if (!out.empty()) out += L" · "; out += p; }
     return out;

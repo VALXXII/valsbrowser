@@ -44,7 +44,7 @@ std::vector<MD::Check> ImportChecks(const BI::Source& s) {
     MD::Check bookmarks, history, cookies;
     bookmarks.label = TR(import_item_bookmarks); history.label = TR(import_item_history); cookies.label = TR(import_item_cookies);
     bookmarks.value = s.bookmarks; bookmarks.disabled = !s.bookmarks;
-    bookmarks.detail = s.bookmarks ? TRF(import_bookmarks_detail, BI::FolderTitle(s)) : std::wstring(TR(import_bookmarks_missing));
+    bookmarks.detail = s.bookmarks ? TRF(import_bookmarks_detail, s.browser == BI::Browser::HtmlFile ? std::wstring(TR(import_source_file_short)) : std::wstring(BI::BrandName(s.browser))) : std::wstring(TR(import_bookmarks_missing));
     if (s.browser == BI::Browser::HtmlFile) { history.disabled = true; history.detail = TR(import_history_html); }
     else { history.value = s.history; history.disabled = !s.history; history.detail = s.history ? TR(import_history_detail) : TR(import_history_missing); }
     cookies.disabled = true; cookies.value = false; cookies.detail = TR(import_cookies_unavailable);
@@ -207,4 +207,16 @@ void ShowImportDialog(bool keyboard) {
     s.onButton = [sources, destination = ImportDestination::Now()](int id) { if (id == MD::AcceptButton) StartImport(*sources, destination); };
     importDialogOpen = true;
     AskModal(std::move(s), nullptr, [](const MD::Result&) { importDialogOpen = false; });
+}
+// A folder an import created: the folder map names it (a stable source/root identity), or it sits directly in a group
+// the map names (v0.3.376 put an HTML file's bar folder there without its own identity). Read-only; never a root.
+bool ImportOwnedFolder(BM::Id id) {
+    const BM::Node* n = bookmarks.Find(id);
+    if (!n || n->kind != BM::Kind::Folder || BM::Store::IsRoot(id) || privateWindow) return false;
+    std::string bytes; bool known = false, complete = false;
+    { ProfileStore::Lock lock(dataDir); if (!lock.Held() || !ProfileStore::ReadAll(dataDir + L"\\bookmark-imports", bytes)) return false; }
+    const BI::FolderMap map = BI::FolderMap::Read(bytes, &known, &complete);
+    if (!known || !complete) return false;
+    auto named = [&](const BM::Node* f) { if (!f) return false; for (const auto& [k, list] : map.entries) for (const auto& e : list) if (e.id == f->id && e.added == f->added) return true; return false; };
+    return named(n) || (n->parent != BM::BarRoot && n->parent != BM::OtherRoot && named(bookmarks.Find(n->parent)));
 }
