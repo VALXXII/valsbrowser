@@ -1,4 +1,5 @@
 // browser-<version>-win-x64-setup.exe logic (no UI). See src/setup-core.h and design/windows-setup-plan.md.
+#include "taskbar-identity.h"
 #include "setup-core.h"
 
 #include <bcrypt.h>
@@ -168,6 +169,13 @@ bool WriteShortcut(const std::wstring& lnk, const std::wstring& root) {
     link->SetWorkingDirectory(root.c_str());
     link->SetIconLocation((root + L"\\browser.ico").c_str(), 0);
     link->SetDescription(L"browser");
+    {   // same taskbar identity as the installed windows (src/taskbar-identity.h): a pin from this link groups with them
+        IPropertyStore* store = nullptr;
+        if (FAILED(link->QueryInterface(IID_PPV_ARGS(&store)))) return false;
+        const bool set = TaskbarIdentity::SetString(store, PKEY_AppUserModel_ID, TaskbarIdentity::AppId) && SUCCEEDED(store->Commit());
+        store->Release();
+        if (!set) return false;
+    }
     IPersistFile* file = nullptr;
     if (FAILED(link->QueryInterface(IID_PPV_ARGS(&file)))) return false;
     const HRESULT saved = file->Save(lnk.c_str(), TRUE);

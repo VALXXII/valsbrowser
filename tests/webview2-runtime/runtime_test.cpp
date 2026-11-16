@@ -82,6 +82,13 @@ static void OverridesRead() {
     policy.clear();
     policy[L"HKLM|Software\\Policies\\Microsoft\\Edge\\WebView2\\BrowserExecutableFolder|other.exe"] = true;
     CHECK(!WR::ReadOverrides(L"browser.exe", envReader, policyReader).Any());
+    // An installed copy declares an AppUserModelID (src/taskbar-identity.h): WebView2 also honours policies keyed by it.
+    policy.clear();
+    policy[L"HKLM|Software\\Policies\\Microsoft\\Edge\\WebView2\\ReleaseChannels|ValXXII.browser"] = true;
+    o = WR::ReadOverridesFor(L"browser.exe", L"ValXXII.browser", envReader, policyReader);
+    CHECK(o.Blocking() && o.items.size() == 1 && o.items[0].name == L"ReleaseChannels" && o.items[0].source == L"stratégie HKLM");
+    CHECK(!WR::ReadOverridesFor(L"browser.exe", L"", envReader, policyReader).Any());   // portable: no AppUserModelID
+    CHECK(!WR::ReadOverrides(L"browser.exe", envReader, policyReader).Any());
     // The real reader works read-only on this machine (whatever it finds).
     (void)WR::ReadOverrides(L"browser.exe");
 }
