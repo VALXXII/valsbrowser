@@ -67,6 +67,10 @@ def existing_fixtures() -> None:
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, language_evidence])
     fixture('bookmarks_test', [*STRICT, 'tests/bookmarks_test.cpp'])
+    fixture('bookmark_drag_test', [*STRICT, 'tests/bookmark_drag_test.cpp'])   # drag and drop rules (src/bookmark-drag.h)
+    promote_work = OUT / 'bookmark-promote-work'
+    promote_work.mkdir(parents=True, exist_ok=True)
+    fixture('bookmark_promote_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/bookmark_promote_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [promote_work])
     # Import from a browser (design/browser-data-import-plan.md): synthetic roots only, Windows' winsqlite3.dll
     import_work = OUT / 'browser-import-work'
     import_work.mkdir(parents=True, exist_ok=True)

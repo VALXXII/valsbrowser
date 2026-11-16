@@ -369,7 +369,7 @@ private:
         case WM_CTLCOLOREDIT: if (hooks_.editColor) { if (const LRESULT brush = hooks_.editColor(reinterpret_cast<HDC>(w), reinterpret_cast<HWND>(l))) return brush; } break;
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
-        case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
+        case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_ && !stayForTest) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
         case WM_SETFOCUS: case WM_KILLFOCUS: Invalidate(); return 0;
         case WM_SETCURSOR: if (LOWORD(l) == HTCLIENT) { POINT p; GetCursorPos(&p); ScreenToClient(h, &p); SetCursor(LoadCursor(nullptr, Hit(p.x * s, p.y * s) == SearchHit ? IDC_IBEAM : IDC_ARROW)); return TRUE; } break;
         case WM_MOUSEMOVE: {
@@ -396,6 +396,7 @@ private:
     }
 public:
     bool holding_ = false; // a menu or the popover opened from the drawer: deactivation keeps it open
+    bool stayForTest = false; // QA only (--qa-drawer-stays, dev builds): an app that is not in the foreground keeps its drawer
     ULONGLONG hiddenAt = 0;
     ~Drawer() { Dispose(); }
     void Dispose() { uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false; }

@@ -3363,6 +3363,7 @@ int popoverReturn=0; bool bookmarksDismissClick=false;
 struct BandDrag { int index=-1; BM::Id id=0; POINT start{}; float grab=0; bool active=false; BM::Id parent=0; size_t from=0; BookmarkDrag::ListDrop drawer; } bandDrag;   // drawer: over the drawer, the place there
 // A bookmark dragged out of a folder/overflow menu or the drawer (src/bookmark-drag.h): stable id + the profile it
 // belongs to; nothing moves until the drop, which is checked again (same profile shown, item still there, place valid).
+bool qaDrawerStays=false;   // dev builds only, --qa-drawer-stays (see wWinMain)
 struct OuterDrag { BM::Id id=0; Workspace* owner=nullptr; bool active=false; BookmarkDrag::Drop drop; int source=0; } outerDrag;   // source: 1 menu, 2 drawer
 void StartOuterDrag(BM::Id id,int source);
 // Undo: each entry replays its steps backwards (16 entries, this session only).
@@ -3833,6 +3834,7 @@ void CreateBookmarkSurfaces(){
     d.announce=AnnounceBookmark;
     d.dragStart=[](BM::Id id,POINT){StartOuterDrag(id,2);};
     if(!bookmarksDrawer.Create(instance,window,base,&bookmarks,std::move(d)))Log(L"BOOKMARKS drawer unavailable");
+    bookmarksDrawer.stayForTest=qaDrawerStays;
 }
 // Band pointer: press records a drag candidate; past the system threshold the item
 // follows the pointer and the others reorder live; over a folder's middle it drops inside.
@@ -4824,7 +4826,11 @@ void CancelContentTransitionIfMoved(){if(contentTransition.Active())contentTrans
 #include "browser-import-integration.h"
 #include "workspace-failover.h"
 #include "profile-workspace.h"
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */ if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */
+#ifndef BROWSER_CHANNEL_RELEASE
+    for(int i=1;argv&&i<argc;++i)if(std::wstring(argv[i])==L"--qa-drawer-stays")qaDrawerStays=true;   // QA: drawer kept while the app is not in the foreground
+#endif
+    if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
 #ifdef BROWSER_E2E_VAULT_HOST
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif
