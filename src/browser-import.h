@@ -430,15 +430,16 @@ private:
 // Standard « User Data » folders, from each vendor's documentation (metadata only; nothing else is guessed):
 //  Chrome, Chromium: chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md
 //  Comet (Perplexity, Chromium-based): Perplexity Help Center « Why can't I access Comet? » gives
-//  %LOCALAPPDATA%\Comet\User Data; current Windows builds keep it under the vendor folder,
-//  %LOCALAPPDATA%\Perplexity\Comet\User Data. Both are candidates; the first holding a profile is used.
+//  %LOCALAPPDATA%\Comet\User Data: the PRIMARY folder. Some Windows builds keep it under the vendor folder,
+//  %LOCALAPPDATA%\Perplexity\Comet\User Data: SECONDARY, used only when the primary holds no profile (a stale
+//  secondary copy never hides the primary one).
 inline std::vector<std::wstring> ChromiumRoots(const Roots& roots, Browser b) {
     if (roots.local.empty()) return {};
     switch (b) {
     case Browser::Chrome: return {roots.local + L"\\Google\\Chrome\\User Data"};
     case Browser::Edge: return {roots.local + L"\\Microsoft\\Edge\\User Data"};
     case Browser::Brave: return {roots.local + L"\\BraveSoftware\\Brave-Browser\\User Data"};
-    case Browser::Comet: return {roots.local + L"\\Perplexity\\Comet\\User Data", roots.local + L"\\Comet\\User Data"};
+    case Browser::Comet: return {roots.local + L"\\Comet\\User Data", roots.local + L"\\Perplexity\\Comet\\User Data"};   // primary, then secondary
     case Browser::Chromium: return {roots.local + L"\\Chromium\\User Data"};
     default: return {};
     }

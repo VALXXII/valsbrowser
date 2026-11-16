@@ -51,29 +51,39 @@ int wmain(int argc, wchar_t** argv) {
         OK(!LoadLogo(std::wstring(windows) + L"\\explorer.exe", 9999));   // no such icon: fallback
     }
 
-    // ---- Synthetic roots: Comet with two profiles (vendor folder), Brave data without registration ----------------
+    // ---- Synthetic roots: Comet with two profiles in its PRIMARY folder (a different, stale secondary copy beside it),
+    // Brave data without registration ------------------------------------------------------------------------------
+    static const std::string kSecondary = R"({"roots":{"bookmark_bar":{"type":"folder","name":"bar","children":[{"type":"url","name":"s","url":"https://secondary.example/"}]}}})";
     const std::wstring local = work + L"\\Local", roaming = work + L"\\Roaming";
-    Put(local + L"\\Perplexity\\Comet\\User Data\\Default\\Bookmarks", kBookmarks);
-    Put(local + L"\\Perplexity\\Comet\\User Data\\Profile 2\\History", "not read here");
-    Put(local + L"\\Perplexity\\Comet\\User Data\\Profile 3\\Preferences", "{}");   // no data: not a source
-    Put(local + L"\\Comet\\User Data\\Default\\Bookmarks", kBookmarks);               // the older folder: not used when the vendor one has profiles
+    Put(local + L"\\Comet\\User Data\\Default\\Bookmarks", kBookmarks);
+    Put(local + L"\\Comet\\User Data\\Profile 2\\History", "not read here");
+    Put(local + L"\\Comet\\User Data\\Profile 3\\Preferences", "{}");   // no data: not a source
+    Put(local + L"\\Perplexity\\Comet\\User Data\\Default\\Bookmarks", kSecondary);   // secondary: not used while the primary has profiles
     Put(local + L"\\BraveSoftware\\Brave-Browser\\User Data\\Default\\Bookmarks", kBookmarks);
     const Roots roots{local, roaming};
     const auto found = Discover(roots);
     std::vector<Source> comet; for (const auto& s : found) if (s.browser == Browser::Comet) comet.push_back(s);
     OK(comet.size() == 2 && comet[0].profile == L"Default" && comet[0].isDefault && comet[1].profile == L"Profile 2" && !comet[0].soleProfile);
-    OK(comet[0].root == local + L"\\Perplexity\\Comet\\User Data" && comet[0].bookmarks && !comet[1].bookmarks && comet[1].history);
-    OK(found[0].browser == Browser::Comet && SourceKey(comet[0]) == "chromium:Comet/Default");
-    {   // Documented folder alone (Perplexity Help Center): found there.
-        const std::wstring old = work + L"\\OldLocal";
-        Put(old + L"\\Comet\\User Data\\Default\\Bookmarks", kBookmarks);
-        const auto v = DiscoverChromium(Roots{old, L""}, Browser::Comet);
-        OK(v.size() == 1 && v[0].root == old + L"\\Comet\\User Data" && v[0].soleProfile);
+    OK(comet[0].root == local + L"\\Comet\\User Data" && comet[1].root == local + L"\\Comet\\User Data" && comet[0].bookmarks && !comet[1].bookmarks && comet[1].history);
+    OK(found[0].browser == Browser::Comet && SourceKey(comet[0]) == "chromium:Comet/Default");   // the same key whichever folder it comes from
+    {   // Primary alone: found there. Secondary alone: the fallback, its own pinned root.
+        const std::wstring one = work + L"\\PrimaryOnly", two = work + L"\\SecondaryOnly";
+        Put(one + L"\\Comet\\User Data\\Default\\Bookmarks", kBookmarks);
+        Put(two + L"\\Perplexity\\Comet\\User Data\\Default\\Bookmarks", kSecondary);
+        const auto v = DiscoverChromium(Roots{one, L""}, Browser::Comet), w = DiscoverChromium(Roots{two, L""}, Browser::Comet);
+        OK(v.size() == 1 && v[0].root == one + L"\\Comet\\User Data" && v[0].soleProfile);
+        OK(w.size() == 1 && w[0].root == two + L"\\Perplexity\\Comet\\User Data" && w[0].soleProfile && SourceKey(w[0]) == "chromium:Comet/Default");
+        // Primary present but without any profile data: the secondary is used.
+        const std::wstring three = work + L"\\EmptyPrimary";
+        Put(three + L"\\Comet\\User Data\\Default\\Preferences", "{}");
+        Put(three + L"\\Perplexity\\Comet\\User Data\\Default\\Bookmarks", kSecondary);
+        const auto x = DiscoverChromium(Roots{three, L""}, Browser::Comet);
+        OK(x.size() == 1 && x[0].root == three + L"\\Perplexity\\Comet\\User Data");
     }
     {   // Read as any Chromium profile: bookmarks bar → roots, nothing guessed.
         Options o; o.bookmarks = true; o.tempRoot = work + L"\\temp"; Dirs(o.tempRoot);
         const ReadResult r = Read(comet[0], o);
-        OK(r.bookmarks.failure == Failure::None && r.bookmarks.roots.size() == 1 && r.bookmarks.roots[0].key == "bookmark_bar" && r.bookmarks.roots[0].children.size() == 1);
+        OK(r.bookmarks.failure == Failure::None && r.bookmarks.roots.size() == 1 && r.bookmarks.roots[0].key == "bookmark_bar" && r.bookmarks.roots[0].children.size() == 1 && r.bookmarks.roots[0].children[0].url == L"https://comet.example/");   // the primary's content, not the secondary's
     }
 
     // ---- The rows -------------------------------------------------------------------------------------------------
