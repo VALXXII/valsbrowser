@@ -40,6 +40,7 @@
 #include "bookmark-toast.h"
 #include "bookmarks-panel.h"
 #include "bookmark-drag.h"
+#include "bookmark-promote.h"
 #include "inline-rename.h"
 #include "split-view.h"
 #include "split-overlay.h"
@@ -3726,19 +3727,22 @@ std::vector<CM::Item> MoveToItems(BM::Id id){
 }
 // A band item's (or menu row's, or drawer row's) own menu, in the order fixed in Paper (c-s207a4).
 // « Placer le contenu dans la barre de favoris » (folder menu): the folder's entries go, same ids and order, to the end
-// of the bar in ONE undoable step and one save. Made for imports of v0.3.376, which nested a browser's bar in
-// « Importés de … › Bookmarks bar »; usable on any folder the person chooses. The emptied folder is removed only if an
-// import created it (src/browser-import-integration.h ImportOwnedFolder); otherwise it stays, empty, as theirs.
-bool ImportOwnedFolder(BM::Id id);
+// of the bar in ONE profile-store transaction, applied on the merged tree under the lock (src/bookmark-promote.h; an
+// outside move + remove lost the moved children in the merge, review 9ef33c5 P1). The emptied folder is removed only
+// when the import folder map names that very folder (ImportOwnedFolder); otherwise it stays, empty, as the person's.
+// One undo step from what was committed; a failed save writes nothing and says so.
+bool ImportOwnedFolder(const BM::Store& s,BM::Id id);
 void PromoteToBar(BM::Id id){
-    const auto* f=bookmarks.Find(id);if(!f||f->kind!=BM::Kind::Folder||BM::Store::IsRoot(id)||f->children.empty())return;
-    const std::vector<BM::Id> kids=f->children;std::vector<BookmarkStep> steps;
-    for(size_t i=0;i<kids.size();++i)if(bookmarks.Move(kids[i],BM::BarRoot,BM::End))steps.push_back({BookmarkStep::Moved,kids[i],id,i});
-    if(steps.empty())return;
-    if(bookmarks.Find(id)->children.empty()&&ImportOwnedFolder(id)){auto removed=bookmarks.Remove(id);if(removed){BookmarkStep s;s.kind=BookmarkStep::Removed;s.id=id;s.removed=std::move(*removed);steps.push_back(std::move(s));}}
-    const size_t moved=steps.size()-(steps.back().kind==BookmarkStep::Removed?1:0);
-    PushUndo(std::move(steps),TR(bookmark_undo_move));SaveBookmarks();BookmarksChanged();
-    const std::wstring text=TRP(bookmark_promoted_to_bar,moved);ShowBookmarkToast(text);AnnounceBookmark(TRF(bookmark_announce_undo_hint,text));
+    const auto* f=bookmarks.Find(id);if(smoke||!f||f->kind!=BM::Kind::Folder||BM::Store::IsRoot(id)||f->children.empty())return;
+    const auto r=BookmarkPromote::Commit(dataDir,BookmarksFile(),bookmarksBase,bookmarks,id,[](const BM::Store& s,BM::Id folder){return ImportOwnedFolder(s,folder);});
+    if(!r.remap.empty())bookmarkUndo.clear();
+    if(!r.Saved()){Log(L"BOOKMARKS promote to bar: save failed, nothing changed");if(bookmarkToast.Window())bookmarkToast.Show(TR(bookmark_save_failed),[id]{PromoteToBar(id);},motion.ReducedMotion(),TR(downloads_action_retry),true);return;}
+    BookmarksChanged();
+    if(r.moved.empty())return;
+    std::vector<BookmarkStep> steps;for(const auto& m:r.moved)steps.push_back({BookmarkStep::Moved,m.id,m.parent,m.index});
+    if(r.removed){BookmarkStep st;st.kind=BookmarkStep::Removed;st.id=id;st.removed=*r.removed;steps.push_back(std::move(st));}   // undone first: the folder comes back before its children
+    PushUndo(std::move(steps),TR(bookmark_undo_move));
+    const std::wstring text=TRP(bookmark_promoted_to_bar,r.moved.size());ShowBookmarkToast(text);AnnounceBookmark(TRF(bookmark_announce_undo_hint,text));
 }
 void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;const bool folder=n->kind==BM::Kind::Folder;

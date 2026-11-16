@@ -208,15 +208,14 @@ void ShowImportDialog(bool keyboard) {
     importDialogOpen = true;
     AskModal(std::move(s), nullptr, [](const MD::Result&) { importDialogOpen = false; });
 }
-// A folder an import created: the folder map names it (a stable source/root identity), or it sits directly in a group
-// the map names (v0.3.376 put an HTML file's bar folder there without its own identity). Read-only; never a root.
-bool ImportOwnedFolder(BM::Id id) {
-    const BM::Node* n = bookmarks.Find(id);
+// A folder an import created: the folder map names that very folder (a validated candidate: same id, kind and time in
+// `s`). A folder merely inside an imported one is the person's, even empty (review 9ef33c5). Read-only; never a root.
+bool ImportOwnedFolder(const BM::Store& s, BM::Id id) {
+    const BM::Node* n = s.Find(id);
     if (!n || n->kind != BM::Kind::Folder || BM::Store::IsRoot(id) || privateWindow) return false;
     std::string bytes; bool known = false, complete = false;
-    { ProfileStore::Lock lock(dataDir); if (!lock.Held() || !ProfileStore::ReadAll(dataDir + L"\\bookmark-imports", bytes)) return false; }
+    { ProfileStore::Lock lock(dataDir); if (!lock.Held() || !ProfileStore::ReadAll(dataDir + L"\\bookmark-imports", bytes)) return false; }   // recursive: fine inside the save
     const BI::FolderMap map = BI::FolderMap::Read(bytes, &known, &complete);
     if (!known || !complete) return false;
-    auto named = [&](const BM::Node* f) { if (!f) return false; for (const auto& [k, list] : map.entries) for (const auto& e : list) if (e.id == f->id && e.added == f->added) return true; return false; };
-    return named(n) || (n->parent != BM::BarRoot && n->parent != BM::OtherRoot && named(bookmarks.Find(n->parent)));
+    return map.Names(s, id);
 }

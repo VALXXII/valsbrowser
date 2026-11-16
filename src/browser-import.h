@@ -638,6 +638,8 @@ struct FolderMap {
         for (const auto& e : it->second) if (const Bookmarks::Node* n = Holds(s, e)) return n;
         return nullptr;
     }
+    // Some key's candidate is exactly this folder of `s` (same id, kind and time): an import created it.
+    bool Names(const Bookmarks::Store& s, Bookmarks::Id id) const { const Bookmarks::Node* n = s.Find(id); if (!n || Bookmarks::Store::IsRoot(id)) return false; for (const auto& [k, list] : entries) for (const auto& e : list) if (e.id == id && Holds(s, e)) return true; return false; }
     bool Claimed(Bookmarks::Id id, const std::string& except) const { for (const auto& [k, list] : entries) if (k != except) for (const auto& e : list) if (e.id == id) return true; return false; }
     // `e` becomes the preferred candidate of `key`; the others stay after it (bounded).
     void Prefer(const std::string& key, const Entry& e) {
