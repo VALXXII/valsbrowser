@@ -278,7 +278,8 @@ inline std::wstring JsonString(const std::wstring& s) {
     }
     return o + L"\"";
 }
-// Script run in the target frame only (ExecuteScript of that frame): fills the focused field's form
+// Script run in the top-level frame only, in an isolated world of its document (review R-1, see
+// IsolatedEvaluateParams below; never ExecuteScript in the page's main world): fills the focused field's form
 // (username + password inputs) and returns nothing to the bridge (no secret comes back).
 // The script re-checks, at the moment it runs, everything the host checked before injecting (review
 // V1/V2): this document's origin and its own (non-opaque) origin equal the account's, a secure
@@ -303,6 +304,76 @@ inline FillOutcome ParseFillResult(long hr, const wchar_t* json) {
     if (hr < 0 || !json) return FillOutcome::Failed;
     const std::wstring j = json;
     return j == L"\"filled\"" ? FillOutcome::Filled : j == L"\"origin\"" ? FillOutcome::Origin : j == L"\"noform\"" ? FillOutcome::NoForm : j == L"\"nofield\"" ? FillOutcome::NoField : FillOutcome::Failed;
+}
+// ---- Review R-1: the fill runs in an ISOLATED world, never in the page's main world ------------------
+// In the main world `self` and `window.origin` are [Replaceable]: an opaque-origin document (CSP sandbox)
+// served at the account's URL can make `self.origin` read as that URL's origin and pass FillScript's own
+// check. The host therefore evaluates FillScript through the DevTools protocol in a FRESH isolated world of
+// the top-level frame (Page.getFrameTree -> Page.createIsolatedWorld -> Runtime.evaluate with that
+// contextId). There the globals and prototypes are the world's own, so `self.origin`, `location`,
+// `isSecureContext` and the HTMLInputElement setter are the engine's, not the page's: an opaque document reads
+// "null" and is refused ("origin"). The world belongs to the document it was created in: a navigation in
+// between destroys it and the evaluation fails (nothing filled). No fallback to the main world.
+inline bool AsciiIdChar(wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9'); }
+// Where the value of member `key` of the JSON object opening at `open` starts (members of THAT object only, never of
+// a nested one; strings skipped whole, whitespace and any key order accepted). npos when absent or malformed.
+inline std::size_t JsonMemberAt(const std::wstring& j, std::size_t open, const wchar_t* key) {
+    if (open >= j.size() || j[open] != L'{') return std::wstring::npos;
+    int depth = 0;
+    for (std::size_t i = open; i < j.size(); ++i) {
+        const wchar_t c = j[i];
+        if (c == L'"') {
+            std::size_t e = i + 1; while (e < j.size() && j[e] != L'"') e += j[e] == L'\\' ? 2 : 1;
+            if (e >= j.size()) return std::wstring::npos;
+            std::size_t k = e + 1; while (k < j.size() && iswspace(j[k])) ++k;
+            if (depth == 1 && k < j.size() && j[k] == L':' && j.compare(i + 1, e - i - 1, key) == 0) { ++k; while (k < j.size() && iswspace(j[k])) ++k; return k < j.size() ? k : std::wstring::npos; }
+            i = e; continue;
+        }
+        if (c == L'{' || c == L'[') ++depth;
+        else if ((c == L'}' || c == L']') && --depth == 0) return std::wstring::npos;
+    }
+    return std::wstring::npos;
+}
+inline std::size_t JsonRoot(const std::wstring& j) { std::size_t i = 0; while (i < j.size() && iswspace(j[i])) ++i; return i < j.size() && j[i] == L'{' ? i : std::wstring::npos; }
+// A plain string value (no escape) starting at `at`; false when it is not one.
+inline bool JsonPlainString(const std::wstring& j, std::size_t at, std::wstring& out) {
+    out.clear(); if (at >= j.size() || j[at] != L'"') return false;
+    const auto e = j.find(L'"', at + 1); if (e == std::wstring::npos) return false;
+    out = j.substr(at + 1, e - at - 1); return out.find(L'\\') == std::wstring::npos;
+}
+// The top-level frame's id in a Page.getFrameTree answer ({frameTree:{frame:{id}}}, never a child frame's);
+// "" when absent or not a plain engine id.
+inline std::wstring MainFrameId(const std::wstring& json) {
+    const auto tree = JsonMemberAt(json, JsonRoot(json), L"frameTree"); const auto frame = JsonMemberAt(json, tree, L"frame");
+    std::wstring v; if (!JsonPlainString(json, JsonMemberAt(json, frame, L"id"), v)) return L"";
+    if (v.empty() || v.size() > 64) return L"";
+    for (wchar_t c : v) if (!AsciiIdChar(c)) return L"";
+    return v;
+}
+inline std::wstring IsolatedWorldParams(const std::wstring& frameId) {
+    return L"{\"frameId\":\"" + frameId + L"\",\"worldName\":\"browser-vault-fill\",\"grantUniveralAccess\":false}";   // (sic: the protocol's spelling)
+}
+// The new world's execution context id from Page.createIsolatedWorld; 0 = refused.
+inline long long ContextIdOf(const std::wstring& json) {
+    std::size_t at = JsonMemberAt(json, JsonRoot(json), L"executionContextId"); if (at == std::wstring::npos) return 0;
+    long long v = 0; std::size_t n = 0;
+    while (at < json.size() && json[at] >= L'0' && json[at] <= L'9' && n < 12) { v = v * 10 + (json[at] - L'0'); ++at; ++n; }
+    while (at < json.size() && iswspace(json[at])) ++at;
+    if (!n || (at < json.size() && json[at] != L'}' && json[at] != L',')) return 0;
+    return v;
+}
+inline std::wstring IsolatedEvaluateParams(long long contextId, const std::wstring& script) {
+    return L"{\"expression\":" + JsonString(script) + L",\"contextId\":" + std::to_wstring(contextId) + L",\"returnByValue\":true,\"awaitPromise\":false,\"silent\":true,\"includeCommandLineAPI\":false}";
+}
+// Runtime.evaluate's answer: only a string result holding one of the fixed words counts; an exception, any
+// other type or an engine error is a failure (never « rempli »).
+inline FillOutcome ParseIsolatedFillResult(long hr, const wchar_t* json) {
+    if (hr < 0 || !json) return FillOutcome::Failed;
+    const std::wstring j = json; const auto root = JsonRoot(j);
+    if (root == std::wstring::npos || JsonMemberAt(j, root, L"exceptionDetails") != std::wstring::npos) return FillOutcome::Failed;
+    const auto result = JsonMemberAt(j, root, L"result"); std::wstring type, value;
+    if (!JsonPlainString(j, JsonMemberAt(j, result, L"type"), type) || type != L"string" || !JsonPlainString(j, JsonMemberAt(j, result, L"value"), value)) return FillOutcome::Failed;
+    return ParseFillResult(0, (L"\"" + value + L"\"").c_str());
 }
 inline const wchar_t* FillOutcomeText(FillOutcome o) {
     switch (o) {

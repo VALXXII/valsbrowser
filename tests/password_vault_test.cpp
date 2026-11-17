@@ -70,6 +70,23 @@ int main() {
     Check(script.find(L"return p") == std::wstring::npos && script.find(L"return u") == std::wstring::npos && script.find(L"return 'filled';") != std::wstring::npos, "fill script answers only a fixed status word (no secret comes back through the bridge)");
     Check(ParseFillResult(0, L"\"filled\"") == FillOutcome::Filled && ParseFillResult(0, L"\"noform\"") == FillOutcome::NoForm && ParseFillResult(0, L"\"origin\"") == FillOutcome::Origin && ParseFillResult(0, L"\"nofield\"") == FillOutcome::NoField, "fill result: the fixed words");
     Check(ParseFillResult(0, L"null") == FillOutcome::Failed && ParseFillResult(0, L"\"x\"") == FillOutcome::Failed && ParseFillResult(-1, L"\"filled\"") == FillOutcome::Failed && ParseFillResult(0, nullptr) == FillOutcome::Failed, "fill result: anything else, or an engine error, is a failure, never « rempli »");
+    // Review R-1: the fill runs in an ISOLATED world of the top-level document (DevTools protocol), never in the
+    // page's main world, where self/window.origin are [Replaceable] and can be faked by an opaque-origin page.
+    {
+        const std::wstring tree = L"{\"frameTree\":{\"frame\":{\"id\":\"8F1E2D3C4B5A69788796A5B4C3D2E1F0\",\"loaderId\":\"AB12\",\"url\":\"https://compte.exemple.test/login\",\"securityOrigin\":\"https://compte.exemple.test\"},\"childFrames\":[{\"frame\":{\"id\":\"CHILD01\"}}]}}";
+        Check(MainFrameId(tree) == L"8F1E2D3C4B5A69788796A5B4C3D2E1F0", "R-1: the main frame id comes from the engine's frame tree (the top frame, never a child)");
+        const std::wstring sorted = L"{\"frameTree\": {\"childFrames\": [{\"frame\": {\"id\": \"CHILD01\"}}], \"frame\": {\"adFrameStatus\": {\"adFrameType\": \"none\"}, \"crossOriginIsolatedContextType\": \"NotIsolated\", \"id\": \"MAIN02\", \"url\": \"https://compte.exemple.test/\"}}}";
+        Check(MainFrameId(sorted) == L"MAIN02", "R-1: any key order and spacing (as the engine re-serialises it): still the top frame's own id, not a child's or a nested object's");
+        Check(MainFrameId(L"{\"frameTree\":{\"childFrames\":[{\"frame\":{\"id\":\"CHILD01\"}}]}}").empty(), "R-1: no top frame object: refused (a child frame's id is never taken)");
+        Check(MainFrameId(L"{\"frameTree\":{\"frame\":{\"id\":\"A\\\"B\"}}}").empty() && MainFrameId(L"{}").empty() && MainFrameId(L"{\"frameTree\":{\"frame\":{\"id\":\"\"}}}").empty(), "R-1: a missing, empty or unexpected frame id is refused (nothing is injected)");
+        const std::wstring world = IsolatedWorldParams(L"8F1E2D3C");
+        Check(world.find(L"\"frameId\":\"8F1E2D3C\"") != std::wstring::npos && world.find(L"\"grantUniveralAccess\":false") != std::wstring::npos, "R-1: a fresh isolated world on that frame, without universal access");
+        Check(ContextIdOf(L"{\"executionContextId\":17}") == 17 && ContextIdOf(L"{ \"executionContextId\" : 18 }") == 18 && ContextIdOf(L"{\"x\":{\"executionContextId\":19}}") == 0 && ContextIdOf(L"{\"executionContextId\":-3}") == 0 && ContextIdOf(L"{}") == 0 && ContextIdOf(L"{\"executionContextId\":\"17\"}") == 0, "R-1: the world's execution context id is read strictly (0 = refused)");
+        const std::wstring ev = IsolatedEvaluateParams(17, FillScript(origin, L"u", L"p\"</script>"));
+        Check(ev.find(L"\"contextId\":17") != std::wstring::npos && ev.find(L"\"returnByValue\":true") != std::wstring::npos && ev.find(L"</script>") == std::wstring::npos && ev.find(L"self.origin!==o") != std::wstring::npos, "R-1: the fill script is evaluated in that world only (JSON-escaped, by value)");
+        Check(ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"string\",\"value\":\"filled\"}}") == FillOutcome::Filled && ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"string\",\"value\":\"origin\"}}") == FillOutcome::Origin, "R-1: the world's answer: the fixed words");
+        Check(ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"object\",\"value\":\"filled\"}}") == FillOutcome::Failed && ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"string\",\"value\":\"filled\"},\"exceptionDetails\":{}}") == FillOutcome::Failed && ParseIsolatedFillResult(-1, L"{\"result\":{\"type\":\"string\",\"value\":\"filled\"}}") == FillOutcome::Failed && ParseIsolatedFillResult(0, nullptr) == FillOutcome::Failed, "R-1: an exception, another type or an engine error is a failure, never « rempli »");
+    }
     // Profile transaction.
     const std::wstring dir = std::filesystem::absolute(L"build/password-vault/profile").wstring(); std::error_code ec; std::filesystem::remove_all(dir, ec); std::filesystem::create_directories(dir, ec);
     Store base, local = s;

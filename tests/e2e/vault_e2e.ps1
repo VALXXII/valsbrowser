@@ -16,7 +16,11 @@ foreach ($p in (Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Whe
 Remove-Item $hostDir, (Split-Path $pki) -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $hostDir, $pki | Out-Null
 & (Join-Path $root 'tools\w64devkit\bin\g++.exe') -std=c++17 -O1 -w -static -municode -mwindows -DTVG_STATIC '-Ideps/thorvg-1.1.3/inc' -Isrc '-Ideps/webview2/build/native/include' tests/e2e/vault_host.cpp src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o "$hostDir\browser.exe" -lole32 -luuid -lcomctl32 -lshlwapi -lgdi32 -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -lwinhttp -lbcrypt -lshell32 -luser32 -lkernel32 -ladvapi32 -lcrypt32 -loleaut32
 if ($LASTEXITCODE -ne 0) { throw 'vault test host build failed' }
-Copy-Item (Join-Path $root 'build\real-integration-check\WebView2Loader.dll') $hostDir; Copy-Item (Join-Path $root 'build\real-integration-check\assets') "$hostDir\assets" -Recurse
+Copy-Item (Join-Path $root 'deps\webview2\build\native\x64\WebView2Loader.dll') $hostDir; Copy-Item (Join-Path $root 'assets') "$hostDir\assets" -Recurse
+# Review R-2: two profiles in the synthetic root (Personnel = default, Travail), each with its own vault.
+[IO.File]::WriteAllText((Join-Path $hostDir 'profiles.txt'), "browser-profiles 1`nlast=default`np=default|house|0|0|1|Personnel`np=ptravail01|briefcase|150|140|0|Travail`n")
+$travailDir = Join-Path $hostDir 'profiles\ptravail01'; $travailLog = Join-Path $travailDir 'browser.log'; $travailVault = Join-Path $travailDir 'passwords'
+$tUser = 'e2e-synth-travail'; $tSecret = 'E2e-Travail-7777!'
 $o = 'C:\Program Files\Git\usr\bin\openssl.exe'; $ErrorActionPreference = 'Continue'
 & $o req -x509 -newkey rsa:2048 -nodes -keyout "$pki\server.key" -out "$pki\server.crt" -days 1 -subj '/CN=127.0.0.1' -addext 'subjectAltName=IP:127.0.0.1' 2>&1 | Out-Null
 & $o x509 -in "$pki\server.crt" -outform DER -out "$pki\server.der" 2>&1 | Out-Null
@@ -43,7 +47,10 @@ function Page {   # newest page target
 function Send($ws, [string]$method, $params) { $script:cid++; $b = [Text.Encoding]::UTF8.GetBytes((@{ id = $script:cid; method = $method; params = $params } | ConvertTo-Json -Depth 6 -Compress)); $ws.SendAsync([ArraySegment[byte]]::new($b), 'Text', $true, [Threading.CancellationToken]::None).Wait()
   $buf = New-Object byte[] 262144; while ($true) { $sb = New-Object Text.StringBuilder; do { $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buf), [Threading.CancellationToken]::None); if (!$r.Wait(10000)) { return $null }; [void]$sb.Append([Text.Encoding]::UTF8.GetString($buf, 0, $r.Result.Count)) } while (!$r.Result.EndOfMessage); $j = $sb.ToString() | ConvertFrom-Json; if ($j.id -eq $script:cid) { return $j } } }
 function Eval($ws, [string]$e) { (Send $ws 'Runtime.evaluate' @{ expression = $e; returnByValue = $true }).result.result.value }
-function WaitLog([string]$pattern, [int]$ms = 15000) { $t = [Environment]::TickCount; while ([Environment]::TickCount - $t -lt $ms) { $l = Get-Content $log -Raw -ErrorAction SilentlyContinue; if ($l -match $pattern) { return $true }; Start-Sleep -Milliseconds 200 }; return $false }
+function LogCount([string]$pattern, [string]$file = $log) { $l = Get-Content $file -Raw -ErrorAction SilentlyContinue; if (!$l) { return 0 }; return ([regex]::Matches($l, $pattern)).Count }
+# Review R-13: a host's engine may outlive the force-killed host for seconds and keep the debugging port.
+function WaitEngineExit { for ($i = 0; $i -lt 60; $i++) { $left = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$hostDir*" }); if (!$left.Count) { return $true }; Start-Sleep -Milliseconds 500 }; return $false }
+function WaitLog([string]$pattern, [int]$ms = 15000, [string]$file = $log) { $t = [Environment]::TickCount; while ([Environment]::TickCount - $t -lt $ms) { $l = Get-Content $file -Raw -ErrorAction SilentlyContinue; if ($l -match $pattern) { return $true }; Start-Sleep -Milliseconds 200 }; return $false }
 $server = Start-Process python -ArgumentList 'tests/e2e/mtls_server.py', $pki, "$port", '--no-client-auth' -PassThru -WindowStyle Hidden
 $env:BROWSER_E2E_PIN_MANIFEST = "$pki\pin.txt"; $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9401'
 if ($Runtime) { $env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER = (Resolve-Path $Runtime).Path }
@@ -108,21 +115,90 @@ try {
       Check ($filled -and (WaitLog 'VAULT filled \(user action, same document, confirmed by the page\)' 3000)) 'B03: the focused form is filled after the explicit choice (confirmed by the page, waited on the DOM up to 3 s)'
       if (!$filled) { Get-Content $log | Where-Object { $_ -match 'VAULT|PROMPT' } | Select-Object -Last 12 | ForEach-Object { "     log: $_" } } }
   }
+  # Review R-1: an OPAQUE-origin document (CSP sandbox) served at the account's URL never receives the secret,
+  # even when its own script replaces window.self so that self.origin reads as the URL's origin. The host
+  # judges the key by URL, so the key and the row may show; the fill itself must be refused (outcome « origin »).
+  function TryFill([string]$path) {   # navigate, focus the password field, key -> row; returns the page's password value
+    $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port$path" }); $w.Dispose(); Start-Sleep 3; $w = Page
+    [void](Eval $w "document.getElementById('p').focus();1")
+    $k = WaitFind $hp 'VaultFill' '' 6000; $rw = $null
+    if ($k) { Start-Sleep -Milliseconds 700; [void](Invoke-El (Find $hp 'VaultFill' '')); $rw = WaitFind $hp '' $user 5000; if ($rw) { Start-Sleep -Milliseconds 700; [void](Invoke-El $rw); Start-Sleep 2 } }
+    $v = Eval $w "document.getElementById('p').value"; $o = Eval $w "(function(){try{return String(self.origin)+'|'+String(window.origin)+'|'+location.origin}catch(e){return 'err'}})()"; $w.Dispose()
+    "     [$path] key shown: $([bool]$k), row shown: $([bool]$rw), page self.origin|window.origin|location.origin = $o, password field: $(if ($v -eq $secret) { 'THE SECRET' } elseif ($v) { 'other value' } else { 'empty' })" | Write-Host
+    return @{ value = $v; picked = [bool]$rw } }
+  $refused0 = LogCount 'VAULT fill not done: outcome=1 '; $filled0 = LogCount 'VAULT filled \(user action'
+  $sbx = TryFill '/sbx'
+  Check ($sbx.picked -and $sbx.value -eq '' -and (LogCount 'VAULT fill not done: outcome=1 ') -gt $refused0) 'R-1 control: opaque-origin (CSP sandbox) document at the account URL: account picked, field stays empty, host logs the refusal (origin)'
+  $refused1 = LogCount 'VAULT fill not done: outcome=1 '
+  $spoof = TryFill '/sbx?spoof'
+  Check ($spoof.picked -and $spoof.value -eq '' -and (LogCount 'VAULT fill not done: outcome=1 ') -gt $refused1 -and (LogCount 'VAULT filled \(user action') -eq $filled0) 'R-1: opaque-origin document that replaces window.self: account picked, NO secret (field empty), host logs the refusal (origin)'
+  # The same same-origin page still fills after the refusals.
+  $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); $w.Dispose(); Start-Sleep 3; $w = Page; [void](Eval $w "document.getElementById('p').focus();1")
+  $k = WaitFind $hp 'VaultFill' '' 6000; if ($k) { Start-Sleep -Milliseconds 700; [void](Invoke-El (Find $hp 'VaultFill' '')); $rw = WaitFind $hp '' $user 5000; if ($rw) { Start-Sleep -Milliseconds 700; [void](Invoke-El $rw) } }
+  $ok = $false; for ($i = 0; $i -lt 15 -and !$ok; $i++) { Start-Sleep -Milliseconds 200; $ok = (Eval $w "document.getElementById('p').value") -eq $secret }; $w.Dispose()
+  Check ($ok -and (LogCount 'VAULT filled \(user action') -gt $filled0) 'R-1: a normal same-origin page still fills after the refusals'
   # Crash with an offer open: the secret lived only in the killed process.
   $s5 = 'E2e-Crash-4444!'; Submit '/login' 'e2e-synth-crash' $s5
   Check ([bool](WaitFind $hp 'PasswordSaveConfirm' '')) 'crash: the offer is open when the host is killed'
-  $ws.Dispose(); foreach ($p in Pids '') { Stop-Process -Id $p -Force }; Start-Sleep 2
+  $ws.Dispose(); foreach ($p in Pids '') { Stop-Process -Id $p -Force }
+  Check (WaitEngineExit) 'crash: the killed host''s engine has exited before the next window starts (review R-13)'
   Check ((Get-FileHash $vaultFile).Hash -eq $hash0) 'crash: nothing written'
-  # Private window: read-only fill, no capture, no write
+  # Review R-2: a Travail window saves its own account into the Travail vault (profiles\ptravail01\passwords).
+  Start-Process -FilePath $exe -ArgumentList '--profile ptravail01' -WorkingDirectory $hostDir; $tp = 0; for ($i = 0; $i -lt 40 -and !$tp; $i++) { Start-Sleep -Milliseconds 250; $tp = Pids '--profile ptravail01' | Select-Object -First 1 }
+  Check (WaitLog 'E2E BOUND certificate decisions cleared' 20000 $travailLog) 'R-2 setup: a Travail window is ready (its own profile folder and log)'
+  Submit '/login' $tUser $tSecret
+  $ts = WaitFind $tp 'PasswordSaveConfirm' ''; if ($ts) { Start-Sleep -Milliseconds 700; $ts = Find $tp 'PasswordSaveConfirm' ''; if ($ts) { [void](Invoke-El $ts) }; Start-Sleep 1 }
+  $tb = if (Test-Path $travailVault) { [IO.File]::ReadAllText($travailVault) } else { '' }
+  Check ($tb.StartsWith("browser-passwords 2`n") -and $tb -match "`nend`t1`t[0-9a-f]{64}`n$" -and (Get-FileHash $vaultFile).Hash -eq $hash0) 'R-2 setup: the Travail account is saved in the Travail vault only (Personnel vault unchanged)'
+  $tHash = if (Test-Path $travailVault) { (Get-FileHash $travailVault).Hash } else { '' }
+  # The product's own « Navigation privée » command (the Ctrl+Maj+N path, OpenPrivateWindow) from the Travail window.
+  Add-Type -Namespace W -Name P -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);' -ErrorAction SilentlyContinue
+  $known = @(Pids '--private')
+  [void][W.P]::PostMessage((Get-Process -Id $tp).MainWindowHandle, 0x8001, [IntPtr]0x50, [IntPtr]::Zero)   # WM_APP+1 (Shortcut) with 'P' = OpenPrivateWindow
+  $child = $null; for ($i = 0; $i -lt 40 -and !$child; $i++) { Start-Sleep -Milliseconds 250; $child = Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.ExecutablePath -ieq $exe -and $_.CommandLine -like '*--private*' -and $known -notcontains $_.ProcessId } | Select-Object -First 1 }
+  "     private window launched from Travail: $(if ($child) { $child.CommandLine -replace '^.*browser\.exe"?', 'browser.exe' } else { 'none' })"
+  Check ($child -and $child.CommandLine -match '--private' -and $child.CommandLine -match '--profile ptravail01( |$)') 'R-2: « Navigation privée » from a Travail window opens a private window bound to Travail (--profile passed)'
+  foreach ($p in Pids '') { Stop-Process -Id $p -Force }; [void](WaitEngineExit)
+  # Review R-13: a fresh private window lists more than one page target and their order changes, so « the newest
+  # target » may be another one than the tab that was navigated. Its page is then found by its URL.
+  function PageAt([string]$url) { $t = $null; for ($i = 0; $i -lt 40 -and !$t; $i++) { try { $t = (Invoke-RestMethod 'http://127.0.0.1:9401/json') | ForEach-Object { $_ } | Where-Object { $_.type -eq 'page' -and $_.url -eq $url } | Select-Object -First 1 } catch {}; if (!$t) { Start-Sleep -Milliseconds 300 } }
+    if (!$t) { return $null }; $w = New-Object System.Net.WebSockets.ClientWebSocket; $w.ConnectAsync([Uri]$t.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait(); return $w }
+  # The new window first loads its own home page (data:); a navigation sent before that is replaced by it.
+  function PrivateLogin {   # a fresh private window: wait for its home page, open /login, wait until it is really there
+    for ($i = 0; $i -lt 50; $i++) { $homePage = $null; try { $homePage = (Invoke-RestMethod 'http://127.0.0.1:9401/json') | ForEach-Object { $_ } | Where-Object { $_.type -eq 'page' -and $_.url -like 'data:*' } | Select-Object -First 1 } catch {}; if ($homePage) { break }; Start-Sleep -Milliseconds 300 }
+    for ($try = 0; $try -lt 2; $try++) {
+      $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); $w.Dispose()
+      $w = PageAt "https://127.0.0.1:$port/login"
+      for ($i = 0; $w -and $i -lt 20; $i++) { if ((Eval $w "document.getElementById('p')?1:0") -eq 1) { return $w }; Start-Sleep -Milliseconds 300 }
+      if ($w) { $w.Dispose() } }
+    "     private window: no /login page target" | Write-Host; return (Page) }
+  function OpenRows([int]$procId, [string]$name) {   # key -> B03 list (one more try if the first activation came before the arming)
+    for ($a = 0; $a -lt 2; $a++) { $k = Find $procId 'VaultFill' ''; if (!$k) { return $null }; Start-Sleep -Milliseconds 700; [void](Invoke-El $k); $r = WaitFind $procId '' $name 4000; if ($r) { return $r } }
+    return $null }
+  # Private window (review R-13: started only once every engine of the fixture has exited): read-only fill, no capture, no write.
   $before = (Get-FileHash $vaultFile).Hash
   Start-Process -FilePath $exe -ArgumentList '--private' -WorkingDirectory $hostDir; $pp = 0; for ($i = 0; $i -lt 40 -and !$pp; $i++) { Start-Sleep -Milliseconds 250; $pp = Pids '--private' | Select-Object -First 1 }
-  Start-Sleep 3; $ws = Page; [void](Send $ws 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); Start-Sleep 3; $ws.Dispose(); $ws = Page
+  $ws = PrivateLogin
   [void](Eval $ws "document.getElementById('p').focus();1")
-  $pkey = WaitFind $pp 'VaultFill' ''
-  if ($pkey) { Start-Sleep -Milliseconds 700; [void](Invoke-El $pkey); $prow = WaitFind $pp '' $user; if ($prow) { Start-Sleep -Milliseconds 700; [void](Invoke-El $prow); Start-Sleep 1 } }
+  $pkey = WaitFind $pp 'VaultFill' ''; $prow = $null; $otherRow = $false
+  if ($pkey) { $prow = OpenRows $pp $user; $otherRow = [bool](Find $pp '' $tUser); if ($prow) { Start-Sleep -Milliseconds 700; [void](Invoke-El $prow); Start-Sleep 1 } }
   Check ([bool]$pkey -and (Eval $ws "document.getElementById('p').value") -eq $secret) 'private window: explicit read-only fill works'
+  Check ([bool]$prow -and -not $otherRow) 'R-2: a private window opened from Personnel (no --profile) lists Personnel''s account only, not Travail''s'
   [void](Eval $ws "document.getElementById('u').value='autre';document.getElementById('p').value='Autre-0000!';document.getElementById('go').click();1"); Start-Sleep 2
   Check (-not (Find $pp 'PasswordSaveConfirm' '') -and (Get-FileHash $vaultFile).Hash -eq $before) 'private window: no capture prompt and the vault file is unchanged'
+  $ws.Dispose()
+  # Review R-2: a private window opened from Travail reads (never writes) the TRAVAIL vault.
+  foreach ($p in Pids '') { Stop-Process -Id $p -Force }; [void](WaitEngineExit)
+  Start-Process -FilePath $exe -ArgumentList '--private --profile ptravail01' -WorkingDirectory $hostDir; $pt = 0; for ($i = 0; $i -lt 40 -and !$pt; $i++) { Start-Sleep -Milliseconds 250; $pt = Pids '--private --profile ptravail01' | Select-Object -First 1 }
+  $ws = PrivateLogin
+  [void](Eval $ws "document.getElementById('p').focus();1")
+  $tkey = WaitFind $pt 'VaultFill' ''; $trow = $null; $drow = $false
+  if ($tkey) { $trow = OpenRows $pt $tUser; $drow = [bool](Find $pt '' $user); if ($trow) { Start-Sleep -Milliseconds 700; [void](Invoke-El $trow); Start-Sleep 1 } }
+  $tv = Eval $ws "document.getElementById('p').value"
+  "     private window from Travail: key $([bool]$tkey), Travail row $([bool]$trow), Personnel row $drow, field: $(if ($tv -eq $tSecret) { 'Travail secret' } elseif ($tv -eq $secret) { 'PERSONNEL secret' } elseif ($tv) { 'other' } else { 'empty' })"
+  Check ([bool]$tkey -and [bool]$trow -and -not $drow -and $tv -eq $tSecret) 'R-2: a private window opened from Travail offers and fills the Travail account only (not Personnel)'
+  [void](Eval $ws "document.getElementById('u').value='autre';document.getElementById('p').value='Autre-0000!';document.getElementById('go').click();1"); Start-Sleep 2
+  Check (-not (Find $pt 'PasswordSaveConfirm' '') -and (Get-FileHash $vaultFile).Hash -eq $before -and $tHash -and (Get-FileHash $travailVault).Hash -eq $tHash) 'R-2: that private window captures nothing and writes neither vault'
   $ws.Dispose()
   # Whole fixture profile (engine user data, log, vault): no synthetic secret in clear, UTF-8 or UTF-16, once every process is gone.
   foreach ($p in Pids '') { Stop-Process -Id $p -Force }
@@ -131,7 +207,7 @@ try {
   $scan = Join-Path (Split-Path $pki) 'scan.py'
   [IO.File]::WriteAllText($scan, "import os,sys`nroot=sys.argv[1];n=[]`nfor s in sys.argv[2:]: n+=[s.encode('utf-8'),s.encode('utf-16-le')]`nhits=[];bad=0;count=0`nfor d,_,fs in os.walk(root):`n  for f in fs:`n    p=os.path.join(d,f);count+=1`n    try: b=open(p,'rb').read()`n    except Exception: bad+=1;continue`n    if any(x in b for x in n): hits.append(os.path.relpath(p,root))`nprint('files=%d unreadable=%d hits=%s'%(count,bad,';'.join(hits)))`n")
   $ctl = 'E2e-Control-9999!'; [IO.File]::WriteAllText((Join-Path $hostDir 'sessions\scan-control.bin'), $ctl, [Text.Encoding]::Unicode)   # positive control (UTF-16)
-  $r = & python -I $scan $hostDir $secret $s2 $s3 $s4 $s5 $s6 $ctl
+  $r = & python -I $scan $hostDir $secret $s2 $s3 $s4 $s5 $s6 $tSecret $ctl
   "     $r"
   Check ($r -match 'unreadable=0 hits=sessions.scan-control\.bin$') 'profile scan: no synthetic password in clear anywhere in the fixture profile (all files read; the planted control is found)'
 } finally {
@@ -140,4 +216,4 @@ try {
   Remove-Item Env:BROWSER_E2E_PIN_MANIFEST, Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER -ErrorAction SilentlyContinue
   Remove-Item (Split-Path $pki) -Recurse -Force -ErrorAction SilentlyContinue
 }
-if ($script:fails) { "FAIL vault e2e: $script:fails"; exit 1 } else { 'PASS vault e2e (synthetic profile, test host only; foreground condition lifted in the test host only, 500 ms arming kept; immediate click on the control not proven E2E, arming proven in U): armed save, v2 without plaintext, no web-storage copy after save/refusal/no navigation/failed cross-origin navigation/crash, armed native fill after explicit choice, private read-only fill without capture or write, profile scan clean' }
+if ($script:fails) { "FAIL vault e2e: $script:fails"; exit 1 } else { 'PASS vault e2e (synthetic profile, test host only; foreground condition lifted in the test host only, 500 ms arming kept; immediate click on the control not proven E2E, arming proven in U): armed save, v2 without plaintext, no web-storage copy after save/refusal/no navigation/failed cross-origin navigation/crash, armed native fill after explicit choice, opaque-origin documents refused even when they fake self.origin (R-1), private windows read their opener profile''s vault only (R-2), private read-only fill without capture or write, profile scan clean' }

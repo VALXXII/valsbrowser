@@ -913,7 +913,12 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
 // user's explicit « Enregistrer » / « Mettre à jour » (B04), through Vault::Commit (fail closed).
 // A private window never captures (D3). Secret copies held by the host are wiped after use (V7).
 Vault::Store vault,vaultBase;bool vaultLoaded=false;std::set<unsigned> vaultPromptOpen;std::map<unsigned,Vault::CaptureBinding> vaultCapture;   // tab serial -> its pending capture (review N13)
-std::wstring VaultFile(){return dataDir+L"\\passwords";}
+// Review R-2: a private window reads (never writes, Vault::WritesForbidden) the vault of the profile it was opened
+// from: set once at start by SelectProfile to Profiles::PrivateReadDir(root, --profile). "" = that profile is not a
+// registered one: no vault at all (never another profile's). A normal window: its (current) profile's folder.
+std::wstring privateVaultDir;
+std::wstring VaultDir(){return privateWindow?privateVaultDir:dataDir;}
+std::wstring VaultFile(){return VaultDir()+L"\\passwords";}
 // Capture (review 885d322 #1): the page posts the submitted login ONCE, directly, and keeps nothing:
 // no web storage, no resend by a later document. The secret then lives only in the host's memory, bound
 // to this tab, this origin (the engine's) and this capture, until « Enregistrer » / « Pas maintenant »,
@@ -934,7 +939,8 @@ void VaultNotice(const std::wstring& message,const std::wstring& detail);
 enum class VaultLoad { Ok, Busy, Unavailable };
 VaultLoad ReadVault(DWORD lockMs){
     std::string bytes;bool exists=false,read=false;
-    {ProfileStore::Lock lock(dataDir,lockMs);if(!lock.Held())return VaultLoad::Busy;   // the cache, if any, is left as it was
+    if(privateWindow&&privateVaultDir.empty()){vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=true;return VaultLoad::Ok;}   // R-2: no known opener profile: no vault, nothing read
+    {ProfileStore::Lock lock(VaultDir(),lockMs);if(!lock.Held())return VaultLoad::Busy;   // the cache, if any, is left as it was
      exists=GetFileAttributesW(VaultFile().c_str())!=INVALID_FILE_ATTRIBUTES;read=ProfileStore::ReadAll(VaultFile(),bytes);}
     static std::wstring lastWhy;
     auto unavailable=[](const wchar_t* why){if(lastWhy!=why){Log(why);lastWhy=why;}vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;return VaultLoad::Unavailable;};
@@ -1012,7 +1018,7 @@ bool VaultCapture(const std::shared_ptr<Tab>& t,const std::wstring& source,std::
         if(r.action==OP::Action::Save&&!r.password.empty()&&!VaultOfferStillValid(weak.lock(),origin)){Log(L"VAULT capture dropped at the answer: the tab is no longer on its origin");Wipe(r.password);return;}   // N13
         if(r.action==OP::Action::Save&&!r.password.empty()&&LoadVault(TR(vault_not_saved))){   // F11: fresh file at the answer
             const auto saved=vault.Save(origin,r.user,r.password,NativeChrome::DownloadsUI::UnixNowMs());
-            const auto res=saved==Vault::Store::Saved::Refused?ProfileStore::Result::Failed:Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
+            const auto res=saved==Vault::Store::Saved::Refused?ProfileStore::Result::Failed:Vault::Commit(VaultDir(),VaultFile(),vaultBase,vault);
             const bool ok=res==ProfileStore::Result::Written||res==ProfileStore::Result::Unchanged;
             Log(std::wstring(L"VAULT ")+(ok?L"saved":L"NOT saved (refused, busy, damaged or unknown file)"));
             if(!ok){vault=vaultBase;VaultNotice(TR(vault_not_saved),res==ProfileStore::Result::Busy?TR(vault_busy):TR(vault_write_failed));}   // F5: memory back to the file
@@ -1073,6 +1079,7 @@ void VaultKeyActivated(){
     Log(L"VAULT key: activated");OfferVaultFill(Active());
 }
 // The source is read from the ENGINE now (review §5), never from our cached URL or a page message.
+void VaultFillIsolated(const std::shared_ptr<Tab>& t,std::wstring script);
 Vault::Target VaultTargetNow(const std::shared_ptr<Tab>& t,bool userAction){const std::wstring src=EngineSource(t);Vault::Target v;v.frameSource=src;v.topSource=src;v.frameId=0;v.navigation=t->navStamp;v.userAction=userAction;return v;}
 void OfferVaultFill(const std::shared_ptr<Tab>& t){
     if(!Vault::Active()||!t||t->closed||!t->view.p)return;
@@ -1101,14 +1108,39 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
         if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(TR(vault_fill_canceled),TR(vault_account_gone));return;}
         std::wstring secret;if(!vault.Reveal(e->id,origin,secret))return;
         std::wstring script=Vault::FillScript(origin,e->user,secret);Wipe(secret);
-        // Only a fixed status word comes back (never a page value or the secret); « rempli » only when the page says so.
-        auto done=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{
-            const auto o=Vault::ParseFillResult(hr,json);
-            if(o==Vault::FillOutcome::Filled){Log(L"VAULT filled (user action, same document, confirmed by the page)");return S_OK;}
-            Log(L"VAULT fill not done: outcome="+std::to_wstring((int)o)+L" hr="+std::to_wstring((long)hr));VaultNotice(TR(vault_fill_not_done),Vault::FillOutcomeText(o));return S_OK;});
-        const HRESULT hr=t->view->ExecuteScript(script.c_str(),done);done->Release();Wipe(script);
-        if(FAILED(hr)){Log(L"VAULT fill not done: ExecuteScript hr="+std::to_wstring((long)hr));VaultNotice(TR(vault_fill_not_done),Vault::FillOutcomeText(Vault::FillOutcome::Failed));}
+        VaultFillIsolated(t,std::move(script));   // review R-1: isolated world of this document, never the page's main world
     },L"vaultfill:"+std::to_wstring(t->serial));
+}
+// Review R-1: FillScript is evaluated in a FRESH isolated world of the top-level document (Vault::IsolatedEvaluateParams),
+// where `self.origin` is the document's real origin (an opaque-origin page cannot fake it there). Three engine steps:
+// the main frame's id, a new world on it, the evaluation in that world only. Every step re-checks that the tab is the
+// same document (navigation stamp); a navigation destroys the world (evaluation fails). Any failure: nothing filled,
+// said. The script (it holds the secret) is wiped as soon as it is handed over, or when the job ends.
+void VaultFillNotDone(Vault::FillOutcome o,const std::wstring& why){Log(L"VAULT fill not done: outcome="+std::to_wstring((int)o)+L" "+why);VaultNotice(TR(vault_fill_not_done),Vault::FillOutcomeText(o));}
+void VaultFillIsolated(const std::shared_ptr<Tab>& t,std::wstring script){
+    struct Job{std::weak_ptr<Tab> tab;std::uint64_t nav=0;std::wstring script;~Job(){Wipe(script);}};
+    auto job=std::make_shared<Job>();job->tab=t;job->nav=t->navStamp;job->script=std::move(script);Wipe(script);
+    auto same=[job]()->std::shared_ptr<Tab>{auto tab=job->tab.lock();return !halted&&tab&&!tab->closed&&tab->view.p&&tab->navStamp==job->nav?tab:nullptr;};
+    auto frames=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([job,same](HRESULT hr,LPCWSTR json)->HRESULT{
+        auto tab=same();const std::wstring frame=SUCCEEDED(hr)&&json?Vault::MainFrameId(json):L"";
+        if(!tab||frame.empty()){Wipe(job->script);VaultFillNotDone(Vault::FillOutcome::Failed,tab?L"(no main frame)":L"(the document changed)");return S_OK;}
+        auto world=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([job,same](HRESULT hr2,LPCWSTR json2)->HRESULT{
+            auto tab2=same();const long long context=SUCCEEDED(hr2)&&json2?Vault::ContextIdOf(json2):0;
+            if(!tab2||!context){Wipe(job->script);VaultFillNotDone(Vault::FillOutcome::Failed,tab2?L"(no isolated world)":L"(the document changed)");return S_OK;}
+            std::wstring params=Vault::IsolatedEvaluateParams(context,job->script);Wipe(job->script);
+            // Only a fixed status word comes back (never a page value or the secret); « rempli » only when the page says so.
+            auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr3,LPCWSTR json3)->HRESULT{
+                const auto o=Vault::ParseIsolatedFillResult(hr3,json3);
+                if(o==Vault::FillOutcome::Filled){Log(L"VAULT filled (user action, same document, confirmed by the page)");return S_OK;}
+                VaultFillNotDone(o,L"hr="+std::to_wstring((long)hr3));return S_OK;});
+            const HRESULT h=tab2->view->CallDevToolsProtocolMethod(L"Runtime.evaluate",params.c_str(),done);done->Release();Wipe(params);
+            if(FAILED(h))VaultFillNotDone(Vault::FillOutcome::Failed,L"Runtime.evaluate hr="+std::to_wstring((long)h));
+            return S_OK;});
+        const HRESULT h=tab->view->CallDevToolsProtocolMethod(L"Page.createIsolatedWorld",Vault::IsolatedWorldParams(frame).c_str(),world);world->Release();
+        if(FAILED(h)){Wipe(job->script);VaultFillNotDone(Vault::FillOutcome::Failed,L"Page.createIsolatedWorld hr="+std::to_wstring((long)h));}
+        return S_OK;});
+    const HRESULT hr=t->view->CallDevToolsProtocolMethod(L"Page.getFrameTree",L"{}",frames);frames->Release();
+    if(FAILED(hr)){Wipe(job->script);VaultFillNotDone(Vault::FillOutcome::Failed,L"Page.getFrameTree hr="+std::to_wstring((long)hr));}
 }
 // E8 / B05: the vault manager, real mode of the B05 surface (no decrypted secret, no reveal; removal
 // through Vault::Commit, a failure is said and the row stays). Only while the vault is active.
@@ -1124,7 +1156,7 @@ void ShowVaultManager(bool keyboard){
     for(const auto& e:vault.Entries()){std::wstring host=e.origin.substr(e.origin.find(L"://")+3);NativeChrome::PasswordDemo::Account a{host,e.user,L"",L"",VaultModified(e.updated)};a.id=e.id;rows.push_back(a);ids.push_back(e.id);}
     passwordDemo.SetReal(std::move(rows),[](std::uint64_t id)->bool{   // review F1: the row's own vault id, never a shifting index
         if(!vault.Remove(id))return false;
-        const auto r=Vault::Commit(dataDir,VaultFile(),vaultBase,vault);
+        const auto r=Vault::Commit(VaultDir(),VaultFile(),vaultBase,vault);
         if(r!=ProfileStore::Result::Written&&r!=ProfileStore::Result::Unchanged){Log(L"VAULT removal NOT written");vault=vaultBase;return false;}   // back to what the file holds
         return true;});
     passwordDemo.SetReadOnly(privateWindow);   // §6: no removal from a private window (Vault::Commit refuses anyway)

@@ -476,7 +476,18 @@ int main(){
         privateWindow=false;Log(L"control");
         Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
         std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
-        Expect(PrivateCommandLine(L"C:/b/browser.exe")==L"\"C:/b/browser.exe\" --private","private window: same executable, only --private passed");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"")==L"\"C:/b/browser.exe\" --private"&&PrivateCommandLine(L"C:/b/browser.exe",Profiles::DefaultId)==L"\"C:/b/browser.exe\" --private","private window from Personnel: same executable, only --private passed");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"ptravail01")==L"\"C:/b/browser.exe\" --private --profile ptravail01","R-2: private window from Travail: --profile of its opener (read-only vault of that profile)");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"..\\x --delete-profile y")==L"\"C:/b/browser.exe\" --private","R-2: an invalid profile id is never passed");
+        // Review R-2: a private window reads the vault of the profile it was opened from, and none when that profile is unknown.
+        { const std::wstring pdir=L"build/elements-integration/private-vault";std::error_code pec;std::filesystem::remove_all(pdir,pec);std::filesystem::create_directories(pdir,pec);
+          {Vault::Store st;st.Save(L"https://travail.test",L"synth-travail",L"Synth-7777!",1);std::ofstream f(std::filesystem::path(pdir+L"\\passwords"),std::ios::binary);st.Write(f);}
+          const std::wstring savedDir=dataDir;const std::wstring savedPrivateDir=privateVaultDir;dataDir=L"build/elements-integration/not-this-one";privateWindow=true;privateVaultDir=pdir;
+          Expect(VaultFile()==pdir+L"\\passwords"&&ReadVault(0)==VaultLoad::Ok&&vault.Entries().size()==1&&vault.Entries()[0].user==L"synth-travail","R-2: a private window reads its opener profile's vault, not the window's data root");
+          privateVaultDir.clear();
+          Expect(ReadVault(0)==VaultLoad::Ok&&vaultLoaded&&vault.Entries().empty(),"R-2: opener profile unknown: no vault is read (never another profile's)");
+          privateWindow=false;privateVaultDir=savedPrivateDir;dataDir=savedDir;vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;std::filesystem::remove_all(pdir,pec);
+          Expect(VaultFile()==dataDir+L"\\passwords","R-2: a normal window keeps its own profile's vault"); }
         // V5: the native fill control is not armed right after it appeared (500 ms, same tab and navigation).
         { chrome.vaultKey=true;vaultKeySerial=live->serial;vaultKeyNav=live->navStamp;vaultKeyShownAt=GetTickCount64();
           Expect(!VaultKeyArmed(),"V5: the fill control ignores an activation before 500 ms");

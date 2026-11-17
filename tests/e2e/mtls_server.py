@@ -17,6 +17,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.startswith('/with-img?p='):
             body = ('<title>with img</title><img src="https://127.0.0.1:%s/img.png">' % self.path.split('=')[1]).encode('utf-8')
             self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if self.path.startswith('/sbx'):   # vault E2E (review R-1): an OPAQUE-origin document (CSP sandbox) served at the account's URL
+            # ?spoof: the page's own script replaces window.self (a [Replaceable] attribute) so that self.origin
+            # reads as the URL's origin, the bypass the independent review reproduced. The vault must not fill either.
+            spoof = '<script>self={origin:location.origin};</script>' if 'spoof' in self.path else ''
+            body = ('<title>sbx</title>%s<form method="post" action="/landing"><input id="u" name="u" autocomplete="username"><input id="p" name="p" type="password"><button id="go">go</button></form>' % spoof).encode('utf-8')
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Security-Policy', 'sandbox allow-scripts allow-forms'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
         if self.path.startswith('/login'):   # vault E2E: a synthetic login form (fictitious account only)
             # POST (the secret never goes into a URL); ?stay: the page keeps the submit (no navigation);
             # ?away: the form posts to another origin (localhost), which the test host refuses (navigation fails).
