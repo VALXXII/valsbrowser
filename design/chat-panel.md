@@ -16,7 +16,7 @@
 | Polices | La CSS charge `../fonts/InterDisplay-Regular.ttf`, `../fonts/InterDisplay-Medium.ttf`, `../fonts/JetBrainsMono-Regular.ttf` : l'hôte sert `assets/fonts/` sous `https://chat.browser.internal/fonts/` (mêmes fichiers que le reste de l'app) |
 | CSP (balise `<meta>` dans la page, à doubler en en-tête par l'hôte) | `default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` |
 | Exclu du build | `assets/chat-panel/dev-host.js` et `assets/chat-panel/dev.html` (faux hôte de QA). La page de production ne les référence pas. |
-| Fond | `#1c1c1c` opaque (planches 6.x). `DefaultBackgroundColor` de la WebView : même couleur, pour éviter un flash blanc. |
+| Fond | `#171717` opaque (`--color-browser-canvas`, planches 6.x). `DefaultBackgroundColor` de la WebView : même couleur, pour éviter un flash blanc. |
 | Taille | Conçu pour 380 DIP de large (planches), fonctionne de 320 à 560. Hauteur libre. |
 
 Pas d'`eval`, pas de `new Function`, pas de `innerHTML` avec du contenu reçu : le Markdown de l'agent est analysé par `markdown.js` et construit avec `createElement` / `textContent`. Les liens ne sont jamais suivis par la page : un clic envoie `link.open` à l'hôte.
@@ -99,6 +99,7 @@ interface FileChange {
   path: string;                 // relatif au dossier du projet
   status: "modified" | "created" | "deleted";
   added: number; removed: number;
+  diff?: Diff;                  // facultatif : affiché sous la barre dépliée quand un seul fichier a changé (6.6)
 }
 
 interface Diff {                // aperçu d'un changement
@@ -229,4 +230,41 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 
 ## 7. Faux hôte (QA)
 
-`assets/chat-panel/dev.html` charge la page de production plus `dev-host.js`, qui imite `window.chrome.webview` et rejoue des scénarios (`?scenario=6.1`, `6.2`, … voir `tests/chat-panel/README.md`). Il n'est jamais copié dans le build.
+`assets/chat-panel/dev.html` charge la page de production plus `dev-host.js`, qui imite `window.chrome.webview` et rejoue des scénarios (`?scenario=6.1-autorisation`, `6.2-premiere-fois`, … liste dans `dev-host.js`, mode d'emploi dans `tests/chat-panel/README.md`). Ni `dev.html` ni `dev-host.js` ne sont copiés dans le build.
+
+**À embarquer par C4** (et rien d'autre) : `assets/chat-panel/index.html`, `panel.css`, `panel.js`, `markdown.js`, `icons.js`, plus `assets/fonts/InterDisplay-Regular.ttf`, `InterDisplay-Medium.ttf`, `JetBrainsMono-Regular.ttf` (servis sous `/fonts/`).
+
+## 8. Ce que fait le panneau (résumé pour l'intégration)
+
+| Zone | Comportement |
+|---|---|
+| En-tête | Logo de l'agent, titre (bouton : ouvre l'historique, chevron qui pivote), source `Checkout.tsx:42` au-dessus si `conversation.source` (en-tête 52 px avec filet), indicateur « en cours », Nouveau / Historique / Fermer. |
+| Fil | Date centrée (nouveau jour ou pause > 30 min) ; bulle de l'utilisateur avec puces d'élément à l'endroit de leur libellé, les autres puces et images sous la bulle ; crayon au survol (Modifier) ; « Revenir » au survol quand le tour a un point de reprise. Tour : infos (modèle · effort · durée), réflexion repliée, texte en flux (Markdown sûr, curseur bleu), étapes (une par ligne pendant le tour, résumé repliable ensuite, « (échec) » en rouge), plan, attente d'accord, « Travaille… N s », barre des changements (+/−, détail, Tout annuler), Copier / Relancer au survol ou au clavier, repère « Passé à … ». |
+| Bas | Bandeau collé à la saisie (hôte ou état de l'agent : pas connecté, pas installé, préparation avec progression, erreur, site non local), suites en file, saisie (puces, images, 6 lignes puis défilement, raccourcis affichés en multi-ligne) ; la carte d'autorisation remplace le tout. |
+| Menus | Modèle (agent courant puis autres agents ; agent pas prêt avec son action ; confirmation « Passer à Codex ouvre un nouveau chat »), Effort, Mode, « + » (image, dossier), « @ » (éléments et fichiers), « / » (commandes de l'agent). |
+| Vues | Première fois (dossier détecté, autre dossier, choix de l'agent), chat vide (suggestions), historique (recherche, ce site / autres sites, en cours). |
+
+Mouvement : entrées de 200 ms (`translateY(6px)` + opacité, courbe ease-out forte), menus 150 ms depuis leur bouton, pression 0,96 ; tout passe en simple fondu, sans reflet animé, sous `prefers-reduced-motion` ou `hello.reducedMotion`. Les éléments rejoués (`thread.reset`) n'animent pas.
+
+Performance : un fil long garde `content-visibility: auto` sur chaque élément ; le texte en flux est regroupé par image (`requestAnimationFrame`) et seul le dernier bloc Markdown est reconstruit.
+
+## 9. Écarts assumés par rapport aux planches
+
+1. **Graisse 600** : l'app n'embarque qu'Inter Display Regular et Medium ; les titres en 600 des planches utilisent Medium (comme les surfaces natives).
+2. **Barre des changements** : les planches mettent « Copier » dans la barre ; la consigne demande « Tout annuler ». La barre porte « Tout annuler » ; Copier reste sur chaque bloc de code et dans les actions de fin de tour. Dépliée, elle liste les fichiers (et le diff si l'hôte fournit `FileChange.diff`).
+3. **Raccourcis visibles** sur la carte d'autorisation (« Refuser Échap », « Autoriser ↵ »), demandés par la consigne, absents de la planche 6.1.
+4. **Puce dans la bulle envoyée** : cadre bleu + icône « viseur » (planches 6.10, 6.11, la plus récente série) ; dans la saisie, icône du type d'élément sans cadre (6.5, 6.9, 6.13). Les planches 6.1/6.3/6.6 montrent l'autre variante.
+5. **Date et infos du tour** affichées dès le premier message (règle de 6.6) ; les planches 6.1 et 6.3 ne les montrent pas.
+6. **Étape en cours** : suivie de 6.10 (ligne de l'étape avec indicateur, « Travaille… N s » en dessous) plutôt que 6.6 (indicateur sur « Travaille »).
+7. **Bord de la saisie** : 1 px `#FFFFFF1F` partout (6.5, planche des états) ; les écrans 6.10 à 6.12 n'en ont pas.
+8. **Historique** : s'ouvre sous l'en-tête, qui reste visible (titre ⌄ ↔ ⌃) ; la planche 6.7 B montre la liste seule.
+9. **Sous-menu Effort** : s'ouvre à la place du menu modèle (même position que le bouton « Élevé ⌄ ») ; à 380 px, côte à côte comme sur 6.4 ne tient pas.
+10. **« @butt »** n'est pas coloré en bleu dans la saisie (texte brut) ; la puce, elle, l'est une fois l'élément choisi.
+11. **9ᵉ état de la saisie** (6.5 n'en dessine que 8) : site non local, bandeau d'explication et saisie désactivée (décision produit 2).
+12. **Menu « + »** : absent des planches, deux lignes (Joindre une image, Choisir un autre dossier…) au style des menus 6.4.
+
+Écart moyen mesuré (canal, sur 255) entre planche et panneau : 6.2 : 3,6 · 6.7 A : 7,0 · 6.8 : 7,3 · 6.9 : 8,4 · 6.7 B : 9,8 · 6.10 : 11,6 · 6.1 : 13,1 · 6.3 : 14,6 · 6.11 : 15,8 · 6.12 : 17,9 · 6.6 : 18,5. Les plus forts viennent des écarts 4 et 5 (contenu décalé de la hauteur d'une ligne), pas du dessin des composants.
+
+## 10. Tests
+
+`python -I tests/chat-panel/run.py` — 162 contrôles (statique, 39 scénarios, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/`.
