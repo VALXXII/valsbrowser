@@ -259,6 +259,28 @@ try:
         load("6.7c-modifier-confirmer")
         check(cdp.js("!!document.querySelector('.editor .warn:not([hidden])')"), "edit: changed files are named before resending (edit.confirm)")
 
+        # « Voir les changements » (checkpoint.viewChanges → changes.diff)
+        load("6.6-voir-changements")
+        view = cdp.js("""(()=>{const v=document.getElementById('changes');return {open:!v.hidden,role:v.getAttribute('role'),files:v.querySelectorAll('section.chg-file').length,
+          diffs:v.querySelectorAll('.udiff').length,add:v.querySelectorAll('.ul.add').length,del:v.querySelectorAll('.ul.del').length,folds:v.querySelectorAll('.unfold').length,
+          nums:Array.from(v.querySelectorAll('.udiff')[0].querySelectorAll('.ul:not(.hunk) .ln')).slice(0,2).map(n=>n.textContent),
+          mono:getComputedStyle(v.querySelector('.udiff')).fontFamily,addBg:getComputedStyle(v.querySelector('.ul.add')).backgroundColor,
+          permAddBg:'rgba(111, 208, 135, 0.1)',focus:document.activeElement.getAttribute('aria-label')}})()""")
+        check(view["open"] and view["role"] == "dialog" and view["files"] == 3 and view["diffs"] == 3, "changes view: opens as a dialog with one unified diff per file", json.dumps(view)[:300])
+        check(any(p.startswith("checkpoint.viewChanges") for p in posted()), "changes view: asks the host (checkpoint.viewChanges) and fills from changes.diff")
+        check(view["folds"] >= 1 and len(view["nums"]) == 2 and view["nums"][0] == view["nums"][1] and int(view["nums"][0]) > 18, "changes view: unchanged runs fold, line numbers follow the @@ header", f"{view['folds']} fold(s), first numbers {view['nums']}")
+        check("JetBrains Mono" in view["mono"] and view["addBg"] == view["permAddBg"] and view["add"] >= 10 and view["del"] >= 3, "changes view: JetBrains Mono, added/removed lines colored like the permission card", view["mono"][:40] + " " + view["addBg"])
+        check(view["focus"] == "Retour au fil", "changes view: focus lands on « Retour au fil »", str(view["focus"]))
+        n0 = cdp.js("document.querySelectorAll('.changes .udiff')[0].querySelectorAll('.ul').length")
+        cdp.js("document.querySelector('.changes .unfold').click()"); time.sleep(.1)
+        n1 = cdp.js("document.querySelectorAll('.changes .udiff')[0].querySelectorAll('.ul').length")
+        check(n1 > n0 and cdp.js("document.activeElement.classList.contains('udiff')"), "changes view: a fold expands in place and keeps focus in that diff", f"{n0} → {n1} lines")
+        key("Escape")
+        check(cdp.js("document.getElementById('changes').hidden") and active() == "Voir les changements", "changes view: Échap returns to the thread, focus back on the trigger", active())
+        load("6.6-voir-changements-fichier")
+        pos = cdp.js("(()=>{const v=document.getElementById('changes');const s=document.getElementById('chg-2');const a=v.getBoundingClientRect(),r=s.getBoundingClientRect();return {top:r.top-a.top,bottom:a.bottom-r.bottom,scrolled:v.scrollTop}})()")
+        check(pos["scrolled"] > 0 and pos["top"] >= 52 and pos["bottom"] >= 0 and "viewChanges" in "".join(posted()), "changes view: opening from a file row scrolls that file into view", json.dumps(pos))
+
         load("6.6-nouvelles-etapes")
         check(cdp.js("!document.querySelector('.newsteps').hidden") and "2 nouvelles" in cdp.js("document.querySelector('.newsteps').textContent"), "scroll: scrolled up, the thread stays and the « nouvelles étapes » pill counts")
         load("markdown")

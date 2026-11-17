@@ -46,6 +46,23 @@
   const ASK = "Aligne-le à droite, et en pleine largeur sur mobile comparé à button.btn-primary dans le canvas";
   const DIFF = { path: "checkout.css", added: 6, removed: 2, lines: [{ op: "-", text: "width: 240px;" }, { op: "+", text: "margin-left: auto;" }, { op: "+", text: "width: 100%;  /* sous 640 px */" }] };
   const CHANGES = [{ path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: { path: "src/styles/checkout.css", added: 6, removed: 2, lines: [{ op: "@", text: "@@ .btn-primary @@" }, { op: "-", text: "  width: 240px;" }, { op: "+", text: "  margin-left: auto;" }, { op: " ", text: "}" }, { op: "+", text: "@media (max-width: 640px) {" }, { op: "+", text: "  .btn-primary { width: 100%; }" }, { op: "+", text: "}" }] } }];
+  // Three files for the « Voir les changements » view: long unchanged runs fold, line numbers come from @@ headers.
+  const CSS_CTX = Array.from({ length: 14 }, (_, i) => ({ op: " ", text: ["  font-size: 16px;", "  line-height: 24px;", "  color: var(--ink);", "  padding: 12px 16px;", "  border-radius: 8px;", "  gap: 8px;", "  display: flex;"][i % 7] }));
+  const FULL_DIFFS = [
+    { path: "src/styles/checkout.css", added: 6, removed: 2, lines: [{ op: "@", text: "@@ -18,24 +18,28 @@ .checkout" }, { op: " ", text: ".checkout {" }].concat(CSS_CTX.slice(0, 9), [
+      { op: " ", text: "}" }, { op: " ", text: ".btn-primary {" }, { op: "-", text: "  width: 240px;" }, { op: "-", text: "  margin-left: 0;" }, { op: "+", text: "  margin-left: auto;" },
+      { op: " ", text: "  height: 44px;" }, { op: " ", text: "}" }], CSS_CTX.slice(0, 8), [
+      { op: "+", text: "@media (max-width: 640px) {" }, { op: "+", text: "  .btn-primary { width: 100%; }" }, { op: "+", text: "}" }, { op: "+", text: "" }, { op: "+", text: "/* bouton pleine largeur sous 640 px */" }]) },
+    { path: "src/pages/Checkout.tsx", added: 3, removed: 1, lines: [{ op: "@", text: "@@ -40,7 +40,9 @@ export function Checkout()" }, { op: " ", text: "  return (" }, { op: " ", text: "    <form className=\"checkout\">" },
+      { op: "-", text: "      <button className=\"btn-primary\">Payer</button>" }, { op: "+", text: "      <button className=\"btn-primary\" type=\"submit\">" }, { op: "+", text: "        Payer {total}" }, { op: "+", text: "      </button>" },
+      { op: " ", text: "    </form>" }, { op: " ", text: "  );" }, { op: " ", text: "}" }] },
+    { path: "src/styles/pay-button.css", added: 4, removed: 0, lines: [{ op: "@", text: "@@ -0,0 +1,4 @@" }, { op: "+", text: ".pay-button {" }, { op: "+", text: "  font-weight: 500;" }, { op: "+", text: "  letter-spacing: -0.01em;" }, { op: "+", text: "}" }] },
+  ];
+  const CHANGES3 = [
+    { path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: FULL_DIFFS[0] },
+    { path: "src/pages/Checkout.tsx", status: "modified", added: 3, removed: 1 },
+    { path: "src/styles/pay-button.css", status: "created", added: 4, removed: 0 },
+  ];
   const conv = (title, extra) => ({ conversation: Object.assign({ id: "c1", title }, extra || {}) });
 
   function thumbPng() {
@@ -63,7 +80,7 @@
     items.push({ type: "toolCall", turnId: id, id: id + "-r2", title: "A lu checkout.css", kind: "read", status: "completed" });
     if (!o.noEdit) items.push({ type: "toolCall", turnId: id, id: id + "-e1", title: "A modifié checkout.css", kind: "edit", status: "completed" });
     if (o.end) items.push({ type: "message.agentChunk", turnId: id, messageId: id + "-m2", text: o.end });
-    items.push({ type: "turn.end", turnId: id, stopReason: "end_turn", durationMs: o.ms, changes: o.noEdit ? [] : CHANGES, checkpointId: "cp-" + id, undoable: true });
+    items.push({ type: "turn.end", turnId: id, stopReason: "end_turn", durationMs: o.ms, changes: o.noEdit ? [] : o.changes || CHANGES, checkpointId: "cp-" + id, undoable: true });
     return items;
   }
   const typeIn = (text) => () => { const c = document.querySelector(".cin"); c.focus(); document.execCommand("insertText", false, text); };
@@ -131,6 +148,12 @@
     "6.6-survol": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1", { thought: 6000 })) }],
     "6.6-changements": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1", { thought: 6000 })) },
       click(".card4 .toggle-chev"), click(".fold")],
+    "6.6-voir-changements": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1", { changes: CHANGES3 })) },
+      click(".card4 .toggle-chev"), click(".card4 .more"), wait(80)],
+    "6.6-voir-changements-deplie": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1", { changes: CHANGES3 })) },
+      click(".card4 .toggle-chev"), click(".card4 .more"), wait(80), click(".changes .unfold"), wait(30)],
+    "6.6-voir-changements-fichier": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1", { changes: CHANGES3 })) },
+      click(".card4 .toggle-chev"), () => { const b = Array.from(document.querySelectorAll(".card4 .file")).find((x) => x.textContent.includes("pay-button")); b && b.click(); }, wait(120)],
     "6.7a-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.7b-historique": [st(conv("Titre de la page", { running: true })), { type: "thread.reset", conversationId: "c1", items: [] },
       { type: "history", items: [
@@ -219,6 +242,7 @@
       case "setEffort": send({ type: "state", effort: m.id }); break;
       case "setMode": send({ type: "state", mode: m.id }); break;
       case "copy": send({ type: "copy.done", ok: true }); break;
+      case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: FULL_DIFFS }); break;
       case "pickElement": send({ type: "pick.state", active: m.active }); if (m.active) setTimeout(() => send({ type: "element.attached", element: EL }), 600); break;
       case "attachImage": send({ type: "attachment.added", attachment: { id: "img" + Date.now(), kind: "image", name: m.name || "capture.png", thumb: thumbPng() } }); break;
       case "send": {

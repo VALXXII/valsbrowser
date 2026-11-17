@@ -106,7 +106,8 @@
   const historyEl = h("div", { class: "history", id: "history", role: "dialog", "aria-label": "Historique des conversations", hidden: true });
   const dock = h("div", { class: "dock" });
   const body = h("div", { class: "body" }, scroller, newSteps);
-  const main = h("div", { style: "position:relative;flex:1;min-height:0;display:flex;flex-direction:column" }, body, dock, historyEl);
+  const changesEl = h("div", { class: "changes", id: "changes", role: "dialog", "aria-modal": "false", "aria-label": "Changements", hidden: true });
+  const main = h("div", { style: "position:relative;flex:1;min-height:0;display:flex;flex-direction:column" }, body, dock, historyEl, changesEl);
   const menuLayer = h("div");
   app.append(hd, main, live, alertLive, menuLayer);
 
@@ -980,15 +981,149 @@
       if (state && state.message) box.appendChild(h("div", { class: "conflict", role: "alert", text: state.message }));
       if (open) {
         box.appendChild(h("div", { class: "files", id: listId, role: "list" }, changes.map((c) =>
-          h("button", { class: "file", type: "button", role: "listitem", title: "Voir les changements", onclick: () => post("checkpoint.viewChanges", { turnId: t.id, path: c.path }) },
+          h("button", { class: "file", type: "button", role: "listitem", title: "Voir les changements", "aria-label": "Voir les changements de " + c.path, onclick: (e) => openChanges(t, c.path, e.currentTarget) },
             h("span", { class: "p", text: c.path }), c.status === "created" ? h("span", { class: "tag", text: "nouveau" }) : c.status === "deleted" ? h("span", { class: "tag", text: "supprimé" }) : null,
             h("span", { class: "num plus", text: "+" + (c.added || 0) }), h("span", { class: "num minus", text: "−" + (c.removed || 0) }))).concat(
-          changes.length === 1 && validDiff(changes[0].diff) ? [diffView(validDiff(changes[0].diff))] : [])));
+          changes.length === 1 && validDiff(changes[0].diff) ? [diffView(validDiff(changes[0].diff))] : []).concat(
+          [h("button", { class: "more", type: "button", style: "margin:4px 6px", onclick: (e) => openChanges(t, null, e.currentTarget) }, "Voir les changements")])));
       }
     };
     render();
     box._render = render;
     return box;
+  }
+
+  // ---------------------------------------------------------------- changes view (checkpoint.viewChanges → changes.diff)
+  // Opens at once with the diffs turn.end already carried, then fills in when the host answers.
+  function openChanges(t, path, trigger) {
+    if (!t || !t.changes) return;
+    closeMenu();
+    if (S.historyOpen) toggleHistory(false);
+    const diffs = new Map();
+    for (const c of t.changes) { const d = validDiff(c.diff, 4000); if (d) diffs.set(c.path, d); }
+    for (const [p, d] of t.fullDiffs || []) diffs.set(p, d);
+    // pin: keep the asked file in place while late diffs grow the files above it, until the user scrolls
+    S.view = { turnId: t.id, t, files: t.changes, diffs, path, pin: path || null, trigger, loading: !t.fullDiffs, folded: new Map() };
+    post("checkpoint.viewChanges", Object.assign({ turnId: t.id }, path ? { path } : {}));
+    changesEl.hidden = false;
+    renderChanges(true);
+    say("Changements : " + plural(t.changes.length, "fichier", "fichiers") + ". Échap pour revenir au fil.");
+  }
+  function closeChanges() {
+    if (!S.view) return;
+    const trig = S.view.trigger;
+    S.view = null;
+    changesEl.hidden = true;
+    clear(changesEl);
+    if (trig && trig.isConnected) trig.focus(); else cin.focus();
+  }
+  function onChangesDiff(m) {
+    const t = S.turns.get(m.turnId);
+    const map = new Map();
+    for (const d of m.diffs) { const v = validDiff(d, 4000); if (v) map.set(v.path, v); }
+    if (t) t.fullDiffs = map;
+    const v = S.view;
+    if (!v || v.turnId !== m.turnId) return;
+    if (Array.isArray(m.files)) { const f = m.files.filter((c) => c && isStr(c.path, 1000)); if (f.length) v.files = f; }
+    for (const [p, d] of map) v.diffs.set(p, d);
+    v.loading = false;
+    rerenderChanges();
+  }
+  function rerenderChanges(focusId) {
+    const a = document.activeElement;
+    if (!focusId && a && changesEl.contains(a)) focusId = a.id || (a.classList.contains("chg-back") ? "chg-back" : null);
+    const top = changesEl.scrollTop;
+    renderChanges(false);
+    changesEl.scrollTop = top;
+    if (S.view && S.view.pin) scrollToFile(S.view.pin);
+    if (focusId) { const n = document.getElementById(focusId); if (n) n.focus(); }
+  }
+  function scrollToFile(path) {
+    const k = S.view ? S.view.files.findIndex((c) => c.path === path) : -1;
+    const n = k >= 0 && S.view.files.length > 1 && document.getElementById("chg-" + k);
+    if (n) changesEl.scrollTop = n.offsetTop - 60;
+  }
+  for (const ev of ["wheel", "pointerdown", "keydown", "touchstart"]) changesEl.addEventListener(ev, () => { if (S.view) S.view.pin = null; }, { passive: true });
+  const diffText = (d) => d.lines.map((l) => (l.op === "@" ? l.text : l.op + l.text)).join("\n");
+  function unifiedView(d, key) {
+    const v = S.view;
+    const box = h("div", { class: "udiff", role: "region", tabindex: "0", id: key + "-d", "aria-label": "Différences dans " + d.path });
+    let oldNo = null, newNo = null;
+    const row = (l) => {
+      if (l.op === "@") {
+        const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(l.text);
+        if (m) { oldNo = +m[1]; newNo = +m[2]; }
+        return h("div", { class: "ul hunk" }, h("span", { class: "tx", text: l.text }));
+      }
+      const o = l.op !== "+" && oldNo != null ? String(oldNo++) : "";
+      const n = l.op !== "-" && newNo != null ? String(newNo++) : "";
+      return h("div", { class: "ul " + (l.op === "+" ? "add" : l.op === "-" ? "del" : "") },
+        h("span", { class: "ln", "aria-hidden": "true", text: o }), h("span", { class: "ln", "aria-hidden": "true", text: n }),
+        h("span", { class: "sg", "aria-hidden": "true", text: l.op === " " ? "" : l.op === "-" ? "−" : "+" }),
+        h("span", { class: "tx" }, l.op === "+" ? h("span", { class: "sr-only", text: "ajouté : " }) : l.op === "-" ? h("span", { class: "sr-only", text: "retiré : " }) : null, l.text || " "));
+    };
+    // Long runs of unchanged lines fold down to the 3 lines around each change.
+    const L = d.lines;
+    let i = 0;
+    while (i < L.length) {
+      if (L[i].op !== " ") { box.appendChild(row(L[i])); i++; continue; }
+      let j = i; while (j < L.length && L[j].op === " ") j++;
+      const run = L.slice(i, j);
+      const head = i === 0 || L[i - 1].op === "@" ? 0 : 3, tail = j === L.length || L[j].op === "@" ? 0 : 3;
+      const fkey = key + ":" + i;
+      if (run.length - head - tail >= 4 && !v.folded.get(fkey)) {
+        run.slice(0, head).forEach((l) => box.appendChild(row(l)));
+        const hidden = run.length - head - tail;
+        if (oldNo != null) oldNo += hidden;
+        if (newNo != null) newNo += hidden;
+        const b = h("button", { class: "unfold", type: "button", "aria-expanded": "false", "aria-label": "Afficher " + plural(hidden, "ligne inchangée", "lignes inchangées") },
+          icon("chevronsUp"), plural(hidden, "ligne inchangée", "lignes inchangées"));
+        b.addEventListener("click", () => { v.folded.set(fkey, true); rerenderChanges(key + "-d"); say(plural(hidden, "ligne affichée", "lignes affichées") + "."); });
+        box.appendChild(b);
+        run.slice(run.length - tail).forEach((l) => box.appendChild(row(l)));
+      } else run.forEach((l) => box.appendChild(row(l)));
+      i = j;
+    }
+    if (d.truncated) box.appendChild(h("div", { class: "ul hunk" }, h("span", { class: "tx", text: "… aperçu tronqué" })));
+    return box;
+  }
+  const statusTag = (c) => c.status === "created" ? h("span", { class: "tag", text: "nouveau" }) : c.status === "deleted" ? h("span", { class: "tag", text: "supprimé" }) : null;
+  function renderChanges(first) {
+    const v = S.view;
+    if (!v) return;
+    clear(changesEl);
+    const files = v.files;
+    const added = files.reduce((a, c) => a + (c.added || 0), 0), removed = files.reduce((a, c) => a + (c.removed || 0), 0);
+    const back = h("button", { class: "hd-btn chg-back", id: "chg-back", type: "button", "aria-label": "Retour au fil", title: "Retour au fil (Échap)", "aria-keyshortcuts": "Escape", onclick: () => closeChanges() }, icon("chevron"));
+    const canUndo = v.t.undoable && !(v.t.changesEl && v.t.changesEl.querySelector(".undone"));
+    changesEl.appendChild(h("div", { class: "chg-hd" }, back,
+      h("div", { class: "chg-t" }, h("h2", { id: "changes-h", text: "Changements" }),
+        h("div", { class: "chg-sub" }, plural(files.length, "fichier", "fichiers") + " · ", h("span", { class: "num plus", text: "+" + added, "aria-label": added + " lignes ajoutées" }), " ",
+          h("span", { class: "num minus", text: "−" + removed, "aria-label": removed + " lignes retirées" }))),
+      canUndo ? h("button", { class: "btn-s", type: "button", onclick: () => { post("undo.turn", { turnId: v.turnId }); closeChanges(); } }, icon("undo"), "Tout annuler") : null));
+    const ids = new Map(files.map((c, k) => [c.path, "chg-" + k]));
+    if (files.length > 1) changesEl.appendChild(h("div", { class: "files chg-nav", role: "list", "aria-label": "Fichiers modifiés" }, files.map((c) =>
+      h("button", { class: "file", type: "button", role: "listitem", "aria-label": "Aller à " + c.path,
+                    onclick: () => { const n = document.getElementById(ids.get(c.path)); if (n) { n.scrollIntoView({ block: "start", behavior: isReduced() ? "auto" : "smooth" }); n.querySelector(".chg-fh").focus({ preventScroll: true }); } } },
+        h("span", { class: "p", text: c.path }), statusTag(c),
+        h("span", { class: "num plus", text: "+" + (c.added || 0) }), h("span", { class: "num minus", text: "−" + (c.removed || 0) })))));
+    files.forEach((c) => {
+      const id = ids.get(c.path);
+      const d = v.diffs.get(c.path);
+      const closed = !!v.folded.get("file:" + c.path);
+      const fh = h("button", { class: "chg-fh", type: "button", "aria-expanded": String(!closed), "aria-controls": id + "-b", id: id + "-h" },
+        icon("chevron", "cv"), h("span", { class: "p", text: c.path }), statusTag(c),
+        h("span", { class: "num plus", text: "+" + (c.added || 0), "aria-label": (c.added || 0) + " ajoutées" }), h("span", { class: "num minus", text: "−" + (c.removed || 0), "aria-label": (c.removed || 0) + " retirées" }));
+      fh.addEventListener("click", () => { v.folded.set("file:" + c.path, !closed); rerenderChanges(id + "-h"); });
+      const body = h("div", { class: "chg-body", id: id + "-b", hidden: closed },
+        d ? unifiedView(d, id) : h("div", { class: "chg-empty", role: "status", text: v.loading ? "Chargement du détail…" : "Pas d'aperçu pour ce fichier." }));
+      changesEl.appendChild(h("section", { class: "card4 chg-file", id, "aria-labelledby": id + "-h" },
+        h("div", { class: "card4-hd" }, h("h3", { class: "chg-h3" }, fh), d ? copyButton(() => diffText(d), "Copier le diff de " + c.path) : null), body));
+    });
+    if (first) requestAnimationFrame(() => {
+      if (v.path) scrollToFile(v.path);
+      const b = document.getElementById("chg-back"); if (b) b.focus({ preventScroll: true });
+    });
   }
 
   function onTurnEnd(m) {
@@ -1004,7 +1139,7 @@
     const notes = { cancelled: "Arrêté.", refusal: "L'agent a refusé de continuer cette demande.", max_tokens: "La réponse a atteint sa longueur maximale. Demandez la suite pour continuer." };
     if (notes[m.stopReason]) t.el.appendChild(h("div", { class: "note", text: notes[m.stopReason] }));
     const changes = Array.isArray(m.changes) ? m.changes.filter((c) => c && typeof c.path === "string") : [];
-    if (changes.length) { t.changesEl = changesBar(t, changes, m.undoable !== false); t.el.appendChild(t.changesEl); }
+    if (changes.length) { t.changes = changes; t.undoable = m.undoable !== false; t.changesEl = changesBar(t, changes, t.undoable); t.el.appendChild(t.changesEl); }
     const copyText = typeof m.copyText === "string" ? m.copyText : t.segs.filter((s) => s.kind === "text").map((s) => s.text).join("\n\n");
     if (m.stopReason !== "error") t.el.appendChild(h("div", { class: "actions" },
       h("button", { class: "icon-btn", type: "button", "aria-label": "Copier la réponse", title: "Copier", onclick: (e) => { lastCopy = null; post("copy", { text: copyText }); } }, icon("copy")),
@@ -1253,10 +1388,11 @@
     return true;
   }
   const validAttachment = (a) => a && ID.test(a.id) && isStr(a.name, 260) && isStr(a.thumb, 350000) && IMG.test(a.thumb);
-  function validDiff(d) {
+  function validDiff(d, max) {
+    max = max || 400;
     if (!d || !isStr(d.path, 1000) || !Array.isArray(d.lines)) return null;
-    return { path: d.path, added: d.added | 0, removed: d.removed | 0, truncated: !!d.truncated || d.lines.length > 400,
-             lines: d.lines.filter((l) => l && isStr(l.text, 4000) && ["+", "-", " ", "@"].includes(l.op)).slice(0, 400) };
+    return { path: d.path, added: d.added | 0, removed: d.removed | 0, truncated: !!d.truncated || d.lines.length > max,
+             lines: d.lines.filter((l) => l && isStr(l.text, 4000) && ["+", "-", " ", "@"].includes(l.op)).slice(0, max) };
   }
   const REQ = {
     "thread.reset": (m) => Array.isArray(m.items), "thread.append": (m) => Array.isArray(m.items),
@@ -1270,7 +1406,7 @@
     error: (m) => ID.test(m.id) && isStr(m.title, 500), strip: (m) => ID.test(m.id), queue: (m) => Array.isArray(m.items),
     history: (m) => Array.isArray(m.items), "element.attached": (m) => validElement(m.element), "attachment.added": (m) => validAttachment(m.attachment),
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
-    "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true,
+    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true,
   };
 
   // ---------------------------------------------------------------- dispatch
@@ -1285,6 +1421,7 @@
       if (S.historyOpen) renderHistoryList();
     },
     "thread.reset"(m) {
+      closeChanges();
       clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
       S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
       tick();
@@ -1325,7 +1462,7 @@
     commands(m) { S.commands = m.items.filter((c) => c && isStr(c.name, 80) && /^[\w-]+$/.test(c.name)); },
     "edit.confirm": onEditConfirm,
     focus() { if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); } else cin.focus(); },
-    "copy.done": onCopyDone,
+    "copy.done": onCopyDone, "changes.diff": onChangesDiff,
   };
   function receive(m) {
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { warn("bad json"); return; } }
@@ -1343,6 +1480,7 @@
     if ((e.ctrlKey || e.metaKey) && e.key === "/") { e.preventDefault(); openModelMenu(modelBtn); return; }
     if (e.key !== "Escape" || e.defaultPrevented) return;
     if (S.menu) { e.preventDefault(); closeMenu(!S.menu.combo); return; }
+    if (S.view) { e.preventDefault(); closeChanges(); return; }
     if (S.historyOpen) { e.preventDefault(); toggleHistory(false); return; }
     if (S.editing) { e.preventDefault(); endEdit(); return; }
     if (S.perms.length) { e.preventDefault(); const r = dock.querySelector(".perm .btn:not(.primary)"); if (r) r.click(); return; }

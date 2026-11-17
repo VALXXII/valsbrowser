@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1** (`"v": 1`). Ce document est la référence ; toute évolution incrémente `v` ou ajoute des champs facultatifs.
+- Version du protocole : **1.1** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -99,7 +99,8 @@ interface FileChange {
   path: string;                 // relatif au dossier du projet
   status: "modified" | "created" | "deleted";
   added: number; removed: number;
-  diff?: Diff;                  // facultatif : affiché sous la barre dépliée quand un seul fichier a changé (6.6)
+  diff?: Diff;                  // facultatif (l'hôte le met sur les premiers fichiers) : diff sous la barre dépliée quand un seul
+                                // fichier a changé (6.6), et contenu immédiat de la vue « Voir les changements » avant changes.diff
 }
 
 interface Diff {                // aperçu d'un changement
@@ -145,6 +146,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `edit.confirm` | `messageId`, `files: string[]` | « Des fichiers ont changé depuis ce message » : **Restaurer et renvoyer** / **Renvoyer sans restaurer** / Annuler. |
 | `focus` | `target: "composer"` | Met le focus dans la saisie (ouverture du panneau). |
 | `copy.done` | `ok` | Le bouton Copier affiche « Copié » 1,5 s (ou rien si `ok` faux). |
+| `changes.diff` *(1.1)* | `turnId`, `diffs: Diff[]` (tous les fichiers du tour, ≤ 4 000 lignes chacun), `files?: FileChange[]` | Réponse à `checkpoint.viewChanges`. Remplit la vue « Voir les changements » si elle est ouverte sur ce tour (sinon gardé pour la prochaine ouverture). Un fichier sans entrée dans `diffs` affiche « Pas d'aperçu pour ce fichier ». |
 
 ### 4.1 `state`
 
@@ -179,7 +181,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `type` | Champs | Quand |
 |---|---|---|
 | `ready` | `v`, `build` | Page chargée. |
-| `send` | `text`, `elements: Id[]`, `attachments: Id[]` | Entrée dans la saisie. Pendant un tour : l'hôte met en file (`queue`) ou envoie en pilotage si l'agent le permet. |
+| `send` | `text`, `elements: Id[]`, `attachments: Id[]` | Entrée dans la saisie. Pendant un tour : l'hôte met en file (`queue`) ou envoie en pilotage si l'agent le permet. **`text` contient le libellé de chaque puce à sa place** (« … comparé à button.btn-primary dans le canvas ») : c'est voulu, l'hôte l'utilise tel quel comme texte de l'utilisateur et décrit les éléments à part (contrat D) ; `elements` les liste dans l'ordre d'apparition. Le panneau, à l'écho `message.user`, replace la puce à la première occurrence du libellé. |
 | `stop` | — | Bouton Arrêter ou Échap pendant un tour. |
 | `queue.sendNow` | `id` | « Envoyer maintenant ». |
 | `queue.remove` | `id` | « × » sur une suite en file. |
@@ -199,7 +201,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `folder.choose` | — | « Choisir un autre dossier… » (sélecteur Windows côté hôte). |
 | `undo.turn` | `turnId` | « Tout annuler » dans la barre des changements. |
 | `checkpoint.restore` | `checkpointId` | « Revenir » sur un point de reprise. |
-| `checkpoint.viewChanges` | `turnId`, `path?` | Ouvrir le détail d'un fichier modifié. |
+| `checkpoint.viewChanges` | `turnId`, `path?` | « Voir les changements » (barre dépliée) ou clic sur un fichier (`path`). Le panneau ouvre aussitôt sa vue avec les `FileChange.diff` déjà reçus, puis attend `changes.diff` (1.1). |
 | `plan.run` | `planId` | « Lancer le plan ». |
 | `plan.edit` | `planId` | « Modifier » (le panneau met aussi le focus dans la saisie, placeholder « Ajouter une précision au plan… »). |
 | `history.open` | — | Ouverture de l'historique (titre ⌄ ou icône). L'hôte répond `history`. |
@@ -267,4 +269,20 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 10. Tests
 
-`python -I tests/chat-panel/run.py` — 162 contrôles (statique, 39 scénarios, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/`.
+`python -I tests/chat-panel/run.py` — 171 contrôles (statique, 39 scénarios, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/`.
+
+## 11. Historique du contrat
+
+- **1.1** (17 nov. 2026, compatible, `"v": 1`) : message hôte → panneau `changes.diff` en réponse à `checkpoint.viewChanges` ; `FileChange.diff` sert aussi à ouvrir la vue tout de suite ; précision sur `send.text` (libellés des puces en ligne, voulu).
+- **1** (17 nov. 2026) : première version.
+
+## 12. Vue « Voir les changements » (1.1)
+
+Ouverte depuis la barre des changements dépliée (« Voir les changements », ou un fichier : la vue se place sur lui). Elle couvre le fil et la saisie, sous l'en-tête du chat ; c'est un `role="dialog"` titré « Changements ».
+
+- **En-tête collant** : « ‹ » Retour au fil (focus à l'ouverture, Échap fait pareil et rend le focus au bouton d'origine), « Changements », « 3 fichiers · +13 −3 », Tout annuler si le tour peut l'être.
+- **Liste des fichiers** (si plus d'un) : chemin, « nouveau » / « supprimé », +/− ; un clic fait défiler jusqu'au fichier.
+- **Un bloc par fichier** : en-tête repliable (`aria-expanded`, titre de niveau 3) avec chemin, +/− et Copier (le diff en texte) ; diff unifié en JetBrains Mono 12/18, colonnes ancien / nouveau numéro (tirés des en-têtes `@@ -a,b +c,d @@`), signe, texte qui revient à la ligne. Lignes ajoutées et retirées dans les couleurs de la carte d'autorisation (fond `#6FD0871A` texte `#A6E3B8`, fond `#FF7B6E1A` texte `#FFB3AB`), en-têtes `@@` atténués.
+- **Repli** : dans une suite de lignes inchangées, on garde 3 lignes de chaque côté d'un changement ; dès que 4 lignes ou plus restent, elles deviennent « ↕ N lignes inchangées », qui se déplie sur place (le focus reste dans ce diff).
+- **Lecteurs d'écran** : chaque diff est une région nommée « Différences dans <fichier> » ; les lignes ajoutées et retirées commencent par « ajouté : » / « retiré : » (texte masqué à l'écran), les numéros et signes sont ignorés.
+
