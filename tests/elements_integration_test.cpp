@@ -352,7 +352,7 @@ int main(){
             }
             // E6: three distinct French reasons on the list row, other failures unchanged.
             Expect(DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS))==L"Bloqué · fichier dangereux"
-                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · vérification de sécurité impossible"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · analyse impossible"
                 &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))==L"Bloqué · règle de sécurité"
                 &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED))==L"Échec · Hors ligne","E6: blocked rows in French, by reason");
             // E2: the toast's progress format, no invented total (French interface: decimal comma, « Mo »).
