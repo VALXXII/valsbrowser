@@ -94,6 +94,7 @@ public:
     bool Visible() const { return visible_; }
     int Active() const { return active_; }
     const AddressBar::Suggestions& Data() const { return data_; }
+    UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the rows are drawn at (tests/ui/address_popup_dpi_test.cpp)
     // Screen pixels of row `i` (UI Automation bounds).
     RECT RowScreen(int i) const {
         auto r = Row(i); RECT p{Px(r.left), Px(r.top), Px(r.right), Px(r.bottom)};
@@ -226,6 +227,9 @@ private:
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
         case WM_SIZE: chrome_.Resize(); InvalidateRect(h, nullptr, FALSE); return 0;
+        // Shown on a monitor at another DPI: the move sizes the window first (WM_SIZE still reads the old DPI), then
+        // the DPI changes. Redraw at the new one, keeping the size Show computed for it.
+        case WM_DPICHANGED: chrome_.Resize(); InvalidateRect(h, nullptr, FALSE); return 0;
         case WM_MOUSEMOVE:
             if (!tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); tracking_ = true; }
             Pointer(x, y); return 0;
