@@ -28,9 +28,9 @@ struct DialogArgs : Fake<ICoreWebView2ScriptDialogOpeningEventArgs> {
 };
 struct PermissionArgs : Fake<ICoreWebView2PermissionRequestedEventArgs> {
     Deferral deferral; COREWEBVIEW2_PERMISSION_STATE state=COREWEBVIEW2_PERMISSION_STATE_DEFAULT; int writes=0;
-    COREWEBVIEW2_PERMISSION_KIND kind=COREWEBVIEW2_PERMISSION_KIND_CAMERA;
+    COREWEBVIEW2_PERMISSION_KIND kind=COREWEBVIEW2_PERMISSION_KIND_CAMERA; std::wstring uri=L"https://meet.exemple.test/";
     explicit PermissionArgs(COREWEBVIEW2_PERMISSION_KIND k=COREWEBVIEW2_PERMISSION_KIND_CAMERA):kind(k){}
-    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(L"https://meet.exemple.test/");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(uri.c_str());return S_OK;}
     HRESULT STDMETHODCALLTYPE get_PermissionKind(COREWEBVIEW2_PERMISSION_KIND* v) override{*v=kind;return S_OK;}
     HRESULT STDMETHODCALLTYPE get_IsUserInitiated(BOOL* v) override{*v=TRUE;return S_OK;}
     HRESULT STDMETHODCALLTYPE get_State(COREWEBVIEW2_PERMISSION_STATE* v) override{*v=state;return S_OK;}
@@ -194,12 +194,24 @@ int main(){
         PermissionArgs cam2(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&cam2);run();
         originPrompt.Surface().Finish(OP::Id::Accept);run();originPrompt.Surface().FinishAnimationsForTest();
         Expect(chip()==std::vector<const char*>{SiteRequest::Path::camera}&&chrome.requestState==State::Granted,"camera granted: persistent chip");
+        // The same document asking again (Meet re-requests on each device check): answered from the
+        // answer already given, no new popover, never saved in the profile.
+        {PermissionArgs again(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&again);run();
+         Expect(!promptOpen&&again.deferral.completed==1&&again.state==COREWEBVIEW2_PERMISSION_STATE_ALLOW,"repeat camera request: allowed silently, completed once");
+         PermissionArgs frame(COREWEBVIEW2_PERMISSION_KIND_CAMERA);frame.uri=L"https://tiers.exemple.test/";PermissionRequested(live,&frame);run();
+         Expect(promptOpen&&frame.deferral.completed==0,"another origin's frame asking: still prompted");
+         originPrompt.Abort();run();originPrompt.Surface().FinishAnimationsForTest();
+         PermissionArgs mic0(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE);PermissionRequested(live,&mic0);run();
+         Expect(promptOpen&&mic0.deferral.completed==0,"a kind not answered yet: still prompted");
+         originPrompt.Abort();run();originPrompt.Surface().FinishAnimationsForTest();}
         ElementsNavigationStarting(live);run();
         Expect(chip().empty()&&!siteStates.count(live->serial),"navigation: granted state cleared");
         // A blocked request: the chip shows « bloqué » for this page.
         PermissionArgs mic2(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE);PermissionRequested(live,&mic2);run();
         originPrompt.Surface().Finish(OP::Id::Cancel);run();originPrompt.Surface().FinishAnimationsForTest();
         Expect(mic2.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&chip()==std::vector<const char*>{SiteRequest::Path::microphone}&&chrome.requestState==State::Blocked,"block: chip shows « bloqué »");
+        {PermissionArgs again(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE);PermissionRequested(live,&again);run();
+         Expect(!promptOpen&&again.deferral.completed==1&&again.state==COREWEBVIEW2_PERMISSION_STATE_DENY,"repeat blocked request: denied silently, completed once");}
         ElementsNavigationStarting(live);run();
         // Notifications, then the user switches tab: cancelled, chip gone.
         auto other=std::make_shared<Tab>();other->uri=L"https://autre.exemple.test/";other->home=false;pages={live,other};
