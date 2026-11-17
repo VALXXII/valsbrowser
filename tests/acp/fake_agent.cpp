@@ -1,0 +1,564 @@
+// Fake ACP v1 agent for tests (never a real model, never the network). Speaks JSON-RPC 2.0, one message per line,
+// on stdin/stdout like the real adapters (claude-agent-acp, codex-acp). Used by tests/acp/acp_client_test.cpp, by the
+// runtime tests, and by the browser's sandbox (BROWSER_CHAT_FAKE_AGENT, see design/chat-acp.md).
+//
+// Options (command line):
+//   --log <file>          append every received line (cut at 2000 bytes) and a few markers ("child <pid>", "cwd <dir>")
+//   --auth-file <file>    signed in only when the file exists: session/new answers -32000 until `authenticate`
+//                         (method "fake-login") or the terminal sign-in (`--cli login`) creates it
+//   --cli login           act as the agent's CLI sign-in: create --auth-file (or %FAKE_AGENT_AUTH_FILE%), exit 0
+//   --crash-at <step>     exit 3 with a message on stderr at: initialize | new | prompt
+//   --silent              never answer initialize
+//   --protocol <n>        answer initialize with this protocol version
+//   --no-images           promptCapabilities.image = false
+//   --resume              advertise session/resume and session/load; only the session "sess-known" can be resumed
+//   --garbage             print lines that are not JSON-RPC around the answers
+//   --child               on session/new start a long-lived child process (Job Object test)
+//   --read-delay <ms>     after answering session/new, do not read stdin for this long (slow reader)
+//   --env-dump <file>     write a few environment variables of this process
+//   --sleep               (internal) the long-lived child
+//
+// Scenarios, chosen by a word in the prompt's text:
+//   (default) / reply   answer in chunks, usage_update, end_turn        think        thought chunks, then the answer
+//   tool                tool_call + updates with locations and a diff   permission   session/request_permission
+//   plan                plan, then the plan with new statuses           mode         current_mode_update to "plan"
+//   slow                a chunk every 100 ms until session/cancel       crash        exit 7 in the middle of the turn
+//   question            elicitation/create (two single-choice fields)   refusal / max_tokens   that stop reason
+//   error-rate / error-auth   JSON-RPC error                            big          "received <n> image bytes"
+//   echo                the text back                                   garbage      invalid lines inside the turn
+//   commands            available_commands_update                       title        session_info_update
+#include <windows.h>
+
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "../../src/strict-json.h"
+
+namespace {
+namespace SJ = StrictJson;
+
+std::string Narrow(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(std::size_t(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()), s.data(), n, nullptr, nullptr);
+    return s;
+}
+bool Exists(const std::wstring& p) { return !p.empty() && GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES; }
+void Append(const std::wstring& path, const std::string& text) {
+    if (path.empty()) return;
+    HANDLE f = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD put = 0;
+    WriteFile(f, text.data(), DWORD(text.size()), &put, nullptr);
+    CloseHandle(f);
+}
+
+struct Options {
+    std::wstring log, authFile, envDump;
+    std::string crashAt;
+    bool silent = false, noImages = false, resume = false, garbage = false, child = false;
+    int protocol = 1;
+    unsigned readDelay = 0;
+} opt;
+
+// ---------------------------------------------------------------- transport
+std::mutex outMu;
+void Raw(const std::string& bytes) {
+    std::lock_guard<std::mutex> lock(outMu);
+    const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    for (std::size_t off = 0; off < bytes.size();) {
+        DWORD put = 0;
+        if (!WriteFile(out, bytes.data() + off, DWORD(bytes.size() - off), &put, nullptr) || !put) ExitProcess(0);
+        off += put;
+    }
+}
+void Send(const SJ::Value& v) { Raw(SJ::Serialize(v) + "\n"); }
+
+std::mutex inMu;
+std::condition_variable inCv;
+std::deque<std::string> lines;
+bool inputClosed = false;
+unsigned readDelay = 0;  // set once, consumed by the reader
+
+void ReaderThread() {
+    const HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    std::string buffer;
+    char chunk[65536];
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lock(inMu);
+            if (readDelay) {
+                const unsigned ms = readDelay;
+                readDelay = 0;
+                lock.unlock();
+                Sleep(ms);
+            }
+        }
+        DWORD got = 0;
+        if (!ReadFile(in, chunk, sizeof chunk, &got, nullptr) || !got) break;
+        buffer.append(chunk, got);
+        std::size_t start = 0;
+        for (std::size_t nl; (nl = buffer.find('\n', start)) != std::string::npos; start = nl + 1) {
+            std::string line = buffer.substr(start, nl - start);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            Append(opt.log, line.substr(0, 2000) + "\n");
+            std::lock_guard<std::mutex> lock(inMu);
+            lines.push_back(std::move(line));
+            inCv.notify_all();
+        }
+        buffer.erase(0, start);
+    }
+    std::lock_guard<std::mutex> lock(inMu);
+    inputClosed = true;
+    inCv.notify_all();
+}
+// Next line, or false after `timeoutMs` (0 = wait for ever). Exits the process when stdin is closed.
+bool NextLine(std::string& out, unsigned timeoutMs) {
+    std::unique_lock<std::mutex> lock(inMu);
+    const auto ready = [] { return !lines.empty() || inputClosed; };
+    if (timeoutMs) {
+        if (!inCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), ready)) return false;
+    } else {
+        inCv.wait(lock, ready);
+    }
+    if (lines.empty()) ExitProcess(0);  // the client closed our stdin: a well-behaved agent exits
+    out = std::move(lines.front());
+    lines.pop_front();
+    return true;
+}
+
+// ---------------------------------------------------------------- JSON helpers
+SJ::Value Obj(std::initializer_list<std::pair<const char*, SJ::Value>> members) {
+    SJ::Value v = SJ::Value::Obj();
+    for (const auto& m : members) v.Set(m.first, m.second);
+    return v;
+}
+SJ::Value Arr(std::initializer_list<SJ::Value> items) {
+    SJ::Value v = SJ::Value::Arr();
+    for (const auto& i : items) v.Push(i);
+    return v;
+}
+SJ::Value S(const std::string& s) { return SJ::Value::Str(s); }
+SJ::Value I(std::int64_t i) { return SJ::Value::Int(i); }
+SJ::Value B(bool b) { return SJ::Value::Bool(b); }
+std::string Str(const SJ::Value* v, const char* key) {
+    const SJ::Value* m = v ? v->Get(key) : nullptr;
+    return m && m->IsString() ? m->string : std::string();
+}
+
+void Result(const SJ::Value& id, SJ::Value result) { Send(Obj({{"jsonrpc", S("2.0")}, {"id", id}, {"result", std::move(result)}})); }
+void Fail(const SJ::Value& id, int code, const std::string& message, SJ::Value data = SJ::Value()) {
+    SJ::Value err = Obj({{"code", I(code)}, {"message", S(message)}});
+    if (!data.IsNull()) err.Set("data", std::move(data));
+    Send(Obj({{"jsonrpc", S("2.0")}, {"id", id}, {"error", std::move(err)}}));
+}
+
+// ---------------------------------------------------------------- session state
+std::string sessionId;
+std::string mode = "default", model = "sonnet", effort = "medium";
+bool cancelled = false;
+std::int64_t nextRequest = 1000;
+
+void Update(SJ::Value update) {
+    Send(Obj({{"jsonrpc", S("2.0")}, {"method", S("session/update")},
+              {"params", Obj({{"sessionId", S(sessionId)}, {"update", std::move(update)}})}}));
+}
+void Chunk(const char* kind, const std::string& text) {
+    Update(Obj({{"sessionUpdate", S(kind)}, {"content", Obj({{"type", S("text")}, {"text", S(text)}})}, {"messageId", S("m1")}}));
+}
+SJ::Value Modes() {
+    return Obj({{"currentModeId", S(mode)},
+                {"availableModes", Arr({Obj({{"id", S("default")}, {"name", S("Demander")}, {"description", S("Demande avant chaque modification")}}),
+                                        Obj({{"id", S("acceptEdits")}, {"name", S("Auto")}}),
+                                        Obj({{"id", S("plan")}, {"name", S("Planifier")}})})}});
+}
+SJ::Value ConfigOptions() {
+    SJ::Value efforts = Arr({Obj({{"value", S("low")}, {"name", S("Faible")}}), Obj({{"value", S("medium")}, {"name", S("Moyen")}})});
+    if (model != "haiku") efforts.Push(Obj({{"value", S("high")}, {"name", S("Élevé")}}));  // Haiku has no high effort
+    return Arr({
+        Obj({{"id", S("model")}, {"name", S("Modèle")}, {"category", S("model")}, {"type", S("select")}, {"currentValue", S(model)},
+             {"options", Arr({Obj({{"group", S("claude")}, {"name", S("Claude")},
+                                   {"options", Arr({Obj({{"value", S("opus")}, {"name", S("Opus 5.5")}, {"description", S("Le plus capable")}}),
+                                                    Obj({{"value", S("sonnet")}, {"name", S("Sonnet 5.5")}}),
+                                                    Obj({{"value", S("haiku")}, {"name", S("Haiku 5.5")}})})}})})}}),
+        Obj({{"id", S("effort")}, {"name", S("Effort")}, {"category", S("thought_level")}, {"type", S("select")}, {"currentValue", S(effort)},
+             {"options", std::move(efforts)}}),
+        Obj({{"id", S("mode")}, {"name", S("Mode")}, {"category", S("mode")}, {"type", S("select")}, {"currentValue", S(mode)},
+             {"options", Arr({Obj({{"value", S("default")}, {"name", S("Demander")}}), Obj({{"value", S("acceptEdits")}, {"name", S("Auto")}}),
+                              Obj({{"value", S("plan")}, {"name", S("Planifier")}})})}}),
+        Obj({{"id", S("fast")}, {"name", S("Rapide")}, {"category", S("model_config")}, {"type", S("boolean")}, {"currentValue", B(false)}}),
+    });
+}
+bool SignedIn() { return opt.authFile.empty() || Exists(opt.authFile); }
+
+// A JSON-RPC message handled outside a turn's own logic. Returns the response to request `waitFor` when it comes.
+bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response);
+
+// Handles incoming messages for `ms`; true when the response to `waitFor` arrived.
+bool Pump(unsigned ms, std::int64_t waitFor = -1, SJ::Value* response = nullptr) {
+    const DWORD until = GetTickCount() + ms;
+    for (;;) {
+        const DWORD now = GetTickCount();
+        const unsigned left = int(until - now) > 0 ? unsigned(until - now) : 0;
+        std::string line;
+        if (!NextLine(line, left ? left : 1)) return false;
+        SJ::Value msg;
+        SJ::Limits limits;
+        limits.maxBytes = 64u << 20;
+        limits.maxStringBytes = 64u << 20;
+        if (!SJ::Parse(line, msg, nullptr, limits) || !msg.IsObject()) continue;
+        if (Dispatch(msg, waitFor, response)) return true;
+        if (int(until - GetTickCount()) <= 0 && waitFor < 0) return false;
+    }
+}
+
+void StartChild() {
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring cmd = L"\"" + std::wstring(self) + L"\" --sleep";
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(self, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        Append(opt.log, "child " + std::to_string(pi.dwProcessId) + "\n");
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
+
+void Crash(int code, const char* why) {
+    const std::string text = std::string("fake-agent: ") + why + "\n";
+    DWORD put = 0;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), text.data(), DWORD(text.size()), &put, nullptr);
+    ExitProcess(UINT(code));
+}
+
+// ---------------------------------------------------------------- the turn
+void Prompt(const SJ::Value& id, const SJ::Value* params) {
+    if (opt.crashAt == "prompt") Crash(3, "crash at prompt");
+    std::string text;
+    std::size_t imageBytes = 0, links = 0;
+    if (const SJ::Value* blocks = params ? params->Get("prompt") : nullptr)
+        for (const SJ::Value& b : blocks->items) {
+            const std::string type = Str(&b, "type");
+            if (type == "text") text += Str(&b, "text") + "\n";
+            else if (type == "image") imageBytes += Str(&b, "data").size();
+            else if (type == "resource_link") ++links;
+        }
+    cancelled = false;
+    const auto has = [&](const char* word) { return text.find(word) != std::string::npos; };
+    const auto end = [&](const char* reason) { Result(id, Obj({{"stopReason", S(cancelled ? "cancelled" : reason)}})); };
+
+    if (has("error-rate")) {
+        Fail(id, -32603, "Internal error", Obj({{"details", S("API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}")}}));
+        return;
+    }
+    if (has("error-auth")) {
+        Fail(id, -32000, "Authentication required");
+        return;
+    }
+    if (has("refusal")) return end("refusal");
+    if (has("max_tokens")) return end("max_tokens");
+    if (has("echo")) {
+        Chunk("agent_message_chunk", text);
+        return end("end_turn");
+    }
+    if (has("big")) {
+        Chunk("agent_message_chunk", "received " + std::to_string(imageBytes) + " image bytes, " + std::to_string(links) + " links");
+        return end("end_turn");
+    }
+    if (has("think")) {
+        Chunk("agent_thought_chunk", "Je regarde le composant ");
+        Pump(20);
+        Chunk("agent_thought_chunk", "et ses styles.");
+    }
+    if (has("commands"))
+        Update(Obj({{"sessionUpdate", S("available_commands_update")},
+                    {"availableCommands", Arr({Obj({{"name", S("review")}, {"description", S("Relire les changements")},
+                                                    {"input", Obj({{"hint", S("fichier")}})}})})}}));
+    if (has("title")) Update(Obj({{"sessionUpdate", S("session_info_update")}, {"title", S("Bouton du héros")}}));
+    if (has("garbage")) {
+        Raw("this is not json\n");
+        Raw("{\"jsonrpc\":\"2.0\",\"method\":\n");
+        Raw("[1,2,3]\n");
+        Raw("{\"dup\":1,\"dup\":2}\n");
+    }
+    if (has("plan")) {
+        const auto entry = [](const char* content, const char* status) {
+            return Obj({{"content", S(content)}, {"priority", S("medium")}, {"status", S(status)}});
+        };
+        Update(Obj({{"sessionUpdate", S("plan")},
+                    {"entries", Arr({entry("Lire Hero.tsx", "in_progress"), entry("Changer le padding", "pending"), entry("Vérifier", "pending")})}}));
+        Pump(20);
+        Update(Obj({{"sessionUpdate", S("plan")},
+                    {"entries", Arr({entry("Lire Hero.tsx", "completed"), entry("Changer le padding", "in_progress"), entry("Vérifier", "pending")})}}));
+    }
+    if (has("mode")) {
+        mode = "plan";
+        Update(Obj({{"sessionUpdate", S("current_mode_update")}, {"currentModeId", S(mode)}}));
+    }
+    if (has("tool") || has("permission")) {
+        const SJ::Value diff = Obj({{"type", S("diff")}, {"path", S("C:\\projet\\src\\Hero.tsx")},
+                                    {"oldText", S("<button className=\"p-2\">\n")}, {"newText", S("<button className=\"p-4\">\n")}});
+        Update(Obj({{"sessionUpdate", S("tool_call")}, {"toolCallId", S("call-1")}, {"title", S("Modifier src/Hero.tsx")}, {"kind", S("edit")},
+                    {"status", S("pending")}, {"locations", Arr({Obj({{"path", S("C:\\projet\\src\\Hero.tsx")}, {"line", I(12)}})})},
+                    {"rawInput", Obj({{"file_path", S("C:\\projet\\src\\Hero.tsx")}})}}));
+        if (has("permission")) {
+            const std::int64_t request = nextRequest++;
+            Send(Obj({{"jsonrpc", S("2.0")}, {"id", I(request)}, {"method", S("session/request_permission")},
+                      {"params", Obj({{"sessionId", S(sessionId)},
+                                      {"toolCall", Obj({{"toolCallId", S("call-1")}, {"title", S("Modifier src/Hero.tsx")}, {"kind", S("edit")},
+                                                        {"content", Arr({diff})},
+                                                        {"locations", Arr({Obj({{"path", S("C:\\projet\\src\\Hero.tsx")}})})}})},
+                                      {"options", Arr({Obj({{"optionId", S("allow")}, {"name", S("Autoriser")}, {"kind", S("allow_once")}}),
+                                                       Obj({{"optionId", S("always")}, {"name", S("Toujours autoriser")}, {"kind", S("allow_always")}}),
+                                                       Obj({{"optionId", S("reject")}, {"name", S("Refuser")}, {"kind", S("reject_once")}})})}})}}));
+            SJ::Value response;
+            while (!Pump(1000, request, &response)) {}
+            const SJ::Value* outcome = response.Get("outcome");
+            const std::string what = Str(outcome, "outcome");
+            const std::string option = Str(outcome, "optionId");
+            Append(opt.log, "permission-outcome " + what + " " + option + "\n");
+            if (what != "selected") {
+                Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S("call-1")}, {"status", S("failed")}}));
+                Pump(300);  // the cancel notification follows the cancelled outcome
+                cancelled = true;
+                return end("cancelled");
+            }
+            if (option == "reject") {
+                Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S("call-1")}, {"status", S("failed")}}));
+                Chunk("agent_message_chunk", "refused");
+                return end("end_turn");
+            }
+            Chunk("agent_message_chunk", "ok:" + option + " ");
+        }
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S("call-1")}, {"status", S("in_progress")}}));
+        Pump(20);
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S("call-1")}, {"status", S("completed")},
+                    {"title", S("Modifié src/Hero.tsx")},
+                    {"content", Arr({diff, Obj({{"type", S("content")}, {"content", Obj({{"type", S("text")}, {"text", S("1 ligne modifiée")}})}})})}}));
+    }
+    if (has("question")) {
+        const std::int64_t request = nextRequest++;
+        const auto choice = [](const char* value, const char* title, const char* description) {
+            return Obj({{"const", S(value)}, {"title", S(title)}, {"description", S(description)}});
+        };
+        Send(Obj({{"jsonrpc", S("2.0")}, {"id", I(request)}, {"method", S("elicitation/create")},
+                  {"params", Obj({{"sessionId", S(sessionId)}, {"mode", S("form")}, {"message", S("Deux questions avant de continuer")},
+                                  {"requestedSchema",
+                                   Obj({{"type", S("object")},
+                                        {"properties",
+                                         Obj({{"size", Obj({{"type", S("string")}, {"title", S("Taille")}, {"description", S("Quelle taille pour le bouton ?")},
+                                                            {"oneOf", Arr({choice("s", "Petit", "32 px"), choice("l", "Grand", "48 px")})}})},
+                                              {"note", Obj({{"type", S("string")}, {"title", S("Remarque")}})},
+                                              {"tone", Obj({{"type", S("string")}, {"title", S("Quelle couleur ?")},
+                                                            {"enum", Arr({S("bleu"), S("vert")})}})}})},
+                                        {"required", Arr({S("size"), S("tone")})}})}})}}));
+        SJ::Value response;
+        while (!Pump(1000, request, &response)) {}
+        const std::string action = Str(&response, "action");
+        const SJ::Value* content = response.Get("content");
+        Chunk("agent_message_chunk", "question:" + action + ":" + Str(content, "size") + ":" + Str(content, "tone"));
+        if (action == "cancel") {
+            Pump(300);
+            cancelled = true;
+            return end("cancelled");
+        }
+        return end("end_turn");
+    }
+    if (has("crash")) {
+        Chunk("agent_message_chunk", "Je commence");
+        Pump(50);
+        Crash(7, "boom: the model backend went away");
+    }
+    if (has("slow")) {
+        for (int i = 0; i < 300 && !cancelled; ++i) {
+            Chunk("agent_message_chunk", "… ");
+            Pump(100);
+        }
+        return end("end_turn");
+    }
+    for (const char* part : {"Bonjour", " — voici", " la réponse."}) {
+        Chunk("agent_message_chunk", part);
+        Pump(15);
+    }
+    Update(Obj({{"sessionUpdate", S("usage_update")}, {"used", I(1234)}, {"size", I(200000)},
+                {"cost", Obj({{"amount", SJ::Value::Num(0.0125)}, {"currency", S("USD")}})}}));
+    end("end_turn");
+}
+
+bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
+    const SJ::Value* method = msg.Get("method");
+    const SJ::Value* id = msg.Get("id");
+    const SJ::Value* params = msg.Get("params");
+    if (!method) {  // a response to one of our requests
+        if (id && id->IsNumber() && id->integer == waitFor && response) {
+            const SJ::Value* result = msg.Get("result");
+            *response = result ? *result : SJ::Value::Obj();
+            return true;
+        }
+        return false;
+    }
+    const std::string m = method->string;
+    if (m == "session/cancel") {
+        cancelled = true;
+        return false;
+    }
+    if (!id) return false;
+    if (m == "initialize") {
+        if (opt.crashAt == "initialize") Crash(3, "crash at initialize: cannot find the CLI");
+        if (opt.silent) return false;
+        if (opt.garbage) Raw("Welcome to the fake agent!\n\n{broken\n");
+        SJ::Value session = SJ::Value::Obj();
+        if (opt.resume) session.Set("resume", SJ::Value::Obj());
+        Result(*id, Obj({{"protocolVersion", I(opt.protocol)},
+                         {"agentCapabilities", Obj({{"loadSession", B(opt.resume)},
+                                                    {"promptCapabilities", Obj({{"image", B(!opt.noImages)}, {"embeddedContext", B(true)}})},
+                                                    {"mcpCapabilities", Obj({{"http", B(true)}, {"sse", B(false)}})},
+                                                    {"sessionCapabilities", std::move(session)}})},
+                         {"authMethods", Arr({Obj({{"id", S("fake-login")}, {"name", S("Fake account")}, {"description", S("Opens the browser")}}),
+                                              Obj({{"id", S("fake-terminal")}, {"name", S("Fake terminal login")}, {"type", S("terminal")},
+                                                   {"args", Arr({S("--cli"), S("login")})}, {"env", Obj({{"FAKE_LOGIN", S("1")}})}})})},
+                         {"agentInfo", Obj({{"name", S("fake-agent")}, {"title", S("Fake Agent")}, {"version", S("1.2.3")}})}}));
+        return false;
+    }
+    if (m == "authenticate") {
+        if (Str(params, "methodId") != "fake-login") {
+            Fail(*id, -32602, "Invalid params", Obj({{"details", S("unknown auth method")}}));
+            return false;
+        }
+        Append(opt.authFile, "signed-in\n");
+        Result(*id, SJ::Value::Obj());
+        return false;
+    }
+    if (m == "session/new" || m == "session/resume" || m == "session/load") {
+        if (opt.crashAt == "new") Crash(3, "crash at session/new");
+        if (!SignedIn()) {
+            Fail(*id, -32000, "Authentication required", Obj({{"details", S("Please run `fake login` first")}}));
+            return false;
+        }
+        const bool fresh = m == "session/new";
+        if (!fresh && Str(params, "sessionId") != "sess-known") {
+            Fail(*id, -32002, "Resource not found", Obj({{"details", S("no such session")}}));
+            return false;
+        }
+        if (m == "session/load") {  // a replay, which the client must drop
+            sessionId = "sess-known";
+            Chunk("agent_message_chunk", "REPLAYED HISTORY");
+        }
+        sessionId = fresh ? "sess-" + std::to_string(GetCurrentProcessId()) : "sess-known";
+        Append(opt.log, "cwd " + Str(params, "cwd") + "\n");
+        if (opt.child) StartChild();
+        SJ::Value result = Obj({{"modes", Modes()}, {"configOptions", ConfigOptions()}});
+        if (fresh) result.Set("sessionId", S(sessionId));
+        Result(*id, std::move(result));
+        Update(Obj({{"sessionUpdate", S("available_commands_update")},
+                    {"availableCommands", Arr({Obj({{"name", S("init")}, {"description", S("Décrire le projet")}})})}}));
+        if (opt.readDelay) {
+            std::lock_guard<std::mutex> lock(inMu);
+            readDelay = opt.readDelay;
+        }
+        return false;
+    }
+    if (m == "session/set_mode") {
+        const std::string wanted = Str(params, "modeId");
+        if (wanted != "default" && wanted != "acceptEdits" && wanted != "plan") {
+            Fail(*id, -32602, "Invalid params", Obj({{"details", S("unknown mode " + wanted)}}));
+            return false;
+        }
+        mode = wanted;
+        Result(*id, SJ::Value::Obj());
+        return false;
+    }
+    if (m == "session/set_config_option") {
+        const std::string config = Str(params, "configId");
+        const std::string value = Str(params, "value");
+        if (config == "model" && (value == "opus" || value == "sonnet" || value == "haiku")) {
+            model = value;
+            if (model == "haiku" && effort == "high") effort = "medium";
+        } else if (config == "effort" && (value == "low" || value == "medium" || (value == "high" && model != "haiku"))) {
+            effort = value;
+        } else if (config == "mode" && (value == "default" || value == "acceptEdits" || value == "plan")) {
+            mode = value;
+        } else if (config == "fast") {
+            // boolean option: accepted, not stored
+        } else {
+            Fail(*id, -32602, "Invalid params", Obj({{"details", S("unknown value " + value + " for " + config)}}));
+            return false;
+        }
+        Result(*id, Obj({{"configOptions", ConfigOptions()}}));
+        return false;
+    }
+    if (m == "session/prompt") {
+        Prompt(*id, params);
+        return false;
+    }
+    Fail(*id, -32601, "Method not found");
+    return false;
+}
+
+}  // namespace
+
+int wmain(int argc, wchar_t** argv) {
+    bool cli = false;
+    std::wstring cliVerb;
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring a = argv[i];
+        const auto value = [&]() -> std::wstring { return i + 1 < argc ? argv[++i] : L""; };
+        if (a == L"--sleep") {
+            Sleep(INFINITE);
+            return 0;
+        }
+        if (a == L"--log") opt.log = value();
+        else if (a == L"--auth-file") opt.authFile = value();
+        else if (a == L"--env-dump") opt.envDump = value();
+        else if (a == L"--crash-at") opt.crashAt = Narrow(value());
+        else if (a == L"--protocol") opt.protocol = _wtoi(value().c_str());
+        else if (a == L"--read-delay") opt.readDelay = unsigned(_wtoi(value().c_str()));
+        else if (a == L"--silent") opt.silent = true;
+        else if (a == L"--no-images") opt.noImages = true;
+        else if (a == L"--resume") opt.resume = true;
+        else if (a == L"--garbage") opt.garbage = true;
+        else if (a == L"--child") opt.child = true;
+        else if (a == L"--cli") cli = true;
+        else if (cli && cliVerb.empty()) cliVerb = a;
+    }
+    if (opt.authFile.empty()) {
+        wchar_t buffer[1024];
+        const DWORD n = GetEnvironmentVariableW(L"FAKE_AGENT_AUTH_FILE", buffer, 1024);
+        if (n && n < 1024) opt.authFile.assign(buffer, n);
+    }
+    if (cliVerb == L"login" || (argc >= 2 && std::wstring(argv[1]) == L"login")) {  // the CLI's own sign-in
+        Append(opt.authFile, "signed-in\n");
+        return opt.authFile.empty() ? 2 : 0;
+    }
+    if (!opt.envDump.empty()) {
+        std::string dump;
+        for (const wchar_t* name : {L"BROWSER", L"CLAUDE_CODE_EXECUTABLE", L"CODEX_PATH", L"CLAUDE_AGENT_ACP_PROTOCOL", L"FAKE_EXTRA", L"FAKE_REMOVED"}) {
+            wchar_t buffer[4096];
+            const DWORD n = GetEnvironmentVariableW(name, buffer, 4096);
+            dump += Narrow(name) + "=" + (n && n < 4096 ? Narrow(std::wstring(buffer, n)) : std::string("<unset>")) + "\n";
+        }
+        wchar_t cwd[4096];
+        const DWORD n = GetCurrentDirectoryW(4096, cwd);
+        dump += "cwd=" + Narrow(std::wstring(cwd, n)) + "\n";
+        for (int i = 1; i < argc; ++i) dump += "arg=" + Narrow(argv[i]) + "\n";
+        Append(opt.envDump, dump);
+    }
+    std::thread(ReaderThread).detach();
+    for (;;) {
+        std::string line;
+        NextLine(line, 0);
+        SJ::Value msg;
+        SJ::Limits limits;
+        limits.maxBytes = 64u << 20;
+        limits.maxStringBytes = 64u << 20;
+        if (!SJ::Parse(line, msg, nullptr, limits) || !msg.IsObject()) continue;
+        Dispatch(msg, -1, nullptr);
+    }
+}
