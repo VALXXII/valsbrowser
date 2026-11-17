@@ -60,6 +60,9 @@ foreach ($p in Fixture-Pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyC
 $server = Start-Process -FilePath python -ArgumentList '-m', 'http.server', '18768', '--bind', '127.0.0.1' -WorkingDirectory $site -PassThru -WindowStyle Hidden
 $origin = 'http://127.0.0.1:18768/'
 function Count-Log([string]$pattern) { ([regex]::Matches((Log-Text), $pattern)).Count }
+function Remember-Check { foreach ($fp in @(Fixture-Pids)) { $c = New-Object Windows.Automation.AndCondition((New-Object Windows.Automation.PropertyCondition($UIA::ProcessIdProperty, [int]$fp)), (New-Object Windows.Automation.PropertyCondition($UIA::NameProperty, 'Mémoriser pour ce site'))); $e = $UIA::RootElement.FindFirst([Windows.Automation.TreeScope]::Descendants, $c); if ($e) { return $e } }; return $null }
+function Remember-State { $e = Remember-Check; if (!$e) { return 'missing' }; $t = $null; if ($e.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$t)) { return [string]$t.Current.ToggleState }; return 'no-toggle' }
+function Clear-Remember { $e = Remember-Check; if (!$e) { return $false }; $t = $null; if ($e.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$t)) { $t.Toggle(); return $true }; $i = $null; if ($e.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$i)) { $i.Invoke(); return $true }; return $false }
 function Wait-Value($ws, [string]$name, [int]$seconds = 10) { for ($i = 0; $i -lt $seconds * 4; $i++) { $v = Read-Page $ws "window.$name"; if ($v -and $v -ne 'pending') { return $v }; Start-Sleep -Milliseconds 250 }; return (Read-Page $ws "window.$name") }
 function Press([string]$id) { for ($i = 0; $i -lt 3; $i++) { $b = Find-Id $id; if ($b) { try { $b.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke(); return $true } catch { "     press $id retried: $($_.Exception.Message)" | Out-Host } }; Start-Sleep -Milliseconds 300 }; return $false }   # the popover may still be animating in
 try {
@@ -70,10 +73,14 @@ try {
   $ws = Cdp-Connect 9368
   [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'index.html' }); Start-Sleep 2
 
-  # 1. Camera + microphone together, answered « Autoriser » once (remember left unchecked, as on Meet).
+  # 1. Camera + microphone together, answered « Autoriser » for this time only (remember cleared): the same page
+  #    asking again (Meet) is answered from that answer.
   [void](Eval $ws "ask('__r0',{audio:true,video:true}); 1" $true)
   Check (Wait-Log 'PERMISSION request kind=2 http://127\.0\.0\.1:18768') 'engine asked for the camera'
   Check ($null -ne (Find-Id 'PermissionPrompt')) 'first request: our popover shows'
+  Check ((Remember-State) -eq 'On') "« Mémoriser pour ce site » checked by default ($(Remember-State))"
+  Check (Clear-Remember) 'remember cleared for this time only (UIA)'; Start-Sleep -Milliseconds 300
+  Check ((Remember-State) -eq 'Off') "remember now cleared ($(Remember-State))"
   Check (Press 'PermissionAllow') 'Autoriser pressed (UIA)'
   $r0 = Wait-Value $ws '__r0'; Check ($r0 -eq 'ok') "first request: devices granted ($r0)"
   Start-Sleep 1
@@ -91,7 +98,7 @@ try {
   Check $all 'repeat requests (12): devices granted each time, no popover'
   Check ((Count-Log 'PERMISSION chip shown') -eq $shown) "no new request chip ($shown before, $(Count-Log 'PERMISSION chip shown') after)"
   "     engine re-asked and was answered from the earlier answer: $(Count-Log 'reused allow') time(s)"
-  Check ((Count-Log ' saved') -eq 0) 'nothing saved in the profile (allow was not remembered)'
+  Check (-not ((Log-Text) -match 'PERMISSION kind=[12] action=1 saved')) 'nothing saved in the profile (allow was for this time only)'
 
   # 3. Another document of the same tab: asked again (the answer was for that page only).
   [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'again.html' }); Start-Sleep 2
@@ -103,6 +110,20 @@ try {
   $blockedAll = $true
   foreach ($n in 1..3) { [void](Eval $ws "ask('__b$n',{video:true}); 1" $true); $v = Wait-Value $ws "__b$n" 8; if ($v -ne 'NotAllowedError') { $blockedAll = $false; "     ask -> $v" }; if ($null -ne (Find-Id 'PermissionPrompt' 1)) { $blockedAll = $false; '     popover shown again after Bloquer'; [void](Press 'DialogClose') } }
   Check $blockedAll 'repeat requests after Bloquer: refused, no popover'
+
+  # 4. Default answers (remember checked) last across visits: the camera stays blocked, a microphone allowed now is
+  #    still allowed on the next visit, without a popover.
+  [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'index.html' }); Start-Sleep 2
+  [void](Eval $ws "ask('__c1',{video:true}); 1" $true); $c1 = Wait-Value $ws '__c1' 8
+  Check ($c1 -eq 'NotAllowedError' -and $null -eq (Find-Id 'PermissionPrompt' 1)) "next visit: camera still blocked, no popover ($c1)"
+  [void](Eval $ws "ask('__m1',{audio:true}); 1" $true)
+  Check ($null -ne (Find-Id 'PermissionPrompt')) 'next visit: microphone (allowed this time only before) asked again'
+  Check ((Remember-State) -eq 'On') 'remember checked by default'
+  Check (Press 'PermissionAllow') 'Autoriser pressed with remember checked'
+  $m1 = Wait-Value $ws '__m1'; Check ($m1 -eq 'ok') "microphone granted ($m1)"
+  [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'again.html' }); Start-Sleep 2
+  [void](Eval $ws "ask('__m2',{audio:true}); 1" $true); $m2 = Wait-Value $ws '__m2' 8
+  Check ($m2 -eq 'ok' -and $null -eq (Find-Id 'PermissionPrompt' 1)) "following visit: microphone granted without a popover ($m2)"
   $lines = ([regex]::Matches((Log-Text), 'PERMISSION[^\r\n]*') | ForEach-Object { $_.Value }) -join "`n"
   "---- fixture log (PERMISSION lines only) ----`n$lines"
 } finally {

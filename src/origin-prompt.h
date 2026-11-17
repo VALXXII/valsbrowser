@@ -151,7 +151,9 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         if (!always) { m.checkLabel = TR(perm_remember); m.originCheck = true; }
         m.stretchButtons = true; m.softButtons = true;
         m.buttons = {button(Id::Cancel, TR(permission_choice_block), Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, TR(permission_choice_allow), Role::Primary, true, false, false, L"PermissionAllow")};
-        m.checkValue = always;
+        // « Mémoriser pour ce site » starts checked (user decision 2026-11-17, like Chrome): an answer is kept for the
+        // site unless the user clears the check for this time only. Notifications are always remembered.
+        m.checkValue = true;
         break;
     }
     case Kind::BasicAuth: {
