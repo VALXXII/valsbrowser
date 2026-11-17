@@ -10,6 +10,8 @@
 #include "../../src/chrome.h"
 #include "../../src/address-popup.h"
 #include "../../src/bookmarks-panel.h"
+#include "../../src/settings-panel.h"
+#include "../../src/history-panel.h"
 
 using namespace NativeChrome;
 struct Monitor { RECT work; UINT dpi; };
@@ -75,6 +77,27 @@ int wmain(int argc, wchar_t** argv) {
     };
     drawerOn(*b, "B");
     drawerOn(*a, "A");
+
+    // Reported 2026-11-17 (screenshot: Réglages twice too large on the 100 % monitor): drawers created while the
+    // browser window was on one monitor, opened after the window moved to the other. Every surface drawn by a Chrome
+    // follows its window's DPI (chrome.h FollowDpi); Réglages and Historique stand for all of them here.
+    BrowserSettings::State settingsState; AddressBar::History history;
+    auto movedTo = [&](const Monitor& from, const Monitor& to, const char* name) {
+        HWND browser = CreateWindowExW(0, bw.lpszClassName, L"browser", WS_POPUP | WS_VISIBLE, from.work.left + 40, from.work.top + 40, 900, 700, nullptr, nullptr, hi, nullptr);
+        SettingsUI::Drawer st; Check(st.Create(hi, browser, argv[1], &settingsState, {}), std::string("Réglages created (") + name + ")");
+        HistoryUI::Drawer hs; Check(hs.Create(hi, browser, argv[1], &history, {}), std::string("Historique created (") + name + ")");
+        st.Show(); Pump(600); st.Hide(false, false); Pump(300);   // drawn once where the window was
+        SetWindowPos(browser, nullptr, to.work.left + 40, to.work.top + 40, 900, 700, SWP_NOZORDER | SWP_NOACTIVATE); Pump(200);
+        st.Show(); Pump(600);
+        Check(GetDpiForWindow(st.Window()) == to.dpi && st.RenderDpiForTest() == to.dpi, std::string("Réglages after the window moved ") + name + ": drawn at " + std::to_string(st.RenderDpiForTest()) + ", monitor " + std::to_string(to.dpi));
+        st.Hide(false, false); Pump(300);
+        hs.Show(); Pump(600);
+        Check(GetDpiForWindow(hs.Window()) == to.dpi && hs.RenderDpiForTest() == to.dpi, std::string("Historique after the window moved ") + name + ": drawn at " + std::to_string(hs.RenderDpiForTest()) + ", monitor " + std::to_string(to.dpi));
+        hs.Hide(false, false); Pump(300);
+        st.Dispose(); hs.Dispose(); DestroyWindow(browser); Pump(50);
+    };
+    movedTo(*a, *b, "A to B");
+    movedTo(*b, *a, "B to A");
 
     s.Dispose(); DestroyWindow(owner); CoUninitialize();
     std::printf("\n%d failure(s)\n", failures);
