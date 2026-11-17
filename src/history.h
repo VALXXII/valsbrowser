@@ -134,8 +134,8 @@ inline constexpr float width = Downloads::Panel::width, top = Downloads::DrawerL
 inline constexpr float searchTop = Downloads::Panel::headerTop + Downloads::Panel::headerHeight + Design::Space::md; // 44
 inline constexpr float searchHeight = Design::Size::control;                                                     // 32
 inline constexpr float viewTop = searchTop + searchHeight + Design::Space::md;                                  // 84
-// The first section keeps the download drawer's 15 DIP under the top of the scrolling view.
-inline constexpr float firstSection = viewTop + (Downloads::DrawerLayout::firstSection - Downloads::DrawerLayout::viewTop); // 99
+// The first section sits 15 DIP under the top of the scrolling view (the downloads drawer's former offset).
+inline constexpr float firstSection = viewTop + 15;                                                             // 99
 inline constexpr Box Search() { return {padding, searchTop, width - padding, searchTop + searchHeight}; }
 inline constexpr Box SearchIcon() { return {padding + Design::Address::slotInset, searchTop + (searchHeight - Design::Address::slot) / 2,
                                             padding + Design::Address::slotInset + Design::Address::slot, searchTop + (searchHeight + Design::Address::slot) / 2}; }
