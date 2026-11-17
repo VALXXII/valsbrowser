@@ -863,6 +863,62 @@ int wmain(int argc, wchar_t** argv) {
         Check(closed == 1 && !demo.Visible(), "demo: Échap closes, closed() once");
         demo.Dispose(); Check(closed == 1, "demo: Dispose does not call closed() again");
     }
+    {   // Text fit (French and English, 96 and 120 DPI): no text runs past its padding or into another control.
+        OriginPrompt::Prompt q; Check(q.Create(hi, owner, root, {}), "text fit prompt"); q.SetPageArea({100, 100, 1300, 900});
+        const std::wstring ev = root + L"/build/text-fit-evidence"; CreateDirectoryW((root + L"/build").c_str(), nullptr); CreateDirectoryW(ev.c_str(), nullptr);
+        auto show = [&](const OriginPrompt::Spec& sp) { q.Show(sp, {200, 150, 224, 174}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest(); return &q.Surface(); };
+        // Reads a rendered PNG back (BGRA, top-down) to look for ink.
+        auto load = [](const std::wstring& path, UINT& w, UINT& h, std::vector<UINT32>& px) {
+            IWICImagingFactory* f = nullptr; IWICBitmapDecoder* dec = nullptr; IWICBitmapFrameDecode* fr = nullptr; IWICFormatConverter* cv = nullptr; bool ok = false;
+            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f))) && SUCCEEDED(f->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &dec))
+                && SUCCEEDED(dec->GetFrame(0, &fr)) && SUCCEEDED(f->CreateFormatConverter(&cv)) && SUCCEEDED(cv->Initialize(fr, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))
+                && SUCCEEDED(cv->GetSize(&w, &h))) { px.resize(size_t(w) * h); ok = SUCCEEDED(cv->CopyPixels(nullptr, w * 4, UINT(px.size() * 4), reinterpret_cast<BYTE*>(px.data()))); }
+            if (cv) cv->Release(); if (fr) fr->Release(); if (dec) dec->Release(); if (f) f->Release(); return ok;
+        };
+        using OP = OriginPrompt::Spec;
+        for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+            I18n::SetForProcess(lang); const std::wstring tag = lang == I18n::Locale::En ? L"en" : L"fr";
+            // B04 save / update (demonstration): « Jamais pour ce site » at the start of the row never runs into
+            // « Plus tard » + « Enregistrer / Mettre à jour » at its end; every button stays inside the padding.
+            for (auto kind : {OriginPrompt::Kind::PasswordSave, OriginPrompt::Kind::PasswordUpdate}) {
+                OP s; s.kind = kind; s.origin = L"compte.exemple.test"; s.user = L"camille.demo@exemple.test"; s.demo = true;
+                auto* dlg = show(s); const auto& spec = dlg->CurrentSpec(); const float pad = spec.padding > 0 ? spec.padding : DialogKit::Paper::padding, w = dlg->WidthForTest();
+                bool apart = true, inside = true;
+                for (size_t i = 0; i < spec.buttons.size(); ++i) {
+                    const auto a = dlg->BoxForTest(Modal::Dialog::ButtonHit(i));
+                    if (a.left < pad - .01f || a.right > w - pad + .01f) inside = false;
+                    for (size_t j = i + 1; j < spec.buttons.size(); ++j) { const auto b = dlg->BoxForTest(Modal::Dialog::ButtonHit(j));
+                        if (a.left < b.right + 4 && b.left < a.right + 4 && a.top < b.bottom && b.top < a.bottom) { apart = false; std::printf("  buttons overlap: « %ls » %.1f..%.1f / « %ls » %.1f..%.1f\n", spec.buttons[i].label.c_str(), a.left, a.right, spec.buttons[j].label.c_str(), b.left, b.right); } }
+                }
+                const char* what = kind == OriginPrompt::Kind::PasswordSave ? "save" : "update";
+                char m1[160]; std::snprintf(m1, sizeof m1, "text fit (%ls): password %s buttons never overlap (4 DIP apart at least)", tag.c_str(), what); Check(apart, m1);
+                char m2[160]; std::snprintf(m2, sizeof m2, "text fit (%ls): password %s buttons inside the popover padding", tag.c_str(), what); Check(inside, m2);
+                for (UINT dpi : {96u, 120u}) dlg->RenderForTest(ev + L"/password-" + std::wstring(what, what + std::strlen(what)) + L"-demo-" + tag + L"-" + std::to_wstring(dpi) + L".png", dpi);
+                q.Abort(); q.Surface().FinishAnimationsForTest();
+            }
+            // B08 certificate choice (radio rows): a long name ends before the radio, never under it.
+            OP cert; cert.kind = OriginPrompt::Kind::ClientCertificate; cert.origin = L"banque.exemple.test";
+            cert.accounts = {{L"Camille Démo-Fictive · Poste de travail de la direction financière", L"Émis par Autorité Démo · expire en 2027"}, {L"Poste de travail démo", L"Émis par CA Interne Démo"}};
+            auto* dlg = show(cert);
+            for (UINT dpi : {96u, 120u}) {
+                const std::wstring png = ev + L"/certificate-long-name-" + tag + L"-" + std::to_wstring(dpi) + L".png"; dlg->RenderForTest(png, dpi);
+                UINT pw = 0, ph = 0; std::vector<UINT32> px; const bool loaded = load(png, pw, ph, px); const float k = dpi / 96.f;
+                const auto r = dlg->BoxForTest(Modal::Dialog::AccountHit(0)); bool clear = loaded;
+                // From where the name must stop (radio - 4) to the radio, on the name's line (above the radio's top, and
+                // just left of it lower down): the row's own fill only.
+                const UINT32 ref = loaded ? px[size_t(std::lround((r.top + 3) * k)) * pw + size_t(std::lround((r.right - 20) * k))] : 0;
+                for (int y = int(std::ceil((r.top + 5) * k)); loaded && y < int(std::floor((r.top + 25) * k)); ++y)
+                    for (int x = int(std::ceil((r.right - 31.5f) * k)); x < int(std::floor((y < (r.top + 15) * k ? r.right - 12 : r.right - 28.5f) * k)); ++x) {
+                        const UINT32 p = px[size_t(y) * pw + size_t(x)]; int d = 0; for (int c = 0; c < 24; c += 8) d = std::max(d, std::abs(int((p >> c) & 255) - int((ref >> c) & 255)));
+                        if (d > 6) clear = false;
+                    }
+                char m3[160]; std::snprintf(m3, sizeof m3, "text fit (%ls, %u dpi): certificate name trimmed before its radio", tag.c_str(), dpi); Check(clear, m3);
+            }
+            q.Abort(); q.Surface().FinishAnimationsForTest();
+        }
+        I18n::SetForProcess(I18n::Locale::Fr);
+        q.Dispose();
+    }
     d.Dispose(); DestroyWindow(owner);
     std::printf("%d checks, %d failures\n", checks, failures);
     CoUninitialize();
