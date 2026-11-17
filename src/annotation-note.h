@@ -35,7 +35,7 @@ struct NoteContext {
 };
 enum class CaptureState { Pending, Ready, Unavailable };
 enum class NoteStatus { Editing, Saving, Failed };
-enum NoteHit { NoteNone = 0, NoteField = 1, NoteAdd = 2, NotePill = 3 };
+enum NoteHit { NoteNone = 0, NoteField = 1, NoteAdd = 2, NotePill = 3, NoteAsk = 4 };   // NoteAsk: « Demander à l'agent » (chat intégré, local sites only)
 
 namespace NoteSpec {
 inline constexpr float width = 350, radius = 12, pad = 12, gap = 12, row = 24, minHeight = 84, noteLine = 20;
@@ -63,11 +63,12 @@ struct NoteView {
     std::wstring note; bool drawNote = true, fieldFocused = true, fieldError = false; float fieldHeight = 40;
     NoteContext context; CaptureState capture = CaptureState::Ready; const Shot* shot = nullptr;
     NoteStatus status = NoteStatus::Editing; std::wstring message;
+    bool ask = false;   // chat intégré: the « Demander à l'agent » button, left of « Ajouter »
     int focus = 0; bool keyboard = false, reduced = false; float spinner = 0;
     std::map<int, Motion::InteractionVisual> visuals;
     Motion::InteractionVisual V(int id) const { auto it = visuals.find(id); return it == visuals.end() ? Motion::InteractionVisual{} : it->second; }
 };
-struct NoteLayout { float height = 0; D2D1_RECT_F field{}, row{}, site{}, add{}, message{}; };
+struct NoteLayout { float height = 0; D2D1_RECT_F field{}, row{}, site{}, add{}, message{}, ask{}; };
 inline std::wstring AddLabel(NoteStatus s) { return s == NoteStatus::Saving ? TR(note_adding) : s == NoteStatus::Failed ? TR(downloads_action_retry) : TR(note_add); }
 inline NoteLayout LayoutNote(Ink& ink, const NoteView& v) {
     using namespace NoteSpec; NoteLayout l; const float x0 = 1 + pad, x1 = width - 1 - pad;
@@ -77,12 +78,15 @@ inline NoteLayout LayoutNote(Ink& ink, const NoteView& v) {
     l.row = {x0, y, x1, y + row};
     const float aw = 10 + ink.Width(AddLabel(v.status), F(13, 16, 500)) + 10;
     l.add = {x1 - aw, y, x1, y + row};
-    l.site = {x0, y, l.add.left - 8, y + row}; y += row;
+    float siteRight = l.add.left - 8;
+    if (v.ask) { const float kw = 8 + ink.Width(TR(chat_note_ask), F(13, 16, 500)) + 8; l.ask = {l.add.left - 6 - kw, y, l.add.left - 6, y + row}; siteRight = l.ask.left - 8; }
+    l.site = {x0, y, std::max(x0, siteRight), y + row}; y += row;
     if (!v.message.empty()) { y += 8; const float mh = ink.Height(v.message, F(12, 16), x1 - x0 - 19); l.message = {x0, y, x1, y + mh}; y += mh; }
     l.height = y + pad + 1; return l;
 }
 inline int NoteHitAt(const NoteLayout& l, float x, float y) {
     if (Inside(l.add, x, y)) return NoteAdd;
+    if (l.ask.right > l.ask.left && Inside(l.ask, x, y)) return NoteAsk;
     if (Inside(l.field, x, y)) return NoteField;
     return NoteNone;
 }
@@ -102,6 +106,12 @@ inline void PaintNote(Ink& ink, const NoteView& v, const NoteLayout& l) {
         ink.Fill(l.add, 6, busy ? Accent(.6f) : AccentButton(iv.hover, iv.press));
         ink.Text(AddLabel(v.status), F(13, 16, 500), l.add, {1, 1, 1, busy ? .8f : 1.f}, false, Align::Center, true);
         if (v.focus == NoteAdd) FocusRing(ink, l.add, 6, v.keyboard); }
+    if (v.ask) {   // ghost button: plate on hover / press, same height and radius as « Ajouter »
+        const auto iv = v.V(NoteAsk); const bool busy = v.status == NoteStatus::Saving;
+        ScaleScope s(ink.Target(), l.ask, Motion::PressScale(iv.press, v.reduced, !busy));
+        ink.Fill(l.ask, 6, {1, 1, 1, .06f + .06f * iv.hover + .04f * iv.press});
+        ink.Text(TR(chat_note_ask), F(13, 16, 500), l.ask, {1, 1, 1, busy ? .5f : .9f}, false, Align::Center, true);
+        if (v.focus == NoteAsk) FocusRing(ink, l.ask, 6, v.keyboard); }
     if (!v.message.empty()) {
         ink.Icon(Glyphs::warningCircle, {l.message.left, l.message.top + 1.5f, l.message.left + 13, l.message.top + 14.5f}, Hex(Ink_::danger));
         ink.Text(v.message, F(12, 16), {l.message.left + 19, l.message.top, l.message.right, l.message.bottom}, Hex(Ink_::danger), true);
@@ -197,6 +207,7 @@ struct NoteRequest {
     bool expanded = false;                                   // V2: the pill starts unfolded
     std::vector<Project> projects; std::wstring projectId;   // V1, ignored (kept so older callers compile)
     bool includeShot = true;                                 // V1, ignored: the capture is always included
+    bool askAgent = false;                                   // chat intégré: show « Demander à l'agent »
 };
 struct NoteHooks {
     std::function<void(const NoteSubmission&)> submit;              // write off the UI thread, then Saved() or Failed()
@@ -205,6 +216,7 @@ struct NoteHooks {
     std::function<void(const std::wstring&)> announce;
     std::function<void()> newProject;                                // V1, never called
     std::function<void(const std::wstring&)> projectChanged;         // V1, never called
+    std::function<void(const std::wstring& draft)> ask;              // « Demander à l'agent »: the caller moves the selection to the chat and closes the panel
 };
 
 class NotePopover : public Animator::Client {
@@ -259,7 +271,7 @@ class NotePopover : public Animator::Client {
     NoteView Visual(Motion::Time now) {
         NoteView v = view_; v.note = EditText(); v.fieldFocused = GetFocus() == edit_ || !settled_;
         v.spinner = SpinnerAngle(now, reduced_); v.reduced = reduced_;
-        v.visuals[NoteAdd] = motion_.Visual(NoteAdd, now);
+        v.visuals[NoteAdd] = motion_.Visual(NoteAdd, now); if (view_.ask) v.visuals[NoteAsk] = motion_.Visual(NoteAsk, now);
         v.shot = shot_.width ? &shot_ : nullptr;
         return v;
     }
@@ -331,10 +343,11 @@ class NotePopover : public Animator::Client {
         switch (hit) {
         case NoteField: SetFocus(edit_); break;
         case NoteAdd: Submit(); break;
+        case NoteAsk: if (view_.ask && view_.status != NoteStatus::Saving && hooks_.ask) hooks_.ask(EditText()); break;
         case NotePill: SetPill(!pillOpen_, keyboard); break;
         }
     }
-    std::vector<int> Order() const { std::vector<int> o{NoteField, NoteAdd}; if (PillExpandable(view_.capture)) o.push_back(NotePill); return o; }
+    std::vector<int> Order() const { std::vector<int> o{NoteField}; if (view_.ask) o.push_back(NoteAsk); o.push_back(NoteAdd); if (PillExpandable(view_.capture)) o.push_back(NotePill); return o; }
     int Current() const { return GetFocus() == edit_ ? int(NoteField) : view_.focus; }
     void FocusStop(int stop) {
         view_.keyboard = true; motion_.ClearInteractions();
@@ -350,6 +363,7 @@ class NotePopover : public Animator::Client {
         const bool shift = GetKeyState(VK_SHIFT) < 0, ctrl = GetKeyState(VK_CONTROL) < 0;
         if (key == VK_ESCAPE) { if (pillOpen_) { SetPill(false, true); return true; } Cancel(true); return true; }
         if (key == VK_TAB) { Cycle(shift); return true; }
+        if (ctrl && shift && key == 'D' && view_.ask) { Activate(NoteAsk, true); return true; }   // Ctrl+Maj+D: « Demander à l'agent »
         if (key == VK_RETURN) {
             if (ctrl) { Submit(); return true; }
             if (fromEdit) { if (shift) return false; Submit(); return true; }
@@ -461,6 +475,8 @@ class NotePopover : public Animator::Client {
         site.focusable = false; site.bounds = screen(layout_.site); site.automationId = L"AnnotationSite"; n.push_back(site);
         Accessibility::Node ok; ok.key = NoteAdd; ok.parent = GroupKey; ok.name = AddLabel(view_.status); ok.accelerator = TR(key_enter); ok.enabled = view_.status != NoteStatus::Saving;
         ok.bounds = screen(layout_.add); ok.automationId = L"AnnotationAdd"; n.push_back(ok);
+        if (view_.ask) { Accessibility::Node a; a.key = NoteAsk; a.parent = GroupKey; a.name = TR(chat_note_ask); a.accelerator = TR(key_ctrl_shift_d); a.enabled = view_.status != NoteStatus::Saving;
+            a.bounds = screen(layout_.ask); a.automationId = L"AnnotationAskAgent"; n.push_back(a); }
         RECT pr{}; if (pill_.Window()) { const auto r = PillLocal(Motion::Now()); pr = pill_.Screen(r); }
         if (PillExpandable(view_.capture)) {
             Accessibility::Node p; p.key = NotePill; p.parent = GroupKey; p.name = NoteSpec::pillLabel(); p.expand = pillOpen_ ? 2 : 1; p.bounds = pr; p.automationId = L"AnnotationContext"; n.push_back(p);
@@ -543,7 +559,7 @@ public:
         if (!Create()) return false;
         const auto now = Motion::Now();
         projectId_ = request.projectId;
-        view_ = NoteView{}; view_.context = request.context; view_.capture = request.capture; view_.keyboard = keyboard;
+        view_ = NoteView{}; view_.context = request.context; view_.capture = request.capture; view_.keyboard = keyboard; view_.ask = request.askAgent;
         if (request.capture != CaptureState::Ready) shot_ = Shot{};
         reduced_ = reduced; target_ = target; bounds_ = bounds; hover_ = pressed_ = pillHover_ = pillPressed_ = 0; motion_.ClearInteractions(); motion_.SetReducedMotion(reduced);
         open_ = false; SetWindowTextW(edit_, request.draft.c_str()); SendMessageW(edit_, EM_SETSEL, WPARAM(request.draft.size()), LPARAM(request.draft.size()));

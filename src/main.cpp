@@ -221,7 +221,7 @@ std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t u
 NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
-constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,AnnotateHistoryCommand=3062; bool AnnotationHistoryAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
+constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,AnnotateHistoryCommand=3062,ChatCommand=3063; /* chat intégré (src/chat-host.h): Ctrl+Maj+D, the panel's width taken from the page area, the reload hook, shutdown */ float ChatInsetDip(); void ChatNavigationCompleted(const std::shared_ptr<Tab>& t); void ChatShutdown(); bool AnnotationHistoryAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
 #include "annotation-entry.h" // settings section « Annotations » and menus: connect/disconnect, status, folder, clear all
 namespace CM=NativeChrome::ContextMenu; extern std::vector<CM::Item> lastSplitMenu; void TabContextMenu(int tabIndex,int anchor); void AnnotationMenuItems(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args,std::vector<CM::Item>& items); void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab,int choice); bool ResizePlaceholdersUp(); extern std::vector<HWND> splitGrips; void SyncGripLooks(); bool PointerOnGrip(); bool GripsAnimating(); void GripFrame(NativeChrome::Motion::Time now); void Select(int n); void EndSplitDrag(bool restore); void SyncSplitDecor(); void ApplyPages(); bool SplitDragMove(POINT point); bool SplitAnimating(); void SplitFrame(NativeChrome::Motion::Time now);
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
@@ -475,7 +475,7 @@ void DissolveSmallGroups(){
 int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->group)&&Members(t->group).size()>=2?t->group:0;}
 // Same box as a single page: under the chrome, 81 DIP or 121 with the bookmarks band
 // (SV::Content assumes the former fixed 84 DIP top).
-SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();c.left=View::inset;c.right=std::max(c.left,chrome.width-View::inset);c.bottom=chrome.height-View::inset;if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
+SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();c.left=View::inset;c.right=std::max(c.left,chrome.width-View::inset-ChatInsetDip()); /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-View::inset;if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
     // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
@@ -1136,6 +1136,7 @@ int Key(UINT key){
         if(!shift&&key=='D')return 'K';
         if(shift&&key=='B')return BookmarkBarCommand;
         if(shift&&key=='A')return AnnotateCommand; // Ctrl+Maj+A: mode Annotation (toggle)
+        if(shift&&key=='D'&&AnnotationHistoryAvailable())return ChatCommand; // Ctrl+Maj+D: « Demander à l'agent » (chat intégré; starts the mode if needed)
         if(shift&&key=='O')return BookmarksDrawerCommand;
         // Ctrl+Z undoes a bookmark change only from the chrome, the toast or the Favoris drawer, never in a text field or the page.
         if(!shift&&key=='Z'){HWND f=GetFocus();return f&&(f==window||f==bookmarkToast.Window()||f==bookmarksDrawer.Window())?BookmarkUndoCommand:0;}
@@ -2454,7 +2455,7 @@ bool E2EFixtureAllows(ICoreWebView2ServerCertificateErrorDetectedEventArgs* args
 HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2NavigationCompletedEventArgs* a){
     if(halted||!t||t->closed)return S_OK;
     BOOL ok=FALSE;a->get_IsSuccess(&ok);
-    ElementsNavigationCompleted(t,ok!=FALSE);
+    ElementsNavigationCompleted(t,ok!=FALSE);ChatNavigationCompleted(t);
     UINT64 navigationId=0;
     if(!Check(a->get_NavigationId(&navigationId),L"NavigationCompleted id"))return S_OK;
     t->loading.Finish(navigationId,NativeChrome::Motion::Now());t->refreshing=false;
@@ -4445,7 +4446,7 @@ case ImportMessage:ImportFinished();return 0;
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */
 case WM_CLOSE:if(!CloseWindowAllowed())return 0;windowClosing=true;popups.CancelAll(); /* pending window.open requests: settled before the profiles close */contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
-case WM_DESTROY:contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
+case WM_DESTROY:ChatShutdown(); /* the agent's process tree and the panel's WebView go first */contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif

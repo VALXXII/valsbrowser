@@ -1,0 +1,559 @@
+#pragma once
+// Chat intégré — agent session and turns (included by src/chat-host.h; see its header for the whole picture).
+namespace Chat {
+
+void ProcessQueue(); void ApplyMark(const char* state, const std::string& selector); void AfterTurnPage(bool changed); void ArmAgentIdle(); void StopTurn();
+void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds);
+void DisposeSession(const wchar_t* why);
+
+// ---------------------------------------------------------------- detection and preparation (off the UI thread)
+void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
+    auto& a = agentInfo[id]; a.known = true; a.cli = d.Usable(); a.prepared = !d.NeedsPrepare();
+    if (sessionReady && id == agentId) return;   // a live session says more than a detection
+    if (sessionStarting && id == agentId) return;
+    if (d.cli.state == AgentRuntime::CliState::Missing) { a.status = "notInstalled"; a.detail = TR(chat_agent_not_installed); }
+    else if (d.cli.state == AgentRuntime::CliState::TooOld) { a.status = "error"; a.detail = TR(chat_agent_too_old); }
+    else if (d.login == AgentRuntime::Login::SignedOut) { a.status = "notConnected"; a.detail = TR(chat_agent_not_connected); }
+    else { a.status = "ready"; a.detail = a.prepared ? TR(chat_agent_installed) : TR(chat_agent_first_use); }
+    a.progress = -1;
+}
+void DetectAgents(std::function<void()> then = nullptr) {
+    auto out = std::make_shared<std::vector<AgentRuntime::Detection>>();
+    Ann::Run([out] { const auto env = RtEnv(); for (const auto& def : Agents) out->push_back(AgentRuntime::Detect(env, def.rt)); },
+             [out, then] {
+                 for (std::size_t i = 0; i < out->size() && i < std::size(Agents); ++i) {
+                     const auto& d = (*out)[i]; ApplyDetection(Agents[i].id, d);
+                     ChatLog(std::wstring(L"agent ") + W(Agents[i].id) + L": cli " + (d.Usable() ? L"found " : L"missing ") + W(d.cli.version) + L" (" + W(d.cli.source) + L"), node " + (d.nodeReady ? L"ready" : L"absent") + L", adapter " + (d.adapterReady ? L"ready" : L"absent"));
+                 }
+                 SendState(); if (then) then();
+             });
+}
+void StartSession();
+// Downloads the private Node and the adapter (pinned fingerprints), with the progress in the panel, then starts.
+std::shared_ptr<std::atomic<bool>> prepareCancel;
+void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
+    const auto* def = AgentOf(id); if (!def || preparing) { if (then) then(false); return; }
+    preparing = true; prepareCancel = std::make_shared<std::atomic<bool>>(false);
+    SetAgentStatus(id, "preparing", TR(chat_agent_preparing), 0);
+    struct Shared { std::atomic<int> permille{0}; AgentRuntime::PrepareResult result; };
+    auto shared = std::make_shared<Shared>(); const auto rt = def->rt; auto cancel = prepareCancel; const HWND target = post;
+    Ann::Run([shared, rt, cancel, target] {
+            const auto env = RtEnv();
+            shared->result = AgentRuntime::Prepare(env, rt, [&](const AgentRuntime::Progress& p) {
+                double f = 0;   // Node is most of the bytes: 0 .. 0.7, the adapter's packages 0.7 .. 1
+                if (p.stage == AgentRuntime::Progress::Stage::Node) f = p.total ? 0.7 * double(p.received) / double(p.total) : 0.1;
+                else if (p.stage == AgentRuntime::Progress::Stage::Adapter) f = 0.7 + (p.itemCount ? 0.3 * double(p.item) / double(p.itemCount) : 0);
+                else if (p.stage == AgentRuntime::Progress::Stage::Done) f = 1;
+                shared->permille = int(f * 1000); if (target) PostMessageW(target, WM_APP + 22, 0, 0);
+            }, cancel.get());
+        },
+        [shared, id, then] {
+            preparing = false;
+            const bool ok = shared->result.Ok();
+            ChatLog(L"prepare " + W(id) + L": " + W(AgentRuntime::PrepareErrorName(shared->result.error)) + (shared->result.detail.empty() ? L"" : L" — " + W(shared->result.detail)));
+            auto& a = agentInfo[id]; a.prepared = ok; a.progress = -1;
+            if (ok) { a.status = "ready"; a.detail = TR(chat_agent_installed); }
+            else if (shared->result.error == AgentRuntime::PrepareError::Cancelled) { a.status = "ready"; a.detail = TR(chat_agent_first_use); }
+            else { a.status = "error"; a.detail = TR(chat_agent_unavailable); Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; SendError(ProblemFor(e, id), std::string(AgentRuntime::PrepareErrorName(shared->result.error)) + " " + shared->result.detail); }
+            SendState(); if (then) then(ok);
+        });
+    preparePermille = [shared] { return shared->permille.load(); };
+}
+void PrepareProgress() {
+    if (!preparing || !preparePermille) return;
+    const int p = preparePermille(); auto& a = agentInfo[agentId];
+    a.status = "preparing"; a.progress = p / 1000.0; a.detail = TRF(chat_agent_download, std::to_wstring(p / 10)); SendState();
+}
+
+// ---------------------------------------------------------------- session (one agent process per conversation)
+void DisposeSession(const wchar_t* why) {
+    if (!session) return;
+    session->Dispose(); disposed.push_back(std::move(session)); session.reset();   // kept until its threads have ended (Shutdown waits)
+    sessionReady = sessionStarting = false; afterReady = nullptr;
+    if (post) KillTimer(post, AgentIdleTimer);
+    ChatLog(std::wstring(L"agent stopped (") + why + L")");
+    disposed.erase(std::remove_if(disposed.begin(), disposed.end(), [](const std::unique_ptr<Acp::Session>& s) { return s->WaitStopped(0); }), disposed.end());
+}
+void ApplyDefaults() {   // the site's remembered choices, else « Demander » (decision 4): never a hard-coded id, the agent's own lists
+    if (!session || !sessionReady) return;
+    auto& info = agentInfo[agentId];
+    auto choose = [&](const Acp::ConfigOption* o, std::string& wanted) {
+        if (!o || wanted.empty()) { wanted.clear(); return; }
+        if (wanted != o->currentValue) for (const auto& c : o->choices) if (c.value == wanted) { session->SetConfigOption(o->id, wanted); break; }
+        wanted.clear();
+    };
+    choose(Acp::FindModelOption(info.options), pendingModel); choose(Acp::FindEffortOption(info.options), pendingEffort);
+    const auto mv = ModesOf(info); std::string want = pendingMode; pendingMode.clear();
+    auto has = [&](const std::string& id) { for (const auto& m : mv.list) if (m.id == id) return true; return false; };
+    if (want.empty() || !has(want)) {   // no choice remembered: the first « ask » mode when the agent starts in another kind
+        want.clear(); std::string currentName; for (const auto& m : mv.list) if (m.id == mv.current) currentName = m.name;
+        if (ModeKind(mv.current, currentName) != "ask") for (const auto& m : mv.list) if (ModeKind(m.id, m.name) == "ask") { want = m.id; break; }
+    }
+    if (!want.empty() && want != mv.current) { if (mv.viaOption) session->SetConfigOption(mv.optionId, want); else session->SetMode(want); }
+}
+void OnStarted(const Acp::StartResult& r) {
+    sessionStarting = false; auto& info = agentInfo[agentId]; started = r;
+    ChatLog(std::wstring(L"session start: ") + (r.state == Acp::StartState::Ready ? (r.resumed ? L"ready (resumed)" : L"ready (new)") : W(Acp::ErrorCodeName(r.error.code))) + (r.error.detail.empty() ? L"" : L" — " + W(ClipUtf8(r.error.detail, 300))));
+    switch (r.state) {
+    case Acp::StartState::Ready: {
+        sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true;
+        info.options = r.configOptions; info.modes = r.modes; info.caps = r.capabilities; info.commands = r.commands;
+        if (!r.resumed || convo.data.head.promptVersion != ChatPrompt::Version) convo.preambleSent = false;
+        convo.data.head.sessionId = r.sessionId; convo.data.head.agentId = agentId;
+        ClearStrip("auth"); ApplyDefaults(); SendState(); SendCommands();
+        if (stats.sessionAt == 0) stats.sessionAt = Ann::NowMs();
+        ArmAgentIdle();
+        if (auto go = std::move(afterReady)) { afterReady = nullptr; go(); }
+        return; }
+    case Acp::StartState::NeedsPrepare:
+        session.reset();
+        PrepareAgent(agentId, [](bool ok) { if (ok) StartSession(); else if (turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; turn.failure = e; FinishTurn("error"); } });
+        return;
+    case Acp::StartState::AuthRequired:
+        info.status = "notConnected"; info.detail = TR(chat_agent_not_connected); info.auth = r.authMethods;
+        Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect));
+        break;
+    case Acp::StartState::NotInstalled: info.status = "notInstalled"; info.detail = TR(chat_agent_not_installed); break;
+    default: info.status = "error"; info.detail = r.error.code == Acp::ErrorCode::CliTooOld ? TR(chat_agent_too_old) : TR(chat_agent_unavailable); break;
+    }
+    // not ready: no process is left. The object is kept after AuthRequired only (Session::Authenticate starts from it).
+    if (session && r.state != Acp::StartState::AuthRequired) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }
+    afterReady = nullptr; SendState();
+    if (turn.active) { turn.failure = r.error; FinishTurn("error"); }
+    else if (r.state != Acp::StartState::AuthRequired) SendError(ProblemFor(r.error, agentId), r.error.detail);
+}
+void StartSession() {
+    if (session && !sessionReady && !sessionStarting) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }   // an object left by AuthRequired
+    if (session || sessionStarting || !Usable()) return;
+    const auto* def = AgentOf(agentId); if (!def) return;
+    session = std::make_unique<Acp::Session>();
+    const HWND target = post; session->SetWake([target] { if (target) PostMessageW(target, AcpWake, 0, 0); });
+    Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(RtEnv(), def->rt); o.cwd = U8(folder);
+    o.resumeSessionId = convo.data.head.agentId == agentId ? convo.data.head.sessionId : std::string();
+    o.clientName = "browser";
+#ifdef BROWSER_VERSION_TEXT
+    o.clientVersion = BROWSER_VERSION_TEXT;
+#endif
+    {   // our MCP bridge over the annotation store, restricted to this site: the agent can list / claim / resolve annotations
+        const auto target2 = Ann::ConnectTarget();
+        if (GetFileAttributesW(target2.bridgeExe.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            Acp::McpServer m; m.name = Ann::ServerName(); m.command = U8(target2.bridgeExe); m.args = {"--store", U8(target2.storeRoot), "--site", site.origin}; o.mcpServers.push_back(std::move(m));
+        }
+    }
+    sessionStarting = true; sessionReady = false;
+    if (!session->Start(std::move(o))) { sessionStarting = false; session.reset(); ChatLog(L"session start refused"); return; }
+    SetAgentStatus(agentId, "starting", TR(chat_agent_starting));
+    ChatLog(L"session starting: " + W(agentId) + L" in " + folder);
+}
+void EnsureSession(std::function<void()> ready) {
+    if (sessionReady && session) { ready(); return; }
+    afterReady = std::move(ready);
+    if (!session && !sessionStarting && !preparing) StartSession();
+}
+void ArmAgentIdle() { if (post && !turn.active) SetTimer(post, AgentIdleTimer, Open() ? AgentIdleMs() : PanelIdleMs(), nullptr); }
+
+// ---------------------------------------------------------------- diffs
+SJ::Value DiffJson(const std::string& path, const CS::FileDiff& d) {
+    SJ::Value o = SJ::Value::Obj(); o.Set("path", Str(path)); o.Set("added", SJ::Value::Int(d.additions)); o.Set("removed", SJ::Value::Int(d.deletions));
+    SJ::Value lines = SJ::Value::Arr(); std::size_t n = 0; bool truncated = d.truncated; std::size_t at = 0; const std::string& u = d.unified;
+    while (at < u.size()) {
+        std::size_t end = u.find('\n', at); if (end == std::string::npos) end = u.size();
+        const std::string line = u.substr(at, end - at); at = end + 1;
+        if (line.rfind("--- ", 0) == 0 || line.rfind("+++ ", 0) == 0 || line.rfind("\\ ", 0) == 0) continue;
+        if (n >= 400) { truncated = true; break; }
+        SJ::Value l = SJ::Value::Obj(); const char op = line.empty() ? ' ' : line[0];
+        l.Set("op", Str(std::string(1, op == '+' || op == '-' || op == '@' ? op : ' '))); l.Set("text", Str(ClipUtf8(op == '@' ? line : (line.empty() ? line : line.substr(1)), 2000)));
+        lines.Push(std::move(l)); ++n;
+    }
+    o.Set("lines", std::move(lines)); if (truncated) o.Set("truncated", SJ::Value::Bool(true));
+    return o;
+}
+std::string RelPath(const std::string& path) {   // a path of the agent, shown relative to the project folder
+    std::string p = path; for (auto& c : p) if (c == '\\') c = '/';
+    std::string root = U8(folder); for (auto& c : root) if (c == '\\') c = '/';
+    if (!root.empty() && p.size() > root.size() + 1 && ChatPrompt::detail::StartsWithFolded(p, root + "/")) return p.substr(root.size() + 1);
+    return p;
+}
+std::string FileName(const std::string& path) { const auto s = path.find_last_of("/\\"); return s == std::string::npos ? path : path.substr(s + 1); }
+SJ::Value AgentDiff(const Acp::Diff& d) {
+    const auto fd = CS::DiffContents(d.path, d.hasOldText ? &d.oldText : nullptr, &d.newText, true, 96 * 1024);
+    SJ::Value o = DiffJson(RelPath(d.path), fd); if (d.truncated) o.Set("truncated", SJ::Value::Bool(true)); return o;
+}
+
+// ---------------------------------------------------------------- agent events -> panel
+void CloseThought() {
+    if (turn.thoughtId.empty()) return;
+    const int ms = int(Ann::NowMs() - turn.thoughtStart);
+    SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("id", Str(turn.thoughtId)); m.Set("text", Str(std::string())); m.Set("done", SJ::Value::Bool(true)); m.Set("durationMs", SJ::Value::Int(ms));
+    Send("thought", std::move(m));
+    if (auto it = turn.itemOf.find(turn.thoughtId); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; item.Set("done", SJ::Value::Bool(true)); item.Set("durationMs", SJ::Value::Int(ms)); }
+    turn.thoughtId.clear();
+}
+void AppendText(const std::string& id, const std::string& more) {
+    if (auto it = turn.itemOf.find(id); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; const auto* t = item.Get("text"); item.Set("text", Str((t && t->IsString() ? t->string : std::string()) + more)); }
+}
+SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {
+    SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(t.id));
+    if (!update || t.hasTitle) m.Set("title", Str(ClipUtf8(t.title.empty() ? t.kind : t.title, 400)));
+    if (!update) m.Set("kind", Str(t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind));
+    if (!update || t.hasStatus) m.Set("status", Str(t.status.empty() ? std::string("pending") : t.status));
+    if (t.hasLocations || (!update && !t.locations.empty())) { SJ::Value ls = SJ::Value::Arr(); for (const auto& l : t.locations) { if (ls.items.size() >= 20) break; SJ::Value o = SJ::Value::Obj(); o.Set("path", Str(RelPath(l.path))); if (l.line >= 0) o.Set("line", SJ::Value::Int(l.line)); ls.Push(std::move(o)); } m.Set("locations", std::move(ls)); }
+    if (!t.diffs.empty()) m.Set("diff", AgentDiff(t.diffs.front()));
+    return m;
+}
+std::wstring PermissionTitle(const Acp::ToolCall& t) {
+    const std::wstring who = AgentShort(agentId); std::string file;
+    if (!t.diffs.empty()) file = FileName(t.diffs.front().path); else if (!t.locations.empty()) file = FileName(t.locations.front().path);
+    if (t.kind == "edit" && !file.empty()) return TRF(chat_perm_edit, who, W(file));
+    if (t.kind == "delete" && !file.empty()) return TRF(chat_perm_delete, who, W(file));
+    if (t.kind == "read" && !file.empty()) return TRF(chat_perm_read, who, W(file));
+    if (t.kind == "execute") return TRF(chat_perm_run, who);
+    if (t.kind == "fetch") return TRF(chat_perm_fetch, who);
+    if (t.kind == "switch_mode") return TRF(chat_perm_mode, who);
+    return t.title.empty() ? TRF(chat_perm_other, who) : W(ClipUtf8(t.title, 200));
+}
+std::string CommandOf(const Acp::ToolCall& t) {
+    SJ::Value v; if (t.rawInput.empty() || !SJ::Parse(t.rawInput, v) || !v.IsObject()) return "";
+    for (const char* k : {"command", "cmd"}) if (const auto* c = v.Get(k); c && c->IsString()) return ClipUtf8(c->string, 2000);
+    return "";
+}
+std::string CurrentModeKind() { const auto mv = ModesOf(agentInfo[agentId]); for (const auto& m : mv.list) if (m.id == mv.current) return ModeKind(m.id, m.name); return "other"; }
+void SendPlan(const std::vector<Acp::PlanEntry>& entries, bool proposed) {
+    SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); if (turn.planId.empty()) turn.planId = "plan-" + turn.id; m.Set("id", Str(turn.planId));
+    SJ::Value arr = SJ::Value::Arr();
+    for (const auto& e : entries) { if (arr.items.size() >= 60) break; SJ::Value o = SJ::Value::Obj(); o.Set("content", Str(ClipUtf8(e.content, 600))); o.Set("status", Str(e.status == "in_progress" || e.status == "completed" ? e.status : std::string("pending"))); arr.Push(std::move(o)); }
+    m.Set("entries", std::move(arr)); if (proposed) m.Set("proposed", SJ::Value::Bool(true));
+    if (auto it = turn.itemOf.find(turn.planId); it != turn.itemOf.end()) convo.data.items[it->second] = Item("plan", m); else turn.itemOf[turn.planId] = Keep("plan", m);
+    Send("plan", std::move(m));
+}
+// A plan written as text (the tool call that asks to leave Plan mode carries it): one entry per list line.
+std::vector<Acp::PlanEntry> PlanFromText(const std::string& text) {
+    std::vector<Acp::PlanEntry> out; std::size_t at = 0;
+    while (at < text.size() && out.size() < 40) {
+        std::size_t end = text.find('\n', at); if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(at, end - at); at = end + 1;
+        std::size_t i = 0; while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+        std::size_t j = i; while (j < line.size() && line[j] >= '0' && line[j] <= '9') ++j;
+        const bool numbered = j > i && j < line.size() && (line[j] == '.' || line[j] == ')'); const bool bullet = i < line.size() && (line[i] == '-' || line[i] == '*') && i + 1 < line.size() && line[i + 1] == ' ';
+        if (!numbered && !bullet) continue;
+        line = line.substr(numbered ? j + 1 : i + 2); while (!line.empty() && line[0] == ' ') line.erase(0, 1);
+        if (!line.empty()) { Acp::PlanEntry e; e.content = line; e.status = "pending"; out.push_back(std::move(e)); }
+    }
+    return out;
+}
+void OnPermission(const Acp::PermissionRequest& p) {
+    if (!turn.active) { if (session) session->RespondPermission(p.requestId, ""); return; }
+    CloseThought(); turn.lastMessageId.clear();
+    // Plan mode: the agent asks to leave it with its plan -> the card « Plan proposé » (Lancer le plan / Modifier).
+    if (!p.question && p.toolCall.kind == "switch_mode" && CurrentModeKind() == "plan") {
+        auto entries = turn.lastPlan.empty() ? PlanFromText(p.toolCall.text) : turn.lastPlan;
+        if (!entries.empty()) { turn.planPermission = p.requestId; turn.planOptions = p.options; SendPlan(entries, true); return; }
+    }
+    SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(p.requestId)); if (!p.toolCall.id.empty()) m.Set("toolCallId", Str(p.toolCall.id));
+    m.Set("title", p.question ? Str(ClipUtf8(p.toolCall.title, 300)) : Str(PermissionTitle(p.toolCall)));
+    m.Set("kind", Str(p.toolCall.kind.empty() || p.toolCall.kind == "switch_mode" ? std::string("other") : p.toolCall.kind));
+    if (!p.toolCall.diffs.empty()) m.Set("diff", AgentDiff(p.toolCall.diffs.front()));
+    if (const std::string cmd = CommandOf(p.toolCall); !cmd.empty()) m.Set("command", Str(cmd));
+    SJ::Value opts = SJ::Value::Arr(); bool first = true;
+    for (const auto& o : p.options) {
+        if (!ChatStore::ValidId(o.id)) continue; SJ::Value v = SJ::Value::Obj(); v.Set("optionId", Str(o.id)); v.Set("name", Str(ClipUtf8(o.name.empty() ? o.id : o.name, 200)));
+        std::string kind = o.kind;   // a question's choices: the first (« skip ») refuses, the others answer
+        if (kind != "allow_once" && kind != "allow_always" && kind != "reject_once" && kind != "reject_always") kind = p.question && first ? "reject_once" : "allow_once";
+        v.Set("kind", Str(kind)); opts.Push(std::move(v)); first = false;
+    }
+    m.Set("options", std::move(opts));
+    Send("permission.request", std::move(m));
+    ChatLog(L"permission asked: " + W(p.toolCall.kind) + L" " + W(ClipUtf8(p.toolCall.title, 120)));
+}
+void OnEvent(const Acp::Event& e) {
+    using T = Acp::Event::Type; auto& info = agentInfo[agentId];
+    switch (e.type) {
+    case T::Started: OnStarted(e.started); break;
+    case T::MessageChunk: {
+        if (!turn.active || e.text.empty()) break;
+        CloseThought();
+        if (turn.lastMessageId.empty()) { turn.lastMessageId = "m" + turn.id + "-" + std::to_string(++turn.messageSeq); SJ::Value item = SJ::Value::Obj(); item.Set("turnId", Str(turn.id)); item.Set("messageId", Str(turn.lastMessageId)); item.Set("text", Str(std::string())); turn.itemOf[turn.lastMessageId] = Keep("message.agentChunk", item); turn.summaryText.clear(); }
+        AppendText(turn.lastMessageId, e.text); turn.summaryText += e.text;
+        if (stats.firstTextAt == 0 && stats.sendAt > 0) { stats.firstTextAt = Ann::NowMs(); ChatLog(L"first agent text " + Ann::Ms(stats.firstTextAt - stats.sendAt) + L" ms after the send"); }
+        SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("messageId", Str(turn.lastMessageId)); m.Set("text", Str(e.text)); Send("message.agentChunk", std::move(m));
+        break; }
+    case T::ThoughtChunk: {
+        if (!turn.active || e.text.empty()) break;
+        turn.lastMessageId.clear();
+        if (turn.thoughtId.empty()) { turn.thoughtId = "th" + turn.id + "-" + std::to_string(++turn.thoughtSeq); turn.thoughtStart = Ann::NowMs(); SJ::Value item = SJ::Value::Obj(); item.Set("turnId", Str(turn.id)); item.Set("id", Str(turn.thoughtId)); item.Set("text", Str(std::string())); item.Set("done", SJ::Value::Bool(true)); turn.itemOf[turn.thoughtId] = Keep("thought", item); }
+        AppendText(turn.thoughtId, e.text);
+        SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("id", Str(turn.thoughtId)); m.Set("text", Str(e.text)); Send("thought", std::move(m));
+        break; }
+    case T::ToolCall: {
+        if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
+        CloseThought(); turn.lastMessageId.clear();
+        SJ::Value m = ToolJson(e.tool, false); m.Set("turnId", Str(turn.id));
+        if (auto it = turn.itemOf.find("tool:" + e.tool.id); it != turn.itemOf.end()) convo.data.items[it->second] = Item("toolCall", m); else turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", m);
+        Send("toolCall", std::move(m));
+        break; }
+    case T::ToolCallUpdate: {
+        if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
+        SJ::Value m = ToolJson(e.tool, true);
+        if (auto it = turn.itemOf.find("tool:" + e.tool.id); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; for (const auto& f : m.members) if (f.first != "diff") item.Set(f.first, f.second); }
+        else { SJ::Value full = ToolJson(e.tool, false); full.Set("turnId", Str(turn.id)); turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", full); Send("toolCall", std::move(full)); break; }
+        Send("toolCallUpdate", std::move(m));
+        break; }
+    case T::Plan: if (turn.active) { turn.lastPlan = e.plan; SendPlan(e.plan, false); } break;
+    case T::PermissionRequest: OnPermission(e.permission); break;
+    case T::PermissionDismissed: {
+        if (e.permission.requestId == turn.planPermission) { turn.planPermission.clear(); break; }
+        SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(e.permission.requestId)); Send("permission.cancel", std::move(m)); break; }
+    case T::ModesChanged: info.modes = e.modes; SendState(); break;
+    case T::ConfigOptionsChanged: info.options = e.configOptions; SendState(); break;
+    case T::CommandsChanged: info.commands = e.commands; SendCommands(); break;
+    case T::SessionTitle: if (!e.text.empty()) { convo.data.head.title = ChatPrompt::OneLine(e.text, 60); SendState(); } break;
+    case T::Usage: break;
+    case T::AuthStatus: ChatLog(L"agent login: " + W(ClipUtf8(e.text, 40))); break;   // a hint only: a start that needs a sign-in says AuthRequired
+    case T::Notice: ChatLog(L"agent notice (" + W(e.severity) + L"): " + W(ClipUtf8(e.text, 300))); break;
+    case T::TurnEnded: if (turn.active) { turn.failure = e.error; FinishTurn(e.error.Ok() ? (e.stopReason.empty() ? std::string("end_turn") : e.stopReason) : std::string("error")); } break;
+    case T::RequestFailed: ChatLog(L"agent refused " + W(e.request) + L": " + W(Acp::ErrorCodeName(e.error.code)) + L" " + W(ClipUtf8(e.error.detail, 200))); SendState(); break;
+    case T::Warning: ChatLog(L"agent line ignored: " + W(ClipUtf8(e.text, 200))); break;
+    case T::Exited:
+        ChatLog(L"agent exited (" + std::to_wstring(e.exitCode) + L"): " + W(ClipUtf8(e.error.detail, 300)));
+        sessionReady = sessionStarting = false; if (session) { disposed.push_back(std::move(session)); session.reset(); }
+        if (turn.active) { turn.failure = e.error; FinishTurn("error"); } else { info.status = "ready"; info.detail = TR(chat_agent_installed); SendState(); }
+        break;
+    }
+}
+void PumpEvents() {
+    if (!session) return;
+    std::vector<Acp::Event> events; session->Poll(events);
+    for (const auto& e : events) { if (!session && e.type != Acp::Event::Type::Started) break; OnEvent(e); }
+}
+
+// ---------------------------------------------------------------- annotations (decision 6: one story)
+// Each element sent becomes an annotation of the store, claimed at once by the chat's agent; resolved with the agent's
+// last words at the end of the turn, released with the reason when the turn stops or fails.
+void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
+    const std::string actor = Agent().actor, origin = site.origin; const std::wstring pid = profileId;
+    std::wstring pname = DefaultProfileLook().name; if (const auto* p = CurrentProfile()) pname = p->name;
+    for (auto& e : elements) {
+        BA::Annotation a = e.pending; a.note = ClipUtf8(note, 3900); a.id = BA::NewAnnotationId(); a.site = origin;
+        a.source.profileId = U8(pid); a.source.profileName = U8(pname); BA::Sanitize(a);
+        auto png = e.png.empty() ? nullptr : std::make_shared<std::string>(e.png);
+        if (png) { a.screenshot.scale = e.shotScale; a.screenshot.crop = e.shotCrop; }
+        e.annId = a.id;
+        struct Out { BA::Outcome write, claim; BA::ClaimResult lease; std::string siteKey; };
+        auto out = std::make_shared<Out>(); const std::string elementId = e.id, turnId = turn.id;
+        Ann::Run([a, png, out, actor]() mutable {
+                std::lock_guard<std::mutex> g(Ann::writeLock);
+                out->write = Ann::Store().WriteAnnotation(a, png.get(), false); out->siteKey = a.siteKey;
+                if (out->write.ok()) out->claim = Ann::Store().Claim(a.siteKey, a.id, actor, "", out->lease);
+            },
+            [out, elementId, turnId, id = a.id] {
+                ChatLog(L"annotation " + W(id) + L": write " + W(BA::CodeName(out->write.code)) + L", claim " + W(BA::CodeName(out->claim.code)));
+                if (!out->write.ok()) return;
+                Ann::sessionIds.insert(id); Ann::seenWorking.insert(id); Ann::seenDone.insert(id);   // the chat shows its own progress: no launcher card for it
+                auto settle = [&](Element& el) { el.annSite = out->siteKey; el.token = out->claim.ok() ? out->lease.token : std::string(); };
+                if (turn.active && turn.id == turnId) { for (auto& el : turn.elements) if (el.id == elementId) settle(el); }
+                else for (auto& late : orphanAnnotations) if (late.annId == id) settle(late);
+                Ann::RefreshStatus();
+            });
+    }
+}
+void CloseAnnotations(const std::vector<Element>& elements, bool resolved, const std::string& summary) {
+    const std::string actor = Agent().actor;
+    for (const auto& e : elements) {
+        if (e.annId.empty()) continue;
+        if (e.annSite.empty() || e.token.empty()) { orphanAnnotations.push_back(e); continue; }   // still being written: closed without a lease is impossible; left open
+        const std::string site2 = e.annSite, id = e.annId, token = e.token; auto r = std::make_shared<BA::Outcome>();
+        Ann::Run([=] { std::lock_guard<std::mutex> g(Ann::writeLock); *r = resolved ? Ann::Store().Resolve(site2, id, token, "resolved", summary, actor) : Ann::Store().Release(site2, id, token, actor, summary); },
+                 [=] { ChatLog(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); Ann::RefreshStatus(); if (Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false); });
+    }
+}
+std::string LastParagraph(const std::string& text) {
+    std::string t = text; while (!t.empty() && (t.back() == '\n' || t.back() == ' ' || t.back() == '\r')) t.pop_back();
+    const auto cut = t.rfind("\n\n"); if (cut != std::string::npos && t.size() - cut > 12) t = t.substr(cut + 2);
+    return ClipUtf8(ChatPrompt::OneLine(t, 600), 1500);
+}
+
+// ---------------------------------------------------------------- one turn
+std::shared_ptr<CS::Store> Snapshots() { if (!snapshots) snapshots = std::make_shared<CS::Store>(Ann::DataRoot() + L"\\" + CS::StoreFolderName); return snapshots; }
+void SendPrompt() {
+    if (!turn.active || !session || !sessionReady) return;
+    std::vector<Acp::ContentBlock> blocks;
+    if (!convo.preambleSent) {
+        ChatPrompt::PreambleInput in; in.site = site.origin; in.folder = U8(folder); in.browser = "the browser";
+        blocks.push_back(Acp::ContentBlock::Text(ChatPrompt::Preamble(in))); convo.preambleSent = true; convo.data.head.promptVersion = ChatPrompt::Version;
+    }
+    const bool images = agentInfo[agentId].caps.image;
+    for (const auto& e : turn.elements) {
+        ChatPrompt::ElementInput in; const auto& t = e.pending.target;
+        in.url = e.pending.source.url; in.viewportW = t.viewport.width; in.viewportH = t.viewport.height; in.tag = t.tag; in.text = t.selectionText ? *t.selectionText : t.text; in.selector = t.selector;
+        in.role = t.role; in.name = t.accessibleName; in.x = t.rect.x; in.y = t.rect.y; in.w = t.rect.width; in.h = t.rect.height;
+        for (const auto& s : t.styles) in.styles.emplace_back(s.name, s.value);
+        in.spacing = BA::SpacingText(t.spacing); in.components = e.components; in.source = e.source; in.crossOriginFrame = e.sel.frameKind == "cross-origin"; in.hasImage = images && !e.png.empty();
+        blocks.push_back(Acp::ContentBlock::Text(ChatPrompt::ElementBlock(in, RandomHex(8))));
+        if (in.hasImage) blocks.push_back(Acp::ContentBlock::Image("image/png", Base64(e.png)));
+    }
+    blocks.push_back(Acp::ContentBlock::Text(turn.text));
+    if (images) for (const auto& a : turn.attachments) blocks.push_back(Acp::ContentBlock::Image(a.mime, a.base64));
+    stats.sendAt = Ann::NowMs(); stats.firstTextAt = 0;
+    if (!session->Prompt(std::move(blocks))) { Acp::Error e; e.code = Acp::ErrorCode::NotReady; turn.failure = e; FinishTurn("error"); return; }
+    turn.promptSent = true;
+    ChatLog(L"prompt sent: " + std::to_wstring(turn.elements.size()) + L" element(s), " + std::to_wstring(turn.attachments.size()) + L" image(s)");
+}
+void BeginSnapshotThenPrompt() {
+    if (!turn.active) return;
+    struct Out { CS::Result r; std::string id; CS::ScanStats stats; };
+    auto out = std::make_shared<Out>(); auto store = Snapshots(); const std::wstring dir = folder; const std::string turnId = turn.id;
+    Ann::Run([out, store, dir] { out->r = store->BeginTurn(dir, &out->id, &out->stats); },
+             [out, turnId] {
+                 if (!turn.active || turn.id != turnId) { if (out->r.ok()) { auto s = Snapshots(); Ann::Run([s] { s->EndTurn(); }, nullptr); } return; }
+                 ChatLog(L"snapshot before the turn: " + W(CS::StatusName(out->r.status)) + L", " + std::to_wstring(out->stats.files) + L" files, " + Ann::Ms(out->stats.milliseconds) + L" ms" + (out->r.detail.empty() ? L"" : L" — " + W(out->r.detail)));
+                 turn.snapshot = out->r.ok(); turn.snapshotTurn = out->id;
+                 if (out->r.status == CS::Status::TurnOpen) { Problem p; p.title = TR(chat_err_generic_title); p.message = TR(chat_strip_other_window); turn.problem = p; FinishTurn("error"); return; }
+                 if (!turn.snapshot) Strip("undo", "neutral", TR(chat_strip_no_undo)); else ClearStrip("undo");
+                 if (turn.cancelled) { FinishTurn("cancelled"); return; }
+                 SendPrompt();
+             });
+}
+void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds) {
+    if (turn.active) return;
+    if (!Usable()) { ChatLog(L"send ignored: no project folder or not a local site"); return; }
+    turn = Turn{}; turn.active = true; turn.id = "t" + std::to_string(++convo.turnSeq); turn.text = text; turn.startedMs = Ann::NowMs();
+    for (const auto& id : elementIds) if (auto it = composerElements.find(id); it != composerElements.end()) { turn.elements.push_back(std::move(it->second)); composerElements.erase(it); }
+    for (const auto& id : attachmentIds) if (auto it = composerAttachments.find(id); it != composerAttachments.end()) { turn.attachments.push_back(std::move(it->second)); composerAttachments.erase(it); }
+    if (auto t = ChatTab()) turn.navStamp = t->navStamp;
+    auto& head = convo.data.head; const auto now = BA::SystemNow();
+    if (head.title.empty()) {   // the first request names the conversation: its words, without the chips' labels (they sit in the text where they were typed)
+        std::string words = text; for (const auto& e : turn.elements) for (auto at = words.find(e.label); !e.label.empty() && at != std::string::npos; at = words.find(e.label)) words.erase(at, e.label.size());
+        head.title = ChatPrompt::OneLine(words, 44); if (head.title.empty() && !turn.elements.empty()) head.title = ChatPrompt::OneLine(U8(AH::ElementLabel(turn.elements.front().pending.target)), 44);
+    }
+    if (head.source.empty()) for (const auto& e : turn.elements) if (e.source.known) { head.source = e.source.Display(); break; }
+    {   SJ::Value m = SJ::Value::Obj(); m.Set("id", Str("u" + turn.id)); m.Set("text", Str(text));
+        SJ::Value els = SJ::Value::Arr(); for (const auto& e : turn.elements) els.Push(ElementRef(e)); m.Set("elements", std::move(els));
+        SJ::Value ats = SJ::Value::Arr(); for (const auto& a : turn.attachments) ats.Push(AttachmentRef(a)); m.Set("attachments", std::move(ats));
+        m.Set("at", Str(Iso(now))); Keep("message.user", m); Send("message.user", std::move(m)); }
+    const auto& info = agentInfo[agentId];
+    {   SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("model", Str(LabelOf(Acp::FindModelOption(info.options)))); const std::string effort = LabelOf(Acp::FindEffortOption(info.options)); if (!effort.empty()) m.Set("effort", Str(effort));
+        m.Set("agentId", Str(agentId)); m.Set("at", Str(Iso(now))); Keep("turn.start", m); Send("turn.start", std::move(m)); }
+    if (post) KillTimer(post, AgentIdleTimer);
+    SendState(); SyncChromeBits();
+    {   SJ::Value m = SJ::Value::Obj(); m.Set("active", SJ::Value::Bool(false)); Send("pick.state", std::move(m)); }
+    // the element shows who works on it (Paper 6.10): only an element of the top document with a unique selector
+    doneMarkSelector.clear(); turn.markSelector.clear();
+    for (const auto& e : turn.elements) if (e.sel.frameKind == "main" && e.pending.target.shadowPath.empty() && e.pending.target.selectorUnique && !e.pending.target.selector.empty()) { turn.markSelector = e.pending.target.selector; break; }
+    ApplyMark(turn.markSelector.empty() ? "clear" : "working", turn.markSelector);
+    if (!turn.elements.empty()) WriteAnnotations(turn.elements, text);
+    SaveConvo();
+    EnsureSession([] { BeginSnapshotThenPrompt(); });
+    ChatLog(L"turn " + W(turn.id) + L" started");
+}
+void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs = nullptr) {
+    const bool failed = stopReason == "error"; const double ms = Ann::NowMs() - turn.startedMs;
+    SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("stopReason", Str(stopReason == "max_turn_requests" ? std::string("max_tokens") : stopReason)); m.Set("durationMs", SJ::Value::Int(std::int64_t(ms)));
+    bool changed = false;
+    if (summary) {
+        SJ::Value changes = SJ::Value::Arr();
+        for (const auto& c : summary->changes) { if (changes.items.size() >= 200) break; SJ::Value o = SJ::Value::Obj(); o.Set("path", Str(c.path)); o.Set("status", Str(std::string(CS::ChangeKindName(c.kind)))); o.Set("added", SJ::Value::Int(c.additions)); o.Set("removed", SJ::Value::Int(c.deletions));
+            if (diffs) for (const auto& d : *diffs) if (d.first == c.path) o.Set("diff", DiffJson(c.path, d.second));   // « Voir les changements » (contract B: FileChange.diff)
+            changes.Push(std::move(o)); }
+        changed = !summary->changes.empty();
+        m.Set("changes", std::move(changes));
+        if (!summary->checkpointId.empty()) { m.Set("checkpointId", Str(summary->checkpointId)); checkpointOfTurn[turn.id] = summary->checkpointId; }
+        m.Set("undoable", SJ::Value::Bool(changed && !summary->checkpointId.empty()));
+        m.Set("snapshotTurn", Str(summary->turnId)); snapshotOfTurn[turn.id] = summary->turnId;   // host field: kept with the history for « Tout annuler » after a restart
+    } else m.Set("undoable", SJ::Value::Bool(false));
+    if (!turn.summaryText.empty()) m.Set("copyText", Str(ClipUtf8(turn.summaryText, 60000)));
+    Keep("turn.end", m); Send("turn.end", std::move(m));
+    if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else { const auto p = ProblemFor(turn.failure, agentId); SendError(p, turn.failure.detail);
+            if (turn.failure.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect)); } }
+    const bool done = stopReason == "end_turn";
+    CloseAnnotations(turn.elements, done, done ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
+                                               : U8(stopReason == "cancelled" ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
+    ChatLog(L"turn " + W(turn.id) + L" ended: " + W(stopReason) + L" in " + Ann::Ms(ms) + L" ms" + (summary ? L", " + std::to_wstring(summary->changes.size()) + L" file(s) changed (+" + std::to_wstring(summary->additions) + L" -" + std::to_wstring(summary->deletions) + L")" : L", no snapshot"));
+    const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp;
+    turn = Turn{}; doneMarkSelector = changed && done ? markSelector : std::string();
+    SendState(); SyncChromeBits(); SaveConvo();
+    {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open())); Send("pick.state", std::move(p)); }
+    AfterTurnPage(changed);
+    ArmAgentIdle();
+    if (auto next = std::move(afterTurn)) { afterTurn = nullptr; next(); }
+    ProcessQueue();
+}
+void FinishTurn(const std::string& stopReason) {
+    if (!turn.active || turn.ending) return;
+    turn.ending = true; CloseThought();
+    if (!turn.planPermission.empty()) turn.planPermission.clear();
+    if (!turn.snapshot) { CompleteTurn(stopReason, nullptr); return; }
+    struct Out { CS::Result r; CS::TurnSummary summary; CS::ScanStats stats; std::vector<std::pair<std::string, CS::FileDiff>> diffs; };
+    auto out = std::make_shared<Out>(); auto store = Snapshots();
+    Ann::Run([out, store] {
+            for (int attempt = 0; attempt < 5; ++attempt) { out->r = store->EndTurn(&out->summary, &out->stats); if (out->r.status != CS::Status::Busy) break; Sleep(200); }
+            if (out->r.ok() && !out->summary.checkpointId.empty())   // the first files' diffs travel with the turn's end (the others on demand)
+                for (const auto& c : out->summary.changes) { if (out->diffs.size() >= 6) break; CS::FileDiff d; if (!c.binary && store->Diff(c.path, out->summary.checkpointId, &d, 64 * 1024).ok()) out->diffs.emplace_back(c.path, std::move(d)); }
+        },
+             [out, stopReason] {
+                 ChatLog(L"snapshot after the turn: " + W(CS::StatusName(out->r.status)) + L", " + Ann::Ms(out->stats.milliseconds) + L" ms" + (out->r.detail.empty() ? L"" : L" — " + W(out->r.detail)));
+                 if (!turn.active) return;
+                 CompleteTurn(stopReason, out->r.ok() ? &out->summary : nullptr, &out->diffs);
+             });
+}
+void StopTurn() {
+    if (!turn.active) return;
+    turn.cancelled = true;
+    if (turn.promptSent && session) session->Cancel();          // -> TurnEnded{cancelled}
+    else if (!sessionReady && !sessionStarting && !preparing) FinishTurn("cancelled");
+    else if (sessionStarting || preparing) { afterReady = nullptr; if (prepareCancel) *prepareCancel = true; FinishTurn("cancelled"); }
+    // else: the snapshot is being taken; BeginSnapshotThenPrompt ends the turn
+}
+void ProcessQueue() {
+    if (turn.active || queue.empty()) { SendQueue(); return; }
+    Queued q = std::move(queue.front()); queue.pop_front(); SendQueue();
+    StartTurn(q.text, q.elements, q.attachments);
+}
+
+// ---------------------------------------------------------------- undo (contract C)
+void Undo(const std::string& panelTurn, const std::string& checkpoint) {
+    auto fail = [&](I18n::Id why) { SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(panelTurn)); m.Set("ok", SJ::Value::Bool(false)); m.Set("message", Str(T8(why))); Send("turn.undone", std::move(m)); };
+    if (turn.active) { fail(I18n::Id::chat_undo_busy); return; }
+    if (folder.empty()) { fail(I18n::Id::chat_undo_gone); return; }
+    std::string snapshotTurn; if (checkpoint.empty()) { auto it = snapshotOfTurn.find(panelTurn); if (it == snapshotOfTurn.end()) { fail(I18n::Id::chat_undo_gone); return; } snapshotTurn = it->second; }
+    auto out = std::make_shared<CS::Result>(); auto store = Snapshots(); const std::wstring dir = folder;
+    Ann::Run([out, store, dir, snapshotTurn, checkpoint] {
+            *out = store->Open(dir); if (out->status != CS::Status::Ok && out->status != CS::Status::Conflict) return;
+            *out = checkpoint.empty() ? store->UndoTurn(snapshotTurn) : store->Restore(checkpoint);
+        },
+        [out, panelTurn, checkpoint] {
+            ChatLog(std::wstring(checkpoint.empty() ? L"undo turn: " : L"restore checkpoint: ") + W(CS::StatusName(out->status)) + L", " + std::to_wstring(out->restored.size()) + L" file(s) put back" + (out->detail.empty() ? L"" : L" — " + W(out->detail)));
+            // every panel turn whose snapshot turn was undone
+            std::vector<std::string> turns; for (const auto& id : out->undoneTurns) for (const auto& p : snapshotOfTurn) if (p.second == id) turns.push_back(p.first);
+            if (turns.empty() && !panelTurn.empty()) turns.push_back(panelTurn);
+            const bool ok = out->ok();
+            for (const auto& t : turns) {
+                SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(t)); m.Set("ok", SJ::Value::Bool(ok));
+                if (!ok) {
+                    if (out->status == CS::Status::Conflict) { SJ::Value cs = SJ::Value::Arr(); for (const auto& c : out->conflicts) { if (cs.items.size() >= 30) break; cs.Push(Str(c.path)); } m.Set("conflicts", std::move(cs)); m.Set("message", Str(T8(I18n::Id::chat_undo_conflict))); }
+                    else m.Set("message", Str(T8(out->status == CS::Status::NotFound || out->status == CS::Status::AlreadyUndone ? I18n::Id::chat_undo_gone : out->status == CS::Status::TurnOpen ? I18n::Id::chat_undo_busy : I18n::Id::chat_err_undo)));
+                } else for (auto& item : convo.data.items) { const auto* ty = item.Get("type"); const auto* id = item.Get("turnId"); if (ty && ty->string == "turn.end" && id && id->string == t) { item.Set("undoable", SJ::Value::Bool(false)); item.Set("undone", SJ::Value::Bool(true)); } }
+                Send("turn.undone", std::move(m));
+            }
+            if (ok) { SaveConvo(); doneMarkSelector.clear(); ApplyMark("clear", ""); if (auto t = ChatTab()) turnNavStamp = t->navStamp; AfterTurnPage(!out->restored.empty()); }
+            if (auto next = std::move(afterUndo)) { afterUndo = nullptr; next(ok); }
+        });
+}
+void ViewChanges(const std::string& panelTurn, const std::string& path) {
+    auto cp = checkpointOfTurn.find(panelTurn); if (cp == checkpointOfTurn.end() || folder.empty()) return;
+    std::vector<std::string> files;
+    if (!path.empty()) files.push_back(path);
+    else for (const auto& item : convo.data.items) { const auto* ty = item.Get("type"); const auto* id = item.Get("turnId"); const auto* ch = item.Get("changes");
+        if (ty && ty->string == "turn.end" && id && id->string == panelTurn && ch && ch->IsArray()) for (const auto& c : ch->items) if (const auto* p = c.Get("path"); p && p->IsString() && files.size() < 20) files.push_back(p->string); }
+    if (files.empty()) return;
+    struct Out { std::vector<std::pair<std::string, CS::FileDiff>> diffs; }; auto out = std::make_shared<Out>(); auto store = Snapshots(); const std::wstring dir = folder; const std::string checkpoint = cp->second;
+    Ann::Run([out, store, dir, files, checkpoint] {
+            if (!store->HasProject()) store->Open(dir);
+            for (const auto& f : files) { CS::FileDiff d; if (store->Diff(f, checkpoint, &d, 96 * 1024).ok()) out->diffs.emplace_back(f, std::move(d)); }
+        },
+        [out, panelTurn] {
+            SJ::Value arr = SJ::Value::Arr(); for (const auto& d : out->diffs) arr.Push(DiffJson(d.first, d.second));
+            SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(panelTurn)); m.Set("diffs", std::move(arr)); Send("changes.diff", std::move(m));
+        });
+}
+
+} // namespace Chat

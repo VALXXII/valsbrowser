@@ -102,6 +102,24 @@ std::map<std::string, Cached> thumbs; std::map<std::string, BA::Entry> historyEn
 bool historyBusy = false, historyDirty = false; std::string historyFocus;   // detail to open once loaded (card « Voir l'annotation »)
 
 bool Reduced() { return motion.ReducedMotion(); }
+} // namespace Ann
+// Chat intégré (src/chat-host.h, included at the end of this file): what the mode asks it.
+namespace Chat {
+bool Open();                                             // the panel is open (or opening)
+bool Shown();                                            // … or still sliding out
+bool TakesSelection();                                   // the next selection goes to the chat (a chip), not to the note panel
+void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);
+bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r);   // true: the image was for the chat
+bool AskAvailable(const std::shared_ptr<Tab>& t);        // « Demander à l'agent » in the note panel (local sites)
+void AskFromNote(const std::wstring& draft);
+void Toggle(bool keyboard);                              // band button / Ctrl+Maj+D
+void ModeEntered();
+void ModeExited();
+bool KeepsMode(const std::shared_ptr<Tab>& t);           // a navigation of the chat's page keeps the mode (re-armed after)
+void PageNavigating(const std::shared_ptr<Tab>& t);
+void Layout();
+}
+namespace Ann {
 // ---------------------------------------------------------------- settings (src/annotation-entry.h): keys owned by the settings
 // worker, read when they exist (compile-time detection), defaults otherwise.
 namespace Prefs {
@@ -250,7 +268,7 @@ void RefreshCount();
 // V3 (retours §6): only in the mode, on the mode's tab, never in full screen.
 bool LauncherWanted() {
     auto t = Active();
-    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window);
+    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window) && !Chat::Open();
 }
 void ShowLauncher(int delayMs = 0) { launcher.Show(claimed > 0 ? AUI::LauncherState::Working : AUI::LauncherState::Rest, claimed, Reduced(), delayMs); }
 // entering: the mode just started (the launcher follows the band by 120 ms). Leaving: animated (into its corner).
@@ -268,6 +286,7 @@ void Place() {
     if (s.active) banner.Move(BandRect());
     if (veil.Running()) veil.Move(PageClient(Active()));
     LauncherSync();
+    Chat::Layout();
 }
 
 // ---------------------------------------------------------------- page script
@@ -410,7 +429,7 @@ AUI::AppStatus StatusFor(int app, const AC::Status& st) {
     return {AUI::ConnectState::Idle, L""};
 }
 void ApplyAgents() {
-    if (s.active && banner.Visible() && !connect.Visible()) banner.SetReminder(!agents.any());
+    if (s.active && banner.Visible() && !connect.Visible()) banner.SetReminder(!agents.any() && !Chat::Open());
     if (connect.Visible()) {
         if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) connect.SetStatus(AUI::AgentKind::Claude, StatusFor(0, agents.claude));
         if (!connectBusy[1]) connect.SetStatus(AUI::AgentKind::Codex, StatusFor(1, agents.codex));
@@ -733,6 +752,7 @@ void OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r, double
                   // i18n-exempt-next: log continuation
                   L") ready " + Ms(ms) + L" ms after the selection message" + (lag >= 0 ? L" (+" + Ms(lag) + L" ms click->host)" : L"") + (timing.empty() ? L"" : L" [" + timing + L"]") + L" utc-ms=" + std::to_wstring(UtcMs()));
     else Log(L"ANNOTATE capture unavailable (" + AH::Wide(r.path) + L"): " + AH::Wide(r.why));
+    if (Chat::OnCaptured(serial, r)) return;   // an element aimed for the chat: its image joins the chip
     if (auto it = std::find_if(lates.begin(), lates.end(), [&](const Late& l) { return l.serial == serial; }); it != lates.end()) {
         if (!r.ok) { lates.erase(it); return; }
         it->shot = std::make_shared<AnnotationCapture::Result>(r);
@@ -879,7 +899,7 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     // pill are placed as if for the page's centre, so neither leaves the window.
     if (RECT in{}; !IntersectRect(&in, &target, &page)) { const LONG cx = (page.left + page.right) / 2, cy = (page.top + page.bottom) / 3; target = {cx - 1, cy - 1, cx + 1, cy + 1}; }
     else target = in;
-    AUI::NoteRequest req; req.draft = s.draft; req.capture = AUI::CaptureState::Pending;
+    AUI::NoteRequest req; req.draft = s.draft; req.capture = AUI::CaptureState::Pending; req.askAgent = Chat::AskAvailable(t);
     {   bool redacted = false; std::wstring shown = AH::Wide(BA::RedactUrl(a.source.url, &redacted));
         if (const auto at = shown.find(L"://"); at != std::wstring::npos) shown = shown.substr(at + 3);
         req.context.page = Clip(shown, 90);
@@ -912,6 +932,12 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         else { shot.pageSeq = std::int64_t(s.serial) + (std::int64_t(1) << 41); Cmd(t, L"hide", std::to_wstring(shot.pageSeq)); Log(L"ANNOTATE native frame unavailable: the page hides its frame for the shot"); }
         s.pageSeq = shot.pageSeq;
         if (EnsurePost()) SetTimer(post, HideTimer, 800, nullptr);
+    }
+    if (Chat::TakesSelection()) {   // chat intégré: the element becomes a chip of the composer; the picker goes on (the shot first)
+        const std::uint64_t serial = s.serial; const bool impossible = s.cap == Cap::Failed;
+        Chat::OnSelection(t, serial, impossible);
+        Resume();
+        return;
     }
     panel.on = true; panel.serial = s.serial; panel.req = req; panel.target = target; panel.page = page; panel.keyboard = sel.keyboard;
     if (shot.waiting && shot.serial == s.serial && EnsurePost()) SetTimer(post, PanelTimer, 60, nullptr);   // shown by OnHidden, or by the timer
@@ -977,10 +1003,12 @@ void ConnectClosed(AUI::ConnectEnd end) {
 void EnsureUi() {
     if (uiReady) return; uiReady = true;
     AUI::BannerHooks bh; bh.exit = [] { Exit(L"quit"); }; bh.connect = [] { OpenConnect(false); }; bh.announce = [](const std::wstring& t) { Announce(t); };
+    bh.chat = [] { Chat::Toggle(false); };
     banner.Init(instance, window, base, bh);
     AUI::NoteHooks nh;
     nh.submit = [](const AUI::NoteSubmission& sub) { OnSubmit(sub); };
     nh.cancel = [](const std::wstring& draft, bool) { s.draft = draft; Resume(); };
+    nh.ask = [](const std::wstring& draft) { Chat::AskFromNote(draft); };
     nh.announce = [](const std::wstring& t) { Announce(t); };
     note.Init(instance, window, base, nh);
     AUI::LauncherHooks lh;
@@ -1053,6 +1081,7 @@ void Activate(const Start& st) {
     if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, st)).c_str(), cb))) { cb->Release(); s.active = false; chrome.annotationBand = 0; SyncChrome(); Layout(); Log(L"ANNOTATE ExecuteScript refused"); return; }
     cb->Release();
     banner.Show(BandRect(), Reduced());
+    Chat::ModeEntered();   // the band's « Demander à l'agent » button
     if (!veil.Start(PageClient(t), Reduced())) Log(L"ANNOTATE entry veil unavailable");   // V3-B: entry only
     LauncherSync(true);
     if (!purged) { purged = true; const std::int64_t retention = Prefs::Retention(settings); Run([retention] { std::lock_guard<std::mutex> g(writeLock); Store().Purge(retention); }, nullptr); }   // retention: first use of the session
@@ -1061,6 +1090,7 @@ void Activate(const Start& st) {
     RefreshAgents([started, direct, nonce] {
         if (!s.active || s.nonce != nonce) return;
         if (agents.any()) { banner.SetReminder(false); return; }
+        if (Chat::Open()) { banner.SetReminder(false); return; }   // the chat was asked for: no « Connecter un agent » modal, no reminder (its agent is the chat's)
         if (!direct && !laterThisSession && Prefs::Prompt(settings) && Prefs::Declines(settings) < Prefs::MaxDeclines && !connect.Visible() && !note.Visible()) {
             const int elapsed = int(GetTickCount64() - started);
             OpenConnect(true); (void)elapsed;
@@ -1088,6 +1118,33 @@ void Exit(const wchar_t* why, bool pageChanged) {
     if (pageChanged && hadPopover) Announce(TR(annotation_page_changed));
     SyncWatch();
     Log(std::wstring(L"ANNOTATE mode off (") + why + L")");
+    Chat::ModeExited();
+}
+// Chat intégré: the page of the mode was reloaded (by the chat after a turn, or by the dev server) while the chat panel
+// is open. The mode stays: band, panel and launcher do not move; the selection state is dropped and the page script is
+// injected again in the new document. Called once that document is complete.
+void Rearm(const std::shared_ptr<Tab>& t, std::function<void(bool)> then = nullptr) {
+    if (!s.active || ModeTab() != t || !t || !t->view.p) { if (then) then(false); return; }
+    std::wstring why;
+    if (!Available(t, &why)) { Exit(L"navigation", true); if (then) then(false); return; }
+    if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); KillTimer(post, PanelTimer); }
+    panel = PendingPanel{}; frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;
+    if (note.Visible()) { note.Close(false); Announce(TR(annotation_page_changed)); }
+    lates.erase(std::remove_if(lates.begin(), lates.end(), [](const Late& l) { return l.serial == s.serial && !l.shot; }), lates.end());
+    ++serials; s.serial = serials; s.frozen = s.saving = s.captureWanted = s.injected = false; s.cap = Cap::None; s.png.clear(); s.pageSeq = -1;
+    s.navStamp = t->navStamp; s.nonce = BA::NewClaimToken(); s.source.clear();
+    { LPWSTR src = nullptr; if (SUCCEEDED(t->view->get_Source(&src)) && src) s.source = src; CoTaskMemFree(src); }
+    s.origin = AH::OriginOf(t->uri); t->controller->get_ZoomFactor(&s.zoom); s.pageAccent = SettledAccentRgb();
+    const std::string nonce = s.nonce;
+    auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([nonce, then](HRESULT hr, LPCWSTR result) -> HRESULT {
+        if (!s.active || s.nonce != nonce) { if (then) then(false); return S_OK; }
+        const bool ok = SUCCEEDED(hr) && result && wcscmp(result, L"\"ok\"") == 0;
+        if (!ok) { Log(L"ANNOTATE script re-injection failed"); Exit(L"injection"); Announce(TR(annotation_mode_unavailable)); }
+        else { s.injected = true; Log(L"ANNOTATE mode re-armed after a reload"); }
+        if (then) then(ok);
+        return S_OK; });
+    if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, {})).c_str(), cb))) { cb->Release(); Exit(L"injection"); if (then) then(false); return; }
+    cb->Release();
 }
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == JobDone) { std::unique_ptr<Job> j(reinterpret_cast<Job*>(l)); LogMigration(); if (j->done && !halted) j->done(); return 0; }
@@ -1118,7 +1175,11 @@ void AnnotationSyncChrome() { Ann::SyncChrome(); Ann::LauncherSync(); }
 void AnnotationLayout() { Ann::Place(); }
 void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); }   // V3-B: the wave's clock
 void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
-void AnnotationNavigation(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"navigation", true); }
+void AnnotationNavigation(const std::shared_ptr<Tab>& t) {
+    if (!Ann::s.active || Ann::ModeTab() != t) return;
+    if (Chat::KeepsMode(t)) Chat::PageNavigating(t);   // chat intégré: the mode survives a reload of its page (Ann::Rearm)
+    else Ann::Exit(L"navigation", true);
+}
 void AnnotationTabChanged() { if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }   // i18n-exempt: log reason
 void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }   // i18n-exempt: log reason
 bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessageReceivedEventArgs* a) {
@@ -1151,6 +1212,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
 bool AnnotationCommand(int cmd) {
     if (cmd == 'N' || cmd == AnnotateCommand) { if (Ann::s.active) Ann::Exit(L"toggle"); else Ann::Activate({}); return true; }
     if (cmd == AnnotateExitCommand) { Ann::Exit(L"escape"); return true; }
+    if (cmd == ChatCommand) { Chat::Toggle(true); return true; }   // Ctrl+Maj+D: « Demander à l'agent » (starts the mode if needed)
     if (cmd == AnnotateHistoryCommand) {
         if (Ann::uiReady && Ann::launcher.HistoryVisible()) { Ann::launcher.HideHistory(); Ann::SyncWatch(); }
         else if (!privateWindow) Ann::OpenHistory(true);
@@ -1237,8 +1299,12 @@ void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab, int choice) {
     Ann::Start st; st.kind = choice == AnnotateSelectionItem ? 2 : 1; st.at = m.at; st.text = m.text;
     Ann::Activate(st);
 }
+#include "chat-host.h"
 #else
 // Unstamped fixtures (tests that include main.cpp) and --channel release builds: no annotation mode.
+float ChatInsetDip() { return 0; }
+void ChatNavigationCompleted(const std::shared_ptr<Tab>&) {}
+void ChatShutdown() {}
 bool AnnotationModeActive() { return false; }
 bool AnnotationSurfaceFocus() { return false; }
 void AnnotationAccentChanged() {}

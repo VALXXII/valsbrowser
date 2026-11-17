@@ -104,6 +104,7 @@ function accentCss() {
     '.l{background:rgb(' + A + ')}' +
     '.pb{background:repeating-linear-gradient(135deg,rgba(' + A + ',.4) 0 1px,transparent 1px 5px),rgba(' + A + ',.08)}' +
     '.pl{background:rgb(' + A + ')}' +
+    '.mf{background:rgba(' + A + ',0.08);border:2px solid rgb(' + A + ')}.mt,.mc{background:rgb(' + A + ')}' +   // chat marks (Paper 6.10, 6.11)
     '.s{' + cursorDecl(false) + '}';   // the iframe shields carry the cursor (its dot is the accent)
 }
 root.innerHTML = '<style>' +
@@ -119,6 +120,14 @@ root.innerHTML = '<style>' +
   '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
   '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;white-space:nowrap;letter-spacing:0}' +
   '.gl{background:#D63E92}' +
+  '.mk{position:fixed;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 120ms ease-out}' +
+  '.mf{box-sizing:border-box;position:absolute;left:0;top:0}' +
+  '.mt{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;gap:6px;padding:0 6px;border-radius:3px 3px 0 0;' +
+  'font:500 12px/16px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;max-width:60vw;overflow:hidden;letter-spacing:0}' +
+  '.mu{color:rgba(255,255,255,.75);font-size:11px;line-height:14px}' +
+  '.ms{width:12px;height:12px;box-sizing:border-box;border:2px solid rgba(255,255,255,.15);border-top-color:#fff;border-radius:50%;flex:none}' +
+  '.ms.spin{animation:mks 1.2s linear infinite}@keyframes mks{to{transform:rotate(360deg)}}' +
+  '.mc{position:absolute;left:-2px;top:-2px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-bottom-right-radius:4px}' +
   '</style><style class="a"></style><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div>';
 var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
@@ -606,8 +615,91 @@ function selectSelection(text) {
   return true;
 }
 
+// ---- chat intégré (design/chat-integration.md): where the selected element comes from in the code, and the mark an
+// agent's turn leaves on it. Both are asked by the host only while the chat panel is open; nothing runs otherwise.
+// source(): debug data only, read synchronously, never guessed — Astro's data-astro-source-file / -loc on the element
+// or one of its 10 ancestors; React's fiber (_debugSource of the element's fiber or of its owners, React < 19; the
+// `__source` prop where a build keeps it). The host checks the path against the project folder (it must exist there).
+function fiberOf(el) {
+  try { var ks = Object.keys(el); for (var i = 0; i < ks.length; i++) if (ks[i].indexOf('__reactFiber$') === 0 || ks[i].indexOf('__reactInternalInstance$') === 0) return el[ks[i]]; } catch (e) {}
+  return null;
+}
+function compName(t) {
+  try { if (typeof t === 'function') return String(t.displayName || t.name || ''); if (t && typeof t === 'object') { if (t.displayName) return String(t.displayName); if (t.render) return String(t.render.displayName || t.render.name || ''); if (t.type) return compName(t.type); } } catch (e) {}
+  return '';
+}
+function sourceOf() {
+  var out = { astro: null, react: null, components: [] };
+  if (!cur || !cur.el || cur.range || (cur.kind === 'cross-origin' && cur.el === cur.frame)) return out;
+  try {
+    for (var n = cur.el, d = 0; n && n.nodeType === 1 && d <= 10; n = n.parentElement, d++) {
+      var f = n.getAttribute('data-astro-source-file');
+      if (f) { out.astro = { file: String(f).slice(0, 1024), loc: String(n.getAttribute('data-astro-source-loc') || '').slice(0, 32) }; break; }
+    }
+  } catch (e) {}
+  try {
+    var fb = null;
+    for (var m = cur.el, k = 0; m && m.nodeType === 1 && k <= 10 && !fb; m = m.parentElement, k++) fb = fiberOf(m);
+    for (var o = fb, g = 0; o && g < 40; g++) {
+      var ds = o._debugSource || (o.memoizedProps && o.memoizedProps.__source) || (o.pendingProps && o.pendingProps.__source);
+      if (ds && !out.react && typeof ds.fileName === 'string' && ds.fileName) out.react = { file: ds.fileName.slice(0, 1024), line: +ds.lineNumber || 0, column: +ds.columnNumber || 0 };
+      if (typeof o.type !== 'string') { var nm = compName(o.type); if (nm && nm.length <= 80 && !/^_|^(Fragment|Suspense|StrictMode|Profiler)$/.test(nm) && out.components.indexOf(nm) < 0 && out.components.length < 6) out.components.push(nm); }
+      o = o._debugOwner || o.return;
+    }
+  } catch (e) {}
+  return out;
+}
+// mark: { state: 'working' | 'done' | 'clear', selector, current, title, sub } — Paper 6.10 (label « ⟳ titre - modèle »
+// above the element) and 6.11 (frame + check tag). `current`: the element selected now (no reload since); otherwise
+// the selector must match exactly one element of the top document, or there is no mark at all.
+var mark = null, markTimer = 0;
+function markClear() {
+  if (markTimer) { clearInterval(markTimer); markTimer = 0; }
+  if (mark) { try { mark.box.remove(); } catch (e) {} mark = null; }
+}
+function markPlace() {
+  if (!mark || !alive) return;
+  var el = mark.el;
+  if (!el || !el.isConnected) { markClear(); return; }
+  var r = el.getBoundingClientRect();
+  if (r.width < 1 && r.height < 1) { mark.box.style.opacity = '0'; return; }
+  var x = r.left + mark.ox - 4, y = r.top + mark.oy - 4, w = r.width + 8, h = r.height + 8;
+  mark.box.style.opacity = '1';
+  mark.box.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)';
+  mark.frame.style.width = w.toFixed(2) + 'px'; mark.frame.style.height = h.toFixed(2) + 'px';
+  if (mark.tag) mark.tag.style.transform = y >= 20 ? 'translate(0,-20px)' : 'translate(0,' + h.toFixed(2) + 'px)';
+}
+function markSet(a) {
+  markClear();
+  if (!a || a.state === 'clear') return;
+  var el = null, ox = 0, oy = 0;
+  if (a.current && cur && cur.el && !cur.range) { el = cur.el; ox = cur.ox; oy = cur.oy; }
+  else if (a.selector) { try { var l = D.querySelectorAll(String(a.selector)); if (l.length === 1) el = l[0]; } catch (e) {} }
+  if (!el) return false;
+  var box = D.createElement('div'); box.className = 'mk';
+  var fr = D.createElement('div'); fr.className = 'mf'; box.appendChild(fr);
+  var tag = null;
+  if (a.state === 'working') {
+    tag = D.createElement('div'); tag.className = 'mt';
+    var sp = D.createElement('div'); sp.className = 'ms' + (reduced ? '' : ' spin'); tag.appendChild(sp);
+    var t1 = D.createElement('span'); t1.textContent = String(a.title || '').slice(0, 60) + (a.sub ? ' - ' : ''); tag.appendChild(t1);
+    if (a.sub) { var t2 = D.createElement('span'); t2.className = 'mu'; t2.textContent = String(a.sub).slice(0, 40); t1.appendChild(t2); }
+    box.appendChild(tag);
+  } else {
+    var ck = D.createElement('div'); ck.className = 'mc';
+    try { ck.innerHTML = '<svg width="12" height="12" viewBox="0 0 256 256"><path d="M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z" fill="#fff"/></svg>'; } catch (e) {}
+    fr.appendChild(ck);
+  }
+  root.appendChild(box);
+  mark = { el: el, ox: ox, oy: oy, box: box, frame: fr, tag: tag, state: a.state };
+  markPlace();
+  markTimer = setInterval(markPlace, a.state === 'working' ? 100 : 400);   // follows a layout change (HMR) without a frame loop
+  return true;
+}
+
 function teardown() {
   if (!alive) return; alive = false;
+  markClear();
   if (raf) cancelAnimationFrame(raf); raf = 0;
   for (var i = 0; i < listeners.length; i++) { var l = listeners[i]; try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) {} }
   listeners = []; cur = null; down = [];
@@ -641,6 +733,7 @@ function cmd(op, arg) {
     return;
   }
   if (op === 'selection') { if (!selectSelection(arg)) post({ op: 'noselection' }); return; }
+  if (op === 'mark') return markSet(arg);   // chat: true when the element was found and marked
 }
 
 var opts = { capture: true, passive: true };
@@ -659,7 +752,7 @@ on(window, 'focusin', onFocus, true);
 on(window, 'scroll', onScroll, opts);
 on(window, 'resize', onScroll, { passive: true });
 on(D, 'pointerout', onLeave, opts);
-Object.defineProperty(window, KEY, { value: { nonce: NONCE, teardown: teardown, cmd: cmd }, configurable: true });
+Object.defineProperty(window, KEY, { value: { nonce: NONCE, teardown: teardown, cmd: cmd, source: sourceOf }, configurable: true });
 syncShields();
 var st = P.start || {};
 if (st.kind === 'point') selectAtPoint(st.x, st.y);
@@ -673,5 +766,12 @@ inline std::wstring PageScriptCall(const std::wstring& paramsJson) { return std:
 // A command to the live instance (no-op if the nonce differs, e.g. after a navigation).
 inline std::wstring PageCommand(const std::wstring& nonce, const std::wstring& op, const std::wstring& argJson = L"null") {
     return L"(function(){try{var h=window[Symbol.for('browser.annotation')];if(h&&h.nonce==='" + nonce + L"')h.cmd('" + op + L"'," + argJson + L");}catch(e){}return 0;})()";
+}
+// Chat: a call whose RESULT comes back through ExecuteScript's completion (a JSON string, or "" when the instance is
+// gone): `source` -> the selected element's debug source (see sourceOf), `mark` -> "true" / "false".
+inline std::wstring PageQuery(const std::wstring& nonce, const std::wstring& what, const std::wstring& argJson = L"null") {
+    return L"(function(){try{var h=window[Symbol.for('browser.annotation')];if(h&&h.nonce==='" + nonce + L"'){" +
+           (what == L"source" ? std::wstring(L"return JSON.stringify(h.source());") : L"return JSON.stringify(!!h.cmd('" + what + L"'," + argJson + L"));") +
+           L"}}catch(e){}return '';})()";
 }
 }} // namespace NativeChrome::Annotations

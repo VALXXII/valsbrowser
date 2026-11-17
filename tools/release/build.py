@@ -16,6 +16,10 @@ Output layout (the application directory, exactly the release payload):
         knows fixed root names + assets/**; a root-level exe would make them reject every
         update). tools/release/package.py refuses any other executable under assets/.
       other channels: <out>/browser-annotations-mcp.exe (dev bridge next to browser.exe).
+  + the chat panel's page (assets/chat-panel/: index.html, panel.css, panel.js, markdown.js, icons.js; its QA
+    host dev.html / dev-host.js is never copied) — design/chat-integration.md.
+Test tools go to <out>-test (never in a package): the fake ACP agent fake-acp-agent.exe (tests/acp), built for
+non-release channels only; the browser uses it when BROWSER_ANNOTATIONS_TEST=1 and BROWSER_CHAT_FAKE_AGENT name it.
 Intermediates (resources object, generated headers) go to <out>-obj so they can
 never leak into a package.
 """
@@ -39,6 +43,28 @@ BROWSER_SOURCES = ['src/main.cpp', 'src/native-lottie.cpp',
                    'src/annotations.cpp',
                    # Annotations V2: one-click agent connection (Claude .mcpb / config merge, Codex), no UI.
                    'src/agent-connect.cpp']
+# Chat intégré (compiled with the annotation mode, src/chat-host.h). Linked into every binary that compiles the
+# annotation mode (tests/update-integration/e2e_install.py uses this list too).
+CHAT_SOURCES = [
+    # Chat V1 (C1): ACP v1 client (one agent process in a Job Object) and the agents' runtime (private Node,
+    # pinned adapters, CLI detection). Tests: tests/acp/run_tests.py.
+    'src/acp-client.cpp', 'src/agent-runtime.cpp',
+    # Chat V1 (C3): undo by our own file copies, no git, no UI. Tests: tests/snapshots/run_tests.py.
+    'src/change-snapshots.cpp']
+CHAT_LIBS = ['-luserenv']   # CreateEnvironmentBlock (the agent gets the user's current environment)
+# Fake ACP agent of the tests (console exe, never packaged): <out>-test/fake-acp-agent.exe.
+FAKE_AGENT_SOURCES = ['tests/acp/fake_agent.cpp']
+FAKE_AGENT_NAME = 'fake-acp-agent.exe'
+# QA-only files of assets/ that are never part of a build (design/chat-panel.md §1).
+ASSET_EXCLUDES = {'chat-panel': ('dev.html', 'dev-host.js')}
+
+
+def test_tools_dir(out: Path) -> Path:
+    return out.parent / (out.name + '-test')
+
+
+def ignore_qa_assets(directory: str, names: list[str]) -> list[str]:
+    return [n for n in names if n in ASSET_EXCLUDES.get(Path(directory).name, ())]
 BROWSER_LIBS = ['-lole32', '-luuid', '-lcomctl32', '-lshlwapi', '-lgdi32', '-ld2d1', '-ldwrite',
                 '-lwindowscodecs', '-ldwmapi', '-lwinhttp', '-lbcrypt', '-lshell32', '-luser32',
                 '-lkernel32', '-ladvapi32']
@@ -72,6 +98,9 @@ LICENSES = {  # destination name -> source
     # Ad blocker: unmodified uBlock Origin Lite (GPLv3) in assets/extensions/ublock-lite.
     'uBOLite-LICENSE.txt': 'assets/extensions/ublock-lite/LICENSE.txt',
     'uBOLite-NOTICE.txt': 'third_party/ublock-lite/NOTICE.txt',
+    # Chat (C1): src/acp-client.cpp and src/agent-runtime.cpp adapt logic from Gui (Apache-2.0); see their headers.
+    'Gui-LICENSE.txt': 'third_party/gui/LICENSE',
+    'Gui-NOTICE.txt': 'third_party/gui/NOTICE',
 }
 
 
@@ -183,9 +212,10 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
     if not annotations:  # measurement baseline: the annotation mode compiled out (src/main.cpp)
         common.append('-DBROWSER_NO_ANNOTATIONS')
     common += release_annotation_defines(info['channel'], bridge, annotations)
+    chat = CHAT_SOURCES if annotations else []   # the chat lives inside the annotation mode
     run([BIN / 'g++.exe', *common, '-mwindows', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
-         f'-I{SDK / "include"}', *BROWSER_SOURCES, res, THORVG, '-o', out / 'browser.exe',
-         *BROWSER_LIBS])
+         f'-I{SDK / "include"}', *BROWSER_SOURCES, *chat, res, THORVG, '-o', out / 'browser.exe',
+         *BROWSER_LIBS, *(CHAT_LIBS if annotations else [])])
     run([BIN / 'g++.exe', *common, '-mwindows', *HELPER_SOURCES, helper_res, '-o', out / HELPER_NAME,
          *HELPER_LIBS])
     executables = ['browser.exe', HELPER_NAME]
@@ -194,6 +224,13 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
         run([BIN / 'strip.exe', '--strip-debug', obj / BRIDGE_NAME])
     for exe in executables:
         run([BIN / 'strip.exe', '--strip-debug', out / exe])
+    tools_dir = test_tools_dir(out)
+    if tools_dir.exists():
+        shutil.rmtree(tools_dir)
+    if annotations and info['channel'] != 'release':  # the sandbox's fake agent: no account, no network, no cost
+        tools_dir.mkdir(parents=True)
+        run([BIN / 'g++.exe', *common, '-mconsole', *FAKE_AGENT_SOURCES, '-o', tools_dir / FAKE_AGENT_NAME])
+        run([BIN / 'strip.exe', '--strip-debug', tools_dir / FAKE_AGENT_NAME])
     if not preview:  # setup stub (no self-update in a preview, so no installer either)
         stub_dir = setup_stub_dir(out)
         if stub_dir.exists():
@@ -208,7 +245,7 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
     shutil.copy2(SDK / 'x64/WebView2Loader.dll', out / 'WebView2Loader.dll')
     for name, source in LICENSES.items():
         shutil.copy2(ROOT / source, out / name)
-    shutil.copytree(ROOT / 'assets', out / 'assets')
+    shutil.copytree(ROOT / 'assets', out / 'assets', ignore=ignore_qa_assets)
     # Same icon as a loose file: the updater refreshes <root>\browser.ico from it for shortcuts.
     shutil.copy2(version_mod.app_icon(info['channel']), out / 'assets/browser.ico')
     if bridge:
