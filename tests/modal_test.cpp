@@ -332,8 +332,8 @@ int wmain(int argc, wchar_t** argv) {
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
         p.Surface().FinishAnimationsForTest(); RECT w{}; GetWindowRect(p.Window(), &w);
         Check(w.left == anchor.left - MulDiv(4, GetDpiForWindow(p.Window()), 96) && w.top == anchor.bottom + MulDiv(16, GetDpiForWindow(p.Window()), 96), "permission: 4 DIP left of the indicator, 16 DIP under it (B01)");
-        p.Surface().ActivateForTest(Modal::Dialog::SimpleCheckHit); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
-        Check(calls == 1 && got.action == OriginPrompt::Action::Allow && got.remember, "permission: Autoriser + Mémoriser");
+        p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 1 && got.action == OriginPrompt::Action::Allow && got.remember, "permission: « Mémoriser pour ce site » checked by default, Autoriser remembered (user decision 2026-11-17)");
         p.Surface().FinishAnimationsForTest();
         s.permissions = {OriginPrompt::Permission::Notifications};
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
@@ -343,6 +343,11 @@ int wmain(int argc, wchar_t** argv) {
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
         p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0));
         Check(calls == 3 && got.action == OriginPrompt::Action::Block && got.remember, "permission: notifications choice always remembered (B02)");
+        p.Surface().FinishAnimationsForTest();
+        s.permissions = {OriginPrompt::Permission::Camera};
+        p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
+        p.Surface().ActivateForTest(Modal::Dialog::SimpleCheckHit); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 4 && got.action == OriginPrompt::Action::Allow && !got.remember, "permission: check cleared = Autoriser this time only");
         p.Surface().FinishAnimationsForTest();
     }
     {   // Permission popovers as drawn in Paper B02 (user edit 2026-11-12): head (glyph, title, subtitle), the
