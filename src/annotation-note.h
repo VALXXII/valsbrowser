@@ -113,8 +113,9 @@ inline void PaintNote(Ink& ink, const NoteView& v, const NoteLayout& l) {
 // ---- the « Ce que l'agent verra » pill: fold 0 (pill) .. 1 (card) --------------------------
 inline bool PillExpandable(CaptureState c) { return c != CaptureState::Unavailable; }
 inline D2D1_SIZE_F PillCollapsed(Ink& ink, CaptureState c) {
-    if (!PillExpandable(c)) return {8 + 13 + 6 + ink.Width(NoteSpec::unavailable(), F(12, 16)) + 8 + 2, 30};
-    return {8 + ink.Width(NoteSpec::pillLabel(), F(12, 16)) + 6 + 14 + 8 + 2, 30};
+    // Never wider than the note (its layer): a longer label ends in an ellipsis inside the pill.
+    if (!PillExpandable(c)) return {std::min(NoteSpec::width, 8 + 13 + 6 + ink.Width(NoteSpec::unavailable(), F(12, 16)) + 8 + 2), 30};
+    return {std::min(NoteSpec::width, 8 + ink.Width(NoteSpec::pillLabel(), F(12, 16)) + 6 + 14 + 8 + 2), 30};
 }
 inline bool PillWide(const Shot* shot) { return shot && shot->width && shot->height && float(shot->width) / float(shot->height) > NoteSpec::wideRatio; }
 inline float PillExpandedH(bool wide = false) {
@@ -142,8 +143,9 @@ inline void PaintPill(Ink& ink, const PillView& v, D2D1_RECT_F r) {
     if (a > 0) {
         ID2D1Layer* g = nullptr; const bool pushed = ink.PushOpacity(a, g);
         const D2D1_RECT_F head{r.left, r.top, r.right, r.top + 30};
-        if (PillExpandable(v.capture)) Pieces(ink, {PText(pillLabel(), F(12, 16), Hex(0xFFFFFF99)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f})}, head);
-        else Pieces(ink, {PIcon(Glyphs::warningCircle, 13, {1, 1, 1, .8f}), PText(unavailable(), F(12, 16), Hex(0xFFFFFFCC))}, head);
+        const D2D1_RECT_F inside{head.left + 1 + 7, head.top, head.right - 1 - 7, head.bottom};   // the pill's 8 DIP padding (1 DIP of rounding slack)
+        if (PillExpandable(v.capture)) Pieces(ink, {PText(pillLabel(), F(12, 16), Hex(0xFFFFFF99)), PIcon(Glyphs::caretDown, 14, {1, 1, 1, .6f})}, inside);
+        else Pieces(ink, {PIcon(Glyphs::warningCircle, 13, {1, 1, 1, .8f}), PText(unavailable(), F(12, 16), Hex(0xFFFFFFCC))}, inside);
         if (pushed) ink.PopOpacity(g);
     }
     if (v.fold > 0) {
