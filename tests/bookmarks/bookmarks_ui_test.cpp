@@ -258,6 +258,16 @@ static void Client(){
         Capture(toast,L"toast-undo");Capture(window,L"window-toast");UndoBookmark();
     });
     Expect(WaitFor([&]{return note.Has(L"Favori restauré");}),"undo announced « Favori restauré »");
+    // Text fit: a long folder name ends in an ellipsis inside the toast's 420 DIP text lane (FR and EN),
+    // never cut mid-letter by the lane's clip.
+    for(auto lang:{I18n::Locale::Fr,I18n::Locale::En})OnUi([&]{
+        I18n::SetForProcess(lang);
+        ShowBookmarkToast(TRF(bookmark_folder_deleted,L"Veille technologique, design produit et lectures à reprendre plus tard"));
+        const auto slot=bookmarkToast.TextSlotForTest();
+        Expect(slot.right-slot.left<=NativeChrome::BookmarkToast::Layout::maxText+1&&bookmarkToast.TextTrimmedForTest(),lang==I18n::Locale::En?"toast (en): long folder name trimmed with an ellipsis inside the text lane":"toast (fr): long folder name trimmed with an ellipsis inside the text lane");
+        Capture(bookmarkToast.Window(),lang==I18n::Locale::En?L"toast-long-folder-en":L"toast-long-folder-fr");bookmarkToast.HideNow();
+        I18n::SetForProcess(I18n::Locale::Fr);
+    });
     if(uia5&&root)uia5->RemoveNotificationEventHandler(root,&note);
     if(root)root->Release();if(uia5)uia5->Release();uia->Release();uia=nullptr;CoUninitialize();
     PostThreadMessageW(uiThread,WM_QUIT,0,0);

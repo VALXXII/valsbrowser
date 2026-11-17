@@ -185,6 +185,31 @@ int wmain(int argc, wchar_t** argv) {
     en.Hide(false, false); en.Dispose();
     I18n::SetForProcess(Locale::Fr);
 
+    // ---- Text fit: a long profile name (32 characters, the editor's limit) on the root's « Profils » row --------
+    // The label keeps its natural width and the value ends in an ellipsis before it, in both languages and at
+    // 96 and 120 DPI; every value / nav row of the root obeys the same rule.
+    for (auto lang : {Locale::Fr, Locale::En}) {
+        I18n::SetForProcess(lang); const std::wstring tag = lang == Locale::En ? L"en" : L"fr";
+        auto h = hooks();
+        h.profiles = [] { SettingsUI::ProfileItem a; a.id = L"default"; a.name = L"Atelier Lumière — Clients Europe"; a.current = true; return std::vector<SettingsUI::ProfileItem>{a}; };
+        SettingsUI::Drawer fit; Check(fit.Create(hi, owner, root, &st, h), "text fit: drawer created"); open(fit);
+        bool profiles = false, intact = true;
+        for (const auto& s : fit.SlotsForTest()) {
+            if ((s.kind != Kind::Value && s.kind != Kind::Nav) || s.value.empty() || !s.hit) continue;
+            profiles |= s.hit == SettingsUI::CatProfiles;
+            const auto t = fit.TrailingForTest(s); const float labelW = fit.TextWidthForTest(s.text, 16), glyph = s.valueGlyph ? 16 + 6 : 0;
+            if (t.labelLeft + labelW > t.labelRight + .5f || t.labelRight + 8 + glyph > t.valueLeft + .5f) {
+                intact = false; std::printf("  row « %ls » · « %ls »: label %.1f..%.1f (needs %.1f), value %.1f..%.1f\n", s.text.c_str(), s.value.c_str(), t.labelLeft, t.labelRight, labelW, t.valueLeft, t.valueRight);
+            }
+        }
+        Check(profiles, tag == L"en" ? "text fit (en): the root shows « Profiles » with the profile's name" : "text fit (fr): the root shows « Profils » with the profile's name");
+        Check(intact, tag == L"en" ? "text fit (en): every root label keeps its width; a long value trims before it" : "text fit (fr): every root label keeps its width; a long value trims before it");
+        fit.ScrollForTest(0); fit.SettleForTest();
+        for (UINT dpi : {96u, 120u}) fit.RenderForTest(shots + L"\\textfit-long-profile-" + tag + L"-" + std::to_wstring(dpi) + L".png", dpi, 731, root);
+        fit.Hide(false, false); fit.Dispose();
+    }
+    I18n::SetForProcess(Locale::Fr);
+
     DeleteFileW(UiLanguage::PathIn(data).c_str()); RemoveDirectoryW(data.c_str());
     DestroyWindow(owner);
     earlyChrome.Dispose();   // Direct2D/WIC released before CoUninitialize, as main.cpp disposes its global chrome

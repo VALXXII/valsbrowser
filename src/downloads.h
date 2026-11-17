@@ -312,8 +312,12 @@ inline std::vector<Item> ReadHistory(std::istream& in, int& nextId) {
 }
 
 // ---- Panel geometry (DIP) ------------------------------------------------
-// Measured from the Paper "Download history" frame: 16 DIP padding, a 24 DIP
-// header, rows of a 32 DIP tile + two 16 DIP lines on a 48 DIP pitch.
+// Measured from the Paper "Download history" frame: 16 DIP padding, rows of a
+// 32 DIP tile + two 16 DIP lines on a 48 DIP pitch. The downloads surfaces have
+// no header any more (no title, no close button: Échap, a click outside or the
+// toolbar button close them): the rows start at the top padding. headerTop,
+// headerHeight, Title() and Close() stay: the history and bookmarks drawers
+// keep that header, and the section carets stay on Close()'s column.
 namespace Panel {
 using Design::Box;
 inline constexpr float width = 268, padding = Design::Space::lg, headerHeight = Design::Size::compact;
@@ -327,7 +331,7 @@ inline constexpr float radius = 8;     // Windows 11 popup corner (DWM)
 inline constexpr int popoverRows = 4;  // latest downloads; "View all" opens the drawer
 inline constexpr float anchorGap = 8;  // below the toolbar button: top on the page edge (81), like the drawer
 inline constexpr float headerTop = padding - (headerHeight - line) / 2;        // 12: header row centred on the first text line
-inline constexpr float firstRow = headerTop + headerHeight + Design::Space::lg; // 52
+inline constexpr float firstRow = padding;                                     // 16: no header, rows start at the top padding
 inline constexpr float RowsBottom(int rows) { return firstRow + (rows < 1 ? 1 : rows) * pitch - rowGap; }
 // "View all": one text line, 16 DIP under the last row.
 inline constexpr float ViewAllTop(int rows) { return RowsBottom(rows) + rowGap; }
@@ -356,18 +360,20 @@ inline constexpr float ViewTop() { return firstRow - rowGap / 2; }
 inline constexpr Box ViewAll(float top, float labelWidth) { return {padding - 4, top - 4, padding + labelWidth + 4, top + line + 4}; }
 }
 // ---- Drawer geometry (DIP) -------------------------------------------------
-// Measured from the Paper "Download history" drawer: the popover's width and
-// header, docked to the window's right edge under the toolbar. Sections: a 24
-// DIP header (label + caret aligned with the close button), 12 DIP, the rows,
-// 12 DIP; four rows give the 240 DIP stride of the frame.
+// Measured from the Paper "Download history" drawer: the popover's width,
+// docked to the window's right edge under the toolbar, without a header: the
+// first section's label sits on the 16 DIP top padding. Sections: a 24 DIP
+// header (label + caret on the history drawer's close-button column), 12 DIP,
+// the rows, 12 DIP; four rows give the 240 DIP stride of the frame.
 namespace DrawerLayout {
 using Design::Box;
 inline constexpr float width = Panel::width, top = Design::Vertical::top; // window client DIP: right under the chrome (81, no top padding)
 // The popover floats 6 DIP in from the window edge; the drawer window keeps that
 // strip (clipped by its region) so the popover rectangle can morph into it.
 inline constexpr float margin = Design::Space::sm;
-inline constexpr float firstSection = 59, sectionHeight = Design::Size::compact, toRows = 12, after = 12;
-inline constexpr float viewTop = Panel::headerTop + Panel::headerHeight + Design::Space::md; // 44: content scrolls under the header
+inline constexpr float sectionHeight = Design::Size::compact, toRows = 12, after = 12;
+inline constexpr float firstSection = Panel::padding - (sectionHeight - Panel::line) / 2; // 12: the label's line on the top padding
+inline constexpr float viewTop = 0;                                                  // no header: content scrolls to the top edge
 inline constexpr float topFade = 16, bottomFade = 128;
 inline constexpr float Block(int rows, float open) { return sectionHeight + open * (toRows + rows * Panel::pitch) + after; }
 inline constexpr Box Label(float y) { return {Panel::padding, y + (sectionHeight - Panel::line) / 2, Panel::width - Panel::padding - Panel::button, y + (sectionHeight + Panel::line) / 2}; }
@@ -375,10 +381,10 @@ inline constexpr Box Caret(float y) { return {Panel::Close().left, y, Panel::Clo
 inline constexpr Box Header(float y) { return {0, y, width, y + sectionHeight}; }
 }
 static_assert(DrawerLayout::Block(4, 1) == 240, "four rows: the 240 DIP section stride of the Paper drawer");
-static_assert(Panel::Height(4, true) == 276, "four rows + View all match the Paper popover height");
-static_assert(Panel::firstRow == 52, "rows start 16 DIP under the 24 DIP header");
+static_assert(Panel::Height(4, true) == 240, "four rows + View all: the Paper popover height (276) without its 36 DIP header");
+static_assert(Panel::firstRow == 16 && DrawerLayout::firstSection == 12 && DrawerLayout::viewTop == 0, "no header: content starts at the top padding");
 static_assert(Panel::textLeft == 56, "row text 8 DIP after the 32 DIP tile");
-static_assert(Panel::Height(4) == 244, "four rows match the first Paper frame height");
+static_assert(Panel::Height(4) == 208, "four rows: the first Paper frame height (244) without its 36 DIP header");
 static_assert(Panel::ActionBox(0, 1).right == 246 && Panel::ActionBox(0, 0).right == 216, "actions: 24 DIP buttons, 6 DIP gap");
 
 // ---- Row reveal motion ----------------------------------------------------

@@ -454,13 +454,16 @@ inline float PiecesWidth(Ink& ink, const std::vector<Piece>& ps) {
 inline float Pieces(Ink& ink, const std::vector<Piece>& ps, D2D1_RECT_F r, Align align = Align::Center) {
     const float total = PiecesWidth(ink, ps), cy = (r.top + r.bottom) / 2;
     float x = align == Align::Center ? (r.left + r.right - total) / 2 : align == Align::Trailing ? r.right - total : r.left;
-    x = std::floor(x * 2 + .5f) / 2;
-    for (const auto& p : ps) {
-        const float w = PieceWidth(ink, p);
+    x = std::max(r.left, std::floor(x * 2 + .5f) / 2);   // a row wider than `r` starts at its left edge, never before it
+    for (size_t i = 0; i < ps.size(); ++i) {
+        const auto& p = ps[i]; float w = PieceWidth(ink, p);
         switch (p.kind) {
         case Piece::Text: {
-            const float right = std::min(r.right, x + w + 1);
+            // A text trims (ellipsis) before the pieces that follow it, so they stay inside `r` too.
+            float after = 0; for (size_t j = i + 1; j < ps.size(); ++j) after += ps[j - 1].gapAfter + PieceWidth(ink, ps[j]);
+            const float right = std::min(r.right - after, x + w + 1);
             ink.Text(p.text, p.font, {x, r.top, right, r.bottom}, p.color, false, Align::Leading, true);
+            w = std::min(w, std::max(0.f, right - x));
             if (p.underline) { const float base = cy - p.font.line / 2 + ink.BaselineOf(p.font) + 3; ink.Fill({x, base - .5f, x + w, base + .5f}, 0, p.color); }
             break; }
         case Piece::Icon: ink.Icon(*p.glyph, {x, cy - p.size / 2, x + p.size, cy + p.size / 2}, p.color, p.rotate); break;

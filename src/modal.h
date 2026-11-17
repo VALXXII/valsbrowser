@@ -1398,7 +1398,7 @@ private:
                     const float lw = kit_.Width(initial, letter);
                     kit_.Text(initial, letter, (avatar.left + avatar.right - lw) / 2, avatar.top + 6, lw + 1, DialogKit::White(P::secondaryText));
                     const float dim = spec_.accounts[i].disabled ? .32f : 1.f;   // Paper FW8-0: expired certificate at 32 %
-                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(dim));
+                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - (spec_.accountsSelect ? 74 : 50), DialogKit::White(dim));   // ends 4 DIP before the radio
                     kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - (spec_.accountsSelect ? 74 : 50), DialogKit::White(P::muted * dim));
                     if (spec_.accountsSelect) kit_.Radio({r.right - 28, r.top + 16, r.right - 12, r.top + 32}, static_cast<int>(i) == spec_.accountSelected, dim);
                 }
