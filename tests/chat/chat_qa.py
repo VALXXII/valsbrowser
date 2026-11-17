@@ -46,6 +46,8 @@ PORT_PAGE = 5183
 URL = f'http://127.0.0.1:{PORT_PAGE}/'
 Q.SRC, Q.APP, Q.QA, Q.PORT, Q.URL = SRC, APP, QA, 9347, URL
 PANEL = 'https://chat.browser.internal'
+# What the fake agent really does to the site copy for an ordinary message (tests/acp/fake_agent.cpp, « apply »).
+FAKE_EDIT = 'styles/checkout.css|margin-top: 4px;|margin-top: 4px; margin-left: auto;'
 REAL_CONFIGS = [pathlib.Path(os.environ['APPDATA']) / 'Claude' / 'claude_desktop_config.json',
                 pathlib.Path(os.environ['USERPROFILE']) / '.codex' / 'config.toml',
                 pathlib.Path(os.environ['USERPROFILE']) / '.claude' / 'settings.json']
@@ -107,10 +109,16 @@ def click_page(selector):
 
 
 def click_panel(selector=None, text=None):
-    """A real click in the panel: on a selector, or on the first button / role=button whose text contains `text`."""
+    """A real click in the panel: on a selector, or on the visible control whose text / accessible name contains `text`
+    (a button or role first, else the smallest element holding that text)."""
     find = (f"document.querySelector({json.dumps(selector)})" if selector else
-            f"Array.from(document.querySelectorAll('button,[role=button],[role=menuitem],[role=option],a')).find(function(e){{return (e.innerText||e.getAttribute('aria-label')||'').indexOf({json.dumps(text)})>=0&&e.getBoundingClientRect().width>0}})")
-    r = panel(f"(function(){{var e={find};if(!e)return null;e.scrollIntoView({{block:'nearest'}});var r=e.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2];}})()")
+            "(function(){var t=" + json.dumps(text) + ";function vis(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0}"
+            "function has(e){return ((e.innerText||'')+' '+(e.getAttribute('aria-label')||'')).indexOf(t)>=0}"
+            "var c=Array.from(document.querySelectorAll('button,[role=button],[role=menuitem],[role=option],summary,a')).filter(function(e){return vis(e)&&has(e)});"
+            "if(c.length)return c.sort(function(a,b){return a.innerText.length-b.innerText.length})[0];"
+            "var all=Array.from(document.querySelectorAll('body *')).filter(function(e){return vis(e)&&(e.innerText||'').indexOf(t)>=0});"
+            "return all.sort(function(a,b){return a.innerText.length-b.innerText.length})[0]||null})()")
+    r = panel(f"(function(){{var e={find};if(!e)return null;e.scrollIntoView({{block:'nearest'}});var r=e.getBoundingClientRect();return [r.left+Math.min(r.width/2,60),r.top+r.height/2];}})()")
     if not r:
         raise RuntimeError(f'no panel element {selector or text}')
     ws = ws_for(PANEL)
@@ -177,6 +185,49 @@ def shot(name):
     return QA / f'{name}.png'
 
 
+def grab(name):
+    """The browser window as it is on screen (chrome included): brought to the front, then a screen capture of its
+    rectangle. When the screen cannot be read (locked session), falls back to PrintWindow of our own windows."""
+    import ctypes.wintypes as W
+    QA.mkdir(parents=True, exist_ok=True)
+    path = QA / f'{name}.png'
+    try:
+        from PIL import ImageGrab
+        h = Q.front()
+        time.sleep(0.35)
+        r = W.RECT()
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(h, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:   # DWMWA_EXTENDED_FRAME_BOUNDS
+            user32.GetWindowRect(h, ctypes.byref(r))
+        ImageGrab.grab(bbox=(r.left, r.top, r.right, r.bottom), all_screens=True).save(path)
+    except Exception:
+        h = Q.main_window()
+        user32.RedrawWindow(h, None, None, 0x0001 | 0x0100 | 0x0080)   # RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN
+        time.sleep(0.15)
+        Q.pw_shot(name)
+    return path
+
+
+def post(message: dict):
+    """A panel -> host message sent from the panel's own page (the same channel as its buttons)."""
+    message = dict(message, v=1)
+    return panel('(function(){window.chrome.webview.postMessage(' + json.dumps(message) + ');return true})()')
+
+
+def uia(*args):
+    r = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(ROOT / 'tests' / 'annotations' / 'uia.ps1'),
+                        '-ProcessId', str(Q.our_pid()), *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+    return r.stdout.strip()
+
+
+def invoke(aid):
+    out = uia('-Id', aid, '-Invoke')
+    return out.startswith('INVOKED') or out.startswith('EXPANDED')
+
+
+def panel_text():
+    return panel('document.body.innerText') or ''
+
+
 def prepare_site(reset=True):
     if reset and SITE.exists():
         shutil.rmtree(SITE)
@@ -221,7 +272,7 @@ def launch(real=False, fresh=True, extra_env=None, reset_site=True):
     if not real:
         fake = TOOLS / 'fake-acp-agent.exe'
         assert fake.is_file(), f'missing {fake}: build first'
-        env['BROWSER_CHAT_FAKE_AGENT'] = f'{fake} --resume --log {WORK / "fake-agent.log"}'
+        env['BROWSER_CHAT_FAKE_AGENT'] = f'"{fake}" --resume --log "{WORK / "fake-agent.log"}" --edit "{FAKE_EDIT}"'
     env.update(extra_env or {})
     assert env.get('BROWSER_ANNOTATIONS_TEST') == '1' and pathlib.Path(env['BROWSER_ANNOTATIONS_CONNECT_ROOT']).resolve().is_relative_to(ROOT / 'build'), 'unsafe environment'
     p = subprocess.Popen([str(APP / 'browser.exe')], cwd=str(APP), env=env)

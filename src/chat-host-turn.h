@@ -23,7 +23,7 @@ void DetectAgents(std::function<void()> then = nullptr) {
              [out, then] {
                  for (std::size_t i = 0; i < out->size() && i < std::size(Agents); ++i) {
                      const auto& d = (*out)[i]; ApplyDetection(Agents[i].id, d);
-                     ChatLog(std::wstring(L"agent ") + W(Agents[i].id) + L": cli " + (d.Usable() ? L"found " : L"missing ") + W(d.cli.version) + L" (" + W(d.cli.source) + L"), node " + (d.nodeReady ? L"ready" : L"absent") + L", adapter " + (d.adapterReady ? L"ready" : L"absent"));
+                     Diag(std::wstring(L"agent ") + W(Agents[i].id) + L": cli " + (d.Usable() ? L"found " : L"missing ") + W(d.cli.version) + L" (" + W(d.cli.source) + L"), node " + (d.nodeReady ? L"ready" : L"absent") + L", adapter " + (d.adapterReady ? L"ready" : L"absent"));
                  }
                  SendState(); if (then) then();
              });
@@ -50,7 +50,7 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
         [shared, id, then] {
             preparing = false;
             const bool ok = shared->result.Ok();
-            ChatLog(L"prepare " + W(id) + L": " + W(AgentRuntime::PrepareErrorName(shared->result.error)) + (shared->result.detail.empty() ? L"" : L" — " + W(shared->result.detail)));
+            Diag(L"prepare " + W(id) + L": " + W(AgentRuntime::PrepareErrorName(shared->result.error)) + (shared->result.detail.empty() ? L"" : L" — " + W(shared->result.detail)));
             auto& a = agentInfo[id]; a.prepared = ok; a.progress = -1;
             if (ok) { a.status = "ready"; a.detail = TR(chat_agent_installed); }
             else if (shared->result.error == AgentRuntime::PrepareError::Cancelled) { a.status = "ready"; a.detail = TR(chat_agent_first_use); }
@@ -71,8 +71,17 @@ void DisposeSession(const wchar_t* why) {
     session->Dispose(); disposed.push_back(std::move(session)); session.reset();   // kept until its threads have ended (Shutdown waits)
     sessionReady = sessionStarting = false; afterReady = nullptr;
     if (post) KillTimer(post, AgentIdleTimer);
-    ChatLog(std::wstring(L"agent stopped (") + why + L")");
+    Diag(std::wstring(L"agent stopped (") + why + L")");
     disposed.erase(std::remove_if(disposed.begin(), disposed.end(), [](const std::unique_ptr<Acp::Session>& s) { return s->WaitStopped(0); }), disposed.end());
+}
+// One entry of the panel's mode list -> the agent: a session mode, the option that carries the modes, or the plan option.
+void SetAgentMode(const std::string& id) {
+    if (!session || !sessionReady) { pendingMode = id; return; }
+    const auto mv = ModesOf(agentId, agentInfo[agentId]);
+    Diag(L"mode asked: « " + W(id) + L" »");
+    if (id == PlanOptionId) { session->SetConfigOption(mv.map.planOption, mv.map.planOn); return; }
+    if (mv.current == PlanOptionId) session->SetConfigOption(mv.map.planOption, mv.map.planOff);   // leaving « Planifier » held by an option
+    if (mv.viaOption) session->SetConfigOption(mv.optionId, id); else session->SetMode(id);
 }
 void ApplyDefaults() {   // the site's remembered choices, else « Demander » (decision 4): never a hard-coded id, the agent's own lists
     if (!session || !sessionReady) return;
@@ -83,17 +92,21 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
         wanted.clear();
     };
     choose(Acp::FindModelOption(info.options), pendingModel); choose(Acp::FindEffortOption(info.options), pendingEffort);
-    const auto mv = ModesOf(info); std::string want = pendingMode; pendingMode.clear();
+    // The session starts in the mode the user's own agent configuration picks (seen: Claude « auto », Codex « agent »).
+    // Ours is « Demander » unless this site remembers another choice: set here, right after Started, before any prompt.
+    const auto mv = ModesOf(agentId, info); std::string want = pendingMode; pendingMode.clear();
     auto has = [&](const std::string& id) { for (const auto& m : mv.list) if (m.id == id) return true; return false; };
-    if (want.empty() || !has(want)) {   // no choice remembered: the first « ask » mode when the agent starts in another kind
-        want.clear(); std::string currentName; for (const auto& m : mv.list) if (m.id == mv.current) currentName = m.name;
-        if (ModeKind(mv.current, currentName) != "ask") for (const auto& m : mv.list) if (ModeKind(m.id, m.name) == "ask") { want = m.id; break; }
+    if (want.empty() || !has(want)) {
+        want.clear();
+        for (const auto& id : mv.map.ask) if (want.empty() && has(id)) want = id;                       // the agent's own « ask » mode, as mapped
+        for (const auto& m : mv.list) if (want.empty() && m.kind == "ask") want = m.id;                // an agent the map does not know
     }
-    if (!want.empty() && want != mv.current) { if (mv.viaOption) session->SetConfigOption(mv.optionId, want); else session->SetMode(want); }
+    if (!want.empty() && want != mv.current) { SetAgentMode(want); Diag(L"mode set to « " + W(want) + L" » (the session started in « " + W(mv.current) + L" »)"); }
+    else Diag(L"mode « " + W(mv.current) + L" » kept");
 }
 void OnStarted(const Acp::StartResult& r) {
     sessionStarting = false; auto& info = agentInfo[agentId]; started = r;
-    ChatLog(std::wstring(L"session start: ") + (r.state == Acp::StartState::Ready ? (r.resumed ? L"ready (resumed)" : L"ready (new)") : W(Acp::ErrorCodeName(r.error.code))) + (r.error.detail.empty() ? L"" : L" — " + W(ClipUtf8(r.error.detail, 300))));
+    Diag(std::wstring(L"session start: ") + (r.state == Acp::StartState::Ready ? (r.resumed ? L"ready (resumed)" : L"ready (new)") : W(Acp::ErrorCodeName(r.error.code))) + (r.error.detail.empty() ? L"" : L" — " + W(ClipUtf8(r.error.detail, 300))));
     switch (r.state) {
     case Acp::StartState::Ready: {
         sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true;
@@ -141,9 +154,9 @@ void StartSession() {
         }
     }
     sessionStarting = true; sessionReady = false;
-    if (!session->Start(std::move(o))) { sessionStarting = false; session.reset(); ChatLog(L"session start refused"); return; }
+    if (!session->Start(std::move(o))) { sessionStarting = false; session.reset(); Diag(L"session start refused"); return; }
     SetAgentStatus(agentId, "starting", TR(chat_agent_starting));
-    ChatLog(L"session starting: " + W(agentId) + L" in " + folder);
+    Diag(L"session starting: " + W(agentId) + L" in " + folder);
 }
 void EnsureSession(std::function<void()> ready) {
     if (sessionReady && session) { ready(); return; }
@@ -210,14 +223,14 @@ std::wstring PermissionTitle(const Acp::ToolCall& t) {
     if (t.kind == "execute") return TRF(chat_perm_run, who);
     if (t.kind == "fetch") return TRF(chat_perm_fetch, who);
     if (t.kind == "switch_mode") return TRF(chat_perm_mode, who);
-    return t.title.empty() ? TRF(chat_perm_other, who) : W(ClipUtf8(t.title, 200));
+    return t.title.empty() ? TRF(chat_perm_generic, who) : W(ClipUtf8(t.title, 200));
 }
 std::string CommandOf(const Acp::ToolCall& t) {
     SJ::Value v; if (t.rawInput.empty() || !SJ::Parse(t.rawInput, v) || !v.IsObject()) return "";
     for (const char* k : {"command", "cmd"}) if (const auto* c = v.Get(k); c && c->IsString()) return ClipUtf8(c->string, 2000);
     return "";
 }
-std::string CurrentModeKind() { const auto mv = ModesOf(agentInfo[agentId]); for (const auto& m : mv.list) if (m.id == mv.current) return ModeKind(m.id, m.name); return "other"; }
+std::string CurrentModeKind() { const auto mv = ModesOf(agentId, agentInfo[agentId]); return KindOfMode(mv, mv.current); }
 void SendPlan(const std::vector<Acp::PlanEntry>& entries, bool proposed) {
     SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); if (turn.planId.empty()) turn.planId = "plan-" + turn.id; m.Set("id", Str(turn.planId));
     SJ::Value arr = SJ::Value::Arr();
@@ -262,8 +275,9 @@ void OnPermission(const Acp::PermissionRequest& p) {
         v.Set("kind", Str(kind)); opts.Push(std::move(v)); first = false;
     }
     m.Set("options", std::move(opts));
+    waitingPermissions[p.requestId] = m;   // shown again if the panel's WebView is created (or re-created) while it waits
     Send("permission.request", std::move(m));
-    ChatLog(L"permission asked: " + W(p.toolCall.kind) + L" " + W(ClipUtf8(p.toolCall.title, 120)));
+    Diag(L"permission asked: " + W(p.toolCall.kind) + L" " + W(ClipUtf8(p.toolCall.title, 120)));
 }
 void OnEvent(const Acp::Event& e) {
     using T = Acp::Event::Type; auto& info = agentInfo[agentId];
@@ -274,7 +288,7 @@ void OnEvent(const Acp::Event& e) {
         CloseThought();
         if (turn.lastMessageId.empty()) { turn.lastMessageId = "m" + turn.id + "-" + std::to_string(++turn.messageSeq); SJ::Value item = SJ::Value::Obj(); item.Set("turnId", Str(turn.id)); item.Set("messageId", Str(turn.lastMessageId)); item.Set("text", Str(std::string())); turn.itemOf[turn.lastMessageId] = Keep("message.agentChunk", item); turn.summaryText.clear(); }
         AppendText(turn.lastMessageId, e.text); turn.summaryText += e.text;
-        if (stats.firstTextAt == 0 && stats.sendAt > 0) { stats.firstTextAt = Ann::NowMs(); ChatLog(L"first agent text " + Ann::Ms(stats.firstTextAt - stats.sendAt) + L" ms after the send"); }
+        if (stats.firstTextAt == 0 && stats.sendAt > 0) { stats.firstTextAt = Ann::NowMs(); Diag(L"first agent text " + Ann::Ms(stats.firstTextAt - stats.sendAt) + L" ms after the send"); }
         SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("messageId", Str(turn.lastMessageId)); m.Set("text", Str(e.text)); Send("message.agentChunk", std::move(m));
         break; }
     case T::ThoughtChunk: {
@@ -302,19 +316,25 @@ void OnEvent(const Acp::Event& e) {
     case T::PermissionRequest: OnPermission(e.permission); break;
     case T::PermissionDismissed: {
         if (e.permission.requestId == turn.planPermission) { turn.planPermission.clear(); break; }
+        waitingPermissions.erase(e.permission.requestId);
         SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(e.permission.requestId)); Send("permission.cancel", std::move(m)); break; }
     case T::ModesChanged: info.modes = e.modes; SendState(); break;
     case T::ConfigOptionsChanged: info.options = e.configOptions; SendState(); break;
     case T::CommandsChanged: info.commands = e.commands; SendCommands(); break;
     case T::SessionTitle: if (!e.text.empty()) { convo.data.head.title = ChatPrompt::OneLine(e.text, 60); SendState(); } break;
     case T::Usage: break;
-    case T::AuthStatus: ChatLog(L"agent login: " + W(ClipUtf8(e.text, 40))); break;   // a hint only: a start that needs a sign-in says AuthRequired
-    case T::Notice: ChatLog(L"agent notice (" + W(e.severity) + L"): " + W(ClipUtf8(e.text, 300))); break;
+    case T::AuthStatus:   // Claude's adapter answers « ready » even when signed out: its own status is what tells
+        Diag(L"agent login: " + W(ClipUtf8(e.text, 40)));
+        if (e.text == "none") { info.status = "notConnected"; info.detail = TR(chat_agent_not_connected); if (info.auth.empty()) info.auth = started.authMethods;
+            Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect)); SendState(); }
+        else if (info.status == "notConnected") { info.status = "ready"; info.detail = TR(chat_agent_installed); ClearStrip("auth"); SendState(); }
+        break;
+    case T::Notice: Diag(L"agent notice (" + W(e.severity) + L"): " + W(ClipUtf8(e.text, 300))); break;
     case T::TurnEnded: if (turn.active) { turn.failure = e.error; FinishTurn(e.error.Ok() ? (e.stopReason.empty() ? std::string("end_turn") : e.stopReason) : std::string("error")); } break;
-    case T::RequestFailed: ChatLog(L"agent refused " + W(e.request) + L": " + W(Acp::ErrorCodeName(e.error.code)) + L" " + W(ClipUtf8(e.error.detail, 200))); SendState(); break;
-    case T::Warning: ChatLog(L"agent line ignored: " + W(ClipUtf8(e.text, 200))); break;
+    case T::RequestFailed: Diag(L"agent refused " + W(e.request) + L": " + W(Acp::ErrorCodeName(e.error.code)) + L" " + W(ClipUtf8(e.error.detail, 200))); SendState(); break;
+    case T::Warning: Diag(L"agent line ignored: " + W(ClipUtf8(e.text, 200))); break;
     case T::Exited:
-        ChatLog(L"agent exited (" + std::to_wstring(e.exitCode) + L"): " + W(ClipUtf8(e.error.detail, 300)));
+        Diag(L"agent exited (" + std::to_wstring(e.exitCode) + L"): " + W(ClipUtf8(e.error.detail, 300)));
         sessionReady = sessionStarting = false; if (session) { disposed.push_back(std::move(session)); session.reset(); }
         if (turn.active) { turn.failure = e.error; FinishTurn("error"); } else { info.status = "ready"; info.detail = TR(chat_agent_installed); SendState(); }
         break;
@@ -346,7 +366,7 @@ void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
                 if (out->write.ok()) out->claim = Ann::Store().Claim(a.siteKey, a.id, actor, "", out->lease);
             },
             [out, elementId, turnId, id = a.id] {
-                ChatLog(L"annotation " + W(id) + L": write " + W(BA::CodeName(out->write.code)) + L", claim " + W(BA::CodeName(out->claim.code)));
+                Diag(L"annotation " + W(id) + L": write " + W(BA::CodeName(out->write.code)) + L", claim " + W(BA::CodeName(out->claim.code)));
                 if (!out->write.ok()) return;
                 Ann::sessionIds.insert(id); Ann::seenWorking.insert(id); Ann::seenDone.insert(id);   // the chat shows its own progress: no launcher card for it
                 auto settle = [&](Element& el) { el.annSite = out->siteKey; el.token = out->claim.ok() ? out->lease.token : std::string(); };
@@ -363,7 +383,7 @@ void CloseAnnotations(const std::vector<Element>& elements, bool resolved, const
         if (e.annSite.empty() || e.token.empty()) { orphanAnnotations.push_back(e); continue; }   // still being written: closed without a lease is impossible; left open
         const std::string site2 = e.annSite, id = e.annId, token = e.token; auto r = std::make_shared<BA::Outcome>();
         Ann::Run([=] { std::lock_guard<std::mutex> g(Ann::writeLock); *r = resolved ? Ann::Store().Resolve(site2, id, token, "resolved", summary, actor) : Ann::Store().Release(site2, id, token, actor, summary); },
-                 [=] { ChatLog(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); Ann::RefreshStatus(); if (Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false); });
+                 [=] { Diag(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); Ann::RefreshStatus(); if (Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false); });
     }
 }
 std::string LastParagraph(const std::string& text) {
@@ -387,7 +407,7 @@ void SendPrompt() {
         in.url = e.pending.source.url; in.viewportW = t.viewport.width; in.viewportH = t.viewport.height; in.tag = t.tag; in.text = t.selectionText ? *t.selectionText : t.text; in.selector = t.selector;
         in.role = t.role; in.name = t.accessibleName; in.x = t.rect.x; in.y = t.rect.y; in.w = t.rect.width; in.h = t.rect.height;
         for (const auto& s : t.styles) in.styles.emplace_back(s.name, s.value);
-        in.spacing = BA::SpacingText(t.spacing); in.components = e.components; in.source = e.source; in.crossOriginFrame = e.sel.frameKind == "cross-origin"; in.hasImage = images && !e.png.empty();
+        in.spacing = BA::SpacingText(t.spacing); in.components = e.components; in.source = e.source; in.nearest = e.nearest; in.crossOriginFrame = e.sel.frameKind == "cross-origin"; in.hasImage = images && !e.png.empty();
         blocks.push_back(Acp::ContentBlock::Text(ChatPrompt::ElementBlock(in, RandomHex(8))));
         if (in.hasImage) blocks.push_back(Acp::ContentBlock::Image("image/png", Base64(e.png)));
     }
@@ -396,7 +416,7 @@ void SendPrompt() {
     stats.sendAt = Ann::NowMs(); stats.firstTextAt = 0;
     if (!session->Prompt(std::move(blocks))) { Acp::Error e; e.code = Acp::ErrorCode::NotReady; turn.failure = e; FinishTurn("error"); return; }
     turn.promptSent = true;
-    ChatLog(L"prompt sent: " + std::to_wstring(turn.elements.size()) + L" element(s), " + std::to_wstring(turn.attachments.size()) + L" image(s)");
+    Diag(L"prompt sent: " + std::to_wstring(turn.elements.size()) + L" element(s), " + std::to_wstring(turn.attachments.size()) + L" image(s)");
 }
 void BeginSnapshotThenPrompt() {
     if (!turn.active) return;
@@ -405,7 +425,7 @@ void BeginSnapshotThenPrompt() {
     Ann::Run([out, store, dir] { out->r = store->BeginTurn(dir, &out->id, &out->stats); },
              [out, turnId] {
                  if (!turn.active || turn.id != turnId) { if (out->r.ok()) { auto s = Snapshots(); Ann::Run([s] { s->EndTurn(); }, nullptr); } return; }
-                 ChatLog(L"snapshot before the turn: " + W(CS::StatusName(out->r.status)) + L", " + std::to_wstring(out->stats.files) + L" files, " + Ann::Ms(out->stats.milliseconds) + L" ms" + (out->r.detail.empty() ? L"" : L" — " + W(out->r.detail)));
+                 Diag(L"snapshot before the turn: " + W(CS::StatusName(out->r.status)) + L", " + std::to_wstring(out->stats.files) + L" files, " + Ann::Ms(out->stats.milliseconds) + L" ms" + (out->r.detail.empty() ? L"" : L" — " + W(out->r.detail)));
                  turn.snapshot = out->r.ok(); turn.snapshotTurn = out->id;
                  if (out->r.status == CS::Status::TurnOpen) { Problem p; p.title = TR(chat_err_generic_title); p.message = TR(chat_strip_other_window); turn.problem = p; FinishTurn("error"); return; }
                  if (!turn.snapshot) Strip("undo", "neutral", TR(chat_strip_no_undo)); else ClearStrip("undo");
@@ -415,7 +435,7 @@ void BeginSnapshotThenPrompt() {
 }
 void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds) {
     if (turn.active) return;
-    if (!Usable()) { ChatLog(L"send ignored: no project folder or not a local site"); return; }
+    if (!Usable()) { Diag(L"send ignored: no project folder or not a local site"); return; }
     turn = Turn{}; turn.active = true; turn.id = "t" + std::to_string(++convo.turnSeq); turn.text = text; turn.startedMs = Ann::NowMs();
     for (const auto& id : elementIds) if (auto it = composerElements.find(id); it != composerElements.end()) { turn.elements.push_back(std::move(it->second)); composerElements.erase(it); }
     for (const auto& id : attachmentIds) if (auto it = composerAttachments.find(id); it != composerAttachments.end()) { turn.attachments.push_back(std::move(it->second)); composerAttachments.erase(it); }
@@ -443,10 +463,11 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     if (!turn.elements.empty()) WriteAnnotations(turn.elements, text);
     SaveConvo();
     EnsureSession([] { BeginSnapshotThenPrompt(); });
-    ChatLog(L"turn " + W(turn.id) + L" started");
+    Diag(L"turn " + W(turn.id) + L" started");
 }
 void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs = nullptr) {
     const bool failed = stopReason == "error"; const double ms = Ann::NowMs() - turn.startedMs;
+    if (stopReason == "end_turn" && !turn.lastPlan.empty() && turn.planPermission.empty() && CurrentModeKind() == "plan") SendPlan(turn.lastPlan, true);   // Paper 6.12: « Plan proposé » waits for « Lancer le plan »
     SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("stopReason", Str(stopReason == "max_turn_requests" ? std::string("max_tokens") : stopReason)); m.Set("durationMs", SJ::Value::Int(std::int64_t(ms)));
     bool changed = false;
     if (summary) {
@@ -465,9 +486,10 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else { const auto p = ProblemFor(turn.failure, agentId); SendError(p, turn.failure.detail);
             if (turn.failure.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect)); } }
     const bool done = stopReason == "end_turn";
-    CloseAnnotations(turn.elements, done, done ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
-                                               : U8(stopReason == "cancelled" ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
-    ChatLog(L"turn " + W(turn.id) + L" ended: " + W(stopReason) + L" in " + Ann::Ms(ms) + L" ms" + (summary ? L", " + std::to_wstring(summary->changes.size()) + L" file(s) changed (+" + std::to_wstring(summary->additions) + L" -" + std::to_wstring(summary->deletions) + L")" : L", no snapshot"));
+    const bool planned = done && !changed && CurrentModeKind() == "plan";   // a plan is not a change: the annotation goes back to waiting, with the reason
+    CloseAnnotations(turn.elements, done && !planned, done && !planned ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
+                                               : U8(planned ? std::wstring(TR(chat_release_planned)) : stopReason == "cancelled" ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
+    Diag(L"turn " + W(turn.id) + L" ended: " + W(stopReason) + L" in " + Ann::Ms(ms) + L" ms" + (summary ? L", " + std::to_wstring(summary->changes.size()) + L" file(s) changed (+" + std::to_wstring(summary->additions) + L" -" + std::to_wstring(summary->deletions) + L")" : L", no snapshot"));
     const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp;
     turn = Turn{}; doneMarkSelector = changed && done ? markSelector : std::string();
     SendState(); SyncChromeBits(); SaveConvo();
@@ -479,7 +501,7 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
 }
 void FinishTurn(const std::string& stopReason) {
     if (!turn.active || turn.ending) return;
-    turn.ending = true; CloseThought();
+    turn.ending = true; CloseThought(); waitingPermissions.clear();
     if (!turn.planPermission.empty()) turn.planPermission.clear();
     if (!turn.snapshot) { CompleteTurn(stopReason, nullptr); return; }
     struct Out { CS::Result r; CS::TurnSummary summary; CS::ScanStats stats; std::vector<std::pair<std::string, CS::FileDiff>> diffs; };
@@ -490,7 +512,7 @@ void FinishTurn(const std::string& stopReason) {
                 for (const auto& c : out->summary.changes) { if (out->diffs.size() >= 6) break; CS::FileDiff d; if (!c.binary && store->Diff(c.path, out->summary.checkpointId, &d, 64 * 1024).ok()) out->diffs.emplace_back(c.path, std::move(d)); }
         },
              [out, stopReason] {
-                 ChatLog(L"snapshot after the turn: " + W(CS::StatusName(out->r.status)) + L", " + Ann::Ms(out->stats.milliseconds) + L" ms" + (out->r.detail.empty() ? L"" : L" — " + W(out->r.detail)));
+                 Diag(L"snapshot after the turn: " + W(CS::StatusName(out->r.status)) + L", " + Ann::Ms(out->stats.milliseconds) + L" ms" + (out->r.detail.empty() ? L"" : L" — " + W(out->r.detail)));
                  if (!turn.active) return;
                  CompleteTurn(stopReason, out->r.ok() ? &out->summary : nullptr, &out->diffs);
              });
@@ -521,7 +543,7 @@ void Undo(const std::string& panelTurn, const std::string& checkpoint) {
             *out = checkpoint.empty() ? store->UndoTurn(snapshotTurn) : store->Restore(checkpoint);
         },
         [out, panelTurn, checkpoint] {
-            ChatLog(std::wstring(checkpoint.empty() ? L"undo turn: " : L"restore checkpoint: ") + W(CS::StatusName(out->status)) + L", " + std::to_wstring(out->restored.size()) + L" file(s) put back" + (out->detail.empty() ? L"" : L" — " + W(out->detail)));
+            Diag(std::wstring(checkpoint.empty() ? L"undo turn: " : L"restore checkpoint: ") + W(CS::StatusName(out->status)) + L", " + std::to_wstring(out->restored.size()) + L" file(s) put back" + (out->detail.empty() ? L"" : L" — " + W(out->detail)));
             // every panel turn whose snapshot turn was undone
             std::vector<std::string> turns; for (const auto& id : out->undoneTurns) for (const auto& p : snapshotOfTurn) if (p.second == id) turns.push_back(p.first);
             if (turns.empty() && !panelTurn.empty()) turns.push_back(panelTurn);

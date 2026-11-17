@@ -71,7 +71,7 @@ class View {
     }
     void Respond(ICoreWebView2WebResourceRequestedEventArgs* a, int status, const wchar_t* reason, const std::string& body, const wchar_t* mime) {
         IStream* stream = body.empty() ? nullptr : SHCreateMemStream(reinterpret_cast<const BYTE*>(body.data()), UINT(body.size()));
-        std::wstring headers = L"Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: " + std::wstring(Csp);
+        std::wstring headers = L"Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: " + std::wstring(Csp);   // i18n-exempt: HTTP response headers
         if (mime && *mime) headers += L"\r\nContent-Type: " + std::wstring(mime);
         Com<ICoreWebView2WebResourceResponse> response;
         if (env_.p && SUCCEEDED(env_->CreateWebResourceResponse(stream, status, reason, headers.c_str(), &response.p)) && response.p) a->put_Response(response.p);
@@ -94,13 +94,13 @@ class View {
         auto resource = Callback<ICoreWebView2WebResourceRequestedEventHandler, ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs*>([this, gen](ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* a) -> HRESULT {
             if (gen != generation_) return S_OK;
             Com<ICoreWebView2WebResourceRequest> request; LPWSTR raw = nullptr, method = nullptr;
-            if (FAILED(a->get_Request(&request.p)) || !request.p || FAILED(request->get_Uri(&raw)) || !raw) { CoTaskMemFree(raw); Respond(a, 403, L"Forbidden", "", L""); return S_OK; }
+            if (FAILED(a->get_Request(&request.p)) || !request.p || FAILED(request->get_Uri(&raw)) || !raw) { CoTaskMemFree(raw); Respond(a, 403, L"Forbidden", "", L""); return S_OK; }   // i18n-exempt: HTTP reason phrase
             const std::wstring uri = raw; CoTaskMemFree(raw);
             request->get_Method(&method); const std::wstring verb = method ? method : L""; CoTaskMemFree(method);
             const std::wstring origin = Origin; std::wstring file;
             if (verb == L"GET" && uri.rfind(origin + L"/", 0) == 0) file = AssetFor(assets_, uri.substr(origin.size()));
             std::string body; const wchar_t* mime = file.empty() ? L"" : MimeFor(file);
-            if (file.empty() || !*mime || !ReadAsset(file, body)) { Log(L"CHAT panel request refused: " + uri.substr(0, 200)); Respond(a, file.empty() ? 403 : 404, file.empty() ? L"Forbidden" : L"Not Found", "", L""); return S_OK; }
+            if (file.empty() || !*mime || !ReadAsset(file, body)) { Log(L"CHAT panel request refused: " + uri.substr(0, 200)); Respond(a, file.empty() ? 403 : 404, file.empty() ? L"Forbidden" : L"Not Found", "", L""); return S_OK; }   // i18n-exempt: HTTP reason phrases
             Respond(a, 200, L"OK", body, mime);
             return S_OK; });
         view_->add_WebResourceRequested(resource, &token); resource->Release();

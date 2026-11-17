@@ -43,7 +43,7 @@ unsigned EnvMs(const wchar_t* name, unsigned fallback) { const std::wstring v = 
 unsigned PanelIdleMs() { static const unsigned v = EnvMs(L"BROWSER_CHAT_PANEL_IDLE_MS", 60000); return v; }    // closed panel -> WebView destroyed
 unsigned AgentIdleMs() { static const unsigned v = EnvMs(L"BROWSER_CHAT_AGENT_IDLE_MS", 600000); return v; }   // no turn -> agent stopped
 bool TestMode() { return !Ann::EnvVar(L"BROWSER_ANNOTATIONS_TEST").empty(); }
-void ChatLog(const std::wstring& s) { Log(L"CHAT " + s); }
+void Diag(const std::wstring& s) { Log(L"CHAT " + s); }   // log lines (English diagnostics): the i18n gate knows « Diag »
 std::string U8(const std::wstring& w) { return AH::Utf8(w); }
 std::wstring W(const std::string& s) { return AH::Wide(s); }
 std::string T8(I18n::Id id) { return I18n::U8(id); }
@@ -98,7 +98,7 @@ std::map<std::string, AgentInfo> agentInfo;
 // ---------------------------------------------------------------- state
 enum class PanelState { Closed, Opening, Open, Closing };
 struct Element {   // an aimed element: a chip in the composer, then part of a turn, then an annotation
-    std::string id, label, kind, selector, text, hint, thumb; ChatPrompt::SourceRef source; std::vector<std::string> components;
+    std::string id, label, kind, selector, text, hint, thumb; ChatPrompt::SourceRef source, nearest; std::vector<std::string> components;
     BA::Annotation pending; AH::Selection sel; std::string png; double shotScale = 1; std::string shotCrop;
     std::uint64_t serial = 0; bool captureDone = false, sourceDone = false, attached = false; ChatPrompt::PageSource rawSource;   // as the page said it (resolved against the folder)
     std::string annSite, annId, token;   // once written and claimed
@@ -126,6 +126,7 @@ std::vector<std::unique_ptr<Acp::Session>> disposed;   // stopped sessions whose
 std::vector<Element> orphanAnnotations;                // annotations of a turn that ended before their write came back
 std::map<std::uint64_t, Element> aiming;                // elements being aimed (by capture serial): image and source still coming
 std::uint64_t turnNavStamp = 0; int rearmTries = 0; std::function<void()> afterTurn; std::function<void(bool)> afterUndo;
+std::map<std::string, SJ::Value> waitingPermissions, activeStrips;   // what the panel must show again when its WebView is (re)created: cards still waiting, strips still true
 std::wstring pendingAsk;                               // « Demander à l'agent » from the note: the text to send once the element is attached
 std::shared_ptr<CS::Store> snapshots; std::map<std::string, std::string> checkpointOfTurn;   // panel turn id -> checkpoint id
 std::map<std::string, std::string> snapshotOfTurn;                                              // panel turn id -> snapshot turn id
@@ -164,26 +165,42 @@ SJ::Value ElementRef(const Element& e) {
 }
 SJ::Value AttachmentRef(const Attachment& a) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(a.id)); o.Set("kind", Str(std::string("image"))); o.Set("name", Str(a.name)); o.Set("thumb", Str(a.thumb)); return o; }
 
-std::string ModeKind(const std::string& id, const std::string& name) {
+// The agent's permission modes as the panel's three choices. The lists come from the session (nothing is hard-coded
+// here); which of the agent's ids stand for « Demander / Auto / Planifier » comes from AgentRuntime::GetModeMap (checked
+// against the real adapters), with the id's wording as a fallback for an agent the map does not know.
+//   - a mode that asks for nothing at all (ModeMap::never) is not offered;
+//   - « Planifier » may be a session mode (Claude) or a config option (Codex: planOption = planOn / planOff): the
+//     panel sees ONE list; PlanOptionId is the entry that stands for the option.
+inline constexpr const char* PlanOptionId = "plan.option";
+struct ModeEntry { std::string id, name, description, kind; };
+struct ModeView { std::vector<ModeEntry> list; std::string current; bool viaOption = false; std::string optionId; AgentRuntime::ModeMap map; };
+bool In(const std::vector<std::string>& l, const std::string& v) { return std::find(l.begin(), l.end(), v) != l.end(); }
+std::string ModeKind(const AgentRuntime::ModeMap& map, const std::string& id, const std::string& name) {
+    if (In(map.ask, id)) return "ask";
+    if (In(map.automatic, id)) return "auto";
+    if (!map.planMode.empty() && id == map.planMode) return "plan";
+    if (id == PlanOptionId) return "plan";
     std::string l; for (char c : id + " " + name) l += char(std::tolower(static_cast<unsigned char>(c)));
     if (l.find("plan") != std::string::npos) return "plan";
-    if (l.find("auto") != std::string::npos || l.find("accept") != std::string::npos || l.find("bypass") != std::string::npos || l.find("yolo") != std::string::npos || l.find("full") != std::string::npos || l == "agent agent" || l.rfind("agent", 0) == 0) return "auto";
-    if (l.find("default") != std::string::npos || l.find("ask") != std::string::npos || l.find("read") != std::string::npos || l.find("demander") != std::string::npos) return "ask";
+    if (l.find("auto") != std::string::npos || l.find("accept") != std::string::npos || l.find("agent") != std::string::npos) return "auto";
+    if (l.find("default") != std::string::npos || l.find("ask") != std::string::npos || l.find("read") != std::string::npos) return "ask";
     return "other";
 }
+ModeView ModesOf(const std::string& agent, const AgentInfo& info) {
+    ModeView m; if (const auto* def = AgentOf(agent)) m.map = AgentRuntime::GetModeMap(def->rt);
+    auto add = [&](const std::string& id, const std::string& name, const std::string& description) { if (!In(m.map.never, id)) m.list.push_back({id, name, description, ModeKind(m.map, id, name)}); };
+    if (!info.modes.available.empty()) { for (const auto& x : info.modes.available) add(x.id, x.name, x.description); m.current = info.modes.currentId; }
+    else if (const auto* o = Acp::FindModeOption(info.options)) { m.viaOption = true; m.optionId = o->id; m.current = o->currentValue; for (const auto& c : o->choices) add(c.value, c.name, c.description); }
+    if (!m.map.planOption.empty()) for (const auto& o : info.options) if (o.id == m.map.planOption) for (const auto& c : o.choices) if (c.value == m.map.planOn) {
+        m.list.push_back({PlanOptionId, c.name.empty() ? c.value : c.name, c.description, "plan"}); if (o.currentValue == m.map.planOn) m.current = PlanOptionId; }
+    return m;
+}
+std::string KindOfMode(const ModeView& m, const std::string& id) { for (const auto& e : m.list) if (e.id == id) return e.kind; return "other"; }
 SJ::Value OptionList(const Acp::ConfigOption* o) {
     SJ::Value arr = SJ::Value::Arr(); if (!o) return arr;
     for (const auto& c : o->choices) { if (!ChatStore::ValidId(c.value)) continue; SJ::Value v = SJ::Value::Obj(); v.Set("id", Str(c.value)); v.Set("label", Str(c.name.empty() ? c.value : c.name));
         if (!c.description.empty()) v.Set("description", Str(ClipUtf8(c.description, 300))); if (!c.group.empty()) v.Set("group", Str(c.group)); arr.Push(std::move(v)); }
     return arr;
-}
-// The agent's modes: ACP session modes, or the option of category "mode" when the agent uses config options for them.
-struct ModeView { std::vector<Acp::Mode> list; std::string current; bool viaOption = false; std::string optionId; };
-ModeView ModesOf(const AgentInfo& info) {
-    ModeView m;
-    if (!info.modes.available.empty()) { m.list = info.modes.available; m.current = info.modes.currentId; return m; }
-    if (const auto* o = Acp::FindModeOption(info.options)) { m.viaOption = true; m.optionId = o->id; m.current = o->currentValue; for (const auto& c : o->choices) m.list.push_back({c.value, c.name, c.description}); }
-    return m;
 }
 std::string LabelOf(const Acp::ConfigOption* o) { if (!o) return ""; for (const auto& c : o->choices) if (c.value == o->currentValue) return c.name.empty() ? c.value : c.name; return o->currentValue; }
 void SendState();
@@ -214,9 +231,9 @@ void SendState() {
     const auto* model = Acp::FindModelOption(info.options); const auto* effort = Acp::FindEffortOption(info.options);
     st.Set("model", model && ChatStore::ValidId(model->currentValue) ? Str(model->currentValue) : SJ::Value::Null());
     st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(effort->currentValue) ? Str(effort->currentValue) : SJ::Value::Null());
-    {   const auto mv = ModesOf(info); SJ::Value modes = SJ::Value::Arr();
+    {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
         for (const auto& m : mv.list) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
-            if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(ModeKind(m.id, m.name))); modes.Push(std::move(o)); }
+            if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
         st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mv.current) ? Str(mv.current) : SJ::Value::Null()); }
     {   SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(convo.data.head.id)); c.Set("title", Str(convo.data.head.title.empty() ? T8(I18n::Id::chat_title_new) : convo.data.head.title));
         if (!convo.data.head.source.empty()) c.Set("source", Str(convo.data.head.source)); c.Set("running", SJ::Value::Bool(turn.active)); st.Set("conversation", std::move(c)); }
@@ -254,9 +271,9 @@ void SendThread() {
 void Strip(const char* id, const char* tone, const std::wstring& text, const char* actionId = nullptr, const std::wstring& actionLabel = L"") {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(std::string(id))); m.Set("tone", Str(std::string(tone))); m.Set("text", Str(text));
     if (actionId) { SJ::Value a = SJ::Value::Obj(); a.Set("id", Str(std::string(actionId))); a.Set("label", Str(actionLabel)); m.Set("action", std::move(a)); }
-    Send("strip", std::move(m));
+    activeStrips[id] = m; Send("strip", std::move(m));
 }
-void ClearStrip(const char* id) { SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(std::string(id))); m.Set("clear", SJ::Value::Bool(true)); Send("strip", std::move(m)); }
+void ClearStrip(const char* id) { activeStrips.erase(id); SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(std::string(id))); m.Set("clear", SJ::Value::Bool(true)); Send("strip", std::move(m)); }
 void SaveConvo() {
     if (convo.data.head.id.empty() || convo.data.items.empty()) return;
     convo.data.head.updatedAt = BA::SystemNow();

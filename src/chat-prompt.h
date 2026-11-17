@@ -94,7 +94,8 @@ struct ElementInput {
     std::vector<std::pair<std::string, std::string>> styles;   // computed, allow-listed by the picker
     std::string spacing;                                      // « padding 18 20 · gap 14 » (may be empty)
     std::vector<std::string> components;                      // innermost first (React), may be empty
-    SourceRef source;
+    SourceRef source;                                         // the element's own file:line (never an ancestor's)
+    SourceRef nearest;                                        // the nearest ancestor with a known source, when the element has none
     bool crossOriginFrame = false;
     bool hasImage = false;
 };
@@ -118,6 +119,7 @@ inline std::string ElementBlock(const ElementInput& e, const std::string& hexTag
     if (e.crossOriginFrame) t += " (inside a cross-origin iframe: only its box is known)";
     t += "\n";
     if (e.source.known) t += "Source: " + OneLine(e.source.Full(), 300) + " (from " + e.source.from + " debug data)\n";
+    else if (e.nearest.known) t += "Nearest ancestor with a known source: " + OneLine(e.nearest.Full(), 300) + " (the element itself carries none)\n";
     if (!e.components.empty()) {
         t += "Components (innermost first): ";
         for (std::size_t i = 0; i < e.components.size() && i < MaxComponents; ++i) t += (i ? " < " : "") + OneLine(e.components[i], 60);
@@ -144,13 +146,15 @@ inline std::string ElementBlock(const ElementInput& e, const std::string& hexTag
 //    "components":["Button","Hero"]}
 struct PageSource {
     std::string astroFile, astroLoc, reactFile; int reactLine = 0, reactColumn = 0;
+    int astroDepth = 0;   // 0: the attribute is on the element itself; n: on its n-th ancestor
     std::vector<std::string> components;
 };
 inline bool ParsePageSource(std::string_view json, PageSource& out) {
     StrictJson::Limits lim; lim.maxBytes = 16 * 1024; lim.maxDepth = 4; lim.maxItems = 64;
     StrictJson::Value v; if (!StrictJson::Parse(json, v, nullptr, lim) || !v.IsObject()) return false;
     auto str = [](const StrictJson::Value* p, std::size_t max) { return p && p->IsString() && p->string.size() <= max ? p->string : std::string(); };
-    if (const auto* a = v.Get("astro"); a && a->IsObject()) { out.astroFile = str(a->Get("file"), 1024); out.astroLoc = str(a->Get("loc"), 32); }
+    if (const auto* a = v.Get("astro"); a && a->IsObject()) { out.astroFile = str(a->Get("file"), 1024); out.astroLoc = str(a->Get("loc"), 32);
+        const auto* d = a->Get("depth"); out.astroDepth = d && d->IsNumber() && d->integral && d->integer >= 0 && d->integer <= 10 ? int(d->integer) : 10; }
     if (const auto* r = v.Get("react"); r && r->IsObject()) {
         out.reactFile = str(r->Get("file"), 1024);
         auto num = [](const StrictJson::Value* p) { return p && p->IsNumber() && p->integral && p->integer > 0 && p->integer < 10000000 ? int(p->integer) : 0; };
@@ -202,7 +206,9 @@ inline std::string AbsoluteSourceFile(const PageSource& p) {
 }
 // `projectDir`: absolute folder (any slashes). `exists(absolutePathWithForwardSlashes)`: true for a regular file.
 // A path is accepted only inside the project folder, outside node_modules, and existing.
-inline SourceRef ResolveSource(const PageSource& p, const std::string& projectDir, const std::function<bool(const std::string&)>& exists) {
+// The element's OWN source: its Astro attribute (depth 0), else its React debug source. An attribute found on an
+// ancestor is never the element's line: `nearest` (optional) receives it, to be shown as such.
+inline SourceRef ResolveSource(const PageSource& p, const std::string& projectDir, const std::function<bool(const std::string&)>& exists, SourceRef* nearest = nullptr) {
     SourceRef none; std::string root;
     if (projectDir.empty() || !detail::Normalize(detail::Slashes(projectDir), root) || root.empty()) return none;
     if (root.back() == '/') root.pop_back();
@@ -222,8 +228,11 @@ inline SourceRef ResolveSource(const PageSource& p, const std::string& projectDi
         return r;
     };
     int line = 0, column = 0; detail::ParseLoc(p.astroLoc, line, column);
-    if (auto r = accept(p.astroFile, line, column, "astro"); r.known) return r;
-    return accept(p.reactFile, p.reactLine, p.reactColumn, "react");
+    const SourceRef astro = accept(p.astroFile, line, column, "astro");
+    if (astro.known && p.astroDepth == 0) return astro;
+    const SourceRef react = accept(p.reactFile, p.reactLine, p.reactColumn, "react");
+    if (!react.known && astro.known && nearest) *nearest = astro;
+    return react;
 }
 
 // ---------------------------------------------------------------- chips (contract B, ElementRef)

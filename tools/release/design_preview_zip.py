@@ -18,7 +18,8 @@ folder = 'design-elements-preview'
 version = json.loads((app / 'version.json').read_text(encoding='utf-8'))
 names = ['browser.exe', 'update-helper.exe', 'WebView2Loader.dll', 'version.json',
          'WebView2-LICENSE.txt', 'WebView2-NOTICE.txt', 'ThorVG-LICENSE.txt', 'RapidJSON-LICENSE.txt',
-         'uBOLite-LICENSE.txt', 'uBOLite-NOTICE.txt']
+         'uBOLite-LICENSE.txt', 'uBOLite-NOTICE.txt',
+         'Gui-LICENSE.txt', 'Gui-NOTICE.txt']   # chat: logic adapted from Gui (Apache-2.0), tools/release/build.py LICENSES
 
 launcher = '@echo off\r\nrem Ouvre la preview directement sur la sandbox des composants (profil de ce dossier).\r\nstart "" "%~dp0browser.exe" --debug-sandbox\r\n'
 instructions = f'''Preview « Éléments & popups » — Windows x64

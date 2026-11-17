@@ -84,9 +84,11 @@ inline bool Exists(const std::wstring& p) { return GetFileAttributesW(p.c_str())
 inline std::wstring Trim(std::wstring p) { while (p.size() > 3 && (p.back() == L'\\' || p.back() == L'/')) p.pop_back(); return p; }
 inline std::wstring Parent(const std::wstring& p) { const auto s = p.find_last_of(L"\\/"); return s == std::wstring::npos ? L"" : (s <= 2 ? p.substr(0, 3) : p.substr(0, s)); }
 inline bool HasMarker(const std::wstring& dir) {
+    // i18n-exempt-begin: file names of project markers (never shown)
     for (const wchar_t* m : {L"package.json", L".git", L"astro.config.mjs", L"astro.config.ts", L"vite.config.ts", L"vite.config.js", L"next.config.js", L"next.config.mjs",
                              L"pyproject.toml", L"composer.json", L"Gemfile", L"index.html"})
         if (Exists(dir + L"\\" + m)) return true;
+    // i18n-exempt-end
     return false;
 }
 inline std::wstring Fold(std::wstring s) { for (auto& c : s) { if (c == L'/') c = L'\\'; c = towlower(c); } return s; }
@@ -116,7 +118,7 @@ inline std::wstring ProjectRoot(const std::wstring& cwd) {
 }
 // Off the UI thread. `port`: the site's port. Empty folder = no suggestion (why says it, for the log).
 inline Guess Detect(int port) {
-    Guess g;
+    Guess g;   // i18n-exempt-begin: `why` is a log detail (English diagnostics), never shown
     if (port < 1 || port > 65535) { g.why = L"no port"; return g; }
     g.pid = detail::ListenerPid(port);
     if (!g.pid) { g.why = L"no listener found on port " + std::to_wstring(port); return g; }
@@ -125,7 +127,7 @@ inline Guess Detect(int port) {
     if (!detail::ProcessFolder(g.pid, cwd, g.process)) { g.why = L"the listener's working folder cannot be read (another user or elevated process)"; return g; }
     g.folder = ProjectRoot(cwd);
     if (g.folder.empty()) g.why = L"the listener's working folder is not a project folder: " + cwd;
-    return g;
+    return g;   // i18n-exempt-end
 }
 // UI thread (modal). Empty = cancelled. `initial`: a folder to open the dialog on (may be empty).
 inline std::wstring PickFolder(HWND owner, const std::wstring& title, const std::wstring& initial) {

@@ -476,7 +476,7 @@ class NotePopover : public Animator::Client {
         Accessibility::Node ok; ok.key = NoteAdd; ok.parent = GroupKey; ok.name = AddLabel(view_.status); ok.accelerator = TR(key_enter); ok.enabled = view_.status != NoteStatus::Saving;
         ok.bounds = screen(layout_.add); ok.automationId = L"AnnotationAdd"; n.push_back(ok);
         if (view_.ask) { Accessibility::Node a; a.key = NoteAsk; a.parent = GroupKey; a.name = TR(chat_note_ask); a.accelerator = TR(key_ctrl_shift_d); a.enabled = view_.status != NoteStatus::Saving;
-            a.bounds = screen(layout_.ask); a.automationId = L"AnnotationAskAgent"; n.push_back(a); }
+            a.bounds = screen(layout_.ask); a.automationId = L"AnnotationNoteAskAgent"; n.push_back(a); }
         RECT pr{}; if (pill_.Window()) { const auto r = PillLocal(Motion::Now()); pr = pill_.Screen(r); }
         if (PillExpandable(view_.capture)) {
             Accessibility::Node p; p.key = NotePill; p.parent = GroupKey; p.name = NoteSpec::pillLabel(); p.expand = pillOpen_ ? 2 : 1; p.bounds = pr; p.automationId = L"AnnotationContext"; n.push_back(p);

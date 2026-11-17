@@ -618,8 +618,9 @@ function selectSelection(text) {
 // ---- chat intégré (design/chat-integration.md): where the selected element comes from in the code, and the mark an
 // agent's turn leaves on it. Both are asked by the host only while the chat panel is open; nothing runs otherwise.
 // source(): debug data only, read synchronously, never guessed — Astro's data-astro-source-file / -loc on the element
-// or one of its 10 ancestors; React's fiber (_debugSource of the element's fiber or of its owners, React < 19; the
-// `__source` prop where a build keeps it). The host checks the path against the project folder (it must exist there).
+// (depth 0) or on one of its 10 ancestors (depth > 0: the host gives that one to the agent as « nearest ancestor », never
+// as the element's own line); React's fiber of the element itself (_debugSource of that fiber or of its owners,
+// React < 19; the `__source` prop where a build keeps it). The host checks the path against the project folder.
 function fiberOf(el) {
   try { var ks = Object.keys(el); for (var i = 0; i < ks.length; i++) if (ks[i].indexOf('__reactFiber$') === 0 || ks[i].indexOf('__reactInternalInstance$') === 0) return el[ks[i]]; } catch (e) {}
   return null;
@@ -634,12 +635,12 @@ function sourceOf() {
   try {
     for (var n = cur.el, d = 0; n && n.nodeType === 1 && d <= 10; n = n.parentElement, d++) {
       var f = n.getAttribute('data-astro-source-file');
-      if (f) { out.astro = { file: String(f).slice(0, 1024), loc: String(n.getAttribute('data-astro-source-loc') || '').slice(0, 32) }; break; }
+      if (f) { out.astro = { file: String(f).slice(0, 1024), loc: String(n.getAttribute('data-astro-source-loc') || '').slice(0, 32), depth: d }; break; }
     }
   } catch (e) {}
   try {
     var fb = null;
-    for (var m = cur.el, k = 0; m && m.nodeType === 1 && k <= 10 && !fb; m = m.parentElement, k++) fb = fiberOf(m);
+    fb = fiberOf(cur.el);   // the element's own fiber only: an ancestor's source is not this element's
     for (var o = fb, g = 0; o && g < 40; g++) {
       var ds = o._debugSource || (o.memoizedProps && o.memoizedProps.__source) || (o.pendingProps && o.pendingProps.__source);
       if (ds && !out.react && typeof ds.fileName === 'string' && ds.fileName) out.react = { file: ds.fileName.slice(0, 1024), line: +ds.lineNumber || 0, column: +ds.columnNumber || 0 };
