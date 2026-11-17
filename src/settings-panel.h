@@ -830,13 +830,26 @@ private:
         const Design::Box knob{left, track.top + Layout::knobInset, left + Layout::knob + stretch, track.top + Layout::knobInset + Layout::knob};
         Fill(knob, Layout::knob / 2, knobGray, knobGray, knobGray, 1);
     }
+    // Label + trailing value on one line (value and nav rows): where each ends. The value is right-aligned
+    // before the chevron (8 DIP), the label stops 8 DIP before the value (and its glyph).
+    struct TrailingSpan { float labelLeft, labelRight, valueLeft, valueRight; };
+    TrailingSpan Trailing(const Slot& s) const {
+        const bool counted = s.hit == Permissions; const float right = Layout::Chevron(s.top).left;
+        float w = pc_->TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        TrailingSpan t; t.labelLeft = (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft;
+        // The label keeps its natural width; the value (a profile name, a folder) gets the rest and trims. When even
+        // that leaves under 48 DIP, the value keeps 48 and the label trims instead.
+        const float labelW = pc_->TextWidth(s.text, 16, false, false, -.16f);
+        w = std::min(w, std::max(std::min(w, 48.f), right - 8 - (s.valueGlyph ? 16 + 6 : 0) - 8 - t.labelLeft - labelW));
+        t.valueRight = right - 8; t.valueLeft = t.valueRight - w; t.labelRight = right - w - (s.valueGlyph ? 16 + 6 : 0) - 16; return t;
+    }
     // Label + current value + chevron: opens its list of choices (native menu).
     void ValueRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
-        const float w = pc_->TextWidth(s.value, 14, false, false, -.14f);
+        const auto t = Trailing(s); const float w = t.valueRight - t.valueLeft;
         Lead(s, v.hover);
-        Label16(s.text, (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        Label16(s.text, t.labelLeft, s.top + 6, t.labelRight, .7f + .3f * v.hover);
         pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
         pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         // A pending note (applied at the next launch) or a save error under the label: aligned with the label
@@ -943,10 +956,9 @@ private:
         RowFocus(Layout::Row(s.top), s.hit);
         auto* t = pc_->RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
         const bool counted = s.hit == Permissions; // a count reads in tabular figures; a summary in text
-        const float w = pc_->TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        const auto tr = Trailing(s); const float w = tr.valueRight - tr.valueLeft;
         Lead(s, v.hover);
-        const float glyphW = s.valueGlyph ? 16 + 6 : 0;
-        Label16(s.text, (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - glyphW - 16, .7f + .3f * v.hover);
+        Label16(s.text, tr.labelLeft, s.top + 6, tr.labelRight, .7f + .3f * v.hover);
         if (!s.value.empty()) pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, counted, false, counted ? 0.f : -.14f);
         if (s.valueGlyph) { const float x = chevron.left - 8 - w - 6 - 16; pc_->PathGlyph(s.valueGlyph, {x, s.top + 8, x + 16, s.top + 24}, 16, D2D1::ColorF(s.ink.r, s.ink.g, s.ink.b, 1)); }
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
@@ -1929,6 +1941,7 @@ public:
     const AnnotationSettings::Agents& AgentsForTest() const { return agents_; }
     std::size_t AnnotationCountForTest() const { return annotationCount_; }
     Design::Box AgentActionForTest(const Slot& s) const { return AgentAction(s); }
+    TrailingSpan TrailingForTest(const Slot& s) const { return Trailing(s); }
     float TextWidthForTest(const std::wstring& text, float size) const { return pc_->TextWidth(text, size, false, false, size >= 16 ? -.16f : -.14f); }
     void SettleForTest() { slide_.Snap(slide_.Target()); page_.Snap(page_.Target()); for (auto& l : scrolls_) l.Snap(l.Target()); for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(switches_[i].Target()); knobPress_[i].Snap(0); } }
     void ScrollForTest(float y) { scrolls_[depth_].Snap(std::clamp(y, 0.f, MaxScroll(Current(), Motion::Now(), true))); }
