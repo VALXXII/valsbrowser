@@ -207,6 +207,17 @@ struct Renders {
             if (items[i].row.percent >= 100) Expect(b > 200 && b - r > 100, "mute glyph is the accent at 100 %");
             else Expect(std::max({r, g, b}) <= 150 && std::abs(r - b) < 12, items[i].row.percent == 0 ? "mute glyph at 0 % / muted is not bright white" : "mute glyph keeps the 50 % ink in between");
         }
+        // Text fit: the value (« 100 % », narrow no-break space in French) stays inside its column, never past the
+        // panel's 16 DIP right padding (content edge 303).
+        if (!drawer) for (int i = 0; i < static_cast<int>(items.size()) && i < L::popoverRows; ++i) {
+            const auto v = L::Value(L::RowTop(i, drawer)); const float k = dpi / 96.f; bool clear = true;
+            for (int py = static_cast<int>(std::ceil(v.top * k)); py < static_cast<int>(std::floor(v.bottom * k)); ++py)
+                for (int px = static_cast<int>(std::ceil(L::right * k)); px < static_cast<int>(std::floor((L::width - 2) * k)); ++px) {
+                    const UINT32 c = chrome.SurfacePixel((px + .5f) / k, (py + .5f) / k);
+                    if (std::abs(static_cast<int>(c & 0xff) - 0x17) > 6 || std::abs(static_cast<int>((c >> 16) & 0xff) - 0x17) > 6) clear = false;
+                }
+            Expect(clear, "volume value inside its column: nothing past the 16 DIP right padding");
+        }
         // Hovering the mute button: accent tint at 100 %, grey ghost surface otherwise.
         if (hover && AudioPanel::HitPart(hover) == 1) {
             const int i = AudioPanel::HitRow(hover); const auto m = L::Mute(L::RowTop(i, drawer));
@@ -290,6 +301,12 @@ int wmain(int argc, wchar_t** argv) {
             Expect(r.Panel(L"panel-full.png", 144, full, 0, false, AudioPanel::SliderHit(0)), "render 100 %");
             Expect(r.Panel(L"panel-full-mute-hover.png", 144, full, 0, false, AudioPanel::MuteHit(0)), "render 100 % mute hover");
             Expect(AudioPanel::Layout::TickLeft(15) + AudioPanel::Layout::tickWidth + 6 <= AudioPanel::Layout::valueLeft, "the last tick and its glow keep clear of the value");
+            for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) for (UINT dpi : {96u, 120u}) {   // text fit: « 100 % » / « 100% »
+                I18n::SetForProcess(lang); const bool en = lang == I18n::Locale::En;
+                const std::wstring name = std::wstring(L"panel-full-") + (en ? L"en-" : L"fr-") + std::to_wstring(dpi) + L".png";
+                Expect(r.Panel(name.c_str(), dpi, full, 0, false), "render 100 % (text fit, FR/EN, 96/120 dpi)");
+            }
+            I18n::SetForProcess(I18n::Locale::Fr);
         }
         {   // Seven sites: two rows + « Voir tout (7) » (Paper TGK-0), then the drawer (U40-0).
             auto many = items; while (many.size() < 7) { auto copy = items[1]; copy.row.site = L"site" + std::to_wstring(many.size()) + L".example"; copy.row.percent = 72; many.push_back(copy); }

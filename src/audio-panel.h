@@ -197,7 +197,7 @@ public:
         Ticks(index, row.percent, presented, top, s);
         const auto value = R(Layout::Value(top)); const auto text = Audio::PercentText(row.percent);
         const float w = chrome_.TextWidth(text, 13, true, true);
-        const float x = (value.left + value.right - w) / 2;
+        const float x = std::min((value.left + value.right - w) / 2, value.right - w);   // « 100 % » is wider than the column: it ends at the padding
         chrome_.Text(text, {x, value.top, x + w + 1, value.bottom}, 13, Design::Text::secondary, true, true);
     }
     void CloseButton(const Scene& s) {
