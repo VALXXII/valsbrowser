@@ -226,20 +226,16 @@ int main(){
         Expect(chip()==std::vector<const char*>{SiteRequest::Path::camera},"back on the tab: its grant shows again");
         siteStates.erase(live->serial);SyncRequestChip();ChipFrame(NativeChrome::Motion::Now()+NativeChrome::Motion::Milliseconds(400));
         originPrompt.Surface().FinishAnimationsForTest();
-        // Simulated engine args: kind 13 routed as persistent storage; kinds 4 / 0 / 14 keep their own copy;
+        // Persistent storage (kind 13) is never asked (user decision 2026-11-17, like Chrome / Edge): x.com asked on
+        // every visit. Allowed silently, nothing saved, no popover, no chip. Kinds 4 / 0 / 14 keep their own copy;
         // no collapsible help on the popover; each request answered once.
         {
             PermissionArgs store((COREWEBVIEW2_PERMISSION_KIND)13);PermissionRequested(live,&store);run();
-            Expect(promptOpen&&promptActive.spec.permissions==std::vector<int>{13}&&chip()==std::vector<const char*>{SiteRequest::Path::storage},"kind 13: routed as persistent storage, storage chip");
-            const auto& m=originPrompt.Surface().CurrentSpec();
-            Expect(m.title==L"meet.exemple.test veut protéger son stockage local"&&m.subtitle.find(L"otification")==std::wstring::npos,"kind 13: own title, never « notifications »");
-            bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.role==Accessibility::Role::Text||n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;
-            Expect(!help&&store.deferral.completed==0&&store.writes==0,"kind 13: no collapsible help exposed, request pending");
-            ElementsNavigationStarting(live);run();
-            Expect(store.deferral.completed==1&&store.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&store.writes==1&&!promptOpen,"kind 13 + navigation: denied once, not saved");
-            originPrompt.Surface().FinishAnimationsForTest();
+            Expect(!promptOpen&&store.deferral.completed==1&&store.state==COREWEBVIEW2_PERMISSION_STATE_ALLOW&&store.writes==1,"kind 13: allowed silently, completed once, no popover");
+            Expect(chip().empty()&&!SiteStateOf(live),"kind 13: no chip, nothing recorded for the site");
             PermissionArgs bell2(COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS);PermissionRequested(live,&bell2);run();
             Expect(originPrompt.Surface().CurrentSpec().title==L"meet.exemple.test veut vous envoyer des notifications"&&originPrompt.Surface().CurrentSpec().notices.empty()&&originPrompt.Surface().CurrentSpec().checkLabel.empty(),"kind 4: notifications title, no note, no check");
+            {bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.role==Accessibility::Role::Text||n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;Expect(!help&&bell2.deferral.completed==0,"kind 4: no collapsible help exposed, request pending");}
             originPrompt.Surface().Finish(OP::Id::Cancel);run();
             Expect(bell2.deferral.completed==1&&bell2.state==COREWEBVIEW2_PERMISSION_STATE_DENY,"kind 4: Bloquer denies once (remember policy unchanged)");
             ElementsNavigationStarting(live);run();originPrompt.Surface().FinishAnimationsForTest();
