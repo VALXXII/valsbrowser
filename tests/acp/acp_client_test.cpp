@@ -244,6 +244,8 @@ void TestStartAndReply() {
     CHECK(Acp::FindModeOption(s.configOptions) && s.configOptions.size() == 4 && s.configOptions[3].type == "boolean" &&
           s.configOptions[3].currentValue == "false");
     CHECK(h.session.phase() == Acp::Phase::Ready && h.session.processId() != 0);
+    const Event* login = First(h.events, Event::Type::AuthStatus);
+    CHECK(login && login->text == "account");  // the kind only: the account's e-mail is never kept
 
     // What the agent received: capabilities as Gui declares them, the absolute cwd, the stdio MCP server.
     const std::string log = h.LogText();
@@ -463,6 +465,8 @@ void TestAuth() {
     CHECK(started.started.state == Acp::StartState::AuthRequired && started.started.error.code == Acp::ErrorCode::AuthRequired &&
           started.started.error.rpcCode == -32000 && started.started.error.detail == "Please run `fake login` first");
     CHECK(started.started.authMethods.size() == 2 && started.started.sessionId.empty());
+    const Event* login = First(h.events, Event::Type::AuthStatus);
+    CHECK(login && login->text == "none");  // signed out, said by the agent itself
     CHECK(h.session.phase() == Acp::Phase::Stopped && h.session.WaitStopped(10000));
     CHECK(!h.session.Prompt({Acp::ContentBlock::Text("x")}));
     CHECK(!h.session.Authenticate("fake-terminal"));  // a terminal method is run by the client itself
@@ -774,6 +778,112 @@ void TestEnvironmentAndCwd() {
     CHECK(Contains(h.LogText(), "cwd " + Narrow(cwd)));  // and session/new carries it, accents included
 }
 
+// The "apply" scenario: the fake agent really edits a file of the session folder (for the browser's sandbox).
+void TestApplyEdit() {
+    const std::wstring project = g_tmp + L"\\apply projet";
+    RemoveTree(project);
+    CHECK(MakeDirs(project + L"\\src"));
+    const std::wstring file = project + L"\\src\\Hero.css", outside = g_tmp + L"\\outside.txt";
+    CHECK(WriteFileText(file, ".hero {\n  color: red;\n  padding: 8px;\n}\n") && WriteFileText(outside, "padding: 8px;\n"));
+    Harness h;
+    Acp::StartOptions o = h.Options({L"--edit", L"src/Hero.css|padding: 8px|padding: 16px"});
+    o.cwd = Narrow(project);
+    CHECK(h.session.Start(o));
+    Event started, ask, end;
+    CHECK(h.Started(started) && started.started.state == Acp::StartState::Ready);
+
+    // Mode "default": the edit waits for the permission; refused, nothing is written.
+    h.cursor = h.events.size();
+    CHECK(h.session.Prompt({Acp::ContentBlock::Text("Préambule : apply plan tool mode"), Acp::ContentBlock::Text("Agrandis le bouton")}));
+    CHECK(h.Wait(Event::Type::PermissionRequest, ask));
+    CHECK(ask.permission.toolCall.kind == "edit" && ask.permission.toolCall.title == "Modifier src/Hero.css" && ask.permission.options.size() == 3);
+    CHECK(ask.permission.toolCall.locations.size() == 1 && ask.permission.toolCall.locations[0].path == Narrow(file) && ask.permission.toolCall.locations[0].line == 3);
+    CHECK(ask.permission.toolCall.diffs.size() == 1 && ask.permission.toolCall.diffs[0].path == Narrow(file) &&
+          ask.permission.toolCall.diffs[0].oldText == ".hero {\n  color: red;\n  padding: 8px;\n}\n" &&
+          ask.permission.toolCall.diffs[0].newText == ".hero {\n  color: red;\n  padding: 16px;\n}\n");
+    CHECK(ReadFileText(file) == ".hero {\n  color: red;\n  padding: 8px;\n}\n");  // not yet
+    CHECK(h.session.RespondPermission(ask.permission.requestId, "reject"));
+    CHECK(h.Wait(Event::Type::TurnEnded, end) && end.stopReason == "end_turn");
+    CHECK(ReadFileText(file) == ".hero {\n  color: red;\n  padding: 8px;\n}\n");
+
+    // Allowed: the file changes on disk, and the tool call says where and what.
+    const std::size_t from = h.events.size();
+    h.cursor = from;
+    CHECK(h.session.Prompt({Acp::ContentBlock::Text("apply")}));
+    CHECK(h.Wait(Event::Type::PermissionRequest, ask));
+    CHECK(h.session.RespondPermission(ask.permission.requestId, "allow"));
+    CHECK(h.Wait(Event::Type::TurnEnded, end) && end.stopReason == "end_turn");
+    CHECK(ReadFileText(file) == ".hero {\n  color: red;\n  padding: 16px;\n}\n");
+    const std::vector<Event> turn(h.events.begin() + std::ptrdiff_t(from), h.events.end());
+    const Event* call = First(turn, Event::Type::ToolCall);
+    CHECK(call && call->tool.kind == "edit" && call->tool.status == "pending" && call->tool.locations.size() == 1 && call->tool.diffs.size() == 1 &&
+          Contains(call->tool.rawInput, "\"old_string\":\"padding: 8px\""));
+    const Event* done = nullptr;
+    for (const auto& e : turn)
+        if (e.type == Event::Type::ToolCallUpdate && e.tool.status == "completed") done = &e;
+    CHECK(done && done->tool.id == call->tool.id && done->tool.title == "Modifié src/Hero.css" && done->tool.diffs.size() == 1 &&
+          done->tool.locations.size() == 1 && done->tool.locations[0].line == 3);
+    CHECK(Contains(Joined(turn, Event::Type::MessageChunk), "C'est fait") && Contains(h.LogText(), "applied src/Hero.css"));
+
+    // The edit given in the message; in "acceptEdits" nothing is asked.
+    CHECK(h.session.SetMode("acceptEdits"));
+    Event mode;
+    CHECK(h.Wait(Event::Type::ModesChanged, mode));
+    const auto direct = h.Turn("apply src/Hero.css|color: red|color: blue", end);
+    CHECK(Count(direct, Event::Type::PermissionRequest) == 0 && end.stopReason == "end_turn");
+    CHECK(ReadFileText(file) == ".hero {\n  color: blue;\n  padding: 16px;\n}\n");
+    // In "plan" nothing is written.
+    CHECK(h.session.SetMode("plan"));
+    CHECK(h.Wait(Event::Type::ModesChanged, mode));
+    const auto planned = h.Turn("apply src/Hero.css|color: blue|color: green", end);
+    CHECK(Count(planned, Event::Type::Plan) == 1 && Count(planned, Event::Type::ToolCall) == 0 && ReadFileText(file) == ".hero {\n  color: blue;\n  padding: 16px;\n}\n");
+    CHECK(h.session.SetMode("acceptEdits"));
+    CHECK(h.Wait(Event::Type::ModesChanged, mode));
+
+    // A path that leaves the session folder is refused, whatever its form; a missing text or file fails cleanly.
+    for (const char* hostile : {"apply ../outside.txt|padding: 8px|x", "apply src/../../outside.txt|padding: 8px|x", "apply ..\\outside.txt|padding: 8px|x"}) {
+        const auto refused = h.Turn(hostile, end);
+        const Event* failed = First(refused, Event::Type::ToolCall);
+        CHECK(failed && failed->tool.status == "failed" && Contains(Joined(refused, Event::Type::MessageChunk), "refused") && end.stopReason == "end_turn");
+    }
+    const auto absolute = h.Turn("apply " + Narrow(outside) + "|padding: 8px|x", end);
+    CHECK(Contains(Joined(absolute, Event::Type::MessageChunk), "refused"));
+    CHECK(ReadFileText(outside) == "padding: 8px;\n");
+    const auto missingText = h.Turn("apply src/Hero.css|no such text|x", end);
+    CHECK(Contains(Joined(missingText, Event::Type::MessageChunk), "text not found") && First(missingText, Event::Type::ToolCall)->tool.status == "failed");
+    const auto missingFile = h.Turn("apply src/Absent.css|a|b", end);
+    CHECK(Contains(Joined(missingFile, Event::Type::MessageChunk), "cannot read"));
+    CHECK(ReadFileText(file) == ".hero {\n  color: blue;\n  padding: 16px;\n}\n");
+    // Other scenarios stay reachable by their word, and "reply" still answers without touching anything.
+    const auto reply = h.Turn("reply", end);
+    CHECK(Joined(reply, Event::Type::MessageChunk) == "Bonjour — voici la réponse." && Count(reply, Event::Type::ToolCall) == 0);
+    h.session.Dispose();
+    CHECK(h.session.WaitStopped(10000));
+
+    // The same edit configured by the environment variable; "always allow" stops the questions.
+    h.events.clear();
+    h.cursor = 0;
+    Acp::StartOptions viaEnv;
+    viaEnv.cwd = Narrow(project);
+    viaEnv.resolve = [](const Acp::ResolveContext&) {
+        Acp::Resolution r;
+        r.launch.exe = g_agent;
+        r.launch.freshUserEnvironment = false;
+        r.launch.env = {{L"FAKE_AGENT_EDIT", L"src/Hero.css|16px|24px"}};
+        return r;
+    };
+    CHECK(h.session.Start(viaEnv));
+    CHECK(h.Started(started) && started.started.state == Acp::StartState::Ready);
+    h.cursor = h.events.size();
+    CHECK(h.session.Prompt({Acp::ContentBlock::Text("Plus grand encore")}));
+    CHECK(h.Wait(Event::Type::PermissionRequest, ask));
+    CHECK(h.session.RespondPermission(ask.permission.requestId, "always"));
+    CHECK(h.Wait(Event::Type::TurnEnded, end));
+    CHECK(ReadFileText(file) == ".hero {\n  color: blue;\n  padding: 24px;\n}\n");
+    const auto again = h.Turn("apply src/Hero.css|24px|32px", end);
+    CHECK(Count(again, Event::Type::PermissionRequest) == 0 && ReadFileText(file) == ".hero {\n  color: blue;\n  padding: 32px;\n}\n");
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -806,6 +916,7 @@ int wmain(int argc, wchar_t** argv) {
         {"big prompt", TestBigPromptDoesNotBlock},
         {"resume", TestResume},
         {"environment + cwd", TestEnvironmentAndCwd},
+        {"apply: a real edit in the project", TestApplyEdit},
     };
     for (const auto& t : tests) {
         const int before = Failures();

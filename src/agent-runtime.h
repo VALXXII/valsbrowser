@@ -166,6 +166,20 @@ void RemoveStale(const Environment& env);
 Acp::Resolution ResolveLaunch(const Environment& env, Agent agent, const Acp::ResolveContext& context);
 Acp::Resolver MakeResolver(Environment env, Agent agent);
 
+// ---------------------------------------------------------------- the agent's own permission modes
+// Which of the agent's modes stand for the product's three choices. The session's announced list still decides
+// what is offered: an id the agent does not announce is skipped, in order. The session starts in the mode the
+// user's own agent configuration picks (seen: Claude "auto", Codex "agent"), so the integration sets the mode it
+// wants right after Started. Checked against the real adapters (design/chat-acp.md section 9).
+struct ModeMap {
+    std::vector<std::string> ask;        // "Demander": every change waits for a permission
+    std::vector<std::string> automatic;  // "Auto", best first
+    std::string planMode;                // "Planifier" as a session mode (Session::SetMode), or ""
+    std::string planOption, planOn, planOff;  // or as a config option (Session::SetConfigOption), or ""
+    std::vector<std::string> never;      // modes that ask for nothing at all: not offered
+};
+ModeMap GetModeMap(Agent agent);
+
 // ---------------------------------------------------------------- terminal sign-in
 // Runs the CLI's own sign-in for an ACP "terminal" method (AuthMethod::terminal) in a visible console window: the
 // CLI opens the user's web browser and exits once signed in. The adapter's leading "--cli" argument is dropped.
@@ -186,6 +200,9 @@ private:
     void* job_ = nullptr;
 };
 SignIn RunTerminalSignIn(const Environment& env, Agent agent, const Acp::AuthMethod& method, std::string* error = nullptr);
+// The CLI's own sign-in as a terminal method, for when the agent cannot be asked (the adapter is not downloaded yet,
+// or Detection::login says SignedOut before any session): `claude auth login --claudeai`, `codex login`.
+Acp::AuthMethod DefaultTerminalSignIn(Agent agent);
 // The sign-in method to offer first, or nullptr: a subscription login before an API-key one.
 const Acp::AuthMethod* PreferredSignIn(const std::vector<Acp::AuthMethod>& methods);
 

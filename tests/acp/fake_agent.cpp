@@ -16,6 +16,8 @@
 //   --child               on session/new start a long-lived child process (Job Object test)
 //   --read-delay <ms>     after answering session/new, do not read stdin for this long (slow reader)
 //   --env-dump <file>     write a few environment variables of this process
+//   --edit <spec>         the edit of the "apply" scenario: "<path relative to the session folder>|<find>|<replace>"
+//                         (also %FAKE_AGENT_EDIT%). With it, a message that names no other scenario applies the edit.
 //   --sleep               (internal) the long-lived child
 //
 // Scenarios, chosen by a word in the prompt's text:
@@ -27,9 +29,15 @@
 //   error-rate / error-auth   JSON-RPC error                            big          "received <n> image bytes"
 //   echo                the text back                                   garbage      invalid lines inside the turn
 //   commands            available_commands_update                       title        session_info_update
+//   apply               REALLY replaces a text in a file of the session folder (tool_call kind edit, locations, diff):
+//                       asks permission in mode "default", writes at once in "acceptEdits", only plans in "plan";
+//                       refuses a path outside the session folder. "apply <path>|<find>|<replace>" in the message, or --edit.
+// The scenario word is looked for in the LAST text block of the prompt only (the user's message), so a preamble or
+// an element description placed before it never triggers one.
 #include <windows.h>
 
 #include <condition_variable>
+#include <functional>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -60,6 +68,7 @@ void Append(const std::wstring& path, const std::string& text) {
 
 struct Options {
     std::wstring log, authFile, envDump;
+    std::string edit;  // --edit / FAKE_AGENT_EDIT: "path|find|replace"
     std::string crashAt;
     bool silent = false, noImages = false, resume = false, garbage = false, child = false;
     int protocol = 1;
@@ -159,7 +168,7 @@ void Fail(const SJ::Value& id, int code, const std::string& message, SJ::Value d
 }
 
 // ---------------------------------------------------------------- session state
-std::string sessionId;
+std::string sessionId, sessionCwd;
 std::string mode = "default", model = "sonnet", effort = "medium";
 bool cancelled = false;
 std::int64_t nextRequest = 1000;
@@ -238,15 +247,149 @@ void Crash(int code, const char* why) {
     ExitProcess(UINT(code));
 }
 
+// ---------------------------------------------------------------- a real edit in the project folder
+std::wstring Widen(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), nullptr, 0);
+    std::wstring w(std::size_t(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), w.data(), n);
+    return w;
+}
+// The absolute path of `relative` inside the session folder, or "" when it would leave it.
+std::wstring InsideProject(const std::string& relative) {
+    const std::wstring rel = Widen(relative);
+    if (rel.empty() || sessionCwd.empty() || rel[0] == L'\\' || rel[0] == L'/' || rel.find(L':') != std::wstring::npos) return {};
+    wchar_t full[4096], root[4096];
+    const DWORD n = GetFullPathNameW((Widen(sessionCwd) + L"\\" + rel).c_str(), 4096, full, nullptr);
+    const DWORD r = GetFullPathNameW(Widen(sessionCwd).c_str(), 4096, root, nullptr);
+    if (!n || n >= 4096 || !r || r >= 4096) return {};
+    std::wstring base(root, r);
+    if (base.back() != L'\\') base += L'\\';
+    if (n <= base.size() || _wcsnicmp(full, base.c_str(), base.size()) != 0) return {};
+    return std::wstring(full, n);
+}
+bool ReadWhole(const std::wstring& path, std::string& out) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    char b[65536];
+    DWORD got = 0;
+    out.clear();
+    while (ReadFile(f, b, sizeof b, &got, nullptr) && got) out.append(b, got);
+    CloseHandle(f);
+    return true;
+}
+bool WriteWhole(const std::wstring& path, const std::string& data) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD put = 0;
+    const bool ok = WriteFile(f, data.data(), DWORD(data.size()), &put, nullptr) && put == data.size();
+    CloseHandle(f);
+    return ok;
+}
+// "apply": really replaces a text in a file of the session folder, like an agent's Edit tool. `spec` is
+// "<path relative to the session folder>|<text to find>|<replacement>". In the mode "default" the edit waits for a
+// permission (with the diff); in "acceptEdits" it is done at once; in "plan" nothing is written.
+void Apply(const std::string& spec, const std::function<void(const char*)>& end) {
+    const std::size_t bar1 = spec.find('|'), bar2 = bar1 == std::string::npos ? bar1 : spec.find('|', bar1 + 1);
+    if (bar2 == std::string::npos) {
+        Chunk("agent_message_chunk", "apply: no edit configured (FAKE_AGENT_EDIT=path|find|replace)");
+        return end("end_turn");
+    }
+    const std::string relative = spec.substr(0, bar1), find = spec.substr(bar1 + 1, bar2 - bar1 - 1), replacement = spec.substr(bar2 + 1);
+    const std::wstring path = InsideProject(relative);
+    const std::string shown = path.empty() ? relative : Narrow(path);
+    const auto call = [&](const char* status, SJ::Value content, std::int64_t line) {
+        SJ::Value location = Obj({{"path", S(shown)}});
+        if (line > 0) location.Set("line", I(line));
+        return Obj({{"toolCallId", S("edit-" + std::to_string(nextRequest))}, {"title", S("Modifier " + relative)}, {"kind", S("edit")}, {"status", S(status)},
+                    {"content", std::move(content)}, {"locations", Arr({std::move(location)})},
+                    {"rawInput", Obj({{"file_path", S(shown)}, {"old_string", S(find)}, {"new_string", S(replacement)}})}});
+    };
+    const auto refuse = [&](const std::string& why) {
+        SJ::Value update = call("failed", Arr({Obj({{"type", S("content")}, {"content", Obj({{"type", S("text")}, {"text", S(why)}})}})}), 0);
+        update.Set("sessionUpdate", S("tool_call"));
+        Update(std::move(update));
+        Chunk("agent_message_chunk", "apply: " + why);
+        end("end_turn");
+    };
+    std::string before;
+    if (path.empty()) return refuse("refused, the path leaves the project folder");
+    if (!ReadWhole(path, before)) return refuse("cannot read " + relative);
+    const std::size_t at = find.empty() ? std::string::npos : before.find(find);
+    if (at == std::string::npos) return refuse("text not found in " + relative);
+    const std::string after = before.substr(0, at) + replacement + before.substr(at + find.size());
+    std::int64_t line = 1;
+    for (std::size_t i = 0; i < at; ++i) line += before[i] == '\n';
+    const SJ::Value diff = Obj({{"type", S("diff")}, {"path", S(shown)}, {"oldText", S(before)}, {"newText", S(after)}});
+    if (mode == "plan") {
+        Update(Obj({{"sessionUpdate", S("plan")},
+                    {"entries", Arr({Obj({{"content", S("Remplacer « " + find + " » par « " + replacement + " » dans " + relative)}, {"priority", S("medium")},
+                                          {"status", S("pending")}})})}}));
+        Chunk("agent_message_chunk", "Plan prêt, rien n'a été modifié.");
+        return end("end_turn");
+    }
+    SJ::Value started = call("pending", Arr({diff}), line);
+    const std::string callId = started.Get("toolCallId")->string;
+    started.Set("sessionUpdate", S("tool_call"));
+    Update(std::move(started));
+    const auto update = [&](const char* status) {
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(callId)}, {"status", S(status)}}));
+    };
+    if (mode == "default") {
+        const std::int64_t request = nextRequest++;
+        SJ::Value asked = call("pending", Arr({diff}), line);
+        asked.Set("toolCallId", S(callId));
+        Send(Obj({{"jsonrpc", S("2.0")}, {"id", I(request)}, {"method", S("session/request_permission")},
+                  {"params", Obj({{"sessionId", S(sessionId)}, {"toolCall", std::move(asked)},
+                                  {"options", Arr({Obj({{"optionId", S("allow")}, {"name", S("Autoriser")}, {"kind", S("allow_once")}}),
+                                                   Obj({{"optionId", S("always")}, {"name", S("Toujours autoriser")}, {"kind", S("allow_always")}}),
+                                                   Obj({{"optionId", S("reject")}, {"name", S("Refuser")}, {"kind", S("reject_once")}})})}})}}));
+        SJ::Value response;
+        while (!Pump(1000, request, &response)) {}
+        const SJ::Value* outcome = response.Get("outcome");
+        const std::string option = Str(outcome, "optionId");
+        if (Str(outcome, "outcome") != "selected") {
+            update("failed");
+            Pump(300);
+            cancelled = true;
+            return end("cancelled");
+        }
+        if (option == "reject") {
+            update("failed");
+            Chunk("agent_message_chunk", "D'accord, je n'ai rien modifié.");
+            return end("end_turn");
+        }
+        if (option == "always") mode = "acceptEdits";  // like "always allow": the next edits do not ask
+    } else {
+        ++nextRequest;
+    }
+    update("in_progress");
+    Pump(20);
+    if (!WriteWhole(path, after)) {
+        update("failed");
+        Chunk("agent_message_chunk", "apply: cannot write " + relative);
+        return end("end_turn");
+    }
+    Append(opt.log, "applied " + relative + "\n");
+    Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(callId)}, {"status", S("completed")}, {"title", S("Modifié " + relative)},
+                {"content", Arr({diff})}, {"locations", Arr({Obj({{"path", S(shown)}, {"line", I(line)}})})}}));
+    Chunk("agent_message_chunk", "C'est fait : « " + find + " » remplacé par « " + replacement + " » dans " + relative + ".");
+    Update(Obj({{"sessionUpdate", S("usage_update")}, {"used", I(2345)}, {"size", I(200000)}}));
+    end("end_turn");
+}
+
 // ---------------------------------------------------------------- the turn
 void Prompt(const SJ::Value& id, const SJ::Value* params) {
     if (opt.crashAt == "prompt") Crash(3, "crash at prompt");
-    std::string text;
+    std::string text, all;
     std::size_t imageBytes = 0, links = 0;
     if (const SJ::Value* blocks = params ? params->Get("prompt") : nullptr)
         for (const SJ::Value& b : blocks->items) {
             const std::string type = Str(&b, "type");
-            if (type == "text") text += Str(&b, "text") + "\n";
+            if (type == "text") {
+                text = Str(&b, "text") + "\n";  // scenarios are chosen in the LAST text block: the user's own message
+                all += text;
+            }
             else if (type == "image") imageBytes += Str(&b, "data").size();
             else if (type == "resource_link") ++links;
         }
@@ -265,7 +408,7 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
     if (has("refusal")) return end("refusal");
     if (has("max_tokens")) return end("max_tokens");
     if (has("echo")) {
-        Chunk("agent_message_chunk", text);
+        Chunk("agent_message_chunk", all);
         return end("end_turn");
     }
     if (has("big")) {
@@ -301,6 +444,13 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
     if (has("mode")) {
         mode = "plan";
         Update(Obj({{"sessionUpdate", S("current_mode_update")}, {"currentModeId", S(mode)}}));
+    }
+    if (has("apply")) {
+        // "apply <path>|<find>|<replace>" in the message, else the configured edit.
+        const std::size_t at = text.find("apply ");
+        std::string spec = at == std::string::npos ? std::string() : text.substr(at + 6, text.find('\n', at) - at - 6);
+        if (spec.find('|') == std::string::npos) spec = opt.edit;
+        return Apply(spec, end);
     }
     if (has("tool") || has("permission")) {
         const SJ::Value diff = Obj({{"type", S("diff")}, {"path", S("C:\\projet\\src\\Hero.tsx")},
@@ -383,6 +533,9 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
         }
         return end("end_turn");
     }
+    // With an edit configured, a message that asks for nothing else is a request to apply it.
+    if (!opt.edit.empty() && !has("reply") && !has("think") && !has("plan") && !has("mode") && !has("commands") && !has("title") && !has("garbage"))
+        return Apply(opt.edit, end);
     for (const char* part : {"Bonjour", " — voici", " la réponse."}) {
         Chunk("agent_message_chunk", part);
         Pump(15);
@@ -425,6 +578,10 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
                                               Obj({{"id", S("fake-terminal")}, {"name", S("Fake terminal login")}, {"type", S("terminal")},
                                                    {"args", Arr({S("--cli"), S("login")})}, {"env", Obj({{"FAKE_LOGIN", S("1")}})}})})},
                          {"agentInfo", Obj({{"name", S("fake-agent")}, {"title", S("Fake Agent")}, {"version", S("1.2.3")}})}}));
+        // Like Claude's adapter: the login the agent itself uses, pushed right after initialize.
+        Send(Obj({{"jsonrpc", S("2.0")}, {"method", S("_auth/status_update")},
+                  {"params", Obj({{"authStatus", Obj({{"kind", S(SignedIn() ? "account" : "none")}, {"label", S("Fake")},
+                                                      {"account", Obj({{"email", S("someone@example.test")}})}})}})}}));
         return false;
     }
     if (m == "authenticate") {
@@ -452,7 +609,8 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
             Chunk("agent_message_chunk", "REPLAYED HISTORY");
         }
         sessionId = fresh ? "sess-" + std::to_string(GetCurrentProcessId()) : "sess-known";
-        Append(opt.log, "cwd " + Str(params, "cwd") + "\n");
+        sessionCwd = Str(params, "cwd");
+        Append(opt.log, "cwd " + sessionCwd + "\n");
         if (opt.child) StartChild();
         SJ::Value result = Obj({{"modes", Modes()}, {"configOptions", ConfigOptions()}});
         if (fresh) result.Set("sessionId", S(sessionId));
@@ -525,6 +683,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--resume") opt.resume = true;
         else if (a == L"--garbage") opt.garbage = true;
         else if (a == L"--child") opt.child = true;
+        else if (a == L"--edit") opt.edit = Narrow(value());
         else if (a == L"--cli") cli = true;
         else if (cli && cliVerb.empty()) cliVerb = a;
     }
@@ -532,6 +691,11 @@ int wmain(int argc, wchar_t** argv) {
         wchar_t buffer[1024];
         const DWORD n = GetEnvironmentVariableW(L"FAKE_AGENT_AUTH_FILE", buffer, 1024);
         if (n && n < 1024) opt.authFile.assign(buffer, n);
+    }
+    if (opt.edit.empty()) {
+        wchar_t buffer[4096];
+        const DWORD n = GetEnvironmentVariableW(L"FAKE_AGENT_EDIT", buffer, 4096);
+        if (n && n < 4096) opt.edit = Narrow(std::wstring(buffer, n));
     }
     if (cliVerb == L"login" || (argc >= 2 && std::wstring(argv[1]) == L"login")) {  // the CLI's own sign-in
         Append(opt.authFile, "signed-in\n");

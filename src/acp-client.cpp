@@ -1127,6 +1127,17 @@ struct Run : std::enable_shared_from_this<Run> {
         Emit(std::move(e));
     }
 
+    // Extension of Claude's adapter: which login the agent process itself uses, pushed soon after initialize and
+    // when it changes. Only the kind is kept (never the account's e-mail or organisation).
+    void OnAuthStatus(const SJ::Value* params) {
+        const std::string kind = Str(Object(params, "authStatus"), "kind", 32);
+        if (kind.empty()) return;
+        Event e;
+        e.type = Event::Type::AuthStatus;
+        e.text = kind;
+        Emit(std::move(e));
+    }
+
     // ------------------------------------------------------------ requests from the agent
     void EmitQuestion(Ask& ask, const std::string& baseId) {  // mu held
         const FormQuestion& q = ask.questions[ask.index];
@@ -1245,6 +1256,7 @@ struct Run : std::enable_shared_from_this<Run> {
             const SJ::Value* params = msg.Get("params");
             if (id && !id->IsNull()) OnAgentRequest(method->string, *id, params);
             else if (method->string == "session/update") OnUpdate(params);
+            else if (method->string == "_auth/status_update") OnAuthStatus(params);
             return;  // other notifications are ignored
         }
         if (id && id->IsNumber() && id->integral && (msg.Get("result") || msg.Get("error"))) {

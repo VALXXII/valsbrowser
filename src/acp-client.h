@@ -223,6 +223,8 @@ struct Event {
         Usage,                 // usage
         SessionTitle,          // text
         Notice,                // text, severity
+        AuthStatus,            // text: the login the agent itself uses, when it says so (Claude's adapter):
+                               // "none" = signed out, else "account" | "api_key" | "gateway" | "external"
         TurnEnded,             // stopReason, or error
         RequestFailed,         // request ("set_mode" | "set_config_option"), error
         Warning,               // text: a line that was not valid JSON-RPC was ignored (developer detail)
