@@ -533,23 +533,39 @@ int main(){
           Expect(answered==4&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
           Expect(!VaultOfferStillValid(live,o)&&!VaultOfferStillValid(nullptr,o),"capture: the show/answer guard refuses a tab whose engine source is not the capture origin (PumpPrompt and the answer use it; shown path covered by vault_e2e)");
           vaultCapture.clear(); }
-        // Owner decision B: the vault's activation date, the engine store cleared 30 days later (injected clock), the one-time notice.
+        // Owner decision B, review V-3: the activation date, the engine store cleared after 30 DAYS OF USE (injected clock),
+        // only with « Mots de passe » on and a readable vault, then the one-time notice.
         { const std::wstring mdir=L"build/elements-integration/vault-migration";std::error_code mec;std::filesystem::remove_all(mdir,mec);std::filesystem::create_directories(mdir,mec);
-          const std::wstring savedDir=dataDir;dataDir=mdir;const bool wasActive=Vault::ActiveFlag();const std::int64_t day=24LL*3600*1000,t0=1790000000000LL;
-          Vault::ActiveFlag()=false;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(mdir+L"\\vault-engine-migration"),"migration: vault inactive (dev/release): nothing recorded, nothing cleared");
-          Vault::ActiveFlag()=true;privateWindow=true;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(mdir+L"\\vault-engine-migration"),"migration: a private window records and clears nothing");
+          const std::wstring savedDir=dataDir;dataDir=mdir;const bool wasActive=Vault::ActiveFlag(),wasOn=settings.passwords;const std::int64_t day=24LL*3600*1000,t0=1790000000000LL;
+          const std::wstring state=mdir+L"\\vault-engine-migration";settings.passwords=true;
+          Vault::ActiveFlag()=false;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state),"migration: vault inactive (dev/release): nothing recorded, nothing cleared");
+          Vault::ActiveFlag()=true;privateWindow=true;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state),"migration: a private window records and clears nothing");
           privateWindow=false;
-          Expect(VaultEngineMigrationStep(t0)==EngineStep::Recorded&&VaultEngineMigrationStep(t0+day)==EngineStep::Nothing,"migration: the first active start records the activation date (once)");
-          Expect(VaultEngineMigrationStep(t0+30*day-1)==EngineStep::Nothing&&VaultEngineMigrationStep(t0+30*day)==EngineStep::ClearNow,"migration: the engine store is cleared from day 30, not before");
+          Expect(VaultEngineMigrationStep(t0)==EngineStep::Recorded&&VaultEngineMigrationStep(t0+3600*1000)==EngineStep::Nothing,"migration: the first active start records the activation date (once)");
+          bool early=false;for(int k=1;k<29;++k)early=early||VaultEngineMigrationStep(t0+k*day)!=EngineStep::Nothing;
+          Expect(!early,"migration: 29 days of use: nothing cleared");
+          Expect(VaultEngineMigrationStep(t0+400*day)==EngineStep::ClearNow,"migration: the 30th day of use (whatever the calendar says): due");
+          settings.passwords=false;Expect(VaultEngineMigrationStep(t0+401*day)==EngineStep::Nothing,"V-3: never while « Mots de passe » is off");settings.passwords=true;
+          { std::ofstream bad(std::filesystem::path(mdir+L"\\passwords"),std::ios::binary);bad<<"pas un coffre\n"; }
+          Expect(VaultEngineMigrationStep(t0+402*day)==EngineStep::Nothing,"V-3: never while the vault is unreadable");
+          std::filesystem::remove(mdir+L"\\passwords",mec);
+          Expect(VaultEngineMigrationStep(t0+403*day)==(Vault::EngineCleanup==Vault::EngineCleanupMode::Automatic?EngineStep::ClearNow:EngineStep::OfferManual),"migration: due again once readable; what happens then is the one switch (automatic clearing or a manual offer)");
           Expect(VaultEngineNotice().empty(),"migration: no notice before the engine store was cleared");
-          VaultEngineCleared(t0+30*day);
-          Expect(VaultEngineMigrationStep(t0+90*day)==EngineStep::Nothing,"migration: cleared once, never again");
+          VaultEngineCleared(t0+403*day);
+          Expect(VaultEngineMigrationStep(t0+404*day)==EngineStep::Nothing,"migration: cleared once, never again");
           const std::wstring n1=VaultEngineNotice(),n2=VaultEngineNotice();
           Expect(!n1.empty()&&n1==n2&&n1.find(L"30")!=std::wstring::npos,"migration: the notice is shown (and stays for this session)");
           vaultNoticeShownThisRun=false;Expect(VaultEngineNotice().empty(),"migration: the notice is one-time (gone at the next start)");
-          { std::ofstream bad(std::filesystem::path(mdir+L"\\vault-engine-migration"),std::ios::binary);bad<<"autre chose\n"; }
-          Expect(VaultEngineMigrationStep(t0+400*day)==EngineStep::Recorded,"migration: an unreadable state file is never taken as an old date (re-recorded now: never an early clear)");
-          Vault::ActiveFlag()=wasActive;dataDir=savedDir;std::filesystem::remove_all(mdir,mec); }
+          { std::ofstream bad(std::filesystem::path(state),std::ios::binary);bad<<"autre chose\n"; }
+          Expect(VaultEngineMigrationStep(t0+405*day)==EngineStep::Recorded,"migration: an unreadable state file is never taken as an old date (re-recorded: never an early clear)");
+          settings.passwords=wasOn;Vault::ActiveFlag()=wasActive;dataDir=savedDir;std::filesystem::remove_all(mdir,mec); }
+        // Review V-5: the capture (DevTools domains) is attached only while it can be used.
+        { const bool wasActive=Vault::ActiveFlag(),wasOn=settings.passwords;
+          Vault::ActiveFlag()=false;settings.passwords=true;Expect(!VaultCaptureWanted(),"V-5: vault inactive (dev/release): no DevTools capture on any tab");
+          Vault::ActiveFlag()=true;settings.passwords=false;Expect(!VaultCaptureWanted(),"V-5: « Mots de passe » off: no DevTools capture");
+          settings.passwords=true;privateWindow=true;Expect(!VaultCaptureWanted(),"V-5: private window: no capture");
+          privateWindow=false;Expect(VaultCaptureWanted(),"V-5: vault active, « Mots de passe » on, normal window: capture attached");
+          Vault::ActiveFlag()=wasActive;settings.passwords=wasOn; }
         // « Effacer en quittant » says what it really deletes (ClearBrowsingDataAll includes the engine's saved passwords and forms).
         { const bool wasActive=Vault::ActiveFlag();Vault::ActiveFlag()=false;const std::wstring off=ClearOnExitNote();Vault::ActiveFlag()=true;const std::wstring on=ClearOnExitNote();Vault::ActiveFlag()=wasActive;
           Expect(off.find(L"mots de passe")!=std::wstring::npos&&on.find(L"mots de passe")!=std::wstring::npos&&off!=on,"clear on exit: the note names the saved passwords it deletes (vault inactive: all of them; active: those not kept yet)"); }

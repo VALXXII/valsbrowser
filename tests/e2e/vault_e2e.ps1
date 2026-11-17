@@ -47,6 +47,14 @@ function Page {   # newest page target
 function Send($ws, [string]$method, $params) { $script:cid++; $b = [Text.Encoding]::UTF8.GetBytes((@{ id = $script:cid; method = $method; params = $params } | ConvertTo-Json -Depth 6 -Compress)); $ws.SendAsync([ArraySegment[byte]]::new($b), 'Text', $true, [Threading.CancellationToken]::None).Wait()
   $buf = New-Object byte[] 262144; while ($true) { $sb = New-Object Text.StringBuilder; do { $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buf), [Threading.CancellationToken]::None); if (!$r.Wait(10000)) { return $null }; [void]$sb.Append([Text.Encoding]::UTF8.GetString($buf, 0, $r.Result.Count)) } while (!$r.Result.EndOfMessage); $j = $sb.ToString() | ConvertFrom-Json; if ($j.id -eq $script:cid) { return $j } } }
 function Eval($ws, [string]$e) { (Send $ws 'Runtime.evaluate' @{ expression = $e; returnByValue = $true }).result.result.value }
+# Review V-4: a login counts only with a real user action and a password the person typed: typing and clicks go through
+# the DevTools Input domain (trusted input, like a person), never through values set by script.
+function TypeInto($ws, [string]$id, [string]$text) { [void](Eval $ws "document.getElementById('$id').focus();document.getElementById('$id').value='';1"); [void](Send $ws 'Input.insertText' @{ text = $text }) }
+function PageClick($ws, [string]$id) {
+  $r = Eval $ws "(function(){var r=document.getElementById('$id').getBoundingClientRect();return Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2);})()"
+  $x, $y = ($r -split ',') | ForEach-Object { [int]$_ }
+  foreach ($t in 'mousePressed', 'mouseReleased') { [void](Send $ws 'Input.dispatchMouseEvent' @{ type = $t; x = $x; y = $y; button = 'left'; clickCount = 1 }) } }
+function TypedLogin($ws, [string]$u, [string]$p) { TypeInto $ws 'u' $u; TypeInto $ws 'p' $p; PageClick $ws 'go' }
 function LogCount([string]$pattern, [string]$file = $log) { $l = Get-Content $file -Raw -ErrorAction SilentlyContinue; if (!$l) { return 0 }; return ([regex]::Matches($l, $pattern)).Count }
 # Review R-13: a host's engine may outlive the force-killed host for seconds and keep the debugging port.
 function WaitEngineExit { for ($i = 0; $i -lt 60; $i++) { $left = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like "*$hostDir*" }); if (!$left.Count) { return $true }; Start-Sleep -Milliseconds 500 }; return $false }
@@ -58,7 +66,7 @@ try {
   Start-Process -FilePath $exe -WorkingDirectory $hostDir; $hp = 0; for ($i = 0; $i -lt 40 -and !$hp; $i++) { Start-Sleep -Milliseconds 250; $hp = Pids '' | Select-Object -First 1 }
   Check (WaitLog 'E2E BOUND certificate decisions cleared') 'test host ready (decisions cleared)'
   $ws = Page; [void](Send $ws 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); Start-Sleep 3; $ws.Dispose(); $ws = Page
-  [void](Eval $ws "document.getElementById('u').value='$user';document.getElementById('p').value='$secret';document.getElementById('go').click();1")
+  TypedLogin $ws $user $secret
   $save = WaitFind $hp 'PasswordSaveConfirm' ''
   Check ([bool]$save) 'B04: the real save prompt appears after the submit (capture, engine origin)'
   if ($save) {
@@ -72,7 +80,7 @@ try {
   # Review 885d322 #1: the browser keeps no copy of a submitted password in web storage, whatever happens next.
   function WebCopy([string]$s) { $w = Page; $v = Eval $w "(function(){try{return JSON.stringify(sessionStorage)+JSON.stringify(localStorage)}catch(e){return ''}})()"; $w.Dispose(); return ([string]$v).Contains($s) }
   function Submit([string]$path, [string]$u, [string]$p) { $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port$path" }); Start-Sleep 3; $w.Dispose(); $w = Page
-    [void](Eval $w "document.getElementById('u').value='$u';document.getElementById('p').value='$p';document.getElementById('go').click();1"); $w.Dispose() }
+    TypedLogin $w $u $p; $w.Dispose() }
   Check (-not (WebCopy $secret)) 'saved: no copy of the password in the landing page storage'
   $hash0 = (Get-FileHash $vaultFile).Hash
   $s2 = 'E2e-Refus-1111!'; Submit '/login' 'e2e-synth-refus' $s2
@@ -94,7 +102,7 @@ try {
   $l = Find $hp 'PasswordLater' ''; if ($l) { Start-Sleep -Milliseconds 700; [void](Invoke-El $l); Start-Sleep 1 }
   # Review N13: submit, then an immediate navigation to another origin: no trusted prompt above another page.
   $s6 = 'E2e-Leave-5555!'; $w = Page; [void](Send $w 'Page.navigate' @{ url = "https://127.0.0.1:$port/login" }); Start-Sleep 3; $w.Dispose(); $w = Page
-  [void](Eval $w "document.getElementById('u').value='e2e-synth-leave';document.getElementById('p').value='$s6';document.getElementById('go').click();setTimeout(function(){location.href='https://localhost:$port/elsewhere'},0);1"); $w.Dispose()
+  [void](Eval $w "document.getElementById('go').addEventListener('click',function(){setTimeout(function(){location.href='https://localhost:$port/elsewhere'},0);});1"); TypedLogin $w 'e2e-synth-leave' $s6; $w.Dispose()
   Start-Sleep 3; Check (-not (Find $hp 'PasswordSaveConfirm' '') -and -not (Find $hp 'PasswordLater' '')) 'submit then immediate navigation to another origin: no offer shown'
   Check (-not (WebCopy $s6)) 'submit then immediate navigation elsewhere: no copy in web storage'
   Check ((Get-FileHash $vaultFile).Hash -eq $hash0) 'nothing written without « Enregistrer »'
@@ -184,7 +192,7 @@ try {
   if ($pkey) { $prow = OpenRows $pp $user; $otherRow = [bool](Find $pp '' $tUser); if ($prow) { Start-Sleep -Milliseconds 700; [void](Invoke-El $prow); Start-Sleep 1 } }
   Check ([bool]$pkey -and (Eval $ws "document.getElementById('p').value") -eq $secret) 'private window: explicit read-only fill works'
   Check ([bool]$prow -and -not $otherRow) 'R-2: a private window opened from Personnel (no --profile) lists Personnel''s account only, not Travail''s'
-  [void](Eval $ws "document.getElementById('u').value='autre';document.getElementById('p').value='Autre-0000!';document.getElementById('go').click();1"); Start-Sleep 2
+  TypedLogin $ws 'autre' 'Autre-0000!'; Start-Sleep 2
   Check (-not (Find $pp 'PasswordSaveConfirm' '') -and (Get-FileHash $vaultFile).Hash -eq $before) 'private window: no capture prompt and the vault file is unchanged'
   $ws.Dispose()
   # Review R-2: a private window opened from Travail reads (never writes) the TRAVAIL vault.
@@ -197,7 +205,7 @@ try {
   $tv = Eval $ws "document.getElementById('p').value"
   "     private window from Travail: key $([bool]$tkey), Travail row $([bool]$trow), Personnel row $drow, field: $(if ($tv -eq $tSecret) { 'Travail secret' } elseif ($tv -eq $secret) { 'PERSONNEL secret' } elseif ($tv) { 'other' } else { 'empty' })"
   Check ([bool]$tkey -and [bool]$trow -and -not $drow -and $tv -eq $tSecret) 'R-2: a private window opened from Travail offers and fills the Travail account only (not Personnel)'
-  [void](Eval $ws "document.getElementById('u').value='autre';document.getElementById('p').value='Autre-0000!';document.getElementById('go').click();1"); Start-Sleep 2
+  TypedLogin $ws 'autre' 'Autre-0000!'; Start-Sleep 2
   Check (-not (Find $pt 'PasswordSaveConfirm' '') -and (Get-FileHash $vaultFile).Hash -eq $before -and $tHash -and (Get-FileHash $travailVault).Hash -eq $tHash) 'R-2: that private window captures nothing and writes neither vault'
   $ws.Dispose()
   # Whole fixture profile (engine user data, log, vault): no synthetic secret in clear, UTF-8 or UTF-16, once every process is gone.

@@ -107,7 +107,10 @@ function SubmitLogin($hostPid) {
   # Typed as trusted input (CDP Input.insertText into the focused field, like a keyboard), then submitted.
   [void](Eval $w "document.getElementById('u').focus();1"); [void](Send $w 'Input.insertText' @{ text = $user })
   [void](Eval $w "document.getElementById('p').focus();1"); [void](Send $w 'Input.insertText' @{ text = $secret })
-  [void](Eval $w "document.getElementById('go').click();1"); $w.Dispose() }
+  # Review V-4: the click is trusted too (DevTools Input domain): a login counts only after a real user action.
+  $r = Eval $w "(function(){var r=document.getElementById('go').getBoundingClientRect();return Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2);})()"; $x, $y = ($r -split ',') | ForEach-Object { [int]$_ }
+  foreach ($t in 'mousePressed', 'mouseReleased') { [void](Send $w 'Input.dispatchMouseEvent' @{ type = $t; x = $x; y = $y; button = 'left'; clickCount = 1 }) }
+  $w.Dispose() }
 
 New-Item -ItemType Directory -Force $pki | Out-Null
 $o = 'C:\Program Files\Git\usr\bin\openssl.exe'; $ErrorActionPreference = 'Continue'

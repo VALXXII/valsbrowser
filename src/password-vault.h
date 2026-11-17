@@ -292,7 +292,10 @@ inline std::wstring FillScript(const std::wstring& origin, const std::wstring& u
     return L"(function(o,u,p){if(location.origin!==o||self.origin!==o||!window.isSecureContext)return 'origin';"
            L"var an=location.ancestorOrigins;if(an)for(var i=0;i<an.length;i++)if(an[i]!==o)return 'origin';"
            L"var a=document.activeElement;var f=a&&a.form;if(!f)return 'noform';"
-           L"function shown(e){return e&&e.type!=='hidden'&&e.offsetParent!==null&&!e.disabled;}"
+           L"function shown(e){if(!e||e.type==='hidden'||e.disabled||e.offsetParent===null)return false;"   // review V-6: really visible, on screen, not covered
+           L"if(e.checkVisibility&&!e.checkVisibility({opacityProperty:true,visibilityProperty:true,contentVisibilityAuto:true}))return false;"
+           L"var r=e.getBoundingClientRect();if(r.width<2||r.height<2||r.right<=0||r.bottom<=0||r.left>=innerWidth||r.top>=innerHeight)return false;"
+           L"var h=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return !!h&&(h===e||e.contains(h)||h.control===e);}"
            L"var pw=Array.prototype.find.call(f.querySelectorAll('input[type=password]'),shown);if(!pw)return 'nofield';"
            L"var id=Array.prototype.find.call(f.querySelectorAll('input[autocomplete=username],input[type=email],input[type=text]'),shown);"
            L"function set(e,v){var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}"
@@ -432,12 +435,21 @@ private:
 inline constexpr const wchar_t* CaptureWorld = L"browser-vault-capture";
 inline constexpr const wchar_t* CaptureBindingName = L"browserVaultCapture";
 inline std::wstring CaptureScript() {
-    return std::wstring(L"(function(){var B=window.") + CaptureBindingName + L";if(typeof B!=='function')return;"
+    // Review V-5: the host does not keep the page's DevTools Runtime domain enabled (it would serialise every console call
+    // of the page); it adds the binding to each new document's world once that document exists (VaultRebind). A message
+    // sent before that is retried for 3 s; one sent while the page leaves goes at once (the binding is there long before).
+    return std::wstring(L"(function(){function B(m){var n=0;(function go(){var f=window.") + CaptureBindingName + L";if(typeof f==='function'){f(m);return;}if(++n<15)setTimeout(go,200);})();}"
         L"var O=self.origin;if(O==='null'||location.protocol!=='https:'||!window.isSecureContext||location.origin!==O)return;"
         L"var TOP=window.top===window?'1':'0';"
+        // Review V-4: a real user action in THIS document (trusted pointer or key, in this world), and the values the person
+        // typed (trusted input) per field: a page can neither fake the action nor plant the password.
+        L"var act=-1e9,typed=new WeakMap();function activated(){return performance.now()-act<=10000;}"
+        L"['pointerdown','mousedown','keydown'].forEach(function(n){document.addEventListener(n,function(e){if(e.isTrusted)act=performance.now();},true);});"
+        L"document.addEventListener('input',function(e){var t=e.target;if(e.isTrusted&&t&&t.tagName==='INPUT')typed.set(t,t.value);},true);"
         L"function shown(e){return !!e&&e.isConnected&&e.type!=='hidden'&&!e.disabled&&e.getClientRects().length>0;}"
         L"function ac(e){return (e.getAttribute('autocomplete')||'').toLowerCase();}"
         L"function list(r,q){return Array.prototype.slice.call(r.querySelectorAll(q));}"
+        L"function visiblePw(r){return list(r,'input[type=password]').filter(shown).length>0;}"
         L"function scope(el){var f=el&&(el.form||(el.closest&&el.closest('form')));return f||document;}"
         L"function userField(r){var c=list(r,'input').filter(function(e){var t=(e.type||'text').toLowerCase();return (t==='text'||t==='email'||t==='tel')&&e.value;});"
         L"var h=c.filter(function(e){return ac(e).indexOf('username')>=0;});if(h.length)return h[0];var v=c.filter(shown);return v.length?v[0]:null;}"
@@ -449,19 +461,24 @@ inline std::wstring CaptureScript() {
         L"else if(f.length>=3){if(f[1].value!==f[2].value)return null;c=f[0].value;p=f[1];}"
         L"else if(f.length===2){if(f[0].value===f[1].value)p=f[0];else if(cu.length){c=cu[0].value;p=f[0]===cu[0]?f[1]:f[0];}else{c=f[0].value;p=f[1];}}"
         L"else p=f[0];"
-        L"if(c===p.value)c='';var a='0';try{a=p.matches(':-webkit-autofill')?'1':'0';}catch(x){}"
-        L"return {k:'capture',u:u?u.value:'',p:p.value,c:c,a:a,f:f};}"
+        L"if(c===p.value)c='';var a=false;try{a=p.matches(':-webkit-autofill');}catch(x){}"
+        L"if(!(a||typed.get(p)===p.value))return null;"   // V-4: typed by the person, or autofilled by the engine
+        L"return {k:'capture',u:u?u.value:'',p:p.value,c:c,a:a?'1':'0',f:f};}"
         L"function post(s,v){var m={k:s.k,o:O,t:TOP,v:v,u:s.u||''};if(s.k==='capture'){m.p=s.p;m.c=s.c;m.a=s.a;}try{B(JSON.stringify(m));}catch(x){}}"
         L"var pend=null,timer=0;function stop(){pend=null;if(timer){clearInterval(timer);timer=0;}}"
         L"function confirmed(v){if(!pend)return;var s=pend;stop();post(s,v);}"
         L"function recent(){if(!pend)return false;var last=pend.t0;try{performance.getEntriesByType('resource').forEach(function(e){if((e.initiatorType==='fetch'||e.initiatorType==='xmlhttprequest')&&e.startTime>=pend.t0&&e.responseEnd>last)last=e.responseEnd;});}catch(x){}return performance.now()-last<=2000;}"
         L"function leave(){if(recent())confirmed('leave');else stop();}"
-        L"function trigger(el){var s=snap(scope(el));if(!s)return;if(s.k==='user'){post(s,'step');return;}stop();pend=s;pend.t0=performance.now();var at=Date.now();"
-        L"timer=setInterval(function(){if(!pend||Date.now()-at>10000){stop();return;}if(pend.f.every(function(e){return !shown(e);}))confirmed('gone');},250);}"
-        L"document.addEventListener('submit',function(e){var f=e.target;if(!f||!f.querySelectorAll)return;var s=snap(f);stop();if(s)post(s,s.k==='user'?'step':'submit');},true);"
+        // Review V-7: a login is held until its outcome is known: every visible password field of THIS document gone (« gone »),
+        // or the page left (« leave »: the next document then says whether it asks for a password again, k:'doc').
+        L"function hold(s){stop();pend=s;pend.t0=performance.now();var at=Date.now();"
+        L"timer=setInterval(function(){if(!pend||Date.now()-at>10000){stop();return;}if(!visiblePw(document))confirmed('gone');},250);}"
+        L"function trigger(el){if(!activated())return;var s=snap(scope(el));if(!s)return;if(s.k==='user'){post(s,'step');return;}hold(s);}"
+        L"document.addEventListener('submit',function(e){if(!(e.isTrusted&&activated()))return;var f=e.target;if(!f||!f.querySelectorAll)return;var s=snap(f);if(!s)return;if(s.k==='user'){post(s,'step');return;}hold(s);},true);"
         L"document.addEventListener('click',function(e){if(!e.isTrusted)return;var t=e.target,b=t&&t.closest?t.closest('button,input[type=submit],input[type=button],input[type=image],[role=button]'):null;if(b)trigger(b);},true);"
         L"document.addEventListener('keydown',function(e){if(!e.isTrusted||e.key!=='Enter')return;var t=e.target;if(t&&t.tagName==='INPUT')trigger(t);},true);"
         L"window.addEventListener('pagehide',leave,true);window.addEventListener('beforeunload',leave,true);"
+        L"document.addEventListener('DOMContentLoaded',function(){setTimeout(function(){try{B(JSON.stringify({k:'doc',o:O,t:TOP,pw:visiblePw(document)?'1':'0'}));}catch(x){}},400);});"
         L"})();";
 }
 inline std::wstring CaptureScriptParams() { return L"{\"source\":" + JsonString(CaptureScript()) + L",\"worldName\":\"" + CaptureWorld + L"\"}"; }
@@ -499,13 +516,20 @@ inline bool ParseAttachedToTarget(const std::wstring& json, AttachedTarget& out)
 // canonical https origin (an opaque "null", http, or anything else is refused). Fields of the page (user,
 // passwords) are only values; no field decides an origin.
 struct CaptureMessage {
-    enum class Kind { Capture, User } kind = Kind::Capture;
-    std::wstring origin, user, secret, current, via; bool top = false, autofilled = false;
+    enum class Kind { Capture, User, Doc } kind = Kind::Capture;
+    std::wstring origin, user, secret, current, via; bool top = false, autofilled = false, passwordField = false;
     CaptureMessage() = default; CaptureMessage(const CaptureMessage&) = default; CaptureMessage& operator=(const CaptureMessage&) = default;
     ~CaptureMessage() { WipeText(secret); WipeText(current); }
 };
+// Review V-4: a username shown in B04 and stored is at most 128 characters, without control, line-separator or
+// text-direction characters (a page must not write a sentence, or reorder text, inside native UI).
+inline bool UsernameAcceptable(const std::wstring& u) {
+    if (u.size() > 128) return false;
+    for (wchar_t c : u) if (c < 0x20 || (c >= 0x7F && c <= 0x9F) || c == 0x200E || c == 0x200F || (c >= 0x2028 && c <= 0x202E) || (c >= 0x2066 && c <= 0x2069)) return false;
+    return true;
+}
 inline bool ParseCaptureEvent(const std::wstring& event, CaptureMessage& out) {
-    out.kind = CaptureMessage::Kind::Capture; out.origin.clear(); out.user.clear(); WipeText(out.secret); WipeText(out.current); out.via.clear(); out.top = out.autofilled = false;
+    out.kind = CaptureMessage::Kind::Capture; out.origin.clear(); out.user.clear(); WipeText(out.secret); WipeText(out.current); out.via.clear(); out.top = out.autofilled = out.passwordField = false;
     const auto root = JsonRoot(event); std::wstring name, payload;
     if (!JsonStringAt(event, JsonMemberAt(event, root, L"name"), name) || name != CaptureBindingName) return false;
     if (!JsonStringAt(event, JsonMemberAt(event, root, L"payload"), payload)) { WipeText(payload); return false; }
@@ -515,7 +539,8 @@ inline bool ParseCaptureEvent(const std::wstring& event, CaptureMessage& out) {
     if (!str(L"k", k) || !str(L"o", out.origin)) return false;
     if (out.origin.empty() || CanonicalOrigin(out.origin) != out.origin) { out.origin.clear(); return false; }   // "null" (opaque), http, non-canonical
     str(L"t", t); str(L"v", out.via); str(L"u", out.user); out.top = t == L"1";
-    if (out.user.size() > 512) return false;
+    if (k == L"doc") { std::wstring pw; str(L"pw", pw); out.kind = CaptureMessage::Kind::Doc; out.passwordField = pw == L"1"; out.user.clear(); return pw == L"0" || pw == L"1"; }
+    if (!UsernameAcceptable(out.user)) return false;   // review V-4: no sentence or control character inside native UI
     if (k == L"user") { out.kind = CaptureMessage::Kind::User; return !out.user.empty(); }
     if (k != L"capture") return false;
     str(L"p", out.secret); str(L"c", out.current); str(L"a", a); out.autofilled = a == L"1";
@@ -542,6 +567,20 @@ inline Offer DecideOffer(const Store& s, const std::wstring& origin, const std::
     if (accounts.size() > 1) { o.kind = Offer::Kind::Choose; for (const auto& e : accounts) o.accounts.push_back(e.user); return o; }
     o.kind = Offer::Kind::Save; o.migration = autofilled; return o;
 }
+// Review V-4: a newer capture of a tab replaces its pending offer only when the newer one is not a frame's while the
+// pending one is the page's own, and at most once every 5 s (a frame or a page cannot keep swapping the offer away).
+inline constexpr std::int64_t ReplaceIntervalMs = 5000;
+inline bool MayReplace(bool pendingTop, bool newTop, std::int64_t now, std::int64_t lastReplaceAt) {
+    if (pendingTop && !newTop) return false;
+    return !(lastReplaceAt && now - lastReplaceAt < ReplaceIntervalMs);
+}
+// Review V-7: a login that left its page is offered only once the next document of the same origin and kind (page or
+// frame) has loaded without a visible password field; asking for a password again means the login failed.
+enum class Outcome { Wait, Offer, Drop };
+inline Outcome LoginOutcome(const std::wstring& captureOrigin, bool captureTop, const std::wstring& docOrigin, bool docTop, bool docAsksPassword) {
+    if (captureOrigin != docOrigin || captureTop != docTop) return Outcome::Wait;
+    return docAsksPassword ? Outcome::Drop : Outcome::Offer;
+}
 // Two-step logins: the username of a first step, joined to a password of the same origin within 3 minutes.
 class TwoStep {
 public:
@@ -552,16 +591,25 @@ private:
     std::wstring origin_, user_; std::int64_t at_ = 0;
 };
 // ---- Engine passwords (owner decision B): migrated as the user logs in (B04 « Garder »), never decrypted from the
-// engine's store; the activation date is recorded per profile and the engine's saved passwords are cleared 30 days
-// later (ClearBrowsingData PASSWORD_AUTOSAVE), once, followed by a one-time notice in Réglages.
-//   browser-vault-migration 1 / activated=<unix ms> / cleared=<unix ms, 0 = not yet> / notice=<0|1>
+// engine's store; the activation date is recorded per profile. Review V-3: the grace period counts DAYS OF USE (a
+// calendar day, local, on which the active vault opened a tab), a day is counted only once and only when it is later
+// than the last one counted (a clock set back counts nothing, a clock set ahead counts one day), and nothing is ever
+// deleted while « Mots de passe » is off or the vault is unreadable (nothing could have been kept).
+// What happens when it is due is ONE switch (owner decision pending, review V-2): Automatic = the engine's saved
+// passwords are cleared (ClearBrowsingData PASSWORD_AUTOSAVE) then a one-time notice; ManualOffer = nothing is deleted,
+// the host only reports that a manual « delete the old passwords » offer is due (EngineStep::OfferManual).
+//   browser-vault-migration 1 / activated=<unix ms> / cleared=<unix ms, 0 = not yet> / notice=<0|1> / days=<n> / lastday=<yyyymmdd>
+enum class EngineCleanupMode { Automatic, ManualOffer };
+inline constexpr EngineCleanupMode EngineCleanup = EngineCleanupMode::Automatic;
 struct EngineMigration {
-    static constexpr std::int64_t GraceMs = 30LL * 24 * 3600 * 1000;
+    static constexpr int GraceDays = 30;
     static constexpr const char* Header = "browser-vault-migration 1";
-    std::int64_t activated = 0, cleared = 0; bool noticeSeen = false;
-    bool CleanupDue(std::int64_t now) const { return activated > 0 && cleared == 0 && now >= activated + GraceMs; }
+    std::int64_t activated = 0, cleared = 0; bool noticeSeen = false; int useDays = 0, lastUseDay = 0;
+    // `dayKey`: yyyymmdd of the local calendar day. True when it counted as a new day of use.
+    bool RecordUse(int dayKey) { if (dayKey <= lastUseDay) return false; lastUseDay = dayKey; ++useDays; return true; }
+    bool CleanupDue(bool passwordsOn, bool vaultReadable) const { return activated > 0 && cleared == 0 && useDays >= GraceDays && passwordsOn && vaultReadable; }
     bool NoticePending() const { return cleared > 0 && !noticeSeen; }
-    std::string Write() const { std::ostringstream o; o << Header << "\nactivated=" << activated << "\ncleared=" << cleared << "\nnotice=" << (noticeSeen ? 1 : 0) << "\n"; return o.str(); }
+    std::string Write() const { std::ostringstream o; o << Header << "\nactivated=" << activated << "\ncleared=" << cleared << "\nnotice=" << (noticeSeen ? 1 : 0) << "\ndays=" << useDays << "\nlastday=" << lastUseDay << "\n"; return o.str(); }
     static bool Read(const std::string& text, EngineMigration& out) {
         out = EngineMigration{}; std::istringstream in(text); std::string line; bool any = false, act = false;
         if (!std::getline(in, line) || line != Header) return false;
@@ -570,7 +618,8 @@ struct EngineMigration {
             const auto eq = line.find('='); if (eq == std::string::npos) return false;
             const std::string k = line.substr(0, eq), v = line.substr(eq + 1); if (!Store::Digits(v)) return false;
             std::int64_t n = 0; try { n = std::stoll(v); } catch (...) { return false; }
-            if (k == "activated") { out.activated = n; act = true; } else if (k == "cleared") out.cleared = n; else if (k == "notice") { if (n > 1) return false; out.noticeSeen = n == 1; } else return false;
+            if (k == "activated") { out.activated = n; act = true; } else if (k == "cleared") out.cleared = n; else if (k == "notice") { if (n > 1) return false; out.noticeSeen = n == 1; }
+            else if (k == "days") { if (n > 100000) return false; out.useDays = static_cast<int>(n); } else if (k == "lastday") { if (n > 99991231) return false; out.lastUseDay = static_cast<int>(n); } else return false;
             any = true;
         }
         return any && act && out.activated > 0;

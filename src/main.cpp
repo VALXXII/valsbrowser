@@ -1822,8 +1822,10 @@ void StartClearBrowsingData(std::function<void(HRESULT)>){
 // tab's profile/settings (also called for each new tab); see ClearOnExitAndClose for quitting.
 // Tracking prevention is profile-wide (the environment keeps EnableTrackingPrevention at
 // its default TRUE: no options are passed); passwords/autofill are per-webview settings.
+void VaultCaptureSync();
 void ApplyPrivacySettings(){
     if(smoke)return;
+    VaultCaptureSync();   // review V-5: the vault capture follows « Mots de passe » on every open tab
     static bool trackingLogged=false,formsLogged=false;bool any=false;
     for(auto& t:pages){if(!t||t->closed||!t->view.p)continue;any=true;
         Com<ICoreWebView2Settings> base;Com<ICoreWebView2Settings4> s4;

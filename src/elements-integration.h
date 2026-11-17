@@ -164,12 +164,14 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
 // A password just submitted (B04, real path) may sit in a queued or active job: every copy is wiped when
 // the job is replaced, dropped or destroyed (review 885d322 #1), never left to the allocator.
 inline void WipeSpecSecret(OP::Spec& s){if(s.secret.capacity())SecureZeroMemory(s.secret.data(),s.secret.capacity()*sizeof(wchar_t));s.secret.clear();}
+struct Workspace;extern Workspace* activeWorkspace;
 struct PromptJob {
     OP::Spec spec; std::weak_ptr<Tab> tab; std::wstring origin;
+    Workspace* owner=nullptr;   // review V-1: the profile whose tab asked (shown only while it is on screen)
     std::vector<std::function<void(OP::Result&)>> answers; // one per merged request
     PromptJob()=default; PromptJob(const PromptJob&)=delete; PromptJob& operator=(const PromptJob&)=delete;
-    PromptJob(PromptJob&& o) noexcept:spec(std::move(o.spec)),tab(std::move(o.tab)),origin(std::move(o.origin)),answers(std::move(o.answers)){WipeSpecSecret(o.spec);}
-    PromptJob& operator=(PromptJob&& o) noexcept{if(this!=&o){WipeSpecSecret(spec);spec=std::move(o.spec);tab=std::move(o.tab);origin=std::move(o.origin);answers=std::move(o.answers);WipeSpecSecret(o.spec);}return *this;}
+    PromptJob(PromptJob&& o) noexcept:spec(std::move(o.spec)),tab(std::move(o.tab)),origin(std::move(o.origin)),owner(o.owner),answers(std::move(o.answers)){WipeSpecSecret(o.spec);}
+    PromptJob& operator=(PromptJob&& o) noexcept{if(this!=&o){WipeSpecSecret(spec);spec=std::move(o.spec);tab=std::move(o.tab);origin=std::move(o.origin);owner=o.owner;answers=std::move(o.answers);WipeSpecSecret(o.spec);}return *this;}
     ~PromptJob(){WipeSpecSecret(spec);}
 };
 std::deque<PromptJob> promptQueue; PromptJob promptActive; bool promptOpen=false;
@@ -298,9 +300,13 @@ RECT PromptAnchor(const OP::Spec& s){
 }
 void PumpPrompt(){
     if(halted||promptOpen||promptQueue.empty()||!originPrompt.Window())return;
+    // Review V-1: judged in the scope of the profile ON SCREEN (a deferred pump may run in a hidden profile's scope, where
+    // Active() is that profile's hidden tab); a request of a hidden profile waits until that profile is shown again.
+    WorkspaceScope onScreen(activeWorkspace);
     for(auto it=promptQueue.begin();it!=promptQueue.end();++it){
         auto t=it->tab.lock();
         if(!t||t->closed){auto job=std::move(*it);promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);PumpPrompt();return;}
+        if(it->owner&&activeWorkspace&&it->owner!=activeWorkspace)continue;
         if(t!=Active())continue;
         // Never pull focus out of the address while it is being edited: the request waits (its
         // page waits too) and shows when editing ends (SyncRequestChip).
@@ -326,7 +332,7 @@ void AskPrompt(OP::Spec spec,const std::shared_ptr<Tab>& tab,std::function<void(
             for(int p:spec.permissions)if(std::find(q.spec.permissions.begin(),q.spec.permissions.end(),p)==q.spec.permissions.end())q.spec.permissions.push_back(p);
             q.answers.push_back(std::move(answer));return;}
     }
-    PromptJob job;job.spec=std::move(spec);job.tab=tab;job.origin=origin;job.answers.push_back(std::move(answer));
+    PromptJob job;job.spec=std::move(spec);job.tab=tab;job.origin=origin;job.owner=WorkspaceNow();job.answers.push_back(std::move(answer));
     promptQueue.push_back(std::move(job));
     // Let a sibling request of the same getUserMedia() call join before showing.
     Defer([]{PumpPrompt();});
@@ -982,41 +988,79 @@ bool VaultOfferStillValid(const std::shared_ptr<Tab>& t,const std::wstring& orig
 struct VaultFileStamp{bool exists=false;FILETIME write{};ULONGLONG size=0;bool operator==(const VaultFileStamp& o)const{return exists==o.exists&&write.dwLowDateTime==o.write.dwLowDateTime&&write.dwHighDateTime==o.write.dwHighDateTime&&size==o.size;}};
 VaultFileStamp VaultStampNow(){VaultFileStamp s;WIN32_FILE_ATTRIBUTE_DATA a{};if(GetFileAttributesExW(VaultFile().c_str(),GetFileExInfoStandard,&a)){s.exists=true;s.write=a.ftLastWriteTime;s.size=(ULONGLONG(a.nFileSizeHigh)<<32)|a.nFileSizeLow;}return s;}
 bool vaultCaptureFailed=false;VaultFileStamp vaultCaptureFailedAt;
+// Review V-5: the capture (DevTools domains on the tab) is attached only while it can be used: vault active, normal
+// window, « Mots de passe » on. Turning the setting off detaches it from every tab (VaultCaptureSync).
+bool VaultCaptureWanted(){return Vault::Active()&&!privateWindow&&settings.passwords;}
 std::map<unsigned,Vault::TwoStep> vaultTwoStep;   // tab serial -> the username of a first login step (owner decision A)
+// Review V-4: per tab, whether its pending offer (held or shown) came from the page itself, and when it was last replaced.
+struct VaultPending{bool top=false;std::int64_t replacedAt=0;};
+std::map<unsigned,VaultPending> vaultPending;
+// Review V-7: a login that left its page waits here (its secret held by the host only) until the next document of the
+// same origin and kind says whether it asks for a password again; 15 s at most; dropped with the tab's capture binding.
+struct VaultAwait{Vault::CaptureMessage m;std::wstring top;std::uint64_t seq=0;};
+std::map<unsigned,VaultAwait> vaultAwait;std::uint64_t vaultAwaitSeq=0;
+void After(UINT ms,std::function<void()> f);
+void VaultOffer(const std::shared_ptr<Tab>& t,Vault::CaptureMessage& m,const std::wstring& top);
 // Runtime.bindingCalled of the capture binding, from the tab's own DevTools session or one of its frames' sessions.
+// Runs in the scope of the profile that owns the tab (the receiver's callback), also while that profile is hidden.
 // Everything the page controls is a value; the offer's origin is the isolated world's self.origin (Vault::ParseCaptureEvent
 // refuses "null" and http), a top-level report must match the engine's own top-level source, and the tab must still show
 // that top-level origin (N13). What is offered comes from what the vault holds (Vault::DecideOffer).
 void VaultCaptureEvent(const std::shared_ptr<Tab>& t,std::wstring json){
     struct WipeOnExit{std::wstring& m;~WipeOnExit(){Wipe(m);}} wipeJson{json};
     if(halted||!t||t->closed||json.size()>8192)return;
-    if(!Vault::Active()||privateWindow||smoke||!settings.passwords)return;   // inactive / private / « Mots de passe » off (F4): nothing kept
+    if(!VaultCaptureWanted()||smoke)return;   // inactive / private / « Mots de passe » off (F4): nothing kept
     Vault::CaptureMessage m;
     if(!Vault::ParseCaptureEvent(json,m)){Log(L"VAULT capture ignored: not a capture of a secure, non-opaque document");return;}
     const std::wstring top=Vault::CanonicalOrigin(EngineSource(t));
-    if(top.empty()||(m.top&&m.origin!=top)||!VaultOfferStillValid(t,top)){Log(L"VAULT capture ignored: the tab is not on a secure page of that document");return;}   // http top, or the tab is already elsewhere (D2, N13)
+    if(top.empty()||(m.top&&m.origin!=top)||!VaultOfferStillValid(t,top)){if(m.kind!=Vault::CaptureMessage::Kind::Doc)Log(L"VAULT capture ignored: the tab is not on a secure page of that document");return;}   // http top, or the tab is already elsewhere (D2, N13)
     const std::int64_t now=NativeChrome::DownloadsUI::UnixNowMs();
+    if(m.kind==Vault::CaptureMessage::Kind::Doc){   // review V-7: the outcome of a login that left its page
+        auto it=vaultAwait.find(t->serial);if(it==vaultAwait.end())return;
+        const auto o=Vault::LoginOutcome(it->second.m.origin,it->second.m.top,m.origin,m.top,m.passwordField);
+        if(o==Vault::Outcome::Wait)return;
+        Vault::CaptureMessage held=it->second.m;const std::wstring heldTop=it->second.top;vaultAwait.erase(it);
+        if(o==Vault::Outcome::Drop){Log(L"VAULT capture dropped: the next page asks for the password again (login refused)");VaultCaptureDrop(t);return;}
+        VaultOffer(t,held,heldTop);return;}
     if(m.kind==Vault::CaptureMessage::Kind::User){vaultTwoStep[t->serial].Remember(m.origin,m.user,now);Log(L"VAULT two-step: username of a first step remembered for this tab");return;}
     {static std::map<unsigned,ULONGLONG> last;const ULONGLONG tick=GetTickCount64();auto& at=last[t->serial];   // review R1: at most one capture per tab per second
      if(at&&tick-at<1000)return;at=tick;}
+    // Review V-4 / N3: a newer capture replaces the pending one (and its secret) only if allowed: never a frame's over the
+    // page's own, and at most once every 5 s.
+    const bool pending=vaultPromptOpen.count(t->serial)||vaultCapture.count(t->serial)||vaultAwait.count(t->serial);
+    auto& p=vaultPending[t->serial];
+    if(pending&&!Vault::MayReplace(p.top,m.top,now,p.replacedAt)){Log(L"VAULT capture ignored: it may not replace the pending offer of this tab");return;}
+    if(pending){VaultCaptureDrop(t);p.replacedAt=now;}
+    p.top=m.top;
     if(m.user.empty()){auto it=vaultTwoStep.find(t->serial);if(it!=vaultTwoStep.end())m.user=it->second.For(m.origin,now);}
-    if(vaultCaptureFailed&&VaultStampNow()==vaultCaptureFailedAt)return;   // N7: still the same unreadable file, already said
+    vaultCapture[t->serial].Start(top,t->navInFlight);   // bound to the TOP document's submission (a frame's capture: its page's)
+    if(m.via==L"leave"){   // review V-7: offered only once the next document shows the login succeeded
+        auto& w=vaultAwait[t->serial];w.m=m;w.top=top;w.seq=++vaultAwaitSeq;const std::uint64_t seq=w.seq;const unsigned serial=t->serial;std::weak_ptr<Tab> weak=t;
+        Log(std::wstring(L"VAULT capture held until the next page loads (")+(m.top?L"page":L"frame")+L")");
+        After(15000,[serial,seq,weak]{auto it=vaultAwait.find(serial);if(it==vaultAwait.end()||it->second.seq!=seq)return;vaultAwait.erase(it);Log(L"VAULT capture dropped: no answer page within 15 s");if(auto tab=weak.lock())VaultCaptureDrop(tab);});
+        return;}
+    VaultOffer(t,m,top);
+}
+void VaultOffer(const std::shared_ptr<Tab>& t,Vault::CaptureMessage& m,const std::wstring& top){
+    if(vaultCaptureFailed&&VaultStampNow()==vaultCaptureFailedAt){VaultCaptureDrop(t);return;}   // N7: still the same unreadable file, already said
     {const auto load=ReadVault(1000);
      if(load!=VaultLoad::Ok){if(load==VaultLoad::Unavailable){vaultCaptureFailed=true;vaultCaptureFailedAt=VaultStampNow();}   // review R2: only a really unreadable file is remembered; busy is retried
-      VaultNotice(TR(vault_not_saved),VaultUnavailableText(load));return;}}   // F5/F11
+      VaultCaptureDrop(t);VaultNotice(TR(vault_not_saved),VaultUnavailableText(load));return;}}   // F5/F11
     vaultCaptureFailed=false;
     const Vault::Offer offer=Vault::DecideOffer(vault,m.origin,m.user,m.secret,m.current,m.autofilled);
-    if(offer.kind==Vault::Offer::Kind::None){Log(L"VAULT capture: nothing to offer (the vault already holds this password)");return;}
-    // Review N3: a newer capture of the tab replaces the pending one (and its secret).
-    if(vaultPromptOpen.count(t->serial)||vaultCapture.count(t->serial)){VaultCaptureDrop(t);vaultPromptOpen.erase(t->serial);}
-    vaultCapture[t->serial].Start(top,t->navInFlight);   // bound to the TOP document's submission (a frame's capture: its page's)
+    if(offer.kind==Vault::Offer::Kind::None){Log(L"VAULT capture: nothing to offer (the vault already holds this password)");VaultCaptureDrop(t);return;}
     const std::wstring origin=m.origin;
     OP::Spec s;s.demo=false;s.origin=origin;s.topOrigin=top;s.user=offer.user;s.secret=m.secret;Wipe(m.secret);Wipe(m.current);s.migration=offer.migration;
     if(offer.kind==Vault::Offer::Kind::Save)s.kind=OP::Kind::PasswordSave;
     else{s.kind=OP::Kind::PasswordUpdate;if(offer.kind==Vault::Offer::Kind::Choose){s.user.clear();for(auto& u:offer.accounts)s.accounts.push_back({u,L""});}}   // several: explicit choice (D1)
     vaultPromptOpen.insert(t->serial);const unsigned serial=t->serial;std::weak_ptr<Tab> weak=t;
+    // Review V-1: the offer belongs to the profile that captured it: shown only while that profile is on screen
+    // (PumpPrompt), answered and saved in ITS scope, into ITS vault.
+    Workspace* owner=WorkspaceNow();
     Log(std::wstring(L"VAULT capture: B04 prompt (")+(m.top?L"page":L"frame")+L", "+(m.via.size()<=8?m.via:std::wstring(L"?"))+(offer.migration?L", migration of an engine password":L"")+L")");   // review N4: no origin in the log
-    AskPrompt(std::move(s),t,[origin,top,serial,weak](OP::Result& r){
+    AskPrompt(std::move(s),t,[origin,top,serial,weak,owner](OP::Result& r){
+        if(WorkspaceDead(owner)){Wipe(r.password);return;}   // that profile left this window: nothing saved anywhere
+        WorkspaceScope scope(owner);
         vaultPromptOpen.erase(serial);vaultCapture.erase(serial);Log(L"VAULT B04 answer action="+std::to_wstring((int)r.action)+(r.password.empty()?L" (no password)":L""));
         if(r.action==OP::Action::Save&&!r.password.empty()&&!VaultOfferStillValid(weak.lock(),top)){Log(L"VAULT capture dropped at the answer: the tab is no longer on its origin");Wipe(r.password);return;}   // N13
         if(r.action==OP::Action::Save&&!r.password.empty()&&LoadVault(TR(vault_not_saved))){   // F11: fresh file at the answer
@@ -1038,21 +1082,42 @@ bool VaultCapture(const std::shared_ptr<Tab>&,const std::wstring&,std::wstring& 
 // script) and in every out-of-process frame it attaches (same three, then resumed). Fails closed: a tab where it
 // could not be installed captures nothing (logged). A window.open target waits for it (popup readiness barrier).
 void VaultSessionSetup(const std::shared_ptr<Tab>& t,const std::wstring& session,std::shared_ptr<bool> ok=nullptr);
+std::set<unsigned> vaultReceivers;std::map<unsigned,std::wstring> vaultScriptIds;   // tab serial -> its receivers / the installed script's id
+// Review V-5: the binding is added to the capture world of the documents that exist in a session (Runtime.addBinding
+// reaches existing contexts without the Runtime domain enabled), each time a frame of that session navigates, reaches
+// DOMContentLoaded or stops loading. So the page's console calls are never serialised for us.
+void VaultRebind(const std::shared_ptr<Tab>& tab,const std::wstring& session){
+    if(!tab||!tab->view.p||!vaultScriptIds.count(tab->serial)||!VaultCaptureWanted())return;
+    auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([](HRESULT,LPCWSTR)->HRESULT{return S_OK;});
+    if(session.empty())tab->view->CallDevToolsProtocolMethod(L"Runtime.addBinding",Vault::CaptureBindingParams().c_str(),done);
+    else{Com<ICoreWebView2_11> v11;if(SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_11,(void**)&v11.p))&&v11.p)v11->CallDevToolsProtocolMethodForSession(session.c_str(),L"Runtime.addBinding",Vault::CaptureBindingParams().c_str(),done);}
+    done->Release();
+}
+void VaultResume(const std::shared_ptr<Tab>& tab,const std::wstring& session){
+    Com<ICoreWebView2_11> v11;if(session.empty()||FAILED(tab->view->QueryInterface(IID_ICoreWebView2_11,(void**)&v11.p))||!v11.p)return;
+    auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([](HRESULT,LPCWSTR)->HRESULT{return S_OK;});v11->CallDevToolsProtocolMethodForSession(session.c_str(),L"Runtime.runIfWaitingForDebugger",L"{}",done);done->Release();
+}
 void VaultCaptureInstall(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup){
-    if(!Vault::Active()||privateWindow||!t||!t->view.p)return;
+    if(!VaultCaptureWanted()||!t||!t->view.p||vaultScriptIds.count(t->serial))return;
     std::weak_ptr<Tab> weak=t;EventRegistrationToken token{};
-    auto receive=[&](const wchar_t* event,std::function<void(const std::shared_ptr<Tab>&,std::wstring)> f){
+    auto receive=[&](const wchar_t* event,std::function<void(const std::shared_ptr<Tab>&,std::wstring,std::wstring)> f){
         Com<ICoreWebView2DevToolsProtocolEventReceiver> r;if(FAILED(t->view->GetDevToolsProtocolEventReceiver(event,&r.p))||!r.p)return false;
         auto h=Callback<ICoreWebView2DevToolsProtocolEventReceivedEventHandler,ICoreWebView2*,ICoreWebView2DevToolsProtocolEventReceivedEventArgs*>([weak,f](ICoreWebView2*,ICoreWebView2DevToolsProtocolEventReceivedEventArgs* a)->HRESULT{
             auto tab=weak.lock();if(halted||!tab||tab->closed||!a)return S_OK;LPWSTR j=nullptr;if(FAILED(a->get_ParameterObjectAsJson(&j))||!j)return S_OK;
-            std::wstring json=j;SecureZeroMemory(j,wcslen(j)*sizeof(wchar_t));CoTaskMemFree(j);f(tab,std::move(json));return S_OK;});
+            std::wstring json=j;SecureZeroMemory(j,wcslen(j)*sizeof(wchar_t));CoTaskMemFree(j);
+            std::wstring session;{Com<ICoreWebView2DevToolsProtocolEventReceivedEventArgs2> a2;LPWSTR sid=nullptr;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2DevToolsProtocolEventReceivedEventArgs2,(void**)&a2.p))&&a2.p&&SUCCEEDED(a2->get_SessionId(&sid))&&sid){session=sid;CoTaskMemFree(sid);}}
+            f(tab,std::move(json),session);return S_OK;});
         const bool ok=SUCCEEDED(r->add_DevToolsProtocolEventReceived(h,&token));h->Release();return ok;};
-    const bool events=receive(L"Runtime.bindingCalled",[](const std::shared_ptr<Tab>& tab,std::wstring json){VaultCaptureEvent(tab,std::move(json));})
-        &&receive(L"Target.attachedToTarget",[](const std::shared_ptr<Tab>& tab,std::wstring json){
-            Vault::AttachedTarget a;if(!Vault::ParseAttachedToTarget(json,a))return;
-            if(a.type==L"iframe")VaultSessionSetup(tab,a.sessionId);
-            else{Com<ICoreWebView2_11> v11;if(SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_11,(void**)&v11.p))&&v11.p){auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([](HRESULT,LPCWSTR)->HRESULT{return S_OK;});v11->CallDevToolsProtocolMethodForSession(a.sessionId.c_str(),L"Runtime.runIfWaitingForDebugger",L"{}",done);done->Release();}}});
+    const bool events=vaultReceivers.count(t->serial)||(receive(L"Runtime.bindingCalled",[](const std::shared_ptr<Tab>& tab,std::wstring json,std::wstring){VaultCaptureEvent(tab,std::move(json));})
+        &&receive(L"Page.frameNavigated",[](const std::shared_ptr<Tab>& tab,std::wstring,std::wstring session){VaultRebind(tab,session);})
+        &&receive(L"Page.domContentEventFired",[](const std::shared_ptr<Tab>& tab,std::wstring,std::wstring session){VaultRebind(tab,session);})
+        &&receive(L"Page.frameStoppedLoading",[](const std::shared_ptr<Tab>& tab,std::wstring,std::wstring session){VaultRebind(tab,session);})
+        &&receive(L"Target.attachedToTarget",[](const std::shared_ptr<Tab>& tab,std::wstring json,std::wstring){
+            // A frame paused for us is ALWAYS resumed: set up first when the capture is wanted, else resumed as it is.
+            Vault::AttachedTarget a;const bool parsed=Vault::ParseAttachedToTarget(json,a);
+            if(parsed&&a.type==L"iframe"&&VaultCaptureWanted()&&vaultScriptIds.count(tab->serial))VaultSessionSetup(tab,a.sessionId);else VaultResume(tab,a.sessionId);}));
     if(!events){Log(L"VAULT capture NOT installed: DevTools events unavailable");if(popup)popups.Finish(popup,false);return;}
+    vaultReceivers.insert(t->serial);vaultScriptIds[t->serial]=L"";
     auto ok=std::make_shared<bool>(true);VaultSessionSetup(t,L"",ok);
     // Popup barrier: the target loads only once the new-document script is in place.
     ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* barrier=PopupScriptBarrier(popup,L"vault");
@@ -1069,31 +1134,58 @@ void VaultSessionSetup(const std::shared_ptr<Tab>& t,const std::wstring& session
     if(!t||!t->view.p)return;
     Com<ICoreWebView2_11> v11;const bool sessions=SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&v11.p))&&v11.p;
     if(!session.empty()&&!sessions)return;   // (never reached: frames are only attached when sessions can be driven)
+    const unsigned serial=t->serial;
     auto call=[&](const wchar_t* method,const std::wstring& params){
-        auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([m=std::wstring(method),frame=!session.empty(),ok](HRESULT hr,LPCWSTR)->HRESULT{if(FAILED(hr)&&ok)*ok=false;if(FAILED(hr))Log(std::wstring(L"VAULT capture setup failed: ")+m+(frame?L" (frame)":L"")+L" "+HrText(hr));return S_OK;});
+        auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([m=std::wstring(method),frame=!session.empty(),ok,serial](HRESULT hr,LPCWSTR json)->HRESULT{
+            if(SUCCEEDED(hr)&&!frame&&m==L"Page.addScriptToEvaluateOnNewDocument"&&json){std::wstring id;const std::wstring j=json;if(Vault::JsonPlainString(j,Vault::JsonMemberAt(j,Vault::JsonRoot(j),L"identifier"),id)){auto it=vaultScriptIds.find(serial);if(it!=vaultScriptIds.end())it->second=id;}}
+            if(FAILED(hr)&&ok)*ok=false;if(FAILED(hr))Log(std::wstring(L"VAULT capture setup failed: ")+m+(frame?L" (frame)":L"")+L" "+HrText(hr));return S_OK;});
         const HRESULT hr=session.empty()?t->view->CallDevToolsProtocolMethod(method,params.c_str(),done):v11->CallDevToolsProtocolMethodForSession(session.c_str(),method,params.c_str(),done);done->Release();
         if(FAILED(hr)){if(ok)*ok=false;Log(std::wstring(L"VAULT capture setup call failed: ")+method+L" "+HrText(hr));}};
     call(L"Page.enable",L"{}");      // the engine runs new-document scripts only while its Page domain is enabled
-    call(L"Runtime.enable",L"{}");   // and installs a binding in NEW contexts only while its Runtime domain is enabled
+
     call(L"Runtime.addBinding",Vault::CaptureBindingParams());
     call(L"Page.addScriptToEvaluateOnNewDocument",Vault::CaptureScriptParams());
     if(sessions)call(L"Target.setAutoAttach",Vault::AutoAttachParams());   // a frame paused for us must be resumable (ForSession)
     else Log(L"VAULT frame capture unavailable on this runtime (no ICoreWebView2_11): frames of other sites are not covered");
     if(!session.empty())call(L"Runtime.runIfWaitingForDebugger",L"{}");   // the frame waited for its setup: never left paused
 }
+// Review V-5: « Mots de passe » turned off (or on) applies to the tabs already open: the capture is detached (its
+// script and binding removed, frames no longer paused, the DevTools domains disabled) or attached.
+void VaultCaptureRemove(const std::shared_ptr<Tab>& t){
+    auto it=vaultScriptIds.find(t->serial);if(it==vaultScriptIds.end()||!t->view.p)return;
+    const std::wstring id=it->second;vaultScriptIds.erase(it);
+    auto call=[&](const wchar_t* method,const std::wstring& params){auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([](HRESULT,LPCWSTR)->HRESULT{return S_OK;});t->view->CallDevToolsProtocolMethod(method,params.c_str(),done);done->Release();};
+    call(L"Target.setAutoAttach",L"{\"autoAttach\":false,\"waitForDebuggerOnStart\":false,\"flatten\":true}");
+    if(!id.empty())call(L"Page.removeScriptToEvaluateOnNewDocument",L"{\"identifier\":"+Vault::JsonString(id)+L"}");
+    call(L"Runtime.removeBinding",std::wstring(L"{\"name\":\"")+Vault::CaptureBindingName+L"\"}");
+    call(L"Page.disable",L"{}");
+    Log(L"VAULT capture detached from a tab (« Mots de passe » off)");
+}
+void VaultCaptureSync(){
+    for(auto& t:pages){if(!t||t->closed||!t->view.p||t->popupSetup)continue;
+        if(VaultCaptureWanted())VaultCaptureInstall(t,nullptr);else VaultCaptureRemove(t);}
+}
 // ---- Owner decision B: engine-saved passwords. The vault's activation date is recorded per profile at the first
 // active start; 30 days later the ENGINE's saved passwords are cleared once (ClearBrowsingData PASSWORD_AUTOSAVE), then
 // Réglages › Confidentialité shows a one-time notice. Never in a private window, never while the vault is inactive.
 // An unreadable state file is never taken as an old date: the activation is recorded again (the clearing only moves later).
-enum class EngineStep { Nothing, Recorded, ClearNow };
+enum class EngineStep { Nothing, Recorded, ClearNow, OfferManual };
+// The local calendar day of `ms` as yyyymmdd (days of use, review V-3).
+int LocalDayKey(std::int64_t ms){FILETIME ft;ULARGE_INTEGER u;u.QuadPart=(ULONGLONG)(ms+11644473600000LL)*10000ULL;ft.dwLowDateTime=u.LowPart;ft.dwHighDateTime=u.HighPart;SYSTEMTIME st{},lt{};FileTimeToSystemTime(&ft,&st);if(!SystemTimeToTzSpecificLocalTime(nullptr,&st,&lt))lt=st;return lt.wYear*10000+lt.wMonth*100+lt.wDay;}
 std::wstring VaultMigrationFile(){return dataDir+L"\\vault-engine-migration";}
 bool ReadEngineMigration(Vault::EngineMigration& m){std::string b;return ProfileStore::ReadAll(VaultMigrationFile(),b)&&Vault::EngineMigration::Read(b,m);}
 bool WriteEngineMigration(const Vault::EngineMigration& m){return ProfileStore::WriteAtomic(VaultMigrationFile(),m.Write());}
 EngineStep VaultEngineMigrationStep(std::int64_t now){
     if(!Vault::Active()||privateWindow||smoke||dataDir.empty())return EngineStep::Nothing;
-    Vault::EngineMigration m;
-    if(!ReadEngineMigration(m)){m=Vault::EngineMigration{};m.activated=now;if(!WriteEngineMigration(m)){Log(L"VAULT activation date NOT recorded");return EngineStep::Nothing;}Log(L"VAULT activation date recorded");return EngineStep::Recorded;}
-    return m.CleanupDue(now)?EngineStep::ClearNow:EngineStep::Nothing;
+    Vault::EngineMigration m;bool recorded=false;
+    if(!ReadEngineMigration(m)){m=Vault::EngineMigration{};m.activated=now;recorded=true;}
+    const bool counted=m.RecordUse(LocalDayKey(now));   // review V-3: a new day of use (never a clock set back)
+    if((recorded||counted)&&!WriteEngineMigration(m)){Log(L"VAULT activation date / day of use NOT recorded");return EngineStep::Nothing;}
+    if(recorded){Log(L"VAULT activation date recorded");return EngineStep::Recorded;}
+    if(m.cleared||m.useDays<Vault::EngineMigration::GraceDays)return EngineStep::Nothing;
+    // Review V-3: never while « Mots de passe » is off or the vault cannot be read (nothing could have been kept).
+    if(!m.CleanupDue(settings.passwords,ReadVault(200)==VaultLoad::Ok)){Log(L"VAULT engine passwords kept: « Mots de passe » off or the vault unreadable");return EngineStep::Nothing;}
+    return Vault::EngineCleanup==Vault::EngineCleanupMode::Automatic?EngineStep::ClearNow:EngineStep::OfferManual;
 }
 void VaultEngineCleared(std::int64_t now){Vault::EngineMigration m;if(!ReadEngineMigration(m))return;m.cleared=now;if(!WriteEngineMigration(m))Log(L"VAULT engine clearing NOT recorded");}
 bool vaultNoticeShownThisRun=false;
@@ -1112,12 +1204,14 @@ std::wstring VaultEngineNotice(){
 bool vaultEngineClearing=false;
 void VaultEngineMigrationTick(){
     const std::int64_t now=NativeChrome::DownloadsUI::UnixNowMs();
-    if(VaultEngineMigrationStep(now)!=EngineStep::ClearNow||vaultEngineClearing)return;
+    const EngineStep step=VaultEngineMigrationStep(now);
+    if(step==EngineStep::OfferManual){static bool said=false;if(!said){said=true;Log(L"VAULT engine passwords: a manual deletion offer is due (owner decision pending; nothing deleted)");}return;}
+    if(step!=EngineStep::ClearNow||vaultEngineClearing)return;
     Com<ICoreWebView2Profile2> profile;if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){Log(L"VAULT engine clearing postponed: no engine profile yet");return;}
     vaultEngineClearing=true;
     auto done=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{
         vaultEngineClearing=false;
-        if(SUCCEEDED(hr)){VaultEngineCleared(NativeChrome::DownloadsUI::UnixNowMs());Log(L"VAULT engine saved passwords cleared (30 days after activation)");}
+        if(SUCCEEDED(hr)){VaultEngineCleared(NativeChrome::DownloadsUI::UnixNowMs());Log(L"VAULT engine saved passwords cleared (30 days of use after activation)");}
         else Log(L"VAULT engine saved passwords NOT cleared "+HrText(hr));
         return S_OK;});
     const HRESULT hr=profile->ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE,done);done->Release();
@@ -1131,7 +1225,7 @@ void VaultCaptureDrop(const std::shared_ptr<Tab>& t){
     auto isCapture=[](const OP::Spec& s){return !s.demo&&(s.kind==OP::Kind::PasswordSave||s.kind==OP::Kind::PasswordUpdate);};
     for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if(isCapture(it->spec)&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
     if(promptOpen&&isCapture(promptActive.spec)){auto q=promptActive.tab.lock();if(!q||q==t)originPrompt.Abort();}
-    if(t){vaultCapture.erase(t->serial);vaultPromptOpen.erase(t->serial);}
+    if(t){vaultCapture.erase(t->serial);vaultPromptOpen.erase(t->serial);auto w=vaultAwait.find(t->serial);if(w!=vaultAwait.end()){Wipe(w->second.m.secret);Wipe(w->second.m.current);vaultAwait.erase(w);}}
 }
 // Review N13: the capture survives only its own submission (Vault::CaptureBinding); the id is the engine's.
 void VaultNavigationStarting(const std::shared_ptr<Tab>& t,std::uint64_t navigationId,const std::wstring& uri){

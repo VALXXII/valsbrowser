@@ -92,6 +92,10 @@ function PageClick($ws, [string]$id) {
   [void](Send $ws 'Input.dispatchMouseEvent' @{ type = 'mouseMoved'; x = $x; y = $y })
   [void](Send $ws 'Input.dispatchMouseEvent' @{ type = 'mousePressed'; x = $x; y = $y; button = 'left'; clickCount = 1 })
   [void](Send $ws 'Input.dispatchMouseEvent' @{ type = 'mouseReleased'; x = $x; y = $y; button = 'left'; clickCount = 1 }) }
+# A login typed and clicked INTO the framed fixture (/login?framed=1 at fixed positions inside an iframe at 20,60):
+# trusted clicks at page coordinates reach the frame (also out of process), Input.insertText the frame's focused field.
+function PageAt($ws, [int]$x, [int]$y) { foreach ($t in 'mousePressed', 'mouseReleased') { [void](Send $ws 'Input.dispatchMouseEvent' @{ type = $t; x = $x; y = $y; button = 'left'; clickCount = 1 }) } }
+function FrameLogin($ws, [string]$u, [string]$p) { Start-Sleep 1; PageAt $ws 130 82; Start-Sleep -Milliseconds 200; [void](Send $ws 'Input.insertText' @{ text = $u }); PageAt $ws 130 122; Start-Sleep -Milliseconds 200; [void](Send $ws 'Input.insertText' @{ text = $p }); PageAt $ws 130 162 }
 function PageEnter($ws) { [void](Send $ws 'Input.dispatchKeyEvent' @{ type = 'keyDown'; key = 'Enter'; code = 'Enter'; windowsVirtualKeyCode = 13; nativeVirtualKeyCode = 13; text = "`r" }); [void](Send $ws 'Input.dispatchKeyEvent' @{ type = 'keyUp'; key = 'Enter'; code = 'Enter'; windowsVirtualKeyCode = 13; nativeVirtualKeyCode = 13 }) }
 
 function Build([string]$source, [string]$dir) {
@@ -218,16 +222,16 @@ try {
   Check ((NoOffer $hp 3000) -and -not [bool](@(VaultEntries $vf) | Where-Object { $_.user -eq 'e2e-cov-echec' })) 'A script-driven failure, then the person leaves the page: still no offer'
 
   # A. frames: same origin, and another origin (offer and entry for the FRAME's origin, never the page's)
-  Scenario $hp 'PasswordSave' 'A same-origin frame' { $w = Navigate '/frame?fill=cadre'; $w.Dispose() } { Holds $vf $O1 $fUser $fSecret }
-  Scenario $hp 'PasswordSave' 'A cross-origin frame (entry for the FRAME''s origin, never the page''s)' { $w = Navigate "/frame?cross=$port2&fill=autre"; $w.Dispose(); $script:oopif = $script:oopif -or (@(Targets | Where-Object { $_.type -eq 'iframe' -and $_.url -like "$O2/*" }).Count -gt 0) } { (Holds $vf $O2 $xUser $xSecret) -and -not [bool](@(VaultEntries $vf) | Where-Object { $_.user -eq $xUser -and $_.origin -eq $O1 }) }
+  Scenario $hp 'PasswordSave' 'A same-origin frame' { $w = Navigate '/frame?typed=1'; FrameLogin $w $fUser $fSecret; $w.Dispose() } { Holds $vf $O1 $fUser $fSecret }
+  Scenario $hp 'PasswordSave' 'A cross-origin frame (entry for the FRAME''s origin, never the page''s)' { $w = Navigate "/frame?typed=1&cross=$port2"; FrameLogin $w $xUser $xSecret; $w.Dispose(); $script:oopif = $script:oopif -or (@(Targets | Where-Object { $_.type -eq 'iframe' -and $_.url -like "$O2/*" }).Count -gt 0) } { (Holds $vf $O2 $xUser $xSecret) -and -not [bool](@(VaultEntries $vf) | Where-Object { $_.user -eq $xUser -and $_.origin -eq $O1 }) }
   "     cross-origin frame ran out of process (its own DevTools target): $script:oopif"
   Check $script:oopif 'A cross-origin frame: the out-of-process frame path was exercised (auto-attached before it ran)'
 
   # A. never for an opaque (sandboxed) document: a sandboxed frame, and a top-level CSP-sandboxed page forging the old channel (R-6)
   Dismiss $hp
-  $w = Navigate "/frame?sbx&fill=sbx"; $w.Dispose()
+  $w = Navigate "/frame?typed=1&sbx=1"; FrameLogin $w $nUser $nSecret; $w.Dispose()
   Check (NoOffer $hp 5000) 'A sandboxed (opaque) frame of the site: no offer'
-  $w = Navigate "/sbx-forge?fill=sbx"; $w.Dispose()
+  $w = Navigate "/sbx-forge"; TypeInto $w 'u' $nUser; TypeInto $w 'p' $nSecret; PageClick $w 'go'; $w.Dispose()
   Check (NoOffer $hp 5000) 'R-6: an opaque top-level page served at the site''s URL (forging the page channel, then submitting): no offer'
   Check (-not [bool](@(VaultEntries $vf) | Where-Object { $_.user -eq $nUser })) 'R-6: nothing of the opaque pages reached the vault'
 
@@ -256,14 +260,15 @@ try {
   $w = Page; $w.Dispose()
   Check (StopHost $prodExe $prodDir) 'product host stopped (engine exited)'
 
-  # ---- B. 30 days later (clock injected through the recorded activation date) -----------------------------------
+  # ---- B. 30 DAYS OF USE later (review V-3; clock injected through the recorded state: 29 days of use already counted,
+  # the last one long ago, so this start is the 30th) ------------------------------------------------------------------
   $day = 24L * 3600 * 1000; $old = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 31 * $day
-  [IO.File]::WriteAllText($mig, ([IO.File]::ReadAllText($mig) -replace 'activated=\d+', "activated=$old"))
+  [IO.File]::WriteAllText($mig, ((([IO.File]::ReadAllText($mig) -replace 'activated=\d+', "activated=$old") -replace 'days=\d+', 'days=29') -replace 'lastday=\d+', 'lastday=20000101'))
   $hp = StartHost $prodExe $prodDir; $hwnd = (Get-Process -Id $hp).MainWindowHandle
   Check (WaitLog $log 'E2E BOUND certificate decisions cleared' 20000) 'product host restarted with an activation date 31 days old'
-  Check (WaitLog $log 'VAULT engine saved passwords cleared \(30 days after activation\)' 15000) 'B: after 30 days the engine''s saved passwords are cleared (ClearBrowsingData PASSWORD_AUTOSAVE)'
+  Check (WaitLog $log 'VAULT engine saved passwords cleared \(30 days of use after activation\)' 15000) 'B: on the 30th day of use the engine''s saved passwords are cleared (ClearBrowsingData PASSWORD_AUTOSAVE)'
   $migText = [IO.File]::ReadAllText($mig)
-  Check ($migText -match "cleared=[1-9]\d*" -and $migText -match "activated=$old") 'B: the clearing is recorded (done once)'
+  Check ($migText -match "cleared=[1-9]\d*" -and $migText -match "activated=$old" -and $migText -match "days=30") 'B: the clearing is recorded (done once, on the 30th day of use)'
   [void](InvokeEl (WaitFind $hp 'Settings' '' 5000)); [void](InvokeEl (WaitFind $hp '' 'Confidentialité' 5000))
   $notice = WaitFind $hp 'SettingsVaultNotice' '' 5000
   "     notice: $(if ($notice) { $notice.Current.Name } else { '(none)' })"

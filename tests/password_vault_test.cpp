@@ -155,17 +155,51 @@ int main() {
         Check(ts.For(o2, 1000 + 60000) == L"camille" && ts.For(o2, 1000 + TwoStep::WindowMs) == L"camille", "two-step: the first step's username, within the window");
         Check(ts.For(o2, 1000 + TwoStep::WindowMs + 1).empty() && ts.For(L"https://autre.exemple.test", 2000).empty(), "two-step: never after the window, never for another origin");
         ts.Remember(o2, L"", 3000); Check(ts.For(o2, 3500) == L"camille", "two-step: an empty username never erases the remembered one");
-        // Migration of the engine's saved passwords: activation date recorded, engine store cleared after 30 days (injected clock).
-        EngineMigration mg; const std::int64_t day = 24LL * 3600 * 1000, t0 = 1790000000000LL;
-        Check(EngineMigration::GraceMs == 30 * day, "migration: the grace period is 30 days");
-        Check(!mg.CleanupDue(t0 + 400 * day), "migration: no activation date recorded: never cleared");
+        // Migration of the engine's saved passwords (review V-3): the grace period counts DAYS OF USE (a day on which the
+        // vault was active and a tab opened), never calendar time, and a clock set back or ahead cannot shorten it.
+        EngineMigration mg; const std::int64_t t0 = 1790000000000LL;
+        Check(EngineMigration::GraceDays == 30, "migration: the grace period is 30 days of use");
+        Check(!mg.CleanupDue(true, true), "migration: no activation date recorded: never cleared");
         mg.activated = t0;
-        Check(!mg.CleanupDue(t0 + 30 * day - 1) && mg.CleanupDue(t0 + 30 * day), "migration: cleared from day 30 after activation, not one millisecond before");
-        Check(!mg.CleanupDue(t0 - day), "migration: a clock set back never clears");
-        mg.cleared = t0 + 31 * day; Check(!mg.CleanupDue(t0 + 60 * day) && mg.NoticePending(), "migration: cleared once only; then the one-time notice is pending");
+        int key = 20261101, counted = 0; for (int d = 0; d < 29; ++d) counted += mg.RecordUse(key + d) ? 1 : 0;
+        Check(counted == 29 && mg.useDays == 29 && !mg.CleanupDue(true, true), "migration: 29 days of use: not yet");
+        Check(!mg.RecordUse(key + 28) && mg.useDays == 29, "migration: the same day again counts nothing");
+        Check(!mg.RecordUse(key) && !mg.RecordUse(20250101) && mg.useDays == 29, "migration: a clock set back counts nothing");
+        Check(mg.RecordUse(20300101) && mg.useDays == 30, "migration: a clock set years ahead counts ONE day, not years");
+        Check(mg.CleanupDue(true, true), "migration: due on the 30th day of use");
+        Check(!mg.CleanupDue(false, true), "migration: never while « Mots de passe » is off (nothing could be migrated)");
+        Check(!mg.CleanupDue(true, false), "migration: never while the vault is unreadable (nothing could be kept)");
+        { EngineMigration away; away.activated = t0; away.RecordUse(20261101); away.RecordUse(20261215); Check(away.useDays == 2 && !away.CleanupDue(true, true), "migration: a person who comes back after weeks away has used the browser 2 days, not 45"); }
+        Check(EngineCleanup == EngineCleanupMode::Automatic || EngineCleanup == EngineCleanupMode::ManualOffer, "migration: the deletion mode is one switch (owner decision pending)");
+        mg.cleared = t0 + 1; Check(!mg.CleanupDue(true, true) && mg.NoticePending(), "migration: cleared once only; then the one-time notice is pending");
         mg.noticeSeen = true; Check(!mg.NoticePending(), "migration: the notice is shown once");
-        EngineMigration back2; Check(EngineMigration::Read(mg.Write(), back2) && back2.activated == mg.activated && back2.cleared == mg.cleared && back2.noticeSeen, "migration: the state file reads back identical");
-        EngineMigration bad; Check(!EngineMigration::Read("autre chose\n", bad) && !EngineMigration::Read("browser-vault-migration 1\nactivated=12x\n", bad) && !EngineMigration::Read("", bad), "migration: an unknown or damaged state file is refused (never taken as a date)");
+        EngineMigration back2; Check(EngineMigration::Read(mg.Write(), back2) && back2.activated == mg.activated && back2.cleared == mg.cleared && back2.noticeSeen && back2.useDays == 30 && back2.lastUseDay == 20300101, "migration: the state file reads back identical");
+        { EngineMigration old; Check(EngineMigration::Read("browser-vault-migration 1\nactivated=12\ncleared=0\nnotice=0\n", old) && old.useDays == 0, "migration: a state file of the previous build reads (no days counted yet)"); }
+        EngineMigration bad; Check(!EngineMigration::Read("autre chose\n", bad) && !EngineMigration::Read("browser-vault-migration 1\nactivated=12x\n", bad) && !EngineMigration::Read("", bad) && !EngineMigration::Read("browser-vault-migration 1\nactivated=12\nlastday=2026-11-01\n", bad), "migration: an unknown or damaged state file is refused (never taken as a date)");
+        // ---- Review V-4: no offer without a real user action in that document; the page cannot write the username at will -----
+        Check(cs.find(L"e.isTrusted&&activated()") != std::wstring::npos && cs.find(L"'pointerdown'") != std::wstring::npos && cs.find(L"function activated(){return performance.now()-act<=10000;}") != std::wstring::npos,
+              "V-4: a submit counts only when trusted and after a trusted click / key in that document within 10 s");
+        Check(cs.find(L"typed.get(p)===p.value") != std::wstring::npos && cs.find(L"'input'") != std::wstring::npos,
+              "V-4: the password offered is one the person typed (trusted input) or the engine autofilled, never a value the page planted");
+        { const std::wstring ok128(128, L'a'), long129(129, L'a');
+          Check(ParseCaptureEvent(ev(L"{\"k\":\"capture\",\"o\":\"https://compte.exemple.test\",\"t\":\"1\",\"u\":\"" + ok128 + L"\",\"p\":\"x\"}"), cm) && !ParseCaptureEvent(ev(L"{\"k\":\"capture\",\"o\":\"https://compte.exemple.test\",\"t\":\"1\",\"u\":\"" + long129 + L"\",\"p\":\"x\"}"), cm),
+                "V-4: a username longer than 128 characters is refused (no sentence inside native UI)");
+          Check(!ParseCaptureEvent(ev(L"{\"k\":\"capture\",\"o\":\"https://compte.exemple.test\",\"t\":\"1\",\"u\":\"a\\nb\",\"p\":\"x\"}"), cm) && !ParseCaptureEvent(ev(L"{\"k\":\"capture\",\"o\":\"https://compte.exemple.test\",\"t\":\"1\",\"u\":\"a\\u202eb\",\"p\":\"x\"}"), cm) && !ParseCaptureEvent(ev(L"{\"k\":\"user\",\"o\":\"https://compte.exemple.test\",\"t\":\"1\",\"u\":\"a\\u0007\"}"), cm),
+                "V-4: control and text-direction characters in a username are refused"); }
+        Check(!MayReplace(true, false, 100000, 0) && MayReplace(true, true, 100000, 0) && MayReplace(false, false, 100000, 0) && MayReplace(false, true, 100000, 0), "V-4: a frame never replaces the page's own pending offer");
+        Check(!MayReplace(true, true, 100000, 96000) && MayReplace(true, true, 100000, 95000) && !MayReplace(false, false, 100000, 99000), "V-4: a pending offer is replaced at most once every 5 s");
+        // ---- Review V-7: a login is offered only once its outcome is known (no password field asked again) ----------------
+        Check(ParseCaptureEvent(ev(L"{\"k\":\"doc\",\"o\":\"https://compte.exemple.test\",\"t\":\"1\",\"pw\":\"0\"}"), cm) && cm.kind == CaptureMessage::Kind::Doc && !cm.passwordField
+              && ParseCaptureEvent(ev(L"{\"k\":\"doc\",\"o\":\"https://compte.exemple.test\",\"t\":\"0\",\"pw\":\"1\"}"), cm) && cm.passwordField && !cm.top, "V-7: a new document reports whether it asks for a password");
+        Check(cs.find(L"k:'doc'") != std::wstring::npos && cs.find(L"'DOMContentLoaded'") != std::wstring::npos && cs.find(L"visiblePw(document)") != std::wstring::npos, "V-7: each document reports, once loaded, whether a visible password field is there; « gone » means none in the whole document");
+        const std::wstring oc = L"https://compte.exemple.test";
+        Check(LoginOutcome(oc, true, oc, true, false) == Outcome::Offer && LoginOutcome(oc, true, oc, true, true) == Outcome::Drop, "V-7: the next page of the login without a password field: offer; asking for a password again (login failed): drop");
+        Check(LoginOutcome(oc, true, L"https://autre.exemple.test", true, false) == Outcome::Wait && LoginOutcome(oc, true, oc, false, false) == Outcome::Wait && LoginOutcome(oc, false, oc, true, false) == Outcome::Wait && LoginOutcome(oc, false, oc, false, false) == Outcome::Offer,
+              "V-7: only a document of the same origin and the same kind (page / frame) decides");
+        // ---- Review V-6: the fill writes only into fields the person can see --------------------------------------------
+        { const std::wstring fs = FillScript(origin, L"u", L"p");
+          Check(fs.find(L"checkVisibility") != std::wstring::npos && fs.find(L"opacityProperty:true") != std::wstring::npos && fs.find(L"elementFromPoint") != std::wstring::npos && fs.find(L"innerWidth") != std::wstring::npos && fs.find(L"r.width<2") != std::wstring::npos,
+                "V-6: invisible, transparent, zero-size, off-screen or covered fields are never filled"); }
     }
     // Profile transaction.
     const std::wstring dir = std::filesystem::absolute(L"build/password-vault/profile").wstring(); std::error_code ec; std::filesystem::remove_all(dir, ec); std::filesystem::create_directories(dir, ec);
