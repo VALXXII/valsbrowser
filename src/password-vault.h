@@ -411,4 +411,170 @@ private:
     std::wstring origin_; std::uint64_t submit_ = 0; bool known_ = false, active_ = false;
 };
 
+// ---- Capture coverage (owner decision A) --------------------------------------------------------------------
+// The capture runs in an ISOLATED world (CaptureWorld) of EVERY document of the tab, its frames included (the
+// out-of-process ones are attached before they run, AutoAttachParams), installed through the DevTools protocol
+// (Page.addScriptToEvaluateOnNewDocument with a worldName). It reports through a DevTools binding that exists ONLY
+// in that world (Runtime.addBinding executionContextName): the page cannot call it, and the origin it reports is
+// read in that world (`self.origin`, the document's real origin), so an opaque (sandboxed) document reads "null"
+// and never reports (review R-6). The page's own message channel (chrome.webview.postMessage) is never a capture.
+// What it reports (once, directly; nothing is kept in web storage):
+//   - a classic form submit;
+//   - a script-driven login: a TRUSTED click on a button-like element or Enter in a field, confirmed within 10 s by
+//     every password field of the login disappearing, or by the page leaving (pagehide / beforeunload) within 2 s
+//     of the click / Enter or of the end of the last request the page made after it (fetch / XHR); a failed login
+//     (the fields stay, the person goes elsewhere later) reports nothing;
+//   - a first step with a username and no password field at all (two-step logins: the host joins it to a later
+//     password of the same origin, TwoStep);
+//   - change-password forms: the NEW password (autocomplete new-password, else current + new + confirm), the
+//     current one only to find the account; a confirmation that differs reports nothing;
+//   - whether the password field was filled by the ENGINE (:-webkit-autofill): a migration from its old store.
+inline constexpr const wchar_t* CaptureWorld = L"browser-vault-capture";
+inline constexpr const wchar_t* CaptureBindingName = L"browserVaultCapture";
+inline std::wstring CaptureScript() {
+    return std::wstring(L"(function(){var B=window.") + CaptureBindingName + L";if(typeof B!=='function')return;"
+        L"var O=self.origin;if(O==='null'||location.protocol!=='https:'||!window.isSecureContext||location.origin!==O)return;"
+        L"var TOP=window.top===window?'1':'0';"
+        L"function shown(e){return !!e&&e.isConnected&&e.type!=='hidden'&&!e.disabled&&e.getClientRects().length>0;}"
+        L"function ac(e){return (e.getAttribute('autocomplete')||'').toLowerCase();}"
+        L"function list(r,q){return Array.prototype.slice.call(r.querySelectorAll(q));}"
+        L"function scope(el){var f=el&&(el.form||(el.closest&&el.closest('form')));return f||document;}"
+        L"function userField(r){var c=list(r,'input').filter(function(e){var t=(e.type||'text').toLowerCase();return (t==='text'||t==='email'||t==='tel')&&e.value;});"
+        L"var h=c.filter(function(e){return ac(e).indexOf('username')>=0;});if(h.length)return h[0];var v=c.filter(shown);return v.length?v[0]:null;}"
+        L"function looksUser(e){return ac(e).indexOf('username')>=0||e.type==='email'||/user|login|mail|ident|account|compte/i.test((e.name||'')+' '+(e.id||''));}"
+        L"function snap(r){var pw=list(r,'input[type=password]').filter(shown),f=pw.filter(function(e){return e.value;}),u=userField(r);"
+        L"if(!f.length)return (!pw.length&&u&&looksUser(u))?{k:'user',u:u.value}:null;"
+        L"var nw=f.filter(function(e){return ac(e).indexOf('new-password')>=0;}),cu=f.filter(function(e){return ac(e).indexOf('current-password')>=0;}),p=null,c='';"
+        L"if(nw.length){if(nw.length>1&&nw[0].value!==nw[1].value)return null;p=nw[0];var o=cu.length?cu[0]:f.filter(function(e){return nw.indexOf(e)<0;})[0];c=o?o.value:'';}"
+        L"else if(f.length>=3){if(f[1].value!==f[2].value)return null;c=f[0].value;p=f[1];}"
+        L"else if(f.length===2){if(f[0].value===f[1].value)p=f[0];else if(cu.length){c=cu[0].value;p=f[0]===cu[0]?f[1]:f[0];}else{c=f[0].value;p=f[1];}}"
+        L"else p=f[0];"
+        L"if(c===p.value)c='';var a='0';try{a=p.matches(':-webkit-autofill')?'1':'0';}catch(x){}"
+        L"return {k:'capture',u:u?u.value:'',p:p.value,c:c,a:a,f:f};}"
+        L"function post(s,v){var m={k:s.k,o:O,t:TOP,v:v,u:s.u||''};if(s.k==='capture'){m.p=s.p;m.c=s.c;m.a=s.a;}try{B(JSON.stringify(m));}catch(x){}}"
+        L"var pend=null,timer=0;function stop(){pend=null;if(timer){clearInterval(timer);timer=0;}}"
+        L"function confirmed(v){if(!pend)return;var s=pend;stop();post(s,v);}"
+        L"function recent(){if(!pend)return false;var last=pend.t0;try{performance.getEntriesByType('resource').forEach(function(e){if((e.initiatorType==='fetch'||e.initiatorType==='xmlhttprequest')&&e.startTime>=pend.t0&&e.responseEnd>last)last=e.responseEnd;});}catch(x){}return performance.now()-last<=2000;}"
+        L"function leave(){if(recent())confirmed('leave');else stop();}"
+        L"function trigger(el){var s=snap(scope(el));if(!s)return;if(s.k==='user'){post(s,'step');return;}stop();pend=s;pend.t0=performance.now();var at=Date.now();"
+        L"timer=setInterval(function(){if(!pend||Date.now()-at>10000){stop();return;}if(pend.f.every(function(e){return !shown(e);}))confirmed('gone');},250);}"
+        L"document.addEventListener('submit',function(e){var f=e.target;if(!f||!f.querySelectorAll)return;var s=snap(f);stop();if(s)post(s,s.k==='user'?'step':'submit');},true);"
+        L"document.addEventListener('click',function(e){if(!e.isTrusted)return;var t=e.target,b=t&&t.closest?t.closest('button,input[type=submit],input[type=button],input[type=image],[role=button]'):null;if(b)trigger(b);},true);"
+        L"document.addEventListener('keydown',function(e){if(!e.isTrusted||e.key!=='Enter')return;var t=e.target;if(t&&t.tagName==='INPUT')trigger(t);},true);"
+        L"window.addEventListener('pagehide',leave,true);window.addEventListener('beforeunload',leave,true);"
+        L"})();";
+}
+inline std::wstring CaptureScriptParams() { return L"{\"source\":" + JsonString(CaptureScript()) + L",\"worldName\":\"" + CaptureWorld + L"\"}"; }
+inline std::wstring CaptureBindingParams() { return std::wstring(L"{\"name\":\"") + CaptureBindingName + L"\",\"executionContextName\":\"" + CaptureWorld + L"\"}"; }
+// Frames of another site run in their own renderer: attached (paused) before they run, iframes only, then given
+// the same world, binding and auto-attach (nested frames), then resumed.
+inline std::wstring AutoAttachParams() { return L"{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true,\"filter\":[{\"type\":\"iframe\",\"exclude\":false}]}"; }
+// A JSON string value starting at `at`, unescaped (\uXXXX kept as UTF-16 units); false when it is not one.
+inline bool JsonStringAt(const std::wstring& j, std::size_t at, std::wstring& out) {
+    out.clear(); if (at >= j.size() || j[at] != L'"') return false;
+    for (std::size_t i = at + 1; i < j.size(); ++i) {
+        const wchar_t c = j[i];
+        if (c == L'"') return true;
+        if (c != L'\\') { out += c; continue; }
+        if (++i >= j.size()) return false;
+        const wchar_t e = j[i];
+        if (e == L'u') { if (i + 4 >= j.size()) return false; unsigned v = 0; for (int k = 1; k <= 4; ++k) { const wchar_t h = j[i + k]; v <<= 4; if (h >= L'0' && h <= L'9') v |= h - L'0'; else if (h >= L'a' && h <= L'f') v |= h - L'a' + 10; else if (h >= L'A' && h <= L'F') v |= h - L'A' + 10; else return false; } out += static_cast<wchar_t>(v); i += 4; }
+        else out += e == L'n' ? L'\n' : e == L't' ? L'\t' : e == L'r' ? L'\r' : e == L'b' ? L'\b' : e == L'f' ? L'\f' : e;
+    }
+    return false;
+}
+inline void WipeText(std::wstring& s) { if (!s.empty()) SecureZeroMemory(s.data(), s.size() * sizeof(wchar_t)); s.clear(); }
+// Target.attachedToTarget: the child session and its type (an engine id: letters and digits only).
+struct AttachedTarget { std::wstring sessionId, type; bool waiting = false; };
+inline bool ParseAttachedToTarget(const std::wstring& json, AttachedTarget& out) {
+    out = AttachedTarget{}; const auto root = JsonRoot(json);
+    if (!JsonPlainString(json, JsonMemberAt(json, root, L"sessionId"), out.sessionId) || out.sessionId.empty() || out.sessionId.size() > 64) return false;
+    for (wchar_t c : out.sessionId) if (!AsciiIdChar(c)) return false;
+    const auto info = JsonMemberAt(json, root, L"targetInfo");
+    if (!JsonPlainString(json, JsonMemberAt(json, info, L"type"), out.type)) return false;
+    const auto w = JsonMemberAt(json, root, L"waitingForDebugger"); out.waiting = w != std::wstring::npos && json.compare(w, 4, L"true") == 0;
+    return true;
+}
+// Runtime.bindingCalled of the capture binding. The origin is the isolated world's `self.origin`: it must be a
+// canonical https origin (an opaque "null", http, or anything else is refused). Fields of the page (user,
+// passwords) are only values; no field decides an origin.
+struct CaptureMessage {
+    enum class Kind { Capture, User } kind = Kind::Capture;
+    std::wstring origin, user, secret, current, via; bool top = false, autofilled = false;
+    CaptureMessage() = default; CaptureMessage(const CaptureMessage&) = default; CaptureMessage& operator=(const CaptureMessage&) = default;
+    ~CaptureMessage() { WipeText(secret); WipeText(current); }
+};
+inline bool ParseCaptureEvent(const std::wstring& event, CaptureMessage& out) {
+    out.kind = CaptureMessage::Kind::Capture; out.origin.clear(); out.user.clear(); WipeText(out.secret); WipeText(out.current); out.via.clear(); out.top = out.autofilled = false;
+    const auto root = JsonRoot(event); std::wstring name, payload;
+    if (!JsonStringAt(event, JsonMemberAt(event, root, L"name"), name) || name != CaptureBindingName) return false;
+    if (!JsonStringAt(event, JsonMemberAt(event, root, L"payload"), payload)) { WipeText(payload); return false; }
+    struct Wiper { std::wstring& s; ~Wiper() { WipeText(s); } } wipePayload{payload};
+    const auto p = JsonRoot(payload); std::wstring k, t, a;
+    auto str = [&](const wchar_t* key, std::wstring& v) { return JsonStringAt(payload, JsonMemberAt(payload, p, key), v); };
+    if (!str(L"k", k) || !str(L"o", out.origin)) return false;
+    if (out.origin.empty() || CanonicalOrigin(out.origin) != out.origin) { out.origin.clear(); return false; }   // "null" (opaque), http, non-canonical
+    str(L"t", t); str(L"v", out.via); str(L"u", out.user); out.top = t == L"1";
+    if (out.user.size() > 512) return false;
+    if (k == L"user") { out.kind = CaptureMessage::Kind::User; return !out.user.empty(); }
+    if (k != L"capture") return false;
+    str(L"p", out.secret); str(L"c", out.current); str(L"a", a); out.autofilled = a == L"1";
+    if (out.secret.empty() || out.secret.size() > 1024 || out.current.size() > 1024) { WipeText(out.secret); WipeText(out.current); return false; }
+    return true;
+}
+// What B04 offers for a capture, from what the vault holds for that origin (secrets compared, then wiped).
+// Never for a password the vault already holds unchanged; an account known by its username: update; no username:
+// the account whose CURRENT password was typed (change form), else the only account, else the user chooses (D1);
+// unknown: save, worded as a migration when the ENGINE autofilled it (owner decision B).
+struct Offer { enum class Kind { None, Save, Update, Choose } kind = Kind::None; std::wstring user; std::vector<std::wstring> accounts; bool migration = false; };
+inline Offer DecideOffer(const Store& s, const std::wstring& origin, const std::wstring& user, const std::wstring& secret, const std::wstring& current, bool autofilled) {
+    Offer o; if (origin.empty() || CanonicalOrigin(origin) != origin || secret.empty()) return o;
+    const auto accounts = s.For(origin);
+    auto holds = [&](const Entry& e, const std::wstring& v) { std::wstring got; const bool same = !v.empty() && s.Reveal(e.id, origin, got) && got == v; WipeText(got); return same; };
+    if (!user.empty()) {
+        for (const auto& e : accounts) if (e.user == user) { if (holds(e, secret)) return o; o.kind = Offer::Kind::Update; o.user = user; return o; }
+        o.kind = Offer::Kind::Save; o.user = user; o.migration = autofilled; return o;
+    }
+    for (const auto& e : accounts) if (holds(e, secret)) return o;
+    if (!current.empty()) { const Entry* match = nullptr; int n = 0; for (const auto& e : accounts) if (holds(e, current)) { match = &e; ++n; }
+        if (n == 1) { o.kind = Offer::Kind::Update; o.user = match->user; return o; } }
+    if (accounts.size() == 1) { o.kind = Offer::Kind::Update; o.user = accounts[0].user; return o; }
+    if (accounts.size() > 1) { o.kind = Offer::Kind::Choose; for (const auto& e : accounts) o.accounts.push_back(e.user); return o; }
+    o.kind = Offer::Kind::Save; o.migration = autofilled; return o;
+}
+// Two-step logins: the username of a first step, joined to a password of the same origin within 3 minutes.
+class TwoStep {
+public:
+    static constexpr std::int64_t WindowMs = 3LL * 60 * 1000;
+    void Remember(const std::wstring& origin, const std::wstring& user, std::int64_t now) { if (origin.empty() || user.empty()) return; origin_ = origin; user_ = user; at_ = now; }
+    std::wstring For(const std::wstring& origin, std::int64_t now) const { return !user_.empty() && origin == origin_ && now >= at_ && now - at_ <= WindowMs ? user_ : std::wstring(); }
+private:
+    std::wstring origin_, user_; std::int64_t at_ = 0;
+};
+// ---- Engine passwords (owner decision B): migrated as the user logs in (B04 « Garder »), never decrypted from the
+// engine's store; the activation date is recorded per profile and the engine's saved passwords are cleared 30 days
+// later (ClearBrowsingData PASSWORD_AUTOSAVE), once, followed by a one-time notice in Réglages.
+//   browser-vault-migration 1 / activated=<unix ms> / cleared=<unix ms, 0 = not yet> / notice=<0|1>
+struct EngineMigration {
+    static constexpr std::int64_t GraceMs = 30LL * 24 * 3600 * 1000;
+    static constexpr const char* Header = "browser-vault-migration 1";
+    std::int64_t activated = 0, cleared = 0; bool noticeSeen = false;
+    bool CleanupDue(std::int64_t now) const { return activated > 0 && cleared == 0 && now >= activated + GraceMs; }
+    bool NoticePending() const { return cleared > 0 && !noticeSeen; }
+    std::string Write() const { std::ostringstream o; o << Header << "\nactivated=" << activated << "\ncleared=" << cleared << "\nnotice=" << (noticeSeen ? 1 : 0) << "\n"; return o.str(); }
+    static bool Read(const std::string& text, EngineMigration& out) {
+        out = EngineMigration{}; std::istringstream in(text); std::string line; bool any = false, act = false;
+        if (!std::getline(in, line) || line != Header) return false;
+        while (std::getline(in, line)) {
+            if (line.empty()) continue;
+            const auto eq = line.find('='); if (eq == std::string::npos) return false;
+            const std::string k = line.substr(0, eq), v = line.substr(eq + 1); if (!Store::Digits(v)) return false;
+            std::int64_t n = 0; try { n = std::stoll(v); } catch (...) { return false; }
+            if (k == "activated") { out.activated = n; act = true; } else if (k == "cleared") out.cleared = n; else if (k == "notice") { if (n > 1) return false; out.noticeSeen = n == 1; } else return false;
+            any = true;
+        }
+        return any && act && out.activated > 0;
+    }
+};
+
 } // namespace Vault

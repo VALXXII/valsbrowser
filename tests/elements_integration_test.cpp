@@ -533,6 +533,33 @@ int main(){
           Expect(answered==4&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
           Expect(!VaultOfferStillValid(live,o)&&!VaultOfferStillValid(nullptr,o),"capture: the show/answer guard refuses a tab whose engine source is not the capture origin (PumpPrompt and the answer use it; shown path covered by vault_e2e)");
           vaultCapture.clear(); }
+        // Owner decision B: the vault's activation date, the engine store cleared 30 days later (injected clock), the one-time notice.
+        { const std::wstring mdir=L"build/elements-integration/vault-migration";std::error_code mec;std::filesystem::remove_all(mdir,mec);std::filesystem::create_directories(mdir,mec);
+          const std::wstring savedDir=dataDir;dataDir=mdir;const bool wasActive=Vault::ActiveFlag();const std::int64_t day=24LL*3600*1000,t0=1790000000000LL;
+          Vault::ActiveFlag()=false;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(mdir+L"\\vault-engine-migration"),"migration: vault inactive (dev/release): nothing recorded, nothing cleared");
+          Vault::ActiveFlag()=true;privateWindow=true;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(mdir+L"\\vault-engine-migration"),"migration: a private window records and clears nothing");
+          privateWindow=false;
+          Expect(VaultEngineMigrationStep(t0)==EngineStep::Recorded&&VaultEngineMigrationStep(t0+day)==EngineStep::Nothing,"migration: the first active start records the activation date (once)");
+          Expect(VaultEngineMigrationStep(t0+30*day-1)==EngineStep::Nothing&&VaultEngineMigrationStep(t0+30*day)==EngineStep::ClearNow,"migration: the engine store is cleared from day 30, not before");
+          Expect(VaultEngineNotice().empty(),"migration: no notice before the engine store was cleared");
+          VaultEngineCleared(t0+30*day);
+          Expect(VaultEngineMigrationStep(t0+90*day)==EngineStep::Nothing,"migration: cleared once, never again");
+          const std::wstring n1=VaultEngineNotice(),n2=VaultEngineNotice();
+          Expect(!n1.empty()&&n1==n2&&n1.find(L"30")!=std::wstring::npos,"migration: the notice is shown (and stays for this session)");
+          vaultNoticeShownThisRun=false;Expect(VaultEngineNotice().empty(),"migration: the notice is one-time (gone at the next start)");
+          { std::ofstream bad(std::filesystem::path(mdir+L"\\vault-engine-migration"),std::ios::binary);bad<<"autre chose\n"; }
+          Expect(VaultEngineMigrationStep(t0+400*day)==EngineStep::Recorded,"migration: an unreadable state file is never taken as an old date (re-recorded now: never an early clear)");
+          Vault::ActiveFlag()=wasActive;dataDir=savedDir;std::filesystem::remove_all(mdir,mec); }
+        // « Effacer en quittant » says what it really deletes (ClearBrowsingDataAll includes the engine's saved passwords and forms).
+        { const bool wasActive=Vault::ActiveFlag();Vault::ActiveFlag()=false;const std::wstring off=ClearOnExitNote();Vault::ActiveFlag()=true;const std::wstring on=ClearOnExitNote();Vault::ActiveFlag()=wasActive;
+          Expect(off.find(L"mots de passe")!=std::wstring::npos&&on.find(L"mots de passe")!=std::wstring::npos&&off!=on,"clear on exit: the note names the saved passwords it deletes (vault inactive: all of them; active: those not kept yet)"); }
+        // Réglages › Confidentialité: the one-time notice row sits in « Formulaires », under the passwords entries.
+        { NativeChrome::SettingsUI::LayoutInput in;in.vaultManager=true;in.vaultCount=2;in.vaultNotice=L"Anciens mots de passe effacés";in.vaultNoticeLines={L"ligne"};
+          const auto slots=NativeChrome::SettingsUI::ContentSlots(NativeChrome::SettingsUI::View::Privacy,in,0);
+          const auto it=std::find_if(slots.begin(),slots.end(),[](const NativeChrome::SettingsUI::Slot& sl){return sl.vaultNotice;});
+          Expect(it!=slots.end()&&it->text==L"Anciens mots de passe effacés"&&it->lines.size()==1,"settings: the engine-cleared notice row is laid out in Confidentialité");
+          in.vaultNotice.clear();const auto none=NativeChrome::SettingsUI::ContentSlots(NativeChrome::SettingsUI::View::Privacy,in,0);
+          Expect(std::none_of(none.begin(),none.end(),[](const NativeChrome::SettingsUI::Slot& sl){return sl.vaultNotice;}),"settings: no notice row without a notice"); }
         // A5 with engine categories but no engine profile (no live tab / older runtime): a real failure, never « effacé ».
         { HRESULT got=S_FALSE;StartClearSelected({false,true,true,false,false},1,[&](HRESULT hr){got=hr;});Expect(FAILED(got),"A5: cookies/cache selected without an engine profile is reported as a failure"); }
         // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.

@@ -458,6 +458,15 @@ int wmain(int argc, wchar_t** argv) {
         Modal::Result pick; pick.button = OriginPrompt::Id::Accept; pick.select = 1; pick.values = {L"Fictif-nouveau-2026"};
         const auto out = OriginPrompt::Map(r, pick);
         Check(out.action == OriginPrompt::Action::Save && out.user == L"travail@exemple.test" && out.password == L"Fictif-nouveau-2026", "B04 real: the chosen account and the (possibly edited) password come back for the vault");
+        // Owner decision B: a password the ENGINE had saved (autofilled) is offered as a migration, same B04 component.
+        { OriginPrompt::Spec mg; mg.kind = OriginPrompt::Kind::PasswordSave; mg.migration = true; mg.origin = L"compte.exemple.test"; mg.user = L"camille@exemple.test"; mg.secret = L"Fictif-moteur-2026";
+          const auto mm = OriginPrompt::Build(mg, true);
+          Check(mm.automationId == L"PasswordKeep" && mm.title == L"Garder ce mot de passe dans browser ?" && mm.buttons.back().label == L"Garder" && mm.buttons.back().automationId == L"PasswordSaveConfirm" && mm.armMs == 500 && mm.fields.size() == 2 && mm.fields[1].value == L"Fictif-moteur-2026",
+                "B04 migration: « Garder ce mot de passe dans browser ? », « Garder », armed, the engine's password pre-filled");
+          Modal::Result keep; keep.button = OriginPrompt::Id::Accept; keep.values = {L"camille@exemple.test", L"Fictif-moteur-2026"};
+          const auto ko = OriginPrompt::Map(mg, keep); Check(ko.action == OriginPrompt::Action::Save && ko.user == L"camille@exemple.test" && ko.password == L"Fictif-moteur-2026", "B04 migration: « Garder » saves like « Enregistrer »");
+          I18n::SetForProcess(I18n::Locale::En); const auto me = OriginPrompt::Build(mg, true); I18n::SetForProcess(I18n::Locale::Fr);
+          Check(me.title == L"Keep this password in browser?" && me.buttons.back().label == L"Keep", "B04 migration in English: « Keep this password in browser? », « Keep »"); }
         // Review F3/V5: credential prompts are armed (500 ms, foreground) and an update has no default Entrée.
         Check(m.armMs == 500 && !m.buttons.back().isDefault, "B04 real update: armed 500 ms, no default Entrée");
         { OriginPrompt::Spec sv = r; sv.kind = OriginPrompt::Kind::PasswordSave; sv.user = L"camille@exemple.test"; sv.accounts.clear();

@@ -92,6 +92,16 @@ function LoginDataHits([string]$dir) {
   $ld = @(Get-ChildItem $dir -Recurse -Force -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Login Data*' })
   $hits = @($ld | Where-Object { $b = [IO.File]::ReadAllBytes($_.FullName); [Text.Encoding]::UTF8.GetString($b).Contains($user) -or [Text.Encoding]::Unicode.GetString($b).Contains($user) })
   return @{ files = $ld.Count; hits = $hits.Count } }
+# Row counts of the engine's password store for the synthetic username (logins: saved credentials; stats: its save-prompt
+# statistics), read on a copy with sqlite3, no password column read. A raw byte search is not enough: a « stats » row
+# alone (the engine only offered to save) holds the username too (vault-coverage finding).
+function EngineRows([string]$dir) {
+  $db = Get-ChildItem $dir -Recurse -Force -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'Login Data' } | Select-Object -First 1
+  if (!$db) { return @{ text = 'no Login Data'; logins = -1; stats = -1 } }
+  $copy = Join-Path $pki 'login-data-copy.db'; Copy-Item $db.FullName $copy -Force
+  $py = "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);u=sys.argv[2];print('%d %d'%(c.execute('select count(*) from logins where username_value=?',(u,)).fetchone()[0],c.execute('select count(*) from stats where username_value=?',(u,)).fetchone()[0]))"
+  $r = (& python -I -c $py $copy $user) -split ' '; Remove-Item $copy -Force
+  return @{ text = "logins=$($r[0]) stats=$($r[1])"; logins = [int]$r[0]; stats = [int]$r[1] } }
 function SubmitLogin($hostPid) {
   $w = Navigate '/login'
   # Typed as trusted input (CDP Input.insertText into the focused field, like a keyboard), then submitted.
@@ -152,9 +162,9 @@ try {
   if (!$filled) { Get-Content $log | Where-Object { $_ -match 'VAULT|PROMPT' } | Select-Object -Last 12 | ForEach-Object { "     log: $_" } }
   $ws.Dispose()
   Check (StopHost $prodExe $prodDir) 'product path: every engine process of the host has exited'
-  $ld = LoginDataHits $prodDir
-  "     product path: engine Login Data files $($ld.files), holding the synthetic account: $($ld.hits)"
-  Check ($ld.files -gt 0 -and $ld.hits -eq 0) 'product path: the engine''s own password store did not record the account (engine autosave off while ours is active)'
+  $ld = LoginDataHits $prodDir; $pr = EngineRows $prodDir
+  "     product path: engine Login Data files $($ld.files), raw bytes holding the synthetic account: $($ld.hits); rows: $($pr.text)"
+  Check ($ld.files -gt 0 -and $ld.hits -eq 0 -and $pr.logins -eq 0 -and $pr.stats -eq 0) 'product path: the engine''s own password store did not record the account (engine autosave off while ours is active)'
   }
   # ---- Control: the same submit on the vault-INACTIVE fixture host (engine autosave on) ------------
   if (!$NoControl) {
@@ -165,9 +175,9 @@ try {
     SubmitLogin $cp; Start-Sleep 4
     Check (-not (Find $cp 'PasswordSaveConfirm' '')) 'control: no B04 (vault inactive)'
     [void](StopHost $ctlExe $ctlDir)
-    $cl = LoginDataHits $ctlDir
-    "     control: engine Login Data files $($cl.files), holding the synthetic account: $($cl.hits)"
-    Check ($cl.hits -gt 0) 'control: with our vault inactive the engine autosaves the same login (the Login Data check can see it)'
+    $cl = LoginDataHits $ctlDir; $cr = EngineRows $ctlDir
+    "     control: engine Login Data files $($cl.files), raw bytes holding the synthetic account: $($cl.hits); rows: $($cr.text) (the engine saves the credential itself only after its own save prompt, which this fixture never shows)"
+    Check ($cl.hits -gt 0 -and ($cr.logins + $cr.stats) -gt 0) 'control: with our vault inactive the engine records the same login in its password store (the check can see it)'
   }
 } finally {
   foreach ($e in @($prodExe, $ctlExe)) { foreach ($p in HostPids $e) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } }

@@ -224,7 +224,7 @@ inline Paths ResolvePaths(const std::wstring& root, const std::wstring& id) {
 // is never touched by a delete of the default profile. Keep in sync with every dataDir+L"\\…"
 // in src (checked by tests/profiles_test.cpp).
 inline const std::vector<std::wstring>& DefaultEntries() {
-    static const std::vector<std::wstring> e{L"profile", L"session", L"sessions", L"history", L"bookmarks", L"settings", L"downloads", L"passwords", L"site-volumes", L"adblock", L"favicons", L"engine-args"};
+    static const std::vector<std::wstring> e{L"profile", L"session", L"sessions", L"history", L"bookmarks", L"settings", L"downloads", L"passwords", L"vault-engine-migration", L"site-volumes", L"adblock", L"favicons", L"engine-args"};
     return e;
 }
 // Application-wide entries at the data root, shared by EVERY profile (annotations are global: one store, see

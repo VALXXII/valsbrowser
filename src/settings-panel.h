@@ -158,6 +158,7 @@ struct Slot {
     D2D1_COLOR_F ink{1, 1, 1, 1}; bool current = false;   // profile rows: identity ink, this window's profile
     const AnnotationSettings::Glyph* glyph = nullptr; // or a vector glyph in its own viewBox (annotation mark)
     bool disabled = false;                 // shown, not actionable (no hover, not in the Tab order)
+    bool vaultNotice = false;              // the one-time « engine passwords deleted » notice (owner decision B)
     bool error = false;                    // Agent: the status is an error (danger ink)
 };
 // Key in LayoutInput::lines of the section's shortcut reminder (no hit: it is read, not focused).
@@ -182,6 +183,7 @@ struct LayoutInput {
     std::size_t annotationCount = SIZE_MAX;                     // SIZE_MAX: not counted yet
     std::wstring annotationFolder;                              // the store root (second line of the folder row)
     bool vaultManager = false; std::size_t vaultCount = 0;   // E8: the vault is active (entry shown) and its account count
+    std::wstring vaultNotice; std::vector<std::wstring> vaultNoticeLines;   // one-time notice: the engine's old passwords were deleted (title, wrapped body)
     bool importData = false;                                   // « Importer depuis un navigateur… » (not in a private window)
     int site = -1;                                             // Site view: index into sites
     const std::vector<ProfileItem>* profiles = nullptr;        // Réglages › Profils
@@ -278,6 +280,8 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         twoLine(Passwords, TR(settings_passwords));
         // E8: the vault's manager, a separate entry from the switch (shown only while the vault is active).
         if (in.vaultManager) add(Kind::Nav, ManagePasswords, row, TR(settings_manage_passwords), in.vaultCount == SIZE_MAX ? std::wstring(TR(settings_vault_unreadable)) : std::to_wstring(in.vaultCount));
+        // Owner decision B: once the engine's old saved passwords were deleted (30 days after activation), said once here.
+        if (!in.vaultNotice.empty()) { auto* s = add(Kind::Nav, None, TwoLine(in.vaultNoticeLines.size()), in.vaultNotice); s->lines = in.vaultNoticeLines; s->vaultNotice = true; }
         twoLine(Autofill, TR(settings_autofill));
         endGroup();
         labelAt(TR(settings_group_data));
@@ -497,6 +501,9 @@ public:
         std::function<void()> pickFolder;                           // modal folder picker (may change the state)
         std::function<void(bool keyboard)> managePasswords;          // E8: the vault manager (B05)
         std::function<std::pair<bool, std::size_t>()> vaultInfo;     // E8: {vault active here, account count}
+        std::function<std::wstring()> vaultNotice;                   // « title, newline, body » of the one-time engine-cleared notice, "" = none (peek)
+        std::function<void()> vaultNoticeShown;                      // the notice was drawn: recorded as seen (once)
+        std::function<std::wstring()> clearOnExitNote;               // « Effacer en quittant »: what it really deletes (depends on the vault)
         std::function<void(bool keyboard)> clearData;               // modal confirmation + clear; `keyboard`: how the row was activated (focus ring)
         std::function<void(bool keyboard)> importData;              // « Importer depuis un navigateur… » (src/browser-import.h); absent: no row
         std::function<void()> checkUpdates;
@@ -555,6 +562,7 @@ private:
     static constexpr int loadGraceMs = 250; Motion::Time loadStart_{};
     bool LoadQuiet(Motion::Time now) const { return !sitesLoaded_ && now < loadStart_ + Motion::Milliseconds(loadGraceMs); }
     std::map<int, std::vector<std::wstring>> lines_; std::vector<std::wstring> noSitesLines_, sitesNoteLines_;
+    std::wstring vaultNoticeTitle_; std::vector<std::wstring> vaultNoticeLines_;
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
     HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
@@ -646,7 +654,8 @@ private:
         in.annotations = AnnotationsOn(); in.agents = &agents_; in.agentsKnown = agentsKnown_; in.agentLines = agentLines_; in.now = NowSeconds();
         in.annotationCount = annotationCount_; if (in.annotations && hooks_.annotationFolder) in.annotationFolder = FolderText(hooks_.annotationFolder());
         in.importData = static_cast<bool>(hooks_.importData);
-        if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
+        if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; }
+        in.vaultNotice = vaultNoticeTitle_; in.vaultNoticeLines = vaultNoticeLines_; return in;
     }
     mutable float customRevealValue_ = 0, homeRevealValue_ = 0;
     void Reveals(Motion::Time now, bool target) const {
@@ -708,6 +717,10 @@ private:
         lines_.clear();
         for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(I18n::T(text.id), Layout::descriptionWidth);
         noSitesLines_ = Wrap(NoSitesDescription(), Layout::rowRight - 8 - Layout::textLeft);
+        if (hooks_.clearOnExitNote) lines_[ClearOnExit] = Wrap(hooks_.clearOnExitNote(), Layout::descriptionWidth);
+        vaultNoticeTitle_.clear(); vaultNoticeLines_.clear();
+        if (hooks_.vaultNotice) { const std::wstring n = hooks_.vaultNotice(); const auto nl = n.find(L'\n');
+            if (!n.empty()) { vaultNoticeTitle_ = n.substr(0, nl); if (nl != std::wstring::npos) vaultNoticeLines_ = Wrap(n.substr(nl + 1), Layout::rowRight - 8 - Layout::textLeft); } }
         sitesNoteLines_ = Wrap(SitesNote(), Layout::rowRight - Layout::textLeft - 4);
         profileNoteLines_ = Wrap(TR(settings_profile_delete_note), Layout::rowRight - Layout::textLeft - 4);
         lastProfileNoteLines_ = Wrap(TR(settings_last_profile_note), Layout::rowRight - Layout::textLeft - 4);
@@ -1087,7 +1100,7 @@ private:
             case Kind::Switch: SwitchRow(s, now); break;
             case Kind::Folder: FolderRow(s, now); break;
             case Kind::Value: ValueRow(s, now); break;
-            case Kind::Nav: NavRow(s, now); break;
+            case Kind::Nav: NavRow(s, now); if (s.vaultNotice && hooks_.vaultNoticeShown) hooks_.vaultNoticeShown(); break;
             case Kind::SiteRow: SiteRow(s, now); break;
             case Kind::Field: FieldRow(s, now); break;
             case Kind::ProfileRow: ProfileRow(s, now); break;
@@ -1405,7 +1418,7 @@ private:
             case Kind::Switch: n = &add(s.hit, Role::Button, s.text, box); n->toggle = SwitchValue(s.hit) ? 2 : 1; n->help = join(s.lines); break;
             case Kind::Value: n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; n->expand = 1; n->help = join(s.lines); break;
             case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, TRF(settings_profiles_name, s.value), box); n->automationId = L"SettingsProfiles"; n->help = TR(settings_profiles_help); }
-                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (s.hit == ImportData) n->automationId = L"SettingsImportData"; } break;
+                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; if (s.vaultNotice) n->automationId = L"SettingsVaultNotice"; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (s.hit == ImportData) n->automationId = L"SettingsImportData"; } break;
             case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(TR(settings_save_in)) : s.text, box);
                 n->help = s.hit == Folder ? (hooks_.downloadFolder ? hooks_.downloadFolder() : L"") : (hooks_.annotationFolder ? hooks_.annotationFolder() : L""); break;
             case Kind::SiteRow: n = &add(s.hit, Role::Button, s.text, box); n->help = s.value; break;

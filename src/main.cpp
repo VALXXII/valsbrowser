@@ -99,6 +99,7 @@ GUID_TEXT(ICoreWebView2FaviconChangedEventHandler,"{2913da94-833d-4de0-8dca-900f
 GUID_TEXT(ICoreWebView2FocusChangedEventHandler,"{05ea24bd-6452-4926-9014-4b82b498135d}")
 GUID_TEXT(ICoreWebView2CapturePreviewCompletedHandler,"{697e05e9-3d8f-45fa-96f4-8ffe1ededaf5}")
 GUID_TEXT(ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,"{5c4889f0-5ef6-4c5a-952c-d8f1b92d0574}")
+GUID_TEXT(ICoreWebView2DevToolsProtocolEventReceivedEventHandler,"{e2fda4be-5456-406c-a261-3d452138362c}")
 GUID_TEXT(ICoreWebView2GetFaviconCompletedHandler,"{a2508329-7da8-49d7-8c05-fa125e4aee8d}")
 GUID_TEXT(ICoreWebView2NavigationStartingEventHandler,"{9adbe429-f36d-432b-9ddc-f8881fbd76e3}")
 GUID_TEXT(ICoreWebView2FindStartCompletedHandler,"{6a90ecaf-44b0-5bd9-8f07-1967e17be9fb}")
@@ -2317,6 +2318,7 @@ void CreateSettingsPanel(){
     hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};
     if(!privateWindow)hooks.importData=[](bool keyboard){ShowImportDialog(keyboard);};   // a private window imports nothing into its profile
     hooks.vaultInfo=[]{return VaultInfo();};
+    hooks.vaultNotice=[]{return VaultEngineNoticeText();};hooks.vaultNoticeShown=[]{VaultEngineNotice();};hooks.clearOnExitNote=[]{return ClearOnExitNote();};   // owner decision B
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
     hooks.downloadFolder=EffectiveDownloadFolder;
@@ -2439,8 +2441,8 @@ bool E2EAllowedUri(const std::wstring& u){
     if(!e2eCleared)return false;   // nothing reaches the fixture before the cache clear completed
     wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
     const auto m=E2EFixturePin::Load(path);if(!m.loaded)return false;
-    const std::wstring o=L"https://"+m.host+L":"+std::to_wstring(m.port);
-    return u==o||u.rfind(o+L"/",0)==0||u.rfind(o+L"?",0)==0||u.rfind(o+L"#",0)==0;
+    auto at=[&](int port){if(!port)return false;const std::wstring o=L"https://"+m.host+L":"+std::to_wstring(port);return u==o||u.rfind(o+L"/",0)==0||u.rfind(o+L"?",0)==0||u.rfind(o+L"#",0)==0;};
+    return at(m.port)||at(m.port2);   // port2: the optional second fixture origin (vault coverage, cross-origin frame)
 }
 bool E2EFixtureAllows(ICoreWebView2ServerCertificateErrorDetectedEventArgs* args){
     wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
