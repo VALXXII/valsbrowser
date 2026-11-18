@@ -187,8 +187,8 @@ def run_main():
         step('agent session ready', logged(r'CHAT session start: ready', m1, 20))
         time.sleep(0.6)
         step('no « Où est le code de ce site ? » screen', 'Où est le code de ce site' not in C.panel_text())
-        chip = C.panel("(function(){var b=document.querySelector('[aria-label^=\"Dossier du projet\"]');return b?b.getAttribute('aria-label'):''})()") or ''
-        step('the folder is a discreet chip in the composer (click = change it)', 'Dossier du projet : site' in chip, chip)
+        chip = C.panel("(function(){var b=document.querySelector('[aria-label^=\"Dossier du projet\"], .tb.folder');return b?b.getAttribute('aria-label')||'?':''})()") or ''
+        step('V1.2: no folder chip in the composer (one project per chat; « + » can still change it)', chip == '', chip)
         capture('6.2-dossier-automatique')
         modeline = logged(r'CHAT mode (?:set to « (\w[\w-]*) »|« (\w[\w-]*) » kept)', m1, 8)
         step('default mode « Demander » applied right after the start', modeline is not None and (modeline.group(1) or modeline.group(2)) == 'default', modeline.group(0) if modeline else '')

@@ -26,6 +26,7 @@ Raccourcis du mode, cohérents entre eux : `Ctrl+Maj+A` Annoter · `Ctrl+Maj+H` 
 | `src/chat-panel-view.h` | La WebView2 du panneau (création, fichiers servis, pont) |
 | `src/chat-local.h` | Règle « site local » (pure, testée) |
 | `src/chat-tools.h` | Quel outil l'agent demande : nom d'outil MCP, nos cinq outils d'annotations (pur, testé) |
+| `src/chat-options.h` | Listes modèle / effort telles que le chat les montre : l'entrée « Default » d'un agent, l'effort à poser au démarrage (pur, testé) |
 | `src/chat-batch.h` | « Traiter les annotations » : ce que devient une ligne de la carte, consigne envoyée à l'agent (pur, testé) |
 | `src/chat-host-batch.h` | « Traiter les annotations » côté navigateur : lot posé dans la saisie, tour, suivi de la carte |
 | `src/chat-prompt.h` | Ce que reçoit l'agent, contrat D (pur, testé) |
@@ -73,15 +74,24 @@ vides.
    simplement pas de proposition. Racine de disque, dossier Windows, dossier du profil : jamais proposés.
 3. **Sinon** : le sélecteur Windows s'ouvre sur le dossier utilisé le plus récemment pour un autre site.
 4. **Mémorisation** : `<données>\annotations-chat\projects.json`, par origine (dossier, qui l'a choisi, agent,
-   modèle). Modifiable depuis la puce dossier de la saisie. Rien n'est écrit dans le projet.
+   modèle, effort). Modifiable depuis « + › Choisir un autre dossier… » (la puce dossier de la saisie est retirée en V1.2 :
+   un seul projet par chat). Rien n'est écrit dans le projet.
 
 Le **mode** (Demander / Auto / Planifier) n'est pas mémorisé : chaque nouvelle session démarre en « Demander ».
+L'**effort** (V1.2) : chaque nouvelle session démarre avec l'effort choisi la dernière fois pour ce site, sinon **Moyen** ;
+le navigateur le règle juste après le démarrage, comme le mode (`CHAT effort set to « medium »` dans le journal). L'entrée
+« Default » des agents n'est jamais montrée ; le modèle qu'elle désigne (Claude : sa description, « Opus 5.5 ») porte le
+badge « Par défaut » (sans alias : le modèle que l'agent avait choisi à sa première session).
 
 ## Viser depuis le chat
 
-- Panneau ouvert, viseur allumé : le prochain clic dans la page va au chat (une puce) au lieu du panneau de
+- **V1.2** : panneau ouvert, **chaque** clic sur un élément (mode Annotation) va au chat : une puce dans la saisie, et le
+  curseur de texte va dans la saisie ; plus de panneau de note. Aussi pendant un tour (la puce attend le message suivant).
+  Panneau fermé : le panneau de note, comme avant (annotations sans agent, lues par le MCP). Au-delà de 10 éléments dans
+  la saisie, le clic ouvre le panneau de note.
+- (V1) Panneau ouvert, viseur allumé : le prochain clic dans la page va au chat (une puce) au lieu du panneau de
   note. C'est le picker et la capture du mode Annotation, sans changement (même image, ≤ 1 600 px).
-- Pendant un tour, le viseur est éteint : un clic ouvre le panneau de note habituel.
+- (V1, remplacé en V1.2) Pendant un tour, le viseur est éteint : un clic ouvre le panneau de note habituel.
 - **Fichier:ligne** — seulement si c'est vrai :
   - attribut Astro `data-astro-source-file` / `-loc` **sur l'élément lui-même** ;
   - sinon données de debug React de l'élément (`_debugSource` de sa fibre ou de ses propriétaires, React < 19 ;
@@ -185,7 +195,7 @@ n'est pas un fichier). Une fois finie, elle porte aussi `summary` (`verb`, `obje
 
 À l'ouverture du chat, le navigateur cherche où est le code : le processus qui écoute le port du site, et son
 dossier de travail. **Si la détection est sûre, le dossier est utilisé tout de suite**, sans l'écran « Où est le
-code de ce site ? ». Il s'affiche dans une petite puce en bas de la saisie (icône dossier + nom ; clic = changer).
+code de ce site ? ». (V1.2 : plus de puce dossier dans la saisie ; « + › Choisir un autre dossier… » pour en changer.)
 
 Sûr = tout cela à la fois (`ChatFolder::Judge`, puis `ChatPrompt::MarksInFolder`) :
 
@@ -330,3 +340,22 @@ verra »). L'animation d'entrée et de sortie passe toujours par le calque fant�
 | `BROWSER_CHAT_PANEL_IDLE_MS` | Délai avant destruction du panneau fermé (défaut 60 000) |
 | `BROWSER_CHAT_AGENT_IDLE_MS` | Délai avant arrêt de l'agent sans tour (défaut 600 000) |
 | `BROWSER_CHAT_DEVTOOLS=1` (mode test seulement) | Outils de développement dans le panneau |
+
+## V1.2 — retours du test réel (landing page)
+
+| # | Ce que l'utilisateur a vu | Cause | Correction |
+| --- | --- | --- | --- |
+| 1 | Le texte de la note n'arrivait pas à l'agent (seule la puce partait) | À la **première** ouverture du chat sur un site, `OpenPanel` démarre une nouvelle conversation, qui vidait `pendingAsk` : le texte posé juste avant était perdu | `pendingAsk` est posé après l'ouverture. Le texte devient le message (bulle et `session/prompt`), avec la puce |
+| 2 | « Default » dans l'effort et dans l'en-tête des réponses | L'entrée « Default » de l'adaptateur Claude était montrée telle quelle | Retirée des listes (`src/chat-options.h`) ; **Moyen** posé au démarrage de chaque session, puis le choix de l'utilisateur, mémorisé par site |
+| 3 | Puce dossier dans la saisie | — | Retirée (un seul projet par chat) ; la détection et l'écran « Où est le code » restent |
+| 4 | L'infobulle de la jauge ne partait pas | Pilotée par `:hover`, que la WebView ne quitte pas quand le pointeur sort tout droit du panneau | Pilotée par le pointeur + `hover` / `pointer.leave` (contrat B 1.5) : l'hôte surveille le vrai pointeur tant qu'une infobulle est ouverte |
+| 5 | Le cadre posé sur l'élément décalait au défilement | Le cadre « fait » (coche) était replacé toutes les 400 ms ; le cadre de sélection suivait par images avec un glissé de 120 ms | Dessinés dans des conteneurs ancrés au **document** (le défilement les emporte dans la même image que la page) ; replacés à chaque image pendant un défilement ; plus de glissé tant que l'élément ne change pas |
+| 6 | Le curseur disparaissait au-dessus de la page | Le champ de la note (contrôle Windows) masque le pointeur pendant la frappe (« Masquer le pointeur pendant la saisie ») et ne le rend que si la souris repasse sur lui ; au-dessus de la page (une autre fenêtre), il restait caché | Après chaque touche, le navigateur surveille le pointeur ; au premier mouvement, il le rend visible, où qu'il soit |
+| 7 | Clic sur un élément, chat ouvert | — | Puce dans la saisie et curseur de texte dans la saisie ; plus de panneau de note quand le chat est ouvert |
+| 8 | Nouveau menu modèle · effort (Paper mis à jour) | — | Un groupe par fournisseur connecté, effort en français sans « Default », logo du fournisseur sur le bouton (contrat B §16) |
+
+Le cadre vert « Modifié par Claude » n'existe pas dans le code (voir « Écarts assumés » : la planche 6.11 a été suivie, cadre à la
+couleur du profil avec une coche) : le cadre « fait » est celui qui a été corrigé et mesuré.
+
+Parcours en vraie fenêtre (faux agent, listes du vrai adaptateur Claude : `--claude-like`) : `python tests/chat/chat_qa_v12.py` →
+`build/chat-qa/v12/` (rapport et captures).

@@ -75,7 +75,17 @@
     const a = curAgent();
     return a && a.models ? a.models.find((m) => m.id === S.st.model) || null : null;
   }
-  const curEffort = () => (S.st.efforts || []).find((e) => e.id === S.st.effort) || null;
+  // Efforts (V1.2, Paper 17VU-0): the levels the agent announces, named in French; its « Default » is not a level.
+  const EFFORT_FR = { minimal: "Minimal", low: "Faible", medium: "Moyen", high: "Élevé", xhigh: "X-Élevé", "x-high": "X-Élevé", "extra high": "X-Élevé", max: "Max", maximum: "Max", ultra: "Ultra", none: "Aucun" };
+  const isDefaultChoice = (o) => !!o && (/^default$/i.test(String(o.id || "")) || /^(default|par défaut)\b/i.test(String(o.label || "")));
+  const effortName = (id, label) => EFFORT_FR[String(id || "").toLowerCase()] || EFFORT_FR[String(label || "").toLowerCase()] || label || id || "";
+  const turnEffort = (label) => (!label || /^(default|par défaut)\b/i.test(label) ? "" : effortName(label, label));
+  const visibleEfforts = () => (S.st.efforts || []).filter((e) => !isDefaultChoice(e));
+  const curEffort = () => visibleEfforts().find((e) => e.id === S.st.effort) || null;
+  // Model menu (V1.2, Paper 17US-0): one group per CONNECTED provider; one that is not installed or not signed in is not listed.
+  const CONNECTED = ["ready", "starting", "preparing"];
+  const connectedAgents = () => (S.st.agents || []).filter((a) => CONNECTED.includes(a.status));
+  const PER_GROUP = 3;
   const curMode = () => (S.st.modes || []).find((m) => m.id === S.st.mode) || null;
 
   // ---------------------------------------------------------------- skeleton
@@ -101,6 +111,18 @@
   const gaugeTip = h("span", { class: "tip", "aria-hidden": "true" });
   const gauge = h("span", { class: "gauge", tabindex: "0", role: "img", hidden: true }, gaugeSvg, gaugeTip);
   const GAUGE_C = 2 * Math.PI * 6;
+  // B 1.5: the bubble shows 300 ms after the pointer enters and goes as soon as it leaves the gauge. The WebView does not
+  // always get a leave when the pointer goes straight out of the panel (page, band, another window): the panel also
+  // listens to the document's own leave and the window's blur, and tells the host a bubble is up (`hover`); the host
+  // then watches the real cursor and answers `pointer.leave` once it is outside the panel.
+  let tipTimer = 0, tipHost = false;
+  function tipShow() { clearTimeout(tipTimer); tipTimer = setTimeout(() => { tipTimer = 0; gauge.classList.add("tip-on"); }, isReduced() ? 0 : 300); if (!tipHost) { tipHost = true; post("hover", { active: true }); } }
+  function tipHide() { clearTimeout(tipTimer); tipTimer = 0; gauge.classList.remove("tip-on"); if (tipHost) { tipHost = false; post("hover", { active: false }); } }
+  gauge.addEventListener("pointerenter", (e) => { if (e.pointerType !== "touch") tipShow(); });
+  gauge.addEventListener("pointerleave", tipHide);
+  document.documentElement.addEventListener("pointerleave", tipHide);
+  document.addEventListener("mouseout", (e) => { if (!e.relatedTarget) tipHide(); });
+  window.addEventListener("blur", tipHide);
   const hd = h("header", { class: "hd" },
     h("div", { class: "hd-main" }, hdLogo, h("div", { class: "hd-titles" }, hdSource, h("div", { class: "hd-row" }, hdTitle, gauge))),
     h("button", { class: "hd-btn", type: "button", "aria-label": "Nouveau chat", title: "Nouveau chat", onclick: () => post("newChat") }, icon("plus")),
@@ -167,9 +189,6 @@
   const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre ou changer de dossier", title: "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
                                 onclick: (e) => openPlusMenu(e.currentTarget) }, icon("plus", "ic"));
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
-  // B 1.4: the project folder, quiet, one click to change it.
-  const folderName = h("span", { class: "fn" });
-  const folderBtn = h("button", { class: "tb folder", type: "button", onclick: () => post("folder.choose") }, icon("folder", "ic"), folderName);
   const batchEl = h("div", { class: "batch", hidden: true, role: "group" });
   const modelName = h("span", { class: "mn" });
   const modelLogo = h("span", { style: "display:flex" });
@@ -181,7 +200,7 @@
   const sendBtn = h("button", { class: "send", type: "button", onclick: () => onSendButton() });
   const foot = h("div", { class: "foot" });
   const composer = h("div", { class: "composer" }, batchEl, thumbs, cin,
-    h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn, folderBtn), h("div", { class: "grow" }),
+    h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
       h("div", { class: "model" }, modelBtn), sendBtn));
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
     h("span", { class: "k" }, h("span", { class: "kc" }, "↵"), "Envoyer"),
@@ -353,25 +372,21 @@
       modeBtn.setAttribute("aria-label", "Mode : " + mode.label);
       modeBtn.title = "Mode : " + mode.label + " (Maj+Tab)";
     }
-    const f = S.st.folder;
-    folderName.textContent = f ? f.name : "Choisir le dossier";
-    folderBtn.title = f ? f.display + " — changer de dossier" : "Choisir le dossier du projet";
-    folderBtn.setAttribute("aria-label", f ? "Dossier du projet : " + f.name + ". Changer de dossier" : "Choisir le dossier du projet");
-    folderBtn.classList.toggle("none", !f);
     const a = curAgent(), m = curModel();
     clear(modelLogo).appendChild(agentIcon(a));
     modelName.textContent = m ? m.label : a ? a.name : "Agent";
     const e = curEffort();
-    effortEl.hidden = !(S.st.efforts || []).length || !e;
-    effortTxt.textContent = e ? e.label : "";
-    modelBtn.setAttribute("aria-label", "Modèle et effort : " + modelName.textContent + (e ? " · " + e.label : ""));
+    effortEl.hidden = !e;
+    effortTxt.textContent = e ? effortName(e.id, e.label) : "";
+    modelBtn.setAttribute("aria-label", "Modèle et effort : " + modelName.textContent + (e ? " · " + effortTxt.textContent : ""));
     modelBtn.title = "Modèle et effort (Ctrl+/)";
     placeholder();
     updateSend();
     fitFoot();
   }
-  // The foot keeps one line: when it does not fit, drop the least useful details first (the model name always stays).
-  const FIT = ["fit-chev", "fit-logo", "fit-folder", "fit-folder-icon", "fit-effort"];
+  // The foot keeps one line: when it does not fit, the mode's chevron goes first; then the model name is cut (CSS
+  // ellipsis), never the effort nor the provider's logo (V1.2).
+  const FIT = ["fit-chev"];
   function fitFoot() {
     if (!foot.isConnected || !foot.clientWidth) return;
     foot.classList.remove(...FIT);
@@ -450,50 +465,76 @@
 
   function openModelMenu(anchor) {
     openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: 300 });
-    if (S.menu) S.menu.view = "main";
+    if (S.menu) { S.menu.view = "main"; S.menu.el.classList.add("models"); }
   }
   function showModelView(view, from) {
     if (!S.menu) return;
     S.menu.view = view;
     fillMenu(S.menu.el, modelItems(view));
-    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : view === "more" ? "Autres modèles" : "Modèle et effort");
-    place(S.menu.el, S.menu.anchor, "right", 300);
+    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : view === "more" ? "Autres modèles" : view === "switch" ? "Changer d'agent" : "Modèle et effort");
+    place(S.menu.el, S.menu.anchor, "right", view === "effort" ? 214 : 300);
     const its = menuItems();
     const back = from && S.menu.el.querySelector(".mi[data-key='" + from + "']");
     (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus();
   }
+  // Another provider's model = another agent = a new conversation: said once, in the menu, before it happens.
+  let switchTo = null;
+  function chooseModel(a, m) {
+    const cur = curAgent();
+    if (a === cur && m) { post("setModel", { id: m.id, agentId: a.id }); S.st.model = m.id; closeMenu(true); renderComposerBar(); return; }
+    if (a === cur) { closeMenu(true); return; }
+    switchTo = { a, m }; showModelView("switch");
+  }
   function modelItems(view) {
-    const a = curAgent(), items = [];
-    const models = (a && a.models) || [];
-    const others = (S.st.agents || []).filter((x) => x !== a);
-    const pickModel = (m) => ({ radio: true, label: m.label, tag: m.isDefault ? "Par défaut" : null, checked: m.id === S.st.model,
-      onSelect: () => { post("setModel", { id: m.id, agentId: a.id }); S.st.model = m.id; closeMenu(true); renderComposerBar(); } });
+    const cur = curAgent(), items = [], groups = connectedAgents();
+    const pickModel = (a, m) => ({ radio: true, label: m.label, tag: m.isDefault ? "Par défaut" : null, checked: a === cur && m.id === S.st.model, onSelect: () => chooseModel(a, m) });
+    // a connected provider whose models are not known yet (its agent never started here): one row, its name
+    const pickAgent = (a) => ({ radio: true, label: a.name, lead: agentIcon(a, "lead"), checked: false, onSelect: () => chooseModel(a, null) });
     const back = (label) => ({ back: true, label, lead: icon("chevron", "lead backi"), onSelect: () => showModelView("main", view) });
+    const efforts = visibleEfforts();
     if (view === "effort") {
       items.push(back("Effort"), { sep: true });
-      for (const e of S.st.efforts || []) items.push({ radio: true, label: e.label, checked: e.id === S.st.effort,
+      for (const e of efforts) items.push({ radio: true, label: effortName(e.id, e.label), checked: e.id === S.st.effort,
         onSelect: () => { post("setEffort", { id: e.id }); S.st.effort = e.id; closeMenu(true); renderComposerBar(); } });
+      return items;
+    }
+    if (view === "switch" && switchTo) {
+      const { a, m } = switchTo;
+      const warn = h("div", { class: "mwarn", role: "group", "aria-label": "Changer d'agent" },
+        h("span", { text: "Passer à " + a.name + " ouvre un nouveau chat. Celui-ci reste dans l'historique." }),
+        h("div", { class: "row" },
+          h("button", { class: "btn-s", type: "button", onclick: () => { switchTo = null; showModelView("main"); } }, "Annuler"),
+          h("button", { class: "btn-s primary", type: "button", onclick: () => {
+            switchTo = null; closeMenu(true);
+            if (m) post("setModel", { id: m.id, agentId: a.id }); else post("setAgent", { id: a.id });
+            say("Nouveau chat avec " + a.name + "."); } }, "Passer à " + a.name)));
+      items.push(back("Changer d'agent"), { node: warn });
       return items;
     }
     if (view === "more") {
       items.push(back("Autres modèles"));
-      if (models.length > 4) { items.push({ sep: true }); models.slice(4).forEach((m) => items.push(pickModel(m))); }
-      if (others.length) {
-        items.push({ sep: true }, { head: "Autres agents" });
-        for (const o of others) {
-          if (o.status === "ready") items.push({ label: o.name, lead: agentIcon(o, "lead"), desc: statusText(o) + " · Ouvre un nouveau chat",
-            onSelect: () => { post("setAgent", { id: o.id }); closeMenu(true); say("Nouveau chat avec " + o.name + "."); } });
-          else items.push({ node: agentRow(o, true) });
-        }
+      for (const a of groups) {
+        const rest = (a.models || []).slice(PER_GROUP);
+        if (!rest.length) continue;
+        items.push({ sep: true });
+        if (groups.length > 1) items.push({ head: a.name });
+        rest.forEach((m) => items.push(pickModel(a, m)));
       }
       return items;
     }
-    models.slice(0, 4).forEach((m) => items.push(pickModel(m)));
-    if (models.length > 4 || others.length) items.push({ sep: true }, { label: "Autres modèles", sub: true, key: "more", onSelect: () => showModelView("more") });
-    if ((S.st.efforts || []).length) {
-      if (!(models.length > 4 || others.length)) items.push({ sep: true });
-      items.push({ label: "Effort", value: curEffort() ? curEffort().label : "", sub: true, key: "effort", onSelect: () => showModelView("effort") });
+    if (!groups.length) {   // nobody connected: the connection state, with its action (Se connecter, Installer…)
+      for (const a of S.st.agents || []) items.push({ node: agentRow(a, true) });
+      return items;
     }
+    groups.forEach((a, i) => {
+      if (i) items.push({ sep: true });
+      const ms = a.models || [];
+      if (ms.length) ms.slice(0, PER_GROUP).forEach((m) => items.push(pickModel(a, m))); else items.push(pickAgent(a));
+    });
+    const more = groups.some((a) => (a.models || []).length > PER_GROUP);
+    if (more || efforts.length) items.push({ sep: true });
+    if (more) items.push({ label: "Autres modèles", sub: true, key: "more", onSelect: () => showModelView("more") });
+    if (efforts.length) items.push({ label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", onSelect: () => showModelView("effort") });
     return items;
   }
   function agentAction(a) {
@@ -955,7 +996,7 @@
   }
 
   function newTurn(id, model, effort, at) {
-    const t = { id, model: model || (curModel() ? curModel().label : ""), effort: effort || (curEffort() ? curEffort().label : ""), start: Date.parse(at) || Date.now(),
+    const t = { id, model: model || (curModel() ? curModel().label : ""), effort: effort ? turnEffort(effort) : (curEffort() ? effortName(curEffort().id, curEffort().label) : ""), start: Date.parse(at) || Date.now(),
                 running: true, segs: [], userId: S.lastUser, metaEl: h("div", { class: "meta" }), workEl: h("div", { class: "working", "aria-hidden": "true" }), waitEl: null, endEl: null };
     t.el = h("div", { class: "turn", "data-turn": id, "aria-busy": "true" }, t.metaEl, t.workEl);
     t.metaEl.textContent = [t.model, t.effort].filter(Boolean).join(" · ");
@@ -1706,7 +1747,7 @@
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
     usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
     "annotations.batch": (m) => ID.test(m.batchId) && Array.isArray(m.items), "annotations.status": (m) => ID.test(m.batchId) && ID.test(m.id),
-    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true,
+    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true,
   };
 
   // ---------------------------------------------------------------- dispatch
@@ -1766,6 +1807,7 @@
     focus() { if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); } else cin.focus(); },
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,
     usage(m) { S.usage = m.size > 0 ? { used: Math.min(m.used, m.size), size: m.size } : null; renderGauge(); },
+    "pointer.leave"() { tipHide(); },   // B 1.5: the host saw the cursor leave the panel
   };
   function receive(m) {
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { warn("bad json"); return; } }

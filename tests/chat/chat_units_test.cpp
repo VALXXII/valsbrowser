@@ -15,6 +15,7 @@
 #include "../../src/chat-folder.h"
 #include "../../src/chat-tools.h"
 #include "../../src/chat-batch.h"
+#include "../../src/chat-options.h"
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", what); } }
@@ -349,8 +350,31 @@ static void TestBatch() {
         Check(OneLine("  a\r\n\tb  c ", 100) == "a b c" && OneLine("\xC3\xA9\xC3\xA9\xC3\xA9", 3) == "\xC3\xA9\xE2\x80\xA6", "one line; never cut inside a character"); }
 }
 
+// V1.2: the model and effort lists as the chat shows them (src/chat-options.h), on the real adapters' own lists
+// (build/acp-test/real-claude-as-user.json, real-codex-as-user.json).
+struct OptChoice { std::string value, name, description; };
+static void TestOptions() {
+    using namespace ChatOptions;
+    std::vector<OptChoice> claudeEffort, codexEffort, claudeModel, codexModel;
+    for (const char* v : {"default|Default", "low|Low", "medium|Medium", "high|High", "xhigh|Xhigh", "max|Max"}) { const std::string s = v; claudeEffort.push_back({s.substr(0, s.find('|')), s.substr(s.find('|') + 1), ""}); }
+    for (const char* v : {"low|Low", "medium|Medium", "high|High", "xhigh|Xhigh", "max|Max", "ultra|Ultra"}) { const std::string s = v; codexEffort.push_back({s.substr(0, s.find('|')), s.substr(s.find('|') + 1), ""}); }
+    claudeModel.push_back({"default", "Default (recommended)", "Opus 5.5"}); claudeModel.push_back({"opus", "Opus 5.5", "For complex work"}); claudeModel.push_back({"sonnet", "Sonnet 5.5", ""});
+    codexModel.push_back({"gpt-6.2-sol", "6.2 Sol", ""}); codexModel.push_back({"gpt-6.1-terra", "6.1 Terra", ""});
+    Check(IsAlias(claudeEffort[0]) && IsAlias(claudeModel[0]) && !IsAlias(claudeEffort[2]) && !IsAlias(claudeModel[1]) && IsAlias("x", "Default (recommended)") && !IsAlias("defaults-off", "Defaults off"), "the agent's « Default » entry is an alias, real levels and models are not");
+    Check(EffortToApply(claudeEffort, "default", "") == "medium", "a new Claude session on « Default »: Medium is set");
+    Check(EffortToApply(codexEffort, "low", "") == "medium", "a Codex session that starts on its own config's Low: Medium too");
+    Check(EffortToApply(claudeEffort, "default", "xhigh") == "xhigh" && EffortToApply(claudeEffort, "medium", "high") == "high", "the effort the user chose last for this site wins");
+    Check(EffortToApply(claudeEffort, "medium", "") == "" && EffortToApply(claudeEffort, "high", "high") == "", "already set: nothing to send");
+    Check(EffortToApply(codexEffort, "low", "default") == "medium" && EffortToApply(codexEffort, "low", "nope") == "medium", "a remembered value the agent does not offer (or its alias) falls back to Medium");
+    std::vector<OptChoice> noMedium; noMedium.push_back({"fast", "Fast", ""}); noMedium.push_back({"deep", "Deep", ""});
+    Check(EffortToApply(noMedium, "fast", "") == "", "an agent without « medium »: its own choice is kept");
+    Check(DefaultModel(claudeModel, "") == "opus" && Shown(claudeModel, "default") == "opus" && Shown(claudeModel, "sonnet") == "sonnet", "Claude's « Default (recommended) » stands for the model its description names");
+    Check(DefaultModel(codexModel, "gpt-6.2-sol") == "gpt-6.2-sol" && DefaultModel(codexModel, "") == "" && DefaultModel(codexModel, "default") == "", "no alias: the model the agent had chosen itself at its first session");
+    Check(Shown(claudeEffort, "default") == "", "an effort still on the alias shows nothing (never « Default »)");
+}
+
 int wmain() {
-    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestBatch();
+    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestBatch(); TestOptions();
     const std::wstring root = TempDir();
     TestStore(root); TestFolder(root);
     RemoveTree(root);

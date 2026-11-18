@@ -99,7 +99,14 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
         if (wanted != o->currentValue) for (const auto& c : o->choices) if (c.value == wanted) { session->SetConfigOption(o->id, wanted); break; }
         wanted.clear();
     };
-    choose(Acp::FindModelOption(info.options), pendingModel); choose(Acp::FindEffortOption(info.options), pendingEffort);
+    choose(Acp::FindModelOption(info.options), pendingModel);
+    if (const auto* e = Acp::FindEffortOption(info.options)) {   // V1.2: never the agent's « Default »; the effort chosen last for this site, else Medium
+        std::string remembered = pendingEffort; if (remembered.empty()) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) remembered = it->second.effort;
+        const std::string want = ChatOptions::EffortToApply(e->choices, e->currentValue, remembered);
+        if (!want.empty()) { session->SetConfigOption(e->id, want); Diag(L"effort set to « " + W(want) + L" » (the session started with « " + W(e->currentValue) + L" »)"); }
+        else Diag(L"effort « " + W(e->currentValue) + L" » kept");
+    }
+    pendingEffort.clear();
     // The session starts in the mode the user's own agent configuration picks (seen: Claude « auto », Codex « agent »).
     // Ours is « Demander » unless this site remembers another choice: set here, right after Started, before any prompt.
     const auto mv = ModesOf(agentId, info); std::string want = pendingMode; pendingMode.clear();
@@ -119,6 +126,7 @@ void OnStarted(const Acp::StartResult& r) {
     case Acp::StartState::Ready: {
         sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true;
         info.options = r.configOptions; info.modes = r.modes; info.caps = r.capabilities; info.commands = r.commands;
+        if (const auto* mo = Acp::FindModelOption(info.options); mo && !agentFirstModel.count(agentId)) agentFirstModel[agentId] = mo->currentValue;
         if (!r.resumed || convo.data.head.promptVersion != ChatPrompt::Version) convo.preambleSent = false;
         convo.data.head.sessionId = r.sessionId; convo.data.head.agentId = agentId;
         ClearStrip("auth"); ApplyDefaults(); SendState(); SendCommands();
@@ -572,11 +580,11 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
         m.Set("at", Str(Iso(now))); const std::size_t at = Keep("message.user", m); if (batch) { activeBatch.item = at; activeBatch.userId = "u" + turn.id; }
         Send("message.user", std::move(m)); }
     const auto& info = agentInfo[agentId];
-    {   SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("model", Str(LabelOf(Acp::FindModelOption(info.options)))); const std::string effort = LabelOf(Acp::FindEffortOption(info.options)); if (!effort.empty()) m.Set("effort", Str(effort));
+    {   SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("model", Str(LabelOf(Acp::FindModelOption(info.options), agentId))); const std::string effort = LabelOf(Acp::FindEffortOption(info.options)); if (!effort.empty()) m.Set("effort", Str(effort));
         m.Set("agentId", Str(agentId)); m.Set("at", Str(Iso(now))); Keep("turn.start", m); Send("turn.start", std::move(m)); }
     if (post) KillTimer(post, AgentIdleTimer);
     SendState(); SyncChromeBits();
-    {   SJ::Value m = SJ::Value::Obj(); m.Set("active", SJ::Value::Bool(false)); Send("pick.state", std::move(m)); }
+    {   SJ::Value m = SJ::Value::Obj(); m.Set("active", SJ::Value::Bool(picking)); Send("pick.state", std::move(m)); }   // V1.2: a click during the turn still goes to the chat (next message)
     // the element shows who works on it (Paper 6.10): only an element of the top document with a unique selector
     doneMarkSelector.clear(); turn.markSelector.clear();
     for (const auto& e : turn.elements) if (e.sel.frameKind == "main" && e.pending.target.shadowPath.empty() && e.pending.target.selectorUnique && !e.pending.target.selector.empty()) { turn.markSelector = e.pending.target.selector; break; }

@@ -27,6 +27,7 @@
 #include "chat-prompt.h"
 #include "chat-tools.h"
 #include "chat-batch.h"
+#include "chat-options.h"
 #include "chat-store.h"
 #include "chat-folder.h"
 #include "chat-panel-view.h"
@@ -132,7 +133,7 @@ struct Batch {
     std::string conversation, userId; std::size_t item = std::size_t(-1);   // the user's message that carries the card: which conversation, which item
 };
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
-HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5;
+HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6;
 AUI::Ramp slide; std::weak_ptr<Tab> chatTab; ChatLocal::Site site; std::wstring folder; ChatFolder::Guess suggestion; bool suggestionAsked = false;
 // Project folder without a screen (contract B 1.4): `folderAsk` = the detection is uncertain, the panel shows « Où est
 // le code de ce site ? »; `folderChosen` = the current folder was picked or confirmed by the user (never replaced by a
@@ -221,13 +222,23 @@ ModeView ModesOf(const std::string& agent, const AgentInfo& info) {
     return m;
 }
 std::string KindOfMode(const ModeView& m, const std::string& id) { for (const auto& e : m.list) if (e.id == id) return e.kind; return "other"; }
-SJ::Value OptionList(const Acp::ConfigOption* o) {
+std::map<std::string, std::string> agentFirstModel;   // agent id -> the model it had chosen itself when its first session started (its « Par défaut » when it has no alias)
+// An agent's list as the panel shows it (V1.2): never the « use my default » alias; `defaultValue` gets « Par défaut ».
+SJ::Value OptionList(const Acp::ConfigOption* o, const std::string& defaultValue = "") {
     SJ::Value arr = SJ::Value::Arr(); if (!o) return arr;
-    for (const auto& c : o->choices) { if (!ChatStore::ValidId(c.value)) continue; SJ::Value v = SJ::Value::Obj(); v.Set("id", Str(c.value)); v.Set("label", Str(c.name.empty() ? c.value : c.name));
-        if (!c.description.empty()) v.Set("description", Str(ClipUtf8(c.description, 300))); if (!c.group.empty()) v.Set("group", Str(c.group)); arr.Push(std::move(v)); }
+    for (const auto& c : o->choices) { if (!ChatStore::ValidId(c.value) || ChatOptions::IsAlias(c)) continue; SJ::Value v = SJ::Value::Obj(); v.Set("id", Str(c.value)); v.Set("label", Str(c.name.empty() ? c.value : c.name));
+        if (!c.description.empty()) v.Set("description", Str(ClipUtf8(c.description, 300))); if (!c.group.empty()) v.Set("group", Str(c.group));
+        if (!defaultValue.empty() && c.value == defaultValue) v.Set("isDefault", SJ::Value::Bool(true)); arr.Push(std::move(v)); }
     return arr;
 }
-std::string LabelOf(const Acp::ConfigOption* o) { if (!o) return ""; for (const auto& c : o->choices) if (c.value == o->currentValue) return c.name.empty() ? c.value : c.name; return o->currentValue; }
+std::string DefaultModelOf(const std::string& id, const Acp::ConfigOption* o) { if (!o) return ""; auto it = agentFirstModel.find(id); return ChatOptions::DefaultModel(o->choices, it == agentFirstModel.end() ? std::string() : it->second); }
+// The current choice's name; an alias is named by the model it stands for (models) or not at all (efforts: no « Default »).
+std::string LabelOf(const Acp::ConfigOption* o, const std::string& agent = "") {
+    if (!o) return "";
+    const std::string shown = ChatOptions::Shown(o->choices, o->currentValue, DefaultModelOf(agent, o));
+    for (const auto& c : o->choices) if (c.value == shown) return ChatOptions::IsAlias(c) ? std::string() : c.name.empty() ? c.value : c.name;
+    return ChatOptions::IsAlias(shown, shown) ? std::string() : shown;
+}
 void SendState();
 void SetAgentStatus(const std::string& id, const std::string& status, const std::wstring& detail = L"", double progress = -1) {
     auto& a = agentInfo[id]; a.status = status; a.detail = detail; a.progress = progress; SendState();
@@ -251,14 +262,16 @@ void SendState() {
         if (!info.detail.empty()) a.Set("detail", Str(info.detail));
         if (info.progress >= 0) a.Set("progress", SJ::Value::Num(std::clamp(info.progress, 0.0, 1.0)));
         if (!info.auth.empty()) { SJ::Value ms = SJ::Value::Arr(); for (const auto& m : info.auth) if (ChatStore::ValidId(m.id)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name)); ms.Push(std::move(o)); } a.Set("authMethods", std::move(ms)); }
-        a.Set("models", OptionList(Acp::FindModelOption(info.options)));
+        {   const auto* mo = Acp::FindModelOption(info.options); a.Set("models", OptionList(mo, DefaultModelOf(def.id, mo))); }
         agents.Push(std::move(a));
     }
     st.Set("agents", std::move(agents)); st.Set("agentId", Str(agentId));
     const auto& info = agentInfo[agentId];
     const auto* model = Acp::FindModelOption(info.options); const auto* effort = Acp::FindEffortOption(info.options);
-    st.Set("model", model && ChatStore::ValidId(model->currentValue) ? Str(model->currentValue) : SJ::Value::Null());
-    st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(effort->currentValue) ? Str(effort->currentValue) : SJ::Value::Null());
+    {   const std::string shown = model ? ChatOptions::Shown(model->choices, model->currentValue, DefaultModelOf(agentId, model)) : std::string();
+        st.Set("model", ChatStore::ValidId(shown) ? Str(shown) : SJ::Value::Null()); }
+    // efforts (V1.2): the agent's levels without its « Default »; a session still on that alias shows no effort
+    st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(effort->currentValue) && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? Str(effort->currentValue) : SJ::Value::Null());
     {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
         for (const auto& m : mv.list) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }

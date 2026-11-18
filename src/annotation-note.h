@@ -245,6 +245,8 @@ class NotePopover : public Animator::Client {
     RECT target_{}, bounds_{}, final_{}; D2D1_POINT_2F origin_{}; float liftX_ = 0, liftY_ = 0; bool above_ = false;
     bool open_ = false, settled_ = false, reduced_ = false, pillOpen_ = false; int hover_ = 0, pressed_ = 0, pillHover_ = 0, pillPressed_ = 0;
     static constexpr UINT_PTR EditSubclass = 0xA77E;
+    static constexpr UINT_PTR VanishTimer = 0x5649;   // the pointer hidden by typing in the field (see WatchPointer)
+    POINT vanishAt_{}; int vanishTicks_ = 0; HCURSOR shownCursor_ = nullptr;
 
     float Dpi() const { const UINT d = GetDpiForWindow(hwnd_ ? hwnd_ : owner_); return d ? float(d) : 96.f; }
     int Px(float dip) const { return int(std::lround(dip * Dpi() / 96.f)); }
@@ -409,7 +411,34 @@ class NotePopover : public Animator::Client {
             }
             return r; }
         }
-        return DefSubclassProc(h, m, w, l);
+        const bool key = m == WM_CHAR || m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
+        if (key) self->KeepPointer();
+        const LRESULT r = DefSubclassProc(h, m, w, l);
+        if (key) self->WatchPointer();
+        return r;
+    }
+    // Windows' « Masquer le pointeur pendant la saisie » (mouse vanish, on by default): the EDIT hides the pointer while
+    // the user types (no cursor at all) and gives it back only when the pointer moves over the EDIT itself. Moved
+    // straight back over the page, it stayed hidden for good (V1.2, point 6): the page (the WebView, another process)
+    // only sets its cursor when its cursor CHANGES, and in the annotation mode it is the same « viseur » everywhere. So the
+    // cursor shown before the key is kept, and after each key the pointer is watched (50 ms): still hidden and it moved
+    // -> that cursor is put back (and the display count, if that is how it was hidden), wherever the pointer is. It stays
+    // hidden while the user keeps typing without touching the mouse, as Windows wants. The watch ends half a second
+    // after the pointer is visible.
+    static bool PointerHidden(const CURSORINFO& ci) { return !(ci.flags & CURSOR_SHOWING) || !ci.hCursor; }
+    void KeepPointer() { CURSORINFO ci{}; ci.cbSize = sizeof(ci); if (GetCursorInfo(&ci) && !PointerHidden(ci)) shownCursor_ = ci.hCursor; }
+    void WatchPointer() {
+        CURSORINFO ci{}; ci.cbSize = sizeof(ci); if (!hwnd_ || !GetCursorInfo(&ci)) return;
+        vanishAt_ = ci.ptScreenPos; vanishTicks_ = 0; SetTimer(hwnd_, VanishTimer, 50, nullptr);
+    }
+    void PointerTick() {
+        CURSORINFO ci{}; ci.cbSize = sizeof(ci); if (!GetCursorInfo(&ci)) { KillTimer(hwnd_, VanishTimer); return; }
+        if (!PointerHidden(ci)) { if (++vanishTicks_ > 10) KillTimer(hwnd_, VanishTimer); return; }
+        vanishTicks_ = 0;
+        if (ci.ptScreenPos.x == vanishAt_.x && ci.ptScreenPos.y == vanishAt_.y) return;
+        if (!(ci.flags & CURSOR_SHOWING)) for (int i = 0; i < 16 && ShowCursor(TRUE) < 0; ++i) {}
+        SetCursor(shownCursor_ ? shownCursor_ : LoadCursorW(nullptr, IDC_ARROW));
+        KillTimer(hwnd_, VanishTimer);
     }
     COLORREF CaretColor() const { const auto a = Design::Accent::Get(); return NativeUI::AccentCaret::Mix(FieldGray(), RGB(std::lround(a.r * 255), std::lround(a.g * 255), std::lround(a.b * 255)), Design::Accent::caretOpacity); }
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -435,6 +464,7 @@ class NotePopover : public Animator::Client {
         case WM_KEYDOWN: case WM_SYSKEYDOWN: if (Key(w, false)) return 0; break;
         case WM_SETFOCUS: case WM_KILLFOCUS: Repaint(); PlacePill(Motion::Now()); return 0;
         case WM_APP + 2: view_.keyboard = true; Activate(int(w), true); return 0;
+        case WM_TIMER: if (w == VanishTimer) { PointerTick(); return 0; } break;
         case WM_DPICHANGED: MakeFont(); Relayout(); PlaceField(); Repaint(); PlacePill(Motion::Now()); return 0;
         }
         return DefWindowProcW(h, m, w, l);
@@ -647,7 +677,10 @@ public:
         else if (!settled_) Settle();
         const bool pillMoving = pillIn_.Moving(now) || fold_.Moving(now);
         const bool spin = open_ && pillOpen_ && view_.capture == CaptureState::Pending && !reduced_;
-        if (pillMoving || spin || moving || motion_.NextWake(now).delay) PlacePill(now);
+        // a closed note's pill is placed until it is hidden: when the UI thread was busy for the whole fade (« Demander à
+        // l'agent » opens the chat right after the close), the first frame comes after the ramp's end, and the pill would
+        // stay on screen as it was last presented (V1.2)
+        if (pillMoving || spin || moving || motion_.NextWake(now).delay || (!open_ && pill_.Shown())) PlacePill(now);
         if (open_ && settled_ && motion_.NextWake(now).delay) Repaint();
         return moving || pillMoving || spin || motion_.NextWake(now).delay.has_value();
     }

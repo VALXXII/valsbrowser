@@ -3,7 +3,8 @@
 // runtime tests, and by the browser's sandbox (BROWSER_CHAT_FAKE_AGENT, see design/chat-acp.md).
 //
 // Options (command line):
-//   --log <file>          append every received line (cut at 2000 bytes) and a few markers ("child <pid>", "cwd <dir>")
+//   --log <file>          append every received line (cut at 2000 bytes) and a few markers ("child <pid>", "cwd <dir>",
+//                         "prompt-text <the last text block of a session/prompt, on one line>")
 //   --auth-file <file>    signed in only when the file exists: session/new answers -32000 until `authenticate`
 //                         (method "fake-login") or the terminal sign-in (`--cli login`) creates it
 //   --cli login           act as the agent's CLI sign-in: create --auth-file (or %FAKE_AGENT_AUTH_FILE%), exit 0
@@ -18,6 +19,8 @@
 //   --env-dump <file>     write a few environment variables of this process
 //   --edit <spec>         the edit of the "apply" scenario: "<path relative to the session folder>|<find>|<replace>"
 //                         (also %FAKE_AGENT_EDIT%). With it, a message that names no other scenario applies the edit.
+//   --claude-like         the real Claude adapter's option lists: effort "default" (current) + low / medium / high / xhigh / max,
+//                         a "default" model alias ("Default (recommended)", description "Sonnet 5.5") and a 4th model
 //   --sleep               (internal) the long-lived child
 //
 // Scenarios, chosen by a word in the prompt's text:
@@ -78,6 +81,7 @@ struct Options {
     std::string edit;  // --edit / FAKE_AGENT_EDIT: "path|find|replace"
     std::string crashAt;
     bool silent = false, noImages = false, resume = false, garbage = false, child = false;
+    bool claudeLike = false;  // --claude-like: the real Claude adapter's lists ("Default" effort first and current, xhigh, max; a "default" model alias)
     int protocol = 1;
     unsigned readDelay = 0;
 } opt;
@@ -197,10 +201,18 @@ SJ::Value Modes() {
 SJ::Value ConfigOptions() {
     SJ::Value efforts = Arr({Obj({{"value", S("low")}, {"name", S("Faible")}}), Obj({{"value", S("medium")}, {"name", S("Moyen")}})});
     if (model != "haiku") efforts.Push(Obj({{"value", S("high")}, {"name", S("Élevé")}}));  // Haiku has no high effort
+    if (opt.claudeLike) {   // as claude-agent-acp 0.107 says it (build/acp-test/real-claude-as-user.json)
+        efforts = Arr({Obj({{"value", S("default")}, {"name", S("Default")}}), Obj({{"value", S("low")}, {"name", S("Low")}}), Obj({{"value", S("medium")}, {"name", S("Medium")}})});
+        if (model != "haiku") { efforts.Push(Obj({{"value", S("high")}, {"name", S("High")}})); efforts.Push(Obj({{"value", S("xhigh")}, {"name", S("Xhigh")}})); efforts.Push(Obj({{"value", S("max")}, {"name", S("Max")}})); }
+    }
+    SJ::Value alias = Obj({{"value", S("default")}, {"name", S("Default (recommended)")}, {"description", S("Sonnet 5.5")}});
     return Arr({
         Obj({{"id", S("model")}, {"name", S("Modèle")}, {"category", S("model")}, {"type", S("select")}, {"currentValue", S(model)},
              {"options", Arr({Obj({{"group", S("claude")}, {"name", S("Claude")},
-                                   {"options", Arr({Obj({{"value", S("opus")}, {"name", S("Opus 5.5")}, {"description", S("Le plus capable")}}),
+                                   {"options", opt.claudeLike ? Arr({std::move(alias), Obj({{"value", S("opus")}, {"name", S("Opus 5.5")}, {"description", S("Le plus capable")}}),
+                                                    Obj({{"value", S("sonnet")}, {"name", S("Sonnet 5.5")}}),
+                                                    Obj({{"value", S("haiku")}, {"name", S("Haiku 5.5")}}), Obj({{"value", S("sonnet-4")}, {"name", S("Sonnet 4.6")}})}) :
+                                                    Arr({Obj({{"value", S("opus")}, {"name", S("Opus 5.5")}, {"description", S("Le plus capable")}}),
                                                     Obj({{"value", S("sonnet")}, {"name", S("Sonnet 5.5")}}),
                                                     Obj({{"value", S("haiku")}, {"name", S("Haiku 5.5")}})})}})})}}),
         Obj({{"id", S("effort")}, {"name", S("Effort")}, {"category", S("thought_level")}, {"type", S("select")}, {"currentValue", S(effort)},
@@ -402,6 +414,10 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
             else if (type == "resource_link") ++links;
         }
     cancelled = false;
+    {   // the user's own message as received (the last text block, one line): what the tests read back (V1.2: the note's text)
+        std::string one = text; for (auto& c : one) if (c == '\n' || c == '\r') c = ' ';
+        Append(opt.log, "prompt-text " + one.substr(0, 2000) + "\n");
+    }
     const auto has = [&](const char* word) { return text.find(word) != std::string::npos; };
     const auto end = [&](const char* reason) { Result(id, Obj({{"stopReason", S(cancelled ? "cancelled" : reason)}})); };
 
@@ -725,10 +741,11 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
     if (m == "session/set_config_option") {
         const std::string config = Str(params, "configId");
         const std::string value = Str(params, "value");
-        if (config == "model" && (value == "opus" || value == "sonnet" || value == "haiku")) {
-            model = value;
-            if (model == "haiku" && effort == "high") effort = "medium";
-        } else if (config == "effort" && (value == "low" || value == "medium" || (value == "high" && model != "haiku"))) {
+        if (config == "model" && (value == "opus" || value == "sonnet" || value == "haiku" || (opt.claudeLike && (value == "default" || value == "sonnet-4")))) {
+            model = value == "default" ? "sonnet" : value;
+            if (model == "haiku" && (effort == "high" || effort == "xhigh" || effort == "max")) effort = "medium";
+        } else if (config == "effort" && (value == "low" || value == "medium" || (value == "high" && model != "haiku") ||
+                                          (opt.claudeLike && (value == "default" || ((value == "xhigh" || value == "max") && model != "haiku"))))) {
             effort = value;
         } else if (config == "mode" && (value == "default" || value == "acceptEdits" || value == "plan")) {
             mode = value;
@@ -772,6 +789,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--resume") opt.resume = true;
         else if (a == L"--garbage") opt.garbage = true;
         else if (a == L"--child") opt.child = true;
+        else if (a == L"--claude-like") { opt.claudeLike = true; effort = "default"; }
         else if (a == L"--edit") opt.edit = Narrow(value());
         else if (a == L"--cli") cli = true;
         else if (cli && cliVerb.empty()) cliVerb = a;

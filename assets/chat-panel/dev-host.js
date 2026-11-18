@@ -136,6 +136,20 @@
     "6.4-agent-pas-pret": [st(Object.assign({ agents: [CLAUDE, Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "chatgpt", label: "ChatGPT" }], models: [] })] }, conv("Bouton de paiement"))),
       { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m"), wait(30), click(".menu .mi[data-key='more']")],
     "6.4-preparation": [st({ agents: [Object.assign({}, CLAUDE, { status: "preparing", detail: "Préparation de Claude Code… 42 %", progress: 0.42 }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
+    // V1.2 (Paper 17US-0 / 17VU-0): one group per connected provider; efforts as the adapters say them (English, « Default » first)
+    "modeles-deux-fournisseurs": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m")],
+    "modeles-un-fournisseur": [st(Object.assign({ agents: [CLAUDE, Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "chatgpt", label: "ChatGPT" }] })] }, conv("Bouton de paiement"))),
+      { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m")],
+    "modeles-aucun-fournisseur": [st({ agents: [Object.assign({}, CLAUDE, { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "claude-ai-login", label: "Claude" }], models: [] }),
+      Object.assign({}, CODEX, { status: "notInstalled", detail: "Pas installé", models: [] })] }), { type: "thread.reset", conversationId: "new", items: [] }, click(".model .m")],
+    "modeles-codex-inconnu": [st(Object.assign({ agents: [CLAUDE, Object.assign({}, CODEX, { models: [] })] }, conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m")],
+    "effort-adaptateur": [st(Object.assign({ efforts: [{ id: "default", label: "Default" }, { id: "low", label: "Low" }, { id: "medium", label: "Medium" }, { id: "high", label: "High" }, { id: "xhigh", label: "Xhigh" }, { id: "max", label: "Max" }], effort: "medium" }, conv("Bouton de paiement"))),
+      { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand"), { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Default", agentId: "claude-code" },
+        { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 4000 }, userMsg("u2", "Encore"), { type: "turn.start", turnId: "t2", model: "Opus 5.5", effort: "Medium", agentId: "claude-code" },
+        { type: "turn.end", turnId: "t2", stopReason: "end_turn", durationMs: 4000 }] },
+      click(".model .m"), wait(30), click(".menu .mi[data-key='effort']")],
+    "jauge-survol": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) },
+      { type: "usage", used: 86000, size: 270000 }],
     "6.4-pas-installe": [st({ agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé" }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.5-1-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }, () => document.querySelector(".cin").setAttribute("data-placeholder", "Que faut-il changer sur la page ?")],
     "6.5-2-element-image": [st(), { type: "thread.reset", conversationId: "new", items: [] },
@@ -320,7 +334,10 @@
       case "mention.query": send({ type: "mentions", query: m.query, elements: [EL, EL2], files: [{ path: "Checkout.tsx", dir: "src/pages" }] }); break;
       case "history.open": if (!window.__historyLoaded) send({ type: "history", items: [] }); break;
       case "message.edit": if (m.restore == null) send({ type: "edit.confirm", messageId: m.messageId, files: ["src/styles/checkout.css"] }); break;
-      case "setModel": send({ type: "state", model: m.id }); break;
+      case "setModel":   // another provider's model: the host starts a new conversation with that agent
+        if (m.agentId && m.agentId !== (window.__agentId || "claude-code")) { window.__agentId = m.agentId; send({ type: "state", agentId: m.agentId, model: m.id, conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); }
+        else send({ type: "state", model: m.id });
+        break;
       case "setEffort": send({ type: "state", effort: m.id }); break;
       case "setMode": send({ type: "state", mode: m.id }); break;
       case "copy": send({ type: "copy.done", ok: true }); break;

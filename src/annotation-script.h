@@ -45,6 +45,14 @@
 //     update per frame at most. At a selection its geometry goes to the host with the frame's (« sp »): the native
 //     copy draws it too and the « handoff » hides the page's, so it is never in the shot. padding / gap values join
 //     the selection (target.spacing).
+// V1.2 (glued while scrolling): the frame, its inspector and the chat marks sit in wrappers that belong to the DOCUMENT
+// (the host element is absolutely positioned at the document's origin), not to the viewport. A wrapper is placed at the
+// viewport's origin (in document coordinates) and has a transform, so its position:fixed children are laid out in it
+// with the same viewport coordinates as before; when the page scrolls, the compositor moves the wrapper with the
+// page in the same frame (no « scroll-linked » lag), and the next animation frame puts both back in step. The
+// wrapper clips to the viewport's client box: it never adds scrollable overflow to the page. An element inside a
+// fixed or sticky box does not scroll with the document: its wrapper is position:fixed instead (followed per frame).
+// While the frame follows the SAME element (scroll, resize), it jumps: the 120 ms glide is only for a new target.
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <string>
@@ -94,7 +102,7 @@ var cur = null, down = [], frozen = false, shown = false, keyboard = false, seq 
 
 var host = D.createElement('browser-annotation-layer');
 host.setAttribute('aria-hidden', 'true');
-host.style.cssText = 'all:initial;position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
+host.style.cssText = 'all:initial;position:absolute;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
 var root = host.attachShadow({ mode: 'closed' });
 var T = 'transform 120ms cubic-bezier(0.2,0,0,1),opacity 120ms ease-out';
 // The accent rules (frame fill 8 %, edges, label, padding hatches and their labels), rebuilt by the « accent » command.
@@ -120,6 +128,7 @@ root.innerHTML = '<style>' +
   '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
   '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;white-space:nowrap;letter-spacing:0}' +
   '.gl{background:#D63E92}' +
+  '.w{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none;transform:translate(0px,0px)}' +
   '.mk{position:fixed;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 120ms ease-out}' +
   '.mf{box-sizing:border-box;position:absolute;left:0;top:0}' +
   '.mt{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;gap:6px;padding:0 6px;border-radius:3px 3px 0 0;' +
@@ -128,12 +137,13 @@ root.innerHTML = '<style>' +
   '.ms{width:12px;height:12px;box-sizing:border-box;border:2px solid rgba(255,255,255,.15);border-top-color:#fff;border-radius:50%;flex:none}' +
   '.ms.spin{animation:mks 1.2s linear infinite}@keyframes mks{to{transform:rotate(360deg)}}' +
   '.mc{position:absolute;left:-2px;top:-2px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-bottom-right-radius:4px}' +
-  '</style><style class="a"></style><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div>';
+  '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
 var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
 var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4], label = parts[5];
 var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb');
 var insPool = { pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = null;
+var frameWrap = root.querySelector('.fw'), markWrap = root.querySelector('.mw'), placed = null;
 (D.documentElement || D).appendChild(host);
 adopt(D);
 
@@ -506,9 +516,45 @@ function placeSpace(info, first) {
   insTimer = setTimeout(function () { insTimer = 0; if (alive && insData && insEl === el) insFade(true, true); }, reduced ? 0 : 120);
 }
 
+// ---- glued to the page (V1.2, see the header)
+// Does this element scroll with the document? Not when it (or a box around it, up to the top document) is fixed or
+// sticky. Same-origin frames: their element in the top document decides. Cached per element.
+var fixedOf = { el: null, v: false };
+function inFixed(el) {
+  if (!el) return false;
+  if (fixedOf.el === el) return fixedOf.v;
+  var v = false, n = el;
+  for (var g = 0; n && g < 400 && !v; g++) {
+    if (n.nodeType === 1) { try { var p = (n.ownerDocument.defaultView || window).getComputedStyle(n).position; if (p === 'fixed' || p === 'sticky') v = true; } catch (e) {} }
+    var up = n.parentElement;
+    if (!up) { var rn = n.getRootNode ? n.getRootNode() : null; up = rn && rn.host ? rn.host : null; }
+    if (!up && n.ownerDocument && n.ownerDocument !== D) { try { up = n.ownerDocument.defaultView.frameElement; } catch (e) { up = null; } }
+    n = up;
+  }
+  fixedOf = { el: el, v: v };
+  return v;
+}
+function anchorEl(info) {
+  if (!info) return null;
+  if (info.frames && info.frames.length) return info.frames[0];
+  if (info.range) { var c = info.range.commonAncestorContainer; return c && c.nodeType === 1 ? c : c ? c.parentElement : null; }
+  return info.el;
+}
+// The wrapper at the viewport's origin, in document coordinates (or fixed), as big as the viewport's client box.
+function anchor(wrap, el) {
+  var de = D.documentElement, cw = Math.min(innerWidth, (de && de.clientWidth) || innerWidth), ch = Math.min(innerHeight, (de && de.clientHeight) || innerHeight);
+  if (inFixed(el)) { wrap.style.position = 'fixed'; wrap.style.transform = 'translate(0px,0px)'; }
+  else { var hr = host.getBoundingClientRect(); wrap.style.position = 'absolute'; wrap.style.transform = 'translate(' + (-hr.left).toFixed(2) + 'px,' + (-hr.top).toFixed(2) + 'px)'; }
+  wrap.style.width = cw + 'px'; wrap.style.height = ch + 'px';
+}
+function glide(on) { for (var i = 0; i < parts.length; i++) parts[i].style.transition = on ? '' : 'none'; }
+
 // ---- drawing
 function place(info) {
-  if (!info) { if (shown) { setOpacity(0); shown = false; } placeSpace(null, false); return; }
+  if (!info) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } placeSpace(null, false); return; }
+  anchor(frameWrap, anchorEl(info));
+  glide(!(shown && placed && placed.el === info.el && placed.range === info.range));   // the same element: it jumps (no lag behind a scroll)
+  placed = { el: info.el, range: info.range };
   var r = rectOf(info);
   var first = !shown;
   if (first) moveOnly(true);
@@ -542,6 +588,7 @@ function same(a, b) { return a && b && a.el === b.el && a.range === b.range; }
 function frame() {
   raf = 0; if (!alive) return;
   syncShields();
+  if (mark) markPlace();
   if (frozen) { if (cur) place(cur); return; }
   if (!haveMove) return;
   haveMove = false;
@@ -584,7 +631,7 @@ function onFocus(e) {
   if (t.getRootNode && t.getRootNode().host) { var info = hit(r.left + 1, r.top + 1); if (info && info.el === t) cur = info; }
   down = []; keyboard = true; place(cur);
 }
-function onScroll() { if (!cur) return; if (!frozen && px >= 0) haveMove = true; schedule(); }
+function onScroll() { if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
 function onLeave(e) { if (!e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
 
 function selectionInfo(text) {
@@ -682,6 +729,7 @@ function markPlace() {
   if (!el || !el.isConnected) { markClear(); return; }
   var r = el.getBoundingClientRect();
   if (r.width < 1 && r.height < 1) { mark.box.style.opacity = '0'; return; }
+  anchor(markWrap, mark.anchor);
   var x = r.left + mark.ox - 4, y = r.top + mark.oy - 4, w = r.width + 8, h = r.height + 8;
   mark.box.style.opacity = '1';
   mark.box.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)';
@@ -712,8 +760,8 @@ function markSet(a) {
     try { ck.innerHTML = '<svg width="12" height="12" viewBox="0 0 256 256"><path d="M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z" fill="#fff"/></svg>'; } catch (e) {}
     fr.appendChild(ck);
   }
-  root.appendChild(box);
-  mark = { el: el, ox: ox, oy: oy, box: box, frame: fr, tag: tag, state: a.state };
+  markWrap.appendChild(box);
+  mark = { el: el, ox: ox, oy: oy, box: box, frame: fr, tag: tag, state: a.state, anchor: a.current && cur && cur.el === el ? anchorEl(cur) : el };
   markPlace();
   markTimer = setInterval(markPlace, a.state === 'working' || a.state === 'show' ? 100 : 400);   // follows a layout change (HMR) without a frame loop
   return true;

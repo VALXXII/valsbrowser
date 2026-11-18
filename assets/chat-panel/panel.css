@@ -79,9 +79,11 @@ svg.i { display: block; flex-shrink: 0; }
 .gauge .tip { position: absolute; top: calc(100% + 4px); left: 50%; z-index: 20; width: max-content; padding: 6px 8px; border-radius: 8px;
   background: var(--canvas); border: 1px solid #FFFFFF1A; box-shadow: #00000080 0 8px 24px; color: #FFFFFF99; font-size: 12px; font-weight: 400; line-height: 16px; white-space: pre;
   font-variant-numeric: tabular-nums; opacity: 0; transform: translate(-50%, -2px); pointer-events: none; transition: opacity 125ms ease-out, transform 125ms ease-out; transition-delay: 0ms; }
-@media (hover: hover) { .gauge:hover .tip { opacity: 1; transform: translate(-50%, 0); transition-delay: 300ms; } .gauge:hover { background: var(--fill6); } }
-.gauge:focus .tip { opacity: 1; transform: translate(-50%, 0); }
-@media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
+/* B 1.5: shown by the pointer (class set by panel.js after 300 ms, removed at the leave, at the window's blur or at the host's
+   pointer.leave), never by :hover — a :hover state the WebView never leaves kept the bubble on screen; keyboard: focus-visible */
+.gauge.tip-on .tip, .gauge:focus-visible .tip { opacity: 1; transform: translate(-50%, 0); }
+.gauge.tip-on { background: var(--fill6); }
+@media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus-visible .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }
 .hd-btn:last-child svg { width: 16px; height: 16px; }
@@ -336,9 +338,10 @@ svg.i { display: block; flex-shrink: 0; }
 .mode.auto .ic { width: 14px; height: 14px; opacity: 1; }
 .mode .lbl { font-size: 12px; line-height: 16px; white-space: pre; }
 .grow { flex: 1; min-width: 0; }
-.model { display: flex; align-items: center; height: 24px; min-width: 0; }
+.model { display: flex; align-items: center; height: 24px; min-width: 0; flex-shrink: 1; }
 .model .m { display: flex; align-items: center; gap: 8px; min-width: 0; height: 24px; padding: 0 6px; border-radius: 6px; }
-.model .mw { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.model .mw { display: flex; align-items: center; gap: 4px; min-width: 0; flex-shrink: 1; }
+.model .mw > span:first-child { flex-shrink: 0; }
 .model .mcv { width: 10px; height: 10px; opacity: .5; margin-left: -4px; flex-shrink: 0; }
 .model .m[aria-expanded="true"] { background: color-mix(in srgb, #FFFFFF 10%, transparent); }
 @media (hover: hover) { .model .m:hover { background: var(--fill6); } .model .m:hover .mn, .model .m:hover .e { color: #FFFFFF; } }
@@ -498,21 +501,16 @@ svg.i { display: block; flex-shrink: 0; }
 .unfold:not(:disabled):active { transform: none; }
 @media (hover: hover) { .unfold:hover { background: #FFFFFF12; } }
 
-/* folder chip (B 1.4) */
-.tb.folder { padding: 0 5px 0 4px; gap: 4px; max-width: 140px; min-width: 0; flex-shrink: 1; }
-.tb.folder .ic { width: 13px; height: 13px; opacity: .5; }
-.tb.folder .fn { color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.tb.folder.none .fn { color: var(--accent-ink); }
-@media (hover: hover) { .tb.folder:hover .fn { color: #FFFFFF; } }
-.tools { min-width: 0; flex-shrink: 1; }
+/* the foot on one line (V1.2): no folder chip; the mode's chevron goes first, then the model name is cut, never the effort */
 .foot.measure * { flex-shrink: 0 !important; }
-.foot.measure .tb.folder { max-width: none; }
 .foot.fit-chev .mode .cv { display: none; }
-.foot.fit-logo .model .mw > span:first-child { display: none; }
-.foot.fit-folder .tb.folder { max-width: 76px; }
-.foot.fit-folder-icon .tb.folder .fn { display: none; }
-.foot.fit-effort .model .e { display: none; }
-.model .mn { flex-shrink: 0; }
+.model .mn { flex-shrink: 1; }
+/* model menu (V1.2, Paper 17US-0 / 17VU-0): rows 6/10, radius 8, 13/18 500; chosen row #FFFFFF0F with the blue check */
+.menu.models .mi { padding: 6px 10px; }
+.menu.models .mi[aria-checked="true"] { background: var(--fill6); }
+.menu.models .mi .lead { margin-top: 0; }
+.menu .btn-s.primary { background: var(--accent); }
+@media (hover: hover) { .menu .btn-s.primary:hover { background: #5579FF; } }
 
 /* « Traiter les annotations » — composer block (Paper 186S-0) */
 .batch { display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 10px; background: #FFFFFF08; border: 1px solid var(--line); max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
