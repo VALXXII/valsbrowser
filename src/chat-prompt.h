@@ -204,6 +204,37 @@ inline std::string AbsoluteSourceFile(const PageSource& p) {
     for (const std::string* f : {&p.astroFile, &p.reactFile}) { const std::string s = detail::Slashes(*f); std::string n; if (detail::Absolute(s) && detail::Normalize(s, n)) return n; }
     return "";
 }
+// Do the page's own file marks agree with a project folder? `files`: source files named by the page's debug data
+// (Astro attributes, React debug sources), absolute or relative. An absolute path must be inside the folder; a
+// relative one must exist in it. Dependencies (node_modules) are skipped: they may live anywhere.
+//   None    the page names no file (nothing to contradict the folder)
+//   Inside  every file it names is in the folder
+//   Outside at least one is not: the folder is not, or not all of, this page's code
+enum class Marks { None, Inside, Outside };
+inline Marks MarksInFolder(const std::vector<std::string>& files, const std::string& projectDir, const std::function<bool(const std::string&)>& exists) {
+    std::string root;
+    if (projectDir.empty() || !detail::Normalize(detail::Slashes(projectDir), root) || root.empty()) return Marks::None;
+    if (root.back() == '/') root.pop_back();
+    bool any = false;
+    for (const auto& raw : files) {
+        std::string f = detail::Slashes(raw); const auto q = f.find_first_of("?#"); if (q != std::string::npos) f.erase(q);
+        if (f.rfind("file:///", 0) == 0) f.erase(0, 8);
+        if (f.empty() || f.size() > 1024 || f.find("/node_modules/") != std::string::npos || f.rfind("node_modules/", 0) == 0) continue;
+        std::string n;
+        if (detail::Absolute(f)) { if (!detail::Normalize(f, n) || !detail::StartsWithFolded(n, root + "/")) return Marks::Outside; }
+        else { if (!detail::Normalize(root + "/" + f, n) || !detail::StartsWithFolded(n, root + "/") || !exists(n)) return Marks::Outside; }
+        any = true;
+    }
+    return any ? Marks::Inside : Marks::None;
+}
+// The list of files a page query (« sources ») returned: a JSON array of strings, read tolerantly (24 at most).
+inline std::vector<std::string> ParsePageSources(std::string_view json) {
+    std::vector<std::string> out;
+    StrictJson::Limits lim; lim.maxBytes = 64 * 1024; lim.maxDepth = 3; lim.maxItems = 64;
+    StrictJson::Value v; if (!StrictJson::Parse(json, v, nullptr, lim) || !v.IsArray()) return out;
+    for (const auto& i : v.items) if (i.IsString() && !i.string.empty() && i.string.size() <= 1024 && out.size() < 24) out.push_back(i.string);
+    return out;
+}
 // `projectDir`: absolute folder (any slashes). `exists(absolutePathWithForwardSlashes)`: true for a regular file.
 // A path is accepted only inside the project folder, outside node_modules, and existing.
 // The element's OWN source: its Astro attribute (depth 0), else its React debug source. An attribute found on an

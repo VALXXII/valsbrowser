@@ -176,13 +176,20 @@ def run_main():
         step('launcher hidden while the panel is open', not launcher_visible())
         sug = logged(r'CHAT folder suggestion from the process listening on the site\'s port \(pid \d+\): (.+)', m0, 10)
         step('folder detected from the port of the site (no admin rights)', sug is not None and sug.group(1).strip().lower() == str(C.SITE).lower(), sug.group(1).strip() if sug else 'none')
-        C.wait_for(lambda: 'Utiliser' in C.panel_text(), 8)
-        capture('6.2-dossier')
-        step('first time: the panel asks where the code is', 'Où est le code de ce site' in C.panel_text())
-        m1 = mark()
-        C.click_panel(text='Utiliser')
+        # contract B 1.4: a sure detection (one server, its working folder is a project, the page's own file marks point
+        # into it) is used at once — no « Où est le code de ce site ? » screen; the folder shows as a chip in the composer
+        m1 = m0
+        marks = logged(r"CHAT the page's file marks agree with the folder \((\d+) file", m0, 10)
+        step('the page\'s own file marks point into that folder', marks is not None, marks.group(0)[5:] if marks else '')
+        auto = logged(r'CHAT folder used without asking \(sure\): (.+)', m0, 10)
+        step('sure detection: the folder is used at once', auto is not None and auto.group(1).strip().lower() == str(C.SITE).lower(), auto.group(1).strip() if auto else '')
         step('site linked to its folder', logged(r'CHAT site http://127\.0\.0\.1:5183 linked to', m1, 8))
         step('agent session ready', logged(r'CHAT session start: ready', m1, 20))
+        time.sleep(0.6)
+        step('no « Où est le code de ce site ? » screen', 'Où est le code de ce site' not in C.panel_text())
+        chip = C.panel("(function(){var b=document.querySelector('[aria-label^=\"Dossier du projet\"]');return b?b.getAttribute('aria-label'):''})()") or ''
+        step('the folder is a discreet chip in the composer (click = change it)', 'Dossier du projet : site' in chip, chip)
+        capture('6.2-dossier-automatique')
         modeline = logged(r'CHAT mode (?:set to « (\w[\w-]*) »|« (\w[\w-]*) » kept)', m1, 8)
         step('default mode « Demander » applied right after the start', modeline is not None and (modeline.group(1) or modeline.group(2)) == 'default', modeline.group(0) if modeline else '')
         time.sleep(0.6)
@@ -362,6 +369,7 @@ def run_main():
         time.sleep(0.6)
         unfold_steps()
         step('…its step line names the annotation by its note', 'A marqué l\'annotation « Aligne le bouton à droite » comme terminée' in C.panel_text())
+        C.panel("(function(){var l=document.querySelector('[role=log]');if(l)l.scrollTop=l.scrollHeight;return 1})()"); time.sleep(0.3)
         capture('6.14-outils-annotations-sans-carte')
 
         def step_summaries():
@@ -493,12 +501,113 @@ def run_main():
             step('« Ajouter » invoked', C.invoke('AnnotationAdd'))
             step('…the annotation is written, the chat stays closed', logged(r'ANNOTATE written', m13b, 8) and 'CHAT panel opened' not in C.log_text()[m13b:])
             time.sleep(0.8)
+        # two more pending annotations for « Traiter les annotations » (the fake agent gives back a note that says
+        # « impossible » and does not touch one that says « oublie »)
+        for sel, text in (('.btn-primary', 'Déplace ce bouton dans l\'en-tête (impossible sans le gabarit)'), ('#react-button', 'On oublie celle-ci pour le moment')):
+            mN = mark()
+            C.click_page(sel)
+            nw = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
+            if nw:
+                Q.post_text(text, Q.find_child(nw[0][0], 'Edit')); time.sleep(0.3)
+                C.invoke('AnnotationAdd'); logged(r'ANNOTATE written', mN, 8); time.sleep(0.8)
         m14 = mark(); C.shortcut('D')
         step('Ctrl+Maj+D opens it again', logged(r'CHAT panel opened', m14, 5))
         time.sleep(0.8)
+
+        # ---- « Traiter les annotations » (contract B 1.4, Paper 186K-0): the pending annotations of the site are posed
+        #      in the composer, the ticked ones leave as one message, and that message is a card that follows each one
+        try:
+            C.wait_for(lambda: C.panel_exists() and logged(r'CHAT session start: ready', m14, 1) is not None, 20)
+            mT = mark()
+            C.post({'type': 'annotations.request'})                         # what the « /annotations » command of the panel sends
+            posed = logged(r'CHAT batch (b_\w+) posed \(([^)]*)\): (\d+) annotation\(s\):((?: ann_\w+)+)', mT, 10)
+            ids = posed.group(4).split() if posed else []
+            step('« Traiter les annotations »: the site\'s pending annotations are posed in the composer', len(ids) >= 4, f'{len(ids)} annotation(s)')
+            C.wait_for(lambda: 'à traiter' in C.panel_text(), 5)
+            C.panel("(function(){var m=document.querySelector('.batch-more');if(m)m.click();return 1})()"); time.sleep(0.3)
+            rows = C.panel("(function(){return Array.prototype.map.call(document.querySelectorAll('.batch-row'),function(r){return [r.dataset.id,r.getAttribute('aria-checked'),r.innerText]})})()") or []
+            step('…one line each, with its note, all ticked', len(rows) == len(ids) and all(r[1] == 'true' for r in rows) and any('Texte trop discret' in r[2] for r in rows), f'{len(rows)} line(s)')
+            capture('6.15-lot-avant-envoi')
+            keep = next((r[0] for r in rows if 'Texte trop discret' in r[2]), None)
+            if keep:
+                C.panel("(function(){var r=document.querySelector(\".batch-row[data-id='" + keep + "']\");if(r)r.click();return 1})()"); time.sleep(0.3)
+            focus_composer(); C.type_panel('Garde les couleurs du site.'); time.sleep(0.2)
+            mS = mark(); C.enter_panel()
+            sent = logged(r'CHAT batch b_\w+ sent: (\d+) of (\d+) annotation', mS, 8)
+            step('the ticked ones leave as one message; the unticked one stays for later', sent is not None and int(sent.group(1)) == len(ids) - 1 and int(sent.group(2)) == len(ids), sent.group(0)[5:] if sent else '')
+            working = logged(r'CHAT batch status (ann_\w+): working \(tool\)', mS, 20)
+            step('claim by the agent: the line says who takes care of it', working is not None)
+            C.wait_for(lambda: "s'en occupe" in C.panel_text(), 5)
+            capture('6.16-lot-en-cours')
+            ended = logged(r'CHAT turn t\d+ ended: end_turn', mS, 90)
+            over = logged(r'CHAT batch b_\w+ over: (\d+) done, (\d+) not handled', mS, 10)
+            step('the turn ends; each annotation has its outcome', ended is not None and over is not None and int(over.group(1)) >= 1 and int(over.group(2)) == 2, over.group(0)[5:] if over else '')
+            step('…and our annotation tools never asked for a card', 'permission asked' not in C.log_text()[mS:])
+            time.sleep(0.8)
+            card = C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];return c?c.innerText:''})()") or ''
+            step('done: the agent\'s one-sentence summary on the line', "C'est corrigé dans le code (faux agent)." in card)
+            step('given back by the agent: its reason on the line', "Je n'ai pas trouvé cet élément dans le code." in card)
+            step('never touched: said plainly, it stays waiting', "ne l'a pas commencée. Elle reste en attente." in card)
+            C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];if(c)c.scrollIntoView({block:'center'});return 1})()"); time.sleep(0.4)
+            capture('6.17-lot-termine')
+            C.panel("(function(){var b=document.querySelectorAll('.ann-inst');b=b[b.length-1];if(b)b.click();return 1})()"); time.sleep(0.4)
+            card2 = C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];return c?c.innerText:''})()") or ''
+            step('« Voir la consigne » shows the exact text sent (tool names only there, and the precision)', 'browser_annotation_claim' in card2 and 'Garde les couleurs du site.' in card2 and 'browser_annotation_claim' not in card)
+            capture('6.17-lot-consigne')
+            mShow = mark()
+            C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];var r=c&&c.querySelector('.ann-row');if(r)r.click();return 1})()")
+            shown = logged(r'CHAT mark « show » on the element: (found|not found)', mShow, 6)
+            step('a click on a line shows the annotation\'s element on the page', shown is not None and shown.group(1) == 'found', shown.group(0)[5:] if shown else '')
+            time.sleep(0.5); capture('6.17-lot-montrer-sur-la-page')
+            left = C.panel('window.__n=0') or 0
+            mP = mark(); C.post({'type': 'annotations.request'})
+            again = logged(r'CHAT batch (b_\w+) posed \(([^)]*)\): (\d+) annotation', mP, 10)
+            step('what was left is still pending: a next batch offers it again', again is not None and int(again.group(3)) >= 3, again.group(0)[5:] if again else '')
+            C.panel("(function(){document.querySelectorAll('.batch-row[aria-checked=true]').forEach(function(r){r.click()});return 1})()"); time.sleep(0.3)
+        except Exception as e:
+            step('« Traiter les annotations » flow', False, repr(e))
         m15 = mark(); C.shortcut('D')
         step('Ctrl+Maj+D closes it', logged(r'CHAT panel closed', m15, 5))
         time.sleep(0.5)
+
+        # ---- contract B 1.4: an uncertain detection still asks (a server running from a folder that is no project)
+        import subprocess, tempfile, shutil
+        loose = tempfile.mkdtemp(prefix='chat-qa-vrac-')
+        with open(loose + '/page.html', 'w', encoding='utf-8') as f:
+            f.write('<!doctype html><meta charset="utf-8"><title>Vrac</title><h1 class="title">Un dossier sans projet</h1><p>Rien ici ne dit où est le code.</p>')
+        other = subprocess.Popen([sys.executable, '-m', 'http.server', '5184', '--bind', '127.0.0.1'], cwd=loose, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            import socket
+            def listening():
+                try:
+                    socket.create_connection(('127.0.0.1', 5184), timeout=0.3).close(); return True
+                except OSError:
+                    return False
+            C.wait_for(listening, 10)
+            mU = mark()
+            C.ws_for(C.URL).call('Page.navigate', {'url': 'http://127.0.0.1:5184/page.html'})
+            logged(r'ANNOTATE mode off \(navigation\)', mU, 8)
+            logged(r'NAVIGATION OK http://127\.0\.0\.1:5184/page\.html', mU, 8); time.sleep(1.0)
+            mU2 = mark(); C.shortcut('D')
+            doubt = logged(r'CHAT folder to confirm: (.+)', mU2, 12)
+            step('uncertain detection (the folder does not look like a project): not used by itself', doubt is not None and 'used without asking' not in C.log_text()[mU2:], doubt.group(1).strip() if doubt else '')
+            C.wait_for(lambda: C.panel_exists() and 'Où est le code de ce site' in C.panel_text(), 8)
+            txt = C.panel_text()
+            step('…the panel asks « Où est le code de ce site ? » and proposes the folder found', 'Où est le code de ce site' in txt and 'Utiliser' in txt)
+            step('…and the batch of the other site left the composer', 'à traiter' not in txt and 'annotation cochée' not in txt)
+            capture('6.2-dossier')
+            C.shortcut('A'); time.sleep(0.9)                                   # leave the mode: the panel closes with it
+            C.ws_for('http://127.0.0.1:5184').call('Page.navigate', {'url': C.URL}); time.sleep(1.2)
+            mU3 = mark(); C.shortcut('A')
+            step('back on the sandbox site, mode on again', logged(r'ANNOTATE mode on', mU3, 8))
+            time.sleep(0.9)
+        finally:
+            other.terminate()
+            try:
+                other.wait(timeout=5)
+            except Exception:
+                other.kill()
+            shutil.rmtree(loose, ignore_errors=True)
 
         # ---- a site that is not local: disabled, explained
         m16 = mark()

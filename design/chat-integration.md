@@ -26,6 +26,8 @@ Raccourcis du mode, cohérents entre eux : `Ctrl+Maj+A` Annoter · `Ctrl+Maj+H` 
 | `src/chat-panel-view.h` | La WebView2 du panneau (création, fichiers servis, pont) |
 | `src/chat-local.h` | Règle « site local » (pure, testée) |
 | `src/chat-tools.h` | Quel outil l'agent demande : nom d'outil MCP, nos cinq outils d'annotations (pur, testé) |
+| `src/chat-batch.h` | « Traiter les annotations » : ce que devient une ligne de la carte, consigne envoyée à l'agent (pur, testé) |
+| `src/chat-host-batch.h` | « Traiter les annotations » côté navigateur : lot posé dans la saisie, tour, suivi de la carte |
 | `src/chat-prompt.h` | Ce que reçoit l'agent, contrat D (pur, testé) |
 | `src/chat-store.h` | Dossier par site, historique des conversations (testé) |
 | `src/chat-folder.h` | Dossier probable d'un site, sélecteur Windows (testé) |
@@ -62,15 +64,16 @@ vides.
 
 ## Site ↔ dossier
 
-1. Le dossier vient toujours d'un **choix** de l'utilisateur : « Utiliser » sur le dossier proposé, ou le
+1. Le dossier vient d'une **détection sûre** (utilisé directement, voir « Dossier du projet sans écran »), sinon
+   d'un **choix** de l'utilisateur : « Utiliser » sur le dossier proposé, ou le
    sélecteur de dossier Windows.
 2. **Dossier proposé** : le processus qui écoute le port du site (`GetExtendedTcpTable`, sans droits admin)
    → son dossier de travail, lu dans ce processus → remonté jusqu'au premier dossier qui contient
    `package.json`, `.git`, etc. Si Windows refuse la lecture (autre utilisateur, processus élevé), il n'y a
    simplement pas de proposition. Racine de disque, dossier Windows, dossier du profil : jamais proposés.
 3. **Sinon** : le sélecteur Windows s'ouvre sur le dossier utilisé le plus récemment pour un autre site.
-4. **Mémorisation** : `<données>\annotations-chat\projects.json`, par origine (dossier, agent, modèle).
-   Modifiable depuis le « + » de la saisie (« changer de dossier »). Rien n'est écrit dans le projet.
+4. **Mémorisation** : `<données>\annotations-chat\projects.json`, par origine (dossier, qui l'a choisi, agent,
+   modèle). Modifiable depuis la puce dossier de la saisie. Rien n'est écrit dans le projet.
 
 Le **mode** (Demander / Auto / Planifier) n'est pas mémorisé : chaque nouvelle session démarre en « Demander ».
 
@@ -178,6 +181,81 @@ n'est pas un fichier). Une fois finie, elle porte aussi `summary` (`verb`, `obje
 `afterMany`, `count`, `one`, `many`) : le panneau s'en sert pour la ligne repliée d'un groupe de plusieurs
 étapes (« a lu 3 annotations »). Un groupe d'une seule étape affiche son titre tel quel.
 
+## Dossier du projet sans écran (contrat B 1.4)
+
+À l'ouverture du chat, le navigateur cherche où est le code : le processus qui écoute le port du site, et son
+dossier de travail. **Si la détection est sûre, le dossier est utilisé tout de suite**, sans l'écran « Où est le
+code de ce site ? ». Il s'affiche dans une petite puce en bas de la saisie (icône dossier + nom ; clic = changer).
+
+Sûr = tout cela à la fois (`ChatFolder::Judge`, puis `ChatPrompt::MarksInFolder`) :
+
+- un seul processus sert ce port ;
+- le dossier proposé **est** son dossier de travail (pas un dossier parent trouvé en remontant) ;
+- ce dossier ressemble à un projet (`package.json`, `astro.config.*`, `vite.config.*`, `next.config.*`,
+  `index.html`, `.git`…) ;
+- aucun dossier juste au-dessus (3 niveaux) ne porte un fichier de projet : sinon on sert sans doute un morceau
+  d'un projet plus grand (`dist\`, `public\`, un paquet parmi plusieurs) et le choix revient à l'utilisateur ;
+- ce n'est ni le dossier utilisateur, ni le Bureau, Documents ou Téléchargements eux-mêmes, ni la racine d'un
+  disque, ni un dossier système ;
+- les repères fichier:ligne de la page, s'il y en a (attributs Astro, sources React), pointent tous dans ce
+  dossier. Les dépendances (`node_modules`) ne comptent pas.
+
+Dans tous les autres cas (rien trouvé, plusieurs processus, repères hors du dossier, dossier trop large…),
+`state.askFolder` vaut vrai : le panneau montre l'écran de choix, avec le dossier trouvé en suggestion s'il y en
+a un. Le journal dit pourquoi (`CHAT folder to confirm: …`).
+
+**Un port resservi par un autre projet.** Le dossier d'un site est retenu, mais la détection est refaite à
+chaque ouverture (les ports comme 5173 passent d'un projet à l'autre). Si elle est sûre et désigne un autre
+dossier : un dossier que le navigateur avait trouvé seul est remplacé (nouvelle conversation) ; un dossier que
+l'utilisateur avait **choisi lui-même** n'est jamais remplacé en silence, l'écran de choix revient. S'il avait
+choisi ce dossier à la place de celui que la détection proposait, ce choix est retenu : la question ne revient
+pas à chaque ouverture, seulement si le site est un jour servi depuis un troisième dossier. Un changement de
+dossier n'est pas accepté pendant un tour.
+
+**Agent.** Même logique : pas d'écran. L'agent est celui de ce site la dernière fois, sinon Claude Code s'il est
+installé, sinon le premier agent installé.
+
+## « Traiter les annotations » (contrat B 1.4, Paper 186K-0)
+
+Trois entrées, un seul chemin : la suggestion du chat vide, la commande `/annotations` du panneau, et
+`Chat::ProcessAnnotations()` côté navigateur (ouvre le chat puis pose le lot). Ce dernier point d'entrée est
+prêt pour un bouton « Traiter avec l'agent » dans l'historique natif ; **ce bouton reste à dessiner**, il n'est
+pas ajouté.
+
+1. **Le lot arrive dans la saisie** (`annotations.batch`) : les annotations en attente de ce site lues dans le
+   magasin (50 au plus, les plus anciennes d'abord), chacune avec sa note, son élément, son fichier:ligne s'il
+   est dans le dossier du projet, et sa miniature. Toutes cochées. Aucune en attente : un bandeau le dit.
+2. **Envoi** (`send.annotations`) : seules les lignes cochées partent ; le texte de la saisie est une précision
+   facultative. Le message de l'utilisateur porte la carte (`message.user.annotations`) et la **consigne
+   exacte** envoyée à l'agent (`ChatBatch::Instruction`, repliée sous « Voir la consigne »). C'est le seul
+   endroit où les noms techniques des outils apparaissent.
+3. **Suivi** (`annotations.status`) : l'agent traite chaque annotation avec nos outils, sans carte
+   d'autorisation (voir plus haut). Chaque appel réussi fait avancer la ligne :
+
+   | Outil appelé par l'agent | Ligne de la carte |
+   | --- | --- |
+   | `browser_annotation_claim` | « Claude s'en occupe » |
+   | `browser_annotation_resolve` (résolue) | Terminée, avec la phrase de résumé de l'agent |
+   | `browser_annotation_resolve` (autre issue) ou `browser_annotation_release` | Non traitée, avec sa raison |
+
+   Une ligne ne fait qu'avancer. Le magasin d'annotations dit la même chose par un autre chemin (c'est le
+   connecteur qui l'écrit) : il est relu après chaque appel et à la fin du tour, pour rattraper un événement
+   manqué.
+4. **Fin du tour** : ce qui reste est dit clairement. Une annotation prise mais pas terminée est rendue tout de
+   suite (sinon elle resterait « en cours » 30 minutes) ; une annotation jamais commencée reste en attente. Les
+   deux apparaissent « non traitées » avec la raison.
+5. **Clic sur une ligne** (`annotation.show`) : l'élément est amené à l'écran et encadré un instant.
+
+Les statuts sont enregistrés dans la conversation : une conversation rouverte montre la carte telle qu'elle a
+fini. Les annotations décochées, ou non traitées, restent en attente et reviennent au lot suivant.
+
+## Touche Alt seule
+
+Un appui sur Alt seul demandait à Windows la barre de menus de la fenêtre. Le navigateur n'en a pas ; la fenêtre
+passait alors en « menu système » et la vue qui avait le clavier (la page ou le panneau du chat) restait figée
+jusqu'à la touche suivante. `main.cpp` ignore maintenant cette demande (`WM_SYSCOMMAND`, `SC_KEYMENU` sans
+touche). Alt+Espace ouvre toujours le menu système.
+
 ## Jauge de contexte (contrat B 1.2)
 
 `usage_update` de l'agent → message `usage {used, size}` au panneau, tel quel (donc aussi après un résumé
@@ -237,7 +315,8 @@ verra »). L'animation d'entrée et de sortie passe toujours par le calque fant�
 - `annotation-mode.h` : le lanceur se masque si le chat est ouvert ; une sélection va au chat si le viseur du
   chat est allumé ; l'image capturée rejoint la puce ; `Rearm()` réinjecte le script après un rechargement ;
   une navigation de la page du chat ne quitte plus le mode (sauf changement de site).
-- `annotation-script.h` : `source()` (Astro / React) et la commande `mark` (étiquette « en cours », coche).
+- `annotation-script.h` : `source()` (Astro / React), `sources()` (les fichiers que la page nomme, pour vérifier
+  le dossier détecté) et la commande `mark` (étiquette « en cours », coche, cadre « montrer » d'un instant).
 - `annotation-note.h` : bouton « Demander à l'agent » (sites locaux, action principale, `Entrée`), `Ctrl+Maj+D`
   dans le champ ; panneau en calque à transparence par pixel (voir « Panneau de note »).
 - `annotation-banner.h` : bouton « Demander à l'agent », allumé quand le panneau est ouvert.

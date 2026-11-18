@@ -132,7 +132,7 @@ def main() -> int:
             print(f'              Node privé et adaptateur téléchargés une fois dans {PREVIEW / "agents"}')
         print('\nPour essayer :')
         print('  1. Ctrl+Maj+D (ou Ctrl+Maj+A puis « Demander à l\'agent » dans le bandeau) ouvre le chat à droite.')
-        print('  2. La première fois : « Utiliser » le dossier détecté (c\'est la copie du site ci-dessus).')
+        print('  2. Le dossier du code est trouvé tout seul (la copie du site ci-dessus) : il s\'affiche en bas de la saisie.')
         print('  3. Cliquez le bouton « Payer 48,00 € » dans la page : il devient une puce dans la saisie.')
         print('  4. Écrivez votre demande, Entrée.')
         if not a.no_browser and not opened_by_session:

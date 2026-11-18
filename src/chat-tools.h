@@ -68,6 +68,12 @@ inline std::string AnnotationIdOf(std::string_view rawInputJson) {
     for (char c : id->string) if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return "";
     return id->string;
 }
+// One text argument of a call (« summary », « reason », « outcome »): empty when absent, not a string or too long.
+inline std::string TextArg(std::string_view rawInputJson, const char* key, std::size_t max) {
+    StrictJson::Limits lim; lim.maxBytes = 64 * 1024; lim.maxDepth = 8;
+    StrictJson::Value v; if (rawInputJson.empty() || !StrictJson::Parse(rawInputJson, v, nullptr, lim) || !v.IsObject()) return "";
+    const auto* t = v.Get(key); return t && t->IsString() && t->string.size() <= max ? t->string : std::string();
+}
 namespace detail {
 // The JSON object inside a tool's result text: from its first « { » to its last « } » (an agent may wrap the text
 // in a code fence or add a line around it).

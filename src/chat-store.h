@@ -56,7 +56,11 @@ inline bool ValidId(const std::string& id) {
 }
 
 // ---------------------------------------------------------------- site -> project folder
-struct Project { std::wstring folder; std::string agentId, mode, model, effort; std::int64_t usedAt = 0; };
+struct Project {
+    std::wstring folder; std::string agentId, mode, model, effort; std::int64_t usedAt = 0;
+    bool chosen = false;   // the user picked or confirmed this folder (true), or the browser found it by itself (false)
+    std::wstring instead;  // chosen only: the folder the detection proposed when the user chose another one (never asked again for it)
+};
 struct Projects {
     std::map<std::string, Project> sites;   // key: the origin ("http://localhost:5173")
     static Projects Load(const std::wstring& file) {
@@ -67,6 +71,8 @@ struct Projects {
             if (m.first.empty() || m.first.size() > 300 || !m.second.IsObject() || p.sites.size() >= 500) continue;
             Project pr; pr.folder = Wide(Str(m.second, "folder", 2048)); pr.agentId = Str(m.second, "agentId", 128); pr.mode = Str(m.second, "mode", 128);
             pr.model = Str(m.second, "model", 128); pr.effort = Str(m.second, "effort", 128); pr.usedAt = Int(m.second, "usedAt");
+            if (const auto* c = m.second.Get("chosen"); c && c->IsBool()) pr.chosen = c->boolean; else pr.chosen = true;   // files written before: the user had chosen
+            pr.instead = Wide(Str(m.second, "instead", 2048));
             p.sites[m.first] = std::move(pr);
         }
         return p;
@@ -79,6 +85,8 @@ struct Projects {
             if (!s.second.mode.empty()) o.Set("mode", SJ::Value::Str(s.second.mode));
             if (!s.second.model.empty()) o.Set("model", SJ::Value::Str(s.second.model));
             if (!s.second.effort.empty()) o.Set("effort", SJ::Value::Str(s.second.effort));
+            o.Set("chosen", SJ::Value::Bool(s.second.chosen));
+            if (s.second.chosen && !s.second.instead.empty()) o.Set("instead", SJ::Value::Str(Utf8(s.second.instead)));
             o.Set("usedAt", SJ::Value::Int(s.second.usedAt)); sites.Set(s.first, std::move(o));
         }
         v.Set("sites", std::move(sites));

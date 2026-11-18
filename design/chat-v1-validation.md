@@ -20,10 +20,142 @@ Nuit du 17 au 18 novembre 2026. Branche `VALXXII/annotations-chat`, build `build
 **Ce qui manque ou n'a pas pu être vérifié :**
 
 - L'ordinateur était verrouillé pendant la validation : dans les captures, la barre du haut (onglets, adresse)
-  est noire, et le panneau de note natif aussi. Le reste des captures est réel. À refaire session ouverte.
+  est noire, et le panneau de note natif aussi. Le reste des captures est réel. **Refait le 18 novembre,
+  session ouverte : toutes les captures de `build\chat-qa\` sont maintenant plein cadre (section suivante).**
 - Aucun lecteur d'écran réel (Narrateur) n'a été essayé ; la structure d'accessibilité, elle, est vérifiée.
 - Codex n'a pas eu d'essai réel (un seul essai réel était autorisé, fait avec Claude Code).
 - Quatre suites du dépôt échouent, **aucune à cause du chat** (détail plus bas).
+
+## Retours du 18 novembre : jauge, autorisations, panneau de note, dossier automatique, « Traiter les annotations »
+
+Après l'essai du vrai navigateur par l'utilisateur. Build `build/chat-preview` refait après le dernier commit du
+panneau (3894eb3, contrat B 1.4) : **0 avertissement**. Session Windows ouverte : les captures sont de vraies
+captures d'écran, plein cadre.
+
+**Ce qui marche, vérifié dans le vrai navigateur (faux agent) : 123 étapes sur 123.**
+
+- **Jauge de contexte.** La valeur envoyée par l'agent arrive au panneau (« Mémoire du chat : 2 345 tokens sur
+  200 000 »). Elle disparaît sur une nouvelle conversation et revient quand on rouvre une conversation.
+- **Autorisations lisibles.** Les cartes ont une phrase pour titre : « Claude veut modifier checkout.css »
+  (inchangé), « Claude veut utiliser l'outil « create_issue » de « github » » pour un autre serveur ; le nom brut
+  et les arguments sont sous « Détails ».
+- **Nos outils d'annotations passent sans carte**, même en mode « Demander », sous les deux formes de nom
+  (Claude Code et Codex). Le fil garde une ligne en clair : « A lu 2 annotations », « A marqué l'annotation
+  « Aligne le bouton à droite » comme terminée ». Un serveur au nom presque identique reçoit, lui, une carte.
+- **Panneau de note.** « Ajouter » à gauche (secondaire), « Demander à l'agent » à droite (bouton bleu
+  principal). `Entrée` = Demander à l'agent quand le chat est disponible, `Ctrl+Entrée` = Ajouter. « Ajouter »
+  enregistre toujours une simple annotation sans ouvrir le chat.
+- **Coins du panneau de note.** Lisses, à l'écran aussi (capture agrandie à 125 %). Le panneau n'est plus
+  découpé par une région de fenêtre. Les autres surfaces du mode (bandeau, lanceur, carte, historique, message,
+  modale) étaient déjà lisses : vérifié par test.
+- **Dossier du projet sans écran.** Sur le bac à sable, le dossier est trouvé et utilisé tout de suite ; il
+  s'affiche dans la puce en bas de la saisie. Sur un serveur lancé depuis un dossier qui n'est pas un projet,
+  l'écran « Où est le code de ce site ? » apparaît, avec le dossier trouvé en proposition.
+- **« Traiter les annotations ».** Les annotations en attente arrivent cochées dans la saisie ; celle qu'on
+  décoche reste pour plus tard ; le message envoyé devient une carte qui suit chacune : « Claude s'en occupe »,
+  terminée avec son résumé, non traitée avec sa raison. « Voir la consigne » montre le texte exact envoyé. Un
+  clic sur une ligne encadre l'élément dans la page.
+- **Touche Alt.** Un appui sur Alt seul ne fige plus le panneau du chat (ni la page) : défaut trouvé pendant
+  les captures, corrigé dans la fenêtre du navigateur. Alt+Espace ouvre toujours le menu système.
+
+**Ce qui manque :**
+
+- **Bouton « Traiter avec l'agent » de l'historique natif : à dessiner.** Le point d'entrée existe côté
+  navigateur (`Chat::ProcessAnnotations()`), aucun bouton n'est ajouté sans planche.
+- **Le faux agent ne modifie pas le magasin d'annotations.** La carte est donc vérifiée par les appels d'outils
+  que l'agent annonce (le chemin immédiat). Le second chemin, la relecture du magasin, est testé par ses règles
+  (tests unitaires) mais pas de bout en bout : il faudrait un vrai agent, et l'essai réel autorisé a déjà servi.
+- **Dossier : deux cas non rejoués en vrai**, seulement par leurs règles : le site resservi depuis un autre
+  dossier (remplacement, ou retour de l'écran si l'utilisateur avait choisi lui-même), et des repères de page
+  qui pointent hors du dossier.
+- **Agent choisi d'office** quand Claude Code est absent et Codex présent : non rejoué (le faux agent tient lieu
+  des deux).
+- **Coins à 100 % et 150 % :** sur planches hors écran seulement (même code de dessin). L'écran de la machine
+  est à 125 % ; on ne change pas l'échelle de l'écran de l'utilisateur pour un test.
+- Toujours aucun essai avec le Narrateur, ni avec Codex en réel.
+
+### Captures
+
+| Sujet | Capture (`build\chat-qa\` sauf mention) | Ce qu'on y voit |
+| --- | --- | --- |
+| Dossier trouvé seul | `6.2-dossier-automatique.png` | pas d'écran de choix ; la puce « site » en bas de la saisie |
+| Dossier incertain | `6.2-dossier.png` | « Où est le code de ce site ? », dossier « Détecté auto », Utiliser |
+| Jauge | `6.13-jauge-contexte.png` | l'anneau à droite du titre, son infobulle « 2k / 200k » |
+| Outils d'annotations sans carte | `6.14-outils-annotations-sans-carte.png` | les lignes d'étape en clair, aucune carte |
+| Carte d'un autre serveur MCP | `6.10-autorisation-outil-mcp.png` | titre en phrase, « Détails » déplié (nom brut, arguments) |
+| Carte de modification | `6.10-autorisation.png` | « Claude veut modifier checkout.css », inchangé |
+| Lot avant l'envoi | `6.15-lot-avant-envoi.png` | « N annotations à traiter », lignes cochées, miniatures, précision facultative |
+| Lot en cours | `6.16-lot-en-cours.png` | carte « Traiter 4 annotations », « 1 sur 4 », « Claude s'en occupe » |
+| Lot terminé | `6.17-lot-termine.png`, `6.17-lot-consigne.png`, `6.17-lot-montrer-sur-la-page.png` | résumés, raisons en ambre, consigne dépliée, élément encadré dans la page |
+| Panneau de note dans le navigateur | `2.1-note-demander.png` | « Ajouter » puis « Demander à l'agent » (bleu), coins lisses |
+| Coin du panneau à l'écran (125 %) | `2.1-note-coin-ecran-125.png` | le coin réel agrandi 12 fois : bord fondu avec la page |
+| Boutons de la note, rendu exact | `build\annotations-ui-qa\v2\6.a-note-ask-agent.png`, `6.a2-…-focus-keyboard.png`, `6.a3-…-saving.png` | repos, focus clavier, enregistrement en cours |
+| Coins à 100 % | `build\annotations-ui-qa\v2\7.a-note-corner-100-before-after.png`, `7.a-note-panel-on-light-100.png` | coin agrandi 12 fois, avant (région de fenêtre) et après (calque) ; panneau entier sur fond clair |
+| Coins à 150 % | `build\annotations-ui-qa\v2\7.a-note-corner-150-before-after.png`, `7.a-note-panel-on-light-150.png` | idem à 150 % |
+| Panneau réel de la fenêtre | `build\annotations-ui-qa\v2\w9b-window-note-panel-layer.png`, `w13-window-note-ask-agent-focus.png` | les pixels du calque de la vraie fenêtre |
+
+Dans les captures du lot, deux notes commencent par « Écris lentement (slow)… » : ce sont des annotations créées
+plus tôt dans le même parcours par un tour arrêté exprès. La première bulle de certaines captures contient le
+texte technique qui commande le faux agent (`mcptool …`) : il n'existe que dans le test.
+
+### Mesures
+
+| Mesure | Résultat |
+| --- | --- |
+| Ouverture du panneau, première fois | prêt en 292 à 623 ms |
+| Coin du panneau de note à l'écran (125 %) | 13 pixels de bord fondus entre la page et le panneau (0 avant, avec la région de fenêtre) |
+| Coin sur planche, 100 % / 150 % | 0 pixel fondu avec une région ; 13 (100 %) et 12 (150 %) avec le calque |
+| WebView2 de la machine | 157.0.4341.60 (signalé par C2 ; les temps ci-dessus sont pris avec cette version) |
+
+### Tests
+
+| Suite | Résultat |
+| --- | --- |
+| Parcours réel, faux agent (`python tests/chat/chat_qa.py run`) | **123 étapes sur 123** (82 avant) |
+| Rendu natif des annotations (`python tests/annotations-ui/run.py`) | **1 617 vérifications, 0 échec** (1 561 avant) : boutons inversés, coins à 100 % et 150 %, fenêtres réelles sans région, clavier, pointeur, mouvement réduit |
+| Tests du chat (`python -I tests/chat/run_tests.py`) | **234 vérifications, 0 échec** (120 avant) : noms d'outils, noms voisins refusés, dossier sûr ou non, repères de page, règles de la carte, consigne |
+| Client ACP et runtime (`python -I tests/acp/run_tests.py --quick`) | **429 + 5 548, 0 échec** |
+| Barrière de traduction | 0 constat |
+| Autres suites relancées | copies de fichiers, panneau (tests de C2), annotations (magasin, connecteur), test de fumée, raccourcis, accessibilité : vertes. Le rendu natif et l'accessibilité ont d'abord échoué sur leurs tests clavier (ils lisent l'état réel des touches Maj et Ctrl, et le clavier de la machine servait à ce moment-là) ; relancés seuls, ils passent |
+
+Le faux agent (`tests/acp/fake_agent.cpp`, fichier de C1) a reçu deux scénarios, avec l'accord du coordinateur
+pour le premier : `mcptool` (un outil MCP demandé par son nom brut, comme les vrais adaptateurs, un ou plusieurs
+appels par tour) et `annotations` (il réagit à la consigne « Traiter les annotations » comme un agent appliqué :
+lire, prendre en charge, terminer avec un résumé, ou rendre avec une raison). Il n'appelle aucun vrai serveur.
+
+Pendant cette série, un passage du test de fumée a dépassé son délai : je faisais au même moment des essais
+clavier (touche Alt) qui lui prenaient le premier plan. Relancé seul : vert.
+
+Empreintes des vraies configurations Claude / Codex : identiques avant et après chaque lanceur (mêmes valeurs
+que plus bas). **Aucun appel réel à Claude Code ou à Codex dans cette série.**
+
+### Règles de design appliquées (skills du Bureau)
+
+- **better-colors** — « one primary action gets [the filled color] and peers stay neutral. Put the color on the
+  background » : un seul bouton rempli de l'accent dans la note (« Demander à l'agent »), « Ajouter » sur fond
+  neutre.
+- **apple-design**, principe « Simplicity » — « use hierarchy — order, spacing, contrast — so the most important
+  thing is the most obvious » : l'action principale est la seule en couleur et vient en dernier dans la rangée ;
+  « fewer steps », « Show the common path first, advanced options one level deeper » : le dossier sûr est utilisé
+  sans question et se change depuis sa puce ; la consigne technique est rangée sous un repli.
+- **apple-design**, principe « Agency » — « a confirmation dialog only for genuinely destructive, irreversible
+  actions (use sparingly; overusing it trains people to click through) » : pas de carte d'autorisation pour nos
+  outils d'annotations ; « offer choices » : le lot arrive coché, l'utilisateur décoche ce qu'il garde.
+- **better-writing** — « Verb-first buttons » et « One voice, one vocabulary » : titres de carte commençant par
+  le verbe (« Lire… », « Ouvrir… », « Marquer… comme terminée »), mêmes mots que le reste du mode (« annotation »,
+  « en attente », « Demander à l'agent ») ; phrases entières au catalogue avec emplacements et pluriels ;
+  « Plain words over clever ones » : aucun nom technique hors de « Détails » et de « Voir la consigne » ; une
+  raison dit ce qui s'est passé puis ce qui va se passer (« Commencée, pas terminée. Elle est de nouveau en
+  attente. »).
+- **better-accessibility** — « Every pointer interaction needs a keyboard path », « Enter and Space activate » :
+  `Entrée` sur l'action principale, `Ctrl+Entrée` pour l'autre, ordre de tabulation = ordre de lecture,
+  raccourcis annoncés aux lecteurs d'écran, anneau de focus clavier ; mouvement réduit : fondu seul, et le
+  défilement vers l'élément montré est immédiat.
+- **better-ui** — « Press scales to 0.96… a disabled one never scales » (convention du projet gardée :
+  `Motion::PressScale`, bouton inactif sans effet de pression) ; rayons et hauteurs des deux boutons identiques.
+- **emil-design-eng / apple-design** — « Popovers should scale from their trigger », « Enter and exit along the
+  same path » : l'animation du panneau de note (née du côté de l'élément visé) est conservée telle quelle avec
+  le nouveau calque.
 
 ## Livrables
 

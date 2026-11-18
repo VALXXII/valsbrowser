@@ -3,7 +3,7 @@
 // (included by src/chat-host.h; see its header for the whole picture).
 namespace Chat {
 
-void OpenPanel(); void ClosePanel(); void NewConversation(); void MaybeStartSession(); void SendHistory(const std::string& query);
+void OpenPanel(); void ClosePanel(); void NewConversation(); void MaybeStartSession(); void SendHistory(const std::string& query); void SendComposerBatch();
 // Keyboard focus back to the page of the chat. Never through the host's FocusPage(): its Check() treats a refusal of
 // MoveFocus as fatal (it stops the whole browser), and WebView2 does refuse while a modal owns the window.
 void FocusChatPage() {
@@ -147,26 +147,68 @@ void SaveProjects() {
 }
 void RememberChoices() {
     if (site.origin.empty() || folder.empty()) return;
-    auto& p = projects.sites[site.origin]; p.folder = folder; p.agentId = agentId; p.usedAt = BA::SystemNow(); SaveProjects();
+    auto& p = projects.sites[site.origin]; p.folder = folder; p.chosen = folderChosen; p.instead = folderChosen ? folderInstead : std::wstring(); p.agentId = agentId; p.usedAt = BA::SystemNow(); SaveProjects();
 }
-void SetFolder(const std::wstring& path) {
+// `byUser`: picked in the Windows dialog or confirmed with « Utiliser » (kept until the user changes it); false: found
+// by the detection, sure enough to be used without asking (replaced if the site is later served from elsewhere).
+void SetFolder(const std::wstring& path, bool byUser = true) {
     const std::wstring dir = ChatFolder::detail::Trim(path);
     if (dir.empty() || !ChatFolder::detail::IsDir(dir) || ChatFolder::detail::Refused(dir)) { Problem p; p.title = TR(chat_err_folder_title); p.message = TR(chat_err_folder); p.retry = false; SendError(p, "", "composer", false); return; }
     if (dir != folder) DisposeSession(L"project folder changed");   // i18n-exempt: log reason
-    folder = dir; RememberChoices();
+    // the user's own choice is kept even against a sure detection: what the detection proposed at that moment is
+    // remembered, so the question does not come back at every opening while the server stays where it is
+    folderInstead = byUser && ChatFolder::detail::Fold(suggestion.folder) != ChatFolder::detail::Fold(dir) ? suggestion.folder : std::wstring();
+    folder = dir; folderChosen = byUser; folderAsk = false; RememberChoices();
     for (auto& e : composerElements) ResolveElementSource(e.second);
     convo.data.head.folder = folder;
     Diag(L"site " + W(site.origin) + L" linked to " + folder);
     SendState(); MaybeStartSession();
     if (!pendingAsk.empty() && !composerElements.empty() && !turn.active) { const std::string text = U8(pendingAsk); pendingAsk.clear(); std::vector<std::string> ids; for (const auto& e : composerElements) ids.push_back(e.first); StartTurn(text, ids, {}); }
 }
+// The detection decided (contract B 1.4). Sure, and the page's own file marks agree: the folder is used at once, no
+// screen. Anything else: « Où est le code de ce site ? » with the folder found, if any, as a suggestion.
+void FolderDecided(bool sure, const std::wstring& doubt) {
+    const bool same = !folder.empty() && ChatFolder::detail::Fold(folder) == ChatFolder::detail::Fold(suggestion.folder);
+    if (!folder.empty()) {   // a folder remembered for this site: only a sure detection of ANOTHER folder says something
+        if (same || !sure) return;
+        if (turn.active) return;
+        if (folderChosen && !folderInstead.empty() && ChatFolder::detail::Fold(folderInstead) == ChatFolder::detail::Fold(suggestion.folder)) return;   // the user already chose against this very folder
+        if (folderChosen) { Diag(L"the site is now served from " + suggestion.folder + L", not from the folder chosen for it (" + folder + L"): asking"); folder.clear(); folderAsk = true; DisposeSession(L"project folder to confirm"); SendState(); return; }   // i18n-exempt: log reason
+        Diag(L"the site is now served from another folder: " + suggestion.folder + L" (was " + folder + L")");
+        if (!convo.data.items.empty()) NewConversation();
+        SetFolder(suggestion.folder, false); return;
+    }
+    if (sure) { Diag(L"folder used without asking (sure): " + suggestion.folder); SetFolder(suggestion.folder, false); return; }
+    folderAsk = true; Diag(L"folder to confirm: " + (doubt.empty() ? std::wstring(L"nothing found") : doubt)); SendState();
+}
+bool EnsurePost();
+// The page's own file marks (Astro attributes, React debug sources) must not point out of the folder found. Asked once
+// the mode's script is in the page: the chat may open while the mode is still starting (Ctrl+Maj+D from outside it).
+void AskPageMarks(const std::string& origin, int tries) {
+    if (origin != site.origin) return;
+    auto t = ChatTab(); if (!t) { FolderDecided(true, L""); return; }
+    if (!Ann::s.injected && tries > 0 && EnsurePost()) { folderMarksOrigin = origin; folderMarksTries = tries - 1; SetTimer(post, FolderTimer, 150, nullptr); return; }
+    Query(t, L"sources", L"null", [origin](const std::string& json) {
+        if (origin != site.origin) return;
+        const auto files = ChatPrompt::ParsePageSources(json);
+        const auto marks = ChatPrompt::MarksInFolder(files, U8(suggestion.folder), [](const std::string& p) { const DWORD a = GetFileAttributesW(W(p).c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); });
+        // i18n-exempt-begin: log details
+        if (marks == ChatPrompt::Marks::Outside) FolderDecided(false, L"the page's file marks point outside the folder (" + std::to_wstring(files.size()) + L" file(s) named)");
+        else { if (marks == ChatPrompt::Marks::Inside) Diag(L"the page's file marks agree with the folder (" + std::to_wstring(files.size()) + L" file(s) named)"); FolderDecided(true, L""); }
+        // i18n-exempt-end
+    });
+}
 void DetectFolder() {
-    if (suggestionAsked || !site.local || site.file || !folder.empty()) return;
-    suggestionAsked = true; auto out = std::make_shared<ChatFolder::Guess>(); const int port = site.port;
+    if (suggestionAsked || !site.local || site.file) return;
+    suggestionAsked = true; auto out = std::make_shared<ChatFolder::Guess>(); const int port = site.port; const std::string origin = site.origin;
     Ann::Run([out, port] { *out = ChatFolder::Detect(port); },
-             [out] { suggestion = *out;
-                     Diag(suggestion.folder.empty() ? L"no folder suggestion: " + suggestion.why : L"folder suggestion from the process listening on the site's port (pid " + std::to_wstring(suggestion.pid) + L"): " + suggestion.folder);
-                     SendState(); });
+             [out, origin] {
+                 if (origin != site.origin) return;   // another site since
+                 suggestion = *out;
+                 Diag(suggestion.folder.empty() ? L"no folder suggestion: " + suggestion.why : L"folder suggestion from the process listening on the site's port (pid " + std::to_wstring(suggestion.pid) + L"): " + suggestion.folder);
+                 if (!suggestion.sure) { FolderDecided(false, suggestion.folder.empty() ? suggestion.why : suggestion.doubt); return; }
+                 AskPageMarks(origin, 20);   // sure so far: the page's own file marks must not point elsewhere (3 s at most for the mode's script)
+             });
 }
 int CountPending() { return pendingAnnotations; }
 void RefreshPending() {
@@ -232,7 +274,7 @@ void MaybeStartSession() {
 void SwitchAgent(const std::string& id, const std::string& model) {
     if (!AgentOf(id)) return;
     auto go = [id, model] {
-        agentId = id; RememberChoices();
+        agentId = id; agentChosen = true; RememberChoices();
         if (!convo.data.items.empty()) NewConversation(); else { DisposeSession(L"agent changed"); convo.data.head.agentId = id; convo.data.head.sessionId.clear(); }   // i18n-exempt: log reason
         pendingModel = model; SendState(); DetectAgents([] { MaybeStartSession(); });
     };
@@ -265,6 +307,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
+        if (w == FolderTimer) { KillTimer(h, FolderTimer); AskPageMarks(folderMarksOrigin, folderMarksTries); return 0; }
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -310,13 +353,15 @@ void OpenPanel() {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
     if (Open()) return;
     EnsureInit(); stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
-    const bool sameTab = ChatTab() == t; chatTab = t;
+    chatTab = t;
     const auto now = ChatLocal::Classify(U8(t->uri));
-    if (now.origin != site.origin || !sameTab) { suggestion = {}; suggestionAsked = false; }
-    site = now; LoadProjects(); folder.clear();
+    const bool otherSite = now.origin != site.origin;
+    if (otherSite) composerBatch = Batch{};   // a batch belongs to its site
+    suggestion = {}; suggestionAsked = false;   // every opening looks again: a port is reused by other projects from one day to the next
+    site = now; LoadProjects(); folder.clear(); folderAsk = false; folderChosen = false; folderInstead.clear();
     if (site.local && !site.file) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) {
-        if (ChatFolder::detail::IsDir(it->second.folder)) folder = it->second.folder;
-        if (!turn.active && convo.data.items.empty() && AgentOf(it->second.agentId)) agentId = it->second.agentId;
+        if (ChatFolder::detail::IsDir(it->second.folder)) { folder = it->second.folder; folderChosen = it->second.chosen; folderInstead = it->second.instead; }
+        if (!turn.active && convo.data.items.empty() && AgentOf(it->second.agentId)) { agentId = it->second.agentId; agentChosen = true; }
         pendingMode.clear();
         if (!sessionReady && pendingModel.empty()) pendingModel = it->second.model;   // the model chosen for this site last time (applied when the session starts, if the agent still offers it)
     }
@@ -333,6 +378,7 @@ void OpenPanel() {
     Ann::LauncherSync(); SyncChromeBits();
     if (reduced) panelState = PanelState::Open; else AUI::Animator::Get().Request(&slideClient);
     DetectAgents([] { MaybeStartSession(); }); DetectFolder(); RefreshPending();
+    if (panelReady && otherSite) SendComposerBatch();   // empty: the block of the other site leaves the composer
     if (panelReady) { SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !turn.active)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
     Ann::Announce(site.local && !site.file ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, site.file ? TR(chat_disabled_file) : TR(chat_disabled_not_local)));
     Diag(L"panel opened on " + W(site.origin) + (site.local ? L"" : L" (not local: disabled)") + (folder.empty() ? L", no folder yet" : L", folder " + folder));
@@ -461,12 +507,28 @@ void OnPanelMessage(const std::string& json) {
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
         for (const auto& s : activeStrips) Send("strip", s.second);
         for (const auto& w : waitingPermissions) Send("permission.request", w.second);   // a card that was waiting before this WebView existed
+        if (!composerBatch.items.empty()) SendComposerBatch();                               // the batch posed in the composer
+        if (batchOwed) { batchOwed = false; PoseBatch(L"asked from the browser"); }   // i18n-exempt: log detail
         {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !turn.active)); Send("pick.state", std::move(p)); }
         if (Open()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
         return;
     }
     if (!panelReady) return;
-    if (type == "send") { SendOrQueue(m.Text("text", 400000), m.Ids("elements", 10), m.Ids("attachments", 10)); return; }
+    if (type == "send") {
+        const std::string text = m.Text("text", 400000);
+        if (const auto* an = v.Get("annotations"); an && an->IsObject()) {   // « Traiter les annotations »: the ticked lines of the batch (the text is what the user adds, it may be empty)
+            const Msg am{*an}; const std::string batch = am.Id("batchId"); const auto ids = am.Ids("ids", 50);
+            if (!batch.empty() && !ids.empty()) {
+                if (!Usable()) return;
+                if (turn.active) { Queued q; q.id = NewId("q_"); q.text = text; q.batchId = batch; q.annotations = ids; queue.push_back(std::move(q)); SendQueue(); }
+                else StartBatchTurn(text, batch, ids);
+                return;
+            }
+        }
+        SendOrQueue(text, m.Ids("elements", 10), m.Ids("attachments", 10)); return;
+    }
+    if (type == "annotations.request") { PoseBatch(L"/annotations"); return; }
+    if (type == "annotation.show") { ShowAnnotation(m.Id("id")); return; }
     if (type == "stop") { StopTurn(); return; }
     if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }
     if (type == "queue.remove") { const std::string id = m.Id("id"); queue.erase(std::remove_if(queue.begin(), queue.end(), [&](const Queued& q) { return q.id == id; }), queue.end()); SendQueue(); return; }
@@ -500,6 +562,7 @@ void OnPanelMessage(const std::string& json) {
     if (type == "attachment.remove") { composerAttachments.erase(m.Id("id")); return; }
     if (type == "mention.query") { Mentions(m.Text("query", 200)); return; }
     if ((type == "folder.use" || type == "folder.choose") && !(site.local && !site.file)) return;   // no folder for a site that is not local
+    if ((type == "folder.use" || type == "folder.choose") && turn.active) { Diag(L"folder change asked during a turn: ignored"); return; }
     if (type == "folder.use") { const std::wstring path = W(m.Text("path", 2048)); if (!suggestion.folder.empty() && path == suggestion.folder) SetFolder(path); else Diag(L"folder.use with a path that was not proposed: ignored"); return; }
     if (type == "folder.choose") { const std::wstring picked = ChatFolder::PickFolder(window, TR(chat_folder_pick_title), !folder.empty() ? folder : !suggestion.folder.empty() ? suggestion.folder : projects.Recent()); if (!picked.empty()) SetFolder(picked); if (Open()) view.Focus(); return; }
     if (type == "undo.turn") { Undo(m.Id("turnId"), ""); return; }
@@ -526,7 +589,12 @@ void OnPanelMessage(const std::string& json) {
         else if (action == "newChat") { NewConversation(); MaybeStartSession(); }
         return;
     }
-    if (type == "suggestion.run") { const std::string id = m.Id("id"); SendOrQueue(T8(id == "annotations" ? I18n::Id::chat_prompt_annotations : id == "mobile" ? I18n::Id::chat_prompt_mobile : I18n::Id::chat_prompt_contrast), {}, {}); return; }
+    if (type == "suggestion.run") {
+        const std::string id = m.Id("id");
+        if (id == "annotations") PoseBatch(L"suggestion");   // the batch goes to the composer: the user sees and picks what leaves (contract B 1.4)
+        else SendOrQueue(T8(id == "mobile" ? I18n::Id::chat_prompt_mobile : I18n::Id::chat_prompt_contrast), {}, {});
+        return;
+    }
     if (type == "copy") { const bool ok = CopyToClipboard(W(m.Text("text", 400000))); SJ::Value r = SJ::Value::Obj(); r.Set("ok", SJ::Value::Bool(ok)); Send("copy.done", std::move(r)); return; }
     if (type == "link.open") { const std::string url = m.Text("url", 2000); if (url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0) CreateTab(W(url), -1, TR(tab_new), nullptr); else Diag(L"link refused: " + W(ClipUtf8(url, 120))); return; }
     if (type == "file.open") {   // shown in the Explorer (never executed): a file of the project folder only

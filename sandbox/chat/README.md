@@ -25,8 +25,9 @@ habituels ne sont pas utilisés. Fermez-le (ou Ctrl+C dans le terminal) : tout s
 
 1. **Ouvrir le chat** : `Ctrl+Maj+D`. (Ou `Ctrl+Maj+A` pour le mode Annotation, puis « Demander à l'agent »
    dans le bandeau bleu.) Le panneau arrive à droite ; la page se resserre, elle n'est pas recouverte.
-2. **La première fois**, le panneau demande où est le code du site. Il propose le dossier qu'il a trouvé tout
-   seul (« Détecté auto ») : cliquez **Utiliser**. On ne le demande qu'une fois par site.
+2. **Le dossier du code** est trouvé tout seul : il s'affiche dans une petite puce en bas de la saisie
+   (« site »). Cliquez la puce pour en changer. Le navigateur ne pose la question « Où est le code de ce
+   site ? » que s'il n'est pas sûr.
 3. **Viser** : cliquez le bouton « Payer 48,00 € » dans la page. Il devient une puce dans la zone de saisie,
    avec son fichier et sa ligne (`index.html:25`).
 4. **Demander** : écrivez « Aligne-le à droite », puis Entrée.
@@ -39,6 +40,10 @@ Autres choses à essayer :
 - Dans le mode Annotation, panneau fermé : cliquez un élément, écrivez une note, puis **« Demander à
   l'agent »** (le bouton bleu, à droite d'« Ajouter »), ou simplement `Entrée`. Le chat s'ouvre avec l'élément
   et votre texte. « Ajouter » (ou `Ctrl+Entrée`) enregistre une simple annotation, sans ouvrir le chat.
+- **Traiter les annotations** : annotez deux ou trois éléments avec « Ajouter », puis dans le chat tapez
+  `/annotations` (ou choisissez la suggestion « Traiter les annotations en attente » d'un chat vide). Les
+  annotations arrivent cochées dans la saisie ; décochez celles à garder pour plus tard, envoyez. Le message
+  devient une carte qui suit chaque annotation : en attente, « Claude s'en occupe », terminée avec son résumé.
 - Le petit anneau à côté du titre du chat : la part de mémoire de la conversation déjà utilisée (survolez-le).
 - Le bouton « Modifier le panier » simule un site React : sa puce indique `CartButton.jsx:6`.
 - Le texte gris « Paiement de démonstration… » n'a aucune information de code : sa puce n'affiche pas de
@@ -60,6 +65,10 @@ Un message ordinaire : il demande votre accord, puis met **vraiment** le bouton 
 | `question` | pose une question à choix |
 | `refusal`, `crash` | refus de l'agent, arrêt brutal de l'agent |
 | `echo` | répète votre message |
+
+Pour « Traiter les annotations », le faux agent fait semblant de traiter chaque annotation (rien n'est modifié
+dans le code). Une note qui contient `impossible` est rendue avec une raison ; une note qui contient `oublie`
+n'est pas touchée, pour voir ce que la carte en dit.
 
 ## Où sont les choses
 

@@ -14,6 +14,7 @@
 #include "../../src/chat-store.h"
 #include "../../src/chat-folder.h"
 #include "../../src/chat-tools.h"
+#include "../../src/chat-batch.h"
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", what); } }
@@ -151,6 +152,15 @@ static void TestStore(const std::wstring& root) {
     Check(q.sites.size() == 2 && q.sites.at("http://localhost:5173").folder == L"C:\\sites\\boutique \xE9t\xE9" && q.sites.at("http://localhost:5173").agentId == "claude" && q.sites.at("http://localhost:5173").mode == "default" &&
           q.sites.at("http://localhost:5173").model == "sonnet" && q.sites.at("http://localhost:5173").usedAt == 100, "projects read back (non-ASCII folder)");
     Check(q.Recent() == L"C:\\autre", "the most recently used folder");
+    {   // who chose the folder: the user (kept), or the detection (replaced when the site is served from elsewhere)
+        CS::Projects w; w.sites["http://localhost:1"].folder = L"C:\\a"; w.sites["http://localhost:2"].folder = L"C:\\b"; w.sites["http://localhost:2"].chosen = true;
+        w.sites["http://localhost:1"].instead = L"C:\\ignored"; w.sites["http://localhost:2"].instead = L"C:\\found\\dist";
+        Check(w.Save(file), "projects saved again");
+        const auto r = CS::Projects::Load(file);
+        Check(r.sites.size() == 2 && !r.sites.at("http://localhost:1").chosen && r.sites.at("http://localhost:2").chosen, "found by the browser / chosen by the user: kept apart");
+        Check(r.sites.at("http://localhost:2").instead == L"C:\\found\\dist" && r.sites.at("http://localhost:1").instead.empty(), "what the detection proposed when the user chose otherwise is kept (with a choice only)");
+        Check(CS::WriteFileAtomic(file, R"({"v":1,"sites":{"http://localhost:3":{"folder":"C:\\c","usedAt":5}}})") && CS::Projects::Load(file).sites.at("http://localhost:3").chosen, "a file written before: the user had chosen");
+    }
     Check(CS::WriteFileAtomic(file, "{ not json") && CS::Projects::Load(file).sites.empty(), "a damaged file reads as empty");
     Check(GetFileAttributesW((file + L".tmp").c_str()) == INVALID_FILE_ATTRIBUTES, "no temporary file left");
 
@@ -190,12 +200,33 @@ static void TestFolder(const std::wstring& root) {
     Check(ProjectRoot(std::wstring(win) + L"\\System32").empty() && ProjectRoot(home).empty(), "Windows and the profile folder itself are refused");
     Check(Display(L"C:\\Users\\moi\\Documents\\clients\\projets\\boutique") == L"C:\\Users\\\x2026\\projets\\boutique" && Display(L"C:\\site") == L"C:\\site", "a long path is folded in the middle");
     Check(Name(L"C:\\Users\\moi\\projets\\boutique\\") == L"boutique", "folder name");
+    // Sure or not (contract B 1.4): a folder is used without asking only when everything agrees. Three empty levels
+    // above the samples: whatever sits in the machine's temp folder cannot count as « a project above ».
+    {   const std::wstring base = root + L"\\n1\\n2\\n3", site = base + L"\\boutique", app = base + L"\\appli", dist = app + L"\\dist", web = app + L"\\apps\\web", empty = base + L"\\vide";
+        for (const auto& d : {site, dist, web, empty}) ChatStore::EnsureDir(d);
+        ChatStore::WriteFileAtomic(site + L"\\index.html", "<p>"); ChatStore::WriteFileAtomic(app + L"\\package.json", "{}");
+        ChatStore::WriteFileAtomic(dist + L"\\index.html", "<p>"); ChatStore::WriteFileAtomic(web + L"\\package.json", "{}");
+        Check(Judge(site, site, 1).sure && Judge(site + L"\\", site, 1).sure, "one server, whose working folder is a project: sure");
+        Check(Judge(app, app, 1).sure, "a project's own root (package.json): sure");
+        Check(!Judge(site, site, 2).sure && !Judge(site, site, 0).sure, "several processes on the port, or none: not sure");
+        Check(!Judge(web + L"\\src", ProjectRoot(web), 1).sure && !Judge(empty, site, 1).sure, "the project found is not the server's working folder: not sure");
+        Check(!Judge(empty, empty, 1).sure, "a folder that does not look like a project: not sure");
+        Check(!Judge(dist, dist, 1).sure, "a built folder served from inside a project (package.json just above): not sure");
+        Check(!Judge(web, web, 1).sure, "one package of several (another package.json above): not sure");
+        Check(!Judge(L"", L"", 1).sure && !Judge(site, L"", 1).sure, "nothing found: not sure");
+        Check(!Judge(home, home, 1).sure && !Judge(L"C:\\", L"C:\\", 1).sure && !Judge(win, win, 1).sure, "the profile, a drive root, Windows: never sure");
+        const std::wstring h = home;
+        Check(detail::TooWide(h + L"\\Desktop") && detail::TooWide(h + L"\\documents\\") && detail::TooWide(h + L"\\Downloads") && !detail::TooWide(h + L"\\Documents\\sites\\boutique") && !detail::TooWide(site),
+              "the Desktop, Documents and Downloads themselves are too wide; a folder inside them is not");
+        Check(!Judge(site, site, 1).doubt.size() && !Judge(dist, dist, 1).doubt.empty(), "a doubt always says why (for the log)");
+    }
     // the process listening on a port: this one
     WSADATA wsa; WSAStartup(MAKEWORD(2, 2), &wsa);
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); a.sin_port = 0;
     bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a); listen(s, 1); int len = sizeof a; getsockname(s, reinterpret_cast<sockaddr*>(&a), &len);
     const int port = ntohs(a.sin_port);
     Check(detail::ListenerPid(port) == GetCurrentProcessId(), "the listener of a port is found without admin rights");
+    Check(detail::ListenerPids(port).size() == 1 && detail::ListenerPids(1).empty(), "every listener of a port, each once");
     std::wstring cwd, image; Check(detail::ProcessFolder(GetCurrentProcessId(), cwd, image) && !cwd.empty() && image.find(L"chat_units_test") != std::wstring::npos, "a process's working folder and image are read");
     wchar_t here[MAX_PATH]; GetCurrentDirectoryW(MAX_PATH, here);
     Check(detail::Fold(detail::Trim(cwd)) == detail::Fold(detail::Trim(here)), "…and it is the real working folder");
@@ -258,8 +289,68 @@ static void TestTools() {
         const auto noNote = AnnotationsIn(R"({"id":"ann_d4"})"); Check(noNote.size() == 1 && noNote[0].second.empty(), "an annotation without a note keeps an empty note"); }
 }
 
+// The page's own file marks against a project folder: they may only confirm it (inside) or put it in doubt (outside).
+static void TestMarks() {
+    using namespace ChatPrompt;
+    const auto exists = [](const std::string& p) { return p == "C:/sites/boutique/src/pages/index.astro" || p == "C:/sites/boutique/src/Button.jsx"; };
+    const std::string dir = "C:\\sites\\boutique";
+    Check(MarksInFolder({}, dir, exists) == Marks::None, "a page without marks says nothing");
+    Check(MarksInFolder({"C:/sites/boutique/src/pages/index.astro", "C:\\sites\\boutique\\src\\Button.jsx"}, dir, exists) == Marks::Inside, "absolute marks inside the folder");
+    Check(MarksInFolder({"c:/SITES/Boutique/src/x.astro"}, dir + "\\", exists) == Marks::Inside, "letter case and a trailing slash do not matter");
+    Check(MarksInFolder({"C:/sites/boutique/src/a.astro", "C:/sites/autre/src/b.astro"}, dir, exists) == Marks::Outside, "one mark outside is enough to doubt");
+    Check(MarksInFolder({"C:/sites/boutique-2/src/a.astro"}, dir, exists) == Marks::Outside, "a neighbour whose name starts the same is outside");
+    Check(MarksInFolder({"C:/sites/boutique/../autre/a.astro"}, dir, exists) == Marks::Outside, "« .. » that leaves the folder is outside");
+    Check(MarksInFolder({"src/Button.jsx"}, dir, exists) == Marks::Inside && MarksInFolder({"src/Absent.jsx"}, dir, exists) == Marks::Outside, "a relative mark must exist in the folder");
+    Check(MarksInFolder({"C:/sites/boutique/node_modules/react/index.js", "D:/cache/node_modules/x.js", "node_modules/y.js"}, dir, exists) == Marks::None, "dependencies are skipped");
+    Check(MarksInFolder({"D:/cache/node_modules/x.js", "C:/sites/boutique/src/Button.jsx"}, dir, exists) == Marks::Inside, "…and do not hide the project's own marks");
+    Check(MarksInFolder({"file:///C:/sites/boutique/src/pages/index.astro?v=3"}, dir, exists) == Marks::Inside, "a file URL with a query");
+    Check(MarksInFolder({"C:/sites/boutique/src/a.astro"}, "", exists) == Marks::None, "no folder: nothing to compare");
+    Check(ParsePageSources(R"(["a.astro","C:/x/b.jsx",3,null,""])").size() == 2 && ParsePageSources("").empty() && ParsePageSources("{}").empty() && ParsePageSources("[[\"a\"]]").empty(), "the page's list is read tolerantly");
+    std::string many = "["; for (int i = 0; i < 40; ++i) many += std::string(i ? "," : "") + "\"f" + std::to_string(i) + ".astro\""; many += "]";
+    Check(ParsePageSources(many).size() == 24, "…and bounded");
+}
+
+// « Traiter les annotations »: what a line of the card becomes, and the instruction the agent gets.
+static void TestBatch() {
+    using namespace ChatBatch; using ChatTools::Ours;
+    Check(ChatTools::TextArg(R"({"id":"ann_a1","summary":"Bouton aligné à droite."})", "summary", 2000) == "Bouton aligné à droite.", "a text argument of a call");
+    Check(ChatTools::TextArg(R"({"summary":42})", "summary", 100).empty() && ChatTools::TextArg("", "summary", 100).empty() && ChatTools::TextArg("[]", "summary", 100).empty() &&
+          ChatTools::TextArg(R"({"summary":"trop long"})", "summary", 4).empty() && ChatTools::TextArg(R"({"other":"x"})", "summary", 100).empty(), "absent, not a string or too long: empty");
+    // our tools -> the line
+    {   const Change c = FromTool(Ours::Claim, R"({"id":"ann_a1"})"); Check(c.status == "working" && c.text.empty(), "claim: the agent takes care of it"); }
+    {   const Change c = FromTool(Ours::Resolve, R"({"id":"ann_a1","claim_token":"t","outcome":"resolved","summary":"Couleur passée au gris secondaire."})");
+        Check(c.status == "done" && c.text == "Couleur passée au gris secondaire.", "resolve: done, with the agent's sentence"); }
+    {   const Change c = FromTool(Ours::Resolve, R"({"id":"ann_a1","summary":"Fait."})"); Check(c.status == "done" && c.text == "Fait.", "resolve without an outcome: done"); }
+    {   const Change c = FromTool(Ours::Resolve, R"({"id":"ann_a1","outcome":"needs_info","summary":"Quelle couleur ?"})"); Check(c.status == "skipped" && c.text == "Quelle couleur ?", "resolve with another outcome: not handled, with its reason"); }
+    {   const Change c = FromTool(Ours::Release, R"({"id":"ann_a1","claim_token":"t","reason":"Fichier introuvable."})"); Check(c.status == "skipped" && c.text == "Fichier introuvable.", "release: not handled, with its reason"); }
+    Check(!FromTool(Ours::List, "{}").Any() && !FromTool(Ours::Get, R"({"id":"ann_a1"})").Any() && !FromTool(Ours::None, "{}").Any(), "reading changes nothing");
+    Check(FromTool(Ours::Release, "not json").status == "skipped" && FromTool(Ours::Release, "not json").text.empty(), "unreadable arguments: the status without a text");
+    // a line only moves forward
+    Check(Advances("pending", "working") && Advances("pending", "done") && Advances("working", "done") && Advances("working", "skipped"), "forward");
+    Check(!Advances("working", "pending") && !Advances("done", "working") && !Advances("done", "skipped") && !Advances("skipped", "done") && !Advances("working", "working") && !Advances("done", "done"), "never back, never twice");
+    // the store, by another road
+    {   StoreFacts f; f.updatedAt = 100; f.status = "claimed"; Check(FromStore(f, 100).status == "working" && !FromStore(f, 101).Any(), "claimed since the batch left: working; an older fact says nothing");
+        f.status = "resolved"; f.summary = "Badge replacé."; Check(FromStore(f, 50).status == "done" && FromStore(f, 50).text == "Badge replacé.", "resolved: done with the summary");
+        f.status = "needs_info"; Check(FromStore(f, 50).status == "skipped", "needs_info: not handled"); f.status = "dismissed"; Check(FromStore(f, 50).status == "skipped", "dismissed: not handled");
+        StoreFacts g; g.status = "open"; g.updatedAt = 120; g.lastAt = 120; g.lastTo = "open"; g.lastSummary = "Pas d'accès au code.";
+        Check(FromStore(g, 100).status == "skipped" && FromStore(g, 100).text == "Pas d'accès au code.", "given back with a reason: not handled");
+        g.lastSummary.clear(); Check(!FromStore(g, 100).Any(), "open again without a reason: still waiting");
+        g.lastSummary = "x"; g.lastAt = 90; Check(!FromStore(g, 100).Any(), "a release from before the batch says nothing");
+        StoreFacts o; o.status = "open"; o.updatedAt = 200; Check(!FromStore(o, 100).Any(), "open and untouched: still waiting"); }
+    // the instruction
+    {   std::vector<Line> two, one, wide;   // built line by line (a braced list of lines trips a GCC 16 false positive at -O2)
+        Line a; a.id = "ann_a1"; a.note = "Le texte sous le titre\nest trop pâle, on le \"lit\" mal."; two.push_back(a); Line b; b.id = "ann_b2"; two.push_back(b);
+        Line c; c.id = "ann_a1"; c.note = "note"; one.push_back(c); Line d; d.id = "ann_a1"; d.note = std::string(1000, 'x'); wide.push_back(d);
+        const std::string text = Instruction("Traite ces annotations.", two, "Précision :", "Garde la police.");
+        Check(text == "Traite ces annotations.\n- ann_a1 : \"Le texte sous le titre est trop pâle, on le 'lit' mal.\"\n- ann_b2\n\nPrécision :\nGarde la police.", "lead, one quoted line per annotation, then what the user added");
+        Check(Instruction("Lead.", one, "Précision :", "  \n ") == "Lead.\n- ann_a1 : \"note\"", "no precision: no label");
+        const std::string big = Instruction("L.", wide, "P", "");
+        Check(big.size() < 340 && big.find("\xE2\x80\xA6\"") != std::string::npos, "a long note is cut, with an ellipsis");
+        Check(OneLine("  a\r\n\tb  c ", 100) == "a b c" && OneLine("\xC3\xA9\xC3\xA9\xC3\xA9", 3) == "\xC3\xA9\xE2\x80\xA6", "one line; never cut inside a character"); }
+}
+
 int wmain() {
-    TestLocal(); TestPrompt(); TestTools();
+    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestBatch();
     const std::wstring root = TempDir();
     TestStore(root); TestFolder(root);
     RemoveTree(root);

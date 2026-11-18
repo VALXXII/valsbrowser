@@ -3,7 +3,10 @@
 namespace Chat {
 
 void ProcessQueue(); void ApplyMark(const char* state, const std::string& selector); void AfterTurnPage(bool changed); void ArmAgentIdle(); void StopTurn();
-void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds);
+void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch = false);
+// « Traiter les annotations » (chat-host-batch.h)
+SJ::Value BatchItemJson(const BatchItem& i, bool withStatus); void BatchToolDone(ChatTools::Ours tool, const std::string& annotation, const std::string& rawInput); void BatchTurnEnded(const std::string& stopReason);
+void StartBatchTurn(const std::string& precision, const std::string& batchId, const std::vector<std::string>& ids); void PoseBatch(const wchar_t* from); void ShowAnnotation(const std::string& id);
 void DisposeSession(const wchar_t* why);
 
 // ---------------------------------------------------------------- detection and preparation (off the UI thread)
@@ -25,6 +28,10 @@ void DetectAgents(std::function<void()> then = nullptr) {
                      const auto& d = (*out)[i]; ApplyDetection(Agents[i].id, d);
                      Diag(std::wstring(L"agent ") + W(Agents[i].id) + L": cli " + (d.Usable() ? L"found " : L"missing ") + W(d.cli.version) + L" (" + W(d.cli.source) + L"), node " + (d.nodeReady ? L"ready" : L"absent") + L", adapter " + (d.adapterReady ? L"ready" : L"absent"));
                  }
+                 // The agent is chosen without a screen: this site's last one or the user's pick; else Claude Code when it
+                 // is installed; else the first agent that is.
+                 if (!agentChosen && !turn.active && convo.data.items.empty() && !session && !agentInfo[agentId].cli)
+                     for (const auto& def : Agents) if (agentInfo[def.id].cli) { agentId = def.id; convo.data.head.agentId = agentId; Diag(std::wstring(L"agent chosen by itself (the only one installed): ") + W(def.id)); break; }
                  SendState(); if (then) then();
              });
 }
@@ -310,6 +317,7 @@ std::vector<Acp::PlanEntry> PlanFromText(const std::string& text) {
 }
 // The step line of one of our annotation tools: what it does while it runs, what it did once done (« A lu 2 annotations »).
 void WordOurCall(Turn::OurCall& call, const Acp::ToolCall& t, SJ::Value& message) {
+    if (!t.rawInput.empty() && t.rawInput != "{}") call.input = t.rawInput;
     if (t.hasContent || !t.text.empty()) { LearnNotes(t.text); if (call.tool == ChatTools::Ours::List) { const int n = ChatTools::ListCount(t.text); if (n >= 0) call.count = n; } }
     if (t.hasStatus || !t.status.empty()) call.done = t.status == "completed";
     message.Set("title", Str(OurToolTitle(call.tool, call.annotation, call.done, call.count)));
@@ -317,6 +325,8 @@ void WordOurCall(Turn::OurCall& call, const Acp::ToolCall& t, SJ::Value& message
     // (« A lu 1 fichier »). An annotation is not a file: the folded line says « 1 étape », the step itself says the rest.
     message.Set("kind", Str(std::string("other")));
     if (call.done) message.Set("summary", OurToolSummary(call.tool, call.annotation, call.count));
+    // a batch turn: the call that just succeeded moves its annotation's line of the card (once)
+    if (call.done && !call.reported) { call.reported = true; BatchToolDone(call.tool, call.annotation, call.input); }
 }
 void OnPermission(const Acp::PermissionRequest& p) {
     if (!turn.active) { if (session) session->RespondPermission(p.requestId, ""); return; }
@@ -333,7 +343,7 @@ void OnPermission(const Acp::PermissionRequest& p) {
     if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None && session) {
         for (const auto& o : p.options) if (o.kind == "allow_once" && ChatStore::ValidId(o.id)) {
             session->RespondPermission(p.requestId, o.id);
-            if (!p.toolCall.id.empty() && !turn.ourCalls.count(p.toolCall.id)) turn.ourCalls[p.toolCall.id] = {ours, ChatTools::AnnotationIdOf(p.toolCall.rawInput), -1, false};
+            if (!p.toolCall.id.empty() && !turn.ourCalls.count(p.toolCall.id)) { auto& call = turn.ourCalls[p.toolCall.id]; call.tool = ours; call.annotation = ChatTools::AnnotationIdOf(p.toolCall.rawInput); call.input = p.toolCall.rawInput; }
             Diag(L"annotation tool allowed without a card: " + W(mcp.tool));
             return;
         }
@@ -532,23 +542,35 @@ void BeginSnapshotThenPrompt() {
                  SendPrompt();
              });
 }
-void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds) {
+// `batch`: « Traiter les annotations » — `text` is then what the user added (it may be empty); the agent gets the
+// batch's instruction (activeBatch, set by StartBatchTurn) and the user's message carries the card.
+void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch) {
     if (turn.active) return;
     if (!Usable()) { Diag(L"send ignored: no project folder or not a local site"); return; }
-    turn = Turn{}; turn.active = true; turn.id = "t" + std::to_string(++convo.turnSeq); turn.text = text; turn.startedMs = Ann::NowMs();
+    turn = Turn{}; turn.active = true; turn.id = "t" + std::to_string(++convo.turnSeq); turn.batch = batch; turn.text = batch ? activeBatch.instruction : text; turn.startedMs = Ann::NowMs();
+    if (activeStrips.count("batch")) ClearStrip("batch");
     for (const auto& id : elementIds) if (auto it = composerElements.find(id); it != composerElements.end()) { turn.elements.push_back(std::move(it->second)); composerElements.erase(it); }
     for (const auto& id : attachmentIds) if (auto it = composerAttachments.find(id); it != composerAttachments.end()) { turn.attachments.push_back(std::move(it->second)); composerAttachments.erase(it); }
     if (auto t = ChatTab()) turn.navStamp = t->navStamp;
     auto& head = convo.data.head; const auto now = BA::SystemNow();
-    if (head.title.empty()) {   // the first request names the conversation: its words, without the chips' labels (they sit in the text where they were typed)
-        std::string words = text; for (const auto& e : turn.elements) for (auto at = words.find(e.label); !e.label.empty() && at != std::string::npos; at = words.find(e.label)) words.erase(at, e.label.size());
+    // the user's own words: the request without the chips' labels (they sit in the text where they were typed)
+    std::string words = text; for (const auto& e : turn.elements) for (auto at = words.find(e.label); !e.label.empty() && at != std::string::npos; at = words.find(e.label)) words.erase(at, e.label.size());
+    while (!words.empty() && (words.back() == ' ' || words.back() == '\n' || words.back() == '\r' || words.back() == '\t')) words.pop_back();
+    if (head.title.empty() && batch) head.title = T8(I18n::Id::chat_batch_title);
+    if (head.title.empty()) {   // the first request names the conversation
         head.title = ChatPrompt::OneLine(words, 44); if (head.title.empty() && !turn.elements.empty()) head.title = ChatPrompt::OneLine(U8(AH::ElementLabel(turn.elements.front().pending.target)), 44);
     }
     if (head.source.empty()) for (const auto& e : turn.elements) if (e.source.known) { head.source = e.source.Display(); break; }
     {   SJ::Value m = SJ::Value::Obj(); m.Set("id", Str("u" + turn.id)); m.Set("text", Str(text));
         SJ::Value els = SJ::Value::Arr(); for (const auto& e : turn.elements) els.Push(ElementRef(e)); m.Set("elements", std::move(els));
         SJ::Value ats = SJ::Value::Arr(); for (const auto& a : turn.attachments) ats.Push(AttachmentRef(a)); m.Set("attachments", std::move(ats));
-        m.Set("at", Str(Iso(now))); Keep("message.user", m); Send("message.user", std::move(m)); }
+        if (batch) {   // the card « Traiter N annotations » (contract B 1.4): the lines, and the exact instruction for « Voir la consigne »
+            SJ::Value an = SJ::Value::Obj(); an.Set("batchId", Str(activeBatch.id));
+            SJ::Value items = SJ::Value::Arr(); for (const auto& i : activeBatch.items) items.Push(BatchItemJson(i, true));
+            an.Set("items", std::move(items)); an.Set("instruction", Str(activeBatch.instruction)); m.Set("annotations", std::move(an));
+        }
+        m.Set("at", Str(Iso(now))); const std::size_t at = Keep("message.user", m); if (batch) { activeBatch.item = at; activeBatch.userId = "u" + turn.id; }
+        Send("message.user", std::move(m)); }
     const auto& info = agentInfo[agentId];
     {   SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("model", Str(LabelOf(Acp::FindModelOption(info.options)))); const std::string effort = LabelOf(Acp::FindEffortOption(info.options)); if (!effort.empty()) m.Set("effort", Str(effort));
         m.Set("agentId", Str(agentId)); m.Set("at", Str(Iso(now))); Keep("turn.start", m); Send("turn.start", std::move(m)); }
@@ -559,7 +581,7 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     doneMarkSelector.clear(); turn.markSelector.clear();
     for (const auto& e : turn.elements) if (e.sel.frameKind == "main" && e.pending.target.shadowPath.empty() && e.pending.target.selectorUnique && !e.pending.target.selector.empty()) { turn.markSelector = e.pending.target.selector; break; }
     ApplyMark(turn.markSelector.empty() ? "clear" : "working", turn.markSelector);
-    if (!turn.elements.empty()) WriteAnnotations(turn.elements, text);
+    if (!turn.elements.empty()) WriteAnnotations(turn.elements, words.find_first_not_of(" \t\r\n") == std::string::npos ? text : words);   // the annotation's note: what the user wrote, not the chips' technical names
     SaveConvo();
     EnsureSession([] { BeginSnapshotThenPrompt(); });
     Diag(L"turn " + W(turn.id) + L" started");
@@ -589,9 +611,10 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     CloseAnnotations(turn.elements, done && !planned, done && !planned ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
                                                : U8(planned ? std::wstring(TR(chat_release_planned)) : stopReason == "cancelled" ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
     Diag(L"turn " + W(turn.id) + L" ended: " + W(stopReason) + L" in " + Ann::Ms(ms) + L" ms" + (summary ? L", " + std::to_wstring(summary->changes.size()) + L" file(s) changed (+" + std::to_wstring(summary->additions) + L" -" + std::to_wstring(summary->deletions) + L")" : L", no snapshot"));
-    const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp;
+    const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp; const bool wasBatch = turn.batch;
     turn = Turn{}; doneMarkSelector = changed && done ? markSelector : std::string();
     SendState(); SyncChromeBits(); SaveConvo();
+    if (wasBatch) BatchTurnEnded(stopReason);   // the card's last word: what the store says, and what is left
     {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open())); Send("pick.state", std::move(p)); }
     AfterTurnPage(changed);
     ArmAgentIdle();
@@ -627,6 +650,7 @@ void StopTurn() {
 void ProcessQueue() {
     if (turn.active || queue.empty()) { SendQueue(); return; }
     Queued q = std::move(queue.front()); queue.pop_front(); SendQueue();
+    if (!q.annotations.empty()) { StartBatchTurn(q.text, q.batchId, q.annotations); if (!turn.active) ProcessQueue(); return; }   // a batch replaced since is dropped: the next one runs
     StartTurn(q.text, q.elements, q.attachments);
 }
 

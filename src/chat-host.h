@@ -26,6 +26,7 @@
 #include "chat-local.h"
 #include "chat-prompt.h"
 #include "chat-tools.h"
+#include "chat-batch.h"
 #include "chat-store.h"
 #include "chat-folder.h"
 #include "chat-panel-view.h"
@@ -106,22 +107,39 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
     bool closeResolved = false; std::string closeSummary;   // how to close it when its write comes back after the turn ended
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
-struct Queued { std::string id, text; std::vector<std::string> elements, attachments; };
+struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string batchId; std::vector<std::string> annotations; };   // annotations: a batch « Traiter N annotations » that waits its turn
 struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false; };
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
+    bool batch = false;   // « Traiter les annotations »: the prompt is the batch's instruction, the card follows our tools
     std::string id, text, snapshotTurn, lastMessageId, thoughtId, summaryText; double startedMs = 0, thoughtStart = 0; int messageSeq = 0, thoughtSeq = 0;
     std::vector<Element> elements; std::vector<Attachment> attachments; std::uint64_t navStamp = 0;
     std::map<std::string, std::size_t> itemOf;   // message / thought / tool id -> index in convo.items
     std::string markSelector; std::string planPermission, planId; std::vector<Acp::PlanEntry> lastPlan; std::vector<Acp::PermissionOption> planOptions;
     Acp::Error failure; Problem problem;   // why it failed (an agent error code, or our own sentence)
-    struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation; int count = -1; bool done = false; };
+    struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation, input; int count = -1; bool done = false, reported = false; };   // input: its arguments (an update does not repeat them)
     std::map<std::string, OurCall> ourCalls;   // tool call id -> one of our annotation tools (its step line is ours to word)
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; };
+// « Traiter les annotations » (contract B 1.4): one pending annotation of the site, as a line of the block / the card.
+struct BatchItem {
+    std::string id, siteKey, note, element, source, thumb; std::string status = "pending", text;   // text: summary (done) or reason (skipped)
+    bool claimedHere = false;   // this turn's agent took it (its own claim call succeeded): ours to give back if it stops there
+};
+struct Batch {
+    std::string id; std::vector<BatchItem> items;
+    std::string instruction; std::int64_t sentAt = 0;                 // once sent: the exact text the agent got, and when (store seconds)
+    std::string conversation, userId; std::size_t item = std::size_t(-1);   // the user's message that carries the card: which conversation, which item
+};
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
-HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4;
+HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5;
 AUI::Ramp slide; std::weak_ptr<Tab> chatTab; ChatLocal::Site site; std::wstring folder; ChatFolder::Guess suggestion; bool suggestionAsked = false;
+// Project folder without a screen (contract B 1.4): `folderAsk` = the detection is uncertain, the panel shows « Où est
+// le code de ce site ? »; `folderChosen` = the current folder was picked or confirmed by the user (never replaced by a
+// detection); `agentChosen` = the agent comes from the user or from this site's last use (else: the first installed).
+bool folderAsk = false, folderChosen = false, agentChosen = false;
+std::wstring folderInstead;   // with folderChosen: the folder the detection proposed when the user chose another one
+std::string folderMarksOrigin; int folderMarksTries = 0;   // the page's file marks are asked once the mode's script is in the page
 ChatStore::Projects projects; bool projectsLoaded = false; std::string agentId = "claude";
 Convo convo; Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
 std::unique_ptr<Acp::Session> session; bool sessionStarting = false, sessionReady = false, preparing = false; Acp::StartResult started;
@@ -131,6 +149,8 @@ std::vector<Element> orphanAnnotations;                // annotations of a turn 
 std::map<std::uint64_t, Element> aiming;                // elements being aimed (by capture serial): image and source still coming
 std::uint64_t turnNavStamp = 0; int rearmTries = 0; std::function<void()> afterTurn; std::function<void(bool)> afterUndo;
 std::map<std::string, SJ::Value> waitingPermissions, activeStrips;   // what the panel must show again when its WebView is (re)created: cards still waiting, strips still true
+Batch composerBatch, activeBatch;   // posed in the composer (not sent yet) / sent: the card of the current or last batch turn
+bool batchOwed = false;             // « Traiter avec l'agent » asked before the panel was ready
 std::map<std::string, std::string> annotationNotes;   // annotation id -> its note, as seen in this session (turns, tool results): the « … » of a step line
 std::wstring pendingAsk;                               // « Demander à l'agent » from the note: the text to send once the element is attached
 std::shared_ptr<CS::Store> snapshots; std::map<std::string, std::string> checkpointOfTurn;   // panel turn id -> checkpoint id
@@ -223,6 +243,7 @@ void SendState() {
     st.Set("folder", !usableSite ? folderObj(L"") : folder.empty() ? SJ::Value::Null() : folderObj(folder));
     if (usableSite && folder.empty() && !suggestion.folder.empty()) { SJ::Value f = folderObj(suggestion.folder); f.Set("reason", Str(std::string("auto"))); st.Set("folderSuggestion", std::move(f)); }
     else st.Set("folderSuggestion", SJ::Value::Null());
+    st.Set("askFolder", SJ::Value::Bool(usableSite && folder.empty() && folderAsk));
     SJ::Value agents = SJ::Value::Arr();
     for (const auto& def : Agents) {
         const auto& info = agentInfo[def.id]; SJ::Value a = SJ::Value::Obj();
@@ -262,7 +283,13 @@ void SendCommands() {
     SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); Send("commands", std::move(m));
 }
 void SendQueue() {
-    SJ::Value items = SJ::Value::Arr(); for (const auto& q : queue) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(q.id)); o.Set("text", Str(ClipUtf8(q.text, 400))); items.Push(std::move(o)); }
+    SJ::Value items = SJ::Value::Arr();
+    for (const auto& q : queue) {
+        SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(q.id));
+        if (!q.annotations.empty() && q.text.find_first_not_of(" \t\r\n") == std::string::npos) o.Set("text", Str(TRP(chat_batch_queue, q.annotations.size(), std::to_wstring(q.annotations.size()))));
+        else o.Set("text", Str(ClipUtf8(q.text, 400)));
+        items.Push(std::move(o));
+    }
     SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); Send("queue", std::move(m));
 }
 // Context gauge (contract B 1.2): tokens used / window, as the agent last reported them for this conversation.
@@ -329,3 +356,4 @@ void SyncChromeBits();
 } // namespace Chat
 #include "chat-host-turn.h"
 #include "chat-host-ui.h"
+#include "chat-host-batch.h"

@@ -6,46 +6,60 @@
 //                  folder, read from that process (PEB -> ProcessParameters.CurrentDirectory; possible without
 //                  elevation for a process of the same user at the same integrity level, refused otherwise: then
 //                  there is simply no suggestion). The folder is walked up to the nearest project marker
-//                  (package.json, .git…), never above the user's profile or a drive root. A suggestion is only
-//                  ever PROPOSED: the user confirms it (« Utiliser ») or picks another folder.
+//                  (package.json, .git…), never above the user's profile or a drive root.
+//   Judge(...)     is that folder SURE? Sure = used at once, without the « Où est le code de ce site ? » screen:
+//                  one process serves the port, its working folder IS the folder (not an ancestor found by walking
+//                  up), the folder looks like a project (a marker file), no folder just above looks like the real
+//                  project (a build output served from inside it), and it is not a wide folder (profile, Desktop,
+//                  Documents, Downloads, a drive root, a system folder). The page's own file:line marks are checked
+//                  by the caller (ChatPrompt::MarksInFolder). Anything else is uncertain: the folder is only
+//                  PROPOSED and the user confirms it (« Utiliser ») or picks another one.
 //   PickFolder     IFileOpenDialog in folder mode, opened on the most recent project folder.
 // iphlpapi.dll and ntdll are reached through GetProcAddress: no new link dependency for the fixtures that
 // include main.cpp.
 #include <windows.h>
 #include <shobjidl.h>
 #include <shlobj.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 
 namespace ChatFolder {
 
-struct Guess { std::wstring folder, process; DWORD pid = 0; std::wstring why; };
+struct Guess {
+    std::wstring folder, process; DWORD pid = 0; std::wstring why;
+    std::wstring cwd;      // the listener's working folder, as read
+    bool sure = false;     // Judge(): usable without asking (the page's marks still have to agree)
+    std::wstring doubt;    // why it is not sure (log detail)
+};
 
 namespace detail {
 // MIB_TCPTABLE_OWNER_PID / MIB_TCP6TABLE_OWNER_PID rows (declared here: no iphlpapi headers / import library).
 struct Row4 { DWORD state, localAddr, localPort, remoteAddr, remotePort, pid; };
 struct Row6 { UCHAR localAddr[16]; DWORD localScope, localPort; UCHAR remoteAddr[16]; DWORD remoteScope, remotePort, state, pid; };
 using GetTable = DWORD(WINAPI*)(PVOID, PDWORD, BOOL, ULONG, int, ULONG);
-inline DWORD ListenerPid(int port) {
-    HMODULE ip = LoadLibraryExW(L"iphlpapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32); if (!ip) return 0;
+// Every process listening on the port (IPv4 then IPv6), each once.
+inline std::vector<DWORD> ListenerPids(int port) {
+    std::vector<DWORD> found;
+    HMODULE ip = LoadLibraryExW(L"iphlpapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32); if (!ip) return found;
     auto get = reinterpret_cast<GetTable>(reinterpret_cast<void*>(GetProcAddress(ip, "GetExtendedTcpTable")));
-    DWORD found = 0;
+    const auto add = [&](DWORD pid) { if (pid > 4 && std::find(found.begin(), found.end(), pid) == found.end()) found.push_back(pid); };
     const USHORT want = USHORT((port >> 8) | ((port & 0xFF) << 8));   // network byte order
     if (get) for (int family : {2 /* AF_INET */, 23 /* AF_INET6 */}) {
-        if (found) break;
         DWORD size = 0; const int listeners = 3;   // TCP_TABLE_OWNER_PID_LISTENER
         if (get(nullptr, &size, FALSE, ULONG(family), listeners, 0) != ERROR_INSUFFICIENT_BUFFER || size == 0 || size > (8u << 20)) continue;
         std::vector<BYTE> buf(size + 4096); size = DWORD(buf.size());
         if (get(buf.data(), &size, FALSE, ULONG(family), listeners, 0) != NO_ERROR) continue;
         const DWORD n = *reinterpret_cast<const DWORD*>(buf.data());
         if (family == 2) { const auto* rows = reinterpret_cast<const Row4*>(buf.data() + sizeof(DWORD));
-            for (DWORD i = 0; i < n && (BYTE*)(rows + i + 1) <= buf.data() + buf.size(); ++i) if (USHORT(rows[i].localPort) == want && rows[i].pid > 4) { found = rows[i].pid; break; } }
+            for (DWORD i = 0; i < n && (BYTE*)(rows + i + 1) <= buf.data() + buf.size(); ++i) if (USHORT(rows[i].localPort) == want) add(rows[i].pid); }
         else { const auto* rows = reinterpret_cast<const Row6*>(buf.data() + sizeof(DWORD));
-            for (DWORD i = 0; i < n && (BYTE*)(rows + i + 1) <= buf.data() + buf.size(); ++i) if (USHORT(rows[i].localPort) == want && rows[i].pid > 4) { found = rows[i].pid; break; } }
+            for (DWORD i = 0; i < n && (BYTE*)(rows + i + 1) <= buf.data() + buf.size(); ++i) if (USHORT(rows[i].localPort) == want) add(rows[i].pid); }
     }
     FreeLibrary(ip);
     return found;
 }
+inline DWORD ListenerPid(int port) { const auto all = ListenerPids(port); return all.empty() ? 0 : all.front(); }
 struct BasicInfo { PVOID reserved1; PVOID peb; PVOID reserved2[2]; ULONG_PTR pid; PVOID reserved3; };
 using NtQuery = LONG(WINAPI*)(HANDLE, int, PVOID, ULONG, PULONG);
 inline bool ReadAt(HANDLE p, ULONG_PTR at, void* out, SIZE_T n) { SIZE_T got = 0; return ReadProcessMemory(p, reinterpret_cast<LPCVOID>(at), out, n, &got) && got == n; }
@@ -92,6 +106,16 @@ inline bool HasMarker(const std::wstring& dir) {
     return false;
 }
 inline std::wstring Fold(std::wstring s) { for (auto& c : s) { if (c == L'/') c = L'\\'; c = towlower(c); } return s; }
+// A file that says « a project lives here » by itself (a build tool's or a package manager's): unlike index.html or
+// .git, which a build output or any folder of a repository may hold too.
+inline bool HasProjectFile(const std::wstring& dir) {
+    // i18n-exempt-begin: file names of project markers (never shown)
+    for (const wchar_t* m : {L"package.json", L"astro.config.mjs", L"astro.config.ts", L"astro.config.js", L"vite.config.ts", L"vite.config.js", L"vite.config.mjs",
+                             L"next.config.js", L"next.config.mjs", L"next.config.ts", L"pyproject.toml", L"composer.json", L"Gemfile"})
+        if (Exists(dir + L"\\" + m)) return true;
+    // i18n-exempt-end
+    return false;
+}
 // Folders that are never a project: a drive root, the Windows folder, the user's profile itself, system temp roots.
 inline bool Refused(const std::wstring& dir) {
     const std::wstring d = Fold(Trim(dir));
@@ -103,6 +127,51 @@ inline bool Refused(const std::wstring& dir) {
     return false;
 }
 }
+
+namespace detail {
+// Wide folders a server may well run from, and that are never one project: the Desktop, Documents, Downloads, a
+// OneDrive root (the profile, drive roots and system folders are refused outright by Refused).
+inline bool TooWide(const std::wstring& dir) {
+    const std::wstring d = Fold(Trim(dir)); wchar_t buf[MAX_PATH];
+    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH)) {
+        const std::wstring home = Fold(Trim(buf));
+        for (const wchar_t* sub : {L"\\desktop", L"\\documents", L"\\downloads", L"\\bureau", L"\\téléchargements"}) if (d == home + sub) return true;   // i18n-exempt: folder names
+    }
+    for (const wchar_t* var : {L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial"}) {
+        if (!GetEnvironmentVariableW(var, buf, MAX_PATH)) continue;
+        const std::wstring one = Fold(Trim(buf));
+        for (const wchar_t* sub : {L"", L"\\desktop", L"\\documents", L"\\bureau"}) if (d == one + sub) return true;   // i18n-exempt: folder names
+    }
+    return false;
+}
+// A folder just above (3 levels at most, never a refused one) that holds a project file: the working folder is
+// then probably a part of that project (dist\, public\, one package of several), and which one to give the agent is
+// the user's call.
+inline bool ProjectAbove(const std::wstring& dir) {
+    std::wstring d = Parent(Trim(dir));
+    for (int up = 0; up < 3 && !d.empty() && !Refused(d); ++up) {
+        if (HasProjectFile(d)) return true;
+        const std::wstring parent = Parent(d); if (parent == d) break; d = parent;
+    }
+    return false;
+}
+}
+struct Certainty { bool sure = false; std::wstring doubt; };
+// `cwd`: the listener's working folder; `folder`: the project root proposed for it; `listeners`: how many processes
+// serve the port. Pure but for the file system.
+// i18n-exempt-begin: `doubt` is a log detail (English diagnostics), never shown
+inline Certainty Judge(const std::wstring& cwd, const std::wstring& folder, std::size_t listeners) {
+    Certainty c;
+    if (folder.empty()) c.doubt = L"no folder";
+    else if (listeners != 1) c.doubt = std::to_wstring(listeners) + L" processes serve the port";
+    else if (detail::Fold(detail::Trim(cwd)) != detail::Fold(detail::Trim(folder))) c.doubt = L"the project marker is above the server's working folder";
+    else if (detail::Refused(folder) || detail::TooWide(folder)) c.doubt = L"the folder is too wide to be one project";
+    else if (!detail::HasMarker(folder)) c.doubt = L"the folder does not look like a project (no package.json, index.html…)";
+    else if (detail::ProjectAbove(folder)) c.doubt = L"a folder above looks like the project: this one may be a part of it";
+    else c.sure = true;
+    return c;
+}
+// i18n-exempt-end
 
 // The project root for a working folder: the nearest ancestor (itself included, 6 levels at most) holding a
 // project marker; the folder itself when none does. Empty when the folder is refused (drive root, profile…).
@@ -120,13 +189,15 @@ inline std::wstring ProjectRoot(const std::wstring& cwd) {
 inline Guess Detect(int port) {
     Guess g;   // i18n-exempt-begin: `why` is a log detail (English diagnostics), never shown
     if (port < 1 || port > 65535) { g.why = L"no port"; return g; }
-    g.pid = detail::ListenerPid(port);
+    const auto pids = detail::ListenerPids(port);
+    g.pid = pids.empty() ? 0 : pids.front();
     if (!g.pid) { g.why = L"no listener found on port " + std::to_wstring(port); return g; }
     if (g.pid == GetCurrentProcessId()) { g.why = L"the listener is the browser itself"; return g; }
     std::wstring cwd;
     if (!detail::ProcessFolder(g.pid, cwd, g.process)) { g.why = L"the listener's working folder cannot be read (another user or elevated process)"; return g; }
-    g.folder = ProjectRoot(cwd);
+    g.cwd = cwd; g.folder = ProjectRoot(cwd);
     if (g.folder.empty()) g.why = L"the listener's working folder is not a project folder: " + cwd;
+    const Certainty c = Judge(cwd, g.folder, pids.size()); g.sure = c.sure; g.doubt = c.doubt;
     return g;   // i18n-exempt-end
 }
 // UI thread (modal). Empty = cancelled. `initial`: a folder to open the dialog on (may be empty).

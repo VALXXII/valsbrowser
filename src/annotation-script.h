@@ -650,7 +650,25 @@ function sourceOf() {
   } catch (e) {}
   return out;
 }
-// mark: { state: 'working' | 'done' | 'clear', selector, current, title, sub } — Paper 6.10 (label « ⟳ titre - modèle »
+// sources(): the source files this page's debug data names (Astro attributes of the document, React debug sources of
+// a sample of elements), each once, 24 at most. The host checks them against the project folder it is about to use.
+function sourcesOf() {
+  var out = [], seen = {};
+  function add(f) { f = String(f || '').slice(0, 1024); if (f && !seen[f] && out.length < 24) { seen[f] = 1; out.push(f); } }
+  try { var l = D.querySelectorAll('[data-astro-source-file]'); for (var i = 0; i < l.length && i < 400; i++) add(l[i].getAttribute('data-astro-source-file')); } catch (e) {}
+  try {
+    var all = D.body ? D.body.querySelectorAll('*') : [];
+    for (var j = 0; j < all.length && j < 300 && out.length < 24; j++) {
+      for (var o = fiberOf(all[j]), g = 0; o && g < 12; g++) {
+        var ds = o._debugSource || (o.memoizedProps && o.memoizedProps.__source);
+        if (ds && typeof ds.fileName === 'string' && ds.fileName) { add(ds.fileName); break; }
+        o = o._debugOwner || o.return;
+      }
+    }
+  } catch (e) {}
+  return out;
+}
+// mark: { state: 'working' | 'done' | 'show' | 'clear', selector, current, title, sub } — Paper 6.10 (label « ⟳ titre - modèle »
 // above the element) and 6.11 (frame + check tag). `current`: the element selected now (no reload since); otherwise
 // the selector must match exactly one element of the top document, or there is no mark at all.
 var mark = null, markTimer = 0;
@@ -686,6 +704,9 @@ function markSet(a) {
     var t1 = D.createElement('span'); t1.textContent = String(a.title || '').slice(0, 60) + (a.sub ? ' - ' : ''); tag.appendChild(t1);
     if (a.sub) { var t2 = D.createElement('span'); t2.className = 'mu'; t2.textContent = String(a.sub).slice(0, 40); t1.appendChild(t2); }
     box.appendChild(tag);
+  } else if (a.state === 'show') {   // chat, « Traiter les annotations »: where this annotation is — brought into view, framed for a moment
+    try { el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: reduced ? 'auto' : 'smooth' }); } catch (e) {}
+    setTimeout(function () { if (mark && mark.box === box) markClear(); }, 2600);
   } else {
     var ck = D.createElement('div'); ck.className = 'mc';
     try { ck.innerHTML = '<svg width="12" height="12" viewBox="0 0 256 256"><path d="M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z" fill="#fff"/></svg>'; } catch (e) {}
@@ -694,7 +715,7 @@ function markSet(a) {
   root.appendChild(box);
   mark = { el: el, ox: ox, oy: oy, box: box, frame: fr, tag: tag, state: a.state };
   markPlace();
-  markTimer = setInterval(markPlace, a.state === 'working' ? 100 : 400);   // follows a layout change (HMR) without a frame loop
+  markTimer = setInterval(markPlace, a.state === 'working' || a.state === 'show' ? 100 : 400);   // follows a layout change (HMR) without a frame loop
   return true;
 }
 
@@ -753,7 +774,7 @@ on(window, 'focusin', onFocus, true);
 on(window, 'scroll', onScroll, opts);
 on(window, 'resize', onScroll, { passive: true });
 on(D, 'pointerout', onLeave, opts);
-Object.defineProperty(window, KEY, { value: { nonce: NONCE, teardown: teardown, cmd: cmd, source: sourceOf }, configurable: true });
+Object.defineProperty(window, KEY, { value: { nonce: NONCE, teardown: teardown, cmd: cmd, source: sourceOf, sources: sourcesOf }, configurable: true });
 syncShields();
 var st = P.start || {};
 if (st.kind === 'point') selectAtPoint(st.x, st.y);
@@ -769,10 +790,11 @@ inline std::wstring PageCommand(const std::wstring& nonce, const std::wstring& o
     return L"(function(){try{var h=window[Symbol.for('browser.annotation')];if(h&&h.nonce==='" + nonce + L"')h.cmd('" + op + L"'," + argJson + L");}catch(e){}return 0;})()";
 }
 // Chat: a call whose RESULT comes back through ExecuteScript's completion (a JSON string, or "" when the instance is
-// gone): `source` -> the selected element's debug source (see sourceOf), `mark` -> "true" / "false".
+// gone): `source` -> the selected element's debug source (see sourceOf), `sources` -> the files the page's debug data
+// names (see sourcesOf), `mark` -> "true" / "false".
 inline std::wstring PageQuery(const std::wstring& nonce, const std::wstring& what, const std::wstring& argJson = L"null") {
     return L"(function(){try{var h=window[Symbol.for('browser.annotation')];if(h&&h.nonce==='" + nonce + L"'){" +
-           (what == L"source" ? std::wstring(L"return JSON.stringify(h.source());") : L"return JSON.stringify(!!h.cmd('" + what + L"'," + argJson + L"));") +
+           (what == L"source" ? std::wstring(L"return JSON.stringify(h.source());") : what == L"sources" ? std::wstring(L"return JSON.stringify(h.sources());") : L"return JSON.stringify(!!h.cmd('" + what + L"'," + argJson + L"));") +
            L"}}catch(e){}return '';})()";
 }
 }} // namespace NativeChrome::Annotations
