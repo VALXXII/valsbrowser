@@ -68,7 +68,20 @@ svg.i { display: block; flex-shrink: 0; }
 .hd-title-text { font-size: 14px; font-weight: 600; line-height: 18px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 .hd-title .chev { width: 12px; height: 12px; opacity: .6; transition: transform 150ms var(--ease-out); }
 .hd-title[aria-expanded="true"] .chev { transform: rotate(180deg); }
-.hd-title .spin { width: 12px; height: 12px; }
+.hd-row { display: flex; align-items: center; gap: 0; min-width: 0; }
+/* context gauge (B 1.2 usage) */
+.gauge { position: relative; flex-shrink: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 6px; }
+.gauge svg { width: 12px; height: 12px; transform: rotate(-90deg); }
+.gauge .track { stroke: #FFFFFF26; }
+.gauge .arc { stroke: #FFFFFF; stroke-linecap: round; transition: stroke-dasharray 300ms var(--ease-out), stroke 150ms ease; }
+.gauge.high .arc { stroke: #E6AC3D; }
+/* bubble: Paper 17Y8-0 (canvas, radius 8, padding 6/8, 12/16 #FFFFFF99); a hairline and a shadow lift it off the same-coloured thread */
+.gauge .tip { position: absolute; top: calc(100% + 4px); left: 50%; z-index: 20; width: max-content; padding: 6px 8px; border-radius: 8px;
+  background: var(--canvas); border: 1px solid #FFFFFF1A; box-shadow: #00000080 0 8px 24px; color: #FFFFFF99; font-size: 12px; font-weight: 400; line-height: 16px; white-space: pre;
+  font-variant-numeric: tabular-nums; opacity: 0; transform: translate(-50%, -2px); pointer-events: none; transition: opacity 125ms ease-out, transform 125ms ease-out; transition-delay: 0ms; }
+@media (hover: hover) { .gauge:hover .tip { opacity: 1; transform: translate(-50%, 0); transition-delay: 300ms; } .gauge:hover { background: var(--fill6); } }
+.gauge:focus .tip { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }
 .hd-btn:last-child svg { width: 16px; height: 16px; }
@@ -320,14 +333,17 @@ svg.i { display: block; flex-shrink: 0; }
 .mode.auto .ic { width: 14px; height: 14px; opacity: 1; }
 .mode .lbl { font-size: 12px; line-height: 16px; white-space: pre; }
 .grow { flex: 1; min-width: 0; }
-.model { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 6px; border-radius: 6px; min-width: 0; }
-.model .m { display: flex; align-items: center; gap: 4px; min-width: 0; height: 24px; border-radius: 6px; }
+.model { display: flex; align-items: center; height: 24px; min-width: 0; }
+.model .m { display: flex; align-items: center; gap: 8px; min-width: 0; height: 24px; padding: 0 6px; border-radius: 6px; }
+.model .mw { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.model .mcv { width: 10px; height: 10px; opacity: .5; margin-left: -4px; flex-shrink: 0; }
+.model .m[aria-expanded="true"] { background: color-mix(in srgb, #FFFFFF 10%, transparent); }
+@media (hover: hover) { .model .m:hover { background: var(--fill6); } .model .m:hover .mn, .model .m:hover .e { color: #FFFFFF; } }
 .model .m svg { width: 14px; height: 14px; }
 .model .mn { color: var(--w90); font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .model .e { display: flex; align-items: center; gap: 4px; flex-shrink: 0; height: 24px; border-radius: 6px; color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; }
 .model .e svg { width: 10px; height: 10px; opacity: .5; }
-.model .m, .model .e { padding: 0 2px; margin: 0 -2px; }
-@media (hover: hover) { .model .m:hover .mn, .model .e:hover { color: #FFFFFF; } }
+
 .send { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--fill8); }
 .send svg { width: 14px; height: 14px; opacity: .4; }
 .send.ready { background: var(--accent); }
@@ -359,6 +375,11 @@ svg.i { display: block; flex-shrink: 0; }
 .sw i { width: 12px; height: 12px; border-radius: 6px; background: #FFFFFF; transition: transform 150ms var(--ease-ui); }
 .always[aria-checked="true"] .sw { background: var(--accent); }
 .always[aria-checked="true"] .sw i { transform: translateX(12px); }
+.perm-details { display: flex; flex-direction: column; gap: 6px; margin-top: -4px; }
+.perm-more { margin: 0; display: flex; align-items: center; gap: 4px; color: var(--w60); }
+.perm-more .dcv { width: 10px; height: 10px; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
+.perm-more[aria-expanded="true"] .dcv { transform: none; }
+@media (hover: hover) { .perm-more:hover { color: #FFFFFF; } }
 .cmd { margin: 0; background: #0E0E0E; border-radius: 4px; padding: 6px 10px; font-family: var(--mono); font-size: 12px; line-height: 18px; color: var(--w90); white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .pop-in { animation: none; }
 @media (prefers-reduced-motion: no-preference) { :root:not(.reduce-motion) .pop-in { animation: rise 200ms var(--ease-out) both; } }
@@ -379,6 +400,9 @@ svg.i { display: block; flex-shrink: 0; }
 .mi .ck { width: 14px; height: 14px; color: var(--accent-ink); flex-shrink: 0; }
 .mi .sub { width: 11px; height: 11px; opacity: .5; transform: rotate(-90deg); flex-shrink: 0; }
 .mi .lead { width: 14px; height: 14px; flex-shrink: 0; margin-top: 2px; opacity: .85; }
+.mi.back { color: var(--w80); }
+.mi .lead.backi { transform: rotate(90deg); width: 11px; height: 11px; opacity: .6; margin: 3px 1px 0; }
+.mi:not(.top) .lead.backi { margin-top: 0; }
 .mi .lead.auto { color: var(--accent-ink); opacity: 1; width: 16px; height: 16px; margin-top: 1px; }
 .mi[aria-disabled="true"] { opacity: .5; }
 .mi.active, .mi[aria-selected="true"] { background: var(--fill6); }
@@ -401,7 +425,7 @@ svg.i { display: block; flex-shrink: 0; }
 .mwarn { padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; color: var(--w80); font-size: 12px; line-height: 16px; }
 .mwarn .row { display: flex; gap: 8px; }
 .agent-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; }
-.agent-row svg { width: 14px; height: 14px; }
+.agent-row svg { width: 14px; height: 14px; flex-shrink: 0; }
 .agent-row .grow { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .agent-row .lb { font-size: 13px; font-weight: 500; line-height: 18px; }
 .agent-row .ds { color: var(--w50); font-size: 12px; line-height: 16px; }

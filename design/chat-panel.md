@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1.1** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
+- Version du protocole : **1.2** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -130,7 +130,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `toolCall` | `turnId`, `id`, `title`, `kind` (`read`/`edit`/`delete`/`move`/`search`/`execute`/`think`/`fetch`/`other`), `status` (`pending`/`in_progress`/`completed`/`failed`), `locations?: {path,line?}[]`, `diff?: Diff` | Étape. Les étapes consécutives terminées se regroupent en une ligne « A lu 2 fichiers, en a modifié 1 › ». L'étape en cours s'affiche seule avec un indicateur. Échec : « (échec) » en rouge dans la ligne. |
 | `toolCallUpdate` | `id`, et n'importe lequel de `title`, `status`, `locations`, `diff` | Met à jour l'étape. |
 | `plan` | `turnId`, `id`, `entries: {content, status: "pending"|"in_progress"|"completed"}[]`, `proposed?` | `proposed: true` (mode Planifier, attend le feu vert) : carte « Plan proposé · N étapes » avec **Lancer le plan** / **Modifier**. Sinon liste de suivi mise à jour en place. |
-| `permission.request` | `requestId`, `toolCallId?`, `title` (« Claude veut modifier checkout.css »), `kind`, `diff?: Diff`, `command?` (pour `execute`), `options: {optionId, name, kind: "allow_once"|"allow_always"|"reject_once"|"reject_always"}[]` | **La carte remplace la saisie.** Focus sur « Autoriser ». Annonce assertive. Plusieurs demandes : file, une à la fois, « 1 sur 2 ». |
+| `permission.request` | `requestId`, `toolCallId?`, `title` (« Claude veut modifier checkout.css » : **phrase humaine**, verbe d'abord, ce qui va se passer et sur quoi ; jamais un nom technique), `kind`, `diff?: Diff`, `command?` (pour `execute`), `tool?` *(1.2)* `{ name, label?, server?, serverLabel? }` (outil appelé : `name` brut, ex. `mcp__browser-annotations-preview__browser_annotations_list` ; `label` « Lister les annotations » et `serverLabel` « Annotations du navigateur » si l'hôte les connaît), `input?` *(1.2)* (arguments bruts de l'outil, texte JSON ≤ 4 000 caractères), `options: {optionId, name, kind: "allow_once"|"allow_always"|"reject_once"|"reject_always"}[]` | **La carte remplace la saisie.** Focus sur « Autoriser ». Annonce assertive. Plusieurs demandes : file, une à la fois, « 1 sur 2 ». |
 | `permission.cancel` | `requestId` | Retire la carte (tour annulé par l'agent). |
 | `turn.end` | `turnId`, `stopReason` (`end_turn`/`cancelled`/`refusal`/`max_tokens`/`error`), `durationMs`, `changes?: FileChange[]`, `checkpointId?`, `undoable?`, `copyText?` | Ferme le tour : infos du tour (« Sonnet · Élevé · 18 s »), barre « ✓ 1 fichier modifié +6 −2 ⌄ » avec Tout annuler, point de reprise, actions au survol (Copier, Relancer). `cancelled` : ligne « Arrêté ». `refusal` / `max_tokens` : ligne d'explication. |
 | `turn.undone` | `turnId`, `ok`, `conflicts?: string[]`, `message?` | Après `undo.turn` ou `checkpoint.restore` : la barre des changements passe à « Annulé », ou affiche le conflit nommé (rien n'a été écrasé). |
@@ -146,6 +146,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `edit.confirm` | `messageId`, `files: string[]` | « Des fichiers ont changé depuis ce message » : **Restaurer et renvoyer** / **Renvoyer sans restaurer** / Annuler. |
 | `focus` | `target: "composer"` | Met le focus dans la saisie (ouverture du panneau). |
 | `copy.done` | `ok` | Le bouton Copier affiche « Copié » 1,5 s (ou rien si `ok` faux). |
+| `usage` *(1.2)* | `used`, `size` (jetons de contexte utilisés / taille de la fenêtre, depuis `usage_update` ACP) | Jauge de contexte à droite du titre : anneau rempli à `used/size`, neutre, ambre au-delà de 80 % ; infobulle « 62 % de la mémoire du chat utilisée · se résume automatiquement vers 100 % ». `size: 0` (ou nouvelle conversation, `thread.reset`) la masque ; l'hôte renvoie `usage` après un `thread.reset` s'il le connaît. |
 | `changes.diff` *(1.1)* | `turnId`, `diffs: Diff[]` (tous les fichiers du tour, ≤ 4 000 lignes chacun), `files?: FileChange[]` | Réponse à `checkpoint.viewChanges`. Remplit la vue « Voir les changements » si elle est ouverte sur ce tour (sinon gardé pour la prochaine ouverture). Un fichier sans entrée dans `diffs` affiche « Pas d'aperçu pour ce fichier ». |
 
 ### 4.1 `state`
@@ -186,10 +187,10 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `queue.sendNow` | `id` | « Envoyer maintenant ». |
 | `queue.remove` | `id` | « × » sur une suite en file. |
 | `permission.respond` | `requestId`, `optionId`, `message?` | Autoriser (↵) / Refuser (Échap) / « Toujours autoriser » coché = l'option `allow_always`. `message` : texte de « Dire à Claude quoi faire à la place… » (avec l'option `reject_once`, l'hôte envoie ensuite le texte comme suite). |
-| `setModel` | `id`, `agentId` | Choix dans le menu modèle. Si `agentId` ≠ agent courant : le panneau a déjà prévenu (« Passer à Codex ouvre un nouveau chat ») ; l'hôte démarre une nouvelle conversation. |
+| `setModel` | `id`, `agentId` | Choix d'un modèle de l'agent courant dans le menu modèle (`agentId` = agent courant ; une valeur différente reste acceptée : l'hôte démarre alors une nouvelle conversation). |
 | `setEffort` | `id` | Sous-menu effort. |
 | `setMode` | `id` | Menu mode ou Maj+Tab. |
-| `setAgent` | `id` | Première fois (6.2) ou changement d'agent. |
+| `setAgent` | `id` | Première fois (6.2), ou « Autres modèles › Autres agents » dans le menu modèle *(1.2)* : la ligne dit déjà « Ouvre un nouveau chat » ; après la première fois, l'hôte démarre une nouvelle conversation avec cet agent (l'ancienne reste dans l'historique). |
 | `agent.connect` | `agentId`, `methodId?` | « Se connecter » (bandeau ou carte). |
 | `agent.prepare` | `agentId` | « Installer » / « Réessayer » quand l'agent n'est pas prêt. |
 | `pickElement` | `active: bool` | Bouton viseur. L'hôte répond `pick.state`. |
@@ -269,10 +270,11 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 10. Tests
 
-`python -I tests/chat-panel/run.py` — 171 contrôles (statique, 39 scénarios, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/`.
+`python -I tests/chat-panel/run.py` — 206 contrôles (statique, 47 scénarios, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/`.
 
 ## 11. Historique du contrat
 
+- **1.2** (18 nov. 2026, compatible, `"v": 1`) : message `usage {used, size}` (jauge de contexte, plus d'indicateur de chargement dans l'en-tête) ; `permission.request` gagne `tool` et `input` (détails repliables) et son `title` doit être une phrase humaine — sans titre lisible, le panneau en compose un à partir de `tool` ou du nom brut ; changement d'agent par `setAgent` depuis « Autres modèles » (le menu modèle n'envoie plus `setModel` pour un autre agent).
 - **1.1** (17 nov. 2026, compatible, `"v": 1`) : message hôte → panneau `changes.diff` en réponse à `checkpoint.viewChanges` ; `FileChange.diff` sert aussi à ouvrir la vue tout de suite ; précision sur `send.text` (libellés des puces en ligne, voulu).
 - **1** (17 nov. 2026) : première version.
 
@@ -285,4 +287,10 @@ Ouverte depuis la barre des changements dépliée (« Voir les changements », o
 - **Un bloc par fichier** : en-tête repliable (`aria-expanded`, titre de niveau 3) avec chemin, +/− et Copier (le diff en texte) ; diff unifié en JetBrains Mono 12/18, colonnes ancien / nouveau numéro (tirés des en-têtes `@@ -a,b +c,d @@`), signe, texte qui revient à la ligne. Lignes ajoutées et retirées dans les couleurs de la carte d'autorisation (fond `#6FD0871A` texte `#A6E3B8`, fond `#FF7B6E1A` texte `#FFB3AB`), en-têtes `@@` atténués.
 - **Repli** : dans une suite de lignes inchangées, on garde 3 lignes de chaque côté d'un changement ; dès que 4 lignes ou plus restent, elles deviennent « ↕ N lignes inchangées », qui se déplie sur place (le focus reste dans ce diff).
 - **Lecteurs d'écran** : chaque diff est une région nommée « Différences dans <fichier> » ; les lignes ajoutées et retirées commencent par « ajouté : » / « retiré : » (texte masqué à l'écran), les numéros et signes sont ignorés.
+
+## 13. Révision 1.2 dans le panneau
+
+- **Jauge de contexte** (en-tête) : anneau de 14 px à droite du titre, piste `#FFFFFF26`, remplissage blanc à 70 % puis ambre `#E6AC3D` au-delà de 80 % (le pourcentage est aussi dans l'infobulle et le nom accessible : la couleur n'est jamais seule). Focusable au clavier, infobulle au survol et au focus, annonce « Mémoire du chat presque pleine » une seule fois en passant 80 %. L'en-tête n'a plus d'indicateur de chargement : « Travaille… » reste dans le fil.
+- **Menu modèle** : toute la puce « modèle · effort » est un seul bouton (Ctrl+/) qui ouvre un seul menu : modèles de l'agent courant (4 au plus), « Autres modèles › », « Effort · Élevé › ». Les deux sous-menus s'ouvrent dans le même menu, avec une ligne « ‹ Retour » (ou flèche gauche). « Autres modèles » : les modèles restants, puis la section « Autres agents » (logo, nom, statut, « Ouvre un nouveau chat », ou l'action « Se connecter » / « Installer » si l'agent n'est pas prêt).
+- **Carte d'autorisation** : titre de l'hôte s'il est humain ; sinon « Claude veut utiliser l'outil « Lister les annotations » (Annotations du navigateur) », composé à partir de `tool` ou du nom brut `mcp__<serveur>__<outil>` (verbe anglais traduit quand il est connu, tirets et soulignés en espaces, majuscule). Les étapes du fil sont réécrites de la même façon. « Détails » (repliable) montre le nom brut et les arguments.
 

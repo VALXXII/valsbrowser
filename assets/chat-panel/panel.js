@@ -37,7 +37,7 @@
     s.innerHTML = def[1]; // constant strings from icons.js only
     return s;
   }
-  const agentIcon = (a) => icon(a && (a.icon === "codex" || a.id === "codex") ? "codex" : a && (a.icon === "claude" || /claude/.test(a.id || "")) ? "claude" : "k-icon");
+  const agentIcon = (a, cls) => icon(a && (a.icon === "codex" || a.id === "codex") ? "codex" : a && (a.icon === "claude" || /claude/.test(a.id || "")) ? "claude" : "k-icon", cls);
   const clear = (n) => { while (n.firstChild) n.firstChild.remove(); return n; };
   const plural = (n, one, many) => n + " " + (n > 1 ? many : one);
   function dur(ms) {
@@ -86,11 +86,22 @@
   const hdLogo = h("span", { class: "hd-logo" });
   const hdSource = h("button", { class: "hd-source", type: "button", hidden: true, onclick: () => S.st.conversation && S.st.conversation.source && post("file.open", srcRef(S.st.conversation.source)) });
   const hdTitleText = h("span", { class: "hd-title-text", text: "Nouveau chat" });
-  const hdSpin = h("span", { class: "spin", hidden: true, role: "img", "aria-label": "En cours" }, icon("spinner"));
   const hdTitle = h("button", { class: "hd-title", type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-controls": "history",
-                                onclick: () => toggleHistory() }, hdTitleText, hdSpin, icon("chevron", "chev"));
+                                onclick: () => toggleHistory() }, hdTitleText, icon("chevron", "chev"));
+  // Context gauge (B 1.2 `usage`): how much of the agent's context window this chat uses before it gets summarised.
+  const gaugeArc = document.createElementNS(SVGNS, "circle");
+  const gaugeSvg = document.createElementNS(SVGNS, "svg");
+  gaugeSvg.setAttribute("viewBox", "0 0 16 16"); gaugeSvg.setAttribute("class", "i"); gaugeSvg.setAttribute("aria-hidden", "true");
+  for (const [c, track] of [[document.createElementNS(SVGNS, "circle"), true], [gaugeArc, false]]) {
+    c.setAttribute("cx", "8"); c.setAttribute("cy", "8"); c.setAttribute("r", "6"); c.setAttribute("fill", "none"); c.setAttribute("stroke-width", "2");
+    c.setAttribute("class", track ? "track" : "arc");
+    gaugeSvg.appendChild(c);
+  }
+  const gaugeTip = h("span", { class: "tip", "aria-hidden": "true" });
+  const gauge = h("span", { class: "gauge", tabindex: "0", role: "img", hidden: true }, gaugeSvg, gaugeTip);
+  const GAUGE_C = 2 * Math.PI * 6;
   const hd = h("header", { class: "hd" },
-    h("div", { class: "hd-main" }, hdLogo, h("div", { class: "hd-titles" }, hdSource, hdTitle)),
+    h("div", { class: "hd-main" }, hdLogo, h("div", { class: "hd-titles" }, hdSource, h("div", { class: "hd-row" }, hdTitle, gauge))),
     h("button", { class: "hd-btn", type: "button", "aria-label": "Nouveau chat", title: "Nouveau chat", onclick: () => post("newChat") }, icon("plus")),
     h("button", { class: "hd-btn", type: "button", "aria-label": "Historique", title: "Historique", onclick: () => toggleHistory() }, icon("history")),
     h("button", { class: "hd-btn", type: "button", "aria-label": "Fermer le chat", title: "Fermer", onclick: () => post("close") }, icon("close")));
@@ -157,15 +168,15 @@
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
   const modelName = h("span", { class: "mn" });
   const modelLogo = h("span", { style: "display:flex" });
-  const modelBtn = h("button", { class: "m", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-keyshortcuts": "Control+/",
-                                 onclick: (e) => openModelMenu(e.currentTarget) }, modelLogo, modelName);
   const effortTxt = h("span");
-  const effortBtn = h("button", { class: "e", type: "button", "aria-haspopup": "menu", "aria-expanded": "false",
-                                  onclick: (e) => openEffortMenu(e.currentTarget) }, effortTxt, icon("chevron"));
+  const effortEl = h("span", { class: "e" }, effortTxt);
+  // The whole « modèle · effort » chip is one trigger for one menu (efforts live in its « Effort › » sub-view).
+  const modelBtn = h("button", { class: "m", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-keyshortcuts": "Control+/",
+                                 onclick: (e) => openModelMenu(e.currentTarget) }, h("span", { class: "mw" }, modelLogo, modelName), effortEl, icon("chevron", "mcv"));
   const sendBtn = h("button", { class: "send", type: "button", onclick: () => onSendButton() });
   const composer = h("div", { class: "composer" }, thumbs, cin,
     h("div", { class: "foot" }, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
-      h("div", { class: "model" }, modelBtn, effortBtn), sendBtn));
+      h("div", { class: "model" }, modelBtn), sendBtn));
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
     h("span", { class: "k" }, h("span", { class: "kc" }, "↵"), "Envoyer"),
     h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"));
@@ -332,12 +343,11 @@
     const a = curAgent(), m = curModel();
     clear(modelLogo).appendChild(agentIcon(a));
     modelName.textContent = m ? m.label : a ? a.name : "Agent";
-    modelBtn.setAttribute("aria-label", "Modèle : " + modelName.textContent);
-    modelBtn.title = "Modèle (Ctrl+/)";
     const e = curEffort();
-    effortBtn.hidden = !(S.st.efforts || []).length;
-    effortTxt.textContent = e ? e.label : "Effort";
-    effortBtn.setAttribute("aria-label", "Effort : " + effortTxt.textContent);
+    effortEl.hidden = !(S.st.efforts || []).length || !e;
+    effortTxt.textContent = e ? e.label : "";
+    modelBtn.setAttribute("aria-label", "Modèle et effort : " + modelName.textContent + (e ? " · " + e.label : ""));
+    modelBtn.title = "Modèle et effort (Ctrl+/)";
     placeholder();
     updateSend();
   }
@@ -382,6 +392,7 @@
       else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeMenu(true); }
       else if (e.key === "Tab") closeMenu();
       else if (e.key === "ArrowRight" && document.activeElement && document.activeElement.dataset.sub) { e.preventDefault(); document.activeElement.click(); }
+      else if (e.key === "ArrowLeft" && S.menu && S.menu.view && S.menu.view !== "main") { e.preventDefault(); showModelView("main", S.menu.view); }
     });
   }
   const menuItems = () => S.menu ? Array.from(S.menu.el.querySelectorAll(".mi:not([aria-disabled='true']), .menu .btn, .menu .btn-s")) : [];
@@ -391,8 +402,8 @@
       if (it.sep) { el.appendChild(h("div", { class: "sep", role: "separator" })); continue; }
       if (it.head) { el.appendChild(h("div", { class: "mh", role: "presentation", text: it.head })); continue; }
       if (it.node) { el.appendChild(it.node); continue; }
-      const b = h("button", { class: "mi" + (it.desc ? " top" : ""), type: "button", role: it.radio ? "menuitemradio" : "menuitem", tabindex: "-1",
-                              "aria-checked": it.radio ? String(!!it.checked) : null, "aria-disabled": it.disabled ? "true" : null, "data-sub": it.sub ? "1" : null,
+      const b = h("button", { class: "mi" + (it.desc ? " top" : "") + (it.back ? " back" : ""), type: "button", role: it.radio ? "menuitemradio" : "menuitem", tabindex: "-1",
+                              "aria-checked": it.radio ? String(!!it.checked) : null, "aria-disabled": it.disabled ? "true" : null, "data-sub": it.sub ? "1" : null, "data-key": it.key || null,
                               onclick: () => { if (!it.disabled) it.onSelect(); } });
       if (it.lead) b.appendChild(it.lead);
       const g = h("span", { class: "grow", style: "flex:1" }, h("span", { class: "row1" }, h("span", { class: "lb", text: it.label }), it.tag ? h("span", { class: "tag", text: it.tag }) : null));
@@ -408,32 +419,53 @@
     if (S.menu && !S.menu.el.contains(e.target) && !(S.menu.anchor && S.menu.anchor.contains(e.target)) && e.target !== cin && !cin.contains(e.target)) closeMenu();
   }, true);
 
-  function openModelMenu(anchor, expanded) {
+  function openModelMenu(anchor) {
+    openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: 300 });
+    if (S.menu) S.menu.view = "main";
+  }
+  function showModelView(view, from) {
+    if (!S.menu) return;
+    S.menu.view = view;
+    fillMenu(S.menu.el, modelItems(view));
+    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : view === "more" ? "Autres modèles" : "Modèle et effort");
+    place(S.menu.el, S.menu.anchor, "right", 300);
+    const its = menuItems();
+    const back = from && S.menu.el.querySelector(".mi[data-key='" + from + "']");
+    (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus();
+  }
+  function modelItems(view) {
     const a = curAgent(), items = [];
     const models = (a && a.models) || [];
-    const shown = expanded || models.length <= 4 ? models : models.slice(0, 4);
-    for (const m of shown) items.push({ radio: true, label: m.label, tag: m.isDefault ? "Par défaut" : null, checked: m.id === S.st.model, desc: null,
-                                         onSelect: () => { post("setModel", { id: m.id, agentId: a.id }); S.st.model = m.id; closeMenu(true); renderComposerBar(); } });
-    if (models.length > 4 && !expanded) items.push({ label: "Autres modèles", sub: true, onSelect: () => openModelMenu(anchor, true) });
-    for (const o of (S.st.agents || []).filter((x) => x !== a)) {
-      items.push({ sep: true });
-      if (o.status === "ready" && o.models && o.models.length) {
-        for (const m of o.models.slice(0, 4)) items.push({ label: m.label, onSelect: () => confirmSwitch(anchor, o, m) });
-      } else items.push({ node: agentRow(o, true) });
+    const others = (S.st.agents || []).filter((x) => x !== a);
+    const pickModel = (m) => ({ radio: true, label: m.label, tag: m.isDefault ? "Par défaut" : null, checked: m.id === S.st.model,
+      onSelect: () => { post("setModel", { id: m.id, agentId: a.id }); S.st.model = m.id; closeMenu(true); renderComposerBar(); } });
+    const back = (label) => ({ back: true, label, lead: icon("chevron", "lead backi"), onSelect: () => showModelView("main", view) });
+    if (view === "effort") {
+      items.push(back("Effort"), { sep: true });
+      for (const e of S.st.efforts || []) items.push({ radio: true, label: e.label, checked: e.id === S.st.effort,
+        onSelect: () => { post("setEffort", { id: e.id }); S.st.effort = e.id; closeMenu(true); renderComposerBar(); } });
+      return items;
     }
+    if (view === "more") {
+      items.push(back("Autres modèles"));
+      if (models.length > 4) { items.push({ sep: true }); models.slice(4).forEach((m) => items.push(pickModel(m))); }
+      if (others.length) {
+        items.push({ sep: true }, { head: "Autres agents" });
+        for (const o of others) {
+          if (o.status === "ready") items.push({ label: o.name, lead: agentIcon(o, "lead"), desc: statusText(o) + " · Ouvre un nouveau chat",
+            onSelect: () => { post("setAgent", { id: o.id }); closeMenu(true); say("Nouveau chat avec " + o.name + "."); } });
+          else items.push({ node: agentRow(o, true) });
+        }
+      }
+      return items;
+    }
+    models.slice(0, 4).forEach((m) => items.push(pickModel(m)));
+    if (models.length > 4 || others.length) items.push({ sep: true }, { label: "Autres modèles", sub: true, key: "more", onSelect: () => showModelView("more") });
     if ((S.st.efforts || []).length) {
-      items.push({ sep: true });
-      items.push({ label: "Effort", value: curEffort() ? curEffort().label : "", sub: true, onSelect: () => { closeMenu(); openEffortMenu(effortBtn); } });
+      if (!(models.length > 4 || others.length)) items.push({ sep: true });
+      items.push({ label: "Effort", value: curEffort() ? curEffort().label : "", sub: true, key: "effort", onSelect: () => showModelView("effort") });
     }
-    openMenu(anchor, { label: "Modèle", items, align: "right", width: 300, keep: !!expanded });
-  }
-  function confirmSwitch(anchor, agent, model) {
-    const go = h("button", { class: "btn primary", type: "button", onclick: () => { post("setModel", { id: model.id, agentId: agent.id }); closeMenu(true); } }, "Passer à " + agent.name);
-    const no = h("button", { class: "btn", type: "button", onclick: () => closeMenu(true) }, "Annuler");
-    fillMenu(S.menu.el, [{ node: h("div", { class: "mwarn", role: "group", "aria-label": "Changer d'agent" },
-      h("span", { text: "Passer à " + agent.name + " ouvre un nouveau chat. Celui-ci reste dans l'historique." }), h("div", { class: "row" }, go, no)) }]);
-    go.focus();
-    say("Passer à " + agent.name + " ouvre un nouveau chat.");
+    return items;
   }
   function agentAction(a) {
     if (a.status === "notConnected") return { label: "Se connecter", run: () => post("agent.connect", { agentId: a.id, methodId: a.authMethods && a.authMethods[0] ? a.authMethods[0].id : undefined }) };
@@ -444,14 +476,9 @@
   const statusText = (a) => a.detail || ({ ready: "Installé", starting: "Démarrage…", preparing: "Préparation…", notInstalled: "Pas installé", notConnected: "Pas connecté", error: "Erreur" })[a.status] || "";
   function agentRow(a, inMenu) {
     const act = agentAction(a);
-    return h("div", { class: "agent-row", role: "group", "aria-label": a.name + ", " + statusText(a) }, agentIcon(a),
+    return h("div", { class: "agent-row", role: "group", "aria-label": a.name + ", " + statusText(a) }, agentIcon(a, "lead"),
       h("span", { class: "grow" }, h("span", { class: "lb", text: a.name }), h("span", { class: "ds", text: statusText(a) })),
       act ? h("button", { class: "btn-s", type: "button", onclick: () => { act.run(); if (inMenu) closeMenu(true); } }, act.label) : null);
-  }
-  function openEffortMenu(anchor) {
-    const items = (S.st.efforts || []).map((e) => ({ radio: true, label: e.label, checked: e.id === S.st.effort,
-      onSelect: () => { post("setEffort", { id: e.id }); S.st.effort = e.id; closeMenu(true); renderComposerBar(); } }));
-    openMenu(anchor, { label: "Effort", items, align: "right", width: 214 });
   }
   function openModeMenu(anchor) {
     const items = (S.st.modes || []).map((m) => ({ radio: true, label: m.label, desc: m.description, checked: m.id === S.st.mode,
@@ -601,6 +628,59 @@
     updateSend();
   }
 
+  // Tool names never reach the reader raw: mcp__<server>__<tool> becomes « Lister les annotations » (Annotations du navigateur).
+  const TOOL_RE = /\bmcp__([A-Za-z0-9.-]+(?:_[A-Za-z0-9.-]+)*?)__([A-Za-z0-9_.-]+)/;
+  const VERBS = { list: "Lister", get: "Lire", read: "Lire", fetch: "Récupérer", show: "Afficher", view: "Afficher", create: "Créer", add: "Ajouter", new: "Créer",
+    update: "Modifier", edit: "Modifier", set: "Régler", write: "Écrire", save: "Enregistrer", delete: "Supprimer", remove: "Retirer", search: "Chercher", find: "Chercher",
+    query: "Interroger", resolve: "Marquer comme traitée", claim: "Prendre en charge", release: "Relâcher", open: "Ouvrir", close: "Fermer", run: "Lancer",
+    start: "Démarrer", stop: "Arrêter", capture: "Capturer", screenshot: "Capturer", navigate: "Ouvrir", click: "Cliquer sur", send: "Envoyer", reply: "Répondre à",
+    check: "Vérifier", count: "Compter", select: "Choisir", reload: "Recharger", wait: "Attendre", evaluate: "Évaluer", install: "Installer" };
+  const NOUNS = { annotations: "les annotations", annotation: "une annotation", screenshot: "une capture", screenshots: "des captures", file: "un fichier", files: "les fichiers",
+    page: "la page", pages: "les pages", console: "la console", logs: "les journaux", log: "le journal", element: "un élément", elements: "les éléments",
+    selection: "la sélection", tab: "un onglet", tabs: "les onglets", site: "le site", sites: "les sites", comment: "un commentaire", comments: "les commentaires",
+    status: "l'état", url: "l'adresse", network: "le réseau", requests: "les requêtes", errors: "les erreurs", styles: "les styles", snapshot: "un instantané" };
+  const SERVERS = { "browser-annotations": "Annotations du navigateur" };
+  const cap = (t) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+  function serverLabel(srv) { const base = srv.replace(/[-_](preview|dev|local|beta|test)$/i, ""); return SERVERS[base] || cap(base.replace(/[-_.]+/g, " ")); }
+  function toolLabel(tool, srv) {
+    const toks = tool.split(/[_.-]+/).filter(Boolean).map((t) => t.toLowerCase());
+    const vi = toks.findIndex((t) => VERBS[t]);
+    if (vi < 0) { const rest = toks.filter((t) => !["browser", "mcp", "tool"].includes(t)); return cap((rest.length ? rest : toks).join(" ")); }
+    let obj = toks.filter((t, i) => i !== vi && !["browser", "mcp", "tool"].includes(t));
+    const srvToks = new Set((srv || "").toLowerCase().split(/[_.-]+/));
+    if (obj.length > 1 && obj.some((t) => !srvToks.has(t))) obj = obj.filter((t) => !srvToks.has(t) || NOUNS[t]);
+    if (obj.length > 1 && NOUNS[obj[obj.length - 1]]) obj = [obj[obj.length - 1]];
+    const what = obj.length === 1 && NOUNS[obj[0]] ? NOUNS[obj[0]] : obj.join(" ");
+    return (VERBS[toks[vi]] + (what ? " " + what : "")).trim();
+  }
+  function parseTool(raw) { const m = TOOL_RE.exec(raw || ""); return m ? { name: m[0], server: m[1], tool: m[2] } : null; }
+  // Rewrites a text that contains raw tool names; a text that is only a tool name becomes « Label (Serveur) ».
+  function humanizeTools(text) {
+    if (!text || !/mcp__/.test(text)) return text;
+    const whole = parseTool(text);
+    if (whole && whole.name === text.trim()) return toolLabel(whole.tool, whole.server) + " (" + serverLabel(whole.server) + ")";
+    return text.replace(new RegExp(TOOL_RE.source, "g"), (m0, srv, tool) => "« " + toolLabel(tool, srv) + " »");
+  }
+  function permissionTitle(m) {
+    const who = curAgentName().replace(/ Code$/, "");
+    const t = m.tool && typeof m.tool === "object" ? m.tool : null;
+    const raw = parseTool((t && t.name) || "") || parseTool(m.title || "");
+    const human = typeof m.title === "string" && m.title.trim() && !/mcp__|\b[a-z0-9]+(?:_[a-z0-9]+){2,}\b/.test(m.title);
+    if (human) return m.title.trim();
+    if (t && isStr(t.label, 200) && t.label) return who + " veut utiliser l'outil « " + t.label + " »" + (isStr(t.serverLabel, 200) && t.serverLabel ? " (" + t.serverLabel + ")" : "");
+    if (raw) return who + " veut utiliser l'outil « " + toolLabel(raw.tool, raw.server) + " » (" + serverLabel(raw.server) + ")";
+    if (t && isStr(t.name, 300) && t.name) return who + " veut utiliser l'outil « " + toolLabel(t.name, t.server || "") + " »";
+    return (m.title || "").replace(/\b[a-z0-9]+(?:_[a-z0-9]+){2,}\b/g, (w) => "« " + toolLabel(w, "") + " »").trim() || who + " demande votre accord";
+  }
+  function permissionDetails(m) {
+    const t = m.tool && typeof m.tool === "object" ? m.tool : null;
+    const raw = (t && isStr(t.name, 300) && t.name) || (parseTool(m.title || "") || {}).name || "";
+    let input = isStr(m.input, 4000) ? m.input : "";
+    if (input) { try { input = JSON.stringify(JSON.parse(input), null, 2); } catch (e) { /* shown as sent */ } }
+    if (!raw && !input) return "";
+    return (raw ? "Outil : " + raw : "") + (raw && input ? "\n" : "") + (input ? "Arguments :\n" + input : "");
+  }
+
   function permCard(p) {
     const allowOnce = p.options.find((o) => o.kind === "allow_once") || p.options.find((o) => /^allow/.test(o.kind));
     const allowAlways = p.options.find((o) => o.kind === "allow_always");
@@ -632,6 +712,7 @@
         S.perms.length > 1 ? h("span", { class: "perm-of", text: "1 sur " + S.perms.length }) : null,
         p.diff ? h("span", { class: "num plus", text: "+" + p.diff.added }) : null, p.diff ? h("span", { class: "num minus", text: "−" + p.diff.removed }) : null),
       h("div", { id: "perm-d" }, p.diff ? diffView(p.diff) : null, p.command ? h("pre", { class: "cmd", text: p.command }) : null),
+      p.details ? detailsBlock(p.details) : null,
       instead,
       h("div", { class: "perm-ft" }, sw, refuse, allow));
     card.addEventListener("keydown", (e) => {
@@ -640,6 +721,12 @@
     });
     requestAnimationFrame(() => allow.focus());
     return card;
+  }
+  function detailsBlock(text) {
+    const pre = h("pre", { class: "detail", id: "perm-details", hidden: true, text });
+    const b = h("button", { class: "more perm-more", type: "button", "aria-expanded": "false", "aria-controls": "perm-details" }, icon("chevron", "dcv"), "Détails");
+    b.addEventListener("click", () => { pre.hidden = !pre.hidden; b.setAttribute("aria-expanded", String(!pre.hidden)); });
+    return h("div", { class: "perm-details" }, b, pre);
   }
   function diffView(d) {
     const box = h("div", { class: "diff", role: "region", "aria-label": "Aperçu du changement dans " + d.path, tabindex: "0" });
@@ -843,7 +930,7 @@
     const run = x.status === "in_progress" || x.status === "pending";
     const fail = x.status === "failed";
     const ic = run ? h("span", { class: "spin", style: "display:flex" }, icon("spinner")) : fail ? icon("x") : icon("check");
-    const label = x.title || (x.locations && x.locations[0] ? x.locations[0].path : "Étape");
+    const label = humanizeTools(x.title) || (x.locations && x.locations[0] ? x.locations[0].path : "Étape");
     return h("div", { class: "step " + (run ? "run" : fail ? "fail" : "done"), role: "listitem" }, ic, h("span", { text: label }), fail ? h("span", { class: "fail-tag", text: " (échec)" }) : null);
   }
   function stepsSeg(t) {
@@ -936,11 +1023,12 @@
   function onPermission(m) {
     const ok = Array.isArray(m.options) && m.options.every((o) => o && ID.test(o.optionId) && typeof o.name === "string");
     if (!ok) { warn("permission.request: bad options"); return; }
-    S.perms.push({ requestId: m.requestId, turnId: m.turnId || S.lastTurn, title: m.title || "Autorisation demandée", kind: m.kind, diff: validDiff(m.diff), command: typeof m.command === "string" ? m.command : null, options: m.options });
+    const title = permissionTitle(m);
+    S.perms.push({ requestId: m.requestId, turnId: m.turnId || S.lastTurn, title, details: permissionDetails(m), kind: m.kind, diff: validDiff(m.diff), command: typeof m.command === "string" ? m.command : null, options: m.options });
     refreshWaiting();
     renderDock(true);
     noteNew(1);
-    shout(m.title + ". Autoriser avec Entrée, refuser avec Échap.");
+    shout(title + ". Autoriser avec Entrée, refuser avec Échap.");
   }
 
   function copyButton(get, label) {
@@ -1366,8 +1454,23 @@
     hdSource.hidden = !src;
     hdSource.textContent = src || "";
     hdSource.setAttribute("aria-label", src ? "Ouvrir " + src : "");
-    hdSpin.hidden = !(S.st.running || (c && c.running));
+    renderGauge();
     hdTitle.setAttribute("aria-label", hdTitleText.textContent + " — ouvrir l'historique");
+  }
+
+  function renderGauge() {
+    const u = S.usage;
+    gauge.hidden = !u;
+    if (!u) return;
+    const pct = Math.max(0, Math.min(100, Math.round((u.used / u.size) * 100)));
+    gaugeArc.setAttribute("stroke-dasharray", (GAUGE_C * pct / 100).toFixed(2) + " " + GAUGE_C.toFixed(2));
+    gauge.classList.toggle("high", pct > 80);
+    // Paper 17Y8-0: the bubble only says « 86k / 270k »; the accessible name spells the numbers out.
+    const k = (n) => (n >= 1000 ? Math.round(n / 1000) + "k" : String(n));
+    gaugeTip.textContent = k(u.used) + " / " + k(u.size);
+    gauge.setAttribute("aria-label", "Mémoire du chat : " + u.used.toLocaleString("fr-FR") + " tokens sur " + u.size.toLocaleString("fr-FR"));
+    if (pct > 80 && !S.usageWarned) { S.usageWarned = true; say("Mémoire du chat presque pleine : elle se résumera bientôt."); }
+    if (pct <= 80) S.usageWarned = false;
   }
 
   // ---------------------------------------------------------------- timers
@@ -1406,6 +1509,7 @@
     error: (m) => ID.test(m.id) && isStr(m.title, 500), strip: (m) => ID.test(m.id), queue: (m) => Array.isArray(m.items),
     history: (m) => Array.isArray(m.items), "element.attached": (m) => validElement(m.element), "attachment.added": (m) => validAttachment(m.attachment),
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
+    usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
     "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true,
   };
 
@@ -1422,6 +1526,7 @@
     },
     "thread.reset"(m) {
       closeChanges();
+      S.usage = null; S.usageWarned = false; renderGauge();
       clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
       S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
       tick();
@@ -1463,6 +1568,7 @@
     "edit.confirm": onEditConfirm,
     focus() { if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); } else cin.focus(); },
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,
+    usage(m) { S.usage = m.size > 0 ? { used: Math.min(m.used, m.size), size: m.size } : null; renderGauge(); },
   };
   function receive(m) {
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { warn("bad json"); return; } }

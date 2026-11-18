@@ -132,6 +132,7 @@ try:
     targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list"))
     cdp = Cdp([t for t in targets if t["type"] == "page"][0]["webSocketDebuggerUrl"])
     for d in ("Page", "Runtime", "Network", "Log"): cdp.call(d + ".enable")
+    cdp.call("Emulation.setFocusEmulationEnabled", enabled=True)  # :focus styles as in a focused window
     cdp.call("Page.addScriptToEvaluateOnNewDocument", source="window.__csp=[];document.addEventListener('securitypolicyviolation',e=>window.__csp.push(e.violatedDirective+' '+e.blockedURI));"
              "window.__long=[];try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__long.push(e.duration)}).observe({type:'longtask',buffered:true})}catch(e){}")
 
@@ -258,6 +259,40 @@ try:
 
         load("6.7c-modifier-confirmer")
         check(cdp.js("!!document.querySelector('.editor .warn:not([hidden])')"), "edit: changed files are named before resending (edit.confirm)")
+
+        # B 1.2 — header gauge, one model menu, readable permission titles
+        load("6.10-travaille")
+        check(cdp.js("!document.querySelector('.hd .spin, .hd svg.spin') && document.querySelector('.gauge').hidden"), "header: no spinner in the header while working (« Travaille » stays in the thread)")
+        load("en-tete-jauge")
+        g = cdp.js("(()=>{const g=document.querySelector('.gauge');const t=g.querySelector('.tip');return {label:g.getAttribute('aria-label'),high:g.classList.contains('high'),"
+                   "dash:g.querySelector('.arc').getAttribute('stroke-dasharray'),tip:getComputedStyle(t).opacity,text:t.textContent,focus:document.activeElement===g,tab:g.tabIndex}})()")
+        check(g["label"] == "Mémoire du chat : 124 000 tokens sur 200 000" and not g["high"] and g["tab"] == 0 and g["dash"].startswith("23.37"), "header: context gauge at 62 % is neutral, named, focusable", json.dumps(g, ensure_ascii=False)[:200])
+        check(g["focus"] and g["tip"] == "1" and g["text"] == "124k / 200k", "header: the bubble « 124k / 200k » shows on keyboard focus", str(g["tip"]) + " " + g["text"])
+        load("en-tete-jauge-pleine")
+        check(cdp.js("document.querySelector('.gauge').classList.contains('high') && getComputedStyle(document.querySelector('.gauge .arc')).stroke==='rgb(230, 172, 61)'"), "header: above 80 % the ring turns amber (86 %)")
+        load("6.7a-vide")
+        check(cdp.js("document.querySelectorAll('.model button').length") == 1, "model menu: the « modèle · effort » chip is a single trigger")
+        cdp.js("document.querySelector('.model .m').click()"); time.sleep(.15)
+        main_rows = cdp.js("Array.from(document.querySelectorAll('.menu .mi')).map(b=>b.textContent.trim())")
+        check(any(r.startswith("Autres modèles") for r in main_rows) and any(r.startswith("Effort") for r in main_rows) and not any("Codex" in r or "6.1" in r for r in main_rows),
+              "model menu: models, « Autres modèles › », « Effort › », no other agent in the main list", " | ".join(main_rows))
+        cdp.js("document.querySelector(\".menu .mi[data-key='effort']\").focus()"); key("ArrowRight")
+        eff = cdp.js("[document.querySelector('.menu').getAttribute('aria-label'), document.activeElement.textContent.trim(), document.querySelectorAll('.menu .mi.back').length]")
+        key("ArrowLeft")
+        check(eff[0] == "Effort" and eff[1].startswith("Élevé") and eff[2] == 1 and cdp.js("document.activeElement.dataset.key") == "effort", "model menu: → opens Effort inside the same menu, ← returns to its row", str(eff))
+        cdp.js("document.querySelector(\".menu .mi[data-key='more']\").click()"); time.sleep(.1)
+        more = cdp.js("document.querySelector('.menu').textContent")
+        check("Autres agents" in more and "Codex" in more and "Ouvre un nouveau chat" in more, "model menu: « Autres modèles » ends with « Autres agents » (Codex, status, new chat warning)", more[:160])
+        cdp.js("Array.from(document.querySelectorAll('.menu .mi')).find(b=>b.textContent.includes('Codex')).click()"); time.sleep(.1)
+        check("setAgent:codex" in posted() and not any(p.startswith("setModel:sol") or p.startswith("setModel:terra") for p in posted()), "model menu: choosing Codex sends setAgent", str(posted()[-3:]))
+        load("6.1c-outil-mcp")
+        perm = cdp.js("(()=>{const c=document.querySelector('.perm');const d=document.getElementById('perm-details');return {title:document.getElementById('perm-t').textContent,"
+                      "visible:c.innerText,details:d.textContent,open:!d.hidden,step:(()=>{const f=document.querySelector('.steps .fold');if(f)f.click();return document.querySelector('.steps').textContent})(),wait:(document.querySelector('.waiting')||{}).textContent}})()")
+        check(perm["title"] == "Claude veut utiliser l'outil « Lister les annotations » (Annotations du navigateur)", "permission: a raw MCP name becomes a readable title", perm["title"])
+        check(perm["open"] and "mcp__browser-annotations-preview__browser_annotations_list" in perm["details"] and '"status": "pending"' in perm["details"]
+              and "mcp__" not in perm["title"] and "mcp__" not in perm["step"], "permission: raw name and arguments only in « Détails »; steps rewritten too", perm["step"] + " / " + (perm["wait"] or ""))
+        load("6.1d-outil-hote")
+        check(cdp.js("document.getElementById('perm-t').textContent") == "Claude veut lire les 3 annotations en attente sur 127.0.0.1:5173", "permission: the host's human title is kept as is")
 
         # « Voir les changements » (checkpoint.viewChanges → changes.diff)
         load("6.6-voir-changements")

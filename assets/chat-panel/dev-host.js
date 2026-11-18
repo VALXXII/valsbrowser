@@ -107,13 +107,14 @@
       { type: "thread.reset", conversationId: "new", items: [] }],
     "6.3-termine": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1", { noEditLine: true })) }],
     "6.4-modele": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m")],
-    "6.4-effort": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .e")],
+    "6.4-effort": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m"), wait(30), click(".menu .mi[data-key='effort']")],
     "6.4-mode": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }, click(".tb.mode")],
     "6.4-mode-auto": [st(Object.assign({ mode: "acceptEdits" }, conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: [] }],
-    "6.4-changer-agent": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m"), wait(30),
-      () => { const b = Array.from(document.querySelectorAll(".menu .mi")).find((x) => x.textContent.includes("6.1 Terra")); b && b.click(); }],
+    "6.4-autres-modeles": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m"), wait(30), click(".menu .mi[data-key='more']")],
+    "6.4-autres-modeles-long": [st(Object.assign({ agents: [Object.assign({}, CLAUDE, { models: CLAUDE.models.concat([{ id: "sonnet-4", label: "Sonnet 4.5" }, { id: "opus-4", label: "Opus 4.1" }]) }), CODEX] }, conv("Bouton de paiement"))),
+      { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m"), wait(30), click(".menu .mi[data-key='more']")],
     "6.4-agent-pas-pret": [st(Object.assign({ agents: [CLAUDE, Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "chatgpt", label: "ChatGPT" }], models: [] })] }, conv("Bouton de paiement"))),
-      { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m")],
+      { type: "thread.reset", conversationId: "c1", items: [] }, click(".model .m"), wait(30), click(".menu .mi[data-key='more']")],
     "6.4-preparation": [st({ agents: [Object.assign({}, CLAUDE, { status: "preparing", detail: "Préparation de Claude Code… 42 %", progress: 0.42 }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.4-pas-installe": [st({ agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé" }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.5-1-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }, () => document.querySelector(".cin").setAttribute("data-placeholder", "Que faut-il changer sur la page ?")],
@@ -181,7 +182,25 @@
         { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "Le bouton a une largeur fixe de 240 px dans checkout.css. Je le passe à droite et en pleine largeur sous" },
         { type: "toolCall", turnId: "t1", id: "r1", title: "A lu Checkout.tsx", kind: "read", status: "completed" },
         { type: "toolCall", turnId: "t1", id: "r2", title: "Lit checkout.css…", kind: "read", status: "in_progress" }] }],
-    "6.11-fait": [st(conv("Bouton de paiement", { source: "Checkout.tsx:42" })), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) }],
+    "6.11-fait": [st(conv("Bouton de paiement", { source: "Checkout.tsx:42" })), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) },
+      { type: "usage", used: 41000, size: 200000 }],
+    "en-tete-jauge": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) },
+      { type: "usage", used: 124000, size: 200000 }, () => document.querySelector(".gauge").focus(), wait(160)],
+    "en-tete-jauge-pleine": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) },
+      { type: "usage", used: 172000, size: 200000 }, () => document.querySelector(".gauge").focus(), wait(160)],
+    "6.1c-outil-mcp": [st(Object.assign({ running: true }, conv("Annotations en attente", { running: true }))),
+      { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Traite les annotations en attente sur ce site.", null, []),
+        { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé", at: ago(6000) },
+        { type: "toolCall", turnId: "t1", id: "s1", title: "mcp__browser-annotations-preview__browser_annotations_status", kind: "other", status: "completed" }] },
+      { type: "permission.request", requestId: "p3", turnId: "t1", title: "mcp__browser-annotations-preview__browser_annotations_list", kind: "other",
+        tool: { name: "mcp__browser-annotations-preview__browser_annotations_list" }, input: "{\"site\":\"http://127.0.0.1:5173\",\"status\":\"pending\"}",
+        options: [{ optionId: "allow", name: "Autoriser", kind: "allow_once" }, { optionId: "always", name: "Toujours autoriser", kind: "allow_always" }, { optionId: "reject", name: "Refuser", kind: "reject_once" }] },
+      wait(30), click(".perm .perm-more")],
+    "6.1d-outil-hote": [st(Object.assign({ running: true }, conv("Annotations en attente", { running: true }))),
+      { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Traite les annotations en attente sur ce site.", null, []), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé", at: ago(6000) }] },
+      { type: "permission.request", requestId: "p4", turnId: "t1", title: "Claude veut lire les 3 annotations en attente sur 127.0.0.1:5173", kind: "other",
+        tool: { name: "mcp__browser-annotations__browser_annotations_list", label: "Lister les annotations", serverLabel: "Annotations du navigateur" }, input: "{\"status\":\"pending\"}",
+        options: [{ optionId: "allow", name: "Autoriser", kind: "allow_once" }, { optionId: "reject", name: "Refuser", kind: "reject_once" }] }],
     "6.12-plan": [st(Object.assign({ mode: "plan" }, conv("Paiement sur mobile", { source: "Checkout.tsx:42" }))),
       { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Comment rendre cette page plus claire sur mobile ? Propose un plan, ne touche à rien pour l'instant.", null, []),
         { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" },
@@ -242,6 +261,7 @@
       case "setEffort": send({ type: "state", effort: m.id }); break;
       case "setMode": send({ type: "state", mode: m.id }); break;
       case "copy": send({ type: "copy.done", ok: true }); break;
+      case "setAgent": send({ type: "state", agentId: m.id, model: m.id === "codex" ? "terra" : "sonnet", conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); break;
       case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: FULL_DIFFS }); break;
       case "pickElement": send({ type: "pick.state", active: m.active }); if (m.active) setTimeout(() => send({ type: "element.attached", element: EL }), 600); break;
       case "attachImage": send({ type: "attachment.added", attachment: { id: "img" + Date.now(), kind: "image", name: m.name || "capture.png", thumb: thumbPng() } }); break;
