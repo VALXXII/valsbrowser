@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1.7** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
+- Version du protocole : **1.8** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -119,6 +119,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 
 | `type` | Champs | Effet dans le panneau |
 |---|---|---|
+| `layout` *(1.8)* | `mode` (`"panel"` / `"bubble"`), `maxWidth?`, `maxHeight?` (px CSS), `side?`, `element?`, `open?` | Disposition de la page : panneau à droite (défaut) ou **bulle compacte** du mode Commentaire (§19). Envoyé à l'ouverture et à chaque bascule. En bulle, le panneau répond `bubble.size`. |
 | `hello` | `v`, `locale` (`"fr"`), `platform` (`"windows"`), `reducedMotion?` (bool, si Windows le demande) | Initialise. `reducedMotion` s'ajoute à `prefers-reduced-motion`. |
 | `state` | voir §4.1 | Fusion **par clé de premier niveau** : une clé absente garde sa valeur, `null` l'efface. |
 | `thread.reset` | `conversationId`, `items: Item[]` (§4.2) | Remplace tout le fil (ouverture d'une conversation, nouveau chat = `items: []`). |
@@ -136,8 +137,8 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `turn.undone` | `turnId`, `ok`, `conflicts?: string[]`, `message?` | Après `undo.turn` ou `checkpoint.restore` : la barre des changements passe à « Annulé », ou affiche le conflit nommé (rien n'a été écrasé). |
 | `error` | `id`, `scope` (`thread`/`composer`), `title`, `message`, `detail?`, `actions?: Action[]`, `turnId?` | `thread` : carte rouge dans le fil (6.7 D), la demande est gardée. Bouton « Voir le détail » local si `detail`. Les actions renvoient `error.action`. |
 | `strip` | `id`, `tone` (`danger`/`neutral`/`info`), `text`, `action?: Action` ; ou `id` + `clear: true` | Bandeau collé au-dessus de la saisie (6.5 états 7 et 8 : déconnecté, limite atteinte, mémoire pleine…). `danger` désactive la saisie. |
-| `queue` | `items: {id, text}[]` | Suites en attente pendant un tour : « En file · Et fais pareil pour le titre · Envoyer maintenant · × ». |
-| `history` | `items: HistoryItem[]`, `query?` | Liste de l'historique (6.7 B). `HistoryItem = {id, title, subtitle?, siteLabel, thisSite: bool, agentIcon, updatedAt: Iso, running?: bool, current?: bool}`. |
+| `queue` | `items: {id, text, after?}[]` | Suites en attente pendant un tour : « En file · Et fais pareil pour le titre · Envoyer maintenant · × ». *(1.8)* `after` : libellé de l'élément sur lequel l'agent travaille déjà (file d'attente entre éléments, §19.6). |
+| `history` | `items: HistoryItem[]`, `query?` | Liste de l'historique (6.7 B). `HistoryItem = {id, title, subtitle?, siteLabel, folderName?, thisSite: bool, agentIcon, updatedAt: Iso, running?: bool, current?: bool}`. *(1.8)* `folderName` (nom du dossier du projet, « boutique ») s'affiche à la place de `siteLabel` quand il est fourni (§19.8). |
 | `element.attached` | `element: ElementRef` | Ajoute la puce dans la saisie (clic dans la page, panneau ouvert, ou `@`). *(1.5)* L'hôte envoie ensuite `focus` : le curseur de texte va dans la saisie. |
 | `attachment.added` | `attachment: Attachment` | Ajoute la miniature dans la saisie. |
 | `pick.state` | `active: bool` | Bouton viseur enfoncé ou non. *(1.5)* Toujours vrai tant que le panneau est ouvert sur un site local, tour en cours compris : un clic dans la page va au chat. |
@@ -225,7 +226,8 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `copy` | `text` | Copier (code, réponse, message). L'hôte écrit le presse-papiers et répond `copy.done`. |
 | `link.open` | `url` | Lien dans une réponse. L'hôte vérifie (http/https/file local) et ouvre un onglet. |
 | `file.open` | `path`, `line?` | Clic sur « Checkout.tsx:42 » ou un nom de fichier. Facultatif pour l'hôte. |
-| `close` | — | Bouton fermer, ou Échap quand rien d'autre n'est ouvert. |
+| `close` | — | Bouton fermer, ou Échap quand rien d'autre n'est ouvert. *(1.8)* En bulle : Échap ferme la bulle **sans arrêter l'agent** et sans répondre à une demande d'autorisation (§19.4). |
+| `bubble.size` *(1.8)* | `width`, `height` (px CSS, entiers) | En disposition bulle seulement : la taille que veut la bulle, bornée par `layout.maxWidth` / `maxHeight`. Envoyé après chaque `layout`, puis à chaque changement de contenu (jamais deux fois de suite la même valeur). L'hôte redimensionne la fenêtre. |
 | `panel.log` | `level` (`info`/`warn`/`error`), `message` | Diagnostic (message invalide, exception). Borné à 2 Kio. |
 | `annotate` *(1.6)* | `text`, `elements: Id[]` | `Ctrl+Entrée` dans la saisie : les puces et les mots deviennent des annotations **ouvertes** du magasin (lues par les agents MCP), rien n'est envoyé à l'agent du chat. Il faut au moins une puce et quelques mots (sinon un bandeau bref dit ce qui manque). L'hôte répond `annotation.kept`, ou une `error` `composer` si l'écriture échoue. |
 | `hover` *(1.5)* | `active: bool` | Une infobulle de survol est ouverte (`true`) ou fermée (`false`). Tant qu'elle l'est, l'hôte compare le vrai pointeur au rectangle du panneau (toutes les 80 ms) et répond `pointer.leave` dès qu'il en sort. Rien ne tourne sinon. |
@@ -284,6 +286,7 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 11. Historique du contrat
 
+- **1.8** (18 nov. 2026, compatible, `"v": 1`) : Mode Commentaire. `layout {mode, maxWidth, maxHeight}` (bulle compacte ou panneau) et `bubble.size {width, height}` ; Échap en bulle = `close` sans arrêter l'agent ; `queue.items[].after` (file d'attente entre éléments) ; `HistoryItem.folderName` (nom du dossier plutôt que l'adresse) (§19).
 - **1.7** (18 nov. 2026, compatible, `"v": 1`) : `pickElement` / `pick.state` = interrupteur de la sélection, le chat restant ouvert ; noms de modes en français fournis par l'hôte (§18).
 - **1.6** (18 nov. 2026, compatible, `"v": 1`) : `annotate` / `annotation.kept` (Ctrl+Entrée garde en annotation) ; infobulle du bouton envoyer (§17).
 - **1.5** (18 nov. 2026, compatible, `"v": 1`) : retours du test réel (§16). `hover` / `pointer.leave` (infobulle de la jauge qui se ferme toujours) ; plus de puce dossier dans la saisie ; menu modèle par fournisseur connecté, efforts sans « Default » ; `pick.state` vrai pendant un tour (un clic va toujours au chat quand il est ouvert).
@@ -401,3 +404,105 @@ quitte le mode. Nom accessible « Sélection d'éléments sur la page », `aria-
 (Paper 14RK-0) : « Demander » (Propose chaque modification.), « Auto » (Applique les modifications de fichiers
 directement.), « Planifier » (Propose un plan, ne touche à aucun fichier.), et le second mode automatique des agents,
 « Autonome » (Claude Code décide seul de ce qu'il autorise.), dans cet ordre. Un mode inconnu garde le nom de l'agent.
+
+## 19. Révision 1.8 — Mode Commentaire : la bulle compacte
+
+Même page, mêmes fichiers, même fil et mêmes messages que le panneau. Seule la **disposition** change : une bulle de
+305 px collée à l'élément, sans en-tête ni liste de conversations (Paper `18NS-0`, `1B30-0`, `1AIE-0`, `1AE7-0`, `1ANU-0`,
+`19ON-0`, `1AAE-0`, `1A6L-0`, `1AWI-0`, `19IO-0`).
+
+### 19.1 `layout` (hôte → panneau)
+
+```ts
+interface Layout {
+  mode: "panel" | "bubble";    // "panel" : le chat à droite, comme avant. Sans `layout`, la page est en "panel".
+  maxWidth?: number;           // px CSS. La bulle fait 305 px, ou moins si maxWidth est plus petit (jamais sous 240).
+  maxHeight?: number;          // px CSS. La bulle ne dépasse ni maxHeight ni 303 px (la hauteur des planches) : au-delà, le fil défile.
+  side?: "right" | "left" | "below" | "above" | "inside";   // où est la bulle par rapport à l'élément (déf. "right")
+  element?: string;            // libellé de l'élément (« button.btn-primary ») : nom de la boîte de dialogue pour les lecteurs d'écran
+  open?: boolean;              // déf. vrai : ce `layout` ouvre la bulle (animation d'ouverture). Faux : seulement de nouvelles bornes.
+}
+```
+
+- **Quand** : à chaque ouverture de la bulle et à chaque bascule Commentaire ↔ Panneau. Ordre conseillé à l'ouverture :
+  `layout`, `state`, `thread.reset` (la conversation de cet élément, ou `items: []`), `focus`. Une bascule de `mode` est
+  toujours suivie d'un `thread.reset` : le fil est redessiné dans la nouvelle disposition.
+- **Premier rendu sans flash** (facultatif) : charger la page avec `index.html?layout=bubble` la met en bulle avant le
+  premier `layout`.
+- `side` sert à deux choses : l'origine de l'animation d'ouverture (du côté de l'élément) et le bord que l'hôte garde
+  fixe quand la hauteur change (`"above"` : le bas ; sinon le haut). La page aligne son contenu sur ce bord : pendant
+  qu'une nouvelle taille est en route, rien ne saute.
+- **Fond** : en bulle, `html` et `body` sont transparents ; la surface (`#171717`, rayon 16) remplit la fenêtre. L'hôte
+  met le fond de la WebView en transparent, ou arrondit la fenêtre (région de rayon 16).
+
+### 19.2 `bubble.size` (panneau → hôte)
+
+`{ "type": "bubble.size", "width": 305, "height": 224 }` — entiers, px CSS. `width` = min(305, `maxWidth`).
+`height` = la hauteur du contenu, bornée par min(303, `maxHeight`). Envoyé après chaque `layout` en bulle (même si la
+taille n'a pas changé : c'est l'accusé de réception), puis dès que le contenu change (jamais deux fois de suite la même
+valeur). La mesure ne dépend pas de la taille actuelle de la fenêtre : l'hôte peut la demander fenêtre masquée.
+
+Hauteurs des planches : saisie seule 104 · tour en cours 224 · arrêté 265 · erreur 248 (détails 279) · terminé 279 ·
+autorisation 303 (le haut du fil défile sous un fondu) · diff en grand 303.
+
+Menus (modèle, mode, « + », @, /) : ils s'ouvrent **dans** la bulle. Si la bulle est trop basse pour le menu, elle
+grandit le temps du menu (nouveau `bubble.size`), puis reprend sa taille.
+
+### 19.3 Ce que la bulle montre
+
+| État | Dans la bulle |
+|---|---|
+| Départ | La saisie seule : « + », le mode avec son nom (Demander, Auto, Planifier), le modèle · effort, envoyer. Pas de bouton viser : l'élément est celui de la bulle. |
+| Tour en cours | Le message (bulle bleue), puis « modèle · effort » et l'étape en cours à droite (« Lit checkout.css… »), le texte de l'agent. En bas : le mode et **Arrêter** (`stop`). Pas de saisie pendant le tour. |
+| Survol de l'étape | Infobulle avec les étapes déjà faites (« A lu index.html », « A utilisé 1 outil MCP »). Clavier : le focus sur l'étape l'ouvre. |
+| Arrêté (`turn.end` `cancelled`) | « S'est arrêté » à droite du modèle ; la saisie revient (« Que voulez-vous ajouter ? »). |
+| Autorisation (`permission.request`) | Dans la bulle, à la place de la saisie : la ligne « Claude veut modifier checkout.css +6 −2 › », « Dire à Claude quoi faire à la place… », l'interrupteur Auto (= option `allow_always`), Refuser / Autoriser. Le haut du fil s'estompe. |
+| Diff en grand | Clic sur la ligne de fichier (autorisation) ou sur la barre des changements (terminé) : le diff prend la bulle, avec fermer ; sous un tour terminé, « Copier ». La page envoie `checkpoint.viewChanges` et complète avec `changes.diff` quand le diff n'était pas dans `turn.end`. |
+| Erreur (`error` `thread`) | Le texte de l'agent en rouge, « Une erreur est apparue. », « Plus d'infos › » (déplie `detail` en caractères fixes, puis `title` et `message` en clair), **Annuler** (local : la saisie revient) et **Réessayer** (`retry`, ou la première `actions` de l'erreur → `error.action`). |
+| Terminé | « C'est fait… », la barre « 1 fichier modifié +6 −2 › » avec **Copier** (`copy` : le diff des fichiers, ou la réponse s'il n'y a pas de diff), « Historique » à droite du modèle (infobulle : lectures, modifications, outils MCP, commandes de ce tour), la saisie (« Que voulez-vous ajouter de plus ? »). |
+
+Ce qui reste comme dans le panneau, en plus serré : plan (`plan`), bandeaux (`strip`), lot d'annotations, ligne « Gardé
+en annotation », Markdown. Ce qui n'existe pas en bulle : en-tête, historique, jauge, « Voir les changements » du
+panneau, modifier un message, « Tout annuler », dates. Ces messages sont acceptés et ignorés à l'affichage.
+
+### 19.4 Envoi, Échap, focus
+
+- **L'élément de la bulle est implicite.** `send.elements` et `annotate.elements` ne listent que les puces ajoutées à la
+  main (menu @) ; ils sont vides le plus souvent. L'hôte ajoute lui-même l'élément auquel la bulle est ancrée.
+  `Ctrl+Entrée` (`annotate`) ne demande que quelques mots en bulle. L'hôte n'envoie pas `element.attached` pour
+  l'élément ancré.
+- **`state.running`** décrit la conversation montrée dans la bulle, pas l'agent en général.
+- **Échap**, dans l'ordre : ferme le menu ouvert → ferme le diff en grand → `close`. Jamais `stop`, jamais de refus
+  d'autorisation : la bulle se ferme, l'agent continue, la demande d'autorisation attend la réouverture. La page joue
+  sa sortie (120 ms) puis envoie `close` ; la surface reste invisible jusqu'au prochain `layout` (ou `focus`).
+- **`focus`** : le curseur va dans la saisie ; sur « Autoriser » si une autorisation attend ; sur la bulle elle-même
+  pendant un tour (il n'y a pas de saisie).
+- **Infobulles** : `hover` / `pointer.leave` comme en 1.5.
+
+### 19.5 Mouvement et accessibilité
+
+Ouverture : 180 ms, opacité + échelle 0,96 → 1 depuis le côté de l'élément (`side`). Fermeture : 120 ms. Mouvement
+réduit (`prefers-reduced-motion` ou `hello.reducedMotion`) : fondu seul. La bulle est une boîte de dialogue non modale
+(`role="dialog"`, `aria-modal="false"`, nommée « Commentaire sur <element> ») ; le fil reste un `role="log"`.
+
+### 19.6 File d'attente entre éléments
+
+Un seul tour d'agent à la fois. Si l'utilisateur écrit dans la bulle d'un autre élément pendant un tour, l'hôte garde
+la demande et envoie `queue { items: [{ id, text, after: "button.btn-primary" }] }` à cette bulle. Elle montre le
+message en attente (bulle estompée) et, dessous, le texte discret « Commencera après le travail en cours sur
+button.btn-primary » avec « × » (`queue.remove`). Sans `after` : « En file ». Quand le tour démarre, l'hôte envoie
+`queue { items: [] }`, puis `message.user` et `turn.start` comme d'habitude.
+
+### 19.7 Écarts assumés (bulle)
+
+1. **Infobulles dans la bulle.** Sur `1AIE-0`, l'infobulle des étapes dépasse de la bulle (7 px en haut, 38 px à
+   droite). La bulle est une fenêtre : rien ne peut être dessiné dehors. L'infobulle s'ouvre donc sous l'étape, calée
+   à droite, dans la bulle.
+2. **« Ask » → « Demander »** (noms de modes en français, §18).
+3. **Menus** : non dessinés dans les planches du mode ; mêmes menus que le panneau, ouverts dans la bulle.
+
+### 19.8 Nom du dossier plutôt que le chemin ou l'adresse (retour Paper `156L-0`)
+
+Là où le panneau montrait un chemin ou une adresse pour dire de quel projet il s'agit, il montre le **nom du dossier** :
+écran du dossier (le chemin complet reste en infobulle), menu « + › Choisir un autre dossier… », titre « Ce site ·
+boutique » de l'historique, et lignes « Autres sites » (`HistoryItem.folderName`, sinon `siteLabel`).
