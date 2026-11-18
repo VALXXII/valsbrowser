@@ -92,10 +92,12 @@ struct Projects {
 struct Header {
     std::string id, origin, siteLabel, title, agentId, sessionId, source;   // source: "Checkout.astro:42" of the first aimed element
     std::wstring folder; std::int64_t createdAt = 0, updatedAt = 0; int promptVersion = 0;
+    std::int64_t usedTokens = 0, windowTokens = 0;   // last context usage the agent reported (the panel's gauge)
     SJ::Value ToJson() const {
         SJ::Value o = SJ::Value::Obj(); o.Set("id", SJ::Value::Str(id)); o.Set("origin", SJ::Value::Str(origin)); o.Set("siteLabel", SJ::Value::Str(siteLabel));
         o.Set("title", SJ::Value::Str(title)); o.Set("agentId", SJ::Value::Str(agentId)); o.Set("sessionId", SJ::Value::Str(sessionId)); o.Set("source", SJ::Value::Str(source));
         o.Set("folder", SJ::Value::Str(Utf8(folder))); o.Set("createdAt", SJ::Value::Int(createdAt)); o.Set("updatedAt", SJ::Value::Int(updatedAt)); o.Set("promptVersion", SJ::Value::Int(promptVersion));
+        if (windowTokens > 0) { o.Set("usedTokens", SJ::Value::Int(usedTokens)); o.Set("windowTokens", SJ::Value::Int(windowTokens)); }
         return o;
     }
     static bool FromJson(const SJ::Value& v, Header& h) {
@@ -104,6 +106,7 @@ struct Header {
         h.origin = Str(v, "origin", 300); h.siteLabel = Str(v, "siteLabel", 300); h.title = Str(v, "title", 400); h.agentId = Str(v, "agentId", 128);
         h.sessionId = Str(v, "sessionId", 512); h.source = Str(v, "source", 300); h.folder = Wide(Str(v, "folder", 2048));
         h.createdAt = Int(v, "createdAt"); h.updatedAt = Int(v, "updatedAt"); h.promptVersion = int(Int(v, "promptVersion"));
+        h.usedTokens = std::max<std::int64_t>(0, Int(v, "usedTokens")); h.windowTokens = std::max<std::int64_t>(0, Int(v, "windowTokens"));
         return true;
     }
 };

@@ -25,6 +25,7 @@
 #include <deque>
 #include "chat-local.h"
 #include "chat-prompt.h"
+#include "chat-tools.h"
 #include "chat-store.h"
 #include "chat-folder.h"
 #include "chat-panel-view.h"
@@ -114,6 +115,8 @@ struct Turn {
     std::map<std::string, std::size_t> itemOf;   // message / thought / tool id -> index in convo.items
     std::string markSelector; std::string planPermission, planId; std::vector<Acp::PlanEntry> lastPlan; std::vector<Acp::PermissionOption> planOptions;
     Acp::Error failure; Problem problem;   // why it failed (an agent error code, or our own sentence)
+    struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation; int count = -1; bool done = false; };
+    std::map<std::string, OurCall> ourCalls;   // tool call id -> one of our annotation tools (its step line is ours to word)
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; };
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
@@ -128,6 +131,7 @@ std::vector<Element> orphanAnnotations;                // annotations of a turn 
 std::map<std::uint64_t, Element> aiming;                // elements being aimed (by capture serial): image and source still coming
 std::uint64_t turnNavStamp = 0; int rearmTries = 0; std::function<void()> afterTurn; std::function<void(bool)> afterUndo;
 std::map<std::string, SJ::Value> waitingPermissions, activeStrips;   // what the panel must show again when its WebView is (re)created: cards still waiting, strips still true
+std::map<std::string, std::string> annotationNotes;   // annotation id -> its note, as seen in this session (turns, tool results): the « … » of a step line
 std::wstring pendingAsk;                               // « Demander à l'agent » from the note: the text to send once the element is attached
 std::shared_ptr<CS::Store> snapshots; std::map<std::string, std::string> checkpointOfTurn;   // panel turn id -> checkpoint id
 std::map<std::string, std::string> snapshotOfTurn;                                              // panel turn id -> snapshot turn id
@@ -261,6 +265,11 @@ void SendQueue() {
     SJ::Value items = SJ::Value::Arr(); for (const auto& q : queue) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(q.id)); o.Set("text", Str(ClipUtf8(q.text, 400))); items.Push(std::move(o)); }
     SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); Send("queue", std::move(m));
 }
+// Context gauge (contract B 1.2): tokens used / window, as the agent last reported them for this conversation.
+void SendUsage() {
+    const auto& h = convo.data.head; if (h.windowTokens <= 0) return;
+    SJ::Value m = SJ::Value::Obj(); m.Set("used", SJ::Value::Int(h.usedTokens)); m.Set("size", SJ::Value::Int(h.windowTokens)); Send("usage", std::move(m));
+}
 void SendThread() {
     // 4 MiB per message (contract B): thread.reset, then thread.append by slices.
     std::size_t i = 0; bool first = true; const auto& items = convo.data.items;
@@ -270,6 +279,7 @@ void SendThread() {
         SJ::Value m = SJ::Value::Obj(); if (first) m.Set("conversationId", Str(convo.data.head.id)); m.Set("items", std::move(arr));
         Send(first ? "thread.reset" : "thread.append", std::move(m)); first = false;
     } while (i < items.size());
+    SendUsage();   // thread.reset hides the gauge: shown again when this conversation's usage is known
 }
 void Strip(const char* id, const char* tone, const std::wstring& text, const char* actionId = nullptr, const std::wstring& actionLabel = L"") {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(std::string(id))); m.Set("tone", Str(std::string(tone))); m.Set("text", Str(text));

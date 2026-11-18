@@ -355,6 +355,26 @@ void TestToolsPlanPermission() {
     CHECK(h.Wait(Event::Type::MessageChunk, chunk) && chunk.text == "refused");
     CHECK(h.Wait(Event::Type::TurnEnded, end) && end.stopReason == "end_turn");
 
+    // An MCP tool asked for by its raw name, in the two forms the real adapters use: the title and the arguments reach
+    // the integration untouched (it words the card from them, and answers our own annotation tools itself).
+    for (const char* title : {"mcp__browser-annotations-preview__browser_annotation_get", "mcp.browser-annotations-preview.browser_annotation_get"}) {
+        h.cursor = h.events.size();
+        const std::size_t from = h.events.size();
+        CHECK(h.session.Prompt({Acp::ContentBlock::Text(std::string("mcptool ") + title + "|{\"id\":\"ann_abcdefghijklmnopqrstuvwxyz\"}|{\"id\":\"ann_abcdefghijklmnopqrstuvwxyz\",\"note\":\"Aligner le bouton\"}")}));
+        CHECK(h.Wait(Event::Type::PermissionRequest, ask));
+        CHECK(!ask.permission.question && ask.permission.toolCall.title == title && ask.permission.toolCall.kind == "other" &&
+              ask.permission.toolCall.rawInput == "{\"id\":\"ann_abcdefghijklmnopqrstuvwxyz\"}" && ask.permission.options.size() == 3 &&
+              ask.permission.options[0].kind == "allow_once");
+        CHECK(h.session.RespondPermission(ask.permission.requestId, "allow"));
+        Event done;
+        CHECK(h.Wait(Event::Type::TurnEnded, done) && done.stopReason == "end_turn");
+        const Event* result = nullptr;
+        for (std::size_t i = from; i < h.events.size(); ++i)
+            if (h.events[i].type == Event::Type::ToolCallUpdate && h.events[i].tool.status == "completed") result = &h.events[i];
+        CHECK(result && result->tool.text.find("Aligner le bouton") != std::string::npos);
+        CHECK(Contains(h.LogText(), "mcptool-outcome selected allow"));
+    }
+
     // Cancel while a permission waits: the request is answered "cancelled" before session/cancel, and dismissed.
     h.cursor = h.events.size();
     const std::size_t mark = h.LogText().size();

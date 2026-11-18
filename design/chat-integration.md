@@ -25,6 +25,7 @@ Raccourcis du mode, cohérents entre eux : `Ctrl+Maj+A` Annoter · `Ctrl+Maj+H` 
 | `src/chat-host-ui.h` | Ouverture / fermeture, viseur, dossier, historique, messages panneau → hôte |
 | `src/chat-panel-view.h` | La WebView2 du panneau (création, fichiers servis, pont) |
 | `src/chat-local.h` | Règle « site local » (pure, testée) |
+| `src/chat-tools.h` | Quel outil l'agent demande : nom d'outil MCP, nos cinq outils d'annotations (pur, testé) |
 | `src/chat-prompt.h` | Ce que reçoit l'agent, contrat D (pur, testé) |
 | `src/chat-store.h` | Dossier par site, historique des conversations (testé) |
 | `src/chat-folder.h` | Dossier probable d'un site, sélecteur Windows (testé) |
@@ -131,6 +132,91 @@ l'utilisateur depuis), rien n'est écrasé : le panneau nomme les fichiers. Apr�
 **Reprise** : conversations dans `<données>\annotations-chat\conversations\` (une par fichier + un index),
 200 au plus. À la réouverture, le fil est rejoué et la session reprend avec son `sessionId`.
 
+## Autorisations lisibles (contrat B 1.2)
+
+Le titre d'une carte est une **phrase écrite par le navigateur**, verbe d'abord, jamais le nom technique de
+l'outil. Le nom brut et les arguments vont dans « Détails » (`tool {name, server, label?, serverLabel?}` et
+`input`, 4 000 caractères au plus).
+
+| Ce que l'agent demande | Titre de la carte |
+| --- | --- |
+| Modifier, supprimer, lire un fichier | « Claude veut modifier checkout.css » (inchangé) |
+| Une commande | « Claude veut lancer une commande » (inchangé) |
+| Un outil d'un autre serveur MCP | « Claude veut utiliser l'outil « create_issue » de « github » » |
+| `browser_annotations_list` | « Lire les annotations en attente de ce site » |
+| `browser_annotation_get` | « Ouvrir l'annotation « Aligne le bouton à droite » » |
+| `browser_annotation_claim` | « Prendre en charge l'annotation « … » » |
+| `browser_annotation_resolve` | « Marquer l'annotation « … » comme terminée » |
+| `browser_annotation_release` | « Rendre l'annotation « … » » |
+
+« … » est la note de l'annotation, sur une ligne, 40 caractères au plus ; si on ne la connaît pas : « une
+annotation ». Les agents nomment un outil MCP dans le titre de leur appel : `mcp__<serveur>__<outil>` (Claude
+Code, serveur normalisé) ou `mcp.<serveur>.<outil>` (Codex). `src/chat-tools.h` lit les deux formes.
+
+### Nos outils d'annotations passent sans carte (choix assumé)
+
+Les cinq outils ci-dessus ne lisent et n'écrivent **que le magasin d'annotations** du navigateur : jamais le
+code du projet, jamais une commande, jamais le réseau. Demander l'accord à chaque lecture d'annotation n'apprend
+rien à l'utilisateur et l'habitue à cliquer « Autoriser » sans lire. Donc :
+
+- le navigateur répond lui-même à la demande, par l'option **« une fois »** de l'agent (`allow_once`), **dans
+  tous les modes**, « Demander » compris ; aucune carte ne s'affiche ;
+- jamais « toujours autoriser » : chaque appel est répondu ici, rien n'est enregistré chez l'agent ;
+- le fil garde la trace : une ligne d'étape en clair (« A lu 2 annotations », « A marqué l'annotation « … »
+  comme terminée »), et le journal écrit `CHAT annotation tool allowed without a card: <outil>`.
+
+Garde-fous : il faut **le nom exact de notre serveur** (celui donné à la session, `browser-annotations` ou
+`browser-annotations-preview`) **et** l'un des cinq noms d'outil exacts. Un serveur au nom voisin, un outil
+inconnu sur notre serveur, une demande sans option « une fois » : carte ordinaire. Limite connue : la
+reconnaissance se fait sur le nom que l'agent écrit ; un autre serveur MCP que l'utilisateur aurait lui-même
+configuré sous exactement ce nom serait traité comme le nôtre.
+
+### Ligne d'étape et résumé replié (contrat B 1.3)
+
+Chaque étape de nos outils part avec son titre en clair et le type `other` (jamais `read` : une annotation
+n'est pas un fichier). Une fois finie, elle porte aussi `summary` (`verb`, `object`, et selon le cas `after`,
+`afterMany`, `count`, `one`, `many`) : le panneau s'en sert pour la ligne repliée d'un groupe de plusieurs
+étapes (« a lu 3 annotations »). Un groupe d'une seule étape affiche son titre tel quel.
+
+## Jauge de contexte (contrat B 1.2)
+
+`usage_update` de l'agent → message `usage {used, size}` au panneau, tel quel (donc aussi après un résumé
+automatique de la conversation, quand l'agent renvoie sa nouvelle valeur). La dernière valeur est gardée avec la
+conversation (`usedTokens`, `windowTokens`) et renvoyée à chaque `thread.reset` : ouverture du panneau,
+conversation rouverte depuis l'historique. Nouvelle conversation ou taille 0 : pas de jauge.
+
+Changement d'agent : le menu envoie `setAgent {id}` ; l'hôte démarre une nouvelle conversation avec cet agent
+(l'ancienne reste dans l'historique ; si elle était vide, elle est simplement reprise par le nouvel agent).
+
+## Panneau de note : deux boutons, coins lisses
+
+**Boutons.** Quand le chat est disponible (site local), la rangée finit par « Ajouter » (secondaire, fond
+neutre) puis « Demander à l'agent » (principal : à droite, seul bouton rempli de la couleur d'accent). Sans le
+chat, « Ajouter » reste seul et principal, comme avant.
+
+| Touche | Avec le chat | Sans le chat |
+| --- | --- | --- |
+| `Entrée` | Demander à l'agent (action principale) | Ajouter |
+| `Ctrl+Entrée` | Ajouter | Ajouter |
+| `Ctrl+Maj+D` | Demander à l'agent | — |
+| `Maj+Entrée` | Nouvelle ligne | Nouvelle ligne |
+| `Tab` | Champ → Ajouter → Demander à l'agent → « Ce que l'agent verra » | Champ → Ajouter → … |
+
+Les lecteurs d'écran annoncent ces raccourcis sur le champ et sur chaque bouton. Pendant l'enregistrement
+d'une note, « Demander à l'agent » est atténué et inactif.
+
+**Coins.** Le panneau de note était la seule surface du mode Annotation découpée par une *région de fenêtre* :
+un masque à 1 bit, donc des coins en escalier et une bordure rognée. Les autres surfaces (bandeau, lanceur,
+carte, historique et son message, modale « Connecter un agent », cadre de page) sont des calques à
+transparence par pixel et étaient déjà lisses : vérifié dans le code et par test (aucune région de fenêtre).
+Correction à la racine : le panneau est maintenant un calque du même type (`Layer`), sans région et sans
+arrondi DWM (qui apporte toujours une ombre, voir `native-ui.h`). Un calque ne peut pas contenir de fenêtre
+enfant ; le champ de saisie natif vit donc dans une seconde fenêtre, rectangulaire, posée exactement sur le
+champ (13 px à l'intérieur du bord : jamais sous un coin) et rattachée au panneau pour rester juste au-dessus.
+Elle porte le focus clavier ; le panneau lui-même n'est jamais activé (comme la pastille « Ce que l'agent
+verra »). L'animation d'entrée et de sortie passe toujours par le calque fantôme, y compris en mouvement réduit
+(fondu seul).
+
 ## Écarts assumés par rapport à la demande
 
 - **Cadre « Modifié par… »** : la planche 6.11 montre le cadre à la couleur du profil avec une coche, sans
@@ -152,7 +238,8 @@ l'utilisateur depuis), rien n'est écrasé : le panneau nomme les fichiers. Apr�
   chat est allumé ; l'image capturée rejoint la puce ; `Rearm()` réinjecte le script après un rechargement ;
   une navigation de la page du chat ne quitte plus le mode (sauf changement de site).
 - `annotation-script.h` : `source()` (Astro / React) et la commande `mark` (étiquette « en cours », coche).
-- `annotation-note.h` : bouton « Demander à l'agent » (sites locaux), `Ctrl+Maj+D` dans le champ.
+- `annotation-note.h` : bouton « Demander à l'agent » (sites locaux, action principale, `Entrée`), `Ctrl+Maj+D`
+  dans le champ ; panneau en calque à transparence par pixel (voir « Panneau de note »).
 - `annotation-banner.h` : bouton « Demander à l'agent », allumé quand le panneau est ouvert.
 - `tools/release/build.py` : sources du chat, faux agent dans `<out>-test`, fichiers de test du panneau exclus.
 

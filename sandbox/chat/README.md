@@ -37,7 +37,9 @@ habituels ne sont pas utilisés. Fermez-le (ou Ctrl+C dans le terminal) : tout s
 Autres choses à essayer :
 
 - Dans le mode Annotation, panneau fermé : cliquez un élément, écrivez une note, puis **« Demander à
-  l'agent »** (à côté d'« Ajouter »). Le chat s'ouvre avec l'élément et votre texte.
+  l'agent »** (le bouton bleu, à droite d'« Ajouter »), ou simplement `Entrée`. Le chat s'ouvre avec l'élément
+  et votre texte. « Ajouter » (ou `Ctrl+Entrée`) enregistre une simple annotation, sans ouvrir le chat.
+- Le petit anneau à côté du titre du chat : la part de mémoire de la conversation déjà utilisée (survolez-le).
 - Le bouton « Modifier le panier » simule un site React : sa puce indique `CartButton.jsx:6`.
 - Le texte gris « Paiement de démonstration… » n'a aucune information de code : sa puce n'affiche pas de
   fichier (on n'invente jamais).

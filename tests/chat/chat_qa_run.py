@@ -88,6 +88,40 @@ def launcher_visible():
     return bool(out)
 
 
+def perm_title():
+    return C.panel("(function(){var t=document.querySelector('.perm .perm-t');return t?t.innerText:''})()") or ''
+
+
+def unfold_steps():
+    """Opens every folded group of steps of the thread (the panel folds finished steps into one counted line)."""
+    C.panel("(function(){var n=0;document.querySelectorAll('.steps > button.fold[aria-expanded=false]').forEach(function(b){b.click();n++});return n})()")
+    time.sleep(0.4)
+
+
+def gauge_label():
+    """The context gauge's accessible name, '' while it is hidden."""
+    return C.panel("(function(){var g=document.querySelector('.gauge');return g&&!g.hidden?(g.getAttribute('aria-label')||'?'):''})()") or ''
+
+
+def corner_zoom(name, rect, box=26, zoom=12):
+    """The REAL screen around the top-left corner of a window rect, enlarged (nearest neighbour), and how many of its
+    pixels are blends between the page behind and the panel (the antialiasing of the corner's silhouette)."""
+    from PIL import ImageGrab, Image
+    x, y = rect[0] - 6, rect[1] - 6
+    try:
+        img = ImageGrab.grab(bbox=(x, y, x + box, y + box), all_screens=True).convert('RGB')
+    except OSError as e:   # locked session: the screen cannot be read
+        return {'unavailable': str(e)}
+    img.resize((box * zoom, box * zoom), Image.NEAREST).save(C.QA / f'{name}.png')
+    report['captures'].append(f'{name}.png')
+    lum = lambda p: .2126 * p[0] + .7152 * p[1] + .0722 * p[2]
+    # behind: the page at the very corner; panel: the canvas just inside the edge, mid-height (away from the note's text)
+    back = lum(img.getpixel((0, 0))); inside = lum(img.getpixel((14, box - 1)))
+    lo, hi = min(back, inside) + 60, max(back, inside) - 25
+    blended = sum(1 for yy in range(20) for xx in range(20) if lo < lum(img.getpixel((xx, yy))) < hi)   # the corner only, not the text
+    return {'behind': round(back), 'panel': round(inside), 'blendedPixels': blended}
+
+
 def ax_summary():
     """Roles and names of the panel's accessibility tree (Chromium's own, what a screen reader gets)."""
     ws = C.ws_for(C.PANEL)
@@ -186,6 +220,7 @@ def run_main():
         step('nothing written before the answer', MOVED not in CSS.read_text(encoding='utf-8'))
         time.sleep(0.6)
         capture('6.10-autorisation')
+        step('permission card title: a sentence, verb first (« … veut modifier checkout.css »)', 'veut modifier checkout.css' in perm_title(), perm_title())
         ax = ax_summary()
         roles = {r for r, _ in ax}
         step('a11y: permission card is an alert dialog', 'alertdialog' in roles, sorted(roles)[:14])
@@ -213,6 +248,15 @@ def run_main():
         step('change bar « 1 fichier modifié » with Tout annuler', '1 fichier modifié' in txt and 'Tout annuler' in txt)
         park_mouse(); time.sleep(0.4)
         capture('6.11-fait')
+
+        # ---- contract B 1.2: the context gauge (usage_update of the agent -> « usage »)
+        used = logged(r'CHAT usage (\d+) / (\d+)', m3, 5)
+        step('the agent\'s context usage is relayed to the panel', used is not None and int(used.group(2)) == 200000, used.group(0)[5:] if used else '')
+        g1 = C.wait_for(gauge_label, 5) or ''
+        step('the gauge shows it (accessible name)', 'Mémoire du chat' in g1 and '200' in g1, g1)
+        C.panel("(function(){var g=document.querySelector('.gauge');if(g)g.focus();return 1})()"); time.sleep(0.5)
+        capture('6.13-jauge-contexte')
+        focus_composer()
 
         # ---- voir les changements (contract B 1.1): the bar unfolds, « Voir les changements » opens the view
         try:
@@ -254,6 +298,7 @@ def run_main():
 
         # ---- stop, queue
         C.click_panel(selector='button[aria-label="Nouveau chat"]'); time.sleep(0.8)
+        step('a new conversation hides the gauge (nothing known yet)', gauge_label() == '')
         m7 = mark()
         send('Écris lentement (slow)')
         stream = logged(r'CHAT first agent text (\d+) ms after the send', m7, 10)
@@ -293,6 +338,71 @@ def run_main():
         C.click_panel(text='Refuser')
         step('Refuser: nothing written', logged(r'CHAT turn t5 ended: end_turn in \d+ ms, 0 file', m9b, 15) and MOVED not in CSS.read_text(encoding='utf-8'))
 
+        # ---- contract B 1.2: readable permissions. Our own annotation tools (they only touch the annotation store)
+        #      are allowed without a card, even in « Demander », and leave a step line; any other MCP tool gets a card
+        #      with a sentence for a title and the raw name + arguments under « Détails ».
+        server = 'browser-annotations-preview'
+        notes = '{"annotations":[{"id":"ann_qa1","note":"Aligne le bouton à droite"},{"id":"ann_qa2","note":"Titre trop pâle"}],"nextCursor":null}'
+        raw_list = f'mcp__{server}__browser_annotations_list'
+        mA = mark()
+        send(f'mcptool {raw_list}|{{}}|{notes}')
+        allowedA = logged(r'CHAT annotation tool allowed without a card: browser_annotations_list', mA, 15)
+        endedA = logged(r'CHAT turn t\d+ ended: end_turn', mA, 15)
+        step('our annotation tool (Claude Code\'s name) is allowed without a card, in « Demander »', allowedA is not None and endedA is not None and 'permission asked' not in C.log_text()[mA:])
+        time.sleep(0.6)
+        unfold_steps()
+        txt = C.panel_text()
+        step('…and leaves a step line « A lu 2 annotations » (never counted as a file)', 'A lu 2 annotations' in txt and 'A lu 1 fichier' not in txt)
+        step('…the raw tool name appears nowhere but in the message typed for the fake agent', txt.count(raw_list) == 1, txt.count(raw_list))
+        mB = mark()
+        send(f'mcptool mcp.{server}.browser_annotation_resolve|{{"id":"ann_qa1","summary":"fait"}}|{{"ok":true}}')
+        allowedB = logged(r'CHAT annotation tool allowed without a card: browser_annotation_resolve', mB, 15)
+        endedB = logged(r'CHAT turn t\d+ ended: end_turn', mB, 15)
+        step('our annotation tool (Codex\'s name) too', allowedB is not None and endedB is not None and 'permission asked' not in C.log_text()[mB:])
+        time.sleep(0.6)
+        unfold_steps()
+        step('…its step line names the annotation by its note', 'A marqué l\'annotation « Aligne le bouton à droite » comme terminée' in C.panel_text())
+        capture('6.14-outils-annotations-sans-carte')
+
+        def step_summaries():
+            """« summary » of the finished steps kept with the conversation (what the panel was sent), by step title."""
+            out = {}
+            for f in (C.APP / 'annotations-chat' / 'conversations').glob('c_*.json'):
+                try:
+                    for it in json.loads(f.read_text(encoding='utf-8')).get('items', []):
+                        if it.get('type') == 'toolCall' and isinstance(it.get('summary'), dict):
+                            out[it.get('title', '')] = it['summary']
+                except Exception:
+                    pass
+            return out
+        sums = C.wait_for(lambda: (lambda d: d if any(k.startswith('A marqué') for k in d) else None)(step_summaries()), 5) or step_summaries()
+        s_list = sums.get('A lu 2 annotations') or {}
+        s_done = next((v for k, v in sums.items() if k.startswith('A marqué')), {})
+        step('each finished step of ours carries its « summary » for the folded line (contract B 1.3)',
+             s_list.get('verb') == 'a lu' and s_list.get('count') == 2 and s_list.get('many') == 'annotations'
+             and s_done.get('verb') == 'a marqué' and s_done.get('after') == 'comme terminée' and 'Aligne le bouton à droite' in s_done.get('object', ''),
+             json.dumps([s_list, s_done], ensure_ascii=False))
+        mC = mark()
+        send('mcptool mcp__github__create_issue|{"repo":"atelier/site","label":"bug"}|ok')
+        askedC = logged(r'CHAT permission asked: other mcp__github__create_issue', mC, 15)
+        C.wait_for(lambda: 'Refuser' in C.panel_text(), 5)
+        tC = perm_title()
+        step('another MCP server: a card, titled with a sentence', askedC is not None and 'veut utiliser l\'outil « create_issue » de « github »' in tC, tC)
+        C.click_panel(selector='.perm .perm-more'); time.sleep(0.4)
+        details = C.panel("(function(){var d=document.getElementById('perm-details');return d&&!d.hidden?d.innerText:''})()") or ''
+        step('…« Détails » holds the raw name and the arguments', 'mcp__github__create_issue' in details and '"repo"' in details, re.sub(r'\s+', ' ', details)[:140])
+        capture('6.10-autorisation-outil-mcp')
+        C.click_panel(text='Refuser')
+        step('…refused: the turn ends', logged(r'CHAT turn t\d+ ended: end_turn', mC, 15))
+        mD = mark()
+        send(f'mcptool mcp__{server}-evil__browser_annotations_list|{{}}|x')
+        askedD = logged(r'CHAT permission asked: other mcp__browser-annotations-preview-evil__browser_annotations_list', mD, 15)
+        step('a look-alike server is never allowed by itself (card)', askedD is not None and 'allowed without a card' not in C.log_text()[mD:])
+        C.wait_for(lambda: 'Refuser' in C.panel_text(), 5)
+        C.click_panel(text='Refuser')
+        step('…refused: the turn ends', logged(r'CHAT turn t\d+ ended: end_turn', mD, 15))
+        time.sleep(0.4)
+
         # ---- history of this site
         C.click_panel(selector='button[aria-label="Historique"]'); time.sleep(0.9)
         txt = C.panel_text()
@@ -303,6 +413,8 @@ def run_main():
         step('a conversation is reopened from the history', logged(r'CHAT conversation reopened: c_\w+ \((\d+) items\)', m10, 8))
         time.sleep(0.6)
         step('its thread is back (message, change bar)', 'pleine largeur sur mobile' in C.panel_text())
+        g2 = C.wait_for(gauge_label, 5) or ''
+        step('…and its gauge (usage kept with the conversation)', 'Mémoire du chat' in g2, g2)
 
         # ---- close: the page takes its width back; destroyed after it stayed closed; agent stopped
         m11 = mark()
@@ -332,8 +444,30 @@ def run_main():
             Q.post_text('Mets ce titre en gras', edit)
             time.sleep(0.4)
             capture('2.1-note-demander')
-            step('note button « Demander à l\'agent » exposed', 'AnnotationNoteAskAgent' in C.uia('-List'))
-            step('note button invoked', C.invoke('AnnotationNoteAskAgent'))
+            # smooth corners at the root: the note is a per-pixel-alpha layer (like the band, the cards, the history, the
+            # modal); neither it nor the field's window has a window region
+            import ctypes
+            layer = [w for w in Q.windows() if w[1] == 'BrowserAnnotationLayer' and w[2] == 'Nouvelle annotation']
+            probe = ctypes.windll.gdi32.CreateRectRgn(0, 0, 0, 0)
+            no_region = bool(layer) and C.user32.GetWindowRgn(layer[0][0], probe) == 0 and C.user32.GetWindowRgn(note[0][0], probe) == 0
+            ctypes.windll.gdi32.DeleteObject(probe)
+            layered = bool(layer) and bool(C.user32.GetWindowLongW(layer[0][0], -20) & 0x80000)
+            step('note panel: per-pixel-alpha layer, no window region (smooth corners)', no_region and layered, f'layer {layer[0][3] if layer else None}')
+            if layer:
+                pr = layer[0][3]; fr = note[0][3]
+                step('the note field\'s window sits inside the panel, away from its corners', pr[0] < fr[0] and pr[1] < fr[1] and fr[2] < pr[2] and fr[3] < pr[3], f'panel {pr} field {fr}')
+                scale = C.user32.GetDpiForWindow(layer[0][0]) / 96.0
+                corner = corner_zoom(f'2.1-note-coin-ecran-{round(scale * 100)}', pr)
+                corner['scalePercent'] = round(scale * 100)
+                report['measures']['noteCornerOnScreen'] = corner
+                if 'unavailable' in corner:
+                    print('screen not readable (locked session?): no on-screen corner capture')
+                elif abs(corner['behind'] - corner['panel']) > 80:   # a page clearly lighter (or darker) than the panel behind the corner
+                    step('on the real screen the corner is blended with the page behind it', corner['blendedPixels'] >= 3, corner)
+            ids = C.uia('-List')
+            step('note buttons « Ajouter » and « Demander à l\'agent » exposed', 'AnnotationNoteAskAgent' in ids and 'AnnotationAdd' in ids)
+            Q.post_key(0x0D, edit)   # Entrée in the field = the main action: « Demander à l'agent »
+            step('Entrée in the note asks the agent (the main action)', logged(r"CHAT « Demander à l'agent » from the note panel \(with its text\)", m12, 8))
             second = logged(r'CHAT panel ready (\d+) ms after the request', m12, 15)
             step('the chat opens from the note (new WebView)', second is not None)
             if second:
@@ -349,6 +483,16 @@ def run_main():
         focus_composer(); C.key_panel('Escape', 'Escape', 27)
         step('Échap in the panel closes it', logged(r'CHAT panel closed', m13, 5))
         time.sleep(0.5)
+        # ---- the note's secondary action: « Ajouter » still writes a plain annotation (no chat)
+        m13b = mark()
+        C.click_page('.hint')
+        note2 = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
+        if step('the note panel opens again (chat closed)', bool(note2)):
+            Q.post_text('Texte trop discret', Q.find_child(note2[0][0], 'Edit'))
+            time.sleep(0.4)
+            step('« Ajouter » invoked', C.invoke('AnnotationAdd'))
+            step('…the annotation is written, the chat stays closed', logged(r'ANNOTATE written', m13b, 8) and 'CHAT panel opened' not in C.log_text()[m13b:])
+            time.sleep(0.8)
         m14 = mark(); C.shortcut('D')
         step('Ctrl+Maj+D opens it again', logged(r'CHAT panel opened', m14, 5))
         time.sleep(0.8)

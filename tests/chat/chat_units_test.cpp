@@ -13,6 +13,7 @@
 #include "../../src/chat-prompt.h"
 #include "../../src/chat-store.h"
 #include "../../src/chat-folder.h"
+#include "../../src/chat-tools.h"
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", what); } }
@@ -205,8 +206,60 @@ static void TestFolder(const std::wstring& root) {
     WSACleanup();
 }
 
+// src/chat-tools.h: which tool an agent asks for. The integration answers a permission request by itself ONLY for one
+// of our five annotation tools on our own server: everything here that returns « None » goes through the card.
+static void TestTools() {
+    using namespace ChatTools;
+    const std::string ours = "browser-annotations-preview";
+    {   const McpName c = ParseMcpName("mcp__browser-annotations-preview__browser_annotations_list");
+        Check(c.mcp && c.server == ours && c.tool == "browser_annotations_list", "Claude Code's form mcp__server__tool is read");
+        const McpName x = ParseMcpName("mcp.browser-annotations-preview.browser_annotation_get");
+        Check(x.mcp && x.server == ours && x.tool == "browser_annotation_get", "Codex's form mcp.server.tool is read");
+        const McpName d = ParseMcpName("mcp.my.dotted.server.read_file");
+        Check(d.mcp && d.server == "my.dotted.server" && d.tool == "read_file", "Codex: a dotted server name keeps its dots, the tool is the last segment"); }
+    for (const char* t : {"", "Edit", "Modifier checkout.css", "mcp__", "mcp____tool", "mcp__server__", "mcp__server", "mcp.", "mcp.server", "mcp..tool", "mcp.server.",
+                          "MCP__server__tool", " mcp__server__tool", "mcp__ser/ver__tool", "mcp__server__to\"ol", "mcp__server__tool\n", "xmcp.server.tool"})
+        Check(!ParseMcpName(t).mcp, "not an MCP tool name");
+    Check(!ParseMcpName(std::string("mcp__") + std::string(200, 'a') + "__tool").mcp, "an oversized name is refused");
+    Check(NormalizeServer("My Server.v2") == "My_Server_v2" && NormalizeServer(ours) == ours, "Claude Code's normalisation of a server name");
+    // ours: exact server, exact tool
+    const std::pair<const char*, Ours> five[] = {{"browser_annotations_list", Ours::List}, {"browser_annotation_get", Ours::Get}, {"browser_annotation_claim", Ours::Claim},
+                                                 {"browser_annotation_resolve", Ours::Resolve}, {"browser_annotation_release", Ours::Release}};
+    for (const auto& [tool, kind] : five) {
+        Check(OurTool(ParseMcpName("mcp__" + ours + "__" + tool), ours) == kind, "our tool, Claude Code's form");
+        Check(OurTool(ParseMcpName("mcp." + ours + "." + tool), ours) == kind, "our tool, Codex's form");
+    }
+    Check(OurTool(ParseMcpName("mcp__browser_annotations_x__browser_annotations_list"), "browser annotations.x") == Ours::List, "our server as Claude Code normalises it");
+    // never ours: another server (even a look-alike), an unknown tool of ours, the release name in a preview, no server
+    Check(OurTool(ParseMcpName("mcp__browser-annotations__browser_annotations_list"), ours) == Ours::None, "the release server's name is not this build's server");
+    Check(OurTool(ParseMcpName("mcp__browser-annotations-preview-evil__browser_annotations_list"), ours) == Ours::None, "a look-alike server is not ours");
+    Check(OurTool(ParseMcpName("mcp__evil__browser_annotation_resolve"), ours) == Ours::None, "our tool's name on another server is not ours");
+    Check(OurTool(ParseMcpName("mcp." + ours + ".evil.browser_annotation_get"), ours) == Ours::None, "an extra segment makes another server");
+    Check(OurTool(ParseMcpName("mcp__" + ours + "__browser_annotation_delete"), ours) == Ours::None, "an unknown tool on our server is not allowed by itself");
+    Check(OurTool(ParseMcpName("mcp__" + ours + "__browser_annotations_list_all"), ours) == Ours::None, "a longer tool name is not ours");
+    Check(OurTool(ParseMcpName("mcp__" + ours + "__browser_annotations_list"), "") == Ours::None, "no server of ours: nothing is ours");
+    Check(OurTool(ParseMcpName("Edit"), ours) == Ours::None && OurTool(ParseMcpName("browser_annotations_list"), ours) == Ours::None, "a bare name is not ours");
+    // the annotation a call is about
+    Check(AnnotationIdOf(R"({"id":"ann_k7m2p9x4"})") == "ann_k7m2p9x4", "the annotation id of a call");
+    Check(AnnotationIdOf(R"({"id":"ann_k7m2p9x4","summary":"fait"})") == "ann_k7m2p9x4", "…with other arguments");
+    for (const char* bad : {"", "{}", "[]", "null", R"({"id":42})", R"({"id":"k7m2"})", R"({"id":"ann_"})", R"({"id":"ann_../../x"})", R"({"id":"ann_ABC"})", R"({"id":"ann_k7m2)", "ann_k7m2p9x4"})
+        Check(AnnotationIdOf(bad).empty(), "not an annotation id");
+    Check(AnnotationIdOf(std::string(R"({"id":"ann_)") + std::string(80, 'a') + R"("})").empty(), "an oversized id is refused");
+    // results (the agent's copy of our bridge's answer): tolerant, display only
+    const std::string list = R"({"annotations":[{"id":"ann_a1","note":"Aligne le bouton à droite","status":"pending"},{"id":"ann_b2","note":"Titre trop pâle"}],"nextCursor":null})";
+    Check(ListCount(list) == 2 && ListCount(R"({"annotations":[]})") == 0, "the list's count");
+    Check(ListCount("") == -1 && ListCount("erreur") == -1 && ListCount(R"({"id":"ann_a1"})") == -1 && ListCount(R"({"annotations":3})") == -1, "an unreadable list has no count");
+    Check(ListCount("```json\n" + list + "\n```") == 2 && ListCount("Résultat : " + list + " (fin)") == 2, "a result wrapped in a fence or a sentence is still read");
+    {   const auto a = AnnotationsIn(list);
+        Check(a.size() == 2 && a[0].first == "ann_a1" && a[0].second == "Aligne le bouton à droite" && a[1].first == "ann_b2", "ids and notes of a list");
+        const auto one = AnnotationsIn(R"({"id":"ann_c3","note":"Marge trop grande","page":"http://localhost:5183/"})");
+        Check(one.size() == 1 && one[0].first == "ann_c3" && one[0].second == "Marge trop grande", "id and note of one annotation");
+        Check(AnnotationsIn("").empty() && AnnotationsIn("{").empty() && AnnotationsIn(R"({"annotations":[{"id":7},{"note":"x"},"y"]})").empty(), "nothing is invented from a damaged result");
+        const auto noNote = AnnotationsIn(R"({"id":"ann_d4"})"); Check(noNote.size() == 1 && noNote[0].second.empty(), "an annotation without a note keeps an empty note"); }
+}
+
 int wmain() {
-    TestLocal(); TestPrompt();
+    TestLocal(); TestPrompt(); TestTools();
     const std::wstring root = TempDir();
     TestStore(root); TestFolder(root);
     RemoveTree(root);

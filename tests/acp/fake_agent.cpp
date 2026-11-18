@@ -29,6 +29,9 @@
 //   error-rate / error-auth   JSON-RPC error                            big          "received <n> image bytes"
 //   echo                the text back                                   garbage      invalid lines inside the turn
 //   commands            available_commands_update                       title        session_info_update
+//   mcptool             an MCP tool asked for by its raw name: "mcptool <title>|<arguments JSON>[|<result text>]" in the message
+//                       (title as the real adapters write it: "mcp__<server>__<tool>" for Claude Code, "mcp.<server>.<tool>" for
+//                       Codex); tool_call kind other with rawInput, session/request_permission (allow / always / reject), result
 //   apply               REALLY replaces a text in a file of the session folder (tool_call kind edit, locations, diff):
 //                       asks permission in mode "default", writes at once in "acceptEdits", only plans in "plan";
 //                       refuses a path outside the session folder. "apply <path>|<find>|<replace>" in the message, or --edit.
@@ -397,6 +400,53 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
     const auto has = [&](const char* word) { return text.find(word) != std::string::npos; };
     const auto end = [&](const char* reason) { Result(id, Obj({{"stopReason", S(cancelled ? "cancelled" : reason)}})); };
 
+    if (has("mcptool ")) {   // first: its title, arguments and result are free text and must not pick another scenario
+        // "mcptool <title>|<arguments as JSON>[|<result text>]": an MCP tool asked for by its raw name, as the real adapters
+        // title it (Claude Code "mcp__<server>__<tool>", Codex "mcp.<server>.<tool>"), with its arguments in rawInput.
+        const std::size_t at = text.find("mcptool ");
+        const std::string spec = text.substr(at + 8, text.find('\n', at) - at - 8);
+        const std::size_t bar1 = spec.find('|'), bar2 = bar1 == std::string::npos ? bar1 : spec.find('|', bar1 + 1);
+        const std::string title = spec.substr(0, bar1);
+        const std::string argsText = bar1 == std::string::npos ? "{}" : spec.substr(bar1 + 1, bar2 == std::string::npos ? std::string::npos : bar2 - bar1 - 1);
+        const std::string result = bar2 == std::string::npos ? "{\"ok\":true}" : spec.substr(bar2 + 1);
+        SJ::Value args;
+        if (!SJ::Parse(argsText, args)) args = SJ::Value::Obj();
+        const std::string callId = "mcp-" + std::to_string(nextRequest);
+        const auto call = [&](const char* status) {
+            return Obj({{"toolCallId", S(callId)}, {"title", S(title)}, {"kind", S("other")}, {"status", S(status)}, {"rawInput", args}});
+        };
+        SJ::Value started = call("pending");
+        started.Set("sessionUpdate", S("tool_call"));
+        Update(std::move(started));
+        const std::int64_t request = nextRequest++;
+        Send(Obj({{"jsonrpc", S("2.0")}, {"id", I(request)}, {"method", S("session/request_permission")},
+                  {"params", Obj({{"sessionId", S(sessionId)}, {"toolCall", call("pending")},
+                                  {"options", Arr({Obj({{"optionId", S("allow")}, {"name", S("Autoriser")}, {"kind", S("allow_once")}}),
+                                                   Obj({{"optionId", S("always")}, {"name", S("Toujours autoriser")}, {"kind", S("allow_always")}}),
+                                                   Obj({{"optionId", S("reject")}, {"name", S("Refuser")}, {"kind", S("reject_once")}})})}})}}));
+        SJ::Value response;
+        while (!Pump(1000, request, &response)) {}
+        const SJ::Value* outcome = response.Get("outcome");
+        const std::string option = Str(outcome, "optionId");
+        Append(opt.log, "mcptool-outcome " + Str(outcome, "outcome") + " " + option + "\n");
+        if (Str(outcome, "outcome") != "selected") {
+            Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(callId)}, {"status", S("failed")}}));
+            Pump(300);
+            cancelled = true;
+            return end("cancelled");
+        }
+        if (option == "reject") {
+            Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(callId)}, {"status", S("failed")}}));
+            Chunk("agent_message_chunk", "refused");
+            return end("end_turn");
+        }
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(callId)}, {"status", S("in_progress")}}));
+        Pump(20);
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(callId)}, {"status", S("completed")},
+                    {"content", Arr({Obj({{"type", S("content")}, {"content", Obj({{"type", S("text")}, {"text", S(result)}})}})})}}));
+        Chunk("agent_message_chunk", "mcptool:" + option);
+        return end("end_turn");
+    }
     if (has("error-rate")) {
         Fail(id, -32603, "Internal error", Obj({{"details", S("API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}")}}));
         return;

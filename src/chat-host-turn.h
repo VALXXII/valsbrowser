@@ -215,8 +215,61 @@ SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {
     if (!t.diffs.empty()) m.Set("diff", AgentDiff(t.diffs.front()));
     return m;
 }
+// ---- tools in words (better-writing: verb first, one whole sentence per case, the product's own nouns)
+// « … » of a step or a card: the annotation's note, short. Empty when this session never saw it.
+std::wstring NoteOf(const std::string& annotation) {
+    if (annotation.empty()) return L"";
+    for (const auto& e : turn.elements) if (e.annId == annotation) return W(ChatPrompt::OneLine(turn.text, 40));
+    if (auto it = annotationNotes.find(annotation); it != annotationNotes.end()) return W(ChatPrompt::OneLine(it->second, 40));
+    if (auto it = Ann::historyEntries.find(annotation); it != Ann::historyEntries.end()) return W(ChatPrompt::OneLine(it->second.annotation.note, 40));
+    return L"";
+}
+// What one of our annotation tools does (asked: the infinitive of the card and of a running step) or did (the step once done).
+std::wstring OurToolTitle(ChatTools::Ours tool, const std::string& annotation, bool done, int count = -1) {
+    const std::wstring note = NoteOf(annotation); const bool named = !note.empty();
+    switch (tool) {
+    case ChatTools::Ours::List: return !done ? std::wstring(TR(chat_tool_list)) : count < 0 ? std::wstring(TR(chat_tool_list_done)) : count == 0 ? std::wstring(TR(chat_tool_list_done_none)) : TRP(chat_tool_list_done, count);
+    case ChatTools::Ours::Get: return done ? (named ? TRF(chat_tool_get_done, note) : std::wstring(TR(chat_tool_get_done_any))) : (named ? TRF(chat_tool_get, note) : std::wstring(TR(chat_tool_get_any)));
+    case ChatTools::Ours::Claim: return done ? (named ? TRF(chat_tool_claim_done, note) : std::wstring(TR(chat_tool_claim_done_any))) : (named ? TRF(chat_tool_claim, note) : std::wstring(TR(chat_tool_claim_any)));
+    case ChatTools::Ours::Resolve: return done ? (named ? TRF(chat_tool_resolve_done, note) : std::wstring(TR(chat_tool_resolve_done_any))) : (named ? TRF(chat_tool_resolve, note) : std::wstring(TR(chat_tool_resolve_any)));
+    case ChatTools::Ours::Release: return done ? (named ? TRF(chat_tool_release_done, note) : std::wstring(TR(chat_tool_release_done_any))) : (named ? TRF(chat_tool_release, note) : std::wstring(TR(chat_tool_release_any)));
+    default: return L"";
+    }
+}
+// How a finished step of ours is said inside the folded summary of a group of steps (contract B 1.3, « summary »):
+// the verb in the past without its subject, then what it was done to. The panel merges equal verbs (« a lu 3
+// annotations ») and lists the rest; a group of one step shows the step's own title (OurToolTitle) as it is.
+SJ::Value OurToolSummary(ChatTools::Ours tool, const std::string& annotation, int count) {
+    SJ::Value s = SJ::Value::Obj(); const std::wstring note = NoteOf(annotation);
+    const auto counted = [&](int n) { s.Set("object", Str(TRP(chat_sum_count, n))); s.Set("count", SJ::Value::Int(n)); s.Set("one", Str(std::wstring(TR(chat_sum_unit_single)))); s.Set("many", Str(std::wstring(TR(chat_sum_unit_plural)))); };
+    const auto about = [&](const wchar_t* verb) {   // one annotation: by its note when we know it, else counted
+        s.Set("verb", Str(std::wstring(verb)));
+        if (!note.empty()) s.Set("object", Str(TRF(chat_sum_named, note))); else counted(1);
+    };
+    switch (tool) {
+    case ChatTools::Ours::List:
+        if (count == 0) { s.Set("verb", Str(std::wstring(TR(chat_sum_found)))); s.Set("object", Str(std::wstring(TR(chat_sum_none)))); }
+        else { s.Set("verb", Str(std::wstring(TR(chat_sum_read)))); if (count > 0) counted(count); else s.Set("object", Str(std::wstring(TR(chat_sum_pending)))); }
+        break;
+    case ChatTools::Ours::Get: about(TR(chat_sum_opened)); break;
+    case ChatTools::Ours::Claim: about(TR(chat_sum_claimed)); break;
+    case ChatTools::Ours::Resolve: about(TR(chat_sum_marked)); s.Set("after", Str(std::wstring(TR(chat_sum_done)))); s.Set("afterMany", Str(std::wstring(TR(chat_sum_done_many)))); break;
+    case ChatTools::Ours::Release: about(TR(chat_sum_released)); break;
+    default: break;
+    }
+    return s;
+}
+ChatTools::Ours OurToolOf(const Acp::ToolCall& t) { return ChatTools::OurTool(ChatTools::ParseMcpName(t.title), Ann::ServerName()); }
+// Notes seen in a tool's result (the list names every annotation it returns): remembered for the next step lines.
+void LearnNotes(const std::string& resultText) {
+    if (resultText.empty()) return;
+    for (auto& a : ChatTools::AnnotationsIn(resultText)) { if (annotationNotes.size() > 2000) annotationNotes.clear(); if (!a.second.empty()) annotationNotes[a.first] = ClipUtf8(a.second, 400); }
+}
 std::wstring PermissionTitle(const Acp::ToolCall& t) {
     const std::wstring who = AgentShort(agentId); std::string file;
+    const auto mcp = ChatTools::ParseMcpName(t.title);
+    if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None) return OurToolTitle(ours, ChatTools::AnnotationIdOf(t.rawInput), false);
+    if (mcp.mcp) return TRF(chat_perm_mcp, who, W(mcp.tool), W(mcp.server));   // another MCP server: its tool and its name, as they are
     if (!t.diffs.empty()) file = FileName(t.diffs.front().path); else if (!t.locations.empty()) file = FileName(t.locations.front().path);
     if (t.kind == "edit" && !file.empty()) return TRF(chat_perm_edit, who, W(file));
     if (t.kind == "delete" && !file.empty()) return TRF(chat_perm_delete, who, W(file));
@@ -255,6 +308,16 @@ std::vector<Acp::PlanEntry> PlanFromText(const std::string& text) {
     }
     return out;
 }
+// The step line of one of our annotation tools: what it does while it runs, what it did once done (« A lu 2 annotations »).
+void WordOurCall(Turn::OurCall& call, const Acp::ToolCall& t, SJ::Value& message) {
+    if (t.hasContent || !t.text.empty()) { LearnNotes(t.text); if (call.tool == ChatTools::Ours::List) { const int n = ChatTools::ListCount(t.text); if (n >= 0) call.count = n; } }
+    if (t.hasStatus || !t.status.empty()) call.done = t.status == "completed";
+    message.Set("title", Str(OurToolTitle(call.tool, call.annotation, call.done, call.count)));
+    // « other », never « read »: the panel folds finished steps into a count by kind, and « read » is counted as files
+    // (« A lu 1 fichier »). An annotation is not a file: the folded line says « 1 étape », the step itself says the rest.
+    message.Set("kind", Str(std::string("other")));
+    if (call.done) message.Set("summary", OurToolSummary(call.tool, call.annotation, call.count));
+}
 void OnPermission(const Acp::PermissionRequest& p) {
     if (!turn.active) { if (session) session->RespondPermission(p.requestId, ""); return; }
     CloseThought(); turn.lastMessageId.clear();
@@ -263,8 +326,26 @@ void OnPermission(const Acp::PermissionRequest& p) {
         auto entries = turn.lastPlan.empty() ? PlanFromText(p.toolCall.text) : turn.lastPlan;
         if (!entries.empty()) { turn.planPermission = p.requestId; turn.planOptions = p.options; SendPlan(entries, true); return; }
     }
+    // Our own annotation tools only read and write the annotation store (never the code, never a command): allowed once,
+    // without a card, in every mode — the step line in the thread says what was done (design/chat-integration.md).
+    // Never « always »: each call is answered here, so nothing is left configured in the agent.
+    const auto mcp = p.question ? ChatTools::McpName{} : ChatTools::ParseMcpName(p.toolCall.title);
+    if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None && session) {
+        for (const auto& o : p.options) if (o.kind == "allow_once" && ChatStore::ValidId(o.id)) {
+            session->RespondPermission(p.requestId, o.id);
+            if (!p.toolCall.id.empty() && !turn.ourCalls.count(p.toolCall.id)) turn.ourCalls[p.toolCall.id] = {ours, ChatTools::AnnotationIdOf(p.toolCall.rawInput), -1, false};
+            Diag(L"annotation tool allowed without a card: " + W(mcp.tool));
+            return;
+        }
+    }
     SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(p.requestId)); if (!p.toolCall.id.empty()) m.Set("toolCallId", Str(p.toolCall.id));
     m.Set("title", p.question ? Str(ClipUtf8(p.toolCall.title, 300)) : Str(PermissionTitle(p.toolCall)));
+    if (mcp.mcp) {   // « Détails » of the card (contract B 1.2): the raw name, and what we know of it
+        SJ::Value tool = SJ::Value::Obj(); tool.Set("name", Str(ClipUtf8(p.toolCall.title, 300))); tool.Set("server", Str(mcp.server));
+        if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None) { tool.Set("label", Str(OurToolTitle(ours, ChatTools::AnnotationIdOf(p.toolCall.rawInput), false))); tool.Set("serverLabel", Str(T8(I18n::Id::chat_tool_server_label))); }
+        m.Set("tool", std::move(tool));
+    }
+    if (!p.question && !p.toolCall.rawInput.empty() && p.toolCall.rawInput != "{}") m.Set("input", Str(ClipUtf8(p.toolCall.rawInput, 4000)));
     m.Set("kind", Str(p.toolCall.kind.empty() || p.toolCall.kind == "switch_mode" ? std::string("other") : p.toolCall.kind));
     if (!p.toolCall.diffs.empty()) m.Set("diff", AgentDiff(p.toolCall.diffs.front()));
     if (const std::string cmd = CommandOf(p.toolCall); !cmd.empty()) m.Set("command", Str(cmd));
@@ -303,12 +384,20 @@ void OnEvent(const Acp::Event& e) {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
         CloseThought(); turn.lastMessageId.clear();
         SJ::Value m = ToolJson(e.tool, false); m.Set("turnId", Str(turn.id));
+        if (const auto ours = OurToolOf(e.tool); ours != ChatTools::Ours::None) {   // one of our annotation tools: the step says it in words
+            auto& call = turn.ourCalls[e.tool.id]; call.tool = ours; if (call.annotation.empty()) call.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
+            WordOurCall(call, e.tool, m);
+        }
         if (auto it = turn.itemOf.find("tool:" + e.tool.id); it != turn.itemOf.end()) convo.data.items[it->second] = Item("toolCall", m); else turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", m);
         Send("toolCall", std::move(m));
         break; }
     case T::ToolCallUpdate: {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
         SJ::Value m = ToolJson(e.tool, true);
+        if (auto call = turn.ourCalls.find(e.tool.id); call != turn.ourCalls.end() && call->second.tool != ChatTools::Ours::None) {
+            if (call->second.annotation.empty()) call->second.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
+            WordOurCall(call->second, e.tool, m);
+        }
         if (auto it = turn.itemOf.find("tool:" + e.tool.id); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; for (const auto& f : m.members) if (f.first != "diff") item.Set(f.first, f.second); }
         else { SJ::Value full = ToolJson(e.tool, false); full.Set("turnId", Str(turn.id)); turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", full); Send("toolCall", std::move(full)); break; }
         Send("toolCallUpdate", std::move(m));
@@ -323,7 +412,12 @@ void OnEvent(const Acp::Event& e) {
     case T::ConfigOptionsChanged: info.options = e.configOptions; SendState(); break;
     case T::CommandsChanged: info.commands = e.commands; SendCommands(); break;
     case T::SessionTitle: if (!e.text.empty()) { convo.data.head.title = ChatPrompt::OneLine(e.text, 60); SendState(); } break;
-    case T::Usage: break;
+    case T::Usage: {   // context gauge (contract B 1.2): relayed as it comes (also after a compaction), kept with the conversation
+        auto& h = convo.data.head; const std::int64_t used = std::max<std::int64_t>(0, e.usage.used), size = std::max<std::int64_t>(0, e.usage.size);
+        if (used != h.usedTokens || size != h.windowTokens) Diag(L"usage " + std::to_wstring(used) + L" / " + std::to_wstring(size));
+        h.usedTokens = used; h.windowTokens = size;
+        SJ::Value m = SJ::Value::Obj(); m.Set("used", SJ::Value::Int(h.usedTokens)); m.Set("size", SJ::Value::Int(h.windowTokens)); Send("usage", std::move(m));
+        break; }
     case T::AuthStatus:   // Claude's adapter answers « ready » even when signed out: its own status is what tells
         Diag(L"agent login: " + W(ClipUtf8(e.text, 40)));
         if (e.text == "none") { info.status = "notConnected"; info.detail = TR(chat_agent_not_connected); if (info.auth.empty()) info.auth = started.authMethods;

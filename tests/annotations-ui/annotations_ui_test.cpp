@@ -393,15 +393,53 @@ static void Captures(Ink& ink) {
     {   NoteView fail = nv; fail.status = NoteStatus::Failed; fail.message = L"Impossible d'enregistrer l'annotation. Votre note est conservée ; réessayez."; auto [l, pr] = noteBoard(fail, CaptureState::Ready, 0, L"2.6-note-write-failed.png"); (void)pr;
         MeasureText(c, k, {40 + l.message.left + 19, 40 + l.message.top, 40 + l.message.right, 40 + l.message.bottom}, canvasRgb, 0xFF7B6EFF, "write error 12/16 #FF7B6E"); }
     {   NoteView kb = nv; kb.focus = NoteAdd; kb.keyboard = true; kb.fieldFocused = false; noteBoard(kb, CaptureState::Ready, 0, L"2.7-note-focus-add-keyboard.png"); }
-    // ---- chat intégré: « Demander à l'agent » in the note panel (left of « Ajouter ») and in the band (left of « Quitter »)
+    // ---- chat intégré: the note's two actions — « Ajouter » (secondary, neutral plate) then « Demander à l'agent »
+    //      (the main one: last, right, the only accent fill) — and the band's button (left of « Quitter »)
     {   NoteView ask = nv; ask.ask = true; auto [l, pr] = noteBoard(ask, CaptureState::Ready, 0, L"6.a-note-ask-agent.png"); (void)pr;
-        Geo("6.a note « Demander à l'agent » — gap to « Ajouter »", 350, 6, l.add.left - l.ask.right);
+        const NoteLayout alone = LayoutNote(ink, nv);
+        Geo("6.a note « Demander à l'agent » ends the row (where « Ajouter » alone ends)", 350, alone.add.right, l.ask.right);
+        Geo("6.a note « Ajouter » — 6 left of « Demander à l'agent »", 350, 6, l.ask.left - l.add.right);
         Geo("6.a note « Demander à l'agent » — same height as « Ajouter »", 350, l.add.bottom - l.add.top, l.ask.bottom - l.ask.top);
-        Geo("6.a note site label ends 8 before the button", 350, 8, l.ask.left - l.site.right);
+        Geo("6.a note site label ends 8 before the first button", 350, 8, l.add.left - l.site.right);
         Geo("6.a note site label keeps room for « localhost:5173 »", 350, 1, l.site.right - l.site.left >= 96 ? 1.f : 0.f, .1f);
-        Geo("6.a note panel height unchanged by the button", 350, LayoutNote(ink, nv).height, l.height);
-        MeasureText(c, k, {40 + l.ask.left + 6, 40 + l.ask.top + 4, 40 + l.ask.right - 6, 40 + l.ask.bottom - 4}, Over(0xFFFFFF0F, canvasRgb), 0xFFFFFFE6, "« Demander à l'agent » 13/16 on its plate");
-        NoteView kbAsk = ask; kbAsk.focus = NoteAsk; kbAsk.keyboard = true; kbAsk.fieldFocused = false; noteBoard(kbAsk, CaptureState::Ready, 0, L"6.a2-note-ask-agent-focus-keyboard.png"); }
+        Geo("6.a note panel height unchanged by the button", 350, alone.height, l.height);
+        Sample(c, k, 40 + l.ask.left + 3, 40 + l.ask.top + 12, accentRgb, "6.a « Demander à l'agent » accent (the main action)");
+        Sample(c, k, 40 + l.add.left + 3, 40 + l.add.top + 12, Over(0xFFFFFF0F, canvasRgb), "6.a « Ajouter » neutral plate #FFFFFF0F (secondary)");
+        MeasureText(c, k, {40 + l.ask.left + 8, 40 + l.ask.top + 4, 40 + l.ask.right - 8, 40 + l.ask.bottom - 4}, accentRgb, 0xFFFFFFFF, "« Demander à l'agent » 13/16 white on accent");
+        MeasureText(c, k, {40 + l.add.left + 6, 40 + l.add.top + 4, 40 + l.add.right - 6, 40 + l.add.bottom - 4}, Over(0xFFFFFF0F, canvasRgb), 0xFFFFFFE6, "« Ajouter » 13/16 on its plate");
+        CHECK(NoteHitAt(l, (l.ask.left + l.ask.right) / 2, l.ask.top + 12) == NoteAsk && NoteHitAt(l, (l.add.left + l.add.right) / 2, l.add.top + 12) == NoteAdd);
+        NoteView kbAsk = ask; kbAsk.focus = NoteAsk; kbAsk.keyboard = true; kbAsk.fieldFocused = false; noteBoard(kbAsk, CaptureState::Ready, 0, L"6.a2-note-ask-agent-focus-keyboard.png");
+        NoteView saving = ask; saving.status = NoteStatus::Saving; noteBoard(saving, CaptureState::Ready, 0, L"6.a3-note-ask-agent-saving.png"); }
+    // ---- 7.a smooth corners of the note panel, at 100 % and 150 %. « before » = what a window region does (the old
+    //      window: a 1-bit round-rect mask over a surface cleared to the canvas); « after » = the per-pixel-alpha layer
+    //      (the same paint code over whatever is behind). Light page behind, where a stair-stepped edge shows most.
+    //      Each board: the top-left corner (20 x 20 DIP), enlarged 12 times: before | after.
+    for (const UINT cd : {96u, 144u}) {
+        NoteView v = nv; v.fieldFocused = false; const NoteLayout l = LayoutNote(ink, v); const float sc = cd / 96.f;
+        Canvas after, dark;
+        Render(ink, NoteSpec::width, l.height, cd, 0xF4F4F3FF, [&](Ink& i, float, float) { PaintNote(i, v, l); }, after);
+        Render(ink, NoteSpec::width, l.height, cd, 0x171717FF, [&](Ink& i, float, float) { PaintNote(i, v, l); }, dark);
+        Canvas before = dark; const int d = 2 * int(NoteSpec::radius * sc + .5f);
+        HRGN rgn = CreateRoundRectRgn(0, 0, int(before.width) + 1, int(before.height) + 1, d, d);
+        for (unsigned y = 0; y < before.height; ++y) for (unsigned x = 0; x < before.width; ++x) if (!PtInRegion(rgn, int(x), int(y))) before.pixels[size_t(y) * before.width + x] = 0xFFF4F4F3;
+        DeleteObject(rgn);
+        // An edge pixel that is neither the page (light) nor the panel (dark): the antialiasing of the silhouette.
+        auto between = [&](const Canvas& cv) { int nb = 0; const int box = int(NoteSpec::radius * sc + .5f);
+            for (int y = 0; y < box; ++y) for (int x = 0; x < box; ++x) { const Rgb p = Px(cv.At(x, y)); const double lum = .2126 * p.r + .7152 * p.g + .0722 * p.b; if (lum > 96 && lum < 226) ++nb; }
+            return nb; };
+        const int nbBefore = between(before), nbAfter = between(after);
+        CHECKM(nbBefore == 0, "7.a window region at %u dpi: a 1-bit silhouette (%d blended pixels)", cd, nbBefore);
+        CHECKM(nbAfter >= int(4 * sc), "7.a layer at %u dpi: antialiased corner (%d blended pixels)", cd, nbAfter);
+        CHECK(Close(Px(after.At(0, 0)), pageRgb) && Close(Px(after.At(int(20 * sc), int(20 * sc))), canvasRgb));
+        const int crop = int(20 * sc + .5f), zoom = 12, gapPx = 24; Canvas board; board.width = unsigned(crop * zoom * 2 + gapPx); board.height = unsigned(crop * zoom);
+        board.pixels.assign(size_t(board.width) * board.height, 0xFFFFFFFF);
+        for (int y = 0; y < crop * zoom; ++y) for (int x = 0; x < crop * zoom; ++x) {
+            board.pixels[size_t(y) * board.width + x] = before.At(x / zoom, y / zoom) | 0xFF000000;
+            board.pixels[size_t(y) * board.width + crop * zoom + gapPx + x] = after.At(x / zoom, y / zoom) | 0xFF000000; }
+        Save(ink, board, cd == 96 ? L"7.a-note-corner-100-before-after.png" : L"7.a-note-corner-150-before-after.png");
+        Save(ink, after, cd == 96 ? L"7.a-note-panel-on-light-100.png" : L"7.a-note-panel-on-light-150.png");
+        sampled.push_back({cd == 96 ? "7.a note corner at 100 %: blended edge pixels, region / layer" : "7.a note corner at 150 %: blended edge pixels, region / layer", std::to_string(nbBefore), std::to_string(nbAfter)});
+    }
     {   Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float) { BannerVisual bv; bv.beta = true; bv.chatShown = true; bv.chatActive = true; PaintBanner(i, w, 32, bv); }, c);
         Save(ink, c, L"6.b-band-ask-agent-open.png");
         const auto l = LayoutBanner(ink, 1180, true, true), plain = LayoutBanner(ink, 1180, true, false);
@@ -723,6 +761,7 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     // ---- Note panel + pill
     NotePopover note; std::vector<NoteSubmission> submits; std::wstring cancelled; bool cancelledKb = false;
     NoteHooks nh; nh.submit = [&](const NoteSubmission& x) { submits.push_back(x); }; nh.cancel = [&](const std::wstring& d, bool kb) { cancelled = d; cancelledKb = kb; }; nh.announce = announce;
+    std::wstring asked; int asks = 0; nh.ask = [&](const std::wstring& d) { asked = d; ++asks; };
     note.Init(inst, host, root, nh);
     RECT target{int(64 * dpiScale), pageTop + int(350 * dpiScale), int(304 * dpiScale), pageTop + int(394 * dpiScale)}; MapWindowPoints(host, nullptr, reinterpret_cast<POINT*>(&target), 2);
     RECT pageScreen = page; MapWindowPoints(host, nullptr, reinterpret_cast<POINT*>(&pageScreen), 2);
@@ -734,6 +773,28 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     CHECK(note.LiftXForTest() < 0 && note.FinalForTest().left > target.right);   // born beside the element, on its side
     Pump(70); SaveLayer(ink, note.GhostForTest(), L"w9-window-note-entering.png");
     CHECK(Settle()); CHECK(note.SettledForTest());
+    {   // Smooth corners at the root: the settled panel is a per-pixel-alpha layer; neither it nor the field's window
+        // has a window region (GetWindowRgn = ERROR); the corner pixels carry partial alpha, the very corner none.
+        HRGN probe = CreateRectRgn(0, 0, 0, 0);
+        CHECK(GetWindowRgn(note.PanelWindow(), probe) == ERROR); CHECK(GetWindowRgn(note.Window(), probe) == ERROR);
+        DeleteObject(probe);
+        CHECK((GetWindowLongPtrW(note.PanelWindow(), GWL_EXSTYLE) & WS_EX_LAYERED) != 0 && IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.GhostForTest().Window()));
+        const auto px = note.PanelForTest().Pixels(); const RECT pr = note.PanelForTest().Rect(), fin = note.FinalForTest(); const int pw = pr.right - pr.left;
+        CHECK(EqualRect(&pr, &fin) && px.size() == size_t(pw) * size_t(pr.bottom - pr.top));
+        int partial = 0; const int box = int(NoteSpec::radius * dpiScale + .5f);
+        if (!px.empty()) for (int y = 0; y < box; ++y) for (int x = 0; x < box; ++x) { const unsigned a = px[size_t(y) * pw + x] >> 24; if (a > 0 && a < 255) ++partial; }
+        CHECK(!px.empty() && (px[0] >> 24) == 0); CHECKM(partial >= 4, "note panel corner: %d pixels with partial alpha", partial);
+        // The field's window: owned by the panel, exactly on the field, 13 DIP inside the edge (never under a corner).
+        RECT fr{}; GetWindowRect(note.Window(), &fr); const int inset = int(12 * dpiScale);
+        CHECK(GetWindow(note.Window(), GW_OWNER) == note.PanelWindow());
+        {   bool above = false, pillAbove = false;   // z-order, top to bottom: the pill, the field's window, the panel
+            for (HWND w = GetWindow(note.Window(), GW_HWNDNEXT); w; w = GetWindow(w, GW_HWNDNEXT)) if (w == note.PanelWindow()) { above = true; break; }
+            for (HWND w = GetWindow(note.PillWindow(), GW_HWNDNEXT); w; w = GetWindow(w, GW_HWNDNEXT)) if (w == note.PanelWindow()) { pillAbove = true; break; }
+            CHECK(above && pillAbove); }
+        CHECK(fr.left >= fin.left + inset && fr.top >= fin.top + inset && fr.right <= fin.right - inset && fr.bottom <= fin.bottom - inset);
+        RECT er{}; GetWindowRect(note.Edit(), &er); CHECK(EqualRect(&er, &fr));
+        SaveLayer(ink, note.PanelForTest(), L"w9b-window-note-panel-layer.png");
+    }
     SaveLayer(ink, note.PillForTest(), L"w10-window-note-pill.png");
     {   auto n = note.NodesForTest(); CHECK(HasNode(n, L"Ajouter") && HasNode(n, L"Ce que l'agent verra") && HasNode(n, L"Site")); }
     // Empty: validation on submit, never a disabled button.
@@ -757,6 +818,40 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     { auto n = note.NodesForTest(); CHECK(HasNode(n, NoteSpec::unavailable()) && !HasNode(n, L"Ce que l'agent verra")); }
     SaveLayer(ink, note.PillForTest(), L"w12-window-note-capture-unavailable.png");
     note.KeyForTest(VK_ESCAPE, true); CHECK(cancelled == L"brouillon" && cancelledKb && !note.Visible()); Settle();
+    CHECK(!IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.Window()));
+    // Chat intégré: « Demander à l'agent » is the main action (right, accent, Entrée); « Ajouter » comes before it
+    // (Tab order = reading order) and keeps Ctrl+Entrée.
+    {   req.capture = CaptureState::Ready; req.draft = L"Aligne-le à droite"; req.askAgent = true; note.Show(req, target, pageScreen, true, false); Settle();
+        const auto n = note.NodesForTest(); std::wstring askKey, addKey;
+        for (const auto& x : n) { if (x.automationId == L"AnnotationNoteAskAgent") askKey = x.accelerator; if (x.automationId == L"AnnotationAdd") addKey = x.accelerator; }
+        CHECK(askKey == L"Entrée" && addKey == L"Ctrl+Entrée");
+        const NoteLayout l = note.LayoutForTest(); CHECK(l.ask.left > l.add.right && l.ask.right > l.add.right);
+        note.KeyForTest(VK_TAB, true); CHECK(note.FocusForTest() == NoteAdd);
+        note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NoteAsk);
+        SaveLayer(ink, note.PanelForTest(), L"w13-window-note-ask-agent-focus.png");
+        note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NotePill);
+        note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NoteField);
+        const size_t before = submits.size(); note.KeyForTest(VK_RETURN, true);
+        CHECK(asks == 1 && asked == L"Aligne-le à droite" && submits.size() == before);   // Entrée in the field asks the agent, writes nothing
+        // The pointer goes to the panel's layer (it never takes activation): a click on a button activates it.
+        const auto click = [&](D2D1_RECT_F r) {
+            const LPARAM at = MAKELPARAM(int((r.left + r.right) / 2 * dpiScale), int((r.top + r.bottom) / 2 * dpiScale));
+            SendMessageW(note.PanelWindow(), WM_MOUSEMOVE, 0, at); SendMessageW(note.PanelWindow(), WM_LBUTTONDOWN, MK_LBUTTON, at); SendMessageW(note.PanelWindow(), WM_LBUTTONUP, 0, at); };
+        click(l.ask); CHECK(asks == 2 && submits.size() == before);
+        CHECK(MA_NOACTIVATE == SendMessageW(note.PanelWindow(), WM_MOUSEACTIVATE, 0, 0));
+        note.KeyForTest(VK_TAB, true); note.KeyForTest(VK_RETURN, false);                   // Tab to « Ajouter », Entrée on it: adds
+        CHECK(asks == 2 && submits.size() == before + 1);
+        click(l.ask); CHECK(asks == 2);                                                      // while the note is being written: « Demander à l'agent » is off
+        note.Failed(L"Impossible d'enregistrer."); click(note.LayoutForTest().add); CHECK(submits.size() == before + 2);   // « Réessayer » with the pointer
+        note.Saved(); CHECK(!note.Visible()); Settle(); req.askAgent = false; }
+    // Reduced motion: the same ghost, a fade only (never scaled, never moved); then the same settled panel.
+    {   req.draft = L"brouillon"; note.Show(req, target, pageScreen, true, true);
+        const Pose rp = note.PresenceForTest().Sample(Motion::Now(), true, note.LiftXForTest(), 0);
+        CHECK(Near(rp.scale, 1, 1e-6) && Near(rp.dx, 0, 1e-6) && Near(rp.dy, 0, 1e-6));
+        CHECK(GetFocus() == note.Edit() && !IsWindowVisible(note.PanelWindow()));
+        CHECK(Settle()); CHECK(note.SettledForTest() && IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.GhostForTest().Window()));
+        note.Close(true); CHECK(!IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.Window()));
+        CHECK(Settle()); CHECK(!IsWindowVisible(note.GhostForTest().Window())); }
 
     // ---- Launcher, cards, history, toast
     Launcher launcher; int toggles = 0, cardConnects = 0, views = 0, reloads = 0, reopens = 0, dismissedKb = -1, annotates = 0;
@@ -806,6 +901,15 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     launcher.Show(LauncherState::Rest, 1, false);
     SetFocus(launcher.LauncherWindow()); SendMessageW(launcher.LauncherWindow(), WM_KEYDOWN, VK_RETURN, 0);
     CHECK(toggles == 1 && launcher.HistoryVisible());
+    {   // Smooth corners everywhere: the band, the modal, the note panel, the launcher, the card, the history and its toast
+        // are per-pixel-alpha layers; none is cut by a window region (the note panel was the only one that was).
+        HRGN probe = CreateRectRgn(0, 0, 0, 0); int surfaces = 0, regions = 0, plain = 0;
+        for (HWND w : {banner.Window(), modal.Window(), note.PanelWindow(), launcher.LauncherWindow(), launcher.CardWindow(), launcher.HistoryWindow(), launcher.ToastWindow()}) {
+            if (!w) continue;
+            ++surfaces; if (GetWindowRgn(w, probe) != ERROR) ++regions; if (!(GetWindowLongPtrW(w, GWL_EXSTYLE) & WS_EX_LAYERED)) ++plain; }
+        DeleteObject(probe);
+        CHECKM(surfaces >= 6 && regions == 0 && plain == 0, "annotation surfaces: %d checked, %d with a window region, %d not layered", surfaces, regions, plain);
+    }
     Pump(80); SaveLayer(ink, launcher.HistoryForTest().LayerForTest(), L"w18-window-history-entering.png");
     CHECK(Settle()); SaveLayer(ink, launcher.HistoryForTest().LayerForTest(), L"w19-window-history.png");
     { auto n = launcher.ButtonNodesForTest(); CHECK(n[0].expand == 2); }

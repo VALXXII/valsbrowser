@@ -193,7 +193,11 @@ def grab(name):
     path = QA / f'{name}.png'
     try:
         from PIL import ImageGrab
-        h = Q.front()
+        # Already in front (the browser or one of its own popups): no Alt tap. On an unlocked session that tap is a real
+        # key press: it puts the window in the system-menu state and the next calls to the page time out.
+        h = Q.main_window(); fg = user32.GetForegroundWindow(); pid = W.DWORD(); user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+        if not fg or pid.value != Q.our_pid():
+            h = Q.front()
         time.sleep(0.35)
         r = W.RECT()
         if ctypes.windll.dwmapi.DwmGetWindowAttribute(h, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:   # DWMWA_EXTENDED_FRAME_BOUNDS
