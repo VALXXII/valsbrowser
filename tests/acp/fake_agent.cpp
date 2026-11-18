@@ -193,6 +193,12 @@ void Chunk(const char* kind, const std::string& text) {
     Update(Obj({{"sessionUpdate", S(kind)}, {"content", Obj({{"type", S("text")}, {"text", S(text)}})}, {"messageId", S("m1")}}));
 }
 SJ::Value Modes() {
+    if (opt.claudeLike)   // claude-agent-acp 0.107: English names, a 4th mode « auto » (bypassPermissions is never shown by the browser)
+        return Obj({{"currentModeId", S(mode)},
+                    {"availableModes", Arr({Obj({{"id", S("default")}, {"name", S("Manual")}, {"description", S("Always ask before making changes")}}),
+                                            Obj({{"id", S("acceptEdits")}, {"name", S("Accept edits")}, {"description", S("Automatically accept all file edits")}}),
+                                            Obj({{"id", S("plan")}, {"name", S("Plan")}, {"description", S("Create a plan before making changes")}}),
+                                            Obj({{"id", S("auto")}, {"name", S("Auto")}, {"description", S("Claude handles permission decisions")}})})}});
     return Obj({{"currentModeId", S(mode)},
                 {"availableModes", Arr({Obj({{"id", S("default")}, {"name", S("Demander")}, {"description", S("Demande avant chaque modification")}}),
                                         Obj({{"id", S("acceptEdits")}, {"name", S("Auto")}}),
@@ -730,7 +736,7 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
     }
     if (m == "session/set_mode") {
         const std::string wanted = Str(params, "modeId");
-        if (wanted != "default" && wanted != "acceptEdits" && wanted != "plan") {
+        if (wanted != "default" && wanted != "acceptEdits" && wanted != "plan" && !(opt.claudeLike && wanted == "auto")) {
             Fail(*id, -32602, "Invalid params", Obj({{"details", S("unknown mode " + wanted)}}));
             return false;
         }
@@ -747,7 +753,7 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
         } else if (config == "effort" && (value == "low" || value == "medium" || (value == "high" && model != "haiku") ||
                                           (opt.claudeLike && (value == "default" || ((value == "xhigh" || value == "max") && model != "haiku"))))) {
             effort = value;
-        } else if (config == "mode" && (value == "default" || value == "acceptEdits" || value == "plan")) {
+        } else if (config == "mode" && (value == "default" || value == "acceptEdits" || value == "plan" || (opt.claudeLike && value == "auto"))) {
             mode = value;
         } else if (config == "fast") {
             // boolean option: accepted, not stored

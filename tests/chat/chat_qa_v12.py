@@ -287,6 +287,44 @@ def run_main():
         step('V1.3 · …nothing is sent to the agent; the thread says « Gardé en annotation »', after == prompts and 'CHAT turn t2' not in C.log_text()[m2:] and 'Gardé en annotation' in line and 'Texte trop discret' in line, line.replace('\n', ' | '))
         capture('7-garde-en-annotation')
 
+        # ---- V1.4: the aim button switches the page's selection off — the chat stays open with its thread — and on again
+        m5 = mark()
+        pg("window.__clicks=0;document.addEventListener('click',function(){window.__clicks++},false);1")
+        h0 = pg('innerHeight'); cur0 = pg("getComputedStyle(document.querySelector('.field-label')).cursor") or ''
+        C.click_panel(selector='.tb.pick')
+        off = logged(r'ANNOTATE selection off', m5, 5)
+        time.sleep(0.7)
+        sw = C.panel("[document.querySelector('.tb.pick').getAttribute('aria-pressed'), document.querySelectorAll('.um, .kept').length]") or ['', 0]
+        h1 = pg('innerHeight'); cur1 = pg("getComputedStyle(document.querySelector('.field-label')).cursor") or ''
+        band_off = not [w for w in Q.windows() if w[1] == 'BrowserAnnotationLayer' and 'Mode Annotation' in (w[2] or '')]
+        report['measures']['selectionSwitch'] = {'heightOn': h0, 'heightOff': h1, 'cursorOn': cur0[:40], 'cursorOff': cur1[:40]}
+        step('V1.4 · the aim button switches the selection off: not pressed, the band goes up (page +32 px), no « viseur » cursor',
+             off is not None and sw[0] == 'false' and h1 - h0 >= 30 and 'url(' in cur0 and 'url(' not in cur1, json.dumps(report['measures']['selectionSwitch']))
+        C.click_page('.field-label'); time.sleep(0.7)
+        clicks = pg('window.__clicks'); aimed = 'CHAT element aimed' in C.log_text()[m5:]
+        step('V1.4 · …the page gets its own clicks again (no chip), the chat stays open with its thread', clicks == 1 and not aimed and C.panel_exists() and sw[1] >= 2, f'clicks {clicks}, aimed {aimed}, {sw[1]} thread item(s)')
+        capture('10-selection-coupee')
+        m6 = mark(); C.shortcut('A')
+        on = logged(r'ANNOTATE selection on', m6, 5); time.sleep(0.8)
+        pressed = C.panel("document.querySelector('.tb.pick').getAttribute('aria-pressed')")
+        cur2 = pg("getComputedStyle(document.querySelector('.field-label')).cursor") or ''
+        step('V1.4 · Ctrl+Maj+A with the chat open switches it on again: pressed, band back, « viseur » back', on is not None and pressed == 'true' and pg('innerHeight') == h0 and 'url(' in cur2, f'{pressed} {pg("innerHeight")}')
+        step('V1.4 · the chat was never closed by the switch', 'CHAT panel closed' not in C.log_text()[m5:])
+        capture('10-selection-active')
+        # ---- V1.4: the modes in French (Paper 14RK-0), whatever the adapter calls them (the fake agent says « Manual », « Accept edits »…)
+        C.click_panel(selector='.tb.mode'); time.sleep(0.4)
+        rows = C.panel("Array.from(document.querySelectorAll('.menu .mi')).map(function(b){return b.innerText.replace(/\\n+/g,' | ')})") or []
+        report['measures']['modeMenu'] = rows
+        step('V1.4 · the mode menu is in French (Demander, Auto, Planifier, Autonome) with Paper\'s descriptions, no English',
+             [r.split(' | ')[0] for r in rows] == ['Demander', 'Auto', 'Planifier', 'Autonome'] and 'Propose chaque modification.' in rows[0] and 'Propose un plan, ne touche à aucun fichier.' in rows[2]
+             and not any(w in ' '.join(rows) for w in ('Manual', 'Accept edits', 'Always ask', 'Claude handles')), ' / '.join(rows))
+        capture('10-modes-en-francais')
+        C.panel("Array.from(document.querySelectorAll('.menu .mi')).find(function(b){return b.innerText.indexOf('Auto')===0}).click();1"); time.sleep(0.5)
+        chipm = C.panel("(document.querySelector('.tb.mode')||{}).innerText||''")
+        step('V1.4 · the mode chip says « Auto » (not « Accept edits »)', (chipm or '').strip() == 'Auto', repr(chipm))
+        C.panel("Array.from(document.querySelectorAll('.tb.mode')).forEach(function(b){b.click()});1"); time.sleep(0.3)
+        C.panel("(function(){var d=Array.from(document.querySelectorAll('.menu .mi')).find(function(b){return b.innerText.indexOf('Demander')===0});if(d)d.click();return 1})()"); time.sleep(0.4)
+
         # ---- a turn that changes the file: the « done » mark and the gauge
         m3 = mark()
         C.click_page('.btn-primary'); C.wait_for(chips, 10); time.sleep(0.3)

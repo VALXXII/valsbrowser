@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1.6** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
+- Version du protocole : **1.7** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -199,7 +199,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `setAgent` | `id` | Première fois (6.2), ou « Autres modèles › Autres agents » dans le menu modèle *(1.2)* : la ligne dit déjà « Ouvre un nouveau chat » ; après la première fois, l'hôte démarre une nouvelle conversation avec cet agent (l'ancienne reste dans l'historique). |
 | `agent.connect` | `agentId`, `methodId?` | « Se connecter » (bandeau ou carte). |
 | `agent.prepare` | `agentId` | « Installer » / « Réessayer » quand l'agent n'est pas prêt. |
-| `pickElement` | `active: bool` | Bouton viseur. L'hôte répond `pick.state`. |
+| `pickElement` | `active: bool` | Bouton viseur. L'hôte répond `pick.state`. *(1.7)* C'est l'interrupteur de la sélection dans la page : `false` la coupe (plus de curseur viseur, de survol ni de cadre ; la page reçoit de nouveau ses clics), le panneau et sa conversation restent ; `true` la rallume. |
 | `element.remove` | `id` | « × » sur une puce. |
 | `attachImage` | `source: "picker"` ou `source: "paste"` + `name`, `mime`, `data` (base64) | « + › Joindre une image » ou collage. L'hôte répond `attachment.added`. |
 | `attachment.remove` | `id` | « × » sur une miniature. |
@@ -284,6 +284,7 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 11. Historique du contrat
 
+- **1.7** (18 nov. 2026, compatible, `"v": 1`) : `pickElement` / `pick.state` = interrupteur de la sélection, le chat restant ouvert ; noms de modes en français fournis par l'hôte (§18).
 - **1.6** (18 nov. 2026, compatible, `"v": 1`) : `annotate` / `annotation.kept` (Ctrl+Entrée garde en annotation) ; infobulle du bouton envoyer (§17).
 - **1.5** (18 nov. 2026, compatible, `"v": 1`) : retours du test réel (§16). `hover` / `pointer.leave` (infobulle de la jauge qui se ferme toujours) ; plus de puce dossier dans la saisie ; menu modèle par fournisseur connecté, efforts sans « Default » ; `pick.state` vrai pendant un tour (un clic va toujours au chat quand il est ouvert).
 - **1.4** (18 nov. 2026, compatible, `"v": 1`) : `state.askFolder` (l'écran du dossier ne s'affiche que si l'hôte le demande ; puce dossier dans la saisie, clic = `folder.choose`) ; lot d'annotations (`annotations.batch`, `annotations.status`, `message.user.annotations`, `send.annotations`, `annotations.request`, `annotation.show`) (§15).
@@ -384,3 +385,19 @@ ne s'affiche plus sur un site local ; elle reste là où le chat ne peut pas s'o
 - **Ligne « Gardé en annotation »** : à droite comme les messages de l'utilisateur, mais plus discrète qu'une bulle
   (bord pointillé `#FFFFFF1F`, pas de fond) ; coche verte, entrée standard du fil (200 ms, 6 px), annoncée poliment.
 - La ligne d'aide multi-ligne de la saisie gagne « Ctrl ↵ Annotation ».
+
+## 18. Révision 1.7 — interrupteur de la sélection, modes en français (V1.4)
+
+**Bouton viser** (en bas à gauche de la saisie) : l'interrupteur de la sélection dans la page (curseur viseur, survol, clic
+qui vise un élément). `aria-pressed="true"` = active ; enfoncé à la couleur d'accent (teinte 16 % et liseré intérieur
+28 %, icône `#8FA9FF`, comme le bouton « Annoter » de la barre), changement en 150 ms, appui 0,96. Un clic envoie
+`pickElement {active}` (l'état change tout de suite dans le panneau, l'hôte confirme par `pick.state`). Coupée : la page
+redevient normale, le bandeau « Mode Annotation » remonte, le bouton « Annoter » de la barre s'éteint ; le panneau garde
+sa conversation, ses puces et les cadres du chat. `Ctrl+Maj+A` (et le bouton « Annoter ») fait la même chose tant que le
+chat est ouvert ; chat fermé, il allume ou quitte le mode comme avant. Fermer le chat pendant que la sélection est coupée
+quitte le mode. Nom accessible « Sélection d'éléments sur la page », `aria-keyshortcuts="Control+Shift+A"`.
+
+**Modes** : `state.modes[].label` / `description` sont écrits par l'hôte en français, quel que soit le nom de l'adaptateur
+(Paper 14RK-0) : « Demander » (Propose chaque modification.), « Auto » (Applique les modifications de fichiers
+directement.), « Planifier » (Propose un plan, ne touche à aucun fichier.), et le second mode automatique des agents,
+« Autonome » (Claude Code décide seul de ce qu'il autorise.), dans cet ordre. Un mode inconnu garde le nom de l'agent.

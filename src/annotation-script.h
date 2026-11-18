@@ -53,6 +53,9 @@
 // wrapper clips to the viewport's client box: it never adds scrollable overflow to the page. An element inside a
 // fixed or sticky box does not scroll with the document: its wrapper is position:fixed instead (followed per frame).
 // While the frame follows the SAME element (scroll, resize), it jumps: the 120 ms glide is only for a new target.
+// V1.4 (chat intégré): « pick » false switches the SELECTION off while the chat panel stays open: no « viseur » cursor
+// (the sheet is emptied), no hover frame nor inspector, no iframe shields, the page gets its own clicks and keys
+// again. The script stays: the chat's marks, source() and sources() go on. « pick » true brings it all back.
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <string>
@@ -99,6 +102,7 @@ var MAX_TEXT = 2000, MAX_MSG = 60000;
 var listeners = [], raf = 0, alive = true;
 var px = -1, py = -1, haveMove = false;
 var cur = null, down = [], frozen = false, shown = false, keyboard = false, seq = 0;
+var off = false;   // V1.4: selection switched off (« pick » false): the page is the page again
 
 var host = D.createElement('browser-annotation-layer');
 host.setAttribute('aria-hidden', 'true');
@@ -573,6 +577,7 @@ function place(info) {
 // Shields over the visible top-level iframes (same and cross origin): their events reach our window
 // listeners, the hit-test (elementsFromPoint without our host) still finds the iframe below.
 function syncShields() {
+  if (off) { for (var z = 0; z < shields.length; z++) shields[z].style.cssText = 'display:none'; return; }
   var list = D.querySelectorAll('iframe,frame'), n = 0;
   for (var i = 0; i < list.length && n < 64; i++) {
     var r = list[i].getBoundingClientRect();
@@ -589,6 +594,7 @@ function frame() {
   raf = 0; if (!alive) return;
   syncShields();
   if (mark) markPlace();
+  if (off) return;
   if (frozen) { if (cur) place(cur); return; }
   if (!haveMove) return;
   haveMove = false;
@@ -599,11 +605,11 @@ function frame() {
 function schedule() { if (!raf && alive) raf = requestAnimationFrame(frame); }
 
 // ---- events
-function onMove(e) { px = e.clientX; py = e.clientY; haveMove = true; keyboard = false; schedule(); }
+function onMove(e) { px = e.clientX; py = e.clientY; if (off) return; haveMove = true; keyboard = false; schedule(); }
 // Only the user's own input is consumed: the page's synthetic events (el.click(), dispatchEvent) pass.
-function stop(e) { if (!e.isTrusted) return; e.preventDefault(); e.stopImmediatePropagation(); }
+function stop(e) { if (!e.isTrusted || off) return; e.preventDefault(); e.stopImmediatePropagation(); }
 function onClick(e) {
-  if (!e.isTrusted) return;
+  if (!e.isTrusted || off) return;
   stop(e);
   if (e.button !== 0) return;
   px = e.clientX; py = e.clientY; keyboard = false;
@@ -614,7 +620,7 @@ function onClick(e) {
   cur = info; down = []; frozen = true; place(cur); sendSelect(cur, null, e);
 }
 function onKey(e) {
-  if (!e.isTrusted || e.ctrlKey || e.metaKey) return;
+  if (!e.isTrusted || e.ctrlKey || e.metaKey || off) return;
   var k = e.key;
   if (k === 'Escape') { stop(e); post({ op: 'escape' }); return; }
   if (frozen) return;
@@ -623,7 +629,7 @@ function onKey(e) {
   if (k === 'Enter' && cur) { stop(e); keyboard = true; frozen = true; place(cur); sendSelect(cur, null, e); return; }
 }
 function onFocus(e) {
-  if (frozen) return;
+  if (frozen || off) return;
   var t = e.composedPath ? e.composedPath()[0] : e.target;
   if (!t || t.nodeType !== 1 || t === host) return;
   var r = t.getBoundingClientRect();
@@ -631,8 +637,8 @@ function onFocus(e) {
   if (t.getRootNode && t.getRootNode().host) { var info = hit(r.left + 1, r.top + 1); if (info && info.el === t) cur = info; }
   down = []; keyboard = true; place(cur);
 }
-function onScroll() { if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
-function onLeave(e) { if (!e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
+function onScroll() { if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
+function onLeave(e) { if (!off && !e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
 
 function selectionInfo(text) {
   var sel = null; try { sel = window.getSelection(); } catch (e) {}
@@ -794,15 +800,29 @@ function cmd(op, arg) {
     return;
   }
   if (op === 'resume') { conceal(false); frozen = false; ++seq; haveMove = px >= 0; schedule(); if (!haveMove) place(null); return; }
-  if (op === 'point') { selectAtPoint(arg.x, arg.y); return; }
+  if (op === 'point') { if (!off) selectAtPoint(arg.x, arg.y); return; }
   if (op === 'accent') {   // { accent: 'r,g,b', svg: cursor } — colours only: no move, no transition, no new selection
     var a = rgbList(arg && arg.accent); if (!a) return;
     A = a;
-    if (arg.svg) { buildCursor(arg.svg); if (sheet) { try { sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) {} } }
+    if (arg.svg) { buildCursor(arg.svg); if (sheet && !off) { try { sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) {} } }
     accentStyle.textContent = accentCss();
     return;
   }
-  if (op === 'selection') { if (!selectSelection(arg)) post({ op: 'noselection' }); return; }
+  if (op === 'selection') { if (off) return; if (!selectSelection(arg)) post({ op: 'noselection' }); return; }
+  if (op === 'pick') {   // V1.4: the selection on (true) or off (false); the chat's marks stay either way
+    var want = !arg;
+    if (want === off) return true;
+    off = want;
+    if (off) {
+      frozen = false; cur = null; down = []; haveMove = false; place(null);
+      try { if (sheet) sheet.replaceSync(''); } catch (e) {}
+      syncShields();
+    } else {
+      try { if (sheet) sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) {}
+      syncShields(); haveMove = px >= 0; schedule();
+    }
+    return true;
+  }
   if (op === 'mark') return markSet(arg);   // chat: true when the element was found and marked
 }
 

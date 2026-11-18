@@ -347,6 +347,15 @@ svg.i { display: block; flex-shrink: 0; }
 .tb { height: 24px; min-width: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 5px; flex-shrink: 0; }
 .tb .ic { width: 14px; height: 14px; opacity: .5; }
 .tb[aria-pressed="true"], .tb[aria-expanded="true"] { background: color-mix(in srgb, #FFFFFF 10%, transparent); }
+/* B 1.7: the selection switch. On = pressed in the accent (the toolbar « Annoter » button's split tint, accent 16 %, and
+   its accent mark); off = a plain tool. The state changes in 150 ms (colour only, never a jump); the press scale is the
+   app's 0.96. */
+.tb.pick { transition: background-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out); }
+.tb.pick .ic { transition: opacity 150ms var(--ease-out), color 150ms var(--ease-out); }
+.tb.pick[aria-pressed="true"] { background: rgb(62 103 255 / 16%); box-shadow: inset 0 0 0 1px rgb(62 103 255 / 28%); }
+.tb.pick[aria-pressed="true"] .ic { opacity: 1; color: var(--accent-ink); }
+@media (hover: hover) { .tb.pick[aria-pressed="true"]:hover { background: rgb(62 103 255 / 22%); } }
+@media (prefers-reduced-motion: reduce) { .tb.pick, .tb.pick .ic { transition: none; } }
 @media (hover: hover) { .tb:hover { background: var(--fill6); } .tb:hover .ic { opacity: .8; } }
 .mode { padding: 0 6px; }
 .mode .ic { width: 13px; height: 13px; opacity: .9; }

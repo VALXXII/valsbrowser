@@ -196,8 +196,11 @@
   const cin = h("div", { class: "cin", contenteditable: "true", role: "textbox", "aria-multiline": "true", "aria-label": "Message à l'agent",
                          spellcheck: "true", "data-placeholder": "Que faut-il changer ?", id: "composer-input" });
   const thumbs = h("div", { class: "thumbs", hidden: true });
-  const pickBtn = h("button", { class: "tb", type: "button", "aria-label": "Viser un élément de la page", title: "Viser un élément", "aria-pressed": "false",
-                                onclick: () => post("pickElement", { active: !S.picking }) }, icon("cursor", "ic"));
+  // B 1.7: the switch of the page's selection (« viseur » cursor, hover, a click picks an element). Pressed = on. Off:
+  // the page is the page again, the chat stays as it is. Ctrl+Maj+A does the same from anywhere while the chat is open.
+  const pickBtn = h("button", { class: "tb pick", type: "button", "aria-label": "Sélection d'éléments sur la page", title: "Sélection d'éléments (Ctrl+Maj+A)",
+                                "aria-pressed": "false", "aria-keyshortcuts": "Control+Shift+A",
+                                onclick: () => { S.picking = !S.picking; renderComposerBar(); post("pickElement", { active: S.picking }); } }, icon("cursor", "ic"));
   const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre ou changer de dossier", title: "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
                                 onclick: (e) => openPlusMenu(e.currentTarget) }, icon("plus", "ic"));
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
@@ -1853,7 +1856,7 @@
       say("Élément " + m.element.label + " ajouté.");
     },
     "attachment.added"(m) { S.cAtt.set(m.attachment.id, m.attachment); renderThumbs(); updateSend(); say("Image " + m.attachment.name + " jointe."); },
-    "pick.state"(m) { S.picking = m.active; renderComposerBar(); say(m.active ? "Viseur actif : cliquez un élément de la page." : ""); },
+    "pick.state"(m) { S.picking = m.active; renderComposerBar(); },   // B 1.7: the button's aria-pressed says it (the browser announces the change)
     mentions(m) { S.mentions = { query: m.query, elements: (m.elements || []).filter(validElement), files: (m.files || []).filter((f) => f && isStr(f.path, 1000)) }; if (S.menu && S.menu.combo === "@" && mentionCtx) openMentionMenu(mentionCtx.q, mentionCtx.node, mentionCtx.offset); },
     commands(m) { S.commands = m.items.filter((c) => c && isStr(c.name, 80) && /^[\w-]+$/.test(c.name)); },
     "edit.confirm": onEditConfirm, "annotations.batch": onBatch, "annotations.status": onAnnStatus,

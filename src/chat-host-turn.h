@@ -584,7 +584,7 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
         m.Set("agentId", Str(agentId)); m.Set("at", Str(Iso(now))); Keep("turn.start", m); Send("turn.start", std::move(m)); }
     if (post) KillTimer(post, AgentIdleTimer);
     SendState(); SyncChromeBits();
-    {   SJ::Value m = SJ::Value::Obj(); m.Set("active", SJ::Value::Bool(picking)); Send("pick.state", std::move(m)); }   // V1.2: a click during the turn still goes to the chat (next message)
+    {   SJ::Value m = SJ::Value::Obj(); m.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(m)); }   // V1.2: a click during the turn still goes to the chat (next message)
     // the element shows who works on it (Paper 6.10): only an element of the top document with a unique selector
     doneMarkSelector.clear(); turn.markSelector.clear();
     for (const auto& e : turn.elements) if (e.sel.frameKind == "main" && e.pending.target.shadowPath.empty() && e.pending.target.selectorUnique && !e.pending.target.selector.empty()) { turn.markSelector = e.pending.target.selector; break; }
@@ -623,7 +623,7 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     turn = Turn{}; doneMarkSelector = changed && done ? markSelector : std::string();
     SendState(); SyncChromeBits(); SaveConvo();
     if (wasBatch) BatchTurnEnded(stopReason);   // the card's last word: what the store says, and what is left
-    {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open())); Send("pick.state", std::move(p)); }
+    {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open() && !Ann::s.paused)); Send("pick.state", std::move(p)); }
     AfterTurnPage(changed);
     ArmAgentIdle();
     if (auto next = std::move(afterTurn)) { afterTurn = nullptr; next(); }

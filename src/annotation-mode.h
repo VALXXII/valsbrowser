@@ -67,6 +67,7 @@ struct Session {
     std::wstring draft;                       // kept when the panel is cancelled
     std::uint32_t pageAccent = 0x3E67FF;      // the accent the page script paints (0xRRGGBB): the window's SETTLED accent
     bool accentOwed = false;                  // an accent change waits for the capture under way (ShotDone)
+    bool paused = false;                      // chat intégré (V1.4): selection switched off, the chat panel stays open
 } s;
 std::uint64_t serials = 0;                    // never reset: a new session never matches an old result
 AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
@@ -109,6 +110,7 @@ bool Open();                                             // the panel is open (o
 bool Shown();                                            // … or still sliding out
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);   // V1.3: a local site's selection goes to the chat (opened if needed); false: the note panel
 void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);
+void SelectionChanged();                                 // V1.4: the selection was switched on / off (the aim button's state)
 bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r);   // true: the image was for the chat
 bool AskAvailable(const std::shared_ptr<Tab>& t);        // « Demander à l'agent » in the note panel (local sites)
 void AskFromNote(const std::wstring& draft);
@@ -246,13 +248,14 @@ bool Available(const std::shared_ptr<Tab>& t, std::wstring* why) {
     if (InFullscreen() || PageFullscreenActive()) return no(TR(annotate_no_fullscreen));
     return true;
 }
+bool Selecting() { return s.active && !s.paused; }   // the mode as the user sees it: band, toolbar button, « viseur »
 void SyncChrome() {
-    chrome.annotateShown = true; chrome.annotateActive = s.active;
+    chrome.annotateShown = true; chrome.annotateActive = Selecting();
     std::wstring why; const bool ok = Available(Active(), &why);
     chrome.SetEnabled('N', ok || s.active);
-    chrome.annotateTip = s.active ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : TRF(annotate_tip_unavailable, why);
+    chrome.annotateTip = Selecting() ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : TRF(annotate_tip_unavailable, why);
     if (!chrome.paintAnnotate) chrome.paintAnnotate = [](ID2D1RenderTarget* t, ID2D1Factory* f, ID2D1SolidColorBrush* b, D2D1_RECT_F box, NativeChrome::Motion::InteractionVisual iv, bool focus) {
-        AUI::ToolbarVisual v; v.active = s.active; v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced();
+        AUI::ToolbarVisual v; v.active = Selecting(); v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced();
         AUI::PaintToolbarButton(t, f, b, box, v);
     };
 }
@@ -881,6 +884,7 @@ bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
 }
 std::wstring Clip(std::wstring t, size_t n) { for (auto& c : t) if (c == L'\n' || c == L'\r' || c == L'\t') c = L' '; if (t.size() > n) { t.resize(n); t += L"…"; } return t; }
 void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
+    if (s.paused) return;   // V1.4: the selection is off (the page script sends none then)
     ++serials; s.serial = serials; s.frozen = true; s.cap = Cap::Pending; s.png.clear(); s.saving = false; s.sel = sel; s.pageSeq = sel.seq;
     s.selectedAt = NowMs(); s.clickLagMs = lag;
     BA::Annotation a;
@@ -1096,6 +1100,30 @@ void Activate(const Start& st) {
     RefreshStatus(); SyncWatch();
     Log(L"ANNOTATE mode on (" + std::to_wstring(GetTickCount64() - started) + L" ms to inject request, accent " + AH::Wide(AccentInts(s.pageAccent)) + L") " + t->uri);
 }
+// Chat intégré (V1.4): the selection — the « viseur » cursor, the hover frame, a click that picks an element — can be
+// switched off while the chat panel stays open with its conversation and its chips (the panel's aim button,
+// Ctrl+Maj+A or the toolbar « Annoter » button while the chat is open). The page is the page again; the band goes up
+// and the toolbar button is no longer lit, as when the mode is off; the page script stays (the chat's marks, the
+// element's source). On again: the band comes back, the « viseur » too. Closing the chat while it is off ends the mode.
+void SetSelecting(bool on) {
+    if (!s.active || s.paused == !on) return;
+    auto t = ModeTab();
+    s.paused = !on;
+    if (!on) {
+        if (note.Visible()) note.Close(false);
+        panel = PendingPanel{}; s.frozen = false;
+        Cmd(t, L"pick", L"false");
+        banner.Hide(); chrome.annotationBand = 0;
+    } else {
+        Cmd(t, L"pick", L"true");
+        chrome.annotationBand = AUI::BannerSpec::height;
+    }
+    SyncChrome(); Layout();
+    if (on) { banner.Show(BandRect(), Reduced()); Chat::ModeEntered(); }
+    Announce(on ? TR(annotation_selection_on) : TR(annotation_selection_off));
+    Log(std::wstring(L"ANNOTATE selection ") + (on ? L"on" : L"off (the chat stays open)"));
+    Chat::SelectionChanged();
+}
 void Exit(const wchar_t* why, bool pageChanged) {
     if (!s.active) return;
     auto t = ModeTab(); const bool hadPopover = note.Visible();
@@ -1137,7 +1165,7 @@ void Rearm(const std::shared_ptr<Tab>& t, std::function<void(bool)> then = nullp
         if (!s.active || s.nonce != nonce) { if (then) then(false); return S_OK; }
         const bool ok = SUCCEEDED(hr) && result && wcscmp(result, L"\"ok\"") == 0;
         if (!ok) { Log(L"ANNOTATE script re-injection failed"); Exit(L"injection"); Announce(TR(annotation_mode_unavailable)); }
-        else { s.injected = true; Log(L"ANNOTATE mode re-armed after a reload"); }
+        else { s.injected = true; Log(L"ANNOTATE mode re-armed after a reload"); if (s.paused) Cmd(ModeTab(), L"pick", L"false"); }
         if (then) then(ok);
         return S_OK; });
     if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, {})).c_str(), cb))) { cb->Release(); Exit(L"injection"); if (then) then(false); return; }
@@ -1200,14 +1228,17 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
         OnSelect(t, c.selection, lag); break; }
     case AH::Op::Hidden: OnHidden(t, c.env.serial); break;
     case AH::Op::Shown: OnShown(c.env.serial); break;
-    case AH::Op::Escape: Exit(L"escape"); break;
+    case AH::Op::Escape: if (!s.paused) Exit(L"escape"); break;
     case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
     }
     return true;
 }
 bool AnnotationCommand(int cmd) {
-    if (cmd == 'N' || cmd == AnnotateCommand) { if (Ann::s.active) Ann::Exit(L"toggle"); else Ann::Activate({}); return true; }
+    if (cmd == 'N' || cmd == AnnotateCommand) {
+        if (Ann::s.active && Chat::Open()) { Ann::SetSelecting(Ann::s.paused); return true; }   // V1.4: with the chat open, the selection only
+        if (Ann::s.active) Ann::Exit(L"toggle"); else Ann::Activate({}); return true;
+    }
     if (cmd == AnnotateExitCommand) { Ann::Exit(L"escape"); return true; }
     if (cmd == ChatCommand) { Chat::Toggle(true); return true; }   // Ctrl+Maj+D: « Demander à l'agent » (starts the mode if needed)
     if (cmd == AnnotateHistoryCommand) {

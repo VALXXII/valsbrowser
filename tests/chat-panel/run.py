@@ -316,6 +316,16 @@ try:
               "send button (B 1.6): its bubble says « Demander à l'agent ↵ » and « Garder en annotation Ctrl ↵ », above it, inside the panel, gone at the leave", json.dumps(tip, ensure_ascii=False)[:240])
         load("garde-en-annotation")
         check(cdp.js("!!document.querySelector('.kept') && document.querySelector('.kept').innerText.includes('Gardé en annotation')"), "keep (B 1.6): the line comes back when the conversation is reopened (thread.reset)")
+        # B 1.7 — the aim button is the selection switch: pressed while on, a click switches it off (the chat stays), again on
+        load("selection-active")
+        sw = lambda: cdp.js("(()=>{const b=document.querySelector('.tb.pick');const cs=getComputedStyle(b);return {pressed:b.getAttribute('aria-pressed'),bg:cs.backgroundColor,keys:b.getAttribute('aria-keyshortcuts'),label:b.getAttribute('aria-label')}})()")
+        on1 = sw(); cdp.js("document.querySelector('.tb.pick').click()"); time.sleep(.3); off1 = sw()
+        sent = cdp.js("window.__posted.filter(m=>m.type==='pickElement').map(m=>m.active)")
+        cdp.js("document.querySelector('.tb.pick').click()"); time.sleep(.3); on2 = sw()
+        sent2 = cdp.js("window.__posted.filter(m=>m.type==='pickElement').map(m=>m.active)")
+        check(on1["pressed"] == "true" and off1["pressed"] == "false" and on2["pressed"] == "true" and sent == [False] and sent2 == [False, True] and on1["bg"] != off1["bg"]
+              and on1["keys"] == "Control+Shift+A" and "Sélection" in on1["label"] and cdp.js("!!document.querySelector('.cin')") ,
+              "selection switch (B 1.7): pressed while on (accent), a click sends pickElement off then on, aria-pressed follows; the chat stays", json.dumps([on1, off1, on2, sent2], ensure_ascii=False)[:300])
         load("en-tete-jauge-pleine")
         check(cdp.js("document.querySelector('.gauge').classList.contains('high') && getComputedStyle(document.querySelector('.gauge .arc')).stroke==='rgb(230, 172, 61)'"), "header: above 80 % the ring turns amber (86 %)")
         load("6.7a-vide")

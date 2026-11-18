@@ -155,6 +155,9 @@
       () => send({ type: "element.attached", element: Object.assign({}, EL, { id: "el-title", label: "h1.title", kind: "heading" }) }), typeIn("Mets ce titre en gras")],
     "garde-en-annotation": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Aligne-le à droite")].concat(doneTurn("t1"),
       [{ type: "annotation.kept", id: "k1", text: "h1.title Mets ce titre en gras", elements: [Object.assign({}, EL, { id: "el-title", label: "h1.title", kind: "heading" })], annotations: ["ann_1"], at: today(15, 40) }]) }],
+    // B 1.7: the selection switch, on (pressed) and off
+    "selection-active": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: true }],
+    "selection-coupee": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: false }],
     "garder-sans-texte": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, () => send({ type: "element.attached", element: EL })],
     "envoyer-infobulle": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] },
       () => send({ type: "element.attached", element: EL }), typeIn("Aligne-le à droite")],
@@ -349,6 +352,7 @@
       case "setEffort": send({ type: "state", effort: m.id }); break;
       case "setMode": send({ type: "state", mode: m.id }); break;
       case "copy": send({ type: "copy.done", ok: true }); break;
+      case "pickElement": send({ type: "pick.state", active: !!m.active }); break;
       case "annotate": send({ type: "annotation.kept", id: "k" + Date.now(), text: m.text, elements: [Object.assign({}, EL, { id: m.elements[0], label: "h1.title", kind: "heading" })], annotations: ["ann_x"], at: new Date().toISOString() }); break;
       case "annotations.request": case "suggestion.run":
         if (m.type === "suggestion.run" && m.id !== "annotations") break;

@@ -94,7 +94,7 @@ void MaybeAttach(std::uint64_t serial) {
     Diag(L"element aimed: " + W(e.label) + (e.source.known ? L" — source " + W(e.source.Full()) + L" (" + W(e.source.from) + L")" : e.nearest.known ? L" — no source of its own (nearest ancestor " + W(e.nearest.Full()) + L")" : L" — no source") + (e.png.empty() ? L", no image" : L", image " + std::to_wstring(e.png.size()) + L" bytes"));
     if (convo.data.head.source.empty() && e.source.known && convo.data.items.empty()) { convo.data.head.source = e.source.Display(); SendState(); }
     SJ::Value m = SJ::Value::Obj(); m.Set("element", ElementRef(e)); composerElements[id] = std::move(e); Send("element.attached", std::move(m));
-    {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking)); Send("pick.state", std::move(p)); }
+    {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
     if (!pendingAsk.empty() && Usable() && !turn.active) { const std::string text = U8(pendingAsk); pendingAsk.clear(); Diag(L"the note's text goes with the element (" + std::to_wstring(text.size()) + L" bytes)"); StartTurn(text, {id}, {}); return; }
     if (Open() && panelReady) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); Diag(L"chip added: the caret goes to the composer"); }
 }
@@ -129,7 +129,7 @@ bool AskAvailable(const std::shared_ptr<Tab>& t) { return t && !privateWindow &&
 // (KeepAnnotation). False (the note panel, as before): not a local site, a private window, the chat cannot open,
 // or 10 elements already in the composer.
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
-    if (!AskAvailable(t) || halted || composerElements.size() + aiming.size() >= 10) return false;
+    if (!AskAvailable(t) || halted || Ann::s.paused || composerElements.size() + aiming.size() >= 10) return false;
     if (!Open()) { OpenPanel(); if (!Open()) return false; Diag(L"a click on an element opens the chat"); }
     OnSelection(t, serial, captureImpossible);
     return true;
@@ -405,7 +405,7 @@ void OpenPanel() {
     if (reduced) panelState = PanelState::Open; else AUI::Animator::Get().Request(&slideClient);
     DetectAgents([] { MaybeStartSession(); }); DetectFolder(); RefreshPending();
     if (panelReady && otherSite) SendComposerBatch();   // empty: the block of the other site leaves the composer
-    if (panelReady) { SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
+    if (panelReady) { SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
     Ann::Announce(site.local && !site.file ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, site.file ? TR(chat_disabled_file) : TR(chat_disabled_not_local)));
     Diag(L"panel opened on " + W(site.origin) + (site.local ? L"" : L" (not local: disabled)") + (folder.empty() ? L", no folder yet" : L", folder " + folder));
 }
@@ -421,6 +421,7 @@ void ClosePanel() {
     panelState = PanelState::Closing; slide.Set(0.f, NativeChrome::Motion::Now(), reduced ? 0 : SlideOutMs, AUI::Curves::band);
     if (reduced || !view.Exists()) FinishClose(); else AUI::Animator::Get().Request(&slideClient);
     Ann::Announce(TR(chat_announce_closed)); Diag(L"panel closed");
+    if (Ann::s.active && Ann::s.paused) { Ann::Exit(L"chat closed while the selection was off"); return; }   // i18n-exempt: log reason — V1.4: nothing of the mode is left
     if (Ann::s.active) FocusChatPage();
 }
 void Toggle(bool keyboard) {
@@ -573,7 +574,7 @@ void OnPanelMessage(const std::string& json) {
         for (const auto& w : waitingPermissions) Send("permission.request", w.second);   // a card that was waiting before this WebView existed
         if (!composerBatch.items.empty()) SendComposerBatch();                               // the batch posed in the composer
         if (batchOwed) { batchOwed = false; PoseBatch(L"asked from the browser"); }   // i18n-exempt: log detail
-        {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking)); Send("pick.state", std::move(p)); }
+        {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
         if (Open()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
         return;
     }
@@ -626,7 +627,7 @@ void OnPanelMessage(const std::string& json) {
     if (type == "setAgent") { SwitchAgent(m.Id("id"), ""); return; }
     if (type == "agent.connect") { Connect(m.Id("agentId").empty() ? agentId : m.Id("agentId"), m.Id("methodId")); return; }
     if (type == "agent.prepare") { const std::string id = m.Id("agentId").empty() ? agentId : m.Id("agentId"); PrepareAgent(id, [](bool ok) { if (ok) MaybeStartSession(); }); return; }
-    if (type == "pickElement") { picking = site.local && !site.file; SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking)); Send("pick.state", std::move(p)); if (picking && m.Flag("active")) FocusChatPage(); return; }   // V1.2: always aiming while open
+    if (type == "pickElement") { Ann::SetSelecting(m.Flag("active")); SelectionChanged(); return; }   // V1.4: the aim button switches the selection on / off (the chat stays)
     if (type == "element.remove") { composerElements.erase(m.Id("id")); return; }
     if (type == "attachImage") { if (m.Text("source", 16) == "picker") PickImage(); else AddAttachment(m.Text("name", 300), m.Text("mime", 40), m.Text("data", 13u << 20)); return; }
     if (type == "attachment.remove") { composerAttachments.erase(m.Id("id")); return; }
@@ -681,6 +682,7 @@ void OnPanelMessage(const std::string& json) {
     Diag(L"panel message of an unknown type ignored: " + W(ClipUtf8(type, 60)));
 }
 
+void SelectionChanged() { SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
 void Shutdown() {
     if (prepareCancel) *prepareCancel = true;
     if (session) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }

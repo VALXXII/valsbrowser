@@ -376,3 +376,17 @@ Parcours en vraie fenêtre (faux agent, listes du vrai adaptateur Claude : `--cl
   saisie (« Annotation non enregistrée »). Journal : `CHAT annotation kept (Ctrl+Entrée) ann_…: write ok`.
 - **Bouton envoyer** : son infobulle dit « Demander à l'agent ↵ » et « Garder en annotation Ctrl ↵ ».
 - La boîte de note reste pour les sites non locaux (aucun chat possible) : « Ajouter » seul, `Entrée`.
+
+## V1.4 — interrupteur de la sélection, modes en français
+
+- **Sélection coupée, chat ouvert** (`Ann::SetSelecting`) : le bouton viser de la saisie, `Ctrl+Maj+A` ou le bouton
+  « Annoter » de la barre (tant que le chat est ouvert) coupent la sélection : le script de page reçoit `pick false`
+  (feuille du curseur vidée, cadre de survol, inspecteur et écrans des iframes retirés, la page reçoit de nouveau ses clics
+  et ses touches), le bandeau remonte (la page reprend ses 32 DIP), le bouton « Annoter » s'éteint. Le mode reste actif en
+  coulisse : le script reste dans la page pour les cadres du chat (« en cours », coche) et le fichier:ligne. Un nouvel
+  appui rallume tout (`pick true`, bandeau). Après un rechargement de la page, l'état coupé est rétabli. Fermer le chat
+  pendant que la sélection est coupée quitte le mode. Journal : `ANNOTATE selection off (the chat stays open)` / `on`.
+- **Modes** : l'hôte nomme les modes en français (I18n `chat_mode_*`), jamais avec les noms anglais de l'adaptateur :
+  l'entrée « ask » = Demander, le premier mode automatique de la table (Claude `acceptEdits`, Codex `workspace-write`) =
+  Auto, le plan = Planifier, l'autre mode automatique (Claude `auto`, Codex `agent`) = Autonome ; ordre de Paper 14RK-0.
+- Faux agent : `--claude-like` donne aussi les modes de l'adaptateur Claude (Manual, Accept edits, Plan, Auto).

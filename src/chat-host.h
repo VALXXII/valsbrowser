@@ -221,6 +221,19 @@ ModeView ModesOf(const std::string& agent, const AgentInfo& info) {
         m.list.push_back({PlanOptionId, c.name.empty() ? c.value : c.name, c.description, "plan"}); if (o.currentValue == m.map.planOn) m.current = PlanOptionId; }
     return m;
 }
+// V1.4: the modes are named in the user's language, as in Paper 14RK-0 (« Demander », « Auto », « Planifier »), never
+// with the adapter's English labels (« Manual », « Accept edits »…). Each agent has two « auto » modes: the first of its
+// map (file edits accepted: Claude « acceptEdits », Codex « workspace-write ») is « Auto »; the one that decides alone
+// (Claude « auto », Codex « agent ») is « Autonome ». A mode the map does not know keeps the agent's own name.
+bool Autonomous(const ModeEntry& m) { return m.kind == "auto" && (m.id == "auto" || m.id == "agent"); }
+void NameMode(ModeEntry& m, const ModeView& v) {
+    (void)v; const bool codex = agentId == "codex";
+    if (m.kind == "ask") { m.name = T8(I18n::Id::chat_mode_ask); m.description = T8(I18n::Id::chat_mode_ask_desc); }
+    else if (m.kind == "plan") { m.name = T8(I18n::Id::chat_mode_plan); m.description = T8(I18n::Id::chat_mode_plan_desc); }
+    else if (Autonomous(m)) { m.name = T8(I18n::Id::chat_mode_autonomous); m.description = codex ? T8(I18n::Id::chat_mode_autonomous_codex_desc) : U8(TRF(chat_mode_autonomous_desc, W(std::string(Agent().name)))); }
+    else if (m.kind == "auto") { m.name = T8(I18n::Id::chat_mode_auto); m.description = T8(codex ? I18n::Id::chat_mode_auto_workspace_desc : I18n::Id::chat_mode_auto_desc); }
+}
+int ModeRank(const ModeEntry& m, const ModeView& v) { (void)v; return m.kind == "ask" ? 0 : m.kind == "auto" && !Autonomous(m) ? 1 : m.kind == "plan" ? 2 : Autonomous(m) ? 3 : 4; }
 std::string KindOfMode(const ModeView& m, const std::string& id) { for (const auto& e : m.list) if (e.id == id) return e.kind; return "other"; }
 std::map<std::string, std::string> agentFirstModel;   // agent id -> the model it had chosen itself when its first session started (its « Par défaut » when it has no alias)
 // An agent's list as the panel shows it (V1.2): never the « use my default » alias; `defaultValue` gets « Par défaut ».
@@ -273,7 +286,9 @@ void SendState() {
     // efforts (V1.2): the agent's levels without its « Default »; a session still on that alias shows no effort
     st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(effort->currentValue) && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? Str(effort->currentValue) : SJ::Value::Null());
     {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
-        for (const auto& m : mv.list) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
+        std::vector<ModeEntry> shown = mv.list; for (auto& m : shown) NameMode(m, mv);
+        std::stable_sort(shown.begin(), shown.end(), [&](const ModeEntry& a, const ModeEntry& b) { return ModeRank(a, mv) < ModeRank(b, mv); });
+        for (const auto& m : shown) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
         st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mv.current) ? Str(mv.current) : SJ::Value::Null()); }
     {   SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(convo.data.head.id)); c.Set("title", Str(convo.data.head.title.empty() ? T8(I18n::Id::chat_title_new) : convo.data.head.title));
