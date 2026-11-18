@@ -1091,63 +1091,66 @@
   ]
  },
  "c-menu-effort": {
-  "root": ".menu",
-  "dy": -41,
-  "note": "la vue Effort commence par « ‹ Effort » et un trait (41 px avec les écarts de 1 px) que la planche 17VU-0 n'a pas (§9.9) : les lignes sont comparées sous eux",
+  "root": ".sub-menu",
   "nodes": [
    [
+    "17VU-0",
+    ".sub-menu",
+    "f"
+   ],
+   [
     "17VV-0",
-    ".menu > :nth-child(3)",
+    ".sub-menu > :nth-child(1)",
     "f"
    ],
    [
     "17VX-0",
-    ".menu > :nth-child(3) .lb",
+    ".sub-menu > :nth-child(1) .lb",
     "t"
    ],
    [
     "17VY-0",
-    ".menu > :nth-child(4)",
+    ".sub-menu > :nth-child(2)",
     "f"
    ],
    [
     "17W0-0",
-    ".menu > :nth-child(4) .lb",
+    ".sub-menu > :nth-child(2) .lb",
     "t"
    ],
    [
     "17W1-0",
-    ".menu > :nth-child(5)",
+    ".sub-menu > :nth-child(3)",
     "f"
    ],
    [
     "17W3-0",
-    ".menu > :nth-child(5) .lb",
+    ".sub-menu > :nth-child(3) .lb",
     "t"
    ],
    [
     "17W4-0",
-    ".menu > :nth-child(5) .ck",
+    ".sub-menu > :nth-child(3) .ck",
     "f"
    ],
    [
     "17W6-0",
-    ".menu > :nth-child(6)",
+    ".sub-menu > :nth-child(4)",
     "f"
    ],
    [
     "17W8-0",
-    ".menu > :nth-child(6) .lb",
+    ".sub-menu > :nth-child(4) .lb",
     "t"
    ],
    [
     "17W9-0",
-    ".menu > :nth-child(7)",
+    ".sub-menu > :nth-child(5)",
     "f"
    ],
    [
     "17WB-0",
-    ".menu > :nth-child(7) .lb",
+    ".sub-menu > :nth-child(5) .lb",
     "t"
    ]
   ]

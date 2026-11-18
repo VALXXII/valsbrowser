@@ -185,6 +185,8 @@
     // the menus next to their boards (17US-0 with « Autres modèles », 17VU-0)
     "c-menu-modele-plus": [LAY(), st({ agents: [Object.assign({}, CLAUDE, { models: CLAUDE.models.concat([{ id: "opus41", label: "Opus 4.1" }]) }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(80)],
     "c-menu-effort": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(40), click(".menu .mi[data-key=effort]"), wait(80)],
+    "c-menu-autres": [LAY(), st({ agents: [Object.assign({}, CLAUDE, { models: CLAUDE.models.concat([{ id: "opus41", label: "Opus 4.1" }]) }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(40), click(".menu .mi[data-key=more]"), wait(80)],
+    "c-menu-effort-gauche": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, () => { window.__grant = { right: 0 }; }, wait(30), click(".model .m"), wait(40), click(".menu .mi[data-key=effort]"), wait(120)],
     "c-menu-plus": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
     "c-menu-plus-incertain": [LAY(), st({ askFolder: true }), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
     "c-infobulle-envoyer": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn(CASK), blur],

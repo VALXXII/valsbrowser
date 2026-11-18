@@ -336,7 +336,7 @@ try:
     for name in scen:
         h = 777 if name == "6.6-fil" else 640 if name in ("6.7a-vide", "6.7b-historique") else 698
         bubble = name.startswith("c-") and name != "c-bascule-panneau"
-        ok = load(name, 380, h)
+        ok = load(name, 900 if bubble else 380, h)   # bubble: room for what floats around the surface (sub-menus on the right)
         if name in HOVER:
             box = cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(HOVER[name])});if(!n)return null;const r=n.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]}})()")
             if box: cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=box[0], y=box[1]); time.sleep(.65 if bubble else .25)
@@ -360,6 +360,9 @@ try:
             cdp.js("document.querySelector('.layer').style.visibility=''")
             if any(ins.values()):   # the whole window the host grants: the surface and what floats outside it
                 shot(os.path.join(COMMENT, name + "-fenetre.png"), {"x": 0, "y": 0, "width": size[0] + ins["left"] + ins["right"], "height": size[1] + ins["top"] + ins["bottom"]})
+            if name == "c-menu-effort":   # the Effort sub-menu alone, next to its board (Paper 17VU-0)
+                sb = cdp.js("(()=>{const n=document.querySelector('.sub-menu');if(!n)return null;const r=n.getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}})()")
+                if sb: shot(os.path.join(COMMENT, "c-menu-effort-sous-menu.png"), sb)
             if name == "c-2.1-survol":   # the hover list alone, next to its board (Paper 1B7H-0)
                 tb = cdp.js("(()=>{const r=document.getElementById('b-tip').getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}})()")
                 if tb["width"]: shot(os.path.join(COMMENT, "c-2.1-infobulle-etapes.png"), tb)
@@ -394,7 +397,7 @@ try:
         rw, rh = size_of(ref)
         report["scenarios"].setdefault(name, {})["compare"] = dict({k: r[k] for k in ("mean", "over", "w", "h", "mode")}, board=[rw, rh])
         print(f"     compare {name}: {r['mode']} {r['w']}x{r['h']} (board {rw}x{rh})" + (f", mean diff {r['mean']:.1f}/255, pixels off >48: {r['over']:.1f} %" if r['mean'] is not None else ""))
-        if name != "c-2.1-infobulle-etapes":
+        if name not in ("c-2.1-infobulle-etapes", "c-menu-effort-sous-menu"):
             check((r["w"], r["h"]) == (rw, rh), f"{name}: the bubble has the size of its Paper board ({rw}x{rh})", f"{r['w']}x{r['h']}")
 
     if fidelity: fidelity_table()
@@ -618,6 +621,37 @@ try:
         g = cdp.js(geo_js)
         check(g["inset"]["top"] <= 40 and g["mTop"] > g["aTop"] + 60 and g["mBottom"] <= g["winH"] and (g["ask"].get("overflowBottom") or 0) > 0 and g["scroll"] <= 0,
               "bubble (menu, R3): when the host cannot give the room above (screen edge: 40 px), the menu turns under its button and asks the room below", json.dumps(g)[:300])
+        # Effort and Autres modèles: true sub-menus next to the model menu (Paper 6.4: 17VU-0 beside 17US-0)
+        sub_js = """(()=>{const m=document.querySelector('.menu.models:not(.sub-menu)'),s=document.querySelector('.sub-menu');if(!m||!s)return null;const a=m.getBoundingClientRect(),b=s.getBoundingClientRect();
+          return {gapR:Math.round(b.left-a.right),gapL:Math.round(a.left-b.right),top:Math.round(b.top-a.top),w:Math.round(b.width),inWin:b.left>=0&&b.right<=document.documentElement.getBoundingClientRect().width,
+          rows:Array.from(s.querySelectorAll('.mi .lb')).map(n=>n.textContent),back:s.querySelectorAll('.mi.back').length,mainRows:m.querySelectorAll('.mi').length,
+          exp:(m.querySelector('.mi[aria-expanded=true]')||{dataset:{}}).dataset.key||'',focus:document.activeElement.closest('.sub-menu')?document.activeElement.textContent.trim():'',ask:window.__posted.filter(x=>x.type==='bubble.size').pop()}})()"""
+        load("c-menu-effort")
+        se = cdp.js(sub_js)
+        check(se and se["gapR"] == 4 and se["top"] == 0 and se["w"] == 214 and se["inWin"] and se["rows"] == ["Faible", "Moyen", "Élevé", "X-Élevé", "Max"] and se["back"] == 0 and se["mainRows"] >= 7
+              and se["exp"] == "effort" and se["focus"].startswith("Élevé") and (se["ask"].get("overflowRight") or 0) > 0,
+              "sub-menu (Paper 6.4): Effort opens beside the model menu (on its right, 4 px, tops aligned, 214 px, no « ‹ Retour »), the window grows on the right; focus on the chosen level", json.dumps(se, ensure_ascii=False)[:300])
+        key("ArrowLeft")
+        check(cdp.js("!document.querySelector('.sub-menu') && !!document.querySelector('.menu.models') && document.activeElement.dataset.key==='effort'"), "sub-menu: ArrowLeft closes it, the model menu stays, focus back on « Effort »")
+        key("ArrowRight")
+        check(cdp.js("!!document.querySelector('.sub-menu') && !!document.activeElement.closest('.sub-menu')"), "sub-menu: ArrowRight on « Effort » opens it again, focus inside")
+        key("Escape")
+        check(cdp.js("!document.querySelector('.sub-menu') && !!document.querySelector('.menu.models')") and "close" not in posted(), "sub-menu: Échap closes the sub-menu only")
+        key("ArrowRight"); key("ArrowDown"); key("Enter")
+        check(cdp.js("!document.querySelector('.menu')") and any(x.startswith("setEffort") for x in posted()), "sub-menu: Entrée on a level sets it and closes both menus", str(posted()[-2:]))
+        load("c-menu-modele")
+        c = center(".menu .mi[data-key=effort]"); move(*c); time.sleep(.4)
+        hv = cdp.js("[!!document.querySelector('.sub-menu'), document.activeElement.closest('.sub-menu')?1:0]")
+        c2 = center(".menu .mi:nth-child(1)"); move(*c2); time.sleep(.5)
+        check(hv == [True, 0] and cdp.js("!document.querySelector('.sub-menu')"), "sub-menu: hovering « Effort » opens it (the focus stays), moving to another row closes it", str(hv))
+        load("c-menu-autres")
+        sa = cdp.js(sub_js)
+        check(sa and sa["gapR"] == 4 and sa["w"] == 300 and sa["rows"] == ["Opus 4.1"] and sa["back"] == 0, "sub-menu: « Autres modèles » opens the same way, beside the menu", json.dumps(sa, ensure_ascii=False)[:240])
+        load("c-menu-effort-gauche")
+        sl = cdp.js(sub_js)
+        check(sl and sl["gapL"] == 4 and sl["top"] == 0 and sl["inWin"] and (sl["ask"].get("overflowRight") or 0) == 0 and (sl["ask"].get("overflowLeft") or 0) > 0,
+              "sub-menu: no room on the right (screen edge), it opens on the left of the menu (overflowLeft)", json.dumps(sl, ensure_ascii=False)[:240])
+
         load("c-menu-mode")
         mm = cdp.js("""(()=>{const m=document.querySelector('.menu');return {rows:Array.from(m.querySelectorAll('.mi')).map(b=>[b.querySelector('.lb').textContent,(b.querySelector('.ds')||{}).textContent||'']),
           icons:Array.from(m.querySelectorAll('.mi .lead')).map(i=>{const r=i.getBoundingClientRect(),cs=getComputedStyle(i);return [Math.round(r.width),cs.color,cs.opacity]}),

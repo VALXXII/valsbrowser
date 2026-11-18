@@ -68,6 +68,7 @@
     cEls: new Map(), cAtt: new Map(), editing: null, replay: false, fatal: false,
     planPending: null,
     // B 1.8 — comment mode: the page as a compact bubble next to the element (Paper 18NS-0 … 19IO-0)
+    sub: null,
     lay: { mode: "panel", maxW: 305, maxH: 520, side: "right", element: "" },
     bview: null, berr: null,
     // B 1.9 (R3): margins of transparent window around the surface — asked (`bubble.size` overflow*) and granted (`layout.inset`)
@@ -541,6 +542,7 @@
   function closeMenu(restore) {
     if (!S.menu) return;
     const m = S.menu;
+    closeSub();
     S.menu = null;
     m.el.remove();
     if (m.anchor) m.anchor.setAttribute("aria-expanded", "false");
@@ -581,7 +583,7 @@
       }
       menuEl.style.left = Math.round(x) + "px"; menuEl.style.top = Math.round(y) + "px";
       menuEl.style.setProperty("--origin", origin + " " + side);
-      return { x, y, w: width, h: menuEl.offsetHeight, pad: menuEl.classList.contains("flat") ? SHADOW.none : SHADOW.menu };
+      return { x, y, w: width, h: menuEl.offsetHeight, pad: menuEl.classList.contains("models") ? SHADOW.none : SHADOW.menu };   // Paper 17US-0 / 17VU-0: no shadow
     });
   }
   // Button-opened menu: focus moves in, arrows move, Enter picks, Escape returns to the trigger.
@@ -601,7 +603,7 @@
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const n = its.length; if (n) its[(i + (e.key === "ArrowDown" ? 1 : n - 1) + n) % n].focus(); }
       else if (e.key === "Home") { e.preventDefault(); its[0] && its[0].focus(); }
       else if (e.key === "End") { e.preventDefault(); its[its.length - 1] && its[its.length - 1].focus(); }
-      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeMenu(true); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (S.sub) closeSub(true); else closeMenu(true); }
       else if (e.key === "Tab") closeMenu();
       else if (e.key === "ArrowRight" && document.activeElement && document.activeElement.dataset.sub) { e.preventDefault(); document.activeElement.click(); }
       else if (e.key === "ArrowLeft" && S.menu && S.menu.view && S.menu.view !== "main") { e.preventDefault(); showModelView("main", S.menu.view); }
@@ -616,6 +618,7 @@
       if (it.node) { el.appendChild(it.node); continue; }
       const b = h("button", { class: "mi" + (it.desc ? " top" : "") + (it.back ? " back" : ""), type: "button", role: it.radio ? "menuitemradio" : "menuitem", tabindex: "-1",
                               "aria-checked": it.radio ? String(!!it.checked) : null, "aria-disabled": it.disabled ? "true" : null, "data-sub": it.sub ? "1" : null, "data-key": it.key || null,
+                              "aria-haspopup": it.sub && BUB() ? "menu" : null, "aria-expanded": it.sub && BUB() ? "false" : null,
                               onclick: () => { if (!it.disabled) it.onSelect(); } });
       if (it.lead) b.appendChild(it.lead);
       const g = h("span", { class: "grow", style: "flex:1" }, h("span", { class: "row1" }, h("span", { class: "lb", text: it.label }), it.tag ? h("span", { class: "tag", text: it.tag }) : null));
@@ -629,13 +632,82 @@
   }
   document.addEventListener("pointerdown", (e) => {
     if (BUB() && !app.contains(e.target) && !menuLayer.contains(e.target)) { bTipHide(); tipHide(); }
-    if (S.menu && !S.menu.el.contains(e.target) && !(S.menu.anchor && S.menu.anchor.contains(e.target)) && e.target !== cin && !cin.contains(e.target)) closeMenu();
+    if (S.menu && !S.menu.el.contains(e.target) && !(S.sub && S.sub.el.contains(e.target)) && !(S.menu.anchor && S.menu.anchor.contains(e.target)) && e.target !== cin && !cin.contains(e.target)) closeMenu();
   }, true);
 
   function openModelMenu(anchor) {
     openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: 300, cls: "models" });   // the class before the menu is placed: its rows are tighter
-    if (S.menu) S.menu.view = "main";
+    if (!S.menu) return;
+    S.menu.view = "main";
+    // Bubble: « Autres modèles › » and « Effort › » open a real sub-menu next to this one (pointer: a short pause on the row)
+    if (BUB()) S.menu.el.addEventListener("pointerover", (e) => {
+      const row = e.target.closest && e.target.closest(".mi");
+      if (!row || !S.menu || !S.menu.el.contains(row)) return;
+      clearTimeout(subTimer);
+      if (row.dataset.sub) { if (!S.sub || S.sub.view !== row.dataset.key) subTimer = setTimeout(() => openSub(row.dataset.key, row, false), 120); }
+      else if (S.sub) subTimer = setTimeout(() => closeSub(), 250);
+    });
   }
+  // B 1.9 (Paper 6.4: 17VU-0 next to 17US-0): in the bubble, Effort and Autres modèles are true sub-menus beside the model
+  // menu — on its right, or on its left when the host cannot give the room (`overflowRight` / `overflowLeft`). Tops aligned,
+  // 4 px apart. ArrowRight or the pointer opens; ArrowLeft or Échap closes it and returns to its row. The panel, too narrow
+  // for two menus side by side, keeps the view inside the menu (« ‹ Effort »).
+  let subTimer = 0;
+  function subItems(view) { const it = modelItems(view); while (it.length && (it[0].back || it[0].sep)) it.shift(); return it; }
+  function closeSub(restore) {
+    clearTimeout(subTimer);
+    const sub = S.sub;
+    if (!sub) return;
+    S.sub = null;
+    sub.el.remove(); floatDrop(sub.el);
+    if (sub.row) sub.row.setAttribute("aria-expanded", "false");
+    if (restore && sub.row && sub.row.isConnected) sub.row.focus({ preventScroll: true });
+  }
+  function openSub(view, row, focus) {
+    if (!S.menu || !row) return;
+    clearTimeout(subTimer);
+    if (S.sub && S.sub.view === view) { if (focus) subFocus(); return; }
+    closeSub();
+    const width = view === "effort" ? 214 : 300;
+    const el = h("div", { class: "menu models sub-menu", role: "menu", "aria-label": view === "effort" ? "Effort" : "Autres modèles", tabindex: "-1" });
+    fillMenu(el, subItems(view));
+    menuLayer.appendChild(el);
+    S.sub = { el, view, row };
+    row.setAttribute("aria-expanded", "true");
+    const parent = S.menu.el;
+    floatSet(el, (lim, H) => {
+      const W = S.lay.maxW;
+      el.style.width = width + "px"; el.style.maxHeight = "";
+      const x0 = parseFloat(parent.style.left) || 0, y0 = parseFloat(parent.style.top) || 0, pw = parent.offsetWidth, sh = el.offsetHeight;
+      let x = x0 + pw + 4, from = "left";
+      if (x + width > W + lim.right) { x = x0 - 4 - width; from = "right"; if (x < -lim.left) { x = Math.max(-lim.left, x0 + pw - width); from = "left"; } }
+      let y = y0;
+      if (y + sh > H + lim.bottom) y = Math.max(-lim.top, H + lim.bottom - sh);
+      el.style.left = Math.round(x) + "px"; el.style.top = Math.round(y) + "px";
+      el.style.setProperty("--origin", "top " + from);
+      return { x, y, w: width, h: sh, pad: SHADOW.none };
+    });
+    el.addEventListener("pointerover", () => clearTimeout(subTimer));
+    el.addEventListener("keydown", (e) => {
+      const its = Array.from(el.querySelectorAll(".mi:not([aria-disabled='true'])")), i = its.indexOf(document.activeElement);
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const n = its.length; if (n) its[(i + (e.key === "ArrowDown" ? 1 : n - 1) + n) % n].focus(); }
+      else if (e.key === "Home") { e.preventDefault(); its[0] && its[0].focus(); }
+      else if (e.key === "End") { e.preventDefault(); its[its.length - 1] && its[its.length - 1].focus(); }
+      else if (e.key === "ArrowLeft" || e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSub(true); }
+      else if (e.key === "Tab") closeMenu();
+    });
+    if (focus) subFocus();
+  }
+  function subFocus() {
+    if (!S.sub) return;
+    const its = Array.from(S.sub.el.querySelectorAll(".mi:not([aria-disabled='true'])"));
+    (its.find((i) => i.getAttribute("aria-checked") === "true") || its[0] || S.sub.el).focus({ preventScroll: true });
+  }
+  const subOrView = (view) => () => {
+    if (!BUB()) { showModelView(view); return; }
+    const row = S.menu && S.menu.el.querySelector(".mi[data-key='" + view + "']");
+    openSub(view, row, true);
+  };
   function showModelView(view, from) {
     if (!S.menu) return;
     S.menu.view = view;
@@ -652,7 +724,7 @@
     const cur = curAgent();
     if (a === cur && m) { post("setModel", { id: m.id, agentId: a.id }); S.st.model = m.id; closeMenu(true); renderComposerBar(); return; }
     if (a === cur) { closeMenu(true); return; }
-    switchTo = { a, m }; showModelView("switch");
+    switchTo = { a, m }; closeSub(); showModelView("switch");
   }
   function modelItems(view) {
     const cur = curAgent(), items = [], groups = connectedAgents();
@@ -702,8 +774,8 @@
     });
     const more = groups.some((a) => (a.models || []).length > PER_GROUP);
     if (more || efforts.length) items.push({ sep: true });
-    if (more) items.push({ label: "Autres modèles", sub: true, key: "more", onSelect: () => showModelView("more") });
-    if (efforts.length) items.push({ label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", onSelect: () => showModelView("effort") });
+    if (more) items.push({ label: "Autres modèles", sub: true, key: "more", onSelect: subOrView("more") });
+    if (efforts.length) items.push({ label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", onSelect: subOrView("effort") });
     return items;
   }
   function agentAction(a) {

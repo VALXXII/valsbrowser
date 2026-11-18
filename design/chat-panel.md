@@ -507,7 +507,8 @@ qui dirait la même phrase n'est pas affiché en bulle tant qu'un message en att
    cale sur l'étape telle que la place `1B30-0` (2 px plus à gauche que sur `1AIE-0`, qui fige aussi sa largeur à 128 px).
 2. **« Ask » → « Demander »** (noms de modes en français, §18).
 3. **Menus** : non dessinés dans les planches du mode ; mêmes menus que le panneau (6.4), au-dessus de leur bouton, hors de
-   la bulle *(1.9)*. La vue Effort s'ouvre dans le menu modèle, sous une ligne « ‹ Effort » (§9.9), et non à côté.
+   la bulle *(1.9)*. Effort et Autres modèles sont de vrais sous-menus à côté du menu modèle (§20.1) ; le panneau, trop étroit
+   pour deux menus côte à côte, garde la vue dans le menu (« ‹ Effort », §9.9).
 4. **Variantes entre planches**, une seule retenue : bulle du message de 210 px au plus (`1AE7-0` la dessine à 220) et
    de rayon 12 (`1AWI-0` : 10) ; étape en cours avec l'anneau de 14 px et son retrait de `1B30-0` (`1ANU-0` : anneau de
    12 px collé au bord droit).
@@ -554,6 +555,12 @@ Paper `18TO-0` … `1B19-0`) et peut dessiner autour d'elle, dans la marge que l
   menu des modes 290 px avec l'ombre `#00000080 0 16px 48px`, lignes 2 px l'une de l'autre ; infobulle des étapes 2 px
   au-dessus de l'étape, bords gauches alignés, 178 px, coins 10/10/10/4 (le coin de 4 px côté étape), sans ombre ;
   infobulle du bouton envoyer 6 px au-dessus, bords droits alignés.
+- **Sous-menus** (Paper 6.4 : `17VU-0` à côté de `17US-0`) : dans la bulle, « Effort › » (214 px) et « Autres modèles › »
+  (300 px) ouvrent un vrai sous-menu à côté du menu modèle, sans ligne « ‹ Retour » : à sa droite, 4 px plus loin, hauts
+  alignés (`overflowRight`) ; à sa gauche si l'hôte ne peut pas donner la place à droite (`overflowLeft`) ; par-dessus sa
+  partie droite si aucun côté n'a la place. Ouverture : survol de la ligne (120 ms), clic, Entrée ou flèche droite (le focus
+  va sur le niveau choisi) ; fermeture : flèche gauche ou Échap (le menu modèle reste, focus sur sa ligne), survol d'une
+  autre ligne (250 ms) ; choisir ferme les deux. La ligne porte `aria-haspopup="menu"` et `aria-expanded`.
 
 ### 20.2 Pas de puce sous le message en bulle (R7)
 
@@ -609,6 +616,6 @@ ne fait jamais deux cartes.
 (boîtes relatives à la bulle ou au menu, styles calculés ; `tests/chat-panel/fidelity.json` relie chaque nœud Paper à son
 élément) et écrit le tableau `build/chat-qa/comment-v2/panel/ecarts.md` : 0 écart non justifié. Écarts justifiés : le nom
 français du mode (« Demander » au lieu de « Ask ») ; les variantes entre planches de §19.7.4 (bulle de 220 px de `1AE7-0`,
-rayon 10 de `1AWI-0`, étape de `1ANU-0`, étape survolée de `1AIE-0`) ; la vue Effort sous sa ligne « ‹ Effort » (§9.9) ;
+rayon 10 de `1AWI-0`, étape de `1ANU-0`, étape survolée de `1AIE-0`) ;
 trois marges portées par l'enfant plutôt que par le cadre, au même rendu (barre « 1 fichier modifié », zone du diff).
 
