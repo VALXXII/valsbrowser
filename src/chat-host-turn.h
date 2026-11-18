@@ -54,7 +54,8 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
             auto& a = agentInfo[id]; a.prepared = ok; a.progress = -1;
             if (ok) { a.status = "ready"; a.detail = TR(chat_agent_installed); }
             else if (shared->result.error == AgentRuntime::PrepareError::Cancelled) { a.status = "ready"; a.detail = TR(chat_agent_first_use); }
-            else { a.status = "error"; a.detail = TR(chat_agent_unavailable); Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; SendError(ProblemFor(e, id), std::string(AgentRuntime::PrepareErrorName(shared->result.error)) + " " + shared->result.detail); }
+            else { a.status = "error"; a.detail = TR(chat_agent_unavailable);
+                if (!turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; SendError(ProblemFor(e, id), std::string(AgentRuntime::PrepareErrorName(shared->result.error)) + " " + shared->result.detail); } }   // a waiting turn says it itself
             SendState(); if (then) then(ok);
         });
     preparePermille = [shared] { return shared->permille.load(); };
@@ -120,7 +121,7 @@ void OnStarted(const Acp::StartResult& r) {
         return; }
     case Acp::StartState::NeedsPrepare:
         session.reset();
-        PrepareAgent(agentId, [](bool ok) { if (ok) StartSession(); else if (turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; turn.failure = e; FinishTurn("error"); } });
+        PrepareAgent(agentId, [](bool ok) { if (ok) StartSession(); else if (turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; turn.failure = e; afterReady = nullptr; FinishTurn(turn.cancelled ? "cancelled" : "error"); } });
         return;
     case Acp::StartState::AuthRequired:
         info.status = "notConnected"; info.detail = TR(chat_agent_not_connected); info.auth = r.authMethods;
@@ -349,6 +350,7 @@ void PumpEvents() {
 // ---------------------------------------------------------------- annotations (decision 6: one story)
 // Each element sent becomes an annotation of the store, claimed at once by the chat's agent; resolved with the agent's
 // last words at the end of the turn, released with the reason when the turn stops or fails.
+void CloseAnnotations(const std::vector<Element>& elements, bool resolved, const std::string& summary);
 void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
     const std::string actor = Agent().actor, origin = site.origin; const std::wstring pid = profileId;
     std::wstring pname = DefaultProfileLook().name; if (const auto* p = CurrentProfile()) pname = p->name;
@@ -371,7 +373,10 @@ void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
                 Ann::sessionIds.insert(id); Ann::seenWorking.insert(id); Ann::seenDone.insert(id);   // the chat shows its own progress: no launcher card for it
                 auto settle = [&](Element& el) { el.annSite = out->siteKey; el.token = out->claim.ok() ? out->lease.token : std::string(); };
                 if (turn.active && turn.id == turnId) { for (auto& el : turn.elements) if (el.id == elementId) settle(el); }
-                else for (auto& late : orphanAnnotations) if (late.annId == id) settle(late);
+                else for (auto it = orphanAnnotations.begin(); it != orphanAnnotations.end(); ++it) if (it->annId == id) {   // its turn is over: close it now
+                    settle(*it); const Element late = *it; orphanAnnotations.erase(it);
+                    if (!late.token.empty()) CloseAnnotations({late}, late.closeResolved, late.closeSummary);
+                    break; }
                 Ann::RefreshStatus();
             });
     }
@@ -380,7 +385,7 @@ void CloseAnnotations(const std::vector<Element>& elements, bool resolved, const
     const std::string actor = Agent().actor;
     for (const auto& e : elements) {
         if (e.annId.empty()) continue;
-        if (e.annSite.empty() || e.token.empty()) { orphanAnnotations.push_back(e); continue; }   // still being written: closed without a lease is impossible; left open
+        if (e.annSite.empty() || e.token.empty()) { Element late = e; late.closeResolved = resolved; late.closeSummary = summary; late.png.clear(); orphanAnnotations.push_back(std::move(late)); continue; }   // still being written: closed when its write comes back
         const std::string site2 = e.annSite, id = e.annId, token = e.token; auto r = std::make_shared<BA::Outcome>();
         Ann::Run([=] { std::lock_guard<std::mutex> g(Ann::writeLock); *r = resolved ? Ann::Store().Resolve(site2, id, token, "resolved", summary, actor) : Ann::Store().Release(site2, id, token, actor, summary); },
                  [=] { Diag(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); Ann::RefreshStatus(); if (Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false); });

@@ -44,6 +44,15 @@ def logged(pattern, after=0, timeout=15.0):
     return C.wait_log(pattern, timeout, after)
 
 
+def park_mouse():
+    """The pointer leaves the page (no hover frame in the captures that show a result)."""
+    try:
+        C.page("document.dispatchEvent(new PointerEvent('pointerout', {bubbles: true, relatedTarget: null}))")
+        C.ws_for(C.URL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': -10, 'y': -10})
+    except Exception:
+        pass
+
+
 def page_width():
     return C.page('innerWidth')
 
@@ -202,18 +211,25 @@ def run_main():
         time.sleep(0.7)
         txt = C.panel_text()
         step('change bar « 1 fichier modifié » with Tout annuler', '1 fichier modifié' in txt and 'Tout annuler' in txt)
+        park_mouse(); time.sleep(0.4)
         capture('6.11-fait')
 
-        # ---- voir les changements (contract B 1.1)
+        # ---- voir les changements (contract B 1.1): the bar unfolds, « Voir les changements » opens the view
         try:
-            C.click_panel(text='1 fichier modifié'); time.sleep(0.7)
-            txt = C.panel_text()
-            step('« Voir les changements » shows the diff', 'margin-left' in txt, 'diff lines in the panel')
+            m4b = mark()
+            C.click_panel(text='Voir les fichiers'); time.sleep(0.5)          # the bar's chevron: the file and its diff unfold under it
+            inline = 'margin-left: auto' in C.panel_text()
+            capture('6.11-fichiers-deplies')
+            C.click_panel(selector='button.more'); time.sleep(0.9)            # « Voir les changements »: the full view
+            opened = C.panel("(function(){var b=document.getElementById('chg-back');return !!b&&b.getBoundingClientRect().width>0})()")
+            view = C.panel("(function(){var b=document.getElementById('chg-back');var v=b&&b.closest('[role=dialog],section,div.changes,#changes');return (v||document.body).innerText})()") or ''
+            step('the unfolded bar shows the diff of the single file (FileChange.diff)', inline)
+            step('« Voir les changements » opens the view with the diff', bool(opened) and 'margin-left: auto' in view, 'styles/checkout.css' if 'checkout.css' in view else view[:80])
             capture('6.11-voir-les-changements')
-            if C.panel("!!document.getElementById('chg-back')"):
-                C.click_panel(selector='#chg-back'); time.sleep(0.3)
+            if opened:
+                C.click_panel(selector='#chg-back'); time.sleep(0.4)
         except Exception as e:
-            step('« Voir les changements » shows the diff', False, e)
+            step('« Voir les changements » opens the view with the diff', False, e)
 
         # ---- tout annuler
         m5 = mark()

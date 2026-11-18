@@ -1,0 +1,80 @@
+# Bac à sable du chat intégré
+
+Un petit site local (« Boutique — Paiement ») pour essayer le chat avec un agent, sans risque : l'agent ne
+modifie qu'une **copie** du site, jamais les fichiers du dépôt ni vos projets.
+
+## Lancer
+
+Une seule commande, depuis la racine du dépôt :
+
+```
+python sandbox/chat/run-sandbox.py --fake-agent
+```
+
+- `--fake-agent` : un **faux agent**. Aucun compte, aucun réseau, aucun coût. Parfait pour voir l'interface.
+- sans `--fake-agent` : **vos vrais agents** (Claude Code, Codex), avec votre compte. Chaque message est une
+  vraie demande. Au premier message, le navigateur télécharge une fois ce qu'il lui faut (Node privé et
+  adaptateur) dans `build/chat-preview/agents` : rien n'est installé ailleurs sur l'ordinateur.
+- `--reset` : remet la copie du site à neuf.
+- `--build` : reconstruit le navigateur d'essai avant de lancer.
+
+Le navigateur d'essai est `build/chat-preview/browser.exe`. Il a son propre profil : vos onglets et réglages
+habituels ne sont pas utilisés. Fermez-le (ou Ctrl+C dans le terminal) : tout s'arrête, rien ne reste en marche.
+
+## Essayer, pas à pas
+
+1. **Ouvrir le chat** : `Ctrl+Maj+D`. (Ou `Ctrl+Maj+A` pour le mode Annotation, puis « Demander à l'agent »
+   dans le bandeau bleu.) Le panneau arrive à droite ; la page se resserre, elle n'est pas recouverte.
+2. **La première fois**, le panneau demande où est le code du site. Il propose le dossier qu'il a trouvé tout
+   seul (« Détecté auto ») : cliquez **Utiliser**. On ne le demande qu'une fois par site.
+3. **Viser** : cliquez le bouton « Payer 48,00 € » dans la page. Il devient une puce dans la zone de saisie,
+   avec son fichier et sa ligne (`index.html:25`).
+4. **Demander** : écrivez « Aligne-le à droite », puis Entrée.
+5. **Autoriser** : l'agent montre ce qu'il veut changer. « Autoriser » ou « Refuser ».
+6. **Résultat** : la page se recharge seule, le bouton est à droite, encadré avec une coche.
+   La barre « 1 fichier modifié » permet de **voir les changements** et de **tout annuler**.
+
+Autres choses à essayer :
+
+- Dans le mode Annotation, panneau fermé : cliquez un élément, écrivez une note, puis **« Demander à
+  l'agent »** (à côté d'« Ajouter »). Le chat s'ouvre avec l'élément et votre texte.
+- Le bouton « Modifier le panier » simule un site React : sa puce indique `CartButton.jsx:6`.
+- Le texte gris « Paiement de démonstration… » n'a aucune information de code : sa puce n'affiche pas de
+  fichier (on n'invente jamais).
+- L'icône horloge de l'en-tête : les conversations précédentes de ce site.
+- Ouvrez un site Internet (par exemple `https://example.com`) et `Ctrl+Maj+D` : le chat s'ouvre désactivé et
+  explique pourquoi (il ne fonctionne que sur vos sites locaux).
+
+## Avec le faux agent
+
+Un message ordinaire : il demande votre accord, puis met **vraiment** le bouton « Payer » à droite
+(`styles/checkout.css` de la copie). Quelques mots déclenchent d'autres comportements :
+
+| Mot dans le message | Ce que fait le faux agent |
+| --- | --- |
+| `think` | montre une réflexion avant de répondre |
+| `plan` | propose un plan (essayez en mode « Planifier ») |
+| `slow` | écrit lentement, sans fin : pour essayer **Arrêter** et la file d'attente |
+| `question` | pose une question à choix |
+| `refusal`, `crash` | refus de l'agent, arrêt brutal de l'agent |
+| `echo` | répète votre message |
+
+## Où sont les choses
+
+| Quoi | Où |
+| --- | --- |
+| Site d'origine (jamais modifié) | `sandbox/chat/site/` |
+| Copie que l'agent modifie | `build/chat-sandbox/site/` |
+| Navigateur d'essai et ses données | `build/chat-preview/` |
+| Faux agent | `build/chat-preview-test/fake-acp-agent.exe` |
+| Journal du navigateur | `build/chat-preview/prototype.log` (lignes `CHAT …`) |
+
+`serve.py` sert la copie sur `http://127.0.0.1:5183/` et ajoute à la volée, comme Astro en développement,
+le fichier et la ligne de chaque balise (`data-astro-source-file`, `data-astro-source-loc`).
+
+## Sécurité de l'essai
+
+- Vos vraies configurations de Claude et de Codex ne sont jamais modifiées : « Connecter avec Claude / Codex »
+  (annotations) écrit dans un dossier de test, `build/chat-sandbox/agent-configs`.
+- Avec vos vrais agents, l'agent travaille dans la copie du site seulement, et en mode « Demander » : chaque
+  modification passe par une carte d'autorisation.

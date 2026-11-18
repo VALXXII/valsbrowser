@@ -393,6 +393,25 @@ static void Captures(Ink& ink) {
     {   NoteView fail = nv; fail.status = NoteStatus::Failed; fail.message = L"Impossible d'enregistrer l'annotation. Votre note est conservée ; réessayez."; auto [l, pr] = noteBoard(fail, CaptureState::Ready, 0, L"2.6-note-write-failed.png"); (void)pr;
         MeasureText(c, k, {40 + l.message.left + 19, 40 + l.message.top, 40 + l.message.right, 40 + l.message.bottom}, canvasRgb, 0xFF7B6EFF, "write error 12/16 #FF7B6E"); }
     {   NoteView kb = nv; kb.focus = NoteAdd; kb.keyboard = true; kb.fieldFocused = false; noteBoard(kb, CaptureState::Ready, 0, L"2.7-note-focus-add-keyboard.png"); }
+    // ---- chat intégré: « Demander à l'agent » in the note panel (left of « Ajouter ») and in the band (left of « Quitter »)
+    {   NoteView ask = nv; ask.ask = true; auto [l, pr] = noteBoard(ask, CaptureState::Ready, 0, L"6.a-note-ask-agent.png"); (void)pr;
+        Geo("6.a note « Demander à l'agent » — gap to « Ajouter »", 350, 6, l.add.left - l.ask.right);
+        Geo("6.a note « Demander à l'agent » — same height as « Ajouter »", 350, l.add.bottom - l.add.top, l.ask.bottom - l.ask.top);
+        Geo("6.a note site label ends 8 before the button", 350, 8, l.ask.left - l.site.right);
+        Geo("6.a note site label keeps room for « localhost:5173 »", 350, 1, l.site.right - l.site.left >= 96 ? 1.f : 0.f, .1f);
+        Geo("6.a note panel height unchanged by the button", 350, LayoutNote(ink, nv).height, l.height);
+        MeasureText(c, k, {40 + l.ask.left + 6, 40 + l.ask.top + 4, 40 + l.ask.right - 6, 40 + l.ask.bottom - 4}, Over(0xFFFFFF0F, canvasRgb), 0xFFFFFFE6, "« Demander à l'agent » 13/16 on its plate");
+        NoteView kbAsk = ask; kbAsk.focus = NoteAsk; kbAsk.keyboard = true; kbAsk.fieldFocused = false; noteBoard(kbAsk, CaptureState::Ready, 0, L"6.a2-note-ask-agent-focus-keyboard.png"); }
+    {   Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float) { BannerVisual bv; bv.beta = true; bv.chatShown = true; bv.chatActive = true; PaintBanner(i, w, 32, bv); }, c);
+        Save(ink, c, L"6.b-band-ask-agent-open.png");
+        const auto l = LayoutBanner(ink, 1180, true, true), plain = LayoutBanner(ink, 1180, true, false);
+        Geo("6.b band « Demander à l'agent » — gap to « Quitter »", 1180, 12, l.quit.left - l.chat.right);
+        Geo("6.b band « Demander à l'agent » — same height as « Quitter »", 1180, l.quit.bottom - l.quit.top, l.chat.bottom - l.chat.top);
+        Geo("6.b band « Quitter » does not move", 1180, plain.quit.left, l.quit.left);
+        Geo("6.b band reminder moves left of the button", 1180, 12, l.chat.left - l.remind.right);
+        Geo("6.b band without the chat: no button", 1180, 0, plain.chat.right - plain.chat.left);
+        Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float) { BannerVisual bv; bv.beta = true; bv.chatShown = true; bv.reminder = 1; bv.focus = true; bv.focusItem = BannerChat; bv.keyboard = true; PaintBanner(i, w, 32, bv); }, c);
+        Save(ink, c, L"6.b2-band-ask-agent-reminder-focus.png"); }
     scene([&](Ink& i) {
         NoteView v = nv; v.capture = CaptureState::Ready; const auto l = LayoutNote(i, v);
         PillView pv; pv.context = v.context; pv.capture = CaptureState::Ready; const D2D1_RECT_F pr = PillRect(i, CaptureState::Ready, NoteSpec::width / 2, l.height + 8, 0);

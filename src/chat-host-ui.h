@@ -318,12 +318,14 @@ void OpenPanel() {
         if (ChatFolder::detail::IsDir(it->second.folder)) folder = it->second.folder;
         if (!turn.active && convo.data.items.empty() && AgentOf(it->second.agentId)) agentId = it->second.agentId;
         pendingMode.clear();
+        if (!sessionReady && pendingModel.empty()) pendingModel = it->second.model;   // the model chosen for this site last time (applied when the session starts, if the agent still offers it)
     }
     if (!turn.active && (convo.data.head.id.empty() || convo.data.head.origin != site.origin)) NewConversation();
     if (post) KillTimer(post, DestroyTimer);
     if (Ann::connect.Visible()) Ann::connect.Close(false);   // the chat was asked for: the « Connecter un agent » modal (MCP) steps back
     const bool reduced = Ann::Reduced(); const auto at = NativeChrome::Motion::Now();
     panelState = PanelState::Opening; slide.Snap(reduced ? 1.f : 0.f); slide.Set(1.f, at, reduced ? 0 : SlideInMs, AUI::Curves::band);
+    ArmAgentIdle();   // an open panel gives the agent its long idle delay back
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, window, PanelRect(slide.Value(at)))) { panelState = PanelState::Closed; Diag(L"panel WebView creation refused"); return; } }
     view.Show(true);
     ::Layout();   // the page shrinks at once (one layout); the panel then slides over the canvas
@@ -497,6 +499,7 @@ void OnPanelMessage(const std::string& json) {
     if (type == "attachImage") { if (m.Text("source", 16) == "picker") PickImage(); else AddAttachment(m.Text("name", 300), m.Text("mime", 40), m.Text("data", 13u << 20)); return; }
     if (type == "attachment.remove") { composerAttachments.erase(m.Id("id")); return; }
     if (type == "mention.query") { Mentions(m.Text("query", 200)); return; }
+    if ((type == "folder.use" || type == "folder.choose") && !(site.local && !site.file)) return;   // no folder for a site that is not local
     if (type == "folder.use") { const std::wstring path = W(m.Text("path", 2048)); if (!suggestion.folder.empty() && path == suggestion.folder) SetFolder(path); else Diag(L"folder.use with a path that was not proposed: ignored"); return; }
     if (type == "folder.choose") { const std::wstring picked = ChatFolder::PickFolder(window, TR(chat_folder_pick_title), !folder.empty() ? folder : !suggestion.folder.empty() ? suggestion.folder : projects.Recent()); if (!picked.empty()) SetFolder(picked); if (Open()) view.Focus(); return; }
     if (type == "undo.turn") { Undo(m.Id("turnId"), ""); return; }

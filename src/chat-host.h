@@ -102,6 +102,7 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
     BA::Annotation pending; AH::Selection sel; std::string png; double shotScale = 1; std::string shotCrop;
     std::uint64_t serial = 0; bool captureDone = false, sourceDone = false, attached = false; ChatPrompt::PageSource rawSource;   // as the page said it (resolved against the folder)
     std::string annSite, annId, token;   // once written and claimed
+    bool closeResolved = false; std::string closeSummary;   // how to close it when its write comes back after the turn ended
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
 struct Queued { std::string id, text; std::vector<std::string> elements, attachments; };
@@ -213,8 +214,10 @@ void SendState() {
     SJ::Value st = SJ::Value::Obj();
     {   SJ::Value s = SJ::Value::Obj(); s.Set("origin", Str(site.origin)); s.Set("label", Str(site.file ? T8(I18n::Id::chat_site_file) : site.label)); s.Set("local", SJ::Value::Bool(site.local)); st.Set("site", std::move(s)); }
     auto folderObj = [](const std::wstring& path) { SJ::Value f = SJ::Value::Obj(); f.Set("path", Str(path)); f.Set("display", Str(ChatFolder::Display(path))); f.Set("name", Str(ChatFolder::Name(path))); return f; };
-    st.Set("folder", folder.empty() ? SJ::Value::Null() : folderObj(folder));
-    if (folder.empty() && !suggestion.folder.empty()) { SJ::Value f = folderObj(suggestion.folder); f.Set("reason", Str(std::string("auto"))); st.Set("folderSuggestion", std::move(f)); }
+    const bool usableSite = site.local && !site.file;
+    // not a local site: no « where is the code » step (null would show it) — an empty folder, and disabledReason says why
+    st.Set("folder", !usableSite ? folderObj(L"") : folder.empty() ? SJ::Value::Null() : folderObj(folder));
+    if (usableSite && folder.empty() && !suggestion.folder.empty()) { SJ::Value f = folderObj(suggestion.folder); f.Set("reason", Str(std::string("auto"))); st.Set("folderSuggestion", std::move(f)); }
     else st.Set("folderSuggestion", SJ::Value::Null());
     SJ::Value agents = SJ::Value::Arr();
     for (const auto& def : Agents) {
