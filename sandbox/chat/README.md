@@ -78,3 +78,15 @@ le fichier et la ligne de chaque balise (`data-astro-source-file`, `data-astro-s
   (annotations) écrit dans un dossier de test, `build/chat-sandbox/agent-configs`.
 - Avec vos vrais agents, l'agent travaille dans la copie du site seulement, et en mode « Demander » : chaque
   modification passe par une carte d'autorisation.
+
+## La mini landing page « Atelier Papier »
+
+Le bac à sable s'ouvre maintenant sur `landing.html`, une petite page d'accueil (le paiement reste sur `index.html`, lien « Panier »). Quelques défauts y sont laissés exprès pour essayer des demandes :
+
+- le texte sous le grand titre est trop pâle : « rends ce texte plus lisible » ;
+- les deux boutons du haut sont collés au texte et entre eux : « espace un peu ces boutons » ;
+- la troisième carte « Fait pour durer » casse la grille : « aligne les trois cartes sur une ligne » ;
+- le badge « Le plus choisi » dépasse de sa carte : « garde le badge dans la carte » ;
+- et tout ce que tu veux : couleurs, textes, mise en page mobile, ajout d'une section…
+
+`--reset` remet la page à neuf (les modifications de l'agent sont faites sur une copie, jamais sur ces fichiers).

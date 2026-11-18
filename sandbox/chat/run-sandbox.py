@@ -44,7 +44,7 @@ SITE = SANDBOX / 'site'
 AGENT_ROOT = SANDBOX / 'agent-configs'
 PORT = 5183
 FAKE_EDIT = 'styles/checkout.css|margin-top: 4px;|margin-top: 4px; margin-left: auto;'
-URL = f'http://127.0.0.1:{PORT}/'
+URL = f'http://127.0.0.1:{PORT}/landing.html'
 
 
 def wait_port(port: int, timeout: float = 10.0) -> bool:

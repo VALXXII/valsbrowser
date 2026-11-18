@@ -1,0 +1,92 @@
+/* Atelier Papier — mini landing page du bac à sable du chat.
+   Quelques défauts sont laissés exprès pour essayer des demandes (voir sandbox/chat/README.md). */
+:root {
+  --ink: #1f1d1a;
+  --muted: #6f6a62;
+  --paper: #f7f3ec;
+  --card: #ffffff;
+  --line: #e6dfd3;
+  --accent: #b5532a;
+  --accent-ink: #ffffff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
+a { color: inherit; }
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 20px 64px;
+  border-bottom: 1px solid var(--line);
+}
+.logo { font-weight: 700; font-size: 18px; text-decoration: none; letter-spacing: -0.01em; }
+.nav-links { display: flex; gap: 24px; flex: 1; }
+.nav-links a { text-decoration: none; color: var(--muted); font-size: 15px; }
+.nav-cta { text-decoration: none; font-size: 14px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; }
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  grid-template-areas: "eyebrow visual" "title visual" "text visual" "actions visual";
+  column-gap: 48px;
+  padding: 72px 64px 56px;
+}
+.eyebrow { grid-area: eyebrow; margin: 0 0 12px; color: var(--accent); font-weight: 600; font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; }
+.hero-title { grid-area: title; margin: 0; font-size: 52px; line-height: 1.05; letter-spacing: -0.02em; max-width: 12ch; }
+/* Défaut voulu : texte d'accroche trop pâle. */
+.hero-text { grid-area: text; margin: 20px 0 0; max-width: 46ch; color: #a8a299; font-size: 18px; }
+/* Défaut voulu : boutons collés au texte et entre eux. */
+.hero-actions { grid-area: actions; display: flex; gap: 4px; margin-top: 12px; }
+.hero-visual { grid-area: visual; position: relative; min-height: 320px; }
+
+.notebook { position: absolute; width: 180px; height: 240px; border-radius: 10px 14px 14px 10px; box-shadow: 0 18px 40px rgba(60, 40, 20, 0.18); }
+.notebook::before { content: ""; position: absolute; left: 14px; top: 0; bottom: 0; width: 2px; background: rgba(255, 255, 255, 0.35); }
+.notebook-a { background: #2f4a3a; left: 20px; top: 50px; transform: rotate(-8deg); }
+.notebook-b { background: var(--accent); left: 130px; top: 20px; transform: rotate(3deg); }
+.notebook-c { background: #d9c7a8; left: 250px; top: 70px; transform: rotate(10deg); }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; height: 44px; padding: 0 20px; border-radius: 10px; font-weight: 600; font-size: 15px; text-decoration: none; }
+.btn-primary { background: var(--ink); color: var(--accent-ink); }
+.btn-secondary { background: transparent; border: 1px solid var(--line); }
+
+.section-title { margin: 0 0 28px; font-size: 32px; letter-spacing: -0.015em; }
+
+.features { padding: 56px 64px; }
+/* Défaut voulu : la troisième carte casse la grille. */
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.feature { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 24px; }
+.feature-wide { grid-column: span 2; }
+.feature h3 { margin: 12px 0 6px; font-size: 18px; }
+.feature p { margin: 0; color: var(--muted); }
+.feature-icon { font-size: 20px; color: var(--accent); }
+
+.pricing { padding: 56px 64px; }
+.plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; align-items: start; }
+.plan { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 28px 24px; }
+.plan h3 { margin: 0; font-size: 18px; }
+.price { margin: 8px 0 4px; font-size: 36px; font-weight: 700; letter-spacing: -0.02em; }
+.plan-text { margin: 0 0 20px; color: var(--muted); }
+.plan-featured { border: 2px solid var(--ink); }
+/* Défaut voulu : le badge déborde de la carte. */
+.badge { position: absolute; top: -12px; right: -18px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+
+.quote { padding: 48px 64px; text-align: center; }
+.quote blockquote { margin: 0 auto; max-width: 30ch; font-size: 28px; line-height: 1.3; letter-spacing: -0.01em; }
+.quote-author { margin: 16px 0 0; color: var(--muted); }
+
+.faq { padding: 48px 64px 64px; max-width: 760px; }
+.faq-item { border-top: 1px solid var(--line); padding: 16px 0; }
+.faq-item summary { cursor: pointer; font-weight: 600; }
+.faq-item p { margin: 8px 0 0; color: var(--muted); }
+
+.footer { padding: 24px 64px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
