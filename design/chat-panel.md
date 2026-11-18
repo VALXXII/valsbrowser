@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1.8** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
+- Version du protocole : **1.9** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -77,7 +77,7 @@ interface Agent {
 interface Option { id: Id; label: string; description?: string; isDefault?: boolean; group?: string; }
 
 interface Mode extends Option {
-  kind: "ask" | "auto" | "plan" | "other";   // pilote l'icône : bouclier / double chevron / liste
+  kind: "edits" | "auto" | "ask" | "plan" | "other";   // (1.9) double chevron / éclair / bouclier / liste ; "other" n'est jamais montré (§20.4)
 }
 
 interface ElementRef {           // « puce » d'élément visé
@@ -119,7 +119,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 
 | `type` | Champs | Effet dans le panneau |
 |---|---|---|
-| `layout` *(1.8)* | `mode` (`"panel"` / `"bubble"`), `maxWidth?`, `maxHeight?` (px CSS), `side?`, `element?`, `open?` | Disposition de la page : panneau à droite (défaut) ou **bulle compacte** du mode Commentaire (§19). Envoyé à l'ouverture et à chaque bascule. En bulle, le panneau répond `bubble.size`. |
+| `layout` *(1.8)* | `mode` (`"panel"` / `"bubble"`), `maxWidth?`, `maxHeight?` (px CSS), `side?`, `element?`, `open?`, `inset?` *(1.9)* `{top, right, bottom, left}` | Disposition de la page : panneau à droite (défaut) ou **bulle compacte** du mode Commentaire (§19). Envoyé à l'ouverture et à chaque bascule. En bulle, le panneau répond `bubble.size`. |
 | `hello` | `v`, `locale` (`"fr"`), `platform` (`"windows"`), `reducedMotion?` (bool, si Windows le demande) | Initialise. `reducedMotion` s'ajoute à `prefers-reduced-motion`. |
 | `state` | voir §4.1 | Fusion **par clé de premier niveau** : une clé absente garde sa valeur, `null` l'efface. |
 | `thread.reset` | `conversationId`, `items: Item[]` (§4.2) | Remplace tout le fil (ouverture d'une conversation, nouveau chat = `items: []`). |
@@ -206,7 +206,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `attachment.remove` | `id` | « × » sur une miniature. |
 | `mention.query` | `query` | Frappe après « @ » (débit limité à 1 / 80 ms). |
 | `folder.use` | `path` | « Utiliser » sur le dossier détecté. |
-| `folder.choose` | — | « Choisir un autre dossier… » (menu « + » ou écran du dossier ; sélecteur Windows côté hôte). La puce dossier de la 1.4 n'existe plus *(1.5)*. |
+| `folder.choose` | — | « Choisir un autre dossier… » (écran du dossier) ou « + › Choisir le dossier… » — ce dernier seulement quand le navigateur n'est pas sûr du dossier (`askFolder` vrai ou pas de dossier) *(1.9)* ; sélecteur Windows côté hôte. La puce dossier de la 1.4 n'existe plus *(1.5)*. |
 | `annotations.request` *(1.4)* | — | Commande `/annotations` choisie dans le menu « / » : l'hôte répond `annotations.batch` (ou une `strip` « Aucune annotation en attente »). |
 | `annotation.show` *(1.4)* | `id` | Clic sur une ligne de la carte « Traiter N annotations » : montrer l'annotation sur la page. |
 | `undo.turn` | `turnId` | « Tout annuler » dans la barre des changements. |
@@ -214,7 +214,8 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `checkpoint.viewChanges` | `turnId`, `path?` | « Voir les changements » (barre dépliée) ou clic sur un fichier (`path`). Le panneau ouvre aussitôt sa vue avec les `FileChange.diff` déjà reçus, puis attend `changes.diff` (1.1). |
 | `plan.run` | `planId` | « Lancer le plan ». |
 | `plan.edit` | `planId` | « Modifier » (le panneau met aussi le focus dans la saisie, placeholder « Ajouter une précision au plan… »). |
-| `history.open` | — | Ouverture de l'historique (titre ⌄ ou icône). L'hôte répond `history`. |
+| `history.open` | — | Ouverture de l'historique (bouton Historique de l'en-tête ; le titre ne l'ouvre plus *(1.9)*). L'hôte répond `history`. |
+| `conversation.rename` *(1.9)* | `id`, `title` (1 à 120 caractères, une ligne) | Double-clic (ou F2) sur le titre de l'en-tête, Entrée (§20.5). L'hôte ramène le titre sur une ligne, l'enregistre, puis renvoie `state` (`conversation.title`) et `history` si l'historique est ouvert ; hors bornes : ignoré. |
 | `history.search` | `query` | Champ « Rechercher une conversation » (débit limité). |
 | `history.select` | `id` | Clic sur une conversation. L'hôte répond `state` + `thread.reset`. |
 | `newChat` | — | Bouton « + » de l'en-tête ou « Nouveau » de l'historique. |
@@ -227,7 +228,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `link.open` | `url` | Lien dans une réponse. L'hôte vérifie (http/https/file local) et ouvre un onglet. |
 | `file.open` | `path`, `line?` | Clic sur « Checkout.tsx:42 » ou un nom de fichier. Facultatif pour l'hôte. |
 | `close` | — | Bouton fermer, ou Échap quand rien d'autre n'est ouvert. *(1.8)* En bulle : Échap ferme la bulle **sans arrêter l'agent** et sans répondre à une demande d'autorisation (§19.4). |
-| `bubble.size` *(1.8)* | `width`, `height` (px CSS, entiers) | En disposition bulle seulement : la taille que veut la bulle, bornée par `layout.maxWidth` / `maxHeight`. Envoyé après chaque `layout`, puis à chaque changement de contenu (jamais deux fois de suite la même valeur). L'hôte redimensionne la fenêtre. |
+| `bubble.size` *(1.8)* | `width`, `height` (px CSS, entiers), `overflowTop?`, `overflowRight?`, `overflowBottom?`, `overflowLeft?` *(1.9, entiers 0 à 400)* | En disposition bulle seulement : la taille que veut la bulle, bornée par `layout.maxWidth` / `maxHeight`. Envoyé après chaque `layout`, puis à chaque changement de contenu (jamais deux fois de suite la même valeur). L'hôte redimensionne la fenêtre. |
 | `panel.log` | `level` (`info`/`warn`/`error`), `message` | Diagnostic (message invalide, exception). Borné à 2 Kio. |
 | `annotate` *(1.6)* | `text`, `elements: Id[]` | `Ctrl+Entrée` dans la saisie : les puces et les mots deviennent des annotations **ouvertes** du magasin (lues par les agents MCP), rien n'est envoyé à l'agent du chat. Il faut au moins une puce et quelques mots (sinon un bandeau bref dit ce qui manque). L'hôte répond `annotation.kept`, ou une `error` `composer` si l'écriture échoue. |
 | `hover` *(1.5)* | `active: bool` | Une infobulle de survol est ouverte (`true`) ou fermée (`false`). Tant qu'elle l'est, l'hôte compare le vrai pointeur au rectangle du panneau (toutes les 80 ms) et répond `pointer.leave` dès qu'il en sort. Rien ne tourne sinon. |
@@ -253,7 +254,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 
 | Zone | Comportement |
 |---|---|
-| En-tête | Logo de l'agent, titre (bouton : ouvre l'historique, chevron qui pivote), source `Checkout.tsx:42` au-dessus si `conversation.source` (en-tête 52 px avec filet), indicateur « en cours », Nouveau / Historique / Fermer. |
+| En-tête | Logo de l'agent, titre (double-clic ou F2 : le renommer en place, §20.5 ; il n'ouvre plus l'historique), source `Checkout.tsx:42` au-dessus si `conversation.source` (en-tête 52 px avec filet), indicateur « en cours », Nouveau / Historique / Fermer. |
 | Fil | Date centrée (nouveau jour ou pause > 30 min) ; bulle de l'utilisateur avec puces d'élément à l'endroit de leur libellé, les autres puces et images sous la bulle ; crayon au survol (Modifier) ; « Revenir » au survol quand le tour a un point de reprise. Tour : infos (modèle · effort · durée), réflexion repliée, texte en flux (Markdown sûr, curseur bleu), étapes (une par ligne pendant le tour, résumé repliable ensuite, « (échec) » en rouge), plan, attente d'accord, « Travaille… N s », barre des changements (+/−, détail, Tout annuler), Copier / Relancer au survol ou au clavier, repère « Passé à … ». |
 | Bas | Bandeau collé à la saisie (hôte ou état de l'agent : pas connecté, pas installé, préparation avec progression, erreur, site non local), suites en file, saisie (puces, images, 6 lignes puis défilement, raccourcis affichés en multi-ligne) ; la carte d'autorisation remplace le tout. |
 | Menus | Modèle (agent courant puis autres agents ; agent pas prêt avec son action ; confirmation « Passer à Codex ouvre un nouveau chat »), Effort, Mode, « + » (image, dossier), « @ » (éléments et fichiers), « / » (commandes de l'agent). |
@@ -276,16 +277,17 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 9. **Sous-menu Effort** : s'ouvre à la place du menu modèle (même position que le bouton « Élevé ⌄ ») ; à 380 px, côte à côte comme sur 6.4 ne tient pas.
 10. **« @butt »** n'est pas coloré en bleu dans la saisie (texte brut) ; la puce, elle, l'est une fois l'élément choisi.
 11. **9ᵉ état de la saisie** (6.5 n'en dessine que 8) : site non local, bandeau d'explication et saisie désactivée (décision produit 2).
-12. **Menu « + »** : absent des planches, deux lignes (Joindre une image, Choisir un autre dossier…) au style des menus 6.4.
+12. **Menu « + »** : absent des planches, au style des menus 6.4 : « Joindre une image », et « Choisir le dossier… » seulement quand le navigateur n'est pas sûr du dossier (1.9, §20.6).
 
 Écart moyen mesuré (canal, sur 255) entre planche et panneau : 6.2 : 3,6 · 6.7 A : 7,0 · 6.8 : 7,3 · 6.9 : 8,4 · 6.7 B : 9,8 · 6.10 : 11,6 · 6.1 : 13,1 · 6.3 : 14,6 · 6.11 : 15,8 · 6.12 : 17,9 · 6.6 : 18,5. Les plus forts viennent des écarts 4 et 5 (contenu décalé de la hauteur d'une ligne), pas du dessin des composants.
 
 ## 10. Tests
 
-`python -I tests/chat-panel/run.py` — 467 contrôles (statique, 92 scénarios dont 24 du mode Commentaire, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/` (panneau) et `build/chat-qa/comment/` (bulle du mode Commentaire, comparée aux planches `tests/chat-panel/reference/comment/`).
+`python -I tests/chat-panel/run.py` — 526 contrôles (statique, scénarios du panneau et 33 du mode Commentaire, clavier, sécurité, polices, performance, fidélité valeur par valeur). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/` (panneau) et `build/chat-qa/comment-v2/panel/` (bulle du mode Commentaire, comparée aux planches `tests/chat-panel/reference/comment/`, tableau d'écarts `ecarts.md`).
 
 ## 11. Historique du contrat
 
+- **1.9** (18 nov. 2026, compatible, `"v": 1`) : retours du premier test réel du Mode Commentaire (§20). `bubble.size` gagne `overflowTop/Right/Bottom/Left` et `layout` gagne `inset` (menus et infobulles hors de la bulle) ; accusé de réception seulement pour un `layout` d'ouverture ; `Mode.kind` `"edits"` et les 4 modes exacts de Paper ; `conversation.rename` ; plus de dossier dans « + » quand il est sûr ; pas de puce sous le message en bulle ; l'étape en cours à la place du message tant que l'agent n'a rien écrit ; logo du fournisseur dans l'en-tête des réponses ; une demande d'autorisation renvoyée après `thread.reset` réapparaît (une seule fois).
 - **1.8** (18 nov. 2026, compatible, `"v": 1`) : Mode Commentaire. `layout {mode, maxWidth, maxHeight}` (bulle compacte ou panneau) et `bubble.size {width, height}` ; Échap en bulle = `close` sans arrêter l'agent ; `queue.items[].after` (file d'attente entre éléments) ; `HistoryItem.folderName` (nom du dossier plutôt que l'adresse) (§19).
 - **1.7** (18 nov. 2026, compatible, `"v": 1`) : `pickElement` / `pick.state` = interrupteur de la sélection, le chat restant ouvert ; noms de modes en français fournis par l'hôte (§18).
 - **1.6** (18 nov. 2026, compatible, `"v": 1`) : `annotate` / `annotation.kept` (Ctrl+Entrée garde en annotation) ; infobulle du bouton envoyer (§17).
@@ -351,7 +353,7 @@ interface AnnotationItem {
 }
 ```
 
-- **Puce dossier** *(retirée en 1.5 : un seul projet par chat ; « + › Choisir un autre dossier… » reste)*. L'écran « Où est le code de ce site ? » ne s'affiche que si `askFolder` vaut vrai ; il ne montre plus la liste des agents quand l'agent courant est prêt.
+- **Puce dossier** *(retirée en 1.5 : un seul projet par chat ; en 1.9, « + » ne propose le dossier que si le navigateur n'en est pas sûr)*. L'écran « Où est le code de ce site ? » ne s'affiche que si `askFolder` vaut vrai ; il ne montre plus la liste des agents quand l'agent courant est prêt.
 - **Avant l'envoi** (Paper 186S-0) : bloc dans la saisie, en-tête « 2 annotations à traiter » + site ; une ligne par annotation (case cochée, miniature 44 × 32, note, « élément · fichier:ligne » en JetBrains Mono) ; décocher = garder pour plus tard ; au-delà de 5, « + N autres » ; champ « Ajouter une précision (facultatif)… ». Envoi possible avec au moins une case cochée, même sans texte.
 - **Après l'envoi** (Paper 188L-0, 18B2-0) : `message.user.annotations` remplace la bulle par une carte : en-tête « Traiter N annotations » et « 1 sur N » (« ✓ N terminées » à la fin) ; lignes En attente → « Claude s'en occupe » (anneau bleu, ligne surlignée) → Terminée (coche verte + résumé) ; non traitée = ambre avec sa raison ; clic sur une ligne = `annotation.show` ; « Voir la consigne envoyée à Claude » (le texte exact, `instruction`) replié. Les noms techniques n'apparaissent pas ailleurs.
 
@@ -400,10 +402,8 @@ sa conversation, ses puces et les cadres du chat. `Ctrl+Maj+A` (et le bouton « 
 chat est ouvert ; chat fermé, il allume ou quitte le mode comme avant. Fermer le chat pendant que la sélection est coupée
 quitte le mode. Nom accessible « Sélection d'éléments sur la page », `aria-keyshortcuts="Control+Shift+A"`.
 
-**Modes** : `state.modes[].label` / `description` sont écrits par l'hôte en français, quel que soit le nom de l'adaptateur
-(Paper 14RK-0) : « Demander » (Propose chaque modification.), « Auto » (Applique les modifications de fichiers
-directement.), « Planifier » (Propose un plan, ne touche à aucun fichier.), et le second mode automatique des agents,
-« Autonome » (Claude Code décide seul de ce qu'il autorise.), dans cet ordre. Un mode inconnu garde le nom de l'agent.
+**Modes** *(remplacé en 1.9, §20.4)* : le menu reprend à la lettre les 4 lignes de Paper `14RK-0` (Accept edits, Auto,
+Demander, Planifier) ; « Autonome » n'existe plus.
 
 ## 19. Révision 1.8 — Mode Commentaire : la bulle compacte
 
@@ -448,10 +448,8 @@ outil, ouverts de la même façon, gardent leur propre hauteur, jamais moins de 
 Hauteurs des planches : saisie seule 104 · tour en cours 224 · arrêté 265 · erreur 248 (détails 279) · terminé 279 ·
 autorisation 303 et diff en grand 303 (planches dessinées avec 303 px de place : le haut du fil défile sous le fondu).
 
-Menus (modèle, mode, « + », @, /) : ils s'ouvrent **dans** la bulle. S'il y a la place au-dessus de leur bouton, ils
-couvrent le fil et la taille ne change pas. Sinon la bulle grandit le temps du menu (un seul `bubble.size`), du côté où
-l'hôte agrandit la fenêtre : sous le bouton, ou au-dessus quand `side` vaut `"above"`. À la fermeture, elle reprend sa
-taille. L'hôte ne ferme rien quand il redimensionne : la page ne ferme pas ses menus sur `resize` en bulle.
+Menus (modèle, mode, « + », @, /) et infobulles *(remplacé en 1.9, §20.1)* : ils s'ouvrent **au-dessus** de leur bouton
+et peuvent sortir de la bulle ; la hauteur de la bulle ne change pas, la fenêtre transparente grandit autour d'elle.
 
 Séquence type (planche 1 → 3) : `layout` → 84 (saisie vide) ; l'utilisateur écrit deux lignes → 104 ; `message.user` +
 `state.running` → 96, puis le tour grandit ligne à ligne jusqu'à 224 ; `turn.end` → 279.
@@ -461,8 +459,8 @@ Séquence type (planche 1 → 3) : `layout` → 84 (saisie vide) ; l'utilisateur
 | État | Dans la bulle |
 |---|---|
 | Départ | La saisie seule : « + », le mode avec son nom (Demander, Auto, Planifier), le modèle · effort, envoyer. Pas de bouton viser : l'élément est celui de la bulle. Le bouton envoyer reste allumé saisie vide (planches) : il met alors le curseur dans la saisie ; il ne s'éteint que si l'envoi est impossible (pas de dossier, agent pas prêt, site non local). Sans dossier (`folder: null`) : une ligne « Choisissez le dossier du projet pour commencer. » avec « Choisir le dossier… » (`folder.choose`). |
-| Tour en cours | Le message (bulle bleue), puis « modèle · effort » et l'étape en cours à droite (« Lit checkout.css… »), le texte de l'agent. En bas : le mode et **Arrêter** (`stop`). Pas de saisie pendant le tour. |
-| Survol de l'étape | Infobulle avec les étapes déjà faites (« A lu index.html », « A utilisé 1 outil MCP » : les appels MCP bruts sont comptés ensemble ; 6 lignes au plus, les plus récentes). Clavier : le focus sur l'étape l'ouvre ; un clic ou Entrée l'épingle. |
+| Tour en cours | Le message (bulle bleue, sans puce d'élément *(1.9)*), puis « logo modèle · effort » et l'étape en cours à droite (« Lit checkout.css… »), le texte de l'agent. Tant que l'agent n'a rien écrit, l'étape en cours est à la place du texte, sous « modèle · effort » *(1.9, §20.3)*. En bas : le mode et **Arrêter** (`stop`). Pas de saisie pendant le tour. |
+| Survol de l'étape | Infobulle avec les étapes déjà faites (« A lu index.html », « A utilisé 1 outil MCP » : les appels MCP bruts sont comptés ensemble ; 6 lignes au plus, les plus récentes), 2 px au-dessus de l'étape, bords gauches alignés, 178 px, hors de la bulle s'il le faut *(1.9)* ; l'étape survolée prend un fond blanc 10 % et des coins 4/4/10/10. Clavier : le focus sur l'étape l'ouvre ; un clic ou Entrée l'épingle. |
 | Arrêté (`turn.end` `cancelled`) | « S'est arrêté » à droite du modèle ; la saisie revient (« Que voulez-vous ajouter ? »). |
 | Autorisation (`permission.request`) | Dans la bulle, à la place de la saisie : la ligne « Claude veut modifier checkout.css +6 −2 › », « Dire à Claude quoi faire à la place… », l'interrupteur Auto (= option `allow_always`), Refuser / Autoriser. Le haut du fil s'estompe. |
 | Diff en grand | Clic sur la ligne de fichier (autorisation) ou sur la barre des changements (terminé) : le diff prend la bulle, avec fermer ; sous un tour terminé, « Copier ». La page envoie `checkpoint.viewChanges` et complète avec `changes.diff` quand le diff n'était pas dans `turn.end`. |
@@ -505,11 +503,11 @@ qui dirait la même phrase n'est pas affiché en bulle tant qu'un message en att
 
 ### 19.7 Écarts assumés (bulle)
 
-1. **Infobulles dans la bulle.** Sur `1AIE-0`, l'infobulle des étapes dépasse de la bulle (7 px en haut, 38 px à
-   droite). La bulle est une fenêtre : rien ne peut être dessiné dehors. L'infobulle s'ouvre donc sous l'étape, calée
-   à droite, dans la bulle (même dessin : 178 px, fond `#2F2F2F`, coin « queue » de 4 px du côté de l'étape).
+1. **Infobulles** *(1.9)* : elles sortent de la bulle comme sur `1AIE-0` (7 px en haut, 36 à 38 px à droite) ; la page se
+   cale sur l'étape telle que la place `1B30-0` (2 px plus à gauche que sur `1AIE-0`, qui fige aussi sa largeur à 128 px).
 2. **« Ask » → « Demander »** (noms de modes en français, §18).
-3. **Menus** : non dessinés dans les planches du mode ; mêmes menus que le panneau, ouverts dans la bulle.
+3. **Menus** : non dessinés dans les planches du mode ; mêmes menus que le panneau (6.4), au-dessus de leur bouton, hors de
+   la bulle *(1.9)*. La vue Effort s'ouvre dans le menu modèle, sous une ligne « ‹ Effort » (§9.9), et non à côté.
 4. **Variantes entre planches**, une seule retenue : bulle du message de 210 px au plus (`1AE7-0` la dessine à 220) et
    de rayon 12 (`1AWI-0` : 10) ; étape en cours avec l'anneau de 14 px et son retrait de `1B30-0` (`1ANU-0` : anneau de
    12 px collé au bord droit).
@@ -526,5 +524,91 @@ détails 8,1 · terminé 8,2 · terminé, diff ouvert 3,4 (peu de texte : l'éca
 ### 19.8 Nom du dossier plutôt que le chemin ou l'adresse (retour Paper `156L-0`)
 
 Là où le panneau montrait un chemin ou une adresse pour dire de quel projet il s'agit, il montre le **nom du dossier** :
-écran du dossier (le chemin complet reste en infobulle), menu « + › Choisir un autre dossier… », titre « Ce site ·
+écran du dossier (le chemin complet reste en infobulle), menu « + › Choisir le dossier… » (1.9 : seulement si le dossier n'est pas sûr), titre « Ce site ·
 boutique » de l'historique, et lignes « Autres sites » (`HistoryItem.folderName`, sinon `siteLabel`).
+
+## 20. Révision 1.9 — retours du premier test réel du Mode Commentaire
+
+Source : `chat-comment-v2-retours.md` (R1 à R12) ; valeurs : relevé Paper `design/chat-comment-paper-values.md`.
+
+### 20.1 Menus et infobulles hors de la bulle (R3)
+
+La bulle est une fenêtre transparente : la page peint elle-même la surface (`#171717`, rayon 16, **ni ombre ni bordure**,
+Paper `18TO-0` … `1B19-0`) et peut dessiner autour d'elle, dans la marge que l'hôte lui accorde.
+
+- **Page → hôte** : `bubble.size { width, height, overflowTop?, overflowRight?, overflowBottom?, overflowLeft? }`. `width` /
+  `height` restent la taille de la **surface** ; chaque `overflow*` (entier 0 à 400, absent = 0) est la place voulue de ce
+  côté de la surface pour ce qui flotte (menu ouvert, infobulle), ombre comprise. Au repos, rien n'est demandé.
+- **Hôte → page** : l'hôte répond à **chaque** `bubble.size` par `layout { mode: "bubble", open: false, inset: { top, right,
+  bottom, left } }` : les marges réellement accordées (moins que demandé au bord de l'écran). La surface reste à sa place à
+  l'écran ; la page la dessine à (`inset.left`, `inset.top`) dans la fenêtre.
+- **Accusé de réception** : la page répond toujours à un `layout` d'**ouverture** (`open` absent ou vrai) par `bubble.size`,
+  même inchangé. Après un `layout` `open: false`, elle n'envoie `bubble.size` que si ce qu'elle veut a changé : pas de boucle.
+- **Marge refusée** : si un côté accordé est plus petit que demandé, la page replace ce qui flotte — au-dessus de son
+  bouton, sinon dessous, sinon dans la surface (la liste défile) — et redemande ; les limites ne font que baisser tant que
+  quelque chose flotte, donc cela se termine (deux allers-retours au plus en pratique).
+- **Clics** : au repos, les clics hors de la surface vont à la page Web dessous. Tant qu'un `overflow` est demandé, toute la
+  fenêtre prend les clics ; un clic dans la zone transparente ferme le menu ou l'infobulle (il n'agit pas dessous).
+- **Placement** (Paper 6.4 `17US-0`, `17VU-0`, `14RK-0` ; `1AIE-0`) : menus 6 px au-dessus de leur bouton, alignés sur
+  son bord (modèle : à droite ; mode, « + », @ : à gauche) ; menu modèle 300 px sans ombre, lignes 1 px l'une de l'autre ;
+  menu des modes 290 px avec l'ombre `#00000080 0 16px 48px`, lignes 2 px l'une de l'autre ; infobulle des étapes 2 px
+  au-dessus de l'étape, bords gauches alignés, 178 px, coins 10/10/10/4 (le coin de 4 px côté étape), sans ombre ;
+  infobulle du bouton envoyer 6 px au-dessus, bords droits alignés.
+
+### 20.2 Pas de puce sous le message en bulle (R7)
+
+L'élément est celui de la bulle : le message de l'utilisateur n'affiche aucune puce d'élément (ni dans le texte, ni dessous),
+même si `message.user.elements` en porte. Le panneau, lui, ne change pas.
+
+### 20.3 L'étape en cours à la place du message (R8, Paper `1B30-0`)
+
+Tant qu'aucun `message.agentChunk` n'est arrivé pour le tour, l'étape en cours (« Lit checkout.css… », « Réfléchit… »,
+« Travaille… ») s'affiche dans le bloc du texte de l'agent, sous « modèle · effort », comme un message (13/18, blanc 80 %,
+anneau de 14 px). Le premier texte prend sa place ; l'étape repasse à droite du modèle. Faire écrire à l'agent une première
+phrase qui dit ce qu'il va faire relève de l'hôte (consigne envoyée).
+
+### 20.4 Modes : les 4 lignes de Paper (R4, `14RK-0` mis à jour par l'utilisateur)
+
+`Mode.kind` gagne `"edits"`. Le panneau et la bulle montrent au plus ces 4 lignes, dans cet ordre, avec ces mots (quel que
+soit `label`) : « Accept edits » / « Automatically accept all file edits » (`edits` : Claude `acceptEdits`, Codex
+`workspace-write` ; double chevron 16 px `#3E67FF`) ; « Auto » / « Claude handles permission decisions » (`auto` : Claude
+`auto`, Codex `agent` ; éclair 16 px `#3E67FF` ; « Codex » à la place de « Claude » pour Codex) ; « Demander » / « Propose
+chaque modification. » (`ask`, bouclier 15 px blanc 85 %) ; « Planifier » / « Propose un plan, ne touche à aucun
+fichier. » (`plan`, liste 15 px). La ligne choisie : fond blanc 6 %, coche `#8FA9FF` 2 px plus bas. Un mode absent de
+l'agent n'a pas de ligne ; un mode `other` (dont celui qui contourne toutes les autorisations) n'est jamais montré.
+Maj+Tab passe au suivant de ces lignes. Compatibilité : un `kind: "auto"` dont l'`id` dit acceptEdits / edits / workspace
+est lu comme `edits`. Dans la saisie, `edits` et `auto` portent l'accent (icône et nom).
+
+### 20.5 Renommer la conversation (R11)
+
+Le titre de l'en-tête n'ouvre plus l'historique (le bouton Historique est juste à côté). Double-clic (ou F2 au clavier) :
+un champ en place, le nom sélectionné ; **Entrée** envoie `conversation.rename { id, title }` et garde le nom, **Échap** ou la
+sortie du champ remettent l'ancien (rien n'est envoyé, Échap ne ferme pas le panneau). Une nouvelle conversation (pas
+d'`id`) ne se renomme pas et son titre n'est pas un arrêt de Tab.
+
+### 20.6 Dossier (R5)
+
+Quand le dossier est trouvé avec certitude (`folder` présent, `askFolder` non vrai), il n'apparaît nulle part dans la saisie
+et ne se change pas depuis elle : « + » ne garde que « Joindre une image ». « Choisir le dossier… » n'y revient que si le
+navigateur n'est pas sûr ; l'écran « Où est le code de ce site ? » reste le chemin normal dans ce cas.
+
+### 20.7 Logo du fournisseur dans l'en-tête des réponses (R12)
+
+À gauche du nom du modèle, comme dans la saisie : 14 px dans la bulle (« Sonnet 5.5 Élevé », Paper `1B66-0`), 12 px sur la
+ligne de 14 px du panneau (« Sonnet · Élevé · 18 s »).
+
+### 20.8 Demande d'autorisation après `thread.reset` (R9, côté page)
+
+Chaque ouverture de la bulle envoie `thread.reset`, qui efface les cartes vivantes ; l'hôte renvoie ensuite chaque
+`permission.request` encore en attente. La page la réaffiche, focus sur « Autoriser » ; la même `requestId` reçue deux fois
+ne fait jamais deux cartes.
+
+### 20.9 Fidélité
+
+`tests/chat-panel/run.py` mesure dans la page chaque valeur du relevé Paper pour les 10 états de la bulle et les 3 menus
+(boîtes relatives à la bulle ou au menu, styles calculés ; `tests/chat-panel/fidelity.json` relie chaque nœud Paper à son
+élément) et écrit le tableau `build/chat-qa/comment-v2/panel/ecarts.md` : 0 écart non justifié. Écarts justifiés : le nom
+français du mode (« Demander » au lieu de « Ask ») ; les variantes entre planches de §19.7.4 (bulle de 220 px de `1AE7-0`,
+rayon 10 de `1AWI-0`, étape de `1ANU-0`, étape survolée de `1AIE-0`) ; la vue Effort sous sa ligne « ‹ Effort » (§9.9) ;
+trois marges portées par l'enfant plutôt que par le cadre, au même rendu (barre « 1 fichier modifié », zone du diff).
+

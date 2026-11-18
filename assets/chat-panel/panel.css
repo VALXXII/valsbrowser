@@ -66,8 +66,10 @@ svg.i { display: block; flex-shrink: 0; }
 .hd-title { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; height: 24px; margin-left: -4px; padding: 0 4px; border-radius: 6px; align-self: flex-start; }
 .hd:not(.with-source) .hd-titles { padding-left: 4px; }
 .hd-title-text { font-size: 14px; font-weight: 600; line-height: 18px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.hd-title .chev { width: 12px; height: 12px; opacity: .6; transition: transform 150ms var(--ease-out); }
-.hd-title[aria-expanded="true"] .chev { transform: rotate(180deg); }
+/* B 1.9 (R11): the title is a name, not a button — double-click (or F2) renames it in place */
+.hd-title { cursor: default; user-select: none; }
+.hd-rename { min-width: 0; flex: 1; height: 24px; margin-left: -4px; padding: 0 4px; border: 0; border-radius: 6px; background: var(--fill8);
+  box-shadow: inset 0 0 0 1px #8FA9FF99; color: #FFFFFF; font-size: 14px; font-weight: 600; line-height: 18px; outline: none; }
 .hd-row { display: flex; align-items: center; gap: 0; min-width: 0; }
 /* context gauge (B 1.2 usage) */
 .gauge { position: relative; flex-shrink: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 6px; }
@@ -104,7 +106,7 @@ svg.i { display: block; flex-shrink: 0; }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }
 .hd-btn:last-child svg { width: 16px; height: 16px; }
-@media (hover: hover) { .hd-btn:hover, .hd-title:hover { background: var(--fill6); } .hd-btn:hover svg { opacity: 1; } }
+@media (hover: hover) { .hd-btn:hover { background: var(--fill6); } .hd-btn:hover svg { opacity: 1; } }
 
 /* ---------- thread ---------- */
 .body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -153,7 +155,9 @@ svg.i { display: block; flex-shrink: 0; }
 
 /* agent turn */
 .turn { display: flex; flex-direction: column; gap: 10px; }
-.meta { color: var(--w40); font-size: 11px; line-height: 14px; }
+.meta { display: flex; align-items: center; gap: 4px; color: var(--w40); font-size: 11px; line-height: 14px; }
+/* B 1.9 (R12): the provider's logo left of the model's name */
+.meta .mlogo { width: 12px; height: 12px; }
 .fold { display: flex; align-items: center; gap: 6px; align-self: flex-start; color: var(--w50); font-size: 13px; line-height: 18px; white-space: pre; border-radius: 4px; }
 .fold .chev { width: 11px; height: 11px; opacity: .45; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
 /* a long summary wraps instead of being cut; the chevron stays on its first line */
@@ -436,6 +440,10 @@ svg.i { display: block; flex-shrink: 0; }
 .mi .lead.backi { transform: rotate(90deg); width: 11px; height: 11px; opacity: .6; margin: 3px 1px 0; }
 .mi:not(.top) .lead.backi { margin-top: 0; }
 .mi .lead.auto { color: var(--accent-ink); opacity: 1; width: 16px; height: 16px; margin-top: 1px; }
+/* mode menu (Paper 14RK-0, updated): the automatic modes' icons 16 px in a 16×18 frame (2 px from the top), #3E67FF;
+   Demander / Planifier 15 px, white at 85 % */
+.mi .lead.m-edits, .mi .lead.m-auto { width: 16px; height: 16px; margin-top: 2px; color: var(--accent); opacity: 1; }
+.mi .lead.m-ask, .mi .lead.m-plan { width: 15px; height: 15px; margin-top: 2px; opacity: .85; }
 .mi[aria-disabled="true"] { opacity: .5; }
 .mi.active, .mi[aria-selected="true"] { background: var(--fill6); }
 .menu .mi:focus-visible { outline: 1px solid #8FA9FF99; outline-offset: -1px; border-radius: 8px; }
@@ -533,6 +541,12 @@ svg.i { display: block; flex-shrink: 0; }
 .model .mn { flex-shrink: 1; }
 /* model menu (V1.2, Paper 17US-0 / 17VU-0): rows 6/10, radius 8, 13/18 500; chosen row #FFFFFF0F with the blue check */
 .menu.models .mi { padding: 6px 10px; }
+/* Paper 17US-0 / 17VU-0: no shadow, rows 1 px apart (14RK-0 keeps its shadow and 2 px) */
+.menu.models { box-shadow: none; gap: 1px; }
+/* Paper 14RK-0: the chosen mode's row is white 6 % with its check 2 px down; 17US-0: « Autres modèles › » / « Effort › » rows 8 px apart */
+.menu.modes .mi[aria-checked="true"] { background: var(--fill6); }
+.mi.top .ck { margin-top: 2px; }
+.mi[data-sub] { gap: 8px; }
 .menu.models .mi[aria-checked="true"] { background: var(--fill6); }
 .menu.models .mi .lead { margin-top: 0; }
 .menu .btn-s.primary { background: var(--accent); }
@@ -594,8 +608,21 @@ svg.i { display: block; flex-shrink: 0; }
    page is transparent. Content sits on the edge the host keeps fixed (top; bottom when the bubble is above its element). */
 .main { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .b-rule, .b-fade, .b-tip, .bview { display: none; }
+/* menus and hover bubbles: their own layer, the surface's origin; in the bubble they may leave the surface (B 1.9, R3) —
+   the host grows the transparent window around it and says where the surface is (`layout.inset` → --it/--ir/--ib/--il) */
+.layer { position: fixed; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 30; }
+.layer > .menu { pointer-events: auto; }
+:root.bub .layer { left: var(--il, 0px); top: var(--it, 0px); width: var(--bw, 305px); height: calc(100% - var(--it, 0px) - var(--ib, 0px)); }
+.layer .tip.ftip { position: absolute; bottom: auto; right: auto; display: flex; flex-direction: column; gap: 6px; width: max-content; padding: 8px 10px;
+  border-radius: 8px; background: var(--canvas); border: 1px solid #FFFFFF1A; box-shadow: #00000080 0 8px 24px; color: var(--w80); font-size: 12px; line-height: 16px;
+  opacity: 0; transform: translateY(2px) scale(.98); transform-origin: bottom right; pointer-events: none; transition: opacity 125ms ease-out, transform 125ms ease-out; }
+.layer .tip.ftip .tr { display: flex; align-items: center; justify-content: space-between; gap: 16px; white-space: pre; }
+.layer .tip.ftip .kc { height: 18px; min-width: 18px; padding: 1px 5px; font-size: 11px; line-height: 16px; }
+.layer .tip.ftip.on { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { .layer .tip.ftip { transform: none; } }
+:root.reduce-motion .layer .tip.ftip { transform: none; }
 :root.bub, :root.bub body { background: transparent; }
-:root.bub #app { width: var(--bw, 305px); height: 100%; border-left: 0; background: var(--canvas); border-radius: 16px; overflow: hidden;
+:root.bub #app { width: var(--bw, 305px); height: calc(100% - var(--it, 0px) - var(--ib, 0px)); margin: var(--it, 0px) 0 0 var(--il, 0px); border-left: 0; background: var(--canvas); border-radius: 16px; overflow: hidden;
   padding: 12px; justify-content: flex-start; font-size: 12px; line-height: 16px; transform-origin: var(--b-origin, left top); }
 :root.bub-up #app { justify-content: flex-end; }
 :root.bub #app:focus-visible { outline: none; }
@@ -647,7 +674,11 @@ svg.i { display: block; flex-shrink: 0; }
 .bt-st.stop svg { opacity: 1; }
 .bt-st.done { padding: 2px 6px 2px 4px; margin-right: -2px; line-height: 20px; color: #FFFFFFBF; }
 button.bt-st:not(:disabled):active { transform: scale(0.96); }
-@media (hover: hover) { button.bt-st:hover, button.bt-st.tip-on { background: var(--fill6); } button.bt-st.done:hover { color: #FFFFFF; } }
+@media (hover: hover) { button.bt-st:hover, button.bt-st.tip-on { background: #FFFFFF1A; border-radius: 4px 4px 10px 10px; } button.bt-st.done:hover { color: #FFFFFF; } }
+button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4px 4px 10px 10px; }
+/* B 1.9 (R8): before the agent's first words, the step in progress stands in the message's place */
+.bt-pend { display: flex; min-width: 0; }
+.bt-pend .bt-st.run { margin: 0 0 0 -4px; padding: 1px 6px 1px 4px; font-size: 13px; line-height: 18px; color: var(--w80); }
 .bt-text { align-self: stretch; display: flex; flex-direction: column; gap: 8px; padding: 4px 8px 6px; border-radius: 4px 12px 16px 12px; background: var(--fill8); }
 .bub .text { font-size: 13px; line-height: 20px; gap: 8px; }
 .bub .md-h1 { font-size: 14px; line-height: 20px; }
@@ -658,6 +689,7 @@ button.bt-st:not(:disabled):active { transform: scale(0.96); }
 .bub .turn.bt.b-err .bt-text { background: linear-gradient(in oklab 180deg, #FFFFFF14 0%, color-mix(in srgb, var(--danger) 10%, transparent) 100%); }
 .bub .turn.bt.b-err .bt-text .text, .bub .turn.bt.b-err .bt-text .md-h, .bub .turn.bt.b-err .bt-text .md-link { color: var(--danger); }
 .bub .turn.bt.b-err-open .bt-text { display: none; }
+.bub .turn.bt.b-err .bt-text { gap: 4px; }   /* Paper 1ADR-0 */
 .bt-err { display: flex; align-items: center; height: 22px; padding: 2px 2px 0; color: var(--danger); font-size: 13px; line-height: 20px; }
 .bt-err .w { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
 .bt-err .w svg { width: 14px; height: 14px; }
@@ -726,7 +758,7 @@ button.bt-st:not(:disabled):active { transform: scale(0.96); }
 .bperm-in { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: 10px; background: var(--raised); flex-shrink: 0; }
 .bperm-in .ic { width: 14px; height: 14px; opacity: .5; }
 .bperm-in .instead { flex: 1; min-width: 0; height: 100%; padding: 0; border-radius: 0; background: none; font-size: 13px; line-height: 16px; }
-.bperm-in .instead::placeholder { color: var(--w50); }
+.bperm-in .instead::placeholder { color: var(--w50); line-height: 16px; }
 .bperm-in .instead:focus-visible { outline: none; }
 .bperm-in:focus-within { box-shadow: inset 0 0 0 1px #FFFFFF33; }
 .bperm-ft { display: flex; align-items: center; gap: 8px; padding-left: 4px; }
@@ -765,10 +797,10 @@ button.bt-st:not(:disabled):active { transform: scale(0.96); }
 .bview-copy { position: absolute; right: 0; bottom: 0; border-radius: 8px 0 8px 0; }
 
 /* hover list of a turn's steps (1B7H-0), inside the bubble */
-.bub .b-tip { display: flex; flex-direction: column; gap: 6px; position: absolute; z-index: 20; width: max-content; min-width: 178px; max-width: calc(100% - 12px); overflow: hidden;
-  padding: 8px 8px 8px 10px; border-radius: 10px 4px 10px 10px; background: #2F2F2F; box-shadow: #00000066 0 8px 24px; pointer-events: none;
-  opacity: 0; transform: scale(0.97); transform-origin: top right; transition: opacity 125ms ease-out, transform 125ms ease-out; }
-.bub .b-tip.up { border-radius: 10px 10px 4px 10px; transform-origin: bottom right; }
+.bub .b-tip { display: flex; flex-direction: column; gap: 6px; position: absolute; z-index: 20; width: 178px; overflow: hidden;
+  padding: 8px 8px 8px 10px; border-radius: 4px 10px 10px 10px; background: #2F2F2F; pointer-events: none;
+  opacity: 0; transform: scale(0.97); transform-origin: top left; transition: opacity 125ms ease-out, transform 125ms ease-out; }
+.bub .b-tip.up { border-radius: 10px 10px 10px 4px; transform-origin: bottom left; }
 .bub .b-tip.on { opacity: 1; transform: none; }
 .bub .b-tip[hidden] { display: none; }
 .b-tip .r { display: flex; align-items: center; gap: 8px; color: var(--w80); font-size: 13px; line-height: 18px; min-width: 0; flex-shrink: 0; }

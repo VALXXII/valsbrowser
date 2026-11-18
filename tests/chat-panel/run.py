@@ -20,11 +20,28 @@ args = sys.argv[1:]
 def opt(name, default=None):
     return args[args.index(name) + 1] if name in args else default
 OUT = os.path.abspath(opt("--out", os.path.join(ROOT, "build", "chat-qa", "panel")))
-COMMENT = os.path.join(os.path.dirname(OUT), "comment")   # comment-mode bubble (B 1.8): build/chat-qa/comment
+COMMENT = os.path.join(os.path.dirname(OUT), "comment-v2", "panel")   # comment-mode bubble (B 1.8/1.9): build/chat-qa/comment-v2/panel
 REF_C = os.path.join(REF, "comment")                      # the bubbles of the Paper boards 18NS-0 … 19IO-0, exported at 1x
 ONLY = set(filter(None, (opt("--only", "") or "").split(",")))
 EDGE = opt("--edge") or next(iter(sorted(glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "EdgeCore", "*", "msedge.exe")), reverse=True)), None)
 os.environ["BROWSER_ANNOTATIONS_TEST"] = "1"
+
+# ------------------------------------------------------------------ Paper values (worker F's survey) for the fidelity table
+PAPER_MD = os.path.join(ROOT, "design", "chat-comment-paper-values.md")
+FID = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fidelity.json"), encoding="utf-8"))
+def paper_nodes():
+    out = {}
+    if not os.path.exists(PAPER_MD): return out
+    for line in open(PAPER_MD, encoding="utf-8"):
+        m = re.match(r"\|\s*(.*?)\s*\|\s*`([0-9A-Z]+-0)`\s*\|\s*([\d.]+)×([\d.]+)\s*\|\s*(-?[\d.]+),\s*(-?[\d.]+)\s*\|(?:[^|]*\|)?\s*([^|]*)\|\s*$", line)
+        if not m or m.group(2) in out: continue
+        st = {}
+        for kv in m.group(7).split(";"):
+            if ":" in kv: k, v = kv.split(":", 1); st[k.strip()] = v.strip()
+        out[m.group(2)] = {"name": m.group(1).replace("└", "").strip(), "w": float(m.group(3)), "h": float(m.group(4)), "x": float(m.group(5)), "y": float(m.group(6)), "st": st}
+    return out
+PAPER = paper_nodes()
+fidelity = {}
 
 failures = []
 report = {"checks": [], "scenarios": {}, "perf": {}}
@@ -46,6 +63,128 @@ check(len(inner) == 1 and "def[1]" in inner[0], "static: innerHTML only for cons
 check("Content-Security-Policy" in src["index.html"] and "default-src 'none'" in src["index.html"] and "connect-src 'none'" in src["index.html"], "static: strict CSP in index.html")
 check(not re.search(r"(src|href)=\"https?:", src["index.html"]) and not re.search(r"url\(\s*['\"]?https?:", src["panel.css"]), "static: no remote script, style or font")
 check("dev-host" not in src["index.html"], "static: index.html does not load the fake host")
+
+# ------------------------------------------------------------------ fidelity: DOM vs Paper, value by value
+def rgba(v):
+    v = (v or "").strip()
+    m = re.match(r"color-mix\((#[0-9A-Fa-f]{6,8})\s+([\d.]+)%,\s*transparent\)", v)
+    if m: c = rgba(m.group(1)); return (c[0], c[1], c[2], round(c[3] * float(m.group(2)) / 100, 3))
+    m = re.match(r"#([0-9A-Fa-f]{6})([0-9A-Fa-f]{2})?$", v)
+    if m: h = m.group(1); return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), round(int(m.group(2) or "FF", 16) / 255, 3))
+    m = re.match(r"color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*/\s*([\d.]+))?\)", v)
+    if m: return (round(float(m.group(1)) * 255), round(float(m.group(2)) * 255), round(float(m.group(3)) * 255), round(float(m.group(4) or 1), 3))
+    m = re.match(r"rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)", v)
+    if m: return (round(float(m.group(1))), round(float(m.group(2))), round(float(m.group(3))), round(float(m.group(4) or 1), 3))
+    if v in ("transparent", "none", ""): return (0, 0, 0, 0)
+    return None
+def over_canvas(c):   # a fill as seen on the bubble's #171717
+    if c is None: return None
+    return tuple(round(c[i] * c[3] + 23 * (1 - c[3])) for i in range(3)) + (1,)
+def same_fill(a, b):
+    x, y = over_canvas(rgba(a)), over_canvas(rgba(b))
+    if x is None or y is None: return a == b
+    return all(abs(x[i] - y[i]) <= 1 for i in range(3))
+def same_color(a, b):
+    x, y = rgba(a), rgba(b)
+    if x is None or y is None: return a == b
+    if x[3] == 0 and y[3] == 0: return True
+    return all(abs(x[i] - y[i]) <= 1 for i in range(3)) and abs(x[3] - y[3]) <= 0.012
+px = lambda v: float(re.sub(r"px$", "", str(v))) if re.match(r"^-?[\d.]+(px)?$", str(v).strip()) else None
+# Écarts assumés (design/chat-panel.md §19.7, §20): (Paper node or "*", property) -> reason
+JUSTIFIED = {
+    ("*", "texte « Ask »"): "Nom de mode en français imposé (« Demander », brief règle 7, contrat §18) : le libellé et la largeur du bouton du mode changent",
+    ("1AH9-0", "w"): "Paper dessine la bulle de 1AE7-0 à 220 px, les autres planches à 210 : une seule valeur retenue, 210 (§19.7.4)",
+    ("1AH9-0", "x"): "Même cause (210 au lieu de 220 : le bord gauche se décale de 10 px) (§19.7.4)",
+    ("1AHA-0", "x"): "Même cause : le texte suit la bulle de 210 px (§19.7.4)",
+    ("1AZT-0", "radius"): "Paper dessine la bulle de 1AWI-0 en rayon 10, les autres en 12 : une seule valeur retenue, 12 (§19.7.4)",
+    ("1B6U-0", "x"): "Survol de l'étape : 1AIE-0 la place 2 px plus à droite que 1B30-0 (sans le retrait de 2 px de la ligne) ; l'étape reste où la met 1B30-0, l'infobulle se cale sur elle (§19.7.4)",
+    ("1B6U-0", "w"): "Paper fige l'étape survolée à 128 px ; la page garde la largeur de son texte (128 px ici, mais un autre libellé change la largeur)",
+    ("1B7H-0", "x"): "L'infobulle se cale sur le bord gauche de l'étape survolée, placée comme dans 1B30-0 (voir 1B6U-0)",
+    ("1ARB-0", "x"): "Étape en cours : 1ANU-0 dessine un anneau de 12 px collé au bord droit, 1B30-0 un anneau de 14 px en retrait ; une seule variante retenue, 1B30-0 (§19.7.4)",
+    ("1AS9-0", "padding top"): "Les 6 px au-dessus et au-dessous des lignes sont portés par la zone qui défile (.bview-body) plutôt que par son cadre : mêmes positions de lignes (mesurées égales)",
+    ("1AS9-0", "padding bottom"): "Même cause que le haut : la marge est dans la zone qui défile",
+    ("1B1J-0", "padding top"): "Les 6 px sont portés par la zone qui défile (.bview-body) : mêmes positions de lignes (mesurées égales)",
+    ("1B1J-0", "padding bottom"): "Même cause que le haut : la marge est dans la zone qui défile",
+    ("1B08-0", "padding left"): "Le retrait de 10 px et l'écart de 8 px sont dans le bouton de la barre (.bt-bar-main), pour que toute la barre soit cliquable : icône, nom et +/− aux mêmes positions (mesurées égales)",
+    ("1B08-0", "gap"): "Même cause : l'écart de 8 px est entre les enfants du bouton de la barre",
+    ("17US-0", "h"): "Hauteur du menu : la planche montre « Autres modèles » ; il n'apparaît que si un fournisseur a plus de 3 modèles (§16) — le scénario comparé en a 4, la hauteur doit donc être égale",
+    ("*", "x texte"): "Position du premier caractère : Inter Display rendu par Chromium et par Paper diffère de moins de 2 px (§19.7.5)",
+}
+def fidelity_table():
+    rows, bad = [], 0
+    for scen, items in fidelity.items():
+        for o in items:
+            P = PAPER.get(o["id"])
+            if not P: rows.append((scen, o["id"], o["sel"], "nœud", "absent du relevé", "", "", "")); bad += 1; continue
+            if o.get("missing"): rows.append((scen, o["id"], o["sel"], "élément", "présent", "absent", "", "")); bad += 1; continue
+            st, ds = P["st"], o["s"]
+            def add(prop, pv, dv, ok, key=None):
+                nonlocal bad
+                if ok: rows.append((scen, o["id"], o["sel"], prop, pv, dv, "=", "")); return
+                why = JUSTIFIED.get((o["id"], key or prop)) or JUSTIFIED.get(("*", key or prop)) or ""
+                if not why and "Ask" in P["name"]: why = JUSTIFIED[("*", "texte « Ask »")]
+                if not why and P["name"] in ("Mode",) and prop in ("w",): why = JUSTIFIED[("*", "texte « Ask »")]
+                if not why: bad += 1
+                rows.append((scen, o["id"], o["sel"], prop, pv, dv, "≠", why))
+            k = o["kind"]
+            if k == "f":
+                for prop, pv, dv in (("x", P["x"], o["x"]), ("y", P["y"], o["y"]), ("w", P["w"], o["w"]), ("h", P["h"], o["h"])):
+                    add(prop, round(pv, 1), round(dv, 1), abs(pv - dv) <= 1)
+            elif k == "ph":   # a placeholder: where its line starts and its vertical centre
+                add("x", round(P["x"], 1), round(o["x"], 1), abs(P["x"] - o["x"]) <= 1)
+                add("centre y", round(P["y"] + P["h"] / 2, 1), round(o["y"] + o["h"] / 2, 1), abs(P["y"] + P["h"] / 2 - o["y"] - o["h"] / 2) <= 1.5)
+            else:
+                cy_p, cy_d = P["y"] + P["h"] / 2, o["y"] + o["h"] / 2
+                add("centre y", round(cy_p, 1), round(cy_d, 1), abs(cy_p - cy_d) <= 1.5)
+                if k == "tc": add("centre x", round(P["x"] + P["w"] / 2, 1), round(o["x"] + o["w"] / 2, 1), abs(P["x"] + P["w"] / 2 - o["x"] - o["w"] / 2) <= 2.5, "x texte")
+                else:
+                    d = abs(P["x"] - o["x"])
+                    add("x", round(P["x"], 1), round(o["x"], 1), d <= 1, "x" if d > 2 else "x texte")
+            if "bg" in st and k == "f": add("fond", st["bg"], ds["bg"], same_fill(st["bg"], ds["bg"]))
+            corners = {"rtl": "borderTopLeftRadius", "rtr": "borderTopRightRadius", "rbr": "borderBottomRightRadius", "rbl": "borderBottomLeftRadius"}
+            if k == "f":
+                for dk, pk in corners.items():
+                    pv = st.get(pk, st.get("radius"))
+                    if pv is None: continue
+                    if "infinity" in pv: ok = px(ds[dk]) is not None and px(ds[dk]) >= o["h"] / 2 - .5; pv = "pilule"
+                    else: ok = px(pv) is not None and px(ds[dk]) is not None and abs(px(pv) - px(ds[dk])) < .5
+                    add("rayon " + pk.replace("border", "").replace("Radius", ""), pv, ds[dk], ok, "radius")
+                pads = {"pt": ["paddingTop", "paddingBlock", "padding"], "pb": ["paddingBottom", "paddingBlock", "padding"], "pl": ["paddingLeft", "paddingInline", "padding"], "pr": ["paddingRight", "paddingInline", "padding"]}
+                for dk, keys in pads.items():
+                    pv = next((st[x] for x in keys if x in st), None)
+                    if pv is None or px(pv) is None: continue
+                    add("padding " + keys[0][7:].lower(), pv, ds[dk], abs(px(pv) - px(ds[dk])) < .5)
+                if "gap" in st and px(st["gap"]) is not None and o["sel"] != "#app":   # the surface's 12 px sit on its inner column (.main)
+                    g = px(st["gap"]); dg = px(ds["rg"] if ds["dir"].startswith("column") else ds["cg"])
+                    add("gap", st["gap"], ds["rg"] if ds["dir"].startswith("column") else ds["cg"], dg is not None and abs(g - dg) < .5)
+                if "opacity" in st and k == "f": add("opacité", st["opacity"], ds["opacity"], abs(float(st["opacity"].rstrip("%")) / (100 if st["opacity"].endswith("%") else 1) - float(ds["opacity"])) < .01)
+            if k != "f":
+                if "size" in st: add("taille", st["size"], ds["size"], px(st["size"]) == px(ds["size"]))
+                if "lh" in st: add("interligne", st["lh"], ds["lh"], px(st["lh"]) == px(ds["lh"]))
+                if "weight" in st: add("graisse", st["weight"], ds["weight"], str(st["weight"]) == str(ds["weight"]))
+                if "color" in st:   # a text's own opacity (Paper 1B7W-0: white at 75 %) is part of its colour
+                    pc = st["color"]
+                    if "opacity" in st and rgba(pc): c = rgba(pc); op = float(st["opacity"].rstrip("%")) / (100 if st["opacity"].endswith("%") else 1); pc = "rgba(%d, %d, %d, %.3f)" % (c[0], c[1], c[2], c[3] * op)
+                    add("couleur", st["color"] + (" × " + st["opacity"] if "opacity" in st else ""), ds["color"], same_color(pc, ds["color"]))
+            if k == "f" and o["id"] in ("14RK-0", "17US-0"):   # the menus: their border and shadow (Paper 14RK-0 has one, 17US-0 none)
+                add("bordure", st.get("borderWidth", "0px"), ds["bw"], px(st.get("borderWidth", "0px")) == px(ds["bw"]))
+                sh = {"14RK-0": "rgba(0, 0, 0, 0.5) 0px 16px 48px 0px", "17US-0": "none"}[o["id"]]
+                add("ombre", st.get("boxShadow", "aucune"), ds["shadow"], ds["shadow"] == sh)
+            if k == "f" and o["id"] in ("18TO-0", "1B60-0", "1ALE-0", "1AH7-0", "1AQU-0", "19RN-0", "1ADE-0", "1A9L-0", "1AZR-0", "1B19-0"):
+                add("ombre", "aucune", ds["shadow"], ds["shadow"] == "none"); add("bordure", "aucune", ds["bw"], ds["bw"] == "0px")
+    out = ["# Bulle du mode Commentaire — écarts mesurés (page) / relevé Paper", "",
+           "Généré par `tests/chat-panel/run.py` : chaque nœud Paper du relevé de F (`design/chat-comment-paper-values.md`) est mesuré dans la page au même état (boîtes relatives à la bulle, styles calculés). Tolérance : 1 px pour les boîtes, 1,5 px pour le centre vertical d'un texte, 1/255 pour une couleur. Les largeurs de texte ne sont pas comparées (rendu des polices, §19.7.5).", "",
+           f"**Écarts non justifiés : {bad}** · valeurs comparées : {len(rows)} · justifiés : {sum(1 for r in rows if r[6] == '≠' and r[7])}", "",
+           "| État | Nœud Paper | Élément | Propriété | Paper | Page | | Justification |", "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        if r[6] == "=": continue
+        out.append("| " + " | ".join(str(x).replace("|", "\\|") for x in r) + " |")
+    out += ["", "## Toutes les valeurs égales", "", "| État | Nœud Paper | Élément | Propriété | Paper | Page |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        if r[6] == "=": out.append("| " + " | ".join(str(x).replace("|", "\\|") for x in r[:6]) + " |")
+    open(os.path.join(COMMENT, "ecarts.md"), "w", encoding="utf-8").write("\n".join(out) + "\n")
+    report["fidelity"] = {"compared": len(rows), "unjustified": bad}
+    check(bad == 0 and len(fidelity) == len([k for k in FID if not k.startswith("_")]), f"fidelity: every Paper value of the 10 bubble boards and the 3 menus matches the page, or its gap is justified ({len(rows)} values)", f"{bad} unjustified — build/chat-qa/comment-v2/panel/ecarts.md")
 
 # ------------------------------------------------------------------ 2. loopback server
 CSP = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
@@ -176,6 +315,16 @@ try:
     def bubble_size():
         return cdp.js("(()=>{const s=window.__posted.filter(m=>m.type==='bubble.size').pop();return s?[s.width,s.height]:null})()")
 
+    # every value Paper gives, measured in the page: boxes relative to the bubble, computed styles
+    FID_JS = r"""(maps,root,dy)=>{const a=document.querySelector(root).getBoundingClientRect();return maps.map(([id,sel,kind])=>{const el=document.querySelector(sel);if(!el)return {id,sel,kind,missing:true};
+      const cs=getComputedStyle(el);let r=el.getBoundingClientRect();const o={id,sel,kind};
+      if(kind==='t'||kind==='tc'){const rs=[];const w=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);let n;while((n=w.nextNode())){if(!n.nodeValue.trim())continue;if(n.parentElement.closest('.sr-only,svg'))continue;const g=document.createRange();g.selectNodeContents(n);for(const q of g.getClientRects())rs.push(q);}
+        if(rs.length){const L=Math.min(...rs.map(q=>q.left)),T=Math.min(...rs.map(q=>q.top)),R=Math.max(...rs.map(q=>q.right)),B=Math.max(...rs.map(q=>q.bottom));r={left:L,top:T,width:R-L,height:B-T};}}
+      let st=cs;if(kind==='ph'){st=getComputedStyle(el,el.tagName==='INPUT'?'::placeholder':'::before');const pl=parseFloat(cs.paddingLeft),pr=parseFloat(cs.paddingRight);r={left:r.left+pl,top:r.top,width:r.width-pl-pr,height:r.height};}
+      o.x=r.left-a.left;o.y=r.top-a.top+(sel===root?0:dy);o.w=r.width;o.h=r.height;
+      o.s={bg:cs.backgroundColor,rtl:cs.borderTopLeftRadius,rtr:cs.borderTopRightRadius,rbr:cs.borderBottomRightRadius,rbl:cs.borderBottomLeftRadius,pt:cs.paddingTop,pr:cs.paddingRight,pb:cs.paddingBottom,pl:cs.paddingLeft,
+        rg:cs.rowGap,cg:cs.columnGap,dir:cs.flexDirection,size:st.fontSize,lh:kind==='ph'&&el.tagName==='INPUT'?cs.lineHeight:st.lineHeight,weight:st.fontWeight,color:st.color,opacity:cs.opacity,bw:cs.borderTopWidth,shadow:cs.boxShadow};return o;})}"""
+
     # ---------------------------------------------------------------- 4. every scenario: screenshot + a11y + errors
     names = cdp.js("new Promise(r=>{})", await_promise=False) if False else None
     cdp.call("Page.navigate", url=f"{BASE}/chat-panel/dev.html?scenario=6.7a-vide")
@@ -196,12 +345,21 @@ try:
             cdp.js("new Promise(r=>{document.activeElement&&document.activeElement.blur();requestAnimationFrame(()=>requestAnimationFrame(r))})")   # no caret, no focus ring: the boards show neither
             size = bubble_size()
             bubble_sizes[name] = size
+            if name in FID:
+                spec = FID[name] if isinstance(FID[name], dict) else {"nodes": FID[name]}
+                fidelity[name] = cdp.js("(" + FID_JS + ")(" + json.dumps(spec["nodes"]) + "," + json.dumps(spec.get("root", "#app")) + "," + str(spec.get("dy", 0)) + ")")
             over = cdp.js("(()=>{const s=document.querySelector('.scroller'),a=document.getElementById('app');return [s.scrollHeight-s.clientHeight, s.scrollTop, a.scrollTop, Math.round(a.getBoundingClientRect().height)]})()")
-            if name in ("c-2-autorisation", "c-fil-long"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
+            if name in ("c-2-autorisation", "c-fil-long", "c-autorisation-reouverte"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
             else: check(over[:3] == [0, 0, 0] and size and over[3] == size[1], f"{name}: the window fits the content exactly (nothing scrolls, nothing is cut)", str(over) + " " + str(size))
             out = os.path.join(COMMENT, name + ".png")
             cdp.call("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
-            shot(out, {"x": 0, "y": 0, "width": size[0], "height": size[1]} if size else None)
+            ins = cdp.js("window.__inset||{top:0,right:0,bottom:0,left:0}")
+            # the surface alone, as Paper exports the bubble's node (what floats outside it is another layer there too)
+            cdp.js("document.querySelector('.layer').style.visibility='hidden'")
+            shot(out, {"x": ins["left"], "y": ins["top"], "width": size[0], "height": size[1]} if size else None)
+            cdp.js("document.querySelector('.layer').style.visibility=''")
+            if any(ins.values()):   # the whole window the host grants: the surface and what floats outside it
+                shot(os.path.join(COMMENT, name + "-fenetre.png"), {"x": 0, "y": 0, "width": size[0] + ins["left"] + ins["right"], "height": size[1] + ins["top"] + ins["bottom"]})
             if name == "c-2.1-survol":   # the hover list alone, next to its board (Paper 1B7H-0)
                 tb = cdp.js("(()=>{const r=document.getElementById('b-tip').getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}})()")
                 if tb["width"]: shot(os.path.join(COMMENT, "c-2.1-infobulle-etapes.png"), tb)
@@ -238,6 +396,8 @@ try:
         print(f"     compare {name}: {r['mode']} {r['w']}x{r['h']} (board {rw}x{rh})" + (f", mean diff {r['mean']:.1f}/255, pixels off >48: {r['over']:.1f} %" if r['mean'] is not None else ""))
         if name != "c-2.1-infobulle-etapes":
             check((r["w"], r["h"]) == (rw, rh), f"{name}: the bubble has the size of its Paper board ({rw}x{rh})", f"{r['w']}x{r['h']}")
+
+    if fidelity: fidelity_table()
 
     shots = sorted(os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(OUT, "*.png")) if not os.path.basename(f).startswith(("planches", "stream")))
     for i in range(0, len(shots), 12):
@@ -281,10 +441,14 @@ try:
         check(b["role"] == "dialog" and b["modal"] == "false" and b["name"] == "Commentaire sur button.btn-primary", "bubble: a non-modal dialog named after its element", f"{b['role']} {b['modal']} {b['name']}")
         check(b["radius"] == "16px" and b["bg"] == "rgb(23, 23, 23)" and b["page"] == "rgba(0, 0, 0, 0)" and round(b["w"]) == 305, "bubble: 305 px surface #171717, radius 16, transparent page around it", f"{b['radius']} {b['bg']} {b['page']} {b['w']}")
         check(b["mode"] == "Demander" and "Ask" not in b["all"], "bubble: the mode shows its French name (« Demander », never « Ask »)", b["mode"])
+        check(b["radius"] == "16px" and cdp.js("getComputedStyle(document.getElementById('app')).boxShadow") == "none" and cdp.js("getComputedStyle(document.getElementById('app')).borderTopWidth") == "0px",
+              "bubble (Paper 18TO-0): radius 16, no shadow, no border")
         check(b["focus"] == "composer-input", "bubble: the cursor is in the input at the opening", b["focus"])
         check(sizes() == [[305, 84]], "bubble: one `bubble.size` per change (305 x 84 for the empty input), never the same value twice", str(sizes()))
-        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "open": False})
-        check(sizes() == [[305, 84], [305, 84]], "bubble: every `layout` is answered by `bubble.size`, even unchanged (acknowledgement)", str(sizes()))
+        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "open": False, "inset": {"top": 0, "right": 0, "bottom": 0, "left": 0}})
+        check(sizes() == [[305, 84]], "bubble (B 1.9): a `layout` with open:false (the host's answer) is not acknowledged when nothing changed — no loop", str(sizes()))
+        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "element": "button.btn-primary"})
+        check(sizes() == [[305, 84], [305, 84]], "bubble: an opening `layout` is always answered by `bubble.size`, even unchanged (acknowledgement)", str(sizes()))
         host({"type": "layout", "mode": "bubble", "maxWidth": 280, "maxHeight": 60, "open": False})
         check(sizes()[-1] == [280, 84], "bubble: the width follows maxWidth (280)", str(sizes()[-1]))
         host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "open": False})
@@ -323,7 +487,13 @@ try:
           desc:document.querySelector('.bt-st').getAttribute('aria-describedby'),hover:window.__posted.filter(m=>m.type==='hover').map(m=>m.active)}})()""")
         check(tip["on"] == "1" and tip["rows"] == ["A lu index.html", "A lu Checkout.tsx", "A utilisé 1 outil MCP"] and tip["role"] == "tooltip" and tip["desc"] == "b-tip" and tip["hover"][-1:] == [True],
               "bubble (hover): the step in progress shows the steps done (« A lu index.html », « A lu Checkout.tsx », « A utilisé 1 outil MCP »)", json.dumps(tip, ensure_ascii=False)[:260])
-        check(inside("#b-tip"), "bubble (hover): the list opens inside the bubble (a window cannot draw outside)")
+        tg = cdp.js("""(()=>{const a=document.getElementById('app').getBoundingClientRect(),t=document.getElementById('b-tip').getBoundingClientRect(),s=document.querySelector('.bt-st').getBoundingClientRect(),cs=getComputedStyle(document.getElementById('b-tip'));
+          return {dx:Math.round(t.left-a.left),dy:Math.round(t.top-a.top),w:Math.round(t.width),h:Math.round(t.height),gap:Math.round(s.top-t.bottom),left:Math.round(t.left-s.left),radius:[cs.borderTopLeftRadius,cs.borderTopRightRadius,cs.borderBottomRightRadius,cs.borderBottomLeftRadius].join(' '),
+          shadow:cs.boxShadow,bg:cs.backgroundColor,ask:window.__posted.filter(m=>m.type==='bubble.size').pop(),inset:window.__inset,winTop:Math.round(t.top),stBg:getComputedStyle(document.querySelector('.bt-st')).backgroundColor}})()""")
+        check(tg["w"] == 178 and tg["h"] == 82 and tg["gap"] == 2 and tg["left"] == 0 and tg["dx"] in (163, 165) and tg["dy"] == -7 and tg["radius"] == "10px 10px 10px 4px" and tg["shadow"] == "none" and tg["bg"] == "rgb(47, 47, 47)",
+              "bubble (hover, R3, Paper 1AIE-0): the list sits 2 px above its step, left edges aligned, 178×82 at (165, −7) from the bubble, corners 10/10/10/4, no shadow", json.dumps(tg)[:300])
+        check(tg["ask"].get("overflowTop") == 7 and abs(tg["ask"].get("overflowRight", 0) - (tg["dx"] + 178 - 305)) <= 1 and tg["inset"]["top"] == 7 and tg["winTop"] >= 0 and tg["stBg"] == "rgba(255, 255, 255, 0.1)",
+              "bubble (hover, R3): it leaves the bubble — `bubble.size` asks 7 px above and 36–38 px right, the host grants them, nothing is cut; the hovered step is white 10 %", json.dumps(tg)[-260:])
         move(c[0] - 150, c[1] + 100); time.sleep(.3)
         check(cdp.js("document.getElementById('b-tip').hidden") and cdp.js("window.__posted.filter(m=>m.type==='hover').pop().active") is False, "bubble (hover): it goes when the pointer leaves")
         move(*c); time.sleep(.6); host({"type": "pointer.leave"})
@@ -408,8 +578,8 @@ try:
         check(len(cp) == 1 and "-width: 240px;" in cp[0]["text"] and "+margin-left: auto;" in cp[0]["text"] and cdp.js("document.querySelector('.bt-copy span').textContent") == "Copié", "bubble (done): Copier copies the diff, then says « Copié »", cp[0]["text"][:80].replace("\n", " | ") if cp else "")
         c = center(".bt-st"); move(*c); time.sleep(.6)
         hist = cdp.js("Array.from(document.querySelectorAll('#b-tip .r')).map(r=>r.textContent)")
-        check(hist == ["A lu index.html", "A lu Checkout.tsx", "A utilisé 1 outil MCP", "A lu checkout.css", "A modifié checkout.css", "A lancé npm run build"] and inside("#b-tip"),
-              "bubble (done): hovering « Historique » lists the turn's actions (reads, MCP tools, edits, commands), inside the bubble", " | ".join(hist))
+        check(hist == ["A lu index.html", "A lu Checkout.tsx", "A utilisé 1 outil MCP", "A lu checkout.css", "A modifié checkout.css", "A lancé npm run build"],
+              "bubble (done): hovering « Historique » lists the turn's actions (reads, MCP tools, edits, commands)", " | ".join(hist))
         move(370, 690); time.sleep(.2)
         click(".bt-bar-main"); time.sleep(.2)
         v = cdp.js("""(()=>{const v=document.getElementById('bview');return {open:!v.hidden,title:v.querySelector('.t').textContent,nums:Array.from(v.querySelectorAll('.num')).map(n=>n.textContent),lines:v.querySelectorAll('.l').length,
@@ -429,19 +599,75 @@ try:
         check(cdp.js("V('.strip')") == 0 and cdp.js("V('.bq-cap')") == 1, "bubble (queue): the host's `wait` strip, which says the same sentence, is not shown twice")
         click(".bq-cap .icon-btn")
         check(q == ["Mets ce titre en gras", "Commencera après le travail en cours sur button.btn-primary", 1] and "queue.remove:q1" in posted(), "bubble (queue): a request written during another element's turn waits, with its discreet line and « × »", str(q))
+        # B 1.9 (R3): menus are drop-downs above their button that may leave the bubble; the window grows around the surface
+        geo_js = """(()=>{const m=document.querySelector('.menu'),r=m.getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect(),cs=getComputedStyle(m);
+          return {mTop:Math.round(r.top),mBottom:Math.round(r.bottom),mLeft:Math.round(r.left),mRight:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height),aTop:Math.round(a.top),aLeft:Math.round(a.left),aH:Math.round(a.height),
+          winH:document.documentElement.getBoundingClientRect().height,winW:document.documentElement.getBoundingClientRect().width,scroll:m.scrollHeight-m.clientHeight,shadow:cs.boxShadow,gap:cs.rowGap,
+          ask:window.__posted.filter(x=>x.type==='bubble.size').pop(),inset:window.__inset}})()"""
         load("c-menu-modele")
-        m = cdp.js("[!!document.querySelector('.menu[role=menu]'), document.querySelectorAll('.menu .mi').length]")
-        grown = sizes()
-        geo = cdp.js("(()=>{const m=document.querySelector('.menu'),r=m.getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect();return {top:Math.round(r.top),h:Math.round(r.height),scroll:m.scrollHeight,app:Math.round(a.height)}})()")
-        check(m[0] and m[1] >= 7 and inside(".menu") and grown[0] == [305, 84] and len(grown) == 2 and abs(grown[-1][1] - (geo["top"] + geo["h"] + 6)) <= 1 and geo["scroll"] <= geo["h"] and geo["app"] == grown[-1][1],
-              "bubble (menu): the model menu opens inside the bubble, which grows for it (nothing cut, nothing scrolled)", f"{m} {grown} {geo}")
+        g = cdp.js(geo_js)
+        check(g["mBottom"] <= g["aTop"] + 84 and g["mTop"] < g["aTop"] and g["mTop"] >= 0 and g["mBottom"] <= g["winH"] and g["mLeft"] >= 0 and g["mRight"] <= g["winW"] and g["scroll"] <= 0 and g["aH"] == 84 and g["w"] == 300,
+              "bubble (menu, R3): the model menu (300 px) opens above its button, out of the bubble, whole (nothing cut, nothing scrolled); the surface keeps its 84 px", json.dumps(g)[:300])
+        check(g["ask"]["height"] == 84 and g["ask"].get("overflowTop", 0) >= g["aTop"] - g["inset"]["top"] + 0 and g["inset"]["top"] == g["ask"].get("overflowTop") and g["aTop"] == g["inset"]["top"] and g["shadow"] == "none" and g["gap"] == "1px",
+              "bubble (menu, R3): `bubble.size` keeps the height and asks `overflowTop`; the surface is drawn at the granted inset; Paper 17US-0: no shadow, rows 1 px apart", json.dumps(g["ask"]) + " " + json.dumps(g["inset"]))
         key("Escape")
-        check(cdp.js("!document.querySelector('.menu')") and sizes()[-1] == [305, 84] and "close" not in posted(), "bubble (menu): Échap closes the menu only; the bubble is back to its size", str(sizes()[-2:]))
+        last = sizes()[-1]; lastm = of("bubble.size")[-1]
+        check(cdp.js("!document.querySelector('.menu')") and last == [305, 84] and not any(k.startswith("overflow") for k in lastm) and "close" not in posted() and cdp.js("Math.round(document.getElementById('app').getBoundingClientRect().top)") == 0,
+              "bubble (menu): Échap closes the menu only; the window shrinks back to the surface (no overflow)", json.dumps(lastm))
+        load("c-menu-refuse")
+        g = cdp.js(geo_js)
+        check(g["inset"]["top"] <= 40 and g["mTop"] > g["aTop"] + 60 and g["mBottom"] <= g["winH"] and (g["ask"].get("overflowBottom") or 0) > 0 and g["scroll"] <= 0,
+              "bubble (menu, R3): when the host cannot give the room above (screen edge: 40 px), the menu turns under its button and asks the room below", json.dumps(g)[:300])
         load("c-menu-mode")
-        check(inside(".menu") and sizes()[-1] == [305, 279] and cdp.js("Array.from(document.querySelectorAll('.menu .mi .lb')).map(n=>n.textContent)") == ["Demander", "Auto", "Planifier"], "bubble (menu): with room above its button the menu covers the thread, the size does not change", str(sizes()[-1]))
+        mm = cdp.js("""(()=>{const m=document.querySelector('.menu');return {rows:Array.from(m.querySelectorAll('.mi')).map(b=>[b.querySelector('.lb').textContent,(b.querySelector('.ds')||{}).textContent||'']),
+          icons:Array.from(m.querySelectorAll('.mi .lead')).map(i=>{const r=i.getBoundingClientRect(),cs=getComputedStyle(i);return [Math.round(r.width),cs.color,cs.opacity]}),
+          checked:(m.querySelector('.mi[aria-checked=true] .lb')||{}).textContent,w:Math.round(m.getBoundingClientRect().width),shadow:getComputedStyle(m).boxShadow,gap:getComputedStyle(m).rowGap,
+          rowH:Math.round(m.querySelector('.mi').getBoundingClientRect().height)}})()""")
+        check(mm["rows"] == [["Accept edits", "Automatically accept all file edits"], ["Auto", "Claude handles permission decisions"], ["Demander", "Propose chaque modification."], ["Planifier", "Propose un plan, ne touche à aucun fichier."]],
+              "modes (R4, Paper 14RK-0): exactly Accept edits, Auto, Demander, Planifier with Paper's words, in that order", json.dumps(mm["rows"], ensure_ascii=False))
+        check(mm["icons"] == [[16, "rgb(62, 103, 255)", "1"], [16, "rgb(62, 103, 255)", "1"], [15, "rgb(255, 255, 255)", "0.85"], [15, "rgb(255, 255, 255)", "0.85"]] and mm["checked"] == "Demander" and mm["w"] == 290
+              and mm["shadow"] == "rgba(0, 0, 0, 0.5) 0px 16px 48px 0px" and mm["gap"] == "2px" and mm["rowH"] == 51,
+              "modes (R4, Paper 14RK-0): double chevron and bolt 16 px #3E67FF, shield and list 15 px white 85 %, 290 px, shadow 0 16 48, rows 51 px, 2 px apart", json.dumps(mm)[:300])
         load("c-menu-au-dessus")
-        up = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.composer').getBoundingClientRect(),b=document.querySelector('.tb.mode').getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect();return [Math.round(a.bottom-c.bottom), m.bottom<=b.top, m.top>=a.top]})()")
-        check(up == [12, True, True] and inside(".menu") and sizes()[-1][1] > 200, "bubble (above its element): content sits on the bottom edge, the menu opens upward", f"{up} {sizes()[-1]}")
+        up = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.composer').getBoundingClientRect(),b=document.querySelector('.tb.mode').getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect();return [Math.round(a.bottom-c.bottom), m.bottom<=b.top, m.top>=0]})()")
+        check(up == [12, True, True] and sizes()[-1][1] == 84, "bubble (above its element): content sits on the bottom edge, the menu opens upward out of the bubble", f"{up} {sizes()[-1]}")
+        load("c-menu-plus")
+        pl = cdp.js("Array.from(document.querySelectorAll('.menu .mi .lb')).map(n=>n.textContent)")
+        load("c-menu-plus-incertain")
+        pl2 = cdp.js("Array.from(document.querySelectorAll('.menu .mi .lb')).map(n=>n.textContent)")
+        check(pl == ["Joindre une image"] and pl2 == ["Joindre une image", "Choisir le dossier…"], "« + » (R5): a folder found for sure is never offered for change — only « Joindre une image »; when the browser is not sure, « Choisir le dossier… »", f"{pl} / {pl2}")
+        load("c-infobulle-envoyer")
+        cdp.js("document.getElementById('composer-input').focus()")
+        for _ in range(4): key("Tab")
+        time.sleep(.3)
+        st_ = cdp.js("""(()=>{const t=document.getElementById('send-tip'),r=t.getBoundingClientRect(),b=document.querySelector('.send').getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect();
+          return {on:getComputedStyle(t).opacity,text:t.innerText,top:Math.round(r.top),bottom:Math.round(b.top-r.bottom),right:Math.round(b.right-r.right),w:r.width,cut:t.scrollWidth>t.clientWidth+1,inLayer:t.parentNode.className,above:r.top<a.top}})()""")
+        check(st_["on"] == "1" and "Garder en annotation" in st_["text"] and "Ctrl" in st_["text"] and st_["bottom"] == 6 and st_["right"] == 0 and st_["top"] >= 0 and not st_["cut"] and st_["inLayer"] == "layer" and st_["above"],
+              "bubble (send button, R3): « Demander à l'agent ↵ / Garder en annotation Ctrl ↵ » opens above the button, out of the bubble, never cut", json.dumps(st_, ensure_ascii=False)[:240])
+        cdp.js("document.activeElement.blur()"); time.sleep(.3)
+        check(cdp.js("getComputedStyle(document.getElementById('send-tip')).opacity") == "0" and not any(k.startswith("overflow") for k in of("bubble.size")[-1]), "bubble (send button): it goes with the focus and the window shrinks back")
+
+        # R9 (page side): the waiting request the host sends again after its thread.reset is shown again, once, focused
+        load("c-autorisation-reouverte")
+        ro = cdp.js("[document.querySelectorAll('.bperm').length, document.getElementById('perm-t').textContent, (document.activeElement.textContent||'').trim()]")
+        check(ro == [1, "Claude veut modifier checkout.css", "Autoriser"], "bubble (R9): reopened (thread.reset), the waiting permission card is back — once, « Autoriser » focused", str(ro))
+        # R7: no element chip under the user's message in the bubble
+        load("c-2-puce")
+        check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
+              "bubble (R7): no element chip under (or in) the user's message — the element is the bubble's")
+        # R8: until the agent writes, the step in progress stands in the message's place, under the model
+        load("c-2-sans-texte")
+        r8 = cdp.js("""(()=>{const p=document.querySelector('.bt-text .bt-pend .bt-st'),h=document.querySelector('.bt-head'),t=document.querySelector('.bt-text');return {inBody:!!p,label:p?p.querySelector('.lb').textContent:'',right:document.querySelector('.bt-stw').textContent.trim(),
+          under:p?Math.round(p.getBoundingClientRect().top-h.getBoundingClientRect().bottom):null,shown:t.getClientRects().length>0}})()""")
+        host({"type": "message.agentChunk", "turnId": "t1", "messageId": "m1", "text": "Je passe le bouton en pleine largeur."}); time.sleep(.1)
+        r8b = cdp.js("[!!document.querySelector('.bt-text .bt-pend'), document.querySelector('.bt-stw .lb').textContent, document.querySelector('.bt-text .text').textContent]")
+        check(r8["inBody"] and r8["label"] == "Lit checkout.css…" and r8["right"] == "" and r8["shown"] and r8["under"] is not None and r8["under"] >= 0,
+              "bubble (R8, Paper 1B30-0): before any words, the step in progress sits in the message's place under « modèle · effort »", json.dumps(r8, ensure_ascii=False))
+        check(r8b == [False, "Lit checkout.css…", "Je passe le bouton en pleine largeur."], "bubble (R8): the first words take that place; the step moves right of the model", json.dumps(r8b, ensure_ascii=False))
+        # R12: the provider's logo left of the model's name in the turn's header
+        load("c-2-envoye")
+        lg = cdp.js("(()=>{const s=document.querySelector('.bt-model svg');const r=s.getBoundingClientRect();return [s.querySelector('path').getAttribute('fill'), Math.round(r.width), s.nextElementSibling.textContent]})()")
+        check(lg == ["#D97757", 14, "Sonnet 5.5"], "bubble (R12): Claude's logo (14 px) left of « Sonnet 5.5 » in the answer's header", str(lg))
         load("c-fil-long")
         lg = cdp.js("(()=>{const s=document.querySelector('.scroller');return [s.scrollHeight>s.clientHeight, Math.round(s.scrollTop+s.clientHeight)===s.scrollHeight, document.getElementById('app').classList.contains('faded')]})()")
         check(sizes()[-1] == [305, 360] and lg == [True, True, True], "bubble (long thread): at maxHeight (360) the thread scrolls, glued to its end, the top fades", f"{sizes()[-1]} {lg}")
@@ -475,6 +701,8 @@ try:
         host({"type": "state", "running": False})
         pn = cdp.js("""(()=>({bub:document.documentElement.classList.contains('bub'),hd:document.querySelector('.hd').getClientRects().length,role:document.getElementById('app').getAttribute('role'),
           meta:(document.querySelector('.turn .meta')||{}).textContent,bt:document.querySelectorAll('.turn.bt').length,pick:document.querySelector('.tb.pick').getClientRects().length,bar:!!document.querySelector('.card4')}))()""")
+        check(cdp.js("(()=>{const s=document.querySelector('.turn .meta svg');return !!s&&s.nextElementSibling.textContent==='Sonnet · Élevé · 18 s'&&Math.round(s.getBoundingClientRect().width)===12})()"),
+              "panel (R12): the provider's logo left of « Sonnet · Élevé · 18 s » in the answer's header")
         check(not pn["bub"] and pn["hd"] == 1 and pn["role"] is None and pn["meta"] == "Sonnet · Élevé · 18 s" and pn["bt"] == 0 and pn["pick"] == 1 and pn["bar"] and len(sizes()) == n0,
               "layout: back to `panel` the chat is the panel again (header, thread drawn again by thread.reset), no more `bubble.size`", json.dumps(pn, ensure_ascii=False))
 
@@ -488,9 +716,9 @@ try:
         cdp.js("window.devHost.send({type:'history',items:[{id:'c2',title:'Bouton de paiement',subtitle:'1 fichier modifié',siteLabel:'127.0.0.1:5173',thisSite:true,agentIcon:'claude',updatedAt:new Date().toISOString()},"
                "{id:'c4',title:'Menu de navigation',subtitle:'3 fichiers modifiés',siteLabel:'localhost:4173',folderName:'vitrine',thisSite:false,agentIcon:'claude',updatedAt:new Date().toISOString()}]})"); time.sleep(.15)
         hs = cdp.js("[document.querySelector('.hsec').textContent, Array.from(document.querySelectorAll('.hrow .s')).map(s=>s.textContent)]")
-        check("boutique" in plus and "C:\\" not in plus and tile[0].startswith("boutique") and tile[1] == 0 and tile[2].endswith("boutique")
+        check("dossier" not in plus and "C:\\" not in plus and tile[0].startswith("boutique") and tile[1] == 0 and tile[2].endswith("boutique")
               and hs == ["Ce site · boutique", ["1 fichier modifié", "vitrine · 3 fichiers modifiés"]],
-              "folder (B 1.8): the folder's name instead of its path or the site's address (« + » menu, folder screen, history)", f"{plus!r} {tile} {hs}"[:300])
+              "folder (B 1.8/1.9): the folder's name instead of its path or the site's address (folder screen, history); a sure folder is not in « + »", f"{plus!r} {tile} {hs}"[:300])
 
     if not ONLY:
         load("6.1-autorisation")
@@ -512,7 +740,7 @@ try:
         check(a1.startswith("Haiku") and cdp.js("!document.querySelector('.menu')") and active().startswith("Modèle"), "keyboard: arrows move, Échap closes and returns to the trigger", a1 + " / " + active())
 
         load("6.7a-vide"); cdp.js("document.getElementById('composer-input').focus()"); key("Tab", "Tab", 8)
-        check(any(p.startswith("setMode:acceptEdits") for p in posted()), "keyboard: Maj+Tab switches mode")
+        check(any(p.startswith("setMode:plan") for p in posted()), "keyboard: Maj+Tab switches to the next of the 4 modes (Demander → Planifier)", str(posted()[-3:]))
 
         load("6.5-4-arobase")
         check(cdp.js("document.getElementById('composer-input').getAttribute('aria-activedescendant')") == "opt-0", "keyboard: @ menu exposes the active row")
@@ -529,10 +757,27 @@ try:
         order = []
         cdp.js("document.activeElement&&document.activeElement.blur()")
         for _ in range(16): key("Tab"); order.append(active())
-        check(order[:4] == ["Nouveau chat — ouvrir l'historique", "Nouveau chat", "Historique", "Fermer le chat"] and "Message à l'agent" in order, "keyboard: Tab order header → content → input → tools", " | ".join(order)[:300])
+        check(order[:3] == ["Nouveau chat", "Historique", "Fermer le chat"] and "Message à l'agent" in order, "keyboard: Tab order header → content → input → tools (a new chat's title is not a stop: nothing to rename)", " | ".join(order)[:300])
 
         load("6.7b-historique"); key("Escape")
-        check(cdp.js("document.getElementById('history').hidden") and active().startswith("Nouveau chat") is False and "historique" in active(), "keyboard: Échap closes the history and returns to the title", active())
+        check(cdp.js("document.getElementById('history').hidden") and active() == "Historique", "keyboard: Échap closes the history and returns to its button", active())
+
+        # B 1.9 (R11): the title does not open the history; a double-click renames it in place
+        load("titre-renommer")
+        tc = center(".hd-title")
+        cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=tc[0], y=tc[1], button="left", clickCount=1); cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=tc[0], y=tc[1], button="left", clickCount=1); time.sleep(.2)
+        one = cdp.js("[document.getElementById('history').hidden, window.__posted.some(m=>m.type==='history.open'), !!document.querySelector('.hd-rename')]")
+        cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=tc[0], y=tc[1], button="left", clickCount=2); cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=tc[0], y=tc[1], button="left", clickCount=2); time.sleep(.15)
+        ed = cdp.js("(()=>{const i=document.querySelector('.hd-rename');return i?[i.value, document.activeElement===i, i.selectionStart, i.selectionEnd]:null})()")
+        cdp.call("Input.insertText", text="Paiement pleine largeur"); key("Enter"); time.sleep(.1)
+        rn = cdp.js("[window.__posted.filter(m=>m.type==='conversation.rename').map(m=>m.id+':'+m.title), document.querySelector('.hd-title-text').textContent, !!document.querySelector('.hd-rename'), document.activeElement.className]")
+        check(one == [True, False, False], "header (R11): a click on the title opens nothing (the history has its own button)", str(one))
+        check(ed == ["Bouton de paiement", True, 0, 18] and rn[0] == ["c1:Paiement pleine largeur"] and rn[1] == "Paiement pleine largeur" and not rn[2] and rn[3] == "hd-title",
+              "header (R11): a double-click renames in place — the field is focused with the name selected, Entrée sends `conversation.rename` and keeps the name", f"{ed} {rn}")
+        cdp.js("document.querySelector('.hd-title').focus()"); key("F2", "F2"); time.sleep(.1)
+        cdp.call("Input.insertText", text="Autre nom"); key("Escape"); time.sleep(.1)
+        esc = cdp.js("[window.__posted.filter(m=>m.type==='conversation.rename').length, document.querySelector('.hd-title-text').textContent, window.__posted.some(m=>m.type==='close')]")
+        check(esc == [1, "Paiement pleine largeur", False], "header (R11): F2 opens the same field; Échap cancels (nothing sent, the old name stays, the panel stays open)", str(esc))
 
         load("6.7c-modifier-confirmer")
         check(cdp.js("!!document.querySelector('.editor .warn:not([hidden])')"), "edit: changed files are named before resending (edit.confirm)")
@@ -664,7 +909,7 @@ try:
         fb = cdp.js("({chip:!!document.querySelector('.tb.folder, [aria-label^=\"Dossier du projet\"]'),first:!document.querySelector('.first').hidden,tools:document.querySelectorAll('.foot .tools > *').length})")
         cdp.js("document.querySelector('.tools .tb[aria-haspopup=menu]').click()")
         plus = cdp.js("document.querySelector('.menu').textContent")
-        check(not fb["chip"] and not fb["first"] and fb["tools"] == 3 and "Choisir un autre dossier" in plus, "folder (V1.2): no folder chip in the composer (one project per chat), no folder screen; « + » can still change it", json.dumps(fb))
+        check(not fb["chip"] and not fb["first"] and fb["tools"] == 3 and "dossier" not in plus, "folder (V1.2/R5): no folder chip in the composer, no folder screen, and « + » does not offer to change a folder found for sure", json.dumps(fb) + " " + plus)
         load("dossier-demande")
         check(cdp.js("!document.querySelector('.first').hidden && !document.querySelector('.agents')"), "folder: the folder screen shows only when the host asks (askFolder), without the agent list when the agent is ready")
         load("annotations-avant")

@@ -69,7 +69,9 @@
     planPending: null,
     // B 1.8 — comment mode: the page as a compact bubble next to the element (Paper 18NS-0 … 19IO-0)
     lay: { mode: "panel", maxW: 305, maxH: 520, side: "right", element: "" },
-    bview: null, berr: null, menuNeed: 0,
+    bview: null, berr: null,
+    // B 1.9 (R3): margins of transparent window around the surface — asked (`bubble.size` overflow*) and granted (`layout.inset`)
+    inset: { top: 0, right: 0, bottom: 0, left: 0 }, ovAsk: { top: 0, right: 0, bottom: 0, left: 0 },
   };
   const BUB = () => S.lay.mode === "bubble";
   const folderName = (f) => (f && ((typeof f.name === "string" && f.name) || String(f.path || "").split(/[\\/]/).filter(Boolean).pop())) || "";
@@ -91,7 +93,24 @@
   const CONNECTED = ["ready", "starting", "preparing"];
   const connectedAgents = () => (S.st.agents || []).filter((a) => CONNECTED.includes(a.status));
   const PER_GROUP = 3;
-  const curMode = () => (S.st.modes || []).find((m) => m.id === S.st.mode) || null;
+  // Modes (B 1.9, Paper 14RK-0 as updated by the user): exactly these four rows, in this order, with these words. A mode
+  // the agent does not have is not shown; anything else (the adapter's « bypass every permission », unknown modes) never is.
+  // `kind` comes from the host; before 1.9 acceptEdits came as « auto » — its id still tells it apart.
+  const MODE_ROWS = [
+    { kind: "edits", label: "Accept edits", desc: () => "Automatically accept all file edits", icon: "chevronsUp" },
+    { kind: "auto", label: "Auto", desc: () => curAgentName().replace(/ Code$/, "") + " handles permission decisions", icon: "bolt" },
+    { kind: "ask", label: "Demander", desc: () => "Propose chaque modification.", icon: "shield" },
+    { kind: "plan", label: "Planifier", desc: () => "Propose un plan, ne touche à aucun fichier.", icon: "list" },
+  ];
+  const modeKind = (m) => (m.kind === "edits" || (m.kind === "auto" && /accept|edit|workspace/i.test(String(m.id))) ? "edits"
+    : ["auto", "ask", "plan"].includes(m.kind) ? m.kind : "other");
+  function shownModes() {
+    const all = (S.st.modes || []).filter((m) => m && ID.test(String(m.id)));
+    const out = [];
+    for (const row of MODE_ROWS) { const m = all.find((x) => modeKind(x) === row.kind); if (m) out.push({ id: m.id, kind: row.kind, label: row.label, desc: row.desc(), icon: row.icon }); }
+    return out;
+  }
+  const curMode = () => shownModes().find((m) => m.id === S.st.mode) || null;
 
   // ---------------------------------------------------------------- skeleton
   const app = document.getElementById("app");
@@ -102,8 +121,36 @@
   const hdLogo = h("span", { class: "hd-logo" });
   const hdSource = h("button", { class: "hd-source", type: "button", hidden: true, onclick: () => S.st.conversation && S.st.conversation.source && post("file.open", srcRef(S.st.conversation.source)) });
   const hdTitleText = h("span", { class: "hd-title-text", text: "Nouveau chat" });
-  const hdTitle = h("button", { class: "hd-title", type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-controls": "history",
-                                onclick: () => toggleHistory() }, hdTitleText, icon("chevron", "chev"));
+  // B 1.9 (R11): the title no longer opens the history (its own button sits right next to it). A double-click (or F2)
+  // renames the conversation in place: Entrée keeps the name, Échap or leaving the field puts the old one back.
+  const hdTitle = h("span", { class: "hd-title", tabindex: "-1", role: "heading", "aria-level": "1", title: "Double-cliquez pour renommer",
+                              "aria-keyshortcuts": "F2", ondblclick: () => startRename(),
+                              onkeydown: (e) => { if (e.key === "F2" || (e.key === "Enter" && !e.repeat)) { e.preventDefault(); startRename(); } } }, hdTitleText);
+  let renaming = null;
+  function startRename() {
+    const c = S.st.conversation;
+    if (renaming || !c || !ID.test(String(c.id || ""))) return;
+    const before = hdTitleText.textContent;
+    const input = h("input", { class: "hd-rename", type: "text", maxlength: "120", "aria-label": "Nom de la conversation", spellcheck: "false" });
+    input.value = before;
+    renaming = { input, before };
+    hdTitle.replaceWith(input);
+    input.focus(); input.select();
+    const done = (keep) => {
+      if (!renaming || renaming.input !== input) return;
+      renaming = null;
+      const title = input.value.replace(/\s+/g, " ").trim().slice(0, 120);
+      if (keep && title && title !== before) { post("conversation.rename", { id: c.id, title }); hdTitleText.textContent = title; if (S.st.conversation) S.st.conversation.title = title; say("Conversation renommée : " + title + "."); }
+      input.replaceWith(hdTitle);
+      renderHeader();
+      hdTitle.focus();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); done(true); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(false); }
+    });
+    input.addEventListener("blur", () => done(false));
+  }
   // Context gauge (B 1.2 `usage`): how much of the agent's context window this chat uses before it gets summarised.
   const gaugeArc = document.createElementNS(SVGNS, "circle");
   const gaugeSvg = document.createElementNS(SVGNS, "svg");
@@ -141,10 +188,12 @@
   document.documentElement.addEventListener("pointerleave", tipHide);
   document.addEventListener("mouseout", (e) => { if (!e.relatedTarget) tipHide(); });
   window.addEventListener("blur", tipHide);
+  const histBtn = h("button", { class: "hd-btn", type: "button", "aria-label": "Historique", title: "Historique", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-controls": "history",
+                               onclick: () => toggleHistory() }, icon("history"));
   const hd = h("header", { class: "hd" },
     h("div", { class: "hd-main" }, hdLogo, h("div", { class: "hd-titles" }, hdSource, h("div", { class: "hd-row" }, hdTitle, gauge))),
     h("button", { class: "hd-btn", type: "button", "aria-label": "Nouveau chat", title: "Nouveau chat", onclick: () => post("newChat") }, icon("plus")),
-    h("button", { class: "hd-btn", type: "button", "aria-label": "Historique", title: "Historique", onclick: () => toggleHistory() }, icon("history")),
+    histBtn,
     h("button", { class: "hd-btn", type: "button", "aria-label": "Fermer le chat", title: "Fermer", onclick: () => post("close") }, icon("close")));
   hdSource.style.cssText = "background:none;border:0;padding:0;text-align:left;font:inherit;font-size:12px;line-height:16px;color:#FFFFFF80;align-self:flex-start;max-width:100%";
   function srcRef(s) { const m = /^(.*?)(?::(\d+))?$/.exec(s); return m[2] ? { path: m[1], line: +m[2] } : { path: s }; }
@@ -165,8 +214,11 @@
   const fadeEl = h("div", { class: "b-fade", "aria-hidden": "true" });
   const btipEl = h("div", { class: "b-tip", id: "b-tip", role: "tooltip", hidden: true });
   const main = h("div", { class: "main" }, body, bviewEl, ruleEl, dock, historyEl, changesEl);
-  const menuLayer = h("div");
-  app.append(hd, main, fadeEl, btipEl, live, alertLive, menuLayer);
+  // Menus and hover bubbles live in their own layer, outside the surface: in the bubble they may leave it (B 1.9, R3) —
+  // the host grows the transparent window around the surface for them. The layer has the surface's origin.
+  const menuLayer = h("div", { class: "layer" }, btipEl);
+  app.append(hd, main, fadeEl, live, alertLive);
+  document.body.appendChild(menuLayer);
 
   scroller.addEventListener("scroll", () => {
     const at = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
@@ -217,7 +269,7 @@
   const pickBtn = h("button", { class: "tb pick", type: "button", "aria-label": "Sélection d'éléments sur la page", title: "Sélection d'éléments (Ctrl+Maj+A)",
                                 "aria-pressed": "false", "aria-keyshortcuts": "Control+Shift+A",
                                 onclick: () => { S.picking = !S.picking; renderComposerBar(); post("pickElement", { active: S.picking }); } }, icon("cursor", "ic"));
-  const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre ou changer de dossier", title: "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
+  const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre", title: "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
                                 onclick: (e) => openPlusMenu(e.currentTarget) }, icon("plus", "ic"));
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
   const batchEl = h("div", { class: "batch", hidden: true, role: "group" });
@@ -234,6 +286,25 @@
     h("span", { class: "tr" }, h("span", { text: "Garder en annotation" }), h("span", { class: "kcs" }, h("span", { class: "kc" }, "Ctrl"), h("span", { class: "kc" }, "↵"))));
   const sendWrap = h("span", { class: "sendw" }, sendBtn, sendTip);
   withTip(sendWrap);
+  // Bubble (B 1.9, R3): the send button's bubble lives in the layer and may leave the surface — above the button, right
+  // edges aligned (never cut: « Garder en annotation Ctrl ↵ » was).
+  function sendTipFloat(on) {
+    if (!BUB()) return;
+    if (!on || sendWrap.classList.contains("no-tip")) { sendTip.classList.remove("on"); floatDrop(sendTip); return; }
+    sendTip.classList.add("on");
+    floatSet(sendTip, (lim, H) => {
+      const ar = app.getBoundingClientRect(), r = sendBtn.getBoundingClientRect(), W = S.lay.maxW;
+      const tw = sendTip.offsetWidth, th = sendTip.offsetHeight;
+      const x = Math.max(-lim.left, Math.min(r.right - ar.left - tw, W + lim.right - tw));
+      let y = r.top - ar.top - 6 - th;
+      if (y < -lim.top) y = r.bottom - ar.top + 6 + th <= H + lim.bottom ? r.bottom - ar.top + 6 : Math.max(0, r.top - ar.top - 6 - th);
+      sendTip.style.left = Math.round(x) + "px"; sendTip.style.top = Math.round(y) + "px";
+      return { x, y, w: tw, h: th, pad: SHADOW.tip };
+    });
+  }
+  sendWrap._tip = sendTipFloat;
+  sendBtn.addEventListener("focus", () => { if (BUB() && sendBtn.matches(":focus-visible")) sendTipFloat(true); });
+  sendBtn.addEventListener("blur", () => { if (BUB() && tipOn !== sendWrap) sendTipFloat(false); });
   const foot = h("div", { class: "foot" });
   const composer = h("div", { class: "composer" }, batchEl, thumbs, cin,
     h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
@@ -396,9 +467,9 @@
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.isComposing) { e.preventDefault(); keep(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); return; }
     if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); document.execCommand("insertText", false, "\n"); return; }
-    if (e.key === "Tab" && e.shiftKey && (S.st.modes || []).length > 1) {
+    if (e.key === "Tab" && e.shiftKey && shownModes().length > 1) {
       e.preventDefault();
-      const ms = S.st.modes, i = ms.findIndex((m) => m.id === S.st.mode);
+      const ms = shownModes(), i = ms.findIndex((m) => m.id === S.st.mode);
       const next = ms[(i + 1) % ms.length];
       post("setMode", { id: next.id }); S.st.mode = next.id; renderComposerBar(); say("Mode " + next.label);
     }
@@ -430,17 +501,15 @@
     const mode = curMode();
     clear(modeBtn);
     modeBtn.className = "tb mode";
-    modeBtn.hidden = !(S.st.modes || []).length;
+    modeBtn.hidden = !shownModes().length;
     if (mode) {
-      const kind = mode.kind || "other";
-      if (BUB()) {   // Paper 18TZ-0: the icon and the mode's French name, no chevron
-        if (kind === "auto") modeBtn.classList.add("auto");
-        if (kind !== "other") modeBtn.appendChild(icon(kind === "auto" ? "auto" : kind === "plan" ? "list" : "shield", "ic"));
-        modeBtn.appendChild(h("span", { class: "lbl", text: mode.label }));
+      const kind = mode.kind, lit = kind === "auto" || kind === "edits";   // the two automatic modes wear the accent
+      if (BUB()) {   // Paper 18TZ-0: the icon and the mode's name, no chevron
+        if (lit) modeBtn.classList.add("auto");
+        modeBtn.append(icon(mode.icon, "ic"), h("span", { class: "lbl", text: mode.label }));
       }
-      else if (kind === "auto") { modeBtn.classList.add("auto"); modeBtn.append(icon("auto", "ic"), h("span", { class: "lbl", text: mode.label })); }
-      else if (kind === "other") modeBtn.append(h("span", { class: "lbl", text: mode.label, style: "color:#FFFFFFB3" }), icon("chevron", "cv"));
-      else modeBtn.append(icon(kind === "plan" ? "list" : "shield", "ic"), icon("chevron", "cv"));
+      else if (lit) { modeBtn.classList.add("auto"); modeBtn.append(icon(mode.icon, "ic"), h("span", { class: "lbl", text: mode.label })); }
+      else modeBtn.append(icon(mode.icon, "ic"), icon("chevron", "cv"));
       modeBtn.setAttribute("aria-label", "Mode : " + mode.label);
       modeBtn.title = "Mode : " + mode.label + " (Maj+Tab)";
     }
@@ -476,7 +545,7 @@
     m.el.remove();
     if (m.anchor) m.anchor.setAttribute("aria-expanded", "false");
     if (m.combo) { cin.removeAttribute("aria-activedescendant"); cin.removeAttribute("aria-controls"); }
-    if (S.menuNeed) { S.menuNeed = 0; publishSize(); }
+    floatDrop(m.el);
     if (restore && m.anchor) m.anchor.focus();
   }
   function place(menuEl, anchor, align, width) {
@@ -492,31 +561,28 @@
       menuEl.style.setProperty("--origin", "bottom " + side);
       return;
     }
-    // Bubble (B 1.8): the menu stays inside the bubble. Above its button when there is room; otherwise on the side the
-    // host grows the window (under the button, or above it when the bubble sits above its element), and the bubble
-    // asks for the missing height (`bubble.size`) for as long as the menu is open.
-    const maxH = S.lay.maxH;
-    menuEl.style.top = ""; menuEl.style.bottom = ""; menuEl.style.maxHeight = Math.max(80, maxH - 12) + "px";
-    const mh = menuEl.offsetHeight, aTop = r.top - ar.top, aBot = r.bottom - ar.top;
-    let need = 0;
-    if (S.lay.side === "above") {
-      const from = ar.bottom - r.top + 6;
-      menuEl.style.bottom = from + "px";
-      menuEl.style.maxHeight = Math.max(80, maxH - from - 6) + "px";
-      menuEl.style.setProperty("--origin", "bottom " + side);
-      need = from + menuEl.offsetHeight + 6;
-    } else if (aTop - 6 - mh >= 6) {
-      menuEl.style.top = (aTop - 6 - mh) + "px";
-      menuEl.style.setProperty("--origin", "bottom " + side);
-    } else {
-      const top = aBot + 6;
-      menuEl.style.top = top + "px";
-      menuEl.style.maxHeight = Math.max(80, maxH - top - 6) + "px";
-      menuEl.style.setProperty("--origin", "top " + side);
-      need = top + menuEl.offsetHeight + 6;
-    }
-    S.menuNeed = need;
-    publishSize();
+    // Bubble (B 1.9, R3, Paper 17US-0 / 17VU-0 / 14RK-0): a drop-down above its button that may leave the bubble; the
+    // host grows the transparent window around the surface for it (`bubble.size` overflow*, granted by `layout.inset`).
+    menuEl.style.bottom = "";
+    floatSet(menuEl, (lim, H) => {
+      const ar = app.getBoundingClientRect(), r = anchor.getBoundingClientRect(), W = S.lay.maxW;
+      menuEl.style.width = width + "px"; menuEl.style.maxHeight = "";
+      const mh = menuEl.offsetHeight;
+      let x = align === "right" ? r.right - ar.left - width : r.left - ar.left;
+      x = Math.max(-lim.left, Math.min(x, W + lim.right - width));
+      const aTop = r.top - ar.top, aBot = r.bottom - ar.top;
+      let y = null, origin = "bottom";
+      for (const [yy, o] of [[aTop - 6 - mh, "bottom"], [aBot + 6, "top"]]) if (yy >= -lim.top && yy + mh <= H + lim.bottom) { y = yy; origin = o; break; }
+      if (y == null) {                                       // no room outside: inside the surface, its list scrolls
+        menuEl.style.maxHeight = Math.max(80, H - 12) + "px";
+        const h2 = menuEl.offsetHeight;
+        y = Math.max(6, Math.min(aTop - 6 - h2, H - 6 - h2));
+        x = Math.max(6, Math.min(x, W - 6 - width));
+      }
+      menuEl.style.left = Math.round(x) + "px"; menuEl.style.top = Math.round(y) + "px";
+      menuEl.style.setProperty("--origin", origin + " " + side);
+      return { x, y, w: width, h: menuEl.offsetHeight, pad: menuEl.classList.contains("flat") ? SHADOW.none : SHADOW.menu };
+    });
   }
   // Button-opened menu: focus moves in, arrows move, Enter picks, Escape returns to the trigger.
   function openMenu(anchor, opts) {
@@ -562,6 +628,7 @@
     }
   }
   document.addEventListener("pointerdown", (e) => {
+    if (BUB() && !app.contains(e.target) && !menuLayer.contains(e.target)) { bTipHide(); tipHide(); }
     if (S.menu && !S.menu.el.contains(e.target) && !(S.menu.anchor && S.menu.anchor.contains(e.target)) && e.target !== cin && !cin.contains(e.target)) closeMenu();
   }, true);
 
@@ -653,17 +720,20 @@
       act ? h("button", { class: "btn-s", type: "button", onclick: () => { act.run(); if (inMenu) closeMenu(true); } }, act.label) : null);
   }
   function openModeMenu(anchor) {
-    const items = (S.st.modes || []).map((m) => ({ radio: true, label: m.label, desc: m.description, checked: m.id === S.st.mode,
-      lead: m.kind === "auto" ? icon("auto", "lead auto") : m.kind === "plan" ? icon("list", "lead") : m.kind === "ask" ? icon("shield", "lead") : null,
+    // Paper 14RK-0: 290 px, rows 8/10, the two automatic modes' icons in the accent (16 px), the others white (15 px)
+    const items = shownModes().map((m) => ({ radio: true, label: m.label, desc: m.desc, checked: m.id === S.st.mode,
+      lead: icon(m.icon, "lead m-" + m.kind),
       onSelect: () => { post("setMode", { id: m.id }); S.st.mode = m.id; closeMenu(true); renderComposerBar(); } }));
-    openMenu(anchor, { label: "Mode", items, align: "left", width: 290 });
+    openMenu(anchor, { label: "Mode", items, align: "left", width: 290, cls: "modes" });
   }
   function openPlusMenu(anchor) {
     const items = [];
     if (S.st.capabilities && S.st.capabilities.image === false) items.push({ label: "Joindre une image", desc: "Cet agent ne lit pas les images", disabled: true, lead: icon("k-image", "lead"), onSelect: () => {} });
     else items.push({ label: "Joindre une image", lead: icon("k-image", "lead"), onSelect: () => { closeMenu(true); post("attachImage", { source: "picker" }); } });
-    // B 1.8 (Paper 156L-0): the folder's name, not its path — the name is what tells which project this is
-    items.push({ label: "Choisir un autre dossier…", desc: folderName(S.st.folder) || null, lead: icon("folder", "lead"), onSelect: () => { closeMenu(true); post("folder.choose"); } });
+    // B 1.9 (R5): a folder found for sure is never shown nor changed from the input. Only when the browser is not sure
+    // (`askFolder`, or no folder yet) does the menu offer to choose it — by its name, not its path (Paper 156L-0).
+    if (!S.st.folder || S.st.askFolder === true)
+      items.push({ label: "Choisir le dossier…", desc: folderName(S.st.folder) || null, lead: icon("folder", "lead"), onSelect: () => { closeMenu(true); post("folder.choose"); } });
     openMenu(anchor, { label: "Joindre", items, align: "left", width: 260 });
   }
 
@@ -946,15 +1016,59 @@
     part(dock.offsetHeight);
     return hgt + Math.max(0, n - 1) * 12;
   }
+  // B 1.9 (R3): what floats outside the surface (a menu, a hover bubble). Each placer draws its node for the room it may
+  // use (`lim`, px around the surface) and returns its box (+ the room its shadow wants). The union, beyond the surface,
+  // is the overflow the page asks for; a side the host granted less than asked becomes a limit, and the floats are placed
+  // again (above, then under, then inside the surface). The limits only shrink while something floats: it ends.
+  const SIDES = ["top", "right", "bottom", "left"], CAP = 400;
+  const SHADOW = { none: { top: 0, right: 0, bottom: 0, left: 0 },
+                   menu: { top: 32, right: 48, bottom: 64, left: 48 },    // 0 16px 48px #00000080 (Paper 14RK-0)
+                   tip: { top: 16, right: 24, bottom: 32, left: 24 } };   // 0 8px 24px #00000080 (send button bubble)
+  const floats = new Map();
+  let lim = { top: CAP, right: CAP, bottom: CAP, left: CAP };
+  function floatSet(el, placer) { floats.set(el, placer); publishSize(); }
+  function floatDrop(el) {
+    if (!floats.delete(el)) return;
+    if (!floats.size) lim = { top: CAP, right: CAP, bottom: CAP, left: CAP };
+    publishSize();
+  }
+  function floatNeed(H) {
+    const need = { top: 0, right: 0, bottom: 0, left: 0 }, W = S.lay.maxW;
+    for (const [el, placer] of Array.from(floats)) {
+      if (!el.isConnected || el.hidden) { floats.delete(el); continue; }
+      const r = placer(lim, H), p = r.pad || SHADOW.none;
+      need.top = Math.max(need.top, p.top - r.y); need.left = Math.max(need.left, p.left - r.x);
+      need.right = Math.max(need.right, r.x + r.w + p.right - W); need.bottom = Math.max(need.bottom, r.y + r.h + p.bottom - H);
+    }
+    for (const k of SIDES) need[k] = Math.max(0, Math.min(CAP, Math.ceil(need[k])));
+    return need;
+  }
+  // `layout.inset`: where the host really put the surface in its window. Drawn at once; a side short of what was asked
+  // becomes a limit and the floats move.
+  function applyInset(inset) {
+    const v = {};
+    for (const k of SIDES) v[k] = inset && Number.isFinite(inset[k]) ? Math.max(0, Math.min(CAP, Math.floor(inset[k]))) : 0;
+    S.inset = v;
+    const st = document.documentElement.style;
+    for (const k of SIDES) st.setProperty("--i" + k[0], v[k] + "px");
+    for (const k of SIDES) if (floats.size && S.ovAsk[k] > v[k] && lim[k] > v[k]) lim[k] = v[k];
+    if (floats.size) publishSize();
+  }
   function publishSize(force) {
     if (!BUB() || S.fatal) return;
-    const hgt = Math.max(1, Math.min(S.lay.maxH, Math.ceil(Math.max(bubbleNatural(), S.menuNeed || 0))));
-    const key = S.lay.maxW + "x" + hgt;
+    const hgt = Math.max(1, Math.min(S.lay.maxH, Math.ceil(bubbleNatural())));
+    const need = floats.size ? floatNeed(hgt) : { top: 0, right: 0, bottom: 0, left: 0 };
+    const key = S.lay.maxW + "x" + hgt + ":" + SIDES.map((k) => need[k]).join(",");
     bFade();
     if (!force && key === lastSize) return;
     lastSize = key;
-    post("bubble.size", { width: S.lay.maxW, height: hgt });
-    if (btipFor) bTipPlace();
+    S.ovAsk = need;
+    const m = { width: S.lay.maxW, height: hgt };
+    if (need.top) m.overflowTop = need.top;
+    if (need.right) m.overflowRight = need.right;
+    if (need.bottom) m.overflowBottom = need.bottom;
+    if (need.left) m.overflowLeft = need.left;
+    post("bubble.size", m);
   }
   // Paper 1ANU-0: once the bubble has reached its maximum, the thread scrolls and its top fades.
   function bFade() { app.classList.toggle("faded", BUB() && !body.hidden && scroller.scrollTop > 0.5 && bubbleNatural() > S.lay.maxH); }
@@ -974,12 +1088,14 @@
     if (b) {
       app.setAttribute("role", "dialog"); app.setAttribute("aria-modal", "false"); app.setAttribute("tabindex", "-1");
       app.setAttribute("aria-label", S.lay.element ? "Commentaire sur " + S.lay.element : "Commentaire");
-      app.style.setProperty("--bw", S.lay.maxW + "px");
+      root.style.setProperty("--bw", S.lay.maxW + "px");
+      menuLayer.appendChild(sendTip); sendTip.classList.add("ftip");   // its bubble may leave the surface (R3)
       app.style.setProperty("--b-origin", ({ left: "right top", above: "left bottom", inside: "right top" })[S.lay.side] || "left top");
     } else {
       for (const a of ["role", "aria-modal", "aria-label", "tabindex"]) app.removeAttribute(a);
       app.classList.remove("b-in", "b-out", "faded", "view", "running", "has-thread");
       body.hidden = false; ruleEl.hidden = true; lastSize = "";
+      if (sendTip.parentNode !== sendWrap) { sendWrap.appendChild(sendTip); sendTip.classList.remove("ftip", "on"); }
     }
     if (!changed) return;
     closeMenu(); if (S.historyOpen) toggleHistory(false);
@@ -1184,24 +1300,31 @@
     bTipPlace();
     if (fresh) { btipEl.classList.remove("on"); void btipEl.offsetWidth; btipEl.classList.add("on"); }
   }
+  // Paper 1AIE-0: the list sits right above its step, left edges aligned, 2 px apart, 178 px wide — it may leave the
+  // bubble (7 px above it and 38 px right of it on the board). Under the step when the host cannot give the room above.
   function bTipPlace() {
     const el = btipFor;
     if (!el || !el.isConnected) { bTipHide(); return; }
-    const ar = app.getBoundingClientRect(), r = el.getBoundingClientRect();
-    btipEl.style.maxHeight = ""; btipEl.style.top = "0px"; btipEl.style.left = "0px";
-    const tw = btipEl.offsetWidth, th = btipEl.offsetHeight;
-    const above = r.top - ar.top - 4 - th, under = ar.height - (r.bottom - ar.top) - 10;
-    let top, up = false;
-    if (above >= 6) { top = above; up = true; }
-    else if (th <= under || under >= r.top - ar.top - 10) { top = r.bottom - ar.top + 4; if (th > under) btipEl.style.maxHeight = Math.max(40, under) + "px"; }
-    else { top = 6; up = true; btipEl.style.maxHeight = Math.max(40, r.top - ar.top - 10) + "px"; }
-    btipEl.style.top = Math.round(top) + "px";
-    btipEl.style.left = Math.round(Math.max(6, Math.min(r.right - ar.left - tw, ar.width - 6 - tw))) + "px";
-    btipEl.classList.toggle("up", up);
+    if (!BUB()) return;
+    floatSet(btipEl, (lim, H) => {
+      const ar = app.getBoundingClientRect(), r = el.getBoundingClientRect(), W = S.lay.maxW;
+      btipEl.style.maxHeight = "";
+      const tw = btipEl.offsetWidth, th = btipEl.offsetHeight;
+      const x = Math.max(-lim.left, Math.min(r.left - ar.left, W + lim.right - tw));
+      let y = r.top - ar.top - 2 - th, up = true;
+      if (y < -lim.top) {
+        const under = r.bottom - ar.top + 2;
+        if (under + th <= H + lim.bottom) { y = under; up = false; }
+        else { y = Math.max(-lim.top, 0); btipEl.style.maxHeight = Math.max(40, r.top - ar.top - 2 - y) + "px"; }
+      }
+      btipEl.style.top = Math.round(y) + "px"; btipEl.style.left = Math.round(x) + "px";
+      btipEl.classList.toggle("up", up);
+      return { x, y, w: tw, h: btipEl.offsetHeight, pad: SHADOW.none };
+    });
   }
   function bTipHide() {
     if (btipFor) btipFor.removeAttribute("aria-describedby");
-    btipFor = null; btipPinned = false; btipEl.classList.remove("on"); btipEl.hidden = true;
+    btipFor = null; btipPinned = false; btipEl.classList.remove("on"); btipEl.hidden = true; floatDrop(btipEl);
   }
   function bTipBind(el, rows) {
     el._rows = rows;
@@ -1226,17 +1349,26 @@
     } else if (t.stop === "cancelled") { kind = "stop"; label = "S'est arrêté"; }
     else if (t.stop !== "error" && steps.length) { kind = "done"; label = "Historique"; rows = bTipRows(steps); }
     t.stRows = rows;
-    const live = rows.length > 0 && kind !== "stop", sig = kind + "|" + live;
+    // B 1.9 (R8, Paper 1B30-0): until the agent's first words arrive, the step in progress sits where its message will be,
+    // under « modèle · effort », like a message — then the words take that place and the step moves right of the model.
+    const hasText = t.segs.some((s) => s.kind === "text");
+    const inBody = kind === "run" && !hasText;
+    if (inBody && !t.pendEl) t.pendEl = h("div", { class: "bt-pend" });
+    if (inBody && t.pendEl.parentNode !== t.textBox) t.textBox.prepend(t.pendEl);
+    if (!inBody && t.pendEl) t.pendEl.remove();
+    t.textBox.hidden = !inBody && !hasText;
+    const home = inBody ? t.pendEl : t.statusEl;
+    const live = rows.length > 0 && kind !== "stop", sig = kind + "|" + live + "|" + inBody;
     if (t.stSig !== sig) {
       t.stSig = sig;
-      if (btipFor && t.statusEl.contains(btipFor)) bTipHide();
-      clear(t.statusEl); t.stBtn = null; t.stLb = null;
+      if (btipFor && t.stBtn && t.stBtn.contains(btipFor)) bTipHide();
+      clear(t.statusEl); if (t.pendEl) clear(t.pendEl); t.stBtn = null; t.stLb = null;
       if (!kind) return;
       const ic = kind === "run" ? h("span", { class: "spin", style: "display:flex" }, icon("spinnerB")) : icon(kind === "stop" ? "prohibit" : "history");
       t.stLb = h("span", { class: "lb" });
       t.stBtn = h(live ? "button" : "span", Object.assign({ class: "bt-st " + kind }, live ? { type: "button" } : {}, live && kind === "done" ? { "aria-label": "Historique des actions de ce tour" } : {}), ic, t.stLb);
       if (live) bTipBind(t.stBtn, () => t.stRows);
-      t.statusEl.appendChild(t.stBtn);
+      home.appendChild(t.stBtn);
     }
     if (t.stLb && t.stLb.textContent !== label) { t.stLb.textContent = label; t.stLb.title = label; }
     if (btipFor && btipFor === t.stBtn) bTipShow(t.stBtn);       // the list follows the steps while it is open
@@ -1321,11 +1453,11 @@
     if (ann) { onAnnotationMessage(m, ann); return; }
     const els = (m.elements || []).filter(validElement);
     const bubble = h("div", { class: "bubble" });
-    const inlineIds = fillWithChips(bubble, m.text, els);
+    const inlineIds = fillWithChips(bubble, m.text, BUB() ? [] : els);   // B 1.9 (R7): in the bubble the element is implicit — no chip
     const pencil = m.editable === false || BUB() ? null : h("button", { class: "icon-btn", type: "button", "aria-label": "Modifier ce message", title: "Modifier", onclick: () => startEdit(m.id) }, icon("pencil"));
     const row = h("div", { class: "um-row" }, h("div", { class: "um-tools" }, pencil), bubble);
     const under = h("div", { class: "um-attach" });
-    for (const e of els) if (!inlineIds.has(e.id)) under.appendChild(chipNode(Object.assign({ picked: true }, e), false));
+    if (!BUB()) for (const e of els) if (!inlineIds.has(e.id)) under.appendChild(chipNode(Object.assign({ picked: true }, e), false));
     for (const a of (m.attachments || []).filter(validAttachment)) under.appendChild(h("div", { class: "thumb", title: a.name }, h("img", { src: a.thumb, alt: a.name, style: "width:100%;height:100%;object-fit:cover;border-radius:5px;display:block" })));
     const node = h("div", { class: "um", "data-id": m.id }, row, under.firstChild ? under : null);
     S.users.set(m.id, { el: node, row, bubble, text: m.text, els, m });
@@ -1483,13 +1615,14 @@
     const t = { id, model: model || (curModel() ? curModel().label : ""), effort: effort ? turnEffort(effort) : (curEffort() ? effortName(curEffort().id, curEffort().label) : ""), start: Date.parse(at) || Date.now(),
                 running: true, segs: [], userId: S.lastUser, metaEl: h("div", { class: "meta" }), workEl: h("div", { class: "working", "aria-hidden": "true" }), waitEl: null, endEl: null };
     t.el = h("div", { class: "turn", "data-turn": id, "aria-busy": "true" }, t.metaEl, t.workEl);
-    t.metaEl.textContent = [t.model, t.effort].filter(Boolean).join(" · ");
+    t.who = (agentId && agentById(agentId)) || curAgent();
+    setMeta(t, [t.model, t.effort].filter(Boolean).join(" · "));
     t.workEl.append("Travaille… ", h("span", { class: "t", text: "0 s" }));
     if (BUB()) {   // Paper 1B64-0: « modèle · effort » and the step in progress on one line, the agent's words in one block under it
       t.b = true;
       t.statusEl = h("span", { class: "bt-stw" });
       t.textBox = h("div", { class: "bt-text", hidden: true });
-      const who = (agentId && agentById(agentId)) || curAgent();
+      const who = t.who;
       t.el = h("div", { class: "turn bt", "data-turn": id, "aria-busy": "true" },
         h("div", { class: "bt-head" }, h("span", { class: "bt-model" }, agentIcon(who), h("span", { class: "n", text: t.model || (who ? who.name : "Agent") }), t.effort ? h("span", { class: "e", text: t.effort }) : null), t.statusEl),
         t.textBox);
@@ -1511,11 +1644,13 @@
     return t;
   }
   const turnOf = (id) => S.turns.get(id) || newTurn(id);
+  // B 1.9 (R12): the provider's logo left of the model's name, as in the input (14 px in the bubble, 12 px on the panel's 14 px line)
+  function setMeta(t, text) { clear(t.metaEl).append(agentIcon(t.who, "mlogo"), h("span", { text })); }
   function addSeg(t, seg) {
     t.segs.push(seg);
     if (t.b) {   // bubble: the words go in the agent's block; steps and thoughts are not lines, they feed the status and its hover list
       for (const s of t.segs) if (s.kind === "text" && s !== seg) s.el.classList.remove("streaming");   // the caret only while the words are the last thing
-      if (seg.kind === "text") { t.textBox.appendChild(seg.el); t.textBox.hidden = false; }
+      if (seg.kind === "text") t.textBox.appendChild(seg.el);
       else if (seg.kind === "plan" || seg.kind === "error") t.el.appendChild(seg.el);
       bStatus(t);
       return seg;
@@ -1764,6 +1899,10 @@
     const ok = Array.isArray(m.options) && m.options.every((o) => o && ID.test(o.optionId) && typeof o.name === "string");
     if (!ok) { warn("permission.request: bad options"); return; }
     const title = permissionTitle(m);
+    // B 1.9 (R9): after each `thread.reset` (every opening of the bubble) the host sends again the request still waiting —
+    // the card comes back; the same request twice never makes two cards
+    const again = S.perms.findIndex((p) => p.requestId === m.requestId);
+    if (again >= 0) S.perms.splice(again, 1);
     S.perms.push({ requestId: m.requestId, turnId: m.turnId || S.lastTurn, title, details: permissionDetails(m), kind: m.kind, diff: validDiff(m.diff), command: typeof m.command === "string" ? m.command : null, options: m.options });
     refreshWaiting();
     renderDock(true);
@@ -1968,7 +2107,7 @@
     if (t.waitEl) { t.waitEl.remove(); t.waitEl = null; }
     S.perms = S.perms.filter((p) => p.turnId !== t.id);
     const d = typeof m.durationMs === "number" ? m.durationMs : Date.now() - t.start;
-    t.metaEl.textContent = [t.model.replace(/\s+[\d.]+$/, ""), t.effort, dur(d)].filter(Boolean).join(" · ");
+    setMeta(t, [t.model.replace(/\s+[\d.]+$/, ""), t.effort, dur(d)].filter(Boolean).join(" · "));
     for (const s of t.segs) { if (s.kind === "text") { s.render(); s.el.classList.remove("streaming"); const rest = s.text.slice(s.spoken); if (rest.trim()) say(plain(rest)); s.spoken = s.text.length; } else s.render(); }
     const notes = { cancelled: "Arrêté.", refusal: "L'agent a refusé de continuer cette demande.", max_tokens: "La réponse a atteint sa longueur maximale. Demandez la suite pour continuer." };
     if (notes[m.stopReason] && !(t.b && m.stopReason === "cancelled")) t.el.appendChild(h("div", { class: "note", text: notes[m.stopReason] }));
@@ -2138,10 +2277,10 @@
   function toggleHistory(force) {
     const open = force != null ? force : !S.historyOpen;
     S.historyOpen = open;
-    hdTitle.setAttribute("aria-expanded", String(open));
+    histBtn.setAttribute("aria-expanded", String(open));
     historyEl.hidden = !open;
     if (open) { closeMenu(); post("history.open"); renderHistory(); const i = historyEl.querySelector("input"); if (i) i.focus(); }
-    else hdTitle.focus();
+    else histBtn.focus();
   }
   function relTime(iso) {
     const t = Date.parse(iso); if (!t) return "";
@@ -2208,7 +2347,10 @@
     hdSource.textContent = src || "";
     hdSource.setAttribute("aria-label", src ? "Ouvrir " + src : "");
     renderGauge();
-    hdTitle.setAttribute("aria-label", hdTitleText.textContent + " — ouvrir l'historique");
+    const canRename = !!(c && ID.test(String(c.id || "")));
+    hdTitle.title = canRename ? "Double-cliquez pour renommer" : "";
+    hdTitle.tabIndex = canRename ? 0 : -1;   // a new chat's title has nothing to rename: not a Tab stop
+    if (canRename) hdTitle.setAttribute("aria-description", "Double-clic ou F2 pour renommer"); else hdTitle.removeAttribute("aria-description");
   }
 
   function renderGauge() {
@@ -2288,9 +2430,14 @@
       S.lay.side = ["right", "left", "below", "above", "inside"].includes(m.side) ? m.side : "right";
       S.lay.element = isStr(m.element, 300) ? m.element : "";
       applyLayout(was !== m.mode);
-      if (!BUB()) return;
-      if (m.open !== false) bOpen();
-      updateView(); publishSize(true);                       // always answered: the host's acknowledgement
+      if (!BUB()) { applyInset(null); return; }
+      // B 1.9: an opening layout is acknowledged (`bubble.size`, even unchanged). A layout with `open: false` is the
+      // host's answer to a `bubble.size` (granted `inset`, new bounds): the page answers it only if what it wants changed.
+      const opening = m.open !== false;
+      if (opening) { closeMenu(); bTipHide(); }
+      applyInset(m.inset);
+      if (opening) bOpen();
+      updateView(); publishSize(opening);
     },
     "thread.reset"(m) {
       resetThread();

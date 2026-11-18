@@ -1,0 +1,1245 @@
+{
+ "_": "Comment-mode bubble vs Paper (design/chat-comment-paper-values.md, worker F). Per scenario: [Paper node, DOM selector, kind]. kind: f = frame (box + styles), t = text (first glyph's left and the text's vertical centre), tc = centred text (centre), ph = placeholder (the field's content box, ::before / ::placeholder styles).",
+ "c-1-saisie": [
+  [
+   "18TO-0",
+   "#app",
+   "f"
+  ],
+  [
+   "18TQ-0",
+   ".cin",
+   "t"
+  ],
+  [
+   "18TW-0",
+   ".tools .tb[aria-label=Joindre]",
+   "f"
+  ],
+  [
+   "18TZ-0",
+   ".tb.mode",
+   "f"
+  ],
+  [
+   "18U2-0",
+   ".tb.mode .lbl",
+   "t"
+  ],
+  [
+   "18U4-0",
+   ".model .m",
+   "f"
+  ],
+  [
+   "18U8-0",
+   ".model .mn",
+   "t"
+  ],
+  [
+   "18UA-0",
+   ".model .e",
+   "t"
+  ],
+  [
+   "18UB-0",
+   ".send",
+   "f"
+  ]
+ ],
+ "c-2-envoye": [
+  [
+   "1B60-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1B62-0",
+   ".um .bubble",
+   "f"
+  ],
+  [
+   "1B63-0",
+   ".um .bubble",
+   "t"
+  ],
+  [
+   "1B66-0",
+   ".bt-model",
+   "f"
+  ],
+  [
+   "1B6A-0",
+   ".bt-model .n",
+   "t"
+  ],
+  [
+   "1B6C-0",
+   ".bt-model .e",
+   "t"
+  ],
+  [
+   "1B6D-0",
+   ".bt-stw .bt-st",
+   "f"
+  ],
+  [
+   "1B6H-0",
+   ".bt-stw .bt-st .lb",
+   "t"
+  ],
+  [
+   "1B6I-0",
+   ".bt-text",
+   "f"
+  ],
+  [
+   "1B6J-0",
+   ".bt-text .text",
+   "t"
+  ],
+  [
+   "1B6M-0",
+   ".tb.mode",
+   "f"
+  ],
+  [
+   "1B6P-0",
+   ".tb.mode .lbl",
+   "t"
+  ],
+  [
+   "1B6R-0",
+   ".send",
+   "f"
+  ]
+ ],
+ "c-2.1-survol": [
+  [
+   "1ALE-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1ALG-0",
+   ".um .bubble",
+   "f"
+  ],
+  [
+   "1ALH-0",
+   ".um .bubble",
+   "t"
+  ],
+  [
+   "1ALK-0",
+   ".bt-model",
+   "f"
+  ],
+  [
+   "1ALO-0",
+   ".bt-model .n",
+   "t"
+  ],
+  [
+   "1ALQ-0",
+   ".bt-model .e",
+   "t"
+  ],
+  [
+   "1B6U-0",
+   ".bt-stw .bt-st",
+   "f"
+  ],
+  [
+   "1B6Y-0",
+   ".bt-stw .bt-st .lb",
+   "t"
+  ],
+  [
+   "1ALW-0",
+   ".bt-text",
+   "f"
+  ],
+  [
+   "1ALX-0",
+   ".bt-text .text",
+   "t"
+  ],
+  [
+   "1AM0-0",
+   ".tb.mode",
+   "f"
+  ],
+  [
+   "1AM3-0",
+   ".tb.mode .lbl",
+   "t"
+  ],
+  [
+   "1AM5-0",
+   ".send",
+   "f"
+  ],
+  [
+   "1B7H-0",
+   "#b-tip",
+   "f"
+  ],
+  [
+   "1B7L-0",
+   "#b-tip .r:nth-child(1) span",
+   "t"
+  ],
+  [
+   "1B7P-0",
+   "#b-tip .r:nth-child(2) span",
+   "t"
+  ],
+  [
+   "1B7R-0",
+   "#b-tip .r:nth-child(3) span",
+   "t"
+  ]
+ ],
+ "c-2.1-arrete": [
+  [
+   "1AH7-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1AH9-0",
+   ".um .bubble",
+   "f"
+  ],
+  [
+   "1AHA-0",
+   ".um .bubble",
+   "t"
+  ],
+  [
+   "1AHD-0",
+   ".bt-model",
+   "f"
+  ],
+  [
+   "1AHH-0",
+   ".bt-model .n",
+   "t"
+  ],
+  [
+   "1AHJ-0",
+   ".bt-model .e",
+   "t"
+  ],
+  [
+   "1AHN-0",
+   ".bt-stw .lb",
+   "t"
+  ],
+  [
+   "1AHO-0",
+   ".bt-text",
+   "f"
+  ],
+  [
+   "1AHP-0",
+   ".bt-text .text",
+   "t"
+  ],
+  [
+   "1AHQ-0",
+   ".b-rule",
+   "f"
+  ],
+  [
+   "1AHT-0",
+   ".cin",
+   "ph"
+  ],
+  [
+   "1AHW-0",
+   ".tools .tb[aria-label=Joindre]",
+   "f"
+  ],
+  [
+   "1AHZ-0",
+   ".tb.mode",
+   "f"
+  ],
+  [
+   "1AI2-0",
+   ".tb.mode .lbl",
+   "t"
+  ],
+  [
+   "1AI4-0",
+   ".model .m",
+   "f"
+  ],
+  [
+   "1AI8-0",
+   ".model .mn",
+   "t"
+  ],
+  [
+   "1AIA-0",
+   ".model .e",
+   "t"
+  ],
+  [
+   "1AIB-0",
+   ".send",
+   "f"
+  ]
+ ],
+ "c-2-autorisation": [
+  [
+   "1AQU-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1AQW-0",
+   ".um .bubble",
+   "f"
+  ],
+  [
+   "1AQX-0",
+   ".um .bubble",
+   "t"
+  ],
+  [
+   "1AR0-0",
+   ".bt-model",
+   "f"
+  ],
+  [
+   "1AR4-0",
+   ".bt-model .n",
+   "t"
+  ],
+  [
+   "1AR6-0",
+   ".bt-model .e",
+   "t"
+  ],
+  [
+   "1ARB-0",
+   ".bt-stw .lb",
+   "t"
+  ],
+  [
+   "1ARC-0",
+   ".bt-text",
+   "f"
+  ],
+  [
+   "1ARD-0",
+   ".bt-text .text",
+   "t"
+  ],
+  [
+   "1ARE-0",
+   ".b-rule",
+   "f"
+  ],
+  [
+   "1ARF-0",
+   ".bperm",
+   "f"
+  ],
+  [
+   "1ARH-0",
+   ".bperm-file",
+   "f"
+  ],
+  [
+   "1ARI-0",
+   ".bperm-file .t",
+   "t"
+  ],
+  [
+   "1ARJ-0",
+   ".bperm-file .num.plus",
+   "t"
+  ],
+  [
+   "1ARK-0",
+   ".bperm-file .num.minus",
+   "t"
+  ],
+  [
+   "1ARN-0",
+   ".bperm-in",
+   "f"
+  ],
+  [
+   "1ARQ-0",
+   ".bperm-in .instead",
+   "ph"
+  ],
+  [
+   "1ARR-0",
+   ".bperm-ft",
+   "f"
+  ],
+  [
+   "1ART-0",
+   ".bperm .always .sw",
+   "f"
+  ],
+  [
+   "1ARU-0",
+   ".bperm .always .sw i",
+   "f"
+  ],
+  [
+   "1ARV-0",
+   ".bperm .always > span:last-child",
+   "t"
+  ],
+  [
+   "1ARW-0",
+   ".bperm .btn:not(.primary)",
+   "f"
+  ],
+  [
+   "1ARX-0",
+   ".bperm .btn:not(.primary)",
+   "tc"
+  ],
+  [
+   "1ARY-0",
+   ".bperm .btn.primary",
+   "f"
+  ],
+  [
+   "1ARZ-0",
+   ".bperm .btn.primary",
+   "tc"
+  ]
+ ],
+ "c-2-autorisation-diff": [
+  [
+   "19RN-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1ANA-0",
+   ".bview",
+   "f"
+  ],
+  [
+   "1AS8-0",
+   ".bview-hd",
+   "f"
+  ],
+  [
+   "1AND-0",
+   ".bview-hd .t",
+   "t"
+  ],
+  [
+   "1ANE-0",
+   ".bview-hd .num.plus",
+   "t"
+  ],
+  [
+   "1ANF-0",
+   ".bview-hd .num.minus",
+   "t"
+  ],
+  [
+   "1ASI-0",
+   ".bview-x",
+   "f"
+  ],
+  [
+   "1AS9-0",
+   ".bview-wrap",
+   "f"
+  ],
+  [
+   "1ASA-0",
+   ".bview-body .l:nth-child(1)",
+   "f"
+  ],
+  [
+   "1ASB-0",
+   ".bview-body .l:nth-child(1)",
+   "t"
+  ],
+  [
+   "1ASC-0",
+   ".bview-body .l:nth-child(2)",
+   "f"
+  ],
+  [
+   "1ASD-0",
+   ".bview-body .l:nth-child(2)",
+   "t"
+  ],
+  [
+   "1ASE-0",
+   ".bview-body .l:nth-child(3)",
+   "f"
+  ],
+  [
+   "1ASF-0",
+   ".bview-body .l:nth-child(3)",
+   "t"
+  ],
+  [
+   "1AMG-0",
+   ".bperm",
+   "f"
+  ],
+  [
+   "1AMS-0",
+   ".bperm-in",
+   "f"
+  ],
+  [
+   "1AMT-0",
+   ".bperm-in .instead",
+   "ph"
+  ],
+  [
+   "1AMU-0",
+   ".bperm-ft",
+   "f"
+  ],
+  [
+   "1AMW-0",
+   ".bperm .always .sw",
+   "f"
+  ],
+  [
+   "1AMX-0",
+   ".bperm .always .sw i",
+   "f"
+  ],
+  [
+   "1AMY-0",
+   ".bperm .always > span:last-child",
+   "t"
+  ],
+  [
+   "1AMZ-0",
+   ".bperm .btn:not(.primary)",
+   "f"
+  ],
+  [
+   "1AN0-0",
+   ".bperm .btn:not(.primary)",
+   "tc"
+  ],
+  [
+   "1AN1-0",
+   ".bperm .btn.primary",
+   "f"
+  ],
+  [
+   "1AN2-0",
+   ".bperm .btn.primary",
+   "tc"
+  ]
+ ],
+ "c-2.2b-erreur": [
+  [
+   "1ADE-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1ADG-0",
+   ".um .bubble",
+   "f"
+  ],
+  [
+   "1ADH-0",
+   ".um .bubble",
+   "t"
+  ],
+  [
+   "1ADK-0",
+   ".bt-model",
+   "f"
+  ],
+  [
+   "1ADO-0",
+   ".bt-model .n",
+   "t"
+  ],
+  [
+   "1ADQ-0",
+   ".bt-model .e",
+   "t"
+  ],
+  [
+   "1ADR-0",
+   ".bt-text",
+   "f"
+  ],
+  [
+   "1ADS-0",
+   ".bt-text .text",
+   "t"
+  ],
+  [
+   "1ADT-0",
+   ".bt-err",
+   "f"
+  ],
+  [
+   "1ADX-0",
+   ".bt-err .w > span",
+   "t"
+  ],
+  [
+   "1ADY-0",
+   ".bt-more",
+   "f"
+  ],
+  [
+   "1ADZ-0",
+   ".bt-more > span",
+   "t"
+  ],
+  [
+   "1AE3-0",
+   ".b-errft .btn:not(.danger)",
+   "f"
+  ],
+  [
+   "1AE4-0",
+   ".b-errft .btn:not(.danger)",
+   "tc"
+  ],
+  [
+   "1AE5-0",
+   ".b-errft .btn.danger",
+   "f"
+  ],
+  [
+   "1AE6-0",
+   ".b-errft .btn.danger",
+   "tc"
+  ]
+ ],
+ "c-2.2b-erreur-details": [
+  [
+   "1A9L-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1A9N-0",
+   ".um .bubble",
+   "f"
+  ],
+  [
+   "1A9O-0",
+   ".um .bubble",
+   "t"
+  ],
+  [
+   "1A9R-0",
+   ".bt-model",
+   "f"
+  ],
+  [
+   "1A9V-0",
+   ".bt-model .n",
+   "t"
+  ],
+  [
+   "1A9X-0",
+   ".bt-model .e",
+   "t"
+  ],
+  [
+   "1A9Y-0",
+   ".bt-err",
+   "f"
+  ],
+  [
+   "1AA2-0",
+   ".bt-err .w > span",
+   "t"
+  ],
+  [
+   "1AA3-0",
+   ".bt-more",
+   "f"
+  ],
+  [
+   "1AA4-0",
+   ".bt-more > span",
+   "t"
+  ],
+  [
+   "1AA7-0",
+   ".bt-errd",
+   "f"
+  ],
+  [
+   "1AA8-0",
+   ".bt-errd .tx",
+   "t"
+  ],
+  [
+   "1AAA-0",
+   ".b-errft .btn:not(.danger)",
+   "f"
+  ],
+  [
+   "1AAB-0",
+   ".b-errft .btn:not(.danger)",
+   "tc"
+  ],
+  [
+   "1AAC-0",
+   ".b-errft .btn.danger",
+   "f"
+  ],
+  [
+   "1AAD-0",
+   ".b-errft .btn.danger",
+   "tc"
+  ]
+ ],
+ "c-3-termine": [
+  [
+   "1AZR-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1AZT-0",
+   ".um .bubble",
+   "f"
+  ],
+  [
+   "1AZU-0",
+   ".um .bubble",
+   "t"
+  ],
+  [
+   "1AZX-0",
+   ".bt-model",
+   "f"
+  ],
+  [
+   "1B01-0",
+   ".bt-model .n",
+   "t"
+  ],
+  [
+   "1B03-0",
+   ".bt-model .e",
+   "t"
+  ],
+  [
+   "1B7W-0",
+   ".bt-stw .lb",
+   "t"
+  ],
+  [
+   "1B06-0",
+   ".bt-text",
+   "f"
+  ],
+  [
+   "1B07-0",
+   ".bt-text .text",
+   "t"
+  ],
+  [
+   "1B08-0",
+   ".bt-bar",
+   "f"
+  ],
+  [
+   "1B0B-0",
+   ".bt-bar .name",
+   "t"
+  ],
+  [
+   "1B0C-0",
+   ".bt-bar .num.plus",
+   "t"
+  ],
+  [
+   "1B0D-0",
+   ".bt-bar .num.minus",
+   "t"
+  ],
+  [
+   "1B0H-0",
+   ".bt-copy",
+   "f"
+  ],
+  [
+   "1B0K-0",
+   ".bt-copy span",
+   "t"
+  ],
+  [
+   "1B0L-0",
+   ".b-rule",
+   "f"
+  ],
+  [
+   "1B0O-0",
+   ".cin",
+   "ph"
+  ],
+  [
+   "1B0R-0",
+   ".tools .tb[aria-label=Joindre]",
+   "f"
+  ],
+  [
+   "1B0U-0",
+   ".tb.mode",
+   "f"
+  ],
+  [
+   "1B0X-0",
+   ".tb.mode .lbl",
+   "t"
+  ],
+  [
+   "1B0Z-0",
+   ".model .m",
+   "f"
+  ],
+  [
+   "1B13-0",
+   ".model .mn",
+   "t"
+  ],
+  [
+   "1B15-0",
+   ".model .e",
+   "t"
+  ],
+  [
+   "1B16-0",
+   ".send",
+   "f"
+  ]
+ ],
+ "c-3-termine-diff": [
+  [
+   "1B19-0",
+   "#app",
+   "f"
+  ],
+  [
+   "1B1A-0",
+   ".bview",
+   "f"
+  ],
+  [
+   "1B1B-0",
+   ".bview-hd",
+   "f"
+  ],
+  [
+   "1B1C-0",
+   ".bview-hd .t",
+   "t"
+  ],
+  [
+   "1B1E-0",
+   ".bview-hd .num.plus",
+   "t"
+  ],
+  [
+   "1B1F-0",
+   ".bview-hd .num.minus",
+   "t"
+  ],
+  [
+   "1B1G-0",
+   ".bview-x",
+   "f"
+  ],
+  [
+   "1B1J-0",
+   ".bview-wrap",
+   "f"
+  ],
+  [
+   "1B1K-0",
+   ".bview-body .l:nth-child(1)",
+   "f"
+  ],
+  [
+   "1B1L-0",
+   ".bview-body .l:nth-child(1)",
+   "t"
+  ],
+  [
+   "1B1M-0",
+   ".bview-body .l:nth-child(2)",
+   "f"
+  ],
+  [
+   "1B1N-0",
+   ".bview-body .l:nth-child(2)",
+   "t"
+  ],
+  [
+   "1B1O-0",
+   ".bview-body .l:nth-child(3)",
+   "f"
+  ],
+  [
+   "1B1P-0",
+   ".bview-body .l:nth-child(3)",
+   "t"
+  ],
+  [
+   "1B2W-0",
+   ".bview-copy",
+   "f"
+  ],
+  [
+   "1B2Z-0",
+   ".bview-copy span",
+   "t"
+  ],
+  [
+   "1B27-0",
+   ".b-rule",
+   "f"
+  ],
+  [
+   "1B2A-0",
+   ".cin",
+   "ph"
+  ],
+  [
+   "1B2D-0",
+   ".tools .tb[aria-label=Joindre]",
+   "f"
+  ],
+  [
+   "1B2G-0",
+   ".tb.mode",
+   "f"
+  ],
+  [
+   "1B2J-0",
+   ".tb.mode .lbl",
+   "t"
+  ],
+  [
+   "1B2L-0",
+   ".model .m",
+   "f"
+  ],
+  [
+   "1B2P-0",
+   ".model .mn",
+   "t"
+  ],
+  [
+   "1B2R-0",
+   ".model .e",
+   "t"
+  ],
+  [
+   "1B2S-0",
+   ".send",
+   "f"
+  ]
+ ],
+ "c-menu-modele-plus": {
+  "root": ".menu",
+  "nodes": [
+   [
+    "17US-0",
+    ".menu",
+    "f"
+   ],
+   [
+    "17UT-0",
+    ".menu > :nth-child(1)",
+    "f"
+   ],
+   [
+    "17UV-0",
+    ".menu > :nth-child(1) .lb",
+    "t"
+   ],
+   [
+    "17UW-0",
+    ".menu > :nth-child(2)",
+    "f"
+   ],
+   [
+    "17UZ-0",
+    ".menu > :nth-child(2) .lb",
+    "t"
+   ],
+   [
+    "17V0-0",
+    ".menu > :nth-child(2) .tag",
+    "f"
+   ],
+   [
+    "17V1-0",
+    ".menu > :nth-child(2) .tag",
+    "t"
+   ],
+   [
+    "17V2-0",
+    ".menu > :nth-child(2) .ck",
+    "f"
+   ],
+   [
+    "17V4-0",
+    ".menu > :nth-child(3)",
+    "f"
+   ],
+   [
+    "17V6-0",
+    ".menu > :nth-child(3) .lb",
+    "t"
+   ],
+   [
+    "17V7-0",
+    ".menu > :nth-child(4)",
+    "f"
+   ],
+   [
+    "17V8-0",
+    ".menu > :nth-child(5)",
+    "f"
+   ],
+   [
+    "17VA-0",
+    ".menu > :nth-child(5) .lb",
+    "t"
+   ],
+   [
+    "17VB-0",
+    ".menu > :nth-child(6)",
+    "f"
+   ],
+   [
+    "17VE-0",
+    ".menu > :nth-child(6) .lb",
+    "t"
+   ],
+   [
+    "17VF-0",
+    ".menu > :nth-child(7)",
+    "f"
+   ],
+   [
+    "17VI-0",
+    ".menu > :nth-child(7) .lb",
+    "t"
+   ],
+   [
+    "17VJ-0",
+    ".menu > :nth-child(8)",
+    "f"
+   ],
+   [
+    "17VK-0",
+    ".menu > :nth-child(9)",
+    "f"
+   ],
+   [
+    "17VL-0",
+    ".menu > :nth-child(9) .lb",
+    "t"
+   ],
+   [
+    "17VM-0",
+    ".menu > :nth-child(9) .sub",
+    "f"
+   ],
+   [
+    "17VO-0",
+    ".menu > :nth-child(10)",
+    "f"
+   ],
+   [
+    "17VP-0",
+    ".menu > :nth-child(10) .lb",
+    "t"
+   ],
+   [
+    "17VQ-0",
+    ".menu > :nth-child(10) .val",
+    "t"
+   ],
+   [
+    "17VR-0",
+    ".menu > :nth-child(10) .sub",
+    "f"
+   ]
+  ]
+ },
+ "c-menu-effort": {
+  "root": ".menu",
+  "dy": -41,
+  "note": "la vue Effort commence par « ‹ Effort » et un trait (41 px avec les écarts de 1 px) que la planche 17VU-0 n'a pas (§9.9) : les lignes sont comparées sous eux",
+  "nodes": [
+   [
+    "17VV-0",
+    ".menu > :nth-child(3)",
+    "f"
+   ],
+   [
+    "17VX-0",
+    ".menu > :nth-child(3) .lb",
+    "t"
+   ],
+   [
+    "17VY-0",
+    ".menu > :nth-child(4)",
+    "f"
+   ],
+   [
+    "17W0-0",
+    ".menu > :nth-child(4) .lb",
+    "t"
+   ],
+   [
+    "17W1-0",
+    ".menu > :nth-child(5)",
+    "f"
+   ],
+   [
+    "17W3-0",
+    ".menu > :nth-child(5) .lb",
+    "t"
+   ],
+   [
+    "17W4-0",
+    ".menu > :nth-child(5) .ck",
+    "f"
+   ],
+   [
+    "17W6-0",
+    ".menu > :nth-child(6)",
+    "f"
+   ],
+   [
+    "17W8-0",
+    ".menu > :nth-child(6) .lb",
+    "t"
+   ],
+   [
+    "17W9-0",
+    ".menu > :nth-child(7)",
+    "f"
+   ],
+   [
+    "17WB-0",
+    ".menu > :nth-child(7) .lb",
+    "t"
+   ]
+  ]
+ },
+ "c-menu-mode": {
+  "root": ".menu",
+  "nodes": [
+   [
+    "14RK-0",
+    ".menu",
+    "f"
+   ],
+   [
+    "14RT-0",
+    ".menu > :nth-child(1)",
+    "f"
+   ],
+   [
+    "17XD-0",
+    ".menu > :nth-child(1) .lead",
+    "f"
+   ],
+   [
+    "14RX-0",
+    ".menu > :nth-child(1) .lb",
+    "t"
+   ],
+   [
+    "14RY-0",
+    ".menu > :nth-child(1) .ds",
+    "t"
+   ],
+   [
+    "1B81-0",
+    ".menu > :nth-child(2)",
+    "f"
+   ],
+   [
+    "1B88-0",
+    ".menu > :nth-child(2) .lead",
+    "f"
+   ],
+   [
+    "1B84-0",
+    ".menu > :nth-child(2) .lb",
+    "t"
+   ],
+   [
+    "1B83-0",
+    ".menu > :nth-child(2) .ds",
+    "t"
+   ],
+   [
+    "14RL-0",
+    ".menu > :nth-child(3)",
+    "f"
+   ],
+   [
+    "14RM-0",
+    ".menu > :nth-child(3) .lead",
+    "f"
+   ],
+   [
+    "14RP-0",
+    ".menu > :nth-child(3) .lb",
+    "t"
+   ],
+   [
+    "14RQ-0",
+    ".menu > :nth-child(3) .ds",
+    "t"
+   ],
+   [
+    "14RR-0",
+    ".menu > :nth-child(3) .ck",
+    "f"
+   ],
+   [
+    "14RZ-0",
+    ".menu > :nth-child(4)",
+    "f"
+   ],
+   [
+    "14S0-0",
+    ".menu > :nth-child(4) .lead",
+    "f"
+   ],
+   [
+    "14S3-0",
+    ".menu > :nth-child(4) .lb",
+    "t"
+   ]
+  ]
+ }
+}

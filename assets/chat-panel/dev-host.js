@@ -7,11 +7,12 @@
   const posted = (window.__posted = []);
   window.__scenarioDone = false;
   window.__scenario = {};
-  let bubbleOn = false, curTurn = null;
+  let bubbleOn = false, curTurn = null, lastLay = {};
   function send(m) {
     const msg = JSON.parse(JSON.stringify(Object.assign({ v: 1 }, m)));
     if (msg.type === "layout") {   // the fake host's « window »: sized from bubble.size while in bubble layout
       bubbleOn = msg.mode === "bubble";
+      lastLay = Object.assign({}, lastLay, msg);
       if (!bubbleOn) { document.documentElement.style.width = ""; document.documentElement.style.height = ""; }
     }
     if (msg.type === "turn.start") curTurn = msg.turnId;
@@ -42,8 +43,10 @@
     agents: [CLAUDE, CODEX], agentId: "claude-code", model: "sonnet",
     efforts: [{ id: "low", label: "Faible" }, { id: "medium", label: "Moyen" }, { id: "high", label: "Élevé" }, { id: "xhigh", label: "X-Élevé" }, { id: "max", label: "Max" }],
     effort: "high",
-    modes: [{ id: "default", label: "Demander", description: "Propose chaque modification.", kind: "ask" },
-            { id: "acceptEdits", label: "Auto", description: "Applique les modifications directement.", kind: "auto" },
+    // B 1.9: as the host sends them (Paper 14RK-0 order); the adapter's « bypass » mode never reaches the panel
+    modes: [{ id: "acceptEdits", label: "Accept edits", description: "Automatically accept all file edits", kind: "edits" },
+            { id: "auto", label: "Auto", description: "Claude handles permission decisions", kind: "auto" },
+            { id: "default", label: "Demander", description: "Propose chaque modification.", kind: "ask" },
             { id: "plan", label: "Planifier", description: "Propose un plan, ne touche à aucun fichier.", kind: "plan" }],
     mode: "default", conversation: null, running: false, pendingAnnotations: 2,
     suggestions: [{ id: "mobile", label: "Vérifier cette page sur mobile" }, { id: "contrast", label: "Trouver les textes trop peu contrastés" }],
@@ -171,6 +174,20 @@
       { type: "message.agentChunk", turnId: "t2", messageId: "m3", text: "C'est ajouté : entre 640 et 1024 px, le bouton garde **16 px** de marge de chaque côté.\n\n- `checkout.css` : une règle de plus\n- rien d'autre n'a changé" },
       { type: "turn.end", turnId: "t2", stopReason: "end_turn", durationMs: 7000 }]) }],
     "c-sans-dossier": [LAY(), st({ folder: null }), { type: "thread.reset", conversationId: "new", items: [] }],
+    // B 1.9 — R8: before the agent's first words; R7: the user's message with its element; R3: menus outside the
+    // bubble, with a host that cannot give the room above (screen edge); R5: « + » with a folder found for sure or not
+    // R9: the bubble closed and opened again during a request: thread.reset, then the host sends the waiting request again
+    "c-autorisation-reouverte": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), LAY({ maxHeight: 303 }), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))),
+      { type: "thread.reset", conversationId: "c1", items: cRunning() }, C_PERM, { type: "focus", target: "composer" }, wait(60), C_PERM, wait(30)]),
+    "c-2-sans-texte": [LAY(), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()].concat(cSteps(true)) }],
+    "c-2-puce": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [{ type: "message.user", id: "u1", text: CASK, at: today(15, 34), elements: [EL] }] }],
+    "c-menu-refuse": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, () => { window.__grant = { top: 40 }; }, wait(30), click(".model .m"), wait(120)],
+    // the menus next to their boards (17US-0 with « Autres modèles », 17VU-0)
+    "c-menu-modele-plus": [LAY(), st({ agents: [Object.assign({}, CLAUDE, { models: CLAUDE.models.concat([{ id: "opus41", label: "Opus 4.1" }]) }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(80)],
+    "c-menu-effort": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(40), click(".menu .mi[data-key=effort]"), wait(80)],
+    "c-menu-plus": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
+    "c-menu-plus-incertain": [LAY(), st({ askFolder: true }), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
+    "c-infobulle-envoyer": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn(CASK), blur],
     "c-mode-auto": [LAY(), st({ mode: "acceptEdits" }), { type: "thread.reset", conversationId: "new", items: [] }],
     "c-plan": [LAY(), st(Object.assign({ mode: "plan" }, conv("Paiement sur mobile"))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "plan", turnId: "t1", id: "plan1", proposed: true, entries: [{ content: "Empiler le formulaire et le récapitulatif sous 768 px", status: "pending" }, { content: "Bouton Payer en pleine largeur", status: "pending" }] },
@@ -316,13 +333,14 @@
     "dossier-puce": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "dossier-demande": [st({ askFolder: true, folder: null, folderSuggestion: { path: "C:\\Users\\val\\projets\\boutique", display: "C:\\Users\\…\\projets\\boutique", name: "boutique", reason: "auto" } }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.7a-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
+    "titre-renommer": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }],
     "6.7b-historique": [st(conv("Titre de la page", { running: true })), { type: "thread.reset", conversationId: "c1", items: [] },
       { type: "history", items: [
         { id: "c1", title: "Titre de la page", subtitle: "Modifie Header.tsx…", siteLabel: "127.0.0.1:5173", thisSite: true, agentIcon: "claude", updatedAt: ago(10000), running: true, current: true },
         { id: "c2", title: "Bouton de paiement", subtitle: "1 fichier modifié", siteLabel: "127.0.0.1:5173", thisSite: true, agentIcon: "claude", updatedAt: ago(2 * 60000) },
         { id: "c3", title: "Badge code promo", subtitle: "Questions seulement", siteLabel: "127.0.0.1:5173", thisSite: true, agentIcon: "codex", updatedAt: ago(26 * 3600000) },
         { id: "c4", title: "Menu de navigation", subtitle: "3 fichiers modifiés", siteLabel: "localhost:4173", thisSite: false, agentIcon: "claude", updatedAt: ago(4 * 24 * 3600000) }] },
-      click(".hd-title"), () => document.activeElement && document.activeElement.blur()],
+      click(".hd-btn[aria-label=Historique]"), () => document.activeElement && document.activeElement.blur()],
     "6.7c-modifier": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Le bouton devrait être aligné à droite, et passer en pleine largeur sous 768 px.", null, [])].concat(doneTurn("t1")) },
       click(".um .um-tools .icon-btn")],
     "6.7c-modifier-confirmer": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Le bouton devrait être aligné à droite, et passer en pleine largeur sous 768 px.", null, [])].concat(doneTurn("t1")) },
@@ -433,7 +451,16 @@
       case "setAgent": send({ type: "state", agentId: m.id, model: m.id === "codex" ? "terra" : "sonnet", conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); break;
       case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: /^c-/.test(window.__scenarioName || "") && window.__scenarioName !== "c-diff-plusieurs-fichiers" ? [C_DIFF] : FULL_DIFFS }); break;
       // bubble layout: the fake host's window follows the bubble (a real host resizes the WebView)
-      case "bubble.size": document.documentElement.style.width = m.width + "px"; document.documentElement.style.height = m.height + "px"; break;
+      // B 1.9: the overflow asked around the surface is granted (window.__grant caps a side, to play a screen edge) and
+      // answered with `layout {open: false, inset}`, as the real host does
+      case "bubble.size": {
+        const g = window.__grant || {}, cap = (k, v) => Math.max(0, Math.min(v | 0, g[k] == null ? 400 : g[k]));
+        const inset = { top: cap("top", m.overflowTop), right: cap("right", m.overflowRight), bottom: cap("bottom", m.overflowBottom), left: cap("left", m.overflowLeft) };
+        window.__inset = inset; window.__surface = { width: m.width, height: m.height };
+        document.documentElement.style.width = (m.width + inset.left + inset.right) + "px"; document.documentElement.style.height = (m.height + inset.top + inset.bottom) + "px";
+        send({ type: "layout", mode: "bubble", open: false, maxWidth: lastLay.maxWidth, maxHeight: lastLay.maxHeight, side: lastLay.side, element: lastLay.element, inset });
+        break;
+      }
       case "close": if (bubbleOn && window.__scenarioName === "interactive") setTimeout(() => { send(LAY()); send({ type: "focus", target: "composer" }); }, 700); break;
       case "retry": if (window.__scenarioName === "interactive") fakeTurn("Réessayer"); break;
       case "queue.remove": send({ type: "queue", items: [] }); break;
