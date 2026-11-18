@@ -83,6 +83,23 @@ svg.i { display: block; flex-shrink: 0; }
    pointer.leave), never by :hover — a :hover state the WebView never leaves kept the bubble on screen; keyboard: focus-visible */
 .gauge.tip-on .tip, .gauge:focus-visible .tip { opacity: 1; transform: translate(-50%, 0); }
 .gauge.tip-on { background: var(--fill6); }
+/* send button bubble (B 1.6): above the button, right-aligned, two rows « action — keys »; 125 ms, from its button */
+.sendw { position: relative; display: flex; flex-shrink: 0; }
+.sendw .tip { position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 20; display: flex; flex-direction: column; gap: 6px; width: max-content; padding: 8px 10px;
+  border-radius: 8px; background: var(--canvas); border: 1px solid #FFFFFF1A; box-shadow: #00000080 0 8px 24px; color: var(--w80); font-size: 12px; line-height: 16px;
+  opacity: 0; transform: translateY(2px) scale(.98); transform-origin: bottom right; pointer-events: none; transition: opacity 125ms ease-out, transform 125ms ease-out; }
+.sendw .tip .tr { display: flex; align-items: center; justify-content: space-between; gap: 16px; white-space: pre; }
+.sendw .tip .kc { height: 18px; min-width: 18px; padding: 1px 5px; font-size: 11px; line-height: 16px; }
+.sendw.tip-on:not(.no-tip) .tip, .sendw:not(.no-tip):has(.send:focus-visible) .tip { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { .sendw .tip { transform: none; } }
+:root.reduce-motion .sendw .tip { transform: none; }
+/* « Gardé en annotation » (B 1.6): the user's side, quieter than a bubble — dashed hairline, no fill */
+.kept { align-self: flex-end; max-width: 88%; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--line2); }
+.kept-note { color: var(--w90); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+.kept-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--w60); font-size: 12px; line-height: 16px; }
+.kept-meta .ck { width: 12px; height: 12px; color: var(--ok); flex-shrink: 0; }
+.kept-els { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.kept-sub { color: var(--w40); font-size: 11px; line-height: 14px; }
 @media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus-visible .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }

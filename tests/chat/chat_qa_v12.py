@@ -13,8 +13,10 @@ posted to our own windows. One run at a time, nothing left running.
   2  no « Default » effort: Medium set at the session start, in French in the button and the turn's header
   4  the gauge's bubble goes when the real pointer leaves the gauge / the panel
   5  the « done » mark and the selection frame stay on their element while the page scrolls (no lag)
-  6  the pointer hidden by typing in the note comes back when the mouse moves over the page
-  7  chat closed: a click opens the note; chat open: a click is a chip in the composer, the caret goes there
+  6  the pointer hidden by typing in the note comes back when the mouse moves over the page (a site that is not local:
+     the only place the note panel still shows)
+  7  V1.3: a click on an element ALWAYS goes to the chat (opened if closed): a chip, the caret in the composer; Ctrl+Entrée
+     keeps it as an annotation of the store (no agent); the send button's bubble says both; not local: the note panel
 """
 from __future__ import annotations
 import ctypes
@@ -119,9 +121,21 @@ def widgets():
     return sorted(out, key=lambda r: r[2] - r[0], reverse=True)
 
 
-def page_point(sel, dy=0.5):
-    r = widgets()[0]; dpr = C.page('devicePixelRatio')
-    b = C.page("(function(){var r=document.querySelector(%s).getBoundingClientRect();return [r.left+r.width/2,r.top+r.height*%s]})()" % (json.dumps(sel), dy))
+def pg(js, prefix=None):
+    return C.evaluate(prefix or C.URL, js)
+
+
+def click_on(sel, prefix=None):
+    """A trusted click (CDP) in the middle of an element of the page at `prefix`."""
+    r = pg(f"(function(){{var e=document.querySelector({json.dumps(sel)});if(!e)return null;var r=e.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2];}})()", prefix)
+    ws = C.ws_for(prefix or C.URL)
+    for kind in ('mouseMoved', 'mousePressed', 'mouseReleased'):
+        ws.call('Input.dispatchMouseEvent', {'type': kind, 'x': r[0], 'y': r[1], 'button': 'none' if kind == 'mouseMoved' else 'left', 'clickCount': 0 if kind == 'mouseMoved' else 1})
+
+
+def page_point(sel, dy=0.5, prefix=None):
+    r = widgets()[0]; dpr = pg('devicePixelRatio', prefix)
+    b = pg("(function(){var r=document.querySelector(%s).getBoundingClientRect();return [r.left+r.width/2,r.top+r.height*%s]})()" % (json.dumps(sel), dy), prefix)
     return int(r[0] + b[0] * dpr), int(r[1] + b[1] * dpr)
 
 
@@ -134,6 +148,17 @@ def panel_point(sel):
 def glide_to(x0, y0, x1, y1, steps=8):
     for k in range(steps):
         u32.SetCursorPos(x0 + (x1 - x0) * (k + 1) // steps, y0 + (y1 - y0) * (k + 1) // steps); time.sleep(0.03)
+
+
+def hover(x, y, shown, tries=3):
+    """The real pointer comes onto (x, y) like a hand does (a short approach, not a jump), then rests; tried again if the
+    bubble did not show (the user's own mouse may have moved meanwhile on a shared desktop)."""
+    for _ in range(tries):
+        glide_to(x - 40, y - 24, x, y, 6); time.sleep(0.7)
+        if shown():
+            return True
+        u32.SetCursorPos(x - 120, y - 120); time.sleep(0.3)
+    return False
 
 
 def shadow_rects(ws, want, sel, samples, gap=0.012):
@@ -162,10 +187,10 @@ def shadow_rects(ws, want, sel, samples, gap=0.012):
     return out
 
 
-def scroll_and_measure(want, sel, offset, label):
+def scroll_and_measure(want, sel, offset, label, prefix=None):
     """Wheel scrolls (the compositor's smooth scroll, as a mouse wheel) down then up; the frame's offset to its element."""
-    ws = C.ws_for(C.URL)
-    x, y = C.page('[innerWidth/2, innerHeight/2]')
+    ws = C.ws_for(prefix or C.URL)
+    x, y = pg('[innerWidth/2, innerHeight/2]', prefix)
     rows = []
     for dy in (360, 360, -720):
         ws.call('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': x, 'y': y, 'deltaX': 0, 'deltaY': dy})
@@ -179,6 +204,10 @@ def scroll_and_measure(want, sel, offset, label):
     return m
 
 
+def chips():
+    return C.panel("document.querySelectorAll('.cin .chip').length") or 0
+
+
 def run_main():
     before = C.fingerprints(); report['fingerprintsBefore'] = before
     OUT.mkdir(parents=True, exist_ok=True)
@@ -188,7 +217,9 @@ def run_main():
     except OSError:
         pass
     fake = C.TOOLS / 'fake-acp-agent.exe'
+    other = f'http://exemple.test:{C.PORT_PAGE}/'   # the same sandbox site under a name that is NOT local: no chat there
     p = C.launch(extra_env={'BROWSER_CHAT_PANEL_IDLE_MS': '60000', 'BROWSER_CHAT_AGENT_IDLE_MS': '600000',
+                            'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS': f'--remote-debugging-port={Q.PORT} --remote-allow-origins=http://127.0.0.1:{Q.PORT} --host-resolver-rules="MAP exemple.test 127.0.0.1"',
                             'BROWSER_CHAT_FAKE_AGENT': f'"{fake}" --resume --claude-like --log "{flog}" --edit "{C.FAKE_EDIT}"'})
     try:
         time.sleep(1.0)
@@ -200,47 +231,31 @@ def run_main():
         step('the « Connecter un agent » modal is out of the way (fresh profile)', not [w for w in Q.windows() if w[1] == 'BrowserAnnotationVeil'])
         u32.SetForegroundWindow(Q.main_window())
 
-        # ---- 7 (chat closed) + 6 + 1: a click opens the note; typing hides the pointer; « Demander à l'agent »
+        # ---- 7 (V1.3): chat CLOSED, a click on an element opens the chat: the element is a chip, the caret is there
         m1 = mark()
-        tx, ty = page_point('.title')
-        u32.SetCursorPos(tx, ty); time.sleep(0.3)
         C.click_page('.title')
-        note = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
-        step('7 · chat closed: a click on an element opens the note panel, as before', bool(note))
-        if note:
-            edit = Q.find_child(note[0][0], 'Edit')
-            Q.post_text(NOTE, edit); time.sleep(0.4)
-            typed = cursor()
-            report['measures']['pointerRightAfterTyping'] = typed
-            print('pointer right after typing:', 'hidden (Windows « hide pointer while typing »)' if not typed['showing'] else 'shown')
-            hx, hy = page_point('.hint')
-            glide_to(tx, ty, hx, hy); time.sleep(0.35)
-            back = cursor()
-            report['measures']['pointerAfterMovingOverPage'] = back
-            step('6 · after typing in the note, the pointer is visible again as soon as it moves over the page', back['showing'] and back['handle'] != 0, json.dumps(back))
-            capture('6-curseur-visible-apres-saisie', with_cursor=True)
-            # 1: Entrée = « Demander à l'agent »: the chat opens for the FIRST time on this site, with the element and the text
-            Q.post_key(0x0D, edit)
-            step('1 · « Demander à l\'agent » from the note, with its text', logged(r"CHAT « Demander à l'agent » from the note panel \(with its text\)", m1, 8))
-            step('1 · the chat opens (first opening on this site: a new conversation)', logged(r'CHAT panel ready', m1, 15))
-            step("1 · the note's text goes with the element", logged(r"CHAT the note's text goes with the element", m1, 25))
-            step('1 · a turn starts', logged(r'CHAT turn t1 started', m1, 20))
-            time.sleep(0.8)
-            left = [w[2] for w in Q.windows() if w[1] in ('BrowserAnnotationLayer', 'BrowserAnnotationNote') and w[2] in ("Ce que l'agent verra", 'Nouvelle annotation')]
-            step('1 · the note and its « Ce que l\'agent verra » pill are gone once the chat has it', not left, str(left))
-            got = C.wait_for(lambda: [l for l in flog.read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith('prompt-text ')], 15)
-            report['measures']['promptText'] = got[-1][:300] if got else ''
-            step('1 · the agent receives the note\'s text in session/prompt (fake agent\'s log)', bool(got) and NOTE in got[-1], got[-1][:160] if got else 'no prompt')
-            bubble = C.wait_for(lambda: C.panel("(function(){var b=document.querySelector('.um .bubble');return b?b.innerText:''})()"), 8) or ''
-            chips = C.panel("document.querySelectorAll('.um .chip').length") or 0
-            step('1 · the user\'s bubble shows the text, with the element\'s chip', NOTE in bubble and chips >= 1, f'{bubble!r}, {chips} chip(s)')
-            perm = logged(r'CHAT permission asked: edit', m1, 20)
-            time.sleep(0.6)
-            capture('1-note-texte-dans-le-chat')
-            if perm:
-                C.wait_for(lambda: 'Refuser' in C.panel_text(), 5)
-                C.click_panel(text='Refuser')
-            step('turn 1 ends', logged(r'CHAT turn t1 ended', m1, 20))
+        opened = logged(r'CHAT a click on an element opens the chat', m1, 8)
+        ready = logged(r'CHAT panel ready', m1, 15)
+        time.sleep(0.4)
+        step('7 · chat closed: a click on an element OPENS the chat (no note panel)', opened is not None and ready is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
+        has_chip = C.wait_for(chips, 10)
+        time.sleep(0.6)
+        foc = C.panel("({chip:document.querySelectorAll('.cin .chip').length,label:(document.querySelector('.cin .chip')||{}).textContent||'',active:document.activeElement&&document.activeElement.id,focus:document.hasFocus()})") or {}
+        step('7 · …the element is a chip in the composer and the caret is in the composer', bool(has_chip) and foc.get('active') == 'composer-input' and foc.get('focus'), json.dumps(foc, ensure_ascii=False))
+        capture('7-clic-ouvre-le-chat')
+
+        # ---- 1: the words typed next to the chip reach the agent (session/prompt) and the bubble, on the FIRST opening
+        C.type_panel(' ' + NOTE); time.sleep(0.2); C.enter_panel()
+        step('1 · a turn starts with the element and the text', logged(r'CHAT turn t1 started', m1, 20))
+        got = C.wait_for(lambda: [l for l in flog.read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith('prompt-text ')], 15)
+        report['measures']['promptText'] = got[-1][:300] if got else ''
+        step('1 · the agent receives the text in session/prompt (fake agent\'s log)', bool(got) and NOTE in got[-1], got[-1][:160] if got else 'no prompt')
+        bubble = C.wait_for(lambda: C.panel("(function(){var b=document.querySelector('.um .bubble');return b?b.innerText:''})()"), 8) or ''
+        step('1 · the user\'s bubble shows the text with the element\'s chip', NOTE in bubble and (C.panel("document.querySelectorAll('.um .chip').length") or 0) >= 1, repr(bubble))
+        if logged(r'CHAT permission asked: edit', m1, 20):
+            C.wait_for(lambda: 'Refuser' in C.panel_text(), 5)
+            C.click_panel(text='Refuser')
+        step('turn 1 ends', logged(r'CHAT turn t1 ended', m1, 20))
 
         # ---- 2: no « Default »: Medium at the session start, in French
         eff = logged(r'CHAT effort set to « (\w+) » \(the session started with « (\w+) »\)', 0, 5)
@@ -251,21 +266,31 @@ def run_main():
         step('2 · the model button says « Moyen »; no « Default » anywhere in the panel', chip_e == 'Moyen' and 'Default' not in C.panel_text(), f'{chip_e!r} {metas}')
         step('2 · the turn\'s header: model · Moyen · duration', bool(metas) and ' · Moyen · ' in metas[-1], str(metas))
 
-        # ---- 7 (chat open): a click is a chip, the caret goes to the composer
+        # ---- V1.3: Ctrl+Entrée keeps an annotation (no agent), read by the MCP agents
         m2 = mark()
-        C.click_page('.btn-primary')
-        aimed = logged(r'CHAT element aimed: (\S+)', m2, 10)
-        caret = logged(r'CHAT chip added: the caret goes to the composer', m2, 5)
-        time.sleep(0.5)
-        no_note = not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote']
-        foc = C.panel("({chip:document.querySelectorAll('.cin .chip').length,active:document.activeElement&&document.activeElement.id,focus:document.hasFocus()})") or {}
-        step('7 · chat open: a click on an element adds it as a chip, no note panel', aimed is not None and no_note and foc.get('chip', 0) >= 1, json.dumps(foc))
-        step('7 · …and the caret goes into the composer', caret is not None and foc.get('active') == 'composer-input' and foc.get('focus'), json.dumps(foc))
-        capture('7-clic-element-puce-dans-le-chat')
+        C.click_page('.hint')
+        C.wait_for(chips, 10); time.sleep(0.4)
+        sx, sy = panel_point('.send')
+        hover(sx, sy, lambda: C.panel("getComputedStyle(document.getElementById('send-tip')).opacity") == '1')
+        tip = C.panel("[getComputedStyle(document.getElementById('send-tip')).opacity, document.getElementById('send-tip').innerText]") or ['', '']
+        capture('7-infobulle-envoyer')
+        step('the send button\'s bubble: Entrée = ask the agent, Ctrl+Entrée = keep as an annotation', tip[0] == '1' and "Demander à l'agent" in tip[1] and 'Garder en annotation' in tip[1], repr(tip))
+        glide_to(sx, sy, sx - 300, sy - 300, 4); time.sleep(0.3)
+        prompts = len([l for l in flog.read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith('prompt-text ')])
+        C.panel("document.getElementById('composer-input').focus()"); C.type_panel(' Texte trop discret'); time.sleep(0.2)
+        C.key_panel('Enter', 'Enter', 13, modifiers=2)
+        wrote = logged(r'CHAT annotation kept \(Ctrl\+Entrée\) (ann_\w+): write ok', m2, 10)
+        time.sleep(0.6)
+        line = C.panel("(document.querySelector('.kept')||{}).innerText||''") or ''
+        after = len([l for l in flog.read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith('prompt-text ')])
+        step('V1.3 · Ctrl+Entrée: the element and its words become an annotation of the store (open, for the MCP agents)', wrote is not None, wrote.group(0)[5:] if wrote else '')
+        step('V1.3 · …nothing is sent to the agent; the thread says « Gardé en annotation »', after == prompts and 'CHAT turn t2' not in C.log_text()[m2:] and 'Gardé en annotation' in line and 'Texte trop discret' in line, line.replace('\n', ' | '))
+        capture('7-garde-en-annotation')
 
         # ---- a turn that changes the file: the « done » mark and the gauge
         m3 = mark()
-        C.type_panel('Aligne-le à droite'); time.sleep(0.2); C.enter_panel()
+        C.click_page('.btn-primary'); C.wait_for(chips, 10); time.sleep(0.3)
+        C.type_panel(' Aligne-le à droite'); time.sleep(0.2); C.enter_panel()
         step('turn 2 started (with the chip)', logged(r'CHAT turn t2 started', m3, 10))
         if logged(r'CHAT permission asked: edit', m3, 20):
             C.wait_for(lambda: 'Autoriser' in C.panel_text(), 5)
@@ -278,22 +303,18 @@ def run_main():
         g = C.wait_for(lambda: C.panel("(function(){var g=document.querySelector('.gauge');return g&&!g.hidden})()"), 8)
         if step('4 · the gauge is shown', bool(g)):
             gx, gy = panel_point('.gauge')
-            u32.SetCursorPos(gx, gy); time.sleep(0.7)
+            hover(gx, gy, lambda: C.panel("document.querySelector('.gauge').classList.contains('tip-on')"))
             on = C.panel("document.querySelector('.gauge').classList.contains('tip-on')")
             capture('4-jauge-survol')
-            m4 = mark()
             ws = widgets(); pr = ws[1] if len(ws) > 1 else ws[0]
-            glide_to(gx, gy, gx, pr[1] - 40, 4)    # straight up, out of the panel (the band / the tabs)
-            time.sleep(0.5)
+            glide_to(gx, gy, gx, pr[1] - 40, 4); time.sleep(0.5)
             off = C.panel("[document.querySelector('.gauge').classList.contains('tip-on'), getComputedStyle(document.querySelector('.gauge .tip')).opacity]")
             capture('4-jauge-apres-sortie')
             step('4 · the bubble shows while the real pointer is on the gauge', on)
-            step('4 · and goes when the pointer leaves the panel upwards (band / tabs)', off and not off[0] and off[1] == '0', f'{off}, host: {bool(logged(r"CHAT pointer left the panel", m4, 1))}')
+            step('4 · and goes when the pointer leaves the panel upwards (band / tabs)', off and not off[0] and off[1] == '0', str(off))
             u32.SetCursorPos(gx, gy); time.sleep(0.7)
-            glide_to(gx, gy, pr[0] - 200, gy, 4)   # straight to the page, on the left
-            time.sleep(0.5)
-            off2 = C.panel("document.querySelector('.gauge').classList.contains('tip-on')")
-            step('4 · and when it leaves to the page', off2 is False)
+            glide_to(gx, gy, pr[0] - 200, gy, 4); time.sleep(0.5)
+            step('4 · and when it leaves to the page', C.panel("document.querySelector('.gauge').classList.contains('tip-on')") is False)
 
         # ---- 5: the « done » mark glued to its element while the page scrolls
         C.page("document.body.style.paddingBottom='2400px'"); time.sleep(0.7)
@@ -302,19 +323,49 @@ def run_main():
         C.page("scrollTo(0, 120)"); time.sleep(0.6)
         capture('5-cadre-fait-colle-apres-defilement')
 
-        # ---- 5: the selection frame (note open, chat closed)
-        C.shortcut('D'); logged(r'CHAT panel closed', 0, 5); time.sleep(0.8)
-        C.page("scrollTo(0, 0)"); time.sleep(0.3)
-        m5 = mark()
-        C.click_page('.hint')
-        note2 = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
-        time.sleep(1.2)   # the capture's hand-off is over: the page draws its frame again
-        if step('the note opens on another element (chat closed)', bool(note2)):
-            fm = scroll_and_measure('x h', '.hint', 0, 'selectionFrameWhileScrolling')
+        # ---- a site that is NOT local: no chat there, the small note panel stays (V1.3), and with it points 6 and 5
+        C.shortcut('D'); logged(r'CHAT panel closed', 0, 5); time.sleep(0.6)
+        C.ws_for(C.URL).call('Page.navigate', {'url': other})
+        C.wait_for(lambda: C.ws_for(other) is not None and pg('document.readyState', other) == 'complete', 15); time.sleep(0.8)
+        mA = mark()   # another site: the mode ended with the navigation; it starts again here
+        C.shortcut('A'); logged(r'ANNOTATE mode on', mA, 6); time.sleep(1.2)
+        if C.invoke('AnnotationConnectLater') or C.invoke('AnnotationConnectClose'):
+            time.sleep(0.6)
+        u32.SetForegroundWindow(Q.main_window())
+        m4 = mark()
+        tx, ty = page_point('.title', prefix=other)
+        u32.SetCursorPos(tx, ty); time.sleep(0.3)
+        click_on('.title', other)
+        note = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
+        step('V1.3 · a site that is not local (no chat): a click opens the small note panel, as before', bool(note) and 'CHAT panel opened' not in C.log_text()[m4:])
+        if note:
+            import ctypes as _c
+            time.sleep(0.6)   # the panel's own layer shows once its entrance (a ghost) has settled
+            layer = [w for w in Q.windows() if w[1] == 'BrowserAnnotationLayer' and w[2] == 'Nouvelle annotation']
+            probe = _c.windll.gdi32.CreateRectRgn(0, 0, 0, 0)
+            no_region = bool(layer) and C.user32.GetWindowRgn(layer[0][0], probe) == 0 and C.user32.GetWindowRgn(note[0][0], probe) == 0
+            _c.windll.gdi32.DeleteObject(probe)
+            step('note panel: per-pixel-alpha layer, no window region (smooth corners)', no_region and bool(C.user32.GetWindowLongW(layer[0][0], -20) & 0x80000) if layer else False)
+            ids = C.uia('-List')
+            step('…with « Ajouter » and no « Demander à l\'agent » (no chat on this site)', 'AnnotationAdd' in ids and 'AnnotationNoteAskAgent' not in ids)
+            edit = Q.find_child(note[0][0], 'Edit')
+            Q.post_text(NOTE, edit); time.sleep(0.4)
+            typed = cursor()
+            report['measures']['pointerRightAfterTyping'] = typed
+            print('pointer right after typing:', 'hidden (Windows « hide pointer while typing »)' if not typed['showing'] else 'shown')
+            hx, hy = page_point('.hint', prefix=other)
+            glide_to(tx, ty, hx, hy); time.sleep(0.35)
+            back = cursor()
+            report['measures']['pointerAfterMovingOverPage'] = back
+            step('6 · after typing in the note, the pointer is visible again as soon as it moves over the page', back['showing'] and back['handle'] != 0, json.dumps(back))
+            capture('6-curseur-visible-apres-saisie', with_cursor=True)
+            # 5: the selection frame of the open note stays on its element while the page scrolls
+            pg("document.body.style.paddingBottom='2400px'", other); time.sleep(0.6)
+            fm = scroll_and_measure('x h', '.title', 0, 'selectionFrameWhileScrolling', other)
             step('5 · the selection frame stays on its element while the page scrolls (no glide behind it)', fm is not None and fm['scrolledPx'] > 100 and fm['worstOffsetPx'] <= 1.0, json.dumps(fm))
-            C.page("scrollTo(0, 90)"); time.sleep(0.5)
+            pg("scrollTo(0, 60)", other); time.sleep(0.5)
             capture('5-cadre-selection-colle-apres-defilement')
-            Q.post_key(0x1B, Q.find_child(note2[0][0], 'Edit'))
+            Q.post_key(0x1B, edit)
     except Exception:
         traceback.print_exc()
         step('run without exception', False, traceback.format_exc()[-400:])

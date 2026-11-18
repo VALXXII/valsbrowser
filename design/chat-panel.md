@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1.5** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
+- Version du protocole : **1.6** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -149,6 +149,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `annotations.status` *(1.4)* | `batchId`, `id`, `status` (`pending`/`working`/`done`/`skipped`), `summary?` (une phrase de l'agent, si `done`), `reason?` (si `skipped`) | Met à jour une ligne de la carte « Traiter N annotations » du fil (et l'en-tête « 1 sur N » / « ✓ N terminées »). Annonce polie. |
 | `copy.done` | `ok` | Le bouton Copier affiche « Copié » 1,5 s (ou rien si `ok` faux). |
 | `usage` *(1.2)* | `used`, `size` (jetons de contexte utilisés / taille de la fenêtre, depuis `usage_update` ACP) | Jauge de contexte à droite du titre : anneau rempli à `used/size`, neutre, ambre au-delà de 80 % ; infobulle « 62 % de la mémoire du chat utilisée · se résume automatiquement vers 100 % ». `size: 0` (ou nouvelle conversation, `thread.reset`) la masque ; l'hôte renvoie `usage` après un `thread.reset` s'il le connaît. |
+| `annotation.kept` *(1.6)* | `id`, `text`, `elements: ElementRef[]`, `annotations: Id[]` (ids du magasin), `at: Iso`, `partial?` | Ligne discrète dans le fil, côté utilisateur : les mots, « Gardé en annotation » + les puces, « Pour vos agents connectés · rien n'est envoyé au chat ». Aussi un `Item` (rejouée avec la conversation). |
 | `pointer.leave` *(1.5)* | — | Le pointeur est sorti du panneau (vu par l'hôte, voir `hover`) : l'infobulle ouverte se ferme. |
 | `changes.diff` *(1.1)* | `turnId`, `diffs: Diff[]` (tous les fichiers du tour, ≤ 4 000 lignes chacun), `files?: FileChange[]` | Réponse à `checkpoint.viewChanges`. Remplit la vue « Voir les changements » si elle est ouverte sur ce tour (sinon gardé pour la prochaine ouverture). Un fichier sans entrée dans `diffs` affiche « Pas d'aperçu pour ce fichier ». |
 
@@ -226,6 +227,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `file.open` | `path`, `line?` | Clic sur « Checkout.tsx:42 » ou un nom de fichier. Facultatif pour l'hôte. |
 | `close` | — | Bouton fermer, ou Échap quand rien d'autre n'est ouvert. |
 | `panel.log` | `level` (`info`/`warn`/`error`), `message` | Diagnostic (message invalide, exception). Borné à 2 Kio. |
+| `annotate` *(1.6)* | `text`, `elements: Id[]` | `Ctrl+Entrée` dans la saisie : les puces et les mots deviennent des annotations **ouvertes** du magasin (lues par les agents MCP), rien n'est envoyé à l'agent du chat. Il faut au moins une puce et quelques mots (sinon un bandeau bref dit ce qui manque). L'hôte répond `annotation.kept`, ou une `error` `composer` si l'écriture échoue. |
 | `hover` *(1.5)* | `active: bool` | Une infobulle de survol est ouverte (`true`) ou fermée (`false`). Tant qu'elle l'est, l'hôte compare le vrai pointeur au rectangle du panneau (toutes les 80 ms) et répond `pointer.leave` dès qu'il en sort. Rien ne tourne sinon. |
 
 ---
@@ -282,6 +284,7 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 11. Historique du contrat
 
+- **1.6** (18 nov. 2026, compatible, `"v": 1`) : `annotate` / `annotation.kept` (Ctrl+Entrée garde en annotation) ; infobulle du bouton envoyer (§17).
 - **1.5** (18 nov. 2026, compatible, `"v": 1`) : retours du test réel (§16). `hover` / `pointer.leave` (infobulle de la jauge qui se ferme toujours) ; plus de puce dossier dans la saisie ; menu modèle par fournisseur connecté, efforts sans « Default » ; `pick.state` vrai pendant un tour (un clic va toujours au chat quand il est ouvert).
 - **1.4** (18 nov. 2026, compatible, `"v": 1`) : `state.askFolder` (l'écran du dossier ne s'affiche que si l'hôte le demande ; puce dossier dans la saisie, clic = `folder.choose`) ; lot d'annotations (`annotations.batch`, `annotations.status`, `message.user.annotations`, `send.annotations`, `annotations.request`, `annotation.show`) (§15).
 - **1.3** (18 nov. 2026, compatible, `"v": 1`) : champ facultatif `summary` sur `toolCall` / `toolCallUpdate` pour le résumé replié des étapes (§14) ; le panneau ne dit plus « fichier » que pour de vrais chemins (`locations`).
@@ -364,3 +367,20 @@ Bas de la saisie sur une seule ligne *(1.5)* : quand la place manque, le panneau
 **Bas de la saisie** (Paper `14P9-0`) : viser, +, mode ; à droite le bouton modèle avec le logo du fournisseur (14 px), le nom (12/16 500 `#FFFFFFE6`), l'effort (`#FFFFFF80`) et le chevron ; puis envoyer. Plus de puce dossier.
 
 **Infobulle de la jauge.** Elle n'est plus pilotée par `:hover` (un état de survol que la WebView ne quittait jamais la laissait à l'écran) : elle apparaît 300 ms après l'entrée du pointeur, disparaît à sa sortie de la jauge, à la sortie du document, quand la fenêtre perd le focus, ou à `pointer.leave` de l'hôte. Au clavier : `:focus-visible` (un clic ne la garde pas ouverte).
+
+## 17. Révision 1.6 — un clic va toujours au chat (V1.3)
+
+Décision de l'utilisateur après son test : en mode Annotation, sur un site local, un clic sur un élément ouvre **toujours**
+le chat (s'il est fermé), l'élément en puce dans la saisie et le curseur de texte dans la saisie. La petite boîte de note
+ne s'affiche plus sur un site local ; elle reste là où le chat ne peut pas s'ouvrir (site non local, fenêtre privée).
+
+- **Entrée** : demander à l'agent (inchangé). **Ctrl+Entrée** : garder en annotation (`annotate`) — l'ancien « Ajouter »
+  de la boîte de note. Les images jointes restent dans la saisie (une annotation n'emporte que la capture de l'élément).
+- **Infobulle du bouton envoyer** (`#send-tip`, `role="tooltip"`, référencée par `aria-describedby`, `aria-keyshortcuts=
+  "Enter Control+Enter"`) : deux lignes « Demander à l'agent ↵ » et « Garder en annotation Ctrl ↵ », au-dessus du bouton,
+  alignée à droite dans le panneau. 300 ms la première fois, immédiate si une autre bulle vient d'être ouverte, 125 ms
+  depuis son bouton (`transform-origin` en bas à droite, échelle 0,98 → 1) ; part à la sortie du pointeur, à l'appui, et
+  sur `pointer.leave`. Au clavier : `:focus-visible`. Pendant un tour sans contenu (bouton Arrêter) : pas de bulle.
+- **Ligne « Gardé en annotation »** : à droite comme les messages de l'utilisateur, mais plus discrète qu'une bulle
+  (bord pointillé `#FFFFFF1F`, pas de fond) ; coche verte, entrée standard du fil (200 ms, 6 px), annoncée poliment.
+- La ligne d'aide multi-ligne de la saisie gagne « Ctrl ↵ Annotation ».

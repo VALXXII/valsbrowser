@@ -107,7 +107,7 @@ bool Reduced() { return motion.ReducedMotion(); }
 namespace Chat {
 bool Open();                                             // the panel is open (or opening)
 bool Shown();                                            // … or still sliding out
-bool TakesSelection();                                   // the next selection goes to the chat (a chip), not to the note panel
+bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);   // V1.3: a local site's selection goes to the chat (opened if needed); false: the note panel
 void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);
 bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r);   // true: the image was for the chat
 bool AskAvailable(const std::shared_ptr<Tab>& t);        // « Demander à l'agent » in the note panel (local sites)
@@ -933,12 +933,9 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         s.pageSeq = shot.pageSeq;
         if (EnsurePost()) SetTimer(post, HideTimer, 800, nullptr);
     }
-    if (Chat::TakesSelection()) {   // chat intégré: the element becomes a chip of the composer; the picker goes on (the shot first)
-        const std::uint64_t serial = s.serial; const bool impossible = s.cap == Cap::Failed;
-        Chat::OnSelection(t, serial, impossible);
-        Resume();
-        return;
-    }
+    // chat intégré (V1.3): on a local site the element always becomes a chip of the chat's composer, the panel opening
+    // if it is closed; the picker goes on (the shot first). Elsewhere (no chat): the note panel, as before.
+    if (Chat::TakeSelection(t, s.serial, s.cap == Cap::Failed)) { Resume(); return; }
     panel.on = true; panel.serial = s.serial; panel.req = req; panel.target = target; panel.page = page; panel.keyboard = sel.keyboard;
     if (shot.waiting && shot.serial == s.serial && EnsurePost()) SetTimer(post, PanelTimer, 60, nullptr);   // shown by OnHidden, or by the timer
     else ShowPanel();

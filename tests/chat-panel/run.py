@@ -288,6 +288,34 @@ try:
         cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=gx[0], y=gx[1], button="left", clickCount=1); cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=gx[0], y=gx[1], button="left", clickCount=1)
         cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=gx[0], y=gx[1] + 140); time.sleep(.25)
         check(not tip()[0] and tip()[1] == "0", "gauge (B 1.5): a mouse click on the gauge does not keep the bubble (focus by the pointer is not keyboard focus)", str(tip()))
+        # B 1.6 — Ctrl+Entrée keeps an annotation (no agent), Entrée asks the agent; the send button says both
+        load("garder-annotation")
+        key("Enter", mods=2)   # Ctrl
+        time.sleep(.3)
+        kept = cdp.js("(()=>{const k=document.querySelector('.kept');return {sent:window.__posted.filter(m=>m.type==='annotate').map(m=>({text:m.text,els:m.elements})),"
+                      "send:window.__posted.filter(m=>m.type==='send').length,line:k?k.innerText:'',chip:k?k.querySelectorAll('.chip').length:0,empty:!document.querySelector('.cin .chip')&&!document.querySelector('.cin').textContent.trim()}})()")
+        check(kept["sent"] == [{"text": "h1.title Mets ce titre en gras", "els": ["el-title"]}] and kept["send"] == 0, "keep (B 1.6): Ctrl+Entrée sends `annotate` with the words and the chip, nothing to the agent", json.dumps(kept["sent"], ensure_ascii=False))
+        check("Mets ce titre en gras" in kept["line"] and "Gardé en annotation" in kept["line"] and kept["chip"] == 1 and kept["empty"],
+              "keep (B 1.6): a discreet « Gardé en annotation » line in the thread (words, element), the composer is empty", kept["line"].replace("\n", " | ")[:160])
+        load("6.7a-vide")
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Plus grand"); key("Enter", mods=2); time.sleep(.2)
+        h1 = cdp.js("[window.__posted.filter(m=>m.type==='annotate').length, (document.querySelector('.strip')||{}).textContent||'']")
+        load("garder-sans-texte")
+        cdp.js("document.getElementById('composer-input').focus()"); key("Enter", mods=2); time.sleep(.2)
+        h2 = cdp.js("[window.__posted.filter(m=>m.type==='annotate').length, (document.querySelector('.strip')||{}).textContent||'']")
+        check(h1[0] == 0 and "Cliquez un élément" in h1[1] and h2[0] == 0 and "Écrivez ce qu'il faut changer" in h2[1], "keep (B 1.6): no element, or no words: nothing is kept, a short hint says what is missing", f"{h1} / {h2}")
+        load("envoyer-infobulle")
+        sx = cdp.js("(()=>{const r=document.querySelector('.send').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()")
+        cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=sx[0], y=sx[1]); time.sleep(.5)
+        tip = cdp.js("(()=>{const t=document.getElementById('send-tip');const b=document.querySelector('.send');return {on:getComputedStyle(t).opacity,text:t.innerText,keys:b.getAttribute('aria-keyshortcuts'),desc:b.getAttribute('aria-describedby'),title:b.title,"
+                     "above:t.getBoundingClientRect().bottom<=b.getBoundingClientRect().top,inside:t.getBoundingClientRect().left>=0}})()")
+        cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=sx[0] - 200, y=sx[1] - 200); time.sleep(.3)
+        off = cdp.js("getComputedStyle(document.getElementById('send-tip')).opacity")
+        check(tip["on"] == "1" and "Demander à l'agent" in tip["text"] and "Garder en annotation" in tip["text"] and "Ctrl" in tip["text"] and tip["above"] and tip["inside"] and off == "0"
+              and tip["keys"] == "Enter Control+Enter" and tip["desc"] == "send-tip" and not tip["title"],
+              "send button (B 1.6): its bubble says « Demander à l'agent ↵ » and « Garder en annotation Ctrl ↵ », above it, inside the panel, gone at the leave", json.dumps(tip, ensure_ascii=False)[:240])
+        load("garde-en-annotation")
+        check(cdp.js("!!document.querySelector('.kept') && document.querySelector('.kept').innerText.includes('Gardé en annotation')"), "keep (B 1.6): the line comes back when the conversation is reopened (thread.reset)")
         load("en-tete-jauge-pleine")
         check(cdp.js("document.querySelector('.gauge').classList.contains('high') && getComputedStyle(document.querySelector('.gauge .arc')).stroke==='rgb(230, 172, 61)'"), "header: above 80 % the ring turns amber (86 %)")
         load("6.7a-vide")

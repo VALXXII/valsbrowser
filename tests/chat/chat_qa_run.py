@@ -442,82 +442,51 @@ def run_main():
         step('rest again: 0 agent process, 0 chat WebView', not left and not C.panel_exists(), f'{len(left)} agent process(es)')
         report['measures']['restAfterClose'] = {'agentProcesses': len(left), 'chatWebViews': 1 if C.panel_exists() else 0}
 
-        # ---- from the note panel of an annotation: « Demander à l'agent »
+        # ---- V1.3 (the user's decision): with the chat closed, a click on an element OPENS the chat — the element is a
+        #      chip, the caret is in the composer; no note panel on a local site
         m12 = mark()
-        C.click_page('.title')
-        note = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
-        step('a click outside the chat opens the note panel as before', bool(note))
-        if note:
-            edit = Q.find_child(note[0][0], 'Edit')
-            Q.post_text('Mets ce titre en gras', edit)
-            time.sleep(0.4)
-            capture('2.1-note-demander')
-            # smooth corners at the root: the note is a per-pixel-alpha layer (like the band, the cards, the history, the
-            # modal); neither it nor the field's window has a window region
-            import ctypes
-            layer = [w for w in Q.windows() if w[1] == 'BrowserAnnotationLayer' and w[2] == 'Nouvelle annotation']
-            probe = ctypes.windll.gdi32.CreateRectRgn(0, 0, 0, 0)
-            no_region = bool(layer) and C.user32.GetWindowRgn(layer[0][0], probe) == 0 and C.user32.GetWindowRgn(note[0][0], probe) == 0
-            ctypes.windll.gdi32.DeleteObject(probe)
-            layered = bool(layer) and bool(C.user32.GetWindowLongW(layer[0][0], -20) & 0x80000)
-            step('note panel: per-pixel-alpha layer, no window region (smooth corners)', no_region and layered, f'layer {layer[0][3] if layer else None}')
-            if layer:
-                pr = layer[0][3]; fr = note[0][3]
-                step('the note field\'s window sits inside the panel, away from its corners', pr[0] < fr[0] and pr[1] < fr[1] and fr[2] < pr[2] and fr[3] < pr[3], f'panel {pr} field {fr}')
-                scale = C.user32.GetDpiForWindow(layer[0][0]) / 96.0
-                corner = corner_zoom(f'2.1-note-coin-ecran-{round(scale * 100)}', pr)
-                corner['scalePercent'] = round(scale * 100)
-                report['measures']['noteCornerOnScreen'] = corner
-                if 'unavailable' in corner:
-                    print('screen not readable (locked session?): no on-screen corner capture')
-                elif abs(corner['behind'] - corner['panel']) > 80:   # a page clearly lighter (or darker) than the panel behind the corner
-                    step('on the real screen the corner is blended with the page behind it', corner['blendedPixels'] >= 3, corner)
-            ids = C.uia('-List')
-            step('note buttons « Ajouter » and « Demander à l\'agent » exposed', 'AnnotationNoteAskAgent' in ids and 'AnnotationAdd' in ids)
-            Q.post_key(0x0D, edit)   # Entrée in the field = the main action: « Demander à l'agent »
-            step('Entrée in the note asks the agent (the main action)', logged(r"CHAT « Demander à l'agent » from the note panel \(with its text\)", m12, 8))
-            second = logged(r'CHAT panel ready (\d+) ms after the request', m12, 15)
-            step('the chat opens from the note (new WebView)', second is not None)
-            if second:
-                report['measures']['secondOpenPanelReadyMs'] = int(second.group(1))
-            step('the selection and its text start a turn', logged(r'CHAT turn t\d+ started', m12, 20) and logged(r'CHAT permission asked: edit', m12, 20))
-            C.wait_for(lambda: 'Refuser' in C.panel_text(), 5)
-            C.click_panel(text='Refuser')
-            step('turn refused ends cleanly', logged(r'CHAT turn t\d+ ended: end_turn', m12, 15))
-            time.sleep(0.4)
+        C.click_page('.field-label')   # (not h1.title: « title » in a message picks the fake agent's rename scenario)
+        second = logged(r'CHAT panel ready (\d+) ms after the request', m12, 15)
+        step('V1.3: chat closed, a click on an element opens the chat (new WebView), no note panel', second is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
+        if second:
+            report['measures']['secondOpenPanelReadyMs'] = int(second.group(1))
+        step('…the element becomes a chip of the composer', logged(r'CHAT element aimed: \S*field-label', m12, 10) is not None and bool(C.wait_for(lambda: C.panel("document.querySelectorAll('.cin .chip').length"), 6)))
+        time.sleep(0.4)
+        focus_composer(); C.type_panel(' Mets ce libellé en gras'); time.sleep(0.2); C.enter_panel()
+        step('the element and its text start a turn', logged(r'CHAT turn t\d+ started', m12, 20) and logged(r'CHAT permission asked: edit', m12, 20))
+        C.wait_for(lambda: 'Refuser' in C.panel_text(), 5)
+        C.click_panel(text='Refuser')
+        step('turn refused ends cleanly', logged(r'CHAT turn t\d+ ended: end_turn', m12, 15))
+        time.sleep(0.4)
 
         # ---- Échap closes, Ctrl+Maj+D toggles
         m13 = mark()
         focus_composer(); C.key_panel('Escape', 'Escape', 27)
         step('Échap in the panel closes it', logged(r'CHAT panel closed', m13, 5))
         time.sleep(0.5)
-        # ---- the note's secondary action: « Ajouter » still writes a plain annotation (no chat)
-        m13b = mark()
-        C.click_page('.hint')
-        note2 = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
-        if step('the note panel opens again (chat closed)', bool(note2)):
-            Q.post_text('Texte trop discret', Q.find_child(note2[0][0], 'Edit'))
-            time.sleep(0.4)
-            step('« Ajouter » invoked', C.invoke('AnnotationAdd'))
-            step('…the annotation is written, the chat stays closed', logged(r'ANNOTATE written', m13b, 8) and 'CHAT panel opened' not in C.log_text()[m13b:])
-            time.sleep(0.8)
-        # two more pending annotations for « Traiter les annotations » (the fake agent gives back a note that says
-        # « impossible » and does not touch one that says « oublie »)
-        for sel, text in (('.btn-primary', 'Déplace ce bouton dans l\'en-tête (impossible sans le gabarit)'), ('#react-button', 'On oublie celle-ci pour le moment')):
+        # ---- Ctrl+Entrée in the composer: an annotation without the agent (the note panel's « Ajouter » before V1.3).
+        #      Two of them for « Traiter les annotations » (the fake agent gives back a note that says « impossible » and
+        #      does not touch one that says « oublie »)
+        kept = []
+        for sel, text in (('.hint', 'Texte trop discret'), ('.btn-primary', 'Déplace ce bouton dans l\'en-tête (impossible sans le gabarit)'), ('#react-button', 'On oublie celle-ci pour le moment')):
             mN = mark()
             C.click_page(sel)
-            nw = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
-            if nw:
-                Q.post_text(text, Q.find_child(nw[0][0], 'Edit')); time.sleep(0.3)
-                C.invoke('AnnotationAdd'); logged(r'ANNOTATE written', mN, 8); time.sleep(0.8)
-        m14 = mark(); C.shortcut('D')
-        step('Ctrl+Maj+D opens it again', logged(r'CHAT panel opened', m14, 5))
-        time.sleep(0.8)
+            C.wait_for(lambda: C.panel_exists() and C.panel("document.querySelectorAll('.cin .chip').length"), 15)
+            time.sleep(0.3)
+            focus_composer(); C.type_panel(' ' + text); time.sleep(0.2)
+            C.key_panel('Enter', 'Enter', 13, modifiers=2)   # Ctrl+Entrée
+            kept.append(logged(r'CHAT annotation kept \(Ctrl\+Entrée\) ann_\w+: write ok', mN, 10) is not None)
+            time.sleep(0.4)
+        step('Ctrl+Entrée keeps each element and its words as a plain annotation (written, no turn)', all(kept) and 'CHAT turn t' not in C.log_text()[m13:], str(kept))
+        step('…the thread says it discreetly (« Gardé en annotation »)', 'Gardé en annotation' in C.panel_text())
+        capture('6.18-garde-en-annotation')
+        m14 = mark()
+        time.sleep(0.4)
 
         # ---- « Traiter les annotations » (contract B 1.4, Paper 186K-0): the pending annotations of the site are posed
         #      in the composer, the ticked ones leave as one message, and that message is a card that follows each one
         try:
-            C.wait_for(lambda: C.panel_exists() and logged(r'CHAT session start: ready', m14, 1) is not None, 20)
+            C.wait_for(lambda: C.panel_exists() and logged(r'CHAT session start: ready', m12, 1) is not None, 20)
             mT = mark()
             C.post({'type': 'annotations.request'})                         # what the « /annotations » command of the panel sends
             posed = logged(r'CHAT batch (b_\w+) posed \(([^)]*)\): (\d+) annotation\(s\):((?: ann_\w+)+)', mT, 10)

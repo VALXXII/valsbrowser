@@ -37,10 +37,10 @@ habituels ne sont pas utilisés. Fermez-le (ou Ctrl+C dans le terminal) : tout s
 
 Autres choses à essayer :
 
-- Dans le mode Annotation, panneau fermé : cliquez un élément, écrivez une note, puis **« Demander à
-  l'agent »** (le bouton bleu, à droite d'« Ajouter »), ou simplement `Entrée`. Le chat s'ouvre avec l'élément
-  et votre texte. « Ajouter » (ou `Ctrl+Entrée`) enregistre une simple annotation, sans ouvrir le chat.
-- **Traiter les annotations** : annotez deux ou trois éléments avec « Ajouter », puis dans le chat tapez
+- Dans le mode Annotation, cliquez un élément de la page : le chat s'ouvre (s'il était fermé), l'élément est dans
+  la saisie. `Entrée` demande à l'agent ; **`Ctrl+Entrée` garde une simple annotation**, sans rien envoyer à l'agent
+  (une ligne « Gardé en annotation » le confirme). Survolez le bouton d'envoi : il rappelle les deux.
+- **Traiter les annotations** : gardez deux ou trois éléments en annotation (`Ctrl+Entrée`), puis dans le chat tapez
   `/annotations` (ou choisissez la suggestion « Traiter les annotations en attente » d'un chat vide). Les
   annotations arrivent cochées dans la saisie ; décochez celles à garder pour plus tard, envoyez. Le message
   devient une carte qui suit chaque annotation : en attente, « Claude s'en occupe », terminée avec son résumé.

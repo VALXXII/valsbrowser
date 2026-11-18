@@ -5,8 +5,8 @@
 Le chat est un panneau à droite de la page, dans le mode Annotation. On vise un élément, on écrit, l'agent
 (Claude Code ou Codex, ceux de l'utilisateur) modifie le code du site, la page se recharge, et on peut tout annuler.
 
-- **Ouvrir** : `Ctrl+Maj+D` (lance aussi le mode Annotation s'il est éteint), ou le bouton « Demander à
-  l'agent » du bandeau bleu, ou « Demander à l'agent » dans le panneau de note d'une sélection.
+- **Ouvrir** : `Ctrl+Maj+D` (lance aussi le mode Annotation s'il est éteint), le bouton « Demander à
+  l'agent » du bandeau bleu, ou (V1.3) **un clic sur un élément de la page** en mode Annotation (site local).
 - **Fermer** : la croix du panneau, `Échap` dans le panneau, `Ctrl+Maj+D`, ou quitter le mode Annotation.
 - **Sites locaux seulement** (localhost, 127.x.x.x, [::1], *.localhost). Ailleurs le panneau s'ouvre désactivé
   et dit pourquoi.
@@ -85,7 +85,11 @@ badge « Par défaut » (sans alias : le modèle que l'agent avait choisi à sa 
 
 ## Viser depuis le chat
 
-- **V1.2** : panneau ouvert, **chaque** clic sur un élément (mode Annotation) va au chat : une puce dans la saisie, et le
+- **V1.3** (décision de l'utilisateur après test, remplace V1.2) : sur un site local, **chaque** clic sur un élément va au
+  chat, qui s'ouvre s'il est fermé ; l'élément devient une puce, le curseur de texte va dans la saisie. La boîte de note
+  ne s'affiche plus sur un site local. Annotation sans agent : `Ctrl+Entrée` dans la saisie (voir plus bas). Site non
+  local, fenêtre privée, ou 10 éléments déjà dans la saisie : la boîte de note, comme avant.
+- (V1.2) panneau ouvert, **chaque** clic sur un élément (mode Annotation) va au chat : une puce dans la saisie, et le
   curseur de texte va dans la saisie ; plus de panneau de note. Aussi pendant un tour (la puce attend le message suivant).
   Panneau fermé : le panneau de note, comme avant (annotations sans agent, lues par le MCP). Au-delà de 10 éléments dans
   la saisie, le clic ouvre le panneau de note.
@@ -359,3 +363,16 @@ couleur du profil avec une coche) : le cadre « fait » est celui qui a été co
 
 Parcours en vraie fenêtre (faux agent, listes du vrai adaptateur Claude : `--claude-like`) : `python tests/chat/chat_qa_v12.py` →
 `build/chat-qa/v12/` (rapport et captures).
+
+## V1.3 — un clic va toujours au chat, Ctrl+Entrée garde en annotation
+
+- **Clic sur un élément** (mode Annotation, site local) : `Chat::TakeSelection` ouvre le panneau s'il est fermé
+  (`CHAT a click on an element opens the chat`), puis la sélection suit le chemin habituel du viseur (capture, fichier:ligne,
+  puce). La puce attend que la page du panneau soit prête ; le curseur de texte va dans la saisie dès qu'elle y est.
+- **Ctrl+Entrée** dans la saisie (`annotate`, contrat B 1.6) : chaque puce devient une annotation **ouverte** du magasin,
+  avec les mots de l'utilisateur (sans le libellé des puces) pour note et la capture de l'élément. Rien n'est envoyé à
+  l'agent du chat, rien n'est pris en charge : Claude Desktop, Codex… la lisent par le MCP, et elle compte dans « Traiter
+  les annotations ». Le fil reçoit `annotation.kept` (gardé avec la conversation) ; une écriture refusée est dite dans la
+  saisie (« Annotation non enregistrée »). Journal : `CHAT annotation kept (Ctrl+Entrée) ann_…: write ok`.
+- **Bouton envoyer** : son infobulle dit « Demander à l'agent ↵ » et « Garder en annotation Ctrl ↵ ».
+- La boîte de note reste pour les sites non locaux (aucun chat possible) : « Ajouter » seul, `Entrée`.

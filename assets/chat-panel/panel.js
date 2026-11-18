@@ -115,11 +115,23 @@
   // always get a leave when the pointer goes straight out of the panel (page, band, another window): the panel also
   // listens to the document's own leave and the window's blur, and tells the host a bubble is up (`hover`); the host
   // then watches the real cursor and answers `pointer.leave` once it is outside the panel.
-  let tipTimer = 0, tipHost = false;
-  function tipShow() { clearTimeout(tipTimer); tipTimer = setTimeout(() => { tipTimer = 0; gauge.classList.add("tip-on"); }, isReduced() ? 0 : 300); if (!tipHost) { tipHost = true; post("hover", { active: true }); } }
-  function tipHide() { clearTimeout(tipTimer); tipTimer = 0; gauge.classList.remove("tip-on"); if (tipHost) { tipHost = false; post("hover", { active: false }); } }
-  gauge.addEventListener("pointerenter", (e) => { if (e.pointerType !== "touch") tipShow(); });
-  gauge.addEventListener("pointerleave", tipHide);
+  // Several anchors share it (the gauge, the send button): the first bubble waits 300 ms; while one is up, the next one
+  // shows at once (emil-design-eng: tooltips skip the delay once one is open).
+  let tipTimer = 0, tipHost = false, tipOn = null, tipAt = 0;
+  function tipShow(el) {
+    clearTimeout(tipTimer);
+    const instant = !!tipOn || Date.now() - tipAt < 400;
+    if (tipOn && tipOn !== el) tipOn.classList.remove("tip-on");
+    tipTimer = setTimeout(() => { tipTimer = 0; el.classList.add("tip-on"); tipOn = el; }, instant || isReduced() ? 0 : 300);
+    if (!tipHost) { tipHost = true; post("hover", { active: true }); }
+  }
+  function tipHide() { clearTimeout(tipTimer); tipTimer = 0; if (tipOn) { tipOn.classList.remove("tip-on"); tipAt = Date.now(); } tipOn = null; if (tipHost) { tipHost = false; post("hover", { active: false }); } }
+  function withTip(el) {
+    el.addEventListener("pointerenter", (e) => { if (e.pointerType !== "touch") tipShow(el); });
+    el.addEventListener("pointerleave", tipHide);
+    el.addEventListener("pointerdown", tipHide);   // pressing it: the bubble goes, the action speaks
+  }
+  withTip(gauge);
   document.documentElement.addEventListener("pointerleave", tipHide);
   document.addEventListener("mouseout", (e) => { if (!e.relatedTarget) tipHide(); });
   window.addEventListener("blur", tipHide);
@@ -197,14 +209,20 @@
   // The whole « modèle · effort » chip is one trigger for one menu (efforts live in its « Effort › » sub-view).
   const modelBtn = h("button", { class: "m", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-keyshortcuts": "Control+/",
                                  onclick: (e) => openModelMenu(e.currentTarget) }, h("span", { class: "mw" }, modelLogo, modelName), effortEl, icon("chevron", "mcv"));
-  const sendBtn = h("button", { class: "send", type: "button", onclick: () => onSendButton() });
+  const sendBtn = h("button", { class: "send", type: "button", "aria-keyshortcuts": "Enter Control+Enter", "aria-describedby": "send-tip", onclick: () => onSendButton() });
+  const sendTip = h("span", { class: "tip", id: "send-tip", role: "tooltip" },
+    h("span", { class: "tr" }, h("span", { text: "Demander à l'agent" }), h("span", { class: "kc" }, "↵")),
+    h("span", { class: "tr" }, h("span", { text: "Garder en annotation" }), h("span", { class: "kcs" }, h("span", { class: "kc" }, "Ctrl"), h("span", { class: "kc" }, "↵"))));
+  const sendWrap = h("span", { class: "sendw" }, sendBtn, sendTip);
+  withTip(sendWrap);
   const foot = h("div", { class: "foot" });
   const composer = h("div", { class: "composer" }, batchEl, thumbs, cin,
     h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
-      h("div", { class: "model" }, modelBtn), sendBtn));
+      h("div", { class: "model" }, modelBtn), sendWrap));
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
     h("span", { class: "k" }, h("span", { class: "kc" }, "↵"), "Envoyer"),
-    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"));
+    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"),
+    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Ctrl"), h("span", { class: "kc" }, "↵")), "Annotation"));
 
   function composerText() {
     let out = "";
@@ -233,12 +251,13 @@
     if (running && !content) {
       sendBtn.classList.add("stop"); sendBtn.appendChild(icon("stop"));
       sendBtn.setAttribute("aria-label", "Arrêter (Échap)"); sendBtn.title = "Arrêter (Échap)"; sendBtn.removeAttribute("aria-disabled");
+      sendWrap.classList.add("no-tip");
     } else {
       sendBtn.appendChild(icon("arrowUp"));
       const ok = content && canSend();
       if (ok) sendBtn.classList.add("ready");
       sendBtn.setAttribute("aria-label", running ? "Ajouter à la file" : "Envoyer");
-      sendBtn.title = running ? "Ajouter à la file (Entrée)" : "Envoyer (Entrée)";
+      sendBtn.removeAttribute("title"); sendWrap.classList.remove("no-tip");   // the bubble says it (no second, native tooltip)
       if (ok) sendBtn.removeAttribute("aria-disabled"); else sendBtn.setAttribute("aria-disabled", "true");
     }
     const lines = composerText().split("\n").length;
@@ -258,6 +277,26 @@
     S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu();
     if (S.batch) { S.batch = null; renderBatch(); }
     updateSend();
+  }
+  // « Garder en annotation » (B 1.6): the chips and the words become annotations of the store, read by the MCP agents;
+  // nothing goes to the chat's agent. Needs an element and a few words (the note of an annotation); images stay.
+  let hintTimer = 0;
+  function hint(text) {
+    clearTimeout(hintTimer);
+    S.strips.set("keep-hint", { id: "keep-hint", tone: "neutral", text, local: true }); renderDock(); say(text);
+    hintTimer = setTimeout(() => { S.strips.delete("keep-hint"); renderDock(); }, 4000);
+  }
+  function keep() {
+    if (S.st.disabledReason || S.batch) return;
+    const els = chipsInComposer().filter((id) => S.cEls.has(id));
+    const text = composerText().replace(/\s+$/, "");
+    let words = text; for (const id of els) words = words.split(S.cEls.get(id).label).join("");
+    if (!els.length) { hint("Cliquez un élément de la page pour le garder en annotation."); return; }
+    if (!words.trim()) { hint("Écrivez ce qu'il faut changer, puis Ctrl+Entrée."); return; }
+    clearTimeout(hintTimer); if (S.strips.delete("keep-hint")) renderDock();
+    post("annotate", { text, elements: els });
+    for (const id of els) S.cEls.delete(id);
+    clear(cin); closeMenu(); updateSend();
   }
   function placeholder() {
     let p = "Que faut-il changer ?";
@@ -327,6 +366,7 @@
   cin.addEventListener("drop", (e) => e.preventDefault());
   cin.addEventListener("keydown", (e) => {
     if (S.menu && S.menu.combo && comboKey(e)) return;
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.isComposing) { e.preventDefault(); keep(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); return; }
     if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); document.execCommand("insertText", false, "\n"); return; }
     if (e.key === "Tab" && e.shiftKey && (S.st.modes || []).length > 1) {
@@ -862,6 +902,19 @@
     S.lastUser = m.id;
     add(node);
     if (!S.replay) { scrollToEnd(false); }
+  }
+  function onKept(m) {
+    const els = (m.elements || []).filter(validElement);
+    const n = Array.isArray(m.annotations) ? m.annotations.length : els.length;
+    const words = (() => { let w = m.text; for (const e of els) w = w.split(e.label).join(""); return w.replace(/\s+/g, " ").trim(); })();
+    const where = h("span", { class: "kept-els" });
+    for (const e of els) where.appendChild(chipNode(Object.assign({ picked: true }, e), false));
+    const node = h("div", { class: "kept", role: "note", "data-id": m.id, "aria-label": "Gardé en annotation : " + words },
+      h("div", { class: "kept-note", text: words }),
+      h("div", { class: "kept-meta" }, icon("check", "ck"), h("span", { text: n > 1 ? plural(n, "annotation gardée", "annotations gardées") : "Gardé en annotation" }), where),
+      h("div", { class: "kept-sub", text: m.partial ? "Une partie n'a pas pu être enregistrée." : "Pour vos agents connectés · rien n'est envoyé au chat" }));
+    add(node);
+    if (!S.replay) { scrollToEnd(false); say("Gardé en annotation."); }
   }
   // ---------------------------------------------------------------- « Traiter les annotations » (B 1.4)
   function validAnnItem(it) {
@@ -1747,7 +1800,7 @@
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
     usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
     "annotations.batch": (m) => ID.test(m.batchId) && Array.isArray(m.items), "annotations.status": (m) => ID.test(m.batchId) && ID.test(m.id),
-    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true,
+    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true, "annotation.kept": (m) => ID.test(m.id) && isStr(m.text) && Array.isArray(m.elements),
   };
 
   // ---------------------------------------------------------------- dispatch
@@ -1808,6 +1861,7 @@
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,
     usage(m) { S.usage = m.size > 0 ? { used: Math.min(m.used, m.size), size: m.size } : null; renderGauge(); },
     "pointer.leave"() { tipHide(); },   // B 1.5: the host saw the cursor leave the panel
+    "annotation.kept": onKept,          // B 1.6: Ctrl+Entrée wrote the annotation(s)
   };
   function receive(m) {
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { warn("bad json"); return; } }

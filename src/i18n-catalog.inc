@@ -1587,6 +1587,8 @@ I18N(chat_err_generic, L"L'agent a renvoyé une erreur. Votre demande est gardé
 I18N(chat_err_folder_title, L"Dossier inutilisable", L"Folder cannot be used")
 I18N(chat_err_folder, L"Ce dossier ne peut pas servir de dossier de projet. Choisissez le dossier qui contient le code du site.", L"This folder cannot be a project folder. Pick the folder that holds the site's code.")
 I18N(chat_err_image_title, L"Image refusée", L"Image refused")
+I18N(chat_err_keep_title, L"Annotation non enregistrée", L"Annotation not saved")
+I18N(chat_err_keep, L"Impossible d'enregistrer l'annotation ({0}). Visez l'élément à nouveau, puis réessayez.", L"Couldn’t save the annotation ({0}). Aim at the element again, then try again.")
 I18N(chat_err_image, L"Cette image ne peut pas être jointe (12 Mo au plus ; PNG, JPEG, WebP ou GIF).", L"This image cannot be attached (12 MB at most; PNG, JPEG, WebP or GIF).")
 I18N(chat_err_undo_title, L"L'annulation n'a pas abouti", L"Undo did not finish")
 I18N(chat_err_undo, L"Les fichiers n'ont pas pu être remis comme avant.", L"The files could not be put back as they were.")
