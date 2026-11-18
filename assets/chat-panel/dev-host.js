@@ -76,9 +76,9 @@
     const items = [{ type: "turn.start", turnId: id, model: o.model, effort: "Élevé", agentId: "claude-code", at: today(15, 34) }];
     if (o.thought) items.push({ type: "thought", turnId: id, id: id + "-th", text: "Je regarde la règle CSS du bouton et le point de rupture mobile.", done: true, durationMs: o.thought });
     items.push({ type: "message.agentChunk", turnId: id, messageId: id + "-m1", text: o.text });
-    items.push({ type: "toolCall", turnId: id, id: id + "-r1", title: "A lu Checkout.tsx", kind: "read", status: "completed" });
-    items.push({ type: "toolCall", turnId: id, id: id + "-r2", title: "A lu checkout.css", kind: "read", status: "completed" });
-    if (!o.noEdit) items.push({ type: "toolCall", turnId: id, id: id + "-e1", title: "A modifié checkout.css", kind: "edit", status: "completed" });
+    items.push({ type: "toolCall", turnId: id, id: id + "-r1", title: "A lu Checkout.tsx", kind: "read", status: "completed", locations: [{ path: "src/pages/Checkout.tsx" }] });
+    items.push({ type: "toolCall", turnId: id, id: id + "-r2", title: "A lu checkout.css", kind: "read", status: "completed", locations: [{ path: "src/styles/checkout.css" }] });
+    if (!o.noEdit) items.push({ type: "toolCall", turnId: id, id: id + "-e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] });
     if (o.end) items.push({ type: "message.agentChunk", turnId: id, messageId: id + "-m2", text: o.end });
     items.push({ type: "turn.end", turnId: id, stopReason: "end_turn", durationMs: o.ms, changes: o.noEdit ? [] : o.changes || CHANGES, checkpointId: "cp-" + id, undoable: true });
     return items;
@@ -155,6 +155,20 @@
       click(".card4 .toggle-chev"), click(".card4 .more"), wait(80), click(".changes .unfold"), wait(30)],
     "6.6-voir-changements-fichier": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1", { changes: CHANGES3 })) },
       click(".card4 .toggle-chev"), () => { const b = Array.from(document.querySelectorAll(".card4 .file")).find((x) => x.textContent.includes("pay-button")); b && b.click(); }, wait(120)],
+    "etapes-annotations": [st(conv("Annotations en attente")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Traite les annotations en attente sur ce site.", null, []),
+        { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" },
+        { type: "toolCall", turnId: "t1", id: "a1", title: "A lu 2 annotations", kind: "read", status: "completed", summary: { verb: "a lu", object: "2 annotations", count: 2, one: "annotation", many: "annotations" } },
+        { type: "toolCall", turnId: "t1", id: "a2", title: "A lu landing.css", kind: "read", status: "completed", locations: [{ path: "src/styles/landing.css" }] },
+        { type: "toolCall", turnId: "t1", id: "a3", title: "A marqué l'annotation « Bouton de paiement » comme terminée", kind: "other", status: "completed",
+          summary: { verb: "a marqué", object: "l'annotation « Bouton de paiement »", after: "comme terminée", afterMany: "comme terminées" } },
+        { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "C'est fait : le bouton est aligné et l'annotation est terminée." },
+        { type: "toolCall", turnId: "t1", id: "b1", title: "A lu 1 annotation", kind: "read", status: "completed", summary: { verb: "a lu", object: "1 annotation", count: 1, one: "annotation", many: "annotations" } },
+        { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Il en reste une, je la garde pour le prochain tour." },
+        { type: "toolCall", turnId: "t1", id: "c1", title: "A marqué l'annotation « Titre » comme terminée", kind: "other", status: "completed",
+          summary: { verb: "a marqué", object: "l'annotation « Titre »", after: "comme terminée", afterMany: "comme terminées" } },
+        { type: "toolCall", turnId: "t1", id: "c2", title: "A marqué l'annotation « Badge » comme terminée", kind: "other", status: "completed",
+          summary: { verb: "a marqué", object: "l'annotation « Badge »", after: "comme terminée", afterMany: "comme terminées" } },
+        { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],
     "6.7a-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.7b-historique": [st(conv("Titre de la page", { running: true })), { type: "thread.reset", conversationId: "c1", items: [] },
       { type: "history", items: [

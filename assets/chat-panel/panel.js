@@ -901,30 +901,68 @@
     queueRender(seg);
   }
 
-  const KIND_ORDER = ["read", "search", "edit", "delete", "move", "execute", "fetch", "think", "other"];
+  // Folded summary of a group of steps (B 1.3). Each step contributes, in order of preference:
+  //  1. the host's `summary` {verb, object, after?, afterMany?, count?, one?, many?} — never guessed;
+  //  2. the real paths it touched (read / edit / delete / move with `locations`): only those are called « fichier » ;
+  //  3. its own title. A group of one step shows that step's title as is.
+  const FILE_VERB = { read: "a lu", edit: "a modifié", delete: "a supprimé", move: "a déplacé" };
+  const COUNTED = { search: ["a cherché", "fois", "fois"], execute: ["a lancé", "commande", "commandes"], fetch: ["a consulté", "page", "pages"] };
+  function validSummary(s) {
+    if (!s || typeof s !== "object" || !isStr(s.verb, 80) || !isStr(s.object, 300) || !s.verb.trim() || !s.object.trim()) return null;
+    const out = { verb: s.verb.trim(), object: s.object.trim(), after: isStr(s.after, 120) ? s.after.trim() : "", afterMany: isStr(s.afterMany, 120) ? s.afterMany.trim() : "" };
+    if (Number.isInteger(s.count) && s.count > 0 && s.count < 1e6 && isStr(s.one, 40) && isStr(s.many, 40) && s.one && s.many) Object.assign(out, { count: s.count, one: s.one, many: s.many });
+    return out;
+  }
+  function stepPart(x) {
+    if (x.summary) return x.summary;
+    const files = (x.locations || []).map((l) => l && l.path).filter((p) => typeof p === "string" && p);
+    if (FILE_VERB[x.kind] && files.length) return { verb: FILE_VERB[x.kind], after: "", afterMany: "", files };
+    if (COUNTED[x.kind]) { const c = COUNTED[x.kind]; return { verb: c[0], after: "", afterMany: "", count: 1, one: c[1], many: c[2], object: "" }; }
+    return { title: humanizeTools(x.title) || "" };
+  }
+  const baseName = (p) => p.split(/[\\/]/).pop();
+  const listFr = (xs) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " et " + xs[xs.length - 1]);
+  const lowerFirst = (t) => (t && t.length > 1 && t[1] === t[1].toLowerCase() ? t[0].toLowerCase() + t.slice(1) : t);
   function stepsSummary(tools) {
-    const by = {};
-    for (const x of tools) (by[x.kind] = by[x.kind] || []).push(x);
-    const parts = [];
-    let filesSaid = false;
-    for (const k of KIND_ORDER) {
-      const n = (by[k] || []).length;
-      if (!n) continue;
-      const firstP = !parts.length;
-      let s;
-      switch (k) {
-        case "read": s = (firstP ? "A lu " : "a lu ") + plural(n, "fichier", "fichiers"); filesSaid = true; break;
-        case "edit": s = filesSaid ? "en a modifié " + n : (firstP ? "A modifié " : "a modifié ") + plural(n, "fichier", "fichiers"); filesSaid = true; break;
-        case "delete": s = filesSaid ? "en a supprimé " + n : (firstP ? "A supprimé " : "a supprimé ") + plural(n, "fichier", "fichiers"); break;
-        case "move": s = (firstP ? "A déplacé " : "a déplacé ") + plural(n, "fichier", "fichiers"); break;
-        case "search": s = (firstP ? "A cherché " : "a cherché ") + n + " fois"; break;
-        case "execute": s = (firstP ? "A lancé " : "a lancé ") + plural(n, "commande", "commandes"); break;
-        case "fetch": s = (firstP ? "A consulté " : "a consulté ") + plural(n, "page", "pages"); break;
-        default: s = (firstP ? "" : "et ") + plural(n, "étape", "étapes"); break;
-      }
-      parts.push(s);
+    if (tools.length === 1) {
+      const p = stepPart(tools[0]);
+      if (tools[0].title) return humanizeTools(tools[0].title);
+      return p.title != null ? p.title || "1 étape" : summaryText([p]);
     }
-    return parts.join(", ");
+    return summaryText(tools.map(stepPart));
+  }
+  function summaryText(parts) {
+    const groups = [], byKey = new Map(), titles = [];
+    for (const p of parts) {
+      if (p.title !== undefined) { titles.push(p.title); continue; }
+      const key = p.verb + "|" + p.after;
+      let g = byKey.get(key);
+      if (!g) { g = { verb: p.verb, after: p.after, afterMany: p.afterMany, files: [], counted: new Map(), objects: [] }; byKey.set(key, g); groups.push(g); }
+      if (p.files) { for (const f of p.files) if (!g.files.includes(f)) g.files.push(f); }
+      else if (p.count) { const c = g.counted.get(p.many) || { n: 0, one: p.one, many: p.many }; c.n += p.count; g.counted.set(p.many, c); }
+      else if (!g.objects.includes(p.object)) g.objects.push(p.object);
+      if (p.afterMany) g.afterMany = p.afterMany;
+    }
+    const clauses = [];
+    let prevFilesOnly = false;
+    for (const g of groups) {
+      const filesOnly = g.files.length && !g.counted.size && !g.objects.length;
+      if (filesOnly) {
+        clauses.push(prevFilesOnly && /^a /.test(g.verb) ? "en " + g.verb + " " + g.files.length : g.verb + " " + plural(g.files.length, "fichier", "fichiers"));
+      } else {
+        const items = Array.from(g.counted.values()).map((c) => plural(c.n, c.one, c.many)).concat(g.objects,
+          g.files.length > 2 ? [plural(g.files.length, "fichier", "fichiers")] : g.files.map(baseName));
+        const many = Array.from(g.counted.values()).reduce((a, c) => a + c.n, 0) + g.objects.length + g.files.length > 1;
+        const after = many && g.afterMany ? g.afterMany : g.after;
+        clauses.push(g.verb + " " + listFr(items) + (after ? " " + after : ""));
+      }
+      prevFilesOnly = !!filesOnly;
+    }
+    const named = titles.filter(Boolean);
+    if (titles.length > 2 || named.length < titles.length) { if (titles.length) clauses.push(plural(titles.length, clauses.length ? "autre étape" : "étape", clauses.length ? "autres étapes" : "étapes")); }
+    else clauses.push(...named.map((t, i) => (clauses.length || i ? lowerFirst(t) : t)));
+    const text = clauses.join(", ").replace(/« /g, "« ").replace(/ »/g, " »");   // guillemets never orphaned at a line end
+    return text ? text[0].toUpperCase() + text.slice(1) : plural(parts.length, "étape", "étapes");
   }
   function stepLine(x) {
     const run = x.status === "in_progress" || x.status === "pending";
@@ -956,7 +994,7 @@
     let seg = t.segs[t.segs.length - 1];
     if (!seg || seg.kind !== "steps") seg = stepsSeg(t);
     else noteNew(1);
-    const x = { id: m.id, title: m.title, kind: m.kind || "other", status: m.status || "pending", locations: m.locations || [], diff: m.diff };
+    const x = { id: m.id, title: m.title, kind: m.kind || "other", status: m.status || "pending", locations: m.locations || [], diff: m.diff, summary: validSummary(m.summary) };
     seg.tools.push(x);
     S.tools.set(m.id, { x, seg, t });
     queueRender(seg);
@@ -966,6 +1004,7 @@
     const r = S.tools.get(m.id);
     if (!r) return;
     for (const k of ["title", "status", "locations", "diff"]) if (m[k] != null) r.x[k] = m[k];
+    if (m.summary != null) r.x.summary = validSummary(m.summary);
     queueRender(r.seg);
     if (m.status === "failed") say("Étape en échec : " + r.x.title);
   }
@@ -1132,6 +1171,8 @@
     if (n) changesEl.scrollTop = n.offsetTop - 60;
   }
   for (const ev of ["wheel", "pointerdown", "keydown", "touchstart"]) changesEl.addEventListener(ev, () => { if (S.view) S.view.pin = null; }, { passive: true });
+  // Late layout (fonts, long lines) can grow the files above the pinned one: follow it until the user scrolls.
+  const chgRO = window.ResizeObserver ? new ResizeObserver(() => { if (S.view && S.view.pin) scrollToFile(S.view.pin); }) : null;
   const diffText = (d) => d.lines.map((l) => (l.op === "@" ? l.text : l.op + l.text)).join("\n");
   function unifiedView(d, key) {
     const v = S.view;
@@ -1179,6 +1220,7 @@
   function renderChanges(first) {
     const v = S.view;
     if (!v) return;
+    if (chgRO) chgRO.disconnect();
     clear(changesEl);
     const files = v.files;
     const added = files.reduce((a, c) => a + (c.added || 0), 0), removed = files.reduce((a, c) => a + (c.removed || 0), 0);
@@ -1208,6 +1250,7 @@
       changesEl.appendChild(h("section", { class: "card4 chg-file", id, "aria-labelledby": id + "-h" },
         h("div", { class: "card4-hd" }, h("h3", { class: "chg-h3" }, fh), d ? copyButton(() => diffText(d), "Copier le diff de " + c.path) : null), body));
     });
+    if (chgRO && v.pin) for (const c of changesEl.children) chgRO.observe(c);
     if (first) requestAnimationFrame(() => {
       if (v.path) scrollToFile(v.path);
       const b = document.getElementById("chg-back"); if (b) b.focus({ preventScroll: true });

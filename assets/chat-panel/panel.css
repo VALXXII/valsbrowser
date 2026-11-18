@@ -137,6 +137,9 @@ svg.i { display: block; flex-shrink: 0; }
 .meta { color: var(--w40); font-size: 11px; line-height: 14px; }
 .fold { display: flex; align-items: center; gap: 6px; align-self: flex-start; color: var(--w50); font-size: 13px; line-height: 18px; white-space: pre; border-radius: 4px; }
 .fold .chev { width: 11px; height: 11px; opacity: .45; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
+/* a long summary wraps instead of being cut; the chevron stays on its first line */
+.steps > .fold { white-space: normal; text-align: left; align-items: flex-start; max-width: 100%; }
+.steps > .fold .chev { margin-top: 3.5px; flex-shrink: 0; }
 .fold[aria-expanded="true"] .chev { transform: rotate(0deg); }
 @media (hover: hover) { .fold:hover { color: var(--w80); } }
 .fold .fail { color: var(--danger); }

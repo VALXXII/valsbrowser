@@ -294,6 +294,14 @@ try:
         load("6.1d-outil-hote")
         check(cdp.js("document.getElementById('perm-t').textContent") == "Claude veut lire les 3 annotations en attente sur 127.0.0.1:5173", "permission: the host's human title is kept as is")
 
+        # B 1.3 — folded step summaries never invent « fichier »
+        load("etapes-annotations")
+        folds = cdp.js("Array.from(document.querySelectorAll('.steps .fold > span:first-child')).map(s=>s.textContent.replace(/\u00a0/g,' '))")
+        check(folds == ["A lu 2 annotations et landing.css, a marqué l'annotation « Bouton de paiement » comme terminée", "A lu 1 annotation",
+                        "A marqué l'annotation « Titre » et l'annotation « Badge » comme terminées"], "steps: host summaries merge by verb, a one-step group shows its title, no false « fichier »", " | ".join(folds))
+        load("6.3-termine")
+        check(cdp.js("document.querySelector('.steps .fold > span').textContent") == "A lu 2 fichiers, en a modifié 1", "steps: real file paths still fold to « A lu 2 fichiers, en a modifié 1 » (6.3)")
+
         # « Voir les changements » (checkpoint.viewChanges → changes.diff)
         load("6.6-voir-changements")
         view = cdp.js("""(()=>{const v=document.getElementById('changes');return {open:!v.hidden,role:v.getAttribute('role'),files:v.querySelectorAll('section.chg-file').length,
@@ -313,7 +321,7 @@ try:
         key("Escape")
         check(cdp.js("document.getElementById('changes').hidden") and active() == "Voir les changements", "changes view: Échap returns to the thread, focus back on the trigger", active())
         load("6.6-voir-changements-fichier")
-        pos = cdp.js("(()=>{const v=document.getElementById('changes');const s=document.getElementById('chg-2');const a=v.getBoundingClientRect(),r=s.getBoundingClientRect();return {top:r.top-a.top,bottom:a.bottom-r.bottom,scrolled:v.scrollTop}})()")
+        pos = cdp.js("(()=>{const v=document.getElementById('changes');const s=document.getElementById('chg-2');const a=v.getBoundingClientRect(),r=s.getBoundingClientRect();return {top:r.top-a.top,bottom:a.bottom-r.bottom,scrolled:v.scrollTop,sh:v.scrollHeight,ch:v.clientHeight,hs:Array.from(v.children).map(c=>c.offsetHeight+'/'+c.scrollHeight).join(' '),pb:getComputedStyle(v).paddingBottom,empty:v.querySelectorAll('.chg-empty').length,off:s.offsetTop,par:s.offsetParent&&s.offsetParent.className}})()")
         check(pos["scrolled"] > 0 and pos["top"] >= 52 and pos["bottom"] >= 0 and "viewChanges" in "".join(posted()), "changes view: opening from a file row scrolls that file into view", json.dumps(pos))
 
         load("6.6-nouvelles-etapes")

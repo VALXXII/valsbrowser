@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1.2** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
+- Version du protocole : **1.3** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -127,8 +127,8 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `turn.start` | `turnId`, `model` (libellé), `effort?` (libellé), `agentId`, `at: Iso` | Ouvre un tour : « Travaille… 0 s » démarre, chronomètre local. Si modèle/effort diffère du tour précédent : repère « Passé à Opus 5.5 · Élevé ». |
 | `message.agentChunk` | `turnId`, `messageId`, `text` (morceau à ajouter, Markdown) | Texte en flux. Rendu par paragraphe, sans animation par mot ; annoncé aux lecteurs d'écran par phrase terminée. |
 | `thought` | `turnId`, `id`, `text` (morceau à ajouter), `done?`, `durationMs?` | Ligne repliée « A réfléchi 6 s ›» (pendant : « Réfléchit… »). Clic : détail en texte atténué. |
-| `toolCall` | `turnId`, `id`, `title`, `kind` (`read`/`edit`/`delete`/`move`/`search`/`execute`/`think`/`fetch`/`other`), `status` (`pending`/`in_progress`/`completed`/`failed`), `locations?: {path,line?}[]`, `diff?: Diff` | Étape. Les étapes consécutives terminées se regroupent en une ligne « A lu 2 fichiers, en a modifié 1 › ». L'étape en cours s'affiche seule avec un indicateur. Échec : « (échec) » en rouge dans la ligne. |
-| `toolCallUpdate` | `id`, et n'importe lequel de `title`, `status`, `locations`, `diff` | Met à jour l'étape. |
+| `toolCall` | `turnId`, `id`, `title`, `kind` (`read`/`edit`/`delete`/`move`/`search`/`execute`/`think`/`fetch`/`other`), `status` (`pending`/`in_progress`/`completed`/`failed`), `locations?: {path,line?}[]`, `diff?: Diff`, `summary?` *(1.3)* `{ verb, object, after?, afterMany?, count?, one?, many? }` | Étape. Les étapes consécutives terminées se regroupent en une ligne repliée (règles §14 : « A lu 2 annotations et landing.css, a marqué l'annotation « Bouton » comme terminée › »). L'étape en cours s'affiche seule avec un indicateur. Échec : « (échec) » en rouge dans la ligne. |
+| `toolCallUpdate` | `id`, et n'importe lequel de `title`, `status`, `locations`, `diff`, `summary` *(1.3)* | Met à jour l'étape. |
 | `plan` | `turnId`, `id`, `entries: {content, status: "pending"|"in_progress"|"completed"}[]`, `proposed?` | `proposed: true` (mode Planifier, attend le feu vert) : carte « Plan proposé · N étapes » avec **Lancer le plan** / **Modifier**. Sinon liste de suivi mise à jour en place. |
 | `permission.request` | `requestId`, `toolCallId?`, `title` (« Claude veut modifier checkout.css » : **phrase humaine**, verbe d'abord, ce qui va se passer et sur quoi ; jamais un nom technique), `kind`, `diff?: Diff`, `command?` (pour `execute`), `tool?` *(1.2)* `{ name, label?, server?, serverLabel? }` (outil appelé : `name` brut, ex. `mcp__browser-annotations-preview__browser_annotations_list` ; `label` « Lister les annotations » et `serverLabel` « Annotations du navigateur » si l'hôte les connaît), `input?` *(1.2)* (arguments bruts de l'outil, texte JSON ≤ 4 000 caractères), `options: {optionId, name, kind: "allow_once"|"allow_always"|"reject_once"|"reject_always"}[]` | **La carte remplace la saisie.** Focus sur « Autoriser ». Annonce assertive. Plusieurs demandes : file, une à la fois, « 1 sur 2 ». |
 | `permission.cancel` | `requestId` | Retire la carte (tour annulé par l'agent). |
@@ -274,6 +274,7 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 11. Historique du contrat
 
+- **1.3** (18 nov. 2026, compatible, `"v": 1`) : champ facultatif `summary` sur `toolCall` / `toolCallUpdate` pour le résumé replié des étapes (§14) ; le panneau ne dit plus « fichier » que pour de vrais chemins (`locations`).
 - **1.2** (18 nov. 2026, compatible, `"v": 1`) : message `usage {used, size}` (jauge de contexte, plus d'indicateur de chargement dans l'en-tête) ; `permission.request` gagne `tool` et `input` (détails repliables) et son `title` doit être une phrase humaine — sans titre lisible, le panneau en compose un à partir de `tool` ou du nom brut ; changement d'agent par `setAgent` depuis « Autres modèles » (le menu modèle n'envoie plus `setModel` pour un autre agent).
 - **1.1** (17 nov. 2026, compatible, `"v": 1`) : message hôte → panneau `changes.diff` en réponse à `checkpoint.viewChanges` ; `FileChange.diff` sert aussi à ouvrir la vue tout de suite ; précision sur `send.text` (libellés des puces en ligne, voulu).
 - **1** (17 nov. 2026) : première version.
@@ -293,4 +294,28 @@ Ouverte depuis la barre des changements dépliée (« Voir les changements », o
 - **Jauge de contexte** (en-tête) : anneau de 14 px à droite du titre, piste `#FFFFFF26`, remplissage blanc à 70 % puis ambre `#E6AC3D` au-delà de 80 % (le pourcentage est aussi dans l'infobulle et le nom accessible : la couleur n'est jamais seule). Focusable au clavier, infobulle au survol et au focus, annonce « Mémoire du chat presque pleine » une seule fois en passant 80 %. L'en-tête n'a plus d'indicateur de chargement : « Travaille… » reste dans le fil.
 - **Menu modèle** : toute la puce « modèle · effort » est un seul bouton (Ctrl+/) qui ouvre un seul menu : modèles de l'agent courant (4 au plus), « Autres modèles › », « Effort · Élevé › ». Les deux sous-menus s'ouvrent dans le même menu, avec une ligne « ‹ Retour » (ou flèche gauche). « Autres modèles » : les modèles restants, puis la section « Autres agents » (logo, nom, statut, « Ouvre un nouveau chat », ou l'action « Se connecter » / « Installer » si l'agent n'est pas prêt).
 - **Carte d'autorisation** : titre de l'hôte s'il est humain ; sinon « Claude veut utiliser l'outil « Lister les annotations » (Annotations du navigateur) », composé à partir de `tool` ou du nom brut `mcp__<serveur>__<outil>` (verbe anglais traduit quand il est connu, tirets et soulignés en espaces, majuscule). Les étapes du fil sont réécrites de la même façon. « Détails » (repliable) montre le nom brut et les arguments.
+
+## 14. Résumé replié des étapes (1.3)
+
+Champ facultatif **`summary`** sur `toolCall` (et `toolCallUpdate`) : comment l'étape se dit dans une phrase de résumé.
+
+```ts
+interface StepSummary {
+  verb: string;        // passé composé sans sujet, en minuscules : "a lu", "a marqué"
+  object: string;      // ce sur quoi : "2 annotations", "l'annotation « Bouton de paiement »"
+  after?: string;      // suite après l'objet : "comme terminée"
+  afterMany?: string;  // la même au pluriel, quand le groupe compte plusieurs éléments : "comme terminées"
+  count?: number;      // avec one / many : le panneau additionne ("2 annotations" + "1 annotation" → "3 annotations")
+  one?: string;        // "annotation"
+  many?: string;       // "annotations"
+}
+```
+
+Exemples pour l'hôte : lecture d'annotations `{ "verb": "a lu", "object": "2 annotations", "count": 2, "one": "annotation", "many": "annotations" }` ; résolution `{ "verb": "a marqué", "object": "l'annotation « Bouton de paiement »", "after": "comme terminée", "afterMany": "comme terminées" }`.
+
+Règles du panneau, dans l'ordre :
+1. **Un groupe d'une seule étape** affiche le titre de cette étape tel quel.
+2. Sinon chaque étape apporte : son `summary` ; à défaut ses **vrais chemins** (`read` / `edit` / `delete` / `move` avec `locations`), seuls appelés « fichier » ; à défaut un compte sûr (`search` « fois », `execute` « commande », `fetch` « page ») ; à défaut son titre.
+3. Les morceaux de même `verb` + `after` fusionnent : les comptes de même `many` s'additionnent, les objets s'énumèrent (« a, b et c »), les fichiers gardent leur nom jusqu'à 2 puis deviennent « N fichiers ». Un groupe fait seulement de fichiers garde la forme des planches : « A lu 2 fichiers, en a modifié 1 ».
+4. Les verbes différents se suivent, séparés par des virgules, dans l'ordre de leur première étape ; les titres seuls viennent ensuite (au plus 2, sinon « N autres étapes »).
 
