@@ -30,6 +30,7 @@ struct BubbleState {
     RECT element{}; bool known = false;                              // the element on screen (px), once the page said where
     int w = 0, h = 0; ChatBubble::Side side = ChatBubble::Side::Right;
     double closedAt = -1e9;                                          // NowMs() of the last close (a click that closed it is not a new comment)
+    double openedAt = -1e9;                                          // NowMs() of the last opening: the click that opened it gives the page the focus back first
     bool modal = false;                                              // a Windows dialog of ours is up: its deactivation does not close the bubble
 } bubble;
 std::map<std::string, Element> anchorElements;   // conversation id -> its element (image, source): joins every message of its bubble
@@ -109,8 +110,17 @@ void CloseBubble(bool focusPage);
 LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // A click elsewhere — the page, the browser's chrome, another window — takes the activation from the bubble: it closes
     // (its agent goes on). Not while one of our own dialogs is up (image picker, folder picker).
-    if (m == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE && bubble.open && !bubble.modal) { PostMessageW(h, WM_APP + 1, 0, 0); return 0; }
-    if (m == WM_APP + 1) { if (bubble.open && !bubble.modal && GetForegroundWindow() != h) CloseBubble(false); return 0; }
+    // Another application takes the foreground: the bubble closes. The browser's own windows do not count: a click in the
+    // page is a selection (TakeCommentSelection closes the bubble, or opens the element's), and the mode's capture and
+    // focus moves activate the browser window without any click.
+    if (m == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE && bubble.open && !bubble.modal) {
+        DWORD pid = 0; HWND to = reinterpret_cast<HWND>(l); if (to) GetWindowThreadProcessId(to, &pid);
+        if (!to || pid != GetCurrentProcessId()) PostMessageW(h, WM_APP + 1, 0, 0);
+        return 0;
+    }
+    // the selection that opened it ends by giving the page the keyboard (Ann::Resume): not a click elsewhere
+    if (m == WM_APP + 1) { if (bubble.open && !bubble.modal && GetForegroundWindow() != h && Ann::NowMs() - bubble.openedAt > 500) CloseBubble(false); return 0; }
+    if (m == WM_APP + 2) { if (bubble.open) { SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     if (m == WM_ERASEBKGND) { RECT c; GetClientRect(h, &c); HBRUSH b = CreateSolidBrush(RGB(0x17, 0x17, 0x17)); FillRect(reinterpret_cast<HDC>(w), &c, b); DeleteObject(b); return 1; }
     return DefWindowProcW(h, m, w, l);
@@ -137,7 +147,9 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, 10, 10})) { bubble.open = false; Diag(L"bubble WebView creation refused"); return; } }
     else view.Reparent(bubble.hwnd, {0, 0, 10, 10});
     PlaceBubble();
+    bubble.openedAt = Ann::NowMs();
     ShowWindow(bubble.hwnd, SW_SHOW); SetForegroundWindow(bubble.hwnd); view.Show(true);
+    PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // after Ann::Resume (it focuses the page): the caret goes to the bubble
     ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits();
     // the page follows the element (its moves become `anchor` messages)
     {   SJ::Value f = SJ::Value::Obj(); if (followCurrent) f.Set("current", SJ::Value::Bool(true)); else f.Set("selector", Str(selector));
@@ -323,12 +335,33 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     return true;
 }
 // MaybeAttach: the bubble's own element (image, source) is kept for its messages, never a chip of the composer.
+// A message sent from the bubble before its element was ready (image, source still coming): it leaves once it is.
+struct HeldSend { bool on = false, annotate = false; std::string conv, text; std::vector<std::string> els, atts; double at = 0; } held;
+void SendOrQueue(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts);
+void KeepAnnotation(const std::string& text, const std::vector<std::string>& ids);
+bool HoldForAnchor(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts, bool annotate) {
+    if (!bubble.open || anchorElements.count(bubble.conv)) return false;
+    bool aimingIt = false; for (const auto& a : aiming) aimingIt = aimingIt || a.second.anchorFor == bubble.conv;
+    if (!aimingIt) return false;
+    held = HeldSend{true, annotate, bubble.conv, text, els, atts, Ann::NowMs()};
+    Diag(L"message held until the bubble's element is ready");
+    return true;
+}
+void ReleaseHeld() {
+    if (!held.on) return;
+    HeldSend h = std::move(held); held = HeldSend{};
+    if (auto it = anchorElements.find(h.conv); it != anchorElements.end()) {
+        Element e = it->second; e.id = "el" + std::to_string(++elementSeq); h.els.insert(h.els.begin(), e.id); composerElements[e.id] = std::move(e);
+    }
+    if (h.annotate) KeepAnnotation(h.text, h.els); else SendOrQueue(h.text, h.els, h.atts);
+}
 bool KeepAnchorElement(Element& e) {
     if (e.anchorFor.empty()) return false;
     const std::string id = e.anchorFor;
     for (auto* h : {&convo.data.head, aside.on ? &aside.c.data.head : nullptr}) if (h && h->id == id && h->anchorSource.empty() && e.source.known) { h->anchorSource = e.source.Display(); if (h->source.empty()) h->source = e.source.Display(); }
     Diag(L"the bubble's element is ready: " + W(e.label) + (e.png.empty() ? L", no image" : L", image " + std::to_wstring(e.png.size()) + L" bytes"));
     anchorElements[id] = std::move(e);
+    if (held.on && held.conv == id) ReleaseHeld();
     return true;
 }
 

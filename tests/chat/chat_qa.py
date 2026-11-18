@@ -242,7 +242,8 @@ def prepare_site(reset=True):
 def launch(real=False, fresh=True, extra_env=None, reset_site=True):
     APP.mkdir(parents=True, exist_ok=True); WORK.mkdir(parents=True, exist_ok=True)
     keep = ('profile', 'session', 'sessions', 'annotations', 'prototype.log', 'downloads', 'bookmarks', 'settings', 'history',
-            'annotations-connect', 'annotations-chat', 'chat-snapshots', 'agents')
+            'annotations-connect', 'annotations-chat', 'chat-snapshots', 'agents',
+            'profiles', 'profiles.txt', 'favicons', 'extensions')   # the user's own profiles in build/chat-preview (made by the sandbox) never reach the copy
     for f in SRC.iterdir():
         if f.name in keep:
             continue
@@ -252,9 +253,9 @@ def launch(real=False, fresh=True, extra_env=None, reset_site=True):
         else:
             shutil.copy2(f, dst)
     if fresh:
-        for n in ('annotations', 'annotations-connect', 'annotations-chat', 'chat-snapshots'):
+        for n in ('annotations', 'annotations-connect', 'annotations-chat', 'chat-snapshots', 'profiles'):
             shutil.rmtree(APP / n, ignore_errors=True)
-        for n in ('settings', 'prototype.log'):
+        for n in ('settings', 'prototype.log', 'profiles.txt'):
             try:
                 (APP / n).unlink()
             except OSError:

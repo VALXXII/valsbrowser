@@ -609,10 +609,10 @@ void OnPanelMessage(const std::string& json) {
                 return;
             }
         }
-        { auto ids = m.Ids("elements", 10); AddAnchorElement(ids); SendOrQueue(text, ids, m.Ids("attachments", 10)); } return;   // Mode Commentaire: + the bubble's element
+        { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(text, ids, m.Ids("attachments", 10), false)) return; AddAnchorElement(ids); SendOrQueue(text, ids, m.Ids("attachments", 10)); } return;   // Mode Commentaire: + the bubble's element
     }
     if (type == "annotations.request") { PoseBatch(L"/annotations"); return; }
-    if (type == "annotate") { auto ids = m.Ids("elements", 10); AddAnchorElement(ids); KeepAnnotation(m.Text("text", 400000), ids); return; }   // contract B 1.6: Ctrl+Entrée (+ the bubble's element)
+    if (type == "annotate") { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(m.Text("text", 400000), ids, {}, true)) return; AddAnchorElement(ids); KeepAnnotation(m.Text("text", 400000), ids); return; }   // contract B 1.6: Ctrl+Entrée (+ the bubble's element)
     if (type == "bubble.size") { const auto* w = v.Get("width"); const auto* h = v.Get("height"); if (w && h && w->IsNumber() && h->IsNumber()) OnBubbleSize(int(w->number), int(h->number)); return; }   // contract B 1.8
     if (type == "annotation.show") { ShowAnnotation(m.Id("id")); return; }
     if (type == "stop") { StopTurn(); return; }
