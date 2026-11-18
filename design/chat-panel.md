@@ -3,7 +3,7 @@
 **En bref.** Le panneau de chat est une page web à nous (`assets/chat-panel/`), affichée dans une WebView2 interne à droite de la page. Il ne parle qu'à l'hôte (le navigateur, C4), par messages JSON. Il ne lit ni n'écrit aucun fichier, n'ouvre aucune connexion réseau, et n'exécute aucun texte reçu : tout ce qui vient de l'agent est affiché comme du texte.
 
 - Propriétaire : C2. Consommateur : C4 (`src/chat-host.*`).
-- Version du protocole : **1.3** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
+- Version du protocole : **1.4** (`"v": 1`). Ce document est la référence ; une évolution compatible (nouveaux messages ou champs facultatifs) garde `"v": 1` et prend un numéro de révision ici ; une rupture incrémente `v`. Historique en fin de document (§11).
 
 ---
 
@@ -123,7 +123,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `state` | voir §4.1 | Fusion **par clé de premier niveau** : une clé absente garde sa valeur, `null` l'efface. |
 | `thread.reset` | `conversationId`, `items: Item[]` (§4.2) | Remplace tout le fil (ouverture d'une conversation, nouveau chat = `items: []`). |
 | `thread.append` | `items: Item[]` | Ajoute des éléments déjà terminés (suite d'un historique découpé). |
-| `message.user` | `id`, `text`, `elements?: ElementRef[]`, `attachments?: Attachment[]`, `at: Iso`, `editable?` (déf. vrai) | Bulle de l'utilisateur, puces dans le texte, date centrée si nouveau jour ou pause > 30 min. |
+| `message.user` | `id`, `text`, `elements?: ElementRef[]`, `attachments?: Attachment[]`, `at: Iso`, `editable?` (déf. vrai), `annotations?` *(1.4)* `{ batchId, items: AnnotationItem[], instruction? }` | Bulle de l'utilisateur, puces dans le texte, date centrée si nouveau jour ou pause > 30 min. |
 | `turn.start` | `turnId`, `model` (libellé), `effort?` (libellé), `agentId`, `at: Iso` | Ouvre un tour : « Travaille… 0 s » démarre, chronomètre local. Si modèle/effort diffère du tour précédent : repère « Passé à Opus 5.5 · Élevé ». |
 | `message.agentChunk` | `turnId`, `messageId`, `text` (morceau à ajouter, Markdown) | Texte en flux. Rendu par paragraphe, sans animation par mot ; annoncé aux lecteurs d'écran par phrase terminée. |
 | `thought` | `turnId`, `id`, `text` (morceau à ajouter), `done?`, `durationMs?` | Ligne repliée « A réfléchi 6 s ›» (pendant : « Réfléchit… »). Clic : détail en texte atténué. |
@@ -145,6 +145,8 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `commands` | `items: {name, description}[]` | Menu « / » (vient de l'agent ; liste vide = menu masqué). |
 | `edit.confirm` | `messageId`, `files: string[]` | « Des fichiers ont changé depuis ce message » : **Restaurer et renvoyer** / **Renvoyer sans restaurer** / Annuler. |
 | `focus` | `target: "composer"` | Met le focus dans la saisie (ouverture du panneau). |
+| `annotations.batch` *(1.4)* | `batchId`, `siteLabel`, `items: AnnotationItem[]` (≤ 50 ; `items: []` retire le bloc) | Lot « N annotations à traiter » posé dans la saisie (toutes cochées). Arrive de la suggestion du chat vide (`suggestion.run {id:"annotations"}`), de la commande `/annotations` (`annotations.request`) ou de « Traiter avec l'agent » dans l'historique (côté hôte). Remplace un lot précédent. |
+| `annotations.status` *(1.4)* | `batchId`, `id`, `status` (`pending`/`working`/`done`/`skipped`), `summary?` (une phrase de l'agent, si `done`), `reason?` (si `skipped`) | Met à jour une ligne de la carte « Traiter N annotations » du fil (et l'en-tête « 1 sur N » / « ✓ N terminées »). Annonce polie. |
 | `copy.done` | `ok` | Le bouton Copier affiche « Copié » 1,5 s (ou rien si `ok` faux). |
 | `usage` *(1.2)* | `used`, `size` (jetons de contexte utilisés / taille de la fenêtre, depuis `usage_update` ACP) | Jauge de contexte à droite du titre : anneau rempli à `used/size`, neutre, ambre au-delà de 80 % ; infobulle « 62 % de la mémoire du chat utilisée · se résume automatiquement vers 100 % ». `size: 0` (ou nouvelle conversation, `thread.reset`) la masque ; l'hôte renvoie `usage` après un `thread.reset` s'il le connaît. |
 | `changes.diff` *(1.1)* | `turnId`, `diffs: Diff[]` (tous les fichiers du tour, ≤ 4 000 lignes chacun), `files?: FileChange[]` | Réponse à `checkpoint.viewChanges`. Remplit la vue « Voir les changements » si elle est ouverte sur ce tour (sinon gardé pour la prochaine ouverture). Un fichier sans entrée dans `diffs` affiche « Pas d'aperçu pour ce fichier ». |
@@ -156,6 +158,8 @@ interface State {
   site?: { origin: string; label: string; local: boolean };      // label : "127.0.0.1:5173"
   folder?: { path: string; display: string; name: string } | null;   // null : première fois (6.2)
   folderSuggestion?: { path: string; display: string; name: string; reason: "auto" } | null;
+  askFolder?: boolean;             // (1.4) true : afficher « Où est le code de ce site ? » (détection incertaine).
+                                   // Absent (hôte < 1.4) : l'écran s'affiche quand folder === null, comme avant.
   agents?: Agent[];                // tous les agents connus (6.2, menu modèle)
   agentId?: Id;                    // agent de la conversation
   model?: Id | null;  efforts?: Option[];  effort?: Id | null;
@@ -182,7 +186,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `type` | Champs | Quand |
 |---|---|---|
 | `ready` | `v`, `build` | Page chargée. |
-| `send` | `text`, `elements: Id[]`, `attachments: Id[]` | Entrée dans la saisie. Pendant un tour : l'hôte met en file (`queue`) ou envoie en pilotage si l'agent le permet. **`text` contient le libellé de chaque puce à sa place** (« … comparé à button.btn-primary dans le canvas ») : c'est voulu, l'hôte l'utilise tel quel comme texte de l'utilisateur et décrit les éléments à part (contrat D) ; `elements` les liste dans l'ordre d'apparition. Le panneau, à l'écho `message.user`, replace la puce à la première occurrence du libellé. |
+| `send` | `text`, `elements: Id[]`, `attachments: Id[]`, `annotations?` *(1.4)* `{ batchId, ids: Id[] }` (lignes cochées, dans l'ordre ; `text` est alors la précision, peut être vide) | Entrée dans la saisie. Pendant un tour : l'hôte met en file (`queue`) ou envoie en pilotage si l'agent le permet. **`text` contient le libellé de chaque puce à sa place** (« … comparé à button.btn-primary dans le canvas ») : c'est voulu, l'hôte l'utilise tel quel comme texte de l'utilisateur et décrit les éléments à part (contrat D) ; `elements` les liste dans l'ordre d'apparition. Le panneau, à l'écho `message.user`, replace la puce à la première occurrence du libellé. |
 | `stop` | — | Bouton Arrêter ou Échap pendant un tour. |
 | `queue.sendNow` | `id` | « Envoyer maintenant ». |
 | `queue.remove` | `id` | « × » sur une suite en file. |
@@ -199,7 +203,9 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `attachment.remove` | `id` | « × » sur une miniature. |
 | `mention.query` | `query` | Frappe après « @ » (débit limité à 1 / 80 ms). |
 | `folder.use` | `path` | « Utiliser » sur le dossier détecté. |
-| `folder.choose` | — | « Choisir un autre dossier… » (sélecteur Windows côté hôte). |
+| `folder.choose` | — | « Choisir un autre dossier… » (sélecteur Windows côté hôte), ou clic sur la puce dossier du bas de la saisie *(1.4)*. |
+| `annotations.request` *(1.4)* | — | Commande `/annotations` choisie dans le menu « / » : l'hôte répond `annotations.batch` (ou une `strip` « Aucune annotation en attente »). |
+| `annotation.show` *(1.4)* | `id` | Clic sur une ligne de la carte « Traiter N annotations » : montrer l'annotation sur la page. |
 | `undo.turn` | `turnId` | « Tout annuler » dans la barre des changements. |
 | `checkpoint.restore` | `checkpointId` | « Revenir » sur un point de reprise. |
 | `checkpoint.viewChanges` | `turnId`, `path?` | « Voir les changements » (barre dépliée) ou clic sur un fichier (`path`). Le panneau ouvre aussitôt sa vue avec les `FileChange.diff` déjà reçus, puis attend `changes.diff` (1.1). |
@@ -274,6 +280,7 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 11. Historique du contrat
 
+- **1.4** (18 nov. 2026, compatible, `"v": 1`) : `state.askFolder` (l'écran du dossier ne s'affiche que si l'hôte le demande ; puce dossier dans la saisie, clic = `folder.choose`) ; lot d'annotations (`annotations.batch`, `annotations.status`, `message.user.annotations`, `send.annotations`, `annotations.request`, `annotation.show`) (§15).
 - **1.3** (18 nov. 2026, compatible, `"v": 1`) : champ facultatif `summary` sur `toolCall` / `toolCallUpdate` pour le résumé replié des étapes (§14) ; le panneau ne dit plus « fichier » que pour de vrais chemins (`locations`).
 - **1.2** (18 nov. 2026, compatible, `"v": 1`) : message `usage {used, size}` (jauge de contexte, plus d'indicateur de chargement dans l'en-tête) ; `permission.request` gagne `tool` et `input` (détails repliables) et son `title` doit être une phrase humaine — sans titre lisible, le panneau en compose un à partir de `tool` ou du nom brut ; changement d'agent par `setAgent` depuis « Autres modèles » (le menu modèle n'envoie plus `setModel` pour un autre agent).
 - **1.1** (17 nov. 2026, compatible, `"v": 1`) : message hôte → panneau `changes.diff` en réponse à `checkpoint.viewChanges` ; `FileChange.diff` sert aussi à ouvrir la vue tout de suite ; précision sur `send.text` (libellés des puces en ligne, voulu).
@@ -318,4 +325,27 @@ Règles du panneau, dans l'ordre :
 2. Sinon chaque étape apporte : son `summary` ; à défaut ses **vrais chemins** (`read` / `edit` / `delete` / `move` avec `locations`), seuls appelés « fichier » ; à défaut un compte sûr (`search` « fois », `execute` « commande », `fetch` « page ») ; à défaut son titre.
 3. Les morceaux de même `verb` + `after` fusionnent : les comptes de même `many` s'additionnent, les objets s'énumèrent (« a, b et c »), les fichiers gardent leur nom jusqu'à 2 puis deviennent « N fichiers ». Un groupe fait seulement de fichiers garde la forme des planches : « A lu 2 fichiers, en a modifié 1 ».
 4. Les verbes différents se suivent, séparés par des virgules, dans l'ordre de leur première étape ; les titres seuls viennent ensuite (au plus 2, sinon « N autres étapes »).
+
+## 15. Dossier et « Traiter les annotations » (1.4)
+
+```ts
+interface AnnotationItem {
+  id: Id;
+  note: string;          // la note écrite par l'utilisateur
+  element?: string;      // "p.hero-text"
+  source?: string;       // "landing.html:23"
+  thumb?: string;        // data:image/… (capture de l'élément), sinon un aplat
+  status?: "pending" | "working" | "done" | "skipped";   // dans message.user (rejeu) ; absent = pending
+  summary?: string;      // résumé d'une phrase de l'agent (done)
+  reason?: string;       // pourquoi non traitée (skipped)
+}
+```
+
+- **Puce dossier** : dans le bas de la saisie, après le mode : icône dossier + `folder.name` (« boutique »), discrète, chemin complet en infobulle ; clic = `folder.choose`. Sans dossier : « Choisir le dossier ». L'écran « Où est le code de ce site ? » ne s'affiche que si `askFolder` vaut vrai ; il ne montre plus la liste des agents quand l'agent courant est prêt.
+- **Avant l'envoi** (Paper 186S-0) : bloc dans la saisie, en-tête « 2 annotations à traiter » + site ; une ligne par annotation (case cochée, miniature 44 × 32, note, « élément · fichier:ligne » en JetBrains Mono) ; décocher = garder pour plus tard ; au-delà de 5, « + N autres » ; champ « Ajouter une précision (facultatif)… ». Envoi possible avec au moins une case cochée, même sans texte.
+- **Après l'envoi** (Paper 188L-0, 18B2-0) : `message.user.annotations` remplace la bulle par une carte : en-tête « Traiter N annotations » et « 1 sur N » (« ✓ N terminées » à la fin) ; lignes En attente → « Claude s'en occupe » (anneau bleu, ligne surlignée) → Terminée (coche verte + résumé) ; non traitée = ambre avec sa raison ; clic sur une ligne = `annotation.show` ; « Voir la consigne envoyée à Claude » (le texte exact, `instruction`) replié. Les noms techniques n'apparaissent pas ailleurs.
+
+Bas de la saisie sur une seule ligne : quand la place manque (380 px avec la puce dossier), le panneau retire dans l'ordre le chevron du mode, le logo de l'agent dans la puce modèle, puis raccourcit le nom du dossier, n'en garde que l'icône (le nom reste dans l'infobulle et le nom accessible), enfin masque l'effort ; le nom du modèle reste toujours entier.
+
+Écarts assumés (1.4) : la puce dossier n'est pas dessinée dans Paper (icône dossier + nom, gris 50 %, comme les autres outils) ; le bloc de la saisie a une croix « Retirer ces annotations de la saisie » en plus ; la ligne de fin de tour « Point de reprise · Voir les changements · Restaurer » de la planche 18B2-0 n'est pas reprise ici (la barre des changements existante reste).
 

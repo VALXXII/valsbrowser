@@ -12,7 +12,7 @@
 
   // ---------------------------------------------------------------- tiny DOM helpers
   function h(tag, props, ...kids) {
-    const n = document.createElement(tag);
+    const n = typeof tag === "string" ? document.createElement(tag) : tag;
     if (props) for (const k in props) {
       const v = props[k];
       if (v == null || v === false) continue;
@@ -62,6 +62,7 @@
           modes: [], mode: null, conversation: null, running: false, pendingAnnotations: 0, suggestions: [], capabilities: {}, disabledReason: null },
     users: new Map(), turns: new Map(), tools: new Map(),
     lastUser: null, lastTurn: null, lastAt: 0,
+    batch: null, batches: new Map(),
     perms: [], queue: [], strips: new Map(), history: null, historyOpen: false, commands: [],
     picking: false, menu: null, atBottom: true, newCount: 0,
     cEls: new Map(), cAtt: new Map(), editing: null, replay: false, fatal: false,
@@ -166,6 +167,10 @@
   const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre ou changer de dossier", title: "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
                                 onclick: (e) => openPlusMenu(e.currentTarget) }, icon("plus", "ic"));
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
+  // B 1.4: the project folder, quiet, one click to change it.
+  const folderName = h("span", { class: "fn" });
+  const folderBtn = h("button", { class: "tb folder", type: "button", onclick: () => post("folder.choose") }, icon("folder", "ic"), folderName);
+  const batchEl = h("div", { class: "batch", hidden: true, role: "group" });
   const modelName = h("span", { class: "mn" });
   const modelLogo = h("span", { style: "display:flex" });
   const effortTxt = h("span");
@@ -174,8 +179,9 @@
   const modelBtn = h("button", { class: "m", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-keyshortcuts": "Control+/",
                                  onclick: (e) => openModelMenu(e.currentTarget) }, h("span", { class: "mw" }, modelLogo, modelName), effortEl, icon("chevron", "mcv"));
   const sendBtn = h("button", { class: "send", type: "button", onclick: () => onSendButton() });
-  const composer = h("div", { class: "composer" }, thumbs, cin,
-    h("div", { class: "foot" }, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
+  const foot = h("div", { class: "foot" });
+  const composer = h("div", { class: "composer" }, batchEl, thumbs, cin,
+    h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn, folderBtn), h("div", { class: "grow" }),
       h("div", { class: "model" }, modelBtn), sendBtn));
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
     h("span", { class: "k" }, h("span", { class: "kc" }, "↵"), "Envoyer"),
@@ -195,7 +201,8 @@
     return out.replace(/ /g, " ");
   }
   const chipsInComposer = () => Array.from(cin.querySelectorAll(".chip")).map((c) => c.dataset.id);
-  function hasContent() { return composerText().trim().length > 0 || S.cAtt.size > 0; }
+  const batchChecked = () => (S.batch ? S.batch.items.filter((it) => S.batch.checked.has(it.id)) : []);
+  function hasContent() { return composerText().trim().length > 0 || S.cAtt.size > 0 || batchChecked().length > 0; }
   function canSend() {
     const a = curAgent();
     return !S.st.disabledReason && !!S.st.folder && !hasDangerStrip() && (!a || a.status === "ready" || a.status === "starting");
@@ -225,12 +232,18 @@
   function send() {
     if (!hasContent() || !canSend()) return;
     const text = composerText().replace(/\s+$/, "");
-    post("send", { text, elements: chipsInComposer().filter((id) => S.cEls.has(id)), attachments: Array.from(S.cAtt.keys()) });
-    S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu(); updateSend();
+    const msg = { text, elements: chipsInComposer().filter((id) => S.cEls.has(id)), attachments: Array.from(S.cAtt.keys()) };
+    const picked = batchChecked();
+    if (picked.length) msg.annotations = { batchId: S.batch.batchId, ids: picked.map((it) => it.id) };
+    post("send", msg);
+    S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu();
+    if (S.batch) { S.batch = null; renderBatch(); }
+    updateSend();
   }
   function placeholder() {
     let p = "Que faut-il changer ?";
-    if (S.planPending) p = "Ajouter une précision au plan…";
+    if (S.batch) p = "Ajouter une précision (facultatif)…";
+    else if (S.planPending) p = "Ajouter une précision au plan…";
     else if (S.st.running) p = "Ajouter une suite…";
     else if (S.lastTurn) p = "Autre chose à changer ?";
     cin.setAttribute("data-placeholder", p);
@@ -309,7 +322,7 @@
   let mentionTimer = 0;
   function detectTrigger() {
     const text = composerText();
-    if (/^\/[\w-]*$/.test(text) && (S.commands || []).length) { openCommandMenu(text.slice(1)); return; }
+    if (/^\/[\w-]*$/.test(text)) { openCommandMenu(text.slice(1)); return; }
     const sel = window.getSelection();
     if (sel.rangeCount && sel.anchorNode && sel.anchorNode.nodeType === 3 && cin.contains(sel.anchorNode)) {
       const before = sel.anchorNode.nodeValue.slice(0, sel.anchorOffset);
@@ -340,6 +353,11 @@
       modeBtn.setAttribute("aria-label", "Mode : " + mode.label);
       modeBtn.title = "Mode : " + mode.label + " (Maj+Tab)";
     }
+    const f = S.st.folder;
+    folderName.textContent = f ? f.name : "Choisir le dossier";
+    folderBtn.title = f ? f.display + " — changer de dossier" : "Choisir le dossier du projet";
+    folderBtn.setAttribute("aria-label", f ? "Dossier du projet : " + f.name + ". Changer de dossier" : "Choisir le dossier du projet");
+    folderBtn.classList.toggle("none", !f);
     const a = curAgent(), m = curModel();
     clear(modelLogo).appendChild(agentIcon(a));
     modelName.textContent = m ? m.label : a ? a.name : "Agent";
@@ -350,7 +368,18 @@
     modelBtn.title = "Modèle et effort (Ctrl+/)";
     placeholder();
     updateSend();
+    fitFoot();
   }
+  // The foot keeps one line: when it does not fit, drop the least useful details first (the model name always stays).
+  const FIT = ["fit-chev", "fit-logo", "fit-folder", "fit-folder-icon", "fit-effort"];
+  function fitFoot() {
+    if (!foot.isConnected || !foot.clientWidth) return;
+    foot.classList.remove(...FIT);
+    foot.classList.add("measure");
+    for (const c of FIT) { if (foot.scrollWidth <= foot.clientWidth) break; foot.classList.add(c); }
+    foot.classList.remove("measure");
+  }
+  if (window.ResizeObserver) new ResizeObserver(() => fitFoot()).observe(composer);
 
   // ---------------------------------------------------------------- menus
   function closeMenu(restore) {
@@ -567,8 +596,14 @@
   }
   function openCommandMenu(q) {
     const ql = q.toLowerCase();
-    const rows = (S.commands || []).filter((c) => c.name.toLowerCase().startsWith(ql) || !ql).slice(0, 8)
-      .map((c) => ({ label: c.name, desc: c.description, pick: () => { closeMenu(); clear(cin); cin.focus(); document.execCommand("insertText", false, "/" + c.name + " "); updateSend(); } }));
+    // B 1.4: « /annotations » is the panel's own command (asks the host for the pending batch); the rest come from the agent.
+    const own = { name: "annotations", description: "Traite les annotations en attente sur ce site", own: true };
+    const all = [own].concat((S.commands || []).filter((c) => c.name !== "annotations"));
+    const rows = all.filter((c) => c.name.toLowerCase().startsWith(ql) || !ql).slice(0, 8)
+      .map((c) => ({ label: c.name, desc: c.description, pick: () => {
+        closeMenu(); clear(cin); cin.focus();
+        if (c.own) { post("annotations.request"); updateSend(); return; }
+        document.execCommand("insertText", false, "/" + c.name + " "); updateSend(); } }));
     openCombo("/", rows);
   }
 
@@ -741,7 +776,7 @@
 
   // ---------------------------------------------------------------- thread
   function updateView() {
-    const firstRun = S.st.folder === null;
+    const firstRun = S.st.askFolder === true || (S.st.askFolder === undefined && S.st.folder === null);
     const isEmpty = !log.firstChild;
     first.hidden = !firstRun;
     empty.hidden = firstRun || !isEmpty;
@@ -771,6 +806,8 @@
     const at = Date.parse(m.at) || Date.now();
     if (!S.lastAt || new Date(at).toDateString() !== new Date(S.lastAt).toDateString() || at - S.lastAt > 30 * 60 * 1000) add(h("div", { class: "date", text: dayLabel(at) }), false);
     S.lastAt = at;
+    const ann = validBatchMessage(m.annotations);
+    if (ann) { onAnnotationMessage(m, ann); return; }
     const els = (m.elements || []).filter(validElement);
     const bubble = h("div", { class: "bubble" });
     const inlineIds = fillWithChips(bubble, m.text, els);
@@ -785,6 +822,121 @@
     add(node);
     if (!S.replay) { scrollToEnd(false); }
   }
+  // ---------------------------------------------------------------- « Traiter les annotations » (B 1.4)
+  function validAnnItem(it) {
+    if (!it || !ID.test(it.id) || !isStr(it.note, 2000)) return null;
+    return { id: it.id, note: it.note, element: isStr(it.element, 200) ? it.element : "", source: isStr(it.source, 300) ? it.source : "",
+             thumb: isStr(it.thumb, 350000) && IMG.test(it.thumb) ? it.thumb : "", status: ["pending", "working", "done", "skipped"].includes(it.status) ? it.status : "pending",
+             summary: isStr(it.summary, 600) ? it.summary : "", reason: isStr(it.reason, 600) ? it.reason : "" };
+  }
+  function validBatchMessage(a) {
+    if (!a || typeof a !== "object" || !ID.test(a.batchId) || !Array.isArray(a.items)) return null;
+    const items = a.items.slice(0, 50).map(validAnnItem).filter(Boolean);
+    return items.length ? { batchId: a.batchId, items, instruction: isStr(a.instruction, 20000) ? a.instruction : "" } : null;
+  }
+  const annMeta = (it) => [it.element, it.source].filter(Boolean).join(" · ");
+  function annThumb(it) {
+    return it.thumb ? h("img", { class: "ann-thumb", src: it.thumb, alt: "" }) : h("span", { class: "ann-thumb blank", "aria-hidden": "true" });
+  }
+  // Composer block: what will be sent, everything checked; unchecking keeps an annotation for later.
+  function renderBatch() {
+    const b = S.batch;
+    clear(batchEl);
+    batchEl.hidden = !b;
+    placeholder();
+    if (!b) { batchEl.removeAttribute("aria-labelledby"); return; }
+    batchEl.setAttribute("aria-labelledby", "batch-h");
+    const n = batchChecked().length;
+    batchEl.appendChild(h("div", { class: "batch-hd" }, icon("tray", "ic"),
+      h("span", { class: "t", id: "batch-h", text: n ? plural(n, "annotation à traiter", "annotations à traiter") : "Aucune annotation cochée" }),
+      b.siteLabel ? h("span", { class: "site", text: b.siteLabel }) : null,
+      h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ces annotations de la saisie", title: "Retirer de la saisie",
+                    onclick: () => { S.batch = null; renderBatch(); updateSend(); cin.focus(); } }, icon("close"))));
+    const shown = b.expanded || b.items.length <= 5 ? b.items : b.items.slice(0, 5);
+    for (const it of shown) {
+      const on = b.checked.has(it.id);
+      const row = h("button", { class: "batch-row" + (on ? "" : " off"), type: "button", role: "checkbox", "aria-checked": String(on), "data-id": it.id,
+                                "aria-label": it.note + (annMeta(it) ? " — " + annMeta(it) : "") },
+        h("span", { class: "box", "aria-hidden": "true" }, on ? icon("check") : null), annThumb(it),
+        h("span", { class: "tx" }, h("span", { class: "note", text: it.note }), annMeta(it) ? h("span", { class: "meta", text: annMeta(it) }) : null));
+      row.addEventListener("click", () => {
+        on ? b.checked.delete(it.id) : b.checked.add(it.id);
+        renderBatch(); updateSend();
+        const again = batchEl.querySelector(".batch-row[data-id='" + it.id + "']"); if (again) again.focus();
+        say(on ? "Gardée pour plus tard." : "Ajoutée.");
+      });
+      batchEl.appendChild(row);
+    }
+    if (shown.length < b.items.length) batchEl.appendChild(h("button", { class: "batch-more", type: "button", onclick: () => { b.expanded = true; renderBatch(); const r = batchEl.querySelectorAll(".batch-row")[5]; if (r) r.focus(); } },
+      "+ " + plural(b.items.length - shown.length, "autre", "autres")));
+  }
+  function onBatch(m) {
+    const items = (Array.isArray(m.items) ? m.items : []).slice(0, 50).map(validAnnItem).filter(Boolean);
+    S.batch = items.length ? { batchId: m.batchId, siteLabel: isStr(m.siteLabel, 200) ? m.siteLabel : "", items, checked: new Set(items.map((i) => i.id)), expanded: false } : null;
+    renderBatch(); updateSend();
+    if (S.batch) { cin.focus(); say(plural(items.length, "annotation prête à être traitée", "annotations prêtes à être traitées") + ". Décochez celles à garder pour plus tard."); }
+  }
+  // Thread card: the sent batch, kept alive by annotations.status.
+  function onAnnotationMessage(m, ann) {
+    const card = h("div", { class: "ann-card", role: "group", "aria-labelledby": "annh-" + ann.batchId });
+    const node = h("div", { class: "um ann", "data-id": m.id }, card);
+    const b = { batchId: ann.batchId, items: ann.items, instruction: ann.instruction, text: m.text || "", card, open: false };
+    S.batches.set(ann.batchId, b);
+    renderAnnCard(b);
+    S.users.set(m.id, { el: node, row: card, bubble: card, text: m.text || "", els: [], m });
+    S.lastUser = m.id;
+    add(node);
+    if (!S.replay) scrollToEnd(false);
+  }
+  function renderAnnCard(b) {
+    const card = b.card;
+    const prevFocus = card.contains(document.activeElement) ? document.activeElement.dataset.id || document.activeElement.className : null;
+    clear(card);
+    const n = b.items.length;
+    const done = b.items.filter((i) => i.status === "done").length, skipped = b.items.filter((i) => i.status === "skipped").length;
+    const working = b.items.findIndex((i) => i.status === "working");
+    const finished = done + skipped === n;
+    let right;
+    if (finished) right = h("span", { class: "ann-prog" + (skipped ? " mixed" : " ok") }, done ? icon("check") : null,
+      [done ? plural(done, "terminée", "terminées") : "", skipped ? plural(skipped, "non traitée", "non traitées") : ""].filter(Boolean).join(" · "));
+    else right = h("span", { class: "ann-prog", text: (working >= 0 ? working + 1 : Math.min(n, done + skipped + 1)) + " sur " + n });
+    const who = curAgentName().replace(/ Code$/, "");
+    card.appendChild(h("div", { class: "ann-hd" }, icon("tray", "ic"), h("span", { class: "t", id: "annh-" + b.batchId, text: "Traiter " + plural(n, "annotation", "annotations") }), right));
+    if (b.text.trim()) card.appendChild(h("div", { class: "ann-extra", text: b.text.trim() }));
+    for (const it of b.items) {
+      const st = it.status;
+      const line = st === "working" ? h("span", { class: "ann-st is-working" }, h("span", { class: "spin", style: "display:flex" }, icon("spinner")), who + " s'en occupe")
+        : st === "done" ? h("span", { class: "ann-st is-done" }, icon("check"), h("span", { text: it.summary || "Terminée" }))
+        : st === "skipped" ? h("span", { class: "ann-st is-skipped" }, icon("x"), h("span", { text: it.reason ? "Non traitée : " + it.reason : who + " n'a pas pu la traiter" }))
+        : h("span", { class: "ann-st is-pending" }, h("i", { "aria-hidden": "true" }), "En attente");
+      card.appendChild(h("button", { class: "ann-row is-" + st, type: "button", "data-id": it.id, title: "Montrer sur la page" + (annMeta(it) ? " (" + annMeta(it) + ")" : ""),
+                                     onclick: () => post("annotation.show", { id: it.id }) },
+        annThumb(it), h("span", { class: "tx" }, h("span", { class: "note", text: it.note }), line)));
+    }
+    if (b.instruction) {
+      const pre = h("pre", { class: "detail", id: "inst-" + b.batchId, hidden: !b.open, text: b.instruction });
+      const t = h("button", { class: "ann-inst", type: "button", "aria-expanded": String(b.open), "aria-controls": "inst-" + b.batchId },
+        "Voir la consigne envoyée à " + who, icon("chevron", "cv"));
+      t.addEventListener("click", () => { b.open = !b.open; renderAnnCard(b); const x = b.card.querySelector(".ann-inst"); if (x) x.focus(); stick(); });
+      card.append(t, pre);
+    }
+    if (prevFocus) { const x = card.querySelector("[data-id='" + prevFocus + "']"); if (x) x.focus(); }
+  }
+  function onAnnStatus(m) {
+    const b = S.batches.get(m.batchId);
+    const it = b && b.items.find((i) => i.id === m.id);
+    if (!it) return;
+    if (["pending", "working", "done", "skipped"].includes(m.status)) it.status = m.status;
+    if (isStr(m.summary, 600)) it.summary = m.summary;
+    if (isStr(m.reason, 600)) it.reason = m.reason;
+    renderAnnCard(b);
+    stick();
+    const who = curAgentName().replace(/ Code$/, "");
+    if (it.status === "working") say(who + " s'occupe de : " + it.note);
+    else if (it.status === "done") say("Terminée : " + it.note + (it.summary ? ". " + it.summary : ""));
+    else if (it.status === "skipped") say("Non traitée : " + it.note + (it.reason ? ". " + it.reason : ""));
+  }
+
   // Chips sit where their label appears in the text (first occurrence); the rest go under the bubble.
   function fillWithChips(parent, text, els) {
     const used = new Set();
@@ -1389,7 +1541,7 @@
     if (sug) q.querySelector(".tile.found .ic").style.opacity = ".8";
     first.appendChild(q);
     const agents = S.st.agents || [];
-    if (agents.length) {
+    if (agents.length && !(curAgent() && curAgent().status === "ready")) {
       const group = h("div", { class: "agents", role: "radiogroup", "aria-labelledby": "agent-h" });
       for (const a of agents) {
         const act = a.status !== "ready" ? agentAction(a) : null;
@@ -1553,6 +1705,7 @@
     history: (m) => Array.isArray(m.items), "element.attached": (m) => validElement(m.element), "attachment.added": (m) => validAttachment(m.attachment),
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
     usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
+    "annotations.batch": (m) => ID.test(m.batchId) && Array.isArray(m.items), "annotations.status": (m) => ID.test(m.batchId) && ID.test(m.id),
     "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true,
   };
 
@@ -1560,7 +1713,7 @@
   const H = {
     hello(m) { if (m.reducedMotion) document.documentElement.classList.add("reduce-motion"); app.removeAttribute("aria-busy"); },
     state(m) {
-      const keys = ["site", "folder", "folderSuggestion", "agents", "agentId", "model", "efforts", "effort", "modes", "mode", "conversation", "running", "pendingAnnotations", "suggestions", "capabilities", "disabledReason"];
+      const keys = ["site", "folder", "folderSuggestion", "askFolder", "agents", "agentId", "model", "efforts", "effort", "modes", "mode", "conversation", "running", "pendingAnnotations", "suggestions", "capabilities", "disabledReason"];
       for (const k of keys) if (k in m) S.st[k] = m[k];
       S.st.agents = (S.st.agents || []).filter((a) => a && ID.test(a.id) && isStr(a.name, 100));
       if (!S.st.agentId && S.st.agents[0]) S.st.agentId = S.st.agents[0].id;
@@ -1570,6 +1723,7 @@
     "thread.reset"(m) {
       closeChanges();
       S.usage = null; S.usageWarned = false; renderGauge();
+      S.batches.clear();
       clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
       S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
       tick();
@@ -1608,7 +1762,7 @@
     "pick.state"(m) { S.picking = m.active; renderComposerBar(); say(m.active ? "Viseur actif : cliquez un élément de la page." : ""); },
     mentions(m) { S.mentions = { query: m.query, elements: (m.elements || []).filter(validElement), files: (m.files || []).filter((f) => f && isStr(f.path, 1000)) }; if (S.menu && S.menu.combo === "@" && mentionCtx) openMentionMenu(mentionCtx.q, mentionCtx.node, mentionCtx.offset); },
     commands(m) { S.commands = m.items.filter((c) => c && isStr(c.name, 80) && /^[\w-]+$/.test(c.name)); },
-    "edit.confirm": onEditConfirm,
+    "edit.confirm": onEditConfirm, "annotations.batch": onBatch, "annotations.status": onAnnStatus,
     focus() { if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); } else cin.focus(); },
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,
     usage(m) { S.usage = m.size > 0 ? { used: Math.min(m.used, m.size), size: m.size } : null; renderGauge(); },
