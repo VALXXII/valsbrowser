@@ -17,7 +17,7 @@
 | CSP (balise `<meta>` dans la page, à doubler en en-tête par l'hôte) | `default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` |
 | Exclu du build | `assets/chat-panel/dev-host.js` et `assets/chat-panel/dev.html` (faux hôte de QA). La page de production ne les référence pas. |
 | Fond | `#171717` opaque (`--color-browser-canvas`, planches 6.x). `DefaultBackgroundColor` de la WebView : même couleur, pour éviter un flash blanc. |
-| Taille | Conçu pour 380 DIP de large (planches), fonctionne de 320 à 560. Hauteur libre. |
+| Taille | Conçu pour 380 DIP de large (planches), fonctionne de 320 à 560. Hauteur libre. En bulle *(1.8)* : 305 DIP de large, hauteur demandée par `bubble.size` (§19). |
 
 Pas d'`eval`, pas de `new Function`, pas de `innerHTML` avec du contenu reçu : le Markdown de l'agent est analysé par `markdown.js` et construit avec `createElement` / `textContent`. Les liens ne sont jamais suivis par la page : un clic envoie `link.open` à l'hôte.
 
@@ -238,7 +238,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 
 - **Défilement.** Le fil suit le texte tant que l'utilisateur est en bas (à 24 px près). Dès qu'il remonte, il ne bouge plus et le bouton « ↓ N nouvelles étapes » apparaît (N = étapes et messages arrivés depuis).
 - **Autorisation.** Pendant qu'une carte est affichée, la saisie est remplacée ; Échap = Refuser (option `reject_once`), Entrée = Autoriser (`allow_always` si la case est cochée, sinon `allow_once`). Le champ « Dire à Claude quoi faire à la place… » envoie l'option `reject_once` avec `message`.
-- **Échap**, dans l'ordre : ferme le menu ouvert → quitte la modification d'un message → Refuser la demande d'autorisation → `stop` si un tour est en cours → `close`.
+- **Échap**, dans l'ordre : ferme le menu ouvert → quitte la modification d'un message → Refuser la demande d'autorisation → `stop` si un tour est en cours → `close`. En bulle *(1.8)* : menu → diff en grand → `close`, rien d'autre (§19.4).
 - **Clavier** : Entrée envoie, Maj+Entrée nouvelle ligne, Ctrl+/ ouvre le menu modèle, Maj+Tab change de mode (dans la saisie), flèches + Entrée dans les menus, `@` et `/` en début de mot ouvrent leurs menus.
 - **Rien n'est déduit en dur** : modèles, efforts, modes, commandes et agents viennent de `state` / `commands`.
 - **Accessibilité** : fil `role="log"` (`aria-live="polite"`, annonces par phrase), carte d'autorisation `role="alertdialog"` (annonce assertive), menus `role="menu"`/`listbox`, tous les boutons nommés, ordre Tab : en-tête → fil → bandeau → saisie.
@@ -282,7 +282,7 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 ## 10. Tests
 
-`python -I tests/chat-panel/run.py` — 206 contrôles (statique, 47 scénarios, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/`.
+`python -I tests/chat-panel/run.py` — 467 contrôles (statique, 92 scénarios dont 24 du mode Commentaire, clavier, sécurité, polices, performance). Détails : `tests/chat-panel/README.md`. Sortie : `build/chat-qa/panel/` (panneau) et `build/chat-qa/comment/` (bulle du mode Commentaire, comparée aux planches `tests/chat-panel/reference/comment/`).
 
 ## 11. Historique du contrat
 
@@ -442,21 +442,27 @@ interface Layout {
 `layout` en bulle (même si la taille n'a pas changé : c'est l'accusé de réception), puis dès que le contenu change
 (jamais deux fois de suite la même valeur). La mesure ne dépend pas de la taille actuelle de la fenêtre : l'hôte peut
 la demander fenêtre masquée. Quand le contenu dépasse `maxHeight`, le fil défile et son haut s'estompe (fondu de 96 px).
-Le **diff en grand** prend toute la hauteur disponible : `height` = `maxHeight`.
+Le **diff en grand** prend toute la hauteur disponible : `height` = `maxHeight` (une commande ou les arguments d'un
+outil, ouverts de la même façon, gardent leur propre hauteur, jamais moins de 224 px).
 
 Hauteurs des planches : saisie seule 104 · tour en cours 224 · arrêté 265 · erreur 248 (détails 279) · terminé 279 ·
 autorisation 303 et diff en grand 303 (planches dessinées avec 303 px de place : le haut du fil défile sous le fondu).
 
-Menus (modèle, mode, « + », @, /) : ils s'ouvrent **dans** la bulle. Si la bulle est trop basse pour le menu, elle
-grandit le temps du menu (nouveau `bubble.size`), puis reprend sa taille.
+Menus (modèle, mode, « + », @, /) : ils s'ouvrent **dans** la bulle. S'il y a la place au-dessus de leur bouton, ils
+couvrent le fil et la taille ne change pas. Sinon la bulle grandit le temps du menu (un seul `bubble.size`), du côté où
+l'hôte agrandit la fenêtre : sous le bouton, ou au-dessus quand `side` vaut `"above"`. À la fermeture, elle reprend sa
+taille. L'hôte ne ferme rien quand il redimensionne : la page ne ferme pas ses menus sur `resize` en bulle.
+
+Séquence type (planche 1 → 3) : `layout` → 84 (saisie vide) ; l'utilisateur écrit deux lignes → 104 ; `message.user` +
+`state.running` → 96, puis le tour grandit ligne à ligne jusqu'à 224 ; `turn.end` → 279.
 
 ### 19.3 Ce que la bulle montre
 
 | État | Dans la bulle |
 |---|---|
-| Départ | La saisie seule : « + », le mode avec son nom (Demander, Auto, Planifier), le modèle · effort, envoyer. Pas de bouton viser : l'élément est celui de la bulle. |
+| Départ | La saisie seule : « + », le mode avec son nom (Demander, Auto, Planifier), le modèle · effort, envoyer. Pas de bouton viser : l'élément est celui de la bulle. Le bouton envoyer reste allumé saisie vide (planches) : il met alors le curseur dans la saisie ; il ne s'éteint que si l'envoi est impossible (pas de dossier, agent pas prêt, site non local). Sans dossier (`folder: null`) : une ligne « Choisissez le dossier du projet pour commencer. » avec « Choisir le dossier… » (`folder.choose`). |
 | Tour en cours | Le message (bulle bleue), puis « modèle · effort » et l'étape en cours à droite (« Lit checkout.css… »), le texte de l'agent. En bas : le mode et **Arrêter** (`stop`). Pas de saisie pendant le tour. |
-| Survol de l'étape | Infobulle avec les étapes déjà faites (« A lu index.html », « A utilisé 1 outil MCP »). Clavier : le focus sur l'étape l'ouvre. |
+| Survol de l'étape | Infobulle avec les étapes déjà faites (« A lu index.html », « A utilisé 1 outil MCP » : les appels MCP bruts sont comptés ensemble ; 6 lignes au plus, les plus récentes). Clavier : le focus sur l'étape l'ouvre ; un clic ou Entrée l'épingle. |
 | Arrêté (`turn.end` `cancelled`) | « S'est arrêté » à droite du modèle ; la saisie revient (« Que voulez-vous ajouter ? »). |
 | Autorisation (`permission.request`) | Dans la bulle, à la place de la saisie : la ligne « Claude veut modifier checkout.css +6 −2 › », « Dire à Claude quoi faire à la place… », l'interrupteur Auto (= option `allow_always`), Refuser / Autoriser. Le haut du fil s'estompe. |
 | Diff en grand | Clic sur la ligne de fichier (autorisation) ou sur la barre des changements (terminé) : le diff prend la bulle, avec fermer ; sous un tour terminé, « Copier ». La page envoie `checkpoint.viewChanges` et complète avec `changes.diff` quand le diff n'était pas dans `turn.end`. |
@@ -474,9 +480,10 @@ panneau, modifier un message, « Tout annuler », dates. Ces messages sont accep
   `Ctrl+Entrée` (`annotate`) ne demande que quelques mots en bulle. L'hôte n'envoie pas `element.attached` pour
   l'élément ancré.
 - **`state.running`** décrit la conversation montrée dans la bulle, pas l'agent en général.
-- **Échap**, dans l'ordre : ferme le menu ouvert → ferme le diff en grand → `close`. Jamais `stop`, jamais de refus
-  d'autorisation : la bulle se ferme, l'agent continue, la demande d'autorisation attend la réouverture. La page joue
-  sa sortie (120 ms) puis envoie `close` ; la surface reste invisible jusqu'au prochain `layout` (ou `focus`).
+- **Échap**, dans l'ordre : ferme le menu ouvert → ferme l'infobulle épinglée → ferme le diff en grand → `close`.
+  Jamais `stop`, jamais de refus d'autorisation : la bulle se ferme, l'agent continue, la demande d'autorisation
+  attend la réouverture. `close` part tout de suite (aucune attente côté hôte) ; la page efface sa surface en 120 ms
+  et la garde invisible jusqu'au prochain `layout` (ou `focus`) : la réouverture ne montre jamais l'ancien état.
 - **`focus`** : le curseur va dans la saisie ; sur « Autoriser » si une autorisation attend ; sur la bulle elle-même
   pendant un tour (il n'y a pas de saisie).
 - **Infobulles** : `hover` / `pointer.leave` comme en 1.5.
@@ -493,15 +500,28 @@ Un seul tour d'agent à la fois. Si l'utilisateur écrit dans la bulle d'un autr
 la demande et envoie `queue { items: [{ id, text, after: "button.btn-primary" }] }` à cette bulle. Elle montre le
 message en attente (bulle estompée) et, dessous, le texte discret « Commencera après le travail en cours sur
 button.btn-primary » avec « × » (`queue.remove`). Sans `after` : « En file ». Quand le tour démarre, l'hôte envoie
-`queue { items: [] }`, puis `message.user` et `turn.start` comme d'habitude.
+`queue { items: [] }`, puis `message.user` et `turn.start` comme d'habitude. Un bandeau `strip` d'identifiant `wait`
+qui dirait la même phrase n'est pas affiché en bulle tant qu'un message en attente porte `after` (pas de doublon).
 
 ### 19.7 Écarts assumés (bulle)
 
 1. **Infobulles dans la bulle.** Sur `1AIE-0`, l'infobulle des étapes dépasse de la bulle (7 px en haut, 38 px à
    droite). La bulle est une fenêtre : rien ne peut être dessiné dehors. L'infobulle s'ouvre donc sous l'étape, calée
-   à droite, dans la bulle.
+   à droite, dans la bulle (même dessin : 178 px, fond `#2F2F2F`, coin « queue » de 4 px du côté de l'étape).
 2. **« Ask » → « Demander »** (noms de modes en français, §18).
 3. **Menus** : non dessinés dans les planches du mode ; mêmes menus que le panneau, ouverts dans la bulle.
+4. **Variantes entre planches**, une seule retenue : bulle du message de 210 px au plus (`1AE7-0` la dessine à 220) et
+   de rayon 12 (`1AWI-0` : 10) ; étape en cours avec l'anneau de 14 px et son retrait de `1B30-0` (`1ANU-0` : anneau de
+   12 px collé au bord droit).
+5. **Texte** : mêmes polices que l'app (Inter Display Regular / Medium, JetBrains Mono) ; Paper dessine les lettres un
+   peu plus grasses et plus serrées. C'est tout l'écart moyen mesuré, comme pour le panneau (§9).
+6. **Ce que les planches ne dessinent pas** et que la bulle sait montrer : plan proposé, file d'attente entre éléments,
+   plusieurs fichiers dans le diff en grand, commande à autoriser, pas de dossier, mode Auto (nom en couleur d'accent).
+
+Écart moyen mesuré (canal, sur 255) entre la bulle de la planche et la bulle rendue, à taille égale au pixel :
+saisie 7,1 · tour en cours 9,1 · arrêté 9,9 · autorisation 7,5 · autorisation, diff ouvert 3,2 · erreur 7,2 · erreur,
+détails 8,1 · terminé 8,2 · terminé, diff ouvert 3,4 (peu de texte : l'écart tombe). Captures et comparaisons :
+`build/chat-qa/comment/` et `build/chat-qa/comment/compare/`.
 
 ### 19.8 Nom du dossier plutôt que le chemin ou l'adresse (retour Paper `156L-0`)
 

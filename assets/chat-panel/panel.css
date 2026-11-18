@@ -645,7 +645,7 @@ svg.i { display: block; flex-shrink: 0; }
 .bt-st.run .spin { color: #FFFFFF; }
 .bt-st.stop { color: var(--w50); }
 .bt-st.stop svg { opacity: 1; }
-.bt-st.done { padding: 0 6px 0 4px; margin-right: -2px; line-height: 20px; color: #FFFFFFBF; }
+.bt-st.done { padding: 2px 6px 2px 4px; margin-right: -2px; line-height: 20px; color: #FFFFFFBF; }
 button.bt-st:not(:disabled):active { transform: scale(0.96); }
 @media (hover: hover) { button.bt-st:hover, button.bt-st.tip-on { background: var(--fill6); } button.bt-st.done:hover { color: #FFFFFF; } }
 .bt-text { align-self: stretch; display: flex; flex-direction: column; gap: 8px; padding: 4px 8px 6px; border-radius: 4px 12px 16px 12px; background: var(--fill8); }
@@ -782,6 +782,17 @@ button.bt-st:not(:disabled):active { transform: scale(0.96); }
 /* menus live inside the bubble */
 .bub .menu { max-height: none; }
 .bub .mfoot { display: none; }
+/* small targets keep a 24 px hit area (the visible size stays the boards') */
+/* never past the bottom of their row: an overflow there would make the thread scrollable by a few pixels */
+button.bt-st.run, .bt-more { position: relative; }
+button.bt-st.run::before { content: ""; position: absolute; inset: -1px 0; }
+.bt-more::before { content: ""; position: absolute; inset: -4px 0 0; }
+@media (prefers-reduced-motion: no-preference) { :root.bub:not(.reduce-motion) .bview { animation: fade 120ms ease both; } }
+@media (forced-colors: active) {
+  :root.bub #app { border: 1px solid CanvasText; }
+  .bub .b-tip, .bub .bview, .bt-bar, .bt-text, .bt-model, .bperm-file, .bperm-in { outline: 1px solid CanvasText; outline-offset: -1px; }
+  .bub .send.stop, .btn.danger { forced-color-adjust: none; }
+}
 
 /* fatal (protocol mismatch) */
 .fatal { margin: auto; padding: 24px; text-align: center; color: var(--w70); font-size: 13px; }

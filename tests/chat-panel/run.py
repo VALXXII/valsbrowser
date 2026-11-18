@@ -196,6 +196,9 @@ try:
             cdp.js("new Promise(r=>{document.activeElement&&document.activeElement.blur();requestAnimationFrame(()=>requestAnimationFrame(r))})")   # no caret, no focus ring: the boards show neither
             size = bubble_size()
             bubble_sizes[name] = size
+            over = cdp.js("(()=>{const s=document.querySelector('.scroller'),a=document.getElementById('app');return [s.scrollHeight-s.clientHeight, s.scrollTop, a.scrollTop, Math.round(a.getBoundingClientRect().height)]})()")
+            if name in ("c-2-autorisation", "c-fil-long"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
+            else: check(over[:3] == [0, 0, 0] and size and over[3] == size[1], f"{name}: the window fits the content exactly (nothing scrolls, nothing is cut)", str(over) + " " + str(size))
             out = os.path.join(COMMENT, name + ".png")
             cdp.call("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
             shot(out, {"x": 0, "y": 0, "width": size[0], "height": size[1]} if size else None)
@@ -422,6 +425,8 @@ try:
         # queue between elements, menus, long thread, no folder
         load("c-file-attente")
         q = cdp.js("[document.querySelector('.bq .bubble').textContent, document.querySelector('.bq-cap .tx').textContent, V('.composer')]")
+        host({"type": "strip", "id": "wait", "tone": "neutral", "text": "Commencera après le travail en cours sur button.btn-primary."})
+        check(cdp.js("V('.strip')") == 0 and cdp.js("V('.bq-cap')") == 1, "bubble (queue): the host's `wait` strip, which says the same sentence, is not shown twice")
         click(".bq-cap .icon-btn")
         check(q == ["Mets ce titre en gras", "Commencera après le travail en cours sur button.btn-primary", 1] and "queue.remove:q1" in posted(), "bubble (queue): a request written during another element's turn waits, with its discreet line and « × »", str(q))
         load("c-menu-modele")

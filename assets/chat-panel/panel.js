@@ -767,7 +767,10 @@
     return out;
   }
   function activeStrip() {
-    const all = Array.from(S.strips.values()).concat(derivedStrips());
+    let all = Array.from(S.strips.values()).concat(derivedStrips());
+    // bubble: the waiting message already says « Commencera après le travail en cours sur … » under itself (queue.after);
+    // the host's strip that says the same thing (`wait`) would repeat it
+    if (BUB() && S.queue.some((q) => q.after)) all = all.filter((s) => s.id !== "wait");
     return all.find((s) => s.tone === "danger") || all[0] || null;
   }
   const hasDangerStrip = () => { const s = activeStrip(); return !!(s && s.tone === "danger"); };
