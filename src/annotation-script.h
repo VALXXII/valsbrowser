@@ -56,6 +56,13 @@
 // V1.4 (chat intégré): « pick » false switches the SELECTION off while the chat panel stays open: no « viseur » cursor
 // (the sheet is emptied), no hover frame nor inspector, no iframe shields, the page gets its own clicks and keys
 // again. The script stays: the chat's marks, source() and sources() go on. « pick » true brings it all back.
+// Chat, Mode Commentaire (design/chat-integration.md): `cmarks` [{id, selector, state}] draws one frame + icon per
+// conversation of the page (Paper 18IJ-0: 2 px accent border 4 px around the element, a 24 px accent tag at its top
+// left with the mark; state working = a spinner in the tag, waiting = « En attente » after the mark) and answers the
+// ids it found; `follow` {selector} (or {current: true}) posts { op: 'anchor', x, y, w, h, vw, vh } whenever the
+// element moves (scroll, layout, resize: checked each frame while the page scrolls, every 250 ms otherwise) and
+// { op: 'anchor', gone: true } once it is no longer in the page; null stops. Both live in document-anchored wrappers
+// like the chat marks (glued while scrolling).
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <string>
@@ -111,7 +118,8 @@ var root = host.attachShadow({ mode: 'closed' });
 var T = 'transform 120ms cubic-bezier(0.2,0,0,1),opacity 120ms ease-out';
 // The accent rules (frame fill 8 %, edges, label, padding hatches and their labels), rebuilt by the « accent » command.
 function accentCss() {
-  return '.f{width:100px;height:100px;background:rgba(' + A + ',0.08)}' +
+  return ':host{--a:' + A + '}.cf,.ct{--a:' + A + '}' +
+    '.f{width:100px;height:100px;background:rgba(' + A + ',0.08)}' +
     '.h,.v{background:rgb(' + A + ')}' +
     '.l{background:rgb(' + A + ')}' +
     '.pb{background:repeating-linear-gradient(135deg,rgba(' + A + ',.4) 0 1px,transparent 1px 5px),rgba(' + A + ',.08)}' +
@@ -134,6 +142,10 @@ root.innerHTML = '<style>' +
   '.gl{background:#D63E92}' +
   '.w{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none;transform:translate(0px,0px)}' +
   '.mk{position:fixed;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 120ms ease-out}' +
+  '.cf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a))}' +
+  '.ct{position:absolute;left:-2px;top:-2px;height:24px;min-width:24px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:6px;padding:0 0;' +
+  'border-bottom-right-radius:6px;background:rgb(var(--a));color:#fff;font:500 11px/14px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;white-space:nowrap}' +
+  '.ct.wait{padding:0 8px 0 6px}.ct.wait svg{opacity:.7}.ct .ms{width:11px;height:11px}' +
   '.mf{box-sizing:border-box;position:absolute;left:0;top:0}' +
   '.mt{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;gap:6px;padding:0 6px;border-radius:3px 3px 0 0;' +
   'font:500 12px/16px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;max-width:60vw;overflow:hidden;letter-spacing:0}' +
@@ -148,6 +160,7 @@ var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4],
 var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb');
 var insPool = { pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = null;
 var frameWrap = root.querySelector('.fw'), markWrap = root.querySelector('.mw'), placed = null;
+var cmarks = {}, cmTimer = 0, follow = null, followTimer = 0, followLast = '';   // Mode Commentaire
 (D.documentElement || D).appendChild(host);
 adopt(D);
 
@@ -594,6 +607,7 @@ function frame() {
   raf = 0; if (!alive) return;
   syncShields();
   if (mark) markPlace();
+  cmPlaceAll(); followCheck();
   if (off) return;
   if (frozen) { if (cur) place(cur); return; }
   if (!haveMove) return;
@@ -637,7 +651,7 @@ function onFocus(e) {
   if (t.getRootNode && t.getRootNode().host) { var info = hit(r.left + 1, r.top + 1); if (info && info.el === t) cur = info; }
   down = []; keyboard = true; place(cur);
 }
-function onScroll() { if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
+function onScroll() { if (follow || cmAny()) schedule(); if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
 function onLeave(e) { if (!off && !e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
 
 function selectionInfo(text) {
@@ -773,9 +787,80 @@ function markSet(a) {
   return true;
 }
 
+// ---- Mode Commentaire: one frame + icon per conversation of this page, and the element the bubble follows
+var MARK_SVG = '<svg width="13" height="12.25" viewBox="48 239.883 13 12.26"><path d="M48.001 250.363L48.049 240.981C48.051 240.535 48.43 240.178 48.89 240.19L59.287 240.226C61.157 240.272 61.667 242.743 59.96 243.484L54.486 245.391C54.03 245.589 53.645 245.909 53.375 246.314 53.342 246.363 53.316 246.416 53.293 246.47L51.265 251.246C50.347 252.733 47.992 252.096 48.001 250.363Z" fill="#fff"/></svg>';
+function cmAny() { for (var k in cmarks) return true; return false; }
+function cmFind(sel) { try { var l = D.querySelectorAll(String(sel)); return l.length === 1 ? l[0] : null; } catch (e) { return null; } }
+function cmTag(m) {
+  var tag = m.tag; while (tag.firstChild) tag.removeChild(tag.firstChild);
+  tag.className = 'ct' + (m.state === 'waiting' ? ' wait' : '');
+  if (m.state === 'working') { var sp = D.createElement('div'); sp.className = 'ms' + (reduced ? '' : ' spin'); tag.appendChild(sp); }
+  else { var holder = D.createElement('span'); try { holder.innerHTML = MARK_SVG; } catch (e) {} while (holder.firstChild) tag.appendChild(holder.firstChild); }
+  if (m.state === 'waiting') { var t = D.createElement('span'); t.textContent = String(m.waitLabel || 'En attente').slice(0, 40); tag.appendChild(t); }
+}
+function cmPlace(m) {
+  if (!m.el || !m.el.isConnected) { m.el = cmFind(m.selector); }
+  if (!m.el) { m.wrap.style.display = 'none'; return false; }
+  var r = m.el.getBoundingClientRect();
+  if (r.width < 1 && r.height < 1) { m.wrap.style.display = 'none'; return false; }
+  m.wrap.style.display = ''; anchor(m.wrap, m.el);
+  var x = r.left - 4, y = r.top - 4, w = r.width + 8, h = r.height + 8;
+  m.box.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)';
+  m.frame.style.width = w.toFixed(2) + 'px'; m.frame.style.height = h.toFixed(2) + 'px';
+  return true;
+}
+function cmPlaceAll() { for (var k in cmarks) cmPlace(cmarks[k]); }
+function cmSet(list) {
+  var keep = {}, found = [];
+  if (!Array.isArray(list)) list = [];
+  for (var i = 0; i < list.length && i < 200; i++) {
+    var it = list[i] || {}; var id = String(it.id || '').slice(0, 128); if (!id || !it.selector) continue;
+    keep[id] = 1;
+    var m = cmarks[id];
+    if (!m || m.selector !== String(it.selector)) {
+      if (m) try { m.wrap.remove(); } catch (e) {}
+      var wrap = D.createElement('div'); wrap.className = 'w';
+      var box = D.createElement('div'); box.className = 'mk'; box.style.opacity = '1';
+      var fr = D.createElement('div'); fr.className = 'cf'; var tag = D.createElement('div'); tag.className = 'ct';
+      fr.appendChild(tag); box.appendChild(fr); wrap.appendChild(box); root.insertBefore(wrap, markWrap);
+      m = cmarks[id] = { id: id, selector: String(it.selector), wrap: wrap, box: box, frame: fr, tag: tag, el: null, state: '' };
+    }
+    if (m.state !== String(it.state || 'idle') || m.waitLabel !== it.waitLabel) { m.state = String(it.state || 'idle'); m.waitLabel = it.waitLabel; cmTag(m); }
+    m.el = null;
+    if (cmPlace(m)) found.push(id);
+  }
+  for (var k in cmarks) if (!keep[k]) { try { cmarks[k].wrap.remove(); } catch (e) {} delete cmarks[k]; }
+  if (cmTimer) { clearInterval(cmTimer); cmTimer = 0; }
+  if (cmAny()) cmTimer = setInterval(cmPlaceAll, 400);   // follows a layout change (HMR) without a frame loop
+  return found;
+}
+function followCheck() {
+  if (!follow) return;
+  var el = follow.el;
+  if (!el || !el.isConnected) { el = follow.el = follow.selector ? cmFind(follow.selector) : null; }
+  if (!el) { if (followLast !== 'gone') { followLast = 'gone'; post({ op: 'anchor', gone: true }); } return; }
+  var r = el.getBoundingClientRect(), o = { x: r.left + follow.ox, y: r.top + follow.oy, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
+  var key = [o.x, o.y, o.w, o.h, o.vw, o.vh].map(function (v) { return v.toFixed(1); }).join(',');
+  if (key === followLast) return;
+  followLast = key; o.op = 'anchor'; post(o);
+}
+function followSet(a) {
+  if (followTimer) { clearInterval(followTimer); followTimer = 0; }
+  follow = null; followLast = '';
+  if (!a) return true;
+  var el = null, ox = 0, oy = 0;
+  if (a.current && cur && cur.el && !cur.range) { el = cur.el; ox = cur.ox; oy = cur.oy; }
+  else if (a.selector) el = cmFind(a.selector);
+  follow = { el: el, selector: a.selector ? String(a.selector) : '', ox: ox, oy: oy };
+  followCheck();
+  followTimer = setInterval(followCheck, 250);
+  return !!el;
+}
+
 function teardown() {
   if (!alive) return; alive = false;
   markClear();
+  if (cmTimer) { clearInterval(cmTimer); cmTimer = 0; } if (followTimer) { clearInterval(followTimer); followTimer = 0; } cmarks = {}; follow = null;
   if (raf) cancelAnimationFrame(raf); raf = 0;
   for (var i = 0; i < listeners.length; i++) { var l = listeners[i]; try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) {} }
   listeners = []; cur = null; down = [];
@@ -824,6 +909,8 @@ function cmd(op, arg) {
     return true;
   }
   if (op === 'mark') return markSet(arg);   // chat: true when the element was found and marked
+  if (op === 'cmarks') return cmSet(arg);   // Mode Commentaire: the ids found in this page
+  if (op === 'follow') return followSet(arg);
 }
 
 var opts = { capture: true, passive: true };
@@ -862,7 +949,8 @@ inline std::wstring PageCommand(const std::wstring& nonce, const std::wstring& o
 // names (see sourcesOf), `mark` -> "true" / "false".
 inline std::wstring PageQuery(const std::wstring& nonce, const std::wstring& what, const std::wstring& argJson = L"null") {
     return L"(function(){try{var h=window[Symbol.for('browser.annotation')];if(h&&h.nonce==='" + nonce + L"'){" +
-           (what == L"source" ? std::wstring(L"return JSON.stringify(h.source());") : what == L"sources" ? std::wstring(L"return JSON.stringify(h.sources());") : L"return JSON.stringify(!!h.cmd('" + what + L"'," + argJson + L"));") +
+           (what == L"source" ? std::wstring(L"return JSON.stringify(h.source());") : what == L"sources" ? std::wstring(L"return JSON.stringify(h.sources());") :
+            what == L"cmarks" ? L"return JSON.stringify(h.cmd('cmarks'," + argJson + L")||[]);" : L"return JSON.stringify(!!h.cmd('" + what + L"'," + argJson + L"));") +
            L"}}catch(e){}return '';})()";
 }
 }} // namespace NativeChrome::Annotations

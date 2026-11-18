@@ -16,6 +16,7 @@
 #include "../../src/chat-tools.h"
 #include "../../src/chat-batch.h"
 #include "../../src/chat-options.h"
+#include "../../src/chat-bubble.h"
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", what); } }
@@ -373,10 +374,52 @@ static void TestOptions() {
     Check(Shown(claudeEffort, "default") == "", "an effort still on the alias shows nothing (never « Default »)");
 }
 
+// Mode Commentaire: where the bubble goes (src/chat-bubble.h) and what the store keeps of it (src/chat-store.h).
+static void TestBubble() {
+    using namespace ChatBubble;
+    const Rect area{0, 100, 1200, 900};   // the page area (screen px)
+    const int w = 305, h = 280, gap = 8, margin = 12;
+    auto p = Place({100, 400, 400, 450}, w, h, area, gap, margin);
+    Check(p.side == Side::Right && p.rect.left == 408 && p.rect.top == 400 && p.rect.W() == w && p.rect.H() == h, "room at the right: next to the element, aligned on its top");
+    p = Place({850, 400, 1100, 450}, w, h, area, gap, margin);
+    Check(p.side == Side::Left && p.rect.right == 842 && p.rect.top == 400, "no room at the right: at its left");
+    p = Place({20, 200, 1180, 260}, w, h, area, gap, margin);
+    Check(p.side == Side::Below && p.rect.top == 268 && p.rect.left == 20, "a full-width element: under it");
+    p = Place({20, 700, 1180, 880}, w, h, area, gap, margin);
+    Check(p.side == Side::Above && p.rect.bottom == 692, "a full-width element low in the page: above it, its bottom on the element");
+    p = Place({20, 120, 1180, 880}, w, h, area, gap, margin);
+    Check(p.side == Side::Inside && p.rect.left >= 12 && p.rect.right <= 1188 && p.rect.top >= 112 && p.rect.bottom <= 888, "no room anywhere: inside the page area, never out of it");
+    p = Place({100, 820, 400, 860}, w, h, area, gap, margin);
+    Check(p.side == Side::Right && p.rect.bottom <= 888 && p.rect.top == 888 - h, "near the bottom: slid up to stay in the page");
+    p = Place({850, 400, 1100, 450}, w, h, area, gap, margin, Side::Below);
+    Check(p.side == Side::Below, "the side it is on is kept while it still fits (a new height never makes it jump)");
+    int fw = 305, fh = 900; Fit(fw, fh, area, margin, 305, 520);
+    Check(fw == 305 && fh == 520, "the height is bounded by the page's maximum");
+    Check(PageKey("http://localhost:5173/checkout#total") == "http://localhost:5173/checkout" && PageKey("http://x/a?b=1") == "http://x/a?b=1", "a page is its URL without the fragment");
+}
+static void TestAnchorStore(const std::wstring& root) {
+    namespace CS = ChatStore;
+    CS::History hist(root);
+    CS::Conversation c; c.head.id = "c_anchor1"; c.head.origin = "http://localhost:5173"; c.head.title = "Bouton"; c.head.updatedAt = 900000;   // more recent than the 200 rows already there (the history keeps the newest)
+    c.head.anchorSelector = "main > button.btn-primary"; c.head.anchorLabel = "button.btn-primary"; c.head.anchorPage = "http://localhost:5173/checkout"; c.head.anchorSource = "index.html:25";
+    c.items.push_back(StrictJson::Value::Obj());
+    Check(hist.Save(c), "a conversation of an element is saved");
+    const auto rows = hist.List(); bool found = false;
+    for (const auto& r : rows) if (r.id == "c_anchor1") found = r.Anchored() && r.anchorSelector == "main > button.btn-primary" && r.anchorLabel == "button.btn-primary" && r.anchorPage == "http://localhost:5173/checkout" && r.anchorSource == "index.html:25";
+    Check(found, "its element (selector, label, page, source) comes back from the index: the frames are drawn without opening it");
+    CS::Conversation plain; plain.head.id = "c_plain"; plain.head.origin = "http://localhost:5173"; plain.head.updatedAt = 900001; plain.items.push_back(StrictJson::Value::Obj());
+    hist.Save(plain); bool plainOk = false; for (const auto& r : hist.List()) if (r.id == "c_plain") plainOk = !r.Anchored();
+    Check(plainOk, "a panel conversation has no element");
+    const std::wstring file = root + L"\\annotations-chat\\projects-layout.json";
+    CS::Projects p; p.layout = "comment"; p.Save(file);
+    Check(CS::Projects::Load(file).layout == "comment", "the band's layout switch is remembered");
+    CS::Projects q; q.Save(file); Check(CS::Projects::Load(file).layout.empty(), "never chosen: no layout");
+}
+
 int wmain() {
-    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestBatch(); TestOptions();
+    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestBatch(); TestOptions(); TestBubble();
     const std::wstring root = TempDir();
-    TestStore(root); TestFolder(root);
+    TestStore(root); TestFolder(root); TestAnchorStore(root);
     RemoveTree(root);
     Check(GetFileAttributesW(root.c_str()) == INVALID_FILE_ATTRIBUTES, "temporary folder removed");
     std::printf("%s chat_units_test: %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);

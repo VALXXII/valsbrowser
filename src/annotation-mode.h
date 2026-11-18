@@ -111,6 +111,11 @@ bool Shown();                                            // … or still sliding
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);   // V1.3: a local site's selection goes to the chat (opened if needed); false: the note panel
 void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);
 void SelectionChanged();                                 // V1.4: the selection was switched on / off (the aim button's state)
+void OnAnchor(const AnnotationHost::Envelope& e);        // Mode Commentaire: the bubble's element moved (or is gone)
+bool CommentHistory(bool open, bool keyboard);           // Mode Commentaire: the launcher's history lists the conversations whose element is gone
+bool OpenFromHistory(const std::wstring& id);            // … and opens one of them
+void SwitchLayout(bool comment);                         // the band's switch (Paper 1AYP-0)
+void ScriptReady();                                      // the mode's page script is in the page
 bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r);   // true: the image was for the chat
 bool AskAvailable(const std::shared_ptr<Tab>& t);        // « Demander à l'agent » in the note panel (local sites)
 void AskFromNote(const std::wstring& draft);
@@ -650,6 +655,7 @@ AUI::HistoryData HistoryFrom(const std::vector<BA::Entry>& entries) {
     return d;
 }
 void LoadHistory(bool open, bool keyboard) {
+    if (Chat::CommentHistory(open, keyboard)) return;   // Mode Commentaire: the conversations whose element is gone, only
     if (historyBusy) { historyDirty = true; return; }
     historyBusy = true;
     struct Out { std::vector<BA::Entry> entries; std::map<std::string, Cached> thumbs; std::vector<BA::Reader> readers; };
@@ -1004,7 +1010,8 @@ void ConnectClosed(AUI::ConnectEnd end) {
 void EnsureUi() {
     if (uiReady) return; uiReady = true;
     AUI::BannerHooks bh; bh.exit = [] { Exit(L"quit"); }; bh.connect = [] { OpenConnect(false); }; bh.announce = [](const std::wstring& t) { Announce(t); };
-    bh.chat = [] { Chat::Toggle(false); };
+    bh.chat = [] { Chat::SwitchLayout(false); };     // « Panneau »: the chat at the right (opens it)
+    bh.comment = [] { Chat::SwitchLayout(true); };   // « Commentaire »: a bubble on the element clicked
     banner.Init(instance, window, base, bh);
     AUI::NoteHooks nh;
     nh.submit = [](const AUI::NoteSubmission& sub) { OnSubmit(sub); };
@@ -1028,7 +1035,7 @@ void EnsureUi() {
     lh.history.remove = [](const std::wstring& id) { HistoryStoreOp(id, 0); };
     lh.history.undo = [](const std::wstring& id) { HistoryStoreOp(id, 1); };
     lh.history.removeFinal = [](const std::wstring& id) { HistoryStoreOp(id, 2); };
-    lh.history.detail = [](const std::wstring& id) { HistoryDetail(id); };
+    lh.history.detail = [](const std::wstring& id) { if (Chat::OpenFromHistory(id)) return; HistoryDetail(id); };
     lh.history.copyEntry = [](const std::wstring& id) {
         const auto* e = FindHistory(id); if (!e) return;
         if (CopyToClipboard(AH::Wide(BA::ToMarkdown(*e, e->annotation.screenshot.present ? Store().ShotPath(e->annotation.siteKey, e->annotation.id) : L"")))) Log(L"ANNOTATE copied as Markdown " + id);
@@ -1075,7 +1082,7 @@ void Activate(const Start& st) {
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([nonce](HRESULT hr, LPCWSTR result) -> HRESULT {
         if (!s.active || s.nonce != nonce) return S_OK;
         if (FAILED(hr) || !result || wcscmp(result, L"\"ok\"") != 0) { Log(L"ANNOTATE script injection failed"); Exit(L"injection"); Announce(TR(annotation_mode_unavailable)); }
-        else s.injected = true;
+        else { s.injected = true; Chat::ScriptReady(); }   // Mode Commentaire: the frames of the page's conversations
         return S_OK; });
     const ULONGLONG started = GetTickCount64();
     chrome.annotationBand = NativeChrome::Annotations::BannerSpec::height; SyncChrome(); Layout();   // the band first: the page is measured in its final viewport
@@ -1230,6 +1237,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     case AH::Op::Shown: OnShown(c.env.serial); break;
     case AH::Op::Escape: if (!s.paused) Exit(L"escape"); break;
     case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
+    case AH::Op::Anchor: Chat::OnAnchor(c.env); break;
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
     }
     return true;

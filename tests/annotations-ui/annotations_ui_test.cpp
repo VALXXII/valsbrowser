@@ -441,15 +441,15 @@ static void Captures(Ink& ink) {
         sampled.push_back({cd == 96 ? "7.a note corner at 100 %: blended edge pixels, region / layer" : "7.a note corner at 150 %: blended edge pixels, region / layer", std::to_string(nbBefore), std::to_string(nbAfter)});
     }
     {   Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float) { BannerVisual bv; bv.beta = true; bv.chatShown = true; bv.chatActive = true; PaintBanner(i, w, 32, bv); }, c);
-        Save(ink, c, L"6.b-band-ask-agent-open.png");
+        Save(ink, c, L"6.b-band-layout-switch-comment.png");
         const auto l = LayoutBanner(ink, 1180, true, true), plain = LayoutBanner(ink, 1180, true, false);
-        Geo("6.b band « Demander à l'agent » — gap to « Quitter »", 1180, 12, l.quit.left - l.chat.right);
-        Geo("6.b band « Demander à l'agent » — same height as « Quitter »", 1180, l.quit.bottom - l.quit.top, l.chat.bottom - l.chat.top);
+        Geo("6.b band layout switch (Paper 1AYP-0) — gap to « Quitter »", 1180, 12, l.quit.left - l.sw.right);
+        Geo("6.b band layout switch — 24 px segments, 2 apart", 1180, 24 + 2 + 24, l.chat.right - l.comment.left);
         Geo("6.b band « Quitter » does not move", 1180, plain.quit.left, l.quit.left);
-        Geo("6.b band reminder moves left of the button", 1180, 12, l.chat.left - l.remind.right);
-        Geo("6.b band without the chat: no button", 1180, 0, plain.chat.right - plain.chat.left);
+        Geo("6.b band reminder moves left of the switch", 1180, 12, l.sw.left - l.remind.right);
+        Geo("6.b band without the chat: no switch", 1180, 0, plain.sw.right - plain.sw.left);
         Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float) { BannerVisual bv; bv.beta = true; bv.chatShown = true; bv.reminder = 1; bv.focus = true; bv.focusItem = BannerChat; bv.keyboard = true; PaintBanner(i, w, 32, bv); }, c);
-        Save(ink, c, L"6.b2-band-ask-agent-reminder-focus.png"); }
+        Save(ink, c, L"6.b2-band-layout-switch-reminder-focus.png"); }
     scene([&](Ink& i) {
         NoteView v = nv; v.capture = CaptureState::Ready; const auto l = LayoutNote(i, v);
         PillView pv; pv.context = v.context; pv.capture = CaptureState::Ready; const D2D1_RECT_F pr = PillRect(i, CaptureState::Ready, NoteSpec::width / 2, l.height + 8, 0);

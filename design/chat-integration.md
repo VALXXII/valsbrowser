@@ -390,3 +390,53 @@ Parcours en vraie fenêtre (faux agent, listes du vrai adaptateur Claude : `--cl
   l'entrée « ask » = Demander, le premier mode automatique de la table (Claude `acceptEdits`, Codex `workspace-write`) =
   Auto, le plan = Planifier, l'autre mode automatique (Claude `auto`, Codex `agent`) = Autonome ; ordre de Paper 14RK-0.
 - Faux agent : `--claude-like` donne aussi les modes de l'adaptateur Claude (Manual, Accept edits, Plan, Auto).
+
+## Mode Commentaire (hôte) — une bulle par élément
+
+Planches Paper 18NS-0 … 18IJ-0, contrat B 1.8 (`design/chat-panel.md` §19, côté page : agent A). Code : `src/chat-comment.h`
+(mode), `src/chat-bubble.h` (placement, pur, testé), accroches dans `chat-host*.h`, `annotation-mode.h`,
+`annotation-banner.h`, `annotation-script.h`, `annotation-host.h`, `chat-panel-view.h`, `chat-store.h`.
+
+- **Sélecteur du bandeau** (Paper 1AYP-0) : deux icônes à gauche de « Quitter », à la place de « Demander à l'agent » :
+  bulle = Commentaire, panneau = Chat à droite. Segment choisi sur blanc 10 % (rayon 6), icône 14 px à 80 % (l'autre à
+  50 %). Deux boutons bascule pour les lecteurs d'écran (`AnnotationLayoutComment`, `AnnotationAskAgent`). Le choix est
+  mémorisé pour tous les sites (`projects.json` « layout ») ; jamais choisi = Panneau (le comportement d'avant). Ctrl+Maj+D
+  ouvre le panneau.
+- **La bulle** : une fenêtre popup appartenant à la fenêtre du navigateur, qui héberge **la même WebView** que le
+  panneau (déplacée par `put_ParentWindow` ; le panneau la récupère de la même façon) : une seule page, un seul fil.
+  305 px CSS de large, la hauteur que la page demande (`bubble.size`), au plus min(520, place libre). Placée dans
+  l'espace libre à côté de l'élément (à droite, sinon à gauche, dessous, dessus ; dans la page sinon), jamais hors de la
+  zone de page ; le côté choisi est gardé tant qu'il tient (une nouvelle hauteur ne la fait pas sauter). Coins arrondis
+  et ombre de DWM. Ordre à l'ouverture : `layout` (bubble, maxWidth, maxHeight, side, element, open), `state`,
+  `thread.reset`, `focus`.
+- **Suivi de l'élément** : le script de page (`follow`) envoie `anchor` (boîte de l'élément) à chaque image de
+  défilement où elle change, toutes les 250 ms sinon (mise en page), et `gone` quand il n'est plus là. L'hôte replace la
+  fenêtre aussitôt. Après un rechargement, l'élément est retrouvé par son sélecteur.
+- **Fermer** : Échap (`close`), un clic ailleurs (la bulle perd l'activation : page, barre, autre fenêtre), ou
+  l'élément qui disparaît. L'agent continue. Un clic sur la page qui vient de fermer la bulle ne commence pas un nouveau
+  commentaire ; un clic sur un élément qui a une conversation la rouvre.
+- **Une conversation par élément** : l'en-tête de la conversation garde l'élément (`anchor` : sélecteur unique, libellé,
+  page sans `#`, fichier:ligne). L'élément de la bulle accompagne chaque message (contrat 1.8 §19.4 : la page ne le liste
+  pas ; l'hôte n'envoie pas `element.attached` pour lui). Annotations comme avant : prise en charge, terminée, rendue ;
+  Ctrl+Entrée = garder en annotation, avec l'élément.
+- **Bordure + icône** (Paper 18IJ-0) : le script de page dessine, pour chaque conversation de la page, un cadre de
+  2 px à la couleur d'accent, 4 px autour de l'élément, et une étiquette de 24 px en haut à gauche avec la marque ;
+  pendant le travail, un indicateur à la place de la marque ; en attente, « En attente ». Ancrés au document comme les
+  autres cadres (collés au défilement). Un clic sur l'élément rouvre sa conversation.
+- **Un seul tour à la fois** : pendant que l'agent travaille sur A, la bulle de B peut s'ouvrir et recevoir un message :
+  il attend dans la file (`queue.items[].after` = A ; bandeau « Commencera après le travail en cours sur A ») et démarre
+  tout seul à la fin du tour de A (nouvelle session pour B). B est alors montrée « à côté » : les messages du fil de A ne
+  sont pas envoyés à la page (filtre dans `Send`) ; si A demande une autorisation, un bandeau le dit avec « Voir ».
+- **Élément disparu** (pas dans la page actuelle : autre page, ou introuvable après rechargement) : sa conversation est
+  listée dans l'historique du lanceur en bas à droite, qui dans ce mode ne liste qu'elles ; un clic la rouvre dans une
+  bulle en bas à droite de la page (ou dans le panneau en mode Panneau).
+- **Bascule** : rien n'est perdu ; la conversation montrée reste la même (Commentaire → Panneau : le panneau s'ouvre sur
+  elle ; Panneau → Commentaire : le panneau se ferme, les cadres apparaissent).
+
+Journal : `CHAT layout: Commentaire…`, `CHAT bubble opened on <élément> for conversation <id>`, `CHAT bubble closed (the
+agent goes on)`, `CHAT the next element's turn: conversation <id>`, `CHAT history of the conversations whose element is
+gone: <n>`.
+
+Limites connues : pas d'animation native de la fenêtre (l'entrée est jouée par la page, contrat §19.5) ; coins DWM
+(rayon de Windows, pas 16 px) ; une conversation ouverte depuis l'historique n'a plus l'image de son élément ;
+deux agents en parallèle : non (un tour à la fois, par choix).

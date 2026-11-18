@@ -28,6 +28,8 @@
 #include "chat-tools.h"
 #include "chat-batch.h"
 #include "chat-options.h"
+#include "chat-bubble.h"
+#include <set>
 #include "chat-store.h"
 #include "chat-folder.h"
 #include "chat-panel-view.h"
@@ -106,9 +108,10 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
     std::uint64_t serial = 0; bool captureDone = false, sourceDone = false, attached = false; ChatPrompt::PageSource rawSource;   // as the page said it (resolved against the folder)
     std::string annSite, annId, token;   // once written and claimed
     bool closeResolved = false; std::string closeSummary;   // how to close it when its write comes back after the turn ended
+    std::string anchorFor;   // Mode Commentaire: aimed as the element of this conversation's bubble (kept for its messages, never a chip)
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
-struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string batchId; std::vector<std::string> annotations; };   // annotations: a batch « Traiter N annotations » that waits its turn
+struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string batchId; std::vector<std::string> annotations; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's   // annotations: a batch « Traiter N annotations » that waits its turn
 struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false; };
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
@@ -142,7 +145,10 @@ bool folderAsk = false, folderChosen = false, agentChosen = false;
 std::wstring folderInstead;   // with folderChosen: the folder the detection proposed when the user chose another one
 std::string folderMarksOrigin; int folderMarksTries = 0;   // the page's file marks are asked once the mode's script is in the page
 ChatStore::Projects projects; bool projectsLoaded = false; std::string agentId = "claude";
-Convo convo; Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
+// Mode Commentaire (chat-comment.h): while the agent works on one element's conversation (convo, « the engine's »), the
+// bubble of another element may show its own conversation « aside »: the engine's thread messages are then not sent.
+struct Aside { bool on = false; Convo c; };
+Convo convo; Aside aside; bool asideSending = false; Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
 std::unique_ptr<Acp::Session> session; bool sessionStarting = false, sessionReady = false, preparing = false; Acp::StartResult started;
 std::string pendingModel, pendingEffort, pendingMode; std::function<void()> afterReady; std::function<int()> preparePermille;
 std::vector<std::unique_ptr<Acp::Session>> disposed;   // stopped sessions whose threads may still be ending (Shutdown waits for them)
@@ -171,8 +177,17 @@ float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.w
 float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() ? PanelDip() : 0.f; }
 
 // ---------------------------------------------------------------- host -> panel
+void OnHiddenPermission();
+bool ThreadMessage(const char* type, const SJ::Value& msg) {
+    static const char* list[] = {"message.user", "turn.start", "message.agentChunk", "thought", "toolCall", "toolCallUpdate", "plan", "permission.request", "permission.cancel",
+                                 "turn.end", "turn.undone", "annotations.status", "changes.diff", "edit.confirm", "usage", "annotation.kept"};
+    for (const char* x : list) if (strcmp(x, type) == 0) return true;
+    if (strcmp(type, "error") == 0) { const auto* sc = msg.Get("scope"); return !sc || !sc->IsString() || sc->string != "composer"; }
+    return false;
+}
 void Send(const char* type, SJ::Value msg = SJ::Value::Obj()) {
     if (!panelReady) return;
+    if (aside.on && !asideSending && ThreadMessage(type, msg)) { if (strcmp(type, "permission.request") == 0) OnHiddenPermission(); return; }   // Mode Commentaire: another conversation is shown
     SJ::Value out = SJ::Value::Obj(); out.Set("v", SJ::Value::Int(1)); out.Set("type", Str(std::string(type)));
     for (auto& m : msg.members) out.Set(m.first, std::move(m.second));
     view.Post(SJ::Serialize(out));
@@ -291,9 +306,10 @@ void SendState() {
         for (const auto& m : shown) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
         st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mv.current) ? Str(mv.current) : SJ::Value::Null()); }
-    {   SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(convo.data.head.id)); c.Set("title", Str(convo.data.head.title.empty() ? T8(I18n::Id::chat_title_new) : convo.data.head.title));
-        if (!convo.data.head.source.empty()) c.Set("source", Str(convo.data.head.source)); c.Set("running", SJ::Value::Bool(turn.active)); st.Set("conversation", std::move(c)); }
-    st.Set("running", SJ::Value::Bool(turn.active));
+    {   const auto& shown = aside.on ? aside.c.data.head : convo.data.head; const bool running = turn.active && !aside.on;   // contract B 1.8: the conversation shown
+        SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));
+        if (!shown.source.empty()) c.Set("source", Str(shown.source)); c.Set("running", SJ::Value::Bool(running)); st.Set("conversation", std::move(c));
+        st.Set("running", SJ::Value::Bool(running)); }
     st.Set("pendingAnnotations", SJ::Value::Int(pendingAnnotations));
     {   SJ::Value sg = SJ::Value::Arr();
         if (Usable()) {
@@ -312,8 +328,11 @@ void SendCommands() {
 }
 void SendQueue() {
     SJ::Value items = SJ::Value::Arr();
+    const std::string shown = aside.on ? aside.c.data.head.id : convo.data.head.id;
     for (const auto& q : queue) {
+        if ((q.convId.empty() ? convo.data.head.id : q.convId) != shown) continue;   // Mode Commentaire: the messages of the conversation shown
         SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(q.id));
+        if (!q.convId.empty() && q.convId != convo.data.head.id && turn.active) o.Set("after", Str(convo.data.head.anchorLabel.empty() ? ChatPrompt::OneLine(convo.data.head.title, 40) : convo.data.head.anchorLabel));   // contract B 1.8 §19.6
         if (!q.annotations.empty() && q.text.find_first_not_of(" \t\r\n") == std::string::npos) o.Set("text", Str(TRP(chat_batch_queue, q.annotations.size(), std::to_wstring(q.annotations.size()))));
         else o.Set("text", Str(ClipUtf8(q.text, 400)));
         items.Push(std::move(o));
@@ -322,16 +341,18 @@ void SendQueue() {
 }
 // Context gauge (contract B 1.2): tokens used / window, as the agent last reported them for this conversation.
 void SendUsage() {
-    const auto& h = convo.data.head; if (h.windowTokens <= 0) return;
+    const auto& h = aside.on ? aside.c.data.head : convo.data.head; if (h.windowTokens <= 0) return;
     SJ::Value m = SJ::Value::Obj(); m.Set("used", SJ::Value::Int(h.usedTokens)); m.Set("size", SJ::Value::Int(h.windowTokens)); Send("usage", std::move(m));
 }
 void SendThread() {
     // 4 MiB per message (contract B): thread.reset, then thread.append by slices.
-    std::size_t i = 0; bool first = true; const auto& items = convo.data.items;
+    struct Flag { Flag() { asideSending = aside.on; } ~Flag() { asideSending = false; } } flag;   // the conversation shown, whichever it is
+    const auto& shown = aside.on ? aside.c : convo;
+    std::size_t i = 0; bool first = true; const auto& items = shown.data.items;
     do {
         SJ::Value arr = SJ::Value::Arr(); std::size_t bytes = 0;
         for (; i < items.size(); ++i) { const std::size_t n = SJ::Serialize(items[i]).size(); if (bytes && bytes + n > (3u << 20)) break; bytes += n; arr.Push(items[i]); }
-        SJ::Value m = SJ::Value::Obj(); if (first) m.Set("conversationId", Str(convo.data.head.id)); m.Set("items", std::move(arr));
+        SJ::Value m = SJ::Value::Obj(); if (first) m.Set("conversationId", Str(shown.data.head.id)); m.Set("items", std::move(arr));
         Send(first ? "thread.reset" : "thread.append", std::move(m)); first = false;
     } while (i < items.size());
     SendUsage();   // thread.reset hides the gauge: shown again when this conversation's usage is known
@@ -346,6 +367,7 @@ void SaveConvo() {
     if (convo.data.head.id.empty() || convo.data.items.empty()) return;
     convo.data.head.updatedAt = BA::SystemNow();
     auto copy = std::make_shared<ChatStore::Conversation>(convo.data);
+    void NoteAnchored(const ChatStore::Header& h); NoteAnchored(convo.data.head);   // Mode Commentaire: its element's frame + icon
     Ann::Run([copy] { if (!History().Save(*copy)) OutputDebugStringW(L"chat: conversation not saved\n"); }, nullptr);
 }
 
@@ -381,7 +403,13 @@ void SendError(const Problem& p, const std::string& detail, const char* scope = 
 }
 
 void SyncChromeBits();
+// Mode Commentaire (chat-comment.h)
+bool CommentLayout(); bool BubbleOpen(); void SyncMarks(); void CloseBubble(bool focusPage); void SendLayout(bool openNow); void OnBubbleSize(int wCss, int hCss);
+bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible); bool KeepAnchorElement(Element& e);
+bool SwitchEngineTo(const std::string& id); void AddAnchorElement(std::vector<std::string>& ids); void RefreshWaitStrip(); void ShowEngineWork();
+void SwitchLayout(bool comment); void RefreshAnchored(); std::string BubbleSelector(); void ForgetPage(); void PlaceBubble(); std::string ShownId();
 } // namespace Chat
 #include "chat-host-turn.h"
 #include "chat-host-ui.h"
 #include "chat-host-batch.h"
+#include "chat-comment.h"

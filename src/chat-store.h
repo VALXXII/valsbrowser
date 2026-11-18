@@ -1,7 +1,8 @@
 #pragma once
 // Chat intégré — what the browser remembers (design/chat-integration.md, « Stockage »). Local files only, in the
 // application's data root, never in the project and never in an agent's configuration:
-//   <data root>\annotations-chat\projects.json                 origin -> { folder, agentId, mode, model, effort, usedAt }
+//   <data root>\annotations-chat\projects.json                 origin -> { folder, agentId, mode, model, effort, usedAt };
+//                                                              layout: "comment" | "panel" (the band's switch, all sites)
 //   <data root>\annotations-chat\conversations\index.json      the history list (one row per conversation)
 //   <data root>\annotations-chat\conversations\<id>.json       one conversation: header + the panel's items (contract B §4.2)
 // Written atomically (temp file + rename), read with the strict JSON parser and bounds; a damaged file reads as empty
@@ -63,9 +64,11 @@ struct Project {
 };
 struct Projects {
     std::map<std::string, Project> sites;   // key: the origin ("http://localhost:5173")
+    std::string layout;                     // the chat's layout chosen last: "comment" (a bubble on the element) or "panel"; "" = never chosen
     static Projects Load(const std::wstring& file) {
         Projects p; std::string text; SJ::Value v;
         if (!ReadFile(file, text, 1u << 20) || !SJ::Parse(text, v) || !v.IsObject()) return p;
+        { const std::string l = Str(v, "layout", 16); if (l == "comment" || l == "panel") p.layout = l; }
         const auto* sites = v.Get("sites"); if (!sites || !sites->IsObject()) return p;
         for (const auto& m : sites->members) {
             if (m.first.empty() || m.first.size() > 300 || !m.second.IsObject() || p.sites.size() >= 500) continue;
@@ -78,7 +81,7 @@ struct Projects {
         return p;
     }
     bool Save(const std::wstring& file) const {
-        SJ::Value v = SJ::Value::Obj(); v.Set("v", SJ::Value::Int(1)); SJ::Value sites = SJ::Value::Obj();
+        SJ::Value v = SJ::Value::Obj(); v.Set("v", SJ::Value::Int(1)); if (!layout.empty()) v.Set("layout", SJ::Value::Str(layout)); SJ::Value sites = SJ::Value::Obj();
         for (const auto& s : this->sites) {
             SJ::Value o = SJ::Value::Obj(); o.Set("folder", SJ::Value::Str(Utf8(s.second.folder)));
             if (!s.second.agentId.empty()) o.Set("agentId", SJ::Value::Str(s.second.agentId));
@@ -101,11 +104,18 @@ struct Header {
     std::string id, origin, siteLabel, title, agentId, sessionId, source;   // source: "Checkout.astro:42" of the first aimed element
     std::wstring folder; std::int64_t createdAt = 0, updatedAt = 0; int promptVersion = 0;
     std::int64_t usedTokens = 0, windowTokens = 0;   // last context usage the agent reported (the panel's gauge)
+    // Comment mode: the element this conversation belongs to (empty selector: a conversation of the panel). page: the
+    // page's URL without its fragment; selector: unique in that page when it was aimed; label « button.btn-primary »;
+    // anchorSource: its file:line when known (« index.html:25 »).
+    std::string anchorSelector, anchorLabel, anchorPage, anchorSource;
+    bool Anchored() const { return !anchorSelector.empty(); }
     SJ::Value ToJson() const {
         SJ::Value o = SJ::Value::Obj(); o.Set("id", SJ::Value::Str(id)); o.Set("origin", SJ::Value::Str(origin)); o.Set("siteLabel", SJ::Value::Str(siteLabel));
         o.Set("title", SJ::Value::Str(title)); o.Set("agentId", SJ::Value::Str(agentId)); o.Set("sessionId", SJ::Value::Str(sessionId)); o.Set("source", SJ::Value::Str(source));
         o.Set("folder", SJ::Value::Str(Utf8(folder))); o.Set("createdAt", SJ::Value::Int(createdAt)); o.Set("updatedAt", SJ::Value::Int(updatedAt)); o.Set("promptVersion", SJ::Value::Int(promptVersion));
         if (windowTokens > 0) { o.Set("usedTokens", SJ::Value::Int(usedTokens)); o.Set("windowTokens", SJ::Value::Int(windowTokens)); }
+        if (Anchored()) { SJ::Value a = SJ::Value::Obj(); a.Set("selector", SJ::Value::Str(anchorSelector)); a.Set("label", SJ::Value::Str(anchorLabel)); a.Set("page", SJ::Value::Str(anchorPage));
+                          if (!anchorSource.empty()) a.Set("source", SJ::Value::Str(anchorSource)); o.Set("anchor", std::move(a)); }
         return o;
     }
     static bool FromJson(const SJ::Value& v, Header& h) {
@@ -115,6 +125,10 @@ struct Header {
         h.sessionId = Str(v, "sessionId", 512); h.source = Str(v, "source", 300); h.folder = Wide(Str(v, "folder", 2048));
         h.createdAt = Int(v, "createdAt"); h.updatedAt = Int(v, "updatedAt"); h.promptVersion = int(Int(v, "promptVersion"));
         h.usedTokens = std::max<std::int64_t>(0, Int(v, "usedTokens")); h.windowTokens = std::max<std::int64_t>(0, Int(v, "windowTokens"));
+        if (const auto* a = v.Get("anchor"); a && a->IsObject()) {
+            h.anchorSelector = Str(*a, "selector", 2048); h.anchorLabel = Str(*a, "label", 300); h.anchorPage = Str(*a, "page", 4096); h.anchorSource = Str(*a, "source", 300);
+            if (h.anchorPage.empty()) h.anchorSelector.clear();
+        }
         return true;
     }
 };

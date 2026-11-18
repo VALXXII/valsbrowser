@@ -61,6 +61,7 @@ inline const wchar_t* MimeFor(const std::wstring& file) {
 class View {
     Com<ICoreWebView2Controller> controller_; Com<ICoreWebView2> view_; Com<ICoreWebView2Environment> env_;
     Hooks hooks_; std::wstring assets_; bool creating_ = false, visible_ = false; RECT bounds_{}; unsigned generation_ = 0;
+    HWND parent_ = nullptr, created_ = nullptr;   // where it should be / where the controller is
     bool devtools_ = false;
     static bool ReadAsset(const std::wstring& file, std::string& out) {
         HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -146,12 +147,13 @@ public:
     // Creates the controller (asynchronous). `bounds`: where it will sit, in the browser window's client pixels.
     bool Create(ICoreWebView2Environment* environment, HWND parent, RECT bounds) {
         if (controller_.p || creating_ || !environment) return controller_.p != nullptr;
-        creating_ = true; bounds_ = bounds; env_.set(environment); const unsigned gen = ++generation_;
+        creating_ = true; bounds_ = bounds; parent_ = created_ = parent; env_.set(environment); const unsigned gen = ++generation_;
         auto done = Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, HRESULT, ICoreWebView2Controller*>([this, gen](HRESULT hr, ICoreWebView2Controller* c) -> HRESULT {
             if (gen != generation_) { if (c) c->Close(); return S_OK; }   // destroyed while it was being created
             creating_ = false;
             if (FAILED(hr) || !c || FAILED(c->get_CoreWebView2(&view_.p)) || !view_.p) { Log(L"CHAT panel WebView2 unavailable"); env_.set(nullptr); if (hooks_.created) hooks_.created(false); return S_OK; }
             controller_.set(c); Wire();
+            if (parent_ != created_) { controller_->put_ParentWindow(parent_); created_ = parent_; }   // moved while it was being created
             controller_->put_Bounds(bounds_); controller_->put_IsVisible(visible_ ? TRUE : FALSE);
             view_->Navigate(PageUrl);
             if (hooks_.created) hooks_.created(true);
@@ -161,6 +163,14 @@ public:
         return true;
     }
     void Place(RECT bounds) { bounds_ = bounds; if (controller_.p) controller_->put_Bounds(bounds); }
+    // Mode Commentaire: the same WebView (same page, same conversation) goes into another window — the browser window
+    // for the panel, the bubble's own window. `bounds` in that window's client pixels.
+    void Reparent(HWND parent, RECT bounds) {
+        parent_ = parent; bounds_ = bounds;
+        if (controller_.p && created_ != parent) { controller_->put_ParentWindow(parent); created_ = parent; }
+        if (controller_.p) controller_->put_Bounds(bounds);
+    }
+    HWND Parent() const { return parent_; }
     void Show(bool on) { visible_ = on; if (controller_.p) controller_->put_IsVisible(on ? TRUE : FALSE); }
     bool Visible() const { return visible_; }
     void Focus() { if (controller_.p && visible_) controller_->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC); }

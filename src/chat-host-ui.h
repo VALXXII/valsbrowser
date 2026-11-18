@@ -38,6 +38,7 @@ void Query(const std::shared_ptr<Tab>& t, const std::wstring& what, const std::w
 // state: "working" (Paper 6.10: « ⟳ titre - modèle » above the element), "done" (6.11: frame + check), "clear".
 void ApplyMark(const char* state, const std::string& selector) {
     auto t = ChatTab(); if (!t || t != Ann::ModeTab()) return;
+    if (CommentLayout() && strcmp(state, "show") != 0) { SyncMarks(); return; }   // Mode Commentaire: the conversations' own frames + icons say it
     SJ::Value a = SJ::Value::Obj(); a.Set("state", Str(std::string(state))); a.Set("selector", Str(selector));
     a.Set("title", Str(ChatPrompt::OneLine(convo.data.head.title.empty() ? T8(I18n::Id::chat_title_new) : convo.data.head.title, 32))); a.Set("sub", Str(LabelOf(Acp::FindModelOption(agentInfo[agentId].options), agentId)));
     const std::string what = state;
@@ -69,6 +70,7 @@ void DoRearm() {
     if (ChatLocal::Classify(U8(t->uri)).origin != site.origin) { Ann::Exit(L"navigation", true); return; }   // another site: the mode (and the panel) end, as before
     Ann::Rearm(t, [](bool ok) {
         if (!ok) return;
+        if (CommentLayout()) { SyncMarks(); if (BubbleOpen() && !BubbleSelector().empty()) { SJ::Value f = SJ::Value::Obj(); f.Set("selector", Str(BubbleSelector())); if (auto t = ChatTab()) Query(t, L"follow", W(SJ::Serialize(f)), nullptr); } return; }
         if (turn.active && !turn.markSelector.empty()) ApplyMark("working", turn.markSelector);
         else if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector);
     });
@@ -91,6 +93,7 @@ void ResolveElementSource(Element& e) {
 void MaybeAttach(std::uint64_t serial) {
     auto it = aiming.find(serial); if (it == aiming.end() || !it->second.captureDone || !it->second.sourceDone) return;
     Element e = std::move(it->second); aiming.erase(it); const std::string id = e.id;
+    if (KeepAnchorElement(e)) return;   // Mode Commentaire: the bubble's element (contract B 1.8 §19.4: no element.attached)
     Diag(L"element aimed: " + W(e.label) + (e.source.known ? L" — source " + W(e.source.Full()) + L" (" + W(e.source.from) + L")" : e.nearest.known ? L" — no source of its own (nearest ancestor " + W(e.nearest.Full()) + L")" : L" — no source") + (e.png.empty() ? L", no image" : L", image " + std::to_wstring(e.png.size()) + L" bytes"));
     if (convo.data.head.source.empty() && e.source.known && convo.data.items.empty()) { convo.data.head.source = e.source.Display(); SendState(); }
     SJ::Value m = SJ::Value::Obj(); m.Set("element", ElementRef(e)); composerElements[id] = std::move(e); Send("element.attached", std::move(m));
@@ -129,7 +132,9 @@ bool AskAvailable(const std::shared_ptr<Tab>& t) { return t && !privateWindow &&
 // (KeepAnnotation). False (the note panel, as before): not a local site, a private window, the chat cannot open,
 // or 10 elements already in the composer.
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
-    if (!AskAvailable(t) || halted || Ann::s.paused || composerElements.size() + aiming.size() >= 10) return false;
+    if (!AskAvailable(t) || halted || Ann::s.paused) return false;
+    if (CommentLayout()) return TakeCommentSelection(t, serial, captureImpossible);   // Mode Commentaire: a bubble on the element
+    if (composerElements.size() + aiming.size() >= 10) return false;
     if (!Open()) { OpenPanel(); if (!Open()) return false; Diag(L"a click on an element opens the chat"); }
     OnSelection(t, serial, captureImpossible);
     return true;
@@ -317,6 +322,7 @@ RECT PanelRect(float shown);
 bool PointerInPanel() {
     POINT p{}; if (!GetCursorPos(&p) || !Open()) return false;
     RECT r = PanelRect(1.f); POINT a{r.left, r.top}, b{r.right, r.bottom}; ClientToScreen(window, &a); ClientToScreen(window, &b);
+    if (BubbleOpen()) { extern RECT BubbleScreenRect(); const RECT br = BubbleScreenRect(); return p.x >= br.left && p.x < br.right && p.y >= br.top && p.y < br.bottom; }
     return p.x >= a.x && p.x < b.x && p.y >= a.y && p.y < b.y && WindowFromPoint(p) && (GetAncestor(WindowFromPoint(p), GA_ROOT) == window);
 }
 void WatchHover(bool on) {
@@ -327,7 +333,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == AcpWake) { PumpEvents(); return 0; }
     if (m == WM_APP + 22) { PrepareProgress(); return 0; }
     if (m == WM_TIMER) {
-        if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
+        if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
@@ -357,10 +363,10 @@ struct SlideClient : AUI::Animator::Client {
         return false;
     }
 } slideClient;
-void Layout() { if (Shown() && view.Exists()) view.Place(PanelRect(slide.Value(NativeChrome::Motion::Now()))); }
+void Layout() { if (Shown() && view.Exists()) view.Place(PanelRect(slide.Value(NativeChrome::Motion::Now()))); if (BubbleOpen()) PlaceBubble(); }
 void SyncChromeBits() {
     if (!Ann::uiReady) return;
-    Ann::banner.SetChat(Ann::s.active, Open());
+    Ann::banner.SetChat(Ann::s.active && AskAvailable(Ann::ModeTab()), CommentLayout());   // Paper 1AYP-0: the layout switch
     if (Ann::s.active && Ann::banner.Visible() && !Ann::connect.Visible()) Ann::banner.SetReminder(!Ann::agents.any() && !Open());   // the MCP reminder steps back while the chat is open
 }
 void OnPanelMessage(const std::string& json);
@@ -374,12 +380,14 @@ void EnsureInit() {
     std::wstring exe = Ann::BrowserExe(); const auto slash = exe.find_last_of(L'\\');
     view.Init(std::move(h), (slash == std::wstring::npos ? std::wstring(L".") : exe.substr(0, slash)) + L"\\assets", !Ann::EnvVar(L"BROWSER_CHAT_DEVTOOLS").empty() && TestMode());
 }
-void OpenPanel() {
-    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
-    if (Open()) return;
-    EnsureInit(); stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
-    chatTab = t;
+bool preparedOtherSite = false;   // PrepareChat moved to another site (the composer's batch of the old one leaves)
+std::string preparedNonce;        // the mode's page the chat was last prepared for (Mode Commentaire: once per page, not per bubble)
+// `force` (the panel's opening): every opening looks again (folder detection: a port is reused by other projects).
+void PrepareChat(const std::shared_ptr<Tab>& t, bool force = false) {
+    EnsureInit();
     const auto now = ChatLocal::Classify(U8(t->uri));
+    if (!force && ChatTab() == t && now.origin == site.origin && preparedNonce == Ann::s.nonce) { preparedOtherSite = false; return; }
+    chatTab = t; preparedNonce = Ann::s.nonce;
     const bool otherSite = now.origin != site.origin;
     if (otherSite) composerBatch = Batch{};   // a batch belongs to its site
     suggestion = {}; suggestionAsked = false;   // every opening looks again: a port is reused by other projects from one day to the next
@@ -394,18 +402,27 @@ void OpenPanel() {
     if (!turn.active && (convo.data.head.id.empty() || convo.data.head.origin != site.origin)) NewConversation();
     if (post) KillTimer(post, DestroyTimer);
     if (Ann::connect.Visible()) Ann::connect.Close(false);   // the chat was asked for: the « Connecter un agent » modal (MCP) steps back
+    preparedOtherSite = otherSite;
+    DetectAgents([] { MaybeStartSession(); }); DetectFolder(); RefreshPending(); RefreshAnchored();
+}
+void OpenPanel() {
+    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
+    if (Open()) return;
+    if (BubbleOpen()) CloseBubble(false);
+    stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
+    PrepareChat(t, true); const bool otherSite = preparedOtherSite;
     const bool reduced = Ann::Reduced(); const auto at = NativeChrome::Motion::Now();
     panelState = PanelState::Opening; slide.Snap(reduced ? 1.f : 0.f); slide.Set(1.f, at, reduced ? 0 : SlideInMs, AUI::Curves::band);
     ArmAgentIdle();   // an open panel gives the agent its long idle delay back
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, window, PanelRect(slide.Value(at)))) { panelState = PanelState::Closed; Diag(L"panel WebView creation refused"); return; } }
+    else view.Reparent(window, PanelRect(slide.Value(at)));   // Mode Commentaire: it may come back from the bubble
     view.Show(true);
     ::Layout();   // the page shrinks at once (one layout); the panel then slides over the canvas
     picking = site.local && !site.file;
     Ann::LauncherSync(); SyncChromeBits();
     if (reduced) panelState = PanelState::Open; else AUI::Animator::Get().Request(&slideClient);
-    DetectAgents([] { MaybeStartSession(); }); DetectFolder(); RefreshPending();
     if (panelReady && otherSite) SendComposerBatch();   // empty: the block of the other site leaves the composer
-    if (panelReady) { SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
+    if (panelReady) { SendLayout(false); SendThread(); SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
     Ann::Announce(site.local && !site.file ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, site.file ? TR(chat_disabled_file) : TR(chat_disabled_not_local)));
     Diag(L"panel opened on " + W(site.origin) + (site.local ? L"" : L" (not local: disabled)") + (folder.empty() ? L", no folder yet" : L", folder " + folder));
 }
@@ -428,12 +445,13 @@ void Toggle(bool keyboard) {
     (void)keyboard;
     if (Open()) { ClosePanel(); return; }
     if (!Ann::s.active) { AnnotationCommand(AnnotateCommand); if (!Ann::s.active) return; }
+    if (CommentLayout() && Ann::ModeTab() == Active()) { SwitchLayout(false); return; }   // Ctrl+Maj+D: the chat panel (the band's « Panneau »)
     else if (Ann::ModeTab() != Active()) return;
     OpenPanel();
 }
-void ModeEntered() { SyncChromeBits(); }
-void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
-bool KeepsMode(const std::shared_ptr<Tab>& t) { return Open() && t && ChatTab() == t; }
+void ModeEntered() { SyncChromeBits(); if (CommentLayout()) SyncMarks(); }
+void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
+bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
 void PageNavigating(const std::shared_ptr<Tab>&) { rearmOwed = true; rearmTries = 0; aiming.clear(); if (EnsurePost()) SetTimer(post, RearmTimer, 250, nullptr); }
 
 // ---------------------------------------------------------------- panel -> host (contract B §5)
@@ -449,7 +467,8 @@ std::string LastUserText() { for (auto it = convo.data.items.rbegin(); it != con
 void SendOrQueue(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts) {
     if (text.find_first_not_of(" \t\r\n") == std::string::npos && els.empty() && atts.empty()) return;
     if (!Usable()) return;
-    if (turn.active) { queue.push_back({NewId("q_"), text, els, atts}); SendQueue(); } else StartTurn(text, els, atts);
+    if (turn.active) { Queued q{NewId("q_"), text, els, atts}; if (aside.on) q.convId = aside.c.data.head.id; queue.push_back(std::move(q)); SendQueue(); RefreshWaitStrip(); SyncMarks(); }
+    else StartTurn(text, els, atts);
 }
 void AddAttachment(const std::string& name, const std::string& mime, std::string base64) {
     static const char* allowed[] = {"image/png", "image/jpeg", "image/webp", "image/gif"}; bool ok = false; for (auto* m : allowed) ok = ok || mime == m;
@@ -567,7 +586,7 @@ void OnPanelMessage(const std::string& json) {
         panelReady = true; stats.readyAt = Ann::NowMs();
         Diag(L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
-        Send("hello", std::move(hello)); SendState(); SendThread(); SendCommands(); SendQueue();
+        Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); SendState(); SendThread(); SendCommands(); SendQueue();
         for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
         for (const auto& s : activeStrips) Send("strip", s.second);
@@ -575,7 +594,7 @@ void OnPanelMessage(const std::string& json) {
         if (!composerBatch.items.empty()) SendComposerBatch();                               // the batch posed in the composer
         if (batchOwed) { batchOwed = false; PoseBatch(L"asked from the browser"); }   // i18n-exempt: log detail
         {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
-        if (Open()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
+        if (Open() || BubbleOpen()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
         return;
     }
     if (!panelReady) return;
@@ -590,10 +609,11 @@ void OnPanelMessage(const std::string& json) {
                 return;
             }
         }
-        SendOrQueue(text, m.Ids("elements", 10), m.Ids("attachments", 10)); return;
+        { auto ids = m.Ids("elements", 10); AddAnchorElement(ids); SendOrQueue(text, ids, m.Ids("attachments", 10)); } return;   // Mode Commentaire: + the bubble's element
     }
     if (type == "annotations.request") { PoseBatch(L"/annotations"); return; }
-    if (type == "annotate") { KeepAnnotation(m.Text("text", 400000), m.Ids("elements", 10)); return; }   // contract B 1.6: Ctrl+Entrée
+    if (type == "annotate") { auto ids = m.Ids("elements", 10); AddAnchorElement(ids); KeepAnnotation(m.Text("text", 400000), ids); return; }   // contract B 1.6: Ctrl+Entrée (+ the bubble's element)
+    if (type == "bubble.size") { const auto* w = v.Get("width"); const auto* h = v.Get("height"); if (w && h && w->IsNumber() && h->IsNumber()) OnBubbleSize(int(w->number), int(h->number)); return; }   // contract B 1.8
     if (type == "annotation.show") { ShowAnnotation(m.Id("id")); return; }
     if (type == "stop") { StopTurn(); return; }
     if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }
@@ -629,13 +649,13 @@ void OnPanelMessage(const std::string& json) {
     if (type == "agent.prepare") { const std::string id = m.Id("agentId").empty() ? agentId : m.Id("agentId"); PrepareAgent(id, [](bool ok) { if (ok) MaybeStartSession(); }); return; }
     if (type == "pickElement") { Ann::SetSelecting(m.Flag("active")); SelectionChanged(); return; }   // V1.4: the aim button switches the selection on / off (the chat stays)
     if (type == "element.remove") { composerElements.erase(m.Id("id")); return; }
-    if (type == "attachImage") { if (m.Text("source", 16) == "picker") PickImage(); else AddAttachment(m.Text("name", 300), m.Text("mime", 40), m.Text("data", 13u << 20)); return; }
+    if (type == "attachImage") { if (m.Text("source", 16) == "picker") { struct Modal { Modal() { extern void BubbleModal(bool); BubbleModal(true); } ~Modal() { extern void BubbleModal(bool); BubbleModal(false); } } modal; PickImage(); } else AddAttachment(m.Text("name", 300), m.Text("mime", 40), m.Text("data", 13u << 20)); return; }
     if (type == "attachment.remove") { composerAttachments.erase(m.Id("id")); return; }
     if (type == "mention.query") { Mentions(m.Text("query", 200)); return; }
     if ((type == "folder.use" || type == "folder.choose") && !(site.local && !site.file)) return;   // no folder for a site that is not local
     if ((type == "folder.use" || type == "folder.choose") && turn.active) { Diag(L"folder change asked during a turn: ignored"); return; }
     if (type == "folder.use") { const std::wstring path = W(m.Text("path", 2048)); if (!suggestion.folder.empty() && path == suggestion.folder) SetFolder(path); else Diag(L"folder.use with a path that was not proposed: ignored"); return; }
-    if (type == "folder.choose") { const std::wstring picked = ChatFolder::PickFolder(window, TR(chat_folder_pick_title), !folder.empty() ? folder : !suggestion.folder.empty() ? suggestion.folder : projects.Recent()); if (!picked.empty()) SetFolder(picked); if (Open()) view.Focus(); return; }
+    if (type == "folder.choose") { struct Modal { Modal() { extern void BubbleModal(bool); BubbleModal(true); } ~Modal() { extern void BubbleModal(bool); BubbleModal(false); } } modal; const std::wstring picked = ChatFolder::PickFolder(window, TR(chat_folder_pick_title), !folder.empty() ? folder : !suggestion.folder.empty() ? suggestion.folder : projects.Recent()); if (!picked.empty()) SetFolder(picked); if (Open()) view.Focus(); return; }
     if (type == "undo.turn") { Undo(m.Id("turnId"), ""); return; }
     if (type == "checkpoint.restore") { const std::string cp = m.Id("checkpointId"); std::string t; for (const auto& p : checkpointOfTurn) if (p.second == cp) t = p.first; if (!cp.empty()) Undo(t, cp); return; }
     if (type == "checkpoint.viewChanges") { ViewChanges(m.Id("turnId"), m.Text("path", 1024)); return; }
@@ -658,6 +678,7 @@ void OnPanelMessage(const std::string& json) {
         if (action == "retry") { const std::string text = LastUserText(); if (!text.empty()) SendOrQueue(text, {}, {}); else MaybeStartSession(); }
         else if (action == "connect") Connect(agentId, "");
         else if (action == "newChat") { NewConversation(); MaybeStartSession(); }
+        else if (action == "showWork") ShowEngineWork();   // Mode Commentaire: the work under way asks for a permission
         return;
     }
     if (type == "suggestion.run") {
@@ -676,7 +697,7 @@ void OnPanelMessage(const std::string& json) {
         if (GetFileAttributesW(w.c_str()) != INVALID_FILE_ATTRIBUTES) ShellExecuteW(window, L"open", L"explorer.exe", (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
         return;
     }
-    if (type == "close") { ClosePanel(); return; }
+    if (type == "close") { if (BubbleOpen()) CloseBubble(true); else ClosePanel(); return; }   // in the bubble: closes it, the agent goes on
     if (type == "hover") { WatchHover(m.Flag("active")); return; }   // contract B 1.5: a hover tooltip is up / down
     if (type == "panel.log") { Diag(L"panel " + W(m.Text("level", 8)) + L": " + W(ClipUtf8(m.Text("message", 2048), 600))); return; }
     Diag(L"panel message of an unknown type ignored: " + W(ClipUtf8(type, 60)));

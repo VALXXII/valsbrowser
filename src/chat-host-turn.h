@@ -179,7 +179,7 @@ void EnsureSession(std::function<void()> ready) {
     afterReady = std::move(ready);
     if (!session && !sessionStarting && !preparing) StartSession();
 }
-void ArmAgentIdle() { if (post && !turn.active) SetTimer(post, AgentIdleTimer, Open() ? AgentIdleMs() : PanelIdleMs(), nullptr); }
+void ArmAgentIdle() { if (post && !turn.active) SetTimer(post, AgentIdleTimer, Open() || BubbleOpen() || (CommentLayout() && Ann::s.active) ? AgentIdleMs() : PanelIdleMs(), nullptr); }
 
 // ---------------------------------------------------------------- diffs
 SJ::Value DiffJson(const std::string& path, const CS::FileDiff& d) {
@@ -657,7 +657,9 @@ void StopTurn() {
 }
 void ProcessQueue() {
     if (turn.active || queue.empty()) { SendQueue(); return; }
-    Queued q = std::move(queue.front()); queue.pop_front(); SendQueue();
+    // Mode Commentaire: the next message may belong to another element's conversation — it becomes the engine's first
+    if (const std::string c = queue.front().convId; !c.empty() && c != convo.data.head.id && !SwitchEngineTo(c)) { queue.pop_front(); ProcessQueue(); return; }
+    Queued q = std::move(queue.front()); queue.pop_front(); SendQueue(); RefreshWaitStrip();
     if (!q.annotations.empty()) { StartBatchTurn(q.text, q.batchId, q.annotations); if (!turn.active) ProcessQueue(); return; }   // a batch replaced since is dropped: the next one runs
     StartTurn(q.text, q.elements, q.attachments);
 }

@@ -49,8 +49,10 @@ inline std::wstring Wide(const std::string& s) {
 }
 
 // ---------------------------------------------------------------- page messages
-enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection };
-struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; };
+enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor };
+// Anchor (chat, Mode Commentaire): where the element the bubble is attached to is now, CSS px of the top viewport;
+// gone = it is no longer in the page.
+struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; };
 
 // Checks the frame of every message: type/version, the session nonce and the navigation stamp.
 // Anything else (unknown op, wrong types) is Invalid.
@@ -68,6 +70,12 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
     else if (op->string == "shown") { e.op = Op::Shown; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
     else if (op->string == "escape") e.op = Op::Escape;
     else if (op->string == "noselection") e.op = Op::NoSelection;
+    else if (op->string == "anchor") {
+        e.op = Op::Anchor;
+        if (const auto* g = v.Get("gone"); g && g->IsBool() && g->boolean) { e.gone = true; return e; }
+        auto num = [&](const char* k, double& out, double lo, double hi) { const auto* p = v.Get(k); if (!p || !p->IsNumber() || !(p->number >= lo && p->number <= hi)) return false; out = p->number; return true; };
+        if (!num("x", e.x, -1e6, 1e6) || !num("y", e.y, -1e6, 1e6) || !num("w", e.w, 0, 1e6) || !num("h", e.h, 0, 1e6) || !num("vw", e.vw, 1, 1e5) || !num("vh", e.vh, 1, 1e5)) return bad("anchor");
+    }
     else return bad("op");
     return e;
 }
