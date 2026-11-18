@@ -417,7 +417,7 @@ Même page, mêmes fichiers, même fil et mêmes messages que le panneau. Seule 
 interface Layout {
   mode: "panel" | "bubble";    // "panel" : le chat à droite, comme avant. Sans `layout`, la page est en "panel".
   maxWidth?: number;           // px CSS. La bulle fait 305 px, ou moins si maxWidth est plus petit (jamais sous 240).
-  maxHeight?: number;          // px CSS. La bulle ne dépasse ni maxHeight ni 303 px (la hauteur des planches) : au-delà, le fil défile.
+  maxHeight?: number;          // px CSS (déf. 520). La bulle grandit avec son contenu jusqu'à maxHeight ; au-delà, le fil défile.
   side?: "right" | "left" | "below" | "above" | "inside";   // où est la bulle par rapport à l'élément (déf. "right")
   element?: string;            // libellé de l'élément (« button.btn-primary ») : nom de la boîte de dialogue pour les lecteurs d'écran
   open?: boolean;              // déf. vrai : ce `layout` ouvre la bulle (animation d'ouverture). Faux : seulement de nouvelles bornes.
@@ -438,12 +438,14 @@ interface Layout {
 ### 19.2 `bubble.size` (panneau → hôte)
 
 `{ "type": "bubble.size", "width": 305, "height": 224 }` — entiers, px CSS. `width` = min(305, `maxWidth`).
-`height` = la hauteur du contenu, bornée par min(303, `maxHeight`). Envoyé après chaque `layout` en bulle (même si la
-taille n'a pas changé : c'est l'accusé de réception), puis dès que le contenu change (jamais deux fois de suite la même
-valeur). La mesure ne dépend pas de la taille actuelle de la fenêtre : l'hôte peut la demander fenêtre masquée.
+`height` = la hauteur du contenu, bornée par `maxHeight` (l'hôte envoie min(520, place libre)). Envoyé après chaque
+`layout` en bulle (même si la taille n'a pas changé : c'est l'accusé de réception), puis dès que le contenu change
+(jamais deux fois de suite la même valeur). La mesure ne dépend pas de la taille actuelle de la fenêtre : l'hôte peut
+la demander fenêtre masquée. Quand le contenu dépasse `maxHeight`, le fil défile et son haut s'estompe (fondu de 96 px).
+Le **diff en grand** prend toute la hauteur disponible : `height` = `maxHeight`.
 
 Hauteurs des planches : saisie seule 104 · tour en cours 224 · arrêté 265 · erreur 248 (détails 279) · terminé 279 ·
-autorisation 303 (le haut du fil défile sous un fondu) · diff en grand 303.
+autorisation 303 et diff en grand 303 (planches dessinées avec 303 px de place : le haut du fil défile sous le fondu).
 
 Menus (modèle, mode, « + », @, /) : ils s'ouvrent **dans** la bulle. Si la bulle est trop basse pour le menu, elle
 grandit le temps du menu (nouveau `bubble.size`), puis reprend sa taille.

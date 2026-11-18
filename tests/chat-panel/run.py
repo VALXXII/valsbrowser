@@ -20,6 +20,8 @@ args = sys.argv[1:]
 def opt(name, default=None):
     return args[args.index(name) + 1] if name in args else default
 OUT = os.path.abspath(opt("--out", os.path.join(ROOT, "build", "chat-qa", "panel")))
+COMMENT = os.path.join(os.path.dirname(OUT), "comment")   # comment-mode bubble (B 1.8): build/chat-qa/comment
+REF_C = os.path.join(REF, "comment")                      # the bubbles of the Paper boards 18NS-0 … 19IO-0, exported at 1x
 ONLY = set(filter(None, (opt("--only", "") or "").split(",")))
 EDGE = opt("--edge") or next(iter(sorted(glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "EdgeCore", "*", "msedge.exe")), reverse=True)), None)
 os.environ["BROWSER_ANNOTATIONS_TEST"] = "1"
@@ -48,12 +50,13 @@ check("dev-host" not in src["index.html"], "static: index.html does not load the
 # ------------------------------------------------------------------ 2. loopback server
 CSP = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
 os.makedirs(os.path.join(OUT, "compare"), exist_ok=True)
+os.makedirs(os.path.join(COMMENT, "compare"), exist_ok=True)
 requests_seen = []
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a): pass
     def translate_path(self, path):
         p = urllib.parse.unquote(urllib.parse.urlsplit(path).path)
-        for prefix, base in (("/out/", OUT), ("/ref/", REF)):
+        for prefix, base in (("/out/", OUT), ("/ref/", REF), ("/cmt/", COMMENT)):
             if p.startswith(prefix): return os.path.join(base, p[len(prefix):])
         if p == "/compare.html": return os.path.join(os.path.dirname(os.path.abspath(__file__)), "compare.html")
         return os.path.join(ASSETS, p.lstrip("/"))
@@ -114,7 +117,8 @@ def size_of(png):
 
 # scenario -> (viewport w, h, hover selector, compare mode)
 FULL = {"6.1-autorisation", "6.2-premiere-fois", "6.3-termine", "6.8-viser", "6.9-ecrire", "6.10-travaille", "6.11-fait", "6.12-plan", "6.6-fil", "6.7a-vide", "6.7b-historique"}
-HOVER = {"6.6-survol": ".turn", "6.6-fil": ".um[data-id='u2'] .bubble", "6.11-fait": ".um[data-id='u1'] .bubble"}
+HOVER = {"6.6-survol": ".turn", "6.6-fil": ".um[data-id='u2'] .bubble", "6.11-fait": ".um[data-id='u1'] .bubble",
+         "c-2.1-survol": ".bt-st", "c-3-historique": ".bt-st"}
 
 profile = tempfile.mkdtemp(prefix="chat-panel-qa-")
 proc = None
@@ -134,7 +138,7 @@ try:
     for d in ("Page", "Runtime", "Network", "Log"): cdp.call(d + ".enable")
     cdp.call("Emulation.setFocusEmulationEnabled", enabled=True)  # :focus styles as in a focused window
     cdp.call("Page.addScriptToEvaluateOnNewDocument", source="window.__csp=[];document.addEventListener('securitypolicyviolation',e=>window.__csp.push(e.violatedDirective+' '+e.blockedURI));"
-             "window.__long=[];try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__long.push(e.duration)}).observe({type:'longtask',buffered:true})}catch(e){}")
+             "window.V=s=>{const n=document.querySelector(s);return n?n.getClientRects().length:0};window.__long=[];try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__long.push(e.duration)}).observe({type:'longtask',buffered:true})}catch(e){}")
 
     def viewport(w, h, reduced=False):
         cdp.call("Emulation.setDeviceMetricsOverride", width=w, height=h, deviceScaleFactor=1, mobile=False)
@@ -165,21 +169,44 @@ try:
         r = cdp.js(f"window.compareImages({json.dumps('/out/' + os.path.relpath(ours, OUT).replace(os.sep, '/'))},{json.dumps('/ref/' + os.path.basename(ref))})")
         open(os.path.join(OUT, "compare", name + ".png"), "wb").write(base64.b64decode(r["png"].split(",", 1)[1]))
         return r
+    def compare_bubble(name):
+        r = cdp.js(f"window.compareImages({json.dumps('/cmt/' + name + '.png')},{json.dumps('/ref/comment/' + name + '.png')})")
+        open(os.path.join(COMMENT, "compare", name + ".png"), "wb").write(base64.b64decode(r["png"].split(",", 1)[1]))
+        return r
+    def bubble_size():
+        return cdp.js("(()=>{const s=window.__posted.filter(m=>m.type==='bubble.size').pop();return s?[s.width,s.height]:null})()")
 
     # ---------------------------------------------------------------- 4. every scenario: screenshot + a11y + errors
     names = cdp.js("new Promise(r=>{})", await_promise=False) if False else None
     cdp.call("Page.navigate", url=f"{BASE}/chat-panel/dev.html?scenario=6.7a-vide")
     time.sleep(.5)
     names = cdp.js("new Promise(r=>{const f=()=>window.__scenarios?r(window.__scenarios):setTimeout(f,20);f()})")
-    scen = [n for n in names if (not ONLY or n in ONLY) and n not in ("stream", "perf-500")]
+    wanted = lambda n: not ONLY or n in ONLY or any(o.endswith("*") and n.startswith(o[:-1]) for o in ONLY)   # --only c-* : a prefix
+    scen = [n for n in names if wanted(n) and n not in ("stream", "perf-500")]
+    bubble_sizes = {}
     for name in scen:
         h = 777 if name == "6.6-fil" else 640 if name in ("6.7a-vide", "6.7b-historique") else 698
+        bubble = name.startswith("c-") and name != "c-bascule-panneau"
         ok = load(name, 380, h)
         if name in HOVER:
             box = cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(HOVER[name])});if(!n)return null;const r=n.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]}})()")
-            if box: cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=box[0], y=box[1]); time.sleep(.25)
-        out = os.path.join(OUT, name + ".png")
-        shot(out)
+            if box: cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=box[0], y=box[1]); time.sleep(.65 if bubble else .25)
+        if bubble:
+            # the bubble at the size it asked for (the fake host resizes its « window » from bubble.size), transparent around it
+            cdp.js("new Promise(r=>{document.activeElement&&document.activeElement.blur();requestAnimationFrame(()=>requestAnimationFrame(r))})")   # no caret, no focus ring: the boards show neither
+            size = bubble_size()
+            bubble_sizes[name] = size
+            out = os.path.join(COMMENT, name + ".png")
+            cdp.call("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
+            shot(out, {"x": 0, "y": 0, "width": size[0], "height": size[1]} if size else None)
+            if name == "c-2.1-survol":   # the hover list alone, next to its board (Paper 1B7H-0)
+                tb = cdp.js("(()=>{const r=document.getElementById('b-tip').getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}})()")
+                if tb["width"]: shot(os.path.join(COMMENT, "c-2.1-infobulle-etapes.png"), tb)
+            cdp.call("Emulation.setDefaultBackgroundColorOverride")
+            cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=370, y=690)
+        else:
+            out = os.path.join(OUT, name + ".png")
+            shot(out)
         errs = errors_of(name)
         a11y = cdp.js(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "a11y.js"), encoding="utf-8").read())
         report["scenarios"][name] = {"screenshot": os.path.relpath(out, ROOT), "errors": errs, "a11y": a11y}
@@ -198,6 +225,17 @@ try:
         report["scenarios"].setdefault(name, {})["compare"] = {k: r[k] for k in ("mean", "over", "w", "h", "mode")}
         print(f"     compare {name}: {r['mode']} {r['w']}x{r['h']}" + (f", mean diff {r['mean']:.1f}/255, pixels off >48: {r['over']:.1f} %" if r['mean'] is not None else ""))
 
+    # comment-mode bubble: each state next to the bubble of its Paper board (same size expected, then a pixel diff)
+    for ref in sorted(glob.glob(os.path.join(REF_C, "*.png"))):
+        name = os.path.splitext(os.path.basename(ref))[0]
+        if not os.path.exists(os.path.join(COMMENT, name + ".png")): continue
+        r = compare_bubble(name)
+        rw, rh = size_of(ref)
+        report["scenarios"].setdefault(name, {})["compare"] = dict({k: r[k] for k in ("mean", "over", "w", "h", "mode")}, board=[rw, rh])
+        print(f"     compare {name}: {r['mode']} {r['w']}x{r['h']} (board {rw}x{rh})" + (f", mean diff {r['mean']:.1f}/255, pixels off >48: {r['over']:.1f} %" if r['mean'] is not None else ""))
+        if name != "c-2.1-infobulle-etapes":
+            check((r["w"], r["h"]) == (rw, rh), f"{name}: the bubble has the size of its Paper board ({rw}x{rh})", f"{r['w']}x{r['h']}")
+
     shots = sorted(os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(OUT, "*.png")) if not os.path.basename(f).startswith(("planches", "stream")))
     for i in range(0, len(shots), 12):
         png = cdp.js(f"window.montage({json.dumps(shots[i:i + 12])}, 6)")
@@ -214,6 +252,240 @@ try:
         cdp.call("Input.dispatchKeyEvent", type="keyUp", **base)
         time.sleep(.08)
     active = lambda: cdp.js("(()=>{const a=document.activeElement;return a?(a.getAttribute('aria-label')||a.textContent||a.className).trim().slice(0,40):''})()")
+
+    # ---------------------------------------------------------------- 6b. comment-mode bubble (B 1.8, design/chat-panel.md §19)
+    if not ONLY or any(o.startswith("c-") for o in ONLY):
+        sizes = lambda: cdp.js("window.__posted.filter(m=>m.type==='bubble.size').map(m=>[m.width,m.height])")
+        of = lambda t: cdp.js(f"window.__posted.filter(m=>m.type==={json.dumps(t)})")
+        host = lambda m: (cdp.js(f"window.devHost.send({json.dumps(m)})"), time.sleep(.12))
+        def center(sel): return cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(sel)});if(!n)return null;const r=n.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]}})()")
+        def move(x, y): cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+        def click(sel): cdp.js(f"document.querySelector({json.dumps(sel)}).click()"); time.sleep(.15)
+        vis = lambda sel: cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(sel)});return !!n&&n.getClientRects().length>0}})()")
+        inside = lambda sel: cdp.js(f"(()=>{{const a=document.getElementById('app').getBoundingClientRect(),r=document.querySelector({json.dumps(sel)}).getBoundingClientRect();return r.left>=a.left-.5&&r.top>=a.top-.5&&r.right<=a.right+.5&&r.bottom<=a.bottom+.5}})()")
+
+        boards = {"c-1-saisie": 104, "c-2-envoye": 224, "c-2.1-arrete": 265, "c-2-autorisation": 303, "c-2-autorisation-diff": 303, "c-2.2b-erreur": 248, "c-2.2b-erreur-details": 279, "c-3-termine": 279, "c-3-termine-diff": 303}
+        seen = {n: bubble_sizes[n] for n in boards if n in bubble_sizes}
+        check(bool(seen) and all(seen[n] == [305, boards[n]] for n in seen), "bubble: `bubble.size` gives the height of each Paper board (104, 224, 265, 303, 303, 248, 279, 279, 303)", json.dumps(seen))
+
+        # the layout: no header, no conversation list, a non-modal dialog, the input focused, French mode names
+        load("c-1-vide")
+        b = cdp.js("""(()=>{const a=document.getElementById('app'),cs=getComputedStyle(a);return {bub:document.documentElement.classList.contains('bub'),hd:document.querySelector('.hd').getClientRects().length,
+          hist:document.getElementById('history').getClientRects().length,pick:document.querySelector('.tb.pick').getClientRects().length,role:a.getAttribute('role'),modal:a.getAttribute('aria-modal'),name:a.getAttribute('aria-label'),
+          radius:cs.borderTopLeftRadius,bg:cs.backgroundColor,page:getComputedStyle(document.body).backgroundColor,w:a.getBoundingClientRect().width,mode:document.querySelector('.tb.mode').textContent,
+          focus:document.activeElement.id,first:window.__posted.findIndex(m=>m.type==='bubble.size'),all:document.body.innerText}})()""")
+        check(b["bub"] and b["hd"] == 0 and b["hist"] == 0 and b["pick"] == 0, "bubble: no header, no conversation list, no aim button", json.dumps(b)[:200])
+        check(b["role"] == "dialog" and b["modal"] == "false" and b["name"] == "Commentaire sur button.btn-primary", "bubble: a non-modal dialog named after its element", f"{b['role']} {b['modal']} {b['name']}")
+        check(b["radius"] == "16px" and b["bg"] == "rgb(23, 23, 23)" and b["page"] == "rgba(0, 0, 0, 0)" and round(b["w"]) == 305, "bubble: 305 px surface #171717, radius 16, transparent page around it", f"{b['radius']} {b['bg']} {b['page']} {b['w']}")
+        check(b["mode"] == "Demander" and "Ask" not in b["all"], "bubble: the mode shows its French name (« Demander », never « Ask »)", b["mode"])
+        check(b["focus"] == "composer-input", "bubble: the cursor is in the input at the opening", b["focus"])
+        check(sizes() == [[305, 84]], "bubble: one `bubble.size` per change (305 x 84 for the empty input), never the same value twice", str(sizes()))
+        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "open": False})
+        check(sizes() == [[305, 84], [305, 84]], "bubble: every `layout` is answered by `bubble.size`, even unchanged (acknowledgement)", str(sizes()))
+        host({"type": "layout", "mode": "bubble", "maxWidth": 280, "maxHeight": 60, "open": False})
+        check(sizes()[-1] == [280, 84], "bubble: the width follows maxWidth (280)", str(sizes()[-1]))
+        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "open": False})
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Plus grand"); key("Enter", mods=2); time.sleep(.15)
+        ann = of("annotate")
+        cdp.call("Input.insertText", text="Plus grand"); key("Enter"); time.sleep(.15)
+        snd = [{"text": m["text"], "elements": m["elements"]} for m in of("send")]
+        check(snd == [{"text": "Plus grand", "elements": []}], "bubble: Entrée sends the words; the element is implicit (elements: [])", json.dumps(snd, ensure_ascii=False))
+        check(len(ann) == 1 and ann[0]["text"] == "Plus grand" and ann[0]["elements"] == [], "bubble: Ctrl+Entrée keeps an annotation with words only (the host adds the anchored element)", json.dumps(ann, ensure_ascii=False)[:160])
+
+        # during a turn: the mode and « Arrêter », no input; Échap closes the bubble and never stops the agent
+        load("c-2-envoye")
+        r = cdp.js("""(()=>{const s=document.querySelector('.send');return {cin:V('.cin'),plus:document.querySelector('.tools .tb[aria-haspopup=menu]:not(.mode)').getClientRects().length,
+          model:document.querySelector('.model').getClientRects().length,stop:s.classList.contains('stop'),label:s.getAttribute('aria-label'),bg:getComputedStyle(s).backgroundColor,focusStop:document.activeElement===s,
+          st:document.querySelector('.bt-st .lb').textContent,chip:document.querySelector('.bt-model').textContent,rule:V('.b-rule'),caret:document.querySelectorAll('.text.streaming').length}})()""")
+        check(r["cin"] == 0 and r["plus"] == 0 and r["model"] == 0 and r["stop"] and r["label"].startswith("Arrêter") and r["rule"] == 0, "bubble (turn): no input, only the mode and « Arrêter »", json.dumps(r, ensure_ascii=False)[:240])
+        check(r["st"] == "Lit checkout.css…" and r["chip"] == "Sonnet 5.5Élevé" and not r["focusStop"] and r["caret"] == 0, "bubble (turn): « modèle · effort », the step in progress at its right; the focus is never on « Arrêter »", f"{r['st']} / {r['chip']}")
+        host({"type": "toolCallUpdate", "id": "r4", "status": "completed", "title": "A lu checkout.css"})
+        host({"type": "toolCall", "turnId": "t1", "id": "r5", "title": "Modifie checkout.css…", "kind": "edit", "status": "in_progress"})
+        check(cdp.js("document.querySelector('.bt-st .lb').textContent") == "Modifie checkout.css…", "bubble (turn): the status follows the step in progress")
+        key("Escape")
+        t = [m["type"] for m in cdp.js("window.__posted")]
+        check("close" in t and "stop" not in t and cdp.js("document.getElementById('app').classList.contains('b-out')"), "bubble: Échap sends `close` (the host closes the bubble), never `stop`; the surface goes", str(t[-4:]))
+        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520})
+        check(not cdp.js("document.getElementById('app').classList.contains('b-out')") and cdp.js("getComputedStyle(document.getElementById('app')).animationName") == "b-in", "bubble: the next `layout` shows it again, opening from the element's side (180 ms)")
+        click(".send.stop")
+        check("stop" in [m["type"] for m in cdp.js("window.__posted")], "bubble (turn): « Arrêter » sends `stop`")
+        time.sleep(.3)
+        s2 = cdp.js("[document.querySelector('.bt-st .lb').textContent, document.getElementById('composer-input').dataset.placeholder, V('.cin'), V('.b-rule')]")
+        check(s2 == ["S'est arrêté", "Que voulez-vous ajouter ?", 1, 1], "bubble (stopped): « S'est arrêté », the input is back (« Que voulez-vous ajouter ? ») under its hairline", str(s2))
+
+        # hover list of the steps: inside the bubble, by pointer and by keyboard
+        load("c-2.1-survol")
+        c = center(".bt-st"); move(*c); time.sleep(.6)
+        tip = cdp.js("""(()=>{const t=document.getElementById('b-tip');return {on:!t.hidden&&getComputedStyle(t).opacity,rows:Array.from(t.querySelectorAll('.r')).map(r=>r.textContent),role:t.getAttribute('role'),
+          desc:document.querySelector('.bt-st').getAttribute('aria-describedby'),hover:window.__posted.filter(m=>m.type==='hover').map(m=>m.active)}})()""")
+        check(tip["on"] == "1" and tip["rows"] == ["A lu index.html", "A lu Checkout.tsx", "A utilisé 1 outil MCP"] and tip["role"] == "tooltip" and tip["desc"] == "b-tip" and tip["hover"][-1:] == [True],
+              "bubble (hover): the step in progress shows the steps done (« A lu index.html », « A lu Checkout.tsx », « A utilisé 1 outil MCP »)", json.dumps(tip, ensure_ascii=False)[:260])
+        check(inside("#b-tip"), "bubble (hover): the list opens inside the bubble (a window cannot draw outside)")
+        move(c[0] - 150, c[1] + 100); time.sleep(.3)
+        check(cdp.js("document.getElementById('b-tip').hidden") and cdp.js("window.__posted.filter(m=>m.type==='hover').pop().active") is False, "bubble (hover): it goes when the pointer leaves")
+        move(*c); time.sleep(.6); host({"type": "pointer.leave"})
+        check(cdp.js("document.getElementById('b-tip').hidden"), "bubble (hover): the host's `pointer.leave` closes it too")
+        move(370, 690); cdp.js("document.activeElement&&document.activeElement.blur()"); key("Tab"); time.sleep(.2)
+        kb = cdp.js("[document.activeElement.className, !document.getElementById('b-tip').hidden, document.activeElement.getAttribute('aria-describedby')]")
+        check("bt-st" in kb[0] and kb[1] and kb[2] == "b-tip", "bubble (hover): keyboard focus on the step opens the same list", str(kb))
+
+        # stopped state: the lit send button over an empty input puts the cursor in the input
+        load("c-2.1-arrete")
+        cdp.js("document.activeElement&&document.activeElement.blur()")
+        s = cdp.js("(()=>{const b=document.querySelector('.send');return [b.classList.contains('ready'), b.getAttribute('aria-disabled'), document.querySelector('.bt-st').tagName]})()")
+        click(".send")
+        check(s == [True, None, "SPAN"] and cdp.js("document.activeElement.id") == "composer-input" and not of("send"), "bubble (stopped): send stays lit (boards), pressing it empty focuses the input; « S'est arrêté » is plain text", str(s))
+
+        # permission in the bubble
+        load("c-2-autorisation")
+        p = cdp.js("""(()=>{const a=document.getElementById('app'),s=document.querySelector('.scroller');return {role:document.querySelector('.bperm').getAttribute('role'),title:document.getElementById('perm-t').textContent,
+          nums:Array.from(document.querySelectorAll('.bperm-file .num')).map(n=>n.textContent),ph:document.querySelector('.instead').placeholder,auto:document.querySelector('.bperm .always').textContent,
+          checked:document.querySelector('.bperm .always').getAttribute('aria-checked'),faded:a.classList.contains('faded'),fade:getComputedStyle(document.querySelector('.b-fade')).opacity,top:s.scrollTop,
+          composer:V('.composer'),rule:V('.b-rule')}})()""")
+        check(p["role"] == "alertdialog" and p["title"] == "Claude veut modifier checkout.css" and p["nums"] == ["+6", "−2"] and p["ph"] == "Dire à Claude quoi faire à la place…" and p["auto"] == "Auto." and p["checked"] == "true"
+              and p["composer"] == 0 and p["rule"] == 1, "bubble (permission): the request is in the bubble, in place of the input", json.dumps(p, ensure_ascii=False)[:300])
+        check(p["faded"] and p["fade"] == "1" and p["top"] > 0, "bubble (permission): at its maximum height the thread scrolls and its top fades", f"faded {p['faded']}, opacity {p['fade']}, scrollTop {p['top']}")
+        check(active().startswith("Autoriser"), "bubble (permission): focus on « Autoriser »", active())
+        key("Enter")
+        check("permission.respond:always" in posted(), "bubble (permission): Entrée = Autoriser (Auto on: the allow_always option)", str(posted()[-3:]))
+        load("c-2-autorisation"); key("Escape")
+        t = posted()
+        check("close" in t and not any(x.startswith("permission.respond") for x in t), "bubble (permission): Échap closes the bubble and answers nothing (the request waits)", str(t[-3:]))
+        load("c-2-autorisation"); click(".bperm .btn:not(.primary)")
+        check("permission.respond:reject" in posted() and cdp.js("!document.querySelector('.bperm')"), "bubble (permission): « Refuser » rejects")
+        load("c-2-autorisation"); cdp.js("document.querySelector('.instead').focus()"); cdp.call("Input.insertText", text="Garde 240 px"); key("Enter")
+        resp = of("permission.respond")
+        check(len(resp) == 1 and resp[0]["optionId"] == "reject" and resp[0].get("message") == "Garde 240 px", "bubble (permission): « Dire à Claude quoi faire à la place » rejects with the words", json.dumps(resp, ensure_ascii=False))
+        load("c-autorisation-grande")
+        g = cdp.js("[document.getElementById('app').classList.contains('faded'), document.querySelector('.scroller').scrollTop]")
+        check(sizes()[-1] == [305, 313] and g == [False, 0], "bubble (permission): with more room (maxHeight 520) the bubble grows to its content (313) and nothing fades", f"{sizes()[-1]} {g}")
+
+        # the diff « en grand »
+        load("c-2-autorisation-diff")
+        v = cdp.js("""(()=>{const v=document.getElementById('bview');return {open:!v.hidden,role:v.getAttribute('role'),name:v.getAttribute('aria-label'),lines:Array.from(v.querySelectorAll('.l')).map(l=>l.className.replace('l ','')),
+          add:getComputedStyle(v.querySelector('.l.add')).color,file:document.querySelector('.bperm-file').getClientRects().length,thread:document.querySelector('.body').getClientRects().length,
+          mono:getComputedStyle(v.querySelector('.bview-body')).fontFamily,focus:document.activeElement.getAttribute('aria-label'),buttons:document.querySelectorAll('.bperm .btn').length}})()""")
+        check(v["open"] and v["role"] == "dialog" and v["name"] == "Claude veut modifier checkout.css" and v["lines"] == ["del", "add", "add"] and v["add"] == "rgb(122, 255, 171)" and "JetBrains Mono" in v["mono"]
+              and v["file"] == 0 and v["thread"] == 0 and v["buttons"] == 2, "bubble (diff): a click on the file line opens the diff in the bubble, above Refuser / Autoriser", json.dumps(v, ensure_ascii=False)[:300])
+        check(sizes()[-1] == [305, 303] and v["focus"] == "Fermer l'aperçu", "bubble (diff): it takes all the height there is (maxHeight), focus on its close button", f"{sizes()[-1]} {v['focus']}")
+        key("Escape")
+        check(cdp.js("document.getElementById('bview').hidden") and "close" not in posted() and "bperm-file" in cdp.js("document.activeElement.className"), "bubble (diff): Échap closes the diff first, focus back on the file line", active())
+        click(".bperm-file"); click(".bperm .btn.primary")
+        check("permission.respond:always" in posted() and cdp.js("document.getElementById('bview').hidden && !document.querySelector('.bperm')"), "bubble (diff): « Autoriser » answers from the open diff and closes it")
+        load("c-autorisation-commande")
+        cmd = cdp.js("[document.querySelector('#bview .bview-pre').textContent, document.querySelectorAll('#bview .num').length]")
+        check(cmd == ["npm test -- --run checkout", 0] and sizes()[-1] == [305, 224], "bubble (permission): a command opens the same way, at its own height (never smaller than the turn's bubble)", f"{cmd} {sizes()[-1]}")
+
+        # error
+        load("c-2.2b-erreur")
+        e = cdp.js("""(()=>({color:getComputedStyle(document.querySelector('.bt-text .text')).color,line:document.querySelector('.bt-err .w').textContent,more:document.querySelector('.bt-more').getAttribute('aria-expanded'),
+          buttons:Array.from(document.querySelectorAll('.b-errft .btn')).map(b=>b.textContent),composer:V('.composer'),st:document.querySelector('.bt-stw').textContent}))()""")
+        check(e["color"] == "rgb(255, 123, 110)" and e["line"] == "Une erreur est apparue." and e["more"] == "false" and e["buttons"] == ["Annuler", "Réessayer"] and e["composer"] == 0 and e["st"] == "",
+              "bubble (error): the agent's text in red, « Une erreur est apparue. », Annuler / Réessayer in place of the input", json.dumps(e, ensure_ascii=False))
+        click(".bt-more")
+        d = cdp.js("(()=>({open:document.querySelector('.bt-more').getAttribute('aria-expanded'),text:document.querySelector('.bt-errd').innerText,code:getComputedStyle(document.querySelector('.bt-errd .ecode')).fontFamily,body:V('.bt-text')}))()")
+        check(d["open"] == "true" and d["text"].startswith("Erreur 529 · overloaded_error") and "Les serveurs de Claude étaient surchargés. La réponse" in d["text"] and "« Réessayer » relance la même demande." in d["text"] and "JetBrains Mono" in d["code"]
+              and sizes()[-1] == [305, 279], "bubble (error): « Plus d'infos » unfolds the code, what happened, what changed and what to do (248 → 279)", d["text"].replace("\n", " | ")[:200] + f" {sizes()[-1]}")
+        click(".bt-more")
+        check(sizes()[-1] == [305, 248] and cdp.js("V('.bt-text')") == 1, "bubble (error): folded again, the bubble is back to 248")
+        click(".b-errft .btn.danger")
+        rt = of("retry")
+        check(rt == [{"v": 1, "type": "retry", "turnId": "t1"}] and vis(".composer"), "bubble (error): « Réessayer » sends `retry` for that turn", json.dumps(rt))
+        load("c-2.2b-erreur"); click(".b-errft .btn:not(.danger)")
+        check(vis(".composer") and not vis(".b-errft") and cdp.js("document.activeElement.id") == "composer-input" and not of("retry"), "bubble (error): « Annuler » brings the input back, nothing is sent")
+
+        # result
+        load("c-3-termine")
+        d = cdp.js("""(()=>({bar:document.querySelector('.bt-bar-main').textContent,copy:document.querySelector('.bt-copy').textContent,st:document.querySelector('.bt-st .lb').textContent,tag:document.querySelector('.bt-st').tagName,
+          ph:document.getElementById('composer-input').dataset.placeholder,text:document.querySelector('.bt-text').textContent,actions:document.querySelectorAll('.actions, .rewind, .um-tools .icon-btn').length}))()""")
+        check(d["bar"] == "1 fichier modifié+6−2" and d["copy"] == "Copier" and d["st"] == "Historique" and d["tag"] == "BUTTON" and d["ph"] == "Que voulez-vous ajouter de plus ?" and d["text"].startswith("C'est fait.") and d["actions"] == 0,
+              "bubble (done): the words, « 1 fichier modifié +6 −2 › » with Copier, « Historique », « Que voulez-vous ajouter de plus ? »", json.dumps(d, ensure_ascii=False)[:260])
+        click(".bt-copy"); time.sleep(.2)
+        cp = of("copy")
+        check(len(cp) == 1 and "-width: 240px;" in cp[0]["text"] and "+margin-left: auto;" in cp[0]["text"] and cdp.js("document.querySelector('.bt-copy span').textContent") == "Copié", "bubble (done): Copier copies the diff, then says « Copié »", cp[0]["text"][:80].replace("\n", " | ") if cp else "")
+        c = center(".bt-st"); move(*c); time.sleep(.6)
+        hist = cdp.js("Array.from(document.querySelectorAll('#b-tip .r')).map(r=>r.textContent)")
+        check(hist == ["A lu index.html", "A lu Checkout.tsx", "A utilisé 1 outil MCP", "A lu checkout.css", "A modifié checkout.css", "A lancé npm run build"] and inside("#b-tip"),
+              "bubble (done): hovering « Historique » lists the turn's actions (reads, MCP tools, edits, commands), inside the bubble", " | ".join(hist))
+        move(370, 690); time.sleep(.2)
+        click(".bt-bar-main"); time.sleep(.2)
+        v = cdp.js("""(()=>{const v=document.getElementById('bview');return {open:!v.hidden,title:v.querySelector('.t').textContent,nums:Array.from(v.querySelectorAll('.num')).map(n=>n.textContent),lines:v.querySelectorAll('.l').length,
+          copy:!!v.querySelector('.bview-copy'),composer:V('.composer'),asked:window.__posted.filter(m=>m.type==='checkpoint.viewChanges').map(m=>m.turnId)}})()""")
+        check(v["open"] and v["title"] == "checkout.css" and v["nums"] == ["+6", "−2"] and v["lines"] == 3 and v["copy"] and v["composer"] == 1 and v["asked"] == ["t1"] and sizes()[-1] == [305, 520],
+              "bubble (done): the bar opens the file's diff in the bubble (title, +6 −2, Copier), asks the host for the full diff, takes maxHeight", json.dumps(v, ensure_ascii=False) + f" {sizes()[-1]}")
+        click(".bview-copy"); click(".bview-x")
+        check(len(of("copy")) == 2 and cdp.js("document.getElementById('bview').hidden") and "bt-bar-main" in cdp.js("document.activeElement.className") and sizes()[-1] == [305, 279], "bubble (done): Copier in the diff; closing returns to the bar and to 279")
+        load("c-diff-plusieurs-fichiers")
+        mf = cdp.js("[document.querySelector('#bview .t').textContent, Array.from(document.querySelectorAll('#bview .l.file')).map(l=>l.textContent), document.querySelectorAll('#bview .l.add').length>5]")
+        check(mf == ["3 fichiers modifiés", ["src/styles/checkout.css", "src/pages/Checkout.tsx", "src/styles/pay-button.css"], True], "bubble (done): several files are stacked in the same view, each under its path", str(mf)[:200])
+
+        # queue between elements, menus, long thread, no folder
+        load("c-file-attente")
+        q = cdp.js("[document.querySelector('.bq .bubble').textContent, document.querySelector('.bq-cap .tx').textContent, V('.composer')]")
+        click(".bq-cap .icon-btn")
+        check(q == ["Mets ce titre en gras", "Commencera après le travail en cours sur button.btn-primary", 1] and "queue.remove:q1" in posted(), "bubble (queue): a request written during another element's turn waits, with its discreet line and « × »", str(q))
+        load("c-menu-modele")
+        m = cdp.js("[!!document.querySelector('.menu[role=menu]'), document.querySelectorAll('.menu .mi').length]")
+        grown = sizes()
+        geo = cdp.js("(()=>{const m=document.querySelector('.menu'),r=m.getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect();return {top:Math.round(r.top),h:Math.round(r.height),scroll:m.scrollHeight,app:Math.round(a.height)}})()")
+        check(m[0] and m[1] >= 7 and inside(".menu") and grown[0] == [305, 84] and len(grown) == 2 and abs(grown[-1][1] - (geo["top"] + geo["h"] + 6)) <= 1 and geo["scroll"] <= geo["h"] and geo["app"] == grown[-1][1],
+              "bubble (menu): the model menu opens inside the bubble, which grows for it (nothing cut, nothing scrolled)", f"{m} {grown} {geo}")
+        key("Escape")
+        check(cdp.js("!document.querySelector('.menu')") and sizes()[-1] == [305, 84] and "close" not in posted(), "bubble (menu): Échap closes the menu only; the bubble is back to its size", str(sizes()[-2:]))
+        load("c-menu-mode")
+        check(inside(".menu") and sizes()[-1] == [305, 279] and cdp.js("Array.from(document.querySelectorAll('.menu .mi .lb')).map(n=>n.textContent)") == ["Demander", "Auto", "Planifier"], "bubble (menu): with room above its button the menu covers the thread, the size does not change", str(sizes()[-1]))
+        load("c-menu-au-dessus")
+        up = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.composer').getBoundingClientRect(),b=document.querySelector('.tb.mode').getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect();return [Math.round(a.bottom-c.bottom), m.bottom<=b.top, m.top>=a.top]})()")
+        check(up == [12, True, True] and inside(".menu") and sizes()[-1][1] > 200, "bubble (above its element): content sits on the bottom edge, the menu opens upward", f"{up} {sizes()[-1]}")
+        load("c-fil-long")
+        lg = cdp.js("(()=>{const s=document.querySelector('.scroller');return [s.scrollHeight>s.clientHeight, Math.round(s.scrollTop+s.clientHeight)===s.scrollHeight, document.getElementById('app').classList.contains('faded')]})()")
+        check(sizes()[-1] == [305, 360] and lg == [True, True, True], "bubble (long thread): at maxHeight (360) the thread scrolls, glued to its end, the top fades", f"{sizes()[-1]} {lg}")
+        load("c-sans-dossier")
+        nf = cdp.js("[(document.querySelector('.strip')||{}).textContent||'', document.querySelector('.send').getAttribute('aria-disabled'), document.querySelector('.first').getClientRects().length]")
+        click(".strip .btn-s")
+        check("Choisissez le dossier du projet" in nf[0] and nf[1] == "true" and nf[2] == 0 and "folder.choose" in posted(), "bubble (no folder): one line with « Choisir le dossier… », no folder screen; send is off", str(nf))
+
+        # a live turn: the height is published as the content grows
+        cdp.events.clear(); viewport(380, 698)
+        cdp.call("Page.navigate", url=f"{BASE}/chat-panel/dev.html?layout=bubble")
+        cdp.js("new Promise(r=>{const f=()=>window.__scenarioDone?r(1):setTimeout(f,20);f()})"); time.sleep(.3)
+        early = cdp.js("document.documentElement.classList.contains('bub')")
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Bonjour"); key("Enter"); time.sleep(.5)
+        mid = cdp.js("[document.querySelector('.send').classList.contains('stop'), V('.cin')]")
+        time.sleep(2.2)
+        lv = cdp.js("""(()=>{const a=document.getElementById('app'),s=document.querySelector('.scroller'),z=window.__posted.filter(m=>m.type==='bubble.size').map(m=>m.height);
+          return {z,app:Math.round(a.getBoundingClientRect().height),fit:s.scrollHeight<=s.clientHeight,done:!!document.querySelector('.bt-st.done'),bar:!!document.querySelector('.bt-bar'),focus:document.activeElement.id}})()""")
+        check(early and mid == [True, 0] and len(set(lv["z"])) >= 4 and lv["z"][-1] == lv["app"] and lv["fit"] and lv["done"] and lv["bar"] and all(a != b for a, b in zip(lv["z"][1:], lv["z"][2:])),
+              "bubble (live): `?layout=bubble` from the first paint; the height is published at each change and the window fits the content", json.dumps(lv))
+        check(lv["focus"] == "composer-input" and not errors_of("live"), "bubble (live): when the turn ends the cursor is back in the input; no error", lv["focus"])
+
+        # motion, switch back to the panel
+        load("c-1-vide", reduced=True)
+        cdp.js("window.devHost.send({type:'layout',mode:'bubble',maxHeight:520})")
+        check(cdp.js("getComputedStyle(document.getElementById('app')).animationName") == "fade", "bubble (motion): reduced motion opens with a fade only")
+        key("Escape"); time.sleep(.2)
+        check(cdp.js("getComputedStyle(document.getElementById('app')).transform") == "none" and cdp.js("getComputedStyle(document.getElementById('app')).opacity") == "0", "bubble (motion): reduced motion closes without scale")
+        load("c-bascule-panneau")
+        n0 = len(sizes())
+        host({"type": "state", "running": False})
+        pn = cdp.js("""(()=>({bub:document.documentElement.classList.contains('bub'),hd:document.querySelector('.hd').getClientRects().length,role:document.getElementById('app').getAttribute('role'),
+          meta:(document.querySelector('.turn .meta')||{}).textContent,bt:document.querySelectorAll('.turn.bt').length,pick:document.querySelector('.tb.pick').getClientRects().length,bar:!!document.querySelector('.card4')}))()""")
+        check(not pn["bub"] and pn["hd"] == 1 and pn["role"] is None and pn["meta"] == "Sonnet · Élevé · 18 s" and pn["bt"] == 0 and pn["pick"] == 1 and pn["bar"] and len(sizes()) == n0,
+              "layout: back to `panel` the chat is the panel again (header, thread drawn again by thread.reset), no more `bubble.size`", json.dumps(pn, ensure_ascii=False))
+
+    # B 1.8 — the folder's name rather than its path or the site's address (Paper 156L-0)
+    if not ONLY:
+        load("6.7a-vide"); cdp.js("document.querySelector('.tools .tb[aria-haspopup=menu]').click()"); time.sleep(.1)
+        plus = cdp.js("document.querySelector('.menu').innerText")
+        load("6.2-premiere-fois")
+        tile = cdp.js("[document.querySelector('.tile.found .nm').textContent, document.querySelectorAll('.tile.found .path').length, document.querySelector('.tile.found').title]")
+        load("6.7b-historique")
+        cdp.js("window.devHost.send({type:'history',items:[{id:'c2',title:'Bouton de paiement',subtitle:'1 fichier modifié',siteLabel:'127.0.0.1:5173',thisSite:true,agentIcon:'claude',updatedAt:new Date().toISOString()},"
+               "{id:'c4',title:'Menu de navigation',subtitle:'3 fichiers modifiés',siteLabel:'localhost:4173',folderName:'vitrine',thisSite:false,agentIcon:'claude',updatedAt:new Date().toISOString()}]})"); time.sleep(.15)
+        hs = cdp.js("[document.querySelector('.hsec').textContent, Array.from(document.querySelectorAll('.hrow .s')).map(s=>s.textContent)]")
+        check("boutique" in plus and "C:\\" not in plus and tile[0].startswith("boutique") and tile[1] == 0 and tile[2].endswith("boutique")
+              and hs == ["Ce site · boutique", ["1 fichier modifié", "vitrine · 3 fichiers modifiés"]],
+              "folder (B 1.8): the folder's name instead of its path or the site's address (« + » menu, folder screen, history)", f"{plus!r} {tile} {hs}"[:300])
 
     if not ONLY:
         load("6.1-autorisation")

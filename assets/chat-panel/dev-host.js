@@ -7,8 +7,15 @@
   const posted = (window.__posted = []);
   window.__scenarioDone = false;
   window.__scenario = {};
+  let bubbleOn = false, curTurn = null;
   function send(m) {
     const msg = JSON.parse(JSON.stringify(Object.assign({ v: 1 }, m)));
+    if (msg.type === "layout") {   // the fake host's « window »: sized from bubble.size while in bubble layout
+      bubbleOn = msg.mode === "bubble";
+      if (!bubbleOn) { document.documentElement.style.width = ""; document.documentElement.style.height = ""; }
+    }
+    if (msg.type === "turn.start") curTurn = msg.turnId;
+    if (msg.type === "thread.reset") { curTurn = null; for (const it of msg.items || []) if (it.type === "turn.start") curTurn = it.turnId; }
     for (const f of listeners) f({ data: msg });
   }
   window.chrome = window.chrome || {};
@@ -106,6 +113,71 @@
   const typeIn = (text) => () => { const c = document.querySelector(".cin"); c.focus(); document.execCommand("insertText", false, text); };
   const click = (sel) => () => { const n = document.querySelector(sel); if (n) n.click(); };
   const wait = (ms) => () => new Promise((r) => setTimeout(r, ms));
+  const blur = () => document.activeElement && document.activeElement.blur();
+
+  // Comment-mode bubble (B 1.8, Paper row « Mode Commentaire »): the same thread drawn in a 305 px bubble.
+  const LAY = (over) => Object.assign({ type: "layout", mode: "bubble", maxWidth: 305, maxHeight: 520, side: "right", element: "button.btn-primary" }, over || {});
+  const CASK = "Fais en sorte que le bouton prenne toute la largeur du form";
+  const CTEXT = "Le bouton a une largeur fixe de 240 px. Je le passe à droite sur grand écran et en pleine largeur sous 640 px.";
+  const CEND = "C'est fait. La page s'est rechargée ; l'annotation est marquée « terminée ».";
+  const C_DIFF = Object.assign({}, DIFF, { path: "src/styles/checkout.css" });
+  const cUser = () => ({ type: "message.user", id: "u1", text: CASK, at: today(15, 34), elements: [] });
+  const cStart = () => ({ type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé", agentId: "claude-code", at: ago(12000) });
+  const cSteps = (running) => [
+    { type: "toolCall", turnId: "t1", id: "r1", title: "A lu index.html", kind: "read", status: "completed", locations: [{ path: "index.html" }] },
+    { type: "toolCall", turnId: "t1", id: "r2", title: "A lu Checkout.tsx", kind: "read", status: "completed", locations: [{ path: "src/pages/Checkout.tsx" }] },
+    { type: "toolCall", turnId: "t1", id: "r3", title: "mcp__browser-annotations__browser_annotations_claim", kind: "other", status: "completed" },
+    { type: "toolCall", turnId: "t1", id: "r4", title: running ? "Lit checkout.css…" : "A lu checkout.css", kind: "read", status: running ? "in_progress" : "completed", locations: [{ path: "src/styles/checkout.css" }] }];
+  const cRunning = () => [cUser(), cStart(), { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }].concat(cSteps(true));
+  const cRun = (lay) => [LAY(lay), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: cRunning() }];
+  const cDoneItems = (changes) => [cUser(), cStart()].concat(cSteps(false), [
+    { type: "toolCall", turnId: "t1", id: "e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] },
+    { type: "toolCall", turnId: "t1", id: "x1", title: "A lancé npm run build", kind: "execute", status: "completed" },
+    { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: CEND },
+    { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 18000, changes: changes || [{ path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: C_DIFF }], checkpointId: "cp-t1", undoable: true }]);
+  const cDone = (lay, changes) => [LAY(lay), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cDoneItems(changes) }];
+  const C_PERM = { type: "permission.request", requestId: "p1", turnId: "t1", title: "Claude veut modifier checkout.css", kind: "edit", diff: DIFF,
+    options: [{ optionId: "allow", name: "Autoriser", kind: "allow_once" }, { optionId: "always", name: "Toujours autoriser", kind: "allow_always" }, { optionId: "reject", name: "Refuser", kind: "reject_once" }] };
+  const cError = (lay) => [LAY(lay), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+    { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "turn.end", turnId: "t1", stopReason: "error", durationMs: 18000 },
+    { type: "error", id: "e1", scope: "thread", turnId: "t1", title: "Les serveurs de Claude étaient surchargés", detail: "Erreur 529 · overloaded_error",
+      message: "La réponse s'est arrêtée au bout de 18 s, avant toute modification : aucun fichier n'a été changé. « Réessayer » relance la même demande.", actions: [{ id: "retry", label: "Réessayer" }] }] }];
+  const C_SCENARIOS = {
+    "c-1-saisie": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn(CASK), blur],
+    "c-1-vide": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }],
+    "c-2-envoye": cRun(),
+    "c-2.1-survol": cRun(),
+    "c-2.1-arrete": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cRunning().concat([{ type: "turn.end", turnId: "t1", stopReason: "cancelled", durationMs: 9000 }]) }],
+    "c-2-autorisation": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), click(".bperm .always")]),
+    "c-2-autorisation-diff": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), click(".bperm .always"), click(".bperm-file"), wait(60)]),
+    "c-2.2b-erreur": cError(),
+    "c-2.2b-erreur-details": cError().concat([click(".bt-more"), wait(30)]),
+    "c-3-termine": cDone(),
+    "c-3-termine-diff": cDone({ maxHeight: 303 }).concat([click(".bt-bar-main"), wait(80)]),
+    "c-3-historique": cDone(),
+    // what the boards do not draw: taller room, several files, a command, the queue between elements, menus, no folder
+    "c-autorisation-grande": cRun().concat([C_PERM, wait(60)]),
+    "c-diff-plusieurs-fichiers": cDone({ maxHeight: 420 }, CHANGES3).concat([click(".bt-bar-main"), wait(80)]),
+    "c-autorisation-commande": cRun().concat([{ type: "permission.request", requestId: "p2", turnId: "t1", title: "Claude veut lancer une commande", kind: "execute", command: "npm test -- --run checkout",
+      options: [{ optionId: "allow", name: "Autoriser", kind: "allow_once" }, { optionId: "reject", name: "Refuser", kind: "reject_once" }] }, wait(60), click(".bperm-file"), wait(60)]),
+    "c-file-attente": [LAY({ element: "h1.title" }), st(), { type: "thread.reset", conversationId: "new", items: [] },
+      { type: "queue", items: [{ id: "q1", text: "Mets ce titre en gras", after: "button.btn-primary" }] }],
+    "c-menu-modele": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(60)],
+    "c-menu-mode": cDone().concat([wait(30), click(".tb.mode"), wait(60)]),
+    "c-menu-au-dessus": [LAY({ side: "above" }), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tb.mode"), wait(60)],
+    "c-fil-long": [LAY({ maxHeight: 360 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cDoneItems().concat([
+      { type: "message.user", id: "u2", text: "Et garde 16 px de marge sur tablette.", at: today(15, 40), elements: [] },
+      { type: "turn.start", turnId: "t2", model: "Sonnet 5.5", effort: "Élevé", agentId: "claude-code", at: today(15, 40) },
+      { type: "message.agentChunk", turnId: "t2", messageId: "m3", text: "C'est ajouté : entre 640 et 1024 px, le bouton garde **16 px** de marge de chaque côté.\n\n- `checkout.css` : une règle de plus\n- rien d'autre n'a changé" },
+      { type: "turn.end", turnId: "t2", stopReason: "end_turn", durationMs: 7000 }]) }],
+    "c-sans-dossier": [LAY(), st({ folder: null }), { type: "thread.reset", conversationId: "new", items: [] }],
+    "c-mode-auto": [LAY(), st({ mode: "acceptEdits" }), { type: "thread.reset", conversationId: "new", items: [] }],
+    "c-plan": [LAY(), st(Object.assign({ mode: "plan" }, conv("Paiement sur mobile"))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+      { type: "plan", turnId: "t1", id: "plan1", proposed: true, entries: [{ content: "Empiler le formulaire et le récapitulatif sous 768 px", status: "pending" }, { content: "Bouton Payer en pleine largeur", status: "pending" }] },
+      { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 22000 }] }],
+    "c-bascule-panneau": cDone().concat([{ type: "layout", mode: "panel" }, st(conv("Bouton de paiement")),
+      { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) }]),
+  };
 
   // ------------------------------------------------------------------ scenarios
   const SC = {
@@ -313,6 +385,7 @@
     "perf-500": [st(conv("Fil de 500 messages")), () => send({ type: "thread.reset", conversationId: "big", items: bigThread(250) })],
     "stream": [st(Object.assign({ running: true }, conv("Texte en flux", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Explique tout en détail.", null, []), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" }] }],
   };
+  Object.assign(SC, C_SCENARIOS);
   function bigThread(n) {
     const out = [];
     for (let i = 0; i < n; i++) {
@@ -358,7 +431,12 @@
         if (m.type === "suggestion.run" && m.id !== "annotations") break;
         send({ type: "annotations.batch", batchId: "b1", siteLabel: "127.0.0.1:5183", items: ANN() }); break;
       case "setAgent": send({ type: "state", agentId: m.id, model: m.id === "codex" ? "terra" : "sonnet", conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); break;
-      case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: FULL_DIFFS }); break;
+      case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: /^c-/.test(window.__scenarioName || "") && window.__scenarioName !== "c-diff-plusieurs-fichiers" ? [C_DIFF] : FULL_DIFFS }); break;
+      // bubble layout: the fake host's window follows the bubble (a real host resizes the WebView)
+      case "bubble.size": document.documentElement.style.width = m.width + "px"; document.documentElement.style.height = m.height + "px"; break;
+      case "close": if (bubbleOn && window.__scenarioName === "interactive") setTimeout(() => { send(LAY()); send({ type: "focus", target: "composer" }); }, 700); break;
+      case "retry": if (window.__scenarioName === "interactive") fakeTurn("Réessayer"); break;
+      case "queue.remove": send({ type: "queue", items: [] }); break;
       case "pickElement": send({ type: "pick.state", active: m.active }); if (m.active) setTimeout(() => send({ type: "element.attached", element: EL }), 600); break;
       case "attachImage": send({ type: "attachment.added", attachment: { id: "img" + Date.now(), kind: "image", name: m.name || "capture.png", thumb: thumbPng() } }); break;
       case "send": {
@@ -377,7 +455,7 @@
         if (window.__scenarioName === "interactive" || !window.__scenarioName) fakeTurn(m.text);
         break;
       }
-      case "stop": send({ type: "turn.end", turnId: "t" + turnSeq, stopReason: "cancelled", durationMs: 1000 }); send({ type: "state", running: false }); break;
+      case "stop": send({ type: "turn.end", turnId: curTurn || "t" + turnSeq, stopReason: "cancelled", durationMs: 1000 }); send({ type: "state", running: false }); break;
       case "permission.respond": send({ type: "state", running: true }); break;
       case "newChat": send({ type: "state", conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); break;
       default: break;
@@ -399,7 +477,9 @@
     const name = new URLSearchParams(location.search).get("scenario") || "interactive";
     window.__scenarioName = name;
     send({ type: "hello", locale: "fr", platform: "windows" });
-    const steps = SC[name] || [st(), { type: "thread.reset", conversationId: "new", items: [] }];
+    // dev.html?layout=bubble (no scenario): the interactive fake host in the comment-mode bubble
+    const bubble = new URLSearchParams(location.search).get("layout") === "bubble";
+    const steps = SC[name] || (bubble ? [LAY()] : []).concat([st(), { type: "thread.reset", conversationId: "new", items: [] }]);
     if (name === "6.7b-historique") window.__historyLoaded = true;
     for (const s of steps) {
       if (typeof s === "function") await s();

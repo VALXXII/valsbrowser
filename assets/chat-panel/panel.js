@@ -67,7 +67,12 @@
     picking: false, menu: null, atBottom: true, newCount: 0,
     cEls: new Map(), cAtt: new Map(), editing: null, replay: false, fatal: false,
     planPending: null,
+    // B 1.8 — comment mode: the page as a compact bubble next to the element (Paper 18NS-0 … 19IO-0)
+    lay: { mode: "panel", maxW: 305, maxH: 520, side: "right", element: "" },
+    bview: null, berr: null, menuNeed: 0,
   };
+  const BUB = () => S.lay.mode === "bubble";
+  const folderName = (f) => (f && ((typeof f.name === "string" && f.name) || String(f.path || "").split(/[\\/]/).filter(Boolean).pop())) || "";
   const agentById = (id) => (S.st.agents || []).find((a) => a.id === id) || null;
   const curAgent = () => agentById(S.st.agentId) || (S.st.agents || [])[0] || null;
   const curAgentName = () => (curAgent() && curAgent().name) || "l'agent";
@@ -122,10 +127,11 @@
     clearTimeout(tipTimer);
     const instant = !!tipOn || Date.now() - tipAt < 400;
     if (tipOn && tipOn !== el) tipOn.classList.remove("tip-on");
-    tipTimer = setTimeout(() => { tipTimer = 0; el.classList.add("tip-on"); tipOn = el; }, instant || isReduced() ? 0 : 300);
+    if (tipOn && tipOn !== el && tipOn._tip) tipOn._tip(false);
+    tipTimer = setTimeout(() => { tipTimer = 0; el.classList.add("tip-on"); tipOn = el; if (el._tip) el._tip(true); }, instant || isReduced() ? 0 : 300);
     if (!tipHost) { tipHost = true; post("hover", { active: true }); }
   }
-  function tipHide() { clearTimeout(tipTimer); tipTimer = 0; if (tipOn) { tipOn.classList.remove("tip-on"); tipAt = Date.now(); } tipOn = null; if (tipHost) { tipHost = false; post("hover", { active: false }); } }
+  function tipHide() { clearTimeout(tipTimer); tipTimer = 0; if (tipOn) { tipOn.classList.remove("tip-on"); if (tipOn._tip) tipOn._tip(false); tipAt = Date.now(); } tipOn = null; if (tipHost) { tipHost = false; post("hover", { active: false }); } }
   function withTip(el) {
     el.addEventListener("pointerenter", (e) => { if (e.pointerType !== "touch") tipShow(el); });
     el.addEventListener("pointerleave", tipHide);
@@ -153,17 +159,27 @@
   const dock = h("div", { class: "dock" });
   const body = h("div", { class: "body" }, scroller, newSteps);
   const changesEl = h("div", { class: "changes", id: "changes", role: "dialog", "aria-modal": "false", "aria-label": "Changements", hidden: true });
-  const main = h("div", { style: "position:relative;flex:1;min-height:0;display:flex;flex-direction:column" }, body, dock, historyEl, changesEl);
+  // Bubble only (B 1.8): the diff « en grand », the hairline above the input, the fade over a scrolled thread, the steps' bubble
+  const bviewEl = h("div", { class: "bview", id: "bview", role: "dialog", "aria-modal": "false", hidden: true });
+  const ruleEl = h("div", { class: "b-rule", "aria-hidden": "true", hidden: true });
+  const fadeEl = h("div", { class: "b-fade", "aria-hidden": "true" });
+  const btipEl = h("div", { class: "b-tip", id: "b-tip", role: "tooltip", hidden: true });
+  const main = h("div", { class: "main" }, body, bviewEl, ruleEl, dock, historyEl, changesEl);
   const menuLayer = h("div");
-  app.append(hd, main, live, alertLive, menuLayer);
+  app.append(hd, main, fadeEl, btipEl, live, alertLive, menuLayer);
 
   scroller.addEventListener("scroll", () => {
     const at = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
     S.atBottom = at;
     if (at && S.newCount) { S.newCount = 0; newSteps.hidden = true; }
+    bFade();
   }, { passive: true });
   // Item heights settle after layout (content-visibility, fonts, code blocks): stay glued to the end.
-  if (window.ResizeObserver) new ResizeObserver(() => { if (S.atBottom) scroller.scrollTop = scroller.scrollHeight; }).observe(log);
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => { if (S.atBottom) scroller.scrollTop = scroller.scrollHeight; publishSize(); }).observe(log);
+    new ResizeObserver(() => { if (BUB()) { if (S.atBottom) scroller.scrollTop = scroller.scrollHeight; bFade(); } }).observe(scroller);
+    new ResizeObserver(() => publishSize()).observe(dock);
+  }
   let scrollQueued = false;
   function stick() {
     if (scrollQueued) return;
@@ -251,23 +267,26 @@
     const running = !!S.st.running, content = hasContent();
     clear(sendBtn);
     sendBtn.className = "send";
-    if (running && !content) {
-      sendBtn.classList.add("stop"); sendBtn.appendChild(icon("stop"));
+    if (running && (!content || BUB())) {   // bubble: no input during a turn (Paper 1B30-0), the button is always « Arrêter »
+      sendBtn.classList.add("stop"); sendBtn.appendChild(icon(BUB() ? "stopB" : "stop"));
       sendBtn.setAttribute("aria-label", "Arrêter (Échap)"); sendBtn.title = "Arrêter (Échap)"; sendBtn.removeAttribute("aria-disabled");
       sendWrap.classList.add("no-tip");
     } else {
       sendBtn.appendChild(icon("arrowUp"));
-      const ok = content && canSend();
+      // Bubble (Paper 1AIB-0, 1B16-0): the button stays lit over an empty input — pressing it then puts the cursor in the
+      // input. It only goes out when sending is impossible (no folder, agent not ready, site not local).
+      const ok = canSend() && (content || BUB());
       if (ok) sendBtn.classList.add("ready");
       sendBtn.setAttribute("aria-label", running ? "Ajouter à la file" : "Envoyer");
       sendBtn.removeAttribute("title"); sendWrap.classList.remove("no-tip");   // the bubble says it (no second, native tooltip)
       if (ok) sendBtn.removeAttribute("aria-disabled"); else sendBtn.setAttribute("aria-disabled", "true");
     }
     const lines = composerText().split("\n").length;
-    keysRow.hidden = !(lines > 1 && document.activeElement === cin);
+    keysRow.hidden = BUB() || !(lines > 1 && document.activeElement === cin);
   }
   function onSendButton() {
     if (sendBtn.classList.contains("stop")) { post("stop"); return; }
+    if (BUB() && !hasContent()) { cin.focus(); return; }
     send();
   }
   function send() {
@@ -294,7 +313,8 @@
     const els = chipsInComposer().filter((id) => S.cEls.has(id));
     const text = composerText().replace(/\s+$/, "");
     let words = text; for (const id of els) words = words.split(S.cEls.get(id).label).join("");
-    if (!els.length) { hint("Cliquez un élément de la page pour le garder en annotation."); return; }
+    // bubble (B 1.8): the element is the one the bubble is anchored to — the host adds it, no chip is needed
+    if (!els.length && !BUB()) { hint("Cliquez un élément de la page pour le garder en annotation."); return; }
     if (!words.trim()) { hint("Écrivez ce qu'il faut changer, puis Ctrl+Entrée."); return; }
     clearTimeout(hintTimer); if (S.strips.delete("keep-hint")) renderDock();
     post("annotate", { text, elements: els });
@@ -305,6 +325,10 @@
     let p = "Que faut-il changer ?";
     if (S.batch) p = "Ajouter une précision (facultatif)…";
     else if (S.planPending) p = "Ajouter une précision au plan…";
+    else if (BUB()) {   // Paper 1AE7-0 (stopped) / 1AWI-0 (done)
+      const lt = S.lastTurn && S.turns.get(S.lastTurn);
+      if (lt) p = lt.stop && lt.stop !== "end_turn" ? "Que voulez-vous ajouter ?" : "Que voulez-vous ajouter de plus ?";
+    }
     else if (S.st.running) p = "Ajouter une suite…";
     else if (S.lastTurn) p = "Autre chose à changer ?";
     cin.setAttribute("data-placeholder", p);
@@ -409,7 +433,12 @@
     modeBtn.hidden = !(S.st.modes || []).length;
     if (mode) {
       const kind = mode.kind || "other";
-      if (kind === "auto") { modeBtn.classList.add("auto"); modeBtn.append(icon("auto", "ic"), h("span", { class: "lbl", text: mode.label })); }
+      if (BUB()) {   // Paper 18TZ-0: the icon and the mode's French name, no chevron
+        if (kind === "auto") modeBtn.classList.add("auto");
+        if (kind !== "other") modeBtn.appendChild(icon(kind === "auto" ? "auto" : kind === "plan" ? "list" : "shield", "ic"));
+        modeBtn.appendChild(h("span", { class: "lbl", text: mode.label }));
+      }
+      else if (kind === "auto") { modeBtn.classList.add("auto"); modeBtn.append(icon("auto", "ic"), h("span", { class: "lbl", text: mode.label })); }
       else if (kind === "other") modeBtn.append(h("span", { class: "lbl", text: mode.label, style: "color:#FFFFFFB3" }), icon("chevron", "cv"));
       else modeBtn.append(icon(kind === "plan" ? "list" : "shield", "ic"), icon("chevron", "cv"));
       modeBtn.setAttribute("aria-label", "Mode : " + mode.label);
@@ -447,30 +476,60 @@
     m.el.remove();
     if (m.anchor) m.anchor.setAttribute("aria-expanded", "false");
     if (m.combo) { cin.removeAttribute("aria-activedescendant"); cin.removeAttribute("aria-controls"); }
+    if (S.menuNeed) { S.menuNeed = 0; publishSize(); }
     if (restore && m.anchor) m.anchor.focus();
   }
   function place(menuEl, anchor, align, width) {
     const ar = app.getBoundingClientRect(), r = anchor.getBoundingClientRect();
-    menuEl.style.width = Math.min(width, ar.width - 16) + "px";
-    menuEl.style.bottom = (ar.bottom - r.top + 6) + "px";
     const w = Math.min(width, ar.width - 16);
+    menuEl.style.width = w + "px";
     let left = align === "right" ? r.right - ar.left - w : r.left - ar.left;
     left = Math.max(8, Math.min(left, ar.width - 8 - w));
     menuEl.style.left = left + "px";
-    menuEl.style.setProperty("--origin", (align === "right" ? "bottom right" : "bottom left"));
+    const side = align === "right" ? "right" : "left";
+    if (!BUB()) {
+      menuEl.style.bottom = (ar.bottom - r.top + 6) + "px";
+      menuEl.style.setProperty("--origin", "bottom " + side);
+      return;
+    }
+    // Bubble (B 1.8): the menu stays inside the bubble. Above its button when there is room; otherwise on the side the
+    // host grows the window (under the button, or above it when the bubble sits above its element), and the bubble
+    // asks for the missing height (`bubble.size`) for as long as the menu is open.
+    const maxH = S.lay.maxH;
+    menuEl.style.top = ""; menuEl.style.bottom = ""; menuEl.style.maxHeight = Math.max(80, maxH - 12) + "px";
+    const mh = menuEl.offsetHeight, aTop = r.top - ar.top, aBot = r.bottom - ar.top;
+    let need = 0;
+    if (S.lay.side === "above") {
+      const from = ar.bottom - r.top + 6;
+      menuEl.style.bottom = from + "px";
+      menuEl.style.maxHeight = Math.max(80, maxH - from - 6) + "px";
+      menuEl.style.setProperty("--origin", "bottom " + side);
+      need = from + menuEl.offsetHeight + 6;
+    } else if (aTop - 6 - mh >= 6) {
+      menuEl.style.top = (aTop - 6 - mh) + "px";
+      menuEl.style.setProperty("--origin", "bottom " + side);
+    } else {
+      const top = aBot + 6;
+      menuEl.style.top = top + "px";
+      menuEl.style.maxHeight = Math.max(80, maxH - top - 6) + "px";
+      menuEl.style.setProperty("--origin", "top " + side);
+      need = top + menuEl.offsetHeight + 6;
+    }
+    S.menuNeed = need;
+    publishSize();
   }
   // Button-opened menu: focus moves in, arrows move, Enter picks, Escape returns to the trigger.
   function openMenu(anchor, opts) {
     if (S.menu && S.menu.anchor === anchor && !opts.keep) { closeMenu(true); return; }
     closeMenu();
-    const el = h("div", { class: "menu", role: "menu", "aria-label": opts.label, tabindex: "-1" });
+    const el = h("div", { class: "menu" + (opts.cls ? " " + opts.cls : ""), role: "menu", "aria-label": opts.label, tabindex: "-1" });
     S.menu = { el, anchor, opts };
     fillMenu(el, opts.items);
     menuLayer.appendChild(el);
     place(el, anchor, opts.align, opts.width);
     anchor.setAttribute("aria-expanded", "true");
     const items = menuItems();
-    (items.find((i) => i.getAttribute("aria-checked") === "true") || items[0] || el).focus();
+    (items.find((i) => i.getAttribute("aria-checked") === "true") || items[0] || el).focus({ preventScroll: BUB() });   // bubble: the window grows for the menu, nothing must scroll meanwhile
     el.addEventListener("keydown", (e) => {
       const its = menuItems(), i = its.indexOf(document.activeElement);
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const n = its.length; if (n) its[(i + (e.key === "ArrowDown" ? 1 : n - 1) + n) % n].focus(); }
@@ -507,8 +566,8 @@
   }, true);
 
   function openModelMenu(anchor) {
-    openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: 300 });
-    if (S.menu) { S.menu.view = "main"; S.menu.el.classList.add("models"); }
+    openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: 300, cls: "models" });   // the class before the menu is placed: its rows are tighter
+    if (S.menu) S.menu.view = "main";
   }
   function showModelView(view, from) {
     if (!S.menu) return;
@@ -518,7 +577,7 @@
     place(S.menu.el, S.menu.anchor, "right", view === "effort" ? 214 : 300);
     const its = menuItems();
     const back = from && S.menu.el.querySelector(".mi[data-key='" + from + "']");
-    (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus();
+    (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus({ preventScroll: BUB() });
   }
   // Another provider's model = another agent = a new conversation: said once, in the menu, before it happens.
   let switchTo = null;
@@ -603,7 +662,8 @@
     const items = [];
     if (S.st.capabilities && S.st.capabilities.image === false) items.push({ label: "Joindre une image", desc: "Cet agent ne lit pas les images", disabled: true, lead: icon("k-image", "lead"), onSelect: () => {} });
     else items.push({ label: "Joindre une image", lead: icon("k-image", "lead"), onSelect: () => { closeMenu(true); post("attachImage", { source: "picker" }); } });
-    items.push({ label: "Choisir un autre dossier…", desc: S.st.folder ? S.st.folder.display : null, lead: icon("folder", "lead"), onSelect: () => { closeMenu(true); post("folder.choose"); } });
+    // B 1.8 (Paper 156L-0): the folder's name, not its path — the name is what tells which project this is
+    items.push({ label: "Choisir un autre dossier…", desc: folderName(S.st.folder) || null, lead: icon("folder", "lead"), onSelect: () => { closeMenu(true); post("folder.choose"); } });
     openMenu(anchor, { label: "Joindre", items, align: "left", width: 260 });
   }
 
@@ -695,6 +755,8 @@
   function derivedStrips() {
     const out = [];
     if (S.st.disabledReason) out.push({ id: "site", tone: "neutral", text: S.st.disabledReason });
+    // bubble: there is no « Où est le code de ce site ? » screen — one line says what is missing, with its action
+    else if (BUB() && S.st.folder === null) out.push({ id: "folder", tone: "neutral", text: "Choisissez le dossier du projet pour commencer.", action: { id: "choose", label: "Choisir le dossier…" } });
     const a = curAgent();
     if (a && S.st.folder) {
       if (a.status === "notConnected") out.push({ id: "agent", tone: "danger", text: "Vous n'êtes plus connecté à " + a.name + ".", action: { id: "connect", label: "Se connecter" } });
@@ -710,12 +772,20 @@
   }
   const hasDangerStrip = () => { const s = activeStrip(); return !!(s && s.tone === "danger"); };
   function stripAction(s) {
+    if (s.id === "folder") { post("folder.choose"); return; }
     if (s.id === "agent") { const a = curAgent(); const act = a && agentAction(a); if (act) act.run(); return; }
     if (s.errorId) post("error.action", { errorId: s.errorId, actionId: s.action.id });
     else post("strip.action", { stripId: s.id, actionId: s.action.id });
   }
+  function stripNode(s) {
+    return h("div", { class: "strip " + (s.tone === "danger" ? "danger" : ""), role: s.tone === "danger" ? "alert" : "status" },
+      h("div", { class: "tx" }, s.text, s.progress != null ? h("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(s.progress * 100)) },
+        h("i", { style: "width:" + Math.round(s.progress * 100) + "%" })) : null),
+      s.action ? h("button", { class: "btn-s", type: "button", onclick: () => stripAction(s) }, s.action.label) : null);
+  }
   let lastDockKey = "";
   function renderDock(force) {
+    if (BUB()) { renderDockB(force); return; }
     const p = S.perms[0];
     const s = activeStrip();
     const key = JSON.stringify([p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason]);
@@ -723,6 +793,7 @@
     lastDockKey = key;
     const hadFocusInComposer = composer.contains(document.activeElement);
     clear(dock);
+    dock.className = "dock"; ruleEl.hidden = true;
     if (p) { dock.appendChild(permCard(p)); return; }
     for (const q of S.queue) {
       dock.appendChild(h("div", { class: "queue", role: "group", "aria-label": "Suite en file" },
@@ -731,13 +802,7 @@
         h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
     }
     const stack = h("div", { class: "stack" });
-    if (s) {
-      const strip = h("div", { class: "strip " + (s.tone === "danger" ? "danger" : ""), role: s.tone === "danger" ? "alert" : "status" },
-        h("div", { class: "tx" }, s.text, s.progress != null ? h("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(s.progress * 100)) },
-          h("i", { style: "width:" + Math.round(s.progress * 100) + "%" })) : null),
-        s.action ? h("button", { class: "btn-s", type: "button", onclick: () => stripAction(s) }, s.action.label) : null);
-      stack.appendChild(strip);
-    }
+    if (s) stack.appendChild(stripNode(s));
     stack.appendChild(composer);
     composer.classList.toggle("disabled", !!(S.st.disabledReason || (s && s.tone === "danger")));
     cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
@@ -858,8 +923,367 @@
     return box;
   }
 
+  // ---------------------------------------------------------------- comment-mode bubble (B 1.8, design/chat-panel.md §19)
+  // Same thread, same messages, another drawing: a 305 px bubble next to the element, no header, no conversation list.
+  // Its height follows its content — every change is published (`bubble.size`) and the host resizes the window.
+  // Nothing is ever drawn outside the bubble: menus and hover bubbles open inside it.
+  let lastSize = "";
+  function bubbleNatural() {
+    if (S.bview) {                                           // the diff « en grand » takes all the room there is;
+      const box = !(S.bview.kind === "perm" && !S.bview.p.diff) ? null : bviewEl.querySelector(".bview-body");
+      if (!box) return S.lay.maxH;
+      let inner = 12;                                        // a command or a tool's arguments: their own height, never
+      for (const c of box.children) inner += c.offsetHeight; // smaller than the bubble of a turn in progress (224)
+      return Math.max(224, 68 + inner + dock.offsetHeight);
+    }
+    let hgt = 24, n = 0;                                     // 12 px of padding above and under
+    const part = (x) => { if (x > 0) { hgt += x; n++; } };
+    if (!body.hidden) part(log.offsetHeight);                // measured on the content: independent of the window's size
+    if (!ruleEl.hidden) part(1);
+    part(dock.offsetHeight);
+    return hgt + Math.max(0, n - 1) * 12;
+  }
+  function publishSize(force) {
+    if (!BUB() || S.fatal) return;
+    const hgt = Math.max(1, Math.min(S.lay.maxH, Math.ceil(Math.max(bubbleNatural(), S.menuNeed || 0))));
+    const key = S.lay.maxW + "x" + hgt;
+    bFade();
+    if (!force && key === lastSize) return;
+    lastSize = key;
+    post("bubble.size", { width: S.lay.maxW, height: hgt });
+    if (btipFor) bTipPlace();
+  }
+  // Paper 1ANU-0: once the bubble has reached its maximum, the thread scrolls and its top fades.
+  function bFade() { app.classList.toggle("faded", BUB() && !body.hidden && scroller.scrollTop > 0.5 && bubbleNatural() > S.lay.maxH); }
+  function resetThread() {
+    closeChanges();
+    S.usage = null; S.usageWarned = false; renderGauge();
+    S.batches.clear();
+    clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
+    S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
+    S.berr = null; closeView(true); bTipHide();
+    tick();
+  }
+  function applyLayout(changed) {
+    const b = BUB(), root = document.documentElement;
+    root.classList.toggle("bub", b);
+    root.classList.toggle("bub-up", b && S.lay.side === "above");
+    if (b) {
+      app.setAttribute("role", "dialog"); app.setAttribute("aria-modal", "false"); app.setAttribute("tabindex", "-1");
+      app.setAttribute("aria-label", S.lay.element ? "Commentaire sur " + S.lay.element : "Commentaire");
+      app.style.setProperty("--bw", S.lay.maxW + "px");
+      app.style.setProperty("--b-origin", ({ left: "right top", above: "left bottom", inside: "right top" })[S.lay.side] || "left top");
+    } else {
+      for (const a of ["role", "aria-modal", "aria-label", "tabindex"]) app.removeAttribute(a);
+      app.classList.remove("b-in", "b-out", "faded", "view", "running", "has-thread");
+      body.hidden = false; ruleEl.hidden = true; lastSize = "";
+    }
+    if (!changed) return;
+    closeMenu(); if (S.historyOpen) toggleHistory(false);
+    resetThread();                                           // a `thread.reset` follows: the thread is drawn again in the new layout
+    renderHeader(); renderComposerBar(); updateView(); renderDock(true);
+  }
+  // Opening: from the element's side (transform-origin), 180 ms. Closing (Échap): the host is told at once — it hides the
+  // bubble, the agent keeps working — and the surface goes in 120 ms; it stays invisible until the next `layout` / `focus`.
+  function bOpen() {
+    app.classList.remove("b-out", "b-in");
+    if (!S.replay) { void app.offsetWidth; app.classList.add("b-in"); }
+    requestAnimationFrame(() => { if (BUB() && !S.perms.length && !S.bview && !S.st.running) cin.focus(); });
+  }
+  app.addEventListener("animationend", (e) => { if (e.target === app) app.classList.remove("b-in"); });
+  // The surface never scrolls: a focus landing on something the window does not show yet (it is being resized) must not shift it.
+  app.addEventListener("scroll", () => { if (BUB() && (app.scrollTop || app.scrollLeft)) { app.scrollTop = 0; app.scrollLeft = 0; } });
+  document.addEventListener("scroll", () => { if (BUB() && (window.scrollX || window.scrollY)) window.scrollTo(0, 0); });
+  function bClose() { post("close"); app.classList.remove("b-in"); app.classList.add("b-out"); }
+
+  function renderDockB(force) {
+    const p = S.perms[0], s = activeStrip(), running = !!S.st.running, none = !log.firstChild;
+    const err = !running && !p ? S.berr : null;
+    const off = !!(S.st.disabledReason || (s && s.tone === "danger"));
+    const key = JSON.stringify(["b", p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason, running, err && err.id, !!S.bview, none]);
+    if (!force && key === lastDockKey) { composer.classList.toggle("disabled", off); updateSend(); return; }
+    lastDockKey = key;
+    const a = document.activeElement;
+    const mine = composer.contains(a) || a === app || a === document.body || !a;
+    clear(dock);
+    dock.className = "dock" + (p ? " has-perm" : "");
+    app.classList.toggle("running", running && !p);
+    if (p) { dock.appendChild(bPerm(p)); ruleEl.hidden = none || !!S.bview; return; }
+    if (err) { dock.appendChild(bErrFoot(err)); ruleEl.hidden = true; return; }
+    for (const q of S.queue) dock.appendChild(bQueued(q));
+    if (s) dock.appendChild(stripNode(s));
+    dock.appendChild(composer);
+    composer.classList.toggle("disabled", off);
+    cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
+    cin.setAttribute("aria-disabled", S.st.disabledReason ? "true" : "false");
+    ruleEl.hidden = running || (none && !S.bview);
+    // no input during a turn: the focus waits on the bubble itself (never on « Arrêter »: Entrée must not stop the agent)
+    if (mine && document.hasFocus()) { if (running) app.focus({ preventScroll: true }); else if (!S.bview) cin.focus(); }
+    updateSend();
+  }
+  function permRespond(p, opt, message) {
+    if (!opt) return;
+    post("permission.respond", Object.assign({ requestId: p.requestId, optionId: opt.optionId }, message ? { message } : {}));
+    S.perms.shift();
+    closeView(true);
+    refreshWaiting(); updateView(); renderDock(true);
+    if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }
+    else if (S.st.running) app.focus({ preventScroll: true }); else cin.focus();
+  }
+  // Paper 1ANU-0: the request sits in the bubble, in place of the input.
+  function bPerm(p) {
+    const allowOnce = p.options.find((o) => o.kind === "allow_once") || p.options.find((o) => /^allow/.test(o.kind));
+    const allowAlways = p.options.find((o) => o.kind === "allow_always");
+    const reject = p.options.find((o) => o.kind === "reject_once") || p.options.find((o) => /^reject/.test(o.kind));
+    const detail = !!(p.diff || p.command || p.details);
+    const kids = [h("span", { class: "t", id: "perm-t", text: p.title, title: p.title }),
+      S.perms.length > 1 ? h("span", { class: "perm-of", text: "1 sur " + S.perms.length }) : null,
+      p.diff ? h("span", { class: "num plus", text: "+" + p.diff.added }) : null, p.diff ? h("span", { class: "num minus", text: "−" + p.diff.removed }) : null,
+      detail ? icon("chevron", "cv") : null];
+    const file = detail ? h("button", { class: "bperm-file", type: "button", "aria-haspopup": "dialog", onclick: () => openView({ kind: "perm", p }) }, kids) : h("div", { class: "bperm-file" }, kids);
+    const instead = h("input", { class: "instead", type: "text", placeholder: "Dire à " + curAgentName().replace(/ Code$/, "") + " quoi faire à la place…",
+                                 "aria-label": "Dire à l'agent quoi faire à la place", maxlength: "4000" });
+    const sw = allowAlways ? h("button", { class: "always", type: "button", role: "switch", "aria-checked": String(!!p.always), "aria-label": "Auto : toujours autoriser ce type de demande",
+                                           onclick: () => { p.always = !p.always; sw.setAttribute("aria-checked", String(p.always)); } },
+                                h("span", { class: "sw", "aria-hidden": "true" }, h("i")), h("span", { text: "Auto." })) : h("span", { class: "always" });
+    const refuse = h("button", { class: "btn", type: "button", onclick: () => permRespond(p, reject, instead.value.trim() || undefined) }, "Refuser");
+    const allow = h("button", { class: "btn primary", type: "button", "aria-keyshortcuts": "Enter", onclick: () => permRespond(p, p.always && allowAlways ? allowAlways : allowOnce || allowAlways) }, "Autoriser");
+    instead.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (instead.value.trim()) permRespond(p, reject, instead.value.trim()); else allow.click(); }
+    });
+    const card = h("div", { class: "bperm" + (S.replay || p.shown ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t" },
+      h("div", { class: "bperm-rows" }, file, h("label", { class: "bperm-in" }, icon("pencilFill", "ic"), instead)),
+      h("div", { class: "bperm-ft" }, sw, refuse, allow));
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); allow.click(); } });
+    if (!p.shown) requestAnimationFrame(() => { if (allow.isConnected) allow.focus(); });
+    p.shown = true;
+    return card;
+  }
+  // Paper 1AAE-0: after an error, the two ways out. « Annuler » is local (the input comes back); « Réessayer » asks the host.
+  function bErrFoot(err) {
+    const act = err.action && err.action.id !== "retry" ? err.action : null;
+    const cancel = h("button", { class: "btn", type: "button", onclick: () => { S.berr = null; renderDock(true); placeholder(); cin.focus(); } }, "Annuler");
+    const retry = h("button", { class: "btn danger", type: "button", onclick: () => {
+      S.berr = null;
+      if (act) post("error.action", { errorId: err.id, actionId: act.id }); else post("retry", err.turnId ? { turnId: err.turnId } : {});
+      renderDock(true); placeholder(); } }, act ? act.label : "Réessayer");
+    return h("div", { class: "b-errft", role: "group", "aria-label": "Après l'erreur" }, cancel, retry);
+  }
+  // One agent turn at a time: a request written in another element's bubble waits (B 1.8 `queue.items[].after`).
+  function bQueued(q) {
+    return h("div", { class: "bq", role: "group", "aria-label": "Message en attente" },
+      h("div", { class: "bubble pending", text: q.text }),
+      h("div", { class: "bq-cap" },
+        h("span", { class: "tx" }, q.after ? ["Commencera après le travail en cours sur ", h("span", { class: "el", text: q.after })] : "En file : commencera après le travail en cours"),
+        h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ce message de la file", title: "Retirer de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
+  }
+
+  // The diff « en grand » (Paper 19ON-0 for a request, 19IO-0 for a finished turn): it takes the bubble, the thread waits.
+  function openView(v) {
+    closeMenu(); bTipHide();
+    S.bview = v;
+    app.classList.add("view");
+    if (v.kind === "changes") post("checkpoint.viewChanges", { turnId: v.t.id });
+    renderView();
+    updateView(); renderDock(true); publishSize();
+    const x = bviewEl.querySelector(".bview-x"); if (x) x.focus();
+    say("Affiché en grand. Échap pour revenir.");
+  }
+  function closeView(silent) {
+    const v = S.bview;
+    if (!v) return;
+    S.bview = null; app.classList.remove("view"); clear(bviewEl); bviewEl.hidden = true;
+    if (silent) return;
+    updateView(); renderDock(true); publishSize();
+    const back = v.kind === "perm" ? dock.querySelector(".bperm-file") : v.t.barEl && v.t.barEl.querySelector(".bt-bar-main");
+    if (back && back.isConnected) back.focus(); else if (!S.st.running) cin.focus();
+    S.atBottom = true; requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
+  }
+  function diffLines(box, d) {
+    for (const l of d.lines) {
+      const cls = l.op === "+" ? "add" : l.op === "-" ? "del" : l.op === "@" ? "hunk" : "";
+      box.appendChild(h("div", { class: "l " + cls }, l.op === "+" ? h("span", { class: "sr-only", text: "ajouté : " }) : l.op === "-" ? h("span", { class: "sr-only", text: "retiré : " }) : null,
+        (l.op === "@" ? "" : (l.op === " " ? " " : l.op) + "  ") + l.text));
+    }
+    if (d.truncated) box.appendChild(h("div", { class: "l hunk", text: "… aperçu tronqué" }));
+  }
+  const turnDiff = (t, c) => (t.fullDiffs && t.fullDiffs.get(c.path)) || validDiff(c.diff, 4000);
+  function changesText(t) {
+    const out = [];
+    for (const c of t.changes || []) { const d = turnDiff(t, c); if (d) out.push((t.changes.length > 1 ? "--- " + c.path + "\n" : "") + diffText(d)); }
+    return out.length ? out.join("\n\n") : t.copyText || "";
+  }
+  function bCopy(get, label, cls) {
+    const b = h("button", { class: cls, type: "button", "aria-label": label }, icon("copy"), h("span", { text: "Copier" }));
+    b.addEventListener("click", () => { lastCopy = b; post("copy", { text: get() }); });
+    return b;
+  }
+  function renderView() {
+    const v = S.bview;
+    if (!v) return;
+    const hadFocus = bviewEl.contains(document.activeElement);
+    clear(bviewEl); bviewEl.hidden = false;
+    const box = h("div", { class: "bview-body", role: "region", tabindex: "0" });
+    let title, added = null, removed = null, lead = null, copy = null;
+    if (v.kind === "perm") {
+      const p = v.p;
+      title = p.title;
+      if (p.diff) { added = p.diff.added; removed = p.diff.removed; diffLines(box, p.diff); }
+      if (p.command) box.appendChild(h("pre", { class: "bview-pre", text: p.command }));
+      if (p.details) box.appendChild(h("pre", { class: "bview-pre dim", text: p.details }));
+      box.setAttribute("aria-label", p.diff ? "Aperçu du changement dans " + p.diff.path : "Détail de la demande");
+    } else {
+      const t = v.t, files = t.changes;
+      added = files.reduce((n, c) => n + (c.added || 0), 0); removed = files.reduce((n, c) => n + (c.removed || 0), 0);
+      title = files.length === 1 ? baseName(files[0].path) : plural(files.length, "fichier modifié", "fichiers modifiés");
+      lead = icon("code", "ic");
+      for (const c of files) {
+        if (files.length > 1) box.appendChild(h("div", { class: "l file", text: c.path }));
+        const d = turnDiff(t, c);
+        if (d) diffLines(box, d); else box.appendChild(h("div", { class: "l hunk", text: t.fullDiffs ? "Pas d'aperçu pour ce fichier." : "Chargement du détail…" }));
+      }
+      box.setAttribute("aria-label", "Différences dans " + title);
+      copy = bCopy(() => changesText(t), "Copier les changements", "bview-copy");
+    }
+    bviewEl.setAttribute("aria-label", title);
+    bviewEl.append(
+      h("div", { class: "bview-hd" }, lead, h("span", { class: "t", text: title, title }),
+        added != null ? h("span", { class: "nums" }, h("span", { class: "num plus", text: "+" + added }), h("span", { class: "num minus", text: "−" + removed })) : null,
+        h("button", { class: "bview-x", type: "button", "aria-label": "Fermer l'aperçu", title: "Fermer (Échap)", "aria-keyshortcuts": "Escape", onclick: () => closeView() }, icon("x"))),
+      h("div", { class: "bview-wrap" }, box, copy));
+    if (hadFocus) { const x = bviewEl.querySelector(".bview-x"); if (x) x.focus(); }
+  }
+
+  // Hover bubble of a turn's steps (Paper 1AIE-0 while it works; the same list under « Historique » once it is done).
+  // It opens inside the bubble: above its line when there is room, else under it; right edges aligned.
+  let btipFor = null, btipPinned = false;
+  function bTipRows(steps) {
+    const rows = [];
+    for (const x of steps) {
+      const failed = x.status === "failed";
+      if (!failed && !x.summary && TOOL_RE.test(x.title || "")) {      // raw MCP calls count together: « A utilisé 2 outils MCP »
+        const last = rows[rows.length - 1];
+        if (last && last.mcp) last.mcp++; else rows.push({ mcp: 1 });
+      } else rows.push({ icon: failed ? "x" : "check", text: stepTitle(x) + (failed ? " (échec)" : ""), cls: failed ? "fail" : "" });
+    }
+    const out = rows.map((r) => (r.mcp ? { icon: "plug", text: "A utilisé " + plural(r.mcp, "outil MCP", "outils MCP"), cls: "mcp" } : r));
+    return out.length > 6 ? [{ text: plural(out.length - 5, "étape", "étapes") + " avant", cls: "more" }].concat(out.slice(-5)) : out;
+  }
+  const stepTitle = (x) => humanizeTools(x.title) || (x.locations && x.locations[0] && x.locations[0].path) || "Étape";
+  function bTipShow(el) {
+    const rows = el._rows ? el._rows() : [];
+    if (!rows.length) { if (btipFor === el) bTipHide(); return; }
+    clear(btipEl);
+    for (const r of rows) btipEl.appendChild(h("div", { class: "r" + (r.cls ? " " + r.cls : "") }, r.icon ? icon(r.icon) : null, h("span", { text: r.text })));
+    const fresh = btipFor !== el;
+    if (btipFor && fresh) btipFor.removeAttribute("aria-describedby");
+    btipFor = el; btipEl.hidden = false; el.setAttribute("aria-describedby", "b-tip");
+    bTipPlace();
+    if (fresh) { btipEl.classList.remove("on"); void btipEl.offsetWidth; btipEl.classList.add("on"); }
+  }
+  function bTipPlace() {
+    const el = btipFor;
+    if (!el || !el.isConnected) { bTipHide(); return; }
+    const ar = app.getBoundingClientRect(), r = el.getBoundingClientRect();
+    btipEl.style.maxHeight = ""; btipEl.style.top = "0px"; btipEl.style.left = "0px";
+    const tw = btipEl.offsetWidth, th = btipEl.offsetHeight;
+    const above = r.top - ar.top - 4 - th, under = ar.height - (r.bottom - ar.top) - 10;
+    let top, up = false;
+    if (above >= 6) { top = above; up = true; }
+    else if (th <= under || under >= r.top - ar.top - 10) { top = r.bottom - ar.top + 4; if (th > under) btipEl.style.maxHeight = Math.max(40, under) + "px"; }
+    else { top = 6; up = true; btipEl.style.maxHeight = Math.max(40, r.top - ar.top - 10) + "px"; }
+    btipEl.style.top = Math.round(top) + "px";
+    btipEl.style.left = Math.round(Math.max(6, Math.min(r.right - ar.left - tw, ar.width - 6 - tw))) + "px";
+    btipEl.classList.toggle("up", up);
+  }
+  function bTipHide() {
+    if (btipFor) btipFor.removeAttribute("aria-describedby");
+    btipFor = null; btipPinned = false; btipEl.classList.remove("on"); btipEl.hidden = true;
+  }
+  function bTipBind(el, rows) {
+    el._rows = rows;
+    el._tip = (on) => { if (on) bTipShow(el); else if (!btipPinned) bTipHide(); };
+    withTip(el);
+    el.addEventListener("focus", () => { if (el.matches(":focus-visible")) bTipShow(el); });
+    el.addEventListener("blur", () => { if (btipFor === el) bTipHide(); });
+    // a click (or Entrée / Espace) pins it: the path for touch and keyboard
+    el.addEventListener("click", () => { if (btipFor === el && btipPinned) bTipHide(); else { bTipShow(el); btipPinned = btipFor === el; } });
+  }
+  // Right of « modèle · effort »: the step in progress, « S'est arrêté », or « Historique ».
+  function bStatus(t) {
+    if (!t.b) return;
+    const steps = [];
+    for (const s of t.segs) if (s.kind === "steps") steps.push(...s.tools);
+    let kind = "", label = "", rows = [];
+    if (t.running) {
+      const cur = steps.slice().reverse().find((x) => x.status === "in_progress" || x.status === "pending");
+      label = cur ? stepTitle(cur) : S.perms.some((p) => p.turnId === t.id) ? "Attend votre accord" : t.segs.some((s) => s.kind === "thought" && !s.done) ? "Réfléchit…" : "Travaille…";
+      rows = bTipRows(steps.filter((x) => x !== cur && x.status !== "in_progress" && x.status !== "pending"));
+      kind = "run";
+    } else if (t.stop === "cancelled") { kind = "stop"; label = "S'est arrêté"; }
+    else if (t.stop !== "error" && steps.length) { kind = "done"; label = "Historique"; rows = bTipRows(steps); }
+    t.stRows = rows;
+    const live = rows.length > 0 && kind !== "stop", sig = kind + "|" + live;
+    if (t.stSig !== sig) {
+      t.stSig = sig;
+      if (btipFor && t.statusEl.contains(btipFor)) bTipHide();
+      clear(t.statusEl); t.stBtn = null; t.stLb = null;
+      if (!kind) return;
+      const ic = kind === "run" ? h("span", { class: "spin", style: "display:flex" }, icon("spinnerB")) : icon(kind === "stop" ? "prohibit" : "history");
+      t.stLb = h("span", { class: "lb" });
+      t.stBtn = h(live ? "button" : "span", Object.assign({ class: "bt-st " + kind }, live ? { type: "button" } : {}, live && kind === "done" ? { "aria-label": "Historique des actions de ce tour" } : {}), ic, t.stLb);
+      if (live) bTipBind(t.stBtn, () => t.stRows);
+      t.statusEl.appendChild(t.stBtn);
+    }
+    if (t.stLb && t.stLb.textContent !== label) { t.stLb.textContent = label; t.stLb.title = label; }
+    if (btipFor && btipFor === t.stBtn) bTipShow(t.stBtn);       // the list follows the steps while it is open
+  }
+  // Paper 1AWI-0: « 1 fichier modifié +6 −2 › » opens the diff « en grand »; « Copier » copies it.
+  function bBar(t) {
+    const files = t.changes;
+    const added = files.reduce((n, c) => n + (c.added || 0), 0), removed = files.reduce((n, c) => n + (c.removed || 0), 0);
+    const label = plural(files.length, "fichier modifié", "fichiers modifiés");
+    const open = h("button", { class: "bt-bar-main", type: "button", "aria-haspopup": "dialog", title: "Voir les changements", onclick: () => openView({ kind: "changes", t }) },
+      icon("code", "ic"), h("span", { class: "name", text: label }),
+      h("span", { class: "num plus", text: "+" + added }), h("span", { class: "num minus", text: "−" + removed }), icon("chevron", "cv"));
+    return h("div", { class: "bt-bar", role: "group", "aria-label": "Changements de ce tour" }, open, bCopy(() => changesText(t), "Copier les changements", "bt-copy"));
+  }
+  // Paper 1AAE-0 / 1A6L-0: the agent's text turns red, one line says an error happened, « Plus d'infos » unfolds the
+  // technical line (fixed-width) and the plain explanation — what happened, what changed or not, what to do.
+  function bError(m) {
+    let t = (m.turnId && S.turns.get(m.turnId)) || (S.lastTurn && S.turns.get(S.lastTurn)) || null;
+    const retryId = t && !t.pseudo ? t.id : null;            // the turn « Réessayer » relaunches
+    if (!t || t.err) { t = newTurn("e:" + m.id); t.pseudo = true; t.running = false; t.stop = "error"; t.el.setAttribute("aria-busy", "false"); tick(); }
+    t.err = m.id; t.el.classList.add("b-err");
+    const id = "errd-" + m.id.replace(/[^\w-]/g, "");
+    const title = (m.title || "").trim(), msg = (m.message || "").trim();
+    const plainText = [title && msg ? title + (/[.!?…»:]$/.test(title) ? "" : ".") : title, msg].filter(Boolean).join(" ");
+    const code = isStr(m.detail, 4000) && m.detail.trim() ? m.detail.trim().split("\n").slice(0, 4).join("\n") : "";
+    const det = h("div", { class: "bt-errd", id, hidden: true }, h("div", { class: "tx" }, code ? [h("span", { class: "ecode", text: code }), h("br")] : null, plainText));
+    const more = h("button", { class: "bt-more", type: "button", "aria-expanded": "false", "aria-controls": id }, h("span", { text: "Plus d'infos" }), icon("caretRight", "cv"));
+    more.addEventListener("click", () => {
+      const openNow = det.hidden;
+      det.hidden = !openNow; more.setAttribute("aria-expanded", String(openNow)); t.el.classList.toggle("b-err-open", openNow);
+      stick(); publishSize();
+    });
+    t.el.append(h("div", { class: "bt-err" }, h("span", { class: "w" }, icon("xCircle"), h("span", { text: "Une erreur est apparue." })), more), det);
+    const first = (m.actions || []).find((a) => a && ID.test(a.id) && isStr(a.label, 40));
+    S.berr = { id: m.id, turnId: retryId, action: first || null };
+    bStatus(t); stick(); renderDock(true);
+    noteNew(1);
+    shout("Une erreur est apparue. " + plainText);
+  }
+
   // ---------------------------------------------------------------- thread
   function updateView() {
+    if (BUB()) {   // no first-run screen, no suggestions: the input, and the thread once there is one
+      const none = !log.firstChild;
+      first.hidden = true; empty.hidden = true; log.hidden = none; body.hidden = none || !!S.bview;
+      app.classList.toggle("has-thread", !none);
+      renderDock();
+      return;
+    }
+    body.hidden = false;
     const firstRun = S.st.askFolder === true || (S.st.askFolder === undefined && S.st.folder === null);
     const isEmpty = !log.firstChild;
     first.hidden = !firstRun;
@@ -895,7 +1319,7 @@
     const els = (m.elements || []).filter(validElement);
     const bubble = h("div", { class: "bubble" });
     const inlineIds = fillWithChips(bubble, m.text, els);
-    const pencil = m.editable === false ? null : h("button", { class: "icon-btn", type: "button", "aria-label": "Modifier ce message", title: "Modifier", onclick: () => startEdit(m.id) }, icon("pencil"));
+    const pencil = m.editable === false || BUB() ? null : h("button", { class: "icon-btn", type: "button", "aria-label": "Modifier ce message", title: "Modifier", onclick: () => startEdit(m.id) }, icon("pencil"));
     const row = h("div", { class: "um-row" }, h("div", { class: "um-tools" }, pencil), bubble);
     const under = h("div", { class: "um-attach" });
     for (const e of els) if (!inlineIds.has(e.id)) under.appendChild(chipNode(Object.assign({ picked: true }, e), false));
@@ -905,6 +1329,7 @@
     S.lastUser = m.id;
     add(node);
     if (!S.replay) { scrollToEnd(false); }
+    if (BUB()) { S.berr = null; renderDock(); }   // a new request: the « Annuler / Réessayer » of an earlier error goes
   }
   function onKept(m) {
     const els = (m.elements || []).filter(validElement);
@@ -1051,12 +1476,26 @@
     return used;
   }
 
-  function newTurn(id, model, effort, at) {
+  function newTurn(id, model, effort, at, agentId) {
     const t = { id, model: model || (curModel() ? curModel().label : ""), effort: effort ? turnEffort(effort) : (curEffort() ? effortName(curEffort().id, curEffort().label) : ""), start: Date.parse(at) || Date.now(),
                 running: true, segs: [], userId: S.lastUser, metaEl: h("div", { class: "meta" }), workEl: h("div", { class: "working", "aria-hidden": "true" }), waitEl: null, endEl: null };
     t.el = h("div", { class: "turn", "data-turn": id, "aria-busy": "true" }, t.metaEl, t.workEl);
     t.metaEl.textContent = [t.model, t.effort].filter(Boolean).join(" · ");
     t.workEl.append("Travaille… ", h("span", { class: "t", text: "0 s" }));
+    if (BUB()) {   // Paper 1B64-0: « modèle · effort » and the step in progress on one line, the agent's words in one block under it
+      t.b = true;
+      t.statusEl = h("span", { class: "bt-stw" });
+      t.textBox = h("div", { class: "bt-text", hidden: true });
+      const who = (agentId && agentById(agentId)) || curAgent();
+      t.el = h("div", { class: "turn bt", "data-turn": id, "aria-busy": "true" },
+        h("div", { class: "bt-head" }, h("span", { class: "bt-model" }, agentIcon(who), h("span", { class: "n", text: t.model || (who ? who.name : "Agent") }), t.effort ? h("span", { class: "e", text: t.effort }) : null), t.statusEl),
+        t.textBox);
+      S.berr = null;
+      S.turns.set(id, t); S.lastTurn = id;
+      add(t.el);
+      bStatus(t); tick();
+      return t;
+    }
     const prev = S.lastTurn && S.turns.get(S.lastTurn);
     if (prev && (prev.model !== t.model || prev.effort !== t.effort)) {
       const u = S.users.get(t.userId);
@@ -1071,6 +1510,13 @@
   const turnOf = (id) => S.turns.get(id) || newTurn(id);
   function addSeg(t, seg) {
     t.segs.push(seg);
+    if (t.b) {   // bubble: the words go in the agent's block; steps and thoughts are not lines, they feed the status and its hover list
+      for (const s of t.segs) if (s.kind === "text" && s !== seg) s.el.classList.remove("streaming");   // the caret only while the words are the last thing
+      if (seg.kind === "text") { t.textBox.appendChild(seg.el); t.textBox.hidden = false; }
+      else if (seg.kind === "plan" || seg.kind === "error") t.el.appendChild(seg.el);
+      bStatus(t);
+      return seg;
+    }
     const before = t.waitEl && t.waitEl.isConnected ? t.waitEl : t.workEl.isConnected ? t.workEl : null;
     t.el.insertBefore(seg.el, before);
     return seg;
@@ -1108,7 +1554,7 @@
   function textSeg(t, messageId) {
     const el = h("div", { class: "text" });
     const doc = new window.ChatMarkdown.Doc(el, mdOpts);
-    const seg = { kind: "text", messageId, text: "", spoken: 0, el, render() { doc.set(seg.text); el.classList.toggle("streaming", t.running && seg === t.segs.filter((s) => s.kind === "text").pop()); } };
+    const seg = { kind: "text", messageId, text: "", spoken: 0, el, render() { doc.set(seg.text); el.classList.toggle("streaming", t.running && seg === (t.b ? t.segs[t.segs.length - 1] : t.segs.filter((s) => s.kind === "text").pop())); } };
     noteNew(1);
     return addSeg(t, seg);
   }
@@ -1137,6 +1583,7 @@
       const el = h("div", { style: "display:flex;flex-direction:column;gap:10px" }, btn, det);
       const start = Date.now();
       seg = { kind: "thought", id: m.id, text: "", done: false, el, render() {
+        if (t.b) { bStatus(t); return; }
         btn.firstChild.textContent = seg.done ? "A réfléchi " + dur(seg.ms != null ? seg.ms : Date.now() - start) : "Réfléchit…";
         det.textContent = seg.text;
         det.id = det.id || "th-" + Math.random().toString(36).slice(2);
@@ -1224,6 +1671,7 @@
     const el = h("div", { class: "steps" });
     let open = false;
     const seg = { kind: "steps", tools: [], el, render() {
+      if (t.b) { bStatus(t); return; }
       clear(el);
       const liveGroup = t.running && seg === t.segs[t.segs.length - 1] && !t.waitEl;
       const list = h("div", { class: "steps", role: "list" }, seg.tools.map(stepLine));
@@ -1292,6 +1740,7 @@
 
   function refreshWaiting() {
     for (const t of S.turns.values()) {
+      if (t.b) { bStatus(t); continue; }
       const p = S.perms.find((x) => x.turnId === t.id) || (t.id === S.lastTurn ? S.perms[0] : null);
       if (p && t.running) {
         const what = /veut (.+)$/.exec(p.title);
@@ -1316,7 +1765,7 @@
     refreshWaiting();
     renderDock(true);
     noteNew(1);
-    shout(title + ". Autoriser avec Entrée, refuser avec Échap.");
+    shout(title + (BUB() ? ". Autoriser avec Entrée." : ". Autoriser avec Entrée, refuser avec Échap."));
   }
 
   function copyButton(get, label) {
@@ -1399,6 +1848,7 @@
     for (const d of m.diffs) { const v = validDiff(d, 4000); if (v) map.set(v.path, v); }
     if (t) t.fullDiffs = map;
     const v = S.view;
+    if (S.bview && S.bview.kind === "changes" && S.bview.t === t) renderView();
     if (!v || v.turnId !== m.turnId) return;
     if (Array.isArray(m.files)) { const f = m.files.filter((c) => c && isStr(c.path, 1000)); if (f.length) v.files = f; }
     for (const [p, d] of map) v.diffs.set(p, d);
@@ -1509,6 +1959,7 @@
   function onTurnEnd(m) {
     const t = turnOf(m.turnId);
     t.running = false;
+    t.stop = typeof m.stopReason === "string" ? m.stopReason : "end_turn";
     t.el.setAttribute("aria-busy", "false");
     t.workEl.remove();
     if (t.waitEl) { t.waitEl.remove(); t.waitEl = null; }
@@ -1517,14 +1968,17 @@
     t.metaEl.textContent = [t.model.replace(/\s+[\d.]+$/, ""), t.effort, dur(d)].filter(Boolean).join(" · ");
     for (const s of t.segs) { if (s.kind === "text") { s.render(); s.el.classList.remove("streaming"); const rest = s.text.slice(s.spoken); if (rest.trim()) say(plain(rest)); s.spoken = s.text.length; } else s.render(); }
     const notes = { cancelled: "Arrêté.", refusal: "L'agent a refusé de continuer cette demande.", max_tokens: "La réponse a atteint sa longueur maximale. Demandez la suite pour continuer." };
-    if (notes[m.stopReason]) t.el.appendChild(h("div", { class: "note", text: notes[m.stopReason] }));
+    if (notes[m.stopReason] && !(t.b && m.stopReason === "cancelled")) t.el.appendChild(h("div", { class: "note", text: notes[m.stopReason] }));
     const changes = Array.isArray(m.changes) ? m.changes.filter((c) => c && typeof c.path === "string") : [];
-    if (changes.length) { t.changes = changes; t.undoable = m.undoable !== false; t.changesEl = changesBar(t, changes, t.undoable); t.el.appendChild(t.changesEl); }
     const copyText = typeof m.copyText === "string" ? m.copyText : t.segs.filter((s) => s.kind === "text").map((s) => s.text).join("\n\n");
-    if (m.stopReason !== "error") t.el.appendChild(h("div", { class: "actions" },
+    t.copyText = copyText;
+    if (changes.length && t.b) { t.changes = changes; t.barEl = bBar(t); t.el.appendChild(t.barEl); t.el.classList.add("has-bar"); }
+    else if (changes.length) { t.changes = changes; t.undoable = m.undoable !== false; t.changesEl = changesBar(t, changes, t.undoable); t.el.appendChild(t.changesEl); }
+    if (t.b) bStatus(t);   // « S'est arrêté », or « Historique » (Paper 1AE7-0, 1AWI-0): no hover actions, no « Revenir » in the bubble
+    else if (m.stopReason !== "error") t.el.appendChild(h("div", { class: "actions" },
       h("button", { class: "icon-btn", type: "button", "aria-label": "Copier la réponse", title: "Copier", onclick: (e) => { lastCopy = null; post("copy", { text: copyText }); } }, icon("copy")),
       h("button", { class: "icon-btn", type: "button", "aria-label": "Relancer", title: "Relancer", onclick: () => post("retry", { turnId: t.id }) }, icon("history"))));
-    if (m.checkpointId && ID.test(m.checkpointId)) {
+    if (!t.b && m.checkpointId && ID.test(m.checkpointId)) {
       const u = S.users.get(t.userId);
       if (u && !u.bubble.querySelector(".rewind")) u.bubble.appendChild(h("button", { class: "rewind", type: "button", title: "Revenir à l'état d'avant ce message",
         "aria-label": "Revenir à avant ce message", onclick: () => post("checkpoint.restore", { checkpointId: m.checkpointId }) }, icon("undo"), "Revenir"));
@@ -1551,6 +2005,7 @@
       shout(m.title + ". " + (m.message || ""));
       return;
     }
+    if (BUB()) { bError(m); return; }
     const det = m.detail ? h("pre", { class: "detail", hidden: true, text: m.detail }) : null;
     const acts = (m.actions || []).filter((a) => a && ID.test(a.id)).map((a, i) =>
       h("button", { class: "btn" + (i ? " ghost" : ""), type: "button", onclick: () => a.id === "retry" ? post("retry", { turnId: m.turnId || S.lastTurn }) : post("error.action", { errorId: m.id, actionId: a.id }) }, a.label));
@@ -1630,9 +2085,10 @@
     const sug = S.st.folderSuggestion;
     const q = h("section", { class: "q", "aria-labelledby": "first-h" },
       h("div", null, h("h2", { id: "first-h", text: "Où est le code de ce site ?" }), h("p", { class: "sub", text: "Choisissez le dossier à partir duquel " + site + " est construit. On ne le demande qu'une fois." })));
-    if (sug) q.appendChild(h("div", { class: "tile found" }, icon("folder", "ic"),
-      h("div", { class: "grow" }, h("div", { class: "nm" }, h("span", { text: sug.name }), h("span", { class: "badge", text: "Détecté auto" })), h("div", { class: "path", text: sug.display, title: sug.path })),
-      h("button", { class: "btn primary", type: "button", "aria-label": "Utiliser le dossier " + sug.name, onclick: () => post("folder.use", { path: sug.path }) }, "Utiliser")));
+    // B 1.8 (Paper 156L-0): the folder's name says which project this is; its full path stays in the tooltip
+    if (sug) q.appendChild(h("div", { class: "tile found", title: sug.path }, icon("folder", "ic"),
+      h("div", { class: "grow" }, h("div", { class: "nm" }, h("span", { text: folderName(sug) }), h("span", { class: "badge", text: "Détecté auto" }))),
+      h("button", { class: "btn primary", type: "button", "aria-label": "Utiliser le dossier " + folderName(sug), onclick: () => post("folder.use", { path: sug.path }) }, "Utiliser")));
     q.appendChild(h("button", { class: "tile other", type: "button", onclick: () => post("folder.choose") }, icon("plus", "ic"), h("span", { class: "lb", text: "Choisir un autre dossier…" })));
     q.querySelector(".tile.other .ic").style.opacity = ".6";
     if (sug) q.querySelector(".tile.found .ic").style.opacity = ".8";
@@ -1729,9 +2185,11 @@
     const mine = items.filter((i) => i.thisSite), others = items.filter((i) => !i.thisSite);
     const row = (it, other) => h("button", { class: "hrow", type: "button", role: "listitem", "aria-current": it.current ? "true" : null, onclick: () => { post("history.select", { id: it.id }); toggleHistory(false); } },
       agentIcon({ icon: it.agentIcon, id: it.agentIcon }),
-      h("span", { class: "grow" }, h("span", { class: "t", text: it.title }), h("span", { class: "s", text: other ? [it.siteLabel, it.subtitle].filter(Boolean).join(" · ") : it.subtitle || "" })),
+      h("span", { class: "grow" }, h("span", { class: "t", text: it.title }), h("span", { class: "s", title: other && it.siteLabel ? it.siteLabel : null, text: other ? [isStr(it.folderName, 200) && it.folderName || it.siteLabel, it.subtitle].filter(Boolean).join(" · ") : it.subtitle || "" })),
       it.running ? h("span", { class: "live" }, h("i"), "En cours") : h("span", { class: "when", text: relTime(it.updatedAt) }));
-    if (mine.length) { list.appendChild(h("div", { class: "hsec", text: "Ce site" + (S.st.site ? " · " + S.st.site.label : "") })); mine.forEach((i) => list.appendChild(row(i, false))); }
+    // B 1.8 (Paper 156L-0): the project folder's name rather than the address — « 127.0.0.1:5173 » does not say what it is
+    const here = folderName(S.st.folder) || (S.st.site ? S.st.site.label : "");
+    if (mine.length) { list.appendChild(h("div", { class: "hsec", title: S.st.site ? S.st.site.label : null, text: "Ce site" + (here ? " · " + here : "") })); mine.forEach((i) => list.appendChild(row(i, false))); }
     if (others.length) { list.appendChild(h("div", { class: "hsec" + (mine.length ? " next" : ""), text: "Autres sites" })); others.forEach((i) => list.appendChild(row(i, true))); }
   }
 
@@ -1803,6 +2261,7 @@
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
     usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
     "annotations.batch": (m) => ID.test(m.batchId) && Array.isArray(m.items), "annotations.status": (m) => ID.test(m.batchId) && ID.test(m.id),
+    layout: (m) => m.mode === "panel" || m.mode === "bubble",
     "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true, "annotation.kept": (m) => ID.test(m.id) && isStr(m.text) && Array.isArray(m.elements),
   };
 
@@ -1817,13 +2276,21 @@
       renderHeader(); renderComposerBar(); updateView(); renderDock(); refreshWaiting();
       if (S.historyOpen) renderHistoryList();
     },
+    // B 1.8: the page's layout — the panel on the right (default) or the comment-mode bubble. Sent at each opening and switch.
+    layout(m) {
+      const was = S.lay.mode;
+      S.lay.mode = m.mode;
+      S.lay.maxW = Math.max(240, Math.min(305, Number.isFinite(m.maxWidth) && m.maxWidth > 0 ? Math.floor(m.maxWidth) : 305));
+      S.lay.maxH = Math.max(104, Number.isFinite(m.maxHeight) && m.maxHeight > 0 ? Math.floor(m.maxHeight) : 520);
+      S.lay.side = ["right", "left", "below", "above", "inside"].includes(m.side) ? m.side : "right";
+      S.lay.element = isStr(m.element, 300) ? m.element : "";
+      applyLayout(was !== m.mode);
+      if (!BUB()) return;
+      if (m.open !== false) bOpen();
+      updateView(); publishSize(true);                       // always answered: the host's acknowledgement
+    },
     "thread.reset"(m) {
-      closeChanges();
-      S.usage = null; S.usageWarned = false; renderGauge();
-      S.batches.clear();
-      clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
-      S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
-      tick();
+      resetThread();
       H["thread.append"](m);
       renderDock(true); placeholder(); updateView();
       requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
@@ -1835,7 +2302,7 @@
       flushRender(); updateView();
     },
     "message.user": onUser,
-    "turn.start"(m) { if (S.turns.has(m.turnId)) return; newTurn(m.turnId, isStr(m.model, 100) ? m.model : null, isStr(m.effort, 100) ? m.effort : null, m.at); },
+    "turn.start"(m) { if (S.turns.has(m.turnId)) return; newTurn(m.turnId, isStr(m.model, 100) ? m.model : null, isStr(m.effort, 100) ? m.effort : null, m.at, ID.test(m.agentId || "") ? m.agentId : null); },
     "message.agentChunk": onChunk, thought: onThought, toolCall: onToolCall, toolCallUpdate: onToolUpdate, plan: onPlan,
     "permission.request": onPermission,
     "permission.cancel"(m) { S.perms = S.perms.filter((p) => p.requestId !== m.requestId); refreshWaiting(); renderDock(true); },
@@ -1846,7 +2313,7 @@
       renderDock();
       const s = S.strips.get(m.id); if (s && s.tone === "danger") shout(s.text);
     },
-    queue(m) { S.queue = m.items.filter((q) => q && ID.test(q.id) && isStr(q.text)); renderDock(); },
+    queue(m) { S.queue = m.items.filter((q) => q && ID.test(q.id) && isStr(q.text)).map((q) => ({ id: q.id, text: q.text, after: isStr(q.after, 300) ? q.after : "" })); renderDock(); },
     history(m) { S.history = { items: m.items.filter((i) => i && ID.test(i.id) && isStr(i.title, 300)), query: m.query }; if (S.historyOpen) renderHistoryList(); },
     "element.attached"(m) {
       if (S.cEls.has(m.element.id)) return;
@@ -1860,7 +2327,13 @@
     mentions(m) { S.mentions = { query: m.query, elements: (m.elements || []).filter(validElement), files: (m.files || []).filter((f) => f && isStr(f.path, 1000)) }; if (S.menu && S.menu.combo === "@" && mentionCtx) openMentionMenu(mentionCtx.q, mentionCtx.node, mentionCtx.offset); },
     commands(m) { S.commands = m.items.filter((c) => c && isStr(c.name, 80) && /^[\w-]+$/.test(c.name)); },
     "edit.confirm": onEditConfirm, "annotations.batch": onBatch, "annotations.status": onAnnStatus,
-    focus() { if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); } else cin.focus(); },
+    focus() {
+      app.classList.remove("b-out");
+      if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }
+      else if (BUB() && S.bview) { const x = bviewEl.querySelector(".bview-x"); if (x) x.focus(); }
+      else if (BUB() && (S.st.running || (S.berr && !S.st.running))) app.focus({ preventScroll: true });   // no input in these states
+      else cin.focus();
+    },
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,
     usage(m) { S.usage = m.size > 0 ? { used: Math.min(m.used, m.size), size: m.size } : null; renderGauge(); },
     "pointer.leave"() { tipHide(); },   // B 1.5: the host saw the cursor leave the panel
@@ -1875,13 +2348,19 @@
     if (!fn) return; // unknown type: ignored by contract
     if (REQ[m.type] && !REQ[m.type](m)) { warn("invalid " + m.type); return; }
     try { fn(m); } catch (e) { post("panel.log", { level: "error", message: (m.type + ": " + (e && e.stack || e)).slice(0, 2000) }); }
+    if (!S.replay) publishSize();   // bubble: the height follows the content (no-op in the panel)
   }
 
   // ---------------------------------------------------------------- global keys
   document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "/") { e.preventDefault(); openModelMenu(modelBtn); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === "/") { e.preventDefault(); if (modelBtn.offsetParent) openModelMenu(modelBtn); return; }
     if (e.key !== "Escape" || e.defaultPrevented) return;
     if (S.menu) { e.preventDefault(); closeMenu(!S.menu.combo); return; }
+    if (BUB()) {   // B 1.8: Échap never stops the agent nor refuses a request — it closes what is open, then the bubble
+      e.preventDefault();
+      if (btipPinned) bTipHide(); else if (S.bview) closeView(); else bClose();
+      return;
+    }
     if (S.view) { e.preventDefault(); closeChanges(); return; }
     if (S.historyOpen) { e.preventDefault(); toggleHistory(false); return; }
     if (S.editing) { e.preventDefault(); endEdit(); return; }
@@ -1889,10 +2368,12 @@
     if (S.st.running) { e.preventDefault(); post("stop"); say("Arrêt demandé."); return; }
     post("close");
   });
-  window.addEventListener("resize", () => closeMenu());
+  window.addEventListener("resize", () => { if (!BUB()) closeMenu(); });   // the bubble's window is resized for the menu itself
   reduceMQ.addEventListener && reduceMQ.addEventListener("change", () => {});
 
   // ---------------------------------------------------------------- boot
+  // `index.html?layout=bubble`: the bubble from the first paint, before the host's `layout` (no flash of the panel).
+  if (/[?&]layout=bubble(&|$)/.test(location.search)) { S.lay.mode = "bubble"; applyLayout(false); }
   renderHeader(); renderComposerBar(); renderDock(true); updateView();
   if (wv) wv.addEventListener("message", (e) => receive(e.data));
   window.addEventListener("error", (e) => post("panel.log", { level: "error", message: String(e.message).slice(0, 2000) }));
