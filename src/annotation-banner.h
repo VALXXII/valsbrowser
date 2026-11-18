@@ -42,6 +42,11 @@ inline constexpr float remindH = 22, remindPad = 8, remindGap = 6, remindRadius 
 // « BETA » on its accent-16 % chip: Paper #5B84FF measures 4.14:1 there (12 px needs 4.5:1), so it is
 // lifted to #6A8FFF (4.66:1); « Mode Annotation » keeps #5B84FF on the band (4.87:1).
 inline constexpr float gradientAlpha = AccentTone::Paper::gradientAlpha;
+// R10 (Paper 1AYJ-0 « Masque » in 1AYH-0): over the dither and the band's gradient, under the content, a layer of the
+// canvas (#171717) at opacity 0.85 whose alpha ramps from 0 at 60.66 % of the band's width to full at 82.29 % (oklab
+// between the same colour = a linear alpha ramp): the wave fades out before the switch and « Quitter ».
+inline constexpr float maskFrom = .6066f, maskTo = .8229f, maskOpacity = .85f;
+inline float MaskAlpha(float x, float w) { if (w <= 0) return 0; const float t = (x / w - maskFrom) / (maskTo - maskFrom); return maskOpacity * (t <= 0 ? 0.f : t >= 1 ? 1.f : t); }
 }
 // BannerChat: the « Panneau » half of the layout switch, BannerComment its « Commentaire » half (chat intégré, local sites
 // only; Paper 1AYP-0: they replace the former « Demander à l'agent » button).
@@ -132,6 +137,7 @@ inline void RasterBandSpan(std::uint32_t* px, int stride, RECT d, float w, float
                 if (x - cx * cp < dot && cells[size_t(cx - c0)]) c = Dither::Over(cells[size_t(cx - c0)], c);
             }
             if (edge) c = Dither::Over(edge, c);
+            if (const float m = MaskAlpha((x + .5f) / k, w); m > 0) c = Dither::Over(Dither::Premul(0x171717FFu, m), c);   // R10: the mask over all of it
             row[x] = c;
         }
     }
@@ -157,6 +163,15 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
     if (v.texture) PaintBandTexture(ink, w, h - 1, v.waveSeconds, v.waveAmp, WaveZones(l, v.beta, v.reminder), tone);
     if (backdrop) { t->PushAxisAlignedClip({0, 0, w, h}, D2D1_ANTIALIAS_MODE_ALIASED); backdrop(); t->PopAxisAlignedClip(); }
     ink.Fill({0, h - 1, w, h}, 0, Hex(tone.border));
+    {   // R10: Paper's mask (1AYJ-0) over the dither, the gradient and the border, under the content. One row of device
+        // pixels from MaskAlpha (the same values RasterBandSpan writes), stretched to the band's height.
+        float dx = 96, dy = 96; t->GetDpi(&dx, &dy); const float s = dx / 96.f; const int pw = std::max(1, int(std::lround(w * s)));
+        static thread_local std::vector<std::uint32_t> row; row.assign(size_t(pw), 0u);
+        for (int x = 0; x < pw; ++x) if (const float m = MaskAlpha((x + .5f) / s, w); m > 0) row[size_t(x)] = Dither::Premul(0x171717FFu, m);
+        ID2D1Bitmap* mask = nullptr; const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dx, dy);
+        if (SUCCEEDED(t->CreateBitmap(D2D1::SizeU(UINT32(pw), 1), row.data(), UINT32(pw * 4), props, &mask))) t->DrawBitmap(mask, D2D1::RectF(0, 0, pw / s, h), 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        Release(mask);
+    }
     {   // Mark with the shader's ramp.
         const D2D1_RECT_F m{(l.logo.left + l.logo.right - markW) / 2, (l.logo.top + l.logo.bottom - markH) / 2, (l.logo.left + l.logo.right + markW) / 2, (l.logo.top + l.logo.bottom + markH) / 2};
         const D2D1_GRADIENT_STOP ramp[3] = {{0, rgb(tone.markLight)}, {.55f, rgb(tone.markMid)}, {1, rgb(tone.markDeep)}};

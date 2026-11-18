@@ -590,7 +590,7 @@ void OnPanelMessage(const std::string& json) {
         for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
         for (const auto& s : activeStrips) Send("strip", s.second);
-        for (const auto& w : waitingPermissions) Send("permission.request", w.second);   // a card that was waiting before this WebView existed
+        // the cards still waiting were sent again by SendThread (after its thread.reset)
         if (!composerBatch.items.empty()) SendComposerBatch();                               // the batch posed in the composer
         if (batchOwed) { batchOwed = false; PoseBatch(L"asked from the browser"); }   // i18n-exempt: log detail
         {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
@@ -613,7 +613,12 @@ void OnPanelMessage(const std::string& json) {
     }
     if (type == "annotations.request") { PoseBatch(L"/annotations"); return; }
     if (type == "annotate") { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(m.Text("text", 400000), ids, {}, true)) return; AddAnchorElement(ids); KeepAnnotation(m.Text("text", 400000), ids); return; }   // contract B 1.6: Ctrl+Entrée (+ the bubble's element)
-    if (type == "bubble.size") { const auto* w = v.Get("width"); const auto* h = v.Get("height"); if (w && h && w->IsNumber() && h->IsNumber()) OnBubbleSize(int(w->number), int(h->number)); return; }   // contract B 1.8
+    if (type == "bubble.size") {   // contract B 1.8, + R3 overflow (§20)
+        const auto* w = v.Get("width"); const auto* h = v.Get("height"); if (!w || !h || !w->IsNumber() || !h->IsNumber()) return;
+        auto edge = [&](const char* k) { const auto* e = v.Get(k); return e && e->IsNumber() && e->number >= 0 && e->number <= 10000 ? int(e->number) : 0; };
+        OnBubbleSize(int(w->number), int(h->number), {edge("overflowTop"), edge("overflowRight"), edge("overflowBottom"), edge("overflowLeft")});
+        return;
+    }
     if (type == "annotation.show") { ShowAnnotation(m.Id("id")); return; }
     if (type == "stop") { StopTurn(); return; }
     if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }
@@ -667,6 +672,20 @@ void OnPanelMessage(const std::string& json) {
         SendOrQueue(T8(I18n::Id::chat_prompt_run_plan), {}, {}); return;
     }
     if (type == "plan.edit") { if (turn.active && !turn.planPermission.empty() && session) { std::string reject; for (const auto& o : turn.planOptions) if (reject.empty() && o.kind.rfind("reject", 0) == 0) reject = o.id; session->RespondPermission(turn.planPermission, reject); turn.planPermission.clear(); } return; }
+    if (type == "conversation.rename") {   // R11: a double click on the title, then Entrée
+        const std::string id = m.Id("id"), title = ChatPrompt::RenameTitle(m.Text("title", 2048)); if (id.empty() || title.empty()) { Diag(L"rename refused (empty or longer than 120 characters)"); return; }
+        Convo* mem = convo.data.head.id == id ? &convo : aside.on && aside.c.data.head.id == id ? &aside.c : nullptr;
+        if (mem) {
+            mem->data.head.title = title;
+            if (!mem->data.items.empty()) { auto copy = std::make_shared<ChatStore::Conversation>(mem->data); Ann::Run([copy] { History().Save(*copy); }, [] { RefreshAnchored(); }); }
+            SendState(); Diag(L"conversation renamed: " + W(id));
+            return;
+        }
+        auto c = std::make_shared<ChatStore::Conversation>(); auto ok = std::make_shared<bool>(false);   // a row of the history list
+        Ann::Run([c, ok, id, title] { if ((*ok = History().Load(id, *c))) { c->head.title = title; *ok = History().Save(*c); } },
+                 [ok, id] { Diag(*ok ? L"conversation renamed: " + W(id) : L"rename: conversation not found"); if (*ok) { SendHistory(""); RefreshAnchored(); } });
+        return;
+    }
     if (type == "history.open") { SendHistory(""); return; }
     if (type == "history.search") { SendHistory(m.Text("query", 200)); return; }
     if (type == "history.select") { const std::string id = m.Id("id"); if (id.empty()) return; if (turn.active) { queue.clear(); afterTurn = [id] { SelectHistory(id); }; StopTurn(); } else SelectHistory(id); return; }

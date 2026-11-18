@@ -236,19 +236,22 @@ ModeView ModesOf(const std::string& agent, const AgentInfo& info) {
         m.list.push_back({PlanOptionId, c.name.empty() ? c.value : c.name, c.description, "plan"}); if (o.currentValue == m.map.planOn) m.current = PlanOptionId; }
     return m;
 }
-// V1.4: the modes are named in the user's language, as in Paper 14RK-0 (« Demander », « Auto », « Planifier »), never
-// with the adapter's English labels (« Manual », « Accept edits »…). Each agent has two « auto » modes: the first of its
-// map (file edits accepted: Claude « acceptEdits », Codex « workspace-write ») is « Auto »; the one that decides alone
-// (Claude « auto », Codex « agent ») is « Autonome ». A mode the map does not know keeps the agent's own name.
-bool Autonomous(const ModeEntry& m) { return m.kind == "auto" && (m.id == "auto" || m.id == "agent"); }
+// R4 (Paper 14RK-0, updated by the user): exactly four lines, in this order, named to the letter — « Accept edits »
+// (Claude acceptEdits, Codex workspace-write), « Auto » (Claude auto, Codex agent: the agent decides its permissions),
+// « Demander », « Planifier » (ChatOptions::PaperModes). The mode that bypasses every permission is never offered
+// (ModeMap::never), nor any other mode of the adapter. The page gets the kinds "edits", "auto", "ask", "plan".
 void NameMode(ModeEntry& m, const ModeView& v) {
-    (void)v; const bool codex = agentId == "codex";
-    if (m.kind == "ask") { m.name = T8(I18n::Id::chat_mode_ask); m.description = T8(I18n::Id::chat_mode_ask_desc); }
-    else if (m.kind == "plan") { m.name = T8(I18n::Id::chat_mode_plan); m.description = T8(I18n::Id::chat_mode_plan_desc); }
-    else if (Autonomous(m)) { m.name = T8(I18n::Id::chat_mode_autonomous); m.description = codex ? T8(I18n::Id::chat_mode_autonomous_codex_desc) : U8(TRF(chat_mode_autonomous_desc, W(std::string(Agent().name)))); }
-    else if (m.kind == "auto") { m.name = T8(I18n::Id::chat_mode_auto); m.description = T8(codex ? I18n::Id::chat_mode_auto_workspace_desc : I18n::Id::chat_mode_auto_desc); }
+    (void)v; const auto slot = ChatOptions::SlotOf(m.kind, m.id); m.kind = ChatOptions::SlotKind(slot);
+    if (slot == ChatOptions::ModeSlot::Ask) { m.name = T8(I18n::Id::chat_mode_ask); m.description = T8(I18n::Id::chat_mode_ask_desc); }
+    else if (slot == ChatOptions::ModeSlot::Plan) { m.name = T8(I18n::Id::chat_mode_plan); m.description = T8(I18n::Id::chat_mode_plan_desc); }
+    else if (slot == ChatOptions::ModeSlot::Auto) { m.name = T8(I18n::Id::chat_mode_auto); m.description = U8(TRF(chat_mode_auto_desc, AgentShort(agentId))); }
+    else if (slot == ChatOptions::ModeSlot::Edits) { m.name = T8(I18n::Id::chat_mode_edits); m.description = T8(I18n::Id::chat_mode_edits_desc); }
 }
-int ModeRank(const ModeEntry& m, const ModeView& v) { (void)v; return m.kind == "ask" ? 0 : m.kind == "auto" && !Autonomous(m) ? 1 : m.kind == "plan" ? 2 : Autonomous(m) ? 3 : 4; }
+std::vector<ModeEntry> ShownModes(const ModeView& mv) {
+    std::vector<std::pair<std::string, std::string>> keys; for (const auto& m : mv.list) keys.push_back({m.kind, m.id});
+    std::vector<ModeEntry> out; for (const auto i : ChatOptions::PaperModes(keys)) { ModeEntry e = mv.list[i]; NameMode(e, mv); out.push_back(std::move(e)); }
+    return out;
+}
 std::string KindOfMode(const ModeView& m, const std::string& id) { for (const auto& e : m.list) if (e.id == id) return e.kind; return "other"; }
 std::map<std::string, std::string> agentFirstModel;   // agent id -> the model it had chosen itself when its first session started (its « Par défaut » when it has no alias)
 // An agent's list as the panel shows it (V1.2): never the « use my default » alias; `defaultValue` gets « Par défaut ».
@@ -301,8 +304,9 @@ void SendState() {
     // efforts (V1.2): the agent's levels without its « Default »; a session still on that alias shows no effort
     st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(effort->currentValue) && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? Str(effort->currentValue) : SJ::Value::Null());
     {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
-        std::vector<ModeEntry> shown = mv.list; for (auto& m : shown) NameMode(m, mv);
-        std::stable_sort(shown.begin(), shown.end(), [&](const ModeEntry& a, const ModeEntry& b) { return ModeRank(a, mv) < ModeRank(b, mv); });
+        const std::vector<ModeEntry> shown = ShownModes(mv);
+        {   static std::string said; std::string ids; for (const auto& m : shown) ids += (ids.empty() ? "" : ", ") + m.id + "=" + m.kind;
+            if (!shown.empty() && ids != said) { said = ids; Diag(L"modes offered: " + W(ids)); } }   // R4: the QA reads it
         for (const auto& m : shown) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
         st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mv.current) ? Str(mv.current) : SJ::Value::Null()); }
@@ -356,6 +360,10 @@ void SendThread() {
         Send(first ? "thread.reset" : "thread.append", std::move(m)); first = false;
     } while (i < items.size());
     SendUsage();   // thread.reset hides the gauge: shown again when this conversation's usage is known
+    // R9 (Mode Commentaire): thread.reset wipes the page's live cards. A permission the engine's turn still waits for is
+    // not an item of the thread: without this, a bubble closed before the request came and opened again showed only the
+    // tool's step (« Edit styles\landing.css ») and the turn waited forever.
+    if (!aside.on) for (const auto& w : waitingPermissions) Send("permission.request", w.second);
 }
 void Strip(const char* id, const char* tone, const std::wstring& text, const char* actionId = nullptr, const std::wstring& actionLabel = L"") {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(std::string(id))); m.Set("tone", Str(std::string(tone))); m.Set("text", Str(text));
@@ -404,7 +412,7 @@ void SendError(const Problem& p, const std::string& detail, const char* scope = 
 
 void SyncChromeBits();
 // Mode Commentaire (chat-comment.h)
-bool CommentLayout(); bool BubbleOpen(); void SyncMarks(); void CloseBubble(bool focusPage); void SendLayout(bool openNow); void OnBubbleSize(int wCss, int hCss);
+bool CommentLayout(); bool BubbleOpen(); void SyncMarks(); void CloseBubble(bool focusPage); void SendLayout(bool openNow); void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over);
 bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible); bool KeepAnchorElement(Element& e);
 bool SwitchEngineTo(const std::string& id); void AddAnchorElement(std::vector<std::string>& ids); void RefreshWaitStrip(); void ShowEngineWork();
 void SwitchLayout(bool comment); void RefreshAnchored(); std::string BubbleSelector(); void ForgetPage(); void PlaceBubble(); std::string ShownId();

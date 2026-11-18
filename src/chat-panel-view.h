@@ -11,7 +11,19 @@
 //   pont      window.chrome.webview.postMessage <-> PostWebMessageAsJson (contract B, design/chat-panel.md);
 //   moved     put_Bounds only (the slide of the entrance / exit never resizes it: no layout per frame);
 //   destroyed Close() on the controller: its renderer goes with it.
+//   visual    R1 / R3 (Mode Commentaire v2): the controller is a COMPOSITION controller (visual hosting): the page is a
+//             DirectComposition visual with a transparent background, so the bubble's window shows the page's own
+//             antialiased 16 px corners over any site (no DWM corner, no window region), and grows transparent around
+//             the surface while a menu or a tooltip goes out of it. The host forwards the mouse (SendMouseInput), the
+//             cursor (CursorChanged) and UI Automation (WM_GETOBJECT); the keyboard is WebView2's own once focused.
+//             Placements: the bubble's popup is its own composition target (WS_EX_NOREDIRECTIONBITMAP: what the page
+//             does not paint is see-through); the panel gets a child window of the browser window, painted #171717
+//             under the page. Without dcomp.dll or ICoreWebView2Environment3: windowed hosting, as before.
 #include <shlwapi.h>
+#include <dcomp.h>
+#include <uiautomation.h>
+#include <windowsx.h>
+#include <vector>
 #include <functional>
 #include <string>
 
@@ -63,6 +75,65 @@ class View {
     Hooks hooks_; std::wstring assets_; bool creating_ = false, visible_ = false; RECT bounds_{}; unsigned generation_ = 0;
     HWND parent_ = nullptr, created_ = nullptr;   // where it should be / where the controller is
     bool devtools_ = false;
+    // ---- visual hosting
+    Com<ICoreWebView2CompositionController> comp_; bool visual_ = false;
+    HMODULE dcompModule_ = nullptr; IDCompositionDevice* dc_ = nullptr; IDCompositionVisual* webVisual_ = nullptr;
+    struct Target { HWND hwnd = nullptr; IDCompositionTarget* target = nullptr; IDCompositionVisual* root = nullptr; };
+    std::vector<Target> targets_; IDCompositionVisual* attachedTo_ = nullptr;
+    HWND panelHost_ = nullptr, direct_ = nullptr, host_ = nullptr;   // the panel's child host / the popup that hosts itself / current
+    RECT hostBounds_{}; bool tracking_ = false; HCURSOR cursor_ = nullptr;
+    static View*& Self() { static View* self = nullptr; return self; }
+    bool EnsureDComp() {
+        if (dc_) return true;
+        if (!dcompModule_) dcompModule_ = LoadLibraryExW(L"dcomp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        using Create = HRESULT(WINAPI*)(IDXGIDevice*, REFIID, void**);
+        auto create = dcompModule_ ? reinterpret_cast<Create>(GetProcAddress(dcompModule_, "DCompositionCreateDevice")) : nullptr;
+        if (!create || FAILED(create(nullptr, __uuidof(IDCompositionDevice), reinterpret_cast<void**>(&dc_))) || !dc_) { dc_ = nullptr; return false; }
+        if (FAILED(dc_->CreateVisual(&webVisual_)) || !webVisual_) { dc_->Release(); dc_ = nullptr; return false; }
+        return true;
+    }
+    IDCompositionVisual* RootOf(HWND h) {
+        for (auto& t : targets_) if (t.hwnd == h) return t.root;
+        Target t; t.hwnd = h;
+        if (!dc_ || FAILED(dc_->CreateTargetForHwnd(h, TRUE, &t.target)) || FAILED(dc_->CreateVisual(&t.root)) || FAILED(t.target->SetRoot(t.root))) {
+            if (t.root) t.root->Release();
+            if (t.target) t.target->Release();
+            return nullptr;
+        }
+        targets_.push_back(t); return t.root;
+    }
+    static LRESULT CALLBACK PanelHostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+        LRESULT r = 0; if (Self() && Self()->HostMessage(h, m, w, l, r)) return r;
+        if (m == WM_ERASEBKGND) { RECT c; GetClientRect(h, &c); HBRUSH b = CreateSolidBrush(RGB(0x17, 0x17, 0x17)); FillRect(reinterpret_cast<HDC>(w), &c, b); DeleteObject(b); return 1; }
+        return DefWindowProcW(h, m, w, l);
+    }
+    HWND PanelHost(HWND parent) {
+        if (panelHost_ && GetParent(panelHost_) == parent) return panelHost_;
+        if (panelHost_) { DestroyWindow(panelHost_); panelHost_ = nullptr; }
+        WNDCLASSEXW wc{sizeof(wc)}; wc.lpfnWndProc = PanelHostProc; wc.hInstance = GetModuleHandleW(nullptr); wc.hCursor = LoadCursorW(nullptr, IDC_ARROW); wc.lpszClassName = L"BrowserChatPanelHost"; RegisterClassExW(&wc);
+        panelHost_ = CreateWindowExW(0, wc.lpszClassName, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, parent, nullptr, wc.hInstance, nullptr);
+        return panelHost_;
+    }
+    // Where the controller sits: its host window, and the WebView's bounds in that window's client pixels.
+    void Seat(HWND parent, RECT bounds) {
+        HWND host = parent; RECT inHost = bounds;
+        if (parent != direct_) {   // the panel: a child window at `bounds`, the WebView filling it
+            host = PanelHost(parent); if (!host) return;
+            SetWindowPos(host, HWND_TOP, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+            inHost = {0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top};
+        } else if (panelHost_) ShowWindow(panelHost_, SW_HIDE);
+        hostBounds_ = inHost;
+        if (host != host_) {
+            if (IDCompositionVisual* root = RootOf(host)) {
+                if (attachedTo_) attachedTo_->RemoveVisual(webVisual_);
+                root->AddVisual(webVisual_, FALSE, nullptr); attachedTo_ = root;
+            }
+            if (controller_.p) controller_->put_ParentWindow(host);
+            host_ = host; created_ = parent;
+        }
+        if (controller_.p) controller_->put_Bounds(inHost);
+        if (dc_) dc_->Commit();
+    }
     static bool ReadAsset(const std::wstring& file, std::string& out) {
         HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (f == INVALID_HANDLE_VALUE) return false;
@@ -88,7 +159,7 @@ class View {
         }
         {   // the canvas colour behind the page: no white flash while it loads (design/chat-panel.md §1)
             Com<ICoreWebView2Controller2> c2;
-            if (SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2, (void**)&c2.p)) && c2.p) c2->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{255, 0x17, 0x17, 0x17});
+            if (SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2, (void**)&c2.p)) && c2.p) c2->put_DefaultBackgroundColor(visual_ ? COREWEBVIEW2_COLOR{0, 0, 0, 0} : COREWEBVIEW2_COLOR{255, 0x17, 0x17, 0x17});
         }
         view_->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
         const unsigned gen = generation_;
@@ -158,20 +229,85 @@ public:
             view_->Navigate(PageUrl);
             if (hooks_.created) hooks_.created(true);
             return S_OK; });
+        Com<ICoreWebView2Environment3> env3;
+        if (EnsureDComp() && SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment3, reinterpret_cast<void**>(&env3.p))) && env3.p) {
+            done->Release(); visual_ = true; Self() = this;
+            HWND host = parent == direct_ ? parent : PanelHost(parent);
+            auto made = Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler, HRESULT, ICoreWebView2CompositionController*>([this, gen](HRESULT hr, ICoreWebView2CompositionController* cc) -> HRESULT {
+                if (gen != generation_) { Com<ICoreWebView2Controller> c; if (cc && SUCCEEDED(cc->QueryInterface(IID_ICoreWebView2Controller, reinterpret_cast<void**>(&c.p))) && c.p) c->Close(); return S_OK; }
+                creating_ = false;
+                Com<ICoreWebView2Controller> c;
+                if (FAILED(hr) || !cc || FAILED(cc->QueryInterface(IID_ICoreWebView2Controller, reinterpret_cast<void**>(&c.p))) || !c.p || FAILED(c->get_CoreWebView2(&view_.p)) || !view_.p) { Log(L"CHAT panel WebView2 unavailable (visual hosting)"); env_.set(nullptr); if (hooks_.created) hooks_.created(false); return S_OK; }
+                comp_.set(cc); controller_.set(c.p); Wire();
+                comp_->put_RootVisualTarget(webVisual_);
+                {   EventRegistrationToken token{};
+                    auto cursor = Callback<ICoreWebView2CursorChangedEventHandler, ICoreWebView2CompositionController*, IUnknown*>([this](ICoreWebView2CompositionController* s, IUnknown*) -> HRESULT {
+                        HCURSOR h = nullptr; if (SUCCEEDED(s->get_Cursor(&h))) { cursor_ = h; POINT p; GetCursorPos(&p); RECT r{}; if (host_ && GetWindowRect(host_, &r) && PtInRect(&r, p)) SetCursor(h); }
+                        return S_OK; });
+                    comp_->add_CursorChanged(cursor, &token); cursor->Release(); }
+                host_ = nullptr; const RECT b = bounds_; Seat(parent_, b);
+                controller_->put_IsVisible(visible_ ? TRUE : FALSE);
+                view_->Navigate(PageUrl);
+                Log(L"CHAT panel WebView2: visual hosting (transparent)");
+                if (hooks_.created) hooks_.created(true);
+                return S_OK; });
+            const HRESULT hr = host ? env3->CreateCoreWebView2CompositionController(host, made) : E_FAIL; made->Release();
+            if (FAILED(hr)) { creating_ = false; env_.set(nullptr); ++generation_; visual_ = false; return false; }
+            return true;
+        }
         const HRESULT hr = environment->CreateCoreWebView2Controller(parent, done); done->Release();
         if (FAILED(hr)) { creating_ = false; env_.set(nullptr); ++generation_; return false; }
         return true;
     }
-    void Place(RECT bounds) { bounds_ = bounds; if (controller_.p) controller_->put_Bounds(bounds); }
+    void Place(RECT bounds) {
+        bounds_ = bounds;
+        if (visual_) { if (controller_.p) Seat(parent_, bounds); return; }
+        if (controller_.p) controller_->put_Bounds(bounds);
+    }
     // Mode Commentaire: the same WebView (same page, same conversation) goes into another window — the browser window
     // for the panel, the bubble's own window. `bounds` in that window's client pixels.
     void Reparent(HWND parent, RECT bounds) {
         parent_ = parent; bounds_ = bounds;
+        if (visual_) { if (controller_.p) Seat(parent, bounds); return; }
         if (controller_.p && created_ != parent) { controller_->put_ParentWindow(parent); created_ = parent; }
         if (controller_.p) controller_->put_Bounds(bounds);
     }
     HWND Parent() const { return parent_; }
-    void Show(bool on) { visible_ = on; if (controller_.p) controller_->put_IsVisible(on ? TRUE : FALSE); }
+    void Show(bool on) {
+        visible_ = on; if (controller_.p) controller_->put_IsVisible(on ? TRUE : FALSE);
+        if (visual_ && panelHost_ && host_ == panelHost_) ShowWindow(panelHost_, on ? SW_SHOWNA : SW_HIDE);
+    }
+    // Mode Commentaire: this popup is its own composition target (the bubble), not a parent for the panel's child host.
+    void HostDirectly(HWND popup) { direct_ = popup; }
+    bool Visual() const { return visual_; }   // transparent page possible (R1 / R3); false = windowed hosting
+    // Visual hosting: the host windows' input. Returns true when the message was taken (`result` set).
+    bool HostMessage(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT& result) {
+        if (!visual_ || !comp_.p || h != host_) return false;
+        if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT) { HCURSOR c = cursor_; if (!c) comp_->get_Cursor(&c); if (c) { SetCursor(c); result = TRUE; return true; } return false; }
+        if (m == WM_GETOBJECT && static_cast<long>(l) == static_cast<long>(UiaRootObjectId)) {
+            Com<ICoreWebView2CompositionController2> c2; Com<IUnknown> provider; Com<IRawElementProviderSimple> simple;
+            static auto fn = reinterpret_cast<decltype(&::UiaReturnRawElementProvider)>(reinterpret_cast<void*>(GetProcAddress(LoadLibraryExW(L"uiautomationcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32), "UiaReturnRawElementProvider")));
+            if (fn && SUCCEEDED(comp_->QueryInterface(IID_ICoreWebView2CompositionController2, reinterpret_cast<void**>(&c2.p))) && c2.p && SUCCEEDED(c2->get_AutomationProvider(&provider.p)) && provider.p &&
+                SUCCEEDED(provider->QueryInterface(__uuidof(IRawElementProviderSimple), reinterpret_cast<void**>(&simple.p))) && simple.p) { result = fn(h, w, l, simple.p); return true; }
+            return false;
+        }
+        if (m == WM_MOUSELEAVE) { tracking_ = false; comp_->SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE, 0, POINT{0, 0}); result = 0; return true; }
+        if (!(m >= WM_MOUSEFIRST && m <= WM_MOUSELAST)) return false;
+        const bool wheel = m == WM_MOUSEWHEEL || m == WM_MOUSEHWHEEL;
+        POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; if (wheel) ScreenToClient(h, &p);
+        if (!PtInRect(&hostBounds_, p) && GetCapture() != h) return false;
+        if (m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN || m == WM_MBUTTONDOWN || m == WM_XBUTTONDOWN) {
+            SetCapture(h);
+            const HWND f = GetFocus(); if (!f || (f != h && !IsChild(h, f))) Focus();   // the keyboard follows a click in the page
+        }
+        if ((m == WM_LBUTTONUP || m == WM_RBUTTONUP || m == WM_MBUTTONUP || m == WM_XBUTTONUP) && GetCapture() == h) ReleaseCapture();
+        UINT32 data = 0;
+        if (wheel) data = UINT32(GET_WHEEL_DELTA_WPARAM(w)); else if (m == WM_XBUTTONDOWN || m == WM_XBUTTONUP || m == WM_XBUTTONDBLCLK) data = GET_XBUTTON_WPARAM(w);
+        p.x -= hostBounds_.left; p.y -= hostBounds_.top;
+        comp_->SendMouseInput(static_cast<COREWEBVIEW2_MOUSE_EVENT_KIND>(m), static_cast<COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS>(GET_KEYSTATE_WPARAM(w)), data, p);
+        if (m == WM_MOUSEMOVE && !tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; tracking_ = TrackMouseEvent(&t) != FALSE; }
+        result = 0; return true;
+    }
     bool Visible() const { return visible_; }
     void Focus() { if (controller_.p && visible_) controller_->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC); }
     bool Post(const std::string& json) { return view_.p && SUCCEEDED(view_->PostWebMessageAsJson(AnnotationHost::Wide(json).c_str())); }
@@ -181,7 +317,10 @@ public:
     void Destroy() {
         ++generation_; creating_ = false; visible_ = false;
         if (controller_.p) controller_->Close();
-        view_.set(nullptr); controller_.set(nullptr); env_.set(nullptr);
+        view_.set(nullptr); controller_.set(nullptr); comp_.set(nullptr); env_.set(nullptr);
+        if (attachedTo_ && webVisual_) { attachedTo_->RemoveVisual(webVisual_); attachedTo_ = nullptr; if (dc_) dc_->Commit(); }
+        host_ = nullptr; created_ = nullptr; visual_ = false; tracking_ = false; cursor_ = nullptr;
+        if (panelHost_) ShowWindow(panelHost_, SW_HIDE);
     }
 };
 

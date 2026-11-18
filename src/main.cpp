@@ -84,6 +84,8 @@ template<class T> const wchar_t* GuidText();
 #define GUID_TEXT(T,S) template<> const wchar_t* GuidText<T>() { return L##S; }
 GUID_TEXT(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler,"{4e8a3389-c9d8-4bd2-b6b5-124fee6cc14d}")
 GUID_TEXT(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,"{6c4819f3-c9b7-4260-8127-c9f5bde7f68c}")
+GUID_TEXT(ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler,"{02fab84b-1428-4fb7-ad45-1b2e64736184}")   /* chat: visual hosting (src/chat-panel-view.h) */
+GUID_TEXT(ICoreWebView2CursorChangedEventHandler,"{9da43ccc-26e1-4dad-b56c-d8961c94c571}")
 GUID_TEXT(ICoreWebView2NavigationCompletedEventHandler,"{d33a35bf-1c49-4f98-93ab-006e0533fe1c}")
 GUID_TEXT(ICoreWebView2SourceChangedEventHandler,"{3c067f9f-5388-4772-8b48-79f7ef1ab37c}")
 GUID_TEXT(ICoreWebView2HistoryChangedEventHandler,"{c79a420c-efd9-4058-9295-3e8b4bcab645}")

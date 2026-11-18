@@ -10,6 +10,7 @@
 //     session starts (like the « Demander » mode), when the agent offers it.
 #include <cctype>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ChatOptions {
@@ -56,5 +57,30 @@ template <class Choice> std::string EffortToApply(const std::vector<Choice>& cho
     if (const auto* r = Find(choices, remembered); r && !IsAlias(*r)) want = r->value;
     else if (const auto* m = Find(choices, MediumEffort)) want = m->value;
     return want == current ? std::string() : want;
+}
+
+// R4 (Paper 14RK-0, updated by the user): the mode menu has exactly four lines, in this order — « Accept edits » (the
+// agent's file-edits mode: Claude acceptEdits, Codex workspace-write), « Auto » (the mode where the agent decides its
+// permissions itself: Claude auto, Codex agent), « Demander », « Planifier ». The mode that bypasses every permission is
+// never offered (the session's ModeMap::never already drops it); any other mode the adapter adds is not shown either.
+// A line the adapter does not have is simply absent. `kind`: the host's classification ("ask", "auto", "plan", …).
+enum class ModeSlot { Edits = 0, Auto = 1, Ask = 2, Plan = 3, Hidden = 4 };
+inline ModeSlot SlotOf(const std::string& kind, const std::string& id) {
+    if (kind == "ask") return ModeSlot::Ask;
+    if (kind == "plan") return ModeSlot::Plan;
+    if (kind == "auto") return id == "auto" || id == "agent" ? ModeSlot::Auto : ModeSlot::Edits;
+    return ModeSlot::Hidden;
+}
+// The kind the page receives (contract B §20): "edits", "auto", "ask", "plan".
+inline const char* SlotKind(ModeSlot s) { switch (s) { case ModeSlot::Edits: return "edits"; case ModeSlot::Auto: return "auto"; case ModeSlot::Ask: return "ask"; case ModeSlot::Plan: return "plan"; default: return "other"; } }
+// The indices of `modes` (pairs kind, id) to show, in Paper's order, one per line (the first of a line wins).
+inline std::vector<std::size_t> PaperModes(const std::vector<std::pair<std::string, std::string>>& modes) {
+    std::vector<std::size_t> out; bool taken[4] = {false, false, false, false};
+    for (int slot = 0; slot < 4; ++slot)
+        for (std::size_t i = 0; i < modes.size(); ++i) {
+            const auto s = SlotOf(modes[i].first, modes[i].second);
+            if (int(s) == slot && !taken[slot]) { taken[slot] = true; out.push_back(i); }
+        }
+    return out;
 }
 } // namespace ChatOptions

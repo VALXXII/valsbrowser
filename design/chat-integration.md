@@ -438,5 +438,113 @@ agent goes on)`, `CHAT the next element's turn: conversation <id>`, `CHAT histor
 gone: <n>`.
 
 Limites connues : pas d'animation native de la fenêtre (l'entrée est jouée par la page, contrat §19.5) ; coins DWM
-(rayon de Windows, pas 16 px) ; une conversation ouverte depuis l'historique n'a plus l'image de son élément ;
+(rayon de Windows, pas 16 px — corrigé en v2, voir plus bas) ; une conversation ouverte depuis l'historique n'a plus l'image de son élément ;
 deux agents en parallèle : non (un tour à la fois, par choix).
+
+## Mode Commentaire v2 (hôte) — retours du premier test réel
+
+Retours R1 à R12 (`plan-annotations-mcp-local/design/chat-comment-v2-retours.md`), valeurs Paper relevées dans
+`design/chat-comment-paper-values.md`. Côté hôte : R1, R2, R3 (fenêtre), R4, R6, R8 (consigne), R9, R10, R11 (message).
+
+### R9 — le tour qui restait sur « Edit styles\landing.css » : la cause
+
+Lue dans le journal du test réel (`build/chat-preview/prototype.log`, conversation `c_06c33ac3fbb4`, élément
+`div.hero-actions`) :
+
+```
+CHAT prompt sent: 1 element(s), 0 image(s)
+CHAT bubble closed (the agent goes on)          <- la bulle se ferme juste après l'envoi
+CHAT permission asked: edit Edit styles\landing.css
+CHAT bubble opened on div.hero-actions …        <- rouverte… puis refermée, rouverte, refermée (3 fois en 2 min)
+CHAT mode asked: « acceptEdits »                <- l'utilisateur change de mode : la demande déjà posée ne change pas
+                                                    (jamais de « permission answered » : le tour attend toujours)
+```
+
+**Cause** : la demande d'autorisation était bien arrivée et bien routée vers la bonne conversation, mais elle n'est pas
+un élément du fil. Chaque ouverture de la bulle envoie `thread.reset` (le fil redessiné) — ce qui efface la carte
+d'autorisation de la page — et l'hôte ne renvoyait les cartes en attente (`waitingPermissions`) qu'à la création de la
+WebView (`ready`). La bulle rouverte montrait donc seulement l'étape de l'outil (« Edit styles\landing.css ») et rien
+pour répondre : l'agent attendait sa réponse indéfiniment. En panneau, le panneau reste ouvert pendant le tour : la
+carte n'est jamais effacée, d'où « en mode chat c'était rapide ». Ni la session (une par conversation, réutilisée), ni
+l'image (8 Ko) n'y sont pour quelque chose.
+
+**Correction** : `SendThread()` renvoie, après son `thread.reset`, chaque `permission.request` encore en attente quand
+la conversation montrée est celle du moteur (`src/chat-host.h`) ; le renvoi de `ready` passe par là. En plus, la
+fermeture « l'activation est partie ailleurs » ne se fait plus quand le premier plan est vide un instant (un processus
+qui démarre) : regardé à nouveau 250 ms plus tard, et une fenêtre de ce navigateur garde la bulle ; le journal dit qui
+a pris le premier plan (`the bubble lost the foreground to another application (<classe>, pid <n>)`).
+
+Vérification : `tests/chat/chat_qa_comment_v2.py` (vraie fenêtre, faux agent) — demande, autorisation, bulle fermée
+puis rouverte, carte toujours là, « Autoriser » par un vrai clic transmis à la bulle, fin du tour ; puis la même
+demande en bulle et en panneau (mesures ci-dessous).
+
+### Mesures R9 (faux agent, même demande, autorisation donnée dès qu'elle s'affiche)
+
+<!-- R9-MEASURES -->
+
+### R1 — vrais coins, sans coin noir : la page dans une fenêtre composée
+
+- La WebView du chat est désormais hébergée **en visuel** (`CreateCoreWebView2CompositionController`,
+  `src/chat-panel-view.h`) : la page est un visuel DirectComposition au fond **transparent**
+  (`DefaultBackgroundColor` alpha 0). Toujours une seule WebView, une seule page.
+- La fenêtre de la bulle est `WS_EX_NOREDIRECTIONBITMAP` (ce que la page ne peint pas est transparent),
+  `DWMWCP_DONOTROUND` et sans bordure DWM : plus de coins de Windows (8 px, avec une ombre), plus de région
+  (crénelée). La surface (`#171717`, rayon 16, padding 12) est dessinée par la page avec ses coins lissés.
+- **Ombre** : Paper n'en dessine aucune sur la bulle (`18TO-0`, `1B60-0` et les 8 autres : ni `boxShadow` ni bordure).
+  La bulle n'a donc pas d'ombre, et la fenêtre fait exactement la surface au repos (`inset` 0).
+- Le panneau : un enfant `BrowserChatPanelHost` de la fenêtre du navigateur, peint `#171717` sous la page (pas de flash
+  blanc au chargement), cible de composition de la page ; il glisse comme avant.
+- L'hôte transmet la souris (`SendMouseInput` : boutons, molette, sortie, capture), le curseur (`CursorChanged`) et UI
+  Automation (`WM_GETOBJECT` → fournisseur de la WebView) ; le clavier est celui de WebView2 une fois le focus donné
+  (un clic dans la page le donne). Glisser-déposer : non (la page le refuse déjà).
+- Sans `dcomp.dll` ou `ICoreWebView2Environment3` : hébergement fenêtré comme avant (coins carrés, aucun débordement).
+  Journal : `CHAT panel WebView2: visual hosting (transparent)`.
+
+### R3 — menus et infobulles hors de la bulle (contrat B §20)
+
+- La page demande de la place autour de sa surface tant qu'un menu ou une infobulle en sort : `bubble.size` reçoit
+  `overflowTop`, `overflowRight`, `overflowBottom`, `overflowLeft` (px CSS, 0 à 400).
+- L'hôte agrandit la fenêtre transparente d'autant, **la surface reste à sa place à l'écran**, dans la limite de l'écran
+  du navigateur (zone de travail du moniteur, pas seulement la page : un menu peut passer sur la barre d'adresse comme
+  dans Paper). Il répond par `layout { mode: "bubble", open: false, inset: {top, right, bottom, left} }` = ce qu'il a
+  accordé (moins au bord de l'écran : la page retourne alors son menu). `inset` part aussi avec chaque `layout`
+  d'ouverture (0 au repos).
+- Pas de réponse à un `bubble.size` identique au précédent (taille et débordements) : pas de boucle.
+- Clics : tant que la fenêtre est agrandie, elle prend les clics ; un clic dans sa partie transparente ferme le menu
+  (la page s'en charge, comme un menu : ce clic n'agit pas dessous). Un clic hors de la fenêtre ferme la bulle.
+- Calcul pur et testé : `ChatBubble::Grow`, `ChatBubble::Bounded` (`src/chat-bubble.h`).
+
+### R2, R6 — bordure + icône, réouverture
+
+- **R2** : un élément n'a sa bordure + son icône qu'après l'envoi du premier message (ou un message en file, ou une
+  annotation gardée avec Ctrl+Entrée) : `ChatBubble::Sent`. Clic puis Échap sans rien envoyer : rien ne reste.
+- **R6** (cause) : la conversation d'un élément cliqué puis abandonnée (jamais enregistrée) restait dans la liste des
+  conversations ancrées ; plus tard, un clic sur l'élément cherchait à la relire, « conversation not found », et la
+  bulle ne s'ouvrait pas (19 « conversation not found » dans le journal du test). Maintenant : seules les conversations envoyées sont
+  ancrées (R2), et une conversation illisible est oubliée et l'élément s'ouvre sur une nouvelle conversation
+  (`ChatBubble::ReopenOf`).
+
+### R4 — exactement les modes de Paper `14RK-0`
+
+`state.modes`, dans cet ordre, textes à la lettre : « Accept edits » / « Automatically accept all file edits » (kind
+`edits` : Claude `acceptEdits`, Codex `workspace-write`), « Auto » / « Claude handles permission decisions » (kind
+`auto` : Claude `auto`, Codex `agent`, nom de l'agent), « Demander » (kind `ask`), « Planifier » (kind `plan`). Le mode
+qui contourne toutes les autorisations n'est jamais proposé, ni aucun autre mode de l'adaptateur ; une ligne que
+l'adaptateur n'a pas est absente (`ChatOptions::PaperModes`). Journal : `CHAT modes offered: …`.
+
+### R8, R10, R11, placement
+
+- **R8** : le préambule (version 2, renvoyé aux sessions reprises) demande à l'agent d'écrire d'abord une phrase courte
+  qui dit ce qu'il va faire, puis de travailler (`src/chat-prompt.h`).
+- **R10** : le masque de Paper `1AYJ-0` est peint sur la trame, le dégradé et la bordure du bandeau, sous son contenu :
+  `#171717` à opacité 0,85, alpha de 0 à 60,66 % de la largeur jusqu'à plein à 82,29 % (`BannerSpec::MaskAlpha`, aussi
+  dans le tracé partiel de la vague `RasterBandSpan`).
+- **R11** : `conversation.rename { id, title }` (page → hôte) : titre sur une ligne, 1 à 120 caractères
+  (`ChatPrompt::RenameTitle`), enregistré ; l'hôte renvoie `state` (et `history` quand le renommage vient de la liste).
+- **Placement** (Paper, 9 planches sur 10) : bulle à 12 px du bord droit de l'élément et 4 px au-dessus de son haut
+  (le haut du cadre de sélection) ; même règle à gauche, dessous et dessus (`ChatBubble::Place`, `lead`).
+
+Limites connues (v2) : le passage panneau ↔ bulle déplace le visuel de la page d'une cible de composition à l'autre
+(une image possible avant la nouvelle mise en page) ; pendant l'agrandissement pour un menu vers le haut ou la gauche,
+la page doit recaler sa surface sur le nouvel `inset` (un décalage d'une image est possible, non mesuré) ; le
+basculement d'un menu au bord de l'écran est fait par la page.
