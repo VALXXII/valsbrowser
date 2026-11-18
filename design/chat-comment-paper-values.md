@@ -38,11 +38,18 @@ Captures de référence (export Paper 1x, PNG) : `build/chat-qa/comment-v2/paper
 5. **Menus 6.4** : surface `#242424`, bordure 1 px `#FFFFFF1A`, rayon 12, padding 6, lignes 30 px (padding 6/10, rayon 8, survol `#FFFFFF0F`), texte 13/18 500 blanc, descriptions 12/16 `#FFFFFF80`. Modèle 300 px « s'ouvre vers le haut », effort 214 px, mode 290 px avec ombre `#00000080 0 16px 48px`.
 6. **Bandeau planche 3** : masque `1AYJ-0` = calque absolu 1180×32 plein cadre, opacité 0,85, `linear-gradient(in oklab 90deg, #171717 à 0 % jusqu'à 60,66 %, #171717 plein à 82,29 %)`, posé **au-dessus** de la trame (opacité 0,85) et sous le contenu. Sélecteur `1AYP-0` : 58 px, padding 4, gap 2, rayon 10, deux boutons 24×24 rayon 6 ; actif = fond `#FFFFFF` à 10 %, icône opacité 0,8 ; inactif = sans fond, icône opacité 50 % (icône panneau tournée de 180°). Placé avant « Quitter », gap 4.
 
-## Incohérences de Paper à trancher (signalées au coordinateur, pas des défauts du code)
+## Points tranchés par le coordinateur (18 novembre 2026)
 
-- **Menu des modes `14RK-0`** : Paper montre **4** lignes — « Accept edits / Automatically accept all file edits » (en anglais), « Auto / Claude handles permission decisions » (en anglais), « Demander / Propose chaque modification. » (sélectionnée), « Planifier / Propose un plan, ne touche à aucun fichier. ». La décision R4 dit « exactement les 3 modes : Demander, Auto, Planifier ». À confirmer : on garde 3 lignes (R4) avec les descriptions françaises de Paper pour Demander et Planifier ; pour Auto, la description de Paper est en anglais.
-- **Position planche 3 `1AZR-0`** : décalage 10 px / haut aligné sur l'élément, contre 12 px / −4 px sur toutes les autres. Probablement une imprécision (x = 5565,001) ; la règle des 9 autres planches fait foi sauf avis contraire.
-- **Étiquette de taille** : affiche « 240x64 » alors que le bouton mesure 520×44 dans les planches 2 à 4 (240×44 en planche 1). Le code doit afficher la vraie taille.
+- **Menu des modes `14RK-0` — 4 lignes exactes, textes de Paper à la lettre** (R4 corrigé : l'utilisateur a mis à jour la planche volontairement), dans cet ordre :
+  1. « Accept edits » / « Automatically accept all file edits »
+  2. « Auto » / « Claude handles permission decisions »
+  3. « Demander » / « Propose chaque modification. » (ligne sélectionnée dans Paper : fond `#FFFFFF0F` + coche à droite)
+  4. « Planifier » / « Propose un plan, ne touche à aucun fichier. »
+  Les lignes 1 et 2 ont une icône 16×16 dans un cadre 16×18 (padding haut 2) ; les lignes 3 et 4 une icône 15×15 (margin-top 2, opacité 0,85). Valeurs complètes dans « Menu 6.4 · modes » en fin de document.
+- **Position de la bulle : +12 px / −4 px partout.** La planche 3 `1AZR-0` (+10 px, haut aligné sur l'élément, x = 5565,001) est une imprécision de la maquette, pas une règle.
+- **Étiquette de taille** : Paper affiche « 240x64 » alors que le bouton mesure 520×44 dans les planches 2 à 4 (240×44 en planche 1). Le code affiche la **vraie taille**.
+
+## Autres remarques sur Paper
 - **Libellé du mode** : « Ask » dans les bulles ; le brief impose « Demander » (règle 7).
 - Les menus 6.4 ont été dessinés pour le panneau (6.4 `14P2-0`) ; aucune planche ne les montre ouverts sur la bulle. Seule règle de placement dans Paper : « Modèle · s'ouvre vers le haut ». R3 : menus au-dessus de la bulle, pouvant en sortir.
 
