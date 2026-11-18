@@ -1,6 +1,6 @@
 # Chat intégré V1 — validation (C4)
 
-Nuit du 17 au 18 novembre 2026. Branche `VALXXII/annotations-chat`, build `build/chat-preview`.
+Nuit du 17 au 18 novembre 2026. Branche `VALXXII/annotations-chat`, build `build/chat-preview` (0.3.412, commit 81ca274).
 
 ## En bref
 
@@ -57,7 +57,7 @@ fois de suite avec le même résultat. Le faux agent modifie réellement `styles
 | 6.12 Mode Planifier | `6.12-planifier.png` | carte « Plan proposé · 3 étapes », Lancer le plan / Modifier, rien d'écrit | — |
 | 6.5 File d'attente | `6.5-file-attente.png` | message en file pendant un tour, parti après l'arrêt | — |
 | 6.7 Historique | `6.7-historique.png`, `6.7-reprise.png` | conversations du site, réouverture, aussi après redémarrage | — |
-| Site non local | `6.x-site-non-local.png` | panneau désactivé avec l'explication, rien ne part | capture faite avant une retouche : l'étape « Où est le code » n'y apparaît plus |
+| Site non local | `6.x-site-non-local.png` | panneau désactivé avec l'explication, saisie grisée, rien ne part | le rectangle noir au milieu est un défaut de capture (fenêtre de note cachée, session verrouillée) |
 | Note → chat | `2.1-note-demander.png`, `6.a-note-ask-agent.png` | « Demander à l'agent » dans le panneau de note ouvre le chat avec l'élément et le texte | la première capture est noire (session verrouillée) ; la seconde est le rendu hors écran |
 | Bandeau | `6.b-band-ask-agent-open.png`, `6.b2-…-reminder-focus.png` | bouton allumé quand le panneau est ouvert, focus clavier | — |
 
@@ -71,8 +71,8 @@ information (jamais l'attribut d'un parent) ; l'annotation est écrite, réserv�
 
 | Mesure | Résultat | Remarque |
 | --- | --- | --- |
-| Ouverture du panneau, première fois | prêt en **200 à 297 ms** (WebView créée en 34 à 99 ms, panneau en place en 223 à 285 ms) | 4 passages |
-| Ouverture suivante (WebView recréée) | prêt en **215 à 231 ms** | |
+| Ouverture du panneau, première fois | prêt en **200 à 318 ms** (WebView créée en 34 à 105 ms, panneau en place en 223 à 305 ms) | 5 passages |
+| Ouverture suivante (WebView recréée) | prêt en **215 à 233 ms** | |
 | Premier texte de l'agent affiché | **1 à 35 ms** après l'envoi avec le faux agent | temps propre au navigateur |
 | Idem avec Claude Code | **8,8 s** après l'envoi (tour complet 18,1 s, dont l'attente de mon clic « Autoriser ») | temps de Claude |
 | Première utilisation réelle | session prête **9,5 s** après l'envoi, téléchargement du Node privé et de l'adaptateur compris (229 Mo sur disque, une fois) | progression visible dans le panneau (`real-01-preparation.png`) |

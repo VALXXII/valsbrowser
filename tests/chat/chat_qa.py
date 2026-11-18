@@ -316,7 +316,7 @@ def descendants(pid):
     """Every process whose ancestor is `pid` (name, pid, command line)."""
     ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
     raw = subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True, text=True, encoding='utf-8', errors='replace').stdout
-    rows = json.loads(raw) if raw.strip() else []
+    rows = json.loads(raw, strict=False) if raw.strip() else []   # command lines of other programs may hold control characters
     kids, frontier = [], {pid}
     while frontier:
         nxt = set()
