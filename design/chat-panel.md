@@ -637,3 +637,11 @@ sous le « + » de la bulle, absente de Paper. Les noms sont dans `aria-label` (
 du dossier, adresse d'un lien, « Double-clic ou F2 pour renommer ») ; les seules infobulles visibles sont celles que Paper
 dessine (étapes, envoyer, jauge). Le DOM le garantit (`h()` ignore `title`) et chaque scénario de test le vérifie.
 
+### 20.12 Second `turn.start` du même tour
+
+L'hôte peut renvoyer `turn.start { turnId, model, effort, agentId, at }` avec le **même** `turnId` quand le modèle et l'effort
+deviennent connus après le début du tour. La page le prend comme une mise à jour de l'en-tête de ce tour seulement :
+« logo modèle · effort » (bulle) ou « Opus 5.5 · Élevé » (panneau ; avec la durée si le tour est fini). Un champ absent garde
+sa valeur. Rien d'autre ne bouge : pas de nouveau tour, pas de repère « Passé à … », le chronomètre, le texte et les étapes
+restent. Avant 1.9 ce second message était ignoré.
+

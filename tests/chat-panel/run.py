@@ -695,6 +695,12 @@ try:
         check(st4 == "Modifie landing.css…" and rows4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build"],
               "bubble (D4, Paper 1B30-0 / 1AIE-0): « Edit styles\\landing.css » is said « Modifie landing.css… »; done steps « A lu index.html », « A utilisé 1 outil MCP », « A lancé npm run build »", f"{st4} / {rows4}")
         move(370, 690)
+        # B 1.9: a second turn.start of the same turn only updates its header (the host learns model and effort late)
+        load("c-2-envoye")
+        n0 = cdp.js("[document.querySelectorAll('.turn').length, document.querySelector('.bt-text .text').textContent, document.querySelectorAll('.marker').length]")
+        host({"type": "turn.start", "turnId": "t1", "model": "Opus 5.5", "effort": "medium", "agentId": "claude-code", "at": "2026-11-19T10:00:00Z"})
+        n1 = cdp.js("[document.querySelectorAll('.turn').length, document.querySelector('.bt-text .text').textContent, document.querySelectorAll('.marker').length, document.querySelector('.bt-model').textContent, !!document.querySelector('.bt-model svg'), document.querySelector('.bt-stw .lb').textContent]")
+        check(n1[:3] == n0 and n1[3] == "Opus 5.5Moyen" and n1[4] and n1[5] == "Lit checkout.css…", "bubble (B 1.9): a second `turn.start` of the same turn updates « modèle · effort » only — same turn, same text, same step, no marker", f"{n0} -> {n1}")
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -823,6 +829,12 @@ try:
         esc = cdp.js("[window.__posted.filter(m=>m.type==='conversation.rename').length, document.querySelector('.hd-title-text').textContent, window.__posted.some(m=>m.type==='close')]")
         check(esc == [1, "Paiement pleine largeur", False], "header (R11): F2 opens the same field; Échap cancels (nothing sent, the old name stays, the panel stays open)", str(esc))
 
+        load("6.10-travaille")
+        p0 = cdp.js("[document.querySelectorAll('.turn').length, document.querySelectorAll('.marker').length, document.querySelectorAll('.step').length]")
+        tid = cdp.js("document.querySelector('.turn:last-of-type').dataset.turn || document.querySelectorAll('.turn')[document.querySelectorAll('.turn').length-1].dataset.turn")
+        cdp.js("window.devHost.send({type:'turn.start',turnId:" + json.dumps(tid) + ",model:'Opus 5.5',effort:'high',agentId:'claude-code',at:new Date().toISOString()})"); time.sleep(.1)
+        p1 = cdp.js("(()=>{const ts=document.querySelectorAll('.turn'),t=ts[ts.length-1];return [ts.length, document.querySelectorAll('.marker').length, document.querySelectorAll('.step').length, t.querySelector('.meta').textContent, !!t.querySelector('.meta svg')]})()")
+        check(p1[:3] == p0 and p1[3] == "Opus 5.5 · Élevé" and p1[4], "panel (B 1.9): a second `turn.start` of the same turn updates its header only (« Opus 5.5 · Élevé »), no « Passé à » marker", f"{p0} -> {p1}")
         load("etapes-brutes")
         pl4 = cdp.js("Array.from(document.querySelectorAll('.steps .step span:not(.spin):not(.fail-tag)')).map(n=>n.textContent)")
         check(pl4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build", "Modifie landing.css…"], "panel (D4): the same French labels for the steps, never the agent's raw title", str(pl4))

@@ -1730,8 +1730,9 @@
       t.textBox = h("div", { class: "bt-text", hidden: true });
       const who = t.who;
       t.el = h("div", { class: "turn bt", "data-turn": id, "aria-busy": "true" },
-        h("div", { class: "bt-head" }, h("span", { class: "bt-model" }, agentIcon(who), h("span", { class: "n", text: t.model || (who ? who.name : "Agent") }), t.effort ? h("span", { class: "e", text: t.effort }) : null), t.statusEl),
+        h("div", { class: "bt-head" }, t.modelEl = h("span", { class: "bt-model" }), t.statusEl),
         t.textBox);
+      bModel(t);
       S.berr = null;
       S.turns.set(id, t); S.lastTurn = id;
       add(t.el);
@@ -1752,6 +1753,16 @@
   const turnOf = (id) => S.turns.get(id) || newTurn(id);
   // B 1.9 (R12): the provider's logo left of the model's name, as in the input (14 px in the bubble, 12 px on the panel's 14 px line)
   function setMeta(t, text) { clear(t.metaEl).append(agentIcon(t.who, "mlogo"), h("span", { text })); }
+  function bModel(t) { const who = t.who; clear(t.modelEl).append(agentIcon(who), h("span", { class: "n", text: t.model || (who ? who.name : "Agent") }), t.effort ? h("span", { class: "e", text: t.effort }) : null); }
+  // B 1.9: a second `turn.start` with the same turnId, once the agent has said its model and effort, only updates this
+  // turn's header (model, effort, agent) — nothing else moves, no « Passé à … » marker.
+  function updateTurnHead(t, model, effort, agentId) {
+    if (model) t.model = model;
+    if (effort != null) t.effort = turnEffort(effort);
+    if (agentId && agentById(agentId)) t.who = agentById(agentId);
+    if (t.b) { bModel(t); return; }
+    setMeta(t, (t.running ? [t.model, t.effort] : [t.model.replace(/\s+[\d.]+$/, ""), t.effort, dur(t.durMs || 0)]).filter(Boolean).join(" · "));
+  }
   function addSeg(t, seg) {
     t.segs.push(seg);
     if (t.b) {   // bubble: the words go in the agent's block; steps and thoughts are not lines, they feed the status and its hover list
@@ -2213,6 +2224,7 @@
     if (t.waitEl) { t.waitEl.remove(); t.waitEl = null; }
     S.perms = S.perms.filter((p) => p.turnId !== t.id);
     const d = typeof m.durationMs === "number" ? m.durationMs : Date.now() - t.start;
+    t.durMs = d;
     setMeta(t, [t.model.replace(/\s+[\d.]+$/, ""), t.effort, dur(d)].filter(Boolean).join(" · "));
     for (const s of t.segs) { if (s.kind === "text") { s.render(); s.el.classList.remove("streaming"); const rest = s.text.slice(s.spoken); if (rest.trim()) say(plain(rest)); s.spoken = s.text.length; } else s.render(); }
     const notes = { cancelled: "Arrêté.", refusal: "L'agent a refusé de continuer cette demande.", max_tokens: "La réponse a atteint sa longueur maximale. Demandez la suite pour continuer." };
@@ -2557,7 +2569,11 @@
       flushRender(); updateView();
     },
     "message.user": onUser,
-    "turn.start"(m) { if (S.turns.has(m.turnId)) return; newTurn(m.turnId, isStr(m.model, 100) ? m.model : null, isStr(m.effort, 100) ? m.effort : null, m.at, ID.test(m.agentId || "") ? m.agentId : null); },
+    "turn.start"(m) {
+      const t = S.turns.get(m.turnId);
+      if (t) { updateTurnHead(t, isStr(m.model, 100) ? m.model : null, isStr(m.effort, 100) ? m.effort : null, ID.test(m.agentId || "") ? m.agentId : null); return; }
+      newTurn(m.turnId, isStr(m.model, 100) ? m.model : null, isStr(m.effort, 100) ? m.effort : null, m.at, ID.test(m.agentId || "") ? m.agentId : null);
+    },
     "message.agentChunk": onChunk, thought: onThought, toolCall: onToolCall, toolCallUpdate: onToolUpdate, plan: onPlan,
     "permission.request": onPermission,
     "permission.cancel"(m) { S.perms = S.perms.filter((p) => p.requestId !== m.requestId); refreshWaiting(); renderDock(true); },
