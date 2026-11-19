@@ -207,7 +207,7 @@ def run_main():
         step('R4 · the modes of Paper 14RK-0, in order: Accept edits, Auto, Demander, Planifier',
              bool(modes) and modes[-1].strip() == 'acceptEdits=edits, auto=auto, default=ask, plan=plan', modes[-1] if modes else 'no log')
         step('R9 · the permission is asked', asked is not None, asked.group(0) if asked else '')
-        step('R2 / D1 · after the first message, bubble open: the element shows the bubble's frame (its icon comes when the bubble closes)', C.wait_for(lambda: bubble_frame()['frames'] == 1, 6))
+        step('R2 / D1 · after the first message, bubble open: the element shows the bubble frame (its icon comes when the bubble closes)', C.wait_for(lambda: bubble_frame()['frames'] == 1, 6))
         m4 = mark()
         focus_composer(); C.key_panel('Escape', 'Escape', 27); logged(r'CHAT bubble closed', m4, 5); time.sleep(0.8)
         pointer_away()
