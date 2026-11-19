@@ -9,6 +9,50 @@ Ce qui a été examiné :
 
 Aucune vraie fenêtre n'a été lancée de mon côté.
 
+## Contre-audit — 19 novembre 2026, soir (hébergement fenêtré, commits jusqu'à 100bb84 ; D4 corrigé par P en 22d4d58)
+
+Sources : nouvelles captures en vraie fenêtre de H (`d1-*`, `d2-*`, `s1`…`s3-*`, `r3-*-fenetre.png` / `r3-*.png`, `r9-*`, `r10-bandeau.png`, `probe-fenetree-bulle.png` / `-coin.png`), plus `host-report.json` (32/32 OK) et `switch-report.json` (12/12 OK). Mesures au pixel sur les images, à l'échelle 125 %.
+
+### D1 à D5
+
+| # | Statut | Preuve (vraie fenêtre) |
+|---|---|---|
+| D1 | **Corrigé** | `d1-bulle-ouverte-session-prete.png` : le bouton va de 433 à 733 et le cadre de 428 à 737 / 554 à 618, soit un débord de 5 px écran = 4 CSS. Le fond dans le cadre est rgb(230, 233, 244), c'est-à-dire `#3E67FF14` sur `#F4F4F3`. Deux étiquettes Inter séparées, « button.btn-primary » et « 240x44 » (vraie taille du bouton de test), hautes de 25 px écran (20 CSS), posées sur le haut du cadre (529 → 554) et alignées sur ses bords gauche et droit. Pas d'inspecteur, pas d'icône. Encore vrai après rechargement (`s1-d1-apres-rechargement.png`, `switch-report` « D1 after the reload »). |
+| D2 | **Corrigé** | `d2-agent-au-travail-bulle-fermee.png` : cadre seul (débord de 4 CSS, sans fond : pixel intérieur rgb(244, 244, 243)) + icône `19NA-0` collée au coin haut gauche. Pas d'anneau, pas d'étiquette, pas d'inspecteur. `host-report` : D2 au travail et D2 au repos sont `spinner: 0, labels: [], inspector: 0`. |
+| D3 | **Corrigé** | Plus aucun lanceur en bas à droite sur `d1`, `d2`, `r3-*`, `s1`, `s3`. `host-report` : « no conversation whose element is gone: no launcher » et « the element is in the page: no launcher, no activity on it ». |
+| D4 | **Corrigé** (P, 22d4d58) | `host-report` (R9) : étape « Modifie checkout.css… » ; infobulle Historique « A modifié checkout.css » (`r3-infobulle-historique.png`). Verbe en français, nom du fichier seul, « … » pendant l'étape. |
+| D5 | **Corrigé** | `host-report` et `switch-report` : « its conversation unreadable: the bubble opens anyway, on a new conversation », `ok` (`s3-d5-nouvelle-conversation.png`). |
+
+### Ce qui dépend de l'hébergement fenêtré (revérifié)
+
+| Point | Paper | Vraie fenêtre | Écart |
+|---|---|---|---|
+| Coins (R1) | rayon 16, sans liseré | `probe-fenetree-coin.png` et `host-report` : le coin laisse voir la page (244, 244, 243), surface (23, 23, 23) = `#171717` ; `DWMWCP_DONOTROUND` | 0 |
+| Ombre / bordure | aucune | Le pixel juste à côté de la surface est celui de la page | 0 |
+| Largeur / placement | 305 ; +12 / −4 | Fenêtre de 381 px écran = 305 CSS. `d1` : bouton jusqu'à 733, bulle à 748 → +15 écran = +12 CSS ; haut à 554 contre 559 → −4 CSS | 0 |
+| Menu modèle hors de la bulle (R3) | `17US-0` 300 px, 6 px au-dessus, bord droit aligné | `r3-sous-menu-effort.png` : menu de 700 à 1073 (≈ 300 CSS), bord droit aligné sur la puce du modèle, au-dessus d'elle ; il sort de la bulle à gauche, la page reste visible autour. La fenêtre revient à la surface après Échap | 0 |
+| Sous-menu Effort | `17VU-0` à côté, 214 px, hauts alignés | De 1079 à 1347 (268 écran = 214 CSS), 6 px écran (≈ 4 CSS) à droite du menu modèle, hauts alignés (575 / 575), ligne choisie avec fond et coche | 0 |
+| Menu des modes | `14RK-0` 290 px, ombre, 4 lignes | `r3-menu-mode.png` : bord gauche aligné sur « Demander », au-dessus du bouton, sort de la bulle à droite, ombre visible, les 4 lignes à la lettre | 0 |
+| Menu « + » | « Joindre une image » seul (R5) | `r3-menu-plus-fenetre.png` : une seule ligne, au-dessus du « + » | 0 |
+| Infobulle Historique | hors de la bulle si besoin | `r3-infobulle-historique.png` : au-dessus de « Historique », elle sort de la bulle à droite, rien n'est coupé | 0 |
+| Masque du bandeau (R10) | `1AYJ-0` | `r10-bandeau.png` : la trame s'éteint avant « Aucun agent connecté », le sélecteur et Quitter, comme avant | 0 |
+
+### Défauts restants
+
+| # | Planche | Paper | Vraie fenêtre | Correctif exact | Propriétaire |
+|---|---|---|---|---|---|
+| D6 | 3 `1AWI-0` (en-tête de la réponse) | « Sonnet 5.5 Élevé » avec le logo à gauche (`1AZX-0` : logo `1AZZ-0`, nom `1B01-0` ; R12) | `s1-d1-apres-rechargement.png` : après le rechargement de la page, l'en-tête de la réponse dit « Claude Code » (nom de l'agent) au lieu du modèle et de l'effort, alors qu'il disait « Sonnet 5.5 Moyen » avant (`d1`). | Conserver le modèle et l'effort de chaque tour et les renvoyer avec le tour quand le fil est redonné à la page (rechargement, réouverture). La page n'affiche le nom de l'agent que si le tour n'a vraiment pas de modèle. | H (P si la page perd une valeur qu'elle reçoit) |
+| D7 | 3 `1AWI-0` (bas de la saisie) | Aucune infobulle système. Les infobulles de la bulle sont dessinées (`1B7H-0` : fond `#2F2F2F`, coins 10/10/10/4) | `r3-infobulle-historique.png` : sous le « + », une infobulle **système** « Joindre » (carré noir, liseré blanc, police système), venue de l'attribut `title` du bouton. Elle déborde sous la bulle. | Dans la bulle, retirer `title` des boutons de la barre (« + », mode, modèle, envoyer ; `aria-label` reste pour les lecteurs d'écran). Si une infobulle est voulue, utiliser l'infobulle dessinée, comme celle du bouton envoyer (§20.1). | P (`assets/chat-panel/panel.js`, l. 273 et les autres `title:` de la barre) |
+
+### À vérifier, pas compté comme défaut
+
+- **Liseré autour de « Quitter Échap »** dans `r10-bandeau.png`, absent dans `d1`, `d2`, `r3` : c'est sans doute l'état survol ou focus au moment de la capture. Paper ne dessine pas cet état.
+- **Contour blanc sur la ligne « Sonnet 5.5 »** du menu modèle (`r3-sous-menu-effort.png`) et **contour bleu sur « + »** (`r3-infobulle-historique.png`) : focus clavier, car le test ouvre les menus au clavier. Paper ne dessine pas le focus, et il est nécessaire pour l'accessibilité.
+- **Bas de la saisie avant que la session soit prête** (`probe-fenetree-bulle.png` : puce « Claude Code » au lieu de mode + modèle) : Paper n'a pas de planche pour cet état. Une fois la session prête (`d1`), c'est conforme.
+- Les variantes entre planches V1 à V4 et la pastille « BETA » attendent toujours la décision de l'utilisateur (voir plus bas).
+
+## Premier audit (matin du 19 novembre) — historique
+
 ## Résultat
 
 **La bulle elle-même est fidèle à Paper.** Les points vérifiés en vraie fenêtre sont tous conformes : coins, absence d'ombre et de bordure, fond, largeur, placement +12 / −4, menus qui sortent de la bulle, sous-menu Effort à côté, masque du bandeau. La page a 0 écart non justifié sur 2 076 valeurs.
