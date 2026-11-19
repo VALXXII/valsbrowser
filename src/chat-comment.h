@@ -45,7 +45,10 @@ bool BubbleOpen() { return bubble.open; }
 std::string BubbleSelector() { return bubble.selector; }
 void ForgetPage() { onPage.clear(); }
 void SyncMarks();
-void ScriptReady() { if (CommentLayout()) SyncMarks(); }
+void FollowBubbleElement(bool current);
+// The page's script is (again) in the page — after a reload (the agent's edit reloads the page) its state is new: the
+// marks, and the open bubble's element (D1: its frame + labels, no hover frame), are given to it again.
+void ScriptReady() { if (CommentLayout()) { SyncMarks(); if (bubble.open) FollowBubbleElement(false); } }
 std::string ShownId() { return aside.on ? aside.c.data.head.id : convo.data.head.id; }
 const ChatStore::Header* AnchoredOf(const std::string& id) { for (const auto& h : anchored) if (h.id == id) return &h; return nullptr; }
 std::string ModeOrigin();
@@ -188,9 +191,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // after Ann::Resume (it focuses the page): the caret goes to the bubble
     ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits();
     // the page follows the element (its moves become `anchor` messages)
-    {   SJ::Value f = SJ::Value::Obj(); if (followCurrent) f.Set("current", SJ::Value::Bool(true)); else f.Set("selector", Str(selector));
-        SJ::Value d = SJ::Value::Obj(); d.Set("label", Str(label)); f.Set("draw", std::move(d));   // D1: the element's frame + its two labels
-        if (followCurrent || !selector.empty()) Query(t, L"follow", W(SJ::Serialize(f)), nullptr); }
+    FollowBubbleElement(followCurrent);
     if (panelReady) {
         SendLayout(true); SendState(); SendThread(); SendQueue();
         SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f));
@@ -199,6 +200,15 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     SyncMarks();
     Ann::Announce(TRF(chat_bubble_announce, W(label.empty() ? std::string("—") : label)));
     Diag(L"bubble opened on " + W(label.empty() ? std::string("(no element)") : label) + L" for conversation " + W(conv) + (again ? L" (was open)" : L""));
+}
+void FollowBubbleElement(bool current) {
+    auto t = ChatTab(); if (!t) t = Active(); if (!t || !bubble.open) return;
+    std::string sel = bubble.selector;
+    if (sel.empty()) if (const auto* h = AnchoredOf(bubble.conv)) sel = h->anchorSelector;
+    if (sel.empty() && convo.data.head.id == bubble.conv) sel = convo.data.head.anchorSelector;
+    SJ::Value f = SJ::Value::Obj(); if (current) f.Set("current", SJ::Value::Bool(true)); else f.Set("selector", Str(sel));
+    SJ::Value d = SJ::Value::Obj(); d.Set("label", Str(bubble.label)); f.Set("draw", std::move(d));   // D1: the element's frame + its two labels
+    if (current || !sel.empty()) Query(t, L"follow", W(SJ::Serialize(f)), nullptr);
 }
 void CloseBubble(bool focusPage) {
     if (!bubble.open) return;
