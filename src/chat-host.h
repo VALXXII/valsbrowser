@@ -119,6 +119,7 @@ struct Turn {
     std::string id, text, snapshotTurn, lastMessageId, thoughtId, summaryText; double startedMs = 0, thoughtStart = 0; int messageSeq = 0, thoughtSeq = 0;
     std::vector<Element> elements; std::vector<Attachment> attachments; std::uint64_t navStamp = 0;
     std::map<std::string, std::size_t> itemOf;   // message / thought / tool id -> index in convo.items
+    std::size_t startItem = std::size_t(-1);       // D6: its `turn.start` in convo.items (model + effort filled in once known)
     std::string markSelector; std::string planPermission, planId; std::vector<Acp::PlanEntry> lastPlan; std::vector<Acp::PermissionOption> planOptions;
     Acp::Error failure; Problem problem;   // why it failed (an agent error code, or our own sentence)
     struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation, input; int count = -1; bool done = false, reported = false; };   // input: its arguments (an update does not repeat them)

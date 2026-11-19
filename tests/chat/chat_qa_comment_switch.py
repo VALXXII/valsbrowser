@@ -141,7 +141,36 @@ def run_main():
         bf = V.bubble_frame(); report['measures']['d1AfterReload'] = bf
         step('D1 after the reload: the open bubble\'s frame + two labels, no hover label, no inspector',
              bf['frames'] == 1 and len(bf['labels']) == 2 and bf['hoverLabel'] == 0 and bf['inspector'] == 0, bf)
+        hdr = C.panel("(function(){var l=document.querySelectorAll('.turn .meta,.turn.bt .bt-head');var e=l[l.length-1];"
+                      "if(!e){var t=document.querySelectorAll('.turn');e=t[t.length-1];}return e?(e.innerText||'').split('\\n').slice(0,2).join(' '):''})()") or ''
+        kept = logged(r'CHAT turn t\d+ header kept: ([^\r\n]+)', m2, 2)
+        step('D6: after the reload the reply header says the model and effort (not the agent name)', 'Sonnet 5.5' in hdr and 'Claude Code' not in hdr and kept is not None,
+             (kept.group(1) if kept else 'no log') + ' | ' + hdr[:120].replace(chr(10), ' | '))
         capture('s1-d1-apres-rechargement')
+        # D7: no system tooltip in the bubble — a REAL pointer resting on « + » for 1.5 s, and no `title` in the page
+        titles = C.panel("document.querySelectorAll('[title]').length")
+        plus = C.panel("(function(){var b=document.querySelector('button[aria-label=Joindre]');if(!b)return null;var r=b.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2,devicePixelRatio]})()")
+        bw = CC.bubble_window(); tipwins = []
+        if plus and bw:
+            u32.SetCursorPos(bw[3][0] + int(plus[0] * plus[2]), bw[3][1] + int(plus[1] * plus[2])); time.sleep(1.6)
+            capture('s1-d7-survol-plus')
+            try:
+                from PIL import ImageGrab
+                ImageGrab.grab(bbox=(bw[3][0] - 40, bw[3][1] - 40, bw[3][2] + 40, bw[3][3] + 80), all_screens=True).save(OUT / 's1-d7-survol-plus-zoom.png'); report['captures'].append('s1-d7-survol-plus-zoom.png')
+            except Exception as e:
+                print('capture failed', e)
+            # a native tooltip window of the engine, visible now (any process: WebView2's own windows)
+            @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+            def cb(h, _):
+                if u32.IsWindowVisible(h):
+                    n = ctypes.create_unicode_buffer(96); u32.GetClassNameW(h, n, 96)
+                    if 'tooltip' in n.value.lower():
+                        r = W.RECT(); u32.GetWindowRect(h, ctypes.byref(r)); tipwins.append((n.value, r.left, r.top, r.right, r.bottom))
+                return True
+            u32.EnumWindows(cb, 0)
+            u32.SetCursorPos(bw[3][0] - 300 if bw[3][0] > 400 else bw[3][2] + 300, bw[3][3] + 300)
+        step('D7: no system tooltip under « + » (no title in the page, no tooltip window after 1.5 s of real hover)', plus is not None and titles == 0 and not tipwins,
+             f'titles {titles}, tooltip windows {tipwins}')
 
         # ---- 2: the switch, the bubble's WebView in existence
         rects2, out2, s2 = uia_bounds(['AnnotationLayoutComment', 'AnnotationAskAgent'])

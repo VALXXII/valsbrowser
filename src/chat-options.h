@@ -59,6 +59,13 @@ template <class Choice> std::string EffortToApply(const std::vector<Choice>& cho
     return want == current ? std::string() : want;
 }
 
+// D6: a turn's header (« Sonnet 5.5 · Moyen ») is kept with the turn. A new conversation starts its session WITH its first
+// turn: the model and the effort are not known yet when the turn starts. They are filled in once known (first text, end
+// of the turn); a value already kept is never replaced (the turn was run with it).
+inline bool FillTurnLabel(std::string& kept, const std::string& now) { if (!kept.empty() || now.empty()) return false; kept = now; return true; }
+// …and while the turn runs, the session's own announcement wins over the composer's guess (coordinator, 19 Nov 2026).
+inline bool CorrectTurnLabel(std::string& kept, const std::string& now) { if (now.empty() || now == kept) return false; kept = now; return true; }
+
 // R4 (Paper 14RK-0, updated by the user): the mode menu has exactly four lines, in this order — « Accept edits » (the
 // agent's file-edits mode: Claude acceptEdits, Codex workspace-write), « Auto » (the mode where the agent decides its
 // permissions itself: Claude auto, Codex agent), « Demander », « Planifier ». The mode that bypasses every permission is

@@ -374,6 +374,14 @@ static void TestOptions() {
     Check(DefaultModel(claudeModel, "") == "opus" && Shown(claudeModel, "default") == "opus" && Shown(claudeModel, "sonnet") == "sonnet", "Claude's « Default (recommended) » stands for the model its description names");
     Check(DefaultModel(codexModel, "gpt-6.2-sol") == "gpt-6.2-sol" && DefaultModel(codexModel, "") == "" && DefaultModel(codexModel, "default") == "", "no alias: the model the agent had chosen itself at its first session");
     Check(Shown(claudeEffort, "default") == "", "an effort still on the alias shows nothing (never « Default »)");
+    // D6: the turn's header is filled in once the session knows its model and effort, never replaced
+    {   std::string model, effort = "Moyen";
+        Check(FillTurnLabel(model, "Sonnet 5.5") && model == "Sonnet 5.5", "D6: a turn started before its session knew the model gets it");
+        Check(!FillTurnLabel(effort, "Élevé") && effort == "Moyen", "D6: a kept value is never replaced (the turn ran with it)");
+        std::string none; Check(!FillTurnLabel(none, "") && none.empty(), "D6: nothing known yet: nothing written (the page then names the agent)");
+        std::string guess = "Sonnet 5.5";
+        Check(!CorrectTurnLabel(guess, "Sonnet 5.5") && !CorrectTurnLabel(guess, "") && guess == "Sonnet 5.5", "D6: the composer's guess confirmed, or nothing announced: no update");
+        Check(CorrectTurnLabel(guess, "Opus 5.5") && guess == "Opus 5.5", "D6: the session announces another model while the turn runs: the header is corrected"); }
     // R4 (Paper 14RK-0, updated): Accept edits, Auto, Demander, Planifier — in this order, nothing else
     using P = std::pair<std::string, std::string>;
     const std::vector<P> claude = {{"ask", "default"}, {"auto", "acceptEdits"}, {"plan", "plan"}, {"auto", "auto"}, {"other", "dontAsk"}};

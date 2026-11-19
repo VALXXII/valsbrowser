@@ -91,6 +91,22 @@ void SetAgentMode(const std::string& id) {
     if (mv.current == PlanOptionId) session->SetConfigOption(mv.map.planOption, mv.map.planOff);   // leaving « Planifier » held by an option
     if (mv.viaOption) session->SetConfigOption(mv.optionId, id); else session->SetMode(id);
 }
+// D6: the turn's `turn.start` item gets the model and the effort the session runs with, when they were not known at its
+// start (a new conversation's session starts with its first turn). Never replaces a kept value.
+void FillTurnHeader() {
+    if (turn.startItem >= convo.data.items.size()) return;
+    auto& item = convo.data.items[turn.startItem]; const auto* ty = item.Get("type"); if (!ty || !ty->IsString() || ty->string != "turn.start") return;
+    const auto& info = agentInfo[agentId];
+    auto field = [&](const char* k) { const auto* v = item.Get(k); return v && v->IsString() ? v->string : std::string(); };
+    std::string model = field("model"), effort = field("effort");
+    const bool m = ChatOptions::CorrectTurnLabel(model, LabelOf(Acp::FindModelOption(info.options), agentId)), e = ChatOptions::CorrectTurnLabel(effort, LabelOf(Acp::FindEffortOption(info.options)));
+    if (m) item.Set("model", Str(model));
+    if (e) item.Set("effort", Str(effort));
+    if (m || e) {
+        Diag(L"turn " + W(turn.id) + L" header kept: " + W(model) + (effort.empty() ? L"" : L" · " + W(effort)));
+        Send("turn.start", item);   // the same turnId again: the page updates the header it already shows (contract B §20.12)
+    }
+}
 void ApplyDefaults() {   // the site's remembered choices, else « Demander » (decision 4): never a hard-coded id, the agent's own lists
     if (!session || !sessionReady) return;
     auto& info = agentInfo[agentId];
@@ -388,6 +404,7 @@ void OnEvent(const Acp::Event& e) {
         CloseThought();
         if (turn.lastMessageId.empty()) { turn.lastMessageId = "m" + turn.id + "-" + std::to_string(++turn.messageSeq); SJ::Value item = SJ::Value::Obj(); item.Set("turnId", Str(turn.id)); item.Set("messageId", Str(turn.lastMessageId)); item.Set("text", Str(std::string())); turn.itemOf[turn.lastMessageId] = Keep("message.agentChunk", item); turn.summaryText.clear(); }
         AppendText(turn.lastMessageId, e.text); turn.summaryText += e.text;
+        FillTurnHeader();   // D6: the session is ready by now: its model and effort go with the turn
         if (stats.firstTextAt == 0 && stats.sendAt > 0) { stats.firstTextAt = Ann::NowMs(); Diag(L"first agent text " + Ann::Ms(stats.firstTextAt - stats.sendAt) + L" ms after the send"); }
         SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("messageId", Str(turn.lastMessageId)); m.Set("text", Str(e.text)); Send("message.agentChunk", std::move(m));
         break; }
@@ -580,8 +597,14 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
         m.Set("at", Str(Iso(now))); const std::size_t at = Keep("message.user", m); if (batch) { activeBatch.item = at; activeBatch.userId = "u" + turn.id; }
         Send("message.user", std::move(m)); }
     const auto& info = agentInfo[agentId];
-    {   SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("model", Str(LabelOf(Acp::FindModelOption(info.options), agentId))); const std::string effort = LabelOf(Acp::FindEffortOption(info.options)); if (!effort.empty()) m.Set("effort", Str(effort));
-        m.Set("agentId", Str(agentId)); m.Set("at", Str(Iso(now))); Keep("turn.start", m); Send("turn.start", std::move(m)); }
+    {   // D6: the header says at once what the composer shows — the choice made before the session (pending), else the
+        // agent's current one; the session confirms it later (FillTurnHeader), or corrects it if it announces another
+        auto chosen = [](const Acp::ConfigOption* o, const std::string& pending, const std::string& agent) {
+            if (o && !pending.empty()) for (const auto& c : o->choices) if (c.value == pending && !ChatOptions::IsAlias(c)) return c.name.empty() ? c.value : c.name;
+            return LabelOf(o, agent); };
+        SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("model", Str(chosen(Acp::FindModelOption(info.options), pendingModel, agentId)));
+        const std::string effort = chosen(Acp::FindEffortOption(info.options), pendingEffort, ""); if (!effort.empty()) m.Set("effort", Str(effort));
+        m.Set("agentId", Str(agentId)); m.Set("at", Str(Iso(now))); turn.startItem = Keep("turn.start", m); Send("turn.start", std::move(m)); }
     if (post) KillTimer(post, AgentIdleTimer);
     SendState(); SyncChromeBits();
     {   SJ::Value m = SJ::Value::Obj(); m.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(m)); }   // V1.2: a click during the turn still goes to the chat (next message)
@@ -619,6 +642,7 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     CloseAnnotations(turn.elements, done && !planned, done && !planned ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
                                                : U8(planned ? std::wstring(TR(chat_release_planned)) : stopReason == "cancelled" ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
     Diag(L"turn " + W(turn.id) + L" ended: " + W(stopReason) + L" in " + Ann::Ms(ms) + L" ms" + (summary ? L", " + std::to_wstring(summary->changes.size()) + L" file(s) changed (+" + std::to_wstring(summary->additions) + L" -" + std::to_wstring(summary->deletions) + L")" : L", no snapshot"));
+    FillTurnHeader();   // D6: kept with the turn (given back after a reload, in the history)
     const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp; const bool wasBatch = turn.batch;
     turn = Turn{}; doneMarkSelector = changed && done ? markSelector : std::string();
     SendState(); SyncChromeBits(); SaveConvo();
