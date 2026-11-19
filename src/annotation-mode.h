@@ -1178,7 +1178,7 @@ void Rearm(const std::shared_ptr<Tab>& t, std::function<void(bool)> then = nullp
         if (!s.active || s.nonce != nonce) { if (then) then(false); return S_OK; }
         const bool ok = SUCCEEDED(hr) && result && wcscmp(result, L"\"ok\"") == 0;
         if (!ok) { Log(L"ANNOTATE script re-injection failed"); Exit(L"injection"); Announce(TR(annotation_mode_unavailable)); }
-        else { s.injected = true; Log(L"ANNOTATE mode re-armed after a reload"); if (s.paused) Cmd(ModeTab(), L"pick", L"false"); }
+        else { s.injected = true; Log(L"ANNOTATE mode re-armed after a reload"); if (s.paused) Cmd(ModeTab(), L"pick", L"false"); Chat::ScriptReady(); }   // D1: a reload empties the page script: the chat's marks and the open bubble's element again
         if (then) then(ok);
         return S_OK; });
     if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, {})).c_str(), cb))) { cb->Release(); Exit(L"injection"); if (then) then(false); return; }

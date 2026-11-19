@@ -48,7 +48,11 @@ void SyncMarks();
 void FollowBubbleElement(bool current);
 // The page's script is (again) in the page — after a reload (the agent's edit reloads the page) its state is new: the
 // marks, and the open bubble's element (D1: its frame + labels, no hover frame), are given to it again.
-void ScriptReady() { if (CommentLayout()) { SyncMarks(); if (bubble.open) FollowBubbleElement(false); } }
+void ScriptReady() {   // at the first injection AND after every reload (annotation-mode.h: both paths call it)
+    const auto r = ChatBubble::OnScriptIn(CommentLayout(), bubble.open);
+    if (r.marks) SyncMarks();
+    if (r.follow) { FollowBubbleElement(false); Diag(L"the page was reloaded: the bubble's element is followed again"); }
+}
 std::string ShownId() { return aside.on ? aside.c.data.head.id : convo.data.head.id; }
 const ChatStore::Header* AnchoredOf(const std::string& id) { for (const auto& h : anchored) if (h.id == id) return &h; return nullptr; }
 std::string ModeOrigin();
@@ -117,7 +121,7 @@ void PlaceBubble() {
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side;
     // R3: while a menu or a tooltip of the page goes out of the surface, the (transparent) window grows around it, on the
     // screen the browser is on; the surface stays where it is. Windowed hosting cannot be transparent: nothing granted.
-    ChatBubble::Edges want = view.Visual() ? bubble.over : ChatBubble::Edges{};
+    ChatBubble::Edges want = bubble.over;   // the page is transparent in the bubble either way (visual, or windowed on a transparent background)
     MONITORINFO mi{sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mi);
     const auto grown = ChatBubble::Grow(p.rect, want, {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k);
     const bool insetChanged = !(grown.inset == bubble.inset); bubble.inset = grown.inset;

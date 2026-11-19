@@ -70,6 +70,10 @@ inline const wchar_t* MimeFor(const std::wstring& file) {
     return L"";
 }
 
+// The colour behind the page: transparent when the page is a visual, or sits in the bubble's see-through window (the
+// page draws its own 16 px surface, R1); else the canvas #171717 (the panel: no white flash while it loads).
+inline COREWEBVIEW2_COLOR Background(bool visual, bool inBubble) { return ChatBubble::TransparentBackground(visual, inBubble) ? COREWEBVIEW2_COLOR{0, 0, 0, 0} : COREWEBVIEW2_COLOR{255, 0x17, 0x17, 0x17}; }
+
 class View {
     Com<ICoreWebView2Controller> controller_; Com<ICoreWebView2> view_; Com<ICoreWebView2Environment> env_;
     Hooks hooks_; std::wstring assets_; bool creating_ = false, visible_ = false; RECT bounds_{}; unsigned generation_ = 0;
@@ -83,6 +87,14 @@ class View {
     HWND panelHost_ = nullptr, direct_ = nullptr, host_ = nullptr;   // the panel's child host / the popup that hosts itself / current
     RECT hostBounds_{}; bool tracking_ = false; HCURSOR cursor_ = nullptr;
     static View*& Self() { static View* self = nullptr; return self; }
+    // Windowed hosting is the default: screen readers read the chat page natively (visual hosting gave UI Automation an
+    // empty page and cut the main window's tree, measured 19 Nov 2026). BROWSER_CHAT_VISUAL=1 brings visual hosting back.
+    static bool VisualWanted() { wchar_t v[8] = L""; GetEnvironmentVariableW(L"BROWSER_CHAT_VISUAL", v, 8); return ChatBubble::VisualHosting(v); }
+    void ApplyBackground() {
+        if (!controller_.p) return;
+        Com<ICoreWebView2Controller2> c2;
+        if (SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2, (void**)&c2.p)) && c2.p) c2->put_DefaultBackgroundColor(Background(visual_, parent_ == direct_ && direct_));
+    }
     bool EnsureDComp() {
         if (dc_) return true;
         if (!dcompModule_) dcompModule_ = LoadLibraryExW(L"dcomp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -159,7 +171,7 @@ class View {
         }
         {   // the canvas colour behind the page: no white flash while it loads (design/chat-panel.md §1)
             Com<ICoreWebView2Controller2> c2;
-            if (SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2, (void**)&c2.p)) && c2.p) c2->put_DefaultBackgroundColor(visual_ || GetEnvironmentVariableW(L"BROWSER_CHAT_WINDOWED_PROBE", nullptr, 0) > 0 ? COREWEBVIEW2_COLOR{0, 0, 0, 0} : COREWEBVIEW2_COLOR{255, 0x17, 0x17, 0x17});
+            if (SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2, (void**)&c2.p)) && c2.p) c2->put_DefaultBackgroundColor(Background(visual_, parent_ == direct_ && direct_));
         }
         view_->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
         const unsigned gen = generation_;
@@ -224,14 +236,13 @@ public:
             creating_ = false;
             if (FAILED(hr) || !c || FAILED(c->get_CoreWebView2(&view_.p)) || !view_.p) { Log(L"CHAT panel WebView2 unavailable"); env_.set(nullptr); if (hooks_.created) hooks_.created(false); return S_OK; }
             controller_.set(c); Wire();
-            if (parent_ != created_) { controller_->put_ParentWindow(parent_); created_ = parent_; }   // moved while it was being created
+            if (parent_ != created_) { controller_->put_ParentWindow(parent_); created_ = parent_; ApplyBackground(); }   // moved while it was being created
             controller_->put_Bounds(bounds_); controller_->put_IsVisible(visible_ ? TRUE : FALSE);
             view_->Navigate(PageUrl);
             if (hooks_.created) hooks_.created(true);
             return S_OK; });
         Com<ICoreWebView2Environment3> env3;
-        const bool windowedProbe = GetEnvironmentVariableW(L"BROWSER_CHAT_WINDOWED_PROBE", nullptr, 0) > 0;   // QA probe only: windowed + transparent
-        if (!windowedProbe && EnsureDComp() && SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment3, reinterpret_cast<void**>(&env3.p))) && env3.p) {
+        if (VisualWanted() && EnsureDComp() && SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment3, reinterpret_cast<void**>(&env3.p))) && env3.p) {
             done->Release(); visual_ = true; Self() = this;
             HWND host = parent == direct_ ? parent : PanelHost(parent);
             auto made = Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler, HRESULT, ICoreWebView2CompositionController*>([this, gen](HRESULT hr, ICoreWebView2CompositionController* cc) -> HRESULT {
@@ -270,7 +281,7 @@ public:
     void Reparent(HWND parent, RECT bounds) {
         parent_ = parent; bounds_ = bounds;
         if (visual_) { if (controller_.p) Seat(parent, bounds); return; }
-        if (controller_.p && created_ != parent) { controller_->put_ParentWindow(parent); created_ = parent; }
+        if (controller_.p && created_ != parent) { controller_->put_ParentWindow(parent); created_ = parent; ApplyBackground(); }
         if (controller_.p) controller_->put_Bounds(bounds);
     }
     HWND Parent() const { return parent_; }

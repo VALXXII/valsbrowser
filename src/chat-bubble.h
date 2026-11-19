@@ -88,6 +88,18 @@ inline constexpr int FrameOutset = 4, LabelRise = 24, LabelHeight = 20;
 // D3 (brief rule 6): in Mode Commentaire the launcher (bottom right) only serves the conversations whose element is
 // gone from the page: shown only when there is one, counting only those. `onPage`: the ids whose element is here.
 template <class Ids, class Set> int GoneCount(const Ids& anchoredIds, const Set& onPage) { int n = 0; for (const auto& id : anchoredIds) if (!onPage.count(id)) ++n; return n; }
+// D1 after a reload (the agent's edit reloads the page): the page script starts empty. What the host gives it again:
+// the conversations' marks (Mode Commentaire), and, while the bubble is open, its element to follow and draw (frame +
+// labels, no hover frame).
+struct ScriptRestore { bool marks = false, follow = false; };
+inline ScriptRestore OnScriptIn(bool commentLayout, bool bubbleOpen) { return {commentLayout, commentLayout && bubbleOpen}; }
+// R1 / accessibility: how the chat page is hosted. Windowed by default — screen readers read the page natively; the
+// visual hosting (DirectComposition) gave UI Automation an empty page and cut the main window's tree (19 Nov 2026).
+// `visualSwitch`: the value of BROWSER_CHAT_VISUAL ("" when unset); "1" brings the visual hosting back.
+inline bool VisualHosting(const std::wstring& visualSwitch) { return visualSwitch == L"1"; }
+// The colour behind the page is transparent when the page is a visual, or sits in the bubble's see-through window
+// (the page draws its own 16 px surface); else it is the canvas #171717 (the panel: no white flash while it loads).
+inline bool TransparentBackground(bool visual, bool inBubble) { return visual || inBubble; }
 // The page an anchor belongs to: the URL without its fragment (a « #section » link does not change the page).
 inline std::string PageKey(const std::string& url) { const auto hash = url.find('#'); return hash == std::string::npos ? url : url.substr(0, hash); }
 } // namespace ChatBubble

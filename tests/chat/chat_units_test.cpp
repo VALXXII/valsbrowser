@@ -434,6 +434,17 @@ static void TestBubble() {
     {   const std::vector<std::string> ids = {"c_a", "c_b", "c_c"}; std::set<std::string> here = {"c_a", "c_b", "c_c"};
         Check(GoneCount(ids, here) == 0, "D3: every element is in the page: no launcher");
         here.erase("c_b"); Check(GoneCount(ids, here) == 1, "D3: one element gone: the launcher counts that one only"); }
+    // D1 after a reload: the page script starts empty; the host gives it the marks and the open bubble's element again
+    {   const auto a = OnScriptIn(true, true), b = OnScriptIn(true, false), c = OnScriptIn(false, true);
+        Check(a.marks && a.follow && b.marks && !b.follow && !c.marks && !c.follow, "D1: after the script comes in, marks (Commentaire) and the open bubble's element are given back");
+        std::string mode; { FILE* f = _wfopen(L"src/annotation-mode.h", L"rb"); if (f) { char buf[4096]; size_t n; while ((n = fread(buf, 1, sizeof buf, f)) > 0) mode.append(buf, n); fclose(f); } }
+        const auto rearm = mode.find("ANNOTATE mode re-armed after a reload"), first = mode.find("s.injected = true; Chat::ScriptReady();");
+        const auto rearmEnd = rearm == std::string::npos ? rearm : mode.find('\n', rearm);
+        Check(first != std::string::npos && rearm != std::string::npos && mode.substr(rearm, rearmEnd - rearm).find("Chat::ScriptReady()") != std::string::npos,
+              "D1: both the first injection and the re-injection after a reload call Chat::ScriptReady"); }
+    // accessibility: windowed hosting by default, the visual one only behind its switch; transparent only in the bubble
+    Check(!VisualHosting(L"") && !VisualHosting(L"0") && VisualHosting(L"1"), "hosting: windowed unless BROWSER_CHAT_VISUAL=1");
+    Check(TransparentBackground(false, true) && TransparentBackground(true, false) && !TransparentBackground(false, false), "background: transparent in the bubble (or as a visual), the canvas in the panel");
     // R2: the frame + icon only once something left the bubble
     Check(!Sent(std::vector<std::string>{}, false), "R2: a click on an element, nothing sent: no frame + icon");
     Check(!Sent(std::vector<std::string>{"turn.end", "plan"}, false), "R2: items that are not the user's do not count");
