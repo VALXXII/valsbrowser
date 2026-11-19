@@ -145,6 +145,11 @@
     { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "turn.end", turnId: "t1", stopReason: "error", durationMs: 18000 },
     { type: "error", id: "e1", scope: "thread", turnId: "t1", title: "Les serveurs de Claude étaient surchargés", detail: "Erreur 529 · overloaded_error",
       message: "La réponse s'est arrêtée au bout de 18 s, avant toute modification : aucun fichier n'a été changé. « Réessayer » relance la même demande.", actions: [{ id: "retry", label: "Réessayer" }] }] }];
+  const RAW_STEPS = () => [
+    { type: "toolCall", turnId: "t1", id: "b1", title: "Read index.html", kind: "read", status: "completed", locations: [{ path: "C:\\site\\index.html" }] },
+    { type: "toolCall", turnId: "t1", id: "b2", title: "mcp__browser-annotations__browser_annotations_claim", kind: "other", status: "completed" },
+    { type: "toolCall", turnId: "t1", id: "b3", title: "`npm run build`", kind: "execute", status: "completed" },
+    { type: "toolCall", turnId: "t1", id: "b4", title: "Edit styles\\landing.css", kind: "edit", status: "in_progress" }];
   const C_SCENARIOS = {
     "c-1-saisie": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn(CASK), blur],
     "c-1-vide": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }],
@@ -179,6 +184,9 @@
     // R9: the bubble closed and opened again during a request: thread.reset, then the host sends the waiting request again
     "c-autorisation-reouverte": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), LAY({ maxHeight: 303 }), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))),
       { type: "thread.reset", conversationId: "c1", items: cRunning() }, C_PERM, { type: "focus", target: "composer" }, wait(60), C_PERM, wait(30)]),
+    // D4 (audit): the agent's raw titles (real Claude Code) — the page says them in French, file name alone
+    "c-etapes-brutes": [LAY(), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }].concat(RAW_STEPS()) }],
     "c-2-sans-texte": [LAY(), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()].concat(cSteps(true)) }],
     "c-2-puce": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [{ type: "message.user", id: "u1", text: CASK, at: today(15, 34), elements: [EL] }] }],
     "c-menu-refuse": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, () => { window.__grant = { top: 40 }; }, wait(30), click(".model .m"), wait(120)],
@@ -335,6 +343,7 @@
     "dossier-puce": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "dossier-demande": [st({ askFolder: true, folder: null, folderSuggestion: { path: "C:\\Users\\val\\projets\\boutique", display: "C:\\Users\\…\\projets\\boutique", name: "boutique", reason: "auto" } }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.7a-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
+    "etapes-brutes": [st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()].concat(RAW_STEPS()) }],
     "titre-renommer": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }],
     "6.7b-historique": [st(conv("Titre de la page", { running: true })), { type: "thread.reset", conversationId: "c1", items: [] },
       { type: "history", items: [

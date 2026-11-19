@@ -685,6 +685,14 @@ try:
         load("c-autorisation-reouverte")
         ro = cdp.js("[document.querySelectorAll('.bperm').length, document.getElementById('perm-t').textContent, (document.activeElement.textContent||'').trim()]")
         check(ro == [1, "Claude veut modifier checkout.css", "Autoriser"], "bubble (R9): reopened (thread.reset), the waiting permission card is back — once, « Autoriser » focused", str(ro))
+        # D4 (audit): the agent's raw titles become Paper's French labels, the file's name alone, « … » while running
+        load("c-etapes-brutes")
+        st4 = cdp.js("document.querySelector('.bt-stw .lb').textContent")
+        c = center(".bt-st"); move(*c); time.sleep(.6)
+        rows4 = cdp.js("Array.from(document.querySelectorAll('#b-tip .r')).map(r=>r.textContent)")
+        check(st4 == "Modifie landing.css…" and rows4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build"],
+              "bubble (D4, Paper 1B30-0 / 1AIE-0): « Edit styles\\landing.css » is said « Modifie landing.css… »; done steps « A lu index.html », « A utilisé 1 outil MCP », « A lancé npm run build »", f"{st4} / {rows4}")
+        move(370, 690)
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -813,6 +821,9 @@ try:
         esc = cdp.js("[window.__posted.filter(m=>m.type==='conversation.rename').length, document.querySelector('.hd-title-text').textContent, window.__posted.some(m=>m.type==='close')]")
         check(esc == [1, "Paiement pleine largeur", False], "header (R11): F2 opens the same field; Échap cancels (nothing sent, the old name stays, the panel stays open)", str(esc))
 
+        load("etapes-brutes")
+        pl4 = cdp.js("Array.from(document.querySelectorAll('.steps .step span:not(.spin):not(.fail-tag)')).map(n=>n.textContent)")
+        check(pl4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build", "Modifie landing.css…"], "panel (D4): the same French labels for the steps, never the agent's raw title", str(pl4))
         load("6.7c-modifier-confirmer")
         check(cdp.js("!!document.querySelector('.editor .warn:not([hidden])')"), "edit: changed files are named before resending (edit.confirm)")
 

@@ -619,3 +619,14 @@ français du mode (« Demander » au lieu de « Ask ») ; les variantes entre pl
 rayon 10 de `1AWI-0`, étape de `1ANU-0`, étape survolée de `1AIE-0`) ;
 trois marges portées par l'enfant plutôt que par le cadre, au même rendu (barre « 1 fichier modifié », zone du diff).
 
+### 20.10 Libellé des étapes (audit D4, Paper `1B30-0`, `1AIE-0`, `1ANU-0`)
+
+Une étape n'est jamais montrée avec le titre brut de l'agent (« Edit styles\landing.css »), ni en bulle ni dans le panneau.
+Le panneau la dit en français, avec le **nom du fichier seul**, au présent suivi de « … » tant qu'elle tourne et au passé
+une fois finie : d'abord `summary` de l'hôte (« a lu » + « 2 annotations » → « Lit 2 annotations… » / « A lu 2
+annotations ») ; sinon `kind` + le nom de `locations[0].path` (à défaut, le fichier nommé dans le titre) : read « Lit X… » /
+« A lu X », edit « Modifie X… » / « A modifié X », delete, move, search, fetch de même ; execute « Lance <commande>… » /
+« A lancé <commande> » (la commande du titre si elle tient en 40 caractères, sinon « une commande ») ; think « Réfléchit… » ;
+un appel MCP brut « Utilise l'outil « … »… » / « A utilisé 1 outil MCP ». Le titre (rendu lisible) ne sert que si `kind`
+ne dit rien.
+

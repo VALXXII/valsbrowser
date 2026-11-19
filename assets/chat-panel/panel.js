@@ -1360,7 +1360,42 @@
     const out = rows.map((r) => (r.mcp ? { icon: "plug", text: "A utilisé " + plural(r.mcp, "outil MCP", "outils MCP"), cls: "mcp" } : r));
     return out.length > 6 ? [{ text: plural(out.length - 5, "étape", "étapes") + " avant", cls: "more" }].concat(out.slice(-5)) : out;
   }
-  const stepTitle = (x) => humanizeTools(x.title) || (x.locations && x.locations[0] && x.locations[0].path) || "Étape";
+  // B 1.9 (audit D4, Paper 1B30-0 / 1AIE-0): a step is always said in French, with the file's name alone — « Lit
+  // checkout.css… » while it runs, « A lu checkout.css » once done — never the agent's raw title (« Edit styles\landing.css »).
+  // Order: the host's `summary` (verb + object); else `kind` + the name of `locations[0]`; a raw MCP call; the title last
+  // (humanised, « … » while it runs) only when the kind says nothing.
+  const PRESENT = { "a lu": "Lit", "a modifié": "Modifie", "a supprimé": "Supprime", "a déplacé": "Déplace", "a cherché": "Cherche", "a lancé": "Lance",
+    "a exécuté": "Exécute", "a consulté": "Consulte", "a marqué": "Marque", "a utilisé": "Utilise", "a réfléchi": "Réfléchit", "a créé": "Crée", "a écrit": "Écrit" };
+  const KIND_VERB = { read: "a lu", edit: "a modifié", delete: "a supprimé", move: "a déplacé", search: "a cherché", execute: "a lancé", fetch: "a consulté" };
+  const KIND_NONE = { search: "dans le projet", execute: "une commande", fetch: "une page" };
+  function stepLabel(x, running) {
+    const say = (verb, object, after) => {
+      const v = running ? PRESENT[verb] || cap(verb) : cap(verb);
+      return v + (object ? " " + object : "") + (after ? " " + after : "") + (running ? "…" : "");
+    };
+    if (x.summary) return say(x.summary.verb, x.summary.object, x.summary.after);
+    const raw = String(x.title || "").replace(/[`"]/g, "").trim();
+    // no `locations`: the file named in the title (« Edit styles\landing.css » → landing.css)
+    const named = /(?:^|[\s(])((?:[^\s"'`()]*[\\/])?[\w@.-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?=$|[\s:,)…])/.exec(raw);
+    const file = (x.locations || []).map((l) => l && l.path).find((p) => typeof p === "string" && p) || (named && !/^mcp__/.test(named[1]) ? named[1] : "");
+    if (TOOL_RE.test(raw)) {
+      const t = parseTool(raw);
+      return running ? "Utilise l'outil « " + toolLabel(t.tool, t.server) + " »…" : "A utilisé 1 outil MCP";
+    }
+    if (x.kind === "think") return running ? "Réfléchit…" : "A réfléchi";
+    if (KIND_VERB[x.kind]) {
+      if (file) return say(KIND_VERB[x.kind], baseName(file));
+      if (x.kind === "execute") {   // the title of an execute step is its command line: kept when short
+        const cmd = raw.replace(/^(run|execute|exécute|lance|a lancé|a exécuté)\s+/i, "").replace(/…$/, "");
+        return say("a lancé", cmd && cmd.length <= 40 && !/\n/.test(cmd) ? cmd : "une commande");
+      }
+      return say(KIND_VERB[x.kind], KIND_NONE[x.kind] || "");
+    }
+    const t = humanizeTools(raw) || (file && baseName(file)) || "Étape";
+    return running && !/…$/.test(t) ? t + "…" : t;
+  }
+  const isRunning = (x) => x.status === "in_progress" || x.status === "pending";
+  const stepTitle = (x) => stepLabel(x, isRunning(x));
   function bTipShow(el) {
     const rows = el._rows ? el._rows() : [];
     if (!rows.length) { if (btipFor === el) bTipHide(); return; }
@@ -1832,7 +1867,7 @@
   function stepsSummary(tools) {
     if (tools.length === 1) {
       const p = stepPart(tools[0]);
-      if (tools[0].title) return humanizeTools(tools[0].title);
+      return stepLabel(tools[0], false);
       return p.title != null ? p.title || "1 étape" : summaryText([p]);
     }
     return summaryText(tools.map(stepPart));
@@ -1874,7 +1909,7 @@
     const run = x.status === "in_progress" || x.status === "pending";
     const fail = x.status === "failed";
     const ic = run ? h("span", { class: "spin", style: "display:flex" }, icon("spinner")) : fail ? icon("x") : icon("check");
-    const label = humanizeTools(x.title) || (x.locations && x.locations[0] ? x.locations[0].path : "Étape");
+    const label = stepLabel(x, run);
     return h("div", { class: "step " + (run ? "run" : fail ? "fail" : "done"), role: "listitem" }, ic, h("span", { text: label }), fail ? h("span", { class: "fail-tag", text: " (échec)" }) : null);
   }
   function stepsSeg(t) {
