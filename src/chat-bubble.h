@@ -80,6 +80,14 @@ inline Grown Grow(const Rect& surface, const Edges& want, const Rect& screen, fl
     g.window.left = surface.left - px(g.inset.left); g.window.top = surface.top - px(g.inset.top);
     return g;
 }
+// D1 (Paper 18NS-0 … 19IO-0, bubble open): the element's frame `18QJ-0` goes 4 px out of the element on every side;
+// its two labels (`18QK-0` selector, `18QQ-0` size) sit 24 px above the element, 20 px high, flush with the frame's
+// left and right edges. The size label says the element's real size, « 520x44 » (a small x, as Paper writes it).
+inline std::string SizeLabel(double w, double h) { auto r = [](double v) { return std::to_string(long(v < 0 ? 0 : v + .5)); }; return r(w) + "x" + r(h); }
+inline constexpr int FrameOutset = 4, LabelRise = 24, LabelHeight = 20;
+// D3 (brief rule 6): in Mode Commentaire the launcher (bottom right) only serves the conversations whose element is
+// gone from the page: shown only when there is one, counting only those. `onPage`: the ids whose element is here.
+template <class Ids, class Set> int GoneCount(const Ids& anchoredIds, const Set& onPage) { int n = 0; for (const auto& id : anchoredIds) if (!onPage.count(id)) ++n; return n; }
 // The page an anchor belongs to: the URL without its fragment (a « #section » link does not change the page).
 inline std::string PageKey(const std::string& url) { const auto hash = url.find('#'); return hash == std::string::npos ? url : url.substr(0, hash); }
 } // namespace ChatBubble

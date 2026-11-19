@@ -113,6 +113,7 @@ void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captu
 void SelectionChanged();                                 // V1.4: the selection was switched on / off (the aim button's state)
 void OnAnchor(const AnnotationHost::Envelope& e);        // Mode Commentaire: the bubble's element moved (or is gone)
 bool CommentHistory(bool open, bool keyboard);           // Mode Commentaire: the launcher's history lists the conversations whose element is gone
+int CommentLauncherCount(bool workingOnly);              // … D3: -1 = not that layout; else how many of them (shown only when > 0)
 bool OpenFromHistory(const std::wstring& id);            // … and opens one of them
 void SwitchLayout(bool comment);                         // the band's switch (Paper 1AYP-0)
 void ScriptReady();                                      // the mode's page script is in the page
@@ -276,9 +277,14 @@ void RefreshCount();
 // V3 (retours §6): only in the mode, on the mode's tab, never in full screen.
 bool LauncherWanted() {
     auto t = Active();
-    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window) && !Chat::Open();
+    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window) && !Chat::Open()
+        && Chat::CommentLauncherCount(false) != 0;   // D3: in Mode Commentaire, only when a conversation's element is gone
 }
-void ShowLauncher(int delayMs = 0) { launcher.Show(claimed > 0 ? AUI::LauncherState::Working : AUI::LauncherState::Rest, claimed, Reduced(), delayMs); }
+void ShowLauncher(int delayMs = 0) {
+    const int gone = Chat::CommentLauncherCount(true);   // D3: in Mode Commentaire it signals only the gone elements' conversations
+    const int n = gone >= 0 ? gone : claimed;
+    launcher.Show(n > 0 ? AUI::LauncherState::Working : AUI::LauncherState::Rest, n, Reduced(), delayMs);
+}
 // entering: the mode just started (the launcher follows the band by 120 ms). Leaving: animated (into its corner).
 void LauncherSync(bool entering = false) {
     if (!uiReady) return;

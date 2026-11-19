@@ -428,6 +428,12 @@ static void TestBubble() {
         Check(g.inset.top == 64 && g.window.top == 400 - 80 && g.window.bottom == 624 + 80, "R3: CSS px to screen px at 125 %");
         Check(Bounded(Edges{-5, 9999, 12, 400}) == Edges{0, 400, 12, 400}, "R3: overflow bounded to 0..400 CSS px");
     }
+    // D1: the open bubble's element — frame 4 px out, labels 24 px above, the real size as « 520x44 »
+    Check(SizeLabel(520, 44) == "520x44" && SizeLabel(239.6, 43.5) == "240x44" && FrameOutset == 4 && LabelRise == 24 && LabelHeight == 20, "D1: Paper's frame (4 px out) and size label (520x44)");
+    // D3: the launcher only for the conversations whose element is gone
+    {   const std::vector<std::string> ids = {"c_a", "c_b", "c_c"}; std::set<std::string> here = {"c_a", "c_b", "c_c"};
+        Check(GoneCount(ids, here) == 0, "D3: every element is in the page: no launcher");
+        here.erase("c_b"); Check(GoneCount(ids, here) == 1, "D3: one element gone: the launcher counts that one only"); }
     // R2: the frame + icon only once something left the bubble
     Check(!Sent(std::vector<std::string>{}, false), "R2: a click on an element, nothing sent: no frame + icon");
     Check(!Sent(std::vector<std::string>{"turn.end", "plan"}, false), "R2: items that are not the user's do not count");

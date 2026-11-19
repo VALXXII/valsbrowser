@@ -72,6 +72,44 @@ def capture_bubble(name):
         print('bubble capture failed', name, e)
 
 
+def overlay():
+    """The mode's drawing in the page (closed shadow root, read through DevTools): classes and texts."""
+    ws = C.ws_for(C.URL); ws.call('DOM.enable')
+    root = ws.call('DOM.getDocument', {'depth': -1, 'pierce': True})['root']
+    out = []
+    def walk(n, parent_cls=''):
+        a = n.get('attributes', []); d = dict(zip(a[::2], a[1::2]))
+        cls = d.get('class', ''); style = d.get('style', '')
+        text = ''.join(c.get('nodeValue', '') for c in n.get('children', []) if c.get('nodeType') == 3)
+        if cls:
+            out.append({'cls': cls, 'style': style, 'text': text})
+        for k in n.get('children', []) + n.get('shadowRoots', []):
+            walk(k, cls)
+    walk(root)
+    return out
+
+
+def bubble_frame():
+    """D1: the open bubble's element frame and its two labels; also whether the hover label / inspector show."""
+    o = overlay()
+    labels = [x['text'] for x in o if x['cls'] == 'bl']
+    frames = [x for x in o if x['cls'] == 'bf']
+    hover = [x for x in o if x['cls'].split()[:1] == ['x'] and 'l' in x['cls'].split() and 'opacity: 1' in x['style']]
+    inspector = [x for x in o if x['cls'].split()[:1] == ['i'] and 'opacity: 1' in x['style']]
+    spin = [x for x in o if 'spin' in x['cls'].split()]
+    return {'labels': labels, 'frames': len(frames), 'hoverLabel': len(hover), 'inspector': len(inspector), 'spinner': len(spin), 'marks': [x['cls'] for x in o if 'ct' in x['cls'].split()]}
+
+
+def pointer_away():
+    """The page's pointer far from every element of the test (top left corner of the page), as a real move would."""
+    C.ws_for(C.URL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': 3, 'y': 3})
+    time.sleep(0.4)
+
+
+def launcher_shown():
+    return 'AnnotationLauncher' in (C.uia('-List') or [])
+
+
 def focus_composer():
     C.panel("(function(){var t=document.querySelector('[contenteditable=true]');if(t)t.focus();return 1})()")
 
@@ -139,6 +177,12 @@ def run_main():
             report['measures']['bubbleWindow'] = {'rect': bw[3], 'cornerPreference': pref.value, 'exStyle': hex(ex & 0xFFFFFFFF)}
             step('R1 · …window: DWMWCP_DONOTROUND, WS_EX_NOREDIRECTIONBITMAP', pref.value == 1 and (ex & 0x00200000) != 0, report['measures']['bubbleWindow'])
             step('R1 · …surface 305 CSS px wide at rest (inset 0: Paper has no shadow)', abs((bw[3][2] - bw[3][0]) - round(305 * C.evaluate(C.URL, 'devicePixelRatio'))) <= 1, bw[3])
+        pointer_away()
+        bf = bubble_frame(); report['measures']['d1'] = bf
+        size = C.evaluate(C.URL, "(function(){var r=document.querySelector('.btn-primary').getBoundingClientRect();return Math.round(r.width)+'x'+Math.round(r.height)})()")
+        step('D1 · bubble open: the element\'s frame (4 px out) and two labels « selector » | « LxH », no hover label, no inspector',
+             bf['frames'] == 1 and len(bf['labels']) == 2 and bf['labels'][1] == size and bf['hoverLabel'] == 0 and bf['inspector'] == 0, bf)
+        step('D3 · no conversation whose element is gone: no launcher', not launcher_shown())
         capture_bubble('r1-bulle-coins'); capture('r2-bulle-ouverte')
         m2 = mark()
         focus_composer(); C.key_panel('Escape', 'Escape', 27)
@@ -166,7 +210,12 @@ def run_main():
         step('R2 · after the first message the element carries its frame + icon', bool(C.wait_for(lambda: CC.conv_marks(), 6)))
         m4 = mark()
         focus_composer(); C.key_panel('Escape', 'Escape', 27); logged(r'CHAT bubble closed', m4, 5); time.sleep(0.8)
+        pointer_away()
+        b2 = bubble_frame(); report['measures']['d2'] = b2
+        step('D2 · bubble closed, agent at work: the icon of 18IJ-0, no spinner, no frame of the bubble', b2['spinner'] == 0 and b2['frames'] == 0 and len(b2['marks']) == 1, b2)
+        step('D3 · the element is in the page: no launcher, no activity on it', not launcher_shown())
         capture('r9-bulle-fermee-autorisation-en-attente')
+        capture('d2-agent-au-travail-bulle-fermee')
         m5 = mark()
         C.click_page('.btn-primary')
         again = logged(r'CHAT bubble opened on (\S+) for conversation (c_\w+)', m5, 10)
@@ -182,7 +231,12 @@ def run_main():
             C.click_panel(text='Autoriser')
         ended = logged(r'CHAT turn t\d+ ended: (\w+) in (\d+) ms', m3b, 30)
         step('R9 · the turn ends', ended is not None and ended.group(1) == 'end_turn', ended.group(0) if ended else '')
-        time.sleep(1.0); capture('r9-termine')
+        time.sleep(1.0); pointer_away(); capture('r9-termine'); capture('d1-bulle-ouverte-session-prete')
+        m6b = mark(); focus_composer(); C.key_panel('Escape', 'Escape', 27); logged(r'CHAT bubble closed', m6b, 5); time.sleep(0.6); pointer_away()
+        b3 = bubble_frame(); report['measures']['d2idle'] = b3
+        step('D2 · bubble closed, agent idle: the icon alone (no label, no inspector)', b3['frames'] == 0 and len(b3['marks']) == 1 and b3['hoverLabel'] == 0 and b3['inspector'] == 0, b3)
+        capture('d2-bulle-fermee')
+        C.click_page('.btn-primary'); time.sleep(1.0)
 
         # ---- R9 measures: the same request, permission answered at once, bubble vs panel
         def measure(where):
@@ -210,7 +264,17 @@ def run_main():
         report['measures']['r9'] = [bub, pan]
         ok = bub['turnMs'] and pan['turnMs'] and bub['turnMs'] <= max(3 * pan['turnMs'], pan['turnMs'] + 1500)
         step('R9 · bubble as fast as the panel (same order of magnitude)', bool(ok), f'{bub} / {pan}')
-        m8 = mark(); C.invoke('AnnotationLayoutComment'); logged(r'CHAT layout: Commentaire', m8, 5); time.sleep(0.8)
+        back = None
+        for _ in range(3):
+            m8 = mark(); u32.SetForegroundWindow(Q.main_window()); C.invoke('AnnotationLayoutComment')
+            back = logged(r'CHAT layout: Commentaire', m8, 5)
+            if back:
+                break
+        step('back to Commentaire', back is not None)
+        time.sleep(0.8)
+        m8b = mark(); C.click_page('.field-label'); other = logged(r'CHAT bubble opened on (\S+) for conversation (c_\w+)', m8b, 10); time.sleep(1.0)
+        send_in_view('echo autre element'); logged(r'CHAT turn t\d+ ended', m8b, 30); time.sleep(0.5)
+        focus_composer(); C.key_panel('Escape', 'Escape', 27); time.sleep(0.6)
 
         # ---- R6: its conversation file is gone: the bubble still opens, on a new conversation
         store = C.APP / 'annotations-chat'
@@ -223,7 +287,9 @@ def run_main():
         m9 = mark()
         C.click_page('.btn-primary')
         fresh = logged(r'CHAT bubble opened on (\S+) for conversation (c_\w+)', m9, 10)
-        step('R6 · its conversation unreadable: the bubble opens anyway (a new conversation)', fresh is not None, (fresh.group(0)[5:] if fresh else '') + f' ({len(removed)} file(s) removed)')
+        nf = logged(r'CHAT conversation not found: (c_\w+)', m9, 5)
+        step('R6 / D5 · its conversation unreadable: the bubble opens anyway, on a new conversation', fresh is not None and nf is not None and fresh.group(2) != conv,
+             (fresh.group(0)[5:] if fresh else '') + f' ({len(removed)} file(s) removed; was {conv})')
         capture('r6-reouverture')
     except Exception:
         traceback.print_exc()

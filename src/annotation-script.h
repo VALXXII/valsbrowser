@@ -118,7 +118,7 @@ var root = host.attachShadow({ mode: 'closed' });
 var T = 'transform 120ms cubic-bezier(0.2,0,0,1),opacity 120ms ease-out';
 // The accent rules (frame fill 8 %, edges, label, padding hatches and their labels), rebuilt by the « accent » command.
 function accentCss() {
-  return ':host{--a:' + A + '}.cf,.ct{--a:' + A + '}' +
+  return ':host{--a:' + A + '}.cf,.ct,.bf,.bl{--a:' + A + '}' +
     '.f{width:100px;height:100px;background:rgba(' + A + ',0.08)}' +
     '.h,.v{background:rgb(' + A + ')}' +
     '.l{background:rgb(' + A + ')}' +
@@ -143,7 +143,7 @@ root.innerHTML = '<style>' +
   '.w{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none;transform:translate(0px,0px)}' +
   '.mk{position:fixed;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 120ms ease-out}' +
   '.cf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a))}' +
-  '.ct{position:absolute;left:-2px;top:-2px;height:24px;min-width:24px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:6px;padding:0 0;' +
+  '.ct{position:absolute;left:-1.4px;top:-1.4px;height:24px;min-width:24px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:6px;padding:0 0;' +
   'border-bottom-right-radius:6px;background:rgb(var(--a));color:#fff;font:500 11px/14px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;white-space:nowrap}' +
   '.ct.wait{padding:0 8px 0 6px}.ct.wait svg{opacity:.7}.ct .ms{width:11px;height:11px}' +
   '.mf{box-sizing:border-box;position:absolute;left:0;top:0}' +
@@ -153,6 +153,11 @@ root.innerHTML = '<style>' +
   '.ms{width:12px;height:12px;box-sizing:border-box;border:2px solid rgba(255,255,255,.15);border-top-color:#fff;border-radius:50%;flex:none}' +
   '.ms.spin{animation:mks 1.2s linear infinite}@keyframes mks{to{transform:rotate(360deg)}}' +
   '.mc{position:absolute;left:-2px;top:-2px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-bottom-right-radius:4px}' +
+  // D1 (Paper 18QJ-0, 18QK-0, 18QQ-0): the element of the open bubble — frame 4 px out, 2 px accent, accent 8 %; two labels
+  '.bx{position:fixed;left:0;top:0;pointer-events:none}' +
+  '.bf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a));background:rgba(var(--a),.08)}' +
+  '.bl{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;padding:0 6px;border-radius:3px 3px 0 0;background:rgb(var(--a));' +
+  'font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:rgba(255,255,255,.902);white-space:pre;letter-spacing:0}' +
   '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
 var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
@@ -568,6 +573,7 @@ function glide(on) { for (var i = 0; i < parts.length; i++) parts[i].style.trans
 
 // ---- drawing
 function place(info) {
+  if (follow && follow.draw) info = null;   // D1: the bubble is open: its element's frame only (no hover frame, no inspector)
   if (!info) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } placeSpace(null, false); return; }
   anchor(frameWrap, anchorEl(info));
   glide(!(shown && placed && placed.el === info.el && placed.range === info.range));   // the same element: it jumps (no lag behind a scroll)
@@ -794,8 +800,8 @@ function cmFind(sel) { try { var l = D.querySelectorAll(String(sel)); return l.l
 function cmTag(m) {
   var tag = m.tag; while (tag.firstChild) tag.removeChild(tag.firstChild);
   tag.className = 'ct' + (m.state === 'waiting' ? ' wait' : '');
-  if (m.state === 'working') { var sp = D.createElement('div'); sp.className = 'ms' + (reduced ? '' : ' spin'); tag.appendChild(sp); }
-  else { var holder = D.createElement('span'); try { holder.innerHTML = MARK_SVG; } catch (e) {} while (holder.firstChild) tag.appendChild(holder.firstChild); }
+  // D2 (Paper 18IJ-0): the icon as drawn, whether the agent works or not (no spinner: Paper draws none)
+  var holder = D.createElement('span'); try { holder.innerHTML = MARK_SVG; } catch (e) {} while (holder.firstChild) tag.appendChild(holder.firstChild);
   if (m.state === 'waiting') { var t = D.createElement('span'); t.textContent = String(m.waitLabel || 'En attente').slice(0, 40); tag.appendChild(t); }
 }
 function cmPlace(m) {
@@ -838,20 +844,42 @@ function followCheck() {
   if (!follow) return;
   var el = follow.el;
   if (!el || !el.isConnected) { el = follow.el = follow.selector ? cmFind(follow.selector) : null; }
-  if (!el) { if (followLast !== 'gone') { followLast = 'gone'; post({ op: 'anchor', gone: true }); } return; }
+  if (!el) { bxPlace(null); if (followLast !== 'gone') { followLast = 'gone'; post({ op: 'anchor', gone: true }); } return; }
   var r = el.getBoundingClientRect(), o = { x: r.left + follow.ox, y: r.top + follow.oy, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
+  bxPlace(el, r);
   var key = [o.x, o.y, o.w, o.h, o.vw, o.vh].map(function (v) { return v.toFixed(1); }).join(',');
   if (key === followLast) return;
   followLast = key; o.op = 'anchor'; post(o);
 }
+// D1: the frame + two labels of the bubble's element (document-anchored like the marks: glued while scrolling)
+var bx = null;
+function bxPlace(el, r) {
+  if (!follow || !follow.draw || !el) { if (bx) { try { bx.wrap.remove(); } catch (e) {} bx = null; } return; }
+  if (!bx) {
+    var wrap = D.createElement('div'); wrap.className = 'w'; var box = D.createElement('div'); box.className = 'bx';
+    var fr = D.createElement('div'); fr.className = 'bf'; var l1 = D.createElement('div'); l1.className = 'bl'; var l2 = D.createElement('div'); l2.className = 'bl';
+    box.appendChild(fr); box.appendChild(l1); box.appendChild(l2); wrap.appendChild(box); root.insertBefore(wrap, markWrap);
+    bx = { wrap: wrap, box: box, frame: fr, left: l1, right: l2 };
+  }
+  bx.wrap.style.display = ''; anchor(bx.wrap, el);
+  var x = r.left - 4, y = r.top - 4, w = r.width + 8, h = r.height + 8;
+  bx.frame.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)'; bx.frame.style.width = w.toFixed(2) + 'px'; bx.frame.style.height = h.toFixed(2) + 'px';
+  var t1 = String(follow.draw.label || seg(el)).slice(0, 120), t2 = Math.round(r.width) + 'x' + Math.round(r.height);
+  if (bx.left.textContent !== t1) bx.left.textContent = t1;
+  if (bx.right.textContent !== t2) bx.right.textContent = t2;
+  bx.left.style.transform = 'translate(' + x.toFixed(2) + 'px,' + (r.top - 24).toFixed(2) + 'px)';
+  bx.right.style.transform = 'translate(' + (x + w - (bx.right.offsetWidth || 0)).toFixed(2) + 'px,' + (r.top - 24).toFixed(2) + 'px)';
+}
 function followSet(a) {
   if (followTimer) { clearInterval(followTimer); followTimer = 0; }
-  follow = null; followLast = '';
+  var drew = follow && follow.draw; follow = null; followLast = ''; bxPlace(null);
+  if (drew) { haveMove = px >= 0; schedule(); }   // the hover frame comes back under the pointer
   if (!a) return true;
   var el = null, ox = 0, oy = 0;
   if (a.current && cur && cur.el && !cur.range) { el = cur.el; ox = cur.ox; oy = cur.oy; }
   else if (a.selector) el = cmFind(a.selector);
-  follow = { el: el, selector: a.selector ? String(a.selector) : '', ox: ox, oy: oy };
+  follow = { el: el, selector: a.selector ? String(a.selector) : '', ox: ox, oy: oy, draw: a.draw && !(cur && cur.range) ? { label: String(a.draw.label || '') } : null };
+  if (follow.draw) place(null);
   followCheck();
   followTimer = setInterval(followCheck, 250);
   return !!el;

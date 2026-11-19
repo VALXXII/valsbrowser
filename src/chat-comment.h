@@ -64,7 +64,7 @@ void NoteAnchored(const ChatStore::Header& h) {
     anchored.insert(anchored.begin(), h);
     SyncMarks();   // a new conversation of an element: its frame + icon now
 }
-void SyncMarks();
+void SyncMarks(); void LauncherRefresh(); std::string MarkState(const std::string& id);
 std::string ModeOrigin() { auto t = Ann::ModeTab(); return t ? ChatLocal::Classify(U8(t->uri)).origin : std::string(); }
 std::string anchoredOrigin;   // the site `anchored` was read for
 void RefreshAnchored() {
@@ -189,6 +189,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits();
     // the page follows the element (its moves become `anchor` messages)
     {   SJ::Value f = SJ::Value::Obj(); if (followCurrent) f.Set("current", SJ::Value::Bool(true)); else f.Set("selector", Str(selector));
+        SJ::Value d = SJ::Value::Obj(); d.Set("label", Str(label)); f.Set("draw", std::move(d));   // D1: the element's frame + its two labels
         if (followCurrent || !selector.empty()) Query(t, L"follow", W(SJ::Serialize(f)), nullptr); }
     if (panelReady) {
         SendLayout(true); SendState(); SendThread(); SendQueue();
@@ -331,7 +332,7 @@ std::string MarkState(const std::string& id) {
 }
 void SyncMarks() {
     auto t = Ann::ModeTab(); if (!t || !Ann::s.active || !Ann::s.injected) return;
-    SJ::Value list = SJ::Value::Arr();
+    SJ::Value list = SJ::Value::Arr(); std::set<std::string> found0;   // found0: on the page, drawn by the bubble's frame
     const auto here = ChatLocal::Classify(U8(t->uri));
     if (CommentLayout() && here.local && !here.file) {
         if (anchoredOrigin != here.origin) { RefreshAnchored(); return; }   // read first, then drawn
@@ -342,16 +343,36 @@ void SyncMarks() {
         for (const auto& p : parked) add(p.second.data.head);
         for (const auto* hp : all) { const auto& h = *hp;
             if (h.origin != here.origin || h.anchorPage != page) continue;
+            if (bubble.open && bubble.conv == h.id) { found0.insert(h.id); continue; }   // D1: its bubble is open: the frame + labels, not the icon
             SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(h.id)); o.Set("selector", Str(h.anchorSelector)); o.Set("state", Str(MarkState(h.id)));
             if (MarkState(h.id) == "waiting") o.Set("waitLabel", Str(T8(I18n::Id::chat_mark_waiting)));
             list.Push(std::move(o));
         }
     }
-    Query(t, L"cmarks", W(SJ::Serialize(list)), [](const std::string& json) {
-        std::set<std::string> found; SJ::Value v; if (SJ::Parse(json, v) && v.IsArray()) for (const auto& i : v.items) if (i.IsString()) found.insert(i.string);
+    Query(t, L"cmarks", W(SJ::Serialize(list)), [found0](const std::string& json) {
+        std::set<std::string> found = found0; SJ::Value v; if (SJ::Parse(json, v) && v.IsArray()) for (const auto& i : v.items) if (i.IsString()) found.insert(i.string);
         const bool changed = found != onPage; onPage = std::move(found);
         if (changed && Ann::uiReady && Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false);
+        LauncherRefresh();   // D3: shown, and counting, only for the conversations whose element is gone
     });
+}
+
+// ---------------------------------------------------------------- the launcher in this layout (D3, brief rule 6)
+std::vector<std::string> GoneIds() {
+    std::vector<std::string> ids; if (!CommentLayout() || !site.local || site.origin.empty()) return ids;
+    for (const auto& h : anchored) if (h.origin == site.origin && !onPage.count(h.id)) ids.push_back(h.id);
+    return ids;
+}
+// -1: not in this layout (the launcher is the mode's own); else the conversations whose element is gone.
+int CommentLauncherCount(bool workingOnly) {
+    if (!CommentLayout() || !site.local) return -1;
+    int n = 0; for (const auto& id : GoneIds()) if (!workingOnly || MarkState(id) == "working") ++n;
+    return n;
+}
+void LauncherRefresh() {
+    if (!Ann::uiReady) return;
+    Ann::LauncherSync();
+    if (Ann::launcher.Visible()) Ann::ShowLauncher();
 }
 
 // ---------------------------------------------------------------- a click in the page, in this layout
