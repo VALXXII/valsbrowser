@@ -64,4 +64,5 @@ def main(tag='fenetree', extra=None):
 
 if __name__ == '__main__':
     sys.stdout.reconfigure(encoding='utf-8')
-    main(*(sys.argv[1:2] or []), {} if '--visual' in sys.argv else None)
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    main(args[0] if args else 'fenetree', {'BROWSER_CHAT_VISUAL': '1'} if '--visual' in sys.argv else None)

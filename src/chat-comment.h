@@ -51,7 +51,7 @@ void FollowBubbleElement(bool current);
 void ScriptReady() {   // at the first injection AND after every reload (annotation-mode.h: both paths call it)
     const auto r = ChatBubble::OnScriptIn(CommentLayout(), bubble.open);
     if (r.marks) SyncMarks();
-    if (r.follow) { FollowBubbleElement(false); Diag(L"the page was reloaded: the bubble's element is followed again"); }
+    if (r.follow) { Diag(L"the page script came in again: the bubble's element is given back"); FollowBubbleElement(false); }
 }
 std::string ShownId() { return aside.on ? aside.c.data.head.id : convo.data.head.id; }
 const ChatStore::Header* AnchoredOf(const std::string& id) { for (const auto& h : anchored) if (h.id == id) return &h; return nullptr; }
@@ -212,7 +212,8 @@ void FollowBubbleElement(bool current) {
     if (sel.empty() && convo.data.head.id == bubble.conv) sel = convo.data.head.anchorSelector;
     SJ::Value f = SJ::Value::Obj(); if (current) f.Set("current", SJ::Value::Bool(true)); else f.Set("selector", Str(sel));
     SJ::Value d = SJ::Value::Obj(); d.Set("label", Str(bubble.label)); f.Set("draw", std::move(d));   // D1: the element's frame + its two labels
-    if (current || !sel.empty()) Query(t, L"follow", W(SJ::Serialize(f)), nullptr);
+    if (!current && sel.empty()) { Diag(L"the bubble's element has no selector: not followed"); return; }
+    Query(t, L"follow", W(SJ::Serialize(f)), [current](const std::string& r) { if (!current) Diag(L"the bubble's element followed by its selector: " + std::wstring(r == "true" ? L"found" : L"not found (" + W(r.substr(0, 40)) + L")")); });
 }
 void CloseBubble(bool focusPage) {
     if (!bubble.open) return;

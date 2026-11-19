@@ -70,7 +70,7 @@ void DoRearm() {
     if (ChatLocal::Classify(U8(t->uri)).origin != site.origin) { Ann::Exit(L"navigation", true); return; }   // another site: the mode (and the panel) end, as before
     Ann::Rearm(t, [](bool ok) {
         if (!ok) return;
-        if (CommentLayout()) { SyncMarks(); if (BubbleOpen() && !BubbleSelector().empty()) { SJ::Value f = SJ::Value::Obj(); f.Set("selector", Str(BubbleSelector())); if (auto t = ChatTab()) Query(t, L"follow", W(SJ::Serialize(f)), nullptr); } return; }
+        if (CommentLayout()) { ScriptReady(); return; }   // D1: the marks, and the open bubble's element WITH its frame + labels (a bare follow lost them)
         if (turn.active && !turn.markSelector.empty()) ApplyMark("working", turn.markSelector);
         else if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector);
     });

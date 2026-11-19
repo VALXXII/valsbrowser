@@ -441,7 +441,12 @@ static void TestBubble() {
         const auto rearm = mode.find("ANNOTATE mode re-armed after a reload"), first = mode.find("s.injected = true; Chat::ScriptReady();");
         const auto rearmEnd = rearm == std::string::npos ? rearm : mode.find('\n', rearm);
         Check(first != std::string::npos && rearm != std::string::npos && mode.substr(rearm, rearmEnd - rearm).find("Chat::ScriptReady()") != std::string::npos,
-              "D1: both the first injection and the re-injection after a reload call Chat::ScriptReady"); }
+              "D1: both the first injection and the re-injection after a reload call Chat::ScriptReady");
+        std::string hostUi; { FILE* f = _wfopen(L"src/chat-host-ui.h", L"rb"); if (f) { char buf[4096]; size_t n; while ((n = fread(buf, 1, sizeof buf, f)) > 0) hostUi.append(buf, n); fclose(f); } }
+        std::string comment; { FILE* f = _wfopen(L"src/chat-comment.h", L"rb"); if (f) { char buf[4096]; size_t n; while ((n = fread(buf, 1, sizeof buf, f)) > 0) comment.append(buf, n); fclose(f); } }
+        std::size_t follows = 0; for (std::size_t at = comment.find("L\"follow\", W("); at != std::string::npos; at = comment.find("L\"follow\", W(", at + 1)) ++follows;
+        Check(hostUi.find("L\"follow\"") == std::string::npos && follows == 1 && comment.find("f.Set(\"draw\"") != std::string::npos,
+              "D1: one place only sends `follow` with an element, and it always asks for the frame + labels (a bare follow after a reload lost them)"); }
     // accessibility: windowed hosting by default, the visual one only behind its switch; transparent only in the bubble
     Check(!VisualHosting(L"") && !VisualHosting(L"0") && VisualHosting(L"1"), "hosting: windowed unless BROWSER_CHAT_VISUAL=1");
     Check(TransparentBackground(false, true) && TransparentBackground(true, false) && !TransparentBackground(false, false), "background: transparent in the bubble (or as a visual), the canvas in the panel");
