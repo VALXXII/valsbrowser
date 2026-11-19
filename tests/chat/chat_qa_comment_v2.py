@@ -103,11 +103,87 @@ def bubble_frame():
 def pointer_away():
     """The page's pointer far from every element of the test (top left corner of the page), as a real move would."""
     C.ws_for(C.URL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': 3, 'y': 3})
+    C.page("document.dispatchEvent(new PointerEvent('pointerout',{bubbles:true,relatedTarget:null}))")   # leaves the page
     time.sleep(0.4)
 
 
 def launcher_shown():
     return 'AnnotationLauncher' in (C.uia('-List') or [])
+
+
+FLOATS_JS = ("(function(){var o=[];var l=document.querySelectorAll('.menu,.b-tip,.sub-menu');for(var i=0;i<l.length;i++){var e=l[i];"
+             "if(e.hidden)continue;var cs=getComputedStyle(e);if(cs.display==='none'||cs.visibility==='hidden'||+cs.opacity<0.5)continue;var r=e.getBoundingClientRect();"
+             "if(r.width<2||r.height<2)continue;o.push({cls:e.className,label:e.getAttribute('aria-label')||'',x:r.left,y:r.top,r:r.right,b:r.bottom})}"
+             "var st=getComputedStyle(document.documentElement);function v(n){return parseFloat(st.getPropertyValue(n))||0}"
+             "return {floats:o,w:innerWidth,h:innerHeight,dpr:devicePixelRatio,inset:{top:v('--it'),right:v('--ir'),bottom:v('--ib'),left:v('--il')}}})()")
+
+
+def screen_grab(rect):
+    from PIL import ImageGrab
+    return ImageGrab.grab(bbox=rect, all_screens=True).convert('RGB')
+
+
+def r3_measure(name, open_fn, rest_rect, rest_img, close_fn=None):
+    """R3: a menu / tooltip of the bubble opened by `open_fn`: not clipped, out of the surface when it needs to, the
+    transparent window around it shows the page, and once closed the window is the surface again (clicks to the page)."""
+    open_fn(); time.sleep(0.7)
+    f = C.panel(FLOATS_JS) or {}
+    bw = CC.bubble_window(); win = bw[3] if bw else None
+    floats = f.get('floats', []); ins = f.get('inset', {}); dpr = f.get('dpr', 1) or 1; W_, H_ = f.get('w', 0), f.get('h', 0)
+    surf = (ins.get('left', 0), ins.get('top', 0), W_ - ins.get('right', 0), H_ - ins.get('bottom', 0))
+    clipped = [x for x in floats if x['x'] < -1 or x['y'] < -1 or x['r'] > W_ + 1 or x['b'] > H_ + 1]
+    outside = [x for x in floats if x['x'] < surf[0] - 1 or x['y'] < surf[1] - 1 or x['r'] > surf[2] + 1 or x['b'] > surf[3] + 1]
+    # a point of the transparent margin covered by no float: the page must show there as it did before the opening
+    see = None
+    if win and outside:
+        for (cx, cy) in [(2, 2), (W_ - 3, 2), (2, H_ - 3), (W_ - 3, H_ - 3), (surf[0] / 2, H_ / 2), (W_ - (W_ - surf[2]) / 2, H_ / 2), (W_ / 2, surf[1] / 2), (W_ / 2, H_ - (H_ - surf[3]) / 2)]:
+            inside_surf = surf[0] <= cx <= surf[2] and surf[1] <= cy <= surf[3]
+            covered = any(x['x'] - 2 <= cx <= x['r'] + 2 and x['y'] - 2 <= cy <= x['b'] + 2 for x in floats)
+            if inside_surf or covered:
+                continue
+            sx, sy = int(win[0] + cx * dpr), int(win[1] + cy * dpr)
+            if rest_rect[0] <= sx < rest_rect[2] and rest_rect[1] <= sy < rest_rect[3]:
+                continue   # under the bubble at rest: no « before » to compare with
+            now = screen_grab((sx, sy, sx + 1, sy + 1)).getpixel((0, 0))
+            before = rest_img.getpixel((sx - rest_img_box[0], sy - rest_img_box[1])) if rest_img_box[0] <= sx < rest_img_box[2] and rest_img_box[1] <= sy < rest_img_box[3] else None
+            see = {'at': (sx, sy), 'now': now, 'before': before}
+            break
+    capture(f'r3-{name}')
+    try:
+        from PIL import ImageGrab
+        if win:
+            ImageGrab.grab(bbox=(win[0] - 8, win[1] - 8, win[2] + 8, win[3] + 8), all_screens=True).save(OUT / f'r3-{name}-fenetre.png'); report['captures'].append(f'r3-{name}-fenetre.png')
+    except Exception as e:
+        print('capture failed', e)
+    if close_fn:
+        close_fn()
+    else:
+        focus_composer(); C.key_panel('Escape', 'Escape', 27)
+    time.sleep(0.6)
+    after = CC.bubble_window(); after_r = after[3] if after else None
+    probe = None
+    if win and after_r and (win[0] < after_r[0] or win[1] < after_r[1] or win[2] > after_r[2] or win[3] > after_r[3]):
+        # a point that was in the grown window and is outside the bubble now: a click there reaches the page
+        px_, py_ = (win[0] + after_r[0]) // 2, (win[1] + after_r[1]) // 2
+        if win[1] >= after_r[1]: py_ = (after_r[1] + after_r[3]) // 2
+        if win[0] >= after_r[0]: px_ = (after_r[0] + after_r[2]) // 2
+        if win[2] > after_r[2]: px_ = (after_r[2] + win[2]) // 2
+        if win[3] > after_r[3] and win[1] >= after_r[1]: py_ = (after_r[3] + win[3]) // 2
+        h = u32.WindowFromPoint(W.POINT(px_, py_)); cls = ctypes.create_unicode_buffer(64); u32.GetClassNameW(h, cls, 64)
+        probe = {'at': (px_, py_), 'window': cls.value}
+    m = {'floats': [(x['label'] or x['cls'])[:30] for x in floats], 'clipped': len(clipped), 'outsideSurface': len(outside), 'window': win, 'rest': rest_rect,
+         'afterClose': after_r, 'inset': ins, 'transparent': see, 'clickAfterClose': probe}
+    report['measures'].setdefault('r3', {})[name] = m
+    ok_open = bool(floats) and not clipped
+    ok_grow = (not outside) or (win and (win[2] - win[0] > rest_rect[2] - rest_rect[0] or win[3] - win[1] > rest_rect[3] - rest_rect[1]))
+    ok_see = (not outside) or (see and see['before'] and sum(abs(a - b) for a, b in zip(see['now'], see['before'])) <= 24)
+    ok_rest = after_r is not None and abs((after_r[2] - after_r[0]) - (rest_rect[2] - rest_rect[0])) <= 2
+    ok_click = probe is None or probe['window'] != 'BrowserChatBubble'
+    step(f'R3 · {name}: shown whole (not clipped), out of the bubble with the window grown, the page seen around it, back to the surface after Échap (clicks to the page)',
+         ok_open and ok_grow and ok_see and ok_rest and ok_click, m)
+
+
+rest_img_box = (0, 0, 0, 0)
 
 
 def focus_composer():
@@ -118,8 +194,43 @@ def send_in_view(text):
     focus_composer(); C.type_panel(text); time.sleep(0.2); C.enter_panel()
 
 
+class _MI(ctypes.Structure):
+    _fields_ = [('dx', W.LONG), ('dy', W.LONG), ('mouseData', W.DWORD), ('dwFlags', W.DWORD), ('time', W.DWORD), ('dwExtraInfo', ctypes.c_size_t)]
+
+
+class _IN(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [('mi', _MI), ('pad', ctypes.c_byte * 32)]
+    _anonymous_ = ('u',)
+    _fields_ = [('type', W.DWORD), ('u', _U)]
+
+
 def real_click_in_bubble(label):
-    """A real mouse message posted to the bubble's window at the button named `label` (tests the host's forwarding)."""
+    """A REAL mouse click (SendInput) on the bubble's button named `label`: the user's path into the chat page."""
+    bw = CC.bubble_window()
+    if not bw:
+        return False
+    js = ("(function(){var b=[].slice.call(document.querySelectorAll('button')).filter(function(x){return (x.textContent||'').trim()===%s&&x.getBoundingClientRect().width>0})[0];"
+          "if(!b)return null;var r=b.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2,devicePixelRatio]})()" % json.dumps(label))
+    at = None
+    for _ in range(20):   # the card's text is announced before its button is laid out
+        at = C.panel(js)
+        if at:
+            break
+        time.sleep(0.25)
+    if not at:
+        return False
+    x, y = bw[3][0] + int(at[0] * at[2]), bw[3][1] + int(at[1] * at[2])
+    u32.SetCursorPos(x, y); time.sleep(0.15)
+    for flag in (0x0002, 0x0004):
+        i = _IN(); i.type = 0; i.mi = _MI(0, 0, 0, flag, 0, 0)
+        u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(_IN)); time.sleep(0.06)
+    u32.SetCursorPos(bw[3][0] - 200 if bw[3][0] > 300 else bw[3][2] + 200, bw[3][3] + 300)
+    return True
+
+
+def _old_posted_click(label):
+    """(kept for the visual hosting, BROWSER_CHAT_VISUAL=1) a mouse message posted to the bubble's window."""
     bw = CC.bubble_window()
     if not bw:
         return False
@@ -169,7 +280,13 @@ def run_main():
         step('R2 · a click opens the bubble', logged(r'CHAT bubble opened on (\S+) for conversation (c_\w+)', m1, 10) is not None)
         logged(r'CHAT panel ready', m1, 15); time.sleep(1.0)
         report['measures']['hosting'] = 'visual' if 'visual hosting (transparent)' in C.log_text() else 'windowed'
-        step('R1 · the bubble\'s page is a transparent visual (no DWM corner, no region)', report['measures']['hosting'] == 'visual')
+        step('R1 · windowed hosting (screen readers read the chat), no DWM corner, no region', report['measures']['hosting'] == 'windowed')
+        bwc = CC.bubble_window()
+        if bwc:
+            r = bwc[3]; img = screen_grab((r[0] - 6, r[1], r[0] + 40, r[1] + 40)); corner = img.getpixel((6, 0)); beside = img.getpixel((0, 20)); surface = img.getpixel((6 + 14, 6))   # the 12 px padding, inside the 16 px curve
+            report['measures']['corner'] = {'corner': corner, 'pageBeside': beside, 'surface': surface}
+            step('R1 · the 16 px corner shows the page (no black corner, no border line), the surface is #171717',
+                 sum(abs(a - b) for a, b in zip(corner, beside)) <= 24 and sum(abs(c - 0x17) for c in surface) <= 12, report['measures']['corner'])
         bw = CC.bubble_window()
         if bw:
             pref = ctypes.c_int(0); ctypes.windll.dwmapi.DwmGetWindowAttribute(bw[0], 33, ctypes.byref(pref), 4)
@@ -226,7 +343,7 @@ def run_main():
         m6 = mark()
         clicked = real_click_in_bubble('Autoriser')
         answered = logged(r'CHAT permission answered: (\S+)', m6, 6)
-        step('input · a real mouse click posted to the bubble window answers the permission (host forwarding)', clicked and answered is not None, answered.group(0) if answered else '')
+        step('input · a real mouse click (SendInput) in the bubble answers the permission', clicked and answered is not None, answered.group(0) if answered else '')
         if not answered:
             C.click_panel(text='Autoriser')
         ended = logged(r'CHAT turn t\d+ ended: (\w+) in (\d+) ms', m3b, 30)
@@ -236,7 +353,33 @@ def run_main():
         b3 = bubble_frame(); report['measures']['d2idle'] = b3
         step('D2 · bubble closed, agent idle: the icon alone (no label, no inspector)', b3['frames'] == 0 and len(b3['marks']) == 1 and b3['hoverLabel'] == 0 and b3['inspector'] == 0, b3)
         capture('d2-bulle-fermee')
-        C.click_page('.btn-primary'); time.sleep(1.0)
+        C.click_page('.btn-primary'); time.sleep(1.2)
+
+        # ---- R3 in the windowed hosting: menus and tooltips out of the bubble
+        global rest_img_box
+        bw0 = CC.bubble_window(); rest = bw0[3]
+        rest_img_box = (max(0, rest[0] - 420), max(0, rest[1] - 420), rest[2] + 420, rest[3] + 420)
+        rest_img = screen_grab(rest_img_box)
+        def click_sel(sel):
+            return lambda: C.click_panel(selector=sel)
+        r3_measure('menu-modele', click_sel('button.m'), rest, rest_img)
+        def open_effort():
+            C.click_panel(selector='button.m'); time.sleep(0.5)
+            row = C.panel("(function(){var r=document.querySelector('.menu [data-key=effort]');if(!r)return null;var b=r.getBoundingClientRect();return [b.left+b.width/2,b.top+b.height/2]})()")
+            if row:
+                C.ws_for(C.PANEL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': row[0], 'y': row[1]})
+                time.sleep(0.4)
+        r3_measure('sous-menu-effort', open_effort, rest, rest_img)
+        r3_measure('menu-mode', click_sel('button.tb.mode'), rest, rest_img)
+        r3_measure('menu-plus', click_sel('button[aria-label=Joindre]'), rest, rest_img)
+        def hover_history():
+            at = C.panel("(function(){var l=[].slice.call(document.querySelectorAll('button,[role=button],span,div')).filter(function(e){return (e.textContent||'').trim()==='Historique'&&e.getBoundingClientRect().width>0});"
+                         "var e=l[l.length-1];if(!e)return null;var b=e.getBoundingClientRect();return [b.left+b.width/2,b.top+b.height/2]})()")
+            if at:
+                C.ws_for(C.PANEL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': at[0], 'y': at[1]})
+        def leave_history():   # a hover tooltip closes when the pointer leaves it (Échap would close the bubble: §19.4)
+            C.ws_for(C.PANEL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': 150, 'y': 8})
+        r3_measure('infobulle-historique', hover_history, rest, rest_img, leave_history)
 
         # ---- R9 measures: the same request, permission answered at once, bubble vs panel
         def measure(where):
