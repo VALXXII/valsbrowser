@@ -124,7 +124,16 @@ def run_main():
         logged(r'CHAT panel ready', m1, 15); time.sleep(1.0)
         m2 = mark(); V.send_in_view('Change le gap en 8 px')
         logged(r'CHAT permission asked', m2, 30)
-        C.wait_for(lambda: 'Autoriser' in (C.panel_text() or ''), 6); C.click_panel(text='Autoriser')
+        answered = None
+        for _ in range(12):   # the card's text is announced before its button is ready: clicked until the host says it was answered
+            try:
+                C.click_panel(text='Autoriser')
+            except Exception:
+                pass
+            answered = logged(r'CHAT permission answered', m2, 1)
+            if answered:
+                break
+        step('the permission is answered in the bubble', answered is not None)
         end = logged(r'CHAT turn t\d+ ended', m2, 30)
         reload = logged(r'ANNOTATE mode re-armed after a reload', m2, 10)
         step('the edit is done and the page reloads', end is not None and reload is not None)
