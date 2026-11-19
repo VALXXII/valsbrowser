@@ -134,7 +134,7 @@
     if (!SAFE_URL.test(url)) { const s = el("span"); inline(s, label, opts); return s; }
     const a = el("a", "md-link");
     a.href = url;
-    a.title = url;
+    a.setAttribute("aria-description", url);   // audit D7: no system tooltip; the address stays for screen readers
     inline(a, label, opts);
     const go = (e) => { e.preventDefault(); if (opts && opts.onLink) opts.onLink(url); };
     a.addEventListener("click", go);

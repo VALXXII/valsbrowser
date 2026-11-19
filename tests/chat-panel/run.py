@@ -371,6 +371,8 @@ try:
         else:
             out = os.path.join(OUT, name + ".png")
             shot(out)
+        tt = cdp.js("Array.from(document.querySelectorAll('[title]')).map(n=>n.className+': '+n.title).slice(0,4)")
+        check(not tt, f"{name}: no system tooltip (no `title` attribute; audit D7)", "; ".join(tt))
         errs = errors_of(name)
         a11y = cdp.js(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "a11y.js"), encoding="utf-8").read())
         report["scenarios"][name] = {"screenshot": os.path.relpath(out, ROOT), "errors": errs, "a11y": a11y}
@@ -753,7 +755,7 @@ try:
         load("6.7a-vide"); cdp.js("document.querySelector('.tools .tb[aria-haspopup=menu]').click()"); time.sleep(.1)
         plus = cdp.js("document.querySelector('.menu').innerText")
         load("6.2-premiere-fois")
-        tile = cdp.js("[document.querySelector('.tile.found .nm').textContent, document.querySelectorAll('.tile.found .path').length, document.querySelector('.tile.found').title]")
+        tile = cdp.js("[document.querySelector('.tile.found .nm').textContent, document.querySelectorAll('.tile.found .path').length, document.querySelector('.tile.found').getAttribute('aria-description')]")
         load("6.7b-historique")
         cdp.js("window.devHost.send({type:'history',items:[{id:'c2',title:'Bouton de paiement',subtitle:'1 fichier modifié',siteLabel:'127.0.0.1:5173',thisSite:true,agentIcon:'claude',updatedAt:new Date().toISOString()},"
                "{id:'c4',title:'Menu de navigation',subtitle:'3 fichiers modifiés',siteLabel:'localhost:4173',folderName:'vitrine',thisSite:false,agentIcon:'claude',updatedAt:new Date().toISOString()}]})"); time.sleep(.15)

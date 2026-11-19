@@ -525,7 +525,7 @@ détails 8,1 · terminé 8,2 · terminé, diff ouvert 3,4 (peu de texte : l'éca
 ### 19.8 Nom du dossier plutôt que le chemin ou l'adresse (retour Paper `156L-0`)
 
 Là où le panneau montrait un chemin ou une adresse pour dire de quel projet il s'agit, il montre le **nom du dossier** :
-écran du dossier (le chemin complet reste en infobulle), menu « + › Choisir le dossier… » (1.9 : seulement si le dossier n'est pas sûr), titre « Ce site ·
+écran du dossier (le chemin complet est donné aux lecteurs d'écran, , 1.9), menu « + › Choisir le dossier… » (1.9 : seulement si le dossier n'est pas sûr), titre « Ce site ·
 boutique » de l'historique, et lignes « Autres sites » (`HistoryItem.folderName`, sinon `siteLabel`).
 
 ## 20. Révision 1.9 — retours du premier test réel du Mode Commentaire
@@ -629,4 +629,11 @@ annotations ») ; sinon `kind` + le nom de `locations[0].path` (à défaut, le f
 « A lancé <commande> » (la commande du titre si elle tient en 40 caractères, sinon « une commande ») ; think « Réfléchit… » ;
 un appel MCP brut « Utilise l'outil « … »… » / « A utilisé 1 outil MCP ». Le titre (rendu lisible) ne sert que si `kind`
 ne dit rien.
+
+### 20.11 Aucune infobulle système (audit D7)
+
+Aucun élément de la page ne porte d'attribut  (bulle, panneau, liens du Markdown) : une infobulle système apparaissait
+sous le « + » de la bulle, absente de Paper. Les noms sont dans  (et  pour un détail : chemin
+du dossier, adresse d'un lien, « Double-clic ou F2 pour renommer ») ; les seules infobulles visibles sont celles que Paper
+dessine (étapes, envoyer, jauge). Le DOM le garantit ( ignore ) et chaque scénario de test le vérifie.
 

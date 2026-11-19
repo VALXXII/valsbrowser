@@ -18,6 +18,7 @@
       if (v == null || v === false) continue;
       if (k === "class") n.className = v;
       else if (k === "text") n.textContent = v;
+      else if (k === "title") continue;   // B 1.9 (audit D7): never a system tooltip — Paper draws its own bubbles; names live in aria-label
       else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
       else if (k === "style") n.style.cssText = v;
       else n.setAttribute(k, v === true ? "" : v);
@@ -124,7 +125,7 @@
   const hdTitleText = h("span", { class: "hd-title-text", text: "Nouveau chat" });
   // B 1.9 (R11): the title no longer opens the history (its own button sits right next to it). A double-click (or F2)
   // renames the conversation in place: Entrée keeps the name, Échap or leaving the field puts the old one back.
-  const hdTitle = h("span", { class: "hd-title", tabindex: "-1", role: "heading", "aria-level": "1", title: "Double-cliquez pour renommer",
+  const hdTitle = h("span", { class: "hd-title", tabindex: "-1", role: "heading", "aria-level": "1",
                               "aria-keyshortcuts": "F2", ondblclick: () => startRename(),
                               onkeydown: (e) => { if (e.key === "F2" || (e.key === "Enter" && !e.repeat)) { e.preventDefault(); startRename(); } } }, hdTitleText);
   let renaming = null;
@@ -189,13 +190,13 @@
   document.documentElement.addEventListener("pointerleave", tipHide);
   document.addEventListener("mouseout", (e) => { if (!e.relatedTarget) tipHide(); });
   window.addEventListener("blur", tipHide);
-  const histBtn = h("button", { class: "hd-btn", type: "button", "aria-label": "Historique", title: "Historique", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-controls": "history",
+  const histBtn = h("button", { class: "hd-btn", type: "button", "aria-label": "Historique", "aria-haspopup": "dialog", "aria-expanded": "false", "aria-controls": "history",
                                onclick: () => toggleHistory() }, icon("history"));
   const hd = h("header", { class: "hd" },
     h("div", { class: "hd-main" }, hdLogo, h("div", { class: "hd-titles" }, hdSource, h("div", { class: "hd-row" }, hdTitle, gauge))),
-    h("button", { class: "hd-btn", type: "button", "aria-label": "Nouveau chat", title: "Nouveau chat", onclick: () => post("newChat") }, icon("plus")),
+    h("button", { class: "hd-btn", type: "button", "aria-label": "Nouveau chat", onclick: () => post("newChat") }, icon("plus")),
     histBtn,
-    h("button", { class: "hd-btn", type: "button", "aria-label": "Fermer le chat", title: "Fermer", onclick: () => post("close") }, icon("close")));
+    h("button", { class: "hd-btn", type: "button", "aria-label": "Fermer le chat", onclick: () => post("close") }, icon("close")));
   hdSource.style.cssText = "background:none;border:0;padding:0;text-align:left;font:inherit;font-size:12px;line-height:16px;color:#FFFFFF80;align-self:flex-start;max-width:100%";
   function srcRef(s) { const m = /^(.*?)(?::(\d+))?$/.exec(s); return m[2] ? { path: m[1], line: +m[2] } : { path: s }; }
 
@@ -267,10 +268,10 @@
   const thumbs = h("div", { class: "thumbs", hidden: true });
   // B 1.7: the switch of the page's selection (« viseur » cursor, hover, a click picks an element). Pressed = on. Off:
   // the page is the page again, the chat stays as it is. Ctrl+Maj+A does the same from anywhere while the chat is open.
-  const pickBtn = h("button", { class: "tb pick", type: "button", "aria-label": "Sélection d'éléments sur la page", title: "Sélection d'éléments (Ctrl+Maj+A)",
+  const pickBtn = h("button", { class: "tb pick", type: "button", "aria-label": "Sélection d'éléments sur la page",
                                 "aria-pressed": "false", "aria-keyshortcuts": "Control+Shift+A",
                                 onclick: () => { S.picking = !S.picking; renderComposerBar(); post("pickElement", { active: S.picking }); } }, icon("cursor", "ic"));
-  const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre", title: "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
+  const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
                                 onclick: (e) => openPlusMenu(e.currentTarget) }, icon("plus", "ic"));
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
   const batchEl = h("div", { class: "batch", hidden: true, role: "group" });
@@ -341,7 +342,7 @@
     sendBtn.className = "send";
     if (running && (!content || BUB())) {   // bubble: no input during a turn (Paper 1B30-0), the button is always « Arrêter »
       sendBtn.classList.add("stop"); sendBtn.appendChild(icon(BUB() ? "stopB" : "stop"));
-      sendBtn.setAttribute("aria-label", "Arrêter (Échap)"); sendBtn.title = "Arrêter (Échap)"; sendBtn.removeAttribute("aria-disabled");
+      sendBtn.setAttribute("aria-label", "Arrêter (Échap)"); sendBtn.removeAttribute("aria-disabled");
       sendWrap.classList.add("no-tip");
     } else {
       sendBtn.appendChild(icon("arrowUp"));
@@ -406,8 +407,7 @@
     cin.setAttribute("data-placeholder", p);
   }
   function chipNode(e, inComposer) {
-    const n = h("span", { class: "chip", "data-id": e.id, "data-label": e.label, contenteditable: inComposer ? "false" : null,
-                         title: [e.selector || e.label, e.source].filter(Boolean).join(" · ") },
+    const n = h("span", { class: "chip", "data-id": e.id, "data-label": e.label, contenteditable: inComposer ? "false" : null },
       icon(inComposer || KINDS.includes(e.kind) && !e.picked ? "k-" + (KINDS.includes(e.kind) ? e.kind : "block") : "corners"), h("span", { class: "chip-label", text: e.label }));
     if (inComposer) {
       n.setAttribute("role", "img");
@@ -512,7 +512,7 @@
       else if (lit) { modeBtn.classList.add("auto"); modeBtn.append(icon(mode.icon, "ic"), h("span", { class: "lbl", text: mode.label })); }
       else modeBtn.append(icon(mode.icon, "ic"), icon("chevron", "cv"));
       modeBtn.setAttribute("aria-label", "Mode : " + mode.label);
-      modeBtn.title = "Mode : " + mode.label + " (Maj+Tab)";
+      modeBtn.setAttribute("aria-keyshortcuts", "Shift+Tab");
     }
     const a = curAgent(), m = curModel();
     clear(modelLogo).appendChild(agentIcon(a));
@@ -521,7 +521,6 @@
     effortEl.hidden = !e;
     effortTxt.textContent = e ? effortName(e.id, e.label) : "";
     modelBtn.setAttribute("aria-label", "Modèle et effort : " + modelName.textContent + (e ? " · " + effortTxt.textContent : ""));
-    modelBtn.title = "Modèle et effort (Ctrl+/)";
     placeholder();
     updateSend();
     fitFoot();
@@ -942,7 +941,7 @@
     if (p) { dock.appendChild(permCard(p)); return; }
     for (const q of S.queue) {
       dock.appendChild(h("div", { class: "queue", role: "group", "aria-label": "Suite en file" },
-        h("span", { class: "tag", text: "En file" }), h("span", { class: "tx", text: q.text, title: q.text }),
+        h("span", { class: "tag", text: "En file" }), h("span", { class: "tx", text: q.text }),
         h("button", { class: "btn-s", type: "button", onclick: () => post("queue.sendNow", { id: q.id }) }, "Envoyer maintenant"),
         h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
     }
@@ -1227,7 +1226,7 @@
     const allowAlways = p.options.find((o) => o.kind === "allow_always");
     const reject = p.options.find((o) => o.kind === "reject_once") || p.options.find((o) => /^reject/.test(o.kind));
     const detail = !!(p.diff || p.command || p.details);
-    const kids = [h("span", { class: "t", id: "perm-t", text: p.title, title: p.title }),
+    const kids = [h("span", { class: "t", id: "perm-t", text: p.title }),
       S.perms.length > 1 ? h("span", { class: "perm-of", text: "1 sur " + S.perms.length }) : null,
       p.diff ? h("span", { class: "num plus", text: "+" + p.diff.added }) : null, p.diff ? h("span", { class: "num minus", text: "−" + p.diff.removed }) : null,
       detail ? icon("chevron", "cv") : null];
@@ -1266,7 +1265,7 @@
       h("div", { class: "bubble pending", text: q.text }),
       h("div", { class: "bq-cap" },
         h("span", { class: "tx" }, q.after ? ["Commencera après le travail en cours sur ", h("span", { class: "el", text: q.after })] : "En file : commencera après le travail en cours"),
-        h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ce message de la file", title: "Retirer de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
+        h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ce message de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
   }
 
   // The diff « en grand » (Paper 19ON-0 for a request, 19IO-0 for a finished turn): it takes the bubble, the thread waits.
@@ -1338,9 +1337,9 @@
     }
     bviewEl.setAttribute("aria-label", title);
     bviewEl.append(
-      h("div", { class: "bview-hd" }, lead, h("span", { class: "t", text: title, title }),
+      h("div", { class: "bview-hd" }, lead, h("span", { class: "t", text: title }),
         added != null ? h("span", { class: "nums" }, h("span", { class: "num plus", text: "+" + added }), h("span", { class: "num minus", text: "−" + removed })) : null,
-        h("button", { class: "bview-x", type: "button", "aria-label": "Fermer l'aperçu", title: "Fermer (Échap)", "aria-keyshortcuts": "Escape", onclick: () => closeView() }, icon("x"))),
+        h("button", { class: "bview-x", type: "button", "aria-label": "Fermer l'aperçu", "aria-keyshortcuts": "Escape", onclick: () => closeView() }, icon("x"))),
       h("div", { class: "bview-wrap" }, box, copy));
     if (hadFocus) { const x = bviewEl.querySelector(".bview-x"); if (x) x.focus(); }
   }
@@ -1477,7 +1476,7 @@
       if (live) bTipBind(t.stBtn, () => t.stRows);
       home.appendChild(t.stBtn);
     }
-    if (t.stLb && t.stLb.textContent !== label) { t.stLb.textContent = label; t.stLb.title = label; }
+    if (t.stLb && t.stLb.textContent !== label) { t.stLb.textContent = label; }
     if (btipFor && btipFor === t.stBtn) bTipShow(t.stBtn);       // the list follows the steps while it is open
   }
   // Paper 1AWI-0: « 1 fichier modifié +6 −2 › » opens the diff « en grand »; « Copier » copies it.
@@ -1485,7 +1484,7 @@
     const files = t.changes;
     const added = files.reduce((n, c) => n + (c.added || 0), 0), removed = files.reduce((n, c) => n + (c.removed || 0), 0);
     const label = plural(files.length, "fichier modifié", "fichiers modifiés");
-    const open = h("button", { class: "bt-bar-main", type: "button", "aria-haspopup": "dialog", title: "Voir les changements", onclick: () => openView({ kind: "changes", t }) },
+    const open = h("button", { class: "bt-bar-main", type: "button", "aria-haspopup": "dialog", onclick: () => openView({ kind: "changes", t }) },
       icon("code", "ic"), h("span", { class: "name", text: label }),
       h("span", { class: "num plus", text: "+" + added }), h("span", { class: "num minus", text: "−" + removed }), icon("chevron", "cv"));
     return h("div", { class: "bt-bar", role: "group", "aria-label": "Changements de ce tour" }, open, bCopy(() => changesText(t), "Copier les changements", "bt-copy"));
@@ -1561,11 +1560,11 @@
     const els = (m.elements || []).filter(validElement);
     const bubble = h("div", { class: "bubble" });
     const inlineIds = fillWithChips(bubble, m.text, BUB() ? [] : els);   // B 1.9 (R7): in the bubble the element is implicit — no chip
-    const pencil = m.editable === false || BUB() ? null : h("button", { class: "icon-btn", type: "button", "aria-label": "Modifier ce message", title: "Modifier", onclick: () => startEdit(m.id) }, icon("pencil"));
+    const pencil = m.editable === false || BUB() ? null : h("button", { class: "icon-btn", type: "button", "aria-label": "Modifier ce message", onclick: () => startEdit(m.id) }, icon("pencil"));
     const row = h("div", { class: "um-row" }, h("div", { class: "um-tools" }, pencil), bubble);
     const under = h("div", { class: "um-attach" });
     if (!BUB()) for (const e of els) if (!inlineIds.has(e.id)) under.appendChild(chipNode(Object.assign({ picked: true }, e), false));
-    for (const a of (m.attachments || []).filter(validAttachment)) under.appendChild(h("div", { class: "thumb", title: a.name }, h("img", { src: a.thumb, alt: a.name, style: "width:100%;height:100%;object-fit:cover;border-radius:5px;display:block" })));
+    for (const a of (m.attachments || []).filter(validAttachment)) under.appendChild(h("div", { class: "thumb" }, h("img", { src: a.thumb, alt: a.name, style: "width:100%;height:100%;object-fit:cover;border-radius:5px;display:block" })));
     const node = h("div", { class: "um", "data-id": m.id }, row, under.firstChild ? under : null);
     S.users.set(m.id, { el: node, row, bubble, text: m.text, els, m });
     S.lastUser = m.id;
@@ -1614,7 +1613,7 @@
     batchEl.appendChild(h("div", { class: "batch-hd" }, icon("tray", "ic"),
       h("span", { class: "t", id: "batch-h", text: n ? plural(n, "annotation à traiter", "annotations à traiter") : "Aucune annotation cochée" }),
       b.siteLabel ? h("span", { class: "site", text: b.siteLabel }) : null,
-      h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ces annotations de la saisie", title: "Retirer de la saisie",
+      h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ces annotations de la saisie",
                     onclick: () => { S.batch = null; renderBatch(); updateSend(); cin.focus(); } }, icon("close"))));
     const shown = b.expanded || b.items.length <= 5 ? b.items : b.items.slice(0, 5);
     for (const it of shown) {
@@ -1673,7 +1672,7 @@
         : st === "done" ? h("span", { class: "ann-st is-done" }, icon("check"), h("span", { text: it.summary || "Terminée" }))
         : st === "skipped" ? h("span", { class: "ann-st is-skipped" }, icon("x"), h("span", { text: it.reason ? "Non traitée : " + it.reason : who + " n'a pas pu la traiter" }))
         : h("span", { class: "ann-st is-pending" }, h("i", { "aria-hidden": "true" }), "En attente");
-      card.appendChild(h("button", { class: "ann-row is-" + st, type: "button", "data-id": it.id, title: "Montrer sur la page" + (annMeta(it) ? " (" + annMeta(it) + ")" : ""),
+      card.appendChild(h("button", { class: "ann-row is-" + st, type: "button", "data-id": it.id, "aria-description": "Montrer sur la page" + (annMeta(it) ? " (" + annMeta(it) + ")" : ""),
                                      onclick: () => post("annotation.show", { id: it.id }) },
         annThumb(it), h("span", { class: "tx" }, h("span", { class: "note", text: it.note }), line)));
     }
@@ -2055,7 +2054,7 @@
       if (state && state.message) box.appendChild(h("div", { class: "conflict", role: "alert", text: state.message }));
       if (open) {
         box.appendChild(h("div", { class: "files", id: listId, role: "list" }, changes.map((c) =>
-          h("button", { class: "file", type: "button", role: "listitem", title: "Voir les changements", "aria-label": "Voir les changements de " + c.path, onclick: (e) => openChanges(t, c.path, e.currentTarget) },
+          h("button", { class: "file", type: "button", role: "listitem", "aria-label": "Voir les changements de " + c.path, onclick: (e) => openChanges(t, c.path, e.currentTarget) },
             h("span", { class: "p", text: c.path }), c.status === "created" ? h("span", { class: "tag", text: "nouveau" }) : c.status === "deleted" ? h("span", { class: "tag", text: "supprimé" }) : null,
             h("span", { class: "num plus", text: "+" + (c.added || 0) }), h("span", { class: "num minus", text: "−" + (c.removed || 0) }))).concat(
           changes.length === 1 && validDiff(changes[0].diff) ? [diffView(validDiff(changes[0].diff))] : []).concat(
@@ -2172,7 +2171,7 @@
     clear(changesEl);
     const files = v.files;
     const added = files.reduce((a, c) => a + (c.added || 0), 0), removed = files.reduce((a, c) => a + (c.removed || 0), 0);
-    const back = h("button", { class: "hd-btn chg-back", id: "chg-back", type: "button", "aria-label": "Retour au fil", title: "Retour au fil (Échap)", "aria-keyshortcuts": "Escape", onclick: () => closeChanges() }, icon("chevron"));
+    const back = h("button", { class: "hd-btn chg-back", id: "chg-back", type: "button", "aria-label": "Retour au fil", "aria-keyshortcuts": "Escape", onclick: () => closeChanges() }, icon("chevron"));
     const canUndo = v.t.undoable && !(v.t.changesEl && v.t.changesEl.querySelector(".undone"));
     changesEl.appendChild(h("div", { class: "chg-hd" }, back,
       h("div", { class: "chg-t" }, h("h2", { id: "changes-h", text: "Changements" }),
@@ -2225,11 +2224,11 @@
     else if (changes.length) { t.changes = changes; t.undoable = m.undoable !== false; t.changesEl = changesBar(t, changes, t.undoable); t.el.appendChild(t.changesEl); }
     if (t.b) bStatus(t);   // « S'est arrêté », or « Historique » (Paper 1AE7-0, 1AWI-0): no hover actions, no « Revenir » in the bubble
     else if (m.stopReason !== "error") t.el.appendChild(h("div", { class: "actions" },
-      h("button", { class: "icon-btn", type: "button", "aria-label": "Copier la réponse", title: "Copier", onclick: (e) => { lastCopy = null; post("copy", { text: copyText }); } }, icon("copy")),
-      h("button", { class: "icon-btn", type: "button", "aria-label": "Relancer", title: "Relancer", onclick: () => post("retry", { turnId: t.id }) }, icon("history"))));
+      h("button", { class: "icon-btn", type: "button", "aria-label": "Copier la réponse", onclick: (e) => { lastCopy = null; post("copy", { text: copyText }); } }, icon("copy")),
+      h("button", { class: "icon-btn", type: "button", "aria-label": "Relancer", onclick: () => post("retry", { turnId: t.id }) }, icon("history"))));
     if (!t.b && m.checkpointId && ID.test(m.checkpointId)) {
       const u = S.users.get(t.userId);
-      if (u && !u.bubble.querySelector(".rewind")) u.bubble.appendChild(h("button", { class: "rewind", type: "button", title: "Revenir à l'état d'avant ce message",
+      if (u && !u.bubble.querySelector(".rewind")) u.bubble.appendChild(h("button", { class: "rewind", type: "button",
         "aria-label": "Revenir à avant ce message", onclick: () => post("checkpoint.restore", { checkpointId: m.checkpointId }) }, icon("undo"), "Revenir"));
     }
     t.el.classList.remove("live");
@@ -2335,7 +2334,7 @@
     const q = h("section", { class: "q", "aria-labelledby": "first-h" },
       h("div", null, h("h2", { id: "first-h", text: "Où est le code de ce site ?" }), h("p", { class: "sub", text: "Choisissez le dossier à partir duquel " + site + " est construit. On ne le demande qu'une fois." })));
     // B 1.8 (Paper 156L-0): the folder's name says which project this is; its full path stays in the tooltip
-    if (sug) q.appendChild(h("div", { class: "tile found", title: sug.path }, icon("folder", "ic"),
+    if (sug) q.appendChild(h("div", { class: "tile found", "aria-description": sug.path }, icon("folder", "ic"),
       h("div", { class: "grow" }, h("div", { class: "nm" }, h("span", { text: folderName(sug) }), h("span", { class: "badge", text: "Détecté auto" }))),
       h("button", { class: "btn primary", type: "button", "aria-label": "Utiliser le dossier " + folderName(sug), onclick: () => post("folder.use", { path: sug.path }) }, "Utiliser")));
     q.appendChild(h("button", { class: "tile other", type: "button", onclick: () => post("folder.choose") }, icon("plus", "ic"), h("span", { class: "lb", text: "Choisir un autre dossier…" })));
@@ -2438,7 +2437,7 @@
       it.running ? h("span", { class: "live" }, h("i"), "En cours") : h("span", { class: "when", text: relTime(it.updatedAt) }));
     // B 1.8 (Paper 156L-0): the project folder's name rather than the address — « 127.0.0.1:5173 » does not say what it is
     const here = folderName(S.st.folder) || (S.st.site ? S.st.site.label : "");
-    if (mine.length) { list.appendChild(h("div", { class: "hsec", title: S.st.site ? S.st.site.label : null, text: "Ce site" + (here ? " · " + here : "") })); mine.forEach((i) => list.appendChild(row(i, false))); }
+    if (mine.length) { list.appendChild(h("div", { class: "hsec", text: "Ce site" + (here ? " · " + here : "") })); mine.forEach((i) => list.appendChild(row(i, false))); }
     if (others.length) { list.appendChild(h("div", { class: "hsec" + (mine.length ? " next" : ""), text: "Autres sites" })); others.forEach((i) => list.appendChild(row(i, true))); }
   }
 
@@ -2455,7 +2454,6 @@
     hdSource.setAttribute("aria-label", src ? "Ouvrir " + src : "");
     renderGauge();
     const canRename = !!(c && ID.test(String(c.id || "")));
-    hdTitle.title = canRename ? "Double-cliquez pour renommer" : "";
     hdTitle.tabIndex = canRename ? 0 : -1;   // a new chat's title has nothing to rename: not a Tab stop
     if (canRename) hdTitle.setAttribute("aria-description", "Double-clic ou F2 pour renommer"); else hdTitle.removeAttribute("aria-description");
   }
