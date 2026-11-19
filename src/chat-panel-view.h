@@ -159,7 +159,7 @@ class View {
         }
         {   // the canvas colour behind the page: no white flash while it loads (design/chat-panel.md §1)
             Com<ICoreWebView2Controller2> c2;
-            if (SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2, (void**)&c2.p)) && c2.p) c2->put_DefaultBackgroundColor(visual_ ? COREWEBVIEW2_COLOR{0, 0, 0, 0} : COREWEBVIEW2_COLOR{255, 0x17, 0x17, 0x17});
+            if (SUCCEEDED(controller_->QueryInterface(IID_ICoreWebView2Controller2, (void**)&c2.p)) && c2.p) c2->put_DefaultBackgroundColor(visual_ || GetEnvironmentVariableW(L"BROWSER_CHAT_WINDOWED_PROBE", nullptr, 0) > 0 ? COREWEBVIEW2_COLOR{0, 0, 0, 0} : COREWEBVIEW2_COLOR{255, 0x17, 0x17, 0x17});
         }
         view_->AddWebResourceRequestedFilter(L"*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
         const unsigned gen = generation_;
@@ -230,7 +230,8 @@ public:
             if (hooks_.created) hooks_.created(true);
             return S_OK; });
         Com<ICoreWebView2Environment3> env3;
-        if (EnsureDComp() && SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment3, reinterpret_cast<void**>(&env3.p))) && env3.p) {
+        const bool windowedProbe = GetEnvironmentVariableW(L"BROWSER_CHAT_WINDOWED_PROBE", nullptr, 0) > 0;   // QA probe only: windowed + transparent
+        if (!windowedProbe && EnsureDComp() && SUCCEEDED(environment->QueryInterface(IID_ICoreWebView2Environment3, reinterpret_cast<void**>(&env3.p))) && env3.p) {
             done->Release(); visual_ = true; Self() = this;
             HWND host = parent == direct_ ? parent : PanelHost(parent);
             auto made = Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler, HRESULT, ICoreWebView2CompositionController*>([this, gen](HRESULT hr, ICoreWebView2CompositionController* cc) -> HRESULT {
@@ -287,8 +288,20 @@ public:
         if (m == WM_GETOBJECT && static_cast<long>(l) == static_cast<long>(UiaRootObjectId)) {
             Com<ICoreWebView2CompositionController2> c2; Com<IUnknown> provider; Com<IRawElementProviderSimple> simple;
             static auto fn = reinterpret_cast<decltype(&::UiaReturnRawElementProvider)>(reinterpret_cast<void*>(GetProcAddress(LoadLibraryExW(L"uiautomationcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32), "UiaReturnRawElementProvider")));
-            if (fn && SUCCEEDED(comp_->QueryInterface(IID_ICoreWebView2CompositionController2, reinterpret_cast<void**>(&c2.p))) && c2.p && SUCCEEDED(c2->get_AutomationProvider(&provider.p)) && provider.p &&
-                SUCCEEDED(provider->QueryInterface(__uuidof(IRawElementProviderSimple), reinterpret_cast<void**>(&simple.p))) && simple.p) { result = fn(h, w, l, simple.p); return true; }
+            const HRESULT q = comp_->QueryInterface(IID_ICoreWebView2CompositionController2, reinterpret_cast<void**>(&c2.p));
+            const HRESULT a = SUCCEEDED(q) && c2.p ? c2->get_AutomationProvider(&provider.p) : E_NOINTERFACE;
+            const HRESULT s = SUCCEEDED(a) && provider.p ? provider->QueryInterface(__uuidof(IRawElementProviderSimple), reinterpret_cast<void**>(&simple.p)) : E_NOINTERFACE;
+            static int said = 0;
+            if (said < 3) {
+                ++said; HRESULT nav = E_NOINTERFACE, host = E_NOINTERFACE; int child = -1, hasHost = -1; ProviderOptions opt{};
+                if (simple.p) {
+                    simple->get_ProviderOptions(&opt);
+                    Com<IRawElementProviderSimple> hp; host = simple->get_HostRawElementProvider(&hp.p); hasHost = hp.p ? 1 : 0;
+                    Com<IRawElementProviderFragment> fr; if (SUCCEEDED(simple->QueryInterface(__uuidof(IRawElementProviderFragment), reinterpret_cast<void**>(&fr.p))) && fr.p) { Com<IRawElementProviderFragment> c; nav = fr->Navigate(NavigateDirection_FirstChild, &c.p); child = c.p ? 1 : 0; }
+                }
+                wchar_t b[260]; swprintf(b, 260, L"CHAT UI Automation of the chat page: controller2 %08lX, provider %08lX, simple %08lX, options %d, host %08lX/%d, first child %08lX/%d", static_cast<unsigned long>(q), static_cast<unsigned long>(a), static_cast<unsigned long>(s), int(opt), static_cast<unsigned long>(host), hasHost, static_cast<unsigned long>(nav), child); Log(b);
+            }
+            if (fn && simple.p) { result = fn(h, w, l, simple.p); return true; }
             return false;
         }
         if (m == WM_MOUSELEAVE) { tracking_ = false; comp_->SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE, 0, POINT{0, 0}); result = 0; return true; }

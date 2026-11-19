@@ -5,6 +5,7 @@
 param([int]$ProcessId, [string[]]$Ids)
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$Ids = @($Ids | ForEach-Object { $_ -split "," } | Where-Object { $_ -ne "" })   # -File passes "A,B" as one string
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $ProcessId)
