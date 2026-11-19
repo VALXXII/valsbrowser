@@ -140,10 +140,6 @@ def run_main():
             step('R1 · …window: DWMWCP_DONOTROUND, WS_EX_NOREDIRECTIONBITMAP', pref.value == 1 and (ex & 0x00200000) != 0, report['measures']['bubbleWindow'])
             step('R1 · …surface 305 CSS px wide at rest (inset 0: Paper has no shadow)', abs((bw[3][2] - bw[3][0]) - round(305 * C.evaluate(C.URL, 'devicePixelRatio'))) <= 1, bw[3])
         capture_bubble('r1-bulle-coins'); capture('r2-bulle-ouverte')
-        modes = re.findall(r'CHAT modes offered: ([^\r\n]+)', C.log_text())
-        report['measures']['modes'] = modes[-1] if modes else ''
-        step('R4 · the modes of Paper 14RK-0, in order: Accept edits, Auto, Demander, Planifier',
-             bool(modes) and modes[-1].strip() == 'acceptEdits=edits, auto=auto, default=ask, plan=plan', modes[-1] if modes else 'no log')
         m2 = mark()
         focus_composer(); C.key_panel('Escape', 'Escape', 27)
         step('R2 · Échap closes it', logged(r'CHAT bubble closed', m2, 5) is not None)
@@ -161,6 +157,11 @@ def run_main():
         send_in_view('Change le gap en 8 px')
         step('R9 · the turn starts', logged(r'CHAT turn t\d+ started', m3b, 15) is not None)
         asked = logged(r'CHAT permission asked: (\S+)', m3b, 30)
+        logged(r'CHAT modes offered', 0, 5)
+        modes = re.findall(r'CHAT modes offered: ([^\r\n]+)', C.log_text())
+        report['measures']['modes'] = modes[-1] if modes else ''
+        step('R4 · the modes of Paper 14RK-0, in order: Accept edits, Auto, Demander, Planifier',
+             bool(modes) and modes[-1].strip() == 'acceptEdits=edits, auto=auto, default=ask, plan=plan', modes[-1] if modes else 'no log')
         step('R9 · the permission is asked', asked is not None, asked.group(0) if asked else '')
         step('R2 · after the first message the element carries its frame + icon', bool(C.wait_for(lambda: CC.conv_marks(), 6)))
         m4 = mark()
@@ -185,16 +186,24 @@ def run_main():
 
         # ---- R9 measures: the same request, permission answered at once, bubble vs panel
         def measure(where):
+            u32.SetForegroundWindow(Q.main_window()); time.sleep(0.3)
             mm = mark()
             send_in_view('Change le gap en 8 px (permission)')   # the fake agent's « permission » scenario: same steps every time
-            logged(r'CHAT permission asked', mm, 30)
-            t0 = time.time()
-            C.wait_for(lambda: 'Autoriser' in (C.panel_text() or ''), 6)
-            shown = time.time() - t0
-            C.click_panel(text='Autoriser')
-            first = ms_after(r'CHAT first agent text ([\d.]+) ms after the send', mm)
-            end = logged(r'CHAT turn t\d+ ended: \w+ in (\d+) ms', mm, 30)
-            return {'where': where, 'firstTextMs': first, 'turnMs': float(end.group(1)) if end else None, 'cardShownAfterAskS': round(shown, 3)}
+            shown, answered, end, deadline = [], 0, None, time.time() + 40
+            while time.time() < deadline:
+                text = C.log_text()[mm:]
+                end = re.search(r'CHAT turn t\d+ ended: \w+ in (\d+) ms', text)
+                if end:
+                    break
+                if text.count('CHAT permission asked') > answered:
+                    t0 = time.time()
+                    if C.wait_for(lambda: 'Autoriser' in (C.panel_text() or ''), 6):
+                        shown.append(round(time.time() - t0, 3)); C.click_panel(text='Autoriser')
+                    answered += 1
+                time.sleep(0.05)
+            first = re.search(r'CHAT first agent text ([\d.]+) ms after the send', C.log_text()[mm:])
+            return {'where': where, 'firstTextMs': float(first.group(1)) if first else None, 'turnMs': float(end.group(1)) if end else None,
+                    'permissions': answered, 'cardShownAfterAskS': shown}
         bub = measure('bulle'); time.sleep(1.0)
         m7 = mark(); C.invoke('AnnotationAskAgent'); logged(r'CHAT panel opened', m7, 10); time.sleep(1.5)
         pan = measure('panneau')

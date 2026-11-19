@@ -480,7 +480,22 @@ demande en bulle et en panneau (mesures ci-dessous).
 
 ### Mesures R9 (faux agent, même demande, autorisation donnée dès qu'elle s'affiche)
 
-<!-- R9-MEASURES -->
+Passage unique en vraie fenêtre, 19 novembre 2026 (`tests/chat/chat_qa_comment_v2.py`, faux agent `--claude-like`,
+mode Demander, build `13eab3c` + hôte `3f5c86b`) — 19 / 20 étapes, rapport `build/chat-qa/comment-v2/host-report.json` :
+
+| Même demande « Change le gap en 8 px (permission) » | Premier texte | Fin du tour | Carte affichée après la demande (2 autorisations) |
+|---|---|---|---|
+| Bulle | 120 ms | 316 ms | 6 ms, 15 ms |
+| Panneau | 99 ms | 304 ms | 3 ms, 4 ms |
+
+Même ordre de grandeur (le faux agent répond sans délai : ces chiffres mesurent le chemin du navigateur, pas l'agent).
+Chemin d'autorisation de bout en bout : demande → bulle fermée → bulle rouverte par un clic sur l'élément → carte
+toujours là → « Autoriser » par un vrai clic posté à la fenêtre de la bulle (transmission de la souris par l'hôte) →
+`permission answered: allow` → `turn t1 ended: end_turn in 2945 ms`.
+
+Non vérifié en vraie fenêtre : R6 quand le fichier de la conversation a disparu (l'étape a échoué parce que le retour
+en mode Commentaire après la mesure en panneau ne s'est pas fait : le clic est parti en mode Panneau ; couvert par le
+test unitaire seulement).
 
 ### R1 — vrais coins, sans coin noir : la page dans une fenêtre composée
 
