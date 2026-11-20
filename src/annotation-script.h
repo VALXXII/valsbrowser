@@ -63,6 +63,13 @@
 // element moves (scroll, layout, resize: checked each frame while the page scrolls, every 250 ms otherwise) and
 // { op: 'anchor', gone: true } once it is no longer in the page; null stops. Both live in document-anchored wrappers
 // like the chat marks (glued while scrolling).
+// Comment mode v4 (design/chat-comment-v2-retours.md): R26 `peek` {selector, active} shows a chip's element as hovered
+// (soft scroll when out of view, back without scrolling); R27 every frame (hover / selection, conversation, bubble, chat
+// mark) is one bordered box on the same rectangle snapped to device pixels, and over a conversation frame the other
+// frames draw no second contour; R31 Ctrl held = the page as usual (cursor, clicks, keys), released = the selection;
+// R33 the size label goes under the name, inside the frame, when the two do not fit side by side; R36 the
+// « browser-restyle » event (chat-transition.h) = follow the element frame by frame while its values glide; R37 the
+// selected element's inspector is placed in the frame's own frame and transitions only when a value changes.
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <string>
@@ -110,17 +117,21 @@ var listeners = [], raf = 0, alive = true;
 var px = -1, py = -1, haveMove = false;
 var cur = null, down = [], frozen = false, shown = false, keyboard = false, seq = 0;
 var off = false;   // V1.4: selection switched off (« pick » false): the page is the page again
+var ctrl = false;  // R31: Ctrl held = the page is the page again, for as long as it is held
+var peek = null;   // R26: the element of a chip the user rests on (panel / bubble), shown as hovered
+var trackUntil = 0;   // R36: a restyle glides: everything follows the element frame by frame until then
+function idle() { return off || ctrl; }
+function tracking() { return performance.now() < trackUntil; }
 
 var host = D.createElement('browser-annotation-layer');
 host.setAttribute('aria-hidden', 'true');
 host.style.cssText = 'all:initial;position:absolute;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;';
 var root = host.attachShadow({ mode: 'closed' });
-var T = 'transform 120ms cubic-bezier(0.2,0,0,1),opacity 120ms ease-out';
+var T = 'transform 120ms cubic-bezier(0.2,0,0,1),width 120ms cubic-bezier(0.2,0,0,1),height 120ms cubic-bezier(0.2,0,0,1),opacity 120ms ease-out';
 // The accent rules (frame fill 8 %, edges, label, padding hatches and their labels), rebuilt by the « accent » command.
 function accentCss() {
   return ':host{--a:' + A + '}.cf,.ct,.bf,.bl{--a:' + A + '}' +
-    '.f{width:100px;height:100px;background:rgba(' + A + ',0.08)}' +
-    '.h,.v{background:rgb(' + A + ')}' +
+    '.f{background:rgba(' + A + ',0.08);border-color:rgb(' + A + ')}' +
     '.l{background:rgb(' + A + ')}' +
     '.pb{background:repeating-linear-gradient(135deg,rgba(' + A + ',.4) 0 1px,transparent 1px 5px),rgba(' + A + ',.08)}' +
     '.pl{background:rgb(' + A + ')}' +
@@ -131,7 +142,9 @@ root.innerHTML = '<style>' +
   '.x{position:fixed;left:0;top:0;transform-origin:0 0;opacity:0;pointer-events:none;will-change:transform,opacity}' +
   '.on{transition:' + (reduced ? 'opacity 120ms ease-out' : T) + '}' +
   '.mv{transition:opacity 120ms ease-out}' +
-  '.h{width:100px;height:2px}.v{width:2px;height:100px}' +
+  // R27: the hover / selection frame is ONE bordered box, exactly as the conversation frame (.cf) and the bubble's (.bf):
+  // same rectangle (frameBox, snapped to device pixels), same border (edgePx), no layer of its own
+  '.f{box-sizing:border-box;border-style:solid;border-width:2px;will-change:auto}.f.hb,.f.nb,.bf.nb{border-color:transparent !important}' +
   // R14 (Paper 18QK-0 / 18QQ-0): the hover labels as the selection's — Inter Display 13/18, 20 px high, padding 0 6,
   // top corners 3, name at the left, real size at the right
   '.l{font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;height:20px;box-sizing:border-box;' +
@@ -163,12 +176,12 @@ root.innerHTML = '<style>' +
   '.bf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a));background:rgba(var(--a),.08)}' +
   '.bl{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;padding:0 6px;border-radius:3px 3px 0 0;background:rgb(var(--a));' +
   'font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:pre;letter-spacing:0}' +
-  '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
+  '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x l"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
 var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
-var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4], label = parts[5], label2 = parts[6];   // R14: name | size
+var fill = parts[0], label = parts[1], label2 = parts[2];   // R27: the frame's box (fill + border); R14: name | size
 var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb');
-var insPool = { pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = null;
+var insPool = { pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = [];
 var frameWrap = root.querySelector('.fw'), markWrap = root.querySelector('.mw'), placed = null;
 var cmarks = {}, cmTimer = 0, follow = null, followTimer = 0, followLast = '';   // Mode Commentaire
 (D.documentElement || D).appendChild(host);
@@ -364,7 +377,11 @@ function sendSelect(info, selText, ev) {
   post(m);
 }
 // marks: the edges and the label only (the fill stays: it is removed from the image by the host).
-function conceal(on, marksOnly) { for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : ''; ins.style.visibility = insL.style.visibility = on ? 'hidden' : ''; }
+function conceal(on, marksOnly) {
+  for (var i = marksOnly ? 1 : 0; i < parts.length; i++) parts[i].style.visibility = on ? 'hidden' : '';
+  if (on && marksOnly) fill.classList.add('hb'); else fill.classList.remove('hb');   // R27: the border is the frame's edges
+  ins.style.visibility = insL.style.visibility = on ? 'hidden' : '';
+}
 // At the click: the frame jumps to its final state (any glide or fade-in ends now, transitions off inline), so the
 // geometry and the fill opacity sent are exactly what the next frame shows (V3: a click within a fade-in left the
 // fill nearly transparent in the shot, and the host removed 8 % that was not there).
@@ -380,7 +397,7 @@ function settle() {
 }
 function geometry(info) {
   var r = rectOf(info), lb = label.getBoundingClientRect();
-  var fb = frameBox(r), rb = label2.getBoundingClientRect(), two = label2.style.visibility !== 'hidden';
+  var fb = frameBox(r), rb = label2.getBoundingClientRect(), two = rb.width > 0;
   return { x: fb.x, y: fb.y, w: fb.w, h: fb.h, lx: lb.left, ly: lb.top, lw: lb.width, lh: lb.height,
            text: String(label.textContent || '').slice(0, 200), rx: two ? rb.left : 0, ry: two ? rb.top : 0, rw: two ? rb.width : 0, rh: two ? rb.height : 0,
            rtext: two ? String(label2.textContent || '').slice(0, 40) : '', fill: 0.08 * (parseFloat(getComputedStyle(fill).opacity) || 0), sp: spaceMark() };
@@ -517,7 +534,7 @@ function drawSpace(g) {
   layer(padEl, p ? rectPath(p.ox, p.oy, p.ow, p.oh, p.r) + (p.iw > 0 && p.ih > 0 ? rectPath(p.ix, p.iy, p.iw, p.ih, p.ri) : '') : null, 'evenodd');
   var gd = ''; for (var i = 0; i < g.gaps.length && i < 96; i++) { var b = g.gaps[i]; gd += rectPath(b.x, b.y, b.w, b.h, 0); }
   layer(gapEl, gd || null, 'nonzero');
-  var obstacles = [labelBox];
+  var obstacles = labelBox.slice();
   for (var j = 0; j < g.labels.length && j < 12; j++) {
     var l = g.labels[j], lk = l.k ? 'gl' : 'pl', e = pool(lk, counts[lk]++);
     e.textContent = l.t;
@@ -533,9 +550,9 @@ function insFade(on, animate) {
 }
 // The inspector follows the frame: same element => updated in place; another element => hidden now, shown when the
 // pointer has rested 120 ms (the frame's glide); nothing at all during a fast movement.
-function placeSpace(info, first) {
+function placeSpace(info, first, g) {
   var el = info ? info.el : null;
-  insData = info ? spaceGeometry(info) : null;
+  insData = info ? (g === undefined ? spaceGeometry(info) : g) : null;
   drawSpace(insData);
   if (!insData) { if (insTimer) { clearTimeout(insTimer); insTimer = 0; } insFade(false, false); insEl = el; return; }
   if (el === insEl) return;
@@ -577,23 +594,44 @@ function anchor(wrap, el) {
   wrap.style.width = cw + 'px'; wrap.style.height = ch + 'px';
 }
 // Paper 18QJ-0 + R15: the frame's box (4 px out of the element, at least 2 px from the window's left and right sides).
+// R27: snapped to the device pixels, so the hover / selection frame, the conversation frame and the bubble's frame are
+// the same pixels whatever the zoom (100 / 125 / 150 %); edgePx = the 2 px border rounded to whole device pixels.
+function dpr() { return devicePixelRatio || 1; }
+function snap(v) { var d = dpr(); return Math.round(v * d) / d; }
+function edgePx() { var d = dpr(); return Math.max(1, Math.round(2 * d)) / d; }
+// The border as the engine draws it (it may snap the width again): what the inner corner of R33 is measured from.
+function edgeShown() { var v = 0; try { v = parseFloat(getComputedStyle(fill).borderTopWidth); } catch (e) {} return v > 0 ? v : edgePx(); }
 function frameBox(r) {
-  var x = Math.max(2, r.x - 4), right = Math.min(innerWidth - 2, r.x + Math.max(r.w, 1) + 4);
-  return { x: x, y: r.y - 4, w: Math.max(right - x, 1), h: Math.max(r.h, 1) + 8 };
+  var x = snap(Math.max(2, r.x - 4)), right = snap(Math.min(innerWidth - 2, r.x + Math.max(r.w, 1) + 4));
+  var y = snap(r.y - 4), bottom = snap(r.y + Math.max(r.h, 1) + 4);
+  return { x: x, y: y, w: Math.max(right - x, 1 / dpr()), h: Math.max(bottom - y, 1 / dpr()) };
+}
+// The same box on any frame element (hover .f, conversation .cf, bubble .bf, chat mark .mf): position, size, border.
+function boxTo(el, fb, viaTransform) {
+  if (viaTransform !== false) el.style.transform = 'translate(' + fb.x.toFixed(6) + 'px,' + fb.y.toFixed(6) + 'px)';
+  el.style.width = fb.w.toFixed(6) + 'px'; el.style.height = fb.h.toFixed(6) + 'px'; el.style.borderWidth = edgePx().toFixed(6) + 'px';
 }
 // Paper 18QK-0 / 18QQ-0: the name label flush with the frame's left edge, the size label with its right edge, both on
 // the frame's top (24 px above the element); under the frame when there is no room above. R15: 2 px from the sides.
-// `both`: false when the two do not fit side by side (the name stays).
+// `both`: false when the two do not fit side by side: R33, the size label then goes UNDER the name, inside the frame,
+// flush with its inner top-left corner (same style, same corners); under the name when the labels are below the frame.
 function labelsPlace(fb, lw, rw) {
-  var y = fb.y - 20 >= 0 ? fb.y - 20 : Math.min(fb.y + fb.h, innerHeight - 20);
+  var above = fb.y - 20 >= 0, y = above ? fb.y - 20 : Math.min(fb.y + fb.h, innerHeight - 20);
   var lx = Math.max(2, Math.min(fb.x, innerWidth - 2 - lw)), rx = Math.min(innerWidth - 2, fb.x + fb.w) - rw;
-  return { lx: lx, rx: rx, y: y, both: rx >= lx + lw + 2 };
+  if (rx >= lx + lw + 2) return { lx: lx, rx: rx, y: y, ry: y, both: true };
+  var e = edgeShown(), ix = Math.max(2, Math.min(fb.x + e, innerWidth - 2 - rw));
+  return above ? { lx: lx, rx: ix, y: y, ry: fb.y + e, both: false } : { lx: lx, rx: lx, y: y, ry: Math.min(y + 20, innerHeight - 20), both: false };
+}
+// The value labels keep off the element labels (both boxes, + 2 px of air).
+function labelBoxes(lp, lw, rw) {
+  var a = { x: lp.lx - 2, y: lp.y - 2, w: lw + 4, h: 24 }, b = { x: lp.rx - 2, y: lp.ry - 2, w: rw + 4, h: 24 };
+  return lp.both ? [{ x: a.x, y: a.y, w: lp.rx + rw - lp.lx + 4, h: 24 }] : [a, b];
 }
 function glide(on) { for (var i = 0; i < parts.length; i++) parts[i].style.transition = on ? '' : 'none'; }
 
 // ---- drawing
 function place(info) {
-  if (follow && follow.draw) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } return; }   // D1: the bubble's frame; R16: its inspector stays (bxPlace)
+  if (follow && follow.draw && !(peek && info === peek)) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } return; }   // D1: the bubble's frame; R16: its inspector stays (bxPlace)
   if (!info) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } placeSpace(null, false); return; }
   anchor(frameWrap, anchorEl(info));
   glide(!(shown && placed && placed.el === info.el && placed.range === info.range));   // the same element: it jumps (no lag behind a scroll)
@@ -603,20 +641,20 @@ function place(info) {
   if (first) moveOnly(true);
   // Paper 18QJ-0: the frame goes 4 px out of the element; R15: never closer than 2 px to the window's left / right sides
   var fb = frameBox(r), x = fb.x, y = fb.y, w = fb.w, h = fb.h;
-  // 100 px bases: a 1 px box would be snapped to one device pixel (DPR 1.25 -> scale 20 % short).
-  tr(fill, x, y, w / 100, h / 100); tr(eT, x, y, w / 100, 1); tr(eB, x, y + h - 2, w / 100, 1); tr(eL, x, y, 1, h / 100); tr(eR, x + w - 2, y, 1, h / 100);
+  boxTo(fill, fb); void x; void y; void w; void h;   // R27: one bordered box, the conversation frame's rectangle
+  if (cmOn(info.el)) fill.classList.add('nb'); else fill.classList.remove('nb');   // R27: its contour is already there: drawn once
   var tag = seg(info.el === info.frame && info.kind === 'cross-origin' ? info.frame : info.el);
   label.textContent = info.range ? 'texte' : tag; label2.textContent = Math.round(r.w) + 'x' + Math.round(r.h);   // R14 (Paper writes « 240x44 »)
-  var lp = labelsPlace(fb, label.offsetWidth || 120, label2.offsetWidth || 60);
-  tr(label, lp.lx, lp.y); tr(label2, lp.rx, lp.y); label2.style.visibility = lp.both ? '' : 'hidden';
-  labelBox = { x: lp.lx - 2, y: lp.y - 2, w: (lp.both ? lp.rx + (label2.offsetWidth || 60) : lp.lx + (label.offsetWidth || 120)) - lp.lx + 4, h: 24 };   // + 2 px of air
+  var lw = label.offsetWidth || 120, rw = label2.offsetWidth || 60, lp = labelsPlace(fb, lw, rw);
+  tr(label, lp.lx, lp.y); tr(label2, lp.rx, lp.ry);   // R33: the size label never disappears
+  labelBox = labelBoxes(lp, lw, rw);
   if (first) { void getComputedStyle(fill).transform; moveOnly(false); setOpacity(1); shown = true; }
   placeSpace(info, first);
 }
 // Shields over the visible top-level iframes (same and cross origin): their events reach our window
 // listeners, the hit-test (elementsFromPoint without our host) still finds the iframe below.
 function syncShields() {
-  if (off) { for (var z = 0; z < shields.length; z++) shields[z].style.cssText = 'display:none'; return; }
+  if (idle()) { for (var z = 0; z < shields.length; z++) shields[z].style.cssText = 'display:none'; return; }
   var list = D.querySelectorAll('iframe,frame'), n = 0;
   for (var i = 0; i < list.length && n < 64; i++) {
     var r = list[i].getBoundingClientRect();
@@ -634,8 +672,12 @@ function frame() {
   syncShields();
   if (mark) markPlace();
   cmPlaceAll(); followCheck();
+  if (shown && placed) { if (cmOn(placed.el)) fill.classList.add('nb'); else fill.classList.remove('nb'); }   // R27
+  if (tracking()) { schedule(); if (px >= 0 && !frozen) haveMove = true; }   // R36: every frame while the page's values glide
+  if (peek) { if (peek.el.isConnected) place(peek); else peekSet(null); return; }   // R26
   if (off) return;
   if (frozen) { if (cur) place(cur); return; }
+  if (ctrl) return;   // R31
   if (!haveMove) return;
   haveMove = false;
   var info = hit(px, py);
@@ -645,11 +687,24 @@ function frame() {
 function schedule() { if (!raf && alive) raf = requestAnimationFrame(frame); }
 
 // ---- events
-function onMove(e) { px = e.clientX; py = e.clientY; if (off) return; haveMove = true; keyboard = false; schedule(); }
+function onMove(e) { px = e.clientX; py = e.clientY; if (e.isTrusted && !!e.ctrlKey !== ctrl) setCtrl(!!e.ctrlKey); if (idle()) return; haveMove = true; keyboard = false; schedule(); }
+// R31: Ctrl held = the page as usual: its own cursors (the sheet is emptied), no hover frame nor inspector, no iframe
+// shields; clicks, scrolling and typing reach the site, nothing is selected. Released = the selection at once. A
+// selected element (note open, bubble) keeps its frame. The Ctrl+... shortcuts are never consumed here (onKey).
+function cursorSheet(on) { try { if (sheet) sheet.replaceSync(on ? '*,*::before,*::after{' + cursorDecl(true) + '}' : ''); } catch (e) {} }
+function setCtrl(v) {
+  v = !!v; if (v === ctrl) return; ctrl = v;
+  if (off) return;
+  if (ctrl) { cursorSheet(false); if (!frozen && !peek) { cur = null; down = []; haveMove = false; place(null); } syncShields(); }
+  else { cursorSheet(true); syncShields(); haveMove = px >= 0; schedule(); }
+}
+function onKeyUp(e) { if (e.isTrusted && e.key === 'Control') setCtrl(false); }
+function onBlur(e) { if (e.target === window) setCtrl(false); }
 // Only the user's own input is consumed: the page's synthetic events (el.click(), dispatchEvent) pass.
-function stop(e) { if (!e.isTrusted || off) return; e.preventDefault(); e.stopImmediatePropagation(); }
+function stop(e) { if (!e.isTrusted || off) return; if (!!e.ctrlKey !== ctrl && e.ctrlKey !== undefined) setCtrl(!!e.ctrlKey); if (ctrl) return; e.preventDefault(); e.stopImmediatePropagation(); }
 function onClick(e) {
   if (!e.isTrusted || off) return;
+  if (e.ctrlKey) setCtrl(true); if (ctrl) return;   // R31: the site's click
   stop(e);
   if (e.button !== 0) return;
   px = e.clientX; py = e.clientY; keyboard = false;
@@ -660,7 +715,8 @@ function onClick(e) {
   cur = info; down = []; frozen = true; place(cur); sendSelect(cur, null, e);
 }
 function onKey(e) {
-  if (!e.isTrusted || e.ctrlKey || e.metaKey || off) return;
+  if (e.isTrusted && e.key === 'Control') { setCtrl(true); return; }   // R31 (never consumed: Ctrl+... stay the site's and the host's)
+  if (!e.isTrusted || e.ctrlKey || e.metaKey || idle()) return;
   var k = e.key;
   if (k === 'Escape') { stop(e); post({ op: 'escape' }); return; }
   if (frozen) return;
@@ -669,7 +725,7 @@ function onKey(e) {
   if (k === 'Enter' && cur) { stop(e); keyboard = true; frozen = true; place(cur); sendSelect(cur, null, e); return; }
 }
 function onFocus(e) {
-  if (frozen || off) return;
+  if (frozen || idle() || peek) return;
   var t = e.composedPath ? e.composedPath()[0] : e.target;
   if (!t || t.nodeType !== 1 || t === host) return;
   var r = t.getBoundingClientRect();
@@ -677,8 +733,8 @@ function onFocus(e) {
   if (t.getRootNode && t.getRootNode().host) { var info = hit(r.left + 1, r.top + 1); if (info && info.el === t) cur = info; }
   down = []; keyboard = true; place(cur);
 }
-function onScroll() { if (follow || cmAny()) schedule(); if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
-function onLeave(e) { if (!off && !e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
+function onScroll() { if (peek || tracking()) { schedule(); return; } if (follow || cmAny()) schedule(); if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
+function onLeave(e) { if (!idle() && !peek && !e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
 
 function selectionInfo(text) {
   var sel = null; try { sel = window.getSelection(); } catch (e) {}
@@ -776,10 +832,10 @@ function markPlace() {
   var r = el.getBoundingClientRect();
   if (r.width < 1 && r.height < 1) { mark.box.style.opacity = '0'; return; }
   anchor(markWrap, mark.anchor);
-  var x = r.left + mark.ox - 4, y = r.top + mark.oy - 4, w = r.width + 8, h = r.height + 8;
+  var fb = frameBox({ x: r.left + mark.ox, y: r.top + mark.oy, w: r.width, h: r.height }), y = fb.y, h = fb.h;   // R27: the hover frame's rectangle
   mark.box.style.opacity = '1';
-  mark.box.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)';
-  mark.frame.style.width = w.toFixed(2) + 'px'; mark.frame.style.height = h.toFixed(2) + 'px';
+  mark.box.style.transform = 'translate(' + fb.x.toFixed(6) + 'px,' + fb.y.toFixed(6) + 'px)';
+  boxTo(mark.frame, fb, false);
   if (mark.tag) mark.tag.style.transform = y >= 20 ? 'translate(0,-20px)' : 'translate(0,' + h.toFixed(2) + 'px)';
 }
 function markSet(a) {
@@ -815,6 +871,9 @@ function markSet(a) {
 
 // ---- Mode Commentaire: one frame + icon per conversation of this page, and the element the bubble follows
 var MARK_SVG = '<svg width="13" height="12.25" viewBox="48 239.883 13 12.26"><path d="M48.001 250.363L48.049 240.981C48.051 240.535 48.43 240.178 48.89 240.19L59.287 240.226C61.157 240.272 61.667 242.743 59.96 243.484L54.486 245.391C54.03 245.589 53.645 245.909 53.375 246.314 53.342 246.363 53.316 246.416 53.293 246.47L51.265 251.246C50.347 252.733 47.992 252.096 48.001 250.363Z" fill="#fff"/></svg>';
+// R27: the element has its conversation frame on screen: the hover / bubble frame on it draws no second contour (two
+// identical anti-aliased edges would add up on a fractional pixel), only its fill and labels.
+function cmOn(el) { for (var k in cmarks) { var m = cmarks[k]; if (m.el === el && m.wrap.style.display !== 'none') return true; } return false; }
 function cmAny() { for (var k in cmarks) return true; return false; }
 function cmFind(sel) { try { var l = D.querySelectorAll(String(sel)); return l.length === 1 ? l[0] : null; } catch (e) { return null; } }
 function cmTag(m) {
@@ -830,9 +889,9 @@ function cmPlace(m) {
   var r = m.el.getBoundingClientRect();
   if (r.width < 1 && r.height < 1) { m.wrap.style.display = 'none'; return false; }
   m.wrap.style.display = ''; anchor(m.wrap, m.el);
-  var x = r.left - 4, y = r.top - 4, w = r.width + 8, h = r.height + 8;
-  m.box.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)';
-  m.frame.style.width = w.toFixed(2) + 'px'; m.frame.style.height = h.toFixed(2) + 'px';
+  var fb = frameBox({ x: r.left, y: r.top, w: r.width, h: r.height });   // R27: exactly the hover / selection frame's rectangle
+  m.box.style.transform = 'translate(' + fb.x.toFixed(6) + 'px,' + fb.y.toFixed(6) + 'px)';
+  boxTo(m.frame, fb, false);
   return true;
 }
 function cmPlaceAll() { for (var k in cmarks) cmPlace(cmarks[k]); }
@@ -858,6 +917,7 @@ function cmSet(list) {
   for (var k in cmarks) if (!keep[k]) { try { cmarks[k].wrap.remove(); } catch (e) {} delete cmarks[k]; }
   if (cmTimer) { clearInterval(cmTimer); cmTimer = 0; }
   if (cmAny()) cmTimer = setInterval(cmPlaceAll, 400);   // follows a layout change (HMR) without a frame loop
+  schedule();   // R27: a frame over one of these elements draws its contour once
   return found;
 }
 function followCheck() {
@@ -882,20 +942,37 @@ function bxPlace(el, r) {
     bx = { wrap: wrap, box: box, frame: fr, left: l1, right: l2 };
   }
   bx.wrap.style.display = ''; anchor(bx.wrap, el);
-  var fb = frameBox({ x: r.left, y: r.top, w: r.width, h: r.height }), x = fb.x, y = fb.y, w = fb.w, h = fb.h;   // R15: 2 px from the window's sides
-  bx.frame.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)'; bx.frame.style.width = w.toFixed(2) + 'px'; bx.frame.style.height = h.toFixed(2) + 'px';
+  var fb = frameBox({ x: r.left, y: r.top, w: r.width, h: r.height });   // R15: 2 px from the window's sides; R27: the hover frame's box
+  boxTo(bx.frame, fb); if (cmOn(el)) bx.frame.classList.add('nb'); else bx.frame.classList.remove('nb');
   var t1 = String(follow.draw.label || seg(el)).slice(0, 120), t2 = Math.round(r.width) + 'x' + Math.round(r.height);
   if (bx.left.textContent !== t1) bx.left.textContent = t1;
   if (bx.right.textContent !== t2) bx.right.textContent = t2;
-  var lp = labelsPlace(fb, bx.left.offsetWidth || 120, bx.right.offsetWidth || 60);
+  var lw = bx.left.offsetWidth || 120, rw = bx.right.offsetWidth || 60, lp = labelsPlace(fb, lw, rw);
   bx.left.style.transform = 'translate(' + lp.lx.toFixed(2) + 'px,' + lp.y.toFixed(2) + 'px)';
-  bx.right.style.transform = 'translate(' + lp.rx.toFixed(2) + 'px,' + lp.y.toFixed(2) + 'px)'; bx.right.style.visibility = lp.both ? '' : 'hidden';
-  // R16: the padding and gap of the selected element stay drawn, bubble open; a change of their values moves softly
-  if (follow.el && !(cur && cur.range)) {
-    labelBox = { x: lp.lx - 2, y: lp.y - 2, w: (lp.both ? lp.rx + (bx.right.offsetWidth || 60) : lp.lx + (bx.left.offsetWidth || 120)) - lp.lx + 4, h: 24 };
-    anchor(frameWrap, el); smooth(true);
-    placeSpace({ el: el, range: null, frame: null, ox: 0, oy: 0, kind: 'main' }, !insShown);
+  bx.right.style.transform = 'translate(' + lp.rx.toFixed(2) + 'px,' + lp.ry.toFixed(2) + 'px)';   // R33: under the name, inside the frame, when narrow
+  // R16: the padding and gap of the selected element stay drawn, bubble open. R37: computed in the same frame as the
+  // frame and its labels (glued while scrolling); the soft transition only when a VALUE changed (padding, gap, size),
+  // never for a move (scroll, window resize), and never while a restyle (R36) is followed frame by frame.
+  if (follow.el && !peek && !(cur && cur.range)) {
+    labelBox = labelBoxes(lp, lw, rw);
+    anchor(frameWrap, el);
+    var info = { el: el, range: null, frame: null, ox: 0, oy: 0, kind: 'main' }, g = spaceGeometry(info), key = spaceKey(g, r), now = performance.now();
+    var resized = innerWidth !== insVW || innerHeight !== insVH; insVW = innerWidth; insVH = innerHeight;
+    if (insShown && insEl === el && key !== insKey && !resized && !tracking()) smUntil = now + 200;
+    smooth(now < smUntil);
+    insKey = key;
+    placeSpace(info, !insShown, g);
   }
+}
+// R37: the inspector's values relative to the element (what a scroll does not change), rounded to 1/4 px.
+var insKey = '', insVW = 0, insVH = 0, smUntil = 0;
+function spaceKey(g, r) {
+  if (!g) return '';
+  var q = function (v) { return Math.round(v * 4) / 4; }, out = [q(r.width), q(r.height)], p = g.pad;
+  if (p) out.push(q(p.ox - r.left), q(p.oy - r.top), q(p.ow), q(p.oh), q(p.ix - r.left), q(p.iy - r.top), q(p.iw), q(p.ih), q(p.r));
+  for (var i = 0; i < g.gaps.length; i++) { var b = g.gaps[i]; out.push(q(b.x - r.left), q(b.y - r.top), q(b.w), q(b.h)); }
+  for (var j = 0; j < g.labels.length; j++) out.push(g.labels[j].t);
+  return out.join(',');
 }
 // R16: soft updates of the selected element's inspector (not for the hover, which jumps to another element)
 function smooth(on) {
@@ -917,10 +994,41 @@ function followSet(a) {
   return !!el;
 }
 
+// R26: the user rests on a chip of an element (composer or thread, panel or bubble): the page scrolls softly to it when it
+// is not in view and shows it as hovered (frame, the two labels, the padding / gap inspector); a new one replaces it;
+// at the end, back to what was there (the selected element, the bubble's element, or nothing), without scrolling back.
+function peekSet(a) {
+  var el = null;
+  if (a && a.active && a.selector) { el = cmFind(a.selector); if (!el) { try { el = D.querySelector(String(a.selector)); } catch (e) { el = null; } } }
+  if (!el) {
+    if (!peek) return false;
+    peek = null; insEl = null; smooth(false);
+    if (follow && follow.draw) { place(null); followLast = ''; followCheck(); }
+    else if (frozen && cur) place(cur);
+    else { cur = null; haveMove = false; place(null); }
+    return false;
+  }
+  if (peek && peek.el === el) return true;
+  peek = { el: el, kind: 'main', ox: 0, oy: 0, shadow: [], frames: [], frame: null, range: null };
+  smooth(false);
+  var r = el.getBoundingClientRect(), seen = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+  var whole = r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
+  if (!seen || (!whole && r.height <= innerHeight && r.width <= innerWidth)) {
+    try { el.scrollIntoView({ block: seen ? 'nearest' : 'center', inline: 'nearest', behavior: reduced ? 'auto' : 'smooth' }); } catch (e) {}
+  }
+  place(peek); schedule();
+  return true;
+}
+// R36: the host swaps the page's style sheets in place with a temporary transition (chat-transition.h) and says so with
+// this event: the frames, labels and inspector follow the gliding values frame by frame, without their own transition.
+function onRestyle(e) {
+  var ms = 0; try { ms = +(e.detail && e.detail.ms) || 0; } catch (x) {}
+  trackUntil = performance.now() + Math.max(0, Math.min(2000, ms)) + 120; smooth(false); smUntil = 0; schedule();
+}
 function teardown() {
   if (!alive) return; alive = false;
   markClear();
-  if (cmTimer) { clearInterval(cmTimer); cmTimer = 0; } if (followTimer) { clearInterval(followTimer); followTimer = 0; } cmarks = {}; follow = null;
+  if (cmTimer) { clearInterval(cmTimer); cmTimer = 0; } if (followTimer) { clearInterval(followTimer); followTimer = 0; } cmarks = {}; follow = null; peek = null;
   if (raf) cancelAnimationFrame(raf); raf = 0;
   for (var i = 0; i < listeners.length; i++) { var l = listeners[i]; try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) {} }
   listeners = []; cur = null; down = [];
@@ -949,7 +1057,7 @@ function cmd(op, arg) {
   if (op === 'accent') {   // { accent: 'r,g,b', svg: cursor } — colours only: no move, no transition, no new selection
     var a = rgbList(arg && arg.accent); if (!a) return;
     A = a;
-    if (arg.svg) { buildCursor(arg.svg); if (sheet && !off) { try { sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) {} } }
+    if (arg.svg) { buildCursor(arg.svg); if (sheet && !idle()) { try { sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) {} } }
     accentStyle.textContent = accentCss();
     return;
   }
@@ -963,7 +1071,7 @@ function cmd(op, arg) {
       try { if (sheet) sheet.replaceSync(''); } catch (e) {}
       syncShields();
     } else {
-      try { if (sheet) sheet.replaceSync('*,*::before,*::after{' + cursorDecl(true) + '}'); } catch (e) {}
+      if (!ctrl) cursorSheet(true);
       syncShields(); haveMove = px >= 0; schedule();
     }
     return true;
@@ -971,6 +1079,7 @@ function cmd(op, arg) {
   if (op === 'mark') return markSet(arg);   // chat: true when the element was found and marked
   if (op === 'cmarks') return cmSet(arg);   // Mode Commentaire: the ids found in this page
   if (op === 'follow') return followSet(arg);
+  if (op === 'peek') return peekSet(arg);   // R26: { selector, active }
 }
 
 var opts = { capture: true, passive: true };
@@ -985,6 +1094,9 @@ on(window, 'dblclick', stop, true);
 on(window, 'auxclick', stop, true);
 on(window, 'dragstart', stop, true);
 on(window, 'keydown', onKey, true);
+on(window, 'keyup', onKeyUp, true);
+on(window, 'blur', onBlur, true);
+on(window, 'browser-restyle', onRestyle, true);
 on(window, 'focusin', onFocus, true);
 on(window, 'scroll', onScroll, opts);
 on(window, 'resize', onScroll, { passive: true });

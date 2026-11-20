@@ -239,6 +239,16 @@ inline bool LooksLikeAnnotation(const std::wstring& json) {
     return json.size() > 2 && json.find(L"\"type\":\"browser-annotation\"") != std::wstring::npos;
 }
 
+// R26: the argument of the page command « peek » (annotation-script.h, peekSet): the chip's element shown as hovered
+// (scrolled softly into view when it is not), or the end of it. {"active":true,"selector":"…"} / {"active":false}.
+inline std::string PeekArg(const std::string& selector, bool active) {
+    SJ::Value v = SJ::Value::Obj();
+    const bool on = active && !selector.empty() && selector.size() <= 4096;
+    v.Set("active", SJ::Value::Bool(on));
+    if (on) v.Set("selector", SJ::Value::Str(selector));
+    return SJ::Serialize(v);
+}
+
 // ---------------------------------------------------------------- capture crop
 // rect/viewport in CSS px of the top viewport; capture = the CapturePreview PNG (viewport pixels).
 struct CropPlan {

@@ -53,6 +53,9 @@ inline constexpr std::uint32_t gap = 0xE0479E, gapLabel = 0xD63E92;
 // Page CSS constants of the frame (annotation-script.h; R14 = Paper 18QK-0 / 18QQ-0): edges 2 px, labels 20 px high,
 // padding 1 / 6, top corners 3, Inter Display 400 13/18, text #FFFFFF (Paper: #FFFFFFE6 = 4.03:1 on #3E67FF, under the 4.5:1 a 13 px text needs: lifted to white, as the band's BETA).
 namespace FrameSpec { inline constexpr double edge = 2, padX = 6, padY = 1, radius = 3, font = 13, line = 18; inline constexpr float textAlpha = 1.f; }
+// R27: the page draws every frame (hover, selection, conversation, bubble) as one box whose border is the 2 px edge
+// rounded to whole device pixels (edgePx in annotation-script.h): 2 at 100 %, 3 at 125 % and 150 % (2.4 / 2 CSS px).
+inline double EdgeCss(double dpr) { if (!(dpr > 0)) dpr = 1; return std::max(1.0, std::round(FrameSpec::edge * dpr)) / dpr; }
 
 class SelectionFrame {
     Layer layer_; HINSTANCE instance_ = nullptr; HWND parent_ = nullptr; std::wstring root_;
@@ -147,7 +150,7 @@ public:
         auto Y = [&](double css) { return float((m.page.top - origin.y + css * m.dpr) / dipScale); };
         const D2D1_COLOR_F accent{((m.accent >> 16) & 255) / 255.f, ((m.accent >> 8) & 255) / 255.f, (m.accent & 255) / 255.f, 1};
         if (m.hasPad || !m.gaps.empty()) PaintSpace(ink, m, X, Y, k);   // the hatches: under the edges and the label, as in the page
-        const double e = FrameSpec::edge, w = std::max(m.w, 1.0), h = std::max(m.h, 1.0);
+        const double e = EdgeCss(m.dpr), w = std::max(m.w, 1.0), h = std::max(m.h, 1.0);   // R27: the page's border, whole device pixels
         ink.Fill({X(m.x), Y(m.y), X(m.x + w), Y(m.y + e)}, 0, accent);               // top
         ink.Fill({X(m.x), Y(m.y + h - e), X(m.x + w), Y(m.y + h)}, 0, accent);       // bottom
         ink.Fill({X(m.x), Y(m.y), X(m.x + e), Y(m.y + h)}, 0, accent);               // left
