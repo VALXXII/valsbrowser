@@ -66,6 +66,10 @@ inline bool FillTurnLabel(std::string& kept, const std::string& now) { if (!kept
 // …and while the turn runs, the session's own announcement wins over the composer's guess (coordinator, 19 Nov 2026).
 inline bool CorrectTurnLabel(std::string& kept, const std::string& now) { if (now.empty() || now == kept) return false; kept = now; return true; }
 
+// R28: until the browser has applied its choices to a new session (model, effort, mode), the chat shows what will be
+// applied — the composer is right and stable from its first image; the session's own announcement shows afterwards.
+inline std::string Intended(const std::string& current, const std::string& wanted, bool applied) { return applied || wanted.empty() ? current : wanted; }
+
 // R4 (Paper 14RK-0, updated by the user): the mode menu has exactly four lines, in this order — « Accept edits » (the
 // agent's file-edits mode: Claude acceptEdits, Codex workspace-write), « Auto » (the mode where the agent decides its
 // permissions itself: Claude auto, Codex agent), « Demander », « Planifier ». The mode that bypasses every permission is

@@ -137,14 +137,16 @@ struct Header {
     // page's URL without its fragment; selector: unique in that page when it was aimed; label « button.btn-primary »;
     // anchorSource: its file:line when known (« index.html:25 »).
     std::string anchorSelector, anchorLabel, anchorPage, anchorSource;
+    bool sent = true;   // R32: a message (or a kept annotation) left this conversation; false: never shown as an element's conversation
     bool Anchored() const { return !anchorSelector.empty(); }
+    bool Marked() const { return Anchored() && sent; }   // R32: the frame + icon of 18IJ-0, only after a message was sent
     SJ::Value ToJson() const {
         SJ::Value o = SJ::Value::Obj(); o.Set("id", SJ::Value::Str(id)); o.Set("origin", SJ::Value::Str(origin)); o.Set("siteLabel", SJ::Value::Str(siteLabel));
         o.Set("title", SJ::Value::Str(title)); o.Set("agentId", SJ::Value::Str(agentId)); o.Set("sessionId", SJ::Value::Str(sessionId)); o.Set("source", SJ::Value::Str(source));
         o.Set("folder", SJ::Value::Str(Utf8(folder))); o.Set("createdAt", SJ::Value::Int(createdAt)); o.Set("updatedAt", SJ::Value::Int(updatedAt)); o.Set("promptVersion", SJ::Value::Int(promptVersion));
         if (windowTokens > 0) { o.Set("usedTokens", SJ::Value::Int(usedTokens)); o.Set("windowTokens", SJ::Value::Int(windowTokens)); }
         if (Anchored()) { SJ::Value a = SJ::Value::Obj(); a.Set("selector", SJ::Value::Str(anchorSelector)); a.Set("label", SJ::Value::Str(anchorLabel)); a.Set("page", SJ::Value::Str(anchorPage));
-                          if (!anchorSource.empty()) a.Set("source", SJ::Value::Str(anchorSource)); o.Set("anchor", std::move(a)); }
+                          if (!anchorSource.empty()) a.Set("source", SJ::Value::Str(anchorSource)); if (!sent) a.Set("sent", SJ::Value::Bool(false)); o.Set("anchor", std::move(a)); }
         return o;
     }
     static bool FromJson(const SJ::Value& v, Header& h) {
@@ -154,9 +156,11 @@ struct Header {
         h.sessionId = Str(v, "sessionId", 512); h.source = Str(v, "source", 300); h.folder = Wide(Str(v, "folder", 2048));
         h.createdAt = Int(v, "createdAt"); h.updatedAt = Int(v, "updatedAt"); h.promptVersion = int(Int(v, "promptVersion"));
         h.usedTokens = std::max<std::int64_t>(0, Int(v, "usedTokens")); h.windowTokens = std::max<std::int64_t>(0, Int(v, "windowTokens"));
+        h.sent = true;
         if (const auto* a = v.Get("anchor"); a && a->IsObject()) {
             h.anchorSelector = Str(*a, "selector", 2048); h.anchorLabel = Str(*a, "label", 300); h.anchorPage = Str(*a, "page", 4096); h.anchorSource = Str(*a, "source", 300);
             if (h.anchorPage.empty()) h.anchorSelector.clear();
+            if (const auto* s = a->Get("sent"); s && s->IsBool()) h.sent = s->boolean;   // absent (before R32): sent
         }
         return true;
     }

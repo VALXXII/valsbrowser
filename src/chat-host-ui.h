@@ -46,21 +46,32 @@ void ApplyMark(const char* state, const std::string& selector) {
 }
 // After a turn that changed files: the page must show them. A dev server that reloads by itself (HMR client in the
 // page, or a navigation that already happened during the turn) is left alone; otherwise the chat reloads the page.
-void AfterTurnPage(bool changed) {
+void AfterTurnPage(const std::vector<std::string>& paths) {   // R36: the files the turn changed (relative, « / »)
+    const bool changed = !paths.empty();
     auto t = ChatTab(); if (!t || t->closed || !t->view.p) return;
     if (!changed) { ApplyMark("clear", ""); return; }
     if (ChatLocal::Classify(U8(t->uri)).origin != site.origin) return;   // the tab went elsewhere: nothing to reload
     if (t->navStamp != turnNavStamp || rearmOwed) { Diag(L"page already reloaded during the turn (dev server): no reload"); if (!rearmOwed && !doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return; }
     std::weak_ptr<Tab> weak = t;
-    auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([weak](HRESULT hr, LPCWSTR result) -> HRESULT {
+    auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([weak, paths](HRESULT hr, LPCWSTR result) -> HRESULT {
         auto tab = weak.lock(); if (!tab || tab->closed || !tab->view.p) return S_OK;
         const bool hmr = SUCCEEDED(hr) && result && wcscmp(result, L"true") == 0;
         if (hmr) { Diag(L"dev server with hot reload detected: no reload"); if (post) SetTimer(post, MarkTimer, 700, nullptr); }
-        else { Diag(L"files changed and no dev server reload: reloading the page"); tab->view->Reload(); }
+        else { Diag(L"files changed and no dev server reload: the page shows them (transition)"); 
+#if CHAT_HAS_TRANSITION
+            ChatTransition::Reload(tab->controller.p, tab->view.p, paths, motion.ReducedMotion());   // R36 (H2)
+#else
+            tab->view->Reload();
+#endif
+        }
         return S_OK; });
     const wchar_t* probe = L"(function(){try{return !!(document.querySelector('script[src*=\"/@vite/client\"],script[src*=\"webpack-dev-server\"],script[src*=\"/_next/static/chunks/webpack\"],astro-dev-toolbar')"
                            L"||window.__vite_plugin_react_preamble_installed__||window.webpackHotUpdate||window.__webpack_hash__||window.__NEXT_DATA__||window.$RefreshReg$)}catch(e){return false}})()";
+#if CHAT_HAS_TRANSITION
+    if (FAILED(t->view->ExecuteScript(probe, cb))) ChatTransition::Reload(t->controller.p, t->view.p, paths, motion.ReducedMotion());   // R36 (H2)
+#else
     if (FAILED(t->view->ExecuteScript(probe, cb))) t->view->Reload();
+#endif
     cb->Release();
 }
 void DoRearm() {
@@ -447,11 +458,13 @@ void OpenPanel() {
     Ann::Announce(site.local && !site.file ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, site.file ? TR(chat_disabled_file) : TR(chat_disabled_not_local)));
     Diag(L"panel opened on " + W(site.origin) + (site.local ? L"" : L" (not local: disabled)") + (folder.empty() ? L", no folder yet" : L", folder " + folder));
 }
+void WarmBubble();
 void FinishClose() {
     panelState = PanelState::Closed; view.Show(false);
     ::Layout(); Ann::LauncherSync(); SyncChromeBits();
     if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr);
     ArmAgentIdle();
+    if (CommentLayout()) WarmBubble();   // R34 / R18: the panel is off screen: the page becomes the warm bubble now
 }
 void ClosePanel() {
     if (!Open()) return;
@@ -608,8 +621,9 @@ void OnPanelMessage(const std::string& json) {
         panelReady = true; stats.readyAt = Ann::NowMs();
         Diag(L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
-        Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else if (BubbleWarm()) SendLayout(false); SendState(); SendThread(); SendCommands(); SendQueue();
-        for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }
+        Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else SendLayout(false);   // R34: the layout the page needs, always first SendState(); SendThread(); SendCommands(); SendQueue();
+        if (!BubbleOpen() && !BubbleWarm())   // R35: the panel's draft (its chips) stays the panel's
+            for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
         for (const auto& s : activeStrips) Send("strip", s.second);
         // the cards still waiting were sent again by SendThread (after its thread.reset)
@@ -635,6 +649,19 @@ void OnPanelMessage(const std::string& json) {
     }
     if (type == "annotations.request") { PoseBatch(L"/annotations"); return; }
     if (type == "annotate") { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(m.Text("text", 400000), ids, {}, true)) return; AddAnchorElement(ids); KeepAnnotation(m.Text("text", 400000), ids); return; }   // contract B 1.6: Ctrl+Entrée (+ the bubble's element)
+    if (type == "element.hover") {   // R26 (P -> H, H2's peek): the element of a chip, shown in the page while it is hovered
+        const std::string id = m.Text("id", 64); const auto* a = v.Get("active"); const bool active = a && a->IsBool() && a->boolean;
+        std::string selector;
+        if (auto it = composerElements.find(id); it != composerElements.end()) selector = it->second.selector;
+        else for (const auto& e : turn.elements) if (e.id == id) { selector = e.selector; break; }
+        if (active && selector.empty()) return;
+#if CHAT_HAS_TRANSITION
+        Query(ChatTab(), L"peek", W(AnnotationHost::PeekArg(selector, active)), nullptr);
+#else
+        (void)active;
+#endif
+        return;
+    }
     if (type == "bubble.size") {   // contract B 1.8, + R3 overflow (§20)
         const auto* w = v.Get("width"); const auto* h = v.Get("height"); if (!w || !h || !w->IsNumber() || !h->IsNumber()) return;
         auto edge = [&](const char* k) { const auto* e = v.Get(k); return e && e->IsNumber() && e->number >= 0 && e->number <= 10000 ? int(e->number) : 0; };

@@ -29,6 +29,12 @@
 #include "chat-batch.h"
 #include "chat-options.h"
 #include "chat-bubble.h"
+#if __has_include("chat-transition.h")
+#include "chat-transition.h"   // R36 (H2): the page shows the agent's changes with a fade / the values gliding
+#define CHAT_HAS_TRANSITION 1
+#else
+#define CHAT_HAS_TRANSITION 0   // until H2's files are in: a plain reload, no chip peek
+#endif
 #include <set>
 #include "chat-store.h"
 #include "chat-folder.h"
@@ -99,6 +105,7 @@ struct AgentInfo {   // what the panel shows for one agent (state.agents)
     std::vector<Acp::AuthMethod> auth; std::vector<Acp::ConfigOption> options; Acp::ModeState modes; Acp::Capabilities caps; std::vector<Acp::Command> commands;
 };
 std::map<std::string, AgentInfo> agentInfo;
+bool defaultsApplied = false;   // R28: the browser's model / effort / mode choices are applied to the session (until then: shown as intended)
 
 // ---------------------------------------------------------------- state
 enum class PanelState { Closed, Opening, Open, Closing };
@@ -301,17 +308,22 @@ void SendState() {
     st.Set("agents", std::move(agents)); st.Set("agentId", Str(agentId));
     const auto& info = agentInfo[agentId];
     const auto* model = Acp::FindModelOption(info.options); const auto* effort = Acp::FindEffortOption(info.options);
-    {   const std::string shown = model ? ChatOptions::Shown(model->choices, model->currentValue, DefaultModelOf(agentId, model)) : std::string();
+    std::string WantedEffort(const Acp::ConfigOption* e); std::string WantedMode(const ModeView& mv);
+    {   std::string shown = model ? ChatOptions::Shown(model->choices, model->currentValue, DefaultModelOf(agentId, model)) : std::string();
+        if (model && !pendingModel.empty()) for (const auto& c : model->choices) if (c.value == pendingModel && !ChatOptions::IsAlias(c)) shown = ChatOptions::Intended(shown, pendingModel, defaultsApplied);   // R28
         st.Set("model", ChatStore::ValidId(shown) ? Str(shown) : SJ::Value::Null()); }
-    // efforts (V1.2): the agent's levels without its « Default »; a session still on that alias shows no effort
-    st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(effort->currentValue) && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? Str(effort->currentValue) : SJ::Value::Null());
+    // efforts (V1.2): the agent's levels without its « Default »; R28: before the browser's choice is applied, that choice
+    {   std::string cur = effort && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? effort->currentValue : std::string();
+        if (effort) cur = ChatOptions::Intended(cur, WantedEffort(effort), defaultsApplied);
+        st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(cur) ? Str(cur) : SJ::Value::Null()); }
     {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
         const std::vector<ModeEntry> shown = ShownModes(mv);
         {   static std::string said; std::string ids; for (const auto& m : shown) ids += (ids.empty() ? "" : ", ") + m.id + "=" + m.kind;
             if (!shown.empty() && ids != said) { said = ids; Diag(L"modes offered: " + W(ids)); } }   // R4: the QA reads it
         for (const auto& m : shown) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
-        st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mv.current) ? Str(mv.current) : SJ::Value::Null()); }
+        const std::string mode = ChatOptions::Intended(mv.current, WantedMode(mv), defaultsApplied);   // R28
+        st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mode) ? Str(mode) : SJ::Value::Null()); }
     {   const auto& shown = aside.on ? aside.c.data.head : convo.data.head; const bool running = turn.active && !aside.on;   // contract B 1.8: the conversation shown
         SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));
         if (!shown.source.empty()) c.Set("source", Str(shown.source)); c.Set("running", SJ::Value::Bool(running)); st.Set("conversation", std::move(c));
@@ -377,6 +389,7 @@ void SaveConvo() {
     if (convo.data.head.id.empty() || convo.data.items.empty()) return;
     convo.data.head.updatedAt = BA::SystemNow();
     auto copy = std::make_shared<ChatStore::Conversation>(convo.data);
+    bool SentConvo(const Convo& c); convo.data.head.sent = SentConvo(convo); copy->head.sent = convo.data.head.sent;   // R32: kept with it
     void NoteAnchored(const ChatStore::Header& h); NoteAnchored(convo.data.head);   // Mode Commentaire: its element's frame + icon
     Ann::Run([copy] { if (!History().Save(*copy)) OutputDebugStringW(L"chat: conversation not saved\n"); }, nullptr);
 }

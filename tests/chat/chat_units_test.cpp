@@ -382,6 +382,8 @@ static void TestOptions() {
         std::string guess = "Sonnet 5.5";
         Check(!CorrectTurnLabel(guess, "Sonnet 5.5") && !CorrectTurnLabel(guess, "") && guess == "Sonnet 5.5", "D6: the composer's guess confirmed, or nothing announced: no update");
         Check(CorrectTurnLabel(guess, "Opus 5.5") && guess == "Opus 5.5", "D6: the session announces another model while the turn runs: the header is corrected"); }
+    // R28: until the browser's choices are applied, the composer shows them (right and stable from the first image)
+    Check(Intended("default", "medium", false) == "medium" && Intended("medium", "", false) == "medium" && Intended("high", "medium", true) == "high", "R28: the choice to apply shows first; the session's own value once applied");
     // R4 (Paper 14RK-0, updated): Accept edits, Auto, Demander, Planifier — in this order, nothing else
     using P = std::pair<std::string, std::string>;
     const std::vector<P> claude = {{"ask", "default"}, {"auto", "acceptEdits"}, {"plan", "plan"}, {"auto", "auto"}, {"other", "dontAsk"}};
@@ -467,6 +469,40 @@ static void TestBubble() {
         SJ::Value bad; SJ::Parse("[{\"name\":\"no id\"},7,{\"id\":\"x\",\"choices\":[{\"name\":\"no value\"}]}]", bad);
         const auto junk = ChatStore::OptionsFromJson<Op>(bad);
         Check(junk.size() == 1 && junk[0].id == "x" && junk[0].choices.empty(), "R13: a damaged cache keeps only what is whole"); }
+    // R29 / R38: the anchor, frozen once placed
+    {   const Rect area{0, 100, 1200, 900}, el{100, 400, 400, 450};
+        const auto p = Place(el, 320, 120, area, 12, 12, Side::Right, 4); const auto a = AnchorOf(p, el);
+        const auto taller = Anchored(a, el, 320, 400);
+        Check(taller.left == p.rect.left && taller.top == p.rect.top && taller.bottom == p.rect.top + 400, "R29: a taller bubble (new card, open diff) keeps its top and its side: it only grows down");
+        const auto bottomOut = Anchored(a, el, 320, 700);
+        Check(bottomOut.top == p.rect.top && bottomOut.bottom > area.bottom, "R29: never moved to fit the window (the user scrolls)");
+        const Rect scrolled{100, 250, 400, 300};
+        const auto follow = Anchored(a, scrolled, 320, 120);
+        Check(follow.top - scrolled.top == p.rect.top - el.top && follow.left == p.rect.left, "R29: it follows its element at the same offset");
+        const auto pa = Place({20, 700, 1180, 880}, 320, 150, area, 12, 12, Side::Right, 4); const auto aa = AnchorOf(pa, {20, 700, 1180, 880});
+        const auto up = Anchored(aa, {20, 700, 1180, 880}, 320, 300);
+        Check(pa.side == Side::Above && up.bottom == pa.rect.bottom && up.top == pa.rect.bottom - 300, "R29: above its element it grows up, its bottom fixed");
+        Check(BottomShift({100, 700, 420, 960}, area, 12, true) == 72 && BottomShift({100, 700, 420, 960}, area, 12, false) == 0 && BottomShift({100, 300, 420, 500}, area, 12, true) == 0,
+              "R29: the one exception — at the end of the document it moves up by what is missing, once; elsewhere never");
+        const auto c = Clip({0, 0, 400, 300}, {0, 50, 1000, 1000});
+        Check(c.top == 50 && c.bottom == 300 && c.left == 0, "R29: never drawn over the browser's bars (clipped to the page area)"); }
+    // R34: the one layout rule — a fast back-and-forth between the two layouts always ends in the right one
+    {   Check(BubbleLayout(true, false, true, false) && BubbleLayout(true, false, false, true), "R34: Commentaire, panel off screen, bubble open or warm: « bubble »");
+        Check(!BubbleLayout(false, false, false, true) && !BubbleLayout(true, true, false, true) && !BubbleLayout(true, false, false, false), "R34: the panel chosen, or still sliding out, or no bubble: « panel »");
+        bool comment = true, panelShown = false, open = false, warm = true; int wrong = 0;
+        for (int i = 0; i < 200; ++i) {   // the switch as the host does it: the warm bubble ends before the panel shows, and comes back once the panel is off screen
+            comment = !comment;
+            if (!comment) { open = false; warm = false; panelShown = true; if (BubbleLayout(comment, panelShown, open, warm)) ++wrong; }
+            else { if (BubbleLayout(comment, panelShown, open, warm)) ++wrong; panelShown = (i % 3 == 0); if (!panelShown) warm = true; if (warm && !BubbleLayout(comment, panelShown, open, warm)) ++wrong; }
+        }
+        Check(wrong == 0, "R34: 200 fast switches, never « bubble » in the panel nor « panel » in a ready bubble"); }
+    // R32: an element's conversation is marked only once something was sent from it, and that is kept
+    {   ChatStore::Header h; h.id = "c_x"; h.anchorSelector = "#a"; h.anchorPage = "http://localhost/"; h.sent = false;
+        ChatStore::Header back; namespace SJ = StrictJson; const bool ok = ChatStore::Header::FromJson(h.ToJson(), back);
+        Check(ok && back.Anchored() && !back.sent && !back.Marked(), "R32: a conversation that sent nothing is never shown as the element's (kept on disk)");
+        h.sent = true; ChatStore::Header::FromJson(h.ToJson(), back); Check(back.Marked(), "R32: …and is once a message left it");
+        SJ::Value old; SJ::Parse("{\"id\":\"c_y\",\"anchor\":{\"selector\":\"#a\",\"page\":\"http://localhost/\"}}", old); ChatStore::Header oh; ChatStore::Header::FromJson(old, oh);
+        Check(oh.Marked(), "R32: a conversation saved before (no flag) keeps its mark"); }
     // R20: 320 px
     // D1: the open bubble's element — frame 4 px out, labels 24 px above, the real size as « 520x44 »
     Check(SizeLabel(520, 44) == "520x44" && SizeLabel(239.6, 43.5) == "240x44" && FrameOutset == 4 && LabelRise == 24 && LabelHeight == 20, "D1: Paper's frame (4 px out) and size label (520x44)");

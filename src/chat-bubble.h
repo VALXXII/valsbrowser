@@ -124,6 +124,32 @@ inline bool VisualHosting(const std::wstring& visualSwitch) { return visualSwitc
 // The colour behind the page is transparent when the page is a visual, or sits in the bubble's see-through window
 // (the page draws its own 16 px surface); else it is the canvas #171717 (the panel: no white flash while it loads).
 inline bool TransparentBackground(bool visual, bool inBubble) { return visual || inBubble; }
+// R29 / R38: once placed, the bubble keeps its anchor for the whole conversation — the same offset from its element,
+// the same fixed edge (its top; its bottom when it is above the element). A new card, an open diff, an expanded
+// permission or error only make it grow away from that edge; it is never moved to fit the window (the user scrolls).
+// Only exception: at the end of the document, where the page cannot scroll further and the bubble would be cut, it
+// moves up once by what is missing (`BottomShift`).
+struct Anchor { bool set = false; Side side = Side::Right; int dx = 0, dy = 0; };   // dy: from the element's top to the fixed edge
+inline Anchor AnchorOf(const Placement& p, const Rect& element) {
+    Anchor a; a.set = true; a.side = p.side; a.dx = p.rect.left - element.left;
+    a.dy = (p.side == Side::Above ? p.rect.bottom : p.rect.top) - element.top; return a;
+}
+inline Rect Anchored(const Anchor& a, const Rect& element, int w, int h) {
+    Rect r; r.left = element.left + a.dx; r.right = r.left + w;
+    if (a.side == Side::Above) { r.bottom = element.top + a.dy; r.top = r.bottom - h; } else { r.top = element.top + a.dy; r.bottom = r.top + h; }
+    return r;
+}
+inline int BottomShift(const Rect& surface, const Rect& area, int margin, bool atDocumentEnd) {
+    const int over = surface.bottom - (area.bottom - margin);
+    return atDocumentEnd && over > 0 ? std::min(over, std::max(0, surface.top - (area.top + margin))) : 0;
+}
+// R29: what of the window may show — never over the browser's own bars (the page area, in window pixels).
+inline Rect Clip(const Rect& a, const Rect& b) { return {std::max(a.left, b.left), std::max(a.top, b.top), std::max(std::max(a.left, b.left), std::min(a.right, b.right)), std::max(std::max(a.top, b.top), std::min(a.bottom, b.bottom))}; }
+// R34: the one rule for the layout the chat page gets. « bubble » only when the layout is Commentaire, the panel is
+// not on screen (not even sliding out) and the bubble is open or kept warm; else « panel » (with its header, thread and
+// composer at full height). Every `layout` the host sends goes through it: no race between the switch, the panel's
+// slide and the warm bubble.
+inline bool BubbleLayout(bool commentLayout, bool panelShown, bool bubbleOpen, bool bubbleWarm) { return commentLayout && !panelShown && (bubbleOpen || bubbleWarm); }
 // The page an anchor belongs to: the URL without its fragment (a « #section » link does not change the page).
 inline std::string PageKey(const std::string& url) { const auto hash = url.find('#'); return hash == std::string::npos ? url : url.substr(0, hash); }
 } // namespace ChatBubble

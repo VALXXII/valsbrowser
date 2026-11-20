@@ -2,7 +2,7 @@
 // Chat intégré — agent session and turns (included by src/chat-host.h; see its header for the whole picture).
 namespace Chat {
 
-void ProcessQueue(); void ApplyMark(const char* state, const std::string& selector); void AfterTurnPage(bool changed); void ArmAgentIdle(); void StopTurn();
+void ProcessQueue(); void ApplyMark(const char* state, const std::string& selector); void AfterTurnPage(const std::vector<std::string>& paths); void ArmAgentIdle(); void StopTurn();
 void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch = false);
 // « Traiter les annotations » (chat-host-batch.h)
 SJ::Value BatchItemJson(const BatchItem& i, bool withStatus); void BatchToolDone(ChatTools::Ours tool, const std::string& annotation, const std::string& rawInput); void BatchTurnEnded(const std::string& stopReason);
@@ -75,6 +75,7 @@ void PrepareProgress() {
 
 // ---------------------------------------------------------------- session (one agent process per conversation)
 void DisposeSession(const wchar_t* why) {
+    defaultsApplied = false;   // R28: the next session shows the browser's choices until they are applied
     if (!session) return;
     session->Dispose(); disposed.push_back(std::move(session)); session.reset();   // kept until its threads have ended (Shutdown waits)
     sessionReady = sessionStarting = false; afterReady = nullptr;
@@ -107,6 +108,21 @@ void FillTurnHeader() {
         Send("turn.start", item);   // the same turnId again: the page updates the header it already shows (contract B §20.12)
     }
 }
+// What ApplyDefaults will set (R28 shows it before): the effort chosen last for this site (or just now), else Medium.
+std::string WantedEffort(const Acp::ConfigOption* e) {
+    if (!e) return "";
+    std::string remembered = pendingEffort; if (remembered.empty()) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) remembered = it->second.effort;
+    const std::string want = ChatOptions::EffortToApply(e->choices, e->currentValue, remembered);
+    return want;
+}
+// …and the mode: the one chosen for this site, else the agent's « ask » mode.
+std::string WantedMode(const ModeView& mv) {
+    auto has = [&](const std::string& id) { for (const auto& m : mv.list) if (m.id == id) return true; return false; };
+    if (!pendingMode.empty() && has(pendingMode)) return pendingMode;
+    for (const auto& id : mv.map.ask) if (has(id)) return id;
+    for (const auto& m : mv.list) if (m.kind == "ask") return m.id;
+    return "";
+}
 void ApplyDefaults() {   // the site's remembered choices, else « Demander » (decision 4): never a hard-coded id, the agent's own lists
     if (!session || !sessionReady) return;
     auto& info = agentInfo[agentId];
@@ -134,6 +150,7 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
     }
     if (!want.empty() && want != mv.current) { SetAgentMode(want); Diag(L"mode set to « " + W(want) + L" » (the session started in « " + W(mv.current) + L" »)"); }
     else Diag(L"mode « " + W(mv.current) + L" » kept");
+    defaultsApplied = true;   // R28: from now on the composer shows the session's own values (the same, once applied)
 }
 void OnStarted(const Acp::StartResult& r) {
     sessionStarting = false; auto& info = agentInfo[agentId]; started = r;
@@ -649,7 +666,8 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     SendState(); SyncChromeBits(); SaveConvo();
     if (wasBatch) BatchTurnEnded(stopReason);   // the card's last word: what the store says, and what is left
     {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open() && !Ann::s.paused)); Send("pick.state", std::move(p)); }
-    AfterTurnPage(changed);
+    {   std::vector<std::string> paths; if (summary) for (const auto& c : summary->changes) paths.push_back(c.path);
+        AfterTurnPage(paths); }   // R36: the transition picks its way from the files changed
     ArmAgentIdle();
     if (auto next = std::move(afterTurn)) { afterTurn = nullptr; next(); }
     ProcessQueue();
@@ -714,7 +732,7 @@ void Undo(const std::string& panelTurn, const std::string& checkpoint) {
                 } else for (auto& item : convo.data.items) { const auto* ty = item.Get("type"); const auto* id = item.Get("turnId"); if (ty && ty->string == "turn.end" && id && id->string == t) { item.Set("undoable", SJ::Value::Bool(false)); item.Set("undone", SJ::Value::Bool(true)); } }
                 Send("turn.undone", std::move(m));
             }
-            if (ok) { SaveConvo(); doneMarkSelector.clear(); ApplyMark("clear", ""); if (auto t = ChatTab()) turnNavStamp = t->navStamp; AfterTurnPage(!out->restored.empty()); }
+            if (ok) { SaveConvo(); doneMarkSelector.clear(); ApplyMark("clear", ""); if (auto t = ChatTab()) turnNavStamp = t->navStamp; AfterTurnPage(out->restored); }
             if (auto next = std::move(afterUndo)) { afterUndo = nullptr; next(ok); }
         });
 }
