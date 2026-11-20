@@ -143,6 +143,7 @@ void OnStarted(const Acp::StartResult& r) {
         sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true;
         info.options = r.configOptions; info.modes = r.modes; info.caps = r.capabilities; info.commands = r.commands;
         if (const auto* mo = Acp::FindModelOption(info.options); mo && !agentFirstModel.count(agentId)) agentFirstModel[agentId] = mo->currentValue;
+        { void SaveOptionsCache(); SaveOptionsCache(); }   // R13: shown from the next launch's first opening
         if (!r.resumed || convo.data.head.promptVersion != ChatPrompt::Version) convo.preambleSent = false;
         convo.data.head.sessionId = r.sessionId; convo.data.head.agentId = agentId;
         ClearStrip("auth"); ApplyDefaults(); SendState(); SendCommands();
@@ -444,7 +445,7 @@ void OnEvent(const Acp::Event& e) {
         waitingPermissions.erase(e.permission.requestId);
         SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(e.permission.requestId)); Send("permission.cancel", std::move(m)); break; }
     case T::ModesChanged: info.modes = e.modes; SendState(); break;
-    case T::ConfigOptionsChanged: info.options = e.configOptions; SendState(); break;
+    case T::ConfigOptionsChanged: { info.options = e.configOptions; SendState(); void SaveOptionsCache(); SaveOptionsCache(); break; }
     case T::CommandsChanged: info.commands = e.commands; SendCommands(); break;
     case T::SessionTitle: if (!e.text.empty()) { convo.data.head.title = ChatPrompt::OneLine(e.text, 60); SendState(); } break;
     case T::Usage: {   // context gauge (contract B 1.2): relayed as it comes (also after a compaction), kept with the conversation

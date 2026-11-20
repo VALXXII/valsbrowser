@@ -5,7 +5,7 @@
 //   switch    the band's two icons (Paper 1AYP-0): Commentaire (a bubble on the element clicked) | Panneau (the chat at
 //             the right, as before). Remembered for all sites (projects.json « layout »).
 //   bubble    a native popup window owned by the browser window that hosts THE chat WebView (moved there with
-//             put_ParentWindow; the panel gets it back the same way): 305 CSS px wide, as high as the page says
+//             put_ParentWindow; the panel gets it back the same way): 320 CSS px wide (R20, the user: Paper said 305), as high as the page says
 //             (`bubble.size`, at most min(520, the free space)), in the free space next to the element (right, left,
 //             below, above — src/chat-bubble.h), never out of the page area; it follows the element (the page posts
 //             `anchor` when the element moves). Échap (`close`) or a click elsewhere closes it; the agent goes on.
@@ -22,7 +22,7 @@ namespace Chat {
 
 bool CommentLayout() { LoadProjects(); return projects.layout == "comment"; }
 float Dpi() { return GetDpiForWindow(window) / 96.f; }
-inline constexpr int BubbleWidthCss = 305, BubbleMaxHeightCss = 520, BubbleStartHeightCss = 104, BubbleGapCss = 12, BubbleLeadCss = 4, BubbleMarginCss = 12;   // Paper: 12 px from the element, 4 px above it
+inline constexpr int BubbleWidthCss = 320,   /* R20: the user's decision (Paper: 305) */ BubbleMaxHeightCss = 520, BubbleStartHeightCss = 104, BubbleGapCss = 12, BubbleLeadCss = 4, BubbleMarginCss = 12;   // Paper: 12 px from the element, 4 px above it
 
 struct BubbleState {
     HWND hwnd = nullptr; bool open = false; std::string conv;      // the conversation it shows
@@ -32,7 +32,9 @@ struct BubbleState {
     double closedAt = -1e9;                                          // NowMs() of the last close (a click that closed it is not a new comment)
     double openedAt = -1e9;                                          // NowMs() of the last opening: the click that opened it gives the page the focus back first
     bool modal = false;                                              // a Windows dialog of ours is up: its deactivation does not close the bubble
-    ChatBubble::Edges over, inset;                                   // R3: what the page asks around its surface / what the window gives (CSS px)
+    ChatBubble::Edges over, inset;                                   // R3: what the page asks around its surface / where the surface is in the window (CSS px)
+    RECT win{}; RECT region{};                                       // R19: the window as placed, its region (window px): changed only when needed
+    bool waitingAck = false;                                         // R18: placed and sized, shown once the page acknowledged the opening layout
     int sizeW = -1, sizeH = -1;                                      // the last bubble.size (a repeat gets no answer: contract §20)
 } bubble;
 std::map<std::string, Element> anchorElements;   // conversation id -> its element (image, source): joins every message of its bubble
@@ -119,19 +121,25 @@ void PlaceBubble() {
     const RECT e = bubble.known ? bubble.element : RECT{a.right - margin, a.bottom - margin, a.right - margin, a.bottom - margin};
     const auto p = ChatBubble::Place({e.left, e.top, e.right, e.bottom}, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)));
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side;
-    // R3: while a menu or a tooltip of the page goes out of the surface, the (transparent) window grows around it, on the
-    // screen the browser is on; the surface stays where it is. Windowed hosting cannot be transparent: nothing granted.
-    ChatBubble::Edges want = bubble.over;   // the page is transparent in the bubble either way (visual, or windowed on a transparent background)
+    // R19: the window is the surface + a fixed transparent margin, as tall as the surface may grow; a menu or a tooltip
+    // out of the surface only widens the window's region (nothing moves: same image before and after, to the pixel)
     MONITORINFO mi{sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mi);
-    const auto grown = ChatBubble::Grow(p.rect, want, {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k);
-    const bool insetChanged = !(grown.inset == bubble.inset); bubble.inset = grown.inset;
-    SetWindowPos(bubble.hwnd, HWND_TOP, grown.window.left, grown.window.top, grown.window.W(), grown.window.H(), SWP_NOACTIVATE);
-    view.Place({0, 0, grown.window.W(), grown.window.H()});
+    const auto f = ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.side == ChatBubble::Side::Above,
+                                           {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
+    const bool insetChanged = !(f.inset == bubble.inset); bubble.inset = f.inset;
+    const RECT wr{f.window.left, f.window.top, f.window.right, f.window.bottom};
+    if (!EqualRect(&wr, &bubble.win)) {
+        bubble.win = wr;
+        SetWindowPos(bubble.hwnd, HWND_TOP, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_NOACTIVATE);
+        view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top});
+    }
+    const RECT rg{f.region.left, f.region.top, f.region.right, f.region.bottom};
+    if (!EqualRect(&rg, &bubble.region)) { bubble.region = rg; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); }   // the system owns the region now
     if ((sideChanged || insetChanged) && panelReady) SendLayout(false);
 }
 RECT BubbleScreenRect() { RECT r{}; if (bubble.hwnd) GetWindowRect(bubble.hwnd, &r); return r; }
 void BubbleModal(bool on) { bubble.modal = on; }
-void CloseBubble(bool focusPage);
+void CloseBubble(bool focusPage); void RevealBubble(const wchar_t* why);
 LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // A click elsewhere — the page, the browser's chrome, another window — takes the activation from the bubble: it closes
     // (its agent goes on). Not while one of our own dialogs is up (image picker, folder picker).
@@ -158,6 +166,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         CloseBubble(false); return 0;
     }
     if (m == WM_APP + 2) { if (bubble.open) { SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
+    if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"after 300 ms (no acknowledgement)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     {   LRESULT r = 0; if (view.HostMessage(h, m, w, l, r)) return r; }   // R1: the page is a visual of this window: mouse, cursor, UI Automation
     if (m == WM_ERASEBKGND) return 1;   // no redirection surface: what the page does not paint is see-through
@@ -189,11 +198,14 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, 10, 10})) { bubble.open = false; Diag(L"bubble WebView creation refused"); return; } }
     else view.Reparent(bubble.hwnd, {0, 0, 10, 10});
+    if (!again) { bubble.win = RECT{}; bubble.region = RECT{}; }
     PlaceBubble();
     bubble.openedAt = Ann::NowMs();
-    ShowWindow(bubble.hwnd, SW_SHOW); SetForegroundWindow(bubble.hwnd); view.Show(true);
-    PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // after Ann::Resume (it focuses the page): the caret goes to the bubble
+    view.Show(true);   // the page renders and measures while the window is still hidden
+    if (again && IsWindowVisible(bubble.hwnd)) { SetForegroundWindow(bubble.hwnd); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0); }
+    else { bubble.waitingAck = true; SetTimer(bubble.hwnd, 0xB2, 300, nullptr); }   // R18: shown at its place once the page says its size (or after 300 ms)
     ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits();
+    MaybeStartSession();   // R13: its agent starts now (model list, model · effort), as the panel's does
     // the page follows the element (its moves become `anchor` messages)
     FollowBubbleElement(followCurrent);
     if (panelReady) {
@@ -215,9 +227,17 @@ void FollowBubbleElement(bool current) {
     if (!current && sel.empty()) { Diag(L"the bubble's element has no selector: not followed"); return; }
     Query(t, L"follow", W(SJ::Serialize(f)), [current](const std::string& r) { if (!current) Diag(L"the bubble's element followed by its selector: " + std::wstring(r == "true" ? L"found" : L"not found (" + W(r.substr(0, 40)) + L")")); });
 }
+// R18: the window appears once, already at its place and size (the page plays its entrance slide).
+void RevealBubble(const wchar_t* why) {
+    if (!bubble.open || !bubble.waitingAck || !bubble.hwnd) return;
+    bubble.waitingAck = false; KillTimer(bubble.hwnd, 0xB2);
+    ShowWindow(bubble.hwnd, SW_SHOWNA); SetForegroundWindow(bubble.hwnd);
+    PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // the caret to the bubble
+    Diag(std::wstring(L"bubble shown at its place ") + why + L" after " + Ann::Ms(Ann::NowMs() - bubble.openedAt) + L" ms");
+}
 void CloseBubble(bool focusPage) {
     if (!bubble.open) return;
-    bubble.open = false; bubble.closedAt = Ann::NowMs();
+    bubble.open = false; bubble.closedAt = Ann::NowMs(); bubble.waitingAck = false; if (bubble.hwnd) KillTimer(bubble.hwnd, 0xB2);
     if (bubble.hwnd) ShowWindow(bubble.hwnd, SW_HIDE);
     view.Show(false);
     if (auto t = ChatTab()) Query(t, L"follow", L"null", nullptr);
@@ -229,12 +249,13 @@ void CloseBubble(bool focusPage) {
 void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over) {
     if (!bubble.open) return;
     over = ChatBubble::Bounded(over);
-    if (wCss == bubble.sizeW && hCss == bubble.sizeH && over == bubble.over) return;   // contract §20: a repeat gets no answer
+    if (wCss == bubble.sizeW && hCss == bubble.sizeH && over == bubble.over) { RevealBubble(L"on the acknowledgement"); return; }   // contract §20: a repeat gets no answer   // i18n-exempt: log detail
     bubble.sizeW = wCss; bubble.sizeH = hCss; bubble.over = over;
     const float k = Dpi();
     bubble.w = int(std::lround(std::clamp(wCss, 200, BubbleWidthCss) * k)); bubble.h = int(std::lround(std::clamp(hCss, 40, BubbleMaxHeightCss) * k));
     const auto before = bubble.inset; PlaceBubble();
     if (bubble.inset == before && panelReady) SendLayout(false);   // R3: every new bubble.size gets its inset (PlaceBubble sent it if it changed)
+    RevealBubble(L"on the acknowledgement");   // R18   // i18n-exempt: log detail
 }
 // The element the bubble follows moved (scroll, layout, reload) or is gone.
 void OnAnchor(const AH::Envelope& e) {

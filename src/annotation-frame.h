@@ -31,8 +31,10 @@ struct FrameMark {
     RECT page{};             // the WebView in the parent's client pixels
     double dpr = 1;          // the page's devicePixelRatio (system scale x zoom)
     double x = 0, y = 0, w = 0, h = 0;          // edges box
-    double lx = 0, ly = 0, lw = 0, lh = 0;      // label box
-    std::wstring text;                          // label text (« button.primary · 240×44 »)
+    double lx = 0, ly = 0, lw = 0, lh = 0;      // label box (R14: the name, « button.primary »)
+    std::wstring text;                          // label text
+    double rx = 0, ry = 0, rw = 0, rh = 0;      // R14: the size label at the right (« 240x44 »), rw 0 = none
+    std::wstring rtext;
     std::uint32_t accent = 0x3E67FF;            // the page's accent (the ints sent to the page script)
     struct Gap { double x = 0, y = 0, w = 0, h = 0; };
     struct Label { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::wstring text; };   // 0 padding, 1 gap
@@ -48,8 +50,9 @@ inline constexpr double pitch = 5, line = 1, labelH = 14, labelR = 3, labelPad =
 inline constexpr float padLine = .4f, padFill = .08f, gapLine = .45f, gapFill = .12f;
 inline constexpr std::uint32_t gap = 0xE0479E, gapLabel = 0xD63E92;
 }
-// Page CSS constants of the frame (annotation-script.h): edges 2 px, label padding 2 / 6, radius 4, font 500 11/16 mono.
-namespace FrameSpec { inline constexpr double edge = 2, padX = 6, padY = 2, radius = 4, font = 11, line = 16; }
+// Page CSS constants of the frame (annotation-script.h; R14 = Paper 18QK-0 / 18QQ-0): edges 2 px, labels 20 px high,
+// padding 1 / 6, top corners 3, Inter Display 400 13/18, text #FFFFFF (Paper: #FFFFFFE6 = 4.03:1 on #3E67FF, under the 4.5:1 a 13 px text needs: lifted to white, as the band's BETA).
+namespace FrameSpec { inline constexpr double edge = 2, padX = 6, padY = 1, radius = 3, font = 13, line = 18; inline constexpr float textAlpha = 1.f; }
 
 class SelectionFrame {
     Layer layer_; HINSTANCE instance_ = nullptr; HWND parent_ = nullptr; std::wstring root_;
@@ -61,6 +64,7 @@ public:
         auto X = [&](double css) { return m.page.left + css * m.dpr; }; auto Y = [&](double css) { return m.page.top + css * m.dpr; };
         double x0 = std::min(m.x, m.lw > 0 ? m.lx : m.x), y0 = std::min(m.y, m.lh > 0 ? m.ly : m.y);
         double x1 = std::max(m.x + m.w, m.lw > 0 ? m.lx + m.lw : m.x + m.w), y1 = std::max(m.y + m.h, m.lh > 0 ? m.ly + m.lh : m.y + m.h);
+        if (m.rw > 0 && m.rh > 0) { x0 = std::min(x0, m.rx); y0 = std::min(y0, m.ry); x1 = std::max(x1, m.rx + m.rw); y1 = std::max(y1, m.ry + m.rh); }   // R14
         if (m.hasPad) { x0 = std::min(x0, m.pad[0]); y0 = std::min(y0, m.pad[1]); x1 = std::max(x1, m.pad[0] + m.pad[2]); y1 = std::max(y1, m.pad[1] + m.pad[3]); }
         for (const auto& b : m.gaps) { x0 = std::min(x0, b.x); y0 = std::min(y0, b.y); x1 = std::max(x1, b.x + b.w); y1 = std::max(y1, b.y + b.h); }
         for (const auto& l : m.labels) { x0 = std::min(x0, l.x); y0 = std::min(y0, l.y); x1 = std::max(x1, l.x + l.w); y1 = std::max(y1, l.y + l.h); }
@@ -148,15 +152,18 @@ public:
         ink.Fill({X(m.x), Y(m.y + h - e), X(m.x + w), Y(m.y + h)}, 0, accent);       // bottom
         ink.Fill({X(m.x), Y(m.y), X(m.x + e), Y(m.y + h)}, 0, accent);               // left
         ink.Fill({X(m.x + w - e), Y(m.y), X(m.x + w), Y(m.y + h)}, 0, accent);       // right
-        if (m.lw > 0 && m.lh > 0) {
-            const D2D1_RECT_F box{X(m.lx), Y(m.ly), X(m.lx + m.lw), Y(m.ly + m.lh)};
-            ink.Fill(box, float(FrameSpec::radius) * k, accent);
-            Font f = Mono(float(FrameSpec::font) * k, float(FrameSpec::line) * k); f.system = true; f.weight = 500;
+        auto tag = [&](double lx, double ly, double lw, double lh, const std::wstring& s) {   // R14: Paper's label (top corners 3, Inter 13/18)
+            if (lw <= 0 || lh <= 0) return;
+            const D2D1_RECT_F box{X(lx), Y(ly), X(lx + lw), Y(ly + lh)}; const float r = float(FrameSpec::radius) * k;
+            ink.Fill(box, r, accent); ink.Fill({box.left, std::max(box.top, box.bottom - r), box.right, box.bottom}, 0, accent);   // square bottom corners
+            Font f = F(float(FrameSpec::font) * k, float(FrameSpec::line) * k, 400);
             const D2D1_RECT_F text{box.left + float(FrameSpec::padX) * k, box.top + float(FrameSpec::padY) * k, box.right - float(FrameSpec::padX) * k + .5f, box.top + float(FrameSpec::padY + FrameSpec::line) * k};
             ink.Target()->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_ALIASED);
-            ink.Text(m.text, f, text, {1, 1, 1, 1});
+            ink.Text(s, f, text, {1, 1, 1, FrameSpec::textAlpha});
             ink.Target()->PopAxisAlignedClip();
-        }
+        };
+        tag(m.lx, m.ly, m.lw, m.lh, m.text);
+        tag(m.rx, m.ry, m.rw, m.rh, m.rtext);
         if (!m.labels.empty()) PaintValueLabels(ink, m, X, Y, k);   // V3-B: on top of the edges and the element label
     }
     // Draws the mark and returns once the compositor has shown it (or false: no window, nothing visible).

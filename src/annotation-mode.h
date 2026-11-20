@@ -883,6 +883,7 @@ bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
     if (control) return false;
     AUI::FrameMark m; m.page = PageClient(t); m.dpr = sel.target.viewport.devicePixelRatio; m.accent = AccentRgb();
     m.x = sel.mark.x; m.y = sel.mark.y; m.w = sel.mark.w; m.h = sel.mark.h; m.lx = sel.mark.lx; m.ly = sel.mark.ly; m.lw = sel.mark.lw; m.lh = sel.mark.lh; m.text = AH::Wide(sel.mark.text);
+    m.rx = sel.mark.rx; m.ry = sel.mark.ry; m.rw = sel.mark.rw; m.rh = sel.mark.rh; m.rtext = AH::Wide(sel.mark.rtext);   // R14
     // V3-B: the spacing inspector (padding ring, gaps, value labels, the viewport of the hatches' phase)
     m.hasPad = sel.mark.hasPad; std::copy(sel.mark.pad, sel.mark.pad + 8, m.pad); m.radius = sel.mark.radius; m.innerRadius = sel.mark.innerRadius; m.vw = sel.mark.vw; m.vh = sel.mark.vh;
     for (const auto& b : sel.mark.bands) m.gaps.push_back({b.x, b.y, b.w, b.h});
@@ -1118,6 +1119,26 @@ void Activate(const Start& st) {
 // Ctrl+Maj+A or the toolbar « Annoter » button while the chat is open). The page is the page again; the band goes up
 // and the toolbar button is no longer lit, as when the mode is off; the page script stays (the chat's marks, the
 // element's source). On again: the band comes back, the « viseur » too. Closing the chat while it is off ends the mode.
+// R25: the band slides in / out (the page and the chat panel are laid out under it at every frame: no jump). As short
+// as the band's own entrance, on the panel's curve; reduced motion: at once.
+inline constexpr int BandSlideInMs = 180, BandSlideOutMs = 140;
+AUI::Ramp bandSlide; bool bandSliding = false, bandHideAtEnd = false;
+void BandSlideApply(NativeChrome::Motion::Time now) {
+    const float full = float(AUI::BannerSpec::height), cur = AUI::BandSlideHeight(bandSlide.Value(now), full, Reduced());
+    chrome.annotationBand = cur; SyncChrome(); Layout();
+    banner.Slide(BandRect(), full - cur);
+}
+struct BandSlideClient : AUI::Animator::Client {
+    bool Frame(NativeChrome::Motion::Time now) override {
+        if (!s.active) { bandSliding = false; return false; }
+        BandSlideApply(now);
+        if (bandSlide.Moving(now)) return true;
+        bandSliding = false;
+        if (bandHideAtEnd) { bandHideAtEnd = false; banner.Hide(false); chrome.annotationBand = 0; SyncChrome(); Layout(); }
+        Log(L"ANNOTATE band slide done (" + std::to_wstring(int(chrome.annotationBand)) + L" DIP)");
+        return false;
+    }
+} bandSlideClient;
 void SetSelecting(bool on) {
     if (!s.active || s.paused == !on) return;
     auto t = ModeTab();
@@ -1126,13 +1147,18 @@ void SetSelecting(bool on) {
         if (note.Visible()) note.Close(false);
         panel = PendingPanel{}; s.frozen = false;
         Cmd(t, L"pick", L"false");
-        banner.Hide(); chrome.annotationBand = 0;
     } else {
         Cmd(t, L"pick", L"true");
-        chrome.annotationBand = AUI::BannerSpec::height;
     }
-    SyncChrome(); Layout();
-    if (on) { banner.Show(BandRect(), Reduced()); Chat::ModeEntered(); }
+    // R25: the band slides; the page and the panel follow it frame by frame (Layout at every step)
+    const auto now = NativeChrome::Motion::Now(); const bool reduced = Reduced();
+    if (!bandSliding) bandSlide.Snap(on ? 0.f : 1.f);
+    bandSlide.Set(on ? 1.f : 0.f, now, reduced ? 0 : (on ? BandSlideInMs : BandSlideOutMs), AUI::Curves::band);
+    bandHideAtEnd = !on;
+    if (on) { banner.Show(BandRect(), reduced); Chat::ModeEntered(); }
+    BandSlideApply(now);
+    if (reduced) { bandSliding = false; if (!on) { bandHideAtEnd = false; banner.Hide(false); chrome.annotationBand = 0; SyncChrome(); Layout(); } }
+    else { bandSliding = true; AUI::Animator::Get().Request(&bandSlideClient); }
     Announce(on ? TR(annotation_selection_on) : TR(annotation_selection_off));
     Log(std::wstring(L"ANNOTATE selection ") + (on ? L"on" : L"off (the chat stays open)"));
     Chat::SelectionChanged();

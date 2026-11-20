@@ -35,6 +35,35 @@ inline bool ReadFile(const std::wstring& path, std::string& out, std::size_t max
     if (ok) { out.resize(size_t(size.QuadPart)); DWORD got = 0, done = 0; while (ok && done < out.size()) { ok = ::ReadFile(f, out.data() + done, DWORD(std::min<std::size_t>(out.size() - done, 1u << 20)), &got, nullptr) && got > 0; done += got; } }
     CloseHandle(f); return ok;
 }
+// R13: the option lists each agent announced last (models, efforts, modes as options), so the chat (the bubble, the
+// panel) shows the model picker and its current model · effort from the first opening of a launch, before a session
+// exists. Display only: a choice made before the session is applied when it starts (pendingModel / pendingEffort).
+// Opt: a type with id, name, description, category, type, currentValue and choices {value, name, description, group}.
+template <class Opt> SJ::Value OptionsToJson(const std::vector<Opt>& options) {
+    SJ::Value arr = SJ::Value::Arr();
+    for (const auto& o : options) {
+        if (arr.items.size() >= 16) break;
+        SJ::Value v = SJ::Value::Obj(); v.Set("id", SJ::Value::Str(o.id)); v.Set("name", SJ::Value::Str(o.name)); v.Set("description", SJ::Value::Str(o.description));
+        v.Set("category", SJ::Value::Str(o.category)); v.Set("type", SJ::Value::Str(o.type)); v.Set("current", SJ::Value::Str(o.currentValue));
+        SJ::Value cs = SJ::Value::Arr();
+        for (const auto& c : o.choices) { if (cs.items.size() >= 64) break; SJ::Value x = SJ::Value::Obj(); x.Set("value", SJ::Value::Str(c.value)); x.Set("name", SJ::Value::Str(c.name)); x.Set("description", SJ::Value::Str(c.description)); x.Set("group", SJ::Value::Str(c.group)); cs.Push(std::move(x)); }
+        v.Set("choices", std::move(cs)); arr.Push(std::move(v));
+    }
+    return arr;
+}
+template <class Opt> std::vector<Opt> OptionsFromJson(const SJ::Value& arr) {
+    std::vector<Opt> out; if (!arr.IsArray()) return out;
+    auto str = [](const SJ::Value& o, const char* k) { const auto* v = o.Get(k); return v && v->IsString() && v->string.size() <= 400 ? v->string : std::string(); };
+    for (const auto& v : arr.items) {
+        if (!v.IsObject() || out.size() >= 16) continue;
+        Opt o; o.id = str(v, "id"); o.name = str(v, "name"); o.description = str(v, "description"); o.category = str(v, "category"); o.type = str(v, "type"); o.currentValue = str(v, "current");
+        if (o.id.empty()) continue;
+        if (const auto* cs = v.Get("choices"); cs && cs->IsArray())
+            for (const auto& c : cs->items) { if (!c.IsObject() || o.choices.size() >= 64) continue; typename decltype(o.choices)::value_type x; x.value = str(c, "value"); x.name = str(c, "name"); x.description = str(c, "description"); x.group = str(c, "group"); if (!x.value.empty()) o.choices.push_back(std::move(x)); }
+        out.push_back(std::move(o));
+    }
+    return out;
+}
 inline bool WriteFileAtomic(const std::wstring& path, const std::string& data) {
     const std::wstring tmp = path + L".tmp";
     HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

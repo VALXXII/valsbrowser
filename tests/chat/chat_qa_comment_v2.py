@@ -293,7 +293,7 @@ def run_main():
             ex = u32.GetWindowLongW(bw[0], -20)
             report['measures']['bubbleWindow'] = {'rect': bw[3], 'cornerPreference': pref.value, 'exStyle': hex(ex & 0xFFFFFFFF)}
             step('R1 · …window: DWMWCP_DONOTROUND, WS_EX_NOREDIRECTIONBITMAP', pref.value == 1 and (ex & 0x00200000) != 0, report['measures']['bubbleWindow'])
-            step('R1 · …surface 305 CSS px wide at rest (inset 0: Paper has no shadow)', abs((bw[3][2] - bw[3][0]) - round(305 * C.evaluate(C.URL, 'devicePixelRatio'))) <= 1, bw[3])
+            step('R1 · …surface 320 CSS px wide at rest (R20; inset 0: Paper has no shadow)', abs((bw[3][2] - bw[3][0]) - round(320 * C.evaluate(C.URL, 'devicePixelRatio'))) <= 1, bw[3])
         pointer_away()
         bf = bubble_frame(); report['measures']['d1'] = bf
         size = C.evaluate(C.URL, "(function(){var r=document.querySelector('.btn-primary').getBoundingClientRect();return Math.round(r.width)+'x'+Math.round(r.height)})()")

@@ -132,8 +132,12 @@ root.innerHTML = '<style>' +
   '.on{transition:' + (reduced ? 'opacity 120ms ease-out' : T) + '}' +
   '.mv{transition:opacity 120ms ease-out}' +
   '.h{width:100px;height:2px}.v{width:2px;height:100px}' +
-  '.l{font:500 11px/16px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;' +
-  'padding:2px 6px;border-radius:4px;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}' +
+  // R14 (Paper 18QK-0 / 18QQ-0): the hover labels as the selection's — Inter Display 13/18, 20 px high, padding 0 6,
+  // top corners 3, name at the left, real size at the right
+  '.l{font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;height:20px;box-sizing:border-box;' +
+  'padding:1px 6px;border-radius:3px 3px 0 0;white-space:pre;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}' +
+  // R16: the selected element's inspector follows a change of its values softly (same path structure: interpolated)
+  '.pb.sm,.gb.sm{transition:clip-path 160ms cubic-bezier(.23,1,.32,1)}.pl.sm,.gl.sm{transition:transform 160ms cubic-bezier(.23,1,.32,1)}' +
   '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;background:transparent}' +
   '.i,.j{position:fixed;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none}.i.on,.j.on{transition:opacity 120ms ease-out}' +
   '.pb,.gb,.pl,.gl{position:fixed;left:0;top:0;box-sizing:border-box}' +
@@ -157,11 +161,11 @@ root.innerHTML = '<style>' +
   '.bx{position:fixed;left:0;top:0;pointer-events:none}' +
   '.bf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a));background:rgba(var(--a),.08)}' +
   '.bl{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;padding:0 6px;border-radius:3px 3px 0 0;background:rgb(var(--a));' +
-  'font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:rgba(255,255,255,.902);white-space:pre;letter-spacing:0}' +
-  '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
+  'font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:pre;letter-spacing:0}' +
+  '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x h"></div><div class="x h"></div><div class="x v"></div><div class="x v"></div><div class="x l"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
 var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
-var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4], label = parts[5];
+var fill = parts[0], eT = parts[1], eB = parts[2], eL = parts[3], eR = parts[4], label = parts[5], label2 = parts[6];   // R14: name | size
 var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb');
 var insPool = { pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = null;
 var frameWrap = root.querySelector('.fw'), markWrap = root.querySelector('.mw'), placed = null;
@@ -375,8 +379,10 @@ function settle() {
 }
 function geometry(info) {
   var r = rectOf(info), lb = label.getBoundingClientRect();
-  return { x: r.x, y: r.y, w: Math.max(r.w, 1), h: Math.max(r.h, 1), lx: lb.left, ly: lb.top, lw: lb.width, lh: lb.height,
-           text: String(label.textContent || '').slice(0, 200), fill: 0.08 * (parseFloat(getComputedStyle(fill).opacity) || 0), sp: spaceMark() };
+  var fb = frameBox(r), rb = label2.getBoundingClientRect(), two = label2.style.visibility !== 'hidden';
+  return { x: fb.x, y: fb.y, w: fb.w, h: fb.h, lx: lb.left, ly: lb.top, lw: lb.width, lh: lb.height,
+           text: String(label.textContent || '').slice(0, 200), rx: two ? rb.left : 0, ry: two ? rb.top : 0, rw: two ? rb.width : 0, rh: two ? rb.height : 0,
+           rtext: two ? String(label2.textContent || '').slice(0, 40) : '', fill: 0.08 * (parseFloat(getComputedStyle(fill).opacity) || 0), sp: spaceMark() };
 }
 // The inspector as drawn (only when on screen): the padding ring [outer x, y, w, h, inner x, y, w, h] + radii, the gap
 // rectangles [x, y, w, h], the value labels [kind, x, y, w, h, text], the viewport (the hatches' common box).
@@ -569,11 +575,24 @@ function anchor(wrap, el) {
   else { var hr = host.getBoundingClientRect(); wrap.style.position = 'absolute'; wrap.style.transform = 'translate(' + (-hr.left).toFixed(2) + 'px,' + (-hr.top).toFixed(2) + 'px)'; }
   wrap.style.width = cw + 'px'; wrap.style.height = ch + 'px';
 }
+// Paper 18QJ-0 + R15: the frame's box (4 px out of the element, at least 2 px from the window's left and right sides).
+function frameBox(r) {
+  var x = Math.max(2, r.x - 4), right = Math.min(innerWidth - 2, r.x + Math.max(r.w, 1) + 4);
+  return { x: x, y: r.y - 4, w: Math.max(right - x, 1), h: Math.max(r.h, 1) + 8 };
+}
+// Paper 18QK-0 / 18QQ-0: the name label flush with the frame's left edge, the size label with its right edge, both on
+// the frame's top (24 px above the element); under the frame when there is no room above. R15: 2 px from the sides.
+// `both`: false when the two do not fit side by side (the name stays).
+function labelsPlace(fb, lw, rw) {
+  var y = fb.y - 20 >= 0 ? fb.y - 20 : Math.min(fb.y + fb.h, innerHeight - 20);
+  var lx = Math.max(2, Math.min(fb.x, innerWidth - 2 - lw)), rx = Math.min(innerWidth - 2, fb.x + fb.w) - rw;
+  return { lx: lx, rx: rx, y: y, both: rx >= lx + lw + 2 };
+}
 function glide(on) { for (var i = 0; i < parts.length; i++) parts[i].style.transition = on ? '' : 'none'; }
 
 // ---- drawing
 function place(info) {
-  if (follow && follow.draw) info = null;   // D1: the bubble is open: its element's frame only (no hover frame, no inspector)
+  if (follow && follow.draw) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } return; }   // D1: the bubble's frame; R16: its inspector stays (bxPlace)
   if (!info) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } placeSpace(null, false); return; }
   anchor(frameWrap, anchorEl(info));
   glide(!(shown && placed && placed.el === info.el && placed.range === info.range));   // the same element: it jumps (no lag behind a scroll)
@@ -581,15 +600,15 @@ function place(info) {
   var r = rectOf(info);
   var first = !shown;
   if (first) moveOnly(true);
-  var x = r.x, y = r.y, w = Math.max(r.w, 1), h = Math.max(r.h, 1);
+  // Paper 18QJ-0: the frame goes 4 px out of the element; R15: never closer than 2 px to the window's left / right sides
+  var fb = frameBox(r), x = fb.x, y = fb.y, w = fb.w, h = fb.h;
   // 100 px bases: a 1 px box would be snapped to one device pixel (DPR 1.25 -> scale 20 % short).
   tr(fill, x, y, w / 100, h / 100); tr(eT, x, y, w / 100, 1); tr(eB, x, y + h - 2, w / 100, 1); tr(eL, x, y, 1, h / 100); tr(eR, x + w - 2, y, 1, h / 100);
   var tag = seg(info.el === info.frame && info.kind === 'cross-origin' ? info.frame : info.el);
-  label.textContent = (info.range ? 'texte' : tag) + ' \u00b7 ' + Math.round(r.w) + '\u00d7' + Math.round(r.h);
-  var ly = y >= 22 ? y - 22 : Math.min(y + h + 4, innerHeight - 20);
-  var lx = Math.max(0, Math.min(x, innerWidth - 120));
-  tr(label, lx, ly);
-  labelBox = { x: lx - 2, y: ly - 2, w: (label.offsetWidth || 120) + 4, h: (label.offsetHeight || 20) + 4 };   // + 2 px of air
+  label.textContent = info.range ? 'texte' : tag; label2.textContent = Math.round(r.w) + 'x' + Math.round(r.h);   // R14 (Paper writes « 240x44 »)
+  var lp = labelsPlace(fb, label.offsetWidth || 120, label2.offsetWidth || 60);
+  tr(label, lp.lx, lp.y); tr(label2, lp.rx, lp.y); label2.style.visibility = lp.both ? '' : 'hidden';
+  labelBox = { x: lp.lx - 2, y: lp.y - 2, w: (lp.both ? lp.rx + (label2.offsetWidth || 60) : lp.lx + (label.offsetWidth || 120)) - lp.lx + 4, h: 24 };   // + 2 px of air
   if (first) { void getComputedStyle(fill).transform; moveOnly(false); setOpacity(1); shown = true; }
   placeSpace(info, first);
 }
@@ -862,18 +881,30 @@ function bxPlace(el, r) {
     bx = { wrap: wrap, box: box, frame: fr, left: l1, right: l2 };
   }
   bx.wrap.style.display = ''; anchor(bx.wrap, el);
-  var x = r.left - 4, y = r.top - 4, w = r.width + 8, h = r.height + 8;
+  var fb = frameBox({ x: r.left, y: r.top, w: r.width, h: r.height }), x = fb.x, y = fb.y, w = fb.w, h = fb.h;   // R15: 2 px from the window's sides
   bx.frame.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px)'; bx.frame.style.width = w.toFixed(2) + 'px'; bx.frame.style.height = h.toFixed(2) + 'px';
   var t1 = String(follow.draw.label || seg(el)).slice(0, 120), t2 = Math.round(r.width) + 'x' + Math.round(r.height);
   if (bx.left.textContent !== t1) bx.left.textContent = t1;
   if (bx.right.textContent !== t2) bx.right.textContent = t2;
-  bx.left.style.transform = 'translate(' + x.toFixed(2) + 'px,' + (r.top - 24).toFixed(2) + 'px)';
-  bx.right.style.transform = 'translate(' + (x + w - (bx.right.offsetWidth || 0)).toFixed(2) + 'px,' + (r.top - 24).toFixed(2) + 'px)';
+  var lp = labelsPlace(fb, bx.left.offsetWidth || 120, bx.right.offsetWidth || 60);
+  bx.left.style.transform = 'translate(' + lp.lx.toFixed(2) + 'px,' + lp.y.toFixed(2) + 'px)';
+  bx.right.style.transform = 'translate(' + lp.rx.toFixed(2) + 'px,' + lp.y.toFixed(2) + 'px)'; bx.right.style.visibility = lp.both ? '' : 'hidden';
+  // R16: the padding and gap of the selected element stay drawn, bubble open; a change of their values moves softly
+  if (follow.el && !(cur && cur.range)) {
+    labelBox = { x: lp.lx - 2, y: lp.y - 2, w: (lp.both ? lp.rx + (bx.right.offsetWidth || 60) : lp.lx + (bx.left.offsetWidth || 120)) - lp.lx + 4, h: 24 };
+    anchor(frameWrap, el); smooth(true);
+    placeSpace({ el: el, range: null, frame: null, ox: 0, oy: 0, kind: 'main' }, !insShown);
+  }
+}
+// R16: soft updates of the selected element's inspector (not for the hover, which jumps to another element)
+function smooth(on) {
+  var l = [padEl, gapEl].concat(insPool.pl, insPool.gl);
+  for (var i = 0; i < l.length; i++) { if (on && !reduced) l[i].classList.add('sm'); else l[i].classList.remove('sm'); }
 }
 function followSet(a) {
   if (followTimer) { clearInterval(followTimer); followTimer = 0; }
   var drew = follow && follow.draw; follow = null; followLast = ''; bxPlace(null);
-  if (drew) { haveMove = px >= 0; schedule(); }   // the hover frame comes back under the pointer
+  if (drew) { smooth(false); placeSpace(null, false); haveMove = px >= 0; schedule(); }   // the hover frame (and its inspector) come back under the pointer
   if (!a) return true;
   var el = null, ox = 0, oy = 0;
   if (a.current && cur && cur.el && !cur.range) { el = cur.el; ox = cur.ox; oy = cur.oy; }

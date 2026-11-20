@@ -89,6 +89,7 @@ struct SpaceBand { int kind = 1; double x = 0, y = 0, w = 0, h = 0; };
 struct SpaceLabel { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::string text; };
 struct Mark {
     bool present = false; double x = 0, y = 0, w = 0, h = 0, lx = 0, ly = 0, lw = 0, lh = 0, fill = 0; std::string text;
+    double rx = 0, ry = 0, rw = 0, rh = 0; std::string rtext;   // R14: the size label at the right (absent: none)
     bool hasPad = false; double pad[8]{}; double radius = 0, innerRadius = 0, vw = 0, vh = 0;   // V3-B: padding ring, viewport
     std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels;                                 // V3-B: gaps, value labels
     bool HasSpace() const { return hasPad || !bands.empty(); }
@@ -189,6 +190,9 @@ inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why 
             !Num(mk->Get("lx"), m.lx, -lim, lim) || !Num(mk->Get("ly"), m.ly, -lim, lim) || !Num(mk->Get("lw"), m.lw, 0, 4000) || !Num(mk->Get("lh"), m.lh, 0, 200) ||
             !Num(mk->Get("fill"), m.fill, 0, 1) || !Str(mk->Get("text"), m.text, 1024)) return bad("mark");
         m.present = true;
+        if (mk->Get("rw")) {   // R14: optional; malformed drops the size label only
+            if (!Num(mk->Get("rx"), m.rx, -lim, lim) || !Num(mk->Get("ry"), m.ry, -lim, lim) || !Num(mk->Get("rw"), m.rw, 0, 4000) || !Num(mk->Get("rh"), m.rh, 0, 200) || !Str(mk->Get("rtext"), m.rtext, 160)) { m.rw = m.rh = 0; m.rtext.clear(); }
+        }
         if (const auto* sp = mk->Get("sp"); sp && !sp->IsNull() && !ParseSpaceMark(*sp, m)) { m.hasPad = false; m.bands.clear(); m.labels.clear(); }
     }
     auto& g = s.target;

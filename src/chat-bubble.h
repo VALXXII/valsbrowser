@@ -80,6 +80,30 @@ inline Grown Grow(const Rect& surface, const Edges& want, const Rect& screen, fl
     g.window.left = surface.left - px(g.inset.left); g.window.top = surface.top - px(g.inset.top);
     return g;
 }
+// R19 (windowed WebView: a window that grows left / up cannot move its page in the same frame): the bubble's window is
+// the surface plus a FIXED transparent margin (up to `marginCss` per side, as far as the screen allows) and as tall as
+// the surface may grow (maxH), on the side that stays fixed (`bottomFixed`: side « above »). A menu or a tooltip that
+// leaves the surface does not move or resize anything: only the window's region (what is shown and clickable) widens
+// to the surface + the overflow asked, within the margin. At rest the region is the surface: clicks around it reach
+// the page. `inset` (CSS px) says where the surface is in the window.
+struct Framed { Rect window; Edges inset; Rect region; };   // region: in the window's own pixels
+inline Framed FrameBubble(const Rect& surface, int maxH, bool bottomFixed, const Rect& screen, float k, const Edges& over, int marginCss = 400) {
+    Rect full = surface;
+    if (bottomFixed) full.top = std::min(surface.top, surface.bottom - maxH); else full.bottom = std::max(surface.bottom, surface.top + maxH);
+    const Grown g = Grow(full, Edges{marginCss, marginCss, marginCss, marginCss}, screen, k);
+    auto px = [&](int css) { return int(css * k + .5f); };
+    auto css = [&](int p) { return k > 0 ? int(p / k) : 0; };
+    Framed f; f.window = g.window;
+    f.inset.left = css(surface.left - f.window.left); f.inset.top = css(surface.top - f.window.top);
+    f.window.left = surface.left - px(f.inset.left); f.window.top = surface.top - px(f.inset.top);   // the surface exactly at the inset told
+    f.inset.right = css(f.window.right - surface.right); f.inset.bottom = css(f.window.bottom - surface.bottom);
+    const int sx = px(f.inset.left), sy = px(f.inset.top);
+    f.region = {sx - px(std::min(over.left, f.inset.left)), sy - px(std::min(over.top, f.inset.top)),
+                sx + surface.W() + px(std::min(over.right, f.inset.right)), sy + surface.H() + px(std::min(over.bottom, f.inset.bottom))};
+    f.region.left = std::max(0, f.region.left); f.region.top = std::max(0, f.region.top);
+    f.region.right = std::min(f.window.W(), f.region.right); f.region.bottom = std::min(f.window.H(), f.region.bottom);
+    return f;
+}
 // D1 (Paper 18NS-0 … 19IO-0, bubble open): the element's frame `18QJ-0` goes 4 px out of the element on every side;
 // its two labels (`18QK-0` selector, `18QQ-0` size) sit 24 px above the element, 20 px high, flush with the frame's
 // left and right edges. The size label says the element's real size, « 520x44 » (a small x, as Paper writes it).

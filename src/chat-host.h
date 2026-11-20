@@ -168,6 +168,7 @@ struct OpenStats { double requestedAt = 0, createdAt = 0, readyAt = 0, firstText
 void FinishTurn(const std::string& stopReason);
 
 std::wstring ProjectsFile() { return Ann::DataRoot() + L"\\annotations-chat\\projects.json"; }
+std::wstring OptionsCacheFile() { return Ann::DataRoot() + L"\\annotations-chat\\agent-options.json"; }   // R13
 ChatStore::History& History() { static ChatStore::History h(Ann::DataRoot()); return h; }
 std::shared_ptr<Tab> ChatTab() { return chatTab.lock(); }
 bool Open() { return panelState == PanelState::Opening || panelState == PanelState::Open; }
@@ -315,10 +316,10 @@ void SendState() {
         SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));
         if (!shown.source.empty()) c.Set("source", Str(shown.source)); c.Set("running", SJ::Value::Bool(running)); st.Set("conversation", std::move(c));
         st.Set("running", SJ::Value::Bool(running)); }
-    st.Set("pendingAnnotations", SJ::Value::Int(pendingAnnotations));
+    st.Set("pendingAnnotations", SJ::Value::Int(0));   // R24 (the user: « c'est fini ce concept »): no pending-annotations source any more
     {   SJ::Value sg = SJ::Value::Arr();
         if (Usable()) {
-            if (pendingAnnotations > 0) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(std::string("annotations"))); o.Set("label", Str(pendingAnnotations == 1 ? T8(I18n::Id::chat_suggest_annotations_one) : U8(TRF(chat_suggest_annotations_other, std::to_wstring(pendingAnnotations))))); o.Set("badge", Str(std::to_string(pendingAnnotations))); sg.Push(std::move(o)); }
+            // R24: no « Traiter les N annotations en attente » suggestion
             for (const auto& s : {std::pair<const char*, I18n::Id>{"mobile", I18n::Id::chat_suggest_mobile}, {"contrast", I18n::Id::chat_suggest_contrast}}) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(std::string(s.first))); o.Set("label", Str(T8(s.second))); sg.Push(std::move(o)); }
         }
         st.Set("suggestions", std::move(sg)); }

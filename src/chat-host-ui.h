@@ -285,7 +285,7 @@ void SelectHistory(const std::string& id) {
 }
 void MaybeStartSession() {
     const auto& a = agentInfo[agentId];
-    if (Usable() && Open() && !session && !sessionStarting && !preparing && a.known && a.cli && a.prepared) StartSession();
+    if (Usable() && (Open() || BubbleOpen()) && !session && !sessionStarting && !preparing && a.known && a.cli && a.prepared) StartSession();
 }
 void SwitchAgent(const std::string& id, const std::string& model) {
     if (!AgentOf(id)) return;
@@ -370,8 +370,28 @@ void SyncChromeBits() {
     if (Ann::s.active && Ann::banner.Visible() && !Ann::connect.Visible()) Ann::banner.SetReminder(!Ann::agents.any() && !Open());   // the MCP reminder steps back while the chat is open
 }
 void OnPanelMessage(const std::string& json);
+// R13: the lists each agent announced last, saved after every session start and change, read at the chat's first use:
+// the model picker and the current model · effort show from the first opening, before any session of this launch.
+void SaveOptionsCache() {
+    SJ::Value agents = SJ::Value::Obj();
+    for (const auto& a : agentInfo) if (!a.second.options.empty() && ChatStore::ValidId(a.first)) agents.Set(a.first, ChatStore::OptionsToJson(a.second.options));
+    SJ::Value v = SJ::Value::Obj(); v.Set("v", SJ::Value::Int(1)); v.Set("agents", std::move(agents));
+    auto text = std::make_shared<std::string>(SJ::Serialize(v) + "\n"); const std::wstring file = OptionsCacheFile();
+    Ann::Run([text, file] { ChatStore::EnsureDir(file.substr(0, file.find_last_of(L'\\'))); ChatStore::WriteFileAtomic(file, *text); }, nullptr);
+}
+void LoadOptionsCache() {
+    auto out = std::make_shared<std::string>(); const std::wstring file = OptionsCacheFile();
+    Ann::Run([out, file] { HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr); if (f == INVALID_HANDLE_VALUE) return;
+                           LARGE_INTEGER n{}; if (GetFileSizeEx(f, &n) && n.QuadPart > 0 && n.QuadPart < (1 << 20)) { out->resize(size_t(n.QuadPart)); DWORD got = 0; if (!ReadFile(f, out->data(), DWORD(out->size()), &got, nullptr) || got != out->size()) out->clear(); } CloseHandle(f); },
+             [out] {
+                 SJ::Value v; if (out->empty() || !SJ::Parse(*out, v) || !v.IsObject()) return;
+                 const auto* agents = v.Get("agents"); if (!agents || !agents->IsObject()) return; int n = 0;
+                 for (const auto& a : agents->members) { auto& info = agentInfo[a.first]; if (!AgentOf(a.first) || !info.options.empty()) continue; info.options = ChatStore::OptionsFromJson<Acp::ConfigOption>(a.second); ++n; }
+                 if (n) { Diag(L"the agents' last model and effort lists read (" + std::to_wstring(n) + L")"); if (panelReady) SendState(); }
+             });
+}
 void EnsureInit() {
-    if (uiInit) return; uiInit = true; EnsurePost();
+    if (uiInit) return; uiInit = true; EnsurePost(); LoadOptionsCache();
     ChatPanelView::Hooks h;
     h.message = [](const std::string& json) { OnPanelMessage(json); };
     h.created = [](bool ok) { stats.createdAt = Ann::NowMs(); Diag(ok ? L"panel WebView created in " + Ann::Ms(stats.createdAt - stats.requestedAt) + L" ms" : L"panel WebView could not be created"); if (!ok) ClosePanel(); else Layout(); };

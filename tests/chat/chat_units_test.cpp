@@ -436,6 +436,38 @@ static void TestBubble() {
         Check(g.inset.top == 64 && g.window.top == 400 - 80 && g.window.bottom == 624 + 80, "R3: CSS px to screen px at 125 %");
         Check(Bounded(Edges{-5, 9999, 12, 400}) == Edges{0, 400, 12, 400}, "R3: overflow bounded to 0..400 CSS px");
     }
+    // R19: a fixed transparent margin; a menu only widens the region, the window and the surface never move
+    {   const Rect screen{0, 0, 1920, 1040}, surface{800, 300, 1120, 404}; const float k = 1.f;
+        const auto rest = FrameBubble(surface, 520, false, screen, k, Edges{});
+        Check(rest.window.left == 400 && rest.window.top == 0 && rest.inset.left == 400 && rest.inset.top == 300 && rest.window.bottom == 300 + 520 + 220,
+              "R19: the window = the surface + up to 400 px of margin (bounded by the screen), as tall as the surface may grow");
+        Check(rest.region.left == 400 && rest.region.top == 300 && rest.region.W() == 320 && rest.region.H() == 104, "R19: at rest the region is the surface: clicks around it reach the page");
+        const auto menu = FrameBubble(surface, 520, false, screen, k, Edges{0, 174, 64, 39});
+        Check(menu.window.left == rest.window.left && menu.window.top == rest.window.top && menu.window.right == rest.window.right && menu.window.bottom == rest.window.bottom && menu.inset == rest.inset,
+              "R19: a menu out of the surface moves nothing (same window, same inset)");
+        Check(menu.region.left == 400 - 39 && menu.region.right == 400 + 320 + 174 && menu.region.bottom == 300 + 104 + 64, "R19: …only the region widens, by the overflow asked (the menus' shadow included)");
+        const Rect taller{800, 300, 1120, 524};
+        const auto grown = FrameBubble(taller, 520, false, screen, k, Edges{});
+        Check(grown.window.left == rest.window.left && grown.window.top == rest.window.top && grown.window.bottom == rest.window.bottom && grown.inset.top == rest.inset.top, "R19: a taller surface keeps the window (top side fixed)");
+        const Rect above{800, 600, 1120, 704}, aboveTaller{800, 500, 1120, 704};
+        const auto a1 = FrameBubble(above, 520, true, screen, k, Edges{}), a2 = FrameBubble(aboveTaller, 520, true, screen, k, Edges{});
+        Check(a1.window.top == a2.window.top && a1.window.bottom == a2.window.bottom && a2.inset.top == a1.inset.top - 100, "R19: side « above »: the bottom stays, the window too; only the inset's top changes (page: same task)");
+        const auto hi = FrameBubble(surface, 520, false, screen, 1.25f, Edges{});
+        Check(hi.window.left + int(hi.inset.left * 1.25f + .5f) == surface.left && hi.window.top + int(hi.inset.top * 1.25f + .5f) == surface.top, "R19: at 125 % the surface sits exactly at the inset told"); }
+    // R13: the agents' last option lists kept on disk (the bubble shows its model picker at once, before any session)
+    {   struct Ch { std::string value, name, description, group; };
+        struct Op { std::string id, name, description, category, type, currentValue; std::vector<Ch> choices; };
+        std::vector<Op> in(2); in[0].id = "model"; in[0].category = "model"; in[0].type = "select"; in[0].currentValue = "default";
+        in[0].choices = {{"default", "Default (recommended)", "Opus 5.5", ""}, {"opus", "Opus 5.5", "", "Claude"}, {"sonnet", "Sonnet 5.5", "", "Claude"}};
+        in[1].id = "effort"; in[1].category = "thought_level"; in[1].type = "select"; in[1].currentValue = "medium"; in[1].choices = {{"low", "Low", "", ""}, {"medium", "Medium", "", ""}};
+        namespace SJ = StrictJson; const auto json = SJ::Serialize(ChatStore::OptionsToJson(in)); SJ::Value v; const bool parsed = SJ::Parse(json, v);
+        const auto out = ChatStore::OptionsFromJson<Op>(v);
+        Check(parsed && out.size() == 2 && out[0].currentValue == "default" && out[0].choices.size() == 3 && out[0].choices[1].name == "Opus 5.5" && out[0].choices[1].group == "Claude" &&
+              out[1].category == "thought_level" && out[1].currentValue == "medium", "R13: the model and effort lists survive a launch (written, read back the same)");
+        SJ::Value bad; SJ::Parse("[{\"name\":\"no id\"},7,{\"id\":\"x\",\"choices\":[{\"name\":\"no value\"}]}]", bad);
+        const auto junk = ChatStore::OptionsFromJson<Op>(bad);
+        Check(junk.size() == 1 && junk[0].id == "x" && junk[0].choices.empty(), "R13: a damaged cache keeps only what is whole"); }
+    // R20: 320 px
     // D1: the open bubble's element — frame 4 px out, labels 24 px above, the real size as « 520x44 »
     Check(SizeLabel(520, 44) == "520x44" && SizeLabel(239.6, 43.5) == "240x44" && FrameOutset == 4 && LabelRise == 24 && LabelHeight == 20, "D1: Paper's frame (4 px out) and size label (520x44)");
     // D3: the launcher only for the conversations whose element is gone

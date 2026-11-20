@@ -255,10 +255,14 @@ struct BannerHooks {
 namespace BannerMotion { inline constexpr int enter = 220, exit = 160, reduced = 150; inline constexpr float lift = 32; }
 inline Timing BannerTiming() { Timing t; t.enter = BannerMotion::enter; t.exit = BannerMotion::exit; t.reducedEnter = t.reducedExit = BannerMotion::reduced; t.from = t.to = 1; t.curve = Curves::band; return t; }
 // The band's offset for a presence progress (0 hidden .. 1 in place): slides with its opacity, none when reduced.
+// R25: the band's visible height while it slides in (progress 0 -> 1) or out (1 -> 0); the page and the chat panel
+// are laid out under it at every frame: they follow without a jump. Reduced motion: no slide (a step).
+inline float BandSlideHeight(float progress, float full, bool reduced) { return reduced ? (progress >= .5f ? full : 0.f) : full * Motion::Clamp(progress); }
 inline float BannerOffset(float progress, bool reduced) { return reduced ? 0.f : -(1 - Motion::Clamp(progress)) * BannerMotion::lift; }
 class Banner : public Animator::Client {
     static constexpr long long RootKey = 1, QuitKey = 2, RemindKey = 3, ChatKey = 4, CommentKey = 5;
     bool chat_ = false, chatActive_ = false;   // the switch is shown / « Commentaire » is chosen
+    float hidden_ = 0;                          // R25: DIP of the band still above its visible part while it slides
     static long long KeyOf(int item) { return item == BannerQuit ? QuitKey : item == BannerChat ? ChatKey : item == BannerComment ? CommentKey : RemindKey; }
     static int ItemOf(long long key) { return key == QuitKey ? BannerQuit : key == ChatKey ? BannerChat : key == CommentKey ? BannerComment : BannerRemind; }
     HINSTANCE instance_ = nullptr; HWND parent_ = nullptr; std::wstring root_; BannerHooks hooks_;
@@ -284,10 +288,11 @@ class Banner : public Animator::Client {
         v.texture = true; v.waveSeconds = WaveSeconds(now); v.waveAmp = Dither::Amplitude(std::chrono::duration<double, std::milli>(now - enteredAt_).count(), reduced_);
         if (v.waveAmp > 0 && presence_.IsOpen()) ++waveFrames_;
         lastRender_ = now;
-        const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count(); auto backdrop = backdrop_;
-        layer_.paint = [v, opacity, dy, seconds, backdrop](Ink& ink, float w, float h) {
+        const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count(); auto backdrop = backdrop_; const float hidden = hidden_;
+        layer_.paint = [v, opacity, dy, seconds, backdrop, hidden](Ink& ink, float w, float hv) {
+            const float h = hv + hidden;   // R25: the band's full height; only its lower part is in the window while it slides
             auto* t = ink.Target(); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
-            t->SetTransform(D2D1::Matrix3x2F::Translation(0, dy) * base);
+            t->SetTransform(D2D1::Matrix3x2F::Translation(0, dy - hidden) * base);
             ID2D1Layer* group = nullptr; const bool pushed = ink.PushOpacity(opacity, group);
             PaintBanner(ink, w, h, v, backdrop ? [&] { backdrop(ink, w, h, seconds); } : std::function<void()>());
             if (pushed) ink.PopOpacity(group);
@@ -299,7 +304,7 @@ class Banner : public Animator::Client {
         // A wave-only frame (nothing else moves): only the span between the labels changes; its pixels are written in
         // place (no Direct2D) and only they go to the compositor.
         bool done = false;
-        if (waveOnly && !raiseNext_ && opacity >= 1 && dy == 0) {
+        if (waveOnly && !raiseNext_ && opacity >= 1 && dy == 0 && hidden_ == 0) {
             const auto z = WaveZones(Layout(), beta_, v.reminder); const float k = layer_.Scale(), w = Width(), h = BannerSpec::height;
             const RECT span{LONG(std::ceil(z.left * k)), 0, LONG(std::floor(z.right * k)), LONG(std::lround(h * k))};
             const auto& tones = AccentTone::BandCached(v.accent);
@@ -421,6 +426,9 @@ public:
         return true;
     }
     void Move(RECT rect) { rect_ = rect; raiseNext_ = true; if (presence_.Visible(Motion::Now())) Render(Motion::Now()); }
+    // R25: the band slides under the toolbar: `rect` is its visible part, `hiddenDip` what is still above it (drawn
+    // shifted up, laid out at its full height). 0 = in place.
+    void Slide(RECT rect, float hiddenDip) { hidden_ = std::max(0.f, hiddenDip); Move(rect); }
     // Chat intégré: the layout switch (shown on local sites only; active = « Commentaire » is the chosen layout).
     void SetChat(bool shown, bool active) {
         if (shown == chat_ && active == chatActive_) return;
