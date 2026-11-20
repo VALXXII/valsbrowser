@@ -563,3 +563,33 @@ Limites connues (v2) : le passage panneau ↔ bulle déplace le visuel de la pag
 (une image possible avant la nouvelle mise en page) ; pendant l'agrandissement pour un menu vers le haut ou la gauche,
 la page doit recaler sa surface sur le nouvel `inset` (un décalage d'une image est possible, non mesuré) ; le
 basculement d'un menu au bord de l'écran est fait par la page.
+
+## Mode Commentaire v3 (hôte) — retours R13 à R25
+
+Contrat B §21 (P). Vérifié en vraie fenêtre, faux agent : `tests/chat/chat_qa_comment_v3.py`, 14/14, rapport et séries
+d'images `build/chat-qa/comment-v3/`.
+
+- **R13** : la bulle démarre son agent dès son ouverture, comme le panneau (`MaybeStartSession`) : liste des modèles et
+  modèle · effort sans attendre un message. Les listes annoncées par chaque agent sont gardées
+  (`annotations-chat\agent-options.json`, `ChatStore::OptionsToJson` / `OptionsFromJson`) et relues au premier usage du
+  chat : affichées dès la première ouverture d'un lancement ; un choix fait avant la session s'applique à son démarrage.
+- **R14, R15** : au survol, le cadre (4 px hors de l'élément) et les deux étiquettes de Paper (`18QK-0` / `18QQ-0`, Inter
+  13/18, nom | « 240x44 ») ; jamais à moins de 2 px des bords gauche et droit de la fenêtre (`frameBox`, `labelsPlace`
+  dans le script de page). La copie native du moment du clic dessine les deux étiquettes pareil (`rx/ry/rw/rh/rtext`).
+  Écart justifié : texte des étiquettes en blanc plein (Paper `#FFFFFFE6` = 4,03:1 sur `#3E67FF`, sous les 4,5:1 qu'un
+  texte de 13 px exige ; même choix que « BETA » du bandeau).
+- **R16** : bulle ouverte, l'inspecteur (padding, gap, valeurs) reste dessiné sur l'élément sélectionné ; quand ses
+  valeurs changent, zones et étiquettes glissent en 160 ms (même structure de chemin : interpolée ; pas de transition en
+  mouvement réduit).
+- **R18** : la fenêtre de la bulle est placée et dimensionnée, montrée avec une région vide (rien à l'écran, la page rend
+  et mesure), puis la surface apparaît d'un coup à sa place à l'accusé `bubble.size` (filet : 300 ms, 2 s si la page est
+  encore en création) ; la page joue son glissement d'entrée. Mesure (échantillon toutes les ~4 ms) : un seul rectangle
+  de fenêtre et un seul coin de surface pendant toute l'apparition.
+- **R19** : fenêtre = surface + marge transparente fixe (jusqu'à 400 px CSS par côté, bornée par l'écran), aussi haute que
+  la surface peut grandir ; un menu ou une infobulle n'élargit que la **région** de la fenêtre (`ChatBubble::FrameBubble`).
+  Mesure : à l'ouverture du menu modèle, même rectangle de fenêtre, même position de la surface dans la page.
+- **R20** : 320 px. **R24** : plus de source « annotations en attente » (`pendingAnnotations` vaut 0, plus de suggestion).
+- **R25** : la sélection coupée / remise : la hauteur du bandeau suit une rampe (180 ms à l'entrée, 140 ms à la sortie,
+  courbe du glissé V3) et la page comme le panneau sont remis en page à chaque image ; le bandeau glisse sous la barre
+  (`Banner::Slide`). Mesure : 5 à 6 positions de la page par glissement, plus grand pas 20 px à 125 % (le relayout de la
+  page à chaque image fait sauter des images : limite connue).

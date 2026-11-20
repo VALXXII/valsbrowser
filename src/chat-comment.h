@@ -134,7 +134,8 @@ void PlaceBubble() {
         view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top});
     }
     const RECT rg{f.region.left, f.region.top, f.region.right, f.region.bottom};
-    if (!EqualRect(&rg, &bubble.region)) { bubble.region = rg; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); }   // the system owns the region now
+    if (bubble.waitingAck) bubble.region = rg;   // R18: kept for the reveal; the window shows nothing until then
+    else if (!EqualRect(&rg, &bubble.region)) { bubble.region = rg; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); }   // the system owns the region now
     if ((sideChanged || insetChanged) && panelReady) SendLayout(false);
 }
 RECT BubbleScreenRect() { RECT r{}; if (bubble.hwnd) GetWindowRect(bubble.hwnd, &r); return r; }
@@ -166,7 +167,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         CloseBubble(false); return 0;
     }
     if (m == WM_APP + 2) { if (bubble.open) { SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
-    if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"after 300 ms (no acknowledgement)"); return 0; }   // i18n-exempt: log detail
+    if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     {   LRESULT r = 0; if (view.HostMessage(h, m, w, l, r)) return r; }   // R1: the page is a visual of this window: mouse, cursor, UI Automation
     if (m == WM_ERASEBKGND) return 1;   // no redirection surface: what the page does not paint is see-through
@@ -203,7 +204,10 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     bubble.openedAt = Ann::NowMs();
     view.Show(true);   // the page renders and measures while the window is still hidden
     if (again && IsWindowVisible(bubble.hwnd)) { SetForegroundWindow(bubble.hwnd); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0); }
-    else { bubble.waitingAck = true; SetTimer(bubble.hwnd, 0xB2, 300, nullptr); }   // R18: shown at its place once the page says its size (or after 300 ms)
+    else {   // R18: shown at once with an empty region (the page renders and measures), revealed at its place once it says its size
+        bubble.waitingAck = true; SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), FALSE);
+        ShowWindow(bubble.hwnd, SW_SHOWNA); SetTimer(bubble.hwnd, 0xB2, panelReady ? 300 : 2000, nullptr);   // a page still being created answers later
+    }
     ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits();
     MaybeStartSession();   // R13: its agent starts now (model list, model · effort), as the panel's does
     // the page follows the element (its moves become `anchor` messages)
@@ -231,6 +235,7 @@ void FollowBubbleElement(bool current) {
 void RevealBubble(const wchar_t* why) {
     if (!bubble.open || !bubble.waitingAck || !bubble.hwnd) return;
     bubble.waitingAck = false; KillTimer(bubble.hwnd, 0xB2);
+    const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE);   // the surface appears, at its place
     ShowWindow(bubble.hwnd, SW_SHOWNA); SetForegroundWindow(bubble.hwnd);
     PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // the caret to the bubble
     Diag(std::wstring(L"bubble shown at its place ") + why + L" after " + Ann::Ms(Ann::NowMs() - bubble.openedAt) + L" ms");

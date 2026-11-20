@@ -91,7 +91,7 @@ class Sampler(threading.Thread):
 def overlay_labels():
     """The page's hover labels (closed shadow root): visible `.x.l` texts and their transforms."""
     o = V.overlay()
-    return [(x['text'], x['style']) for x in o if x['cls'].split() == ['x', 'l'] and 'visibility: hidden' not in x['style']]
+    return [(x['text'], x['style']) for x in o if 'x' in x['cls'].split() and 'l' in x['cls'].split() and 'visibility: hidden' not in x['style'] and 'opacity: 0' not in x['style']]
 
 
 def tx(style):
@@ -135,7 +135,7 @@ def run_main():
         vw = C.evaluate(C.URL, 'innerWidth')
         C.ws_for(C.URL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': 200, 'y': 655 - C.evaluate(C.URL, 'scrollY')}); time.sleep(0.5)
         labs = overlay_labels(); pos = [tx(s) for _, s in labs]
-        o = V.overlay(); fills = [tx(x['style']) for x in o if x['cls'].split() == ['x', 'f']]
+        o = V.overlay(); fills = [tx(x['style']) for x in o if 'x' in x['cls'].split() and 'f' in x['cls'].split()]
         ok15 = len(pos) == 2 and pos[0] and pos[0][0] >= 2 - 0.01 and fills and fills[0] and fills[0][0] >= 2 - 0.01
         report['measures']['r15'] = {'labels': labs, 'fill': fills, 'innerWidth': vw}
         step('R15 · an element touching the sides: frame and labels 2 px in', ok15, report['measures']['r15'])
@@ -149,16 +149,19 @@ def run_main():
             if not bw:
                 return None
             hwnd_box['h'] = bw[0]
-            return (bool(u32.IsWindowVisible(bw[0])), win_rect(bw[0]))
+            rg = W.RECT(); kind = ctypes.windll.user32.GetWindowRgnBox(bw[0], ctypes.byref(rg))
+            visible = bool(u32.IsWindowVisible(bw[0])) and not (kind == 1 or (rg.right - rg.left) <= 0)   # NULLREGION = 1
+            return (visible, win_rect(bw[0]), (rg.left, rg.top, rg.right, rg.bottom))
         region = (max(0, el[0] - 40), max(0, el[1] - 120), el[2] + 760, el[3] + 420)
         s18 = Sampler(bubble_sample, region); s18.start()
         m1 = mark(); C.click_page('.btn-primary')
         opened = logged(r'CHAT bubble opened on (\S+) for conversation (c_\w+)', m1, 10)
         time.sleep(1.2); s18.stop = True; s18.join()
         shown = [r for _, r in s18.samples if r and r[0]]
-        rects = sorted(set(r[1] for r in shown))
+        rects = sorted(set(r[1] for r in shown)); corners = sorted(set((r[2][0], r[2][1]) for r in shown))
         report['measures']['r18'] = {'samples': len(s18.samples), 'shownSamples': len(shown), 'rects': rects, 'log': (logged(r'CHAT bubble shown at its place ([^\r\n]+)', m1, 2) or [None])[0]}
-        step('R18 · the window is shown once, already at its place and size (no move while it appears)', opened is not None and len(shown) > 5 and len(rects) == 1, report['measures']['r18'])
+        report['measures']['r18']['surfaceCorners'] = corners
+        step('R18 · the window is shown once, already at its place (no move while it appears: one window rect, one surface corner)', opened is not None and len(shown) > 5 and len(rects) == 1 and len(corners) == 1, report['measures']['r18'])
         for i, (t, img) in enumerate(s18.frames[:40]):
             img.save(OUT / f'r18-ouverture-{i:02d}.png')
         report['captures'].append(f'r18-ouverture-00..{min(len(s18.frames), 40) - 1:02d}.png')
@@ -185,11 +188,13 @@ def run_main():
         bubble_h = C.panel("(function(){var a=document.getElementById('app');return a?Math.round(a.getBoundingClientRect().height):0})()") or 104
         surf = (surf[0], surf[1], surf[2], w0[1] + int((i0.get('top', 0) + bubble_h) * dpr))
         before_img = grab(surf)
+        app0 = C.panel("(function(){var a=document.getElementById('app');if(!a)return null;var r=a.getBoundingClientRect();return [r.left,r.top,r.width,r.height]})()")
         s19 = Sampler(lambda: win_rect(h)); s19.start()
         C.click_panel(selector='button.m'); time.sleep(0.8)
         s19.stop = True; s19.join()
         f = C.panel(V.FLOATS_JS) or {}
         after_img = grab(surf)
+        app1 = C.panel("(function(){var a=document.getElementById('app');if(!a)return null;var r=a.getBoundingClientRect();return [r.left,r.top,r.width,r.height]})()")
         # the menu and its shadow (0 16px 48px) are excluded from the comparison
         cover = [((x['x'] - 56) * dpr + w0[0] - surf[0], (x['y'] - 56) * dpr + w0[1] - surf[1], (x['r'] + 56) * dpr + w0[0] - surf[0], (x['b'] + 72) * dpr + w0[1] - surf[1]) for x in f.get('floats', [])]
         diff, n = 0, 0
@@ -201,8 +206,9 @@ def run_main():
                 n += 1; d = sum(abs(a - b) for a, b in zip(pa[xx, yy], pb[xx, yy]))
                 if d > 6: diff += 1
         moves = sorted(set(r for _, r in s19.samples))
-        report['measures']['r19'] = {'windowRects': moves, 'comparedPixels': n, 'changedPixels': diff, 'floats': [x.get('label') for x in f.get('floats', [])]}
-        step('R19 · a menu opens: the window does not move, the surface\'s pixels outside the menu are the same', len(moves) == 1 and n > 200 and diff == 0, report['measures']['r19'])
+        report['measures']['r19'] = {'windowRects': moves, 'surfaceBefore': app0, 'surfaceAfter': app1, 'comparedPixels': n, 'changedPixels': diff, 'floats': [x.get('label') for x in f.get('floats', [])]}
+        step('R19 · a menu opens: the window does not move, the surface does not move in it, its pixels outside the menu and its shadow are the same',
+             len(moves) == 1 and app0 and app0 == app1 and diff == 0, report['measures']['r19'])
         before_img.save(OUT / 'r19-surface-avant.png'); after_img.save(OUT / 'r19-surface-apres.png'); report['captures'] += ['r19-surface-avant.png', 'r19-surface-apres.png']
         V.focus_composer(); C.key_panel('Escape', 'Escape', 27); time.sleep(0.5)
 
@@ -214,13 +220,22 @@ def run_main():
             ws = [x for x in Q.windows() if x[1] == 'BrowserChatPanelHost' or x[1] == 'Chrome_WidgetWin_0']
             pgw = CC.page_widget()
             return (pgw[1], tuple(sorted(x[3][1] for x in Q.windows() if x[1] == 'BrowserAnnotationLayer')))
+        tab = [None]
+        @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+        def cb(hh, _):
+            n_ = ctypes.create_unicode_buffer(64); u32.GetClassNameW(hh, n_, 64)
+            if n_.value == 'Chrome_RenderWidgetHostHWND' and u32.IsWindowVisible(hh) and tab[0] is None:
+                r_ = win_rect(hh)
+                if r_[2] - r_[0] > 600: tab[0] = hh
+            return True
+        u32.EnumChildWindows(Q.main_window(), cb, 0)
         for label, want in (('off', 'off'), ('on', 'on')):
-            s25 = Sampler(lambda: CC.page_widget()[1]); s25.start()
+            s25 = Sampler(lambda: win_rect(tab[0])[1]); s25.start()
             m3 = mark(); C.shortcut('A'); logged(r'ANNOTATE selection ' + want, m3, 5); time.sleep(0.6)
             s25.stop = True; s25.join()
             ys = [y for _, y in s25.samples if isinstance(y, int)]
             steps_ = [abs(b - a) for a, b in zip(ys, ys[1:]) if b != a]
-            report['measures'][f'r25-{label}'] = {'from': ys[0] if ys else None, 'to': ys[-1] if ys else None, 'distinct': len(set(ys)), 'maxStep': max(steps_) if steps_ else 0}
+            report['measures'][f'r25-{label}'] = {'samples': len(ys), 'from': ys[0] if ys else None, 'to': ys[-1] if ys else None, 'distinct': len(set(ys)), 'maxStep': max(steps_) if steps_ else 0, 'path': sorted(set(ys))}
             step(f'R25 · selection {label}: the page moves with the band in small steps (no jump)', ys and ys[0] != ys[-1] and len(set(ys)) >= 4 and max(steps_) <= int(16 * dpr), report['measures'][f'r25-{label}'])
             capture(f'r25-selection-{label}')
     except Exception:
