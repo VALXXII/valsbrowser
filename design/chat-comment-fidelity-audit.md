@@ -9,6 +9,58 @@ Ce qui a été examiné :
 
 Aucune vraie fenêtre n'a été lancée de mon côté.
 
+## Quatrième passe — 20 novembre 2026, soir (R26 à R38, commits a26587f, fee8927, 53fe3ac, 9b15972, 6b5f65d ; v3 rejouée en 825f9f2)
+
+Sources :
+- **Vraie fenêtre H** : `build/chat-qa/comment-v4/` (`report.json` 14/14 ; `r26`, `r32`, `r34`, `r38-diff-ouvert`, `r37-defilement-00` à `12`) et `comment-v3/` rejoué à 16 h 45 (`report.json`, 18 contrôles dont 1 en échec).
+- **Sans fenêtre H2** : `tests/annotations-ui/page_v4.py`, **relancé par moi**, 52/52 OK (22 contrôles unitaires + 30 dans Chromium sans écran à 100, 125 et 150 %).
+- Mes mesures au pixel sur les captures.
+
+Remarque : un petit widget d'une autre application (heure « 1:36:45 », avatars) recouvre le coin haut droit des captures v4. Il ne vient pas du navigateur.
+
+### R26 à R38
+
+| # | Décision | Preuve | Verdict |
+|---|---|---|---|
+| R26 | Survol d'une puce : défilement doux vers l'élément, montré comme au survol, retour sans redéfiler | `r26-survol-puce.png` : puce « span.field-label » survolée dans le panneau, l'élément est montré avec son cadre et ses deux étiquettes Inter (« 397x18 »). Sans fenêtre : 48 positions de défilement de 0 à 2 290 (pas de saut), inspecteur seulement s'il y a padding ou gap, retour sans redéfiler, pas de défilement si l'élément est déjà visible, cadre de la bulle conservé | Conforme |
+| R27 | Un seul contour : même rectangle pour le cadre conversation et le cadre survol / sélection | Sans fenêtre, à 100, 125 et 150 % : les deux cadres couvrent les mêmes pixels (1 750, 2 192 et 3 234 px, 0 différent), aucun double bord quand ils sont ensemble, bordure de 2 px pour les deux | Conforme (pas de capture en vraie fenêtre de ce cas) |
+| R28 | Bas de la saisie juste et stable dès la première image | `report` : « Sonnet 5.5 Moyen » dès la première image, hauteur 84 px constante. `r38` : effort et chevron présents | Conforme dans la bulle. Voir **O1** pour le panneau |
+| R29 | Position figée une fois posée, croissance dans un seul sens | `report` : pendant les nouvelles cartes, la modification qui déplace l'élément et le diff, la surface garde son décalage à l'élément (+315 ; −4 px écran, soit +12 / −4 CSS) | Conforme. L'exception près du bas de la page n'est pas testée (**T4**) |
+| R30 | Entrée en 250 ms, glissé de 12 px, `cubic-bezier(.23,1,.32,1)`, fondu seul en mouvement réduit | `panel.css` l. 639 et 646 : `b-in 250ms var(--ease-out)`, avec `--ease-out` = `cubic-bezier(0.23, 1, 0.32, 1)`, glissé de 12 px ; fondu de 120 ms en mouvement réduit | Conforme (vérifié dans le code) |
+| R31 | Ctrl maintenu : le site comme d'habitude | Sans fenêtre : curseur de la page pendant Ctrl, pas de cadre de survol, le clic va au site, rien n'est sélectionné, Ctrl+C reste à la page ; au relâchement, le viseur et le cadre reviennent tout de suite | Conforme côté page. Le curseur réel et le Chat à droite en vraie fenêtre ne sont pas capturés (**T5**) |
+| R32 | Icône et bordure « conversation » seulement après un envoi, dans les deux modes | `r32-rien-apres-echap.png` + `report` : rien sur l'élément après clic puis Échap, en Commentaire comme dans le panneau | Conforme |
+| R33 | Élément étroit : la taille passe sous le nom, à l'intérieur du cadre | Sans fenêtre : « 40x90 » visible, sous le nom, dans le cadre, à son coin intérieur haut gauche ; la copie native la place au même endroit | Conforme (pas de capture en vraie fenêtre) |
+| R34 | Le panneau ne montre jamais la disposition bulle | `report` : six bascules rapides, jamais la disposition bulle. `r34-apres-bascules.png` : panneau pleine hauteur avec en-tête, chat vide en bas, saisie « Sonnet 5.5 Moyen » | Conforme |
+| R35 | Un brouillon par conversation, pas de puce du panneau dans la bulle | `report` : la puce du panneau n'est pas dans la bulle (0) | Conforme |
+| R36 | (1) fondu universel de 250 ms après rechargement ; (2) glissé des valeurs quand seules des feuilles de style changent | (2) sans fenêtre : glissé de 120 à 360 avec 8 images intermédiaires, valeur finale juste, inspecteur qui suit image par image, repli « nomatch » vers (1), nettoyage fait. Code : `FadeMs = 250`, 150 ms en mouvement réduit. (1) en vraie fenêtre : **attesté seulement par le journal** (« the page shows them (transition) »), sans mesure image par image | Conforme pour (2). (1) à mesurer (**T6**) |
+| R37 | Inspecteur, cadre et étiquettes collés pendant le défilement | Sans fenêtre : 40 images d'un défilement rapide, 0 décalage ; un changement de valeur glisse toujours. Vraie fenêtre (mes mesures sur `r37-00` à `03`, les seules où l'élément est visible) : la pastille « 6 » garde exactement le même décalage par rapport au cadre (+3 ; +9 px) sur chaque image, y compris pendant le mouvement | Conforme |
+| R38 | Le diff s'ouvre en place, sans déplacer la bulle | `r38-diff-ouvert.png` + `report` : surface toujours à (748, 554) avec le diff ouvert, même décalage à l'élément ; elle grandit vers le bas | Conforme |
+
+### Non-régression D1 à D8 et R13 à R25
+
+| Point | Verdict | Preuve |
+|---|---|---|
+| D1, R14, R15, R16, R20 | Tiennent | v3 rejoué : deux étiquettes Inter au survol, retrait de 2,4 px au bord, inspecteur visible bulle ouverte, 320 px |
+| D3 | **Corrigé**, avant : régression possible | v3 rejoué avec un profil vierge : aucun lanceur sans conversation disparue |
+| D8 | **Corrigé** (décision appliquée) | `annotation-script.h` l. 158 : valeurs de padding et gap en Inter Display, blanc plein, 10/14 |
+| T1 (R19) | **Fermé** | v3 rejoué : 2 513 pixels comparés, 0 changé |
+| T2 (R25) | **Fermé** | v3 rejoué : la page **et le panneau** passent par 10 à 12 positions régulières (au plus 8 px d'un coup) |
+| N1 (`1B8R-0`) | **Fermé** | Commit bf26dc0 : planche 3 mise à jour, comparée valeur par valeur, 0 écart non expliqué |
+| R13, R24 | Tiennent | v3 rejoué |
+| R18 | **Un contrôle en échec** | v3 rejoué : « a real click: the surface is on screen less than 100 ms later » → **215 ms**. La fenêtre apparaît bien une seule fois, à sa place (8 images, un seul coin de surface). C'est le délai entre le clic et l'apparition qui dépasse l'objectif de H |
+| D2, D4, D5, D6, D7 | **Non rejoués après v3 et v4** (T3 toujours ouvert) | Derniers contrôles OK le 19 nov. (`comment-v2/host-report.json`, `switch-report.json`) |
+
+### Restant
+
+| # | Quoi | Correctif exact | Propriétaire |
+|---|---|---|---|
+| P1 | R18 : 215 ms entre le clic réel et l'apparition de la surface (objectif de H : moins de 100 ms) | Trouver ce qui retarde l'apparition (attente de l'accusé de la page, création de la région) et passer sous 100 ms, ou faire valider un autre objectif par l'utilisateur. Le placement et le glissé, eux, sont justes | H |
+| O1 | `r26-survol-puce.png` : dans le panneau, juste après la bascule, le bas de la saisie affiche une étoile générique « ☆ Agent » (et « ☆ Nouveau chat » dans l'en-tête) ; `r34` montre ensuite « Sonnet 5.5 Moyen » avec le logo. R28 demande un bas de saisie juste dès la première image (décision écrite pour la bulle, même esprit pour le panneau) | Envoyer à la page du panneau, dès son ouverture, l'agent, le logo, le modèle et l'effort mémorisés, comme pour la bulle (R28). Ne jamais afficher « Agent » avec l'étoile quand ces valeurs sont connues | H (P si la page ignore ce qu'elle reçoit) |
+| T3 | D2, D4, D5, D6 et D7 pas rejoués sur le build v4 | Rejouer le passage court v2 (bulle fermée, étape « Modifie … », conversation illisible, en-tête après rechargement, pas d'infobulle système) sur `build/chat-cv4` | H |
+| T4 | R29 : l'exception « près du bas de la page » (un seul décalage, en douceur) n'est pas testée | Passage en vraie fenêtre sur un élément proche du pied de page : un seul déplacement vertical, doux, et la bulle entière | H |
+| T5 | R31 en vraie fenêtre : curseur Windows réel et mode Chat à droite | Une capture du curseur (`GetCursorInfo`) avec Ctrl tenu, dans les deux modes, et un clic qui arrive au site | H |
+| T6 | R36 niveau 1 : le fondu de 250 ms n'est prouvé que par le journal | Relever les statistiques de `ChatTransition` (`fadeFrames`, `fadeStart` / `fadeEnd`) dans le `report`, avec au moins une image intermédiaire capturée | H |
+
 ## Troisième passe — 20 novembre 2026 (R13 à R25, commits 986207e, 16fbf32, 06cfa61)
 
 Sources :
