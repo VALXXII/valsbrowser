@@ -345,7 +345,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == AcpWake) { PumpEvents(); return 0; }
     if (m == WM_APP + 22) { PrepareProgress(); return 0; }
     if (m == WM_TIMER) {
-        if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && !BubbleWarm() && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
+        if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && !BubbleWarm() && !Ann::s.active && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
@@ -483,7 +483,16 @@ void Toggle(bool keyboard) {
     else if (Ann::ModeTab() != Active()) return;
     OpenPanel();
 }
-void ModeEntered() { SyncChromeBits(); if (CommentLayout()) SyncMarks(); }
+// O1 (R28 for the panel): in « Chat à droite », the panel's page is created and loaded (hidden) as soon as the mode is on,
+// so its first image already shows the agent, its logo, the model · effort and the mode (never « ☆ Agent »).
+void WarmPanel() {
+    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow || CommentLayout() || Shown() || !AskAvailable(t)) return;
+    EnsureInit(); PrepareChat(t);
+    if (view.Usable(environment.p) || view.Creating()) return;
+    view.Destroy(); panelReady = false;
+    if (view.Create(environment.p, window, PanelRect(0.f))) { view.Show(false); Diag(L"panel WebView created in advance (Chat a droite)"); }   // i18n-exempt: log detail
+}
+void ModeEntered() { SyncChromeBits(); if (CommentLayout()) SyncMarks(); else WarmPanel(); }
 void CoolBubble();
 void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
 bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
