@@ -122,7 +122,7 @@ def run_main():
         time.sleep(1.0)
         step('D3 · fresh profile, Commentaire, no conversation whose element is gone: no launcher', 'AnnotationLauncher' not in (C.uia('-List') or ''))
         capture('d3-sans-lanceur')
-        warm = logged(r'CHAT bubble WebView created in advance', m0, 10)
+        warm = logged(r'CHAT (bubble|panel) WebView created in advance', 0, 10)   # O1: in « Chat à droite » the page is made at the mode's start; the bubble reuses it
         logged(r'CHAT panel ready', m0, 10); time.sleep(0.8)
         step('R18 · the bubble\'s page is created and loaded as soon as Commentaire is on (before any click)', warm is not None)
 
@@ -150,8 +150,12 @@ def run_main():
 
         # ---- R18: the opening, sampled every ~4 ms: the window never moves once shown
         hwnd_box = {}
+        warm_bubble = V.bubble_hwnd()   # the warm bubble's window (empty region) exists before the click: found once, sampled fast
         def bubble_sample():
-            bw = CC.bubble_window()
+            if warm_bubble:   # fast: one window, no enumeration (R18 is measured to a few ms)
+                bw = warm_bubble[0]
+            else:
+                bw = CC.bubble_window()
             if not bw:
                 return None
             hwnd_box['h'] = bw[0]
@@ -159,14 +163,15 @@ def run_main():
             visible = bool(u32.IsWindowVisible(bw[0])) and not (kind == 1 or (rg.right - rg.left) <= 0)   # NULLREGION = 1
             return (visible, win_rect(bw[0]), (rg.left, rg.top, rg.right, rg.bottom))
         region = (max(0, el[0] - 40), max(0, el[1] - 120), el[2] + 760, el[3] + 420)
-        s18 = Sampler(bubble_sample, region); s18.start(); time.sleep(0.05)
+        s18 = Sampler(bubble_sample); s18.start(); s18f = Sampler(lambda: None, region); s18f.start(); time.sleep(0.05)   # region samples fast, the images on their own thread
         m1 = mark()
+        V.front()   # the test browser in front (the user's own browser may have taken it)
         V.u32.SetCursorPos((el[0] + el[2]) // 2, (el[1] + el[3]) // 2); time.sleep(0.12)
         clicked_at = time.perf_counter()
         for flag in (0x0002, 0x0004):   # a REAL click (SendInput)
             i = V._IN(); i.type = 0; i.mi = V._MI(0, 0, 0, flag, 0, 0); u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(V._IN)); time.sleep(0.02)
         opened = logged(r'CHAT bubble opened on (\S+) for conversation (c_\w+)', m1, 10)
-        time.sleep(1.2); s18.stop = True; s18.join()
+        time.sleep(1.2); s18.stop = True; s18.join(); s18f.stop = True; s18f.join(); s18.frames = s18f.frames
         shown = [r for _, r in s18.samples if r and r[0]]
         rects = sorted(set(r[1] for r in shown)); corners = sorted(set((r[2][0], r[2][1]) for r in shown))
         first = next((t for t, r in s18.samples if r and r[0]), None)

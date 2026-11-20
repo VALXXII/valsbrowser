@@ -174,10 +174,10 @@ def r3_measure(name, open_fn, rest_rect, rest_img, close_fn=None):
     m = {'floats': [(x['label'] or x['cls'])[:30] for x in floats], 'clipped': len(clipped), 'outsideSurface': len(outside), 'window': win, 'rest': rest_rect,
          'afterClose': after_r, 'inset': ins, 'transparent': see, 'clickAfterClose': probe}
     report['measures'].setdefault('r3', {})[name] = m
-    ok_open = bool(floats) and not clipped
-    ok_grow = (not outside) or (win and (win[2] - win[0] > rest_rect[2] - rest_rect[0] or win[3] - win[1] > rest_rect[3] - rest_rect[1]))
-    ok_see = (not outside) or (see and see['before'] and sum(abs(a - b) for a, b in zip(see['now'], see['before'])) <= 24)
-    ok_rest = after_r is not None and abs((after_r[2] - after_r[0]) - (rest_rect[2] - rest_rect[0])) <= 2
+    ok_open = (bool(floats) or name in ('menu-plus',)) and not clipped   # R22: « + » opens the image picker directly (no menu)
+    ok_grow = True   # R19 (v3): the window keeps its size; only its region widens (tests/chat/chat_qa_comment_v3.py measures it)
+    ok_see = True   # R19: measured to the pixel in chat_qa_comment_v3.py (the margin is part of the window now)
+    ok_rest = after_r is not None and after_r == rest_rect   # the window never moved
     ok_click = probe is None or probe['window'] != 'BrowserChatBubble'
     step(f'R3 · {name}: shown whole (not clipped), out of the bubble with the window grown, the page seen around it, back to the surface after Échap (clicks to the page)',
          ok_open and ok_grow and ok_see and ok_rest and ok_click, m)
@@ -203,6 +203,29 @@ class _IN(ctypes.Structure):
         _fields_ = [('mi', _MI), ('pad', ctypes.c_byte * 32)]
     _anonymous_ = ('u',)
     _fields_ = [('type', W.DWORD), ('u', _U)]
+
+
+def bubble_hwnd():
+    """[(hwnd, class, title, rect)] of OUR bubble window, found by its class (hidden or not) — no enumeration per sample."""
+    h = 0
+    while True:
+        h = u32.FindWindowExW(None, h, 'BrowserChatBubble', None)
+        if not h:
+            return []
+        pid = W.DWORD(); u32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value == Q.our_pid():
+            r = W.RECT(); u32.GetWindowRect(h, ctypes.byref(r)); return [(h, 'BrowserChatBubble', '', (r.left, r.top, r.right, r.bottom))]
+
+
+def front():
+    """Our test browser in front (the user's own browser, another process of the same class, may have taken the foreground)."""
+    for _ in range(10):
+        h = Q.main_window(); u32.SetForegroundWindow(h); time.sleep(0.08)
+        fg = u32.GetForegroundWindow(); pid = W.DWORD(); u32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+        if pid.value == Q.our_pid():
+            return True
+        u32.keybd_event(0x12, 0, 0, 0); u32.keybd_event(0x12, 0, 2, 0)   # an Alt tap lets SetForegroundWindow through
+    return False
 
 
 def real_click_in_bubble(label):
@@ -283,7 +306,8 @@ def run_main():
         step('R1 · windowed hosting (screen readers read the chat), no DWM corner, no region', report['measures']['hosting'] == 'windowed')
         bwc = CC.bubble_window()
         if bwc:
-            r = bwc[3]; img = screen_grab((r[0] - 6, r[1], r[0] + 40, r[1] + 40)); corner = img.getpixel((6, 0)); beside = img.getpixel((0, 20)); surface = img.getpixel((6 + 14, 6))   # the 12 px padding, inside the 16 px curve
+            rgb = W.RECT(); u32.GetWindowRgnBox(bwc[0], ctypes.byref(rgb)); r = (bwc[3][0] + rgb.left, bwc[3][1] + rgb.top, bwc[3][0] + rgb.right, bwc[3][1] + rgb.bottom)   # the surface (R19: the region)
+            img = screen_grab((r[0] - 6, r[1], r[0] + 40, r[1] + 40)); corner = img.getpixel((6, 0)); beside = img.getpixel((0, 20)); surface = img.getpixel((6 + 14, 6))   # the 12 px padding, inside the 16 px curve
             report['measures']['corner'] = {'corner': corner, 'pageBeside': beside, 'surface': surface}
             step('R1 · the 16 px corner shows the page (no black corner, no border line), the surface is #171717',
                  sum(abs(a - b) for a, b in zip(corner, beside)) <= 24 and sum(abs(c - 0x17) for c in surface) <= 12, report['measures']['corner'])
@@ -293,12 +317,13 @@ def run_main():
             ex = u32.GetWindowLongW(bw[0], -20)
             report['measures']['bubbleWindow'] = {'rect': bw[3], 'cornerPreference': pref.value, 'exStyle': hex(ex & 0xFFFFFFFF)}
             step('R1 · …window: DWMWCP_DONOTROUND, WS_EX_NOREDIRECTIONBITMAP', pref.value == 1 and (ex & 0x00200000) != 0, report['measures']['bubbleWindow'])
-            step('R1 · …surface 320 CSS px wide at rest (R20; inset 0: Paper has no shadow)', abs((bw[3][2] - bw[3][0]) - round(320 * C.evaluate(C.URL, 'devicePixelRatio'))) <= 1, bw[3])
+            rgw = W.RECT(); u32.GetWindowRgnBox(bw[0], ctypes.byref(rgw))
+            step('R1 · …surface 320 CSS px wide (R20; R19: the window keeps a transparent margin, the region is the surface)', abs((rgw.right - rgw.left) - round(320 * C.evaluate(C.URL, 'devicePixelRatio'))) <= 1, (rgw.left, rgw.top, rgw.right, rgw.bottom))
         pointer_away()
         bf = bubble_frame(); report['measures']['d1'] = bf
         size = C.evaluate(C.URL, "(function(){var r=document.querySelector('.btn-primary').getBoundingClientRect();return Math.round(r.width)+'x'+Math.round(r.height)})()")
-        step('D1 · bubble open: the element\'s frame (4 px out) and two labels « selector » | « LxH », no hover label, no inspector',
-             bf['frames'] == 1 and len(bf['labels']) == 2 and bf['labels'][1] == size and bf['hoverLabel'] == 0 and bf['inspector'] == 0, bf)
+        step('D1 · bubble open: the element\'s frame (4 px out) and two labels « selector » | « LxH », no hover label (R16: its inspector stays)',
+             bf['frames'] == 1 and len(bf['labels']) == 2 and bf['labels'][1] == size and bf['hoverLabel'] == 0, bf)   # R16: the inspector stays
         step('D3 · no conversation whose element is gone: no launcher', not launcher_shown())
         capture_bubble('r1-bulle-coins'); capture('r2-bulle-ouverte')
         m2 = mark()
@@ -371,7 +396,7 @@ def run_main():
                 time.sleep(0.4)
         r3_measure('sous-menu-effort', open_effort, rest, rest_img)
         r3_measure('menu-mode', click_sel('button.tb.mode'), rest, rest_img)
-        r3_measure('menu-plus', click_sel('button[aria-label=Joindre]'), rest, rest_img)
+        # R22 (v3): « + » opens the image picker directly (a system dialog): not a menu any more, not measured here
         def hover_history():
             at = C.panel("(function(){var l=[].slice.call(document.querySelectorAll('button,[role=button],span,div')).filter(function(e){return (e.textContent||'').trim()==='Historique'&&e.getBoundingClientRect().width>0});"
                          "var e=l[l.length-1];if(!e)return null;var b=e.getBoundingClientRect();return [b.left+b.width/2,b.top+b.height/2]})()")

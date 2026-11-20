@@ -1126,7 +1126,7 @@ void Activate(const Start& st) {
 // element's source). On again: the band comes back, the « viseur » too. Closing the chat while it is off ends the mode.
 // R25: the band slides in / out (the page and the chat panel are laid out under it at every frame: no jump). As short
 // as the band's own entrance, on the panel's curve; reduced motion: at once.
-inline constexpr int BandSlideInMs = 200, BandSlideOutMs = 200;   // R25: ~12 frames at 60 Hz, regular steps
+inline constexpr int BandSlideInMs = 240, BandSlideOutMs = 240;   /* the entrance has more to do on its first frame (the band shown): a little longer */   // R25: ~12 frames at 60 Hz, regular steps
 AUI::Ramp bandSlide; bool bandSliding = false, bandHideAtEnd = false; int bandFrames = 0;
 void BandSlideApply(NativeChrome::Motion::Time now) {
     const float full = float(AUI::BannerSpec::height), cur = AUI::BandSlideHeight(bandSlide.Value(now), full, Reduced());

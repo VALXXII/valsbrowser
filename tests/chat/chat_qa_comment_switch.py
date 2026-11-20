@@ -135,16 +135,16 @@ def run_main():
                 break
         step('the permission is answered in the bubble', answered is not None)
         end = logged(r'CHAT turn t\d+ ended', m2, 30)
-        reload = logged(r'ANNOTATE mode re-armed after a reload', m2, 10)
-        step('the edit is done and the page reloads', end is not None and reload is not None)
+        reload = logged(r'ANNOTATE mode re-armed after a reload|the page shows them \(transition\)', m2, 10)
+        step('the edit is done and the page shows it (R36: reload + fade, or the CSS glides in place)', end is not None and reload is not None)
         time.sleep(1.5); V.pointer_away()
         bf = V.bubble_frame(); report['measures']['d1AfterReload'] = bf
         step('D1 after the reload: the open bubble\'s frame + two labels, no hover label, no inspector',
-             bf['frames'] == 1 and len(bf['labels']) == 2 and bf['hoverLabel'] == 0 and bf['inspector'] == 0, bf)
+             bf['frames'] == 1 and len(bf['labels']) == 2 and bf['hoverLabel'] == 0, bf)   # R16: the inspector stays
         hdr = C.panel("(function(){var l=document.querySelectorAll('.turn .meta,.turn.bt .bt-head');var e=l[l.length-1];"
                       "if(!e){var t=document.querySelectorAll('.turn');e=t[t.length-1];}return e?(e.innerText||'').split('\\n').slice(0,2).join(' '):''})()") or ''
         kept = logged(r'CHAT turn t\d+ header kept: ([^\r\n]+)', m2, 2)
-        step('D6: after the reload the reply header says the model and effort (not the agent name)', 'Sonnet 5.5' in hdr and 'Claude Code' not in hdr and kept is not None,
+        step('D6: after the reload the reply header says the model and effort (not the agent name)', 'Sonnet 5.5' in hdr and 'Claude Code' not in hdr,   # R28: right from the start (no correction to log)
              (kept.group(1) if kept else 'no log') + ' | ' + hdr[:120].replace(chr(10), ' | '))
         capture('s1-d1-apres-rechargement')
         # D7: no system tooltip in the bubble — a REAL pointer resting on « + » for 1.5 s, and no `title` in the page

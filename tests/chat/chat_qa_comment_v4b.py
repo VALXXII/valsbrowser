@@ -18,6 +18,7 @@ import ctypes.wintypes as W
 import json
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
@@ -79,8 +80,50 @@ def page_point(sel):
     el = CC.element_screen(sel); return ((el[0] + el[2]) // 2, (el[1] + el[3]) // 2)
 
 
-def frames_in(region, seconds):
-    s = V3.Sampler(lambda: None, region); s.start(); time.sleep(seconds); s.stop = True; s.join(); return s.frames
+gdi = ctypes.windll.gdi32
+
+
+def fast_grab(region):
+    """The screen's pixels of `region` through GDI (a few ms): (w, h, bytes BGRA)."""
+    l, t, r, b = region; w, h = r - l, b - t
+    sdc = u32.GetDC(None); mdc = gdi.CreateCompatibleDC(sdc); bmp = gdi.CreateCompatibleBitmap(sdc, w, h); old = gdi.SelectObject(mdc, bmp)
+    gdi.BitBlt(mdc, 0, 0, w, h, sdc, l, t, 0x00CC0020)
+    class BIH(ctypes.Structure):
+        _fields_ = [('biSize', W.DWORD), ('biWidth', W.LONG), ('biHeight', W.LONG), ('biPlanes', W.WORD), ('biBitCount', W.WORD), ('biCompression', W.DWORD),
+                    ('biSizeImage', W.DWORD), ('biXPelsPerMeter', W.LONG), ('biYPelsPerMeter', W.LONG), ('biClrUsed', W.DWORD), ('biClrImportant', W.DWORD)]
+    bi = BIH(); bi.biSize = ctypes.sizeof(BIH); bi.biWidth = w; bi.biHeight = -h; bi.biPlanes = 1; bi.biBitCount = 32
+    buf = ctypes.create_string_buffer(w * h * 4); gdi.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bi), 0)
+    gdi.SelectObject(mdc, old); gdi.DeleteObject(bmp); gdi.DeleteDC(mdc); u32.ReleaseDC(None, sdc)
+    return (w, h, buf.raw)
+
+
+class FastFrames(threading.Thread):
+    def __init__(self, region):
+        super().__init__(daemon=True); self.region = region; self.frames = []; self.stop = False
+    def run(self):
+        while not self.stop and len(self.frames) < 240:
+            t = time.perf_counter(); self.frames.append((t, fast_grab(self.region)))
+            time.sleep(max(0.0, 0.008 - (time.perf_counter() - t)))
+
+
+def frames_png(frames, prefix, limit=40):
+    from PIL import Image
+    for i, (t, (w, h, raw)) in enumerate(frames[:limit]):
+        Image.frombuffer('RGBA', (w, h), raw, 'raw', 'BGRA', 0, 1).convert('RGB').save(OUT / f'{prefix}-{i:02d}.png')
+
+
+def fast_changes(frames):
+    """Per successive pair: the share of sampled pixels that changed (> 12 levels), and how many pairs moved."""
+    out = []
+    for (_, (w, h, a)), (_, (_, _, b)) in zip(frames, frames[1:]):
+        n = d = 0
+        for y in range(0, h, 6):
+            row = y * w * 4
+            for x in range(0, w, 6):
+                i = row + x * 4; n += 1
+                if abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2]) > 12: d += 1
+        out.append(round(d / max(1, n), 3))
+    return out
 
 
 def changes(frames):
@@ -129,15 +172,21 @@ def run_main():
 
         # ---- T5 in « Chat à droite »: Ctrl held
         def ctrl_check(label):
+            V.front()
             fx, fy = page_point('.field input') if C.evaluate(C.URL, "!!document.querySelector('.field input')") else page_point('.field-label')
             u32.SetCursorPos(fx, fy); time.sleep(0.3)
             free = cursor_now()
-            key(0x11); time.sleep(0.35)
-            u32.SetCursorPos(fx + 2, fy); time.sleep(0.35)
+            key(0x11); time.sleep(0.2)
+            for dx in (2, 4, 6): u32.SetCursorPos(fx + dx, fy); time.sleep(0.08)
+            time.sleep(0.2)
             held = cursor_now(); hov = V3.overlay_labels()
             capture(f't5-ctrl-{label}')
-            bx, by = page_point('.btn-primary'); u32.SetCursorPos(bx, by); time.sleep(0.35); held_btn = cursor_now()
-            key(0x11, up=True); time.sleep(0.35); u32.SetCursorPos(bx + 2, by); time.sleep(0.35)
+            bx, by = page_point('.btn-primary')
+            for dx in (0, 2, 4): u32.SetCursorPos(bx + dx, by); time.sleep(0.08)
+            time.sleep(0.2); held_btn = cursor_now()
+            key(0x11, up=True); time.sleep(0.2)
+            for dx in (2, 4, 6): u32.SetCursorPos(bx + dx, by); time.sleep(0.08)
+            time.sleep(0.2)
             back = cursor_now()
             sysset = set(SYSTEM.values())
             m = {'free': free, 'heldOverField': held, 'heldOverButton': held_btn, 'released': back, 'system': SYSTEM, 'hoverLabelsWhileHeld': len(hov)}
@@ -152,13 +201,14 @@ def run_main():
 
         # ---- R18: a real click, measured
         el = CC.element_screen('.btn-primary'); hwnd = {}
+        warm_b = V.bubble_hwnd()
         def surf():
-            bw = CC.bubble_window()
+            bw = warm_b[0] if warm_b else CC.bubble_window()   # fast when the warm bubble's window exists
             if not bw:
                 return None
             rg = W.RECT(); kind = u32.GetWindowRgnBox(bw[0], ctypes.byref(rg)); return kind != 1 and rg.right > rg.left
         s18 = V3.Sampler(surf); s18.start(); time.sleep(0.05)
-        m2 = mark(); u32.SetCursorPos((el[0] + el[2]) // 2, (el[1] + el[3]) // 2); time.sleep(0.12)
+        V.front(); m2 = mark(); u32.SetCursorPos((el[0] + el[2]) // 2, (el[1] + el[3]) // 2); time.sleep(0.12)
         t_click = time.perf_counter()
         for flag in (0x0002, 0x0004):
             i = V._IN(); i.type = 0; i.mi = V._MI(0, 0, 0, flag, 0, 0); u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(V._IN)); time.sleep(0.02)
@@ -171,40 +221,39 @@ def run_main():
 
         # ---- T6: a CSS-only turn (glide), frame by frame
         region = (max(0, el[0] - 40), max(0, el[1] - 120), el[2] + 420, el[3] + 60)
+        region = (max(0, el[0] - 40), max(0, el[1] - 120), el[2] + 420, el[3] + 60)
         m3 = mark(); V.send_in_view('Change le gap en 8 px')
+        ff = FastFrames(region)
         for _ in range(16):
             try:
                 C.click_panel(text='Autoriser')
             except Exception:
                 pass
             if logged(r'CHAT permission answered', m3, 1):
-                break
-        logged(r'CHAT turn t\d+ ended', m3, 30)
-        fr = frames_in(region, 0.6)
-        ch = changes(fr)
-        for i, (t, img) in enumerate(fr[:36]):
-            img.save(OUT / f't6-css-{i:02d}.png')
+                ff.start(); break
+        logged(r'CHAT turn t\d+ ended', m3, 30); time.sleep(0.8); ff.stop = True; ff.join()
+        fr = ff.frames; ch = fast_changes(fr)
         moving = [c for c in ch if c > 0]
-        report['measures']['t6-css'] = {'frames': len(fr), 'changes': ch, 'log': [l for l in C.log_text()[m3:].splitlines() if 'transition' in l.lower() or 'glide' in l.lower() or 'fade' in l.lower()][:6]}
+        first = next((i for i, c in enumerate(ch) if c > 0), 0); frames_png(fr[max(0, first - 2):], 't6-css')
+        report['measures']['t6-css'] = {'frames': len(fr), 'changes': [c for c in ch if c > 0], 'log': [l for l in C.log_text()[m3:].splitlines() if 'transition' in l.lower() or 'glide' in l.lower() or 'fade' in l.lower()][:6]}
         step('T6 · R36 a CSS-only turn: the values glide over several frames (no cut)', len(moving) >= 4 and max(moving) < 0.5, report['measures']['t6-css'])
 
         # ---- T6: an HTML turn (capture + reload + fade), frame by frame
+        pg = CC.page_widget(); region2 = (pg[0], pg[1], pg[0] + 700, pg[1] + 520)
         m4 = mark(); V.send_in_view("apply index.html|rien n'est envoyé|aucun paiement n'est fait")
+        ff2 = FastFrames(region2)
         for _ in range(16):
             try:
                 C.click_panel(text='Autoriser')
             except Exception:
                 pass
             if logged(r'CHAT permission answered', m4, 1):
-                break
-        logged(r'CHAT turn t\d+ ended', m4, 30)
-        pg = CC.page_widget(); region2 = (pg[0], pg[1], pg[0] + 700, pg[1] + 520)
-        fr2 = frames_in(region2, 0.7)
-        ch2 = changes(fr2)
-        for i, (t, img) in enumerate(fr2[:40]):
-            img.save(OUT / f't6-html-{i:02d}.png')
+                ff2.start(); break
+        logged(r'CHAT turn t\d+ ended', m4, 30); time.sleep(1.0); ff2.stop = True; ff2.join()
+        fr2 = ff2.frames; ch2 = fast_changes(fr2)
         moving2 = [c for c in ch2 if c > 0]
-        report['measures']['t6-html'] = {'frames': len(fr2), 'changes': ch2, 'log': [l for l in C.log_text()[m4:].splitlines() if 'transition' in l.lower() or 'fade' in l.lower() or 'reload' in l.lower()][:6]}
+        first2 = next((i for i, c in enumerate(ch2) if c > 0), 0); frames_png(fr2[max(0, first2 - 2):], 't6-html')
+        report['measures']['t6-html'] = {'frames': len(fr2), 'changes': [c for c in ch2 if c > 0], 'log': [l for l in C.log_text()[m4:].splitlines() if 'transition' in l.lower() or 'fade' in l.lower() or 'reload' in l.lower()][:6]}
         step('T6 · R36 an HTML turn: capture, reload, then a fade over several frames (no white flash, no cut)', len(moving2) >= 4 and max(moving2) < 0.5, report['measures']['t6-html'])
         V.focus_composer(); C.key_panel('Escape', 'Escape', 27); time.sleep(0.6)
 

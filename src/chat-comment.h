@@ -282,8 +282,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     }
     PostMessageW(bubble.hwnd, WM_APP + 3, 0, 0);
     Ann::Announce(TRF(chat_bubble_announce, W(label.empty() ? std::string("—") : label)));
-    Diag(L"bubble opened on " + W(label.empty() ? std::string("(no element)") : label) + L" for conversation " + W(conv) + (again ? L" (was open)" : L"") +
-         L", " + Ann::Ms(bubble.openedAt - Ann::s.selectedAt) + L" ms after the selection message");   // R18
+    Diag(L"bubble opened on " + W(label.empty() ? std::string("(no element)") : label) + L" for conversation " + W(conv) + (again ? L" (was open)" : L""));
 }
 // R18: what the opening does not need before the surface shows (the agent's start, the element's frame, the marks)
 void FinishOpening() {
@@ -512,6 +511,8 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
     const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);
     early = EarlyOpen{true, env.serial, "", Ann::NowMs()};
+    if (env.at > 0) { FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;   // R18: the click (page clock) -> here
+        const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; Diag(L"the click's « selecting » reached the host " + Ann::Ms(std::max(0.0, now - env.at)) + L" ms after the click"); }
     for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == env.selector) {   // its conversation
         const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
         ShowConversation(id, [id, element, l] { OpenBubble(id, &element, ShownSelector(id), false, l); });

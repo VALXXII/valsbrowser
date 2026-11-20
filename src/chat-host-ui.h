@@ -297,7 +297,7 @@ void SelectHistory(const std::string& id) {
 }
 void MaybeStartSession() {
     const auto& a = agentInfo[agentId];
-    if (Usable() && (Open() || BubbleOpen()) && !session && !sessionStarting && !preparing && a.known && a.cli && a.prepared) StartSession();
+    if (Usable() && (Open() || BubbleOpen() || (panelWarm && Ann::s.active && !CommentLayout())) && !session && !sessionStarting && !preparing && a.known && a.cli && a.prepared) StartSession();
 }
 void SwitchAgent(const std::string& id, const std::string& model) {
     if (!AgentOf(id)) return;
@@ -490,7 +490,8 @@ void WarmPanel() {
     EnsureInit(); PrepareChat(t);
     if (view.Usable(environment.p) || view.Creating()) return;
     view.Destroy(); panelReady = false;
-    if (view.Create(environment.p, window, PanelRect(0.f))) { view.Show(false); Diag(L"panel WebView created in advance (Chat a droite)"); }   // i18n-exempt: log detail
+    if (view.Create(environment.p, window, PanelRect(0.f))) { view.Show(false); panelWarm = true; Diag(L"panel WebView created in advance (Chat a droite)"); }   // i18n-exempt: log detail
+    DetectAgents([] { MaybeStartSession(); });   // O1: its agent too: the model and effort are known before the panel shows
 }
 void ModeEntered() { SyncChromeBits(); if (CommentLayout()) SyncMarks(); else WarmPanel(); }
 void CoolBubble();

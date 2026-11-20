@@ -105,6 +105,7 @@ struct AgentInfo {   // what the panel shows for one agent (state.agents)
     std::vector<Acp::AuthMethod> auth; std::vector<Acp::ConfigOption> options; Acp::ModeState modes; Acp::Capabilities caps; std::vector<Acp::Command> commands;
 };
 std::map<std::string, AgentInfo> agentInfo;
+bool panelWarm = false;   // O1: the panel's page created in advance (its agent may start)
 bool defaultsApplied = false;   // R28: the browser's model / effort / mode choices are applied to the session (until then: shown as intended)
 
 // ---------------------------------------------------------------- state
