@@ -13,9 +13,11 @@
 //   13/20 medium #FFFFFFB3 ; detail lines 14/20 #FFFFFF80 ; multi-line: padding 6/8, gap 4
 //   (header + detail) or 2 (truncated tab: title + domain), max width 320.
 //   Behaviour notes (EW8-0..EWA-0): appears after 600 ms of still hover, then instantly between
-//   neighbouring buttons for 300 ms; 120 ms fade, no movement; 6 px under the target, left
-//   aligned, flips above / clamps to the edge when room is short; keyboard focus shows it at once;
+//   neighbouring buttons for 300 ms; 120 ms fade, no movement; 6 px under the target, flips above
+//   when room is short; keyboard focus shows it at once;
 //   Échap hides it without moving focus (the host calls Hide()).
+//   Horizontal placement (user request 2026-11-20, replaces Paper's « left aligned »): centred on
+//   the target, slid only to stay 8 DIP inside the window and the screen (TooltipPlacement::Place).
 //
 // This header also carries NativeChrome::PopupKit, the small toolkit the B surfaces share
 // (find bar, context toast, full-screen hint): popup creation without shadow, the host frame
@@ -33,6 +35,7 @@
 #include "chrome.h"
 #include "accessibility.h"
 #include "native-ui.h"
+#include "tooltip-placement.h"
 
 namespace NativeChrome {
 namespace PopupKit {
@@ -223,16 +226,7 @@ public:
     }
     void Stop() { if (window_) KillTimer(window_, TimerId); }
 };
-// A bounded rectangle (screen px) for a popup of `size` near `target`: `gap` px under it,
-// left edges aligned; above when there is no room below; clamped `margin` px inside `bounds`.
-inline POINT PlaceBelow(RECT target, SIZE size, RECT bounds, int gap, int margin = 0) {
-    POINT p{target.left, target.bottom + gap};
-    if (p.y + size.cy > bounds.bottom - margin && target.top - gap - size.cy >= bounds.top + margin) p.y = target.top - gap - size.cy;
-    p.x = std::max<LONG>(bounds.left + margin, std::min<LONG>(p.x, bounds.right - margin - size.cx));
-    p.y = std::max<LONG>(bounds.top + margin, std::min<LONG>(p.y, bounds.bottom - margin - size.cy));
-    return p;
-}
-inline RECT WorkArea(RECT around) { MONITORINFO mi{sizeof(mi)}; if (GetMonitorInfoW(MonitorFromRect(&around, MONITOR_DEFAULTTONEAREST), &mi)) return mi.rcWork; return around; }
+inline RECT WorkArea(RECT around) { return TooltipPlacement::WorkArea(around); }
 
 // Tests: runs a surface's Paint() into an offscreen WIC target (same code path, software
 // Direct2D) and saves a PNG: the GPU HWND target cannot be read back (PrintWindow / BitBlt).
@@ -328,8 +322,8 @@ class Tip {
     }
     void Place() {
         const SIZE size{PopupKit::Px(owner_, width_), PopupKit::Px(owner_, height_)};
-        RECT area = PopupKit::WorkArea(target_); if (hasBounds_) IntersectRect(&area, &area, &bounds_);
-        const POINT p = PopupKit::PlaceBelow(target_, size, area, PopupKit::Px(owner_, Layout::offset));
+        const RECT area = TooltipPlacement::Bounds(PopupKit::WorkArea(target_), hasBounds_ ? &bounds_ : nullptr);
+        const POINT p = TooltipPlacement::Place(target_, size, area, PopupKit::Px(owner_, Layout::offset), PopupKit::Px(owner_, TooltipPlacement::marginDip)).at;
         SetWindowPos(hwnd_, HWND_TOP, p.x, p.y, size.cx, size.cy, SWP_NOACTIVATE);
         chrome_.Resize();
     }

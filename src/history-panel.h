@@ -20,6 +20,7 @@
 #include "chrome.h"
 #include "download-panel.h" // RowReveal, Lane, springs, the reveal blur (DownloadsUI::View::Element)
 #include "history.h"
+#include "tooltip-placement.h"
 
 namespace NativeChrome {
 namespace HistoryUI {
@@ -520,6 +521,7 @@ private:
         const float scale = 96.f / Dpi();
         switch (msg) {
         case WM_ERASEBKGND: return 1;
+        case WM_NOTIFY: if (TooltipPlacement::OnNotify(tip_, l)) return TRUE; break; // tips centred on their tool
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
         case WM_DPICHANGED: ApplyGeometry(Motion::Now(), true); return 0;

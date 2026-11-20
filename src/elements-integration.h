@@ -1502,7 +1502,7 @@ void ChromeTipHover(int x,int y){
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
         RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
-        RECT bounds=WindowScreenRect();chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
+        RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
     chromeTip.Hide();
 }

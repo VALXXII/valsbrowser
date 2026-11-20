@@ -19,6 +19,7 @@
 #include "chrome.h"
 #include "address.h"
 #include "native-ui.h"
+#include "tooltip-placement.h"
 
 namespace NativeChrome::AddressUI {
 namespace Layout {
@@ -225,6 +226,7 @@ private:
         switch (msg) {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE; // the EDIT keeps focus
         case WM_ERASEBKGND: return 1;
+        case WM_NOTIFY: if (TooltipPlacement::OnNotify(tip_, l)) return TRUE; break; // tips centred on their tool
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
         case WM_SIZE: chrome_.Resize(); InvalidateRect(h, nullptr, FALSE); return 0;
         // Shown on a monitor at another DPI: the move sizes the window first (WM_SIZE still reads the old DPI), then

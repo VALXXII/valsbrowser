@@ -20,6 +20,7 @@
 #include <vector>
 #include "chrome.h"
 #include "native-ui.h"
+#include "tooltip-placement.h"
 #include "downloads.h"
 #include "accessibility.h"
 
@@ -636,6 +637,7 @@ protected:
         const float scale = 96.f / Dpi();
         switch (msg) {
         case WM_ERASEBKGND: return 1;
+        case WM_NOTIFY: if (TooltipPlacement::OnNotify(tip_, l)) return TRUE; break; // tips centred on their tool
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;

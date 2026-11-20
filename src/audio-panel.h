@@ -381,7 +381,7 @@ class Popover {
         const RECT target = ScreenBox(view_.InfoBox(Layout::RowTop(i, drawer_, scroll_)));
         tipFor_ = InfoHit(i);
         // Kept inside the browser window (Paper TJ0-0 sits within it), like the toolbar's tips.
-        RECT bounds{}; GetWindowRect(owner_, &bounds);
+        const RECT bounds = TooltipPlacement::VisibleRect(owner_);
         if (now) tip_.Show(Tooltip::Content{SoundsTip(), L"", L""}, target, &bounds); else tip_.Hover(Tooltip::Content{SoundsTip(), L"", L""}, target, &bounds);
     }
     // The tip follows the info glyph under the pointer, or the keyboard focus on it.

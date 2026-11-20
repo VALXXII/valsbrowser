@@ -169,7 +169,8 @@ private:
         PopupKit::SetAlpha(hwnd_, progress);
     }
     RECT ScreenBox(int hit) const { const auto b = HitBox(hit); RECT r{Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
-    RECT TipBounds() const { RECT r = page_; r.right -= Px(Layout::tooltipMargin); r.left += Px(Layout::tooltipMargin); return r; }
+    // The tip keeps tooltipMargin from the page edges: Tip adds its own 8 DIP edge margin to these bounds.
+    RECT TipBounds() const { const int inset = Px(Layout::tooltipMargin - TooltipPlacement::marginDip); RECT r = page_; r.right -= inset; r.left += inset; return r; }
     void TipFor(int hit, bool immediate) {
         if (!hit || hit == FieldHit) { tip_.Hide(); return; }
         Tooltip::Content c{Name(hit), Keys(hit), L""}; const RECT target = ScreenBox(hit);

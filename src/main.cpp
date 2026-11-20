@@ -4440,6 +4440,7 @@ case WM_TIMER:
     if(w==DrawerWarmTimerId){KillTimer(h,DrawerWarmTimerId);if(downloadPanel.Visible())downloadDrawer.Warm();return 0;}
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case EngineInstallMessage:OnEngineInstallMessage();return 0;
+case WM_NOTIFY:if(NativeChrome::TooltipPlacement::OnNotify(tooltip,l))return TRUE;break; // comctl fallback tips (no native Tip): centred too
 case ImportMessage:ImportFinished();return 0;
 // A window that never became ready (WebView2 recovery) never removes its session: it keeps it for the
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.

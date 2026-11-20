@@ -34,6 +34,7 @@
 #include "settings.h"
 #include "context-menu.h"
 #include "native-ui.h"
+#include "tooltip-placement.h"
 #include "modal.h"
 #include "accessibility.h"
 #include "svg-path.h"
@@ -1848,6 +1849,7 @@ private:
         const float scale = 96.f / Dpi();
         switch (msg) {
         case WM_ERASEBKGND: return 1;
+        case WM_NOTIFY: if (TooltipPlacement::OnNotify(tip_, l)) return TRUE; break; // tips centred on their tool
         case WM_GETOBJECT: { LRESULT r; if (uia_.OnGetObject(h, w, l, r)) return r; break; }
         case UiaInvoke: UiaAction(static_cast<int>(w), static_cast<long long>(l)); return 0;
         case WM_CTLCOLOREDIT: {
