@@ -19,7 +19,7 @@
 #include "chrome.h"
 #include "address.h"
 #include "native-ui.h"
-#include "tooltip-placement.h"
+#include "tooltip.h"
 
 namespace NativeChrome::AddressUI {
 namespace Layout {
@@ -42,7 +42,7 @@ struct Hooks {
 };
 
 class Suggestions {
-    HWND hwnd_ = nullptr, tip_ = nullptr;
+    HWND hwnd_ = nullptr; Tooltip::Tools tip_;
     Chrome chrome_;
     Hooks hooks_;
     AddressBar::Suggestions data_;
@@ -85,12 +85,11 @@ public:
         // No DWM rounding or DWM border (rounding always casts a shadow): a window region
         // rounds it at Layout::radius and PaintRows draws the hairline DWM used to draw.
         NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius);
-        tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        NativeUI::StripTooltipShadow(tip_);
+        tip_.Create(instance, hwnd_, root);
         chrome_.textCacheLimit = 256;
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
-    void Dispose() { chrome_.Dispose(); hwnd_ = tip_ = nullptr; visible_ = false; }
+    void Dispose() { tip_.Dispose(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
     int Active() const { return active_; }
@@ -199,12 +198,10 @@ private:
     }
     void RefreshTip() {
         if (!tip_) return;
-        TOOLINFOW t{sizeof(t)}; t.hwnd = hwnd_; t.uId = 1; SendMessageW(tip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&t));
+        tip_.Clear();
         if (!Removable(hover_)) return;
         const auto b = RemoveBox(hover_);
-        t.uFlags = TTF_SUBCLASS; t.rect = {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)};
-        t.lpszText = const_cast<wchar_t*>(TR(suggest_remove_tip));
-        SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t));
+        tip_.Add(1, {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}, TR(suggest_remove_tip));
     }
     void Pointer(float x, float y) {
         const int row = HitRow(y);
@@ -226,7 +223,6 @@ private:
         switch (msg) {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE; // the EDIT keeps focus
         case WM_ERASEBKGND: return 1;
-        case WM_NOTIFY: if (TooltipPlacement::OnNotify(tip_, l)) return TRUE; break; // tips centred on their tool
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
         case WM_SIZE: chrome_.Resize(); InvalidateRect(h, nullptr, FALSE); return 0;
         // Shown on a monitor at another DPI: the move sizes the window first (WM_SIZE still reads the old DPI), then

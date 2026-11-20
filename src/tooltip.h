@@ -24,6 +24,7 @@
 // clock or a private timer, exact Paper (Phosphor) glyph paths and wrapped Inter text.
 #include <windows.h>
 #include <windowsx.h>
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <algorithm>
 #include <cmath>
@@ -408,6 +409,58 @@ public:
     }
     void PaintForTest() { Paint(); }
     bool RenderForTest(const std::wstring& root, const wchar_t* png, UINT dpi = 96) { return PopupKit::RenderPng(root, width_, height_, dpi, png, surface_, [this] { Paint(); }); }
+};
+
+// Hover tips for a window's icon buttons (history, downloads, settings, address suggestions).
+// They used comctl TOOLTIPS_CLASS tools, which never showed: without common-controls v6 in the
+// manifest, TTM_ADDTOOL rejects the v6 TOOLINFO size (0 tools registered, measured 2026-11-20).
+// Now the same C5 tip as the toolbar: 600 ms delay, instant between neighbours, centred under
+// the button, inside the browser window. The window is subclassed to follow the pointer; a
+// click, the wheel, a key, leaving or hiding the window dismisses the tip.
+class Tools {
+    struct Tool { UINT_PTR id; RECT rect; std::wstring text; };
+    Tip tip_; HWND hwnd_ = nullptr; std::vector<Tool> tools_; UINT_PTR current_ = 0; bool dismissed_ = false, tracking_ = false;
+    const Tool* At(POINT p) const { for (const auto& t : tools_) if (PtInRect(&t.rect, p)) return &t; return nullptr; }
+    void Pointer(POINT p) {
+        if (!tracking_) { TRACKMOUSEEVENT e{sizeof(e), TME_LEAVE, hwnd_, 0}; tracking_ = TrackMouseEvent(&e) != FALSE; }
+        const Tool* t = At(p); const UINT_PTR id = t ? t->id : 0;
+        if (id == current_) return;
+        current_ = id; dismissed_ = false;
+        if (!t) { tip_.Hide(); return; }
+        RECT target = t->rect; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&target), 2);
+        const RECT bounds = TooltipPlacement::VisibleRect(GetAncestor(hwnd_, GA_ROOTOWNER));
+        tip_.Hover(Content{t->text, L"", L""}, target, bounds.right > bounds.left ? &bounds : nullptr);
+    }
+    // Stays dismissed until the pointer reaches another tool (like the toolbar after a click).
+    void Dismiss() { if (current_) dismissed_ = true; tip_.Hide(); }
+    static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+        auto* self = reinterpret_cast<Tools*>(data);
+        const LRESULT result = DefSubclassProc(h, msg, w, l);   // after the window: its hover / tools are current
+        switch (msg) {
+        case WM_MOUSEMOVE: { const POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; const Tool* t = self->At(p); if (self->dismissed_ && t && t->id == self->current_) break; self->Pointer(p); break; }
+        case WM_MOUSELEAVE: self->tracking_ = false; self->current_ = 0; self->dismissed_ = false; self->tip_.Hide(); break;
+        case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: case WM_MOUSEWHEEL: case WM_KEYDOWN: case WM_CAPTURECHANGED: self->Dismiss(); break;
+        case WM_SHOWWINDOW: if (!w) { self->current_ = 0; self->tip_.HideNow(); } break;
+        case WM_WINDOWPOSCHANGED: if (reinterpret_cast<const WINDOWPOS*>(l)->flags & SWP_HIDEWINDOW) { self->current_ = 0; self->tip_.HideNow(); } break;
+        case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE) { self->current_ = 0; self->tip_.Hide(); } break;
+        case WM_NCDESTROY: RemoveWindowSubclass(h, Proc, 1); self->hwnd_ = nullptr; break;
+        default: break;
+        }
+        return result;
+    }
+public:
+    bool Create(HINSTANCE instance, HWND window, const std::wstring& root) {
+        if (!window || !tip_.Create(instance, window, root)) return false;
+        hwnd_ = window; return SetWindowSubclass(window, Proc, 1, reinterpret_cast<DWORD_PTR>(this)) != FALSE;
+    }
+    void Dispose() { if (hwnd_) RemoveWindowSubclass(hwnd_, Proc, 1); hwnd_ = nullptr; tools_.clear(); current_ = 0; tip_.Dispose(); }
+    explicit operator bool() const { return hwnd_ != nullptr; }
+    // Tools are client rects in px; RefreshTips rebuilds them as the layout moves.
+    void Clear() { tools_.clear(); }
+    void Add(UINT_PTR id, RECT clientPx, std::wstring text) { tools_.push_back({id, clientPx, std::move(text)}); }
+    Tip& TipForTest() { return tip_; }
+    UINT_PTR CurrentForTest() const { return current_; }
+    size_t CountForTest() const { return tools_.size(); }
 };
 } // namespace Tooltip
 } // namespace NativeChrome

@@ -4,10 +4,9 @@
 // bottom is short of room), slid sideways only to stay `margin` px inside the allowed area
 // (browser window ∩ monitor work area); an arrow, if a tip draws one, keeps pointing at the
 // anchor's centre. One function, Place(), owns the arithmetic (tests/tooltip_placement_test.cpp);
-// the native Tooltip::Tip and the comctl tooltips of the panels (OnNotify) both call it.
+// every tip goes through the native Tooltip::Tip (src/tooltip.h), which calls it.
 // All values are physical screen pixels: callers scale gap / margin with the DPI (Px()).
 #include <windows.h>
-#include <commctrl.h>
 #include <dwmapi.h>
 #include <algorithm>
 #include <cmath>
@@ -56,25 +55,6 @@ inline RECT VisibleRect(HWND h) {
     return r;
 }
 
-// comctl tooltips (TOOLTIPS_CLASS): call from the tool window's WM_NOTIFY. On TTN_SHOW it moves
-// `tip` centred under the current tool, inside the browser window, and returns true (the window
-// procedure then returns TRUE so comctl keeps that position).
-inline bool OnNotify(HWND tip, LPARAM l) {
-    const auto* n = reinterpret_cast<const NMHDR*>(l);
-    if (!tip || !n || n->hwndFrom != tip || n->code != TTN_SHOW) return false;
-    TOOLINFOW ti{}; ti.cbSize = sizeof(ti);
-    if (!SendMessageW(tip, TTM_GETCURRENTTOOLW, 0, reinterpret_cast<LPARAM>(&ti)) || !ti.hwnd) return false;
-    RECT anchor = ti.rect;
-    if (ti.uFlags & TTF_IDISHWND) GetWindowRect(reinterpret_cast<HWND>(ti.uId), &anchor);
-    else MapWindowPoints(ti.hwnd, nullptr, reinterpret_cast<POINT*>(&anchor), 2);
-    RECT box{}; GetWindowRect(tip, &box);
-    const int dpi = static_cast<int>(GetDpiForWindow(ti.hwnd));
-    const RECT window = VisibleRect(GetAncestor(ti.hwnd, GA_ROOTOWNER));
-    const RECT area = Bounds(WorkArea(anchor), window.right > window.left ? &window : nullptr);
-    const Result r = Place(anchor, {box.right - box.left, box.bottom - box.top}, area, Px(dpi, gapDip), Px(dpi, marginDip));
-    SetWindowPos(tip, nullptr, r.at.x, r.at.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    return true;
-}
 
 } // namespace TooltipPlacement
 } // namespace NativeChrome

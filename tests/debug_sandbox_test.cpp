@@ -224,6 +224,28 @@ static void NativeTests(HINSTANCE instance, const std::wstring& root) {
         Require(GetForegroundWindow() != tip.Window(), "never activates");
         tip.Dispose();
     }
+    // --- Panel hover tips (Tooltip::Tools: history, downloads, settings, suggestions): the C5 tip, centred.
+    {
+        RECT work{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+        HWND panel = CreateWindowExW(WS_EX_TOOLWINDOW, L"LisiereBTestOwner", L"panel", WS_POPUP, work.left + 200, work.top + 100, 400, 300, nullptr, nullptr, instance, nullptr);
+        Require(panel != nullptr, "panel window");
+        Tooltip::Tools tools; Require(tools.Create(instance, panel, root) && static_cast<bool>(tools), "tools created (subclass + C5 tip)");
+        tools.Clear(); tools.Add(7, {300, 12, 330, 42}, L"Fermer"); tools.Add(8, {20, 12, 50, 42}, L"Retour");
+        Require(tools.CountForTest() == 2, "two tools");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(310, 20));
+        Require(tools.CurrentForTest() == 7 && tools.TipForTest().Pending() && !tools.TipForTest().Visible(), "hover: the toolbar's 600 ms delay");
+        tools.TipForTest().Frame(Motion::Now() + Motion::Milliseconds(650)); Require(tools.TipForTest().Visible(), "appears after the delay");
+        RECT r{}; GetWindowRect(tools.TipForTest().Window(), &r);
+        const int anchorCentre = work.left + 200 + 315;
+        Require(std::abs((r.left + r.right) / 2 - anchorCentre) <= 1, "panel tip centred on its button");
+        Require(r.top == work.top + 100 + 42 + PopupKit::Px(panel, 6), "6 DIP under the button");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(30, 20)); Require(tools.CurrentForTest() == 8 && tools.TipForTest().Visible(), "neighbour button: instant");
+        SendMessageW(panel, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(30, 20)); tools.TipForTest().Frame(Motion::Now() + Motion::Milliseconds(200));
+        Require(!tools.TipForTest().Visible(), "a click dismisses it");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(31, 21)); Require(!tools.TipForTest().Pending() && !tools.TipForTest().Visible(), "stays dismissed on the same button");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(200, 200)); Require(tools.CurrentForTest() == 0, "off the buttons: no tool");
+        tools.Dispose(); DestroyWindow(panel);
+    }
     // --- Full-screen hint (C6/C7).
     {
         FullscreenHint::Hint hint; Require(hint.Create(instance, owner, root), "hint created");

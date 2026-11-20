@@ -11,6 +11,8 @@ param(
 # without touching anything else. Only this run's browser.exe is ever stopped.
 $ErrorActionPreference = 'Stop'
 $BuildDir = (Resolve-Path $BuildDir).Path
+# A used build restores its last windows (another process over this one): start from a fresh build.
+if ((Test-Path "$BuildDir/profile") -or (Test-Path "$BuildDir/sessions")) { throw "$BuildDir already holds a profile: build into a new folder (tools/release/build.py --out ...)" }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
@@ -34,6 +36,7 @@ public static class W {
         EnumWindows((h, p) => { int id; GetWindowThreadProcessId(h, out id); if (id == pid && IsWindowVisible(h)) { var s = new StringBuilder(64); GetClassName(h, s, 64); if (s.ToString() == cls) list.Add(h); } return true; }, IntPtr.Zero);
         return list;
     }
+    public static string All(int pid) { var sb = new StringBuilder(); EnumWindows((h, p) => { int id; GetWindowThreadProcessId(h, out id); if (id == pid && IsWindowVisible(h)) { var s = new StringBuilder(64); GetClassName(h, s, 64); RECT r; GetWindowRect(h, out r); sb.Append(s + " " + r.L + "," + r.T + "," + r.R + "," + r.B + "; "); } return true; }, IntPtr.Zero); return sb.ToString(); }
     public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
     public static RECT Frame(IntPtr h) { RECT r; if (DwmGetWindowAttribute(h, 9, out r, 16) != 0) GetWindowRect(h, out r); return r; }
 }
@@ -74,10 +77,10 @@ function Case([string]$name, [hashtable]$anchor, [string]$cls, [int]$waitMs = 11
         Start-Sleep -Milliseconds 120
         [W]::SetCursorPos([int](($anchor.L + $anchor.R) / 2) + 1, [int](($anchor.T + $anchor.B) / 2)) | Out-Null
         Start-Sleep -Milliseconds $waitMs
-        $tips = [W]::Visible($browser.Id, $cls)
+        $tips = [W]::Visible($browser.Id, $cls); for ($k = 0; $k -lt 60 -and !$tips.Count; $k++) { Start-Sleep -Milliseconds 150; $tips = [W]::Visible($browser.Id, $cls) }; Start-Sleep -Milliseconds 250; if ($k) { Write-Host "$name : tip after $($k * 150) ms more" }
         if (!$tips.Count) {
             $win = [W]::Frame($script:main); try { Grab $win.L $win.T ($win.R - $win.L) ($win.B - $win.T) (Join-Path $OutDir "$Label-$name-FAILED.png") } catch {}
-            throw "$name : no visible $cls tooltip (anchor $($anchor.L),$($anchor.T)..$($anchor.R),$($anchor.B))"
+            throw "$name : no visible $cls tooltip (anchor $($anchor.L),$($anchor.T)..$($anchor.R),$($anchor.B)) visible: $([W]::All($browser.Id))"
         }
         $t = [W]::Rect($tips[0]); $win = [W]::Frame($script:main)
         $delta = (($t.L + $t.R) - ($anchor.L + $anchor.R)) / 2
@@ -122,7 +125,7 @@ try {
     $results += Case 'media-panel-info' (Rect $info) 'LisiereTooltip'
     (Find 'AudioClose').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Start-Sleep -Milliseconds 600
-    # History drawer: its close button carries a comctl tooltip (TOOLTIPS_CLASS).
+    # History drawer: its close button carries a hover tip (Tooltip::Tools).
     (Find 'History').GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Start-Sleep -Milliseconds 1200
     $drawer = [W]::Visible($browser.Id, 'LisiereHistoryDrawer')
@@ -130,11 +133,14 @@ try {
     $d = [W]::Rect($drawer[0]); $s = [W]::GetDpiForWindow($drawer[0]) / 96.0
     # downloads.h Panel::Close(): {244 - 12, 12, 244 + 12, 36} DIP in the drawer's client area.
     $close = @{L = [int]($d.L + 232 * $s); T = [int]($d.T + 12 * $s); R = [int]($d.L + 256 * $s); B = [int]($d.T + 36 * $s)}
-    $results += Case 'history-close' $close 'tooltips_class32' 1600
+    # Before 2026-11-20 these were comctl tips that never showed (no common-controls v6).
+    try { $results += Case 'history-close' $close 'LisiereTooltip' 1100 } catch { $results += "$Label history-close: $($_.Exception.Message)"; Write-Host $results[-1] }
     Park
 }
 finally {
     if ($browser -and !$browser.HasExited) { Stop-Process -Id $browser.Id -Force }
+    # A window the browser relaunched itself (--restore-window) from this build only.
+    Start-Sleep 2; Get-Process browser -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$BuildDir\*" } | Stop-Process -Force
     if ($server -and !$server.HasExited) { Stop-Process -Id $server.Id }
     [W]::SetCursorPos($cursor.L, $cursor.T) | Out-Null
 }
