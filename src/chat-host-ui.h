@@ -131,6 +131,7 @@ bool AskAvailable(const std::shared_ptr<Tab>& t) { return t && !privateWindow &&
 // chip is there). The note panel never shows then; an annotation without the agent is Ctrl+Entrée in the composer
 // (KeepAnnotation). False (the note panel, as before): not a local site, a private window, the chat cannot open,
 // or 10 elements already in the composer.
+bool CommentFirst(const std::shared_ptr<Tab>& t) { return AskAvailable(t) && !halted && !Ann::s.paused && CommentLayout(); }
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
     if (!AskAvailable(t) || halted || Ann::s.paused) return false;
     if (CommentLayout()) return TakeCommentSelection(t, serial, captureImpossible);   // Mode Commentaire: a bubble on the element
@@ -333,7 +334,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == AcpWake) { PumpEvents(); return 0; }
     if (m == WM_APP + 22) { PrepareProgress(); return 0; }
     if (m == WM_TIMER) {
-        if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
+        if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && !BubbleWarm() && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
@@ -350,7 +351,7 @@ bool EnsurePost() {
 }
 RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .. 1 (in place)
     RECT c{}; GetClientRect(window, &c); const int w = S(PanelDip()); const int left = c.right - w + int(std::lround((1 - shown) * w));
-    return {left, S(chrome.ContentTop()), left + w, c.bottom};
+    return {left, S(chrome.ContentTop()), left + w, c.bottom + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
 }
 void FinishClose();
 struct SlideClient : AUI::Animator::Client {
@@ -470,7 +471,8 @@ void Toggle(bool keyboard) {
     OpenPanel();
 }
 void ModeEntered() { SyncChromeBits(); if (CommentLayout()) SyncMarks(); }
-void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
+void CoolBubble();
+void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
 bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
 void PageNavigating(const std::shared_ptr<Tab>&) { rearmOwed = true; rearmTries = 0; aiming.clear(); if (EnsurePost()) SetTimer(post, RearmTimer, 250, nullptr); }
 
@@ -606,7 +608,7 @@ void OnPanelMessage(const std::string& json) {
         panelReady = true; stats.readyAt = Ann::NowMs();
         Diag(L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
-        Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); SendState(); SendThread(); SendCommands(); SendQueue();
+        Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else if (BubbleWarm()) SendLayout(false); SendState(); SendThread(); SendCommands(); SendQueue();
         for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
         for (const auto& s : activeStrips) Send("strip", s.second);

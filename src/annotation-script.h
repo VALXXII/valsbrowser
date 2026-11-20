@@ -142,7 +142,8 @@ root.innerHTML = '<style>' +
   '.i,.j{position:fixed;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none}.i.on,.j.on{transition:opacity 120ms ease-out}' +
   '.pb,.gb,.pl,.gl{position:fixed;left:0;top:0;box-sizing:border-box}' +
   '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
-  '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "JetBrains Mono","Cascadia Mono",Consolas,monospace;color:#fff;white-space:nowrap;letter-spacing:0}' +
+  // D8 (decided): the padding / gap values in the labels' font (Paper 18QK-0): Inter Display, plain white, 10/14 (a band may be 4 px)
+  '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;letter-spacing:0}' +
   '.gl{background:#D63E92}' +
   '.w{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none;transform:translate(0px,0px)}' +
   '.mk{position:fixed;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 120ms ease-out}' +

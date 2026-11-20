@@ -119,6 +119,12 @@ def run_main():
         u32.SetForegroundWindow(Q.main_window())
         m0 = mark(); C.invoke('AnnotationLayoutComment'); step('Commentaire chosen', logged(r'CHAT layout: Commentaire', m0, 5) is not None)
         dpr = C.evaluate(C.URL, 'devicePixelRatio') or 1
+        time.sleep(1.0)
+        step('D3 · fresh profile, Commentaire, no conversation whose element is gone: no launcher', 'AnnotationLauncher' not in (C.uia('-List') or ''))
+        capture('d3-sans-lanceur')
+        warm = logged(r'CHAT bubble WebView created in advance', m0, 10)
+        logged(r'CHAT panel ready', m0, 10); time.sleep(0.8)
+        step('R18 · the bubble\'s page is created and loaded as soon as Commentaire is on (before any click)', warm is not None)
 
         # ---- R14: hover labels in Paper's style
         el = CC.element_screen('.btn-primary'); pg = CC.page_widget()
@@ -153,13 +159,20 @@ def run_main():
             visible = bool(u32.IsWindowVisible(bw[0])) and not (kind == 1 or (rg.right - rg.left) <= 0)   # NULLREGION = 1
             return (visible, win_rect(bw[0]), (rg.left, rg.top, rg.right, rg.bottom))
         region = (max(0, el[0] - 40), max(0, el[1] - 120), el[2] + 760, el[3] + 420)
-        s18 = Sampler(bubble_sample, region); s18.start()
-        m1 = mark(); C.click_page('.btn-primary')
+        s18 = Sampler(bubble_sample, region); s18.start(); time.sleep(0.05)
+        m1 = mark()
+        V.u32.SetCursorPos((el[0] + el[2]) // 2, (el[1] + el[3]) // 2); time.sleep(0.12)
+        clicked_at = time.perf_counter()
+        for flag in (0x0002, 0x0004):   # a REAL click (SendInput)
+            i = V._IN(); i.type = 0; i.mi = V._MI(0, 0, 0, flag, 0, 0); u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(V._IN)); time.sleep(0.02)
         opened = logged(r'CHAT bubble opened on (\S+) for conversation (c_\w+)', m1, 10)
         time.sleep(1.2); s18.stop = True; s18.join()
         shown = [r for _, r in s18.samples if r and r[0]]
         rects = sorted(set(r[1] for r in shown)); corners = sorted(set((r[2][0], r[2][1]) for r in shown))
-        report['measures']['r18'] = {'samples': len(s18.samples), 'shownSamples': len(shown), 'rects': rects, 'log': (logged(r'CHAT bubble shown at its place ([^\r\n]+)', m1, 2) or [None])[0]}
+        first = next((t for t, r in s18.samples if r and r[0]), None)
+        latency = round((first - clicked_at) * 1000) if first else None
+        report['measures']['r18'] = {'samples': len(s18.samples), 'shownSamples': len(shown), 'rects': rects, 'clickToSurfaceMs': latency, 'log': (logged(r'CHAT bubble shown at its place ([^\r\n]+)', m1, 2) or [None])[0]}
+        step('R18 · a real click: the surface is on screen (its slide starts) less than 100 ms later', latency is not None and latency < 100, latency)
         report['measures']['r18']['surfaceCorners'] = corners
         step('R18 · the window is shown once, already at its place (no move while it appears: one window rect, one surface corner)', opened is not None and len(shown) > 5 and len(rects) == 1 and len(corners) == 1, report['measures']['r18'])
         for i, (t, img) in enumerate(s18.frames[:40]):
@@ -182,6 +195,8 @@ def run_main():
         capture('r16-inspecteur-bulle-ouverte')
 
         # ---- R19: a menu in the bubble: the window does not move; the surface's pixels outside the menu do not change
+        m19 = mark(); V.send_in_view('echo Une conversation assez longue pour que la bulle grandisse, avec plusieurs lignes de texte a comparer au pixel pres.')
+        logged(r'CHAT turn t\d+ ended', m19, 30); time.sleep(1.2); V.pointer_away()
         h = hwnd_box.get('h'); w0 = win_rect(h)
         ins = C.panel(V.FLOATS_JS) or {}; i0 = ins.get('inset', {})
         surf = (w0[0] + int(i0.get('left', 0) * dpr), w0[1] + int(i0.get('top', 0) * dpr), w0[0] + int((i0.get('left', 0) + 320) * dpr), w0[1] + int((i0.get('top', 0) + 104) * dpr))
@@ -196,7 +211,7 @@ def run_main():
         after_img = grab(surf)
         app1 = C.panel("(function(){var a=document.getElementById('app');if(!a)return null;var r=a.getBoundingClientRect();return [r.left,r.top,r.width,r.height]})()")
         # the menu and its shadow (0 16px 48px) are excluded from the comparison
-        cover = [((x['x'] - 56) * dpr + w0[0] - surf[0], (x['y'] - 56) * dpr + w0[1] - surf[1], (x['r'] + 56) * dpr + w0[0] - surf[0], (x['b'] + 72) * dpr + w0[1] - surf[1]) for x in f.get('floats', [])]
+        cover = [((x['x'] - 32) * dpr + w0[0] - surf[0], (x['y'] - 32) * dpr + w0[1] - surf[1], (x['r'] + 32) * dpr + w0[0] - surf[0], (x['b'] + 64) * dpr + w0[1] - surf[1]) for x in f.get('floats', [])]   # the menu + its shadow (0 16px 48px: visible within ~32 px)
         diff, n = 0, 0
         pa, pb = before_img.load(), after_img.load()
         for yy in range(0, before_img.size[1], 2):
@@ -208,7 +223,7 @@ def run_main():
         moves = sorted(set(r for _, r in s19.samples))
         report['measures']['r19'] = {'windowRects': moves, 'surfaceBefore': app0, 'surfaceAfter': app1, 'comparedPixels': n, 'changedPixels': diff, 'floats': [x.get('label') for x in f.get('floats', [])]}
         step('R19 · a menu opens: the window does not move, the surface does not move in it, its pixels outside the menu and its shadow are the same',
-             len(moves) == 1 and app0 and app0 == app1 and diff == 0, report['measures']['r19'])
+             len(moves) == 1 and app0 and app0 == app1 and n > 500 and diff == 0, report['measures']['r19'])
         before_img.save(OUT / 'r19-surface-avant.png'); after_img.save(OUT / 'r19-surface-apres.png'); report['captures'] += ['r19-surface-avant.png', 'r19-surface-apres.png']
         V.focus_composer(); C.key_panel('Escape', 'Escape', 27); time.sleep(0.5)
 
@@ -229,14 +244,25 @@ def run_main():
                 if r_[2] - r_[0] > 600: tab[0] = hh
             return True
         u32.EnumChildWindows(Q.main_window(), cb, 0)
+        panelw = [None]
+        @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+        def cbp(hh, _):
+            if u32.IsWindowVisible(hh) and hh != tab[0] and panelw[0] is None:
+                r_ = win_rect(hh); pr = win_rect(tab[0])
+                if r_[0] >= pr[2] - 4 and 200 < (r_[2] - r_[0]) < 700 and (r_[3] - r_[1]) > 300: panelw[0] = hh
+            return True
+        u32.EnumChildWindows(Q.main_window(), cbp, 0)
         for label, want in (('off', 'off'), ('on', 'on')):
-            s25 = Sampler(lambda: win_rect(tab[0])[1]); s25.start()
+            s25 = Sampler(lambda: (win_rect(tab[0])[1], win_rect(panelw[0])[1] if panelw[0] else None)); s25.start()
             m3 = mark(); C.shortcut('A'); logged(r'ANNOTATE selection ' + want, m3, 5); time.sleep(0.6)
             s25.stop = True; s25.join()
-            ys = [y for _, y in s25.samples if isinstance(y, int)]
-            steps_ = [abs(b - a) for a, b in zip(ys, ys[1:]) if b != a]
-            report['measures'][f'r25-{label}'] = {'samples': len(ys), 'from': ys[0] if ys else None, 'to': ys[-1] if ys else None, 'distinct': len(set(ys)), 'maxStep': max(steps_) if steps_ else 0, 'path': sorted(set(ys))}
-            step(f'R25 · selection {label}: the page moves with the band in small steps (no jump)', ys and ys[0] != ys[-1] and len(set(ys)) >= 4 and max(steps_) <= int(16 * dpr), report['measures'][f'r25-{label}'])
+            vals = [v for _, v in s25.samples if isinstance(v, tuple)]
+            for who, idx in (('page', 0), ('panneau', 1)):
+                ys = [v[idx] for v in vals if v[idx] is not None]
+                steps_ = [abs(b - a) for a, b in zip(ys, ys[1:]) if b != a]
+                report['measures'][f'r25-{label}-{who}'] = {'samples': len(ys), 'from': ys[0] if ys else None, 'to': ys[-1] if ys else None, 'distinct': len(set(ys)), 'maxStep': max(steps_) if steps_ else 0, 'path': sorted(set(ys))}
+                step(f'R25 · selection {label}: the {who} moves with the band, at least 10 regular positions (no jump)',
+                     ys and ys[0] != ys[-1] and len(set(ys)) >= 10 and max(steps_) <= int(8 * dpr), report['measures'][f'r25-{label}-{who}'])
             capture(f'r25-selection-{label}')
     except Exception:
         traceback.print_exc()

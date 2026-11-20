@@ -118,6 +118,7 @@ bool OpenFromHistory(const std::wstring& id);            // … and opens one of
 void SwitchLayout(bool comment);                         // the band's switch (Paper 1AYP-0)
 void ScriptReady();                                      // the mode's page script is in the page
 bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r);   // true: the image was for the chat
+bool CommentFirst(const std::shared_ptr<Tab>& t);        // R18: Mode Commentaire — the bubble opens before the shot starts
 bool AskAvailable(const std::shared_ptr<Tab>& t);        // « Demander à l'agent » in the note panel (local sites)
 void AskFromNote(const std::wstring& draft);
 void Toggle(bool keyboard);                              // band button / Ctrl+Maj+D
@@ -916,6 +917,9 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     // pill are placed as if for the page's centre, so neither leaves the window.
     if (RECT in{}; !IntersectRect(&in, &target, &page)) { const LONG cx = (page.left + page.right) / 2, cy = (page.top + page.bottom) / 3; target = {cx - 1, cy - 1, cx + 1, cy + 1}; }
     else target = in;
+    // R18 (< 100 ms from the click to the bubble): in Mode Commentaire the bubble opens FIRST; the shot (taken from the
+    // page itself: the bubble is not in it) and its native frame follow.
+    const bool commentFirst = Chat::CommentFirst(t) && Chat::TakeSelection(t, s.serial, !AH::PlanClip(r, sel.target.viewport).ok);
     AUI::NoteRequest req; req.draft = s.draft; req.capture = AUI::CaptureState::Pending; req.askAgent = Chat::AskAvailable(t);
     {   bool redacted = false; std::wstring shown = AH::Wide(BA::RedactUrl(a.source.url, &redacted));
         if (const auto at = shown.find(L"://"); at != std::wstring::npos) shown = shown.substr(at + 3);
@@ -952,7 +956,7 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     }
     // chat intégré (V1.3): on a local site the element always becomes a chip of the chat's composer, the panel opening
     // if it is closed; the picker goes on (the shot first). Elsewhere (no chat): the note panel, as before.
-    if (Chat::TakeSelection(t, s.serial, s.cap == Cap::Failed)) { Resume(); return; }
+    if (commentFirst || Chat::TakeSelection(t, s.serial, s.cap == Cap::Failed)) { Resume(); return; }
     panel.on = true; panel.serial = s.serial; panel.req = req; panel.target = target; panel.page = page; panel.keyboard = sel.keyboard;
     if (shot.waiting && shot.serial == s.serial && EnsurePost()) SetTimer(post, PanelTimer, 60, nullptr);   // shown by OnHidden, or by the timer
     else ShowPanel();
@@ -1121,8 +1125,8 @@ void Activate(const Start& st) {
 // element's source). On again: the band comes back, the « viseur » too. Closing the chat while it is off ends the mode.
 // R25: the band slides in / out (the page and the chat panel are laid out under it at every frame: no jump). As short
 // as the band's own entrance, on the panel's curve; reduced motion: at once.
-inline constexpr int BandSlideInMs = 180, BandSlideOutMs = 140;
-AUI::Ramp bandSlide; bool bandSliding = false, bandHideAtEnd = false;
+inline constexpr int BandSlideInMs = 200, BandSlideOutMs = 200;   // R25: ~12 frames at 60 Hz, regular steps
+AUI::Ramp bandSlide; bool bandSliding = false, bandHideAtEnd = false; int bandFrames = 0;
 void BandSlideApply(NativeChrome::Motion::Time now) {
     const float full = float(AUI::BannerSpec::height), cur = AUI::BandSlideHeight(bandSlide.Value(now), full, Reduced());
     chrome.annotationBand = cur; SyncChrome(); Layout();
@@ -1131,11 +1135,11 @@ void BandSlideApply(NativeChrome::Motion::Time now) {
 struct BandSlideClient : AUI::Animator::Client {
     bool Frame(NativeChrome::Motion::Time now) override {
         if (!s.active) { bandSliding = false; return false; }
-        BandSlideApply(now);
+        BandSlideApply(now); ++bandFrames;
         if (bandSlide.Moving(now)) return true;
-        bandSliding = false;
+        bandSliding = false; Layout();   // R25: the one size change, on the side that is out of sight
         if (bandHideAtEnd) { bandHideAtEnd = false; banner.Hide(false); chrome.annotationBand = 0; SyncChrome(); Layout(); }
-        Log(L"ANNOTATE band slide done (" + std::to_wstring(int(chrome.annotationBand)) + L" DIP)");
+        Log(L"ANNOTATE band slide done (" + std::to_wstring(int(chrome.annotationBand)) + L" DIP, " + std::to_wstring(bandFrames) + L" frames)"); bandFrames = 0;
         return false;
     }
 } bandSlideClient;
@@ -1153,10 +1157,12 @@ void SetSelecting(bool on) {
     // R25: the band slides; the page and the panel follow it frame by frame (Layout at every step)
     const auto now = NativeChrome::Motion::Now(); const bool reduced = Reduced();
     if (!bandSliding) bandSlide.Snap(on ? 0.f : 1.f);
-    bandSlide.Set(on ? 1.f : 0.f, now, reduced ? 0 : (on ? BandSlideInMs : BandSlideOutMs), AUI::Curves::band);
+    bandSlide.Set(on ? 1.f : 0.f, now, reduced ? 0 : (on ? BandSlideInMs : BandSlideOutMs), AUI::Curves::easeOut);   // R25: no front-loaded jump (the band curve moved 22 px in its first frame)
     bandHideAtEnd = !on;
+    if (!reduced) bandSliding = true;   // R25: from the first frame, the page only moves
     if (on) { banner.Show(BandRect(), reduced); Chat::ModeEntered(); }
-    BandSlideApply(now);
+    if (on && !reduced) { const auto at = NativeChrome::Motion::Now(); bandSlide.Snap(0.f); bandSlide.Set(1.f, at, BandSlideInMs, AUI::Curves::easeOut); }   // R25: the ramp starts after the band's first render
+    BandSlideApply(NativeChrome::Motion::Now());
     if (reduced) { bandSliding = false; if (!on) { bandHideAtEnd = false; banner.Hide(false); chrome.annotationBand = 0; SyncChrome(); Layout(); } }
     else { bandSliding = true; AUI::Animator::Get().Request(&bandSlideClient); }
     Announce(on ? TR(annotation_selection_on) : TR(annotation_selection_off));
@@ -1228,6 +1234,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 // ---------------------------------------------------------------- host entry points (declared at the top of main.cpp)
 bool AnnotationModeActive() { return Ann::s.active; }
+bool AnnotationBandSliding() { return Ann::s.active && Ann::bandSliding; }   // R25: the page and the chat panel only move meanwhile
 bool AnnotationSurfaceFocus() {
     if (!Ann::uiReady) return false;
     HWND f = GetFocus(); if (!f) return false;
@@ -1374,6 +1381,7 @@ float ChatInsetDip() { return 0; }
 void ChatNavigationCompleted(const std::shared_ptr<Tab>&) {}
 void ChatShutdown() {}
 bool AnnotationModeActive() { return false; }
+bool AnnotationBandSliding() { return false; }
 bool AnnotationSurfaceFocus() { return false; }
 void AnnotationAccentChanged() {}
 void AnnotationSyncChrome() {}

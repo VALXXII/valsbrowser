@@ -44,7 +44,7 @@ struct FrameMark {
     std::vector<Gap> gaps; std::vector<Label> labels;
 };
 // Page CSS constants of the inspector (annotation-script.h): hatch 1 px every 5 px, label 14 px high, radius 3,
-// 400 10/14 mono, padding 0 4; gap pink rgb(224 71 158), gap label #D63E92.
+// 400 10/14 Inter Display (D8), padding 0 4; gap pink rgb(224 71 158), gap label #D63E92.
 namespace SpaceSpec {
 inline constexpr double pitch = 5, line = 1, labelH = 14, labelR = 3, labelPad = 4, font = 10;
 inline constexpr float padLine = .4f, padFill = .08f, gapLine = .45f, gapFill = .12f;
@@ -136,7 +136,7 @@ public:
         for (const auto& l : m.labels) {
             const D2D1_RECT_F box{X(l.x), Y(l.y), X(l.x + l.w), Y(l.y + l.h)};
             ink.Fill(box, float(SpaceSpec::labelR) * k, l.kind == 0 ? accent : D2D1_COLOR_F{((SpaceSpec::gapLabel >> 16) & 255) / 255.f, ((SpaceSpec::gapLabel >> 8) & 255) / 255.f, (SpaceSpec::gapLabel & 255) / 255.f, 1});
-            Font f = Mono(float(SpaceSpec::font) * k, float(SpaceSpec::labelH) * k); f.system = true; f.weight = 400;
+            Font f = F(float(SpaceSpec::font) * k, float(SpaceSpec::labelH) * k, 400);   // D8: Inter Display, as the page
             ink.Text(l.text, f, box, {1, 1, 1, 1}, false, Align::Center, true);
         }
     }
