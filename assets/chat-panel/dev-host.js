@@ -195,6 +195,12 @@
       { type: "toolCall", turnId: "t1", id: "e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] },
       { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: CEND },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 18000, changes: [{ path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: C_DIFF }] }] }],
+    // Paper 1AWI-0 as updated by the user (two agent messages, 1AZV-0), at Paper's 305 px — compared value by value
+    "c-3-termine-v3": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()].concat(cSteps(false), [
+      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT },
+      { type: "toolCall", turnId: "t1", id: "e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] },
+      { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: CEND },
+      { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 18000, changes: [{ path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: C_DIFF }] }]) }],
     "c-messages-deux": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Rien d'autre n'a changé." },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],

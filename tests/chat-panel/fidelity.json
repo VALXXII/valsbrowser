@@ -1215,5 +1215,104 @@
    ]
   ]
  },
- "_r21": "cv3 R21 : le bouton du mode est son icône seule (décision de l'utilisateur) — le libellé « Ask » de Paper n'est plus mesuré"
+ "_r21": "cv3 R21 : le bouton du mode est son icône seule (décision de l'utilisateur) — le libellé « Ask » de Paper n'est plus mesuré",
+ "c-3-termine-v3": {
+  "note": "Planche 3 (1AWI-0) mise à jour par l'utilisateur : deux messages de l'agent, deux cartes (1B8R-0 puis 1B06-0) et la barre ; positions relevées dans Paper le 20 nov. (get_node_info / get_children / get_computed_styles), bulle 1AZR-0 de 305×351",
+  "paper": {
+   "1B8R-0": {
+    "name": "Frame",
+    "w": 281,
+    "h": 70,
+    "x": 12,
+    "y": 102,
+    "st": {
+     "dir": "column",
+     "align": "start",
+     "borderTopLeftRadius": "4px",
+     "borderTopRightRadius": "10px",
+     "borderBottomLeftRadius": "4px",
+     "borderBottomRightRadius": "4px",
+     "paddingTop": "4px",
+     "paddingBottom": "6px",
+     "alignSelf": "stretch",
+     "paddingInline": "8px",
+     "bg": "#FFFFFF14"
+    }
+   },
+   "1B8S-0": {
+    "name": "Le bouton a une largeur fixe…",
+    "w": 265,
+    "h": 60,
+    "x": 20,
+    "y": 106,
+    "st": {
+     "font": "Inter Display",
+     "size": "13px",
+     "lh": "20px",
+     "weight": "400",
+     "color": "#FFFFFFE6"
+    }
+   },
+   "1B06-0": {
+    "name": "Frame",
+    "w": 281,
+    "h": 50,
+    "x": 12,
+    "y": 174,
+    "st": {
+     "dir": "column",
+     "align": "start",
+     "borderTopLeftRadius": "4px",
+     "borderTopRightRadius": "4px",
+     "borderBottomLeftRadius": "4px",
+     "borderBottomRightRadius": "4px",
+     "paddingTop": "4px",
+     "paddingBottom": "6px",
+     "alignSelf": "stretch",
+     "paddingInline": "8px",
+     "bg": "#FFFFFF14"
+    }
+   },
+   "1B08-0": {
+    "name": "Barre des changements",
+    "w": 281,
+    "h": 32,
+    "x": 12,
+    "y": 226,
+    "st": {
+     "height": "32px",
+     "paddingRight": "2px",
+     "paddingLeft": "10px",
+     "gap": "8px",
+     "borderTopLeftRadius": "4px",
+     "borderTopRightRadius": "4px",
+     "borderBottomLeftRadius": "10px",
+     "borderBottomRightRadius": "10px",
+     "bg": "#FFFFFF14"
+    }
+   }
+  },
+  "nodes": [
+   [
+    "1B8R-0",
+    ".turn.bt > .bt-text.c-top",
+    "f"
+   ],
+   [
+    "1B8S-0",
+    ".turn.bt > .bt-text.c-top .text",
+    "t"
+   ],
+   [
+    "1B06-0",
+    ".turn.bt > .bt-text.c-mid",
+    "f"
+   ],
+   [
+    "1B08-0",
+    ".turn.bt > .bt-bar",
+    "f"
+   ]
+  ]
+ }
 }

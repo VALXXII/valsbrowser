@@ -113,8 +113,9 @@ JUSTIFIED = {
 def fidelity_table():
     rows, bad = [], 0
     for scen, items in fidelity.items():
+        extra = FID[scen].get("paper", {}) if isinstance(FID.get(scen), dict) else {}   # values read from a board updated after F's survey
         for o in items:
-            P = PAPER.get(o["id"])
+            P = extra.get(o["id"]) or PAPER.get(o["id"])
             if not P: rows.append((scen, o["id"], o["sel"], "nœud", "absent du relevé", "", "", "")); bad += 1; continue
             if o.get("missing"): rows.append((scen, o["id"], o["sel"], "élément", "présent", "absent", "", "")); bad += 1; continue
             st, ds = P["st"], o["s"]
