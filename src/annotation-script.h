@@ -366,14 +366,19 @@ function describe(info, selText) {
   };
 }
 function sendSelect(info, selText, ev) {
+  // Latency: the host learns at once WHAT was clicked (« selecting »: the selector and the element's rectangle, nothing
+  // else), before the full description (styles, text, spacing: the slow part) is computed and posted (« select »).
+  var at = ev && ev.timeStamp > 0 && performance.timeOrigin ? performance.timeOrigin + ev.timeStamp : Date.now();
+  var mine = ++seq, r0 = rectOf(info), el0 = info.kind === 'cross-origin' && info.el !== info.frame ? info.frame : info.el;
+  post({ op: 'selecting', seq: mine, at: at, selector: String(selectorFor(el0).sel).slice(0, 1000),
+         rect: { x: r2(r0.x), y: r2(r0.y), width: r2(r0.w), height: r2(r0.h) } });
   var m = describe(info, selText);
   if (JSON.stringify(m).length > MAX_MSG) { m.target.text = m.target.text.slice(0, 400); if (m.target.selectionText) m.target.selectionText = m.target.selectionText.slice(0, 400); }
   if (JSON.stringify(m).length > MAX_MSG) { m.target.styles = {}; m.target.path = m.target.path.slice(-4); m.target.selector = m.target.selector.slice(-200); }
   if (JSON.stringify(m).length > MAX_MSG) return;
   // V3: nothing changes on screen at the click; the host takes the edges and label over (« handoff »).
-  var mine = ++seq; m.seq = mine; settle(); m.mark = geometry(info);
-  // When the user acted (event time on the system clock): the host measures click -> image ready.
-  m.at = ev && ev.timeStamp > 0 && performance.timeOrigin ? performance.timeOrigin + ev.timeStamp : Date.now();
+  m.seq = mine; settle(); m.mark = geometry(info);   // V3: what the screen shows (nothing changed since the click)
+  m.at = at;   // when the user acted (event time on the system clock): the host measures click -> image ready
   post(m);
 }
 // marks: the edges and the label only (the fill stays: it is removed from the image by the host).

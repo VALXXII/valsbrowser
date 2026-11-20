@@ -199,6 +199,9 @@ try:
     mouse(cdp, 620, 200, "mousePressed", button="left", clicks=1); mouse(cdp, 620, 200, "mouseReleased", button="left", clicks=1); frames(cdp)
     m = cdp.js("window.__msgs.filter(m=>m.op==='select').pop()")
     check(m and m["mark"]["rw"] > 0 and abs(m["mark"]["ry"] - (m["mark"]["y"] + g["e"])) < .01, "R33: the native copy gets the size label where the page draws it", m and {k: m["mark"][k] for k in ("x", "y", "rx", "ry", "rw")})
+    ops = cdp.js("window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').slice(-2).map(m=>[m.op,m.seq,m.selector||m.target.selector,(m.rect||m.target.rect).width,Object.keys(m).sort().join(',')])")
+    check(len(ops) == 2 and ops[0][0] == "selecting" and ops[1][0] == "select" and ops[0][1] == ops[1][1] and ops[0][2] == ops[1][2] and ops[0][3] == ops[1][3]
+          and ops[0][4] == "at,navStamp,nonce,op,rect,selector,seq,type,v", "latency: « selecting » (selector + rectangle only) posted before the full « select », same seq", ops)
     cdp.js(f"{H}.cmd('resume')")
 
     # ---------------- R26: peek

@@ -48,11 +48,35 @@ inline std::wstring Wide(const std::string& s) {
     return o;
 }
 
+namespace detail {
+inline bool Str(const SJ::Value* v, std::string& out, std::size_t maxBytes) { if (!v || !v->IsString() || v->string.size() > maxBytes) return false; out = v->string; return true; }
+inline bool Num(const SJ::Value* v, double& out, double lo, double hi) { if (!v || !v->IsNumber() || !std::isfinite(v->number) || v->number < lo || v->number > hi) return false; out = v->number; return true; }
+inline bool StrList(const SJ::Value* v, std::vector<std::string>& out, std::size_t maxItems, std::size_t maxBytes) {
+    if (!v || !v->IsArray() || v->items.size() > maxItems) return false;
+    for (const auto& i : v->items) { if (!i.IsString() || i.string.size() > maxBytes) return false; out.push_back(i.string); }
+    return true;
+}
+inline bool Pairs(const SJ::Value* v, std::vector<BA::NamedValue>& out, std::size_t maxItems, bool allowNull) {
+    if (!v || !v->IsObject() || v->members.size() > maxItems) return false;
+    for (const auto& m : v->members) {
+        BA::NamedValue nv; nv.name = m.first;
+        if (m.first.size() > 64) return false;
+        if (m.second.IsNull() && allowNull) nv.isNull = true;
+        else if (m.second.IsString() && m.second.string.size() <= 4096) nv.value = m.second.string;
+        else return false;
+        out.push_back(std::move(nv));
+    }
+    return true;
+}
+}
+
 // ---------------------------------------------------------------- page messages
-enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor };
+enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Selecting };
 // Anchor (chat, Mode Commentaire): where the element the bubble is attached to is now, CSS px of the top viewport;
 // gone = it is no longer in the page.
-struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; };
+// Selecting (latency): posted at the click, before the full « select » of the same seq: what was clicked —
+// serial = seq, selector, x / y / w / h = the element's rectangle (CSS px of the top viewport), at = the click (ms since 1970).
+struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; std::string selector; double at = 0; };
 
 // Checks the frame of every message: type/version, the session nonce and the navigation stamp.
 // Anything else (unknown op, wrong types) is Invalid.
@@ -68,6 +92,15 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
     if (op->string == "select") e.op = Op::Select;
     else if (op->string == "hidden") { e.op = Op::Hidden; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
     else if (op->string == "shown") { e.op = Op::Shown; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
+    else if (op->string == "selecting") {
+        const auto* q = v.Get("seq"); const auto* sel = v.Get("selector"); const auto* r = v.Get("rect");
+        if (!q || !q->IsNumber() || !q->integral || q->integer < 0 || q->integer > (std::int64_t(1) << 40)) return bad("selecting seq");
+        if (!sel || !sel->IsString() || sel->string.empty() || sel->string.size() > 4096) return bad("selecting selector");
+        if (!r || !r->IsObject() || !detail::Num(r->Get("x"), e.x, -1e7, 1e7) || !detail::Num(r->Get("y"), e.y, -1e7, 1e7) ||
+            !detail::Num(r->Get("width"), e.w, 0, 1e7) || !detail::Num(r->Get("height"), e.h, 0, 1e7)) return bad("selecting rect");
+        if (const auto* t0 = v.Get("at")) { if (!detail::Num(t0, e.at, 0, 1e14)) return bad("selecting at"); }
+        e.op = Op::Selecting; e.serial = q->integer; e.selector = sel->string;
+    }
     else if (op->string == "escape") e.op = Op::Escape;
     else if (op->string == "noselection") e.op = Op::NoSelection;
     else if (op->string == "anchor") {
@@ -103,27 +136,6 @@ struct Selection {
     double at = 0;           // the page's Date.now() at the click (ms since 1970): click -> host latency, measured only
 };
 
-namespace detail {
-inline bool Str(const SJ::Value* v, std::string& out, std::size_t maxBytes) { if (!v || !v->IsString() || v->string.size() > maxBytes) return false; out = v->string; return true; }
-inline bool Num(const SJ::Value* v, double& out, double lo, double hi) { if (!v || !v->IsNumber() || !std::isfinite(v->number) || v->number < lo || v->number > hi) return false; out = v->number; return true; }
-inline bool StrList(const SJ::Value* v, std::vector<std::string>& out, std::size_t maxItems, std::size_t maxBytes) {
-    if (!v || !v->IsArray() || v->items.size() > maxItems) return false;
-    for (const auto& i : v->items) { if (!i.IsString() || i.string.size() > maxBytes) return false; out.push_back(i.string); }
-    return true;
-}
-inline bool Pairs(const SJ::Value* v, std::vector<BA::NamedValue>& out, std::size_t maxItems, bool allowNull) {
-    if (!v || !v->IsObject() || v->members.size() > maxItems) return false;
-    for (const auto& m : v->members) {
-        BA::NamedValue nv; nv.name = m.first;
-        if (m.first.size() > 64) return false;
-        if (m.second.IsNull() && allowNull) nv.isNull = true;
-        else if (m.second.IsString() && m.second.string.size() <= 4096) nv.value = m.second.string;
-        else return false;
-        out.push_back(std::move(nv));
-    }
-    return true;
-}
-}
 
 // V3-B: mark.sp — { pad: [ox, oy, ow, oh, ix, iy, iw, ih] | null, radius, inner, gaps: [[x, y, w, h]...],
 // labels: [[kind, x, y, w, h, text]...], vw, vh }. False = ignore it.

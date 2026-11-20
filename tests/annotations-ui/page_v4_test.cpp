@@ -21,6 +21,19 @@ static void Peek() {
     CHECK(js.find(L"if (op === 'peek') return peekSet(arg);") != std::wstring::npos);
     CHECK(js.find(L"behavior: reduced ? 'auto' : 'smooth'") != std::wstring::npos);   // R26: soft scroll, none when reduced
 }
+static void Selecting() {   // latency: the light message at the click, before the full « select »
+    namespace AH = AnnotationHost;
+    auto check = [](const std::string& j) { return AH::CheckMessage(j, "n4", 1); };
+    const std::string head = "{\"type\":\"browser-annotation\",\"v\":1,\"nonce\":\"n4\",\"navStamp\":1,";
+    auto c = check(head + "\"op\":\"selecting\",\"seq\":7,\"at\":1763650000000.5,\"selector\":\"section.hero\",\"rect\":{\"x\":10.5,\"y\":-20,\"width\":300,\"height\":40}}");
+    CHECK(c.env.op == AH::Op::Selecting && c.env.serial == 7 && c.env.selector == "section.hero" && c.env.x == 10.5 && c.env.y == -20 && c.env.w == 300 && c.env.h == 40 && c.env.at > 1.7e12);
+    CHECK(check(head + "\"op\":\"selecting\",\"seq\":7,\"selector\":\"\",\"rect\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1}}").env.op == AH::Op::Invalid);
+    CHECK(check(head + "\"op\":\"selecting\",\"seq\":7,\"selector\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"width\":-1,\"height\":1}}").env.op == AH::Op::Invalid);
+    CHECK(check(head + "\"op\":\"selecting\",\"selector\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1}}").env.op == AH::Op::Invalid);
+    const std::wstring js = NativeChrome::Annotations::PageScript();
+    const auto light = js.find(L"post({ op: 'selecting'"), full = js.find(L"var m = describe(info, selText);");
+    CHECK(light != std::wstring::npos && full != std::wstring::npos && light < full);   // posted before the description is computed
+}
 static void Edges() {   // R27: whole device pixels at 100 / 125 / 150 / 200 %
     CHECK(Near(EdgeCss(1), 2, 1e-9) && Near(EdgeCss(1.25) * 1.25, 3, 1e-9) && Near(EdgeCss(1.5) * 1.5, 3, 1e-9) && Near(EdgeCss(2) * 2, 4, 1e-9));
     const std::wstring js = NativeChrome::Annotations::PageScript();
@@ -50,7 +63,7 @@ static void Transition() {   // R36
 }
 
 int wmain(int argc, wchar_t** argv) {
-    Peek(); Edges(); Ctrl(); Transition();
+    Peek(); Selecting(); Edges(); Ctrl(); Transition();
     if (argc > 1) {
         const std::wstring out = argv[1];
         auto write = [&](const wchar_t* name, const std::wstring& text) {

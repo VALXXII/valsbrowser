@@ -238,6 +238,7 @@ private:
     void After(UINT_PTR id, unsigned ms) { if (HWND t = Timers()) SetTimer(t, id, ms, nullptr); }
     void Stop(UINT_PTR id) { if (timerWnd_) KillTimer(timerWnd_, id); }
 
+    // i18n-exempt-begin: stats_.path is a QA measurement code (Runner::Last), never shown to the user
     // ---- level 2: the style sheets swapped in place
     void Swap(const std::vector<std::string>& paths) {
         swapping_ = true; stats_.path = L"glide";
@@ -342,6 +343,7 @@ private:
         else if (id == TSwap) CheckSwap();
         else if (id == TCapture) { if (!reloaded_) { stats_.path += L" (no capture)"; StartReload(); } }
     }
+    // i18n-exempt-end
     void DropBitmap() { if (mem_) { if (old_) SelectObject(mem_, old_); DeleteDC(mem_); } if (dib_) DeleteObject(dib_); mem_ = nullptr; dib_ = nullptr; old_ = nullptr; }
     void Release() {
         Stop(TFade); Stop(TSettle); Stop(TCap); Stop(TSwap); Stop(TCapture); Unhook();
