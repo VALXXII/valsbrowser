@@ -9,6 +9,61 @@ Ce qui a été examiné :
 
 Aucune vraie fenêtre n'a été lancée de mon côté.
 
+## Troisième passe — 20 novembre 2026 (R13 à R25, commits 986207e, 16fbf32, 06cfa61)
+
+Sources :
+- **H** : `build/chat-qa/comment-v3/` (`report.json`, 14/14 OK ; captures `r13` à `r25`, dont 12 images de l'ouverture pour R18).
+- **P** : `build/chat-qa/comment-v2/panel/cv3/` (comparaison côte à côte avec Paper), `panel/ecarts.md` (2 040 valeurs, 0 écart non justifié) et `build/chat-qa/panel/report.json`.
+- **Paper**, relu aujourd'hui pour `1AZV-0`, `1575-0` et `156O-0`.
+
+Les décisions R13 à R25 de `chat-comment-v2-retours.md` priment sur Paper là où elles le disent.
+
+### R13 à R25
+
+| # | Décision | Preuve | Verdict |
+|---|---|---|---|
+| R13 | Bouton modèle de Paper (logo + modèle + effort), jamais « Claude Code » | `r13-bulle-modele.png` : « Sonnet 5.5 Moyen » avec le logo dès l'ouverture, avant tout message ; mode à gauche. `report` : « the bubble starts its agent at once » | Conforme |
+| R14 | Même style d'étiquettes au survol qu'à la sélection | `r14-survol.png` : deux étiquettes Inter (« button.btn-primary » à gauche, « 240x44 » à droite), cadre débordant de 4 px, comme D1 | Conforme |
+| R15 | Retrait de 2 px aux bords gauche et droit de la fenêtre | `r15-bord.png` + `report` : étiquettes à x = 2 et à 1 116 + largeur = 1 176 − 2, cadre et fond à x = 2 | Conforme |
+| R16 | Padding et gap toujours visibles sur l'élément sélectionné, mises à jour en douceur | `r16-inspecteur-bulle-ouverte.png` : hachures de padding et pastille « 6 » visibles bulle ouverte (`inspector: 1`). Transition présente dans le code (`annotation-script.h` l. 899, interpolation). | Conforme, sauf le style des pastilles (**D8**, à trancher) |
+| R17 | Une carte par message, coins selon la position (`1AZV-0`) | `cv3/R17-cartes-paper-vs-page.png` : puce modèle 12/12/12/4, 1re carte 4/10/4/4, carte du milieu 4 partout, barre 4/4/10/10, 2 px d'écart, fond `#FFFFFF14`. Valeurs de `1AZV-0` relues dans Paper aujourd'hui : identiques | Conforme (voir la note sur le relevé) |
+| R18 | Apparition directement à sa place, glissé d'entrée plus rapide que le tiroir des Réglages | `report` : un seul rectangle de fenêtre, un seul coin de surface sur les 6 images où elle est visible, montrée à sa place après l'accusé de la page. `r18-ouverture-05` → `06` : fondu à la position finale, aucun saut. CSS : glissé de 12 px côté élément + fondu, 160 ms, sans agrandissement | Conforme |
+| R19 | Rien ne bouge quand un menu ouvre la fenêtre | Le contrôle de H a comparé **0 pixel** (`comparedPixels: 0`), il ne prouvait rien. J'ai comparé moi-même `r19-surface-avant` et `-apres` : **0 pixel différent** hors du menu et de la puce survolée (barre du bas, bouton envoyer, bord droit) | Conforme (à corriger dans le test de H, voir plus bas) |
+| R20 | Largeur 320 px | `r16` : surface de 398 à 797 = 400 px écran = 320 CSS ; `report` : 320. Placement inchangé : +15 px écran (+12 CSS) à droite du bouton | Conforme |
+| R21 | Mode en icône seule | `r13`, `r16`, `cv3/R20-R21` : bouclier seul, carré de 24 px (`ecarts.md`) | Conforme |
+| R22 | « + » ouvre directement le choix d'image | `panel.js` l. 830–831 : sans menu quand le dossier est sûr et que l'agent lit les images ; sinon le menu reste | Conforme (vérifié dans le code, pas de capture) |
+| R23 | Chat vide : titre et suggestions en bas, au-dessus de la saisie | `build/chat-qa/panel/6.7a-vide.png` et `report` : 16 px au-dessus de la saisie. Paper `1575-0` : `justify-content: end`, padding 16, gap 16 ; suggestions avec gap 6, padding 10/12, rayon 10, bordure `#FFFFFF14` | Conforme |
+| R24 | Plus de « Traiter les annotations en attente », jamais de doublon | `6.7a-vide.png` : deux suggestions seulement. `report` (H et P) : aucune suggestion « en attente », un `annotations.batch` de l'hôte est ignoré, aucun doublon | Conforme |
+| R25 | Le bandeau glisse, la page suit sans saut | `report` : la page passe de 101 à 141 (et retour) en 5 ou 6 positions, au plus 20 px d'un coup ; aucun saut d'un coup | Conforme pour la page. **Le panneau** n'est pas mesuré : à ajouter au test |
+
+### Non-régression D1 à D7
+
+| # | Verdict | Preuve |
+|---|---|---|
+| D1 | Tient, en tenant compte de R16 | `r16` : cadre débordant de 4 px, fond 8 %, deux étiquettes Inter ; l'inspecteur est maintenant voulu (R16) |
+| D2 | **Non revérifié** | Aucune capture bulle fermée dans `comment-v3` ; dernier contrôle : `comment-v2/host-report.json` du 19 nov. à 17 h 15, avant les commits v3 |
+| D3 | **Régression possible** | Le lanceur en bas à droite est de nouveau visible sur `r14-survol.png` et `r15-bord.png`, et absent de `r13` et `r16`. D3 ne figure plus dans le `report` v3 |
+| D4, D5 | Non revérifiés en v3 | Derniers contrôles OK le 19 nov. (`host-report`, `switch-report` de 18 h 03) |
+| D6, D7 | Tiennent | `switch-report.json` (19 nov., 18 h 03) : en-tête « Sonnet 5.5 Moyen » après rechargement ; aucun attribut `title`, aucune fenêtre d'infobulle. `panel/report.json` (20 nov.) : « no system tooltip » sur tous les états |
+
+### Écart signalé par H : texte des étiquettes en blanc plein au lieu de `#FFFFFFE6`
+
+- **Paper** : `18QL-0` / `18QR-0`, texte 13/18 `#FFFFFFE6` sur `#3E67FF`.
+- **Calcul** : `#FFFFFFE6` sur `#3E67FF` donne `#ECF0FF` composé, soit un contraste de **4,02:1**. Le blanc plein donne **4,58:1**. Pour du texte de 13 px non gras, le minimum WCAG AA est 4,5:1 (skill better-accessibility, obligatoire pour ce chantier).
+- **Verdict** : écart **admis**. La valeur de Paper ne passe pas le contraste minimum. Le blanc plein est le plus petit changement qui le passe, sans toucher au fond ni à la taille.
+- **À faire** : demander à l'utilisateur de reporter `#FFFFFF` dans Paper sur les étiquettes, pour que le design et le code redeviennent identiques.
+
+### Défauts et points restants
+
+| # | Quoi | Correctif exact | Propriétaire |
+|---|---|---|---|
+| D3 | Le lanceur en bas à droite réapparaît sur `r14` et `r15` alors qu'aucune conversation n'a perdu son élément (ou alors le profil de test en garde une d'un passage précédent) | Remettre le contrôle D3 dans le passage v3, avec un profil vierge. Si le lanceur s'affiche sans conversation disparue, le masquer comme en v2 (commit 827debf). Faire une capture `d3-*` | H |
+| D8 | R16 demande les valeurs de padding et de gap « avec le style des étiquettes de Paper ». Les pastilles sont restées en JetBrains Mono 10/14, coins 3 px de tous les côtés (`annotation-script.h` l. 145) | **À trancher par l'utilisateur.** Ma proposition : police Inter Display, celle des étiquettes `18QK-0`, texte blanc plein, taille 10/14 gardée parce qu'une bande de padding peut ne faire que 4 px. Une pastille de 20 px de haut comme `18QK-0` ne tiendrait pas dans la bande | H |
+| T1 | Le test R19 de H compare 0 pixel (`comparedPixels: 0`), donc il ne prouve rien même quand il passe | Comparer pour de vrai les pixels hors du rectangle du menu et de son ombre, et faire échouer le test si `comparedPixels` vaut 0 | H |
+| T2 | R25 : seul le mouvement de la page est mesuré, pas celui du panneau | Mesurer aussi le haut du panneau sur les mêmes images (pas plus de 20 px d'un coup, aucun saut) | H |
+| T3 | D2, D4 et D5 ne sont pas rejoués après les commits v3 | Rejouer le passage court v2 (bulle fermée, étape, conversation illisible) sur le build v3 | H |
+| N1 | Mon relevé `chat-comment-paper-values.md` est en retard pour la planche 3 : l'utilisateur a ajouté la carte `1B8R-0` (4/10/4/4) et `1B06-0` est passée à 4 partout. Les valeurs à jour sont données ci-dessus (R17) ; `fidelity.json` de P ne relie pas encore `1B8R-0` | Ajouter `1B8R-0` à `tests/chat-panel/fidelity.json` (état « 2 messages ») | P |
+
 ## Contre-audit — 19 novembre 2026, soir (hébergement fenêtré, commits jusqu'à 100bb84 ; D4 corrigé par P en 22d4d58)
 
 Sources : nouvelles captures en vraie fenêtre de H (`d1-*`, `d2-*`, `s1`…`s3-*`, `r3-*-fenetre.png` / `r3-*.png`, `r9-*`, `r10-bandeau.png`, `probe-fenetree-bulle.png` / `-coin.png`), plus `host-report.json` (32/32 OK) et `switch-report.json` (12/12 OK). Mesures au pixel sur les images, à l'échelle 125 %.
