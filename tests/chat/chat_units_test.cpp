@@ -486,6 +486,11 @@ static void TestBubble() {
               "R29: the one exception — at the end of the document it moves up by what is missing, once; elsewhere never");
         const auto c = Clip({0, 0, 400, 300}, {0, 50, 1000, 1000});
         Check(c.top == 50 && c.bottom == 300 && c.left == 0, "R29: never drawn over the browser's bars (clipped to the page area)"); }
+    // R38: the diff (or an expanded card) opens in place: the bubble may only take the room below its fixed edge
+    {   const Rect area{0, 100, 1200, 900};
+        Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&
+              RoomCss({100, 850, 420, 890}, false, area, 12, 1.f, 520) == 120 && RoomCss({100, 300, 420, 700}, true, area, 12, 1.25f, 520) == 470,
+              "R38: the height offered is the room from the fixed edge to the page's far side (min 120, max 520)"); }
     // R34: the one layout rule — a fast back-and-forth between the two layouts always ends in the right one
     {   Check(BubbleLayout(true, false, true, false) && BubbleLayout(true, false, false, true), "R34: Commentaire, panel off screen, bubble open or warm: « bubble »");
         Check(!BubbleLayout(false, false, false, true) && !BubbleLayout(true, true, false, true) && !BubbleLayout(true, false, false, false), "R34: the panel chosen, or still sliding out, or no bubble: « panel »");

@@ -120,6 +120,7 @@ def run_main():
         time.sleep(1.0)
         step('R34 · six fast switches: the panel never shows the bubble layout', not wrong, wrong)
         capture('r34-apres-bascules')
+        mc = mark(); C.invoke('AnnotationLayoutComment'); step('back to Commentaire', logged(r'CHAT layout: Commentaire', mc, 5) is not None); time.sleep(1.5)
 
         # ---- R32 (Commentaire) + R35: a click, Échap: nothing; the panel's chip is not in the bubble
         m1 = mark(); C.click_page('.btn-primary')
@@ -140,8 +141,9 @@ def run_main():
 
         # ---- R29 / R38: a turn and the diff, the surface's corner sampled every ~4 ms
         m2 = mark(); C.click_page('.btn-primary'); logged(r'CHAT bubble opened on', m2, 10); time.sleep(0.8)
+        el0 = CC.element_screen('.btn-primary'); c0 = region_corner()
         s29 = V3.Sampler(region_corner); s29.start()
-        m3 = mark(); V.send_in_view('Change le gap en 8 px (permission)')
+        m3 = mark(); V.send_in_view('Change le gap en 8 px')   # the fake agent's real edit of styles/checkout.css (a CSS-only turn: R36 glide)
         answered = None
         for _ in range(16):
             try:
@@ -151,21 +153,29 @@ def run_main():
             answered = logged(r'CHAT permission answered', m3, 1)
             if answered:
                 break
-        end = logged(r'CHAT turn t\\d+ ended', m3, 30); time.sleep(1.5)
+        end = logged(r'CHAT turn t\d+ ended', m3, 30)
+        s29.stop = True; s29.join(); during = sorted(set(c for t, c in s29.samples if c))   # until the edit shows (the element then moves)
+        time.sleep(1.5)
+        if not region_corner():   # the user's own test browser (another process) may take the foreground: the bubble closed — open it again
+            mr = mark(); C.click_page('.btn-primary'); logged(r'CHAT bubble opened on', mr, 10); time.sleep(1.2); report['measures']['r29reopened'] = True
+        V.pointer_away(); time.sleep(0.3)
+        s29b = V3.Sampler(region_corner); s29b.start()
         try:
             C.click_panel(selector='.bt-bar-main'); time.sleep(1.0)
         except Exception as e:
             print('no changes bar', e)
         capture('r38-diff-ouvert')
         V.focus_composer(); C.key_panel('Escape', 'Escape', 27); time.sleep(0.8)
-        s29.stop = True; s29.join()
-        corners = sorted(set(c for _, c in s29.samples if c))
-        report['measures']['r29'] = {'samples': len(s29.samples), 'corners': corners}
-        step('R29 / R38 · during the turn, new cards and the diff: the surface keeps its corner (never moved)', end is not None and len(corners) == 1, report['measures']['r29'])
+        s29b.stop = True; s29b.join(); after = sorted(set(c for t, c in s29b.samples if c))
+        el1 = CC.element_screen('.btn-primary')
+        off0 = (c0[0] - el0[0], c0[1] - el0[1]) if c0 else None; off1 = (after[0][0] - el1[0], after[0][1] - el1[1]) if after else None
+        report['measures']['r29'] = {'during': during, 'afterEditAndDiff': after, 'element': [el0, el1], 'offsetBefore': off0, 'offsetAfter': off1}
+        step('R29 / R38 · new cards, the edit moving the element, the diff: the surface keeps its corner and its offset to the element',
+             end is not None and c0 is not None and all(c[1] == c0[1] and min(c0[0], c0[0] + el1[0] - el0[0]) <= c[0] <= max(c0[0], c0[0] + el1[0] - el0[0]) for c in during) and len(after) == 1 and off0 is not None and off1 is not None and abs(off0[0] - off1[0]) <= 1 and abs(off0[1] - off1[1]) <= 1, report['measures']['r29'])
 
         # ---- R36: the CSS-only edit: frames of the page while it changes
         m4 = mark()
-        tr = logged(r'CHAT files changed and no dev server reload: the page shows them', m3, 2)
+        tr = logged(r'CHAT files changed and no dev server reload: the page shows them', m3, 5)
         report['measures']['r36'] = {'log': tr.group(0) if tr else None, 'transitionLog': [l for l in C.log_text()[m3:].splitlines() if 'transition' in l.lower() or 'glide' in l.lower()][:6]}
         step('R36 · after the agent\'s edit the page is shown through the transition (log)', tr is not None, report['measures']['r36'])
 

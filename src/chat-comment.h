@@ -38,6 +38,7 @@ struct BubbleState {
     bool warm = false;                                               // R18: the WebView is in the window, rendering, the window shown with an empty region
     bool followCurrent = false;                                      // the deferred work of the opening (FinishOpening)
     ChatBubble::Anchor anchor;                                       // R29: frozen once placed (offset from the element, fixed edge)
+    int roomCss = 0;                                                 // R38: the height offered to the page (room below / above its fixed edge)
     bool endAsked = false;                                           // R29: the document's end asked once per opening
     int sizeW = -1, sizeH = -1;                                      // the last bubble.size (a repeat gets no answer: contract §20)
 } bubble;
@@ -111,7 +112,7 @@ const char* SideName(ChatBubble::Side s) { switch (s) { case ChatBubble::Side::L
 void SendLayout(bool openNow) {
     SJ::Value m = SJ::Value::Obj();
     if (ChatBubble::BubbleLayout(CommentLayout(), Shown(), bubble.open, bubble.warm)) {   // R34: one rule
-        m.Set("mode", Str(std::string("bubble"))); m.Set("maxWidth", SJ::Value::Int(BubbleWidthCss)); m.Set("maxHeight", SJ::Value::Int(std::min(BubbleMaxHeightCss, FreeHeightCss())));
+        m.Set("mode", Str(std::string("bubble"))); m.Set("maxWidth", SJ::Value::Int(BubbleWidthCss)); m.Set("maxHeight", SJ::Value::Int(bubble.roomCss > 0 ? bubble.roomCss : std::min(BubbleMaxHeightCss, FreeHeightCss())));   // R38
         m.Set("side", Str(std::string(SideName(bubble.side)))); if (!bubble.label.empty()) m.Set("element", Str(bubble.label)); m.Set("open", SJ::Value::Bool(openNow));
         {   SJ::Value in = SJ::Value::Obj(); in.Set("top", SJ::Value::Int(bubble.inset.top)); in.Set("right", SJ::Value::Int(bubble.inset.right)); in.Set("bottom", SJ::Value::Int(bubble.inset.bottom)); in.Set("left", SJ::Value::Int(bubble.inset.left));
             m.Set("inset", std::move(in)); }   // R3: where the surface sits in the window (0 at rest: Paper's bubble has no shadow)
@@ -149,6 +150,8 @@ void PlaceBubble() {
         if (bubble.known) bubble.anchor = ChatBubble::AnchorOf(p, er);
     } else { p.side = bubble.anchor.side; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side;
+    {   const int room = ChatBubble::RoomCss(p.rect, p.side == ChatBubble::Side::Above, area, margin, k, BubbleMaxHeightCss);   // R38
+        if (room != bubble.roomCss) { bubble.roomCss = room; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false); } }
     if (bubble.anchor.set && !bubble.endAsked && p.rect.bottom > area.bottom - margin && p.side != ChatBubble::Side::Above) AskDocumentEnd();   // R29: the one exception
     // R19: the window is the surface + a fixed transparent margin, as tall as the surface may grow; a menu or a tooltip
     // out of the surface only widens the window's region (nothing moves: same image before and after, to the pixel)
@@ -250,7 +253,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     const bool again = bubble.open;
     bubble.open = true; bubble.conv = conv; bubble.selector = selector; bubble.label = label;
     bubble.known = element != nullptr; if (element) bubble.element = *element;
-    if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; }
+    if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; }
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, 10, 10})) { bubble.open = false; Diag(L"bubble WebView creation refused"); return; } }
     else view.Reparent(bubble.hwnd, {0, 0, 10, 10});

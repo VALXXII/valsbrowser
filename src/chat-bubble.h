@@ -143,6 +143,13 @@ inline int BottomShift(const Rect& surface, const Rect& area, int margin, bool a
     const int over = surface.bottom - (area.bottom - margin);
     return atDocumentEnd && over > 0 ? std::min(over, std::max(0, surface.top - (area.top + margin))) : 0;
 }
+// R38: the height the bubble may take is the room between its fixed edge and the page area's far side (its content
+// scrolls inside beyond that): a diff, an expanded permission or error opens in place and never makes it move.
+inline int RoomCss(const Rect& surface, bool bottomFixed, const Rect& area, int margin, float k, int maxCss, int minCss = 120) {
+    const int px = bottomFixed ? surface.bottom - (area.top + margin) : (area.bottom - margin) - surface.top;
+    const int css = k > 0 ? int(px / k) : 0;
+    return std::max(minCss, std::min(maxCss, css));
+}
 // R29: what of the window may show — never over the browser's own bars (the page area, in window pixels).
 inline Rect Clip(const Rect& a, const Rect& b) { return {std::max(a.left, b.left), std::max(a.top, b.top), std::max(std::max(a.left, b.left), std::min(a.right, b.right)), std::max(std::max(a.top, b.top), std::min(a.bottom, b.bottom))}; }
 // R34: the one rule for the layout the chat page gets. « bubble » only when the layout is Commentaire, the panel is
