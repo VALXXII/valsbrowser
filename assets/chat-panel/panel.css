@@ -636,7 +636,7 @@ svg.i { display: block; flex-shrink: 0; }
 .bub .b-rule { display: block; flex-shrink: 0; height: 1px; border-radius: 999px; background: color-mix(in srgb, #DDDDDD 10%, transparent); }
 /* open from the element's side, close faster; reduced motion: a fade only */
 @media (prefers-reduced-motion: no-preference) {
-  :root.bub:not(.reduce-motion) #app.b-in { animation: b-in 160ms var(--ease-out) both; }
+  :root.bub:not(.reduce-motion) #app.b-in { animation: b-in 250ms var(--ease-out) both; }   /* cv4 R30: 250 ms */
   :root.bub:not(.reduce-motion) #app.b-out { transform: scale(0.98); }
 }
 @media (prefers-reduced-motion: reduce) { :root.bub #app.b-in { animation: fade 120ms ease both; } }
@@ -732,7 +732,8 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub .mode.auto { background: none; padding: 0 6px; gap: 5px; }
 .bub .mode.auto .ic, .bub .mode.auto .lbl { color: var(--accent-ink); opacity: 1; }
 .bub .model .m { gap: 4px; }
-.bub .model .mcv { display: none; }
+/* cv4 R28 (user's decision): the chevron of the model button never disappears, in the bubble too */
+.bub .model .mcv { margin-left: 0; }
 .bub .batch { max-height: 170px; }
 .bub .strip { border-radius: 10px; padding: 8px 8px 8px 10px; }
 .bub .strip + .composer, .bub .strip.danger + .composer { margin-top: 0; }

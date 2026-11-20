@@ -231,6 +231,7 @@ Un `Item` est un des messages hôte → panneau ci-dessus, déjà terminé : `me
 | `bubble.size` *(1.8)* | `width`, `height` (px CSS, entiers), `overflowTop?`, `overflowRight?`, `overflowBottom?`, `overflowLeft?` *(1.9, entiers 0 à 400)* | En disposition bulle seulement : la taille que veut la bulle, bornée par `layout.maxWidth` / `maxHeight`. Envoyé après chaque `layout`, puis à chaque changement de contenu (jamais deux fois de suite la même valeur). L'hôte redimensionne la fenêtre. |
 | `panel.log` | `level` (`info`/`warn`/`error`), `message` | Diagnostic (message invalide, exception). Borné à 2 Kio. |
 | `annotate` *(1.6)* | `text`, `elements: Id[]` | `Ctrl+Entrée` dans la saisie : les puces et les mots deviennent des annotations **ouvertes** du magasin (lues par les agents MCP), rien n'est envoyé à l'agent du chat. Il faut au moins une puce et quelques mots (sinon un bandeau bref dit ce qui manque). L'hôte répond `annotation.kept`, ou une `error` `composer` si l'écriture échoue. |
+| `element.hover` *(cv4)* | `id`, `active: bool` | Pause de 120 ms du pointeur sur une puce d'élément (saisie ou fil) : `active: true` ; sortie de la puce, fermeture, `pointer.leave` : `active: false` (§22.1). |
 | `hover` *(1.5)* | `active: bool` | Une infobulle de survol est ouverte (`true`) ou fermée (`false`). Tant qu'elle l'est, l'hôte compare le vrai pointeur au rectangle du panneau (toutes les 80 ms) et répond `pointer.leave` dès qu'il en sort. Rien ne tourne sinon. |
 
 ---
@@ -696,4 +697,46 @@ carte d'un groupe 4/10/4/4 ; cartes du milieu 4 ; barre des changements en derni
   attente » (ni `pendingAnnotations`, ni une suggestion d'`id` `annotations`), plus de commande « /annotations », et
   `annotations.batch` est ignoré (aucun lot dans la saisie). Les cartes « Traiter N annotations » déjà envoyées restent
   lisibles quand on rouvre une ancienne conversation. Une suggestion n'apparaît jamais deux fois (même `id` ou mêmes mots).
+
+## 22. Commentaire v4 — retours R26 à R38, côté page (20 nov. 2026)
+
+Source : `chat-comment-v2-retours.md`, R26 à R38 (décisions de l'utilisateur). Le reste (R27, R29 et R38 côté placement,
+R31, R32, R33, R34, R36, R37) est à l'hôte (H1, H2).
+
+### 22.1 Survol d'une puce (R26) — `element.hover`
+
+Page → hôte : `element.hover { id, active }`. `id` est l'`ElementRef.id` de la puce survolée, dans la saisie ou dans le fil.
+`active: true` après **120 ms** de pause du pointeur sur la puce (la traverser n'envoie rien) ; `active: false` à la sortie
+de la puce, à la fermeture de la bulle et au `pointer.leave` de l'hôte. Une seule puce active à la fois (un nouveau `true`
+remplace le précédent sans `false` entre les deux). L'hôte retrouve l'élément par cet `id` (comme `element.remove`),
+fait défiler la page en douceur s'il n'est pas visible et le montre comme au survol (cadre, étiquettes, inspecteur) ; à
+`false` il rend l'état précédent sans redéfiler.
+
+### 22.2 Bas de la saisie stable dès la première image (R28)
+
+Mode, logo, modèle **et effort** sont affichés dès le premier rendu, avec les valeurs mémorisées que l'hôte envoie à
+l'ouverture (avant que l'agent soit prêt). L'effort ne disparaît jamais : le niveau choisi, sinon l'`id` mémorisé nommé en
+français, sinon le dernier affiché ; le modèle garde son dernier nom pour cet agent tant qu'aucun autre n'est connu (jamais
+le nom de l'agent à la place). Le **chevron** du bouton modèle est toujours là, dans la bulle aussi (décision de
+l'utilisateur, au lieu de `18U4-0` qui n'en a pas) ; le bouton s'aligne à droite, la hauteur de la bulle ne change pas.
+
+### 22.3 Nouvelles cartes en douceur (R29)
+
+Une nouvelle carte de l'agent (nouveau message) et la barre des changements entrent par la montée standard du fil (200 ms,
+6 px, fondu en mouvement réduit) ; rien de ce qui est déjà affiché ne bouge. La page publie sa nouvelle hauteur ; l'hôte
+garde l'ancrage et ne fait grandir la bulle que dans son sens de croissance (§21.1). R38 : le diff en grand, une
+autorisation ou une erreur dépliée et l'Historique suivent la même règle — la page demande seulement une hauteur.
+
+### 22.4 Entrée de la bulle (R30)
+
+**250 ms** (au lieu de 160), même glissement de 12 px depuis le côté de l'élément, même fondu, même courbe
+`cubic-bezier(.23, 1, .32, 1)` ; fondu seul en mouvement réduit.
+
+### 22.5 Un brouillon par conversation (R35)
+
+La saisie (mots, puces, images) appartient à une conversation : celle du panneau, ou celle de la bulle d'un élément. À chaque
+`thread.reset`, la page met de côté le brouillon affiché et rend celui de la conversation montrée (clé : disposition, puis
+élément de la bulle, puis `conversationId`). Une bulle ne montre jamais de puce (R7) : un brouillon rendu en bulle perd ses
+puces, et `element.attached` est ignoré en bulle. Les puces ajoutées dans le Chat à droite restent dans le brouillon du
+panneau ; la bulle de chaque élément garde ses propres mots. L'hôte tient aussi son brouillon par conversation (H1).
 

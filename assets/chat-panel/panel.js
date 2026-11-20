@@ -426,8 +426,17 @@
     else if (S.lastTurn) p = "Autre chose à changer ?";
     cin.setAttribute("data-placeholder", p);
   }
+  // cv4 R26 (contract §22.1): a pause of 120 ms on a chip asks the host to show its element in the page (smooth scroll if
+  // needed, frame, labels and inspector, as on hover); leaving it gives the page back. One chip at a time.
+  let hoverChip = null, hoverTimer = 0;
+  function chipHover(id, on) {
+    clearTimeout(hoverTimer); hoverTimer = 0;
+    if (on && ID.test(String(id))) { hoverTimer = setTimeout(() => { hoverTimer = 0; if (hoverChip === id) return; hoverChip = id; post("element.hover", { id, active: true }); }, 120); return; }
+    if (hoverChip) { const was = hoverChip; hoverChip = null; post("element.hover", { id: was, active: false }); }
+  }
   function chipNode(e, inComposer) {
-    const n = h("span", { class: "chip", "data-id": e.id, "data-label": e.label, contenteditable: inComposer ? "false" : null },
+    const n = h("span", { class: "chip", "data-id": e.id, "data-label": e.label, contenteditable: inComposer ? "false" : null,
+                         onpointerenter: (ev) => { if (ev.pointerType !== "touch") chipHover(e.id, true); }, onpointerleave: () => chipHover(null, false) },
       icon(inComposer || KINDS.includes(e.kind) && !e.picked ? "k-" + (KINDS.includes(e.kind) ? e.kind : "block") : "corners"), h("span", { class: "chip-label", text: e.label }));
     if (inComposer) {
       n.setAttribute("role", "img");
@@ -540,10 +549,16 @@
     clear(modelLogo).appendChild(agentIcon(a));
     // R13: always a model (the chosen one, else the agent's default, else its first) — the agent's name only while none is known
     const shown = m || (a && a.models && (a.models.find((x) => x.isDefault) || a.models[0])) || null;
-    modelName.textContent = shown ? shown.label : a ? a.name : "Agent";
+    // cv4 R28: a label once shown for this agent stays until another model is known (no flicker to the agent's name)
+    if (shown && a) S.lastModel = { agent: a.id, label: shown.label };
+    const kept = !shown && a && S.lastModel && S.lastModel.agent === a.id ? S.lastModel.label : "";
+    modelName.textContent = shown ? shown.label : kept || (a ? a.name : "Agent");
     const e = curEffort();
-    effortEl.hidden = !e;
-    effortTxt.textContent = e ? effortName(e.id, e.label) : "";
+    // cv4 R28: the effort never disappears — the chosen level, else the remembered id named in French, else the last shown
+    const eLabel = e ? effortName(e.id, e.label) : S.st.effort && !/^default$/i.test(String(S.st.effort)) ? effortName(S.st.effort, S.st.effort) : S.lastEffort || "";
+    if (eLabel) S.lastEffort = eLabel;
+    effortEl.hidden = !eLabel;
+    effortTxt.textContent = eLabel;
     modelBtn.setAttribute("aria-label", "Modèle et effort : " + modelName.textContent + (e ? " · " + effortTxt.textContent : ""));
     placeholder();
     updateSend();
@@ -1179,6 +1194,28 @@
   }
   // Paper 1ANU-0: once the bubble has reached its maximum, the thread scrolls and its top fades.
   function bFade() { app.classList.toggle("faded", BUB() && !body.hidden && scroller.scrollTop > 0.5 && bubbleNatural() > S.lay.maxH); }
+  // cv4 R35: the input's words, chips and images belong to one conversation (the panel's, or one element's bubble); a
+  // `thread.reset` puts them aside and brings back the ones of the conversation shown. A bubble never shows a chip (R7).
+  const drafts = new Map();
+  let draftKey = "";
+  const draftKeyFor = (conv) => (BUB() ? "b:" + (S.lay.element || "") : "p") + ":" + (conv && conv !== "new" ? conv : "new");
+  function stashDraft() {
+    if (!draftKey) { clear(cin); S.cEls.clear(); S.cAtt.clear(); return; }
+    const frag = document.createDocumentFragment();
+    while (cin.firstChild) frag.appendChild(cin.firstChild);
+    if (frag.textContent.trim() || frag.querySelector && frag.querySelector(".chip") || S.cAtt.size) drafts.set(draftKey, { frag, els: new Map(S.cEls), att: new Map(S.cAtt) });
+    else drafts.delete(draftKey);
+    S.cEls.clear(); S.cAtt.clear();
+  }
+  function restoreDraft(key) {
+    draftKey = key;
+    const d = drafts.get(key);
+    drafts.delete(key);
+    clear(cin);
+    if (d) { cin.appendChild(d.frag); for (const [k, v] of d.els) S.cEls.set(k, v); for (const [k, v] of d.att) S.cAtt.set(k, v); }
+    if (BUB()) for (const c of Array.from(cin.querySelectorAll(".chip"))) { S.cEls.delete(c.dataset.id); c.remove(); }
+    renderThumbs(); updateSend();
+  }
   function resetThread() {
     closeChanges();
     S.usage = null; S.usageWarned = false; renderGauge();
@@ -1223,7 +1260,7 @@
   // The surface never scrolls: a focus landing on something the window does not show yet (it is being resized) must not shift it.
   app.addEventListener("scroll", () => { if (BUB() && (app.scrollTop || app.scrollLeft)) { app.scrollTop = 0; app.scrollLeft = 0; } });
   document.addEventListener("scroll", () => { if (BUB() && (window.scrollX || window.scrollY)) window.scrollTo(0, 0); });
-  function bClose() { post("close"); app.classList.remove("b-in"); app.classList.add("b-out"); }
+  function bClose() { chipHover(null, false); post("close"); app.classList.remove("b-in"); app.classList.add("b-out"); }
 
   function renderDockB(force) {
     const p = S.perms[0], s = activeStrip(), running = !!S.st.running, none = !log.firstChild;
@@ -1823,7 +1860,7 @@
         const used = t.segs.some((x) => x !== seg && x.kind === "text");
         if (!used) t.textBox.appendChild(seg.el);
         else {   // R17: each new message of the agent is a new card, right after the last one
-          const card = h("div", { class: "bt-text" }, seg.el);
+          const card = h("div", { class: "bt-text" + (S.replay ? "" : " enter") }, seg.el);
           const cards = t.el.querySelectorAll(":scope > .bt-text");
           cards[cards.length - 1].after(card);
         }
@@ -2292,7 +2329,7 @@
     const changes = Array.isArray(m.changes) ? m.changes.filter((c) => c && typeof c.path === "string") : [];
     const copyText = typeof m.copyText === "string" ? m.copyText : t.segs.filter((s) => s.kind === "text").map((s) => s.text).join("\n\n");
     t.copyText = copyText;
-    if (changes.length && t.b) { t.changes = changes; t.barEl = bBar(t); t.el.appendChild(t.barEl); t.el.classList.add("has-bar"); bCards(t); }
+    if (changes.length && t.b) { t.changes = changes; t.barEl = bBar(t); if (!S.replay) t.barEl.classList.add("enter"); t.el.appendChild(t.barEl); t.el.classList.add("has-bar"); bCards(t); }
     else if (changes.length) { t.changes = changes; t.undoable = m.undoable !== false; t.changesEl = changesBar(t, changes, t.undoable); t.el.appendChild(t.changesEl); }
     if (t.b) bStatus(t);   // « S'est arrêté », or « Historique » (Paper 1AE7-0, 1AWI-0): no hover actions, no « Revenir » in the bubble
     else if (m.stopReason !== "error") t.el.appendChild(h("div", { class: "actions" },
@@ -2623,7 +2660,9 @@
       updateView(); publishSize(opening);
     },
     "thread.reset"(m) {
+      stashDraft();
       resetThread();
+      restoreDraft(draftKeyFor(isStr(m.conversationId, 128) ? m.conversationId : ""));
       H["thread.append"](m);
       renderDock(true); placeholder(); updateView();
       requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
@@ -2653,6 +2692,7 @@
     queue(m) { S.queue = m.items.filter((q) => q && ID.test(q.id) && isStr(q.text)).map((q) => ({ id: q.id, text: q.text, after: isStr(q.after, 300) ? q.after : "" })); renderDock(); },
     history(m) { S.history = { items: m.items.filter((i) => i && ID.test(i.id) && isStr(i.title, 300)), query: m.query }; if (S.historyOpen) renderHistoryList(); },
     "element.attached"(m) {
+      if (BUB()) return;   // cv4 R35 / R7: the bubble's element is implicit — a chip never lands in a bubble
       if (S.cEls.has(m.element.id)) return;
       S.cEls.set(m.element.id, m.element);
       insertNodeAtCaret(chipNode(m.element, true)); updateSend();
@@ -2673,7 +2713,7 @@
     },
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,
     usage(m) { S.usage = m.size > 0 ? { used: Math.min(m.used, m.size), size: m.size } : null; renderGauge(); },
-    "pointer.leave"() { tipHide(); },   // B 1.5: the host saw the cursor leave the panel
+    "pointer.leave"() { tipHide(); chipHover(null, false); },   // B 1.5: the host saw the cursor leave the panel
     "annotation.kept": onKept,          // B 1.6: Ctrl+Entrée wrote the annotation(s)
   };
   function receive(m) {

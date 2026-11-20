@@ -23,7 +23,8 @@ OUT = os.path.abspath(opt("--out", os.path.join(ROOT, "build", "chat-qa", "panel
 COMMENT = os.path.join(os.path.dirname(OUT), "comment-v2", "panel")   # comment-mode bubble (B 1.8/1.9): build/chat-qa/comment-v2/panel
 REF_C = os.path.join(REF, "comment")                      # the bubbles of the Paper boards 18NS-0 … 19IO-0, exported at 1x
 ONLY = set(filter(None, (opt("--only", "") or "").split(",")))
-EDGE = opt("--edge") or next(iter(sorted(glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "EdgeCore", "*", "msedge.exe")), reverse=True)), None)
+EDGE = opt("--edge") or next(iter(sorted(glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "EdgeCore", "*", "msedge.exe"))
+                                         + glob.glob(os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Microsoft", "EdgeCore", "*", "msedge.exe")), reverse=True)), None)
 os.environ["BROWSER_ANNOTATIONS_TEST"] = "1"
 
 # ------------------------------------------------------------------ Paper values (worker F's survey) for the fidelity table
@@ -124,6 +125,8 @@ def fidelity_table():
                 if ok: rows.append((scen, o["id"], o["sel"], prop, pv, dv, "=", "")); return
                 why = JUSTIFIED.get((o["id"], key or prop)) or JUSTIFIED.get(("*", key or prop)) or ""
                 if not why and "Ask" in P["name"]: why = JUSTIFIED[("*", "texte « Ask »")]
+                if not why and o["sel"] in (".model .m", ".model .mn", ".model .e") and prop in ("x", "w", "x texte"):
+                    why = "cv4 R28 (décision de l'utilisateur) : le bouton modèle garde son chevron dans la bulle — plus large de la place du chevron, aligné à droite, il commence donc plus à gauche"
                 if not why and P["name"] in ("Mode",) and prop in ("w", "padding left", "padding right"): why = "R21 (décision de l'utilisateur) : le bouton du mode est son icône seule dans un carré de 24 px — plus de libellé, donc ni sa largeur ni ses marges"
                 if not why: bad += 1
                 rows.append((scen, o["id"], o["sel"], prop, pv, dv, "≠", why))
@@ -726,7 +729,7 @@ try:
         an = cdp.js("(()=>{const a=document.getElementById('app'),s=getComputedStyle(a);return [s.animationName, s.animationDuration, a.style.getPropertyValue('--b-dx')]})()")
         host({"type": "layout", "mode": "bubble", "maxWidth": 320, "maxHeight": 520, "side": "left", "element": "button.btn-primary"})
         an2 = cdp.js("document.getElementById('app').style.getPropertyValue('--b-dx')")
-        check(an == ["b-in", "0.16s", "-12px"] and an2 == "12px", "bubble (R18): it slides in from the element's side (12 px, 160 ms, faster than the Settings drawer) — no scale", f"{an} {an2}")
+        check(an == ["b-in", "0.25s", "-12px"] and an2 == "12px", "bubble (R18): it slides in from the element's side (12 px, 250 ms — cv4 R30) — no scale", f"{an} {an2}")
         load("c-menu-modele")
         r0 = cdp.js("(()=>{const r=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer-input').getBoundingClientRect();return [r.left,r.top,r.width,r.height,c.top]})()")
         key("Escape"); time.sleep(.15)
@@ -739,6 +742,22 @@ try:
         mt = cdp.js("(()=>{const t=document.getElementById('mode-tip'),b=document.querySelector('.tb.mode').getBoundingClientRect(),r=t.getBoundingClientRect();return [getComputedStyle(t).opacity, t.textContent, Math.round(b.top-r.bottom), Math.round(r.left-b.left)]})()")
         check(mt == ["1", "Demander", 6, 0], "bubble (R21): hovering the mode's icon shows its name in the drawn bubble, 6 px above, left edges aligned", str(mt))
         move(c[0], c[1] + 300); time.sleep(.3)
+        # cv4 — R28: the bottom of the input is right from the first image and never loses its effort nor its chevron
+        load("c-1-vide")
+        f0 = cdp.js("(()=>{const m=document.querySelector('.model .m'),e=document.querySelector('.model .e');return [m.textContent, !e.hidden, getComputedStyle(m.querySelector('.mcv')).display!=='none', Math.round(m.getBoundingClientRect().height)]})()")
+        host({"type": "state", "agents": [{"id": "claude-code", "name": "Claude Code", "icon": "claude", "status": "starting"}], "efforts": [], "model": "sonnet", "effort": "high"})
+        f1 = cdp.js("(()=>{const m=document.querySelector('.model .m'),e=document.querySelector('.model .e');return [m.textContent, !e.hidden, getComputedStyle(m.querySelector('.mcv')).display!=='none', Math.round(m.getBoundingClientRect().height)]})()")
+        check(f0 == ["Sonnet 5.5Élevé", True, True, 24] and f1 == f0 and sizes()[-1] == [305, 84], "bubble (cv4 R28): model, effort and chevron shown at once and kept when the agent's state comes back without its lists — nothing changes size", f"{f0} -> {f1} {sizes()[-1]}")
+        # R29: a new card of the agent comes in softly
+        load("c-2-envoye")
+        host({"type": "message.agentChunk", "turnId": "t1", "messageId": "m9", "text": "Je vérifie aussi la largeur sur mobile."})
+        nc = cdp.js("(()=>{const c=Array.from(document.querySelectorAll('.turn.bt > .bt-text'));const l=c[c.length-1];return [c.length, l.classList.contains('enter'), getComputedStyle(l).animationName]})()")
+        check(nc == [2, True, "rise"], "bubble (cv4 R29): a new message of the agent is a new card that comes in softly (rise 200 ms), the cards above do not move", str(nc))
+        # R35: a draft per conversation — the panel's chips never reach a bubble, each element keeps its own words
+        load("brouillons")
+        dr = cdp.js("window.__drafts")
+        check(dr == {"bubbleA": "", "chipsInBubble": 0, "bubbleB": "", "backToA": "Texte pour A", "panel": "div.hero-visual Pour le panneau"},
+              "bubble (cv4 R35): the panel's chip and words stay in the panel's draft; each element's bubble keeps its own words; a bubble never shows a chip", json.dumps(dr, ensure_ascii=False))
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -873,6 +892,20 @@ try:
         cdp.js("window.devHost.send({type:'turn.start',turnId:" + json.dumps(tid) + ",model:'Opus 5.5',effort:'high',agentId:'claude-code',at:new Date().toISOString()})"); time.sleep(.1)
         p1 = cdp.js("(()=>{const ts=document.querySelectorAll('.turn'),t=ts[ts.length-1];return [ts.length, document.querySelectorAll('.marker').length, document.querySelectorAll('.step').length, t.querySelector('.meta').textContent, !!t.querySelector('.meta svg')]})()")
         check(p1[:3] == p0 and p1[3] == "Opus 5.5 · Élevé" and p1[4], "panel (B 1.9): a second `turn.start` of the same turn updates its header only (« Opus 5.5 · Élevé »), no « Passé à » marker", f"{p0} -> {p1}")
+        # cv4 R26: a pause on an element chip (input or thread) asks the host to show the element; leaving gives the page back
+        load("6.9-ecrire")
+        c = center(".cin .chip"); move(*c); time.sleep(.05)
+        early = cdp.js("window.__posted.filter(m=>m.type==='element.hover').length")
+        time.sleep(.25)
+        on26 = cdp.js("window.__posted.filter(m=>m.type==='element.hover').map(m=>m.id+':'+m.active)")
+        move(c[0], c[1] + 200); time.sleep(.1)
+        off26 = cdp.js("window.__posted.filter(m=>m.type==='element.hover').map(m=>m.id+':'+m.active)")
+        check(early == 0 and on26 == ["el-btn:true"] and off26 == ["el-btn:true", "el-btn:false"], "panel (cv4 R26): 120 ms on a chip sends element.hover {id, active: true}; leaving it sends active: false; passing over sends nothing", f"{early} {on26} {off26}")
+        load("6.11-fait")
+        tc = center(".um .chip")
+        if tc: move(*tc); time.sleep(.3); move(tc[0], tc[1] + 300); time.sleep(.1)
+        th26 = cdp.js("window.__posted.filter(m=>m.type==='element.hover').map(m=>m.active)")
+        check(tc is not None and th26 == [True, False], "panel (cv4 R26): the same for a chip in the thread", str(th26))
         load("etapes-brutes")
         pl4 = cdp.js("Array.from(document.querySelectorAll('.steps .step span:not(.spin):not(.fail-tag)')).map(n=>n.textContent)")
         check(pl4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build", "Modifie landing.css…"], "panel (D4): the same French labels for the steps, never the agent's raw title", str(pl4))
