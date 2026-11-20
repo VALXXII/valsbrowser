@@ -187,6 +187,17 @@
     // D4 (audit): the agent's raw titles (real Claude Code) — the page says them in French, file name alone
     "c-etapes-brutes": [LAY(), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }].concat(RAW_STEPS()) }],
+    // cv3: R20 (320 px), R13 (no model chosen yet: the agent's default), R17 (several agent messages, with and without a bar)
+    "c-largeur-320": [LAY({ maxWidth: 320 }), st(), { type: "thread.reset", conversationId: "new", items: [] }],
+    "c-modele-inconnu": [LAY({ maxWidth: 320 }), st({ model: null, agents: [CLAUDE, Object.assign({}, CODEX, { models: [] })] }), { type: "thread.reset", conversationId: "new", items: [] }],
+    "c-messages-multiples": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT },
+      { type: "toolCall", turnId: "t1", id: "e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] },
+      { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: CEND },
+      { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 18000, changes: [{ path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: C_DIFF }] }] }],
+    "c-messages-deux": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Rien d'autre n'a changé." },
+      { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],
     "c-2-sans-texte": [LAY(), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()].concat(cSteps(true)) }],
     "c-2-puce": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [{ type: "message.user", id: "u1", text: CASK, at: today(15, 34), elements: [EL] }] }],
     "c-menu-refuse": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, () => { window.__grant = { top: 40 }; }, wait(30), click(".model .m"), wait(120)],
@@ -464,10 +475,14 @@
       // bubble layout: the fake host's window follows the bubble (a real host resizes the WebView)
       // B 1.9: the overflow asked around the surface is granted (window.__grant caps a side, to play a screen edge) and
       // answered with `layout {open: false, inset}`, as the real host does
+      // cv3 (R19): the host's window is always larger than the surface — a fixed transparent margin of up to 400 px on each
+      // side (window.__grant caps a side, to play a screen edge); `layout {open: false, inset}` gives it after each
+      // bubble.size. The overflow asked only sets the visible and clickable region (not played here).
       case "bubble.size": {
-        const g = window.__grant || {}, cap = (k, v) => Math.max(0, Math.min(v | 0, g[k] == null ? 400 : g[k]));
-        const inset = { top: cap("top", m.overflowTop), right: cap("right", m.overflowRight), bottom: cap("bottom", m.overflowBottom), left: cap("left", m.overflowLeft) };
+        const g = window.__grant || {}, side = (k) => Math.max(0, Math.min(400, g[k] == null ? 400 : g[k]));
+        const inset = { top: side("top"), right: side("right"), bottom: side("bottom"), left: side("left") };
         window.__inset = inset; window.__surface = { width: m.width, height: m.height };
+        window.__region = { x: inset.left - (m.overflowLeft || 0), y: inset.top - (m.overflowTop || 0), width: m.width + (m.overflowLeft || 0) + (m.overflowRight || 0), height: m.height + (m.overflowTop || 0) + (m.overflowBottom || 0) };
         document.documentElement.style.width = (m.width + inset.left + inset.right) + "px"; document.documentElement.style.height = (m.height + inset.top + inset.bottom) + "px";
         send({ type: "layout", mode: "bubble", open: false, maxWidth: lastLay.maxWidth, maxHeight: lastLay.maxHeight, side: lastLay.side, element: lastLay.element, inset });
         break;

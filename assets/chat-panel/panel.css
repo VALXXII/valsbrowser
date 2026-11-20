@@ -302,7 +302,8 @@ svg.i { display: block; flex-shrink: 0; }
 .agent .btn-s { margin-left: 6px; }
 
 /* empty chat (6.7 A) */
-.empty { display: flex; flex-direction: column; justify-content: flex-end; gap: 16px; padding: 16px; flex: 1; }
+/* R23 (Paper 156O-0 / 1575-0): at the bottom, right above the input — the block fills the thread's height */
+.empty { display: flex; flex-direction: column; justify-content: flex-end; gap: 16px; padding: 16px; flex: 1; min-height: 100%; }
 .sugs { display: flex; flex-direction: column; gap: 6px; }
 .sug { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--w90); font-size: 13px; line-height: 18px; text-align: left; width: 100%; }
 .sug .lb { flex: 1; }
@@ -612,7 +613,7 @@ svg.i { display: block; flex-shrink: 0; }
    the host grows the transparent window around it and says where the surface is (`layout.inset` → --it/--ir/--ib/--il) */
 .layer { position: fixed; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 30; }
 .layer > .menu { pointer-events: auto; }
-:root.bub .layer { left: var(--il, 0px); top: var(--it, 0px); width: var(--bw, 305px); height: calc(100% - var(--it, 0px) - var(--ib, 0px)); }
+:root.bub .layer { left: var(--il, 0px); top: var(--it, 0px); width: var(--bw, 320px); height: var(--bh, calc(100% - var(--it, 0px) - var(--ib, 0px))); }
 .layer .tip.ftip { position: absolute; bottom: auto; right: auto; display: flex; flex-direction: column; gap: 6px; width: max-content; padding: 8px 10px;
   border-radius: 8px; background: var(--canvas); border: 1px solid #FFFFFF1A; box-shadow: #00000080 0 8px 24px; color: var(--w80); font-size: 12px; line-height: 16px;
   opacity: 0; transform: translateY(2px) scale(.98); transform-origin: bottom right; pointer-events: none; transition: opacity 125ms ease-out, transform 125ms ease-out; }
@@ -622,7 +623,7 @@ svg.i { display: block; flex-shrink: 0; }
 @media (prefers-reduced-motion: reduce) { .layer .tip.ftip { transform: none; } }
 :root.reduce-motion .layer .tip.ftip { transform: none; }
 :root.bub, :root.bub body { background: transparent; }
-:root.bub #app { width: var(--bw, 305px); height: calc(100% - var(--it, 0px) - var(--ib, 0px)); margin: var(--it, 0px) 0 0 var(--il, 0px); border-left: 0; background: var(--canvas); border-radius: 16px; overflow: hidden;
+:root.bub #app { width: var(--bw, 320px); height: var(--bh, calc(100% - var(--it, 0px) - var(--ib, 0px))); margin: var(--it, 0px) 0 0 var(--il, 0px); border-left: 0; background: var(--canvas); border-radius: 16px; overflow: hidden;
   padding: 12px; justify-content: flex-start; font-size: 12px; line-height: 16px; transform-origin: var(--b-origin, left top); }
 :root.bub-up #app { justify-content: flex-end; }
 :root.bub #app:focus-visible { outline: none; }
@@ -635,13 +636,14 @@ svg.i { display: block; flex-shrink: 0; }
 .bub .b-rule { display: block; flex-shrink: 0; height: 1px; border-radius: 999px; background: color-mix(in srgb, #DDDDDD 10%, transparent); }
 /* open from the element's side, close faster; reduced motion: a fade only */
 @media (prefers-reduced-motion: no-preference) {
-  :root.bub:not(.reduce-motion) #app.b-in { animation: b-in 180ms var(--ease-out) both; }
+  :root.bub:not(.reduce-motion) #app.b-in { animation: b-in 160ms var(--ease-out) both; }
   :root.bub:not(.reduce-motion) #app.b-out { transform: scale(0.98); }
 }
 @media (prefers-reduced-motion: reduce) { :root.bub #app.b-in { animation: fade 120ms ease both; } }
 :root.bub.reduce-motion #app.b-in { animation: fade 120ms ease both; }
 :root.bub #app.b-out { opacity: 0; transition: opacity 120ms ease-out, transform 120ms ease-out; pointer-events: none; }
-@keyframes b-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+/* R18: a short slide from the element's side (faster than the Settings drawer), with a fade; nothing scales */
+@keyframes b-in { from { opacity: 0; transform: translate(var(--b-dx, -12px), var(--b-dy, 0)); } to { opacity: 1; transform: none; } }
 /* the thread scrolls once the bubble is at its maximum: its top fades (1AS0-0) */
 .bub .b-fade { display: block; position: absolute; top: 0; left: 0; right: 0; height: 96px; z-index: 3; pointer-events: none; opacity: 0;
   background-image: linear-gradient(in oklab 180.49deg, var(--raised) 10.75%, color-mix(in srgb, var(--raised) 0%, transparent) 98.04%); transition: opacity 150ms ease; }
@@ -682,7 +684,10 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bt-text { align-self: stretch; display: flex; flex-direction: column; gap: 8px; padding: 4px 8px 6px; border-radius: 4px 12px 16px 12px; background: var(--fill8); }
 .bub .text { font-size: 13px; line-height: 20px; gap: 8px; }
 .bub .md-h1 { font-size: 14px; line-height: 20px; }
-.bub .turn.bt.has-bar .bt-text { border-radius: 4px 10px 4px 4px; }
+/* R17 (Paper 1AZV-0): corners by the card's place in the group */
+.bub .turn.bt .bt-text.c-top { border-radius: 4px 10px 4px 4px; }
+.bub .turn.bt .bt-text.c-mid { border-radius: 4px; }
+.bub .turn.bt .bt-text.c-end { border-radius: 4px 4px 16px 12px; }
 .bub .turn.bt .note { padding: 2px 2px 0; font-size: 12px; line-height: 16px; }
 .bub .plan { padding: 10px; border-radius: 12px; gap: 10px; margin-top: 4px; }
 /* error (1ADR-0, 1ADT-0, 1AA7-0) */
@@ -722,6 +727,8 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub .mode { gap: 5px; padding: 0 6px; }
 .bub .mode .ic { width: 13px; height: 13px; opacity: .9; color: var(--w50); }
 .bub .mode .lbl { color: var(--w50); font-size: 14px; line-height: 20px; }
+/* R21: the icon alone, in a 24 px square */
+.bub .mode.solo { width: 24px; padding: 0; justify-content: center; }
 .bub .mode.auto { background: none; padding: 0 6px; gap: 5px; }
 .bub .mode.auto .ic, .bub .mode.auto .lbl { color: var(--accent-ink); opacity: 1; }
 .bub .model .m { gap: 4px; }

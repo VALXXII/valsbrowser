@@ -70,7 +70,7 @@
     planPending: null,
     // B 1.8 — comment mode: the page as a compact bubble next to the element (Paper 18NS-0 … 19IO-0)
     sub: null,
-    lay: { mode: "panel", maxW: 305, maxH: 520, side: "right", element: "" },
+    lay: { mode: "panel", maxW: 320, maxH: 520, side: "right", element: "" },
     bview: null, berr: null,
     // B 1.9 (R3): margins of transparent window around the surface — asked (`bubble.size` overflow*) and granted (`layout.inset`)
     inset: { top: 0, right: 0, bottom: 0, left: 0 }, ovAsk: { top: 0, right: 0, bottom: 0, left: 0 },
@@ -274,6 +274,8 @@
   const plusBtn = h("button", { class: "tb", type: "button", "aria-label": "Joindre", "aria-haspopup": "menu", "aria-expanded": "false",
                                 onclick: (e) => openPlusMenu(e.currentTarget) }, icon("plus", "ic"));
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
+  const modeTip = h("span", { class: "tip ftip mtip", role: "tooltip", id: "mode-tip", "aria-hidden": "true" });
+  menuLayer.appendChild(modeTip);
   const batchEl = h("div", { class: "batch", hidden: true, role: "group" });
   const modelName = h("span", { class: "mn" });
   const modelLogo = h("span", { style: "display:flex" });
@@ -305,6 +307,24 @@
     });
   }
   sendWrap._tip = sendTipFloat;
+  // R21: the mode's name above its icon (bubble only), same drawing as the send button's bubble, left edges aligned
+  function modeTipFloat(on) {
+    if (!BUB() || !on || S.menu || !modeBtn.classList.contains("solo")) { modeTip.classList.remove("on"); floatDrop(modeTip); return; }
+    if (modeTip.parentNode !== menuLayer) menuLayer.appendChild(modeTip);
+    modeTip.classList.add("on");
+    floatSet(modeTip, (lim, H) => {
+      const ar = app.getBoundingClientRect(), r = modeBtn.getBoundingClientRect(), W = S.lay.maxW;
+      const tw = modeTip.offsetWidth, th = modeTip.offsetHeight;
+      const x = Math.max(-lim.left, Math.min(r.left - ar.left, W + lim.right - tw));
+      let y = r.top - ar.top - 6 - th;
+      if (y < -lim.top) y = r.bottom - ar.top + 6;
+      modeTip.style.left = Math.round(x) + "px"; modeTip.style.top = Math.round(y) + "px";
+      return { x, y, w: tw, h: th, pad: SHADOW.tip };
+    });
+  }
+  modeBtn._tip = modeTipFloat;
+  withTip(modeBtn);
+  modeBtn.addEventListener("pointerdown", () => modeTipFloat(false));
   sendBtn.addEventListener("focus", () => { if (BUB() && sendBtn.matches(":focus-visible")) sendTipFloat(true); });
   sendBtn.addEventListener("blur", () => { if (BUB() && tipOn !== sendWrap) sendTipFloat(false); });
   const foot = h("div", { class: "foot" });
@@ -505,9 +525,11 @@
     modeBtn.hidden = !shownModes().length;
     if (mode) {
       const kind = mode.kind, lit = kind === "auto" || kind === "edits";   // the two automatic modes wear the accent
-      if (BUB()) {   // Paper 18TZ-0: the icon and the mode's name, no chevron
+      if (BUB()) {   // R21 (user's decision over Paper 18TZ-0): the icon alone; the name shows in the drawn bubble on hover
         if (lit) modeBtn.classList.add("auto");
-        modeBtn.append(icon(mode.icon, "ic"), h("span", { class: "lbl", text: mode.label }));
+        modeBtn.classList.add("solo");
+        modeBtn.append(icon(mode.icon, "ic"));
+        modeTip.textContent = mode.label;
       }
       else if (lit) { modeBtn.classList.add("auto"); modeBtn.append(icon(mode.icon, "ic"), h("span", { class: "lbl", text: mode.label })); }
       else modeBtn.append(icon(mode.icon, "ic"), icon("chevron", "cv"));
@@ -516,7 +538,9 @@
     }
     const a = curAgent(), m = curModel();
     clear(modelLogo).appendChild(agentIcon(a));
-    modelName.textContent = m ? m.label : a ? a.name : "Agent";
+    // R13: always a model (the chosen one, else the agent's default, else its first) — the agent's name only while none is known
+    const shown = m || (a && a.models && (a.models.find((x) => x.isDefault) || a.models[0])) || null;
+    modelName.textContent = shown ? shown.label : a ? a.name : "Agent";
     const e = curEffort();
     effortEl.hidden = !e;
     effortTxt.textContent = e ? effortName(e.id, e.label) : "";
@@ -766,10 +790,14 @@
       for (const a of S.st.agents || []) items.push({ node: agentRow(a, true) });
       return items;
     }
-    groups.forEach((a, i) => {
-      if (i) items.push({ sep: true });
+    let firstGroup = true;
+    groups.forEach((a) => {
+      if (BUB() && !(a.models || []).length) return;
+      if (!firstGroup) items.push({ sep: true });
+      firstGroup = false;
       const ms = a.models || [];
-      if (ms.length) ms.slice(0, PER_GROUP).forEach((m) => items.push(pickModel(a, m))); else items.push(pickAgent(a));
+      if (ms.length) ms.slice(0, PER_GROUP).forEach((m) => items.push(pickModel(a, m)));
+      else if (!BUB()) items.push(pickAgent(a));   // R13: in the bubble one picks a model, never « Claude Code » / « Codex »
     });
     const more = groups.some((a) => (a.models || []).length > PER_GROUP);
     if (more || efforts.length) items.push({ sep: true });
@@ -799,6 +827,8 @@
   }
   function openPlusMenu(anchor) {
     const items = [];
+    // R22: with one action only (the folder is sure), « + » does it at once — no menu
+    if ((S.st.folder && S.st.askFolder !== true) && !(S.st.capabilities && S.st.capabilities.image === false)) { closeMenu(); post("attachImage", { source: "picker" }); return; }
     if (S.st.capabilities && S.st.capabilities.image === false) items.push({ label: "Joindre une image", desc: "Cet agent ne lit pas les images", disabled: true, lead: icon("k-image", "lead"), onSelect: () => {} });
     else items.push({ label: "Joindre une image", lead: icon("k-image", "lead"), onSelect: () => { closeMenu(true); post("attachImage", { source: "picker" }); } });
     // B 1.9 (R5): a folder found for sure is never shown nor changed from the input. Only when the browser is not sure
@@ -881,9 +911,8 @@
   }
   function openCommandMenu(q) {
     const ql = q.toLowerCase();
-    // B 1.4: « /annotations » is the panel's own command (asks the host for the pending batch); the rest come from the agent.
-    const own = { name: "annotations", description: "Traite les annotations en attente sur ce site", own: true };
-    const all = [own].concat((S.commands || []).filter((c) => c.name !== "annotations"));
+    // R24: no panel command of its own anymore (« /annotations » is gone); the commands are the agent's
+    const all = (S.commands || []).filter((c) => c.name !== "annotations");
     const rows = all.filter((c) => c.name.toLowerCase().startsWith(ql) || !ql).slice(0, 8)
       .map((c) => ({ label: c.name, desc: c.description, pick: () => {
         closeMenu(); clear(cin); cin.focus();
@@ -1105,13 +1134,16 @@
   }
   function floatNeed(H) {
     const need = { top: 0, right: 0, bottom: 0, left: 0 }, W = S.lay.maxW;
+    // cv3 (R19): the host's window keeps a fixed transparent margin around the surface (`layout.inset`); a float stays inside it
+    const room = {};
+    for (const k of SIDES) room[k] = Math.min(lim[k], S.insetKnown ? S.inset[k] : CAP);
     for (const [el, placer] of Array.from(floats)) {
       if (!el.isConnected || el.hidden) { floats.delete(el); continue; }
-      const r = placer(lim, H), p = r.pad || SHADOW.none;
+      const r = placer(room, H), p = r.pad || SHADOW.none;
       need.top = Math.max(need.top, p.top - r.y); need.left = Math.max(need.left, p.left - r.x);
       need.right = Math.max(need.right, r.x + r.w + p.right - W); need.bottom = Math.max(need.bottom, r.y + r.h + p.bottom - H);
     }
-    for (const k of SIDES) need[k] = Math.max(0, Math.min(CAP, Math.ceil(need[k])));
+    for (const k of SIDES) need[k] = Math.max(0, Math.min(room[k], CAP, Math.ceil(need[k])));
     return need;
   }
   // `layout.inset`: where the host really put the surface in its window. Drawn at once; a side short of what was asked
@@ -1119,8 +1151,11 @@
   function applyInset(inset) {
     const v = {};
     for (const k of SIDES) v[k] = inset && Number.isFinite(inset[k]) ? Math.max(0, Math.min(CAP, Math.floor(inset[k]))) : 0;
+    S.insetKnown = !!inset;
     S.inset = v;
     const st = document.documentElement.style;
+    // R19: the height the page asked for and the host's inset land together — the surface never moves nor stretches
+    if (BUB() && S.pendH) st.setProperty("--bh", S.pendH + "px");
     for (const k of SIDES) st.setProperty("--i" + k[0], v[k] + "px");
     for (const k of SIDES) if (floats.size && S.ovAsk[k] > v[k] && lim[k] > v[k]) lim[k] = v[k];
     if (floats.size) publishSize();
@@ -1131,6 +1166,7 @@
     const need = floats.size ? floatNeed(hgt) : { top: 0, right: 0, bottom: 0, left: 0 };
     const key = S.lay.maxW + "x" + hgt + ":" + SIDES.map((k) => need[k]).join(",");
     bFade();
+    S.pendH = hgt;   // R19: drawn when the host answers (layout open:false), with its inset, in the same task
     if (!force && key === lastSize) return;
     lastSize = key;
     S.ovAsk = need;
@@ -1162,6 +1198,9 @@
       root.style.setProperty("--bw", S.lay.maxW + "px");
       menuLayer.appendChild(sendTip); sendTip.classList.add("ftip");   // its bubble may leave the surface (R3)
       app.style.setProperty("--b-origin", ({ left: "right top", above: "left bottom", inside: "right top" })[S.lay.side] || "left top");
+      // R18: the slide comes from the element's side (the bubble is right of it: it comes from the left, and so on)
+      const from = ({ right: [-12, 0], left: [12, 0], below: [0, -12], above: [0, 12], inside: [-12, 0] })[S.lay.side] || [-12, 0];
+      app.style.setProperty("--b-dx", from[0] + "px"); app.style.setProperty("--b-dy", from[1] + "px");
     } else {
       for (const a of ["role", "aria-modal", "aria-label", "tabindex"]) app.removeAttribute(a);
       app.classList.remove("b-in", "b-out", "faded", "view", "running", "has-thread");
@@ -1463,6 +1502,7 @@
     if (inBody && t.pendEl.parentNode !== t.textBox) t.textBox.prepend(t.pendEl);
     if (!inBody && t.pendEl) t.pendEl.remove();
     t.textBox.hidden = !inBody && !hasText;
+    bCards(t);
     const home = inBody ? t.pendEl : t.statusEl;
     const live = rows.length > 0 && kind !== "stop", sig = kind + "|" + live + "|" + inBody;
     if (t.stSig !== sig) {
@@ -1478,6 +1518,18 @@
     }
     if (t.stLb && t.stLb.textContent !== label) { t.stLb.textContent = label; }
     if (btipFor && btipFor === t.stBtn) bTipShow(t.stBtn);       // the list follows the steps while it is open
+  }
+  // R17 (Paper 1AZV-0): the agent's cards are a group, 2 px apart; the corners follow the place in the group — the first
+  // 4/10/4/4, the middle ones 4, the result bar last (4/4/10/10); a lone card 4/12/16/12; a closing card 4/4/16/12.
+  function bCards(t) {
+    const cards = Array.from(t.el.querySelectorAll(":scope > .bt-text")).filter((c) => !c.hidden);
+    const n = cards.length, bar = !!t.barEl;
+    cards.forEach((c, i) => {
+      const first = i === 0, last = i === n - 1 && !bar;
+      c.classList.toggle("c-top", first && !last);
+      c.classList.toggle("c-mid", !first && !last);
+      c.classList.toggle("c-end", !first && last);
+    });
   }
   // Paper 1AWI-0: « 1 fichier modifié +6 −2 › » opens the diff « en grand »; « Copier » copies it.
   function bBar(t) {
@@ -1767,7 +1819,15 @@
     t.segs.push(seg);
     if (t.b) {   // bubble: the words go in the agent's block; steps and thoughts are not lines, they feed the status and its hover list
       for (const s of t.segs) if (s.kind === "text" && s !== seg) s.el.classList.remove("streaming");   // the caret only while the words are the last thing
-      if (seg.kind === "text") t.textBox.appendChild(seg.el);
+      if (seg.kind === "text") {
+        const used = t.segs.some((x) => x !== seg && x.kind === "text");
+        if (!used) t.textBox.appendChild(seg.el);
+        else {   // R17: each new message of the agent is a new card, right after the last one
+          const card = h("div", { class: "bt-text" }, seg.el);
+          const cards = t.el.querySelectorAll(":scope > .bt-text");
+          cards[cards.length - 1].after(card);
+        }
+      }
       else if (seg.kind === "plan" || seg.kind === "error") t.el.appendChild(seg.el);
       bStatus(t);
       return seg;
@@ -2232,7 +2292,7 @@
     const changes = Array.isArray(m.changes) ? m.changes.filter((c) => c && typeof c.path === "string") : [];
     const copyText = typeof m.copyText === "string" ? m.copyText : t.segs.filter((s) => s.kind === "text").map((s) => s.text).join("\n\n");
     t.copyText = copyText;
-    if (changes.length && t.b) { t.changes = changes; t.barEl = bBar(t); t.el.appendChild(t.barEl); t.el.classList.add("has-bar"); }
+    if (changes.length && t.b) { t.changes = changes; t.barEl = bBar(t); t.el.appendChild(t.barEl); t.el.classList.add("has-bar"); bCards(t); }
     else if (changes.length) { t.changes = changes; t.undoable = m.undoable !== false; t.changesEl = changesBar(t, changes, t.undoable); t.el.appendChild(t.changesEl); }
     if (t.b) bStatus(t);   // « S'est arrêté », or « Historique » (Paper 1AE7-0, 1AWI-0): no hover actions, no « Revenir » in the bubble
     else if (m.stopReason !== "error") t.el.appendChild(h("div", { class: "actions" },
@@ -2382,8 +2442,14 @@
   function renderEmpty() {
     clear(empty);
     const sugs = [];
-    if (S.st.pendingAnnotations > 0) sugs.push({ id: "annotations", label: "Traiter les " + plural(S.st.pendingAnnotations, "annotation en attente", "annotations en attente").replace(/^1 /, "1 "), badge: String(S.st.pendingAnnotations) });
-    for (const s of S.st.suggestions || []) if (s && ID.test(s.id) && typeof s.label === "string") sugs.push(s);
+    // R24: the « annotations en attente » concept is gone; a suggestion never shows twice (same id or same words)
+    const seen = new Set();
+    for (const s of S.st.suggestions || []) {
+      if (!s || !ID.test(s.id) || typeof s.label !== "string" || s.id === "annotations" || /annotations? en attente/i.test(s.label)) continue;
+      const k = s.label.trim().toLowerCase();
+      if (seen.has(s.id) || seen.has(k)) continue;
+      seen.add(s.id); seen.add(k); sugs.push(s);
+    }
     if (S.st.disabledReason) sugs.length = 0;
     empty.append(h("h2", { id: "empty-h", text: "Que voulez-vous changer ?" }),
       h("div", { class: "sugs", role: "list", "aria-labelledby": "empty-h" }, sugs.map((s) =>
@@ -2542,7 +2608,7 @@
     layout(m) {
       const was = S.lay.mode;
       S.lay.mode = m.mode;
-      S.lay.maxW = Math.max(240, Math.min(305, Number.isFinite(m.maxWidth) && m.maxWidth > 0 ? Math.floor(m.maxWidth) : 305));
+      S.lay.maxW = Math.max(240, Math.min(320, Number.isFinite(m.maxWidth) && m.maxWidth > 0 ? Math.floor(m.maxWidth) : 320));   // R20: 320 px (user's decision over Paper's 305)
       S.lay.maxH = Math.max(104, Number.isFinite(m.maxHeight) && m.maxHeight > 0 ? Math.floor(m.maxHeight) : 520);
       S.lay.side = ["right", "left", "below", "above", "inside"].includes(m.side) ? m.side : "right";
       S.lay.element = isStr(m.element, 300) ? m.element : "";
@@ -2597,7 +2663,7 @@
     "pick.state"(m) { S.picking = m.active; renderComposerBar(); },   // B 1.7: the button's aria-pressed says it (the browser announces the change)
     mentions(m) { S.mentions = { query: m.query, elements: (m.elements || []).filter(validElement), files: (m.files || []).filter((f) => f && isStr(f.path, 1000)) }; if (S.menu && S.menu.combo === "@" && mentionCtx) openMentionMenu(mentionCtx.q, mentionCtx.node, mentionCtx.offset); },
     commands(m) { S.commands = m.items.filter((c) => c && isStr(c.name, 80) && /^[\w-]+$/.test(c.name)); },
-    "edit.confirm": onEditConfirm, "annotations.batch": onBatch, "annotations.status": onAnnStatus,
+    "edit.confirm": onEditConfirm, "annotations.status": onAnnStatus,   // R24: `annotations.batch` is ignored (no batch in the input)
     focus() {
       app.classList.remove("b-out");
       if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }

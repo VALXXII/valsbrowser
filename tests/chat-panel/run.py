@@ -123,7 +123,7 @@ def fidelity_table():
                 if ok: rows.append((scen, o["id"], o["sel"], prop, pv, dv, "=", "")); return
                 why = JUSTIFIED.get((o["id"], key or prop)) or JUSTIFIED.get(("*", key or prop)) or ""
                 if not why and "Ask" in P["name"]: why = JUSTIFIED[("*", "texte « Ask »")]
-                if not why and P["name"] in ("Mode",) and prop in ("w",): why = JUSTIFIED[("*", "texte « Ask »")]
+                if not why and P["name"] in ("Mode",) and prop in ("w", "padding left", "padding right"): why = "R21 (décision de l'utilisateur) : le bouton du mode est son icône seule dans un carré de 24 px — plus de libellé, donc ni sa largeur ni ses marges"
                 if not why: bad += 1
                 rows.append((scen, o["id"], o["sel"], prop, pv, dv, "≠", why))
             k = o["kind"]
@@ -284,6 +284,7 @@ try:
         cdp.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": "reduce" if reduced else "no-preference"}])
 
     def load(name, w=380, h=698, reduced=False):
+        if name.startswith("c-") and name != "c-bascule-panneau" and (w, h) == (380, 698): w, h = 1200, 1400   # cv3: the bubble's window has up to 400 px of margin each side
         viewport(w, h, reduced)
         cdp.events.clear()
         cdp.call("Page.navigate", url=f"{BASE}/chat-panel/dev.html?scenario={urllib.parse.quote(name)}")
@@ -336,7 +337,7 @@ try:
     for name in scen:
         h = 777 if name == "6.6-fil" else 640 if name in ("6.7a-vide", "6.7b-historique") else 698
         bubble = name.startswith("c-") and name != "c-bascule-panneau"
-        ok = load(name, 900 if bubble else 380, h)   # bubble: room for what floats around the surface (sub-menus on the right)
+        ok = load(name, 380, h)   # bubble: room for what floats around the surface (sub-menus on the right)
         if name in HOVER:
             box = cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(HOVER[name])});if(!n)return null;const r=n.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]}})()")
             if box: cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=box[0], y=box[1]); time.sleep(.65 if bubble else .25)
@@ -358,8 +359,9 @@ try:
             cdp.js("document.querySelector('.layer').style.visibility='hidden'")
             shot(out, {"x": ins["left"], "y": ins["top"], "width": size[0], "height": size[1]} if size else None)
             cdp.js("document.querySelector('.layer').style.visibility=''")
-            if any(ins.values()):   # the whole window the host grants: the surface and what floats outside it
-                shot(os.path.join(COMMENT, name + "-fenetre.png"), {"x": 0, "y": 0, "width": size[0] + ins["left"] + ins["right"], "height": size[1] + ins["top"] + ins["bottom"]})
+            reg = cdp.js("window.__region||null")
+            if reg and (reg["width"] != size[0] or reg["height"] != size[1]):   # the visible region: the surface and what floats outside it
+                shot(os.path.join(COMMENT, name + "-fenetre.png"), reg)
             if name == "c-menu-effort":   # the Effort sub-menu alone, next to its board (Paper 17VU-0)
                 sb = cdp.js("(()=>{const n=document.querySelector('.sub-menu');if(!n)return null;const r=n.getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}})()")
                 if sb: shot(os.path.join(COMMENT, "c-menu-effort-sous-menu.png"), sb)
@@ -445,7 +447,8 @@ try:
         check(b["bub"] and b["hd"] == 0 and b["hist"] == 0 and b["pick"] == 0, "bubble: no header, no conversation list, no aim button", json.dumps(b)[:200])
         check(b["role"] == "dialog" and b["modal"] == "false" and b["name"] == "Commentaire sur button.btn-primary", "bubble: a non-modal dialog named after its element", f"{b['role']} {b['modal']} {b['name']}")
         check(b["radius"] == "16px" and b["bg"] == "rgb(23, 23, 23)" and b["page"] == "rgba(0, 0, 0, 0)" and round(b["w"]) == 305, "bubble: 305 px surface #171717, radius 16, transparent page around it", f"{b['radius']} {b['bg']} {b['page']} {b['w']}")
-        check(b["mode"] == "Demander" and "Ask" not in b["all"], "bubble: the mode shows its French name (« Demander », never « Ask »)", b["mode"])
+        md = cdp.js("(()=>{const b=document.querySelector('.tb.mode');return [b.textContent, b.getAttribute('aria-label'), Math.round(b.getBoundingClientRect().width), b.querySelectorAll('svg').length, document.getElementById('mode-tip').textContent]})()")
+        check(md == ["", "Mode : Demander", 24, 1, "Demander"] and "Ask" not in b["all"], "bubble (R21): the mode is its icon alone (24 px); its French name is its accessible name and its drawn bubble", str(md))
         check(b["radius"] == "16px" and cdp.js("getComputedStyle(document.getElementById('app')).boxShadow") == "none" and cdp.js("getComputedStyle(document.getElementById('app')).borderTopWidth") == "0px",
               "bubble (Paper 18TO-0): radius 16, no shadow, no border")
         check(b["focus"] == "composer-input", "bubble: the cursor is in the input at the opening", b["focus"])
@@ -497,7 +500,7 @@ try:
           shadow:cs.boxShadow,bg:cs.backgroundColor,ask:window.__posted.filter(m=>m.type==='bubble.size').pop(),inset:window.__inset,winTop:Math.round(t.top),stBg:getComputedStyle(document.querySelector('.bt-st')).backgroundColor}})()""")
         check(tg["w"] == 178 and tg["h"] == 82 and tg["gap"] == 2 and tg["left"] == 0 and tg["dx"] in (163, 165) and tg["dy"] == -7 and tg["radius"] == "10px 10px 10px 4px" and tg["shadow"] == "none" and tg["bg"] == "rgb(47, 47, 47)",
               "bubble (hover, R3, Paper 1AIE-0): the list sits 2 px above its step, left edges aligned, 178×82 at (165, −7) from the bubble, corners 10/10/10/4, no shadow", json.dumps(tg)[:300])
-        check(tg["ask"].get("overflowTop") == 7 and abs(tg["ask"].get("overflowRight", 0) - (tg["dx"] + 178 - 305)) <= 1 and tg["inset"]["top"] == 7 and tg["winTop"] >= 0 and tg["stBg"] == "rgba(255, 255, 255, 0.1)",
+        check(tg["ask"].get("overflowTop") == 7 and abs(tg["ask"].get("overflowRight", 0) - (tg["dx"] + 178 - 305)) <= 1 and tg["inset"]["top"] >= 7 and tg["winTop"] >= 0 and tg["stBg"] == "rgba(255, 255, 255, 0.1)",
               "bubble (hover, R3): it leaves the bubble — `bubble.size` asks 7 px above and 36–38 px right, the host grants them, nothing is cut; the hovered step is white 10 %", json.dumps(tg)[-260:])
         move(c[0] - 150, c[1] + 100); time.sleep(.3)
         check(cdp.js("document.getElementById('b-tip').hidden") and cdp.js("window.__posted.filter(m=>m.type==='hover').pop().active") is False, "bubble (hover): it goes when the pointer leaves")
@@ -613,11 +616,11 @@ try:
         g = cdp.js(geo_js)
         check(g["mBottom"] <= g["aTop"] + 84 and g["mTop"] < g["aTop"] and g["mTop"] >= 0 and g["mBottom"] <= g["winH"] and g["mLeft"] >= 0 and g["mRight"] <= g["winW"] and g["scroll"] <= 0 and g["aH"] == 84 and g["w"] == 300,
               "bubble (menu, R3): the model menu (300 px) opens above its button, out of the bubble, whole (nothing cut, nothing scrolled); the surface keeps its 84 px", json.dumps(g)[:300])
-        check(g["ask"]["height"] == 84 and g["ask"].get("overflowTop", 0) >= g["aTop"] - g["inset"]["top"] + 0 and g["inset"]["top"] == g["ask"].get("overflowTop") and g["aTop"] == g["inset"]["top"] and g["shadow"] == "none" and g["gap"] == "1px",
+        check(g["ask"]["height"] == 84 and g["ask"].get("overflowTop", 0) >= g["aTop"] - g["mTop"] and g["aTop"] == g["inset"]["top"] and g["shadow"] == "none" and g["gap"] == "1px",
               "bubble (menu, R3): `bubble.size` keeps the height and asks `overflowTop`; the surface is drawn at the granted inset; Paper 17US-0: no shadow, rows 1 px apart", json.dumps(g["ask"]) + " " + json.dumps(g["inset"]))
         key("Escape")
         last = sizes()[-1]; lastm = of("bubble.size")[-1]
-        check(cdp.js("!document.querySelector('.menu')") and last == [305, 84] and not any(k.startswith("overflow") for k in lastm) and "close" not in posted() and cdp.js("Math.round(document.getElementById('app').getBoundingClientRect().top)") == 0,
+        check(cdp.js("!document.querySelector('.menu')") and last == [305, 84] and not any(k.startswith("overflow") for k in lastm) and "close" not in posted() and cdp.js("Math.round(document.getElementById('app').getBoundingClientRect().top)") == cdp.js("window.__inset.top"),
               "bubble (menu): Échap closes the menu only; the window shrinks back to the surface (no overflow)", json.dumps(lastm))
         load("c-menu-refuse")
         g = cdp.js(geo_js)
@@ -669,9 +672,10 @@ try:
         check(up == [12, True, True] and sizes()[-1][1] == 84, "bubble (above its element): content sits on the bottom edge, the menu opens upward out of the bubble", f"{up} {sizes()[-1]}")
         load("c-menu-plus")
         pl = cdp.js("Array.from(document.querySelectorAll('.menu .mi .lb')).map(n=>n.textContent)")
+        check(any(x.startswith("attachImage") for x in posted()) and cdp.js("!document.querySelector('.menu')"), "« + » (R22): its only action at once — the image picker (attachImage), no menu")
         load("c-menu-plus-incertain")
         pl2 = cdp.js("Array.from(document.querySelectorAll('.menu .mi .lb')).map(n=>n.textContent)")
-        check(pl == ["Joindre une image"] and pl2 == ["Joindre une image", "Choisir le dossier…"], "« + » (R5): a folder found for sure is never offered for change — only « Joindre une image »; when the browser is not sure, « Choisir le dossier… »", f"{pl} / {pl2}")
+        check(pl == [] and pl2 == ["Joindre une image", "Choisir le dossier…"], "« + » (R5, R22): with a folder found for sure, « + » opens no menu; when the browser is not sure, « Joindre une image » and « Choisir le dossier… »", f"{pl} / {pl2}")
         load("c-infobulle-envoyer")
         cdp.js("document.getElementById('composer-input').focus()")
         for _ in range(4): key("Tab")
@@ -701,6 +705,39 @@ try:
         host({"type": "turn.start", "turnId": "t1", "model": "Opus 5.5", "effort": "medium", "agentId": "claude-code", "at": "2026-11-19T10:00:00Z"})
         n1 = cdp.js("[document.querySelectorAll('.turn').length, document.querySelector('.bt-text .text').textContent, document.querySelectorAll('.marker').length, document.querySelector('.bt-model').textContent, !!document.querySelector('.bt-model svg'), document.querySelector('.bt-stw .lb').textContent]")
         check(n1[:3] == n0 and n1[3] == "Opus 5.5Moyen" and n1[4] and n1[5] == "Lit checkout.css…", "bubble (B 1.9): a second `turn.start` of the same turn updates « modèle · effort » only — same turn, same text, same step, no marker", f"{n0} -> {n1}")
+        # cv3 — R20: 320 px; R13: the model button always names a model; R17: one card per message; R18: slide; R19: still surface; R21: drawn mode name
+        load("c-largeur-320")
+        check(sizes()[-1][0] == 320 and cdp.js("Math.round(document.getElementById('app').getBoundingClientRect().width)") == 320, "bubble (R20): 320 px wide (user's decision over Paper's 305)", str(sizes()[-1]))
+        load("c-modele-inconnu")
+        mb = cdp.js("[document.querySelector('.model .mn').textContent, !!document.querySelector('.tb.mode')]")
+        click(".model .m")
+        rows13 = cdp.js("Array.from(document.querySelectorAll('.menu .mi .lb')).map(n=>n.textContent)")
+        check(mb == ["Sonnet 5.5", True] and "Codex" not in rows13 and "Claude Code" not in rows13 and "Sonnet 5.5" in rows13, "bubble (R13): mode on the left, the model button names a model (the agent's default) — never « Claude Code » / « Codex » as a choice", f"{mb} {rows13}")
+        load("c-messages-multiples")
+        cards = cdp.js("Array.from(document.querySelectorAll('.turn.bt > .bt-text, .turn.bt > .bt-bar')).map(c=>{const s=getComputedStyle(c);return [c.className.replace('bt-text','').trim(),s.borderTopLeftRadius,s.borderTopRightRadius,s.borderBottomRightRadius,s.borderBottomLeftRadius].join(' ')})")
+        gaps = cdp.js("(()=>{const c=Array.from(document.querySelectorAll('.turn.bt > .bt-text, .turn.bt > .bt-bar'));return c.slice(1).map((x,i)=>Math.round(x.getBoundingClientRect().top-c[i].getBoundingClientRect().bottom))})()")
+        check(cards == ["c-top 4px 10px 4px 4px", "c-mid 4px 4px 4px 4px", "bt-bar 4px 4px 10px 10px"] and gaps == [2, 2], "bubble (R17, Paper 1AZV-0): one card per agent message, 2 px apart; corners 4/10/4/4, then 4, the bar last 4/4/10/10", f"{cards} {gaps}")
+        load("c-messages-deux")
+        cards2 = cdp.js("Array.from(document.querySelectorAll('.turn.bt > .bt-text')).map(c=>{const s=getComputedStyle(c);return [s.borderTopLeftRadius,s.borderTopRightRadius,s.borderBottomRightRadius,s.borderBottomLeftRadius].join(' ')})")
+        check(cards2 == ["4px 10px 4px 4px", "4px 4px 16px 12px"], "bubble (R17): without a bar, the last card closes the group (4/4/16/12)", str(cards2))
+        load("c-1-vide")
+        host({"type": "layout", "mode": "bubble", "maxWidth": 320, "maxHeight": 520, "side": "right", "element": "button.btn-primary"})
+        an = cdp.js("(()=>{const a=document.getElementById('app'),s=getComputedStyle(a);return [s.animationName, s.animationDuration, a.style.getPropertyValue('--b-dx')]})()")
+        host({"type": "layout", "mode": "bubble", "maxWidth": 320, "maxHeight": 520, "side": "left", "element": "button.btn-primary"})
+        an2 = cdp.js("document.getElementById('app').style.getPropertyValue('--b-dx')")
+        check(an == ["b-in", "0.16s", "-12px"] and an2 == "12px", "bubble (R18): it slides in from the element's side (12 px, 160 ms, faster than the Settings drawer) — no scale", f"{an} {an2}")
+        load("c-menu-modele")
+        r0 = cdp.js("(()=>{const r=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer-input').getBoundingClientRect();return [r.left,r.top,r.width,r.height,c.top]})()")
+        key("Escape"); time.sleep(.15)
+        r1 = cdp.js("(()=>{const r=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer-input').getBoundingClientRect();return [r.left,r.top,r.width,r.height,c.top]})()")
+        click(".model .m"); time.sleep(.15)
+        r2 = cdp.js("(()=>{const r=document.getElementById('app').getBoundingClientRect(),c=document.getElementById('composer-input').getBoundingClientRect();return [r.left,r.top,r.width,r.height,c.top]})()")
+        check(r0 == r1 == r2, "bubble (R19): opening and closing a menu never moves nor resizes the surface or its input (same box to the pixel)", f"{r0} {r1} {r2}")
+        load("c-1-vide")
+        c = center(".tb.mode"); move(*c); time.sleep(.6)
+        mt = cdp.js("(()=>{const t=document.getElementById('mode-tip'),b=document.querySelector('.tb.mode').getBoundingClientRect(),r=t.getBoundingClientRect();return [getComputedStyle(t).opacity, t.textContent, Math.round(b.top-r.bottom), Math.round(r.left-b.left)]})()")
+        check(mt == ["1", "Demander", 6, 0], "bubble (R21): hovering the mode's icon shows its name in the drawn bubble, 6 px above, left edges aligned", str(mt))
+        move(c[0], c[1] + 300); time.sleep(.3)
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -759,7 +796,7 @@ try:
     # B 1.8 — the folder's name rather than its path or the site's address (Paper 156L-0)
     if not ONLY:
         load("6.7a-vide"); cdp.js("document.querySelector('.tools .tb[aria-haspopup=menu]').click()"); time.sleep(.1)
-        plus = cdp.js("document.querySelector('.menu').innerText")
+        plus = cdp.js("(document.querySelector('.menu')||{innerText:''}).innerText")
         load("6.2-premiere-fois")
         tile = cdp.js("[document.querySelector('.tile.found .nm').textContent, document.querySelectorAll('.tile.found .path').length, document.querySelector('.tile.found').getAttribute('aria-description')]")
         load("6.7b-historique")
@@ -967,24 +1004,22 @@ try:
         load("dossier-puce")
         fb = cdp.js("({chip:!!document.querySelector('.tb.folder, [aria-label^=\"Dossier du projet\"]'),first:!document.querySelector('.first').hidden,tools:document.querySelectorAll('.foot .tools > *').length})")
         cdp.js("document.querySelector('.tools .tb[aria-haspopup=menu]').click()")
-        plus = cdp.js("document.querySelector('.menu').textContent")
+        plus = cdp.js("(document.querySelector('.menu')||{textContent:''}).textContent")
         check(not fb["chip"] and not fb["first"] and fb["tools"] == 3 and "dossier" not in plus, "folder (V1.2/R5): no folder chip in the composer, no folder screen, and « + » does not offer to change a folder found for sure", json.dumps(fb) + " " + plus)
         load("dossier-demande")
         check(cdp.js("!document.querySelector('.first').hidden && !document.querySelector('.agents')"), "folder: the folder screen shows only when the host asks (askFolder), without the agent list when the agent is ready")
+        # R24 (user's decision): « Traiter les annotations en attente » is gone — no suggestion, no « /annotations », no batch in the input
         load("annotations-avant")
-        bt = cdp.js("(()=>{const b=document.querySelector('.batch');return {h:b.querySelector('.t').textContent,rows:b.querySelectorAll('.batch-row[aria-checked=true]').length,ph:document.getElementById('composer-input').dataset.placeholder,"
-                    "ready:document.querySelector('.send').classList.contains('ready'),meta:b.querySelector('.meta').textContent}})()")
-        check(bt["h"] == "2 annotations à traiter" and bt["rows"] == 2 and bt["ph"].startswith("Ajouter une précision") and bt["ready"] and bt["meta"] == "p.hero-text · landing.html:23",
-              "annotations: the batch sits in the composer, all checked, sendable without text", json.dumps(bt, ensure_ascii=False))
-        cdp.js("document.querySelector(\".batch-row[data-id='a-badge']\").click()")
-        check(cdp.js("document.querySelector('.batch .t').textContent") == "1 annotation à traiter" and cdp.js("document.activeElement.dataset.id") == "a-badge", "annotations: unchecking keeps one for later, focus stays on the row")
-        cdp.js("document.getElementById('composer-input').focus()"); key("Enter")
-        sent = cdp.js("window.__posted.filter(m=>m.type==='send').map(m=>m.annotations)")
-        check(sent == [{"batchId": "b1", "ids": ["a-hero"]}], "annotations: Entrée sends only the checked annotations", json.dumps(sent))
-        time.sleep(.3)
-        check(cdp.js("!!document.querySelector('.ann-card') && document.querySelector('.batch').hidden"), "annotations: the sent batch becomes a card in the thread and leaves the composer")
-        load("annotations-avant-long")
-        check(cdp.js("document.querySelectorAll('.batch-row').length") == 5 and "+ 2 autres" in cdp.js("document.querySelector('.batch-more').textContent"), "annotations: beyond 5, « + 2 autres »")
+        check(cdp.js("!document.querySelector('.batch-row') && document.querySelector('.batch').hidden"), "annotations (R24): an `annotations.batch` from the host is ignored — no batch in the input")
+        load("6.7a-vide")
+        sg = cdp.js("Array.from(document.querySelectorAll('.sug .lb')).map(n=>n.textContent)")
+        check(sg == ["Vérifier cette page sur mobile", "Trouver les textes trop peu contrastés"], "empty chat (R24): no « Traiter les annotations en attente » suggestion, even with pendingAnnotations", str(sg))
+        cdp.js("window.devHost.send({type:'state',suggestions:[{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'m2',label:'Vérifier cette page sur mobile'},{id:'annotations',label:'Traiter les 3 annotations en attente'}]})"); time.sleep(.1)
+        check(cdp.js("Array.from(document.querySelectorAll('.sug .lb')).map(n=>n.textContent)") == ["Vérifier cette page sur mobile"], "empty chat (R24): a suggestion never shows twice (same id or same words)")
+        # R23 (Paper 156O-0 / 1575-0): the empty chat sits at the bottom, right above the input
+        load("6.7a-vide")
+        e23 = cdp.js("(()=>{const e=document.querySelector('.empty').getBoundingClientRect(),c=document.querySelector('.dock').getBoundingClientRect(),h=document.querySelector('.empty h2').getBoundingClientRect(),l=document.querySelectorAll('.sug');const s=l[l.length-1].getBoundingClientRect();return [Math.round(c.top-s.bottom), Math.round(h.top), Math.round(e.bottom-c.top)]})()")
+        check(e23[0] == 16 and e23[1] > 300 and abs(e23[2]) <= 1, "empty chat (R23): « Que voulez-vous changer ? » and its suggestions sit at the bottom, 16 px above the input (Paper 1575-0)", str(e23))
         load("annotations-statuts")
         st_ = cdp.js("(()=>{const c=document.querySelector('.ann-card');return {prog:c.querySelector('.ann-prog').textContent,rows:Array.from(c.querySelectorAll('.ann-row')).map(r=>r.className.replace('ann-row is-','')+':'+r.querySelector('.ann-st').textContent.trim())}})()")
         check(st_["prog"] == "2 sur 2" and st_["rows"] == ["done:Couleur passée au gris secondaire du site.", "working:Claude s'en occupe"], "annotations: rows go En attente → s'en occupe → Terminée with the summary, header « 2 sur 2 »", json.dumps(st_, ensure_ascii=False))
@@ -996,9 +1031,7 @@ try:
         nt = cdp.js("(()=>{const r=document.querySelector(\".ann-row[data-id='a-badge'] .ann-st\");return {t:r.textContent,c:getComputedStyle(r).color,prog:document.querySelector('.ann-prog').textContent,inst:!document.querySelector('.ann-card .detail').hidden}})()")
         check(nt["t"].startswith("Non traitée : le badge") and nt["c"] == "rgb(230, 172, 61)" and nt["prog"] == "1 terminée · 1 non traitée" and nt["inst"], "annotations: a skipped one is amber with its reason; the instruction unfolds", json.dumps(nt, ensure_ascii=False))
         load("6.7a-vide"); cdp.js("document.getElementById('composer-input').focus()"); key("/", "Slash", 0, "/"); time.sleep(.15)
-        check(cdp.js("Array.from(document.querySelectorAll('#combo [role=option]')).some(o=>o.textContent.startsWith('/annotations'))"), "annotations: « /annotations » is always in the / menu")
-        key("Enter"); time.sleep(.2)
-        check("annotations.request" in posted() and cdp.js("!document.querySelector('.batch').hidden"), "annotations: /annotations asks the host and the batch lands in the composer")
+        check(not cdp.js("Array.from(document.querySelectorAll('#combo [role=option]')).some(o=>o.textContent.startsWith('/annotations'))"), "annotations (R24): « /annotations » is no longer in the / menu")
 
         # « Voir les changements » (checkpoint.viewChanges → changes.diff)
         load("6.6-voir-changements")

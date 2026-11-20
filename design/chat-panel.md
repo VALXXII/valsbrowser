@@ -645,3 +645,55 @@ deviennent connus après le début du tour. La page le prend comme une mise à j
 sa valeur. Rien d'autre ne bouge : pas de nouveau tour, pas de repère « Passé à … », le chronomètre, le texte et les étapes
 restent. Avant 1.9 ce second message était ignoré.
 
+## 21. Commentaire v3 — retours R13 à R25 (20 nov. 2026)
+
+Source : `chat-comment-v2-retours.md`, tableaux R13 à R25 (décisions de l'utilisateur, qui priment sur Paper là où elles le
+disent). Ce paragraphe décrit la page ; l'hôte (H) a sa part (R14, R15, R16, R18, R19, R24, R25).
+
+### 21.1 Fenêtre de la bulle, glissement et immobilité (R18, R19, R20 — accord avec H)
+
+- **Largeur (R20)** : `width` = min(**320**, `layout.maxWidth`), jamais sous 240 ; l'hôte envoie `maxWidth: 320` (moins si la
+  place manque). Les planches Paper restent comparées à 305 (scénarios de test avec `maxWidth: 305`).
+- **Fenêtre toujours plus grande que la surface (R19)** : la fenêtre de la bulle garde une marge transparente fixe autour de
+  la surface (jusqu'à 400 px CSS par côté, bornée par l'écran) ; `layout.inset` donne cette marge. La page dessine la surface
+  à (`inset.left`, `inset.top`), largeur `width`, hauteur = **la dernière hauteur qu'elle a publiée** (`bubble.size.height`) —
+  jamais la hauteur de la fenêtre. L'inset **ne change plus** quand un menu s'ouvre : les `overflow*` de `bubble.size` ne
+  règlent plus que la **région visible et cliquable** (surface + débords demandés, bornés par l'inset ; au repos, la surface
+  exacte). La page ne dessine jamais hors de cette région (ombre des menus comprise) et place ses menus et infobulles dans
+  la marge accordée (dessus, sinon dessous, sinon dans la surface). Quand la hauteur change, la fenêtre garde sa taille ;
+  seul `inset.top` change si `side` vaut `"above"` (le bas reste fixe) ; l'hôte répond `layout {open: false, inset}` et la
+  page applique **hauteur et inset dans la même tâche** : la surface ne bouge pas d'un pixel. Un clic dans la partie
+  transparente de la région arrive à la page, qui ferme son menu ou son infobulle.
+- **Glissement d'entrée (R18)** : à chaque `layout` d'ouverture, la page fait glisser la surface de 12 px depuis le côté de
+  l'élément (`side` right : depuis la gauche ; left : depuis la droite ; below : depuis le haut ; above : depuis le bas) avec un
+  fondu, **160 ms**, `cubic-bezier(.23, 1, .32, 1)` (plus rapide que le tiroir des Réglages) ; fondu seul en mouvement réduit.
+  L'hôte place et dimensionne la fenêtre avant de la montrer et ne la montre qu'après le `bubble.size` qui accuse réception
+  de ce `layout` (filet de 300 ms) ; ensuite il ne la déplace plus.
+
+### 21.2 Bas de la saisie de la bulle (R13, R21, R22)
+
+- **R13** : mode à gauche, bouton modèle de Paper à droite (logo, modèle, effort) ; il nomme toujours un modèle — le choisi,
+  sinon celui `isDefault` de l'agent, sinon son premier ; le nom de l'agent seulement tant qu'aucun modèle n'est connu. Dans
+  le menu modèle de la bulle, on choisit un modèle parmi les fournisseurs connectés : jamais une ligne « Claude Code » ou
+  « Codex » seule (un fournisseur sans modèle connu n'y figure pas). Pendant un tour : le mode et Arrêter (Paper `1B6K-0`).
+- **R21** : le bouton du mode est **son icône seule** (carré de 24 px) ; son nom (« Demander »…) est son nom accessible et
+  s'affiche au survol dans la bulle dessinée (même dessin que celle du bouton envoyer, 6 px au-dessus, bords gauches alignés).
+- **R22** : quand « + » n'a qu'une action (dossier sûr), il ouvre **directement** le choix d'une image (`attachImage
+  {source: "picker"}`), sans menu ; avec deux actions (dossier incertain), le menu reste.
+
+### 21.3 Une carte par message de l'agent (R17, Paper `1AZV-0`)
+
+Chaque nouveau message de l'agent (`messageId` différent dans un tour) est une nouvelle carte, juste après la précédente ;
+les cartes du tour forment un groupe, 2 px d'écart, coins selon la place : puce modèle 12/12/12/4 (inchangée) ; première
+carte d'un groupe 4/10/4/4 ; cartes du milieu 4 ; barre des changements en dernier 4/4/10/10 ; une carte seule 4/12/16/12
+(`1B30-0`) ; une dernière carte sans barre 4/4/16/12.
+
+### 21.4 Panneau (R23, R24)
+
+- **R23** : le chat vide (« Que voulez-vous changer ? » et ses suggestions) est en bas, 16 px au-dessus de la saisie
+  (Paper `156O-0` / `1575-0` : colonne alignée en bas, marge 16, écart 16).
+- **R24** : le concept « annotations en attente » est retiré du panneau : plus de suggestion « Traiter les N annotations en
+  attente » (ni `pendingAnnotations`, ni une suggestion d'`id` `annotations`), plus de commande « /annotations », et
+  `annotations.batch` est ignoré (aucun lot dans la saisie). Les cartes « Traiter N annotations » déjà envoyées restent
+  lisibles quand on rouvre une ancienne conversation. Une suggestion n'apparaît jamais deux fois (même `id` ou mêmes mots).
+

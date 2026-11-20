@@ -22,11 +22,6 @@
    "f"
   ],
   [
-   "18U2-0",
-   ".tb.mode .lbl",
-   "t"
-  ],
-  [
    "18U4-0",
    ".model .m",
    "f"
@@ -104,11 +99,6 @@
    "f"
   ],
   [
-   "1B6P-0",
-   ".tb.mode .lbl",
-   "t"
-  ],
-  [
    "1B6R-0",
    ".send",
    "f"
@@ -169,11 +159,6 @@
    "1AM0-0",
    ".tb.mode",
    "f"
-  ],
-  [
-   "1AM3-0",
-   ".tb.mode .lbl",
-   "t"
   ],
   [
    "1AM5-0",
@@ -266,11 +251,6 @@
    "1AHZ-0",
    ".tb.mode",
    "f"
-  ],
-  [
-   "1AI2-0",
-   ".tb.mode .lbl",
-   "t"
   ],
   [
    "1AI4-0",
@@ -808,11 +788,6 @@
    "f"
   ],
   [
-   "1B0X-0",
-   ".tb.mode .lbl",
-   "t"
-  ],
-  [
    "1B0Z-0",
    ".model .m",
    "f"
@@ -933,11 +908,6 @@
    "1B2G-0",
    ".tb.mode",
    "f"
-  ],
-  [
-   "1B2J-0",
-   ".tb.mode .lbl",
-   "t"
   ],
   [
    "1B2L-0",
@@ -1244,5 +1214,6 @@
     "t"
    ]
   ]
- }
+ },
+ "_r21": "cv3 R21 : le bouton du mode est son icône seule (décision de l'utilisateur) — le libellé « Ask » de Paper n'est plus mesuré"
 }
