@@ -119,6 +119,7 @@ void SwitchLayout(bool comment);                         // the band's switch (P
 void ScriptReady();                                      // the mode's page script is in the page
 bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r);   // true: the image was for the chat
 bool CommentFirst(const std::shared_ptr<Tab>& t);        // R18: Mode Commentaire — the bubble opens before the shot starts
+bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& e);   // R18: the click's light « selecting »: the bubble opens now
 bool AskAvailable(const std::shared_ptr<Tab>& t);        // « Demander à l'agent » in the note panel (local sites)
 void AskFromNote(const std::wstring& draft);
 void Toggle(bool keyboard);                              // band button / Ctrl+Maj+D
@@ -1277,6 +1278,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     case AH::Op::Escape: if (!s.paused) Exit(L"escape"); break;
     case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
     case AH::Op::Anchor: Chat::OnAnchor(c.env); break;
+    case AH::Op::Selecting: if (!s.paused) Chat::OpenEarly(t, c.env); break;   // R18: before the full « select » of the same seq
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
     }
     return true;

@@ -82,6 +82,7 @@ void NoteAnchored(const ChatStore::Header& h) {
     SyncMarks();   // a new conversation of an element: its frame + icon now
 }
 void SyncMarks(); void LauncherRefresh(); std::string MarkState(const std::string& id);
+std::string ShownSelector(const std::string& id) { for (const auto& h : anchored) if (h.id == id) return h.anchorSelector; return ""; }
 std::string ModeOrigin() { auto t = Ann::ModeTab(); return t ? ChatLocal::Classify(U8(t->uri)).origin : std::string(); }
 std::string anchoredOrigin;   // the site `anchored` was read for
 void RefreshAnchored() {
@@ -494,8 +495,49 @@ void LauncherRefresh() {
 }
 
 // ---------------------------------------------------------------- a click in the page, in this layout
+// R18 (< 100 ms from the click): the page posts a light « selecting » (seq, selector, rect) before its full « select »,
+// whose description takes longer. The bubble opens on it at once — on the element's conversation, or a new one — and the
+// « select » that follows (same seq) only completes it (label, image, source). A « select » that never comes leaves a
+// working bubble, anchored by the selector.
+struct EarlyOpen { bool on = false; std::int64_t seq = -1; std::string conv; double at = 0; } early;
+std::string LabelOfSelector(const std::string& s) {
+    std::string last = s; if (const auto p = s.find_last_of(" >"); p != std::string::npos) last = s.substr(p + 1);
+    if (const auto c = last.find(':'); c != std::string::npos) last = last.substr(0, c);
+    return ChatPrompt::OneLine(last, 60);
+}
+bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& env) {
+    if (!t || !CommentFirst(t) || env.selector.empty() || bubble.open || Ann::NowMs() - bubble.closedAt < 400) return false;
+    PrepareChat(t);
+    const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
+    const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
+    const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);
+    early = EarlyOpen{true, env.serial, "", Ann::NowMs()};
+    for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == env.selector) {   // its conversation
+        const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
+        ShowConversation(id, [id, element, l] { OpenBubble(id, &element, ShownSelector(id), false, l); });
+        Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
+        return true;
+    }
+    const std::string id = NewAnchoredConversation(env.selector, label, page, ""); early.conv = id;
+    OpenBubble(id, &element, env.selector, false, label);
+    Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L")");
+    return true;
+}
 bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
     PrepareChat(t);
+    if (early.on && early.seq == Ann::s.sel.seq && bubble.open && bubble.conv == early.conv) {   // R18: the bubble is already open: completed
+        early.on = false;
+        const auto& tg = Ann::s.pending.target; const std::string label = tg.path.empty() ? tg.tag : tg.path.back();
+        if (!label.empty() && label != bubble.label) {
+            bubble.label = label;
+            for (auto* h : {&convo.data.head, aside.on ? &aside.c.data.head : nullptr}) if (h && h->id == early.conv) { h->anchorLabel = label; if (!SentConvo(h == &convo.data.head ? convo : aside.c)) h->title = ChatPrompt::OneLine(label, 44); }
+            if (panelReady) SendLayout(false);
+        }
+        if (anchorElements.find(early.conv) == anchorElements.end()) { Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = early.conv; aiming[serial] = std::move(e); QuerySource(t, serial); }
+        Diag(L"the click's full selection completes the bubble (" + Ann::Ms(Ann::NowMs() - early.at) + L" ms after it opened)");
+        return true;
+    }
+    early.on = false;
     const auto& tgt = Ann::s.pending.target;
     const std::string sel = Ann::s.sel.frameKind == "main" && tgt.shadowPath.empty() && tgt.selectorUnique ? tgt.selector : std::string();
     const std::string page = ChatBubble::PageKey(U8(t->uri));
