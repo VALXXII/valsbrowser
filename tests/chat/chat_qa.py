@@ -34,8 +34,10 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / 'tests' / 'annotations'))
 import sandbox_qa as Q   # noqa: E402  (CDP WebSocket, window helpers, PrintWindow)
 
-SRC = ROOT / 'build' / 'chat-preview'
-TOOLS = ROOT / 'build' / 'chat-preview-test'
+# CHAT_QA_BUILD=<folder under build/> runs the QA on another build than build/chat-preview (the user may be testing that one)
+import os as _os
+SRC = ROOT / 'build' / (_os.environ.get('CHAT_QA_BUILD') or 'chat-preview')
+TOOLS = ROOT / 'build' / ((_os.environ.get('CHAT_QA_BUILD') or 'chat-preview') + '-test')
 APP = ROOT / 'build' / 'chat-qa-app'
 QA = ROOT / 'build' / 'chat-qa'
 WORK = ROOT / 'build' / 'chat-qa-work'
