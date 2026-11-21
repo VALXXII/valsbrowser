@@ -5,6 +5,7 @@
 #include "browser-catalog.h"
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAILED %s:%d: %s\n", __FILE__, __LINE__, #x); std::exit(1); } } while (0)
 static int checks = 0;
@@ -55,6 +56,7 @@ int wmain(int argc, wchar_t** argv) {
     {
         wchar_t windows[MAX_PATH]{}; GetWindowsDirectoryW(windows, MAX_PATH);
         const std::wstring box = work + L"\\logo-box", real = box + L"\\real\\deep";
+        { std::error_code ec; std::filesystem::remove_all(box, ec); }   // a reused work folder (run_all) starts clean: no stale logo.exe.old
         Dirs(real); CHECK(CopyFileW((std::wstring(windows) + L"\\explorer.exe").c_str(), (real + L"\\logo.exe").c_str(), FALSE));
         CHECK(CopyFileW(self.c_str(), (box + L"\\plain.exe").c_str(), FALSE));
         // A minimal 16 x 16 32-bit .ico (one entry, opaque blue): the .ico path through the same checks.
