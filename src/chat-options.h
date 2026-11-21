@@ -73,6 +73,9 @@ inline std::string Intended(const std::string& current, const std::string& wante
 // mode right after the start, or the user's choice) is shown until the agent confirms it — never the session's starting
 // value in between. Patience: an agent that never confirms (refused) shows its real value again after `patienceMs`.
 struct Asked { std::string value; double at = 0; };
+// E2 / M9 (coordinator, review R): the model, the effort and the mode the user chose are remembered per site and given to
+// every new session — a new element included; « Demander » is only the start while nothing was chosen.
+inline std::string ChoiceForNewSession(const std::string& justChosen, const std::string& remembered) { return justChosen.empty() ? remembered : justChosen; }
 inline std::string ShownWhileAsked(const std::string& current, Asked& asked, double now, double patienceMs = 3000) {
     if (asked.value.empty()) return current;
     if (current == asked.value || now - asked.at > patienceMs) { asked = Asked{}; return current; }

@@ -531,6 +531,9 @@ static void TestBubble() {
         Check(grown.bottom == b2.rect.bottom && grown.right == b2.rect.right && grown.top == b2.rect.bottom - 400 && FullyVisible(grown, area),
               "R44 then R29: in a bottom corner the bubble keeps its corner and grows up, whole");
         Check(FullyVisible({10, 150, 330, 254}, area) && !FullyVisible({10, 700, 330, 900}, area) && !FullyVisible({}, area), "R44: whole in the visible area or not"); }
+    // E2 / M9: every new session gets the choice just made, else the one remembered for the site, else the agent's own
+    {   Check(ChatOptions::ChoiceForNewSession("opus", "sonnet") == "opus" && ChatOptions::ChoiceForNewSession("", "sonnet") == "sonnet" && ChatOptions::ChoiceForNewSession("", "").empty(),
+              "E2 / M9: the choice made, else the site's remembered one (a second element no longer falls back to the agent's default)"); }
     // R46: the session starts in « auto », the browser asks « default »: until the agent confirms, the state says « default »
     {   ChatOptions::Asked asked{"default", 1000};
         Check(ChatOptions::ShownWhileAsked("auto", asked, 1200) == "default" && ChatOptions::ShownWhileAsked("auto", asked, 2500) == "default",

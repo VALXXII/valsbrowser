@@ -322,7 +322,8 @@ std::string ChoiceName(const Acp::ConfigOption* o, const std::string& value) {
     return value;
 }
 void MarkSwitch(const std::string& agent, const std::string& model) {
-    if (convo.data.items.empty()) return;
+    auto& shown = aside.on ? aside.c : convo;   // E3: the mark belongs to the conversation shown (aside: not the engine's)
+    if (shown.data.items.empty()) return;
     const auto& info = agentInfo[agent]; const auto* def = AgentOf(agent);
     SJ::Value m = SJ::Value::Obj(); m.Set("agentId", Str(agent)); if (def) m.Set("agentName", Str(std::string(def->name)));
     if (!model.empty()) { m.Set("modelId", Str(model)); m.Set("model", Str(ChoiceName(Acp::FindModelOption(info.options), model))); }
@@ -330,7 +331,9 @@ void MarkSwitch(const std::string& agent, const std::string& model) {
         const std::string e = agent == agentId && !pendingEffort.empty() ? pendingEffort : eo->currentValue;
         if (!e.empty()) { m.Set("effortId", Str(e)); m.Set("effort", Str(ChoiceName(eo, e))); }
     }
-    m.Set("at", Str(Iso(BA::SystemNow()))); Keep("model.switch", m); Send("model.switch", std::move(m));
+    m.Set("at", Str(Iso(BA::SystemNow())));
+    if (aside.on) shown.data.items.push_back(Item("model.switch", m)); else Keep("model.switch", m);
+    Send("model.switch", std::move(m));
 }
 // R42: another provider's model = the same chat, without a confirmation: the session of the other agent starts for the
 // next message, with the conversation so far given as context. A turn running is never stopped for it: the change
@@ -738,6 +741,10 @@ void OnPanelMessage(const std::string& json) {
     }
     if (type == "setModel") {
         const std::string id = m.Id("id"), agent = m.Id("agentId"); if (id.empty()) return;
+        if (aside.on) {   // E3: another element's turn runs — never its session; this conversation gets it at its own start
+            pendingModel = id; if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].model = id; RememberChoices(); }
+            MarkSwitch(agent.empty() ? agentId : agent, id); SendState(); return;
+        }
         if (!agent.empty() && agent != agentId) { SwitchAgent(agent, id); return; }
         const auto* o = Acp::FindModelOption(agentInfo[agentId].options);
         const bool changed = id != (pendingModel.empty() ? (o ? o->currentValue : std::string()) : pendingModel);
@@ -748,6 +755,7 @@ void OnPanelMessage(const std::string& json) {
     }
     if (type == "setEffort") {
         const std::string id = m.Id("id"); const auto* o = Acp::FindEffortOption(agentInfo[agentId].options); if (id.empty()) return;
+        if (aside.on) { pendingEffort = id; if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].effort = id; RememberChoices(); } SendState(); return; }   // E3
         if (session && sessionReady && o) { session->SetConfigOption(o->id, id); askedEffort = ChatOptions::Asked{id, Ann::NowMs()}; } else pendingEffort = id;
         if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].effort = id; RememberChoices(); }   // V1.2: the next sessions start with it (else Medium)
         return;
@@ -755,7 +763,9 @@ void OnPanelMessage(const std::string& json) {
     if (type == "setMode") {
         const std::string id = m.Id("id"); if (id.empty()) return; const auto mv = ModesOf(agentId, agentInfo[agentId]);
         if (!mv.list.empty() && KindOfMode(mv, id) == "other" && std::none_of(mv.list.begin(), mv.list.end(), [&](const ModeEntry& e) { return e.id == id; })) return;   // not a mode the agent offers
-        SetAgentMode(id);   // for this session only: a new session always starts in « Demander » (decision 4), whatever was chosen before
+        if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].mode = id; RememberChoices(); }   // M9 (coordinator): remembered for the site, given to every new session
+        if (aside.on) { pendingMode = id; SendState(); return; }   // E3: never the running session of another element
+        SetAgentMode(id);
         return;
     }
     if (type == "setAgent") { SwitchAgent(m.Id("id"), ""); return; }

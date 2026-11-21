@@ -86,6 +86,20 @@ check(all(x in busy for x in ('turn.active', 'waitingPermissions', 'HasQueued(')
 check('bubble.noFollow' in block_after(comment, 'void FollowBubbleElement(bool current) {') and 'noFollow = true' in block_after(comment, 'bool OpenFromHistory(const std::wstring& id) {'),
       'C3: a conversation opened from the history follows no element (it used to close at once)')
 
+# E2 / M9 (coordinator): the model, the effort and the mode chosen are remembered per site and given to EVERY new session
+apply = block_after(turn, 'void ApplyDefaults() {')
+check(apply.count('ChoiceForNewSession(') >= 2 and 'RememberedChoice(' in apply, 'E2 / M9: ApplyDefaults gives each new session the choice made, else the one remembered for the site (model and mode)')
+set_mode = block_after(ui, 'if (type == "setMode")')
+check('.mode = id' in set_mode, 'M9: a mode chosen is remembered for the site')
+check('ChoiceForNewSession(' in block_after(turn, 'std::string WantedMode('), 'M9: the mode shown before the session (R28) is the one it will get')
+
+# E3: a bubble shown aside (another element's turn runs) never changes the running session; its choice waits for its own
+for t in ('setModel', 'setEffort', 'setMode'):
+    h = block_after(ui, 'if (type == "' + t + '")')
+    check('aside.on' in h and h.find('aside.on') < h.find('session->') if 'session->' in h else 'aside.on' in h,
+          'E3: « ' + t + ' » from a bubble aside keeps the choice for that conversation, the running session untouched')
+check('aside.on' in block_after(ui, 'void MarkSwitch('), 'E3: the « Passé à … » mark goes into the conversation shown aside')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

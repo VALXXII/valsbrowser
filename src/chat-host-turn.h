@@ -119,10 +119,15 @@ std::string WantedEffort(const Acp::ConfigOption* e) {
     const std::string want = ChatOptions::EffortToApply(e->choices, e->currentValue, remembered);
     return want;
 }
+// E2 / M9: what the user chose last for this site ("" = nothing)
+std::string RememberedChoice(std::string ChatStore::Project::* field) {
+    if (site.origin.empty()) return "";
+    const auto it = projects.sites.find(site.origin); return it == projects.sites.end() ? std::string() : it->second.*field;
+}
 // …and the mode: the one chosen for this site, else the agent's « ask » mode.
 std::string WantedMode(const ModeView& mv) {
     auto has = [&](const std::string& id) { for (const auto& m : mv.list) if (m.id == id) return true; return false; };
-    if (!pendingMode.empty() && has(pendingMode)) return pendingMode;
+    if (const std::string c = ChatOptions::ChoiceForNewSession(pendingMode, RememberedChoice(&ChatStore::Project::mode)); !c.empty() && has(c)) return c;   // M9
     for (const auto& id : mv.map.ask) if (has(id)) return id;
     for (const auto& m : mv.list) if (m.kind == "ask") return m.id;
     return "";
@@ -135,6 +140,7 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
         if (wanted != o->currentValue) for (const auto& c : o->choices) if (c.value == wanted) { session->SetConfigOption(o->id, wanted); askedModel = ChatOptions::Asked{wanted, Ann::NowMs()}; break; }
         wanted.clear();
     };
+    pendingModel = ChatOptions::ChoiceForNewSession(pendingModel, RememberedChoice(&ChatStore::Project::model));   // E2: every session, not the first one only
     choose(Acp::FindModelOption(info.options), pendingModel);
     if (const auto* e = Acp::FindEffortOption(info.options)) {   // V1.2: never the agent's « Default »; the effort chosen last for this site, else Medium
         std::string remembered = pendingEffort; if (remembered.empty()) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) remembered = it->second.effort;
@@ -145,7 +151,7 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
     pendingEffort.clear();
     // The session starts in the mode the user's own agent configuration picks (seen: Claude « auto », Codex « agent »).
     // Ours is « Demander » unless this site remembers another choice: set here, right after Started, before any prompt.
-    const auto mv = ModesOf(agentId, info); std::string want = pendingMode; pendingMode.clear();
+    const auto mv = ModesOf(agentId, info); std::string want = ChatOptions::ChoiceForNewSession(pendingMode, RememberedChoice(&ChatStore::Project::mode)); pendingMode.clear();   // M9
     auto has = [&](const std::string& id) { for (const auto& m : mv.list) if (m.id == id) return true; return false; };
     if (want.empty() || !has(want)) {
         want.clear();

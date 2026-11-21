@@ -337,10 +337,12 @@ void SendState() {
     {   std::string shown = model ? ChatOptions::Shown(model->choices, model->currentValue, DefaultModelOf(agentId, model)) : std::string();
         if (model && !pendingModel.empty()) for (const auto& c : model->choices) if (c.value == pendingModel && !ChatOptions::IsAlias(c)) shown = ChatOptions::Intended(shown, pendingModel, defaultsApplied);   // R28
         if (model) shown = ChatOptions::ShownWhileAsked(shown, askedModel, Ann::NowMs());   // R46
+        if (aside.on && !pendingModel.empty()) shown = pendingModel;   // E3: the choice of the conversation shown aside
         st.Set("model", ChatStore::ValidId(shown) ? Str(shown) : SJ::Value::Null()); }
     // efforts (V1.2): the agent's levels without its « Default »; R28: before the browser's choice is applied, that choice
     {   std::string cur = effort && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? effort->currentValue : std::string();
         if (effort) cur = ChatOptions::ShownWhileAsked(ChatOptions::Intended(cur, WantedEffort(effort), defaultsApplied), askedEffort, Ann::NowMs());   // R28, R46
+        if (aside.on && !pendingEffort.empty()) cur = pendingEffort;   // E3
         st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(cur) ? Str(cur) : SJ::Value::Null()); }
     {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
         const std::vector<ModeEntry> shown = ShownModes(mv);
@@ -348,7 +350,8 @@ void SendState() {
             if (!shown.empty() && ids != said) { said = ids; Diag(L"modes offered: " + W(ids)); } }   // R4: the QA reads it
         for (const auto& m : shown) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
-        const std::string mode = ChatOptions::ShownWhileAsked(ChatOptions::Intended(mv.current, WantedMode(mv), defaultsApplied), askedMode, Ann::NowMs());   // R28, R46: never the session's starting mode in between
+        const std::string mode = aside.on && !pendingMode.empty() ? pendingMode   // E3
+                               : ChatOptions::ShownWhileAsked(ChatOptions::Intended(mv.current, WantedMode(mv), defaultsApplied), askedMode, Ann::NowMs());   // R28, R46: never the session's starting mode in between
         st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mode) ? Str(mode) : SJ::Value::Null()); }
     {   const auto& shown = aside.on ? aside.c.data.head : convo.data.head; const bool running = turn.active && !aside.on;   // contract B 1.8: the conversation shown
         SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));
