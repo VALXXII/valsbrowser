@@ -113,7 +113,9 @@ public:
         if (!same) { hover_ = -1; hoverRemove_ = false; }
         if (hover_ >= static_cast<int>(data_.rows.size())) hover_ = -1;
         SetWindowPos(hwnd_, HWND_TOP, left, top + Px(Layout::anchorGap), right - left, Px(Layout::Height(data_.rows.size())), SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        visible_ = true; RefreshTip(); InvalidateRect(hwnd_, nullptr, FALSE);
+        // Painted now, at its new size, before the keystroke that changed it returns: a list shown or
+        // grown and left for a later WM_PAINT shows its previous rows (or nothing) meanwhile.
+        visible_ = true; RefreshTip(); InvalidateRect(hwnd_, nullptr, FALSE); UpdateWindow(hwnd_);
     }
     void Hide() {
         if (!hwnd_ || !visible_) return;

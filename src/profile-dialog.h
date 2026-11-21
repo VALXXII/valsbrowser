@@ -143,7 +143,7 @@ private:
         switch (msg) {
         case WM_GETOBJECT: { LRESULT r; if (uia_.OnGetObject(h, w, l, r)) return r; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); editor_.Flush(); return 0; }
         case WM_CTLCOLOREDIT: { LRESULT r; if (editor_.CtlColor(reinterpret_cast<HWND>(l), reinterpret_cast<HDC>(w), r)) return r; break; }
         case WM_TIMER: if (w == FrameTimer) Step(); return 0;
         case WM_MOUSEMOVE: {
@@ -214,7 +214,7 @@ public:
     bool Run(Spec spec) {
         if (!owner_ || hwnd_) return false;
         spec_ = std::move(spec); done_ = accepted_ = false; error_.clear(); focus_ = hover_ = pressed_ = None; keyboard_ = spec_.keyboard;
-        hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, L"LisiereProfileDialog", spec_.title.c_str(), WS_POPUP, 0, 0, 1, 1, owner_, nullptr, instance_, this);
+        hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, L"LisiereProfileDialog", spec_.title.c_str(), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner_, nullptr, instance_, this);
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
         dpi_ = GetDpiForWindow(owner_); chrome_.Init(hwnd_, root_);

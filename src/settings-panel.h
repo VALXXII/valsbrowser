@@ -558,7 +558,7 @@ private:
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
     HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
-    HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
+    HBRUSH editBrush_ = nullptr; COLORREF editBrushColor_ = 0; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     I18n::Locale languageSaved_ = I18n::Current(); bool languageFailed_ = false;   // « Langue »: preference as saved, last save failed
@@ -1679,17 +1679,6 @@ private:
             break;
         case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->ApplyCaret(); return r; }
         case WM_KILLFOCUS: if (self->editing_ && !self->cancelEdit_) self->Commit(false); break;
-        case WM_PAINT: {
-            // No comctl32 v6 (no cue banner): the placeholder is painted over the empty field, as when it rests.
-            const LRESULT r = DefSubclassProc(h, msg, w, l);
-            if (GetWindowTextLengthW(h) == 0 && self->editing_) {
-                HDC dc = GetDC(h); RECT rc; GetClientRect(h, &rc);
-                const auto old = SelectObject(dc, self->editFont_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, self->Gray(.35f * .9f));
-                DrawTextW(dc, FieldTexts(self->editing_).placeholder, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-                SelectObject(dc, old); ReleaseDC(h, dc);
-            }
-            return r;
-        }
         case WM_CHAR: if (w == L'\r' || w == 27 || w == L'\t') return 0; [[fallthrough]];
         case WM_CUT: case WM_PASTE: case WM_CLEAR: case WM_UNDO: case EM_REPLACESEL: {
             // Placeholder and error follow the text as it is typed.
@@ -1699,7 +1688,7 @@ private:
                 self->SetQuery(std::move(text));
             }
             if (self->errors_[self->editing_]) { self->errors_[self->editing_] = false; self->Invalidate(); }
-            InvalidateRect(h, nullptr, TRUE); return r;
+            return r;   // the field itself is recomposed by its EditBuffer (placeholder included): no repaint per keystroke
         }
         case WM_NCDESTROY: RemoveWindowSubclass(h, EditProc, 0); break;
         }
@@ -1722,6 +1711,13 @@ private:
             if (!edit_) return;
             SendMessageW(edit_, EM_SETLIMITTEXT, 2048, 0);
             SetWindowSubclass(edit_, EditProc, 0, reinterpret_cast<DWORD_PTR>(this));
+            // No comctl32 v6 (no cue banner): the placeholder is drawn into the empty field's image, as when it rests.
+            NativeUI::EditBuffer::Attach(edit_, [this](HWND h, HDC dc, const RECT& client) {
+                if (GetWindowTextLengthW(h) != 0 || !editing_) return;
+                RECT rc = client; const auto old = SelectObject(dc, editFont_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, Gray(.35f * .9f));
+                DrawTextW(dc, FieldTexts(editing_).placeholder, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+                SelectObject(dc, old);
+            });
         }
         const UINT dpi = GetDpiForWindow(hwnd_);
         if (!editFont_ || editDpi_ != dpi) {
@@ -1852,13 +1848,14 @@ private:
         case UiaInvoke: UiaAction(static_cast<int>(w), static_cast<long long>(l)); return 0;
         case WM_CTLCOLOREDIT: {
             { LRESULT r; if (editor_.CtlColor(reinterpret_cast<HWND>(l), reinterpret_cast<HDC>(w), r)) return r; }
-            // The EDIT blends into the field: its exact fill, text at 90% white.
+            // The EDIT blends into the field: its exact fill, text at 90% white. One brush per fill.
             HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(EditFill());
+            NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc);
             SetTextColor(dc, Gray(.9f)); SetBkColor(dc, fill);
-            if (editBrush_) DeleteObject(editBrush_);
-            editBrush_ = CreateSolidBrush(fill); return reinterpret_cast<LRESULT>(editBrush_);
+            if (!editBrush_ || fill != editBrushColor_) { if (editBrush_) DeleteObject(editBrush_); editBrush_ = CreateSolidBrush(fill); editBrushColor_ = fill; }
+            return reinterpret_cast<LRESULT>(editBrush_);
         }
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(edit_); editor_.Flush(); return 0; }
         case WM_SIZE: pc_->Resize(); Invalidate(); return 0;
         case WM_DPICHANGED: ApplyGeometry(Motion::Now(), true); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
@@ -1981,6 +1978,7 @@ public:
         for (auto& g : glyphs_) Drop(g.second); glyphs_.clear();
         Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
     HWND Window() const { return hwnd_; }
+    HWND EditForTest() const { return edit_; }   // the field being edited (search, address fields)
     UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
     bool Visible() const { return visible_; }
     bool Closing() const { return closing_; }
