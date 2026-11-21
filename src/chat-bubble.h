@@ -124,6 +124,31 @@ inline Framed Reframe(const Rect& surface, const Edges& inset, int winW, int win
     f.region.right = std::min(winW, f.region.right); f.region.bottom = std::min(winH, f.region.bottom);
     return f;
 }
+// E4 (review R): during an opening the window keeps its place relative to the surface's FIXED corner and its size — the
+// frame chosen at the opening, carried by every scroll and every new size, so its inset never changes because the screen's
+// edge got nearer (it changed at the first new size after a scroll: the surface jumped by the scroll for a few images).
+// `rel`: the window relative to the fixed corner (left/top of `rel` are offsets, right/bottom too). ok = false when the
+// surface (with what its overflow asks) no longer fits in that window: framed again then.
+struct Kept { bool ok = false; Framed f; };
+inline Rect CornerOf(const Rect& surface, bool fromRight, bool fromBottom) { const int x = fromRight ? surface.right : surface.left, y = fromBottom ? surface.bottom : surface.top; return {x, y, x, y}; }
+inline Rect RelativeTo(const Rect& window, const Rect& corner) { return {window.left - corner.left, window.top - corner.top, window.right - corner.left, window.bottom - corner.top}; }
+inline Kept FrameKept(const Rect& surface, bool fromRight, bool fromBottom, const Rect& rel, float k, const Edges& over) {
+    auto css = [&](int p) { return k > 0 ? int(p / k) : 0; };
+    auto px = [&](int c) { return int(c * k + .5f); };
+    const Rect c = CornerOf(surface, fromRight, fromBottom);
+    Rect w{c.left + rel.left, c.top + rel.top, c.left + rel.right, c.top + rel.bottom};
+    Kept out;
+    if (surface.left < w.left || surface.top < w.top || surface.right > w.right || surface.bottom > w.bottom) return out;
+    Edges inset{css(surface.top - w.top), css(w.right - surface.right), css(w.bottom - surface.bottom), css(surface.left - w.left)};
+    const int dx = (surface.left - px(inset.left)) - w.left, dy = (surface.top - px(inset.top)) - w.top;   // the surface exactly at the inset told
+    w.left += dx; w.right += dx; w.top += dy; w.bottom += dy;
+    inset.right = css(w.right - surface.right); inset.bottom = css(w.bottom - surface.bottom);
+    if (px(over.top) > surface.top - w.top || px(over.left) > surface.left - w.left || px(over.right) > w.right - surface.right || px(over.bottom) > w.bottom - surface.bottom) {
+        const Edges b = Bounded(over);
+        if (b.top > inset.top || b.left > inset.left || b.right > inset.right || b.bottom > inset.bottom) return out;   // a menu that the window cannot hold any more
+    }
+    out.ok = true; out.f = Reframe(surface, inset, w.W(), w.H(), k, over); return out;
+}
 inline Framed FrameBubble(const Rect& surface, int maxH, bool bottomFixed, const Rect& screen, float k, const Edges& over, int marginCss = 400) {
     Rect full = surface;
     if (bottomFixed) full.top = std::min(surface.top, surface.bottom - maxH); else full.bottom = std::max(surface.bottom, surface.top + maxH);

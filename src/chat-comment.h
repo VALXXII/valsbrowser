@@ -38,6 +38,7 @@ struct BubbleState {
     bool away = false;                                               // open, hidden while another application is in front; shown again when the browser comes back
     ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
     bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
+    bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
     bool noFollow = false;                                           // C3: opened from the history (its element is gone): no selector followed
     bool lost = false;                                               // C3: its element is not found while its conversation works: kept at its last place
     bool measured = false;                                           // R44: the page measured the element since this opening (the click's rectangle was only a first guess)
@@ -127,6 +128,11 @@ void SendLayout(bool openNow) {
             SJ::Value mx = SJ::Value::Obj(); mx.Set("width", SJ::Value::Int(std::max(BubbleWidthCss, bubble.resizeMax.width))); mx.Set("height", SJ::Value::Int(bubble.resizeMax.height)); m.Set("resizeMax", std::move(mx));
             SJ::Value mn = SJ::Value::Obj(); mn.Set("width", SJ::Value::Int(BubbleWidthCss)); mn.Set("height", SJ::Value::Int(bubble.baseHCss > 0 ? bubble.baseHCss : bubble.sizeH)); m.Set("resizeMin", std::move(mn));
         }
+        if (bubble.surface.W() > 0) {   // E4 (b): where a menu may really go out of the surface — the page area's edges, not only the window's
+            const RECT pa = PageArea(); const float kk = Dpi(); auto css = [&](long v) { return SJ::Value::Int(std::max(0, int(v / kk))); };
+            SJ::Value r = SJ::Value::Obj(); r.Set("top", css(bubble.surface.top - pa.top)); r.Set("right", css(pa.right - bubble.surface.right));
+            r.Set("bottom", css(pa.bottom - bubble.surface.bottom)); r.Set("left", css(bubble.surface.left - pa.left)); m.Set("room", std::move(r));
+        }
         {   SJ::Value in = SJ::Value::Obj(); in.Set("top", SJ::Value::Int(bubble.inset.top)); in.Set("right", SJ::Value::Int(bubble.inset.right)); in.Set("bottom", SJ::Value::Int(bubble.inset.bottom)); in.Set("left", SJ::Value::Int(bubble.inset.left));
             m.Set("inset", std::move(in)); }   // R3: where the surface sits in the window (0 at rest: Paper's bubble has no shadow)
     } else m.Set("mode", Str(std::string("panel")));
@@ -181,10 +187,17 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     MONITORINFO mi{sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mi);
     // R39: a scroll step carries the same window (size, inset): only a move. Re-framed to the screen (a new inset told to
     // the page, a new WebView size) at the next change of size — never at each image of a scroll.
-    const bool carry = scrolling && bubble.win.right > bubble.win.left && !bubble.waitingAck;
-    const auto f = carry ? ChatBubble::Reframe(p.rect, bubble.inset, bubble.win.right - bubble.win.left, bubble.win.bottom - bubble.win.top, k, bubble.over)
-                         : ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.fromBottom,
-                                                   {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
+    // E4 (review R): not only a scroll step — every placement of this opening carries the window chosen at its opening
+    // (relative to the surface's fixed corner): framed again only when the surface or its overflow does not fit any more
+    if (placedNow) bubble.frameKept = false;
+    ChatBubble::Kept kept; if (bubble.frameKept) kept = ChatBubble::FrameKept(p.rect, p.fromRight, p.fromBottom, bubble.frameRel, k, bubble.over);
+    if (!kept.ok && scrolling && bubble.win.right > bubble.win.left && !bubble.waitingAck) {   // R39: a scroll never frames again
+        kept.ok = true; kept.f = ChatBubble::Reframe(p.rect, bubble.inset, bubble.win.right - bubble.win.left, bubble.win.bottom - bubble.win.top, k, bubble.over);
+    }
+    const auto f = kept.ok ? kept.f
+                           : ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.fromBottom,
+                                                     {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
+    if (!kept.ok) { bubble.frameKept = true; bubble.frameRel = ChatBubble::RelativeTo(f.window, ChatBubble::CornerOf(p.rect, p.fromRight, p.fromBottom)); }
     const bool insetChanged = !(f.inset == bubble.inset); bubble.inset = f.inset;
     const RECT wr{f.window.left, f.window.top, f.window.right, f.window.bottom};
     const auto vis = ChatBubble::Clip(f.region, {a.left - f.window.left, a.top - f.window.top, a.right - f.window.left, a.bottom - f.window.top});   // R29: never over the bars
@@ -365,7 +378,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     if (!again) {   // R44: the pointer is still where the user clicked
         POINT c{}; bubble.click = ChatBubble::Point{};
         if (element && GetCursorPos(&c) && PtInRect(element, c)) bubble.click = ChatBubble::Point{c.x, c.y, true};
-        bubble.fromBottom = false; bubble.surface = ChatBubble::Rect{}; bubble.measured = false; bubble.noFollow = false; bubble.lost = false;
+        bubble.fromBottom = false; bubble.surface = ChatBubble::Rect{}; bubble.measured = false; bubble.noFollow = false; bubble.lost = false; bubble.frameKept = false;
     }
     if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; bubble.resized = false; bubble.baseHCss = 0; bubble.resizeMax = ChatBubble::ResizeMax{}; }
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();

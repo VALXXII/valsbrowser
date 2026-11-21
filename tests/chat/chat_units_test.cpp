@@ -560,6 +560,23 @@ static void TestBubble() {
         Check(SameBubble("c_a", "section.hero", "c_a", "section.hero") && SameBubble("c_a", "section.hero", "c_a", "#hero"), "the same conversation (its full selection after the early open): kept");
         Check(SameBubble("", "section.hero", "c_a", "section.hero") && !SameBubble("", "section.hero", "c_a", "h2") && !SameBubble("", "", "", ""), "no conversation known yet: the same element only");
         Check(!SameBubble("c_a", "section.hero", "c_b", "section.hero"), "a fresh conversation for the same element (R6): opened again"); }
+    // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
+    {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
+        const Rect s0{342, 536, 742, 641};
+        const auto f0 = FrameBubble(s0, 650, false, screen, k, none);
+        const Rect rel = RelativeTo(f0.window, CornerOf(s0, false, false));
+        const Rect scrolled{342, 386, 742, 491};   // 150 px up, then a new card: 140 px taller
+        const Rect taller{342, 386, 742, 631};
+        const auto old = FrameBubble(taller, 650, false, screen, k, none);
+        Check(!(old.inset == f0.inset), "E4: (before: framed again against the screen, the inset changed — the surface jumped)");
+        const auto kept = FrameKept(taller, false, false, rel, k, none);
+        Check(kept.ok && kept.f.inset.top == f0.inset.top && kept.f.inset.left == f0.inset.left && kept.f.window.W() == f0.window.W() && kept.f.window.H() == f0.window.H()
+              && kept.f.window.top == f0.window.top - 150, "E4: carried — same inset and size, the window only moved with the surface");
+        (void)scrolled;
+        Check(!FrameKept({342, 386, 742, 386 + 2000}, false, false, rel, k, none).ok, "E4: a surface that no longer fits in the window is framed again");
+        const Rect up0{342, 300, 742, 405}; const auto fu = FrameBubble(up0, 650, true, screen, k, none);   // bottom fixed: grows up inside its window
+        const auto ku = FrameKept({342, 200, 742, 405}, false, true, RelativeTo(fu.window, CornerOf(up0, false, true)), k, none);
+        Check(ku.ok && ku.f.window.top == fu.window.top && ku.f.window.bottom == fu.window.bottom, "E4: bottom fixed — growing up keeps the window (R19)"); }
     // R39: a scroll step carries the window — same size, same inset, same region, only moved; even past the screen's top
     {   const Rect screen{0, 0, 1475, 1019}; const Edges over{0, 0, 0, 0};
         const Rect s0{342, 536, 742, 641};

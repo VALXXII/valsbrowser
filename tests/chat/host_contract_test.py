@@ -110,6 +110,11 @@ check('selectorUnique' in done and 'FollowBubbleElement(' in done, 'E1: the full
 show = block_after(comment, 'void ShowConversation(const std::string& id, std::function<void()> then')
 check('loadingConv' in show and show.find('loadingConv') < show.find('Ann::Run('), 'E5: a second ShowConversation of the same conversation while it is read does not read it again')
 
+# E4: every placement of an opening carries its window; framed again only when the surface does not fit
+place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('FrameKept(' in place and place.find('FrameKept(') < place.find('FrameBubble('), 'E4: PlaceBubble carries the frame of the opening before framing again')
+check('m.Set("room"' in block_after(comment, 'void SendLayout(bool openNow) {'), 'E4 (b): the layout tells the page the room really usable for its menus (page area)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
