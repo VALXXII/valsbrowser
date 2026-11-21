@@ -101,7 +101,7 @@ private:
     COLORREF TextColor(float alpha) const { auto f = FieldColor(); auto c = [&](int b) { return static_cast<int>(std::lround(b + (255 - b) * alpha)); }; return RGB(c(GetRValue(f)), c(GetGValue(f)), c(GetBValue(f))); }
     void RefreshField() {
         const COLORREF color = FieldColor();
-        if (!fieldBrush_ || color != fieldColor_) { if (fieldBrush_) DeleteObject(fieldBrush_); fieldBrush_ = CreateSolidBrush(color); fieldColor_ = color; if (edit_) InvalidateRect(edit_, nullptr, TRUE); }
+        if (!fieldBrush_ || color != fieldColor_) { if (fieldBrush_) DeleteObject(fieldBrush_); fieldBrush_ = CreateSolidBrush(color); fieldColor_ = color; if (edit_) InvalidateRect(edit_, nullptr, FALSE); }
         RefreshCaret();
     }
     void RefreshCaret() {
@@ -177,7 +177,7 @@ private:
         if (immediate) tip_.Show(c, target, &bounds); else tip_.Hover(c, target, &bounds);
     }
     void Interact() { motion_.SetInteraction(Enabled(hover_) ? hover_ : 0, pressed_ == hover_ && Enabled(pressed_) ? pressed_ : 0, Motion::Now()); Repaint(); Wake(); }
-    void Repaint() { if (!hwnd_ || !visible_) return; Paint(); ValidateRect(hwnd_, nullptr); }
+    void Repaint() { if (!hwnd_ || !visible_) return; Paint(); ValidateRect(hwnd_, nullptr); NativeUI::EditBuffer::Flush(edit_); }
     void Wake() { pump_.Request(NextWake(Motion::Now())); }
     void Query() { if (silent_ || !hooks_.query) return; const auto text = Text(); state_ = text.empty() ? State::Idle : State::Searching; if (text.empty()) active_ = count_ = 0; RefreshField(); PlaceEdit(); Repaint(); hooks_.query(text, options_); }
     void Toggle(int hit) { if (hit == CaseHit) options_.matchCase = !options_.matchCase; else options_.wholeWord = !options_.wholeWord; Repaint(); if (uia_.Listening()) uia_.Raise(hit, UIA_ToggleToggleStatePropertyId); Query(); }
@@ -228,16 +228,6 @@ private:
         case WM_SYSCHAR: if (w == L'c' || w == L'C' || w == L'w' || w == L'W') return 0; break;
         case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->focus_ = 0; self->RefreshCaret(); self->Repaint(); return r; }
         case WM_LBUTTONDOWN: self->keyboard_ = false; self->tip_.Hide(); break;
-        case WM_PAINT: {
-            const LRESULT r = DefSubclassProc(h, msg, w, l);
-            if (GetWindowTextLengthW(h) == 0) { // Paper placeholder (#FFFFFF66), drawn after the caret position 0
-                HDC dc = GetDC(h); RECT rc{}; GetClientRect(h, &rc); rc.left += self->Px(2);
-                HGDIOBJ old = SelectObject(dc, self->font_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, self->TextColor(Layout::placeholder));
-                DrawTextW(dc, TR(find_title), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
-                SelectObject(dc, old); ReleaseDC(h, dc);
-            }
-            return r;
-        }
         }
         return DefSubclassProc(h, msg, w, l);
     }
@@ -251,8 +241,8 @@ private:
         switch (msg) {
         case WM_GETOBJECT: { LRESULT r; if (uia_.OnGetObject(h, w, l, r)) return r; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
-        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); SetTextColor(dc, TextColor(Layout::text)); SetBkColor(dc, FieldColor()); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(fieldBrush_); }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(edit_); return 0; }
+        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc); SetTextColor(dc, TextColor(Layout::text)); SetBkColor(dc, FieldColor()); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(fieldBrush_); }
         case WM_COMMAND: if (reinterpret_cast<HWND>(l) == edit_ && HIWORD(w) == EN_CHANGE) Query(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
         case WM_TIMER: if (w == PopupKit::Pump::TimerId) { KillTimer(h, w); const auto now = Motion::Now(); Frame(now); pump_.Request(NextWake(now)); } return 0;
@@ -296,6 +286,14 @@ public:
         if (!edit_) return false;
         SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SendMessageW(edit_, EM_SETLIMITTEXT, 1024, 0);
         SetWindowSubclass(edit_, EditProc, 0xF1, reinterpret_cast<DWORD_PTR>(this));
+        // Paper placeholder (#FFFFFF66), drawn after the caret position 0, inside the field's composed image.
+        NativeUI::EditBuffer::Attach(edit_, [this](HWND h, HDC dc, const RECT& client) {
+            if (GetWindowTextLengthW(h) != 0) return;
+            RECT rc = client; rc.left += Px(2);
+            HGDIOBJ old = SelectObject(dc, font_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, TextColor(Layout::placeholder));
+            DrawTextW(dc, TR(find_title), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+            SelectObject(dc, old);
+        });
         RefreshField();
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { return Nodes(); };

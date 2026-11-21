@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <oleacc.h>
+#include "native-ui.h"
 #include <algorithm>
 #include <functional>
 #include <string>
@@ -35,6 +36,7 @@ public:
         SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
         SendMessageW(edit, EM_SETLIMITTEXT, 1024, 0);
         SetWindowSubclass(edit, Proc, subclassId, reinterpret_cast<DWORD_PTR>(this));
+        EditBuffer::Attach(edit);   // every draw one finished image (native-ui.h)
         Name(edit, name);
         Move(box);
         ShowWindow(edit, SW_SHOW);
@@ -68,7 +70,7 @@ public:
     RECT Box() const { return box_; }
     bool Owns(HWND h) const { return edit_ && h == edit_; }
     // From the host's WM_CTLCOLOREDIT for Edit(): the label's colours.
-    LRESULT Color(HDC dc) const { SetTextColor(dc, style_.text); SetBkColor(dc, style_.back); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(brush_); }
+    LRESULT Color(HDC dc) const { EditBuffer::Clip(edit_, dc); SetTextColor(dc, style_.text); SetBkColor(dc, style_.back); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(brush_); }
 private:
     static constexpr UINT_PTR subclassId = 0x524E;   // "RN"
     static constexpr UINT FinishMessage = WM_APP + 0x52;

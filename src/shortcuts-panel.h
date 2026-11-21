@@ -141,7 +141,7 @@ class Panel {
         PopupKit::SetAlpha(hwnd_, progress);
     }
     void PlaceEdit() { const auto f = Field(); SetWindowPos(edit_, nullptr, Px(f.left + 30), Px(f.top + 7), Px(f.right - f.left - 38), Px(18), SWP_NOZORDER | SWP_NOACTIVATE); }
-    void Repaint() { if (visible_) { Paint(); ValidateRect(hwnd_, nullptr); } }
+    void Repaint() { if (visible_) { Paint(); ValidateRect(hwnd_, nullptr); NativeUI::EditBuffer::Flush(edit_); } }
     void Wake() { pump_.Request(NextWake(Motion::Now())); }
     void Scroll(float dy) { const float before = scroll_; scroll_ = std::clamp(scroll_ + dy, 0.f, std::max(0.f, content_ - ListHeight())); if (scroll_ != before) Repaint(); }
     void Close() { const bool was = visible_; Hide(); if (was && closed_) closed_(); }
@@ -161,11 +161,6 @@ class Panel {
         case WM_KEYDOWN: if (self->Key(w)) return 0; break;
         case WM_CHAR: if (w == L'\t' || w == L'\r' || w == 27) return 0; break;
         case WM_MOUSEWHEEL: SendMessageW(self->hwnd_, msg, w, l); return 0;
-        case WM_PAINT: {
-            const LRESULT r = DefSubclassProc(h, msg, w, l);
-            if (GetWindowTextLengthW(h) == 0) { HDC dc = GetDC(h); RECT rc{}; GetClientRect(h, &rc); HGDIOBJ old = SelectObject(dc, self->font_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, Ink(.4f)); DrawTextW(dc, TR(shortcuts_filter), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS); SelectObject(dc, old); ReleaseDC(h, dc); }
-            return r;
-        }
         }
         return DefSubclassProc(h, msg, w, l);
     }
@@ -179,8 +174,8 @@ class Panel {
         switch (msg) {
         case WM_GETOBJECT: { LRESULT r; if (uia_.OnGetObject(h, w, l, r)) return r; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
-        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); SetTextColor(dc, Ink(.9f)); SetBkColor(dc, FieldGray()); return reinterpret_cast<LRESULT>(fieldBrush_); }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(edit_); return 0; }
+        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc); SetTextColor(dc, Ink(.9f)); SetBkColor(dc, FieldGray()); return reinterpret_cast<LRESULT>(fieldBrush_); }
         case WM_COMMAND: if (reinterpret_cast<HWND>(l) == edit_ && HIWORD(w) == EN_CHANGE) { scroll_ = 0; Build(); Repaint(); } return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
         case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && visible_) PostMessageW(h, WM_APP + 2, 0, 0); return 0;
@@ -214,6 +209,11 @@ public:
         if (!edit_) return false;
         SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SendMessageW(edit_, EM_SETLIMITTEXT, 128, 0);
         SetWindowSubclass(edit_, EditProc, 0xC5, reinterpret_cast<DWORD_PTR>(this));
+        // The filter's placeholder, inside the field's composed image (also back as soon as the field is emptied).
+        NativeUI::EditBuffer::Attach(edit_, [this](HWND h, HDC dc, const RECT& client) {
+            if (GetWindowTextLengthW(h) != 0) return;
+            RECT rc = client; HGDIOBJ old = SelectObject(dc, font_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, Ink(.4f)); DrawTextW(dc, TR(shortcuts_filter), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS); SelectObject(dc, old);
+        });
         fieldBrush_ = CreateSolidBrush(FieldGray());
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] {

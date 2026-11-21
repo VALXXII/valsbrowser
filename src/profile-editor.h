@@ -128,7 +128,7 @@ public:
         host_ = host; hooks_ = std::move(hooks); style_ = style;
         name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, host, nullptr, GetModuleHandleW(nullptr), nullptr);
         hex_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, host, nullptr, GetModuleHandleW(nullptr), nullptr);
-        for (HWND e : {name_, hex_}) if (e) { SetWindowSubclass(e, EditProc, 0, reinterpret_cast<DWORD_PTR>(this)); SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); }
+        for (HWND e : {name_, hex_}) if (e) { SetWindowSubclass(e, EditProc, 0, reinterpret_cast<DWORD_PTR>(this)); SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); NativeUI::EditBuffer::Attach(e); }
         if (name_) SendMessageW(name_, EM_LIMITTEXT, 2 * Profiles::MaxNameLength, 0);   // UTF-16 units; the 32 characters are enforced in WM_CHAR
         if (hex_) SendMessageW(hex_, EM_LIMITTEXT, 7, 0);
         editBrush_ = CreateSolidBrush(RGB(0x2C, 0x2C, 0x2C)); // #FFFFFF14 over #171717
@@ -143,9 +143,12 @@ public:
     // The host answers WM_CTLCOLOREDIT with this for our two edits (white text on the field fill).
     bool CtlColor(HWND edit, HDC dc, LRESULT& result) {
         if (edit != name_ && edit != hex_) return false;
+        NativeUI::EditBuffer::Clip(edit, dc);
         SetTextColor(dc, RGB(255, 255, 255)); SetBkColor(dc, RGB(0x2C, 0x2C, 0x2C)); result = reinterpret_cast<LRESULT>(editBrush_); return true;
     }
     bool Owns(HWND h) const { return h && (h == name_ || h == hex_); }
+    // From the host's WM_PAINT, once the block is painted: the two fields follow in the same turn.
+    void Flush() const { NativeUI::EditBuffer::Flush(name_); NativeUI::EditBuffer::Flush(hex_); }
     // Places the native edits over the painted fields (`origin` in host client DIP, `scale` px/DIP).
     // `visible`: hidden while the host scrolls/animates the block out of view.
     void Place(D2D1_POINT_2F origin, float scale, bool visible) {
