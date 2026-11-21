@@ -719,6 +719,8 @@ class Model:
     def __init__(self):
         self.layout = 'comment'; self.open = None; self.conv = {}; self.mode = None; self.model = None
         self.anchor = None; self.size = None; self.hidden_by_other = False; self.scroll_moved = False
+        self.panel_marked = set()   # elements picked in the panel then sent from it: they get a mark too
+        self.unknown = False        # a bubble of an element the model does not know (a container selected by a click « elsewhere »)
 
 
 class Invariants:
@@ -751,7 +753,7 @@ class Invariants:
             n = len(re.findall(r'conversation of an element reopened', C.log_text()[mark:]))
             if n > 1:
                 self.r.step(f'{where} · invariant: one « conversation of an element reopened » per click', False, n, {'action': where})
-        self.m.open = sel; self.m.hidden_by_other = False; self.close_at = log_mark()
+        self.m.open = sel; self.m.hidden_by_other = False; self.close_at = log_mark(); self.m.unknown = False
         if ms is None:   # no bubble came (reported above): nothing open, no anchor — no cascade of follow-up failures
             self.m.open = None; self.m.anchor = None; return
         el = element_screen(sel)
@@ -789,7 +791,7 @@ class Invariants:
         wins = bubble_windows()
         if len(wins) > 1:
             broken['one bubble window'] = len(wins)
-        if self.m.layout == 'comment':
+        if self.m.layout == 'comment' and not self.m.unknown:
             expect = bool(self.m.open) and fg and not self.m.hidden_by_other
             if expect and self.m.anchor and self.m.size:
                 try:   # the element scrolled away with its bubble: nothing to see, nothing to check
@@ -849,7 +851,7 @@ class Invariants:
             nodes = overlay_nodes()
             marks = [x for x in nodes if 'ct' in x['cls'].split()]
             frames = [x for x in nodes if x['cls'] == 'bf']
-            want = sum(1 for t in self.m.conv.values() if t)
+            want = sum(1 for t in self.m.conv.values() if t) + len(self.m.panel_marked - set(self.m.conv))
             if len(marks) > want:
                 broken['the conversation mark exists only after a send'] = {'marks': len(marks), 'sent on': want}
             if len(frames) > 1:

@@ -79,7 +79,7 @@ class Monkey:
         F.front()
         p = F.element_point(sel, avoid=self.bubble_box())
         if self.inv.m.layout == 'panel':
-            F.click_at(*p); return f'panel: click on {sel} (a chip)', 0.6
+            F.click_at(*p); self.picked = getattr(self, 'picked', set()) | {sel}; return f'panel: click on {sel} (a chip)', 0.6
         m = F.log_mark(); t = F.click_at(*p, settle=0.04)
         self.inv.after_element_click(sel, t, f'#{a["i"]} click {sel}', mark=m)
         return f'click on {sel}', 0.2
@@ -99,17 +99,20 @@ class Monkey:
             if 'click elsewhere closed' in lines or 'bubble closed' in lines:
                 self.inv.m.open = None
             elif 'bubble opened on' in lines:
-                self.inv.m.open = None; self.inv.m.anchor = None   # a container got selected: its own bubble (not one of ours)
+                self.inv.m.open = None; self.inv.m.anchor = None; self.inv.m.unknown = True   # a container got selected: its own bubble (not one of ours)
                 return 'click elsewhere: a container selected (its bubble)', 0.3
         return 'click elsewhere', 0.3
 
     def escape(self, a):
+        if self.inv.m.layout == 'comment' and self.inv.m.unknown:
+            F.escape_chat('bubble'); self.inv.m.unknown = False; self.inv.allow_close = True
+            return 'Échap: the bubble of the container closes', 0.6
         if self.inv.m.layout == 'comment' and self.inv.m.open:
             st = F.chat_state('bubble')
             F.escape_chat('bubble')
             if st.get('menus') or st.get('diff'):
                 return 'Échap (a menu / the diff)', 0.5
-            self.inv.m.open = None; self.inv.allow_close = True
+            self.inv.m.open = None; self.inv.allow_close = True; self.inv.m.unknown = False
             return 'Échap: the bubble closes', 0.6
         return 'Échap with nothing open: nothing', 0.1
 
@@ -138,7 +141,7 @@ class Monkey:
 
     def toggle_layout(self, a):
         to = 'panel' if self.inv.m.layout == 'comment' else 'comment'
-        self.inv.allow_close = True; F.set_layout(to); self.inv.m.layout = to; self.inv.m.open = None
+        self.inv.allow_close = True; F.set_layout(to); self.inv.m.layout = to; self.inv.m.open = None; self.inv.m.unknown = False
         return f'layout -> {to}', 0.4
 
     def other_app(self, a):
@@ -226,6 +229,8 @@ class Monkey:
         F.type_and_send(f'{sc} {token}', kind)
         if kind == 'bubble':
             self.inv.m.conv[self.inv.m.open] = token
+        else:   # the chips of the panel's composer get the conversation (its mark)
+            self.inv.m.panel_marked |= getattr(self, 'picked', set()); self.picked = set()
         self.inv.sent(kind, token, f'#{a["i"]} send')
         return f'send « {sc} »', 1.0
 
