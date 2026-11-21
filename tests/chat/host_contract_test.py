@@ -143,7 +143,7 @@ check('Send("bubble.hidden"' not in block_after(comment, 'void BubbleAway('), 'M
 check('RevealBubble(L"with the opening layout")' not in block_after(comment, 'void OpenBubble('), 'M2: the opening shows its region at the acknowledgement only')
 # M4 (a): back from another application, the bubble that had the keyboard gets it again
 back = block_after(comment, 'void BubbleBack(')
-check('hadKeyboard' in back and 'view.Focus()' in back, 'M4 (a): BubbleBack gives the keyboard back to the bubble that had it')
+check('hadKeyboard' in back and 'KeyboardToBubble(' in back and 'view.Focus()' in block_after(comment, 'void KeyboardTry() {'), 'M4 (a): BubbleBack gives the keyboard back to the bubble that had it (checked and retried)')
 check('WA_ACTIVE' in block_after(comment, 'LRESULT CALLBACK BubbleProc('), 'M4 (a): an activated bubble gives its page the keyboard')
 # M5: a click while the panel slides out: the slide ends first, and its end never hides the bubble's view
 check('PanelState::Closing' in block_after(comment, 'void OpenBubble('), 'M5: OpenBubble finishes the panel closing first')
@@ -195,7 +195,7 @@ check('a click elsewhere closed the bubble' not in take1 and 'if (!bubble.open &
       'Q 1: a click on another element while a bubble is open opens that element\'s bubble (only a click right after closing does nothing)')
 # Q pass 1, defect 4 (M4): back in front from another application, the bubble that had the keyboard gets it — even when it was not hidden
 fg = block_after(comment, 'void CALLBACK ForegroundChanged(')
-check('hadKeyboard' in fg and 'WM_APP + 2' in fg, 'Q 4: the browser back in front gives the keyboard to the bubble that had it')
+check('cameBack' in fg and 'KeyboardToBubble(' in fg and 'MouseDown()' in fg, 'Q 4: back from another application (not a click in the page), the open bubble gets the keyboard')
 # Q pass 1, defect 6 (E1): an element in an iframe or a web component finds its conversation again by a stable key
 check('anchorKey' in take1 and 'UnsafeAnchorKey(' in take1, 'Q 6: an element without a safe selector is found again by its key')
 
@@ -205,6 +205,11 @@ early_fn = block_after(comment, 'bool OpenEarly(')
 check('env.selector' in early_fn and 'env.px' in early_fn, 'monkey: the early opening logs the clicked selector and the click point')
 done2 = block_after(block_after(comment, 'bool TakeCommentSelection('), 'if (early.on && early.seq == Ann::s.sel.seq')
 check('bubble.selector = safe' not in done2 and 'not the clicked one' in done2, 'monkey: the full selection never moves the bubble to another element (only says the selector is not safe)')
+
+# M4 (Q's real window): Échap in the browser's own window (its shortcut) closes an open bubble before it would quit the mode
+mode = code('annotation-mode.h')
+ex = mode[mode.find('if (cmd == AnnotateExitCommand)'):][:200]
+check('Chat::BubbleOpen()' in ex and ex.find('CloseBubble') < ex.find('Ann::Exit'), 'M4: the browser shortcut Échap shortcut closes the bubble first')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

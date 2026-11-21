@@ -84,7 +84,7 @@ int claimed = 0;                              // launcher counter: annotations a
 bool statusBusy = false, statusDirty = false;
 enum class Card { None, Working, NoAgent, Added, Done, Read, Unhandled } card = Card::None; std::string cardId, cardSite;
 std::wstring loggedOnce;
-HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3;
+HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2, CtrlChanged = WM_APP + 3; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3;
 // V3: the note panel is built right after the engine is asked for the shot (building it takes 30-55 ms of the UI
 // thread: done before, it delayed the page's « hidden » and so the shot by as much). 60 ms at most after the click.
 struct PendingPanel { bool on = false; std::uint64_t serial = 0; AUI::NoteRequest req; RECT target{}, page{}; bool keyboard = false; } panel;
@@ -227,6 +227,24 @@ bool ConnectRedirected() { return !EnvVar(L"BROWSER_ANNOTATIONS_CONNECT_ROOT").e
 // ---------------------------------------------------------------- thread pool -> UI thread
 struct Job { std::function<void()> work, done; };
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l);
+// Final pass 1, R31: Ctrl held = the site as usual. The page sees Ctrl only when its own WebView has the keyboard (its
+// pointer moves carry no Ctrl flag otherwise: keyboard in the band, the bubble, the panel). While the mode is on, a
+// low-level keyboard hook watches the Ctrl keys only (every other key passes untouched, nothing is read or kept) and
+// tells the page « ctrl » true / false; installed at the mode's entry, removed at its exit (no wake-up otherwise).
+HHOOK ctrlHook = nullptr; bool ctrlHeld = false;
+LRESULT CALLBACK CtrlHookProc(int code, WPARAM w, LPARAM l) {
+    if (code == HC_ACTION && post) {
+        const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(l);
+        if (k->vkCode == VK_LCONTROL || k->vkCode == VK_RCONTROL || k->vkCode == VK_CONTROL)
+            PostMessageW(post, CtrlChanged, (w == WM_KEYDOWN || w == WM_SYSKEYDOWN) ? 1 : 0, 0);   // handled on the UI thread, never here
+    }
+    return CallNextHookEx(ctrlHook, code, w, l);
+}
+void CtrlWatch(bool on) {
+    if (on && !ctrlHook) ctrlHook = SetWindowsHookExW(WH_KEYBOARD_LL, CtrlHookProc, GetModuleHandleW(nullptr), 0);
+    else if (!on && ctrlHook) { UnhookWindowsHookEx(ctrlHook); ctrlHook = nullptr; }
+    if (!on) ctrlHeld = false;
+}
 bool EnsurePost() {
     if (post) return true;
     WNDCLASSEXW wc{sizeof(wc)}; wc.lpfnWndProc = PostProc; wc.hInstance = instance; wc.lpszClassName = L"BrowserAnnotationPost";
@@ -1091,6 +1109,7 @@ void Activate(const Start& st) {
     const std::wstring keepDraft = s.draft;
     s = Session{}; s.active = true; s.tab = t; s.navStamp = t->navStamp; ++serials; s.serial = serials; s.nonce = BA::NewClaimToken();
     if (s.nonce.empty()) { s.active = false; Log(L"ANNOTATE no random source"); return; }
+    CtrlWatch(true);   // R31
     { LPWSTR src = nullptr; if (SUCCEEDED(t->view->get_Source(&src)) && src) s.source = src; CoTaskMemFree(src); }
     s.origin = AH::OriginOf(t->uri); t->controller->get_ZoomFactor(&s.zoom); s.draft = keepDraft;
     s.pageAccent = SettledAccentRgb();   // the profile's colour, even when the entry falls inside its 120 ms fade
@@ -1177,7 +1196,7 @@ void SetSelecting(bool on) {
 void Exit(const wchar_t* why, bool pageChanged) {
     if (!s.active) return;
     auto t = ModeTab(); const bool hadPopover = note.Visible();
-    Cmd(t, L"exit");
+    Cmd(t, L"exit"); CtrlWatch(false);
     if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); KillTimer(post, PanelTimer); }
     panel = PendingPanel{};
     frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;   // the page's frame is gone with its script
@@ -1232,6 +1251,14 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } ShowPanel(); return 0; }
     if (m == WM_TIMER && w == PanelTimer) { KillTimer(h, PanelTimer); ShowPanel(); return 0; }
+    if (m == CtrlChanged) {   // R31: only while this window (or one of ours: the bubble, the band) is in front; a release always
+        DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid);
+        const bool down = w != 0, ours = pid == GetCurrentProcessId();
+        if (down == ctrlHeld || (down && !ours)) return 0;
+        ctrlHeld = down;
+        if (s.active && s.injected) Cmd(ModeTab(), L"ctrl", down ? L"true" : L"false");
+        return 0;
+    }
     if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
@@ -1294,7 +1321,7 @@ bool AnnotationCommand(int cmd) {
         if (Ann::s.active && Chat::Open()) { Ann::SetSelecting(Ann::s.paused); return true; }   // V1.4: with the chat open, the selection only
         if (Ann::s.active) Ann::Exit(L"toggle"); else Ann::Activate({}); return true;
     }
-    if (cmd == AnnotateExitCommand) { Ann::Exit(L"escape"); return true; }
+    if (cmd == AnnotateExitCommand) { if (Chat::BubbleOpen()) { Chat::CloseBubble(true); return true; } Ann::Exit(L"escape"); return true; }   // M4 (Q's real window): Échap in the browser's window closes an open bubble first
     if (cmd == ChatCommand) { Chat::Toggle(true); return true; }   // Ctrl+Maj+D: « Demander à l'agent » (starts the mode if needed)
     if (cmd == AnnotateHistoryCommand) {
         if (Ann::uiReady && Ann::launcher.HistoryVisible()) { Ann::launcher.HideHistory(); Ann::SyncWatch(); }

@@ -191,6 +191,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         const int room = ChatBubble::OfferedRoomCss(placedNow || !bubble.anchor.set || areaResized, bubble.roomCss, p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);   // R47: kept with the anchor
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
+            if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
             bubble.roomCss = room; bubble.resizeMax = rm; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false);
         }
     }
@@ -212,6 +213,9 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
                                                      {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
     if (!kept.ok) { bubble.frameKept = true; bubble.frameRel = ChatBubble::RelativeTo(f.window, ChatBubble::CornerOf(p.rect, p.fromRight, p.fromBottom)); }
     const bool insetChanged = !(f.inset == bubble.inset); bubble.inset = f.inset;
+    if (insetChanged) Diag(L"bubble frame: inset " + std::to_wstring(f.inset.left) + L"," + std::to_wstring(f.inset.top) + L" window " + std::to_wstring(f.window.left) + L"," + std::to_wstring(f.window.top) +
+                           L" " + std::to_wstring(f.window.W()) + L"x" + std::to_wstring(f.window.H()) + L" surface " + std::to_wstring(p.rect.left) + L"," + std::to_wstring(p.rect.top) + L" " + std::to_wstring(p.rect.W()) + L"x" + std::to_wstring(p.rect.H()) +
+                           (kept.ok ? L" (carried)" : L" (framed)") + (scrolling ? L", scrolling: told at the next layout" : L""));   // E4 / M15 diagnostics   // i18n-exempt: log detail
     {   // Q's invariant (region == surface): where the page will draw the surface (its CAP on the inset) is where the host shows it
         auto px = [&](int c) { return int(c * k + .5f); };
         const int dx = f.window.left + px(std::min(f.inset.left, ChatBubble::PageInsetCapCss)) - p.rect.left, dy = f.window.top + px(std::min(f.inset.top, ChatBubble::PageInsetCapCss)) - p.rect.top;
@@ -274,6 +278,7 @@ RECT BubbleRegionScreen() { const RECT w = BubbleScreenRect(); return RECT{w.lef
 // Another application in front (test réel: a window of another program took the foreground): the bubble is not closed
 // any more — it is hidden, still open (its conversation, its draft, its place), and shown again as it was as soon as a
 // window of this browser is in front. One state: open + away = hidden; every opening, closing and click clears it.
+void KeyboardToBubble(const wchar_t* why); bool MouseDown();
 void BubbleAway(const wchar_t* who) {
     if (!bubble.open || bubble.away || !bubble.hwnd) return;
     bubble.away = true; SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE);   // an empty region, not SW_HIDE: hiding the active window would give the activation back to the browser (« back » at once)
@@ -284,17 +289,40 @@ void BubbleBack(const wchar_t* why) {
     bubble.away = false;
     PlaceBubble();   // the page may have moved meanwhile
     if (!bubble.waitingAck) { const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); ShowWindow(bubble.hwnd, SW_SHOWNA); }
-    if (bubble.hadKeyboard && !bubble.waitingAck) { SetForegroundWindow(bubble.hwnd); view.Focus(); }   // M4 (a): it had the keyboard: it gets it back
+    if (bubble.hadKeyboard && !bubble.waitingAck && !MouseDown()) KeyboardToBubble(L"shown again");   // M4 (a): checked and retried   // i18n-exempt: log detail
     Diag(std::wstring(L"the bubble is shown again (") + why + L")");
 }
+// M4 (Q's real window, twice): the keyboard given to the bubble is checked — the browser's own activation may take it back
+// right after (its last focused window): up to 3 tries, 60 ms apart, until the bubble is the foreground window; logged.
+int keyboardTries = 0;
+void KeyboardToBubble(const wchar_t* why) {
+    if (!bubble.open || !bubble.hwnd || bubble.waitingAck) return;
+    keyboardTries = 3; SetTimer(bubble.hwnd, 0xB3, 40, nullptr);
+    Diag(std::wstring(L"the keyboard goes back to the bubble (") + why + L")");   // i18n-exempt: log detail
+}
+void KeyboardTry() {
+    if (!bubble.open || bubble.away || bubble.waitingAck || !bubble.hwnd) { KillTimer(bubble.hwnd, 0xB3); return; }
+    if (GetForegroundWindow() != bubble.hwnd) SetForegroundWindow(bubble.hwnd);
+    view.Focus();
+    const HWND fg = GetForegroundWindow(); const bool ok = fg == bubble.hwnd;
+    if (ok || --keyboardTries <= 0) {
+        KillTimer(bubble.hwnd, 0xB3);
+        wchar_t cls[64] = L""; if (fg) GetClassNameW(fg, cls, 64);
+        Diag(ok ? std::wstring(L"the keyboard is in the bubble") : L"the keyboard could not be given to the bubble (foreground: " + std::wstring(cls) + L")");   // i18n-exempt: log detail
+    } else SetTimer(bubble.hwnd, 0xB3, 60, nullptr);
+}
+bool MouseDown() { return (GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON) | GetAsyncKeyState(VK_MBUTTON)) & 0x8000; }
 void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD, DWORD) {
+    static bool lastOurs = true;   // the previous foreground window was one of this browser's
+    DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
+    const bool ours = fg && pid == GetCurrentProcessId(), cameBack = ours && !lastOurs; if (fg) lastOurs = ours;
     if (!bubble.open || !fg || !bubble.hwnd) return;
-    DWORD pid = 0; GetWindowThreadProcessId(fg, &pid);
-    if (pid == GetCurrentProcessId()) {
+    if (ours) {
         if (bubble.away) BubbleBack(L"the browser is back in front");   // i18n-exempt: log detail
-        // Q pass 1, defect 4 (M4): the bubble had the keyboard when another application came — the browser back in front gives
-        // it back, also when the bubble was not hidden (a short visit) — else the keys and Échap went to the browser's band
-        else if (bubble.hadKeyboard && fg != bubble.hwnd && !bubble.waitingAck) { Diag(L"the browser is back in front: the keyboard goes back to the bubble"); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0); }   // i18n-exempt: log detail
+        // M4 (Q's real window): back from another application — whatever window of the browser it activates (the harness's
+        // Alt taps, Alt+Tab, a click on the title bar), the open bubble gets the keyboard; not when a mouse button is down (a
+        // click in the page is a selection), not between the browser's own windows
+        if (cameBack && fg != bubble.hwnd && !bubble.waitingAck && !MouseDown()) KeyboardToBubble(L"the browser is back in front");   // i18n-exempt: log detail
         return;
     }
     // another application in front while the browser's window (not the bubble) had it: the same check as WM_ACTIVATE's
@@ -340,6 +368,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!followPositions.empty()) FollowLater();
         return 0;
     }
+    if (m == WM_TIMER && w == 0xB3) { KeyboardTry(); return 0; }   // M4
     if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     {   LRESULT r = 0; if (view.HostMessage(h, m, w, l, r)) return r; }   // R1: the page is a visual of this window: mouse, cursor, UI Automation
