@@ -204,6 +204,14 @@ inline int RoomCss(const Rect& surface, bool bottomFixed, const Rect& area, int 
     const int css = k > 0 ? int(px / k) : 0;
     return std::max(minCss, std::min(maxCss, css));
 }
+// R47 (test réel: an authorization cut and greyed after scrolling up then down): the height offered to the page is the
+// room measured when the bubble is placed (R44: where its 520 px fit), then kept with the anchor — a scroll never makes
+// it smaller (before: measured again at each new size from where the scroll had put the bubble, down to 120 px, and
+// never given back). `placedNow`: this placement chose the anchor; `kept`: the room given then (0 = none yet).
+inline int OfferedRoomCss(bool placedNow, int kept, const Rect& surface, bool bottomFixed, const Rect& area, int margin, float k, int maxCss) {
+    if (placedNow || kept <= 0) return RoomCss(surface, bottomFixed, area, margin, k, maxCss);
+    return kept;
+}
 // R29: what of the window may show — never over the browser's own bars (the page area, in window pixels).
 inline Rect Clip(const Rect& a, const Rect& b) { return {std::max(a.left, b.left), std::max(a.top, b.top), std::max(std::max(a.left, b.left), std::min(a.right, b.right)), std::max(std::max(a.top, b.top), std::min(a.bottom, b.bottom))}; }
 // R34: the one rule for the layout the chat page gets. « bubble » only when the layout is Commentaire, the panel is

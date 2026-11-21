@@ -76,6 +76,7 @@ void PrepareProgress() {
 // ---------------------------------------------------------------- session (one agent process per conversation)
 void DisposeSession(const wchar_t* why) {
     defaultsApplied = false;   // R28: the next session shows the browser's choices until they are applied
+    askedModel = askedEffort = askedMode = ChatOptions::Asked{};   // R46
     if (!session) return;
     session->Dispose(); disposed.push_back(std::move(session)); session.reset();   // kept until its threads have ended (Shutdown waits)
     sessionReady = sessionStarting = false; afterReady = nullptr;
@@ -89,6 +90,7 @@ void DisposeSession(const wchar_t* why) {
 void SetAgentMode(const std::string& id) {
     if (!session || !sessionReady) { pendingMode = id; return; }
     const auto mv = ModesOf(agentId, agentInfo[agentId]);
+    askedMode = ChatOptions::Asked{id, Ann::NowMs()};   // R46: shown until the agent confirms it
     Diag(L"mode asked: « " + W(id) + L" »");
     if (id == PlanOptionId) { session->SetConfigOption(mv.map.planOption, mv.map.planOn); return; }
     if (mv.current == PlanOptionId) session->SetConfigOption(mv.map.planOption, mv.map.planOff);   // leaving « Planifier » held by an option
@@ -130,14 +132,14 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
     auto& info = agentInfo[agentId];
     auto choose = [&](const Acp::ConfigOption* o, std::string& wanted) {
         if (!o || wanted.empty()) { wanted.clear(); return; }
-        if (wanted != o->currentValue) for (const auto& c : o->choices) if (c.value == wanted) { session->SetConfigOption(o->id, wanted); break; }
+        if (wanted != o->currentValue) for (const auto& c : o->choices) if (c.value == wanted) { session->SetConfigOption(o->id, wanted); askedModel = ChatOptions::Asked{wanted, Ann::NowMs()}; break; }
         wanted.clear();
     };
     choose(Acp::FindModelOption(info.options), pendingModel);
     if (const auto* e = Acp::FindEffortOption(info.options)) {   // V1.2: never the agent's « Default »; the effort chosen last for this site, else Medium
         std::string remembered = pendingEffort; if (remembered.empty()) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) remembered = it->second.effort;
         const std::string want = ChatOptions::EffortToApply(e->choices, e->currentValue, remembered);
-        if (!want.empty()) { session->SetConfigOption(e->id, want); Diag(L"effort set to « " + W(want) + L" » (the session started with « " + W(e->currentValue) + L" »)"); }
+        if (!want.empty()) { session->SetConfigOption(e->id, want); askedEffort = ChatOptions::Asked{want, Ann::NowMs()}; Diag(L"effort set to « " + W(want) + L" » (the session started with « " + W(e->currentValue) + L" »)"); }
         else Diag(L"effort « " + W(e->currentValue) + L" » kept");
     }
     pendingEffort.clear();

@@ -162,7 +162,7 @@ ChatStore::Projects projects; bool projectsLoaded = false; std::string agentId =
 struct Aside { bool on = false; Convo c; };
 Convo convo; Aside aside; bool asideSending = false; Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
 std::unique_ptr<Acp::Session> session; bool sessionStarting = false, sessionReady = false, preparing = false; Acp::StartResult started;
-std::string pendingModel, pendingEffort, pendingMode; std::function<void()> afterReady; std::function<int()> preparePermille;
+std::string pendingModel, pendingEffort, pendingMode; ChatOptions::Asked askedModel, askedEffort, askedMode; /* R46: asked to the session, not confirmed yet */ std::function<void()> afterReady; std::function<int()> preparePermille;
 std::vector<std::unique_ptr<Acp::Session>> disposed;   // stopped sessions whose threads may still be ending (Shutdown waits for them)
 std::vector<Element> orphanAnnotations;                // annotations of a turn that ended before their write came back
 std::map<std::uint64_t, Element> aiming;                // elements being aimed (by capture serial): image and source still coming
@@ -315,10 +315,11 @@ void SendState() {
     std::string WantedEffort(const Acp::ConfigOption* e); std::string WantedMode(const ModeView& mv);
     {   std::string shown = model ? ChatOptions::Shown(model->choices, model->currentValue, DefaultModelOf(agentId, model)) : std::string();
         if (model && !pendingModel.empty()) for (const auto& c : model->choices) if (c.value == pendingModel && !ChatOptions::IsAlias(c)) shown = ChatOptions::Intended(shown, pendingModel, defaultsApplied);   // R28
+        if (model) shown = ChatOptions::ShownWhileAsked(shown, askedModel, Ann::NowMs());   // R46
         st.Set("model", ChatStore::ValidId(shown) ? Str(shown) : SJ::Value::Null()); }
     // efforts (V1.2): the agent's levels without its « Default »; R28: before the browser's choice is applied, that choice
     {   std::string cur = effort && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? effort->currentValue : std::string();
-        if (effort) cur = ChatOptions::Intended(cur, WantedEffort(effort), defaultsApplied);
+        if (effort) cur = ChatOptions::ShownWhileAsked(ChatOptions::Intended(cur, WantedEffort(effort), defaultsApplied), askedEffort, Ann::NowMs());   // R28, R46
         st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(cur) ? Str(cur) : SJ::Value::Null()); }
     {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
         const std::vector<ModeEntry> shown = ShownModes(mv);
@@ -326,7 +327,7 @@ void SendState() {
             if (!shown.empty() && ids != said) { said = ids; Diag(L"modes offered: " + W(ids)); } }   // R4: the QA reads it
         for (const auto& m : shown) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
-        const std::string mode = ChatOptions::Intended(mv.current, WantedMode(mv), defaultsApplied);   // R28
+        const std::string mode = ChatOptions::ShownWhileAsked(ChatOptions::Intended(mv.current, WantedMode(mv), defaultsApplied), askedMode, Ann::NowMs());   // R28, R46: never the session's starting mode in between
         st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mode) ? Str(mode) : SJ::Value::Null()); }
     {   const auto& shown = aside.on ? aside.c.data.head : convo.data.head; const bool running = turn.active && !aside.on;   // contract B 1.8: the conversation shown
         SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));

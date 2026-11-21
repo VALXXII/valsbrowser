@@ -69,6 +69,15 @@ inline bool CorrectTurnLabel(std::string& kept, const std::string& now) { if (no
 // R28: until the browser has applied its choices to a new session (model, effort, mode), the chat shows what will be
 // applied — the composer is right and stable from its first image; the session's own announcement shows afterwards.
 inline std::string Intended(const std::string& current, const std::string& wanted, bool applied) { return applied || wanted.empty() ? current : wanted; }
+// R46 (test réel: pasting text, the mode button showed « Auto » an instant): a value asked to the session (the browser's
+// mode right after the start, or the user's choice) is shown until the agent confirms it — never the session's starting
+// value in between. Patience: an agent that never confirms (refused) shows its real value again after `patienceMs`.
+struct Asked { std::string value; double at = 0; };
+inline std::string ShownWhileAsked(const std::string& current, Asked& asked, double now, double patienceMs = 3000) {
+    if (asked.value.empty()) return current;
+    if (current == asked.value || now - asked.at > patienceMs) { asked = Asked{}; return current; }
+    return asked.value;
+}
 
 // R4 (Paper 14RK-0, updated by the user): the mode menu has exactly four lines, in this order — « Accept edits » (the
 // agent's file-edits mode: Claude acceptEdits, Codex workspace-write), « Auto » (the mode where the agent decides its

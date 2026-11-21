@@ -531,6 +531,27 @@ static void TestBubble() {
         Check(grown.bottom == b2.rect.bottom && grown.right == b2.rect.right && grown.top == b2.rect.bottom - 400 && FullyVisible(grown, area),
               "R44 then R29: in a bottom corner the bubble keeps its corner and grows up, whole");
         Check(FullyVisible({10, 150, 330, 254}, area) && !FullyVisible({10, 700, 330, 900}, area) && !FullyVisible({}, area), "R44: whole in the visible area or not"); }
+    // R46: the session starts in « auto », the browser asks « default »: until the agent confirms, the state says « default »
+    {   ChatOptions::Asked asked{"default", 1000};
+        Check(ChatOptions::ShownWhileAsked("auto", asked, 1200) == "default" && ChatOptions::ShownWhileAsked("auto", asked, 2500) == "default",
+              "R46: a state sent before the agent confirms (pasting text) shows the mode asked, never the session's starting one");
+        Check(ChatOptions::ShownWhileAsked("default", asked, 2600) == "default" && asked.value.empty() && ChatOptions::ShownWhileAsked("plan", asked, 2700) == "plan",
+              "R46: once confirmed, the session's own value again (a later change by the agent shows)");
+        ChatOptions::Asked refused{"default", 1000};
+        Check(ChatOptions::ShownWhileAsked("auto", refused, 4100) == "auto" && refused.value.empty(), "R46: an agent that never confirms shows its real mode again after 3 s");
+        ChatOptions::Asked none; Check(ChatOptions::ShownWhileAsked("auto", none, 0) == "auto", "R46: nothing asked: the session's value"); }
+    // R47: an authorization open, the page scrolled up (the bubble goes down the screen) then down: the height offered stays
+    {   const Rect area{0, 141, 1470, 806}; const float k = 1.25f;
+        const Rect opened{342, 200, 742, 600};   // placed where its 520 CSS px fit
+        int offered = OfferedRoomCss(true, 0, opened, false, area, 12, k, 520);
+        const int atOpening = offered;
+        const Rect low{342, 700, 742, 1100};      // scrolled: its top 106 px above the page area's bottom
+        Check(RoomCss(low, false, area, 12, k, 520) == 120, "R47: (before: measured again from there — 120 CSS px, the card and its buttons cut)");
+        offered = OfferedRoomCss(false, offered, low, false, area, 12, k, 520);
+        Check(offered == atOpening && atOpening > 400, "R47: a scroll never makes the offered height smaller");
+        offered = OfferedRoomCss(false, offered, opened, false, area, 12, k, 520);
+        Check(offered == atOpening, "R47: back where it was, the same height (nothing to give back: nothing was taken)");
+        Check(OfferedRoomCss(true, offered, low, false, area, 12, k, 520) == 120, "R47: a new placement measures again"); }
     // Bug « clic, pas de bulle »: a bubble open on A, a click on B with its own conversation = a new opening (never A's place)
     {   Check(!SameBubble("c_a", "h2.section-title", "c_b", "section.hero"), "another element's conversation: opened again from scratch");
         Check(SameBubble("c_a", "section.hero", "c_a", "section.hero") && SameBubble("c_a", "section.hero", "c_a", "#hero"), "the same conversation (its full selection after the early open): kept");

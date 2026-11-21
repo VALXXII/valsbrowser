@@ -155,19 +155,19 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     // no element known yet (opened from the history, or waiting for the page): the bottom right corner of the page
     const RECT e = bubble.known ? bubble.element : RECT{a.right - margin, a.bottom - margin, a.right - margin, a.bottom - margin};
     const ChatBubble::Rect er{e.left, e.top, e.right, e.bottom};
-    ChatBubble::Placement p;
+    ChatBubble::Placement p; bool placedNow = false;
     if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor; then they never change
         // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
         p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
                               int(std::lround(BubbleMaxHeightCss * k)), bubble.click, int(std::lround(BubbleGapCss * k)));
         if (bubble.known) {
-            bubble.anchor = ChatBubble::AnchorOf(p, er);
+            bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true;
             Diag(std::wstring(L"bubble placed ") + W(std::string(p.why)) + L" (element " + std::to_wstring(er.W()) + L"x" + std::to_wstring(er.H()) + L", visible area " + std::to_wstring(area.W()) + L"x" + std::to_wstring(area.H()) + L")");   // i18n-exempt: log detail
         }
     } else { p.side = bubble.anchor.side; p.fromRight = bubble.anchor.fromRight; p.fromBottom = bubble.anchor.fromBottom; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side; bubble.fromBottom = p.fromBottom; bubble.surface = p.rect;
     if (!scrolling) {   // R38 / R40: the room and the handle's bounds are told on a new size, never at each scroll step (R39)
-        const int room = ChatBubble::RoomCss(p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);
+        const int room = ChatBubble::OfferedRoomCss(placedNow || !bubble.anchor.set, bubble.roomCss, p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);   // R47: kept with the anchor
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             bubble.roomCss = room; bubble.resizeMax = rm; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false);

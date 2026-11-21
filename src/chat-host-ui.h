@@ -736,14 +736,14 @@ void OnPanelMessage(const std::string& json) {
         if (!agent.empty() && agent != agentId) { SwitchAgent(agent, id); return; }
         const auto* o = Acp::FindModelOption(agentInfo[agentId].options);
         const bool changed = id != (pendingModel.empty() ? (o ? o->currentValue : std::string()) : pendingModel);
-        if (session && sessionReady && o) session->SetConfigOption(o->id, id); else pendingModel = id;
+        if (session && sessionReady && o) { session->SetConfigOption(o->id, id); askedModel = ChatOptions::Asked{id, Ann::NowMs()}; } else pendingModel = id;
         if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].model = id; RememberChoices(); }
         if (changed) MarkSwitch(agentId, id);   // R42: the same agent, another model — the next message, the same session
         return;
     }
     if (type == "setEffort") {
         const std::string id = m.Id("id"); const auto* o = Acp::FindEffortOption(agentInfo[agentId].options); if (id.empty()) return;
-        if (session && sessionReady && o) session->SetConfigOption(o->id, id); else pendingEffort = id;
+        if (session && sessionReady && o) { session->SetConfigOption(o->id, id); askedEffort = ChatOptions::Asked{id, Ann::NowMs()}; } else pendingEffort = id;
         if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].effort = id; RememberChoices(); }   // V1.2: the next sessions start with it (else Medium)
         return;
     }
