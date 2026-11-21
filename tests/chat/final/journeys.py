@@ -69,7 +69,7 @@ class J:
         p = F.element_point(sel, avoid=rb if shown and isinstance(rb, tuple) else None)
         m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.05)
         self.n += 1
-        self.inv.after_element_click(sel, t, f'{self.n:02d} {where or "click"}')
+        self.inv.after_element_click(sel, t, f'{self.n:02d} {where or "click"}', mark=m)
         F.wait_log(r'CHAT panel ready|CHAT bubble opened on', m, 5)
         return m
 
@@ -83,7 +83,7 @@ class J:
         return m
 
     def close(self):
-        m = F.log_mark(); F.escape_chat('bubble'); time.sleep(0.6)
+        m = F.log_mark(); self.inv.allow_close = True; F.escape_chat('bubble'); time.sleep(0.6)
         self.inv.m.open = None
         return m
 
@@ -565,6 +565,248 @@ def j_errors(j):
     time.sleep(0.6); j.check('after the stop')
 
 
+# ---------------------------------------------------------------- the independent review's sequences (design/chat-final-review.md, « Pour Q »)
+def _sid_of(token):
+    """The fake agent's session id that received the prompt holding `token` (its log of every received line)."""
+    try:
+        for line in F.FLOG.read_text(encoding='utf-8', errors='replace').splitlines():
+            if '"session/prompt"' in line and token in line:
+                m = re.search(r'"sessionId":"([^"]+)"', line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return None
+
+
+@journey('c2_envoi_dans_b_apres_tour_de_a', 'review C2 (A works, open B, wait for the end of A\'s turn, send in B)')
+def j_c2(j):
+    j.open_on('div.hero-visual', 'B first'); j.send('div.hero-visual', 'reply', token='jetonB1'); j.close()
+    j.open_on('a.btn-primary', 'A'); m = F.log_mark(); F.type_and_send('vrai-lent jetonA1', 'bubble'); j.inv.m.conv['a.btn-primary'] = 'jetonA1'
+    time.sleep(0.8)
+    j.open_on('div.hero-visual', 'B while A works'); j.check('B open, A working')
+    j.step('A\'s turn ends', F.wait_log(r'CHAT turn t\d+ ended', m, 20)); time.sleep(0.8); j.check('A done, B still shown')
+    m2 = F.log_mark(); F.type_and_send('reply jetonB2', 'bubble'); j.inv.m.conv['div.hero-visual'] = 'jetonB2'
+    j.step('C2 · B\'s turn ends', F.wait_log(r'CHAT turn t\d+ ended', m2, 20)); time.sleep(0.8)
+    j.inv.sent('bubble', 'jetonB2', 'C2 send in B')
+    st = F.chat_state('bubble')
+    j.step('C2 · the message and its answer are in B\'s bubble (with B\'s first message)', 'jetonB1' in st.get('text', '') and 'Bonjour' in st.get('text', ''), st.get('text', '')[-300:])
+    j.step('C2 · the fake agent got it in B\'s session, not A\'s', _sid_of('jetonB2') and _sid_of('jetonB2') != _sid_of('jetonA1'), {'A': _sid_of('jetonA1'), 'B2': _sid_of('jetonB2'), 'B1': _sid_of('jetonB1')})
+    j.close(); j.open_on('a.btn-primary', 'A again')
+    j.step('C2 · A\'s conversation does not hold B\'s message', 'jetonB2' not in F.chat_state('bubble').get('text', ''))
+    j.check('end')
+
+
+@journey('c1_clic_avant_page_prete', 'review C1 (a click right after the start, before the chat page is ready: the conversation, the model, Envoyer)')
+def j_c1(j):
+    j.open_on('a.btn-primary', 'A'); j.send('a.btn-primary', 'reply', token='jetonC1'); j.close()
+    F.release_all(); C.quit_all(); time.sleep(1.0)
+    F.launch(fresh=False)   # the same profile: A's conversation is on disk
+    j.inv.m.open = None; j.inv.log_at = F.log_mark(); j.inv.uia_base = None
+    F.front(); m = F.log_mark(); C.shortcut('A'); F.wait_log(r'ANNOTATE mode on', m, 10)
+    F.set_layout('comment')
+    p = F.element_point('a.btn-primary'); t = time.perf_counter(); F.click_at(*p, settle=0.02)
+    j.inv.after_element_click('a.btn-primary', t, 'C1 first click after the start', mark=m)
+    samples = []; t0 = time.time()
+    while time.time() - t0 < 3:
+        st = F.chat_state('bubble'); samples.append((round(time.time() - t0, 2), st.get('model'), 'jetonC1' in (st.get('text') or '')))
+        time.sleep(0.1)
+    bad = [s for s in samples if not s[1] or 'Agent' == (s[1] or '').split(':')[-1].strip() or not s[2]]
+    j.step('C1 · from the first image: the conversation, the model · effort (never « Agent »)', not bad, bad[:5])
+    j.R.capture('c1-premier-clic'); j.check('C1')
+
+
+@journey('c3_element_disparait_pendant_tour', 'review C3 (the element renamed by the agent during a turn with a permission; removed without a turn)')
+def j_c3(j):
+    j.open_on('p.hero-text', 'text')
+    m = F.log_mark(); F.type_and_send('vrai-autorisation jetonC3', 'bubble'); j.inv.m.conv['p.hero-text'] = 'jetonC3'
+    j.step('permission asked', F.wait_log(r'CHAT permission asked', m, 20))
+    F.page("(function(){var e=document.querySelector('p.hero-text');e.className='hero-copy';return 1})()"); time.sleep(1.2)
+    shown, _ = F.bubble_shown()
+    j.step('C3 · the element renamed during the turn: the bubble stays open', shown and 'no longer in the page' not in C.log_text()[m:], [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][-4:])
+    j.step('C3 · the permission is still answered in the bubble', F.answer_permission('Autoriser', 'bubble', m) and F.wait_log(r'CHAT turn t\d+ ended', m, 20))
+    F.page("(function(){var e=document.querySelector('.hero-copy');e.className='hero-text';return 1})()"); time.sleep(0.5)
+    j.inv.m.open = None; F.escape_chat('bubble'); time.sleep(0.5)
+    j.open_on('h1.hero-title', 'title (no turn)')
+    j.inv.allow_close = True
+    F.page("(function(){document.querySelector('h1.hero-title').remove();return 1})()"); time.sleep(1.0)
+    j.check('the element removed without a turn: the bubble may close')
+
+
+@journey('e2_modele_sur_deux_elements', 'review E2 + arbitration (the model, effort and mode chosen are kept for every new element)')
+def j_e2(j):
+    j.open_on('a.btn-primary', 'A')
+    F.real_click_chat('button.m'); time.sleep(0.6); F.real_click_chat(text='Opus 5.5'); time.sleep(0.8); F.close_menus()
+    F.real_click_chat('button.tb.mode'); time.sleep(0.6); F.real_click_chat(text='Accept edits'); time.sleep(0.6); F.close_menus()
+    st = F.chat_state('bubble'); j.inv.m.model, j.inv.m.mode = st.get('model'), st.get('mode')
+    j.step('Opus 5.5 and « Accept edits » chosen in A', 'Opus' in (st.get('model') or '') and 'Accept' in (st.get('mode') or ''), st)
+    j.send('a.btn-primary', 'reply', token='jetonE2a'); j.close()
+    j.open_on('div.hero-visual', 'B (new)')
+    seen = set(); t0 = time.time()
+    while time.time() - t0 < 3.5:
+        s = F.chat_state('bubble'); seen.add((s.get('model'), s.get('mode'))); time.sleep(0.05)
+    j.step('E2 · in B, from the first image and for 3.5 s: the same model, effort and mode', seen == {(j.inv.m.model, j.inv.m.mode)}, sorted(map(str, seen)))
+    j.send('div.hero-visual', 'reply', token='jetonE2b')
+    sid = _sid_of('jetonE2b'); flog = F.FLOG.read_text(encoding='utf-8', errors='replace') if F.FLOG.exists() else ''
+    applied = [l for l in flog.splitlines() if sid and sid in l and ('set_config_option' in l or 'set_mode' in l)]
+    j.step('E2 · B\'s session got the model (opus) and the mode (acceptEdits) before its prompt', any('opus' in l for l in applied) and any('acceptEdits' in l for l in applied), applied[:6])
+    j.check('E2')
+
+
+@journey('e3_choix_dans_b_pendant_tour_de_a', 'review E3 (a mode chosen in B while A works never reaches A\'s session)')
+def j_e3(j):
+    j.open_on('a.btn-primary', 'A'); m = F.log_mark(); F.type_and_send('vrai-lent jetonE3a', 'bubble'); j.inv.m.conv['a.btn-primary'] = 'jetonE3a'; time.sleep(0.8)
+    j.open_on('div.hero-visual', 'B while A works')
+    F.real_click_chat('button.tb.mode'); time.sleep(0.6); F.real_click_chat(text='Accept edits'); time.sleep(0.6); F.close_menus()
+    j.inv.m.mode = F.chat_state('bubble').get('mode')
+    time.sleep(0.5); sa = _sid_of('jetonE3a')
+    flog = F.FLOG.read_text(encoding='utf-8', errors='replace') if F.FLOG.exists() else ''
+    leaked = [l for l in flog.splitlines() if sa and sa in l and 'acceptEdits' in l]
+    j.step('E3 · « Accept edits » chosen in B is not sent to A\'s session', sa and not leaked, leaked[:3])
+    F.wait_log(r'CHAT turn t\d+ ended', m, 20); j.check('E3')
+
+
+@journey('e4_defilement_puis_menu', 'review E4 (scroll 150 px, then a menu: the surface never shifts, 60+ images per second)')
+def j_e4b(j):
+    import chat_qa_comment_v5 as V5
+    F.scroll_into_view('div.plans', 'center')
+    j.open_on('div.plans', 'plans'); j.send('div.plans', 'reply')
+    F.front(); pg = F.page_area(); F.u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); time.sleep(0.2)
+    F.wheel(1, 0.05); time.sleep(0.9)
+    sf = F.bubble_surface(); j.inv.rebase()
+    if not j.step('E4 · the bubble is on screen after the scroll', sf):
+        return
+    region = (sf[0] - 40, sf[1] - 40, sf[2] + 40, sf[3] + 40)
+    film = V5.Frames(region, 90, 0.010); film.start(); time.sleep(0.05)
+    F.real_click_chat('button.m'); time.sleep(0.7); film.stop = True; film.join()
+    x = (sf[2] - sf[0]) // 2 + 40; tops = []
+    for _, fr in film.frames:
+        r = V5.run_of(fr, x, V5.dark, 0, fr[1] - 1)
+        tops.append(r[0] if r else None)
+    vals = [t for t in tops if t is not None]
+    j.step('E4 · while the menu opens, the surface\'s top edge does not move (every image)', vals and max(vals) - min(vals) <= 1, {'images': len(tops), 'tops': sorted(set(vals))[:8]})
+    for i, (_, fr) in enumerate(film.frames[:: max(1, len(film.frames) // 6)][:6]):
+        V5.save_png(fr, f'e4-{i:02d}.png')
+    F.close_menus(); j.check('E4')
+
+
+@journey('e1_iframe_composant_web', 'review E1 (an iframe of the same origin, a web component with an open shadow root)')
+def j_e1(j):
+    F.inject_embedded()
+    for host in ('#qa-frame', '#qa-card'):
+        F.scroll_into_view(host, 'center'); F.front()
+        p = F.embedded_point(host); m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        j.n += 1; j.inv.after_element_click(host, t, f'{j.n:02d} E1 click inside {host}', mark=m)
+        time.sleep(1.5)
+        j.step(f'E1 · {host}: the bubble stays open (never « element no longer in the page »)', F.bubble_shown()[0] and 'no longer in the page' not in C.log_text()[m:], [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][-5:])
+        j.send(host, 'reply'); j.check(f'{host} after a send')
+        j.close(); F.scroll_into_view(host, 'center'); p = F.embedded_point(host)
+        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        j.n += 1; j.inv.after_element_click(host, t, f'{j.n:02d} E1 {host} again, its conversation', mark=m)
+        j.R.capture(f'e1-{host[1:]}'); j.close()
+
+
+@journey('m5_bascule_puis_clic', 'review M5 (the Commentaire switch, then a click on an element 50 ms later, while the panel slides out)')
+def j_m5(j):
+    for i in range(3):
+        F.set_layout('panel'); j.inv.m.layout = 'panel'; time.sleep(0.8)
+        b = j.uia.bounds(['AnnotationLayoutComment']).get('AnnotationLayoutComment') if j.uia else None
+        if not j.step(f'M5 · the « Commentaire » button located ({i + 1})', b):
+            return
+        p = F.element_point('a.btn-primary')
+        F.front(); F.click_at((b[0] + b[2]) // 2, (b[1] + b[3]) // 2, settle=0.03); time.sleep(0.05)
+        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.0)
+        j.inv.m.layout = 'comment'
+        j.n += 1; j.inv.after_element_click('a.btn-primary', t, f'{j.n:02d} M5 switch then click {i + 1}', mark=m)
+        st = F.chat_state('bubble')
+        j.step(f'M5 · the bubble has the bubble layout (narrow, no panel header) ({i + 1})', st.get('w', 999) < 700 and 'Nouveau chat' not in (st.get('text') or '')[:40], {'w': st.get('w')})
+        j.check(f'M5 {i + 1}'); j.close()
+
+
+@journey('m4_clavier_apres_premier_plan', 'review M4 (back from another application: typing reaches the bubble; Échap closes the bubble, not the mode)')
+def j_m4(j):
+    j.open_on('h1.hero-title', 'title')
+    F.click_at(*F.chat_point('[contenteditable=true]')); time.sleep(0.2)
+    with F.OtherApp():
+        time.sleep(0.6); j.inv.m.hidden_by_other = True
+    F.front(); time.sleep(0.8); j.inv.m.hidden_by_other = False
+    F.type_keys('abc'); time.sleep(0.4)
+    comp = F.chat("(document.querySelector('[contenteditable=true]')||{}).innerText||''") or ''
+    j.step('M4 · back from another application, the keyboard writes in the bubble', 'abc' in comp, comp)
+    m = F.log_mark(); F.tap(0x1B); time.sleep(0.8); j.inv.allow_close = True
+    j.step('M4 · Échap (real key) closes the bubble and keeps the mode', not F.bubble_shown()[0] and 'ANNOTATE mode off' not in C.log_text()[m:], C.log_text()[m:][-400:])
+    j.inv.m.open = None; j.check('M4')
+    # Échap with the keyboard in the page (after a click on its scrollbar)
+    j.open_on('h1.hero-title', 'title again'); pg = F.page_area(); k = F.dpr()
+    F.click_at(pg[2] - int(6 * k), pg[1] + int(30 * k)); time.sleep(0.3)
+    m = F.log_mark(); F.tap(0x1B); time.sleep(0.8); j.inv.allow_close = True
+    j.step('M4 · Échap with the keyboard in the page: the bubble closes, the mode stays', 'ANNOTATE mode off' not in C.log_text()[m:], C.log_text()[m:][-400:])
+    j.inv.m.open = None; j.check('M4 page')
+
+
+@journey('m11_fermeture_pendant_tour', 'review M11 (the browser closed during a turn, opened again: no endless « Travaille »)')
+def j_m11(j):
+    j.open_on('a.btn-primary', 'A'); F.type_and_send('vrai-lent jetonM11', 'bubble'); time.sleep(1.5)
+    F.release_all(); C.quit_all(); time.sleep(1.0)
+    F.launch(fresh=False); j.inv.m.open = None; j.inv.log_at = F.log_mark(); j.inv.uia_base = None; j.inv.m.conv = {'a.btn-primary': 'jetonM11'}
+    F.mode_on('comment'); j.open_on('a.btn-primary', 'A after the restart'); time.sleep(2.5)
+    st = F.chat_state('bubble')
+    j.step('M11 · the interrupted turn is closed (no ring, no « Arrêter », Envoyer usable)', not st.get('busy') and 'Travaille' not in (st.get('text') or ''), (st.get('text') or '')[-300:])
+    j.R.capture('m11-apres-relance'); j.check('M11')
+
+
+@journey('m15_defilement_puis_redimensionnement', 'review M15 (a long thread, scroll, then the window made lower: the bubble whole, its composer seen)')
+def j_m15(j):
+    F.scroll_into_view('div.plans', 'center')
+    j.open_on('div.plans', 'plans'); j.send('div.plans', 'vrai-markdown'); j.send('div.plans', 'vrai-code', token='jetonM15b')
+    F.front(); pg = F.page_area(); F.u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); F.wheel(1); time.sleep(0.9); j.inv.rebase()
+    for h in (480, 400, 665):
+        F.set_page_size(1470, h); time.sleep(1.2); j.inv.rebase()
+        st = F.chat_state('bubble'); sf = F.bubble_surface(st); pg = F.page_area()
+        comp = F.chat("(function(){var c=document.querySelector('[contenteditable=true]');var r=c.getBoundingClientRect();return [r.top,r.bottom,innerHeight]})()")
+        whole = sf and sf[1] >= pg[1] - 1 and sf[3] <= pg[3] + 1
+        j.step(f'M15 · page area {h} px high: the bubble is whole in it, its composer inside the surface', whole and comp and comp[1] <= st['app'][3] + 1, {'surface': sf, 'page': pg, 'composer': comp, 'app': st.get('app')})
+        j.R.capture(f'm15-{h}'); j.check(f'M15 {h}')
+
+
+@journey('m6_clic_sans_envoi_puis_panneau', 'review M6 (a click without a send, then the panel: nothing anchored, no mark after a send from the panel)')
+def j_m6(j):
+    F.scroll_into_view('div.plans', 'center')
+    j.open_on('div.plans', 'plans, no send'); j.close()
+    F.set_layout('panel'); j.inv.m.layout = 'panel'
+    title = F.chat("(document.querySelector('.hd-title-text')||{}).textContent||''", 'panel')
+    j.step('M6 · the panel\'s title is not the element clicked without a send', 'div.plans' not in title, title)
+    m = F.log_mark(); F.type_and_send('reply jetonM6', 'panel'); F.wait_log(r'CHAT turn t\d+ ended', m, 20); time.sleep(0.6)
+    F.set_layout('comment'); j.inv.m.layout = 'comment'
+    j.step('M6 · div.plans has no conversation mark', len(F.conversation_marks()) == 0, F.conversation_marks())
+    j.open_on('div.plans', 'plans again'); j.step('M6 · its bubble does not hold the panel\'s message', 'jetonM6' not in F.chat_state('bubble').get('text', ''))
+    j.check('M6')
+
+
+@journey('m16_rechargement_avant_clic', 'review M16 (F5 before any click in Commentaire: the mode stays)')
+def j_m16(j):
+    F.front(); m = F.log_mark()
+    pg = F.page_area(); k = F.dpr(); F.click_at(pg[2] - int(6 * k), pg[1] + int(30 * k)); time.sleep(0.2)   # the page has the keyboard (scrollbar)
+    F.tap(0x74); time.sleep(2.0)
+    j.step('M16 · F5 before a click: the annotation mode stays on', 'ANNOTATE mode off' not in C.log_text()[m:] and F.wait_log(r'ANNOTATE mode re-armed after a reload|ANNOTATE mode on', m, 5), C.log_text()[m:][-500:])
+    j.open_on('a.btn-primary', 'a click after the reload'); j.check('M16')
+
+
+@journey('m2_jamais_l_ancien_fil', 'review M2 (opening B after A: never an image of A\'s conversation at B\'s place)')
+def j_m2(j):
+    j.open_on('a.btn-primary', 'A'); j.send('a.btn-primary', 'vrai-markdown', token='jetonM2a')
+    F.front(); rb = F.bubble_shown()[1]; p = F.element_point('h1.hero-title', avoid=rb if isinstance(rb, tuple) else None)
+    el = F.element_screen('h1.hero-title'); old = F.bubble_surface()
+    F.click_at(*p, settle=0.02); t0 = time.time(); stale = []
+    while time.time() - t0 < 1.0:
+        shown, rb = F.bubble_shown()
+        if shown and isinstance(rb, tuple) and rb != old and 'jetonM2a' in (F.chat_state('bubble').get('text') or ''):
+            stale.append(round((time.time() - t0) * 1000))
+        time.sleep(0.01)
+    j.step('M2 · B\'s bubble never shows A\'s conversation, not even one image', not stale, stale[:5])
+    j.inv.m.open = 'h1.hero-title'; j.inv.rebase(); j.check('M2')
+
+
 # ---------------------------------------------------------------- runner
 def run_one(jn):
     name = jn['name']; print(f'===== {name} ({jn["retours"]})', flush=True)
@@ -572,7 +814,7 @@ def run_one(jn):
     try:
         F.launch(jn['agent'])
         F.mode_on('comment')
-        uia = F.Uia(); j.inv = F.Invariants(j.R, uia)
+        uia = F.Uia(); j.uia = uia; j.inv = F.Invariants(j.R, uia)
         F.ERRORS.collect()
         jn['fn'](j)
     except Exception:

@@ -253,6 +253,15 @@ def drag(x0, y0, x1, y1, steps=20, every=0.016):
     time.sleep(0.05); mouse(0x0004); time.sleep(0.3)
 
 
+def type_keys(text, every=0.02):
+    """Real key presses (KEYEVENTF_UNICODE) into the window that has the keyboard."""
+    for ch in text:
+        for flags in (0x0004, 0x0004 | 0x0002):
+            i = _IN(); i.type = 1; i.ki = _KI(0, ord(ch), flags, 0, 0)
+            u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(_IN))
+        time.sleep(every)
+
+
 def release_all():
     """Never leave a key or a button down (Ctrl held by a failed step would change everything after it)."""
     for vk in (0x11, 0x10, 0x12):
@@ -345,6 +354,33 @@ def element_point(sel, avoid=None):
         pts = [p for p in pts if not (avoid[0] - 4 <= p[0] <= avoid[2] + 4 and avoid[1] - 4 <= p[1] <= avoid[3] + 4)] or pts
     pts = [p for p in pts if pg[0] + 4 <= p[0] <= pg[2] - 20 and pg[1] + 4 <= p[1] <= pg[3] - 4] or pts   # never the scrollbar
     return pts[len(pts) // 2]
+
+
+EMBED_JS = ("(function(){if(document.getElementById('qa-frame'))return 0;var h=document.querySelector('section.hero');"
+            "var f=document.createElement('iframe');f.id='qa-frame';f.style.cssText='display:block;width:380px;height:150px;margin:24px auto;border:0';"
+            "f.srcdoc='<body style=\\'margin:0;background:#f4efe6;font:16px sans-serif\\'><div id=\\'qa-in\\' style=\\'margin:22px;padding:18px;background:#fff\\'>Bloc dans un iframe</div></body>';"
+            "h.after(f);if(!customElements.get('qa-card'))customElements.define('qa-card',class extends HTMLElement{constructor(){super();"
+            "this.attachShadow({mode:'open'}).innerHTML='<div id=\\'qa-sh\\' style=\\'padding:20px;margin:14px auto;width:320px;background:#e8f0ff;font:16px sans-serif\\'>Carte composant web</div>'}});"
+            "var c=document.createElement('qa-card');c.id='qa-card';c.style.display='block';f.after(c);return 1})()")
+EMBEDDED = {'#qa-frame': "(function(){var f=document.getElementById('qa-frame');if(!f||!f.contentDocument)return null;var a=f.getBoundingClientRect(),"
+                         "b=f.contentDocument.getElementById('qa-in').getBoundingClientRect();return [a.left+b.left+b.width/2,a.top+b.top+b.height/2]})()",
+            '#qa-card': "(function(){var c=document.getElementById('qa-card');if(!c||!c.shadowRoot)return null;var b=c.shadowRoot.getElementById('qa-sh').getBoundingClientRect();"
+                        "return [b.left+b.width/2,b.top+b.height/2]})()"}
+
+
+def inject_embedded():
+    """The iframe (same origin) and the web component; again after a reload (they are not in the site's files)."""
+    r = page(EMBED_JS); time.sleep(0.5 if r else 0); return r
+
+
+def embedded_point(host):
+    """Screen point of the block INSIDE the iframe / the shadow root of `host` (its anchor is the host)."""
+    inject_embedded()
+    r = page(EMBEDDED[host])
+    if not r:
+        return None
+    pg = page_area(); k = dpr()
+    return (int(pg[0] + r[0] * k), int(pg[1] + r[1] * k))
 
 
 def scroll_into_view(sel, where='center'):
@@ -510,7 +546,7 @@ class Uia:
 
 
 # ---------------------------------------------------------------- the browser
-def launch(agent_args='', size=USER_PAGE, url=LANDING, extra_env=None):
+def launch(agent_args='', size=USER_PAGE, url=LANDING, extra_env=None, fresh=True):
     """The QA copy with the fake agent (started in « auto » like the real Claude adapter), the page area set to `size`."""
     try:
         FLOG.unlink()
@@ -521,9 +557,9 @@ def launch(agent_args='', size=USER_PAGE, url=LANDING, extra_env=None):
     env = {'BROWSER_CHAT_PANEL_IDLE_MS': '60000', 'BROWSER_CHAT_AGENT_IDLE_MS': '600000',
            'BROWSER_CHAT_FAKE_AGENT': f'"{fake}" --resume --claude-like --start-mode auto --log "{FLOG}" {agent_args}'.rstrip()}
     env.update(extra_env or {})
-    C.launch(extra_env=env)
+    C.launch(fresh=fresh, reset_site=fresh, extra_env=env)
     _ws.clear()
-    if url != C.URL:
+    if url != C.URL and not (page('location.href') or '').startswith(url):
         ws = page_ws(); ws.call('Page.navigate', {'url': url}); time.sleep(1.5)
         C.wait_for(lambda: page("document.readyState") == 'complete', 15)
     if size:
@@ -675,9 +711,10 @@ class Model:
 class Invariants:
     def __init__(self, report, uia=None):
         self.r = report; self.uia = uia; self.m = Model(); self.log_at = log_mark(); self.uia_base = None
+        self.allow_close = False   # set by an action that may close the bubble (Échap, click elsewhere, switch, element gone)
 
     # -- called right after a click on an element in Comment mode (before any other wait)
-    def after_element_click(self, sel, t_click, where):
+    def after_element_click(self, sel, t_click, where, mark=None):
         ms = None
         while time.perf_counter() - t_click < 3.0:
             ok, _ = bubble_shown()
@@ -696,6 +733,10 @@ class Invariants:
         d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if t in text]}
         self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), natural height, < 150 ms, the right conversation',
                     ms is not None and ms < 150 and inside and natural and right_conv, d, {'action': where})
+        if mark is not None:
+            n = len(re.findall(r'conversation of an element reopened', C.log_text()[mark:]))
+            if n > 1:
+                self.r.step(f'{where} · invariant: one « conversation of an element reopened » per click', False, n, {'action': where})
         self.m.open = sel; self.m.hidden_by_other = False
         el = element_screen(sel)
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
@@ -708,11 +749,26 @@ class Invariants:
             self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
             self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
 
+    def sent(self, kind, token, where):
+        """After a send: the user's message is in the bubble (or the panel) it was sent from."""
+        t0 = time.time(); ok = False
+        while time.time() - t0 < 3 and not ok:
+            ok = token in (chat_state(kind).get('text') or ''); time.sleep(0.1)
+        if not ok:
+            self.r.step(f'{where} · invariant: the message sent is shown where it was sent ({kind})', False, token, {'action': where})
+        return ok
+
     def check(self, where, wheel_moved=False):
         """Every invariant, after an action. Returns the list of broken ones."""
         broken = {}
         self.r.data['measures']['invariantChecks'] = self.r.data['measures'].get('invariantChecks', 0) + 1
         fg = foreground_is_ours()
+        seg = C.log_text()[self.log_at:]
+        if self.m.open and re.search(r'CHAT (bubble closed|a click elsewhere closed the bubble|the bubble.s element is no longer in the page)', seg):
+            if not self.allow_close:
+                broken['an open bubble stays open until the user closes it'] = [l for l in seg.splitlines() if 'bubble' in l][-4:]
+            self.m.open = None
+        self.allow_close = False
         shown, region = bubble_shown()
         wins = bubble_windows()
         if len(wins) > 1:

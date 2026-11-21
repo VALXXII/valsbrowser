@@ -9,6 +9,9 @@
   - the mode, the model and the effort shown change only by an action of the user
   - the conversation mark only after a send; one contour per element
   - no JavaScript error (chat page, page), no exception in the host's log, UI Automation tree complete
+  - (review) after each send the user's message is shown in the bubble it was sent from; an open bubble stays open until
+    the user closes it (or its element is gone with no turn running); never two « conversation of an element reopened »
+    for one click; the mode, model and effort chosen are kept for every new element (coordinator's arbitration)
   - at the end: nothing left running or open
 
     CHAT_QA_BUILD=chat-preview python tests/chat/final/monkey.py --seed 1 [--actions 320] [--until N] [--dry]
@@ -31,7 +34,9 @@ from qa_final import C
 
 WEIGHTS = [('click_element', 24), ('click_elsewhere', 4), ('escape', 7), ('wheel', 10), ('scrollbar', 3), ('keyboard_scroll', 3),
            ('toggle_layout', 5), ('other_app', 4), ('paste', 4), ('menu', 6), ('diff', 3), ('ctrl_held', 4), ('send', 9),
-           ('permission', 4), ('stop', 2), ('model_change', 2), ('mode_change', 2)]
+           ('permission', 4), ('stop', 2), ('model_change', 2), ('mode_change', 2),
+           # the independent review's sequences (design/chat-final-review.md, « Pour Q »)
+           ('click_embedded', 4), ('element_change', 2), ('resize', 2), ('switch_then_click', 2), ('keys_after_other_app', 2)]
 SCENARIOS = ['reply', 'vrai-markdown', 'vrai-adresse', 'vrai-code', 'vrai-autorisation', 'vrai-lent', 'vrai-erreur-outil', 'vrai-surcharge',
              'annonce', 'vrai-tour', 'apply']
 PASTES = ['Change la couleur du bouton en vert', 'Voir http://127.0.0.1:5183/landing.html', 'Texte collé\nsur deux lignes', '```css\n.a{gap:8px}\n```']
@@ -75,8 +80,8 @@ class Monkey:
         p = F.element_point(sel, avoid=self.bubble_box())
         if self.inv.m.layout == 'panel':
             F.click_at(*p); return f'panel: click on {sel} (a chip)', 0.6
-        t = time.perf_counter(); F.click_at(*p, settle=0.04)
-        self.inv.after_element_click(sel, t, f'#{a["i"]} click {sel}')
+        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        self.inv.after_element_click(sel, t, f'#{a["i"]} click {sel}', mark=m)
         return f'click on {sel}', 0.2
 
     def click_elsewhere(self, a):
@@ -87,7 +92,7 @@ class Monkey:
         m = F.log_mark()
         if not pts:
             return 'no empty point', 0.1
-        k = F.dpr(); x, y = pts[int(a['r'][1] * len(pts))]
+        k = F.dpr(); x, y = pts[int(a['r'][1] * len(pts))]; self.inv.allow_close = True
         F.click_at(pg[0] + x * k, pg[1] + y * k); time.sleep(0.6)
         lines = C.log_text()[m:]
         if self.inv.m.layout == 'comment':
@@ -104,7 +109,7 @@ class Monkey:
             F.escape_chat('bubble')
             if st.get('menus') or st.get('diff'):
                 return 'Échap (a menu / the diff)', 0.5
-            self.inv.m.open = None
+            self.inv.m.open = None; self.inv.allow_close = True
             return 'Échap: the bubble closes', 0.6
         return 'Échap with nothing open: nothing', 0.1
 
@@ -133,7 +138,7 @@ class Monkey:
 
     def toggle_layout(self, a):
         to = 'panel' if self.inv.m.layout == 'comment' else 'comment'
-        F.set_layout(to); self.inv.m.layout = to; self.inv.m.open = None
+        self.inv.allow_close = True; F.set_layout(to); self.inv.m.layout = to; self.inv.m.open = None
         return f'layout -> {to}', 0.4
 
     def other_app(self, a):
@@ -147,8 +152,8 @@ class Monkey:
                 vis = self.visible_elements()
                 if vis:
                     sel = vis[int(a['r'][1] * len(vis))]; p = F.element_point(sel)
-                    t = time.perf_counter(); F.click_at(*p, settle=0.04)
-                    self.inv.after_element_click(sel, t, f'#{a["i"]} other application in front, click {sel}')
+                    m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+                    self.inv.after_element_click(sel, t, f'#{a["i"]} other application in front, click {sel}', mark=m)
                     return f'other application, then a click on {sel}', 0.3
         F.front(); time.sleep(0.5); self.inv.m.hidden_by_other = False
         return 'other application, then back', 0.4
@@ -221,6 +226,7 @@ class Monkey:
         F.type_and_send(f'{sc} {token}', kind)
         if kind == 'bubble':
             self.inv.m.conv[self.inv.m.open] = token
+        self.inv.sent(kind, token, f'#{a["i"]} send')
         return f'send « {sc} »', 1.0
 
     def permission(self, a):
@@ -273,6 +279,85 @@ class Monkey:
         self.inv.m.mode = got or self.inv.m.mode
         return f'mode -> {name}', 0.3
 
+    # ---- the review's sequences
+    def click_embedded(self, a):
+        if self.inv.m.layout != 'comment':
+            return 'embedded: panel layout', 0.1
+        host = '#qa-frame' if a['r'][0] < 0.5 else '#qa-card'
+        F.inject_embedded(); F.scroll_into_view(host, 'center'); F.front()
+        p = F.embedded_point(host)
+        if not p:
+            return 'embedded: not found', 0.1
+        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        self.inv.after_element_click(host, t, f'#{a["i"]} click inside {host}', mark=m)
+        return f'click inside {host}', 0.8
+
+    def element_change(self, a):
+        """The open bubble's element renamed (as an agent's edit would) — kept open during a turn — then given back."""
+        sel = self.inv.m.open
+        if self.inv.m.layout != 'comment' or not sel or sel.startswith('#qa-'):
+            return 'element change: no bubble', 0.1
+        busy = F.chat_state('bubble').get('busy')
+        F.page("(function(){var e=document.querySelector(%s);if(!e)return 0;e.dataset.qaClass=e.className;e.className='qa-renamed';return 1})()" % json.dumps(sel))
+        time.sleep(1.0)
+        shown, _ = F.bubble_shown()
+        if busy and not shown and F.foreground_is_ours():
+            self.R.step(f'#{a["i"]} invariant: the element renamed during a turn keeps its bubble open (C3)', False, sel)
+        F.page("(function(){var e=document.querySelector('.qa-renamed');if(e)e.className=e.dataset.qaClass;return 1})()")
+        if not busy:
+            self.inv.allow_close = True
+        time.sleep(0.4)
+        return f'element {sel} renamed then given back (turn running: {busy})', 0.4
+
+    def resize(self, a):
+        w = 1100 + int(a['r'][0] * 370); h = 420 + int(a['r'][1] * 245)
+        if a['r'][2] < 0.4:
+            w, h = F.USER_PAGE
+        F.front(); pg = F.page_area(); F.u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); F.wheel(a['sign'])
+        time.sleep(0.6); got = F.set_page_size(w, h); time.sleep(0.8); self.inv.rebase()
+        if self.inv.m.open and self.inv.m.layout == 'comment' and F.foreground_is_ours():
+            sf = F.bubble_surface(); pg = F.page_area()
+            comp = F.chat("(function(){var c=document.querySelector('[contenteditable=true]');if(!c)return null;var r=c.getBoundingClientRect();return r.bottom})()")
+            st = F.chat_state('bubble')
+            if sf and comp and st.get('app') and comp > st['app'][3] + 1:
+                self.R.step(f'#{a["i"]} invariant: after a resize the composer stays inside the bubble (M15)', False, {'composer': comp, 'app': st['app']})
+        return f'scroll then page area {got}', 0.3
+
+    def switch_then_click(self, a):
+        """Panel -> Commentaire by the band's button, then a click on an element 50 ms later (M5)."""
+        if self.inv.m.layout != 'panel':
+            self.inv.allow_close = True; F.set_layout('panel'); self.inv.m.layout = 'panel'; self.inv.m.open = None; time.sleep(0.6)
+        b = self.uia.bounds(['AnnotationLayoutComment']).get('AnnotationLayoutComment') if self.uia else None
+        vis = [s for s in self.visible_elements() if s not in F.BIG] or self.visible_elements()
+        if not b or not vis:
+            return 'switch then click: no button or element', 0.1
+        sel = vis[int(a['r'][0] * len(vis))]; p = F.element_point(sel)
+        F.front(); F.click_at((b[0] + b[2]) // 2, (b[1] + b[3]) // 2, settle=0.03); time.sleep(0.05)
+        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.0)
+        self.inv.m.layout = 'comment'
+        self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m)
+        st = F.chat_state('bubble')
+        if st.get('w', 0) > 700:
+            self.R.step(f'#{a["i"]} invariant: the bubble has the bubble layout (M5)', False, {'w': st.get('w')})
+        return f'Commentaire then click {sel} 50 ms later', 0.3
+
+    def keys_after_other_app(self, a):
+        if self.inv.m.layout != 'comment' or not self.inv.m.open:
+            return 'keys: no bubble', 0.1
+        p = F.chat_point('[contenteditable=true]')
+        if not p:
+            return 'keys: no composer', 0.1
+        F.click_at(*p); time.sleep(0.2)
+        with F.OtherApp():
+            time.sleep(0.5); self.inv.m.hidden_by_other = True
+        F.front(); time.sleep(0.7); self.inv.m.hidden_by_other = False
+        word = f'k{a["i"]}'; F.type_keys(word); time.sleep(0.4)
+        comp = F.chat("(document.querySelector('[contenteditable=true]')||{}).innerText||''") or ''
+        if word not in comp:
+            self.R.step(f'#{a["i"]} invariant: back from another application, the keyboard writes in the bubble (M4)', False, comp[-80:])
+        F.chat("(function(){var t=document.querySelector('[contenteditable=true]');if(t){t.textContent='';t.dispatchEvent(new Event('input',{bubbles:true}))}return 1})()")
+        return 'other application, back, typing', 0.2
+
     def run(self, actions):
         for a in actions:
             self.R.context = {'seed': self.seed, 'index': a['i'], 'action': a,
@@ -313,6 +398,7 @@ def main():
     try:
         F.launch()
         F.mode_on('comment')
+        F.inject_embedded()
         uia = F.Uia(); inv = F.Invariants(R, uia); F.ERRORS.collect()
         Monkey(seed, R, inv, uia).run(actions)
     except Exception:
