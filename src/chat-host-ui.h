@@ -407,6 +407,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
         if (w == FolderTimer) { KillTimer(h, FolderTimer); AskPageMarks(folderMarksOrigin, folderMarksTries); return 0; }
+        if (w == HeldTimer) { KillTimer(h, HeldTimer); ReleaseHeld(); return 0; }   // M14: the element never came: the message leaves without it
         if (w == StopTimer) { KillTimer(h, StopTimer); if (turn.active && turn.cancelled) { DisposeSession(L"stop not answered"); if (turn.active) FinishTurn("cancelled"); } return 0; }   // M1   // i18n-exempt: log reason
         if (w == HoverTimer) { if ((!Open() && !BubbleOpen()) || !panelReady) { KillTimer(h, HoverTimer); return 0; } if (!PointerInPanel()) { KillTimer(h, HoverTimer); Send("pointer.leave"); Diag(L"pointer left the panel: hover tooltip closed"); } return 0; }
     }
@@ -445,7 +446,12 @@ void OnPanelMessage(const std::string& json);
 void SaveOptionsCache() {
     SJ::Value agents = SJ::Value::Obj();
     for (const auto& a : agentInfo) if (!a.second.options.empty() && ChatStore::ValidId(a.first)) agents.Set(a.first, ChatStore::OptionsToJson(a.second.options));
-    SJ::Value v = SJ::Value::Obj(); v.Set("v", SJ::Value::Int(1)); v.Set("agents", std::move(agents));
+    SJ::Value modes = SJ::Value::Obj();   // M8 (review R): the modes too — the mode button is there from the first opening
+    for (const auto& a : agentInfo) if (!a.second.modes.available.empty() && ChatStore::ValidId(a.first)) {
+        SJ::Value list = SJ::Value::Arr(); for (const auto& md : a.second.modes.available) { if (list.items.size() >= 16) break; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(md.id)); o.Set("name", Str(md.name)); o.Set("description", Str(ClipUtf8(md.description, 300))); list.Push(std::move(o)); }
+        SJ::Value x = SJ::Value::Obj(); x.Set("current", Str(a.second.modes.currentId)); x.Set("available", std::move(list)); modes.Set(a.first, std::move(x));
+    }
+    SJ::Value v = SJ::Value::Obj(); v.Set("v", SJ::Value::Int(1)); v.Set("agents", std::move(agents)); v.Set("modes", std::move(modes));
     auto text = std::make_shared<std::string>(SJ::Serialize(v) + "\n"); const std::wstring file = OptionsCacheFile();
     Ann::Run([text, file] { ChatStore::EnsureDir(file.substr(0, file.find_last_of(L'\\'))); ChatStore::WriteFileAtomic(file, *text); }, nullptr);
 }
@@ -457,6 +463,13 @@ void LoadOptionsCache() {
                  SJ::Value v; if (out->empty() || !SJ::Parse(*out, v) || !v.IsObject()) return;
                  const auto* agents = v.Get("agents"); if (!agents || !agents->IsObject()) return; int n = 0;
                  for (const auto& a : agents->members) { auto& info = agentInfo[a.first]; if (!AgentOf(a.first) || !info.options.empty()) continue; info.options = ChatStore::OptionsFromJson<Acp::ConfigOption>(a.second); ++n; }
+                 if (const auto* ms = v.Get("modes"); ms && ms->IsObject()) for (const auto& a : ms->members) {   // M8
+                     auto& info = agentInfo[a.first]; if (!AgentOf(a.first) || !info.modes.available.empty() || !a.second.IsObject()) continue;
+                     const auto* av = a.second.Get("available"); if (!av || !av->IsArray()) continue;
+                     for (const auto& o : av->items) { const auto* id = o.Get("id"); if (!id || !id->IsString() || id->string.empty() || info.modes.available.size() >= 16) continue;
+                         Acp::Mode md; md.id = id->string; if (const auto* nm = o.Get("name"); nm && nm->IsString()) md.name = nm->string; if (const auto* d = o.Get("description"); d && d->IsString()) md.description = d->string; info.modes.available.push_back(md); }
+                     if (const auto* c = a.second.Get("current"); c && c->IsString()) info.modes.currentId = c->string; ++n;
+                 }
                  if (n) { Diag(L"the agents' last model and effort lists read (" + std::to_wstring(n) + L")"); if (panelReady) SendState(); }
              });
 }
@@ -526,7 +539,7 @@ void FinishClose() {
 }
 void ClosePanel() {
     if (!Open()) return;
-    const bool reduced = Ann::Reduced(); picking = false; aiming.clear(); if (post) KillTimer(post, HoverTimer);
+    const bool reduced = Ann::Reduced(); picking = false; aiming.clear(); ReleaseHeld(); if (post) KillTimer(post, HoverTimer);
     panelState = PanelState::Closing; slide.Set(0.f, NativeChrome::Motion::Now(), reduced ? 0 : SlideOutMs, AUI::Curves::band);
     if (reduced || !view.Exists()) FinishClose(); else AUI::Animator::Get().Request(&slideClient);
     Ann::Announce(TR(chat_announce_closed)); Diag(L"panel closed");
@@ -556,7 +569,7 @@ void ModeEntered() { SyncChromeBits(); if (CommentLayout()) { if (auto t = Activ
 void CoolBubble();
 void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
 bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
-void PageNavigating(const std::shared_ptr<Tab>&) { rearmOwed = true; rearmTries = 0; aiming.clear(); if (EnsurePost()) SetTimer(post, RearmTimer, 250, nullptr); }
+void PageNavigating(const std::shared_ptr<Tab>&) { rearmOwed = true; rearmTries = 0; aiming.clear(); ReleaseHeld(); if (EnsurePost()) SetTimer(post, RearmTimer, 250, nullptr); }
 
 // ---------------------------------------------------------------- panel -> host (contract B §5)
 struct Msg {
@@ -661,7 +674,12 @@ void KeepAnnotation(const std::string& text, const std::vector<std::string>& ids
                 SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(keptId)); m.Set("text", Str(text)); m.Set("elements", *shared);
                 SJ::Value ann = SJ::Value::Arr(); for (const auto& i : left->ids) ann.Push(Str(i)); m.Set("annotations", std::move(ann));
                 if (!left->ok) m.Set("partial", SJ::Value::Bool(true));
-                m.Set("at", Str(Iso(BA::SystemNow()))); Keep("annotation.kept", m); Send("annotation.kept", std::move(m)); SaveConvo();
+                m.Set("at", Str(Iso(BA::SystemNow())));
+                if (aside.on) {   // M7: shown aside (a turn of another element runs): the line is kept in ITS conversation
+                    aside.c.data.items.push_back(Item("annotation.kept", m)); aside.c.data.head.updatedAt = BA::SystemNow();
+                    auto copy = std::make_shared<ChatStore::Conversation>(aside.c.data); Ann::Run([copy] { History().Save(*copy); }, nullptr);
+                    Send("annotation.kept", std::move(m));
+                } else { Keep("annotation.kept", m); Send("annotation.kept", std::move(m)); SaveConvo(); }
             });
     }
 }
@@ -822,7 +840,7 @@ void OnPanelMessage(const std::string& json) {
     if (type == "history.select") { const std::string id = m.Id("id"); if (id.empty()) return; if (turn.active) { queue.clear(); afterTurn = [id] { SelectHistory(id); }; StopTurn(); } else SelectHistory(id); return; }
     if (type == "newChat") { if (turn.active) { queue.clear(); afterTurn = [] { NewConversation(); MaybeStartSession(); }; StopTurn(); } else { NewConversation(); MaybeStartSession(); } return; }
     if (type == "message.edit") { EditMessage(m.Id("messageId"), m.Text("text", 400000), m.Has("restore"), m.Flag("restore")); return; }
-    if (type == "retry") { const std::string t = m.Id("turnId"); std::string text; for (const auto& item : convo.data.items) { const auto* ty = item.Get("type"); const auto* id = item.Get("id"); const auto* tx = item.Get("text"); if (ty && ty->string == "message.user" && id && id->string == "u" + t && tx && tx->IsString()) text = tx->string; } if (text.empty()) text = LastUserText(); if (!text.empty()) SendOrQueue(text, {}, {}); return; }
+    if (type == "retry") { const std::string t = m.Id("turnId"); std::string text; for (const auto& item : ShownItems()) { const auto* ty = item.Get("type"); const auto* id = item.Get("id"); const auto* tx = item.Get("text"); if (ty && ty->string == "message.user" && id && id->string == "u" + t && tx && tx->IsString()) text = tx->string; } if (text.empty()) text = LastUserText(); if (!text.empty()) SendOrQueue(text, {}, {}); return; }
     if (type == "error.action" || type == "strip.action") {
         const std::string action = m.Id("actionId");
         if (action == "retry") { const std::string text = LastUserText(); if (!text.empty()) SendOrQueue(text, {}, {}); else MaybeStartSession(); }

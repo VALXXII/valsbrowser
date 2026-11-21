@@ -160,6 +160,29 @@ check('CloseBubble(' in ui[ui.find('h.created = '):][:400], 'F7: a WebView that 
 # F8: after a page change, a bubble whose conversation belongs to another page closes
 check('anchorPage' in block_after(comment, 'void ScriptReady() {'), 'F8: ScriptReady closes a bubble whose page is not the one shown')
 
+# M6 / F5: a bubble closed with nothing sent (or the panel chosen) leaves no conversation tied to its element, and frees its image
+forget = block_after(comment, 'void ForgetUnsent(')
+check('CloseBubble' and 'ForgetUnsent(' in block_after(comment, 'void CloseBubble(bool focusPage) {'), 'M6: closing a bubble with nothing sent forgets its element')
+check('ForgetUnsent(' in block_after(comment, 'void SwitchLayout('), 'M6: so does choosing the panel')
+check('anchorSelector.clear()' in forget and 'anchorElements.erase(' in forget and 'SentConvo(' in forget, 'M6 / F5: only when nothing was sent — the anchor cleared, the element\'s image freed')
+# M7: messages of a bubble shown aside are resolved on ITS conversation
+check('ShownItems()' in ui[ui.find('if (type == "retry")'):][:500], 'M7: « Réessayer » takes the message of the conversation shown')
+check('ShownItems()' in block_after(turn, 'void ViewChanges(') and 'CheckpointOf(' in block_after(turn, 'void ViewChanges('), 'M7: the changes of a turn of the conversation shown')
+check('aside.on' in block_after(ui, 'void KeepAnnotation('), 'M7: Ctrl+Entrée in a bubble aside keeps the line in its conversation')
+# M8: the modes are cached with the options (the mode button is there from the first opening)
+check('"modes"' in block_after(ui, 'void SaveOptionsCache() {') and '"modes"' in block_after(ui, 'void LoadOptionsCache() {'), 'M8: the modes are cached and read back')
+# M14: a held message never waits forever (2 s, or the page reloaded), and a second one does not erase the first
+hold = block_after(comment, 'bool HoldForAnchor(')
+check('held.on' in hold and 'ReleaseHeld(' in hold and 'HeldTimer' in hold, 'M14: a second send releases the first; a 2 s guard')
+check(ui.count('aiming.clear(); ReleaseHeld()') >= 2 or ui.count('ReleaseHeld();') >= 2, 'M14: when the page reloads (aiming emptied) the held message leaves without image')
+# F6: the page keeps a bubble's draft per element before the first send
+check('"elementKey"' in block_after(comment, 'void SendLayout(bool openNow) {'), 'F6: the layout says the element\'s stable key')
+# F9: « Voir » scrolls to the element before the bubble is placed
+check('L"peek"' in block_after(comment, 'void ShowEngineWork() {'), 'F9: « Voir » brings the element on screen first')
+# F11: a position that came while waiting for the composition waits for the next one (generations)
+fl = block_after(comment, 'void FollowLater() {')
+check('gen' in fl and 'gen' in block_after(comment, 'LRESULT CALLBACK BubbleProc('), 'F11: the scroll follow places the position its wait was for')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

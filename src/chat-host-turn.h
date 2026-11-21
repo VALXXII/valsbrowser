@@ -754,14 +754,21 @@ void Undo(const std::string& panelTurn, const std::string& checkpoint) {
             if (auto next = std::move(afterUndo)) { afterUndo = nullptr; next(ok); }
         });
 }
+// M7 (review R): the checkpoint of a turn of the conversation SHOWN — aside, its own turns (their ids are the engine's too)
+std::string CheckpointOf(const std::string& turnId) {
+    if (!aside.on) { const auto it = checkpointOfTurn.find(turnId); return it == checkpointOfTurn.end() ? std::string() : it->second; }
+    for (const auto& item : aside.c.data.items) { const auto* ty = item.Get("type"); const auto* id = item.Get("turnId"); const auto* cp = item.Get("checkpointId");
+        if (ty && ty->IsString() && ty->string == "turn.end" && id && id->IsString() && id->string == turnId && cp && cp->IsString()) return cp->string; }
+    return "";
+}
 void ViewChanges(const std::string& panelTurn, const std::string& path) {
-    auto cp = checkpointOfTurn.find(panelTurn); if (cp == checkpointOfTurn.end() || folder.empty()) return;
+    const std::string cpId = CheckpointOf(panelTurn); if (cpId.empty() || folder.empty()) return;   // M7: of the conversation shown
     std::vector<std::string> files;
     if (!path.empty()) files.push_back(path);
-    else for (const auto& item : convo.data.items) { const auto* ty = item.Get("type"); const auto* id = item.Get("turnId"); const auto* ch = item.Get("changes");
+    else for (const auto& item : ShownItems()) { const auto* ty = item.Get("type"); const auto* id = item.Get("turnId"); const auto* ch = item.Get("changes");
         if (ty && ty->string == "turn.end" && id && id->string == panelTurn && ch && ch->IsArray()) for (const auto& c : ch->items) if (const auto* p = c.Get("path"); p && p->IsString() && files.size() < 20) files.push_back(p->string); }
     if (files.empty()) return;
-    struct Out { std::vector<std::pair<std::string, CS::FileDiff>> diffs; }; auto out = std::make_shared<Out>(); auto store = Snapshots(); const std::wstring dir = folder; const std::string checkpoint = cp->second;
+    struct Out { std::vector<std::pair<std::string, CS::FileDiff>> diffs; }; auto out = std::make_shared<Out>(); auto store = Snapshots(); const std::wstring dir = folder; const std::string checkpoint = cpId;
     Ann::Run([out, store, dir, files, checkpoint] {
             if (!store->HasProject()) store->Open(dir);
             for (const auto& f : files) { CS::FileDiff d; if (store->Diff(f, checkpoint, &d, 96 * 1024).ok()) out->diffs.emplace_back(f, std::move(d)); }

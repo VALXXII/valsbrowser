@@ -148,7 +148,7 @@ struct Batch {
     std::string conversation, userId; std::size_t item = std::size_t(-1);   // the user's message that carries the card: which conversation, which item
 };
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
-HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8;
+HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9;
 // QA (C1, Q's « c1_prechauffage_retarde »): BROWSER_CHAT_TEST_WARM_DELAY_MS=<ms>, read only with BROWSER_ANNOTATIONS_TEST=1, holds
 // back the creation in advance of the bubble's and the panel's WebView by that long (a click lands before the page is ready).
 unsigned WarmDelayMs() {
@@ -181,7 +181,7 @@ ChatStore::Projects projects; bool projectsLoaded = false; std::string agentId =
 // Mode Commentaire (chat-comment.h): while the agent works on one element's conversation (convo, « the engine's »), the
 // bubble of another element may show its own conversation « aside »: the engine's thread messages are then not sent.
 struct Aside { bool on = false; Convo c; };
-Convo convo; Aside aside; bool asideSending = false; Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
+Convo convo; Aside aside; bool asideSending = false; /* M7: the items of the conversation shown (aside or the engine's) */ const std::vector<SJ::Value>& ShownItems(); void ReleaseHeld(); Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
 std::unique_ptr<Acp::Session> session; bool sessionStarting = false, sessionReady = false, preparing = false; Acp::StartResult started;
 std::string pendingModel, pendingEffort, pendingMode; ChatOptions::Asked askedModel, askedEffort, askedMode; /* R46: asked to the session, not confirmed yet */ std::function<void()> afterReady; std::function<int()> preparePermille;
 std::vector<std::unique_ptr<Acp::Session>> disposed;   // stopped sessions whose threads may still be ending (Shutdown waits for them)
@@ -414,6 +414,7 @@ void Strip(const char* id, const char* tone, const std::wstring& text, const cha
     activeStrips[id] = m; Send("strip", std::move(m));
 }
 void ClearStrip(const char* id) { activeStrips.erase(id); SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(std::string(id))); m.Set("clear", SJ::Value::Bool(true)); Send("strip", std::move(m)); }
+const std::vector<SJ::Value>& ShownItems() { return aside.on ? aside.c.data.items : convo.data.items; }   // M7
 void SaveConvo() {
     if (convo.data.head.id.empty() || convo.data.items.empty()) return;
     convo.data.head.updatedAt = BA::SystemNow();

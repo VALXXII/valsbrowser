@@ -132,6 +132,10 @@ void SendLayout(bool openNow) {
     if (ChatBubble::BubbleLayout(CommentLayout(), Shown(), bubble.open, bubble.warm)) {   // R34: one rule
         m.Set("mode", Str(std::string("bubble"))); m.Set("maxWidth", SJ::Value::Int(BubbleWidthCss)); m.Set("maxHeight", SJ::Value::Int(bubble.roomCss > 0 ? bubble.roomCss : std::min(BubbleMaxHeightCss, FreeHeightCss())));   // R38
         m.Set("side", Str(std::string(SideName(bubble.side)))); if (!bubble.label.empty()) m.Set("element", Str(bubble.label)); m.Set("open", SJ::Value::Bool(openNow));
+        {   // F6 (P's contract): the element's stable key — the page keeps a bubble's draft per element until its first send
+            std::string key = bubble.selector; if (key.empty()) if (const auto* h = AnchoredOf(bubble.conv)) key = h->anchorSelector.empty() ? h->anchorSource : h->anchorSelector;
+            if (!key.empty()) m.Set("elementKey", Str(ClipUtf8(key, 1000)));
+        }
         if (bubble.resizeMax.width > 0) {   // R40: the handle's bounds (the anchored corner stays where it is)
             SJ::Value mx = SJ::Value::Obj(); mx.Set("width", SJ::Value::Int(std::max(BubbleWidthCss, bubble.resizeMax.width))); mx.Set("height", SJ::Value::Int(bubble.resizeMax.height)); m.Set("resizeMax", std::move(mx));
             SJ::Value mn = SJ::Value::Obj(); mn.Set("width", SJ::Value::Int(BubbleWidthCss)); mn.Set("height", SJ::Value::Int(bubble.baseHCss > 0 ? bubble.baseHCss : bubble.sizeH)); m.Set("resizeMin", std::move(mn));
@@ -234,7 +238,9 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
 // that scroll reaches the screen; a window moved at once lands one screen image AHEAD of the content. The move waits
 // for the next composition (DwmFlush, on a small thread of its own), then lands with the page's image. Only the latest
 // position counts: anchors that arrive meanwhile only update the element. BROWSER_CHAT_FOLLOW_FRAMES=0 moves at once.
-struct Follower { HANDLE wake = nullptr; std::atomic<HWND> to{nullptr}; std::atomic<bool> pending{false}; } follower;
+struct Follower { HANDLE wake = nullptr; std::atomic<HWND> to{nullptr}; std::atomic<bool> pending{false}; std::atomic<unsigned> gen{0}; } follower;
+// F11 (review R): the positions the page sent, by generation — each wait places the one it waited for, a newer one waits for its own
+std::deque<std::pair<unsigned, RECT>> followPositions;
 int FollowFrames() {
     static const int n = [] { wchar_t v[8] = L""; return GetEnvironmentVariableW(L"BROWSER_CHAT_FOLLOW_FRAMES", v, 8) ? std::clamp(_wtoi(v), 0, 3) : 1; }();
     return n;
@@ -246,8 +252,9 @@ void FollowLater() {
         std::thread([] {
             for (;;) {
                 WaitForSingleObject(follower.wake, INFINITE);
+                const unsigned gen = follower.gen.load();   // F11: the positions sent so far are on their way to the screen
                 for (int i = 0; i < FollowFrames(); ++i) DwmFlush();
-                if (const HWND h = follower.to.load()) PostMessageW(h, WM_APP + 4, 0, 0);
+                if (const HWND h = follower.to.load()) PostMessageW(h, WM_APP + 4, WPARAM(gen), 0);
             }
         }).detach();
     }
@@ -315,7 +322,13 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     if (m == WM_APP + 2) { if (bubble.open && !bubble.away) { SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
     if (m == WM_APP + 3) { FinishOpening(); return 0; }   // R18: after the opening layout
-    if (m == WM_APP + 4) { follower.pending = false; if (bubble.open && bubble.known && bubble.anchor.set) PlaceBubble(true); return 0; }   // R39: the page's image is on screen
+    if (m == WM_APP + 4) {   // R39: the page's image is on screen — F11: the position this wait was for, not a newer one
+        follower.pending = false; const unsigned gen = unsigned(w); bool any = false; RECT at{};
+        while (!followPositions.empty() && followPositions.front().first <= gen) { at = followPositions.front().second; followPositions.pop_front(); any = true; }
+        if (any) { bubble.element = at; if (bubble.open && bubble.known && bubble.anchor.set) PlaceBubble(true); }
+        if (!followPositions.empty()) FollowLater();
+        return 0;
+    }
     if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     {   LRESULT r = 0; if (view.HostMessage(h, m, w, l, r)) return r; }   // R1: the page is a visual of this window: mouse, cursor, UI Automation
@@ -464,8 +477,20 @@ void RevealBubble(const wchar_t* why) {
     PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // the caret to the bubble
     Diag(std::wstring(L"bubble shown at its place ") + why + L" after " + Ann::Ms(Ann::NowMs() - bubble.openedAt) + L" ms");
 }
+// M6 / F5 (review R): a bubble closed with nothing sent (or the panel chosen) leaves no conversation tied to its element —
+// the panel showed it titled with the element, and a first message from the panel marked the element; its image is freed
+void ForgetUnsent(const std::string& conv) {
+    if (conv.empty()) return;
+    Convo* c = convo.data.head.id == conv ? &convo : (aside.on && aside.c.data.head.id == conv ? &aside.c : nullptr);
+    if (!c || SentConvo(*c) || HasQueued(conv) || (turn.active && c == &convo)) return;
+    anchorElements.erase(conv); parked.erase(conv);
+    if (c->data.head.anchorSelector.empty() && c->data.head.anchorSource.empty()) return;
+    auto& h = c->data.head; h.anchorSelector.clear(); h.anchorLabel.clear(); h.anchorPage.clear(); h.anchorSource.clear(); h.title.clear();
+    Diag(L"nothing was sent from that bubble: its conversation is no longer tied to the element");   // i18n-exempt: log detail
+}
 void CloseBubble(bool focusPage) {
     if (!bubble.open) return;
+    ForgetUnsent(bubble.conv);   // M6 / F5
     const bool wasAway = bubble.away;
     bubble.open = false; bubble.away = false; bubble.closedAt = Ann::NowMs(); bubble.waitingAck = false; if (bubble.hwnd) KillTimer(bubble.hwnd, 0xB2);
     const bool keepWarm = CommentLayout() && Ann::s.active && !privateWindow;   // R18: ready for the next click
@@ -524,8 +549,11 @@ void OnAnchor(const AH::Envelope& e) {
         }
     }
     const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows, nothing else
-    bubble.element = measured; bubble.known = true;
-    if (scrolling && FollowFrames() > 0) FollowLater(); else PlaceBubble(scrolling);
+    bubble.known = true;
+    if (scrolling && FollowFrames() > 0) {   // F11: placed when the page's image of THIS position is on screen
+        followPositions.push_back({++follower.gen, measured}); while (followPositions.size() > 8) followPositions.pop_front();
+        FollowLater();
+    } else { followPositions.clear(); bubble.element = measured; PlaceBubble(scrolling); }
     if (scrolling && e.t > 0) {   // R39: the page's scroll (its clock) -> here, summed over 30 steps   // i18n-exempt: log detail
         static int n = 0; static double sum = 0, worst = 0;
         FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
@@ -643,7 +671,8 @@ void OnHiddenPermission() {
 }
 void ShowEngineWork() {
     const std::string id = convo.data.head.id, sel = convo.data.head.anchorSelector, label = convo.data.head.anchorLabel;
-    ShowConversation(id, [id, sel, label] { if (CommentLayout()) OpenBubble(id, nullptr, sel, false, label); });
+    auto t = ChatTab(); if (t && !sel.empty() && CommentLayout()) Query(t, L"peek", W(AnnotationHost::PeekArg(sel, true)), nullptr);   // F9: the element on screen first (soft scroll)
+    ShowConversation(id, [id, sel, label, t] { if (CommentLayout()) OpenBubble(id, nullptr, sel, false, label); if (t && !sel.empty()) Query(t, L"peek", W(AnnotationHost::PeekArg("", false)), nullptr); });
 }
 
 // ---------------------------------------------------------------- the frames + icons of the page (Paper 18IJ-0)
@@ -793,11 +822,14 @@ bool HoldForAnchor(const std::string& text, const std::vector<std::string>& els,
     if (!bubble.open || anchorElements.count(bubble.conv)) return false;
     bool aimingIt = false; for (const auto& a : aiming) aimingIt = aimingIt || a.second.anchorFor == bubble.conv;
     if (!aimingIt) return false;
+    if (held.on) ReleaseHeld();   // M14: a second send — the first one leaves now (it was erased)
     held = HeldSend{true, annotate, bubble.conv, text, els, atts, Ann::NowMs()};
+    if (post) SetTimer(post, HeldTimer, 2000, nullptr);   // M14: never forever — 2 s, then without the element's image
     Diag(L"message held until the bubble's element is ready");
     return true;
 }
 void ReleaseHeld() {
+    if (post) KillTimer(post, HeldTimer);
     if (!held.on) return;
     HeldSend h = std::move(held); held = HeldSend{};
     if (auto it = anchorElements.find(h.conv); it != anchorElements.end()) {
@@ -818,6 +850,7 @@ bool KeepAnchorElement(Element& e) {
 // ---------------------------------------------------------------- the layout switch of the band (Paper 1AYP-0)
 void SwitchLayout(bool comment) {
     const bool was = CommentLayout();
+    if (!comment) ForgetUnsent(convo.data.head.id);   // M6: the panel never shows an element's unsent conversation
     if (comment != was) { projects.layout = comment ? "comment" : "panel"; SaveProjects(); Diag(comment ? L"layout: Commentaire (a bubble on the element)" : L"layout: Panneau (the chat at the right)"); }
     if (comment) {
         if (Ann::s.paused) Ann::SetSelecting(true);   // the switch of V1.4 is a panel thing: the selection is how comments start
