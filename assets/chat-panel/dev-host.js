@@ -138,7 +138,8 @@
     { type: "toolCall", turnId: "t1", id: "r2", title: "A lu Checkout.tsx", kind: "read", status: "completed", locations: [{ path: "src/pages/Checkout.tsx" }] },
     { type: "toolCall", turnId: "t1", id: "r3", title: "mcp__browser-annotations__browser_annotations_claim", kind: "other", status: "completed" },
     { type: "toolCall", turnId: "t1", id: "r4", title: running ? "Lit checkout.css…" : "A lu checkout.css", kind: "read", status: running ? "in_progress" : "completed", locations: [{ path: "src/styles/checkout.css" }] }];
-  const cRunning = () => [cUser(), cStart(), { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }].concat(cSteps(true));
+  // R43: the agent's words after its steps — the latest text of a turn in progress is its answer so far (a card, as on 1B30-0)
+  const cRunning = () => [cUser(), cStart()].concat(cSteps(true), [{ type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }]);
   const cRun = (lay) => [LAY(lay), st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: cRunning() }];
   const cDoneItems = (changes) => [cUser(), cStart()].concat(cSteps(false), [
     { type: "toolCall", turnId: "t1", id: "e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] },
@@ -199,14 +200,16 @@
     "c-largeur-320": [LAY({ maxWidth: 320 }), st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "c-modele-inconnu": [LAY({ maxWidth: 320 }), st({ model: null, agents: [CLAUDE, Object.assign({}, CODEX, { models: [] })] }), { type: "thread.reset", conversationId: "new", items: [] }],
     "c-messages-multiples": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
-      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT },
       { type: "toolCall", turnId: "t1", id: "e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] },
+      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT },
+      
       { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: CEND },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 18000, changes: [{ path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: C_DIFF }] }] }],
     // Paper 1AWI-0 as updated by the user (two agent messages, 1AZV-0), at Paper's 305 px — compared value by value
     "c-3-termine-v3": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()].concat(cSteps(false), [
-      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT },
       { type: "toolCall", turnId: "t1", id: "e1", title: "A modifié checkout.css", kind: "edit", status: "completed", locations: [{ path: "src/styles/checkout.css" }] },
+      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT },
+      
       { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: CEND },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 18000, changes: [{ path: "src/styles/checkout.css", status: "modified", added: 6, removed: 2, diff: C_DIFF }] }]) }],
     // cv4 R35: words and a chip in the panel, then two elements' bubbles, then back to A, then back to the panel
@@ -223,6 +226,17 @@
       () => { window.__drafts.panel = document.querySelector(".cin").textContent.replace(/\s+/g, " ").trim(); }],
     "c-diff-redimension": cDone({ maxWidth: 320, maxHeight: 520 }).concat([click(".bt-bar-main"), wait(80)]),
     "c-menus-morph": [LAY({ maxWidth: 320 }), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(260)],
+    // R43: announcements before actions, then the answer — during the turn, then its end
+    "c-suivi": [LAY({ maxWidth: 320 }), st(Object.assign({ running: true }, conv("Carte « S'ouvre à plat »", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+      { type: "message.agentChunk", turnId: "t1", messageId: "a1", text: "Je cherche cette phrase dans landing.html." },
+      { type: "toolCall", turnId: "t1", id: "s1", title: "Read landing.html", kind: "read", status: "completed", locations: [{ path: "landing.html" }] },
+      { type: "message.agentChunk", turnId: "t1", messageId: "a2", text: "Je raccourcis la phrase dans landing.html." },
+      { type: "toolCall", turnId: "t1", id: "s2", title: "Edit landing.html", kind: "edit", status: "in_progress", locations: [{ path: "landing.html" }] }] }],
+    "suivi": [st(Object.assign({ running: true }, conv("Carte", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+      { type: "message.agentChunk", turnId: "t1", messageId: "a1", text: "Je cherche cette phrase dans landing.html." },
+      { type: "toolCall", turnId: "t1", id: "s1", title: "Read landing.html", kind: "read", status: "completed", locations: [{ path: "landing.html" }] },
+      { type: "message.agentChunk", turnId: "t1", messageId: "a2", text: "J'ai raccourci le texte." },
+      { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],
     "c-messages-deux": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Rien d'autre n'a changé." },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],

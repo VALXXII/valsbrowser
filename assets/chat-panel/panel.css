@@ -859,3 +859,20 @@ button.bt-st.run::before { content: ""; position: absolute; inset: -1px 0; }
 @media (hover: hover) { .bub #app.view .b-grip:hover path { stroke: #FFFFFF80; } }
 .bub #app.resizing, .bub #app.resizing * { cursor: nwse-resize !important; user-select: none; }
 
+/* R43 (Paper « 5 · Suivi vs réponse », B and D): an announcement of the agent is a grey follow-up line without a card —
+   13/20 #FFFFFF80, a 14×20 slot with a 12 px check (white 40 %) once its action is done, a small ring while it runs;
+   lines 2 px apart, the group 4 px under what precedes it and 6 px above what follows, 8 px from the sides */
+.bub .turn.bt > .bt-text.bt-follow { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; background: none; border-radius: 0; padding: 0 8px; }
+.bub .turn.bt > :not(.bt-follow) + .bt-text.bt-follow { margin-top: 4px; }
+.bub .turn.bt > .bt-text.bt-follow:has(+ :not(.bt-follow)) { margin-bottom: 6px; }
+.follow { display: flex; align-items: flex-start; gap: 8px; }
+.bt-follow .text, .follow .text { color: var(--w50); font-size: 13px; line-height: 20px; flex: 1; min-width: 0; }
+.fl-ic { display: flex; align-items: center; justify-content: center; width: 14px; height: 20px; flex-shrink: 0; }
+.fl-ic svg { width: 12px; height: 12px; }
+.fl-ic.done svg { color: #FFFFFF66; }
+.fl-ic.run svg { color: var(--w60); }
+/* at the end of the turn they close softly: height and fade, 250 ms */
+.fl-closing { overflow: hidden; opacity: 0; margin-top: 0 !important; margin-bottom: 0 !important;
+  transition: height 250ms var(--ease-out), opacity 200ms ease-out, margin 250ms var(--ease-out); }
+@media (prefers-reduced-motion: reduce) { .fl-closing { transition: none; } }
+

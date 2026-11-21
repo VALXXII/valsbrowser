@@ -837,6 +837,25 @@ try:
           const t0=performance.now(),seen=[];const f=()=>{const m=document.querySelector('.menu:not(.menu-ghost)');if(m)seen.push(+getComputedStyle(m).opacity);
           if(performance.now()-t0<520)requestAnimationFrame(f);else r({frames:seen.length,min:Math.min(...seen)})};requestAnimationFrame(f)})""")
         check(op["frames"] >= 20 and op["min"] == 1, "bubble (cv5 R41): the new menu's surface is opaque at every image from the click to 500 ms after — the entrance fade never replays at the end", json.dumps(op))
+        # R43: announcements are grey follow-up lines during the turn; the last text is the answer (a card); at the end the lines
+        # close softly and join « Historique »
+        load("c-suivi")
+        fl = cdp.js("""(()=>{const ls=Array.from(document.querySelectorAll('.turn.bt > .bt-follow'));return ls.map(l=>{const t=l.querySelector('.text'),c=getComputedStyle(t),b=getComputedStyle(l),i=l.querySelector('.fl-ic');
+          return [t.textContent, c.fontSize+'/'+c.lineHeight, c.color, b.backgroundColor, i.className.replace('fl-ic ',''), getComputedStyle(i.querySelector('svg')).width]})})()""")
+        check(fl == [["Je cherche cette phrase dans landing.html.", "13px/20px", "rgba(255, 255, 255, 0.5)", "rgba(0, 0, 0, 0)", "done", "12px"],
+                     ["Je raccourcis la phrase dans landing.html.", "13px/20px", "rgba(255, 255, 255, 0.5)", "rgba(0, 0, 0, 0)", "run", "12px"]],
+              "bubble (R43): each announcement before an action is a grey line without a card (13/20, #FFFFFF80), a 12 px check once done, a ring while it runs", json.dumps(fl, ensure_ascii=False))
+        host({"type": "toolCallUpdate", "id": "s2", "status": "completed"})
+        host({"type": "message.agentChunk", "turnId": "t1", "messageId": "a3", "text": "J'ai raccourci le texte de la carte."})
+        host({"type": "turn.end", "turnId": "t1", "stopReason": "end_turn", "durationMs": 9000, "changes": [{"path": "landing.html", "status": "modified", "added": 1, "removed": 1}]})
+        mid43 = cdp.js("[document.querySelectorAll('.turn.bt > .fl-closing').length, getComputedStyle(document.querySelector('.fl-closing')||document.body).transitionDuration]")
+        time.sleep(.4)
+        end43 = cdp.js("[document.querySelectorAll('.turn.bt > .bt-follow, .turn.bt > .fl-closing').length, Array.from(document.querySelectorAll('.turn.bt > .bt-text')).map(c=>c.textContent), !!document.querySelector('.bt-bar')]")
+        c = center(".bt-st.done"); move(*c); time.sleep(.6)
+        h43 = cdp.js("Array.from(document.querySelectorAll('#b-tip .r')).map(r=>r.textContent)")
+        move(c[0], c[1] + 300)
+        check(mid43[0] == 2 and "0.25s" in mid43[1] and end43 == [0, ["J'ai raccourci le texte de la carte."], True], "bubble (R43): at the end of the turn the lines close (250 ms); only the answer card and the changes bar stay", f"{mid43} {end43}")
+        check(h43 == ["Je cherche cette phrase dans landing.html.", "A lu landing.html", "Je raccourcis la phrase dans landing.html.", "A modifié landing.html"], "bubble (R43): the announcements join « Historique », in their order", str(h43))
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -985,6 +1004,9 @@ try:
         if tc: move(*tc); time.sleep(.3); move(tc[0], tc[1] + 300); time.sleep(.1)
         th26 = cdp.js("window.__posted.filter(m=>m.type==='element.hover').map(m=>m.active)")
         check(tc is not None and th26 == [True, False], "panel (cv4 R26): the same for a chip in the thread", str(th26))
+        load("suivi")
+        p43 = cdp.js("[document.querySelectorAll('.follow').length, Array.from(document.querySelectorAll('.turn .text')).map(t=>t.textContent)]")
+        check(p43 == [0, ["J'ai raccourci le texte."]], "panel (R43): a finished turn shows only its answer — the announcements are gone (folded with the steps)", str(p43))
         load("etapes-brutes")
         pl4 = cdp.js("Array.from(document.querySelectorAll('.steps .step span:not(.spin):not(.fail-tag)')).map(n=>n.textContent)")
         check(pl4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build", "Modifie landing.css…"], "panel (D4): the same French labels for the steps, never the agent's raw title", str(pl4))

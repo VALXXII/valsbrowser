@@ -768,3 +768,16 @@ transforme). Pendant les 200 ms, les `overflow*` de `bubble.size` couvrent l'**u
 l'hôte applique la région demandée dès réception. Ouverture depuis l'état fermé et fermeture finale inchangées ; en
 mouvement réduit, changement direct.
 
+## 24. Lignes de suivi et réponse (R43, Paper « 5 · Suivi vs réponse », colonnes B et D)
+
+Bulle et Chat à droite. Un texte de l'agent suivi d'un appel d'outil dans le même tour est une **annonce** ; le dernier
+texte du tour est la **réponse**. Pendant le tour, chaque annonce est une **ligne de suivi** grise sans carte : texte
+13/20 `#FFFFFF80`, emplacement 14 × 20 à gauche (8 px d'écart) avec une coche de 12 px blanc 40 % quand son action est
+faite, un petit anneau tant qu'elle tourne ; lignes à 2 px l'une de l'autre, le groupe 4 px sous ce qui précède, 6 px
+au-dessus de ce qui suit, 8 px des bords. La réponse est une carte (§21.3). À la fin du tour (`turn.end`), le dernier texte
+redevient la réponse s'il avait été pris pour une annonce ; les lignes de suivi se referment en douceur (hauteur et fondu,
+250 ms ; tout de suite en mouvement réduit et au rejeu) et rejoignent la liste « Historique » de la bulle, dans leur ordre,
+entre les étapes ; il ne reste que la réponse et la barre des changements. Un texte rejoué (`thread.reset`) n'a pas de
+curseur clignotant. La langue des annonces et de la réponse (celle de l'utilisateur) relève de la consigne envoyée par
+l'hôte.
+

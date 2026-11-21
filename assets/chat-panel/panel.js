@@ -1519,6 +1519,7 @@
   function bTipRows(steps) {
     const rows = [];
     for (const x of steps) {
+      if (x.say) { rows.push({ icon: "check", text: x.say, cls: "say" }); continue; }
       const failed = x.status === "failed";
       if (!failed && !x.summary && TOOL_RE.test(x.title || "")) {      // raw MCP calls count together: « A utilisé 2 outils MCP »
         const last = rows[rows.length - 1];
@@ -1622,7 +1623,12 @@
       rows = bTipRows(steps.filter((x) => x !== cur && x.status !== "in_progress" && x.status !== "pending"));
       kind = "run";
     } else if (t.stop === "cancelled") { kind = "stop"; label = "S'est arrêté"; }
-    else if (t.stop !== "error" && steps.length) { kind = "done"; label = "Historique"; rows = bTipRows(steps); }
+    else if (t.stop !== "error" && steps.length) {
+      kind = "done"; label = "Historique";
+      const hist = [];   // R43: the announcements join the list, in their order
+      for (const s of t.segs) { if (s.kind === "text" && s.closed) hist.push({ say: plain(s.text) }); else if (s.kind === "steps") hist.push(...s.tools); }
+      rows = bTipRows(hist);
+    }
     t.stRows = rows;
     // B 1.9 (R8, Paper 1B30-0): until the agent's first words arrive, the step in progress sits where its message will be,
     // under « modèle · effort », like a message — then the words take that place and the step moves right of the model.
@@ -1652,7 +1658,7 @@
   // R17 (Paper 1AZV-0): the agent's cards are a group, 2 px apart; the corners follow the place in the group — the first
   // 4/10/4/4, the middle ones 4, the result bar last (4/4/10/10); a lone card 4/12/16/12; a closing card 4/4/16/12.
   function bCards(t) {
-    const cards = Array.from(t.el.querySelectorAll(":scope > .bt-text")).filter((c) => !c.hidden);
+    const cards = Array.from(t.el.querySelectorAll(":scope > .bt-text")).filter((c) => !c.hidden && !c.classList.contains("bt-follow") && !c.classList.contains("fl-closing"));
     const n = cards.length, bar = !!t.barEl;
     cards.forEach((c, i) => {
       const first = i === 0, last = i === n - 1 && !bar;
@@ -1945,17 +1951,68 @@
     if (t.b) { bModel(t); return; }
     setMeta(t, (t.running ? [t.model, t.effort] : [t.model.replace(/\s+[\d.]+$/, ""), t.effort, dur(t.durMs || 0)]).filter(Boolean).join(" · "));
   }
+  // R43 (Paper « 5 · Suivi vs réponse », columns B and D): a text of the agent followed by an action in the same turn is an
+  // announcement — a grey follow-up line without a card (13/20, #FFFFFF80; a 12 px check, white 40 %, once its action is
+  // done; a small ring while it runs). The last text of the turn is the answer (a card). At the end of the turn the lines
+  // close softly (height and fade, 250 ms) and join the « Historique » list; only the answer and the changes bar stay.
+  function markFollow(t, seg, on) {
+    if (!!seg.follow === on) return;
+    seg.follow = on;
+    if (on) seg.wasFollow = true;
+    if (t.b) {
+      const box = seg.box;
+      if (!box) return;
+      box.classList.toggle("bt-follow", on);
+      if (on) { seg.ic = h("span", { class: "fl-ic", "aria-hidden": "true" }); box.prepend(seg.ic); }
+      else if (seg.ic) { seg.ic.remove(); seg.ic = null; }
+      bCards(t);
+      return;
+    }
+    if (on) { seg.wrap = h("div", { class: "follow" + (S.replay ? "" : " enter") }); seg.el.before(seg.wrap); seg.ic = h("span", { class: "fl-ic", "aria-hidden": "true" }); seg.wrap.append(seg.ic, seg.el); }
+    else if (seg.wrap) { seg.wrap.before(seg.el); seg.wrap.remove(); seg.wrap = null; seg.ic = null; }
+  }
+  function refreshFollow(t) {
+    t.segs.forEach((seg, i) => {
+      if (!seg.follow || !seg.ic) return;
+      const after = [];
+      for (let j = i + 1; j < t.segs.length && t.segs[j].kind !== "text"; j++) if (t.segs[j].kind === "steps") after.push(...t.segs[j].tools);
+      const run = after.some((x) => x.status === "in_progress" || x.status === "pending") || (!after.length && t.running);
+      const state = run ? "run" : "done";
+      if (seg.icState === state) return;
+      seg.icState = state;
+      clear(seg.ic).appendChild(run ? h("span", { class: "spin", style: "display:flex" }, icon("spinnerB")) : icon("check"));
+      seg.ic.className = "fl-ic " + state;
+    });
+  }
+  function closeFollows(t) {
+    const texts = t.segs.filter((x) => x.kind === "text");
+    const last = texts[texts.length - 1];
+    if (last && last.follow) markFollow(t, last, false);   // the last text of the turn is the answer
+    for (const seg of texts) {
+      if (!seg.follow) continue;
+      const el = t.b ? seg.box : seg.wrap;
+      seg.follow = false; seg.closed = true;
+      if (!el) continue;
+      if (S.replay || isReduced()) { el.remove(); continue; }
+      el.style.height = el.offsetHeight + "px"; el.classList.add("fl-closing");
+      void el.offsetWidth;
+      el.style.height = "0px";
+      setTimeout(() => { el.remove(); if (t.b) bCards(t); stick(); publishSize(); }, 270);
+    }
+    if (t.b) bCards(t);
+  }
   function addSeg(t, seg) {
     t.segs.push(seg);
     if (t.b) {   // bubble: the words go in the agent's block; steps and thoughts are not lines, they feed the status and its hover list
       for (const s of t.segs) if (s.kind === "text" && s !== seg) s.el.classList.remove("streaming");   // the caret only while the words are the last thing
       if (seg.kind === "text") {
         const used = t.segs.some((x) => x !== seg && x.kind === "text");
-        if (!used) t.textBox.appendChild(seg.el);
+        if (!used) { t.textBox.appendChild(seg.el); seg.box = t.textBox; }
         else {   // R17: each new message of the agent is a new card, right after the last one
           const card = h("div", { class: "bt-text" + (S.replay ? "" : " enter") }, seg.el);
           const cards = t.el.querySelectorAll(":scope > .bt-text");
           cards[cards.length - 1].after(card);
+          seg.box = card;
         }
       }
       else if (seg.kind === "plan" || seg.kind === "error") t.el.appendChild(seg.el);
@@ -1999,7 +2056,7 @@
   function textSeg(t, messageId) {
     const el = h("div", { class: "text" });
     const doc = new window.ChatMarkdown.Doc(el, mdOpts);
-    const seg = { kind: "text", messageId, text: "", spoken: 0, el, render() { doc.set(seg.text); el.classList.toggle("streaming", t.running && seg === (t.b ? t.segs[t.segs.length - 1] : t.segs.filter((s) => s.kind === "text").pop())); } };
+    const seg = { kind: "text", messageId, text: "", spoken: 0, el, render() { doc.set(seg.text); el.classList.toggle("streaming", !S.replay && t.running && seg === (t.b ? t.segs[t.segs.length - 1] : t.segs.filter((s) => s.kind === "text").pop())); } };
     noteNew(1);
     return addSeg(t, seg);
   }
@@ -2134,12 +2191,14 @@
   function onToolCall(m) {
     const t = turnOf(m.turnId);
     let seg = t.segs[t.segs.length - 1];
+    if (seg && seg.kind === "text" && t.running) markFollow(t, seg, true);   // R43
     if (!seg || seg.kind !== "steps") seg = stepsSeg(t);
     else noteNew(1);
     const x = { id: m.id, title: m.title, kind: m.kind || "other", status: m.status || "pending", locations: m.locations || [], diff: m.diff, summary: validSummary(m.summary) };
     seg.tools.push(x);
     S.tools.set(m.id, { x, seg, t });
     queueRender(seg);
+    refreshFollow(t);
     if (x.status === "in_progress") say(x.title);
   }
   function onToolUpdate(m) {
@@ -2148,6 +2207,7 @@
     for (const k of ["title", "status", "locations", "diff"]) if (m[k] != null) r.x[k] = m[k];
     if (m.summary != null) r.x.summary = validSummary(m.summary);
     queueRender(r.seg);
+    refreshFollow(r.t);
     if (m.status === "failed") say("Étape en échec : " + r.x.title);
   }
 
@@ -2424,6 +2484,7 @@
     t.copyText = copyText;
     if (changes.length && t.b) { t.changes = changes; t.barEl = bBar(t); if (!S.replay) t.barEl.classList.add("enter"); t.el.appendChild(t.barEl); t.el.classList.add("has-bar"); bCards(t); }
     else if (changes.length) { t.changes = changes; t.undoable = m.undoable !== false; t.changesEl = changesBar(t, changes, t.undoable); t.el.appendChild(t.changesEl); }
+    closeFollows(t);
     if (t.b) bStatus(t);   // « S'est arrêté », or « Historique » (Paper 1AE7-0, 1AWI-0): no hover actions, no « Revenir » in the bubble
     else if (m.stopReason !== "error") t.el.appendChild(h("div", { class: "actions" },
       h("button", { class: "icon-btn", type: "button", "aria-label": "Copier la réponse", onclick: (e) => { lastCopy = null; post("copy", { text: copyText }); } }, icon("copy")),
