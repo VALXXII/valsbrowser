@@ -248,6 +248,8 @@ void FollowLater() {
     if (!follower.pending.exchange(true)) { askedAt = Ann::NowMs(); SetEvent(follower.wake); }
 }
 RECT BubbleScreenRect() { RECT r{}; if (bubble.hwnd) GetWindowRect(bubble.hwnd, &r); return r; }
+// M10: what of the bubble is on screen and takes the clicks (its region: surface + overflow asked), screen px
+RECT BubbleRegionScreen() { const RECT w = BubbleScreenRect(); return RECT{w.left + bubble.region.left, w.top + bubble.region.top, w.left + bubble.region.right, w.top + bubble.region.bottom}; }
 // Another application in front (test réel: a window of another program took the foreground): the bubble is not closed
 // any more — it is hidden, still open (its conversation, its draft, its place), and shown again as it was as soon as a
 // window of this browser is in front. One state: open + away = hidden; every opening, closing and click clears it.

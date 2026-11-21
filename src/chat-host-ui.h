@@ -377,9 +377,9 @@ void Connect(const std::string& id, const std::string& methodId) {
 // panel's rectangle every 80 ms; outside, the panel gets `pointer.leave` and the watch stops. Nothing runs otherwise.
 RECT PanelRect(float shown);
 bool PointerInPanel() {
-    POINT p{}; if (!GetCursorPos(&p) || !Open()) return false;
+    POINT p{}; if (!GetCursorPos(&p) || (!Open() && !BubbleOpen())) return false;   // M10: in the bubble too
+    if (BubbleOpen()) { extern RECT BubbleRegionScreen(); const RECT br = BubbleRegionScreen(); return p.x >= br.left && p.x < br.right && p.y >= br.top && p.y < br.bottom; }   // M10: its region, not the transparent window
     RECT r = PanelRect(1.f); POINT a{r.left, r.top}, b{r.right, r.bottom}; ClientToScreen(window, &a); ClientToScreen(window, &b);
-    if (BubbleOpen()) { extern RECT BubbleScreenRect(); const RECT br = BubbleScreenRect(); return p.x >= br.left && p.x < br.right && p.y >= br.top && p.y < br.bottom; }
     return p.x >= a.x && p.x < b.x && p.y >= a.y && p.y < b.y && WindowFromPoint(p) && (GetAncestor(WindowFromPoint(p), GA_ROOT) == window);
 }
 void WatchHover(bool on) {
@@ -396,7 +396,8 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
         if (w == FolderTimer) { KillTimer(h, FolderTimer); AskPageMarks(folderMarksOrigin, folderMarksTries); return 0; }
-        if (w == HoverTimer) { if (!Open() || !panelReady) { KillTimer(h, HoverTimer); return 0; } if (!PointerInPanel()) { KillTimer(h, HoverTimer); Send("pointer.leave"); Diag(L"pointer left the panel: hover tooltip closed"); } return 0; }
+        if (w == StopTimer) { KillTimer(h, StopTimer); if (turn.active && turn.cancelled) { DisposeSession(L"stop not answered"); if (turn.active) FinishTurn("cancelled"); } return 0; }   // M1   // i18n-exempt: log reason
+        if (w == HoverTimer) { if ((!Open() && !BubbleOpen()) || !panelReady) { KillTimer(h, HoverTimer); return 0; } if (!PointerInPanel()) { KillTimer(h, HoverTimer); Send("pointer.leave"); Diag(L"pointer left the panel: hover tooltip closed"); } return 0; }
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -844,6 +845,11 @@ void OnPanelMessage(const std::string& json) {
 void SelectionChanged() { SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
 void Shutdown() {
     if (prepareCancel) *prepareCancel = true;
+    if (turn.active && !convo.data.head.id.empty()) {   // M11 (review R): the turn running ends, written now — it never shows « Travaille… » again
+        SJ::Value m = SJ::Value::Obj(); m.Set("turnId", Str(turn.id)); m.Set("status", Str(std::string("cancelled"))); m.Set("stopReason", Str(std::string("cancelled")));
+        Keep("turn.end", m); convo.data.head.updatedAt = BA::SystemNow(); History().Save(convo.data);   // synchronous: the process is ending
+        turn.active = false; Diag(L"the browser closes during a turn: it is written as interrupted");   // i18n-exempt: log detail
+    }
     if (session) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }
     for (auto& s : disposed) s->WaitStopped(3000);
     disposed.clear(); view.Destroy(); panelReady = false; panelState = PanelState::Closed;

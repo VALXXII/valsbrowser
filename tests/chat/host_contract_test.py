@@ -115,6 +115,22 @@ place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
 check('FrameKept(' in place and place.find('FrameKept(') < place.find('FrameBubble('), 'E4: PlaceBubble carries the frame of the opening before framing again')
 check('m.Set("room"' in block_after(comment, 'void SendLayout(bool openNow) {'), 'E4 (b): the layout tells the page the room really usable for its menus (page area)')
 
+# M1: « Arrêter » the agent does not answer: 5 s later (or at a second « Arrêter ») the session is stopped and the turn ends
+stop = block_after(turn, 'void StopTurn() {')
+check('StopTimer' in stop and 'turn.cancelled' in stop[:stop.find('turn.cancelled = true')] if 'turn.cancelled = true' in stop else False,
+      'M1: StopTurn arms a guard delay and a second « Arrêter » forces the end')
+check('StopTimer' in ui and 'stop not answered' in ui, 'M1: at the guard delay, the session is stopped and the turn ended (cancelled)')
+# M10: in the bubble the hover timer runs and the pointer is compared with the bubble's region, not the whole window
+hover = ui[ui.find('if (w == HoverTimer)'):][:400]
+check('BubbleOpen()' in hover, 'M10: the hover timer keeps running in the bubble (it stopped at !Open())')
+check('BubbleRegionScreen()' in block_after(ui, 'bool PointerInPanel() {'), 'M10: the pointer is compared with the bubble region (surface + overflow asked), not the transparent window')
+# M11: the browser closed during a turn writes its end (interrupted), so it never shows « Travaille… » again
+shut = block_after(ui, 'void Shutdown() {')
+check('turn.active' in shut and '"turn.end"' in shut, 'M11: Shutdown ends the running turn in the conversation saved')
+# M13: a turn whose session cannot start ends in error instead of waiting forever
+ens = block_after(turn, 'void EnsureSession(std::function<void()> ready) {')
+check('FinishTurn(' in ens, 'M13: EnsureSession ends the turn in error when no session can start')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

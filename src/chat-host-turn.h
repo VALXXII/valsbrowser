@@ -221,7 +221,10 @@ void StartSession() {
 void EnsureSession(std::function<void()> ready) {
     if (sessionReady && session) { ready(); return; }
     afterReady = std::move(ready);
-    if (!session && !sessionStarting && !preparing) StartSession();
+    if (!sessionStarting && !preparing) StartSession();   // M13: an object left by « sign-in needed » counts as none (StartSession disposes it)
+    if (!session && !sessionStarting && !preparing && turn.active) {   // M13: nothing could start — the turn ends in error instead of waiting forever
+        afterReady = nullptr; Acp::Error e; e.code = Acp::ErrorCode::NotReady; turn.failure = e; Diag(L"no session could start: the turn ends in error"); FinishTurn("error");   // i18n-exempt: log detail
+    }
 }
 void ArmAgentIdle() { if (post && !turn.active) SetTimer(post, AgentIdleTimer, Open() || BubbleOpen() || (CommentLayout() && Ann::s.active) ? AgentIdleMs() : PanelIdleMs(), nullptr); }
 
@@ -703,6 +706,9 @@ void FinishTurn(const std::string& stopReason) {
 }
 void StopTurn() {
     if (!turn.active) return;
+    // M1 (review R): an agent that does not answer « cancel » — a second « Arrêter », or 5 s, ends the turn anyway
+    if (turn.cancelled) { if (post) KillTimer(post, StopTimer); DisposeSession(L"stop not answered (second stop)"); if (turn.active) FinishTurn("cancelled"); return; }   // i18n-exempt: log reason
+    if (post) SetTimer(post, StopTimer, 5000, nullptr);
     turn.cancelled = true;
     if (turn.promptSent && session) session->Cancel();          // -> TurnEnded{cancelled}
     else if (!sessionReady && !sessionStarting && !preparing) FinishTurn("cancelled");
