@@ -148,7 +148,28 @@ struct Batch {
     std::string conversation, userId; std::size_t item = std::size_t(-1);   // the user's message that carries the card: which conversation, which item
 };
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
-HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6;
+HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7;
+// QA (C1, Q's « c1_prechauffage_retarde »): BROWSER_CHAT_TEST_WARM_DELAY_MS=<ms>, read only with BROWSER_ANNOTATIONS_TEST=1, holds
+// back the creation in advance of the bubble's and the panel's WebView by that long (a click lands before the page is ready).
+unsigned WarmDelayMs() {
+    static const unsigned v = [] {
+        wchar_t t[8] = L"", d[16] = L"";
+        if (!GetEnvironmentVariableW(L"BROWSER_ANNOTATIONS_TEST", t, 8) || wcscmp(t, L"1") != 0) return 0u;
+        return GetEnvironmentVariableW(L"BROWSER_CHAT_TEST_WARM_DELAY_MS", d, 16) ? unsigned(std::max(0, _wtoi(d))) : 0u;
+    }();
+    return v;
+}
+// true while the warm-up is held back (the first call starts the delay and arms WarmTimer, which calls the warm-ups again)
+bool WarmHeldBack() {
+    static double since = 0; static bool said = false;
+    const unsigned d = WarmDelayMs(); if (!d) return false;
+    if (since == 0) since = Ann::NowMs();
+    const double left = d - (Ann::NowMs() - since);
+    if (left <= 0) return false;
+    if (!said) { said = true; Diag(L"warm-up held back " + std::to_wstring(d) + L" ms (test)"); }   // i18n-exempt: log detail
+    if (post) SetTimer(post, WarmTimer, UINT(left) + 1, nullptr);
+    return true;
+}
 AUI::Ramp slide; std::weak_ptr<Tab> chatTab; ChatLocal::Site site; std::wstring folder; ChatFolder::Guess suggestion; bool suggestionAsked = false;
 // Project folder without a screen (contract B 1.4): `folderAsk` = the detection is uncertain, the panel shows « Où est
 // le code de ce site ? »; `folderChosen` = the current folder was picked or confirmed by the user (never replaced by a

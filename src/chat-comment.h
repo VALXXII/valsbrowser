@@ -311,6 +311,7 @@ bool EnsureBubbleWindow() {
 // A click then only places the window, sends the opening layout and reveals the surface on the page's acknowledgement.
 void WarmBubble() {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow || !CommentLayout() || Shown() || bubble.open) return;   // R34: not while the panel slides out
+    if (WarmHeldBack()) return;   // QA only
     EnsureInit(); if (!EnsureBubbleWindow()) return;
     if (post) KillTimer(post, DestroyTimer);
     const RECT a = PageArea(); const float k = Dpi(); const int w = int(std::lround((BubbleWidthCss + 2 * BubbleMarginCss) * k)), h = int(std::lround(BubbleMaxHeightCss * k));

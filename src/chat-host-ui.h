@@ -388,6 +388,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_APP + 22) { PrepareProgress(); return 0; }
     if (m == WM_TIMER) {
         if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && !BubbleWarm() && !Ann::s.active && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
+        if (w == WarmTimer) { void WarmPanel(); void WarmBubble(); KillTimer(h, WarmTimer); WarmPanel(); WarmBubble(); return 0; }   // QA: the warm-up held back is done now
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
@@ -529,6 +530,7 @@ void Toggle(bool keyboard) {
 // so its first image already shows the agent, its logo, the model · effort and the mode (never « ☆ Agent »).
 void WarmPanel() {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow || CommentLayout() || Shown() || !AskAvailable(t)) return;
+    if (WarmHeldBack()) return;   // QA only
     EnsureInit(); PrepareChat(t);
     if (view.Usable(environment.p) || view.Creating()) return;
     view.Destroy(); panelReady = false;
