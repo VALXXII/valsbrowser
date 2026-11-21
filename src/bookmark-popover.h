@@ -356,8 +356,8 @@ public:
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius); // no shadow: region-rounded, never DWM-rounded
-        name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
-        url_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
+        name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr); NativeUI::SelectAllOnCtrlA(name_);
+        url_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr); NativeUI::SelectAllOnCtrlA(url_);
         for (HWND e : {name_, url_}) { SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SetWindowSubclass(e, EditProc, 7, reinterpret_cast<DWORD_PTR>(this)); }
         SendMessageW(name_, EM_SETLIMITTEXT, 1024, 0); SendMessageW(url_, EM_SETLIMITTEXT, 4095, 0);
         fieldBrush_ = CreateSolidBrush(FieldGray());
