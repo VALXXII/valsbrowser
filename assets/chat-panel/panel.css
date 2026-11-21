@@ -876,3 +876,6 @@ button.bt-st.run::before { content: ""; position: absolute; inset: -1px 0; }
   transition: height 250ms var(--ease-out), opacity 200ms ease-out, margin 250ms var(--ease-out); }
 @media (prefers-reduced-motion: reduce) { .fl-closing { transition: none; } }
 
+/* R42: « Passé à Opus 5.5 · Moyen » — the panel's marker, also in the bubble (where the other markers stay hidden) */
+.bub .marker.mswitch { display: flex !important; }
+

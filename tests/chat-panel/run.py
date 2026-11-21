@@ -856,6 +856,20 @@ try:
         move(c[0], c[1] + 300)
         check(mid43[0] == 2 and "0.25s" in mid43[1] and end43 == [0, ["J'ai raccourci le texte de la carte."], True], "bubble (R43): at the end of the turn the lines close (250 ms); only the answer card and the changes bar stay", f"{mid43} {end43}")
         check(h43 == ["Je cherche cette phrase dans landing.html.", "A lu landing.html", "Je raccourcis la phrase dans landing.html.", "A modifié landing.html"], "bubble (R43): the announcements join « Historique », in their order", str(h43))
+        # R42: same provider = same agent even when the state came back (other objects); the thread says « Passé à … »
+        load("c-1-vide")
+        cdp.js("window.devHost.send(JSON.parse(JSON.stringify({type:'state',agents:[{id:'claude-code',name:'Claude Code',icon:'claude',status:'ready',models:[{id:'opus',label:'Opus 5.5'},{id:'sonnet',label:'Sonnet 5.5',isDefault:true},{id:'haiku',label:'Haiku 5.5'}]},{id:'codex',name:'Codex',icon:'codex',status:'ready',models:[{id:'terra',label:'6.1 Terra'}]}]})))"); time.sleep(.1)
+        click(".model .m")
+        chk = cdp.js("(document.querySelector('.menu .mi[aria-checked=true] .lb')||{}).textContent")
+        cdp.js("Array.from(document.querySelectorAll('.menu .mi')).find(b=>b.textContent.startsWith('Opus 5.5')).click()"); time.sleep(.1)
+        r42 = cdp.js("[window.__posted.filter(m=>m.type==='setModel').map(m=>m.id+'@'+m.agentId), !!document.querySelector('.menu'), document.querySelector('.model .mn').textContent, window.__posted.some(m=>m.type==='setAgent')]")
+        check(chk == "Sonnet 5.5" and r42 == [["opus@claude-code"], False, "Opus 5.5", False], "bubble (R42): a model of the same provider applies at once (compared by id, the state having been sent again), no box, no agent change", f"{chk} {r42}")
+        host({"type": "model.switch", "agentId": "claude-code", "model": "Opus 5.5", "modelId": "opus", "effort": "Moyen", "effortId": "medium"})
+        host({"type": "model.switch", "agentId": "codex", "agentName": "Codex"})
+        ms = cdp.js("Array.from(document.querySelectorAll('.mswitch')).map(n=>[n.textContent, getComputedStyle(n).display])")
+        check(ms == [["Passé à Opus 5.5 · Moyen", "flex"], ["Passé à Codex", "flex"]], "bubble (R42): `model.switch` draws a discreet grey line « Passé à Opus 5.5 · Moyen » (« Passé à Codex » without a model)", str(ms))
+        load("c-modele-change")
+        check(cdp.js("Array.from(document.querySelectorAll('.mswitch')).map(n=>n.textContent)") == ["Passé à Opus 5.5 · Moyen"], "bubble (R42): the « Passé à » line comes back with the conversation (thread.reset)")
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -1092,9 +1106,7 @@ try:
         key("ArrowLeft")
         check(eff[0] == "Effort" and eff[1].startswith("Élevé") and eff[2] == 1 and cdp.js("document.activeElement.dataset.key") == "effort", "model menu: → opens Effort inside the same menu, ← returns to its row", str(eff))
         cdp.js("Array.from(document.querySelectorAll('.menu .mi')).find(b=>b.textContent==='6.1 Terra').click()"); time.sleep(.1)
-        warn = cdp.js("(document.querySelector('.menu .mwarn')||{}).textContent||''")
-        check("Passer à Codex ouvre un nouveau chat. Celui-ci reste dans l'historique." in warn and not any(p.startswith("setModel:terra") for p in posted()), "model menu (V1.2): another provider's model first says it opens a new chat", warn[:120])
-        cdp.js("Array.from(document.querySelectorAll('.menu .btn-s')).find(b=>b.textContent==='Passer à Codex').click()"); time.sleep(.15)
+        check(not cdp.js("!!document.querySelector('.menu .mwarn')") and cdp.js("!document.querySelector('.menu')"), "model menu (R42): another provider's model applies at once, no « Changer d'agent » box, the menu closes")
         sent = cdp.js("window.__posted.filter(m=>m.type==='setModel').map(m=>m.id+'@'+m.agentId)")
         check(sent[-1:] == ["terra@codex"] and cdp.js("document.querySelector('.model .mn').textContent") == "6.1 Terra" and cdp.js("!!document.querySelector('.model .mw svg')"),
               "model menu (V1.2): confirmed, the agent changes with that model; the button shows the provider's logo and the model", str(sent))

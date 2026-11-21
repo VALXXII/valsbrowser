@@ -237,6 +237,10 @@
       { type: "toolCall", turnId: "t1", id: "s1", title: "Read landing.html", kind: "read", status: "completed", locations: [{ path: "landing.html" }] },
       { type: "message.agentChunk", turnId: "t1", messageId: "a2", text: "J'ai raccourci le texte." },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],
+    // R42: a model change kept in the thread (replayed)
+    "c-modele-change": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
+      { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CEND }, { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 },
+      { type: "model.switch", agentId: "claude-code", model: "Opus 5.5", modelId: "opus", effort: "medium", effortId: "medium" }] }],
     "c-messages-deux": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Rien d'autre n'a changé." },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],

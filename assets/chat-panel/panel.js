@@ -831,23 +831,26 @@
     if (!S.menu) return;
     S.menu.view = view;
     fillMenu(S.menu.el, modelItems(view));
-    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : view === "more" ? "Autres modèles" : view === "switch" ? "Changer d'agent" : "Modèle et effort");
+    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : view === "more" ? "Autres modèles" : "Modèle et effort");
     place(S.menu.el, S.menu.anchor, "right", view === "effort" ? 214 : 300);
     const its = menuItems();
     const back = from && S.menu.el.querySelector(".mi[data-key='" + from + "']");
     (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus({ preventScroll: BUB() });
   }
-  // Another provider's model = another agent = a new conversation: said once, in the menu, before it happens.
-  let switchTo = null;
+  // R42: the model changes at any time, in the same chat, with no confirmation — the same provider or another one (the host
+  // starts the other agent at the next message with the conversation as context). Agents are compared by id: the state is
+  // sent again often (bubble), so the same agent may be another object.
   function chooseModel(a, m) {
     const cur = curAgent();
-    if (a === cur && m) { post("setModel", { id: m.id, agentId: a.id }); S.st.model = m.id; closeMenu(true); renderComposerBar(); return; }
-    if (a === cur) { closeMenu(true); return; }
-    switchTo = { a, m }; closeSub(); showModelView("switch");
+    closeSub(); closeMenu(true);
+    if (m) { post("setModel", { id: m.id, agentId: a.id }); S.st.model = m.id; }
+    else if (!cur || a.id !== cur.id) post("setAgent", { id: a.id });
+    if (!cur || a.id !== cur.id) S.st.agentId = a.id;
+    renderComposerBar();
   }
   function modelItems(view) {
     const cur = curAgent(), items = [], groups = connectedAgents();
-    const pickModel = (a, m) => ({ radio: true, label: m.label, tag: m.isDefault ? "Par défaut" : null, checked: a === cur && m.id === S.st.model, onSelect: () => chooseModel(a, m) });
+    const pickModel = (a, m) => ({ radio: true, label: m.label, tag: m.isDefault ? "Par défaut" : null, checked: !!cur && a.id === cur.id && m.id === S.st.model, onSelect: () => chooseModel(a, m) });
     // a connected provider whose models are not known yet (its agent never started here): one row, its name
     const pickAgent = (a) => ({ radio: true, label: a.name, lead: agentIcon(a, "lead"), checked: false, onSelect: () => chooseModel(a, null) });
     const back = (label) => ({ back: true, label, lead: icon("chevron", "lead backi"), onSelect: () => showModelView("main", view) });
@@ -856,19 +859,6 @@
       items.push(back("Effort"), { sep: true });
       for (const e of efforts) items.push({ radio: true, label: effortName(e.id, e.label), checked: e.id === S.st.effort,
         onSelect: () => { post("setEffort", { id: e.id }); S.st.effort = e.id; closeMenu(true); renderComposerBar(); } });
-      return items;
-    }
-    if (view === "switch" && switchTo) {
-      const { a, m } = switchTo;
-      const warn = h("div", { class: "mwarn", role: "group", "aria-label": "Changer d'agent" },
-        h("span", { text: "Passer à " + a.name + " ouvre un nouveau chat. Celui-ci reste dans l'historique." }),
-        h("div", { class: "row" },
-          h("button", { class: "btn-s", type: "button", onclick: () => { switchTo = null; showModelView("main"); } }, "Annuler"),
-          h("button", { class: "btn-s primary", type: "button", onclick: () => {
-            switchTo = null; closeMenu(true);
-            if (m) post("setModel", { id: m.id, agentId: a.id }); else post("setAgent", { id: a.id });
-            say("Nouveau chat avec " + a.name + "."); } }, "Passer à " + a.name)));
-      items.push(back("Changer d'agent"), { node: warn });
       return items;
     }
     if (view === "more") {
@@ -1928,7 +1918,8 @@
       return t;
     }
     const prev = S.lastTurn && S.turns.get(S.lastTurn);
-    if (prev && (prev.model !== t.model || prev.effort !== t.effort)) {
+    const said = S.switched; S.switched = false;
+    if (!said && prev && (prev.model !== t.model || prev.effort !== t.effort)) {
       const u = S.users.get(t.userId);
       const mk = h("div", { class: "marker", role: "note", text: "Passé à " + [t.model, t.effort].filter(Boolean).join(" · ") });
       if (u && u.el.isConnected) log.insertBefore(mk, u.el); else add(mk, false);
@@ -2831,6 +2822,16 @@
       flushRender(); updateView();
     },
     "message.user": onUser,
+    // R42: « Passé à Opus 5.5 · Moyen » — a model or a provider changed in the same chat (sent live, kept in the thread)
+    "model.switch"(m) {
+      const a = isStr(m.agentId, 128) ? agentById(m.agentId) : null;
+      const who = isStr(m.model, 100) && m.model ? m.model : isStr(m.agentName, 100) && m.agentName ? m.agentName : a ? a.name : "";
+      if (!who) return;
+      const eff = isStr(m.effort, 100) || isStr(m.effortId, 100) ? turnEffort(effortName(m.effortId || "", m.effort || m.effortId || "")) : "";
+      add(h("div", { class: "marker mswitch", role: "note", text: "Passé à " + [who, isStr(m.model, 100) && m.model ? eff : ""].filter(Boolean).join(" · ") }), !S.replay);
+      S.switched = true;
+      if (!S.replay) say("Passé à " + who + ".");
+    },
     "turn.start"(m) {
       const t = S.turns.get(m.turnId);
       if (t) { updateTurnHead(t, isStr(m.model, 100) ? m.model : null, isStr(m.effort, 100) ? m.effort : null, ID.test(m.agentId || "") ? m.agentId : null); return; }

@@ -148,6 +148,7 @@ interface Action { id: Id; label: string; primary?: boolean; }
 | `focus` | `target: "composer"` | Met le focus dans la saisie (ouverture du panneau). |
 | `annotations.batch` *(1.4)* | `batchId`, `siteLabel`, `items: AnnotationItem[]` (≤ 50 ; `items: []` retire le bloc) | Lot « N annotations à traiter » posé dans la saisie (toutes cochées). Arrive de la suggestion du chat vide (`suggestion.run {id:"annotations"}`), de la commande `/annotations` (`annotations.request`) ou de « Traiter avec l'agent » dans l'historique (côté hôte). Remplace un lot précédent. |
 | `annotations.status` *(1.4)* | `batchId`, `id`, `status` (`pending`/`working`/`done`/`skipped`), `summary?` (une phrase de l'agent, si `done`), `reason?` (si `skipped`) | Met à jour une ligne de la carte « Traiter N annotations » du fil (et l'en-tête « 1 sur N » / « ✓ N terminées »). Annonce polie. |
+| `model.switch` *(R42)* | `agentId?`, `agentName?`, `model?`, `modelId?`, `effort?`, `effortId?` | Ligne grise discrète centrée dans le fil (bulle et panneau) : « Passé à Opus 5.5 · Moyen », « Passé à Opus 5.5 » sans effort, « Passé à Codex » sans modèle connu. Envoyé en direct et gardé dans le fil (`Item`, rejoué par `thread.reset`) (§25). |
 | `copy.done` | `ok` | Le bouton Copier affiche « Copié » 1,5 s (ou rien si `ok` faux). |
 | `usage` *(1.2)* | `used`, `size` (jetons de contexte utilisés / taille de la fenêtre, depuis `usage_update` ACP) | Jauge de contexte à droite du titre : anneau rempli à `used/size`, neutre, ambre au-delà de 80 % ; infobulle « 62 % de la mémoire du chat utilisée · se résume automatiquement vers 100 % ». `size: 0` (ou nouvelle conversation, `thread.reset`) la masque ; l'hôte renvoie `usage` après un `thread.reset` s'il le connaît. |
 | `annotation.kept` *(1.6)* | `id`, `text`, `elements: ElementRef[]`, `annotations: Id[]` (ids du magasin), `at: Iso`, `partial?` | Ligne discrète dans le fil, côté utilisateur : les mots, « Gardé en annotation » + les puces, « Pour vos agents connectés · rien n'est envoyé au chat ». Aussi un `Item` (rejouée avec la conversation). |
@@ -366,7 +367,7 @@ Bas de la saisie sur une seule ligne *(1.5)* : quand la place manque, le panneau
 
 **Menu modèle** (Paper `17US-0`, 300 px, s'ouvre vers le haut). Un groupe par fournisseur **connecté** (`Agent.status` `ready`, `starting` ou `preparing`), dans l'ordre de `state.agents`, séparés par un trait (1 px `#FFFFFF14`, marges 4/10). Un fournisseur pas installé ou pas connecté n'apparaît pas du tout (ni ligne grisée, ni « Se connecter » dans ce menu). Chaque groupe montre ses 3 premiers modèles (`Agent.models`, listes de l'agent) ; `isDefault` porte le badge « Par défaut ». Un fournisseur connecté dont les modèles ne sont pas encore connus (son agent n'a jamais démarré ici) tient sur une ligne à son nom. Puis un trait, « Autres modèles › » (seulement si un groupe a plus de 3 modèles ; le sous-menu les range par fournisseur) et « Effort  <valeur> › ». Ligne choisie : fond `#FFFFFF0F`, coche `#8FA9FF`. Lignes 6/10, rayon 8, 13/18 500.
 - Modèle du même agent : `setModel {id, agentId}`, appliqué au message suivant.
-- Modèle d'un autre fournisseur : le menu dit d'abord « Passer à Codex ouvre un nouveau chat. Celui-ci reste dans l'historique. » (Annuler / Passer à Codex), puis `setModel {id, agentId: <l'autre>}` : l'hôte démarre une nouvelle conversation avec cet agent et ce modèle. Fournisseur sans modèle connu : `setAgent`.
+- Modèle d'un autre fournisseur *(remplacé par R42, §25)* : `setModel {id, agentId: <l'autre>}` tout de suite, sans boîte, dans le même chat. Fournisseur sans modèle connu : `setAgent`.
 - Aucun fournisseur connecté : le menu montre l'état de connexion des agents, avec leur action (Se connecter, Installer).
 
 **Effort** (Paper `17VU-0`, sous-menu de 214 px). Les niveaux annoncés par l'agent, en français : `low` Faible, `medium` Moyen, `high` Élevé, `xhigh` X-Élevé, `max` Max (`minimal`, `ultra`, `none` : Minimal, Ultra, Aucun ; un autre nom reste tel quel). L'entrée « Default » d'un agent n'est jamais montrée : l'hôte la retire de `state.efforts`, et le panneau l'ignore aussi par sécurité (`id` `default` ou libellé « Default… »). L'en-tête d'un tour dit « Opus · Moyen · 4 s », jamais « Default ».
@@ -780,4 +781,15 @@ redevient la réponse s'il avait été pris pour une annonce ; les lignes de sui
 entre les étapes ; il ne reste que la réponse et la barre des changements. Un texte rejoué (`thread.reset`) n'a pas de
 curseur clignotant. La langue des annonces et de la réponse (celle de l'utilisateur) relève de la consigne envoyée par
 l'hôte.
+
+## 25. Changer de modèle à tout moment, dans le même chat (R42)
+
+- Choisir un modèle, du même fournisseur ou d'un autre, s'applique **tout de suite et sans boîte** : la page envoie
+  `setModel { id, agentId }` (ou `setAgent { id }` pour un fournisseur dont aucun modèle n'est connu), ferme le menu et
+  montre le nouveau modèle dans le bouton. Plus de vue « Changer d'agent ». Les agents se comparent par `id` (l'état est
+  renvoyé souvent ; le même agent peut être un autre objet), y compris pour la coche du modèle choisi.
+- Même fournisseur : l'hôte l'applique au message suivant, dans la même session. Autre fournisseur : l'hôte démarre l'autre
+  agent au message suivant, dans **le même chat**, avec l'historique de la conversation en contexte.
+- L'hôte l'écrit dans le fil avec `model.switch` (§4) : ligne grise discrète centrée, la même dans la bulle et le panneau.
+  Quand elle est là, le panneau n'ajoute pas son propre repère « Passé à … » au tour suivant.
 
