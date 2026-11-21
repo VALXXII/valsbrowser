@@ -21,6 +21,9 @@
 //                         (also %FAKE_AGENT_EDIT%). With it, a message that names no other scenario applies the edit.
 //   --claude-like         the real Claude adapter's option lists: effort "default" (current) + low / medium / high / xhigh / max,
 //                         a "default" model alias ("Default (recommended)", description "Sonnet 5.5") and a 4th model
+//   --start-mode <id>     the session starts in this mode (as the real Claude adapter does with "auto"); with --claude-like
+//                         the config option "mode" then lists it too
+//   --new-delay <ms>      answer session/new / resume / load only after this long (a slow start: the user types meanwhile)
 //   --sleep               (internal) the long-lived child
 //
 // Scenarios, chosen by a word in the prompt's text:
@@ -32,6 +35,16 @@
 //   error-rate / error-auth   JSON-RPC error                            big          "received <n> image bytes"
 //   echo                the text back                                   garbage      invalid lines inside the turn
 //   annonce             (R43) a sentence, a tool call, a sentence, a tool call, then the answer
+//   vrai-*              realistic turns of a real agent, in French, streamed in small uneven chunks (a chunk may cut a word,
+//                       an address or a code fence in two), see Realistic() below:
+//     vrai-tour         announcements + read / edit tool calls, then a long Markdown answer (bare addresses, code blocks)
+//     vrai-markdown     the long Markdown answer only      vrai-adresse   a short answer full of bare addresses
+//     vrai-code         several code blocks (css, html, js with backticks, a very long line)
+//     vrai-autorisation an announcement, then the edit: --edit applied for real (permission in "default"), else a
+//                       permission with a diff; allow -> the answer, reject -> « rien modifié », cancel -> cancelled
+//     vrai-surcharge    an announcement, then the API's 529 overloaded error (JSON-RPC error, as the adapter reports it)
+//     vrai-lent         2.5 s of silence, an announcement, a 3 s tool call (session/cancel stops it), then the answer
+//     vrai-erreur-outil a tool call that fails, the agent says so and tries another way, then the answer
 //   commands            available_commands_update                       title        session_info_update
 //   mcptool             an MCP tool asked for by its raw name: "mcptool <title>|<arguments JSON>[|<result text>]" in the message
 //                       several calls in one turn: specs separated by ";;"; a part "wait <ms>" pauses between two calls
@@ -85,6 +98,8 @@ struct Options {
     bool claudeLike = false;  // --claude-like: the real Claude adapter's lists ("Default" effort first and current, xhigh, max; a "default" model alias)
     int protocol = 1;
     unsigned readDelay = 0;
+    std::string startMode;   // --start-mode
+    unsigned newDelay = 0;   // --new-delay
 } opt;
 
 // ---------------------------------------------------------------- transport
@@ -205,6 +220,12 @@ SJ::Value Modes() {
                                         Obj({{"id", S("acceptEdits")}, {"name", S("Auto")}}),
                                         Obj({{"id", S("plan")}, {"name", S("Planifier")}})})}});
 }
+SJ::Value ModeOptions() {
+    SJ::Value list = Arr({Obj({{"value", S("default")}, {"name", S("Demander")}}), Obj({{"value", S("acceptEdits")}, {"name", S("Auto")}}),
+                          Obj({{"value", S("plan")}, {"name", S("Planifier")}})});
+    if (opt.claudeLike && !opt.startMode.empty()) list.Push(Obj({{"value", S("auto")}, {"name", S("Auto")}}));
+    return list;
+}
 SJ::Value ConfigOptions() {
     SJ::Value efforts = Arr({Obj({{"value", S("low")}, {"name", S("Faible")}}), Obj({{"value", S("medium")}, {"name", S("Moyen")}})});
     if (model != "haiku") efforts.Push(Obj({{"value", S("high")}, {"name", S("Élevé")}}));  // Haiku has no high effort
@@ -225,8 +246,7 @@ SJ::Value ConfigOptions() {
         Obj({{"id", S("effort")}, {"name", S("Effort")}, {"category", S("thought_level")}, {"type", S("select")}, {"currentValue", S(effort)},
              {"options", std::move(efforts)}}),
         Obj({{"id", S("mode")}, {"name", S("Mode")}, {"category", S("mode")}, {"type", S("select")}, {"currentValue", S(mode)},
-             {"options", Arr({Obj({{"value", S("default")}, {"name", S("Demander")}}), Obj({{"value", S("acceptEdits")}, {"name", S("Auto")}}),
-                              Obj({{"value", S("plan")}, {"name", S("Planifier")}})})}}),
+             {"options", ModeOptions()}}),
         Obj({{"id", S("fast")}, {"name", S("Rapide")}, {"category", S("model_config")}, {"type", S("boolean")}, {"currentValue", B(false)}}),
     });
 }
@@ -405,6 +425,158 @@ void Apply(const std::string& spec, const std::function<void(const char*)>& end)
     end("end_turn");
 }
 
+// ---------------------------------------------------------------- realistic turns ("vrai-*")
+// What a real agent sends, in French: short announcements before each action, then the answer, streamed in small uneven
+// chunks (a chunk may end in the middle of a word, an address or a code fence: the page must not care).
+void Stream(const std::string& text, unsigned every = 12) {
+    static const std::size_t sizes[] = {7, 13, 5, 19, 11, 23, 3, 17};
+    std::size_t at = 0, k = 0;
+    while (at < text.size() && !cancelled) {
+        std::size_t n = std::min(sizes[k++ % 8], text.size() - at);
+        while (at + n < text.size() && (static_cast<unsigned char>(text[at + n]) & 0xC0) == 0x80) ++n;  // never cut a UTF-8 character
+        Chunk("agent_message_chunk", text.substr(at, n));
+        at += n;
+        Pump(every);
+    }
+}
+const char* const kLongAnswer =
+    "C'est fait. J'ai agrandi l'espacement entre les deux boutons du héros et vérifié le rendu.\n\n"
+    "## Ce qui a changé\n\n"
+    "- `styles/landing.css` : `gap` passe de **4 px** à **8 px** dans `.hero-actions` ;\n"
+    "- rien d'autre n'a bougé (les couleurs, les tailles de police et les marges restent les mêmes) ;\n"
+    "- la page se recharge toute seule : http://127.0.0.1:5183/\n\n"
+    "### Fichiers\n\n"
+    "1. file:///C:/projet/styles/landing.css\n"
+    "2. https://example.test/docs/flex-gap?x=1&y=2#exemple\n"
+    "3. www.example.test/guide (adresse sans protocole)\n\n"
+    "| Propriété | Avant | Après |\n|---|---|---|\n| gap | 4px | 8px |\n| padding | 12px 16px | 12px 16px |\n\n"
+    "```css\n.hero-actions {\n  display: flex;\n  gap: 8px; /* était 4px */\n}\n```\n\n"
+    "> Astuce : si l'écart paraît trop grand sur mobile, on peut le réduire sous 480 px avec une requête média.\n\n"
+    "```js\nconst actions = document.querySelector('.hero-actions');\nconsole.log(getComputedStyle(actions).gap); // « 8px »\n```\n\n"
+    "Dites-moi si vous voulez le même espacement ailleurs (par exemple dans `div.plans`).";
+
+void Realistic(const SJ::Value& id, const std::string& text, const std::function<void(const char*)>& end) {
+    const auto has = [&](const char* word) { return text.find(word) != std::string::npos; };
+    const std::string file = sessionCwd.empty() ? std::string("C:\\projet\\styles\\landing.css") : sessionCwd + "\\styles\\landing.css";
+    const auto tool = [&](const std::string& call, const char* title, const char* kind, const char* status) {
+        Update(Obj({{"sessionUpdate", S("tool_call")}, {"toolCallId", S(call)}, {"title", S(title)}, {"kind", S(kind)}, {"status", S(status)},
+                    {"locations", Arr({Obj({{"path", S(file)}})})}}));
+    };
+    const auto status = [&](const std::string& call, const char* to) {
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(call)}, {"status", S(to)}}));
+    };
+    const auto usage = [&] { Update(Obj({{"sessionUpdate", S("usage_update")}, {"used", I(4321)}, {"size", I(200000)}})); };
+    const SJ::Value diff = Obj({{"type", S("diff")}, {"path", S(file)}, {"oldText", S(".hero-actions {\n  display: flex;\n  gap: 4px;\n}\n")},
+                                {"newText", S(".hero-actions {\n  display: flex;\n  gap: 8px;\n}\n")}});
+    if (has("vrai-surcharge")) {
+        Stream("Je regarde le fichier de styles. ");
+        Pump(300);
+        Fail(id, -32603, "Internal error",
+             Obj({{"details", S("API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}")}}));
+        return;
+    }
+    if (has("vrai-lent")) {
+        Pump(2500);
+        if (cancelled) return end("cancelled");
+        Stream("Je cherche la règle qui fixe l'espacement. ");
+        tool("call-lent", "Lire styles/landing.css", "read", "in_progress");
+        for (int i = 0; i < 30 && !cancelled; ++i) Pump(100);
+        status("call-lent", cancelled ? "failed" : "completed");
+        if (cancelled) return end("cancelled");
+        Stream("C'est fait : j'ai trouvé la règle, rien d'autre à changer.");
+        return end("end_turn");
+    }
+    if (has("vrai-erreur-outil")) {
+        Stream("Je lis le fichier de styles. ");
+        tool("call-e1", "Lire styles/landing.scss", "read", "in_progress");
+        Pump(500);
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S("call-e1")}, {"status", S("failed")},
+                    {"content", Arr({Obj({{"type", S("content")}, {"content", Obj({{"type", S("text")}, {"text", S("Fichier introuvable")}})}})})}}));
+        Stream("Ce fichier n'existe pas, je regarde la feuille CSS à la place. ");
+        tool("call-e2", "Lire styles/landing.css", "read", "in_progress");
+        Pump(500);
+        status("call-e2", "completed");
+        Stream("Voilà : l'espacement vient de `.hero-actions` dans `styles/landing.css`.");
+        usage();
+        return end("end_turn");
+    }
+    if (has("vrai-adresse")) {
+        Stream("Voici les adresses : http://127.0.0.1:5183/ puis file:///C:/projet/styles/landing.css, et aussi "
+               "https://example.test/a_(b)?x=1&y=2. Une adresse en fin de phrase https://example.test/fin.");
+        return end("end_turn");
+    }
+    if (has("vrai-code")) {
+        Stream("Trois blocs de code :\n\n```css\n.hero { padding: 24px; }\n```\n\n```html\n<div class=\"hero-actions\"><a href=\"#\">Essayer</a></div>\n```\n\n"
+               "```js\nconst s = `gap: ${8}px`; // des `accents graves` dans le code\n" + std::string(260, 'x') + "\n```\n\nFin.");
+        return end("end_turn");
+    }
+    if (has("vrai-markdown")) {
+        Stream(kLongAnswer);
+        usage();
+        return end("end_turn");
+    }
+    if (has("vrai-autorisation")) {
+        Stream("Je vais modifier l'espacement dans la feuille de styles. ");
+        Pump(200);
+        if (!opt.edit.empty()) return Apply(opt.edit, end);
+        if (mode == "plan") {
+            Update(Obj({{"sessionUpdate", S("plan")}, {"entries", Arr({Obj({{"content", S("Passer gap à 8px dans .hero-actions")}, {"priority", S("medium")},
+                                                                               {"status", S("pending")}})})}}));
+            Stream("Plan prêt, rien n'a été modifié.");
+            return end("end_turn");
+        }
+        tool("call-p", "Modifier styles/landing.css", "edit", "pending");
+        if (mode == "default") {
+            const std::int64_t request = nextRequest++;
+            Send(Obj({{"jsonrpc", S("2.0")}, {"id", I(request)}, {"method", S("session/request_permission")},
+                      {"params", Obj({{"sessionId", S(sessionId)},
+                                      {"toolCall", Obj({{"toolCallId", S("call-p")}, {"title", S("Modifier styles/landing.css")}, {"kind", S("edit")},
+                                                        {"content", Arr({diff})}, {"locations", Arr({Obj({{"path", S(file)}})})}})},
+                                      {"options", Arr({Obj({{"optionId", S("allow")}, {"name", S("Autoriser")}, {"kind", S("allow_once")}}),
+                                                       Obj({{"optionId", S("always")}, {"name", S("Toujours autoriser")}, {"kind", S("allow_always")}}),
+                                                       Obj({{"optionId", S("reject")}, {"name", S("Refuser")}, {"kind", S("reject_once")}})})}})}}));
+            SJ::Value response;
+            while (!Pump(1000, request, &response)) {}
+            const SJ::Value* outcome = response.Get("outcome");
+            const std::string option = Str(outcome, "optionId");
+            Append(opt.log, "permission-outcome " + Str(outcome, "outcome") + " " + option + "\n");
+            if (Str(outcome, "outcome") != "selected") {
+                status("call-p", "failed");
+                Pump(300);
+                cancelled = true;
+                return end("cancelled");
+            }
+            if (option == "reject") {
+                status("call-p", "failed");
+                Stream("D'accord, je n'ai rien modifié.");
+                return end("end_turn");
+            }
+            if (option == "always") mode = "acceptEdits";
+        }
+        status("call-p", "in_progress");
+        Pump(200);
+        Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S("call-p")}, {"status", S("completed")}, {"title", S("Modifié styles/landing.css")},
+                    {"content", Arr({diff})}}));
+        Stream("C'est fait : l'espacement passe de 4 px à 8 px.");
+        usage();
+        return end("end_turn");
+    }
+    // vrai-tour (and any other vrai-* word): the whole thing
+    Stream("Je regarde d'abord les styles du héros. ");
+    tool("call-t1", "Lire styles/landing.css", "read", "in_progress");
+    Pump(700);
+    status("call-t1", "completed");
+    Stream("J'agrandis l'espacement entre les boutons. ");
+    tool("call-t2", "Modifier styles/landing.css", "edit", "in_progress");
+    Pump(700);
+    Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S("call-t2")}, {"status", S("completed")}, {"title", S("Modifié styles/landing.css")},
+                {"content", Arr({diff})}}));
+    Pump(200);
+    Stream(kLongAnswer);
+    usage();
+    end("end_turn");
+}
+
 // ---------------------------------------------------------------- the turn
 void Prompt(const SJ::Value& id, const SJ::Value* params) {
     if (opt.crashAt == "prompt") Crash(3, "crash at prompt");
@@ -508,6 +680,7 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
         Chunk("agent_message_chunk", batch ? std::string("J'ai traité les annotations que j'ai pu traiter.") : "mcptool:" + option);
         return end("end_turn");
     }
+    if (has("vrai-")) return Realistic(id, text, end);
     if (has("error-rate")) {
         Fail(id, -32603, "Internal error", Obj({{"details", S("API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}")}}));
         return;
@@ -725,6 +898,7 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
             return false;
         }
         const bool fresh = m == "session/new";
+        if (opt.newDelay) Sleep(opt.newDelay);
         if (const SJ::Value* servers = params ? params->Get("mcpServers") : nullptr; servers && servers->IsArray() && !servers->items.empty()) mcpServer = Str(&servers->items.front(), "name");
         if (!fresh && Str(params, "sessionId") != "sess-known") {
             Fail(*id, -32002, "Resource not found", Obj({{"details", S("no such session")}}));
@@ -805,6 +979,8 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--crash-at") opt.crashAt = Narrow(value());
         else if (a == L"--protocol") opt.protocol = _wtoi(value().c_str());
         else if (a == L"--read-delay") opt.readDelay = unsigned(_wtoi(value().c_str()));
+        else if (a == L"--new-delay") opt.newDelay = unsigned(_wtoi(value().c_str()));
+        else if (a == L"--start-mode") opt.startMode = Narrow(value());
         else if (a == L"--silent") opt.silent = true;
         else if (a == L"--no-images") opt.noImages = true;
         else if (a == L"--resume") opt.resume = true;
@@ -825,6 +1001,7 @@ int wmain(int argc, wchar_t** argv) {
         const DWORD n = GetEnvironmentVariableW(L"FAKE_AGENT_EDIT", buffer, 4096);
         if (n && n < 4096) opt.edit = Narrow(std::wstring(buffer, n));
     }
+    if (!opt.startMode.empty()) mode = opt.startMode;
     if (cliVerb == L"login" || (argc >= 2 && std::wstring(argv[1]) == L"login")) {  // the CLI's own sign-in
         Append(opt.authFile, "signed-in\n");
         return opt.authFile.empty() ? 2 : 0;
