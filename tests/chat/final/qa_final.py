@@ -734,6 +734,9 @@ class Invariants:
         ms = None
         while time.perf_counter() - t_click < 3.0:
             ok, _ = bubble_shown()
+            # the bubble of THIS click: the host said it opened it (the previous bubble may still be on screen)
+            if ok and mark is not None and 'CHAT bubble opened on' not in C.log_text()[mark:]:
+                ok = False
             if ok:
                 ms = round((time.perf_counter() - t_click) * 1000); break
             time.sleep(0.004)
@@ -791,7 +794,9 @@ class Invariants:
         wins = bubble_windows()
         if len(wins) > 1:
             broken['one bubble window'] = len(wins)
-        if self.m.layout == 'comment' and not self.m.unknown:
+        if self.m.layout == 'comment' and self.m.unknown:
+            pass   # a container's bubble (click « elsewhere »): not one the model can place
+        elif self.m.layout == 'comment':
             expect = bool(self.m.open) and fg and not self.m.hidden_by_other
             if expect and self.m.anchor and self.m.size:
                 try:   # the element scrolled away with its bubble: nothing to see, nothing to check
