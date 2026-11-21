@@ -166,7 +166,9 @@ root.innerHTML = '<style>' +
   // the native copy), positions snapped to device pixels
   '.l,.bl{font:400 13px/18px "Browser Annotation Inter","Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;height:20px;box-sizing:border-box;' +
   'padding:1px 6px;border-radius:3px 3px 0 0;white-space:pre;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0;' +
-  'font-kerning:normal;font-feature-settings:normal;font-synthesis:none;text-rendering:auto;will-change:transform,opacity}' +
+  'font-kerning:normal;font-feature-settings:normal;font-synthesis:none;text-rendering:auto;will-change:transform,opacity;' +
+  // final pass 1, defect 3: the width is the text's own (never the containing block's: .bx is 0 wide, the hover's is the viewport)
+  'width:max-content;flex:none}' +
   // R16: the selected element's inspector follows a change of its values softly (same path structure: interpolated)
   '.pb.sm,.gb.sm{transition:clip-path 160ms cubic-bezier(.23,1,.32,1)}.pl.sm,.gl.sm{transition:transform 160ms cubic-bezier(.23,1,.32,1)}' +
   '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;background:transparent}' +
@@ -392,7 +394,8 @@ function sendSelect(info, selText, ev) {
   // the full « select » (one frame later), which carries the frame kind and the shadow path.
   if (selText === null && info.kind === 'main' && !info.range && !info.shadow.length && info.el.getRootNode() === D) {
     var s0 = selectorFor(info.el), r0 = rectOf(info);
-    if (s0.unique && s0.sel.length <= 1000) post({ op: 'selecting', seq: mine, at: at, selector: s0.sel, rect: { x: r2(r0.x), y: r2(r0.y), width: r2(r0.w), height: r2(r0.h) } });
+    if (s0.unique && s0.sel.length <= 1000) post({ op: 'selecting', seq: mine, at: at, selector: s0.sel, rect: { x: r2(r0.x), y: r2(r0.y), width: r2(r0.w), height: r2(r0.h) },
+                                              pt: { x: r2(px), y: r2(py) } });   // final pass 1: where the page saw the click (host diagnostics)
   }
   var m = describe(info, selText);
   if (JSON.stringify(m).length > MAX_MSG) { m.target.text = m.target.text.slice(0, 400); if (m.target.selectionText) m.target.selectionText = m.target.selectionText.slice(0, 400); }
@@ -730,7 +733,9 @@ function setCtrl(v) {
 function onKeyUp(e) { if (e.isTrusted && e.key === 'Control') setCtrl(false); }
 function onBlur(e) { if (e.target === window) setCtrl(false); }
 // Only the user's own input is consumed: the page's synthetic events (el.click(), dispatchEvent) pass.
-function stop(e) { if (!e.isTrusted || off) return; if (!!e.ctrlKey !== ctrl && e.ctrlKey !== undefined) setCtrl(!!e.ctrlKey); if (ctrl) return; e.preventDefault(); e.stopImmediatePropagation(); }
+// Final pass 1, defect 2: a button event never RELEASES Ctrl (in the real window the click may come without the Ctrl flag
+// while it is held: it was selected). Ctrl ends on its keyup, a window blur, or a pointer move without the flag.
+function stop(e) { if (!e.isTrusted || off) return; if (e.ctrlKey) setCtrl(true); if (ctrl) return; e.preventDefault(); e.stopImmediatePropagation(); }
 function onClick(e) {
   if (!e.isTrusted || off) return;
   if (e.ctrlKey) setCtrl(true); if (ctrl) return;   // R31: the site's click

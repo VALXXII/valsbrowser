@@ -36,6 +36,11 @@ struct FrameMark {
     double rx = 0, ry = 0, rw = 0, rh = 0;      // R14: the size label at the right (« 240x44 »), rw 0 = none
     std::wstring rtext;
     std::uint32_t accent = 0x3E67FF;            // the page's accent (the ints sent to the page script)
+    // Final pass 1, defect 3 (R45): the labels as the page drew them, taken from the screen just before the handoff
+    // (parent client px, premultiplied BGRA, opaque): the copy shows these very pixels instead of drawing the text again
+    // with another engine. Empty: the text is drawn (Paint's fallback).
+    struct Pixels { RECT at{}; std::vector<std::uint32_t> bits; bool Ok() const { return at.right > at.left && at.bottom > at.top && bits.size() == size_t(at.right - at.left) * size_t(at.bottom - at.top); } };
+    Pixels leftPx, rightPx;
     struct Gap { double x = 0, y = 0, w = 0, h = 0; };
     struct Label { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::wstring text; };   // 0 padding, 1 gap
     // V3-B inspector: pad = [outer x, y, w, h, inner x, y, w, h] (CSS px), radii of the outer / inner rounded rects,
@@ -155,8 +160,16 @@ public:
         ink.Fill({X(m.x), Y(m.y + h - e), X(m.x + w), Y(m.y + h)}, 0, accent);       // bottom
         ink.Fill({X(m.x), Y(m.y), X(m.x + e), Y(m.y + h)}, 0, accent);               // left
         ink.Fill({X(m.x + w - e), Y(m.y), X(m.x + w), Y(m.y + h)}, 0, accent);       // right
-        auto tag = [&](double lx, double ly, double lw, double lh, const std::wstring& s) {   // R14: Paper's label (top corners 3, Inter 13/18)
+        auto tag = [&](double lx, double ly, double lw, double lh, const std::wstring& s, const FrameMark::Pixels& px) {   // R14: Paper's label (top corners 3, Inter 13/18)
             if (lw <= 0 || lh <= 0) return;
+            if (px.Ok()) {   // R45: the page's own pixels, 1:1 on the device pixels they came from
+                ID2D1Bitmap* bm = nullptr; auto* t = ink.Target();
+                const UINT bw = UINT(px.at.right - px.at.left), bh = UINT(px.at.bottom - px.at.top);
+                if (SUCCEEDED(t->CreateBitmap(D2D1::SizeU(bw, bh), px.bits.data(), bw * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &bm)) && bm) {
+                    const D2D1_RECT_F d{float((px.at.left - origin.x) / dipScale), float((px.at.top - origin.y) / dipScale), float((px.at.right - origin.x) / dipScale), float((px.at.bottom - origin.y) / dipScale)};
+                    t->DrawBitmap(bm, d, 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR); bm->Release(); return;
+                }
+            }
             const D2D1_RECT_F box{X(lx), Y(ly), X(lx + lw), Y(ly + lh)}; const float r = float(FrameSpec::radius) * k;
             ink.Fill(box, r, accent); ink.Fill({box.left, std::max(box.top, box.bottom - r), box.right, box.bottom}, 0, accent);   // square bottom corners
             Font f = F(float(FrameSpec::font) * k, float(FrameSpec::line) * k, 400);
@@ -165,12 +178,38 @@ public:
             ink.Text(s, f, text, {1, 1, 1, FrameSpec::textAlpha});
             ink.Target()->PopAxisAlignedClip();
         };
-        tag(m.lx, m.ly, m.lw, m.lh, m.text);
-        tag(m.rx, m.ry, m.rw, m.rh, m.rtext);
+        tag(m.lx, m.ly, m.lw, m.lh, m.text, m.leftPx);
+        tag(m.rx, m.ry, m.rw, m.rh, m.rtext, m.rightPx);
         if (!m.labels.empty()) PaintValueLabels(ink, m, X, Y, k);   // V3-B: on top of the edges and the element label
     }
+    // R45: the page's labels as they are on screen now (before the handoff hides them), in parent client px. Empty when
+    // the parent is not on screen or the copy fails: the copy then draws the text itself.
+    static void GrabLabels(HWND parent, FrameMark& m) {
+        auto grab = [&](double lx, double ly, double lw, double lh, FrameMark::Pixels& out) {
+            out = {}; if (!parent || lw <= 0 || lh <= 0) return;
+            RECT r{LONG(std::lround(m.page.left + lx * m.dpr)), LONG(std::lround(m.page.top + ly * m.dpr)), LONG(std::lround(m.page.left + (lx + lw) * m.dpr)), LONG(std::lround(m.page.top + (ly + lh) * m.dpr))};
+            RECT in{}; if (!IntersectRect(&in, &r, &m.page) || !EqualRect(&in, &r)) return;   // whole labels only
+            const int w = r.right - r.left, h = r.bottom - r.top; if (w > 2000 || h > 200) return;
+            POINT o{r.left, r.top}; ClientToScreen(parent, &o);
+            BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+            HDC screen = GetDC(nullptr); if (!screen) return;
+            void* bits = nullptr; HDC mem = CreateCompatibleDC(screen); HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            if (mem && dib && bits) {
+                HGDIOBJ old = SelectObject(mem, dib);
+                if (BitBlt(mem, 0, 0, w, h, screen, o.x, o.y, SRCCOPY | CAPTUREBLT)) {
+                    GdiFlush(); out.at = r; out.bits.assign(static_cast<const std::uint32_t*>(bits), static_cast<const std::uint32_t*>(bits) + size_t(w) * h);
+                    for (auto& p : out.bits) p |= 0xFF000000u;   // opaque labels
+                }
+                SelectObject(mem, old);
+            }
+            if (dib) DeleteObject(dib); if (mem) DeleteDC(mem); ReleaseDC(nullptr, screen);
+        };
+        grab(m.lx, m.ly, m.lw, m.lh, m.leftPx);
+        grab(m.rx, m.ry, m.rw, m.rh, m.rightPx);
+    }
     // Draws the mark and returns once the compositor has shown it (or false: no window, nothing visible).
-    bool Show(const FrameMark& m) {
+    bool Show(const FrameMark& shown) {
+        FrameMark m = shown; if (!m.leftPx.Ok() && !m.rightPx.Ok()) GrabLabels(parent_, m);   // R45: before anything covers them
         if (!Ink::Shared(root_)) return false;
         if (!layer_.Window()) {
             Layer::Options o; o.child = true; o.clickThrough = true; o.title = L"";

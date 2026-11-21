@@ -247,6 +247,7 @@ inline Accessibility::Node ToolbarNode(long long key, long long parent, RECT bou
 
 struct BannerHooks {
     std::function<void()> exit;                               // « Quitter » / Échap via UIA
+    std::function<void()> escape;                             // Échap typed in the band (unset: exit) — an open bubble closes first
     std::function<void()> connect;                            // V2: « Aucun agent connecté · Connecter » (1.8)
     std::function<void()> chat;                               // chat intégré: « Panneau » (the chat panel at the right; opens it)
     std::function<void()> comment;                            // chat intégré: « Commentaire » (a bubble on the element clicked)
@@ -361,7 +362,7 @@ class Banner : public Animator::Client {
                 r = 0; return true;
             }
             if (w == VK_RETURN || w == VK_SPACE) { Activate(focusItem_); r = 0; return true; }
-            if (w == VK_ESCAPE) { if (hooks_.exit) hooks_.exit(); r = 0; return true; }
+            if (w == VK_ESCAPE) { if (hooks_.escape) hooks_.escape(); else if (hooks_.exit) hooks_.exit(); r = 0; return true; }
             return false;
         case WM_APP + 1: Activate(int(w)); r = 0; return true;
         case WM_TIMER: if (w != WaveTimer) return false;   // V3-B: the next wave frame is due: back to the display clock

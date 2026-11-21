@@ -1023,7 +1023,9 @@ void ConnectClosed(AUI::ConnectEnd end) {
 }
 void EnsureUi() {
     if (uiReady) return; uiReady = true;
-    AUI::BannerHooks bh; bh.exit = [] { Exit(L"quit"); }; bh.connect = [] { OpenConnect(false); }; bh.announce = [](const std::wstring& t) { Announce(t); };
+    AUI::BannerHooks bh; bh.exit = [] { Exit(L"quit"); };
+    bh.escape = [] { if (AH::OnEscape(false, Chat::BubbleOpen()) == AH::EscapeAction::CloseBubble) Chat::CloseBubble(true); else Exit(L"escape"); };   // as the page's Escape (review M4)
+    bh.connect = [] { OpenConnect(false); }; bh.announce = [](const std::wstring& t) { Announce(t); };
     bh.chat = [] { Chat::SwitchLayout(false); };     // « Panneau »: the chat at the right (opens it)
     bh.comment = [] { Chat::SwitchLayout(true); };   // « Commentaire »: a bubble on the element clicked
     banner.Init(instance, window, base, bh);

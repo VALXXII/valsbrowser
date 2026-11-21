@@ -61,8 +61,9 @@ open(os.path.join(SITE, "index.html"), "w", encoding="utf-8").write("""<!doctype
 .far{position:absolute;left:200px;top:2600px;width:240px;height:80px;background:#ccc}
 .btn{position:absolute;left:700px;top:420px;width:120px;height:40px}
 .spacer{height:4000px}
-h2.section-title{position:absolute;left:520px;top:300px;width:301.3px;margin:0;font:600 28px serif;padding:8px 12px}</style></head><body>
-<h2 class="section-title">Nos offres</h2><x-card style="position:absolute;left:40px;top:560px;width:200px;height:60px;display:block"></x-card><iframe class="sb" srcdoc="<body style='margin:0'><div class='inner' style='width:180px;height:50px;background:#9c9'></div></body>" style="position:absolute;left:280px;top:560px;width:200px;height:60px;border:0"></iframe><div class="dup" style="position:absolute;left:520px;top:560px;width:80px;height:40px;background:#c99"></div><div class="dup" style="position:absolute;left:620px;top:560px;width:80px;height:40px;background:#c99"></div><div class="vanish" style="position:absolute;left:740px;top:560px;width:80px;height:40px;background:#99c"></div><script>customElements.define("x-card",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<div class=inner style=width:200px;height:60px;background:#cc9></div>"}})</script><div class="card"></div><div class="narrow"></div><div class="pad"><div></div><div></div><div></div></div>
+h2.section-title{position:absolute;left:520px;top:300px;width:301.3px;margin:0;font:600 28px serif;padding:8px 12px}
+div.plans{position:absolute;left:83.2px;top:640.4px;width:820.6px;height:90px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;background:#ece}</style></head><body>
+<h2 class="section-title">Nos offres</h2><div class="plans"><div></div><div></div><div></div></div><x-card style="position:absolute;left:40px;top:560px;width:200px;height:60px;display:block"></x-card><iframe class="sb" srcdoc="<body style='margin:0'><div class='inner' style='width:180px;height:50px;background:#9c9'></div></body>" style="position:absolute;left:280px;top:560px;width:200px;height:60px;border:0"></iframe><div class="dup" style="position:absolute;left:520px;top:560px;width:80px;height:40px;background:#c99"></div><div class="dup" style="position:absolute;left:620px;top:560px;width:80px;height:40px;background:#c99"></div><div class="vanish" style="position:absolute;left:740px;top:560px;width:80px;height:40px;background:#99c"></div><script>customElements.define("x-card",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<div class=inner style=width:200px;height:60px;background:#cc9></div>"}})</script><div class="card"></div><div class="narrow"></div><div class="pad"><div></div><div></div><div></div></div>
 <div class="far"></div><button class="btn" onclick="window.__clicked=(window.__clicked||0)+1">site</button>
 <div class="box"></div><div class="spacer"></div></body></html>""")
 
@@ -71,6 +72,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a): pass
     def end_headers(self): self.send_header("Cache-Control", "no-store"); super().end_headers()
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+class SandboxSite(http.server.SimpleHTTPRequestHandler):   # the QA site (sandbox/chat/site), as the real-window passes use it
+    def __init__(self, *a, **k): super().__init__(*a, directory=os.path.join(ROOT, "sandbox", "chat", "site"), **k)
+    def log_message(self, *a): pass
+ssrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SandboxSite); ssrv.handle_error = lambda *a: None; threading.Thread(target=ssrv.serve_forever, daemon=True).start()
+SBASE = f"http://127.0.0.1:{ssrv.server_address[1]}"
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{srv.server_address[1]}"
 
@@ -202,14 +208,14 @@ try:
     check(m and m["mark"]["rw"] > 0 and abs(m["mark"]["ry"] - g["b"][1]) < .01, "R33: the native copy gets the size label where the page draws it", m and {k: m["mark"][k] for k in ("x", "y", "rx", "ry", "rw")})
     ops = cdp.js("window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').slice(-2).map(m=>[m.op,m.seq,m.selector||m.target.selector,(m.rect||m.target.rect).width,Object.keys(m).sort().join(',')])")
     check(len(ops) == 2 and ops[0][0] == "selecting" and ops[1][0] == "select" and ops[0][1] == ops[1][1] and ops[0][2] == ops[1][2] and ops[0][3] == ops[1][3]
-          and ops[0][4] == "at,navStamp,nonce,op,rect,selector,seq,type,v", "latency: « selecting » (selector + rectangle only) posted before the full « select », same seq", ops)
+          and ops[0][4] == "at,navStamp,nonce,op,pt,rect,selector,seq,type,v", "latency: « selecting » (selector + rectangle only) posted before the full « select », same seq", ops)
     cdp.js(f"{H}.cmd('resume')")
 
     # ---------------- R45: the name / size labels identical on hover and once selected (bubble), pixel for pixel
-    for dpr in (1.0, 1.25, 1.5):
+    for dpr, (tx, ty), tsel in [(d, t, n) for d in (1.0, 1.25, 1.5) for t, n in (((600, 320), 'h2.section-title'), ((353, 690), 'div.plans'))]:
         load(dpr)
         ok = cdp.js("document.fonts.ready.then(()=>document.fonts.check('13px \"Browser Annotation Inter\"'))")
-        mouse(cdp, 600, 320); wait(cdp, 400)
+        mouse(cdp, tx, ty); wait(cdp, 400)
         LR = f"(()=>{{const r={R},l=[...r.querySelectorAll('.l')].filter(e=>getComputedStyle(e).opacity==='1'),b=[...r.querySelectorAll('.bl')];const q=(l.length?l:b).map(e=>{{const x=e.getBoundingClientRect();return [x.left,x.top,x.width,x.height,e.textContent,getComputedStyle(e).fontFamily.split(',')[0]]}});return q}})()"
         h = cdp.js(LR)
         def grab(rects, name):   # a full-viewport shot, cropped here (a clipped shot at 125 % makes the headless engine autoscroll at the next click)
@@ -218,18 +224,27 @@ try:
             img = Image.open(io.BytesIO(raw)).convert("RGB")
             x0 = min(r[0] for r in rects) - 1; y0 = min(r[1] for r in rects) - 1; x1 = max(r[0] + r[2] for r in rects) + 1; y1 = max(r[1] + r[3] for r in rects) + 1
             box = tuple(int(round(v * dpr)) for v in (x0, y0, x1, y1)); img = img.crop(box); img.save(os.path.join(OUT, name)); return img
-        a = grab(h, f"r45-hover-{int(dpr*100)}.png")
-        mouse(cdp, 600, 320, "mousePressed", button="left", clicks=1); mouse(cdp, 600, 320, "mouseReleased", button="left", clicks=1); frames(cdp)
-        cdp.js(f"{H}.cmd('follow',{{current:true,draw:{{label:'h2.section-title'}}}})"); wait(cdp, 400)
+        a = grab(h, f"r45-hover-{int(dpr*100)}-{tsel}.png")
+        mouse(cdp, tx, ty, "mousePressed", button="left", clicks=1); mouse(cdp, tx, ty, "mouseReleased", button="left", clicks=1); frames(cdp)
+        cdp.js(f"{H}.cmd('follow',{{current:true,draw:{{label:'{tsel}'}}}})"); wait(cdp, 400)
         cdp.js("new Promise(r=>{let y=scrollY,n=0;const f=()=>{if(scrollY===y&&++n>10)r(1);else{if(scrollY!==y)n=0;y=scrollY;requestAnimationFrame(f)}};f()})")   # still (a stray restoration scroll of the test browser)
         s2 = cdp.js(LR)
-        b = grab(s2, f"r45-selected-{int(dpr*100)}.png")   # its own place: the pixels must be the same
+        b = grab(s2, f"r45-selected-{int(dpr*100)}-{tsel}.png")   # its own place: the pixels must be the same
         same_box = len(s2) == len(h) and all(abs(p[i] - q[i]) < .01 for p, q in zip(h, s2) for i in (0, 2, 3)) and abs((h[1][1] - h[0][1]) - (s2[1][1] - s2[0][1])) < .01 and [p[4] for p in h] == [q[4] for q in s2]
+        diff = 0
         pa, pb = a.load(), b.load()
-        diff = sum(1 for y in range(min(a.size[1], b.size[1])) for x in range(min(a.size[0], b.size[0])) if pa[x, y] != pb[x, y]) + (0 if a.size == b.size else 1)
-        check(ok and h and h[0][5].strip('"') == "Browser Annotation Inter", f"R45 {int(dpr*100)} %: the bundled Inter Display is the labels' font", [ok, h and h[0][5]])
-        check(same_box and diff == 0, f"R45 {int(dpr*100)} %: name + size labels identical on hover and selected, pixel for pixel", f"boxes {'=' if same_box else '≠'} {h} / {s2}, {diff} px differ")
+        ox = min(r[0] for r in h) - 1; oy = min(r[1] for r in h) - 1; qx = min(r[0] for r in s2) - 1; qy = min(r[1] for r in s2) - 1
+        for p, q in zip(h, s2):
+            for y in range(int(round(p[3] * dpr))):
+                for x in range(int(round(p[2] * dpr))):
+                    u = (int(round((p[0] - ox) * dpr)) + x, int(round((p[1] - oy) * dpr)) + y); v = (int(round((q[0] - qx) * dpr)) + x, int(round((q[1] - qy) * dpr)) + y)
+                    if u[0] < a.size[0] and u[1] < a.size[1] and v[0] < b.size[0] and v[1] < b.size[1] and pa[u] != pb[v]: diff += 1
+        clipped = cdp.js(f"[...{R}.querySelectorAll('.bl')].filter(e=>e.scrollWidth>e.clientWidth).length")
+        check(clipped == 0, f"R45 {int(dpr*100)} % {tsel}: the bubble's labels show their whole text (never cut)", clipped)
+        check(ok and h and h[0][5].strip('"') == "Browser Annotation Inter", f"R45 {int(dpr*100)} % {tsel}: the bundled Inter Display is the labels' font", [ok, h and h[0][5]])
+        check(same_box and diff == 0, f"R45 {int(dpr*100)} % {tsel}: name + size labels identical on hover and selected, pixel for pixel", f"boxes {'=' if same_box else '≠'} {h} / {s2}, {diff} px differ")
         cdp.js(f"{H}.cmd('follow',null)"); cdp.js(f"{H}.cmd('resume')"); mouse(cdp, 990, 690)
+        if tsel == 'div.plans': check(h and h[0][4] == 'div.plans' and s2 and s2[0][4] == 'div.plans' and abs(h[0][2] - s2[0][2]) < .01, f"R45 {int(dpr*100)} % div.plans: the bubble's name label is as wide as the hover one (never cut)", [h and h[0][2], s2 and s2[0][2]])
 
     # ---------------- review E1: « selecting » only for an element of the main document, outside shadow DOM, unique selector
     load(1.0)
@@ -261,6 +276,25 @@ try:
     cdp.js(f"{H}.cmd('follow',null)"); cdp.js("window.__msgs.length=0")
     cdp.js(f"{H}.cmd('follow',{{selector:'.nothing-here'}})"); wait(cdp, 200); g5 = cdp.js(GONE); wait(cdp, 800); g6 = cdp.js(GONE)
     check(g5 == 0 and g6 == 1, "C3: a selector found nowhere at the start: « gone » only after 500 ms", [g5, g6])
+    cdp.js(f"{H}.cmd('follow',null)")
+
+    # ---------------- final pass 1 (monkey seed 1, step 5): on the QA site, after bubbles on p.hero-text and div.hero-visual
+    # (conversation frames on screen), a click on a.btn-primary selects a.btn-primary — the deepest element, as the hover
+    cdp.call("Emulation.setDeviceMetricsOverride", width=1836, height=790, deviceScaleFactor=1.25, mobile=False)
+    cdp.call("Page.navigate", url=SBASE + "/landing.html"); cdp.js("new Promise(r=>{const f=()=>document.readyState==='complete'?r(1):setTimeout(f,20);f()})")
+    inject(cdp); frames(cdp)
+    def ctr(sel): return cdp.js(f"(()=>{{const r=document.querySelector('{sel}').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]}})()")
+    picked = []
+    for sel in ('p.hero-text', 'div.hero-visual', 'a.btn-primary', 'h1.hero-title', 'a.btn-primary'):
+        x, y = ctr(sel); mouse(cdp, x, y); frames(cdp, 3)
+        hov = cdp.js(f"{R}.querySelector('.l').textContent")
+        mouse(cdp, x, y, "mousePressed", button="left", clicks=1); mouse(cdp, x, y, "mouseReleased", button="left", clicks=1); frames(cdp, 3)
+        m = cdp.js("window.__msgs.filter(m=>m.op==='select').pop()"); e = cdp.js("window.__msgs.filter(m=>m.op==='selecting').pop()")
+        picked.append([sel, hov, m and m["target"]["path"][-1], e and e["selector"], e and e.get("pt")])
+        cdp.js(f"{H}.cmd('follow',{{current:true,draw:{{label:'{sel}'}}}})"); frames(cdp, 3)
+        cdp.js(f"{H}.cmd('cmarks',[{{id:'c1',selector:'p.hero-text',state:'idle'}},{{id:'c2',selector:'div.hero-visual',state:'working'}}])"); frames(cdp, 3)
+    ok = all(p[2] and p[2].startswith(p[0].split('.')[0]) and p[0].split('.')[1] in p[2] and (p[3] or '').split(' ')[-1].split(':')[0].replace('.btn.', '.').startswith(p[0].split('.')[0]) for p in picked if p[0] != 'div.hero-visual')
+    check(ok, "monkey 1 step 5: each click selects the deepest element under the pointer (as the hover), never its container", picked)
     cdp.js(f"{H}.cmd('follow',null)")
 
     # ---------------- R26: peek
@@ -332,6 +366,18 @@ try:
     check(cdp.js("getComputedStyle(document.querySelector('.card')).cursor") == "auto", "R31: Ctrl seen on a pointer move (focus elsewhere)")
     mouse(cdp, 301, 200, "mouseMoved", mods=0); frames(cdp)
     check(cdp.js("getComputedStyle(document.querySelector('.card')).cursor") != "auto", "R31: released, seen on the next move")
+    # final pass 1, defect 2: Ctrl held (seen on the moves), the button events arrive WITHOUT the Ctrl flag (the real window's
+    # click): still the site's click, nothing selected; released (keyup): the aiming cursor at once, the same cursor value
+    load(1.0)
+    cur0 = cdp.js("getComputedStyle(document.querySelector('.btn')).cursor")
+    cdp.call("Input.dispatchKeyEvent", type="rawKeyDown", key="Control", code="ControlLeft", windowsVirtualKeyCode=17, modifiers=2)
+    mouse(cdp, 760, 440, "mouseMoved", mods=2); frames(cdp)
+    n0 = cdp.js("window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').length"); c0 = cdp.js("window.__clicked||0")
+    mouse(cdp, 760, 440, "mousePressed", mods=0, button="left", clicks=1); mouse(cdp, 760, 440, "mouseReleased", mods=0, button="left", clicks=1); frames(cdp, 3)
+    st = cdp.js("[window.__clicked||0, window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').length, getComputedStyle(document.querySelector('.btn')).cursor]")
+    check(st[0] == c0 + 1 and st[1] == n0 and st[2] == "default", "R31 (defect 2): Ctrl held, a click without the Ctrl flag: the site's click, nothing selected, still the page's cursor", st[:2] + [st[2][:30]])
+    cdp.call("Input.dispatchKeyEvent", type="keyUp", key="Control", code="ControlLeft", windowsVirtualKeyCode=17, modifiers=0); frames(cdp)
+    check(cdp.js("getComputedStyle(document.querySelector('.btn')).cursor") == cur0, "R31 (defect 2): Ctrl released: the aiming cursor back at once (same cursor value)")
 
     # ---------------- R37: glued while scrolling, transition only for values
     load(1.25)
@@ -379,7 +425,7 @@ finally:
     try:
         if proc: proc.kill(); proc.wait(10)
     except Exception: pass
-    srv.shutdown()
+    srv.shutdown(); ssrv.shutdown()
     shutil.rmtree(profile, ignore_errors=True)
     report["failures"] = failures
     json.dump(report, open(os.path.join(OUT, "page-v4.json"), "w", encoding="utf-8"), indent=1, ensure_ascii=False)

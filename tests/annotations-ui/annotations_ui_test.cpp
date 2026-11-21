@@ -682,8 +682,8 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     auto lastSaid = [&](const std::wstring& prefix) { for (auto it = said.rbegin(); it != said.rend(); ++it) if (it->rfind(prefix, 0) == 0) return true; return false; };
 
     // ---- Banner: reminder « Aucun agent connecté · Connecter »
-    Banner banner; int exits = 0, bannerConnects = 0;
-    BannerHooks bh; bh.exit = [&] { ++exits; }; bh.connect = [&] { ++bannerConnects; }; bh.announce = announce;
+    Banner banner; int exits = 0, escapes = 0, bannerConnects = 0;
+    BannerHooks bh; bh.exit = [&] { ++exits; }; bh.escape = [&] { ++escapes; }; bh.connect = [&] { ++bannerConnects; }; bh.announce = announce;
     banner.Init(inst, host, root, bh); banner.SetLiveForTest(0);   // V3-B: the wave is tested in V3B::Windows; here the band must settle
     CHECK(banner.Show({0, int(std::lround(85 * dpiScale)), client.right, pageTop}, false));
     CHECK(lastSaid(L"Mode Annotation activé"));
@@ -692,7 +692,7 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     { auto n = banner.NodesForTest(); CHECK(HasNode(n, L"Connecter un agent") && HasNode(n, L"Quitter le mode Annotation")); }
     SetFocus(banner.Window()); CHECK(banner.KeyForTest(VK_TAB) && banner.FocusItemForTest() == BannerRemind);
     banner.KeyForTest(VK_RETURN); CHECK(bannerConnects == 1);
-    banner.KeyForTest(VK_ESCAPE); CHECK(exits == 1);
+    banner.KeyForTest(VK_ESCAPE); CHECK(escapes == 1 && exits == 0);   // Escape in the band: its own hook (an open bubble closes first), « Quitter » stays exit
     SaveLayer(ink, banner.LayerForTest(), L"w1-window-band-reminder.png");
     banner.SetReminder(false); CHECK(!banner.ReminderVisible()); Settle();
 
@@ -1081,6 +1081,16 @@ static void V3Tests(Ink& ink) {
         CHECKM(Close(at(101.25, 100), accentRgb, 4), "left edge accent");
         CHECKM(Close(at(220, 100), pageRgb, 1), "inside the edges: nothing (the fill stays in the page)");
         CHECKM(Close(at(103, 60), accentRgb, 4), "label box accent");
+        // final pass 1, defect 3 (R45): given the page's label pixels (taken from the screen), the copy shows exactly them
+        FrameMark g = m;
+        auto pattern = [](RECT r, std::uint32_t seed) { FrameMark::Pixels p; p.at = r; for (LONG y = r.top; y < r.bottom; ++y) for (LONG x = r.left; x < r.right; ++x)
+            p.bits.push_back(0xFF000000u | ((std::uint32_t(x * 37 + y * 91) * seed) & 0x00FFFFFFu)); return p; };
+        g.leftPx = pattern({LONG(std::lround(g.lx * 2)), LONG(std::lround(g.ly * 2)), LONG(std::lround((g.lx + g.lw) * 2)), LONG(std::lround((g.ly + g.lh) * 2))}, 2654435761u);
+        Canvas cg; Render(ink, w, h, dpi, 0xF4F4F3FF, [&](Ink& i, float, float) { SelectionFrame::Paint(i, g, {b.left, b.top}, 2); }, cg);
+        int off = 0, n = 0; const RECT& r = g.leftPx.at;
+        for (LONG y = r.top; y < r.bottom; ++y) for (LONG x = r.left; x < r.right; ++x, ++n)
+            if ((cg.At(int(x - b.left), int(y - b.top)) | 0xFF000000u) != g.leftPx.bits[size_t(n)]) ++off;
+        CHECKM(off == 0, "R45 native copy: the page's own label pixels, pixel for pixel (%d of %d differ)", off, n);
     }
 }
 // Live: the launcher's windows are destroyed at rest outside the mode; the history opens alone, anchored low.
