@@ -513,6 +513,35 @@ int wmain(int argc, wchar_t** argv) {
         Check(removeCalls == 1 && w2.Accounts().size() == 1 && said.find(L"n'a pas pu être supprimé") != std::wstring::npos, "B05 real: a removal the vault did not write is said, the row stays");
         w2.Hide(); w2.Surface().FinishAnimationsForTest();
         w2.SetReal({}, nullptr); Check(w2.Show({0, 0, 900, 700}) && w2.Surface().CurrentSpec().accountsTitle == L"Aucun mot de passe enregistré par browser", "B05 real: empty state"); w2.Hide(); w2.Surface().FinishAnimationsForTest();
+        {   // Owner decision « option A »: the B05 list offers deleting the engine's old passwords; the button asks the host;
+            // after the deletion the list says so and the offer is gone. Renders: build/popups/vault-engine-*.png.
+            int asked = 0; w2.SetReal({{L"compte.exemple.test", L"camille@exemple.test", L"", L"", L"Modifié le 12 novembre 2026", 7}}, [](std::uint64_t) { return true; });
+            w2.SetEngineOffer(true, [&] { ++asked; }); Check(w2.Show({0, 0, 900, 700}), "option A: B05 list with the offer shown");
+            const auto& ls = w2.Surface().CurrentSpec(); int offerAt = -1; for (size_t i = 0; i < ls.buttons.size(); ++i) if (ls.buttons[i].automationId == L"VaultEngineOffer") offerAt = static_cast<int>(i);
+            Check(offerAt >= 0 && ls.buttons[static_cast<size_t>(offerAt)].label == L"Supprimer les anciens mots de passe…" && ls.buttons[static_cast<size_t>(offerAt)].role == Modal::Role::Danger && !ls.notices.empty() && ls.notices[0].text.find(L"Edge WebView2") != std::wstring::npos,
+                  "option A: B05 list: the info line and « Supprimer les anciens mots de passe… » (destructive, leading)");
+            w2.Surface().FinishAnimationsForTest(); Check(w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-fr.png"), "option A: render B05 list with the offer (FR)");
+            if (offerAt >= 0) { w2.Surface().ArmNowForTest(); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(offerAt)); }
+            Check(asked == 1 && w2.Visible(), "option A: the button asks the host (the confirmation), the list stays");
+            w2.EngineDeleted(); const auto& ds = w2.Surface().CurrentSpec(); bool still = false; for (auto& b : ds.buttons) still = still || b.automationId == L"VaultEngineOffer";
+            Check(!still && !ds.notices.empty() && ds.notices[0].text == L"Anciens mots de passe supprimés." && ds.subtitle.find(L"moteur") == std::wstring::npos, "option A: after the deletion the list says so, the offer and the engine note are gone");
+            w2.Surface().FinishAnimationsForTest(); Check(w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-deleted-fr.png"), "option A: render B05 list after the deletion (FR)");
+            w2.Hide(); w2.Surface().FinishAnimationsForTest();
+            I18n::SetForProcess(I18n::Locale::En); w2.SetEngineOffer(true, [] {}); w2.Show({0, 0, 900, 700}); w2.Surface().FinishAnimationsForTest();
+            Check(w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-en.png"), "option A: render B05 list with the offer (EN)"); w2.Hide(); w2.Surface().FinishAnimationsForTest(); I18n::SetForProcess(I18n::Locale::Fr);
+            // The confirmation: A5 vocabulary (ECR-0 without period and categories), « Annuler » first and focused.
+            const auto cs = Modal::DeleteEnginePasswordsSpec();
+            Check(cs.title == L"Supprimer les anciens mots de passe" && cs.buttons.size() == 2 && cs.buttons[0].label == L"Annuler" && cs.buttons[0].initialFocus && cs.buttons[1].role == Modal::Role::Danger && cs.buttons[1].label == cs.title && !cs.buttons[1].isDefault && cs.body.find(L"irréversible") != std::wstring::npos,
+                  "option A: confirmation « Supprimer les anciens mots de passe », Annuler focused, destructive action never the default Entrée");
+            Modal::Dialog cd; cd.Create(hi, owner, root, {}); auto spec = cs; spec.buttons[1].closes = false; int closed = 0;
+            cd.Show(spec, Area(), [&](const Modal::Result&) { ++closed; }); cd.FinishAnimationsForTest();
+            Check(cd.RenderForTest(root + L"/build/popups/vault-engine-confirm-fr.png"), "option A: render the confirmation (FR)");
+            cd.SetBusy(true, L"Suppression…"); Check(cd.RenderForTest(root + L"/build/popups/vault-engine-confirm-busy-fr.png"), "option A: render the confirmation while deleting");
+            cd.SetBusy(false); cd.SetError(L"La suppression n'a pas abouti (0x80004005). Réessayez."); Check(cd.RenderForTest(root + L"/build/popups/vault-engine-confirm-failed-fr.png") && closed == 0, "option A: render the failure (the dialog stays)");
+            cd.Abort(); cd.FinishAnimationsForTest(); cd.Dispose();
+            I18n::SetForProcess(I18n::Locale::En); const auto ce = Modal::DeleteEnginePasswordsSpec(); Modal::Dialog ed; ed.Create(hi, owner, root, {}); ed.Show(ce, Area(), [](const Modal::Result&) {}); ed.FinishAnimationsForTest();
+            Check(ce.title == L"Delete old passwords" && ed.RenderForTest(root + L"/build/popups/vault-engine-confirm-en.png"), "option A: confirmation in English, rendered"); ed.Abort(); ed.FinishAnimationsForTest(); ed.Dispose(); I18n::SetForProcess(I18n::Locale::Fr);
+        }
         {   // Review F1: removals act on each row's own vault id, whatever the rows' order after earlier removals.
             std::vector<std::uint64_t> removed; w2.SetReal({{L"a.test", L"A", L"", L"", L"", 11}, {L"b.test", L"B", L"", L"", L"", 22}, {L"c.test", L"C", L"", L"", L"", 33}}, [&](std::uint64_t id) { removed.push_back(id); return true; });
             w2.Show({0, 0, 900, 700}); w2.Surface().ArmNowForTest();

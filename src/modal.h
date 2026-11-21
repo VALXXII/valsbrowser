@@ -311,7 +311,7 @@ inline constexpr const char* screen = SiteRequest::Path::screen;
 
 namespace Modal {
 namespace P = DialogKit::Paper;
-enum class Kind { Generic, Alert, Confirm, Prompt, BeforeUnload, ClearData, CloseWindow, OpenManyTabs, DeleteBookmarks, About, Private, Origin, Passwords };
+enum class Kind { Generic, Alert, Confirm, Prompt, BeforeUnload, ClearData, CloseWindow, OpenManyTabs, DeleteBookmarks, About, Private, Origin, Passwords, EnginePasswords };
 enum class Role { Primary, Secondary, Danger, Quiet };
 // Page: scrim on `area`, 16 DIP under its top. Window: scrim on the owner's client area,
 // centred. Anchor: no scrim, under Spec::anchor (light dismiss).
@@ -1495,6 +1495,9 @@ private:
         if (!spec_.manageLabel.empty()) add(ManageHit, spec_.manageLabel, Find(ManageHit), true);
         if (!spec_.checkLabel.empty()) { const auto at = add(SimpleCheckHit, spec_.checkLabel, Find(SimpleCheckHit), !busy_); nodes[at].toggle = spec_.checkValue ? 2 : 1; }
         if (spec_.danger.shown) { Accessibility::Node c; c.key = DangerKey; c.parent = GroupKey; c.role = Accessibility::Role::Group; c.focusable = false; c.name = spec_.danger.title + (spec_.danger.subtitle.empty() ? L"" : L" — " + spec_.danger.subtitle); c.help = spec_.danger.text; c.automationId = L"DangerousDownloadCard"; for (const auto& bl : blocks_) if (bl.type == B::Danger) c.bounds = ScreenOf(bl.r); nodes.push_back(c); }
+        // Notice lines (B05: the engine-passwords offer and its result, B06 lock box, info lines) are read too (UIA text,
+        // not focusable; keys 7600+, never a hit).
+        for (const auto& bl : blocks_) if (bl.type == B::Notice && bl.index < spec_.notices.size()) { Accessibility::Node t; t.key = 7600 + static_cast<long long>(bl.index); t.parent = GroupKey; t.role = Accessibility::Role::Text; t.focusable = false; t.name = spec_.notices[bl.index].text; t.automationId = L"DialogNotice"; t.bounds = ScreenOf(bl.r); nodes.push_back(t); }
         for (size_t i = 0; i < spec_.buttons.size(); ++i) { const auto at = add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId); if (spec_.danger.shown) nodes[at].help = DangerSpoken(); }
         if (spec_.closeButton) add(CloseHit, TR(common_close), Find(CloseHit), true, L"DialogClose");
         return nodes;
@@ -1659,6 +1662,7 @@ public:
     float HeightForTest() const { return height_; }
     float WidthForTest() const { return width_; }
     bool BusyForTest() const { return busy_; }
+    std::wstring ErrorForTest() const { return error_; }
     bool ClosingForTest() const { return closing_; }
     std::wstring FieldErrorForTest() const { return fieldError_; }
     void FinishAnimationsForTest() { fade_.Settle(); if (closing_) FinishClosing(); else if (open_) { Place(false); ApplyAlpha(); } }
@@ -1771,6 +1775,16 @@ inline Spec DeleteBookmarksSpec(int count) {
     s.title = count > 1 ? TRF(delete_bookmarks_title, std::to_wstring(count)) : std::wstring(TR(delete_bookmark_title));
     s.body = TR(delete_bookmarks_body);
     s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(common_delete), Role::Danger, true, false, false, L"DialogDelete")};
+    return s;
+}
+// Engine passwords, owner decision « option A » (no Paper frame of its own: the A5 « Effacer les données »
+// confirmation, ECR-0, without its period and categories): title = the action, body = what is deleted and what is
+// kept, « Annuler » first and focused, the destructive action. The host keeps it open in A5's busy footer while the
+// engine works (buttons[1].closes = false + onButton, SetBusy) and says a failure with SetError, like A5.
+inline Spec DeleteEnginePasswordsSpec() {
+    Spec s; s.kind = Kind::EnginePasswords; s.scope = Scope::Window; s.automationId = L"DeleteEnginePasswords";
+    s.title = TR(vault_engine_delete_title); s.body = TR(vault_engine_delete_body);
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(vault_engine_delete_title), Role::Danger, false, false, false, L"DialogDeleteEnginePasswords")};
     return s;
 }
 // A8 states (same vocabulary as the update toast).

@@ -7,10 +7,13 @@
 #   F  (V-7) a classic login whose answer asks for the password again (wrong password): no offer; a successful one: offer.
 #   H  (V-6) the fill refuses a transparent password field (nothing written into it).
 #   K  (V-5) cost of a console-heavy page loop with the vault active, compared with the vault-inactive host.
+#   E  (option A) the engine's old saved passwords are never deleted automatically: after 30 days of use Réglages ›
+#      Mots de passe offers the deletion; « Annuler » keeps them; the confirmation deletes them; the offer is then gone.
 # Test host tests/e2e/vault_host.cpp (vault on, foreground condition lifted: UI Automation, no mouse), control host
 # tests/e2e/mtls_host.cpp (vault off). Synthetic profiles in build/, fictitious accounts, local fixture on 127.0.0.1 only.
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+. (Join-Path $PSScriptRoot 'job_guard.ps1')   # every process started here dies with this script, even interrupted
 $root = (Resolve-Path '.').Path; $pki = Join-Path $root 'build\e2e-vault-review-pki'
 $script:fails = 0
 function Check([bool]$ok, [string]$what) { if ($ok) { "ok   $what" } else { "FAIL $what"; $script:fails++ } }
@@ -165,6 +168,50 @@ try {
     $filled = $false; for ($i = 0; $i -lt 20 -and !$filled; $i++) { Start-Sleep -Milliseconds 200; $filled = (Eval $w "document.getElementById('p').value") -eq 'E2e-Bon-2002!' }; $w.Dispose()
     Check $filled 'V-6 control: a visible field still fills'
   }
+  if (!$Only -or $Only -match 'E') {
+    '--- E (option A): deleting the engine''s old passwords is OFFERED after 30 days of use, done only on request'
+    function FindLike([int]$hostPid, [string]$pattern) {
+      $cond = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $hostPid)
+      foreach ($w in $AE::RootElement.FindAll('Children', $cond)) { foreach ($e in $w.FindAll('Descendants', [System.Windows.Automation.Condition]::TrueCondition)) { if ($e.Current.Name -like $pattern) { return $e } } }
+      return $null }
+    function OpenManager([int]$hostPid) {   # Réglages › Confidentialité › Gérer les mots de passe, step by step until the list is there
+      $t = [Environment]::TickCount
+      while ([Environment]::TickCount - $t -lt 25000) {
+        $list = Find $hostPid 'PasswordList'; if ($list) { return $list }
+        $g = FindName $hostPid 'Gérer les mots de passe'; if ($g) { [void](InvokeEl $g); Start-Sleep -Milliseconds 800; continue }
+        $p = FindName $hostPid 'Confidentialité'; if ($p) { [void](InvokeEl $p); Start-Sleep -Milliseconds 800; continue }
+        [void](InvokeEl (Find $hostPid 'Settings')); Start-Sleep -Milliseconds 1200 }
+      return $null }
+    $mig = "$dir\vault-engine-migration"
+    function Cleared { if (!(Test-Path $mig)) { return -1 }; $m = [regex]::Match([IO.File]::ReadAllText($mig), 'cleared=(\d+)'); if ($m.Success) { return [int64]$m.Groups[1].Value }; return -1 }
+    StopHost $exe $dir; Fresh $dir; $hp = StartHost $exe $dir
+    Check ((Test-Path $mig) -and (Cleared) -eq 0) 'option A: the first active start records the activation (nothing deleted)'
+    $list = OpenManager $hp
+    Check ([bool]$list -and -not (Find $hp 'VaultEngineOffer')) 'option A: before 30 days of use, Réglages › Mots de passe offers nothing'
+    StopHost $exe $dir
+    # Clock injected through the recorded state: 29 days of use already counted, so this start is the 30th.
+    [IO.File]::WriteAllText($mig, (([IO.File]::ReadAllText($mig) -replace 'days=\d+', 'days=29') -replace 'lastday=\d+', 'lastday=20000101'))
+    $hp = StartHost $exe $dir; Start-Sleep 2
+    Check ((Cleared) -eq 0 -and (LogCount $log 'VAULT engine saved passwords deleted') -eq 0) 'option A: on the 30th day of use NOTHING is deleted automatically'
+    $list = OpenManager $hp; $offer = WaitFind $hp 'VaultEngineOffer' 5000
+    Check ([bool]$list -and [bool]$offer) 'option A: on the 30th day of use Réglages › Mots de passe offers « Supprimer les anciens mots de passe… »'
+    if ($offer) {
+      [void](InvokeEl $offer); $confirm = WaitFind $hp 'DeleteEnginePasswords' 6000
+      Check ([bool]$confirm) 'option A: the button opens the confirmation (A5 pattern)'
+      [void](InvokeEl (WaitFind $hp 'DialogCancel' 3000)); Start-Sleep 1
+      Check ((Cleared) -eq 0 -and (LogCount $log 'VAULT engine saved passwords deleted') -eq 0 -and [bool](Find $hp 'VaultEngineOffer')) 'option A: « Annuler » deletes nothing and the offer stays'
+      [void](InvokeEl (Find $hp 'VaultEngineOffer')); [void](WaitFind $hp 'DeleteEnginePasswords' 6000)
+      [void](InvokeEl (WaitFind $hp 'DialogDeleteEnginePasswords' 3000))
+      Check (WaitLog $log 'VAULT engine saved passwords deleted on request' 15000) 'option A: after the confirmation the engine''s saved passwords are deleted (ClearBrowsingData PASSWORD_AUTOSAVE)'
+      Start-Sleep 1
+      $done = FindLike $hp '*Anciens mots de passe supprimés*'
+      Check ((Cleared) -gt 0 -and -not (Find $hp 'VaultEngineOffer') -and [bool]$done) 'option A: the result is said in the list (« Anciens mots de passe supprimés »), the deletion is recorded and the offer is gone'
+    }
+    StopHost $exe $dir; $hp = StartHost $exe $dir; Start-Sleep 1
+    $list = OpenManager $hp
+    Check ([bool]$list -and -not (Find $hp 'VaultEngineOffer') -and (LogCount $log 'VAULT engine saved passwords deleted on request') -eq 1) 'option A: the offer never comes back (next start)'
+    StopHost $exe $dir
+  }
   if (!$Only -or $Only -match 'K') {
     '--- K (V-5): cost of a console-heavy loop (2000 console.debug of an object), three runs each'
     StopHost $exe $dir; Fresh $dir; $hp = StartHost $exe $dir
@@ -183,4 +230,4 @@ try {
   Remove-Item Env:BROWSER_E2E_PIN_MANIFEST, Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER -ErrorAction SilentlyContinue
   Remove-Item $pki -Recurse -Force -ErrorAction SilentlyContinue
 }
-if ($script:fails) { "FAIL vault review e2e: $script:fails"; exit 1 } else { 'PASS vault review e2e: V-1 offers bound to their profile, V-4 no offer without a user action and a typed password, V-7 offered only after a successful login, V-6 no fill into a transparent field, V-5 no console slowdown' }
+if ($script:fails) { "FAIL vault review e2e: $script:fails"; exit 1 } else { 'PASS vault review e2e: V-1 offers bound to their profile, V-4 no offer without a user action and a typed password, V-7 offered only after a successful login, V-6 no fill into a transparent field, V-5 no console slowdown, option A engine passwords deleted only on request' }

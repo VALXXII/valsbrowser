@@ -590,26 +590,26 @@ public:
 private:
     std::wstring origin_, user_; std::int64_t at_ = 0;
 };
-// ---- Engine passwords (owner decision B): migrated as the user logs in (B04 « Garder »), never decrypted from the
-// engine's store; the activation date is recorded per profile. Review V-3: the grace period counts DAYS OF USE (a
-// calendar day, local, on which the active vault opened a tab), a day is counted only once and only when it is later
-// than the last one counted (a clock set back counts nothing, a clock set ahead counts one day), and nothing is ever
-// deleted while « Mots de passe » is off or the vault is unreadable (nothing could have been kept).
-// What happens when it is due is ONE switch (owner decision pending, review V-2): Automatic = the engine's saved
-// passwords are cleared (ClearBrowsingData PASSWORD_AUTOSAVE) then a one-time notice; ManualOffer = nothing is deleted,
-// the host only reports that a manual « delete the old passwords » offer is due (EngineStep::OfferManual).
-//   browser-vault-migration 1 / activated=<unix ms> / cleared=<unix ms, 0 = not yet> / notice=<0|1> / days=<n> / lastday=<yyyymmdd>
-enum class EngineCleanupMode { Automatic, ManualOffer };
-inline constexpr EngineCleanupMode EngineCleanup = EngineCleanupMode::Automatic;
+/// ---- Engine passwords (owner decision B, then « option A »): migrated as the user logs in (B04 « Garder »), never
+// decrypted from the engine's store, and NEVER deleted automatically. The activation date is recorded per profile and
+// the days of use are counted (review V-3: a calendar day, local, on which the active vault opened a tab; a day counts
+// once and only when it is later than the last one counted: a clock set back counts nothing, a clock set ahead counts
+// one day). After 30 days of use, while « Mots de passe » is on and the vault is readable, Réglages › Mots de passe
+// OFFERS to delete them; they are deleted only after the person's click and confirmation (ClearBrowsingData
+// PASSWORD_AUTOSAVE); once deleted (`cleared`), the offer never comes back.
+//   browser-vault-migration 1 / activated=<unix ms> / cleared=<unix ms, 0 = not yet> / days=<n> / lastday=<yyyymmdd>
+// (a « notice=<0|1> » line written by the previous build is read and ignored)
+enum class EngineCleanupMode { ManualOffer };
+inline constexpr EngineCleanupMode EngineCleanup = EngineCleanupMode::ManualOffer;   // option A (owner decision)
 struct EngineMigration {
     static constexpr int GraceDays = 30;
     static constexpr const char* Header = "browser-vault-migration 1";
-    std::int64_t activated = 0, cleared = 0; bool noticeSeen = false; int useDays = 0, lastUseDay = 0;
+    std::int64_t activated = 0, cleared = 0; int useDays = 0, lastUseDay = 0;
     // `dayKey`: yyyymmdd of the local calendar day. True when it counted as a new day of use.
     bool RecordUse(int dayKey) { if (dayKey <= lastUseDay) return false; lastUseDay = dayKey; ++useDays; return true; }
-    bool CleanupDue(bool passwordsOn, bool vaultReadable) const { return activated > 0 && cleared == 0 && useDays >= GraceDays && passwordsOn && vaultReadable; }
-    bool NoticePending() const { return cleared > 0 && !noticeSeen; }
-    std::string Write() const { std::ostringstream o; o << Header << "\nactivated=" << activated << "\ncleared=" << cleared << "\nnotice=" << (noticeSeen ? 1 : 0) << "\ndays=" << useDays << "\nlastday=" << lastUseDay << "\n"; return o.str(); }
+    // The deletion is offered (never done) from the 30th day of use, until the person has deleted them.
+    bool OfferDue(bool passwordsOn, bool vaultReadable) const { return activated > 0 && cleared == 0 && useDays >= GraceDays && passwordsOn && vaultReadable; }
+    std::string Write() const { std::ostringstream o; o << Header << "\nactivated=" << activated << "\ncleared=" << cleared << "\ndays=" << useDays << "\nlastday=" << lastUseDay << "\n"; return o.str(); }
     static bool Read(const std::string& text, EngineMigration& out) {
         out = EngineMigration{}; std::istringstream in(text); std::string line; bool any = false, act = false;
         if (!std::getline(in, line) || line != Header) return false;
@@ -618,7 +618,7 @@ struct EngineMigration {
             const auto eq = line.find('='); if (eq == std::string::npos) return false;
             const std::string k = line.substr(0, eq), v = line.substr(eq + 1); if (!Store::Digits(v)) return false;
             std::int64_t n = 0; try { n = std::stoll(v); } catch (...) { return false; }
-            if (k == "activated") { out.activated = n; act = true; } else if (k == "cleared") out.cleared = n; else if (k == "notice") { if (n > 1) return false; out.noticeSeen = n == 1; }
+            if (k == "activated") { out.activated = n; act = true; } else if (k == "cleared") out.cleared = n; else if (k == "notice") { if (n > 1) return false; }
             else if (k == "days") { if (n > 100000) return false; out.useDays = static_cast<int>(n); } else if (k == "lastday") { if (n > 99991231) return false; out.lastUseDay = static_cast<int>(n); } else return false;
             any = true;
         }

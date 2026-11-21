@@ -13,6 +13,7 @@ param([string]$Runtime = '', [switch]$NoControl, [switch]$SkipBuild, [switch]$Co
 # whose image is this fixture's host are touched.
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+. (Join-Path $PSScriptRoot 'job_guard.ps1')   # every process started here dies with this script, even interrupted
 $root = (Resolve-Path '.').Path; $pki = Join-Path $root 'build\e2e-vault-product-pki'
 $script:fails = 0
 function Check([bool]$ok, [string]$what) { if ($ok) { "ok   $what" } else { "FAIL $what"; $script:fails++ } }

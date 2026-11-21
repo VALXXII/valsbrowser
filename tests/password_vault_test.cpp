@@ -155,26 +155,26 @@ int main() {
         Check(ts.For(o2, 1000 + 60000) == L"camille" && ts.For(o2, 1000 + TwoStep::WindowMs) == L"camille", "two-step: the first step's username, within the window");
         Check(ts.For(o2, 1000 + TwoStep::WindowMs + 1).empty() && ts.For(L"https://autre.exemple.test", 2000).empty(), "two-step: never after the window, never for another origin");
         ts.Remember(o2, L"", 3000); Check(ts.For(o2, 3500) == L"camille", "two-step: an empty username never erases the remembered one");
-        // Migration of the engine's saved passwords (review V-3): the grace period counts DAYS OF USE (a day on which the
-        // vault was active and a tab opened), never calendar time, and a clock set back or ahead cannot shorten it.
+        // Engine passwords, owner decision « option A »: NEVER deleted automatically. After 30 DAYS OF USE (a day on which the
+        // vault was active and a tab opened; a clock set back or ahead cannot shorten it) the person is OFFERED a manual
+        // deletion, only while « Mots de passe » is on and the vault is readable; once deleted, the offer is gone for good.
         EngineMigration mg; const std::int64_t t0 = 1790000000000LL;
-        Check(EngineMigration::GraceDays == 30, "migration: the grace period is 30 days of use");
-        Check(!mg.CleanupDue(true, true), "migration: no activation date recorded: never cleared");
+        Check(EngineCleanup == EngineCleanupMode::ManualOffer, "option A: the engine's saved passwords are deleted only on the person's request, never automatically");
+        Check(EngineMigration::GraceDays == 30, "migration: the offer waits 30 days of use");
+        Check(!mg.OfferDue(true, true), "migration: no activation date recorded: no offer");
         mg.activated = t0;
         int key = 20261101, counted = 0; for (int d = 0; d < 29; ++d) counted += mg.RecordUse(key + d) ? 1 : 0;
-        Check(counted == 29 && mg.useDays == 29 && !mg.CleanupDue(true, true), "migration: 29 days of use: not yet");
+        Check(counted == 29 && mg.useDays == 29 && !mg.OfferDue(true, true), "migration: 29 days of use: no offer yet");
         Check(!mg.RecordUse(key + 28) && mg.useDays == 29, "migration: the same day again counts nothing");
         Check(!mg.RecordUse(key) && !mg.RecordUse(20250101) && mg.useDays == 29, "migration: a clock set back counts nothing");
         Check(mg.RecordUse(20300101) && mg.useDays == 30, "migration: a clock set years ahead counts ONE day, not years");
-        Check(mg.CleanupDue(true, true), "migration: due on the 30th day of use");
-        Check(!mg.CleanupDue(false, true), "migration: never while « Mots de passe » is off (nothing could be migrated)");
-        Check(!mg.CleanupDue(true, false), "migration: never while the vault is unreadable (nothing could be kept)");
-        { EngineMigration away; away.activated = t0; away.RecordUse(20261101); away.RecordUse(20261215); Check(away.useDays == 2 && !away.CleanupDue(true, true), "migration: a person who comes back after weeks away has used the browser 2 days, not 45"); }
-        Check(EngineCleanup == EngineCleanupMode::Automatic || EngineCleanup == EngineCleanupMode::ManualOffer, "migration: the deletion mode is one switch (owner decision pending)");
-        mg.cleared = t0 + 1; Check(!mg.CleanupDue(true, true) && mg.NoticePending(), "migration: cleared once only; then the one-time notice is pending");
-        mg.noticeSeen = true; Check(!mg.NoticePending(), "migration: the notice is shown once");
-        EngineMigration back2; Check(EngineMigration::Read(mg.Write(), back2) && back2.activated == mg.activated && back2.cleared == mg.cleared && back2.noticeSeen && back2.useDays == 30 && back2.lastUseDay == 20300101, "migration: the state file reads back identical");
-        { EngineMigration old; Check(EngineMigration::Read("browser-vault-migration 1\nactivated=12\ncleared=0\nnotice=0\n", old) && old.useDays == 0, "migration: a state file of the previous build reads (no days counted yet)"); }
+        Check(mg.OfferDue(true, true), "migration: the offer is due on the 30th day of use");
+        Check(!mg.OfferDue(false, true), "migration: no offer while « Mots de passe » is off (nothing could have been kept)");
+        Check(!mg.OfferDue(true, false), "migration: no offer while the vault is unreadable (nothing could have been kept)");
+        { EngineMigration away; away.activated = t0; away.RecordUse(20261101); away.RecordUse(20261215); Check(away.useDays == 2 && !away.OfferDue(true, true), "migration: a person who comes back after weeks away has used the browser 2 days, not 45"); }
+        mg.cleared = t0 + 1; Check(!mg.OfferDue(true, true), "migration: once the person deleted them, the offer is gone for good");
+        EngineMigration back2; Check(EngineMigration::Read(mg.Write(), back2) && back2.activated == mg.activated && back2.cleared == mg.cleared && back2.useDays == 30 && back2.lastUseDay == 20300101 && mg.Write().find("notice=") == std::string::npos, "migration: the state file reads back identical (no notice flag any more)");
+        { EngineMigration old; Check(EngineMigration::Read("browser-vault-migration 1\nactivated=12\ncleared=0\nnotice=1\ndays=3\nlastday=20261101\n", old) && old.useDays == 3 && old.cleared == 0, "migration: a state file of the previous build (with its notice flag) still reads"); }
         EngineMigration bad; Check(!EngineMigration::Read("autre chose\n", bad) && !EngineMigration::Read("browser-vault-migration 1\nactivated=12x\n", bad) && !EngineMigration::Read("", bad) && !EngineMigration::Read("browser-vault-migration 1\nactivated=12\nlastday=2026-11-01\n", bad), "migration: an unknown or damaged state file is refused (never taken as a date)");
         // ---- Review V-4: no offer without a real user action in that document; the page cannot write the username at will -----
         Check(cs.find(L"e.isTrusted&&activated()") != std::wstring::npos && cs.find(L"'pointerdown'") != std::wstring::npos && cs.find(L"function activated(){return performance.now()-act<=10000;}") != std::wstring::npos,

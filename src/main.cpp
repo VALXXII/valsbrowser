@@ -2320,7 +2320,7 @@ void CreateSettingsPanel(){
     hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};
     if(!privateWindow)hooks.importData=[](bool keyboard){ShowImportDialog(keyboard);};   // a private window imports nothing into its profile
     hooks.vaultInfo=[]{return VaultInfo();};
-    hooks.vaultNotice=[]{return VaultEngineNoticeText();};hooks.vaultNoticeShown=[]{VaultEngineNotice();};hooks.clearOnExitNote=[]{return ClearOnExitNote();};   // owner decision B
+    hooks.clearOnExitNote=[]{return ClearOnExitNote();};   // owner decision B
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
     hooks.downloadFolder=EffectiveDownloadFolder;

@@ -1165,57 +1165,75 @@ void VaultCaptureSync(){
     for(auto& t:pages){if(!t||t->closed||!t->view.p||t->popupSetup)continue;
         if(VaultCaptureWanted())VaultCaptureInstall(t,nullptr);else VaultCaptureRemove(t);}
 }
-// ---- Owner decision B: engine-saved passwords. The vault's activation date is recorded per profile at the first
-// active start; 30 days later the ENGINE's saved passwords are cleared once (ClearBrowsingData PASSWORD_AUTOSAVE), then
-// Réglages › Confidentialité shows a one-time notice. Never in a private window, never while the vault is inactive.
-// An unreadable state file is never taken as an old date: the activation is recorded again (the clearing only moves later).
-enum class EngineStep { Nothing, Recorded, ClearNow, OfferManual };
+// ---- Engine-saved passwords, owner decision « option A ». The vault's activation date and its days of use are recorded
+// per profile (each tab of an active vault; never in a private window, never while the vault is inactive). NOTHING is
+// ever deleted automatically: from the 30th day of use, while « Mots de passe » is on and the vault is readable,
+// Réglages › Mots de passe offers « Supprimer les anciens mots de passe… »; the engine's saved passwords are deleted
+// (ClearBrowsingData PASSWORD_AUTOSAVE) only after that click AND the confirmation; the result is said (deleted, or
+// the failure with its reason); once deleted the offer never comes back. An unreadable state file is never taken as an
+// old date: the activation is recorded again (the offer only moves later).
+static_assert(Vault::EngineCleanup==Vault::EngineCleanupMode::ManualOffer,"option A: the engine's passwords are deleted only on the person's request");
+enum class EngineStep { Nothing, Recorded, OfferDue };
 // The local calendar day of `ms` as yyyymmdd (days of use, review V-3).
 int LocalDayKey(std::int64_t ms){FILETIME ft;ULARGE_INTEGER u;u.QuadPart=(ULONGLONG)(ms+11644473600000LL)*10000ULL;ft.dwLowDateTime=u.LowPart;ft.dwHighDateTime=u.HighPart;SYSTEMTIME st{},lt{};FileTimeToSystemTime(&ft,&st);if(!SystemTimeToTzSpecificLocalTime(nullptr,&st,&lt))lt=st;return lt.wYear*10000+lt.wMonth*100+lt.wDay;}
 std::wstring VaultMigrationFile(){return dataDir+L"\\vault-engine-migration";}
 bool ReadEngineMigration(Vault::EngineMigration& m){std::string b;return ProfileStore::ReadAll(VaultMigrationFile(),b)&&Vault::EngineMigration::Read(b,m);}
 bool WriteEngineMigration(const Vault::EngineMigration& m){return ProfileStore::WriteAtomic(VaultMigrationFile(),m.Write());}
+bool VaultEngineScope(){return Vault::Active()&&!privateWindow&&!smoke&&!dataDir.empty();}
+// Whether Réglages › Mots de passe offers the deletion now (read only: nothing recorded, nothing deleted).
+bool VaultEngineOfferDue(){
+    if(!VaultEngineScope()||!settings.passwords)return false;
+    Vault::EngineMigration m;if(!ReadEngineMigration(m)||m.cleared||m.useDays<Vault::EngineMigration::GraceDays)return false;
+    return m.OfferDue(settings.passwords,ReadVault(200)==VaultLoad::Ok);
+}
+// A new day of use (a tab of the active vault); the activation date the first time.
 EngineStep VaultEngineMigrationStep(std::int64_t now){
-    if(!Vault::Active()||privateWindow||smoke||dataDir.empty())return EngineStep::Nothing;
+    if(!VaultEngineScope())return EngineStep::Nothing;
     Vault::EngineMigration m;bool recorded=false;
     if(!ReadEngineMigration(m)){m=Vault::EngineMigration{};m.activated=now;recorded=true;}
     const bool counted=m.RecordUse(LocalDayKey(now));   // review V-3: a new day of use (never a clock set back)
     if((recorded||counted)&&!WriteEngineMigration(m)){Log(L"VAULT activation date / day of use NOT recorded");return EngineStep::Nothing;}
     if(recorded){Log(L"VAULT activation date recorded");return EngineStep::Recorded;}
-    if(m.cleared||m.useDays<Vault::EngineMigration::GraceDays)return EngineStep::Nothing;
-    // Review V-3: never while « Mots de passe » is off or the vault cannot be read (nothing could have been kept).
-    if(!m.CleanupDue(settings.passwords,ReadVault(200)==VaultLoad::Ok)){Log(L"VAULT engine passwords kept: « Mots de passe » off or the vault unreadable");return EngineStep::Nothing;}
-    return Vault::EngineCleanup==Vault::EngineCleanupMode::Automatic?EngineStep::ClearNow:EngineStep::OfferManual;
+    return VaultEngineOfferDue()?EngineStep::OfferDue:EngineStep::Nothing;
 }
-void VaultEngineCleared(std::int64_t now){Vault::EngineMigration m;if(!ReadEngineMigration(m))return;m.cleared=now;if(!WriteEngineMigration(m))Log(L"VAULT engine clearing NOT recorded");}
-bool vaultNoticeShownThisRun=false;
-// The notice text while it is due (peek: nothing changes).
-std::wstring VaultEngineNoticeText(){
-    if(!Vault::Active()||privateWindow)return L"";
-    Vault::EngineMigration m;if(!ReadEngineMigration(m)||m.cleared==0||(m.noticeSeen&&!vaultNoticeShownThisRun))return L"";
-    return std::wstring(TR(settings_vault_engine_cleared_title))+L"\n"+TR(settings_vault_engine_cleared_body);
-}
-// Shown: recorded as seen once (it stays for the rest of this run, gone at the next start).
-std::wstring VaultEngineNotice(){
-    const std::wstring text=VaultEngineNoticeText();if(text.empty())return text;
-    if(!vaultNoticeShownThisRun){Vault::EngineMigration m;if(ReadEngineMigration(m)&&!m.noticeSeen){m.noticeSeen=true;WriteEngineMigration(m);}vaultNoticeShownThisRun=true;Log(L"VAULT engine-cleared notice shown (once)");}
-    return text;
-}
-bool vaultEngineClearing=false;
 void VaultEngineMigrationTick(){
-    const std::int64_t now=NativeChrome::DownloadsUI::UnixNowMs();
-    const EngineStep step=VaultEngineMigrationStep(now);
-    if(step==EngineStep::OfferManual){static bool said=false;if(!said){said=true;Log(L"VAULT engine passwords: a manual deletion offer is due (owner decision pending; nothing deleted)");}return;}
-    if(step!=EngineStep::ClearNow||vaultEngineClearing)return;
-    Com<ICoreWebView2Profile2> profile;if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){Log(L"VAULT engine clearing postponed: no engine profile yet");return;}
-    vaultEngineClearing=true;
-    auto done=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{
+    if(VaultEngineMigrationStep(NativeChrome::DownloadsUI::UnixNowMs())==EngineStep::OfferDue){static bool said=false;if(!said){said=true;Log(L"VAULT engine passwords: deletion offered in Réglages › Mots de passe (nothing deleted automatically)");}}
+}
+// Tests replace the engine call (no WebView2 there). `done` gets the engine's result.
+std::function<void(std::function<void(HRESULT)>)> vaultEngineClearHook;
+bool vaultEngineClearing=false;
+// The deletion itself, only from the confirmed request below. The offer is checked again here (another window may
+// have deleted them, the setting may have changed). `done(hr, reason)` on this thread; reason empty on success.
+void VaultEngineDelete(std::function<void(HRESULT,const std::wstring&)> done){
+    if(!VaultEngineOfferDue()){done(E_ABORT,L"");return;}
+    if(vaultEngineClearing){done(E_PENDING,L"");return;}
+    auto finish=[done](HRESULT hr){
         vaultEngineClearing=false;
-        if(SUCCEEDED(hr)){VaultEngineCleared(NativeChrome::DownloadsUI::UnixNowMs());Log(L"VAULT engine saved passwords cleared (30 days of use after activation)");}
-        else Log(L"VAULT engine saved passwords NOT cleared "+HrText(hr));
-        return S_OK;});
-    const HRESULT hr=profile->ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE,done);done->Release();
-    if(FAILED(hr)){vaultEngineClearing=false;Log(L"VAULT engine saved passwords NOT cleared "+HrText(hr));}
+        if(FAILED(hr)){Log(L"VAULT engine saved passwords NOT deleted "+HrText(hr));done(hr,HrText(hr));return;}
+        Vault::EngineMigration m;const bool read=ReadEngineMigration(m);m.cleared=NativeChrome::DownloadsUI::UnixNowMs();
+        if(!read||!WriteEngineMigration(m))Log(L"VAULT engine deletion NOT recorded (the offer may show again)");
+        Log(L"VAULT engine saved passwords deleted on request (ClearBrowsingData PASSWORD_AUTOSAVE)");done(S_OK,L"");};
+    vaultEngineClearing=true;
+    if(vaultEngineClearHook){vaultEngineClearHook(finish);return;}
+    Com<ICoreWebView2Profile2> profile;
+    if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){vaultEngineClearing=false;Log(L"VAULT engine saved passwords NOT deleted: no engine profile");done(E_NOINTERFACE,TR(vault_engine_not_ready));return;}
+    auto handler=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([finish](HRESULT hr)->HRESULT{finish(hr);return S_OK;});
+    const HRESULT hr=profile->ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE,handler);handler->Release();
+    if(FAILED(hr))finish(hr);
+}
+// « Supprimer les anciens mots de passe… » (B05 list): the A5-style confirmation, busy while the engine works; a failure
+// stays in the dialog with its reason; success closes it and the list says « Anciens mots de passe supprimés ».
+void AskVaultEngineDelete(){
+    if(!VaultEngineOfferDue()){Log(L"VAULT engine deletion not offered now: nothing asked");return;}
+    auto spec=MD::DeleteEnginePasswordsSpec();spec.buttons[1].closes=false;
+    spec.onButton=[](int id){
+        if(id!=MD::AcceptButton)return;
+        modal.SetBusy(true,TR(vault_engine_deleting));
+        VaultEngineDelete([](HRESULT hr,const std::wstring& reason){
+            if(FAILED(hr)){modal.SetBusy(false);modal.SetError(TRF(vault_engine_delete_failed,reason.empty()?HrText(hr):reason));return;}
+            modal.Finish(MD::AcceptButton);passwordDemo.EngineDeleted();accessibility.Notify('S',TR(vault_engine_deleted),L"VaultEngineDeleted");});
+    };
+    AskModal(std::move(spec),nullptr,[](const MD::Result&){});
 }
 // « Effacer en quittant » runs ClearBrowsingDataAll: the engine's saved passwords and form entries go too. With the
 // vault active, what the vault keeps stays (only passwords not kept yet, in the engine's old store, go).
@@ -1353,6 +1371,7 @@ void ShowVaultManager(bool keyboard){
         if(r!=ProfileStore::Result::Written&&r!=ProfileStore::Result::Unchanged){Log(L"VAULT removal NOT written");vault=vaultBase;return false;}   // back to what the file holds
         return true;});
     passwordDemo.SetReadOnly(privateWindow);   // §6: no removal from a private window (Vault::Commit refuses anyway)
+    passwordDemo.SetEngineOffer(!privateWindow&&VaultEngineOfferDue(),[]{AskVaultEngineDelete();});   // option A: the engine's old passwords
     passwordDemo.Show(PageScreenRect());
 }
 HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){

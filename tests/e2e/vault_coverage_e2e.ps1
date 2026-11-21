@@ -11,14 +11,15 @@
 #      is saved, with and without autocomplete hints; a confirm that differs offers nothing) / never for an opaque
 #      (sandboxed) document, top-level or framed, even when it forges the old page channel (R-6) / never for a
 #      password the vault already holds.
-#   B. the activation date is recorded; 30 days later (clock injected through the recorded date, no waiting) the
-#      engine's password store is cleared (its rows for the synthetic login are gone) and Réglages › Confidentialité
-#      shows a one-time notice; « Effacer en quittant » says it deletes saved passwords. A password the ENGINE
+#   B. the activation date is recorded; on the 30th day of use (clock injected through the recorded state, no
+#      waiting) the deletion of the engine's old passwords is only OFFERED (owner decision « option A »): nothing is
+#      deleted automatically; « Effacer en quittant » says it deletes saved passwords. A password the ENGINE
 #      autofilled is offered as « Garder ce mot de passe dans browser ? » when the engine has one to autofill (it only
 #      saves after its own prompt, which this fixture cannot show: then the step is reported as not verified).
 # Synthetic profiles under build/, local fixture servers on 127.0.0.1 only; only this fixture's processes are touched.
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+. (Join-Path $PSScriptRoot 'job_guard.ps1')   # every process started here dies with this script, even interrupted
 $root = (Resolve-Path '.').Path; $pki = Join-Path $root 'build\e2e-vault-coverage-pki'
 $script:fails = 0
 function Check([bool]$ok, [string]$what) { if ($ok) { "ok   $what" } else { "FAIL $what"; $script:fails++ } }
@@ -256,37 +257,28 @@ try {
   $coe = WaitFind $hp '' 'Effacer en quittant' 5000; $help = if ($coe) { $coe.Current.HelpText } else { '' }
   "     « Effacer en quittant » note: $help"
   Check ($help -match 'mots de passe') '« Effacer en quittant »: the note says saved passwords are deleted too'
-  Check (-not (Find $hp 'SettingsVaultNotice' '')) 'B: no engine-cleared notice before the 30 days'
   $w = Page; $w.Dispose()
   Check (StopHost $prodExe $prodDir) 'product host stopped (engine exited)'
 
-  # ---- B. 30 DAYS OF USE later (review V-3; clock injected through the recorded state: 29 days of use already counted,
-  # the last one long ago, so this start is the 30th) ------------------------------------------------------------------
+  # ---- B, owner decision « option A »: 30 DAYS OF USE later (clock injected through the recorded state: 29 days of use
+  # already counted, the last one long ago, so this start is the 30th) NOTHING is deleted automatically. The offer and
+  # its confirmation are exercised by tests/e2e/vault_review_e2e.ps1 (scenario E). ----------------------------------------
   $day = 24L * 3600 * 1000; $old = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 31 * $day
   [IO.File]::WriteAllText($mig, ((([IO.File]::ReadAllText($mig) -replace 'activated=\d+', "activated=$old") -replace 'days=\d+', 'days=29') -replace 'lastday=\d+', 'lastday=20000101'))
   $hp = StartHost $prodExe $prodDir; $hwnd = (Get-Process -Id $hp).MainWindowHandle
-  Check (WaitLog $log 'E2E BOUND certificate decisions cleared' 20000) 'product host restarted with an activation date 31 days old'
-  Check (WaitLog $log 'VAULT engine saved passwords cleared \(30 days of use after activation\)' 15000) 'B: on the 30th day of use the engine''s saved passwords are cleared (ClearBrowsingData PASSWORD_AUTOSAVE)'
+  Check (WaitLog $log 'E2E BOUND certificate decisions cleared' 20000) 'product host restarted on the 30th day of use'
+  Check (WaitLog $log 'VAULT engine passwords: deletion offered' 15000) 'B (option A): on the 30th day of use the deletion is OFFERED (Réglages › Mots de passe)'
+  Start-Sleep 2
   $migText = [IO.File]::ReadAllText($mig)
-  Check ($migText -match "cleared=[1-9]\d*" -and $migText -match "activated=$old" -and $migText -match "days=30") 'B: the clearing is recorded (done once, on the 30th day of use)'
-  [void](InvokeEl (WaitFind $hp 'Settings' '' 5000)); [void](InvokeEl (WaitFind $hp '' 'Confidentialité' 5000))
-  $notice = WaitFind $hp 'SettingsVaultNotice' '' 5000
-  "     notice: $(if ($notice) { $notice.Current.Name } else { '(none)' })"
-  Check ($notice -and $notice.Current.Name -match '30') 'B: Réglages › Confidentialité › Mots de passe shows the one-time notice'
-  Check (Holds $vf $O1 $mUser $mSecret) 'B: the vault keeps its passwords when the engine''s store is cleared'
+  Check ($migText -match "cleared=0" -and $migText -match "days=30" -and (Get-Content $log -Raw) -notmatch 'VAULT engine saved passwords deleted') 'B (option A): NOTHING deleted automatically (the engine''s store is untouched, no deletion recorded)'
+  Check (Holds $vf $O1 $mUser $mSecret) 'B: the vault keeps its passwords'
   [void](StopHost $prodExe $prodDir)
-  $hp = StartHost $prodExe $prodDir
-  [void](WaitLog $log 'E2E BOUND certificate decisions cleared' 20000)
-  [void](InvokeEl (WaitFind $hp 'Settings' '' 8000)); [void](InvokeEl (WaitFind $hp '' 'Confidentialité' 5000)); Start-Sleep 1
-  Check ((WaitFind $hp '' 'Effacer en quittant' 5000) -and -not (Find $hp 'SettingsVaultNotice' '')) 'B: the notice is shown once (gone at the next start)'
-  Check ((Select-String -Path $log -Pattern 'VAULT engine saved passwords cleared' -AllMatches).Matches.Count -eq 1) 'B: the engine store is cleared once, never again'
-  [void](StopHost $prodExe $prodDir)
-  $after = EngineRows $prodDir $mUser; "     engine password store for the synthetic login after the clearing: $after (before: $ctlRows)"
-  "     (the engine reported the PASSWORD_AUTOSAVE clearing as done; this fixture holds no engine CREDENTIAL to watch disappear, and the engine keeps its save-prompt statistics row: NOT VERIFIED on a real saved credential)"
+  $after = EngineRows $prodDir $mUser; "     engine password store for the synthetic login on the 30th day of use: $after (before: $ctlRows)"
+  Check ($after -eq $ctlRows) 'B (option A): the engine''s password store is unchanged without the person''s request'
 } finally {
   foreach ($e in @($prodExe, $ctlExe)) { foreach ($p in HostPids $e) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } }
   foreach ($s in $servers) { if ($s -and !$s.HasExited) { Stop-Process -Id $s.Id -Force } }
   Remove-Item Env:BROWSER_E2E_PIN_MANIFEST, Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, Env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER -ErrorAction SilentlyContinue
   Remove-Item $pki -Recurse -Force -ErrorAction SilentlyContinue
 }
-if ($script:fails) { "FAIL vault coverage e2e: $script:fails"; exit 1 } else { 'PASS vault coverage e2e (product path): classic and script-driven logins, same- and cross-origin (out-of-process) frames, two-step, change-password, opaque documents refused (R-6), already-held refused, activation date, 30-day engine clearing with a one-time notice, honest clear-on-exit note (engine-autofill migration: see the NOT VERIFIED line when shown)' }
+if ($script:fails) { "FAIL vault coverage e2e: $script:fails"; exit 1 } else { 'PASS vault coverage e2e (product path): classic and script-driven logins, same- and cross-origin (out-of-process) frames, two-step, change-password, opaque documents refused (R-6), already-held refused, activation date, engine passwords never deleted automatically (option A), honest clear-on-exit note (engine-autofill migration: see the NOT VERIFIED line when shown)' }
