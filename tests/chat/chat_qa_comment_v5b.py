@@ -194,6 +194,18 @@ def run_main():
             real_click(s); time.sleep(0.18)
         wait_shown('#qa-b', 'conversation-B', 'fast A -> B -> A -> B: B on screen at the end')
         real_click('#qa-a'); wait_shown('#qa-a', 'conversation-A', 'and A again: on screen')
+        # ---- R42: another model of the same provider, in the bubble: no « Changer d'agent », the same chat, a mark in the thread
+        m = mark()
+        try:
+            C.click_panel('button.m'); time.sleep(0.5); C.click_panel(text='Opus 5.5'); time.sleep(0.8)
+        except Exception as e:
+            print('R42 menu', e)
+        warn = C.panel("!!document.querySelector('.mwarn')"); body = C.panel("(document.body.innerText||'').replace(/\\s+/g,' ')") or ''
+        lines = C.log_text()[m:].splitlines()
+        step('R42 · Opus 5.5 chosen (same provider): no « Changer d\'agent », the same conversation, a mark in the thread',
+             not warn and not any('new conversation' in l or 'provider changed' in l for l in lines) and 'conversation-A' in body and 'Passé à' in body,
+             {'warn': warn, 'mark': 'Passé à' in body, 'log': [l for l in lines if 'agent' in l][:4]})
+        capture('r42-opus')
         # ---- E5: A's agent working (a turn running), click on B, then back on A
         m = mark(); V.send_in_view('slow'); logged(r'CHAT turn t\d+ started|CHAT turn t\d+ sent|agent', m, 10); time.sleep(1.5)
         real_click('#qa-b'); wait_shown('#qa-b', 'conversation-B', 'E5 · A working, click on B: B on screen')
