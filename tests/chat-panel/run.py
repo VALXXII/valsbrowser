@@ -925,6 +925,13 @@ try:
         e4 = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect();return [m.top>a.top+30, Math.round(m.top-a.top)]})()")
         asks = of("bubble.size")[n0:]
         check(e4[0] and all((u.get("overflowTop") or 0) <= 40 for u in asks), "review E4 (b): with room 40 px above (layout.room), the model menu opens under its button at once, never asking past the page area", f"{e4} {[u.get('overflowTop', 0) for u in asks]}")
+        # margin cap (r44 / r06 / r47): an inset over 400 px (a bubble whose bottom stays fixed, grown at once) is drawn as given
+        load("c-1-vide")
+        host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 520, "inset": {"top": 700, "right": 0, "bottom": 0, "left": 0}})
+        cap = cdp.js("[Math.round(document.getElementById('app').getBoundingClientRect().top), getComputedStyle(document.documentElement).getPropertyValue('--it').trim()]")
+        host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 520, "inset": {"top": 1500, "right": 0, "bottom": 0, "left": 0}})
+        cap2 = cdp.js("getComputedStyle(document.documentElement).getPropertyValue('--it').trim()")
+        check(cap == [700, "700px"] and cap2 == "1000px", "margin cap: the surface is drawn at an inset of 700 px as given (it stopped at 400 and moved); the single bound is 1000 px", f"{cap} {cap2}")
         # F5: drafts never grow without end — after 45 elements with unsent words, the oldest one is dropped, the latest kept
         load("c-1-vide")
         f5 = cdp.js("""(()=>{const send=window.devHost.send,cin=()=>document.getElementById('composer-input');

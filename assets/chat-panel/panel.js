@@ -1213,7 +1213,9 @@
   // use (`lim`, px around the surface) and returns its box (+ the room its shadow wants). The union, beyond the surface,
   // is the overflow the page asks for; a side the host granted less than asked becomes a limit, and the floats are placed
   // again (above, then under, then inside the surface). The limits only shrink while something floats: it ends.
-  const SIDES = ["top", "right", "bottom", "left"], CAP = 400;
+  // The one bound (px CSS) on the transparent margin around the surface — the host's inset and the overflow asked — so a
+  // bubble whose bottom stays fixed can grow by up to this much at once without its surface moving (H1: PageInsetCapCss)
+  const SIDES = ["top", "right", "bottom", "left"], CAP = 1000;
   const SHADOW = { none: { top: 0, right: 0, bottom: 0, left: 0 },
                    menu: { top: 32, right: 48, bottom: 64, left: 48 },    // 0 16px 48px #00000080 (Paper 14RK-0)
                    tip: { top: 16, right: 24, bottom: 32, left: 24 } };   // 0 8px 24px #00000080 (send button bubble)

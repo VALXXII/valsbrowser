@@ -540,7 +540,7 @@ La bulle est une fenêtre transparente : la page peint elle-même la surface (`#
 Paper `18TO-0` … `1B19-0`) et peut dessiner autour d'elle, dans la marge que l'hôte lui accorde.
 
 - **Page → hôte** : `bubble.size { width, height, overflowTop?, overflowRight?, overflowBottom?, overflowLeft? }`. `width` /
-  `height` restent la taille de la **surface** ; chaque `overflow*` (entier 0 à 400, absent = 0) est la place voulue de ce
+  `height` restent la taille de la **surface** ; chaque `overflow*` (entier 0 à 1000, absent = 0) est la place voulue de ce
   côté de la surface pour ce qui flotte (menu ouvert, infobulle), ombre comprise. Au repos, rien n'est demandé.
 - **Hôte → page** : l'hôte répond à **chaque** `bubble.size` par `layout { mode: "bubble", open: false, inset: { top, right,
   bottom, left } }` : les marges réellement accordées (moins que demandé au bord de l'écran). La surface reste à sa place à
@@ -657,7 +657,7 @@ disent). Ce paragraphe décrit la page ; l'hôte (H) a sa part (R14, R15, R16, R
 - **Largeur (R20)** : `width` = min(**320**, `layout.maxWidth`), jamais sous 240 ; l'hôte envoie `maxWidth: 320` (moins si la
   place manque). Les planches Paper restent comparées à 305 (scénarios de test avec `maxWidth: 305`).
 - **Fenêtre toujours plus grande que la surface (R19)** : la fenêtre de la bulle garde une marge transparente fixe autour de
-  la surface (jusqu'à 400 px CSS par côté, bornée par l'écran) ; `layout.inset` donne cette marge. La page dessine la surface
+  la surface (jusqu'à 1000 px CSS par côté, bornée par l'écran) ; `layout.inset` donne cette marge. La page dessine la surface
   à (`inset.left`, `inset.top`), largeur `width`, hauteur = **la dernière hauteur qu'elle a publiée** (`bubble.size.height`) —
   jamais la hauteur de la fenêtre. L'inset **ne change plus** quand un menu s'ouvre : les `overflow*` de `bubble.size` ne
   règlent plus que la **région visible et cliquable** (surface + débords demandés, bornés par l'inset ; au repos, la surface
@@ -812,4 +812,8 @@ l'hôte.
 - **`layout.room` (E4 b)** : `{top, right, bottom, left}` en px CSS, la distance de chaque bord de la surface au bord de la zone
   de page. La page place menus et infobulles dans cette place (avec l'inset) : un menu se retourne d'emblée au lieu
   d'attendre un refus de l'hôte ; elle ne demande jamais de débord au-delà.
+- **Borne unique de la marge (1000 px CSS)** : l'inset accordé par l'hôte et les `overflow*` demandés par la page sont bornés à
+  **1000 px CSS par côté** (une seule constante, `CAP` côté page, `PageInsetCapCss` côté hôte). La page dessine la surface à
+  l'inset reçu jusqu'à cette valeur : une bulle à bord bas fixe peut grandir d'un coup jusqu'à 1000 px sans que sa surface
+  bouge (elle se limitait à 400 px et se déplaçait au-delà).
 
