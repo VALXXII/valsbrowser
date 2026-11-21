@@ -39,6 +39,9 @@
 #include "bookmark-popover.h"
 #include "bookmark-toast.h"
 #include "bookmarks-panel.h"
+#include "bookmark-drag.h"
+#include "bookmark-promote.h"
+#include "bookmark-move.h"
 #include "inline-rename.h"
 #include "split-view.h"
 #include "split-overlay.h"
@@ -3363,7 +3366,12 @@ BM::Store bookmarks; BM::Id lastFolder=BM::BarRoot; bool bookmarksSaveFailed=fal
 // merge (src/profile-store.h). Another window's changes arrive with every commit and on activation.
 BM::Store bookmarksBase;
 int popoverReturn=0; bool bookmarksDismissClick=false;
-struct BandDrag { int index=-1; BM::Id id=0; POINT start{}; float grab=0; bool active=false; BM::Id parent=0; size_t from=0; } bandDrag;
+struct BandDrag { int index=-1; BM::Id id=0; POINT start{}; float grab=0; bool active=false; BM::Id parent=0; size_t from=0; BookmarkDrag::Drop drop; Workspace* owner=nullptr; } bandDrag;   // drop: where a release would land (bar or drawer)
+// A bookmark dragged out of a folder/overflow menu or the drawer (src/bookmark-drag.h): stable id + the profile it
+// belongs to; nothing moves until the drop, which is checked again (same profile shown, item still there, place valid).
+bool qaDrawerStays=false;   // dev builds only, --qa-drawer-stays (see wWinMain)
+struct OuterDrag { BM::Id id=0; Workspace* owner=nullptr; bool active=false; BookmarkDrag::Drop drop; int source=0; } outerDrag;   // source: 1 menu, 2 drawer
+void StartOuterDrag(BM::Id id,int source);
 // Undo: each entry replays its steps backwards (16 entries, this session only).
 struct BookmarkStep { enum Kind { Created, Removed, Moved, Renamed, Readdressed } kind; BM::Id id=0,parent=0; size_t index=0; std::wstring text; BM::Removed removed; };
 struct BookmarkUndo { std::vector<BookmarkStep> steps; std::wstring done; };
@@ -3658,8 +3666,10 @@ void RunBookmarkMenu(const std::vector<CM::Item>& items,int region,bool keyboard
     RECT anchor=RegionScreen(region);chrome.bandOpen=region;InvalidateChrome();UpdateWindow(window);
     if(accessibility.Listening())accessibility.Raise(AccessibleBandItemKey(region),UIA_ExpandCollapseExpandCollapseStatePropertyId);
     POINT p{anchor.left,anchor.bottom};
-    const auto choice=contextMenu.TrackChoice(items,p,&anchor,keyboard,motion.ReducedMotion(),false,[](int v){if(MenuKindOf(v)==MenuOpen){auto* n=bookmarks.Find(MenuBookmark(v));if(n&&n->kind==BM::Kind::Link)OpenBookmarkUrl(n->url,1);}});
+    const auto choice=contextMenu.TrackChoice(items,p,&anchor,keyboard,motion.ReducedMotion(),false,[](int v){if(MenuKindOf(v)==MenuOpen){auto* n=bookmarks.Find(MenuBookmark(v));if(n&&n->kind==BM::Kind::Link)OpenBookmarkUrl(n->url,1);}},
+        [](int v){return MenuKindOf(v)==MenuOpen&&!BM::Store::IsRoot(MenuBookmark(v))&&bookmarks.Find(MenuBookmark(v))!=nullptr;});   // opt-in drag: bookmark rows only
     chrome.bandOpen=0;InvalidateChrome();
+    if(choice.drag){StartOuterDrag(MenuBookmark(choice.drag),1);return;}
     if(keyboard&&region){SetFocus(window);keyboardFocus=region;keyboardModality=true;InvalidateChrome();}
     if(!choice.id)return;
     const BM::Id id=MenuBookmark(choice.id);
@@ -3723,9 +3733,28 @@ std::vector<CM::Item> MoveToItems(BM::Id id){
     return items;
 }
 // A band item's (or menu row's, or drawer row's) own menu, in the order fixed in Paper (c-s207a4).
+// « Placer le contenu dans la barre de favoris » (folder menu): the folder's entries go, same ids and order, to the end
+// of the bar in ONE profile-store transaction, applied on the merged tree under the lock (src/bookmark-promote.h; an
+// outside move + remove lost the moved children in the merge, review 9ef33c5 P1). The emptied folder is removed only
+// when the import folder map names that very folder (ImportOwnedFolder); otherwise it stays, empty, as the person's.
+// One undo step from what was committed; a failed save writes nothing and says so.
+bool ImportOwnedFolder(const BM::Store& s,BM::Id id);
+void PromoteToBar(BM::Id id){
+    const auto* f=bookmarks.Find(id);if(smoke||!f||f->kind!=BM::Kind::Folder||BM::Store::IsRoot(id)||f->children.empty())return;
+    const auto r=BookmarkPromote::Commit(dataDir,BookmarksFile(),bookmarksBase,bookmarks,id,[](const BM::Store& s,BM::Id folder){return ImportOwnedFolder(s,folder);});
+    if(!r.remap.empty())bookmarkUndo.clear();
+    if(!r.Saved()){Log(L"BOOKMARKS promote to bar: save failed, nothing changed");if(bookmarkToast.Window())bookmarkToast.Show(TR(bookmark_save_failed),[id]{PromoteToBar(id);},motion.ReducedMotion(),TR(downloads_action_retry),true);return;}
+    BookmarksChanged();
+    if(r.refused){Log(L"BOOKMARKS promote to bar: the folder changed in another window, nothing moved");const std::wstring t=TR(bookmark_promote_folder_changed);if(bookmarkToast.Window()){bookmarkToast.SetBottomReserve(UpdateToastHeight());bookmarkToast.Show(t,[]{},motion.ReducedMotion(),TR(common_ok));}AnnounceBookmark(t);return;}
+    if(r.moved.empty())return;
+    std::vector<BookmarkStep> steps;for(const auto& m:r.moved)steps.push_back({BookmarkStep::Moved,m.id,m.parent,m.index});   // committed ids (after remap)
+    if(r.removed){BookmarkStep st;st.kind=BookmarkStep::Removed;st.id=r.folder;st.removed=*r.removed;steps.push_back(std::move(st));}   // undone first: the folder comes back before its children
+    PushUndo(std::move(steps),TR(bookmark_undo_move));
+    const std::wstring text=TRP(bookmark_promoted_to_bar,r.moved.size());ShowBookmarkToast(text);AnnounceBookmark(TRF(bookmark_announce_undo_hint,text));
+}
 void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;const bool folder=n->kind==BM::Kind::Folder;
-    enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar};
+    enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar,Promote};
     std::vector<CM::Item> items;
     if(folder){const size_t links=bookmarks.CountLinks(id);auto all=CM::Command(OpenAll,TRP(bookmark_open_all,links),L"",links>0);items.push_back(all);}
     else items.push_back(CM::Command(OpenTab,TR(history_open_new_tab)));
@@ -3739,6 +3768,7 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     items.push_back(CM::Command(NewFolderItem,TR(bookmark_new_folder_menu)));
     if(folder){auto t=Active();items.push_back(CM::Command(AddHere,TR(bookmark_add_here),L"",t&&!t->home&&BM::Admissible(t->uri)));}
     CM::Item move;move.label=TR(cmd_move_to);move.children=MoveToItems(id);if(move.children.empty())move.enabled=false;items.push_back(move);
+    if(folder&&n->parent!=BM::BarRoot)items.push_back(CM::Command(Promote,TR(bookmark_promote_to_bar),L"",!n->children.empty()));
     items.push_back(CM::Command(ToggleBar,BandToggleLabel(),TR(key_ctrl_shift_b)));
     const int region=[&]{for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==id)return NativeChrome::BookmarkBase+i;return 0;}();
     if(region){chrome.bandOpen=region;InvalidateChrome();UpdateWindow(window);}
@@ -3759,6 +3789,7 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     case NewFolderItem:{const BM::Id parent=folder?id:n->parent;const size_t at2=folder?BM::End:bookmarks.IndexOf(id)+1;if(BM::Id made=NewFolder(parent,at2))RenameOrEdit(made,surface,edit,keyboard,keyboard?region:0);break;}
     case AddHere:lastFolder=id;BookmarkStar(keyboard);break;
     case ToggleBar:ToggleBookmarkBar();break;
+    case Promote:PromoteToBar(id);break;
     default:break;
     }
 }
@@ -3808,36 +3839,125 @@ void CreateBookmarkSurfaces(){
     d.closed=[](bool keyboard){SyncUpdateToastReserve();if(keyboard&&!halted)FocusPage();};
     d.icon=[](const std::wstring& site){return SiteIcon(site);};
     d.announce=AnnounceBookmark;
+    d.dragStart=[](BM::Id id,POINT){StartOuterDrag(id,2);};
     if(!bookmarksDrawer.Create(instance,window,base,&bookmarks,std::move(d)))Log(L"BOOKMARKS drawer unavailable");
+    bookmarksDrawer.stayForTest=qaDrawerStays;
 }
-// Band pointer: press records a drag candidate; past the system threshold the item
-// follows the pointer and the others reorder live; over a folder's middle it drops inside.
+// ---- One drop, any origin (review eb542bc): src/bookmark-move.h -------------------------------------------------------
+// The place shown on screen is captured as identities (item, destination folder, the sibling it goes before) and the
+// move is applied INSIDE the save, on the tree merged with the other windows' changes. Only a move that was actually
+// written gets its undo step and « déplacé » announcement, from the committed ids; a failed write keeps the sticky
+// retry (which re-checks the same identities and profile); an item or place that changed elsewhere moves nothing and
+// says so.
+void ShowBookmarkNotice(const std::wstring& text){
+    if(bookmarkToast.Window()){bookmarkToast.SetBottomReserve(UpdateToastHeight());bookmarkToast.Show(text,[]{},motion.ReducedMotion(),TR(common_ok));}
+    AnnounceBookmark(text);
+}
+void CommitBookmarkDrop(const BookmarkMove::Request& q,Workspace* owner){
+    if(WorkspaceNow()!=owner||WorkspaceParked()){Log(L"BOOKMARKS drag cancelled: the profile changed");return;}
+    BookmarkMove::Result r;
+    if(smoke)BookmarkMove::Apply(bookmarks,q,{},r);   // --smoke-test / UI tests: no profile on disk, the same checked move in memory (as SaveBookmarks skips the write)
+    else r=BookmarkMove::Commit(dataDir,BookmarksFile(),bookmarksBase,bookmarks,q);
+    if(!r.remap.empty()){bookmarkUndo.clear();Log(L"BOOKMARKS new ids remapped (another window used them)");}
+    if(r.outcome==BookmarkMove::Outcome::SaveFailed){
+        Log(L"BOOKMARKS drag drop not saved");bookmarksSaveFailed=true;
+        if(bookmarkToast.Window()){bookmarkToast.SetBottomReserve(UpdateToastHeight());bookmarkToast.Show(TR(bookmark_save_failed),[q,owner]{CommitBookmarkDrop(q,owner);},motion.ReducedMotion(),TR(downloads_action_retry),true);}
+        AnnounceBookmark(TR(bookmark_save_failed));return;
+    }
+    if(bookmarksSaveFailed){bookmarksSaveFailed=false;Log(L"BOOKMARKS saved again");}
+    if(!bookmarks.Find(lastFolder))lastFolder=BM::BarRoot;
+    BookmarksChanged();
+    switch(r.outcome){
+    case BookmarkMove::Outcome::Gone:Log(L"BOOKMARKS drag cancelled: the item changed in another window");ShowBookmarkNotice(TR(bookmark_drop_gone));return;
+    case BookmarkMove::Outcome::TargetChanged:Log(L"BOOKMARKS drag cancelled: the place changed in another window");ShowBookmarkNotice(TR(bookmark_drop_target_changed));return;
+    case BookmarkMove::Outcome::Refused:AnnounceBookmark(TR(bookmark_too_deep));return;
+    case BookmarkMove::Outcome::Unchanged:Log(L"BOOKMARKS drag dropped where it was");return;
+    default:break;
+    }
+    PushUndo({{BookmarkStep::Moved,r.id,r.from,r.fromIndex}},TR(bookmark_undo_move));
+    const auto* p=bookmarks.Find(r.to);
+    if(p&&p->id==BM::BarRoot)AnnounceBookmark(TRF(bookmark_moved_position,std::to_wstring(bookmarks.IndexOf(r.id)+1),std::to_wstring(p->children.size())));
+    else AnnounceBookmark(TRF(bookmark_moved_into,p&&!p->title.empty()?p->title:std::wstring(TR(bookmarks_unnamed_folder))));
+    Log(L"BOOKMARKS drag dropped");
+}
+void ClearOuterMarkers(){chrome.bandInsertX=-1;chrome.bandDropInto=-1;bookmarksDrawer.SetDropMarker(-1,BookmarkDrag::Mark::None);InvalidateChrome();}
+// Where a drag at `client` would land (bar: within its band only; drawer: over its window); nothing else is a target.
+// Sets the markers. The store is never touched here.
+BookmarkDrag::Drop DropTargetAt(BM::Id id,POINT client){
+    const float k=96.f/GetDpiForWindow(window),x=client.x*k,y=client.y*k;
+    POINT screen=client;ClientToScreen(window,&screen);
+    BookmarkDrag::Drop drop;chrome.bandInsertX=-1;chrome.bandDropInto=-1;
+    RECT dr{};const bool overDrawer=bookmarksDrawer.Visible()&&GetWindowRect(bookmarksDrawer.Window(),&dr)&&PtInRect(&dr,screen);
+    if(overDrawer){
+        const auto t=bookmarksDrawer.DropAt(screen,id);
+        if(t.drop.valid)drop=t.drop;
+        bookmarksDrawer.SetDropMarker(t.drop.valid?t.row:-1,t.drop.valid?t.mark:BookmarkDrag::Mark::None);
+        return drop;
+    }
+    bookmarksDrawer.SetDropMarker(-1,BookmarkDrag::Mark::None);
+    if(chrome.bandShown&&y>=BookmarksBar::Layout::top-6&&y<BookmarksBar::Layout::bottom+6&&x>=0){
+        std::vector<BookmarkDrag::Box> boxes;for(int i=0;i<chrome.band.visible;++i){const auto r=chrome.BandRect(i);boxes.push_back({r.left,r.right});}
+        RECT client{};GetClientRect(window,&client);const float end=chrome.band.overflow?chrome.band.overflowLeft:client.right*k;
+        if(x<end){   // the bar's own width (trailing blank included), never the overflow button or past the window
+            const auto t=BookmarkDrag::BarTarget(bookmarks,id,boxes,x);
+            if(t.drop.valid){drop=t.drop;chrome.bandDropInto=t.into;chrome.bandInsertX=t.into>=0?-1:t.marker;}
+        }
+    }
+    return drop;
+}
+// Bar pointer: press records a drag candidate; past the system threshold the item follows the pointer (drawn only)
+// and a marker shows where it would land — on the bar (line, or the folder it would enter) or in the drawer. The
+// store changes only at a valid release (CommitBookmarkDrop); anywhere else the drag ends with nothing changed.
 void BandDragMove(POINT point){
     if(bandDrag.index<0||halted)return;
-    if(!bandDrag.active){if(std::abs(point.x-bandDrag.start.x)<=GetSystemMetrics(SM_CXDRAG)&&std::abs(point.y-bandDrag.start.y)<=GetSystemMetrics(SM_CYDRAG))return;bandDrag.active=true;Log(L"BOOKMARKS drag start");}
-    const float x=point.x*96.f/GetDpiForWindow(window);
-    const auto& bar=bookmarks.Root(BM::BarRoot).children;int index=(int)(std::find(bar.begin(),bar.end(),bandDrag.id)-bar.begin());if(index>=(int)bar.size()){bandDrag={};return;}
-    int into=-1,slot=index;
-    for(int i=0;i<chrome.band.visible;++i){const auto r=chrome.BandRect(i);if(x<r.left||x>=r.right)continue;
-        const bool folder=chrome.bandItems[i].folder&&i!=index;const float w=r.right-r.left;
-        if(folder&&x>r.left+w*.25f&&x<r.right-w*.25f&&!bookmarks.IsAncestor(bandDrag.id,chrome.bandItems[i].id))into=i;else slot=i;break;}
-    if(x<BookmarksBar::Layout::padding)slot=0;
-    if(into<0&&slot!=index&&slot<chrome.band.visible){bookmarks.Move(bandDrag.id,BM::BarRoot,(size_t)slot);index=slot;SyncBookmarkChrome();BuildChrome();}
-    chrome.bandDrag=index;chrome.bandDropInto=into;
-    if(index<chrome.band.visible)chrome.bandDragOffset=x-bandDrag.grab-chrome.BandRect(index).left;
+    if(!bandDrag.active){if(std::abs(point.x-bandDrag.start.x)<=GetSystemMetrics(SM_CXDRAG)&&std::abs(point.y-bandDrag.start.y)<=GetSystemMetrics(SM_CYDRAG))return;bandDrag.active=true;bandDrag.owner=WorkspaceNow();bookmarksDrawer.holding_=bookmarksDrawer.Visible();Log(L"BOOKMARKS drag start");}
+    bandDrag.drop={};
+    if(!bookmarks.Find(bandDrag.id)||WorkspaceNow()!=bandDrag.owner){chrome.bandDrag=-1;ClearOuterMarkers();return;}
+    bandDrag.drop=DropTargetAt(bandDrag.id,point);
+    const auto& bar=bookmarks.Root(BM::BarRoot).children;const int index=(int)(std::find(bar.begin(),bar.end(),bandDrag.id)-bar.begin());
+    chrome.bandDrag=index<chrome.band.visible?index:-1;
+    if(chrome.bandDrag>=0)chrome.bandDragOffset=point.x*96.f/GetDpiForWindow(window)-bandDrag.grab-chrome.BandRect(index).left;
+    SetCursor(LoadCursor(nullptr,bandDrag.drop.valid?IDC_ARROW:IDC_NO));
     InvalidateChrome();
 }
-void BandDragEnd(bool cancel){
-    if(bandDrag.index<0)return;const auto drag=bandDrag;const int into=chrome.bandDropInto;
-    bandDrag={};chrome.bandDrag=-1;chrome.bandDropInto=-1;chrome.bandDragOffset=0;
-    if(!drag.active){InvalidateChrome();return;}
-    if(cancel){bookmarks.Move(drag.id,drag.parent,drag.from);BookmarksChanged();return;}
-    if(into>=0&&into<(int)chrome.bandItems.size()){const BM::Id folder=chrome.bandItems[into].id;
-        if(!bookmarks.Move(drag.id,folder,BM::End)){bookmarks.Move(drag.id,drag.parent,drag.from);AnnounceBookmark(TR(bookmark_too_deep));BookmarksChanged();return;}
-        PushUndo({{BookmarkStep::Moved,drag.id,drag.parent,drag.from}},TR(bookmark_undo_move));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_moved_into,bookmarks.Find(folder)->title));return;}
-    const size_t now=bookmarks.IndexOf(drag.id);
-    if(now!=drag.from){PushUndo({{BookmarkStep::Moved,drag.id,drag.parent,drag.from}},TR(bookmark_undo_move));SaveBookmarks();AnnounceBookmark(TRF(bookmark_moved_position,std::to_wstring(now+1),std::to_wstring(bookmarks.Root(BM::BarRoot).children.size())));}
-    BookmarksChanged();
+// `at`: the release point (the drop is computed there again); none or `cancel`: nothing changes.
+void BandDragEnd(bool cancel,const POINT* at=nullptr){
+    if(bandDrag.index<0)return;
+    if(!cancel&&at&&bandDrag.active)BandDragMove(*at);
+    const auto drag=bandDrag;
+    bandDrag={};chrome.bandDrag=-1;chrome.bandDragOffset=0;ClearOuterMarkers();bookmarksDrawer.holding_=false;
+    if(!drag.active)return;
+    if(cancel||!at||!drag.drop.valid){Log(L"BOOKMARKS drag cancelled");BookmarksChanged();return;}
+    if(!bookmarks.Find(drag.id)){Log(L"BOOKMARKS drag cancelled: item gone");BookmarksChanged();return;}
+    CommitBookmarkDrop(BookmarkMove::Capture(bookmarks,drag.id,drag.drop),drag.owner);
+}
+// ---- Drag from a menu or the drawer (src/bookmark-drag.h) --------------------------------------------------------------
+// The menu or the drawer hands over a bookmark while the button is still down; the main window takes the capture and
+// shows where it would land: on the bar (insertion line or the folder it would enter) or in the drawer (line / folder).
+// Only a valid release commits (CommitBookmarkDrop). Escape, a lost capture, a profile switch, the item deleted
+// meanwhile, a release anywhere else or the window closing cancel it with nothing changed.
+void StartOuterDrag(BM::Id id,int source){
+    if(halted||outerDrag.active||bandDrag.index>=0||!bookmarks.Find(id)||BM::Store::IsRoot(id))return;   // the source saw the button down (its message's MK_LBUTTON)
+    outerDrag={id,WorkspaceNow(),true,{},source};
+    bookmarksDrawer.holding_=bookmarksDrawer.Visible();   // keep the drawer open while the main window takes the pointer
+    if(GetFocus()!=window)SetFocus(window);   // Escape reaches the controller (the drawer stays: holding_)
+    SetCapture(window);Log(source==1?L"BOOKMARKS drag start (menu)":L"BOOKMARKS drag start (drawer)");
+}
+void OuterDragMove(POINT client){
+    if(!outerDrag.active)return;
+    if(!bookmarks.Find(outerDrag.id)||WorkspaceNow()!=outerDrag.owner){outerDrag.drop={};ClearOuterMarkers();return;}
+    outerDrag.drop=DropTargetAt(outerDrag.id,client);
+    SetCursor(LoadCursor(nullptr,outerDrag.drop.valid?IDC_ARROW:IDC_NO));
+    InvalidateChrome();
+}
+void OuterDragEnd(bool cancel,const POINT* at=nullptr){
+    if(!outerDrag.active)return;
+    if(!cancel&&at)OuterDragMove(*at);
+    const auto drag=outerDrag;outerDrag={};ClearOuterMarkers();bookmarksDrawer.holding_=false;
+    if(GetCapture()==window)ReleaseCapture();
+    if(cancel||!at||!drag.drop.valid||WorkspaceNow()!=drag.owner||WorkspaceParked()){Log(L"BOOKMARKS drag cancelled");return;}
+    if(!bookmarks.Find(drag.id)){Log(L"BOOKMARKS drag cancelled: item gone");return;}
+    CommitBookmarkDrop(BookmarkMove::Capture(bookmarks,drag.id,drag.drop),drag.owner);
 }
 // Band keyboard (focus on an item or the » button): arrows rove, Ctrl+Maj+arrows move.
 bool BandKey(WPARAM w){
@@ -4367,7 +4487,7 @@ case WM_ERASEBKGND:return 1;
 case WM_SETCURSOR:if(LOWORD(l)==HTCLIENT&&(HWND)w==h){POINT p;GetCursorPos(&p);ScreenToClient(h,&p);const float d=GetDpiForWindow(h)/96.f;auto v=CurrentSplit();
     if(v.group&&(sepDrag.active||SeparatorAt(p.x/d,p.y/d,v)>=0)){SetCursor(LoadCursor(nullptr,v.a.orientation==SV::Orientation::Row?IDC_SIZEWE:IDC_SIZENS));return TRUE;}}break;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);++chromePaints;SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));{std::vector<bool> asleep;for(auto&t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;SyncTabKeys();chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
-case WM_MOUSEMOVE:{ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;
+case WM_MOUSEMOVE:{if(outerDrag.active){OuterDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});return 0;}ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;
     if(sepDrag.active){SeparatorMove(x,y);return 0;}
     if(!tabDrag.tab){auto v=CurrentSplit();const int hot=v.group?SeparatorAt(x,y,v):-1;if(hot!=chrome.split.hotHandle&&!sepDrag.active){chrome.split.hotHandle=hot;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}}}
     if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
@@ -4376,10 +4496,10 @@ case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();if(chrome.split.hotHandle>=0
 case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}if(y>=SV::liftY&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;}
     int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);}
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()){const BM::Id bid=chrome.bandItems[i].id;bandDrag={i,bid,{GET_X_LPARAM(l),GET_Y_LPARAM(l)},GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.BandRect(i).left,false,BM::BarRoot,bookmarks.IndexOf(bid)};}}}return 0;}
-case WM_LBUTTONUP:{if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDrag.active||bandDrag.active;if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active)FinishReorder();CancelTabDrag();BandDragEnd(false);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
+case WM_LBUTTONUP:{const POINT up{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(outerDrag.active){OuterDragEnd(false,&up);return 0;}if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDrag.active||bandDrag.active;if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active)FinishReorder();CancelTabDrag();BandDragEnd(false,&up);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
     if(!dragged&&original&&original==id&&NativeChrome::IsBookmark(id)){BandActivate(NativeChrome::BookmarkIndex(id),(w&MK_CONTROL)!=0,(w&MK_SHIFT)!=0,false);return 0;}
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}vaultKeyPress=-1;return 0;}   /* review R3: a press never outlives its release */
-case WM_CAPTURECHANGED:case WM_CANCELMODE:CancelSeparator();CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
+case WM_CAPTURECHANGED:case WM_CANCELMODE:if(outerDrag.active&&(msg==WM_CANCELMODE||(HWND)l!=h))OuterDragEnd(true);CancelSeparator();CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_COPYDATA:if(const int answer=ProfileCopyDataMessage(l))return answer;break;
 case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();}   /* review N6: the key re-arms when the window is activated */
     if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
@@ -4399,6 +4519,7 @@ case WM_CONTEXTMENU:if(GET_X_LPARAM(l)==-1&&GET_Y_LPARAM(l)==-1&&GetFocus()==h){
     if(NativeChrome::IsBookmark(keyboardFocus)&&NativeChrome::BookmarkIndex(keyboardFocus)<(int)chrome.bandItems.size()){keyboardModality=true;const RECT r=RegionScreen(keyboardFocus);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(keyboardFocus)].id,{r.left,r.bottom},&r,true);if(GetForegroundWindow()==window&&!bookmarkPopover.Visible())SetFocus(window);InvalidateChrome();return 0;}}break;
 case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(p.y<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
 case WM_KEYDOWN:if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
+    if(w==VK_ESCAPE&&outerDrag.active){OuterDragEnd(true);return 0;}
     if(w==VK_ESCAPE&&bandDrag.index>=0){BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
     if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);return 0;}break;
@@ -4444,7 +4565,7 @@ case ImportMessage:ImportFinished();return 0;
 // A window that never became ready (WebView2 recovery) never removes its session: it keeps it for the
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */
-case WM_CLOSE:if(!CloseWindowAllowed())return 0;windowClosing=true;popups.CancelAll(); /* pending window.open requests: settled before the profiles close */contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
+case WM_CLOSE:OuterDragEnd(true);BandDragEnd(true);if(!CloseWindowAllowed())return 0;windowClosing=true;popups.CancelAll(); /* pending window.open requests: settled before the profiles close */contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
 case WM_DESTROY:contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
@@ -4742,11 +4863,15 @@ void StampTaskbarIdentity(){
     if(!taskbarIdentity.active()||!window)return;
     if(!TaskbarIdentity::ApplyToWindow(window,taskbarIdentity))Log(L"TASKBAR identity not applied to the window");
     for(const KNOWNFOLDERID* folder:{&FOLDERID_Programs,&FOLDERID_Desktop}){PWSTR dir=nullptr;if(FAILED(SHGetKnownFolderPath(*folder,0,nullptr,&dir))||!dir){CoTaskMemFree(dir);continue;}
-        const std::wstring lnk=std::wstring(dir)+L"\browser.lnk";CoTaskMemFree(dir);
+        const std::wstring lnk=TaskbarIdentity::LauncherShortcut(dir);CoTaskMemFree(dir);
         const auto r=TaskbarIdentity::StampShortcut(lnk,taskbarIdentity);
         if(r==TaskbarIdentity::Stamp::Stamped)Log(L"TASKBAR shortcut given the identity: "+lnk);else if(r==TaskbarIdentity::Stamp::Failed)Log(L"TASKBAR shortcut identity could not be written: "+lnk);}
 }
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */ if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */
+#ifndef BROWSER_CHANNEL_RELEASE
+    for(int i=1;argv&&i<argc;++i)if(std::wstring(argv[i])==L"--qa-drawer-stays")qaDrawerStays=true;   // QA: drawer kept while the app is not in the foreground
+#endif
+    if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
 #ifdef BROWSER_E2E_VAULT_HOST
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif

@@ -330,6 +330,10 @@ struct Select {
     std::wstring label; std::vector<std::wstring> options; int index = 0;
     std::function<std::vector<std::wstring>(int)> details;   // new check details for an option (A5 counts)
     std::function<std::vector<Check>(int)> checks;           // or the whole check list for an option (availability per import source)
+    // Optional, per option (import sources): a decorative logo (else the `icons` glyph), a second line in the list,
+    // and options shown but not selectable (they say why on their second line).
+    std::vector<std::shared_ptr<const FaviconImage>> images; std::vector<std::wstring> icons, descriptions; std::vector<bool> disabled;
+    bool Enabled(int i) const { return i >= 0 && i < static_cast<int>(options.size()) && !(i < static_cast<int>(disabled.size()) && disabled[static_cast<size_t>(i)]); }
 };
 enum class StatusIcon { None, Check, Download, Warning, Busy };
 struct Status { StatusIcon icon = StatusIcon::None; std::wstring title, detail; Button button; bool hasButton = false; };
@@ -404,14 +408,22 @@ struct Result { int button = -1; std::vector<std::wstring> values; bool checked 
 // Second line of an account row: password dots keep Paper's 0.08em; any other text is not tracked.
 inline DialogKit::Style AccountHintStyle(const Account& a) { return {14, 16, false, a.plain ? 0.f : .08f}; }
 
-inline int ChooseFromMenu(ContextMenu::Menu& menu, const std::vector<std::wstring>& options, int current, RECT anchor, bool keyboard, bool reduced) {
+inline std::vector<ContextMenu::Item> SelectItems(const Select& select) {
     std::vector<ContextMenu::Item> items;
+    const auto& options = select.options;
     for (size_t i = 0; i < options.size(); ++i) {
         std::wstring label; for (wchar_t c : options[i]) { label += c; if (c == L'&') label += L'&'; }   // no mnemonics
-        items.push_back(ContextMenu::Command(static_cast<int>(i) + 1, std::move(label), L"", true, static_cast<int>(i) == current));
+        auto item = ContextMenu::Command(static_cast<int>(i) + 1, std::move(label), L"", select.Enabled(static_cast<int>(i)), static_cast<int>(i) == select.index);
+        if (i < select.images.size()) item.image = select.images[i];
+        if (i < select.icons.size()) item.icon = select.icons[i];
+        if (i < select.descriptions.size()) item.description = select.descriptions[i];
+        items.push_back(std::move(item));
     }
-    const int id = menu.Track(items, {anchor.right, anchor.bottom}, &anchor, keyboard, reduced, true, true);
-    return id > 0 && id <= static_cast<int>(options.size()) ? id - 1 : -1;
+    return items;
+}
+inline int ChooseFromMenu(ContextMenu::Menu& menu, const Select& select, RECT anchor, bool keyboard, bool reduced) {
+    const int id = menu.Track(SelectItems(select), {anchor.right, anchor.bottom}, &anchor, keyboard, reduced, true, true);
+    return id > 0 && id <= static_cast<int>(select.options.size()) && select.Enabled(id - 1) ? id - 1 : -1;
 }
 
 class Dialog {
@@ -421,7 +433,7 @@ public:
         // Native list for the Période select (B07 « Plus d'options »): chosen index or -1. Hosts with a
         // shared ContextMenu::Menu pass ChooseFromMenu on it; without a hook the dialog opens its own
         // (same shadowless menu). Choosing only changes the value: it never triggers the action.
-        std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        std::function<int(const Select&, RECT anchorScreen, bool keyboard)> choose;
         std::function<void()> dismiss;   // with `choose` / `menu`: end that list now (the dialog closed while it was open)
         // Command list (B07 « Plus d'options »): chosen id, 0 when dismissed. Hosts pass their shared
         // ContextMenu::Menu; without it the dialog opens its own (same shadowless menu).
@@ -960,15 +972,15 @@ private:
     // value as it was; the dialog may be closed or replaced meanwhile, then the answer is dropped.
     void ChooseSelect(bool keyboard) {
         if (!open_ || busy_ || choosing_ || !spec_.hasSelect || spec_.select.options.empty()) return;
-        const auto options = spec_.select.options; const int current = spec_.select.index; const unsigned generation = generation_;
+        const Select select = spec_.select; const unsigned generation = generation_;
         const RECT anchor = ScreenOf(Find(SelectHit));
         keyboard_ = keyboard; focus_ = SelectHit; InvalidateRect(hwnd_, nullptr, FALSE);
         choosing_ = true; hostMenu_ = static_cast<bool>(hooks_.choose);
         int next = -1;
-        if (hooks_.choose) next = hooks_.choose(options, current, anchor, keyboard);
+        if (hooks_.choose) next = hooks_.choose(select, anchor, keyboard);
         else {
             if (!menu_) { menu_ = std::make_unique<ContextMenu::Menu>(); menu_->Init(instance_, hwnd_, root_); }
-            next = ChooseFromMenu(*menu_, options, current, anchor, keyboard, reduced_);
+            next = ChooseFromMenu(*menu_, select, anchor, keyboard, reduced_);
         }
         choosing_ = false;
         if (!open_ || generation != generation_ || !hwnd_ || !IsWindowVisible(hwnd_)) return;
@@ -976,7 +988,7 @@ private:
         SetSelect(next);
     }
     void SetSelect(int index) {
-        if (index < 0 || index >= static_cast<int>(spec_.select.options.size()) || index == spec_.select.index) return;
+        if (!spec_.select.Enabled(index) || index == spec_.select.index) return;
         spec_.select.index = index;
         if (spec_.select.details) { const auto d = spec_.select.details(index); for (size_t i = 0; i < d.size() && i < spec_.checks.size(); ++i) spec_.checks[i].detail = d[i]; }
         if (spec_.select.checks) {
@@ -1298,7 +1310,16 @@ private:
                 kit_.Text(spec_.select.label, DialogKit::Type::body, left, r.top + 6, r.left - left - 8, DialogKit::White(P::body));
                 kit_.Fill(r, P::fieldRadius, DialogKit::Mix(DialogKit::Mix(DialogKit::Gray(Design::Surface::raised), DialogKit::Gray(Design::Surface::hover), v.hover), DialogKit::Gray(Design::Surface::pressed), v.press));
                 const std::wstring value = spec_.select.index >= 0 && spec_.select.index < static_cast<int>(spec_.select.options.size()) ? spec_.select.options[static_cast<size_t>(spec_.select.index)] : L"";
-                kit_.Text(value, DialogKit::Type::body, r.left + 10, r.top + 6, r.right - r.left - 10 - 8 - 14 - 8, DialogKit::White(busy_ ? P::disabled : 1));
+                float textLeft = r.left + 10;
+                const size_t at = static_cast<size_t>(std::max(spec_.select.index, 0));
+                const bool hasLogo = (at < spec_.select.images.size() && spec_.select.images[at]) || (at < spec_.select.icons.size() && !spec_.select.icons[at].empty());
+                if (hasLogo) {   // decorative: the field's UIA name is the option's text
+                    const D2D1_RECT_F logo{textLeft, r.top + 8, textLeft + 16, r.top + 24};
+                    if (!(at < spec_.select.images.size() && pc_->DrawSiteImage(spec_.select.images[at], logo, busy_ ? P::disabled : 1)) && at < spec_.select.icons.size() && !spec_.select.icons[at].empty())
+                        pc_->Icon(spec_.select.icons[at].c_str(), logo, 16, busy_ ? P::disabled : P::body);
+                    textLeft += 16 + 8;
+                }
+                kit_.Text(value, DialogKit::Type::body, textLeft, r.top + 6, r.right - textLeft - 8 - 14 - 8, DialogKit::White(busy_ ? P::disabled : 1));
                 kit_.DrawGlyph(DialogKit::Glyph::caretDown, {r.right - 8 - 14, r.top + 9, r.right - 8, r.top + 23}, 14, DialogKit::White(P::muted));
                 if (Focused(SelectHit)) kit_.Ring(r, P::fieldRadius, DialogKit::White(P::ring));
                 break;

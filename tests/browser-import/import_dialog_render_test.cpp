@@ -51,7 +51,7 @@ static std::vector<MD::Check> ImportChecks(const BI::Source& s) {
     MD::Check bookmarks, history, cookies;
     bookmarks.label = TR(import_item_bookmarks); history.label = TR(import_item_history); cookies.label = TR(import_item_cookies);
     bookmarks.value = s.bookmarks; bookmarks.disabled = !s.bookmarks;
-    bookmarks.detail = s.bookmarks ? TRF(import_bookmarks_detail, BI::FolderTitle(s)) : std::wstring(TR(import_bookmarks_missing));
+    bookmarks.detail = s.bookmarks ? TRF(import_bookmarks_detail, s.browser == BI::Browser::HtmlFile ? std::wstring(TR(import_source_file_short)) : std::wstring(BI::BrandName(s.browser))) : std::wstring(TR(import_bookmarks_missing));
     if (s.browser == BI::Browser::HtmlFile) { history.disabled = true; history.detail = TR(import_history_html); }
     else { history.value = s.history; history.disabled = !s.history; history.detail = s.history ? TR(import_history_detail) : TR(import_history_missing); }
     cookies.disabled = true; cookies.detail = TR(import_cookies_unavailable);

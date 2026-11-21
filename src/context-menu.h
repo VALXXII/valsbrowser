@@ -16,6 +16,7 @@
 #include <d2d1effects.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <string>
@@ -54,7 +55,9 @@ struct Item {
 // new tab (Ctrl / Shift) or ask for its own context menu (right click, Menu key).
 // `keyboard`: chosen with Entrée / Espace / a mnemonic / UIA Invoke (not a pointer): the focus ring
 // of whatever the choice opens follows it.
-struct Choice { int id = 0; bool ctrl = false, shift = false, context = false, keyboard = false; };
+// `drag`: a row of a menu that opted in (TrackChoice's `draggable`) was dragged past the system threshold; the menu
+// closed and the host now owns that drag (the button is still down). Never set for menus that did not opt in.
+struct Choice { int id = 0; bool ctrl = false, shift = false, context = false, keyboard = false; int drag = 0; };
 inline Item Separator() { Item item; item.separator = true; return item; }
 inline Item Header(std::wstring label, std::wstring second, std::vector<std::shared_ptr<const FaviconImage>> icons, int tag = 0) {
     Item item; item.kind = Kind::Header; item.label = std::move(label); item.second = std::move(second); item.icons = std::move(icons); item.siteIcon = true; item.enabled = false; item.tag = tag; return item;
@@ -141,7 +144,8 @@ class Menu {
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_;
     const Item* highlighted_ = nullptr;
     std::vector<std::unique_ptr<Level>> levels_; int depth_ = 0; // open levels
-    int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_; bool keyedChoice_ = false;   // the input that drives the current pick (keyboard vs pointer)
+    int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_; bool keyedChoice_ = false;
+    std::function<bool(int)> draggable_; POINT pressAt_{}; int drag_ = 0;   // opt-in row drag (bookmark menus only)   // the input that drives the current pick (keyboard vs pointer)
     std::function<void(int)> background_; // middle click on a row: open in the background, menu stays
     bool contextRows_ = false;            // right click on a row returns it with context = true
     static constexpr UINT InvokeMessage = WM_APP + 40; // UIA actions are posted, never run inside the provider call
@@ -544,11 +548,17 @@ class Menu {
             return 0;
         case WM_MOUSEMOVE: {
             if (!l || ignorePointer) return 0;
+            // Opt-in drag: a pressed row with a draggable id, moved past the system threshold, ends the menu and hands
+            // the drag to the host (Choice::drag). Ordinary menus (no `draggable_`) never get here.
+            if (draggable_ && (w & MK_LBUTTON) && l->pressed >= 0 && l->pressed < static_cast<int>(l->items->size())) {
+                const Item& it = (*l->items)[l->pressed]; POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; ClientToScreen(h, &p);   // the message's own point
+                if (it.id && it.enabled && draggable_(it.id) && (std::abs(p.x - pressAt_.x) > GetSystemMetrics(SM_CXDRAG) || std::abs(p.y - pressAt_.y) > GetSystemMetrics(SM_CYDRAG))) { drag_ = it.id; Finish(0); return 0; }
+            }
             TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0}; TrackMouseEvent(&track);
             PointerMove(index, GET_Y_LPARAM(lp) / Scale(*l)); return 0;
         }
         case WM_MOUSELEAVE: if (l && !ignorePointer) PointerLeave(index); return 0;
-        case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); Interact(*l); } return 0;
+        case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); if (msg == WM_LBUTTONDOWN) { pressAt_ = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; ClientToScreen(h, &pressAt_); } Interact(*l); } return 0;
         case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
             if (!l) return 0;
             const int row = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); l->pressed = -1; Interact(*l);
@@ -640,11 +650,13 @@ public:
     // Bookmark menus: the whole gesture. `background` runs on a middle click without closing;
     // a right click (or the Menu key) on a row with an id returns {id, context = true}.
     bool LastChoiceKeyboard() const { return choice_.keyboard; }   // after Track(): was the pick made from the keyboard?
-    Choice TrackChoice(const std::vector<Item>& items, POINT at, const RECT* exclude, bool keyboard, bool reduced, bool alignRight, std::function<void(int)> background) {
-        background_ = std::move(background); contextRows_ = true;
+    Choice TrackChoice(const std::vector<Item>& items, POINT at, const RECT* exclude, bool keyboard, bool reduced, bool alignRight, std::function<void(int)> background,
+                       std::function<bool(int)> draggable = {}) {
+        background_ = std::move(background); contextRows_ = true; draggable_ = std::move(draggable); drag_ = 0;
         const int id = Track(items, at, exclude, keyboard, reduced, alignRight);
-        background_ = nullptr; contextRows_ = false;
-        Choice c = choice_; c.id = id; if (!id) c = {};
+        background_ = nullptr; contextRows_ = false; draggable_ = nullptr;
+        Choice c = choice_; c.id = id; if (!id) { c = {}; c.drag = drag_; }
+        drag_ = 0;
         return c;
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
