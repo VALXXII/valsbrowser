@@ -72,16 +72,30 @@
 // selected element's inspector is placed in the frame's own frame and transitions only when a value changes.
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
+#include <cstring>
 #include <string>
+#include "annotation-font.h"   // R45: the labels' font, bundled (generated)
 
 namespace NativeChrome { namespace Annotations {
 
-inline const wchar_t* PageScript() {
+inline const wchar_t* PageScriptSource() {
     return LR"JS((function (P) {
 'use strict';
 var KEY = Symbol.for('browser.annotation');
 try { var old = window[KEY]; if (old && typeof old.teardown === 'function') old.teardown(); } catch (e) {}
 var NONCE = String(P.nonce), STAMP = P.navStamp, D = document;
+// R45: the labels' font is the bundled Inter Display (the file the native copy of the frame draws with, Paper's font),
+// subset and embedded: a FontFace from an ArrayBuffer (no request, no CSP, nothing installed), under a family name of
+// its own (the page's fonts are untouched); removed at the exit. Hover, selection and bubble labels: the same face.
+var FONT = { '400': '@@FONT400@@', '500': '@@FONT500@@' }, faces = [];
+try {
+  if (window.FontFace && D.fonts && window.atob) for (var fw in FONT) {
+    var bin = atob(FONT[fw]), buf = new Uint8Array(bin.length);
+    for (var bi = 0; bi < bin.length; bi++) buf[bi] = bin.charCodeAt(bi);
+    var face = new FontFace('Browser Annotation Inter', buf.buffer, { weight: fw, style: 'normal' });
+    D.fonts.add(face); faces.push(face);
+  }
+} catch (e) {}
 var STYLE_PROPS = P.styles || [], ATTRS = P.attrs || [];
 var reduced = !!P.reduced;
 try { if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) reduced = true; } catch (e) {}
@@ -147,8 +161,12 @@ root.innerHTML = '<style>' +
   '.f{box-sizing:border-box;border-style:solid;border-width:2px;will-change:auto}.f.hb,.f.nb,.bf.nb{border-color:transparent !important}' +
   // R14 (Paper 18QK-0 / 18QQ-0): the hover labels as the selection's — Inter Display 13/18, 20 px high, padding 0 6,
   // top corners 3, name at the left, real size at the right
-  '.l{font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;height:20px;box-sizing:border-box;' +
-  'padding:1px 6px;border-radius:3px 3px 0 0;white-space:pre;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}' +
+  // R45: ONE label style for the hover / selection labels (.l) and the bubble element's (.bl): same font face, weight,
+  // size, line height, letter spacing, padding, corners, same layer (will-change: the same grayscale text rendering as
+  // the native copy), positions snapped to device pixels
+  '.l,.bl{font:400 13px/18px "Browser Annotation Inter","Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;height:20px;box-sizing:border-box;' +
+  'padding:1px 6px;border-radius:3px 3px 0 0;white-space:pre;max-width:60vw;overflow:hidden;text-overflow:ellipsis;letter-spacing:0;' +
+  'font-kerning:normal;font-feature-settings:normal;font-synthesis:none;text-rendering:auto;will-change:transform,opacity}' +
   // R16: the selected element's inspector follows a change of its values softly (same path structure: interpolated)
   '.pb.sm,.gb.sm{transition:clip-path 160ms cubic-bezier(.23,1,.32,1)}.pl.sm,.gl.sm{transition:transform 160ms cubic-bezier(.23,1,.32,1)}' +
   '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;background:transparent}' +
@@ -156,17 +174,17 @@ root.innerHTML = '<style>' +
   '.pb,.gb,.pl,.gl{position:fixed;left:0;top:0;box-sizing:border-box}' +
   '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
   // D8 (decided): the padding / gap values in the labels' font (Paper 18QK-0): Inter Display, plain white, 10/14 (a band may be 4 px)
-  '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;letter-spacing:0}' +
+  '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "Browser Annotation Inter","Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;letter-spacing:0}' +
   '.gl{background:#D63E92}' +
   '.w{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none;transform:translate(0px,0px)}' +
   '.mk{position:fixed;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 120ms ease-out}' +
   '.cf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a))}' +
   '.ct{position:absolute;left:-1.4px;top:-1.4px;height:24px;min-width:24px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:6px;padding:0 0;' +
-  'border-bottom-right-radius:6px;background:rgb(var(--a));color:#fff;font:500 11px/14px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;white-space:nowrap}' +
+  'border-bottom-right-radius:6px;background:rgb(var(--a));color:#fff;font:500 11px/14px "Browser Annotation Inter","Inter Display",Inter,"Segoe UI",system-ui,sans-serif;white-space:nowrap}' +
   '.ct.wait{padding:0 8px 0 6px}.ct.wait svg{opacity:.7}.ct .ms{width:11px;height:11px}' +
   '.mf{box-sizing:border-box;position:absolute;left:0;top:0}' +
   '.mt{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;gap:6px;padding:0 6px;border-radius:3px 3px 0 0;' +
-  'font:500 12px/16px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;max-width:60vw;overflow:hidden;letter-spacing:0}' +
+  'font:500 12px/16px "Browser Annotation Inter","Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;max-width:60vw;overflow:hidden;letter-spacing:0}' +
   '.mu{color:rgba(255,255,255,.75);font-size:11px;line-height:14px}' +
   '.ms{width:12px;height:12px;box-sizing:border-box;border:2px solid rgba(255,255,255,.15);border-top-color:#fff;border-radius:50%;flex:none}' +
   '.ms.spin{animation:mks 1.2s linear infinite}@keyframes mks{to{transform:rotate(360deg)}}' +
@@ -174,8 +192,7 @@ root.innerHTML = '<style>' +
   // D1 (Paper 18QJ-0, 18QK-0, 18QQ-0): the element of the open bubble — frame 4 px out, 2 px accent, accent 8 %; two labels
   '.bx{position:fixed;left:0;top:0;pointer-events:none}' +
   '.bf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a));background:rgba(var(--a),.08)}' +
-  '.bl{position:absolute;left:0;top:0;height:20px;box-sizing:border-box;display:flex;align-items:center;padding:0 6px;border-radius:3px 3px 0 0;background:rgb(var(--a));' +
-  'font:400 13px/18px "Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:pre;letter-spacing:0}' +
+  '.bl{position:absolute;left:0;top:0;background:rgb(var(--a))}' +   // R45: the rest is .l's
   '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x l"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
 var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
@@ -612,6 +629,8 @@ function frameBox(r) {
   return { x: x, y: y, w: Math.max(right - x, 1 / dpr()), h: Math.max(bottom - y, 1 / dpr()) };
 }
 // The same box on any frame element (hover .f, conversation .cf, bubble .bf, chat mark .mf): position, size, border.
+// R45: a label at a point snapped to device pixels (the same text pixels in the hover and the bubble labels).
+function atPx(el, x, y) { el.style.transform = 'translate(' + snap(x).toFixed(6) + 'px,' + snap(y).toFixed(6) + 'px)'; }
 function boxTo(el, fb, viaTransform) {
   if (viaTransform !== false) el.style.transform = 'translate(' + fb.x.toFixed(6) + 'px,' + fb.y.toFixed(6) + 'px)';
   el.style.width = fb.w.toFixed(6) + 'px'; el.style.height = fb.h.toFixed(6) + 'px'; el.style.borderWidth = edgePx().toFixed(6) + 'px';
@@ -651,7 +670,7 @@ function place(info) {
   var tag = seg(info.el === info.frame && info.kind === 'cross-origin' ? info.frame : info.el);
   label.textContent = info.range ? 'texte' : tag; label2.textContent = Math.round(r.w) + 'x' + Math.round(r.h);   // R14 (Paper writes « 240x44 »)
   var lw = label.offsetWidth || 120, rw = label2.offsetWidth || 60, lp = labelsPlace(fb, lw, rw);
-  tr(label, lp.lx, lp.y); tr(label2, lp.rx, lp.ry);   // R33: the size label never disappears
+  atPx(label, lp.lx, lp.y); atPx(label2, lp.rx, lp.ry);   // R33: the size label never disappears; R45: device pixels
   labelBox = labelBoxes(lp, lw, rw);
   if (first) { void getComputedStyle(fill).transform; moveOnly(false); setOpacity(1); shown = true; }
   placeSpace(info, first);
@@ -965,8 +984,8 @@ function bxPlace(el, r) {
   if (bx.left.textContent !== t1) bx.left.textContent = t1;
   if (bx.right.textContent !== t2) bx.right.textContent = t2;
   var lw = bx.left.offsetWidth || 120, rw = bx.right.offsetWidth || 60, lp = labelsPlace(fb, lw, rw);
-  bx.left.style.transform = 'translate(' + lp.lx.toFixed(2) + 'px,' + lp.y.toFixed(2) + 'px)';
-  bx.right.style.transform = 'translate(' + lp.rx.toFixed(2) + 'px,' + lp.ry.toFixed(2) + 'px)';   // R33: under the name, inside the frame, when narrow
+  atPx(bx.left, lp.lx, lp.y);
+  atPx(bx.right, lp.rx, lp.ry);   // R33: under the name, inside the frame, when narrow; R45: placed as the hover labels
   // R16: the padding and gap of the selected element stay drawn, bubble open. R37: computed in the same frame as the
   // frame and its labels (glued while scrolling); the soft transition only when a VALUE changed (padding, gap, size),
   // never for a move (scroll, window resize), and never while a restyle (R36) is followed frame by frame.
@@ -1053,6 +1072,7 @@ function teardown() {
   for (var a = 0; a < adopted.length; a++) { try { var rn = adopted[a]; rn.adoptedStyleSheets = rn.adoptedStyleSheets.filter(function (x) { return x !== sheet; }); } catch (e) {} }
   adopted = [];
   try { host.remove(); } catch (e) {}
+  for (var fi = 0; fi < faces.length; fi++) { try { D.fonts.delete(faces[fi]); } catch (e) {} }
   try { if (window[KEY] && window[KEY].nonce === NONCE) delete window[KEY]; } catch (e) {}
 }
 function cmd(op, arg) {
@@ -1128,6 +1148,16 @@ return 'ok';
 }
 
 // Builds `(script)(params)`; `paramsJson` is a JSON object built by the host.
+// The page script with its embedded label font (R45), built once.
+inline const wchar_t* PageScript() {
+    static const std::wstring full = [] {
+        std::wstring js = PageScriptSource();
+        auto put = [&](const wchar_t* mark, const char* b64) { const auto at = js.find(mark); if (at != std::wstring::npos) js.replace(at, wcslen(mark), std::wstring(b64, b64 + strlen(b64))); };
+        put(L"@@FONT400@@", LabelFontRegular()); put(L"@@FONT500@@", LabelFontMedium());
+        return js;
+    }();
+    return full.c_str();
+}
 inline std::wstring PageScriptCall(const std::wstring& paramsJson) { return std::wstring(PageScript()) + L"(" + paramsJson + L")"; }
 // A command to the live instance (no-op if the nonce differs, e.g. after a navigation).
 inline std::wstring PageCommand(const std::wstring& nonce, const std::wstring& op, const std::wstring& argJson = L"null") {
