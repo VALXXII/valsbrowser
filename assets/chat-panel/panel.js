@@ -561,6 +561,10 @@
 
   // ---------------------------------------------------------------- composer bar (mode, model, effort)
   function renderComposerBar() {
+    // pass 1 #8 (R22): « + » with its single action (a folder found for sure) opens the image picker — it is not a menu
+    const plusMenu = !(S.st.folder && S.st.askFolder !== true) || (S.st.capabilities && S.st.capabilities.image === false);
+    if (plusMenu) { plusBtn.setAttribute("aria-haspopup", "menu"); if (!plusBtn.hasAttribute("aria-expanded")) plusBtn.setAttribute("aria-expanded", "false"); }
+    else { plusBtn.removeAttribute("aria-haspopup"); plusBtn.removeAttribute("aria-expanded"); }
     S.picking ? pickBtn.setAttribute("aria-pressed", "true") : pickBtn.setAttribute("aria-pressed", "false");
     const mode = curMode();
     clear(modeBtn);

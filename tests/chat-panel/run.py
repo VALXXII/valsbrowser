@@ -508,7 +508,7 @@ try:
 
         # during a turn: the mode and « Arrêter », no input; Échap closes the bubble and never stops the agent
         load("c-2-envoye")
-        r = cdp.js("""(()=>{const s=document.querySelector('.send');return {cin:V('.cin'),plus:document.querySelector('.tools .tb[aria-haspopup=menu]:not(.mode)').getClientRects().length,
+        r = cdp.js("""(()=>{const s=document.querySelector('.send');return {cin:V('.cin'),plus:document.querySelector('.tools .tb[aria-label=Joindre]').getClientRects().length,
           model:document.querySelector('.model').getClientRects().length,stop:s.classList.contains('stop'),label:s.getAttribute('aria-label'),bg:getComputedStyle(s).backgroundColor,focusStop:document.activeElement===s,
           st:document.querySelector('.bt-st .lb').textContent,chip:document.querySelector('.bt-model').textContent,rule:V('.b-rule'),caret:document.querySelectorAll('.text.streaming').length}})()""")
         check(r["cin"] == 0 and r["plus"] == 0 and r["model"] == 0 and r["stop"] and r["label"].startswith("Arrêter") and r["rule"] == 0, "bubble (turn): no input, only the mode and « Arrêter »", json.dumps(r, ensure_ascii=False)[:240])
@@ -932,6 +932,20 @@ try:
         host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 520, "inset": {"top": 1500, "right": 0, "bottom": 0, "left": 0}})
         cap2 = cdp.js("getComputedStyle(document.documentElement).getPropertyValue('--it').trim()")
         check(cap == [700, "700px"] and cap2 == "1000px", "margin cap: the surface is drawn at an inset of 700 px as given (it stopped at 400 and moved); the single bound is 1000 px", f"{cap} {cap2}")
+        # pass 1, defect 8 (R22): « + » that opens the image picker directly is not announced as a menu
+        load("c-1-vide")
+        d8 = cdp.js("[document.querySelector('.tools .tb[aria-label=Joindre]').getAttribute('aria-haspopup'), document.querySelector('.tools .tb[aria-label=Joindre]').getAttribute('aria-expanded')]")
+        load("c-menu-plus-incertain")
+        d8b = cdp.js("[document.querySelector('.tools .tb[aria-label=Joindre]').getAttribute('aria-haspopup')]")
+        check(d8 == [None, None] and d8b == ["menu"], "pass 1 #8 (R22): « + » with its single action has no aria-haspopup / aria-expanded; with two actions it is a menu again", f"{d8} {d8b}")
+        # pass 1, defect 5 (E4, page side): after the page was scrolled (the host sends new inset / room), opening the model menu never
+        # moves the surface — its top is the same at every image for 400 ms
+        load("c-1-vide")
+        ins = cdp.js("window.__inset")
+        host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 520, "inset": ins, "room": {"top": 150, "right": 600, "bottom": 600, "left": 600}})
+        e4p = cdp.js("""new Promise(r=>{const a=document.getElementById('app'),tops=[];document.querySelector('.model .m').click();const t0=performance.now();
+          const f=()=>{tops.push(Math.round(a.getBoundingClientRect().top*10)/10);if(performance.now()-t0<400)requestAnimationFrame(f);else r({frames:tops.length,tops:Array.from(new Set(tops))})};requestAnimationFrame(f)})""")
+        check(e4p["frames"] >= 15 and len(e4p["tops"]) == 1, "pass 1 #5 (E4, page): opening the model menu after a scroll never moves the surface (same top at every image)", json.dumps(e4p))
         # F5: drafts never grow without end — after 45 elements with unsent words, the oldest one is dropped, the latest kept
         load("c-1-vide")
         f5 = cdp.js("""(()=>{const send=window.devHost.send,cin=()=>document.getElementById('composer-input');
@@ -1007,7 +1021,7 @@ try:
 
     # B 1.8 — the folder's name rather than its path or the site's address (Paper 156L-0)
     if not ONLY:
-        load("6.7a-vide"); cdp.js("document.querySelector('.tools .tb[aria-haspopup=menu]').click()"); time.sleep(.1)
+        load("6.7a-vide"); cdp.js("document.querySelector('.tools .tb[aria-label=Joindre]').click()"); time.sleep(.1)
         plus = cdp.js("(document.querySelector('.menu')||{innerText:''}).innerText")
         load("6.2-premiere-fois")
         tile = cdp.js("[document.querySelector('.tile.found .nm').textContent, document.querySelectorAll('.tile.found .path').length, document.querySelector('.tile.found').getAttribute('aria-description')]")
@@ -1237,7 +1251,7 @@ try:
         # B 1.4 — folder chip, first-run only when asked, « Traiter les annotations »
         load("dossier-puce")
         fb = cdp.js("({chip:!!document.querySelector('.tb.folder, [aria-label^=\"Dossier du projet\"]'),first:!document.querySelector('.first').hidden,tools:document.querySelectorAll('.foot .tools > *').length})")
-        cdp.js("document.querySelector('.tools .tb[aria-haspopup=menu]').click()")
+        cdp.js("document.querySelector('.tools .tb[aria-label=Joindre]').click()")
         plus = cdp.js("(document.querySelector('.menu')||{textContent:''}).textContent")
         check(not fb["chip"] and not fb["first"] and fb["tools"] == 3 and "dossier" not in plus, "folder (V1.2/R5): no folder chip in the composer, no folder screen, and « + » does not offer to change a folder found for sure", json.dumps(fb) + " " + plus)
         load("dossier-demande")
