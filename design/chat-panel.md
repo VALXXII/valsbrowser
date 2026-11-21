@@ -671,6 +671,9 @@ disent). Ce paragraphe décrit la page ; l'hôte (H) a sa part (R14, R15, R16, R
   fondu, **160 ms**, `cubic-bezier(.23, 1, .32, 1)` (plus rapide que le tiroir des Réglages) ; fondu seul en mouvement réduit.
   L'hôte place et dimensionne la fenêtre avant de la montrer et ne la montre qu'après le `bubble.size` qui accuse réception
   de ce `layout` (filet de 300 ms) ; ensuite il ne la déplace plus.
+  La page envoie cet accusé dans le traitement même du `layout`, avant de dessiner le fil (1 à 3 ms). Une longue conversation
+  (plus de 10 échanges) dessine d'abord ses 6 derniers échanges — ce que la bulle montre, en bas — puis les plus anciens
+  juste après la première image, au-dessus, sans rien déplacer de ce qui est vu (40 échanges : première image 55 → ~17 ms).
 
 ### 21.2 Bas de la saisie de la bulle (R13, R21, R22)
 

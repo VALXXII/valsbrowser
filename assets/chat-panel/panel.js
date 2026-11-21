@@ -1311,7 +1311,24 @@
     if (BUB()) for (const c of Array.from(cin.querySelectorAll(".chip"))) { S.cEls.delete(c.dataset.id); c.remove(); }
     renderThumbs(); updateSend();
   }
+  let resetGen = 0;
+  const RESET_FIRST = 6;   // exchanges drawn before the first image
+  function prependOlder(items) {
+    const anchor = log.firstChild;
+    const keep = { lastUser: S.lastUser, lastTurn: S.lastTurn, lastAt: S.lastAt, berr: S.berr, planPending: S.planPending, switched: S.switched };
+    S.lastUser = null; S.lastTurn = null; S.lastAt = 0;
+    S.prependAt = anchor; S.replay = true;
+    try { for (const it of items) if (it && typeof it.type === "string" && it.type !== "thread.reset" && it.type !== "thread.append") receive(Object.assign({ v: V }, it)); }
+    finally { S.replay = false; S.prependAt = null; }
+    flushRender();
+    Object.assign(S, keep);
+    for (const t of S.turns.values()) if (t.running && t.id !== S.lastTurn) { S.replay = true; try { onTurnEnd({ turnId: t.id, stopReason: "cancelled", interrupted: true }); } finally { S.replay = false; } }
+    updateView(); renderDock(true);
+    if (S.atBottom) scroller.scrollTop = scroller.scrollHeight;
+    publishSize();
+  }
   function resetThread() {
+    resetGen++;
     closeChanges();
     S.usage = null; S.usageWarned = false; renderGauge();
     S.batches.clear();
@@ -1728,7 +1745,7 @@
   }
   function add(node, liveItem) {
     if (!S.replay) node.classList.add("enter", "live");
-    log.appendChild(node);
+    if (S.prependAt && S.prependAt.parentNode === log) log.insertBefore(node, S.prependAt); else log.appendChild(node);
     if (liveItem === false || S.replay) node.classList.remove("live");
     if (!empty.hidden || log.hidden) updateView();
     stick();
@@ -2829,14 +2846,25 @@
       stashDraft();
       resetThread();
       const conv = isStr(m.conversationId, 128) ? m.conversationId : "";
-      H["thread.append"](m);
+      // H1's measure (opening < 150 ms): a long conversation draws its last exchanges first — what the bubble shows, at the
+      // end — and the older ones right after the first image, put above without moving what is seen
+      const gen = ++resetGen;
+      const users = []; m.items.forEach((it, i) => { if (it && it.type === "message.user") users.push(i); });
+      const cut = users.length > RESET_FIRST + 4 ? users[users.length - RESET_FIRST] : 0;
+      if (cut > 0) {
+        const older = m.items.slice(0, cut);
+        const lastOlderAt = older.filter((it) => it && it.type === "message.user").map((it) => Date.parse(it.at) || 0).pop() || 0;
+        S.lastAt = lastOlderAt;
+        H["thread.append"]({ items: m.items.slice(cut) });
+        requestAnimationFrame(() => setTimeout(() => { if (gen === resetGen) prependOlder(older); }, 0));
+      } else H["thread.append"](m);
       restoreDraft(draftKeyFor(conv, !log.firstChild));
       // M11 (review): a replayed turn with no end while nothing runs (the browser was closed during it) ends as stopped
       if (!S.st.running) for (const t of Array.from(S.turns.values())) if (t.running) { S.replay = true; try { onTurnEnd({ turnId: t.id, stopReason: "cancelled", interrupted: true }); } finally { S.replay = false; } }
       renderDock(true); placeholder(); updateView();
       requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
     },
-    "thread.append"(m) {
+    "thread.append"(m) {   // (see also prependOlder: the older part of a long conversation, put above after the first image)
       S.replay = true;
       try { for (const it of m.items) if (it && typeof it.type === "string" && it.type !== "thread.reset" && it.type !== "thread.append") receive(Object.assign({ v: V }, it)); }
       finally { S.replay = false; }

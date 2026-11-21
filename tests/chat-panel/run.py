@@ -946,6 +946,31 @@ try:
         e4p = cdp.js("""new Promise(r=>{const a=document.getElementById('app'),tops=[];document.querySelector('.model .m').click();const t0=performance.now();
           const f=()=>{tops.push(Math.round(a.getBoundingClientRect().top*10)/10);if(performance.now()-t0<400)requestAnimationFrame(f);else r({frames:tops.length,tops:Array.from(new Set(tops))})};requestAnimationFrame(f)})""")
         check(e4p["frames"] >= 15 and len(e4p["tops"]) == 1, "pass 1 #5 (E4, page): opening the model menu after a scroll never moves the surface (same top at every image)", json.dumps(e4p))
+        # H1's measure: the host shows the bubble at the page's acknowledgement (bubble.size of the opening layout) — the page must
+        # answer at once, whatever it has to draw (a long thread still there, a long conversation coming)
+        LAT_JS = """((big)=>{const send=window.devHost.send,P=window.__posted;
+          const items=[];for(let i=0;i<big;i++){items.push({type:'message.user',id:'u'+i,text:'Demande '+i+' : '+'mot '.repeat(40),at:new Date().toISOString(),elements:[]},{type:'turn.start',turnId:'t'+i,model:'Sonnet 5.5',effort:'Élevé',agentId:'claude-code',at:new Date().toISOString()},{type:'message.agentChunk',turnId:'t'+i,messageId:'m'+i,text:'## Titre\\n\\n'+'Une phrase de réponse assez longue. '.repeat(30)+'\\n\\n```css\\n.a{b:c}\\n```'},{type:'turn.end',turnId:'t'+i,stopReason:'end_turn',durationMs:9000})}
+          send({type:'layout',mode:'bubble',maxWidth:320,maxHeight:520,element:'section.a',elementKey:'A'});send({type:'thread.reset',conversationId:'cA',items});
+          const n0=P.length,t0=performance.now();send({type:'layout',mode:'bubble',maxWidth:320,maxHeight:520,element:'section.b',elementKey:'B'});
+          const ack=P.slice(n0).findIndex(m=>m.type==='bubble.size')>=0?performance.now()-t0:-1;
+          const t1=performance.now();send({type:'thread.reset',conversationId:'cB',items});const reset=performance.now()-t1;
+          return {ack:Math.round(ack*10)/10,reset:Math.round(reset)}})"""
+        PAINT_JS = """((big)=>new Promise(r=>{const send=window.devHost.send;
+          const items=[];for(let i=0;i<big;i++){items.push({type:'message.user',id:'u'+i,text:'Demande '+i+' : '+'mot '.repeat(40),at:new Date().toISOString(),elements:[]},{type:'turn.start',turnId:'t'+i,model:'Sonnet 5.5',effort:'Élevé',agentId:'claude-code',at:new Date().toISOString()},{type:'message.agentChunk',turnId:'t'+i,messageId:'m'+i,text:'## Titre\\n\\n'+'Une phrase de réponse assez longue. '.repeat(30)+'\\n\\n```css\\n.a{b:c}\\n```'},{type:'turn.end',turnId:'t'+i,stopReason:'end_turn',durationMs:9000})}
+          send({type:'bubble.hidden'});const t0=performance.now();
+          send({type:'layout',mode:'bubble',maxWidth:320,maxHeight:520,element:'section.b',elementKey:'B'});send({type:'state',running:false});send({type:'thread.reset',conversationId:'cB',items});
+          const sync=performance.now()-t0;const sc=document.querySelector('.scroller');const lastBox=()=>{const u=document.querySelectorAll('.um');return Math.round(u[u.length-1].getBoundingClientRect().top-sc.getBoundingClientRect().bottom)};
+          requestAnimationFrame(()=>{const raf=performance.now()-t0,first=document.querySelectorAll('.turn').length,b0=lastBox();
+            setTimeout(()=>{const ids=Array.from(document.querySelectorAll('.um')).map(n=>+n.dataset.id.slice(1));
+              r({sync:Math.round(sync),firstImage:Math.round(raf),firstTurns:first,turns:document.querySelectorAll('.turn').length,ordered:ids.every((v,i)=>v===i),
+                 stayed:lastBox()===b0,atEnd:Math.round(sc.scrollHeight-sc.scrollTop-sc.clientHeight)<=1})},300)})}))"""
+        load("c-1-vide")
+        paint = cdp.js("(" + PAINT_JS + ")(40)")
+        check(paint["firstImage"] < 30 and paint["firstTurns"] == 6 and paint["turns"] == 40 and paint["ordered"] and paint["stayed"] and paint["atEnd"],
+              "H1 latency: a 40-exchange conversation reaches its first image fast (its last 6 exchanges; was 55 ms for all), then the older ones come above — all 40 in order, nothing seen moves, still at the end", json.dumps(paint))
+        load("c-1-vide")
+        lat = cdp.js("(" + LAT_JS + ")(40)")
+        check(lat["ack"] >= 0 and lat["ack"] < 16, "H1 latency: the opening layout is acknowledged (bubble.size) within one image even with a 40-turn thread still drawn and another coming", json.dumps(lat))
         # F5: drafts never grow without end — after 45 elements with unsent words, the oldest one is dropped, the latest kept
         load("c-1-vide")
         f5 = cdp.js("""(()=>{const send=window.devHost.send,cin=()=>document.getElementById('composer-input');
