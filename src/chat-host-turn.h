@@ -555,6 +555,7 @@ void SendPrompt() {
         ChatPrompt::PreambleInput in; in.site = site.origin; in.folder = U8(folder); in.browser = "the browser";
         blocks.push_back(Acp::ContentBlock::Text(ChatPrompt::Preamble(in))); convo.preambleSent = true; convo.data.head.promptVersion = ChatPrompt::Version;
     }
+    if (!convo.recap.empty()) { blocks.push_back(Acp::ContentBlock::Text(convo.recap)); convo.recap.clear(); Diag(L"the conversation so far given to the agent that took the chat over"); }   // R42
     const bool images = agentInfo[agentId].caps.image;
     for (const auto& e : turn.elements) {
         ChatPrompt::ElementInput in; const auto& t = e.pending.target;

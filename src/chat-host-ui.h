@@ -299,14 +299,56 @@ void MaybeStartSession() {
     const auto& a = agentInfo[agentId];
     if (Usable() && (Open() || BubbleOpen() || (panelWarm && Ann::s.active && !CommentLayout())) && !session && !sessionStarting && !preparing && a.known && a.cli && a.prepared) StartSession();
 }
+// R42: what the conversation said and did so far, for the agent that takes it over (another provider, same chat).
+std::string ConversationRecap(const std::string& previousAgent) {
+    std::vector<ChatPrompt::RecapTurn> turns;
+    for (const auto& item : convo.data.items) {
+        const auto* ty = item.Get("type"); if (!ty || !ty->IsString()) continue;
+        if (ty->string == "message.user") {
+            ChatPrompt::RecapTurn t; if (const auto* x = item.Get("text"); x && x->IsString()) t.user = x->string;
+            if (const auto* els = item.Get("elements"); els && els->IsArray()) for (const auto& e : els->items) if (const auto* l = e.Get("label"); l && l->IsString()) t.elements.push_back(l->string);
+            turns.push_back(std::move(t));
+        } else if (ty->string == "turn.end" && !turns.empty()) {
+            if (const auto* x = item.Get("copyText"); x && x->IsString()) turns.back().reply = x->string;
+            if (const auto* ch = item.Get("changes"); ch && ch->IsArray()) for (const auto& c : ch->items) if (const auto* p = c.Get("path"); p && p->IsString()) turns.back().files.push_back(p->string);
+        }
+    }
+    return ChatPrompt::Recap(turns, previousAgent, RandomHex(8));
+}
+// R42: a discreet mark in the thread, « Passé à Opus · Moyen » (the page words it): the model (and the agent) the next
+// message goes to. Only in a chat that has messages; kept with the conversation.
+std::string ChoiceName(const Acp::ConfigOption* o, const std::string& value) {
+    if (o) for (const auto& c : o->choices) if (c.value == value) return c.name.empty() ? c.value : c.name;
+    return value;
+}
+void MarkSwitch(const std::string& agent, const std::string& model) {
+    if (convo.data.items.empty()) return;
+    const auto& info = agentInfo[agent]; const auto* def = AgentOf(agent);
+    SJ::Value m = SJ::Value::Obj(); m.Set("agentId", Str(agent)); if (def) m.Set("agentName", Str(std::string(def->name)));
+    if (!model.empty()) { m.Set("modelId", Str(model)); m.Set("model", Str(ChoiceName(Acp::FindModelOption(info.options), model))); }
+    if (const auto* eo = Acp::FindEffortOption(info.options)) {
+        const std::string e = agent == agentId && !pendingEffort.empty() ? pendingEffort : eo->currentValue;
+        if (!e.empty()) { m.Set("effortId", Str(e)); m.Set("effort", Str(ChoiceName(eo, e))); }
+    }
+    m.Set("at", Str(Iso(BA::SystemNow()))); Keep("model.switch", m); Send("model.switch", std::move(m));
+}
+// R42: another provider's model = the same chat, without a confirmation: the session of the other agent starts for the
+// next message, with the conversation so far given as context. A turn running is never stopped for it: the change
+// waits for its end (its queue too).
 void SwitchAgent(const std::string& id, const std::string& model) {
     if (!AgentOf(id)) return;
     auto go = [id, model] {
-        agentId = id; agentChosen = true; RememberChoices();
-        if (!convo.data.items.empty()) NewConversation(); else { DisposeSession(L"agent changed"); convo.data.head.agentId = id; convo.data.head.sessionId.clear(); }   // i18n-exempt: log reason
-        pendingModel = model; SendState(); DetectAgents([] { MaybeStartSession(); });
+        if (id != agentId) {
+            const auto* before = AgentOf(agentId); const std::string previous = before ? before->name : agentId;
+            agentId = id; agentChosen = true; RememberChoices();
+            DisposeSession(L"provider changed, same conversation");   // i18n-exempt: log reason
+            convo.data.head.agentId = id; convo.data.head.sessionId.clear(); convo.preambleSent = false;
+            convo.recap = convo.data.items.empty() ? std::string() : ConversationRecap(previous);
+            Diag(L"the conversation goes on with " + W(std::string(AgentOf(id)->name)) + (convo.recap.empty() ? L"" : L" (the conversation so far goes with the next message)"));
+        }
+        pendingModel = model; MarkSwitch(id, model); SendState(); DetectAgents([] { MaybeStartSession(); });
     };
-    if (turn.active) { queue.clear(); afterTurn = go; StopTurn(); } else go();
+    if (turn.active) { auto prev = std::move(afterTurn); afterTurn = [prev, go] { if (prev) prev(); go(); }; Diag(L"the agent changes after the turn running"); } else go();
 }
 void Connect(const std::string& id, const std::string& methodId) {
     const auto* def = AgentOf(id); if (!def) return;
@@ -693,8 +735,10 @@ void OnPanelMessage(const std::string& json) {
         const std::string id = m.Id("id"), agent = m.Id("agentId"); if (id.empty()) return;
         if (!agent.empty() && agent != agentId) { SwitchAgent(agent, id); return; }
         const auto* o = Acp::FindModelOption(agentInfo[agentId].options);
+        const bool changed = id != (pendingModel.empty() ? (o ? o->currentValue : std::string()) : pendingModel);
         if (session && sessionReady && o) session->SetConfigOption(o->id, id); else pendingModel = id;
         if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].model = id; RememberChoices(); }
+        if (changed) MarkSwitch(agentId, id);   // R42: the same agent, another model — the next message, the same session
         return;
     }
     if (type == "setEffort") {

@@ -136,7 +136,7 @@ struct Turn {
     struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation, input; int count = -1; bool done = false, reported = false; };   // input: its arguments (an update does not repeat them)
     std::map<std::string, OurCall> ourCalls;   // tool call id -> one of our annotation tools (its step line is ours to word)
 };
-struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; };
+struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; std::string recap; };   // recap (R42): given with the next prompt to the agent that took the chat over
 // « Traiter les annotations » (contract B 1.4): one pending annotation of the site, as a line of the block / the card.
 struct BatchItem {
     std::string id, siteKey, note, element, source, thumb; std::string status = "pending", text;   // text: summary (done) or reason (skipped)
