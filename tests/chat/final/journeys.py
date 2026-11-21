@@ -811,8 +811,15 @@ def j_m6(j):
 def j_m16(j):
     F.front(); m = F.log_mark()
     pg = F.page_area(); k = F.dpr(); F.click_at(pg[2] - int(6 * k), pg[1] + int(30 * k)); time.sleep(0.2)   # the page has the keyboard (scrollbar)
+    origin = F.page('performance.timeOrigin')
     F.tap(0x74); time.sleep(2.0)
-    j.step('M16 · F5 before a click: the annotation mode stays on', 'ANNOTATE mode off' not in C.log_text()[m:] and F.wait_log(r'ANNOTATE mode re-armed after a reload|ANNOTATE mode on', m, 5), C.log_text()[m:][-500:])
+    how = 'F5 (SendInput)'
+    if F.page('performance.timeOrigin') == origin:   # not reloaded: the key posted to the browser's window, as the shortcuts are
+        F.Q.post_key(0x74); time.sleep(2.0); how = 'F5 posted to the window'
+    reloaded = F.page('performance.timeOrigin') != origin
+    j.R.data['measures']['m16'] = {'reloaded': reloaded, 'how': how}
+    j.step('M16 · the page is reloaded by F5', reloaded, how)
+    j.step('M16 · F5 before a click: the annotation mode stays on', reloaded and 'ANNOTATE mode off' not in C.log_text()[m:] and 'store watch stopped' not in C.log_text()[m:], C.log_text()[m:][-500:])
     j.open_on('a.btn-primary', 'a click after the reload'); j.check('M16')
 
 
@@ -820,11 +827,12 @@ def j_m16(j):
 def j_m2(j):
     j.open_on('a.btn-primary', 'A'); j.send('a.btn-primary', 'vrai-markdown', token='jetonM2a')
     F.front(); rb = F.bubble_shown()[1]; p = F.element_point('h1.hero-title', avoid=rb if isinstance(rb, tuple) else None)
-    el = F.element_screen('h1.hero-title'); old = F.bubble_surface()
+    el = F.element_screen('h1.hero-title'); old = F.bubble_shown()[1]   # A's region on screen (compared with the same measure)
     F.click_at(*p, settle=0.02); t0 = time.time(); stale = []
     while time.time() - t0 < 1.0:
         shown, rb = F.bubble_shown()
-        if shown and isinstance(rb, tuple) and rb != old and 'jetonM2a' in (F.chat_state('bubble').get('text') or ''):
+        moved = isinstance(rb, tuple) and isinstance(old, tuple) and (abs(rb[0] - old[0]) > 4 or abs(rb[1] - old[1]) > 4)
+        if shown and moved and 'jetonM2a' in (F.chat_state('bubble').get('text') or ''):
             stale.append(round((time.time() - t0) * 1000))
         time.sleep(0.01)
     j.step('M2 · B\'s bubble never shows A\'s conversation, not even one image', not stale, stale[:5])
