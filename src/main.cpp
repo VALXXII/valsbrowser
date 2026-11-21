@@ -3854,8 +3854,10 @@ void ShowBookmarkNotice(const std::wstring& text){
     AnnounceBookmark(text);
 }
 void CommitBookmarkDrop(const BookmarkMove::Request& q,Workspace* owner){
-    if(smoke||WorkspaceNow()!=owner||WorkspaceParked()){Log(L"BOOKMARKS drag cancelled: the profile changed");return;}
-    const auto r=BookmarkMove::Commit(dataDir,BookmarksFile(),bookmarksBase,bookmarks,q);
+    if(WorkspaceNow()!=owner||WorkspaceParked()){Log(L"BOOKMARKS drag cancelled: the profile changed");return;}
+    BookmarkMove::Result r;
+    if(smoke)BookmarkMove::Apply(bookmarks,q,{},r);   // --smoke-test / UI tests: no profile on disk, the same checked move in memory (as SaveBookmarks skips the write)
+    else r=BookmarkMove::Commit(dataDir,BookmarksFile(),bookmarksBase,bookmarks,q);
     if(!r.remap.empty()){bookmarkUndo.clear();Log(L"BOOKMARKS new ids remapped (another window used them)");}
     if(r.outcome==BookmarkMove::Outcome::SaveFailed){
         Log(L"BOOKMARKS drag drop not saved");bookmarksSaveFailed=true;
