@@ -760,6 +760,8 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
     const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);
     early = EarlyOpen{true, env.serial, "", Ann::NowMs()};
+    Diag(L"the click's « selecting » " + std::to_wstring(env.serial) + L": " + W(env.selector) + L" (" + std::to_wstring(int(env.w)) + L"x" + std::to_wstring(int(env.h)) + L")" +
+         (env.px >= 0 ? L" clicked at " + std::to_wstring(int(env.px)) + L"," + std::to_wstring(int(env.py)) : std::wstring()));   // monkey: what the page sent   // i18n-exempt: log detail
     if (env.at > 0) { FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;   // R18: the click (page clock) -> here
         const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; Diag(L"the click's « selecting » reached the host " + Ann::Ms(std::max(0.0, now - env.at)) + L" ms after the click"); }
     for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == env.selector) {   // its conversation
@@ -777,21 +779,23 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     PrepareChat(t);
     if (early.on && early.seq == Ann::s.sel.seq && bubble.open && bubble.conv == early.conv) {   // R18: the bubble is already open: completed
         early.on = false;
-        {   // E1 (review R): the early opening followed the click's selector; the full selection says whether it is a safe one
-            const auto& tq = Ann::s.pending.target;
-            const std::string safe = Ann::s.sel.frameKind == "main" && tq.shadowPath.empty() && tq.selectorUnique ? tq.selector : std::string();
-            if (safe != bubble.selector) {
-                Diag(safe.empty() ? std::wstring(L"the click's selector is not a safe one (frame, shadow or not unique): the bubble follows the element itself") : L"the bubble follows the full selection's selector");   // i18n-exempt: log detail
-                bubble.selector = safe; FollowBubbleElement(safe.empty());
-            }
+        // A click = the element clicked, always (monkey seed 1 step 5: a.btn-primary clicked, a bubble on section.hero). The
+        // full selection never moves the bubble to another element: if it names another one, the clicked one stays (logged);
+        // it only says whether the click's selector is a safe one (E1: else the element itself is followed).
+        const auto& tq = Ann::s.pending.target;
+        const bool same = bubble.selector.empty() || tq.selector == bubble.selector;
+        if (!same) Diag(L"the full selection names " + W(tq.selector) + L", not the clicked one (" + W(bubble.selector) + L"): the bubble stays on the clicked element");   // i18n-exempt: log detail
+        else if (!bubble.selector.empty() && !(Ann::s.sel.frameKind == "main" && tq.shadowPath.empty() && tq.selectorUnique)) {
+            Diag(L"the click's selector is not a safe one (frame, shadow or not unique): the bubble follows the element itself");   // i18n-exempt: log detail
+            bubble.selector.clear(); FollowBubbleElement(true);
         }
-        const auto& tg = Ann::s.pending.target; const std::string label = tg.path.empty() ? tg.tag : tg.path.back();
+        const auto& tg = Ann::s.pending.target; const std::string label = same ? (tg.path.empty() ? tg.tag : tg.path.back()) : std::string();
         if (!label.empty() && label != bubble.label) {
             bubble.label = label;
             for (auto* h : {&convo.data.head, aside.on ? &aside.c.data.head : nullptr}) if (h && h->id == early.conv) { h->anchorLabel = label; if (!SentConvo(h == &convo.data.head ? convo : aside.c)) h->title = ChatPrompt::OneLine(label, 44); }
             if (panelReady) SendLayout(false);
         }
-        if (anchorElements.find(early.conv) == anchorElements.end()) { Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = early.conv; aiming[serial] = std::move(e); QuerySource(t, serial); }
+        if (same && anchorElements.find(early.conv) == anchorElements.end()) { Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = early.conv; aiming[serial] = std::move(e); QuerySource(t, serial); }
         Diag(L"the click's full selection completes the bubble (" + Ann::Ms(Ann::NowMs() - early.at) + L" ms after it opened)");
         return true;
     }

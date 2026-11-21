@@ -199,6 +199,13 @@ check('hadKeyboard' in fg and 'WM_APP + 2' in fg, 'Q 4: the browser back in fron
 # Q pass 1, defect 6 (E1): an element in an iframe or a web component finds its conversation again by a stable key
 check('anchorKey' in take1 and 'UnsafeAnchorKey(' in take1, 'Q 6: an element without a safe selector is found again by its key')
 
+# monkey seed 1 step 5 (click on a.btn-primary -> bubble on section.hero): a click = the element clicked, always; the host
+# logs what the page sent (selector, click point) and never puts the bubble on another element than the click's
+early_fn = block_after(comment, 'bool OpenEarly(')
+check('env.selector' in early_fn and 'env.px' in early_fn, 'monkey: the early opening logs the clicked selector and the click point')
+done2 = block_after(block_after(comment, 'bool TakeCommentSelection('), 'if (early.on && early.seq == Ann::s.sel.seq')
+check('bubble.selector = safe' not in done2 and 'not the clicked one' in done2, 'monkey: the full selection never moves the bubble to another element (only says the selector is not safe)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

@@ -79,7 +79,8 @@ enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Sel
 // Anchor (R39): sx / sy = the page's scroll offset (CSS px), t = when the page measured it (ms since 1970, sub-ms):
 // optional (0 when absent), for the host's frame-by-frame measure of the page -> host lag.
 struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; std::string selector; double at = 0;
-                  double sx = 0, sy = 0, t = 0; };
+                  double sx = 0, sy = 0, t = 0;
+                  double px = -1, py = -1; };   // Selecting: pt = where the page saw the click (CSS px of the top viewport); -1 when absent (diagnostics only)
 
 // Checks the frame of every message: type/version, the session nonce and the navigation stamp.
 // Anything else (unknown op, wrong types) is Invalid.
@@ -102,6 +103,7 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
         if (!r || !r->IsObject() || !detail::Num(r->Get("x"), e.x, -1e7, 1e7) || !detail::Num(r->Get("y"), e.y, -1e7, 1e7) ||
             !detail::Num(r->Get("width"), e.w, 0, 1e7) || !detail::Num(r->Get("height"), e.h, 0, 1e7)) return bad("selecting rect");
         if (const auto* t0 = v.Get("at")) { if (!detail::Num(t0, e.at, 0, 1e14)) return bad("selecting at"); }
+        if (const auto* pt = v.Get("pt"); pt && pt->IsObject()) { double x = 0, y = 0; if (detail::Num(pt->Get("x"), x, -1e7, 1e7) && detail::Num(pt->Get("y"), y, -1e7, 1e7)) { e.px = x; e.py = y; } }   // optional
         e.op = Op::Selecting; e.serial = q->integer; e.selector = sel->string;
     }
     else if (op->string == "escape") e.op = Op::Escape;
