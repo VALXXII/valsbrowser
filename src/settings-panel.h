@@ -1718,7 +1718,7 @@ private:
     void StartEdit(int hit) {
         if (!hwnd_ || !state_) return;
         if (!edit_) {
-            edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)), nullptr);
+            edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)), nullptr); NativeUI::SelectAllOnCtrlA(edit_);
             if (!edit_) return;
             SendMessageW(edit_, EM_SETLIMITTEXT, 2048, 0);
             SetWindowSubclass(edit_, EditProc, 0, reinterpret_cast<DWORD_PTR>(this));

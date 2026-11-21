@@ -817,7 +817,7 @@ private:
         for (size_t i = 0; i < spec_.fields.size(); ++i) {
             const auto& f = spec_.fields[i]; auto& e = edits_[i];
             e.password = f.password; e.placeholder = f.placeholder;
-            e.edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | (f.password ? ES_PASSWORD : 0), 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr);
+            e.edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | (f.password ? ES_PASSWORD : 0), 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr); NativeUI::SelectAllOnCtrlA(e.edit);
             if (!e.edit) continue;
             SendMessageW(e.edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
             SendMessageW(e.edit, EM_SETLIMITTEXT, static_cast<WPARAM>(std::max(1, f.maxLength)), 0);

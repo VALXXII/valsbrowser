@@ -10,6 +10,7 @@
 //  - Accessible name through documented Dynamic Annotation (IAccPropServices, PROPID_ACC_NAME).
 #include <windows.h>
 #include <commctrl.h>
+#include "native-ui.h"
 #include <oleacc.h>
 #include <algorithm>
 #include <functional>
@@ -26,7 +27,7 @@ public:
     // `box`: the label's text box in `host` client pixels. Returns false if the EDIT could not be made.
     bool Begin(HWND host, unsigned long long id, RECT box, const std::wstring& text, Style style, const wchar_t* name, Done done) {
         Cancel();
-        HWND edit = CreateWindowExW(0, L"EDIT", text.c_str(), WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, host, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(host, GWLP_HINSTANCE)), nullptr);
+        HWND edit = CreateWindowExW(0, L"EDIT", text.c_str(), WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, host, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(host, GWLP_HINSTANCE)), nullptr); NativeUI::SelectAllOnCtrlA(edit);
         if (!edit) return false;
         edit_ = edit; host_ = host; id_ = id; done_ = std::move(done); style_ = style; composing_ = finishing_ = false;
         if (brush_) DeleteObject(brush_);

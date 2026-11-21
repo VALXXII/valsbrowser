@@ -256,6 +256,22 @@ private:
         return r;
     }
 };
+// Ctrl+A selects the whole text of a Win32 EDIT, which has no such shortcut of its own (it ignored the
+// keystroke, then the WM_CHAR 0x01 that TranslateMessage makes of it). Ctrl+Shift+A and Ctrl+Alt+A
+// (AltGr) stay free for their own shortcuts. Any number of other subclasses can sit on the same EDIT.
+namespace SelectAllDetail {
+inline constexpr UINT_PTR subclassId=0x5E1A;   // "select all"
+inline LRESULT CALLBACK Proc(HWND edit,UINT message,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
+    switch(message){
+    case WM_KEYDOWN:if(w=='A'&&GetKeyState(VK_CONTROL)<0&&GetKeyState(VK_SHIFT)>=0&&GetKeyState(VK_MENU)>=0){SendMessageW(edit,EM_SETSEL,0,-1);return 0;}break;
+    case WM_CHAR:if(w==1)return 0;   // Ctrl+A's control character: never typed, no beep
+        break;
+    case WM_NCDESTROY:RemoveWindowSubclass(edit,Proc,subclassId);break;
+    }
+    return DefSubclassProc(edit,message,w,l);
+}
+}
+inline bool SelectAllOnCtrlA(HWND edit){return edit&&SetWindowSubclass(edit,SelectAllDetail::Proc,SelectAllDetail::subclassId,0)!=FALSE;}
 inline std::wstring EscapeMenuText(const std::wstring& text){
     std::wstring label;label.reserve(text.size());
     for(wchar_t c:text){label+=c;if(c==L'&')label+=c;}
