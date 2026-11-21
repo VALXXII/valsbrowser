@@ -73,7 +73,7 @@ class Report:
         try:
             path = C.grab(f'final/{self.name}/{label}')
             self.data['captures'].append(path.name); return path
-        except Exception as e:
+        except BaseException as e:   # Q.front() exits when the window is gone: never stop the run for a capture
             print('capture failed', label, e); return None
 
     def failure(self, name, detail, where=None):
@@ -187,7 +187,7 @@ class _Errors:
 ERRORS = _Errors()
 
 # Lines of the host's log that are never normal (an exception, a crash, a failed renderer, a refused creation)
-BAD_LOG = re.compile(r'exception|assert|access violation|renderer failed|creation refused|unhandled|std::|terminate called|stack overflow', re.I)
+BAD_LOG = re.compile(r'exception|assert|access violation|renderer failed|creation refused|unhandled|std::|terminate called|stack overflow|bubble drawn away from its region', re.I)
 
 
 def log_mark():
@@ -237,8 +237,10 @@ def tap(vk, ctrl=False, shift=False):
 
 
 def click_at(x, y, settle=0.08):
+    """A real click; returns the time of the button's release (what the user sees as « the click »)."""
     u32.SetCursorPos(int(x), int(y)); time.sleep(settle)
     mouse(0x0002); time.sleep(0.03); mouse(0x0004)
+    return time.perf_counter()
 
 
 def wheel(notches, every=0.05):
@@ -272,7 +274,7 @@ def release_all():
 
 def set_clipboard(text):
     CF_UNICODETEXT = 13; GMEM_MOVEABLE = 2
-    k32.GlobalAlloc.restype = W.HGLOBAL; k32.GlobalLock.restype = ctypes.c_void_p; k32.GlobalLock.argtypes = [W.HGLOBAL]
+    k32.GlobalAlloc.restype = W.HGLOBAL; k32.GlobalLock.restype = ctypes.c_void_p; k32.GlobalLock.argtypes = [W.HGLOBAL]; k32.GlobalUnlock.argtypes = [W.HGLOBAL]
     u32.SetClipboardData.argtypes = [W.UINT, W.HANDLE]
     data = (text + '\0').encode('utf-16-le')
     for _ in range(20):
@@ -502,8 +504,14 @@ def overlay_nodes():
     return out
 
 
-def conversation_marks():
-    return [x for x in overlay_nodes() if 'ct' in x['cls'].split()]
+def conversation_marks(wait_for=None, timeout=4.0):
+    """The conversation marks drawn in the page; with `wait_for`, polled until there are that many (they come after the close)."""
+    t0 = time.time()
+    while True:
+        out = [x for x in overlay_nodes() if 'ct' in x['cls'].split()]
+        if wait_for is None or len(out) == wait_for or time.time() - t0 > timeout:
+            return out
+        time.sleep(0.25)
 
 
 # ---------------------------------------------------------------- UI Automation (one PowerShell for the whole run)
@@ -581,19 +589,20 @@ def set_page_size(w, h):
     return (round((pg[2] - pg[0]) / k), round((pg[3] - pg[1]) / k))
 
 
-def mode_on(layout='comment'):
-    """Annotation mode on (Ctrl+Maj+A), the connection screen dismissed, the band's layout chosen."""
-    front(); m = log_mark(); C.shortcut('A'); wait_log(r'ANNOTATE mode on', m, 10); time.sleep(1.2)
+def mode_on(layout='comment', settle=True):
+    """Annotation mode on (Ctrl+Maj+A), the connection screen dismissed, the band's layout chosen. settle=False: as fast
+    as the user (C1: a click before the chat page is ready)."""
+    front(); m = log_mark(); C.shortcut('A'); wait_log(r'ANNOTATE mode on', m, 10); time.sleep(1.2 if settle else 0.3)
     if C.invoke('AnnotationConnectLater') or C.invoke('AnnotationConnectClose'):
-        time.sleep(0.6)
-    set_layout(layout)
+        time.sleep(0.6 if settle else 0.2)
+    set_layout(layout, settle)
 
 
-def set_layout(layout):
+def set_layout(layout, settle=True):
     front(); m = log_mark()
     C.invoke('AnnotationLayoutComment' if layout == 'comment' else 'AnnotationAskAgent')
     wait_log(r'CHAT layout: ' + ('Commentaire' if layout == 'comment' else 'Panneau'), m, 5)
-    time.sleep(1.2)
+    time.sleep(1.2 if settle else 0.05)
 
 
 def finish(report, before):
@@ -602,7 +611,11 @@ def finish(report, before):
     C.quit_all()
     time.sleep(0.8)
     report.step('real Claude / Codex configuration files unchanged', before == C.fingerprints())
-    ps = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq fake-acp-agent.exe', '/NH'], capture_output=True, text=True).stdout
+    for _ in range(10):
+        ps = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq fake-acp-agent.exe', '/NH'], capture_output=True, text=True).stdout
+        if 'fake-acp-agent' not in ps:
+            break
+        time.sleep(0.5)
     report.step('nothing left running (fake agent)', 'fake-acp-agent' not in ps)
     left = leftover_from_app()
     report.step('nothing left running from the QA copy (browser, WebView2)', not left, left)
@@ -711,6 +724,7 @@ class Model:
 class Invariants:
     def __init__(self, report, uia=None):
         self.r = report; self.uia = uia; self.m = Model(); self.log_at = log_mark(); self.uia_base = None
+        self.close_at = self.log_at
         self.allow_close = False   # set by an action that may close the bubble (Échap, click elsewhere, switch, element gone)
 
     # -- called right after a click on an element in Comment mode (before any other wait)
@@ -737,7 +751,7 @@ class Invariants:
             n = len(re.findall(r'conversation of an element reopened', C.log_text()[mark:]))
             if n > 1:
                 self.r.step(f'{where} · invariant: one « conversation of an element reopened » per click', False, n, {'action': where})
-        self.m.open = sel; self.m.hidden_by_other = False
+        self.m.open = sel; self.m.hidden_by_other = False; self.close_at = log_mark()
         el = element_screen(sel)
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
         self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
@@ -763,12 +777,12 @@ class Invariants:
         broken = {}
         self.r.data['measures']['invariantChecks'] = self.r.data['measures'].get('invariantChecks', 0) + 1
         fg = foreground_is_ours()
-        seg = C.log_text()[self.log_at:]
+        seg = C.log_text()[self.close_at:]
         if self.m.open and re.search(r'CHAT (bubble closed|a click elsewhere closed the bubble|the bubble.s element is no longer in the page)', seg):
             if not self.allow_close:
                 broken['an open bubble stays open until the user closes it'] = [l for l in seg.splitlines() if 'bubble' in l][-4:]
             self.m.open = None
-        self.allow_close = False
+        self.allow_close = False; self.close_at = log_mark()
         shown, region = bubble_shown()
         wins = bubble_windows()
         if len(wins) > 1:
@@ -796,6 +810,10 @@ class Invariants:
                     if sf and vis and isinstance(region, tuple):
                         if not (region[0] <= vis[0] + 1 and region[1] <= vis[1] + 1 and region[2] >= vis[2] - 1 and region[3] >= vis[3] - 1):
                             broken['never cut by the region'] = {'region': region, 'visible surface': vis}
+                        if not st.get('menus'):   # no menu asked: the region is the surface (+ its shadow), never a transparent zone that takes the clicks
+                            k = st.get('dpr', 1); pad = int(40 * k)
+                            if region[0] < vis[0] - pad or region[1] < vis[1] - pad or region[2] > vis[2] + pad or region[3] > vis[3] + pad:
+                                broken['region = surface (no menu open: nothing beyond its shadow)'] = {'region': region, 'visible surface': vis}
                         share = drawn_share(vis)
                         if share < 0.4:
                             broken['never empty (drawn)'] = share

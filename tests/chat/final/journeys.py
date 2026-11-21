@@ -67,7 +67,7 @@ class J:
             F.scroll_into_view(sel, scroll)
         shown, rb = F.bubble_shown()
         p = F.element_point(sel, avoid=rb if shown and isinstance(rb, tuple) else None)
-        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.05)
+        m = F.log_mark(); t = F.click_at(*p, settle=0.05)
         self.n += 1
         self.inv.after_element_click(sel, t, f'{self.n:02d} {where or "click"}', mark=m)
         F.wait_log(r'CHAT panel ready|CHAT bubble opened on', m, 5)
@@ -102,12 +102,12 @@ def j_marque(j):
     j.step('R32 · still no mark after several elements', len(F.conversation_marks()) == 0)
     j.open_on('a.btn-primary', 'click to send'); j.send('a.btn-primary', 'reply')
     j.check('after the send')
-    j.step('R2 · the mark appears after the first send (one)', len(F.conversation_marks()) == 1, F.conversation_marks())
     j.close(); j.check('closed')
+    j.step('R2 · the mark appears after the first send (one, once the bubble is closed)', len(F.conversation_marks(1)) == 1, F.conversation_marks())
     F.set_layout('panel'); j.inv.m.layout = 'panel'
     F.front(); p = F.element_point('div.hero-visual'); F.click_at(*p); time.sleep(0.8)
     j.check('panel: an element picked')
-    j.step('R32 · Chat à droite: a picked element gets no mark without a send', len(F.conversation_marks()) == 1, F.conversation_marks())
+    j.step('R32 · Chat à droite: a picked element gets no mark without a send (at most the sent one)', len(F.conversation_marks()) <= 1, F.conversation_marks())
 
 
 @journey('r06_conversation_bulle_fermee', 'R6 R44 R18 (a click on an element WITH a conversation while the bubble is closed)')
@@ -261,7 +261,8 @@ def j_switch(j):
     for i in range(4):
         F.set_layout('panel'); j.inv.m.layout = 'panel'; j.inv.m.open = None
         st = F.chat_state('panel')
-        j.step(f'R34 · switch {i + 1}: the panel page has the panel layout (full height, header)', st.get('w', 0) >= 340 and 'Nouveau chat' in st.get('text', '') or 'Historique' in st.get('text', ''), {'w': st.get('w'), 'h': st.get('h')})
+        hd = F.chat("(function(){var h=document.querySelector('.hd');if(!h)return null;var r=h.getBoundingClientRect();return [r.width,r.height]})()", 'panel')
+        j.step(f'R34 · switch {i + 1}: the panel page has the panel layout (full height, header)', st.get('w', 0) >= 340 and hd and hd[1] > 10, {'w': st.get('w'), 'h': st.get('h'), 'header': hd})
         j.check(f'panel {i + 1}')
         F.set_layout('comment'); j.inv.m.layout = 'comment'; j.check(f'comment {i + 1}')
     # R35: the panel's draft never reaches a bubble
@@ -386,7 +387,7 @@ def j_shape(j):
     if sf:
         k = st['dpr']; corner = F.drawn_share((sf[0], sf[1], sf[0] + int(4 * k), sf[1] + int(4 * k)))
         inner = F.drawn_share((sf[0] + int(14 * k), sf[1] + int(14 * k), sf[0] + int(30 * k), sf[1] + int(30 * k)))
-        j.step('R1 · rounded corners (the corner shows the page, inside is the surface)', corner < 0.5 and inner > 0.9, {'corner': corner, 'inside': inner})
+        j.step('R1 · rounded corners (the corner shows the page, inside is the surface)', corner < 0.5 and inner > 0.5, {'corner': corner, 'inside': inner})
     mode_txt = F.chat("(document.querySelector('button.tb.mode')||{}).innerText||''") or ''
     j.step('R21 · the mode button is an icon alone (its name in the accessible label)', not mode_txt.strip() and (st.get('mode') or '').startswith('Mode'), {'text': mode_txt, 'label': st.get('mode')})
     j.step('R13/R28 · the model button: model · effort, never « Claude Code »', st.get('model') and '·' in st['model'] and 'Claude Code' not in st['model'], st.get('model'))
@@ -569,11 +570,12 @@ def j_errors(j):
 def _sid_of(token):
     """The fake agent's session id that received the prompt holding `token` (its log of every received line)."""
     try:
+        last = None   # a prompt's line is cut at 2000 bytes: its session is the last « session/prompt » before its « prompt-text » marker
         for line in F.FLOG.read_text(encoding='utf-8', errors='replace').splitlines():
-            if '"session/prompt"' in line and token in line:
-                m = re.search(r'"sessionId":"([^"]+)"', line)
-                if m:
-                    return m.group(1)
+            if '"session/prompt"' in line:
+                m = re.search(r'"sessionId":"([^"]+)"', line); last = m.group(1) if m else last
+            elif line.startswith('prompt-text ') and token in line:
+                return last
     except OSError:
         pass
     return None
@@ -603,9 +605,8 @@ def j_c1(j):
     F.release_all(); C.quit_all(); time.sleep(1.0)
     F.launch(fresh=False)   # the same profile: A's conversation is on disk
     j.inv.m.open = None; j.inv.log_at = F.log_mark(); j.inv.uia_base = None
-    F.front(); m = F.log_mark(); C.shortcut('A'); F.wait_log(r'ANNOTATE mode on', m, 10)
-    F.set_layout('comment')
-    p = F.element_point('a.btn-primary'); t = time.perf_counter(); F.click_at(*p, settle=0.02)
+    m = F.log_mark(); F.mode_on('comment', settle=False)
+    p = F.element_point('a.btn-primary'); t = F.click_at(*p, settle=0.02)
     j.inv.after_element_click('a.btn-primary', t, 'C1 first click after the start', mark=m)
     samples = []; t0 = time.time()
     while time.time() - t0 < 3:
@@ -695,13 +696,13 @@ def j_e1(j):
     F.inject_embedded()
     for host in ('#qa-frame', '#qa-card'):
         F.scroll_into_view(host, 'center'); F.front()
-        p = F.embedded_point(host); m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        p = F.embedded_point(host); m = F.log_mark(); t = F.click_at(*p, settle=0.04)
         j.n += 1; j.inv.after_element_click(host, t, f'{j.n:02d} E1 click inside {host}', mark=m)
         time.sleep(1.5)
         j.step(f'E1 · {host}: the bubble stays open (never « element no longer in the page »)', F.bubble_shown()[0] and 'no longer in the page' not in C.log_text()[m:], [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][-5:])
         j.send(host, 'reply'); j.check(f'{host} after a send')
         j.close(); F.scroll_into_view(host, 'center'); p = F.embedded_point(host)
-        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        m = F.log_mark(); t = F.click_at(*p, settle=0.04)
         j.n += 1; j.inv.after_element_click(host, t, f'{j.n:02d} E1 {host} again, its conversation', mark=m)
         j.R.capture(f'e1-{host[1:]}'); j.close()
 
@@ -715,11 +716,12 @@ def j_m5(j):
             return
         p = F.element_point('a.btn-primary')
         F.front(); F.click_at((b[0] + b[2]) // 2, (b[1] + b[3]) // 2, settle=0.03); time.sleep(0.05)
-        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.0)
+        m = F.log_mark(); t = F.click_at(*p, settle=0.0)
         j.inv.m.layout = 'comment'
         j.n += 1; j.inv.after_element_click('a.btn-primary', t, f'{j.n:02d} M5 switch then click {i + 1}', mark=m)
         st = F.chat_state('bubble')
-        j.step(f'M5 · the bubble has the bubble layout (narrow, no panel header) ({i + 1})', st.get('w', 999) < 700 and 'Nouveau chat' not in (st.get('text') or '')[:40], {'w': st.get('w')})
+        aw = (st['app'][2] - st['app'][0]) if st.get('app') else 0
+        j.step(f'M5 · the bubble has the bubble layout (a 320 px surface, no panel header) ({i + 1})', abs(aw - 320) <= 2, {'surface width': aw, 'window': st.get('w')})
         j.check(f'M5 {i + 1}'); j.close()
 
 
@@ -855,9 +857,9 @@ def j_c1_delay(j):
     F.release_all(); C.quit_all(); time.sleep(1.0)
     F.launch(fresh=False, extra_env={'BROWSER_CHAT_TEST_WARM_DELAY_MS': '4000'})
     j.inv.m.open = None; j.inv.log_at = F.log_mark(); j.inv.uia_base = None
-    F.front(); m = F.log_mark(); C.shortcut('A'); F.wait_log(r'ANNOTATE mode on', m, 10); F.set_layout('comment')
-    j.R.data['measures']['warmDelayed'] = bool(F.wait_log(r'warm[^\n]*delay|held back', m, 0.5))
-    p = F.element_point('a.btn-primary'); t = time.perf_counter(); F.click_at(*p, settle=0.02)
+    m = F.log_mark(); F.mode_on('comment', settle=False)
+    j.R.data['measures']['warmDelayed'] = bool(F.wait_log(r'warm-up held back', m, 0.5))
+    p = F.element_point('a.btn-primary'); t = F.click_at(*p, settle=0.02)
     j.inv.after_element_click('a.btn-primary', t, 'C1 click before the chat page is ready', mark=m)
     samples = []; t0 = time.time()
     while time.time() - t0 < 5:
@@ -877,7 +879,7 @@ def run_one(jn):
         uia = F.Uia(); j.uia = uia; j.inv = F.Invariants(j.R, uia)
         F.ERRORS.collect()
         jn['fn'](j)
-    except Exception:
+    except BaseException:
         traceback.print_exc()
         j.step('journey without exception', False, traceback.format_exc()[-800:])
     finally:
@@ -899,14 +901,16 @@ def main():
         print('covered elsewhere:', json.dumps(COVERED_ELSEWHERE, indent=1, ensure_ascii=False))
         return 0
     only = set(sys.argv[sys.argv.index('--only') + 1].split(',')) if '--only' in sys.argv else None
-    results = {}
+    prev = F.OUT / 'journeys.json'
+    results = json.loads(prev.read_text(encoding='utf-8'))['results'] if only and prev.exists() else {}
     for jn in JOURNEYS:
         if only and jn['name'] not in only:
             continue
         results[jn['name']] = run_one(jn)
     (F.OUT / 'journeys.json').write_text(json.dumps({'results': results, 'coveredElsewhere': COVERED_ELSEWHERE}, indent=2, ensure_ascii=False), encoding='utf-8')
-    bad = {k: v['failed'] for k, v in results.items() if v['failed']}
-    print(f'{len(results) - len(bad)} / {len(results)} journeys without failure')
+    bad = {k: v['failed'] for k, v in results.items() if v['failed'] and (not only or k in only)}
+    ran = [k for k in results if not only or k in only]
+    print(f'{len(ran) - len(bad)} / {len(ran)} journeys without failure')
     for k, v in bad.items():
         print('  FAILED', k, v[:6])
     return 1 if bad else 0

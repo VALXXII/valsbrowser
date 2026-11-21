@@ -29,6 +29,9 @@ import sys
 import time
 import urllib.request
 
+# Per-monitor DPI aware (v2): window, region and screen coordinates are physical pixels, the same as the captures.
+ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / 'tests' / 'annotations'))

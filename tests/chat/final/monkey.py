@@ -80,7 +80,7 @@ class Monkey:
         p = F.element_point(sel, avoid=self.bubble_box())
         if self.inv.m.layout == 'panel':
             F.click_at(*p); return f'panel: click on {sel} (a chip)', 0.6
-        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        m = F.log_mark(); t = F.click_at(*p, settle=0.04)
         self.inv.after_element_click(sel, t, f'#{a["i"]} click {sel}', mark=m)
         return f'click on {sel}', 0.2
 
@@ -152,7 +152,7 @@ class Monkey:
                 vis = self.visible_elements()
                 if vis:
                     sel = vis[int(a['r'][1] * len(vis))]; p = F.element_point(sel)
-                    m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+                    m = F.log_mark(); t = F.click_at(*p, settle=0.04)
                     self.inv.after_element_click(sel, t, f'#{a["i"]} other application in front, click {sel}', mark=m)
                     return f'other application, then a click on {sel}', 0.3
         F.front(); time.sleep(0.5); self.inv.m.hidden_by_other = False
@@ -288,7 +288,7 @@ class Monkey:
         p = F.embedded_point(host)
         if not p:
             return 'embedded: not found', 0.1
-        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.04)
+        m = F.log_mark(); t = F.click_at(*p, settle=0.04)
         self.inv.after_element_click(host, t, f'#{a["i"]} click inside {host}', mark=m)
         return f'click inside {host}', 0.8
 
@@ -333,7 +333,7 @@ class Monkey:
             return 'switch then click: no button or element', 0.1
         sel = vis[int(a['r'][0] * len(vis))]; p = F.element_point(sel)
         F.front(); F.click_at((b[0] + b[2]) // 2, (b[1] + b[3]) // 2, settle=0.03); time.sleep(0.05)
-        m = F.log_mark(); t = time.perf_counter(); F.click_at(*p, settle=0.0)
+        m = F.log_mark(); t = F.click_at(*p, settle=0.0)
         self.inv.m.layout = 'comment'
         self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m)
         st = F.chat_state('bubble')
