@@ -183,6 +183,12 @@ check('L"peek"' in block_after(comment, 'void ShowEngineWork() {'), 'F9: « Voir
 fl = block_after(comment, 'void FollowLater() {')
 check('gen' in fl and 'gen' in block_after(comment, 'LRESULT CALLBACK BubbleProc('), 'F11: the scroll follow places the position its wait was for')
 
+# Q r44: the host's PageInsetCapCss is the page's CAP (panel.js applyInset) — the same number, or the surface is drawn away
+import re as _re
+cap_page = _re.search(r'CAP = (\d+)', (ROOT / 'assets' / 'chat-panel' / 'panel.js').read_text(encoding='utf-8'))
+cap_host = _re.search(r'PageInsetCapCss = (\d+)', code('chat-bubble.h'))
+check(cap_page and cap_host and cap_page.group(1) == cap_host.group(1), 'Q r44: PageInsetCapCss (host) == CAP (page)', (cap_host and cap_host.group(1), cap_page and cap_page.group(1)))
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

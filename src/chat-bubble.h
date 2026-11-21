@@ -89,7 +89,7 @@ struct Edges {
     bool operator==(const Edges& o) const { return top == o.top && right == o.right && bottom == o.bottom && left == o.left; }
 };
 inline constexpr int MaxOverflowCss = 400;
-inline constexpr int PageInsetCapCss = 400;   // the page (panel.js applyInset, CAP) never draws the surface further than this into its window
+inline constexpr int PageInsetCapCss = 1000;   // = panel.js applyInset CAP (P, 1000): the page draws the surface up to this far into its window — room to grow 520 + margin 400 fits, never framed again
 inline Edges Bounded(Edges e) { auto b = [](int v) { return Clamp(v, 0, MaxOverflowCss); }; return {b(e.top), b(e.right), b(e.bottom), b(e.left)}; }
 struct Grown { Rect window; Edges inset; };
 // surface: the surface on screen (px); want: CSS px; screen: the work area of the monitor (px); k: px per CSS px.

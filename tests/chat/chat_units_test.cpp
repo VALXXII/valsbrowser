@@ -579,6 +579,16 @@ static void TestBubble() {
         Check(!kk.ok || (kk.f.inset.top <= cap && pageDraws(kk.f).top == grown.top), "Q r06: a bubble growing up is never drawn away from its region");
         const Rect top{98, 150, 498, 255}; const auto ft = FrameBubble(top, int(520 * k), false, screen, k, none);
         Check(ft.inset.top <= cap && ft.inset.left <= cap && pageDraws(ft).top == top.top && pageDraws(ft).left == top.left, "Q: top fixed too — drawn where its region is"); }
+    // CAP 1000 (P + H1): a bottom-fixed bubble that grows 600 px at once keeps its window — no new frame, no jump
+    {   const Rect screen{0, 0, 1840, 1000}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
+        const Rect s{98, 701, 498, 806};
+        const auto f = FrameBubble(s, int(520 * k), true, screen, k, none);
+        const Rect grown{98, 701 - 600, 498, 806};
+        const auto kk = FrameKept(grown, false, true, RelativeTo(f.window, CornerOf(s, false, true)), k, none);
+        auto px = [&](int c) { return int(c * k + .5f); };
+        Check(kk.ok && kk.f.window.top == f.window.top && kk.f.window.bottom == f.window.bottom && f.inset.top <= PageInsetCapCss && f.inset.top > 400
+              && kk.f.window.top + px(std::min(kk.f.inset.top, PageInsetCapCss)) == grown.top,
+              "CAP 1000: grown up 600 px at once — the same window, drawn exactly where its region is (before, at 400: framed again, a jump)"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};
