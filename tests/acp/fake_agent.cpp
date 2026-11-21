@@ -31,6 +31,7 @@
 //   question            elicitation/create (two single-choice fields)   refusal / max_tokens   that stop reason
 //   error-rate / error-auth   JSON-RPC error                            big          "received <n> image bytes"
 //   echo                the text back                                   garbage      invalid lines inside the turn
+//   annonce             (R43) a sentence, a tool call, a sentence, a tool call, then the answer
 //   commands            available_commands_update                       title        session_info_update
 //   mcptool             an MCP tool asked for by its raw name: "mcptool <title>|<arguments JSON>[|<result text>]" in the message
 //                       several calls in one turn: specs separated by ";;"; a part "wait <ms>" pauses between two calls
@@ -554,6 +555,20 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
     if (has("mode")) {
         mode = "plan";
         Update(Obj({{"sessionUpdate", S("current_mode_update")}, {"currentModeId", S(mode)}}));
+    }
+    if (has("annonce")) {   // R43: what a real agent does — one short sentence, then its action; twice; then the answer
+        const char* says[] = {"Je regarde le bouton. ", "J'ajuste la marge. "};
+        for (int i = 0; i < 2; ++i) {
+            const std::string call = "call-a" + std::to_string(i);
+            Chunk("agent_message_chunk", says[i]); Pump(400);
+            Update(Obj({{"sessionUpdate", S("tool_call")}, {"toolCallId", S(call)}, {"title", S(i ? "Modifier styles/checkout.css" : "Lire styles/checkout.css")},
+                        {"kind", S(i ? "edit" : "read")}, {"status", S("in_progress")}}));
+            Pump(900);
+            Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(call)}, {"status", S("completed")}}));
+            Pump(300);
+        }
+        Chunk("agent_message_chunk", "C'est fait : la marge du bouton est plus grande.");
+        return end("end_turn");
     }
     if (has("apply")) {
         // "apply <path>|<find>|<replace>" in the message, else the configured edit.
