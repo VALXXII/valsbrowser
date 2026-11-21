@@ -666,6 +666,12 @@ static void TestAnchorStore(const std::wstring& root) {
     CS::Conversation plain; plain.head.id = "c_plain"; plain.head.origin = "http://localhost:5173"; plain.head.updatedAt = 900001; plain.items.push_back(StrictJson::Value::Obj());
     hist.Save(plain); bool plainOk = false; for (const auto& r : hist.List()) if (r.id == "c_plain") plainOk = !r.Anchored();
     Check(plainOk, "a panel conversation has no element");
+    {   // M12 (review R): two saves of the same conversation finishing out of order (thread pool) never leave the older one on disk
+        CS::Conversation newer = c; newer.head.updatedAt = 900010; newer.head.title = "Neuf"; newer.items.push_back(StrictJson::Value::Obj());
+        CS::Conversation older = c; older.head.updatedAt = 900005; older.head.title = "Vieux";
+        hist.Save(newer); hist.Save(older);
+        CS::Conversation back; hist.Load("c_anchor1", back); bool rowNew = false; for (const auto& r : hist.List()) if (r.id == "c_anchor1") rowNew = r.title == "Neuf";
+        Check(back.head.title == "Neuf" && back.items.size() == 2 && rowNew, "M12: a save older than the last one written is not written (the turn kept its end)"); }
     const std::wstring file = root + L"\\annotations-chat\\projects-layout.json";
     CS::Projects p; p.layout = "comment"; p.Save(file);
     Check(CS::Projects::Load(file).layout == "comment", "the band's layout switch is remembered");

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "strict-json.h"
@@ -195,6 +196,13 @@ public:
     // Writes the conversation and its row of the index; the oldest conversations beyond MaxConversations are removed.
     bool Save(const Conversation& c) const {
         if (!ValidId(c.head.id)) return false;
+        // M12 (review R): saves run on the thread pool, several at once — one at a time (the index is read, changed, written,
+        // through one temporary file), and a copy older than the last one written for this conversation is not written
+        static std::mutex lock; static std::map<std::wstring, std::int64_t> written;
+        std::lock_guard<std::mutex> one(lock);
+        const std::wstring key = FileOf(c.head.id);
+        if (const auto w = written.find(key); w != written.end() && c.head.updatedAt < w->second) return true;
+        written[key] = c.head.updatedAt;
         EnsureDir(dir_);
         SJ::Value v = SJ::Value::Obj(); v.Set("v", SJ::Value::Int(1)); v.Set("head", c.head.ToJson());
         SJ::Value items = SJ::Value::Arr(); const std::size_t from = c.items.size() > MaxItems ? c.items.size() - MaxItems : 0;
