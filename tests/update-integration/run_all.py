@@ -100,6 +100,11 @@ def existing_fixtures() -> None:
     fixture('address_background_test', [*STRICT, 'tests/address_background_test.cpp', '-lgdi32', '-luser32', '-ldwmapi'])
     # Address selection in the profile colour: real EDIT pixels, keyboard/mouse/edit, live switch, 96/144/192 DPI
     fixture('address_selection_test', [*STRICT, 'tests/address_selection_test.cpp', '-lgdi32', '-luser32', '-ldwmapi', '-lcomctl32'])
+    # Typing flicker: every native text field shows no frame between before and after a keystroke (real EDITs, surface pixels)
+    flicker_evidence = ROOT / 'build/flicker-qa'
+    flicker_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('edit_flicker_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/ui/edit_flicker_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT, flicker_evidence])
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])

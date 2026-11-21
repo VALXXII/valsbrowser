@@ -266,26 +266,20 @@ struct EditField {
     HWND edit = nullptr; HBRUSH brush = nullptr; COLORREF color = 0; std::wstring placeholder; bool password = false;
     NativeUI::AccentCaret caret;
     void Destroy() { if (edit && IsWindow(edit)) DestroyWindow(edit); edit = nullptr; if (brush) DeleteObject(brush); brush = nullptr; }
-    void SetColor(COLORREF c) { if (brush && c == color) return; if (brush) DeleteObject(brush); brush = CreateSolidBrush(c); color = c; if (edit) InvalidateRect(edit, nullptr, TRUE); }
+    void SetColor(COLORREF c) { if (brush && c == color) return; if (brush) DeleteObject(brush); brush = CreateSolidBrush(c); color = c; if (edit) InvalidateRect(edit, nullptr, FALSE); }
     std::wstring Text() const { if (!edit) return {}; const int n = GetWindowTextLengthW(edit); std::wstring s(static_cast<size_t>(n) + 1, L'\0'); GetWindowTextW(edit, s.data(), n + 1); s.resize(static_cast<size_t>(n)); return s; }
     // Best effort for secrets: overwrite the EDIT buffer before clearing it.
     void Wipe() { if (!edit) return; const int n = GetWindowTextLengthW(edit); if (n > 0) { std::wstring fill(static_cast<size_t>(n), L'\x2022'); SetWindowTextW(edit, fill.c_str()); } SetWindowTextW(edit, L""); }
 };
-inline LRESULT CALLBACK PlaceholderProc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
-    auto* f = reinterpret_cast<EditField*>(data);
-    if (msg == WM_NCDESTROY) { RemoveWindowSubclass(h, PlaceholderProc, 0x5048); return DefSubclassProc(h, msg, w, l); }
-    if (msg == WM_PAINT && f && !f->placeholder.empty() && GetWindowTextLengthW(h) == 0) {
-        const LRESULT r = DefSubclassProc(h, msg, w, l);
-        HDC dc = GetDC(h); RECT rc{}; GetClientRect(h, &rc);
-        HFONT font = reinterpret_cast<HFONT>(SendMessageW(h, WM_GETFONT, 0, 0)); auto old = SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, NativeUI::AccentCaret::Mix(f->color, RGB(255, 255, 255), .5f)); // #FFFFFF80
-        DrawTextW(dc, f->placeholder.c_str(), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
-        SelectObject(dc, old); ReleaseDC(h, dc);
-        if (GetFocus() == h) { HideCaret(h); ShowCaret(h); }
-        return r;
-    }
-    if (msg == WM_SETTEXT || msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_CUT || msg == WM_PASTE || msg == WM_CLEAR || msg == WM_UNDO) { const LRESULT r = DefSubclassProc(h, msg, w, l); InvalidateRect(h, nullptr, TRUE); return r; }
-    return DefSubclassProc(h, msg, w, l);
+// The placeholder, drawn into the field's composed image while it is empty (NativeUI::EditBuffer:
+// the field is recomposed when it becomes empty or stops being empty; no repaint per keystroke).
+inline void DrawPlaceholder(const EditField& f, HWND h, HDC dc, const RECT& client) {
+    if (f.placeholder.empty() || GetWindowTextLengthW(h) != 0) return;
+    RECT rc = client;
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(h, WM_GETFONT, 0, 0)); auto old = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, NativeUI::AccentCaret::Mix(f.color, RGB(255, 255, 255), .5f)); // #FFFFFF80
+    DrawTextW(dc, f.placeholder.c_str(), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, old);
 }
 } // namespace DialogKit
 
@@ -835,7 +829,8 @@ private:
             SendMessageW(e.edit, EM_SETLIMITTEXT, static_cast<WPARAM>(std::max(1, f.maxLength)), 0);
             if (f.password) SendMessageW(e.edit, EM_SETPASSWORDCHAR, 0x2022, 0);
             SetWindowTextW(e.edit, f.value.c_str());
-            SetWindowSubclass(e.edit, DialogKit::PlaceholderProc, 0x5048, reinterpret_cast<DWORD_PTR>(&e));
+            DialogKit::EditField* field = &e;
+            NativeUI::EditBuffer::Attach(e.edit, [field](HWND h, HDC dc, const RECT& client) { DialogKit::DrawPlaceholder(*field, h, dc, client); });
             SetWindowSubclass(e.edit, EditProc, 0x4D44, reinterpret_cast<DWORD_PTR>(this));
             e.SetColor(FieldColor(i));
         }
@@ -1126,10 +1121,11 @@ private:
         switch (msg) {
         case WM_GETOBJECT: { LRESULT result; if (uia_.OnGetObject(h, w, l, result)) return result; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); for (auto& e : edits_) NativeUI::EditBuffer::Flush(e.edit); return 0; }
         case WM_CTLCOLOREDIT: {
             HDC dc = reinterpret_cast<HDC>(w); const int i = EditIndex(reinterpret_cast<HWND>(l));
             if (i < 0) break;
+            NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc);
             SetTextColor(dc, RGB(255, 255, 255)); SetBkColor(dc, edits_[static_cast<size_t>(i)].color); SetBkMode(dc, OPAQUE);
             return reinterpret_cast<LRESULT>(edits_[static_cast<size_t>(i)].brush);
         }

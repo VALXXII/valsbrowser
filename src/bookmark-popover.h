@@ -235,9 +235,10 @@ class Popover {
         switch (msg) {
         case WM_GETOBJECT: { LRESULT result; if (uia_.OnGetObject(h, w, l, result)) return result; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(name_); NativeUI::EditBuffer::Flush(url_); return 0; }
         case WM_CTLCOLOREDIT: {
             HDC dc = reinterpret_cast<HDC>(w); const bool danger = reinterpret_cast<HWND>(l) == url_ && error_ && shownError_;
+            NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc);
             SetTextColor(dc, danger ? RGB(0xFF, 0x7B, 0x6E) : RGB(255, 255, 255)); SetBkColor(dc, FieldGray()); SetBkMode(dc, OPAQUE);
             return reinterpret_cast<LRESULT>(fieldBrush_);
         }
@@ -358,7 +359,7 @@ public:
         NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius); // no shadow: region-rounded, never DWM-rounded
         name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr); NativeUI::SelectAllOnCtrlA(name_);
         url_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr); NativeUI::SelectAllOnCtrlA(url_);
-        for (HWND e : {name_, url_}) { SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SetWindowSubclass(e, EditProc, 7, reinterpret_cast<DWORD_PTR>(this)); }
+        for (HWND e : {name_, url_}) { SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SetWindowSubclass(e, EditProc, 7, reinterpret_cast<DWORD_PTR>(this)); NativeUI::EditBuffer::Attach(e); }
         SendMessageW(name_, EM_SETLIMITTEXT, 1024, 0); SendMessageW(url_, EM_SETLIMITTEXT, 4095, 0);
         fieldBrush_ = CreateSolidBrush(FieldGray());
         Accessibility::Host host; host.window = hwnd_;
