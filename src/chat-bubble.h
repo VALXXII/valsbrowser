@@ -153,6 +153,12 @@ inline int BottomShift(const Rect& surface, const Rect& area, int margin, bool a
     const int over = surface.bottom - (area.bottom - margin);
     return atDocumentEnd && over > 0 ? std::min(over, std::max(0, surface.top - (area.top + margin))) : 0;
 }
+// A bubble asked open while one is open: the same one (kept as it is) only for the same conversation — or, when a
+// conversation is not known yet on one side, the same element. Anything else is another element: a new opening.
+inline bool SameBubble(const std::string& openConv, const std::string& openSelector, const std::string& conv, const std::string& selector) {
+    if (!openConv.empty() && !conv.empty()) return openConv == conv;
+    return !selector.empty() && selector == openSelector;
+}
 // R40: the largest size the bubble may be resized to from its fixed corner, staying in the page area (CSS px).
 struct ResizeMax { int width = 0, height = 0; };
 inline ResizeMax ResizeRoom(const Rect& surface, Side side, const Rect& area, int margin, float k) {

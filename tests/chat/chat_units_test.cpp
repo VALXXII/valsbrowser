@@ -491,6 +491,11 @@ static void TestBubble() {
         Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&
               RoomCss({100, 850, 420, 890}, false, area, 12, 1.f, 520) == 120 && RoomCss({100, 300, 420, 700}, true, area, 12, 1.25f, 520) == 470,
               "R38: the height offered is the room from the fixed edge to the page's far side (min 120, max 520)"); }
+    // Bug « clic, pas de bulle »: a bubble open on A, a click on B with its own conversation = a new opening (never A's place)
+    {   Check(!SameBubble("c_a", "h2.section-title", "c_b", "section.hero"), "another element's conversation: opened again from scratch");
+        Check(SameBubble("c_a", "section.hero", "c_a", "section.hero") && SameBubble("c_a", "section.hero", "c_a", "#hero"), "the same conversation (its full selection after the early open): kept");
+        Check(SameBubble("", "section.hero", "c_a", "section.hero") && !SameBubble("", "section.hero", "c_a", "h2") && !SameBubble("", "", "", ""), "no conversation known yet: the same element only");
+        Check(!SameBubble("c_a", "section.hero", "c_b", "section.hero"), "a fresh conversation for the same element (R6): opened again"); }
     // R39: a scroll step carries the window — same size, same inset, same region, only moved; even past the screen's top
     {   const Rect screen{0, 0, 1475, 1019}; const Edges over{0, 0, 0, 0};
         const Rect s0{342, 536, 742, 641};

@@ -80,7 +80,9 @@ void DisposeSession(const wchar_t* why) {
     session->Dispose(); disposed.push_back(std::move(session)); session.reset();   // kept until its threads have ended (Shutdown waits)
     sessionReady = sessionStarting = false; afterReady = nullptr;
     if (post) KillTimer(post, AgentIdleTimer);
-    Diag(std::wstring(L"agent stopped (") + why + L")");
+    // Unambiguous (test réel): a stop for another element / a new conversation only ever happens with no turn running —
+    // a working agent keeps working (the other conversation is shown aside, its message waits in the queue).
+    Diag(std::wstring(L"agent stopped (") + why + (turn.active ? L"; a turn was running: stopped with it)" : L"; no turn was running: the agent was idle)"));
     disposed.erase(std::remove_if(disposed.begin(), disposed.end(), [](const std::unique_ptr<Acp::Session>& s) { return s->WaitStopped(0); }), disposed.end());
 }
 // One entry of the panel's mode list -> the agent: a session mode, the option that carries the modes, or the plan option.

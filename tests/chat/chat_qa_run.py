@@ -436,7 +436,7 @@ def run_main():
         step('launcher back', launcher_visible())
         destroyed = logged(r'CHAT panel WebView destroyed', m11, 12)
         step('panel WebView destroyed after staying closed', destroyed is not None and not C.panel_exists())
-        step('agent stopped after the panel closed', logged(r'CHAT agent stopped \(idle\)', m11, 12))
+        step('agent stopped after the panel closed', logged(r'CHAT agent stopped \(idle', m11, 12))
         time.sleep(2.5)
         left = agent_processes()
         step('rest again: 0 agent process, 0 chat WebView', not left and not C.panel_exists(), f'{len(left)} agent process(es)')
