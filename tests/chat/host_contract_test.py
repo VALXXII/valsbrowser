@@ -74,6 +74,18 @@ check('TakeShownAside()' in block_after(batch, 'void StartBatchTurn('), 'C2: a b
 check('TakeShownAside()' in block_after(ui, 'void KeepAnnotation('), 'C2: Ctrl+Entrée in a bubble aside keeps the line in its conversation')
 check('SwitchEngineTo(' in block_after(comment, 'bool TakeShownAside()'), 'C2: by the same path as a queued message (SwitchEngineTo)')
 
+# C3: an element not found never closes the bubble while its conversation works or waits (a turn, an authorization, a
+# queued message); it stays at its last place and follows the element again if it comes back. Opened from the
+# launcher's history (element gone), the bubble follows no selector: it cannot close itself
+on_anchor = block_after(comment, 'void OnAnchor(')
+gone = block_after(on_anchor, 'if (e.gone)')
+check('BubbleBusy()' in gone and gone.find('BubbleBusy()') < gone.find('CloseBubble('), 'C3: « gone » closes only when nothing works or waits for this conversation', gone[:160])
+check('bubble.lost' in on_anchor, 'C3: an element found again is followed again (bubble.lost)')
+busy = block_after(comment, 'bool BubbleBusy()')
+check(all(x in busy for x in ('turn.active', 'waitingPermissions', 'HasQueued(')), 'C3: busy = a turn of its conversation, an authorization waiting, or a message queued for it')
+check('bubble.noFollow' in block_after(comment, 'void FollowBubbleElement(bool current) {') and 'noFollow = true' in block_after(comment, 'bool OpenFromHistory(const std::wstring& id) {'),
+      'C3: a conversation opened from the history follows no element (it used to close at once)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

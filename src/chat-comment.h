@@ -38,6 +38,8 @@ struct BubbleState {
     bool away = false;                                               // open, hidden while another application is in front; shown again when the browser comes back
     ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
     bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
+    bool noFollow = false;                                           // C3: opened from the history (its element is gone): no selector followed
+    bool lost = false;                                               // C3: its element is not found while its conversation works: kept at its last place
     bool measured = false;                                           // R44: the page measured the element since this opening (the click's rectangle was only a first guess)
     bool warm = false;                                               // R18: the WebView is in the window, rendering, the window shown with an empty region
     bool followCurrent = false;                                      // the deferred work of the opening (FinishOpening)
@@ -363,7 +365,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     if (!again) {   // R44: the pointer is still where the user clicked
         POINT c{}; bubble.click = ChatBubble::Point{};
         if (element && GetCursorPos(&c) && PtInRect(element, c)) bubble.click = ChatBubble::Point{c.x, c.y, true};
-        bubble.fromBottom = false; bubble.surface = ChatBubble::Rect{}; bubble.measured = false;
+        bubble.fromBottom = false; bubble.surface = ChatBubble::Rect{}; bubble.measured = false; bubble.noFollow = false; bubble.lost = false;
     }
     if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; bubble.resized = false; bubble.baseHCss = 0; bubble.resizeMax = ChatBubble::ResizeMax{}; }
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
@@ -418,6 +420,7 @@ void FinishOpening() {
 }
 void FollowBubbleElement(bool current) {
     auto t = ChatTab(); if (!t) t = Active(); if (!t || !bubble.open) return;
+    if (bubble.noFollow) { Diag(L"the bubble was opened from the history: no element followed"); return; }   // C3   // i18n-exempt: log detail
     std::string sel = bubble.selector;
     if (sel.empty()) if (const auto* h = AnchoredOf(bubble.conv)) sel = h->anchorSelector;
     if (sel.empty() && convo.data.head.id == bubble.conv) sel = convo.data.head.anchorSelector;
@@ -468,9 +471,21 @@ void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     RevealBubble(L"on the acknowledgement");   // R18   // i18n-exempt: log detail
 }
 // The element the bubble follows moved (scroll, layout, reload) or is gone.
+// C3: the bubble's conversation works or waits — a turn of it runs, an authorization of it waits, or a message of it is queued
+bool BubbleBusy() {
+    const bool engine = !aside.on && bubble.conv == convo.data.head.id;
+    return (engine && turn.active) || (engine && !waitingPermissions.empty()) || HasQueued(bubble.conv);
+}
 void OnAnchor(const AH::Envelope& e) {
     if (!bubble.open) return;
-    if (e.gone) { Diag(L"the bubble's element is no longer in the page"); CloseBubble(false); return; }
+    if (e.gone) {   // C3 (review R): never closed while its conversation works or waits — kept at its last place
+        if (BubbleBusy()) { if (!bubble.lost) { bubble.lost = true; Diag(L"the bubble's element is not found while its conversation works: the bubble stays at its last place"); } return; }   // i18n-exempt: log detail
+        Diag(L"the bubble's element is no longer in the page, nothing runs: closed (its conversation is in the history)"); CloseBubble(false); return;   // i18n-exempt: log detail
+    }
+    if (bubble.lost) {   // C3: found again — followed and placed again from where it is now
+        bubble.lost = false; bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right; bubble.measured = true;
+        Diag(L"the bubble's element is found again: followed");   // i18n-exempt: log detail
+    }
     if (!bubble.known) bubble.anchor = ChatBubble::Anchor{};   // R29: the first real position of the element decides the anchor
     const RECT measured = ToScreen(e.x, e.y, e.w, e.h, e.vw);
     if (!bubble.measured) {   // R44: the first measure of the page is the truth; the anchor taken from the click's rectangle is only kept if it is right
@@ -797,7 +812,7 @@ bool OpenFromHistory(const std::wstring& id) {
     if (id.rfind(L"conv:", 0) != 0) return false;
     Ann::launcher.HideHistory();
     const std::string conv = U8(id.substr(5)); const auto* h = AnchoredOf(conv); const std::string label = h ? h->anchorLabel : std::string();
-    ShowConversation(conv, [conv, label] { if (CommentLayout()) OpenBubble(conv, nullptr, "", false, label); else OpenPanel(); });
+    ShowConversation(conv, [conv, label] { if (CommentLayout()) { OpenBubble(conv, nullptr, "", false, label); bubble.noFollow = true; } else OpenPanel(); });   // C3: no element to follow (it is gone)
     return true;
 }
 } // namespace Chat
