@@ -6,6 +6,8 @@ Dernière version publique : https://github.com/VALXXII/browser-releases/release
 
 Version portable (sans installation) : `browser-<version>-win-x64.zip` — clic droit > **Extraire tout…**, lancer **browser.exe** en gardant tout le dossier ; profil dans ce dossier ; une mise à jour installée passe ensuite dans `%LOCALAPPDATA%\browser` et y copie le profil une fois. Les fichiers `.lsrupd` et `update-manifest` servent seulement aux mises à jour automatiques. Construction et vérifications du ZIP : [design/public-download-report.md](design/public-download-report.md).
 
+Page de téléchargement (site statique, sans build) : [web/landing/index.html](web/landing/index.html). Le bouton pointe vers le dernier installateur via l'API GitHub, avec repli sur la page « latest » ; fenêtre interactive reproduite depuis Paper, valeurs dans [web/landing/DESIGN-VALUES.md](web/landing/DESIGN-VALUES.md). La page lit les polices et icônes dans `assets/` : servir le dépôt entier, ou copier ces fichiers avec le dossier.
+
 ## Preview « Éléments & popups » (sandbox des composants)
 
 Build portable : `build/design-elements-preview/browser.exe` (ZIP `build/browser-design-elements-preview.zip`). Profil, session et journal restent dans ce dossier ; aucune mise à jour automatique, jamais de renvoi vers la version installée (`build.py --preview`). Ouvrir la sandbox : `Ouvrir la sandbox.cmd`, `browser.exe --debug-sandbox`, `browser://debug` dans la barre d'adresse ou Ctrl+Maj+F12.
