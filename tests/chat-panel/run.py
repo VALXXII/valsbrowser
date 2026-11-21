@@ -1207,6 +1207,10 @@ try:
         load("markdown")
         check(cdp.js("!document.querySelector('.text script') && document.querySelector('.text').textContent.includes('<script>alert(1)</script>')"), "markdown: raw HTML from the agent stays text")
         check(cdp.js("!!document.querySelector('.code.clamped') && !!document.querySelector('.more')"), "markdown: code over 15 lines is clamped with « Afficher plus »")
+        bare = cdp.js("(()=>{try{const d=document.createElement('div');const t='Voir http://127.0.0.1:5183/checkout et file:///C:/site/index.html ou [http://a.test/x](http://a.test/x).';"
+                      "window.ChatMarkdown.inline(d,t,{});const a=[...d.querySelectorAll('a.md-link')].map(x=>x.textContent);return {ok:true,links:a,text:d.textContent}}catch(e){return {ok:false,err:String(e)}}})()")
+        check(bare["ok"] and "http://127.0.0.1:5183/checkout" in bare["links"] and "http://a.test/x" in bare["links"] and "file:///C:/site/index.html" in bare["text"],
+              "markdown: a bare address (http://, file:///) and a link whose label is an address render once, no endless recursion", json.dumps(bare))
         cdp.js("document.querySelector('.md-link').click()")
         check(any(p.startswith("link.open") for p in posted()) and cdp.js("location.pathname").endswith("dev.html"), "markdown: a link asks the host and never navigates")
 

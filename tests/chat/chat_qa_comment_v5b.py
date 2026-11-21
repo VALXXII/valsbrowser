@@ -131,6 +131,10 @@ class OtherApp:
             pass
 
 
+def self_h():
+    return u32.FindWindowW(None, 'QA autre application')
+
+
 def send_and_wait(text):
     m = mark(); V.send_in_view(text); logged(r'CHAT turn t\d+ ended', m, 30); time.sleep(0.6)
 
@@ -156,7 +160,7 @@ def run_main():
         # A: page-wide (like section.hero), B: narrow (like h2.section-title)
         C.page("(function(){document.body.style.background='#fff';"
                "var a=document.createElement('section');a.id='qa-a';a.textContent='Section large';a.style.cssText='position:absolute;left:0;right:0;top:250px;height:150px;background:#eef;z-index:5';document.body.appendChild(a);"
-               "var b=document.createElement('h2');b.id='qa-b';b.textContent='Titre';b.style.cssText='position:absolute;left:40px;top:470px;width:200px;height:40px;margin:0;background:#efe;z-index:5';document.body.appendChild(b);"
+               "var b=document.createElement('h2');b.id='qa-b';b.textContent='Titre';b.style.cssText='position:absolute;left:760px;top:120px;width:200px;height:40px;margin:0;background:#efe;z-index:5';document.body.appendChild(b);"
                "window.scrollTo(0,0);return 1})()")
         time.sleep(0.6)
 
@@ -180,8 +184,9 @@ def run_main():
         m = mark()
         with OtherApp():
             time.sleep(0.8)
-            b = V.bubble_hwnd(); hidden = b and not u32.IsWindowVisible(b[0][0])
-            step('E4 · another application in front: the bubble is hidden (not closed)', hidden and 'bubble closed' not in C.log_text()[m:], [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][:4])
+            b = V.bubble_hwnd(); hidden = b and (not u32.IsWindowVisible(b[0][0]) or region_box(b[0][0]) is None)
+            step('E4 · another application in front: the bubble is hidden (not closed)', hidden and 'bubble closed' not in C.log_text()[m:],
+                 {'otherInFront': u32.GetForegroundWindow() == self_h(), 'log': [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][:4]})
             real_click('#qa-a', front=False)
             wait_shown('#qa-a', 'conversation-A', 'E4 · back with a click on A: A on screen as it was')
         # ---- A -> other application -> B -> A

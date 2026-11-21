@@ -131,11 +131,13 @@
   }
 
   function link(label, url, opts) {
-    if (!SAFE_URL.test(url)) { const s = el("span"); inline(s, label, opts); return s; }
+    // A link's label is shown as it is, never parsed again: a bare address is its own label, parsing it again made
+    // another link of it, and so on until « Maximum call stack size exceeded » (the thread then never rendered).
+    if (!SAFE_URL.test(url)) { const s = el("span"); s.textContent = label; return s; }
     const a = el("a", "md-link");
     a.href = url;
     a.setAttribute("aria-description", url);   // audit D7: no system tooltip; the address stays for screen readers
-    inline(a, label, opts);
+    a.appendChild(document.createTextNode(label));
     const go = (e) => { e.preventDefault(); if (opts && opts.onLink) opts.onLink(url); };
     a.addEventListener("click", go);
     a.addEventListener("auxclick", go);
