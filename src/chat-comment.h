@@ -36,6 +36,9 @@ struct BubbleState {
     RECT win{}; RECT region{};                                       // R19: the window as placed, its region (window px): changed only when needed
     bool waitingAck = false;                                         // R18: placed and sized, shown once the page acknowledged the opening layout
     bool away = false;                                               // open, hidden while another application is in front; shown again when the browser comes back
+    ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
+    bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
+    bool measured = false;                                           // R44: the page measured the element since this opening (the click's rectangle was only a first guess)
     bool warm = false;                                               // R18: the WebView is in the window, rendering, the window shown with an empty region
     bool followCurrent = false;                                      // the deferred work of the opening (FinishOpening)
     ChatBubble::Anchor anchor;                                       // R29: frozen once placed (offset from the element, fixed edge)
@@ -154,18 +157,23 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     const ChatBubble::Rect er{e.left, e.top, e.right, e.bottom};
     ChatBubble::Placement p;
     if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor; then they never change
-        p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)));
-        if (bubble.known) bubble.anchor = ChatBubble::AnchorOf(p, er);
-    } else { p.side = bubble.anchor.side; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
-    const bool sideChanged = p.side != bubble.side; bubble.side = p.side;
+        // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
+        p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
+                              int(std::lround(BubbleMaxHeightCss * k)), bubble.click, int(std::lround(BubbleGapCss * k)));
+        if (bubble.known) {
+            bubble.anchor = ChatBubble::AnchorOf(p, er);
+            Diag(std::wstring(L"bubble placed ") + W(std::string(p.why)) + L" (element " + std::to_wstring(er.W()) + L"x" + std::to_wstring(er.H()) + L", visible area " + std::to_wstring(area.W()) + L"x" + std::to_wstring(area.H()) + L")");   // i18n-exempt: log detail
+        }
+    } else { p.side = bubble.anchor.side; p.fromRight = bubble.anchor.fromRight; p.fromBottom = bubble.anchor.fromBottom; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
+    const bool sideChanged = p.side != bubble.side; bubble.side = p.side; bubble.fromBottom = p.fromBottom; bubble.surface = p.rect;
     if (!scrolling) {   // R38 / R40: the room and the handle's bounds are told on a new size, never at each scroll step (R39)
-        const int room = ChatBubble::RoomCss(p.rect, p.side == ChatBubble::Side::Above, area, margin, k, BubbleMaxHeightCss);
-        const auto rm = ChatBubble::ResizeRoom(p.rect, p.side, area, margin, k);
+        const int room = ChatBubble::RoomCss(p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);
+        const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             bubble.roomCss = room; bubble.resizeMax = rm; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false);
         }
     }
-    if (!scrolling && bubble.anchor.set && !bubble.endAsked && p.rect.bottom > area.bottom - margin && p.side != ChatBubble::Side::Above) AskDocumentEnd();   // R29: the one exception
+    if (!scrolling && bubble.anchor.set && !bubble.endAsked && p.rect.bottom > area.bottom - margin && !p.fromBottom) AskDocumentEnd();   // R29: the one exception
     // R19: the window is the surface + a fixed transparent margin, as tall as the surface may grow; a menu or a tooltip
     // out of the surface only widens the window's region (nothing moves: same image before and after, to the pixel)
     MONITORINFO mi{sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mi);
@@ -173,7 +181,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     // the page, a new WebView size) at the next change of size — never at each image of a scroll.
     const bool carry = scrolling && bubble.win.right > bubble.win.left && !bubble.waitingAck;
     const auto f = carry ? ChatBubble::Reframe(p.rect, bubble.inset, bubble.win.right - bubble.win.left, bubble.win.bottom - bubble.win.top, k, bubble.over)
-                         : ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.side == ChatBubble::Side::Above,
+                         : ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.fromBottom,
                                                    {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
     const bool insetChanged = !(f.inset == bubble.inset); bubble.inset = f.inset;
     const RECT wr{f.window.left, f.window.top, f.window.right, f.window.bottom};
@@ -321,6 +329,20 @@ void CoolBubble() {   // Mode Commentaire left (or the panel chosen): the window
     if (!Open()) { view.Show(false); if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr); }
 }
 void FinishOpening();
+// R44: a click on the element whose bubble is open never does nothing: the bubble is brought to the front, and placed
+// again (R44 rules) when it is not whole in the visible area.
+void EnsureOnScreen(const wchar_t* why) {
+    if (!bubble.open || !bubble.hwnd || bubble.waitingAck) return;
+    const RECT a = PageArea(); const ChatBubble::Rect area{a.left, a.top, a.right, a.bottom};
+    if (!ChatBubble::FullyVisible(bubble.surface, area) || !IsWindowVisible(bubble.hwnd) || IsRectEmpty(&bubble.region)) {
+        Diag(std::wstring(L"the bubble was not whole on screen (") + why + L"): placed again");   // i18n-exempt: log detail
+        POINT c{}; bubble.click = GetCursorPos(&c) && PtInRect(&bubble.element, c) ? ChatBubble::Point{c.x, c.y, true} : ChatBubble::Point{};
+        bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right;
+        PlaceBubble();
+        const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); ShowWindow(bubble.hwnd, SW_SHOWNA);
+    }
+    SetForegroundWindow(bubble.hwnd); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);
+}
 void OpenBubble(const std::string& conv, const RECT* element, const std::string& selector, bool followCurrent, const std::string& label) {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
     if (Open()) ClosePanel();
@@ -337,6 +359,11 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     if (bubble.away) BubbleBack(L"a click on an element");   // i18n-exempt: log detail
     bubble.open = true; bubble.conv = conv; bubble.selector = selector; bubble.label = label;
     bubble.known = element != nullptr; if (element) bubble.element = *element;
+    if (!again) {   // R44: the pointer is still where the user clicked
+        POINT c{}; bubble.click = ChatBubble::Point{};
+        if (element && GetCursorPos(&c) && PtInRect(element, c)) bubble.click = ChatBubble::Point{c.x, c.y, true};
+        bubble.fromBottom = false; bubble.surface = ChatBubble::Rect{}; bubble.measured = false;
+    }
     if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; bubble.resized = false; bubble.baseHCss = 0; bubble.resizeMax = ChatBubble::ResizeMax{}; }
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, 10, 10})) { bubble.open = false; Diag(L"bubble WebView creation refused"); return; } }
@@ -345,7 +372,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     PlaceBubble();
     bubble.openedAt = Ann::NowMs();
     view.Show(true);   // the page renders and measures while the window shows nothing
-    if (again && IsWindowVisible(bubble.hwnd) && !bubble.waitingAck) { SetForegroundWindow(bubble.hwnd); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0); }
+    if (again && IsWindowVisible(bubble.hwnd) && !bubble.waitingAck) { EnsureOnScreen(L"a click on its element"); }   // i18n-exempt: log detail
     else {   // R18: an empty region (the page renders and measures), the surface revealed at its place once it says its size
         bubble.waitingAck = true; SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), FALSE);
         ShowWindow(bubble.hwnd, SW_SHOWNA); SetTimer(bubble.hwnd, 0xB2, panelReady ? 300 : 2000, nullptr);   // a page still being created answers later
@@ -357,7 +384,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
         // region that reaches the window's bottom (its height is not known yet); its acknowledgement trims it, nothing moves
         if (bubble.waitingAck) {
             RECT c{}; GetClientRect(bubble.hwnd, &c); RECT rg = bubble.region;
-            if (bubble.side == ChatBubble::Side::Above) rg.top = 0; else rg.bottom = c.bottom;
+            if (bubble.fromBottom) rg.top = 0; else rg.bottom = c.bottom;
             bubble.region = rg; RevealBubble(L"with the opening layout");   // i18n-exempt: log detail
         }
         SendState(); SendThread(); SendQueue();
@@ -373,8 +400,9 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
 void CheckBubbleShown() {
     if (!bubble.open || bubble.away || bubble.waitingAck || !bubble.hwnd) return;
     const bool visible = IsWindowVisible(bubble.hwnd) != FALSE, empty = IsRectEmpty(&bubble.region) != FALSE;
-    if (visible && !empty) return;
-    Diag(std::wstring(L"the bubble was open but not on screen (") + (visible ? L"empty region" : L"window hidden") + L"): placed again");   // i18n-exempt: log detail
+    const RECT a = PageArea(); const bool whole = !bubble.known || ChatBubble::FullyVisible(bubble.surface, ChatBubble::Rect{a.left, a.top, a.right, a.bottom});   // R44
+    if (visible && !empty && whole) return;
+    Diag(std::wstring(L"the bubble was open but not on screen (") + (!visible ? L"window hidden" : empty ? L"empty region" : L"not whole in the visible area") + L"): placed again");   // i18n-exempt: log detail
     bubble.anchor = ChatBubble::Anchor{}; bubble.win = RECT{}; bubble.region = RECT{}; bubble.side = ChatBubble::Side::Right;
     PlaceBubble(); ShowWindow(bubble.hwnd, SW_SHOWNA);
 }
@@ -443,8 +471,18 @@ void OnAnchor(const AH::Envelope& e) {
     if (!bubble.open) return;
     if (e.gone) { Diag(L"the bubble's element is no longer in the page"); CloseBubble(false); return; }
     if (!bubble.known) bubble.anchor = ChatBubble::Anchor{};   // R29: the first real position of the element decides the anchor
+    const RECT measured = ToScreen(e.x, e.y, e.w, e.h, e.vw);
+    if (!bubble.measured) {   // R44: the first measure of the page is the truth; the anchor taken from the click's rectangle is only kept if it is right
+        bubble.measured = true;
+        const RECT& was = bubble.element;
+        if (bubble.known && bubble.anchor.set && (std::abs(was.left - measured.left) > 2 || std::abs(was.top - measured.top) > 2 || std::abs(was.right - measured.right) > 2 || std::abs(was.bottom - measured.bottom) > 2)) {
+            Diag(L"the element is not where the click said (" + std::to_wstring(was.left) + L"," + std::to_wstring(was.top) + L" " + std::to_wstring(was.right - was.left) + L"x" + std::to_wstring(was.bottom - was.top) +
+                 L" -> " + std::to_wstring(measured.left) + L"," + std::to_wstring(measured.top) + L" " + std::to_wstring(measured.right - measured.left) + L"x" + std::to_wstring(measured.bottom - measured.top) + L"): placed again");   // i18n-exempt: log detail
+            bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right;
+        }
+    }
     const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows, nothing else
-    bubble.element = ToScreen(e.x, e.y, e.w, e.h, e.vw); bubble.known = true;
+    bubble.element = measured; bubble.known = true;
     if (scrolling && FollowFrames() > 0) FollowLater(); else PlaceBubble(scrolling);
     if (scrolling && e.t > 0) {   // R39: the page's scroll (its clock) -> here, summed over 30 steps   // i18n-exempt: log detail
         static int n = 0; static double sum = 0, worst = 0;
@@ -660,7 +698,7 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     if (!sel.empty()) for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == sel) { existing = &h; break; }
     if (existing) {   // its conversation: the bubble opens on it again
         const std::string id = existing->id, s = existing->anchorSelector, l = existing->anchorLabel;
-        if (bubble.open && bubble.conv == id) { BubbleBack(L"a click on its element"); return true; }   // already open: shown (hidden by another application meanwhile)   // i18n-exempt: log detail
+        if (bubble.open && bubble.conv == id) { BubbleBack(L"a click on its element"); EnsureOnScreen(L"a click on its element"); return true; }   // already open: shown (hidden by another application meanwhile)   // i18n-exempt: log detail
         if (anchorElements.find(id) == anchorElements.end()) { Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = id; aiming[serial] = std::move(e); QuerySource(t, serial); }
         const std::string page2 = page;
         ShowConversation(id, [id, element, s, l] { OpenBubble(id, &element, s, false, l); },

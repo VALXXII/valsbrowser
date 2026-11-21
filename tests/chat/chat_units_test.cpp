@@ -505,6 +505,32 @@ static void TestBubble() {
         Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&
               RoomCss({100, 850, 420, 890}, false, area, 12, 1.f, 520) == 120 && RoomCss({100, 300, 420, 700}, true, area, 12, 1.25f, 520) == 470,
               "R38: the height offered is the room from the fixed edge to the page's far side (min 120, max 520)"); }
+    // R44: at its opening the bubble is whole in the visible area with the height it may take (520), never cut nor reduced
+    {   const Rect area{0, 141, 1470, 806};   // the user's page area (1470 x 665)
+        const int W = 320, h = 104, H = 520, gap = 12, margin = 12, lead = 4, corner = 12;
+        auto planned = [&](const Placement& p) { return p.fromBottom ? Rect{p.rect.left, p.rect.bottom - H, p.rect.right, p.rect.bottom} : Rect{p.rect.left, p.rect.top, p.rect.right, p.rect.top + H}; };
+        auto whole = [&](const Placement& p) { return FullyVisible(p.rect, area) && FullyVisible(planned(p), area); };
+        const Rect hero{0, 161, 1470, 643};   // section.hero: page-wide, 482 px, at the top
+        const auto a = Place(hero, W, h, area, gap, margin, Side::Right, lead, H, Point{300, 300, true}, corner);
+        Check(a.side == Side::Inside && !a.fromRight && !a.fromBottom && a.rect.left == 12 && a.rect.top == 173 && whole(a),
+              "R44: a page-wide element at the top: inside it, its top-left corner nearest to the click, 12 px from its edges, whole with 520 px");
+        const Rect plans{50, 356, 1420, 718};   // div.plans: page-wide, its top 215 px into the visible area (the user's log)
+        const auto old = Place(plans, W, h, area, gap, margin, Side::Right, lead);
+        Check(old.side == Side::Above, "R44: (before: chosen for the small opening height, « above » — it then grew up out of the visible area)");
+        const auto b2 = Place(plans, W, h, area, gap, margin, Side::Right, lead, H, Point{1300, 700, true}, corner);
+        Check(b2.side == Side::Inside && b2.fromRight && b2.fromBottom && b2.rect.right == 1420 - 12 && b2.rect.bottom == 706 && whole(b2),
+              "R44: div.plans clicked near its bottom right: inside, bottom right corner, it grows up and stays whole");
+        const auto c = Place({100, 700, 300, 780}, W, h, area, gap, margin, Side::Right, lead, H, Point{}, corner);
+        Check(c.side == Side::Right && whole(c), "R44: a small element at the bottom of the visible area: at its right, slid up so 520 px fit");
+        const auto d = Place({0, 0, 1470, 3000}, W, h, area, gap, margin, Side::Right, lead, H, Point{}, corner);
+        Check(d.side == Side::Inside && d.fromRight && d.rect.right == 1458 && d.rect.top == 153 && whole(d),
+              "R44: an element taller than the window: inside its visible part (no click: top right corner)");
+        const auto e = Place({600, 400, 800, 440}, W, h, area, gap, margin, Side::Right, lead, H, Point{}, corner);
+        Check(e.side == Side::Right && whole(e), "R44: a small element with room: at its right, as before");
+        const auto an = AnchorOf(b2, plans); const auto grown = Anchored(an, plans, W, 400);
+        Check(grown.bottom == b2.rect.bottom && grown.right == b2.rect.right && grown.top == b2.rect.bottom - 400 && FullyVisible(grown, area),
+              "R44 then R29: in a bottom corner the bubble keeps its corner and grows up, whole");
+        Check(FullyVisible({10, 150, 330, 254}, area) && !FullyVisible({10, 700, 330, 900}, area) && !FullyVisible({}, area), "R44: whole in the visible area or not"); }
     // Bug « clic, pas de bulle »: a bubble open on A, a click on B with its own conversation = a new opening (never A's place)
     {   Check(!SameBubble("c_a", "h2.section-title", "c_b", "section.hero"), "another element's conversation: opened again from scratch");
         Check(SameBubble("c_a", "section.hero", "c_a", "section.hero") && SameBubble("c_a", "section.hero", "c_a", "#hero"), "the same conversation (its full selection after the early open): kept");
