@@ -793,3 +793,20 @@ l'hôte.
 - L'hôte l'écrit dans le fil avec `model.switch` (§4) : ligne grise discrète centrée, la même dans la bulle et le panneau.
   Quand elle est là, le panneau n'ajoute pas son propre repère « Passé à … » au tour suivant.
 
+## 26. Revue finale — corrections côté page (design/chat-final-review.md)
+
+- **`bubble.hidden` (hôte → page, M2 / F4)** : envoyé à chaque **vraie** fermeture de la bulle décidée par l'hôte (clic ailleurs,
+  élément disparu hors tour, bascule de mode, Échap). La page rend la surface invisible tout de suite (sans animation),
+  `inert` et `aria-hidden`, met le brouillon de côté et **vide le fil** : l'ouverture suivante (`layout` → `state` →
+  `thread.reset`) ne peut jamais montrer l'ancienne conversation, même une image. La perte du premier plan n'est pas une
+  fermeture (pas de `bubble.hidden` : la bulle est masquée puis réaffichée telle quelle). Le prochain `layout` d'ouverture
+  rend la surface visible et active.
+- **`layout.elementKey` (F6)** : identifiant stable de l'élément (sélecteur ou source). Tant que rien n'a été envoyé, le brouillon
+  d'une bulle appartient à l'élément (`elementKey`, sinon `element`) : un clic ailleurs puis sur le même élément rend les mots.
+  Ensuite il appartient à la conversation. Les brouillons sont bornés (les 40 plus récents, F5).
+- **F10** : une demande d'autorisation sans option de refus n'affiche ni « Refuser » ni le champ « Dire à … à la place ».
+- **M11** : au rejeu (`thread.reset`), un tour sans `turn.end` alors que `state.running` est faux (navigateur fermé pendant le
+  tour) se termine comme arrêté (« S'est arrêté », sans durée).
+- **F1 / F2 (Markdown)** : titres analysés sans retour arrière coûteux ; une adresse `file:///` reste du texte (l'hôte n'ouvre que
+  http(s)).
+

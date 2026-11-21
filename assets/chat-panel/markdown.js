@@ -5,12 +5,22 @@
 "use strict";
 (function () {
   const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)\s*(.*)$/;
-  const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+  // F1 (review): a simple pattern; the closing « #… » and spaces are taken off by hand (the old lazy pattern backtracked
+  // cubically: « # » + 5 000 spaces + « x » froze the page)
+  const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/;
+  function headingText(t) {
+    let e = t.length;
+    while (e > 0 && /\s/.test(t[e - 1])) e--;
+    let h = e;
+    while (h > 0 && t[h - 1] === "#") h--;
+    if (h < e && (h === 0 || /\s/.test(t[h - 1]))) { e = h; while (e > 0 && /\s/.test(t[e - 1])) e--; }
+    return t.slice(0, e);
+  }
   const RULE = /^ {0,3}([-*_])(\s*\1){2,}\s*$/;
   const QUOTE = /^ {0,3}>\s?(.*)$/;
   const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
   const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-  const SAFE_URL = /^(https?:\/\/|file:\/\/\/)[^\s]*$/i;
+  const SAFE_URL = /^https?:\/\/[^\s]*$/i;   // F2 (review): file:/// stays text — the host opens http(s) only, a dead link is worse
 
   function el(tag, cls, text) {
     const n = document.createElement(tag);
@@ -50,7 +60,7 @@
                    src: lines.slice(start, i).join("\n") });
         continue;
       }
-      if ((m = HEADING.exec(line))) { out.push({ type: "h", level: m[1].length, text: m[2], src: line }); i++; continue; }
+      if ((m = HEADING.exec(line))) { out.push({ type: "h", level: m[1].length, text: headingText(m[2]), src: line }); i++; continue; }
       if (RULE.test(line)) { out.push({ type: "hr", src: line }); i++; continue; }
       if (QUOTE.test(line)) {
         const start = i, body = [];

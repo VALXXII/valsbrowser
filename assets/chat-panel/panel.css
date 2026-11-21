@@ -879,3 +879,6 @@ button.bt-st.run::before { content: ""; position: absolute; inset: -1px 0; }
 /* R42: « Passé à Opus 5.5 · Moyen » — the panel's marker, also in the bubble (where the other markers stay hidden) */
 .bub .marker.mswitch { display: flex !important; }
 
+/* M2 / F4 (review): a bubble the host closed is gone at once — no fade, nothing drawn */
+:root.bub #app.b-gone { opacity: 0 !important; transition: none !important; animation: none !important; visibility: hidden; }
+

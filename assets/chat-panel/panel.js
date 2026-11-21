@@ -422,6 +422,7 @@
     const picked = batchChecked();
     if (picked.length) msg.annotations = { batchId: S.batch.batchId, ids: picked.map((it) => it.id) };
     post("send", msg);
+    if (BUB()) drafts.delete("b:el:" + (S.lay.elementKey || S.lay.element || ""));
     S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu();
     if (S.batch) { S.batch = null; renderBatch(); }
     updateSend();
@@ -1158,8 +1159,8 @@
         p.diff ? h("span", { class: "num plus", text: "+" + p.diff.added }) : null, p.diff ? h("span", { class: "num minus", text: "−" + p.diff.removed }) : null),
       h("div", { id: "perm-d" }, p.diff ? diffView(p.diff) : null, p.command ? h("pre", { class: "cmd", text: p.command }) : null),
       p.details ? detailsBlock(p.details) : null,
-      instead,
-      h("div", { class: "perm-ft" }, sw, refuse, allow));
+      reject ? instead : null,
+      h("div", { class: "perm-ft" }, sw, reject ? refuse : null, allow));   // F10: no refuse option, no « Refuser »
     card.addEventListener("keydown", (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); refuse.click(); }
       else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); allow.click(); }
@@ -1280,13 +1281,17 @@
   // `thread.reset` puts them aside and brings back the ones of the conversation shown. A bubble never shows a chip (R7).
   const drafts = new Map();
   let draftKey = "";
-  const draftKeyFor = (conv) => (BUB() ? "b:" + (S.lay.element || "") : "p") + ":" + (conv && conv !== "new" ? conv : "new");
+  // F6 (review): while a bubble's conversation is empty (nothing sent), its draft belongs to the element (layout.elementKey,
+  // else its label) — a click elsewhere then on the element again finds the words back; once sent, to the conversation.
+  const draftKeyFor = (conv, empty) => BUB() ? (empty ? "b:el:" + (S.lay.elementKey || S.lay.element || "") : "b:" + (conv && conv !== "new" ? conv : "new:" + (S.lay.elementKey || S.lay.element || "")))
+                                             : "p:" + (conv && conv !== "new" ? conv : "new");
   function stashDraft() {
     if (!draftKey) { clear(cin); S.cEls.clear(); S.cAtt.clear(); return; }
     const frag = document.createDocumentFragment();
     while (cin.firstChild) frag.appendChild(cin.firstChild);
+    drafts.delete(draftKey);
     if (frag.textContent.trim() || frag.querySelector && frag.querySelector(".chip") || S.cAtt.size) drafts.set(draftKey, { frag, els: new Map(S.cEls), att: new Map(S.cAtt) });
-    else drafts.delete(draftKey);
+    while (drafts.size > 40) drafts.delete(drafts.keys().next().value);   // F5 (review): the oldest drafts go (nothing grows without end)
     S.cEls.clear(); S.cAtt.clear();
   }
   function restoreDraft(key) {
@@ -1334,7 +1339,7 @@
   // Opening: from the element's side (transform-origin), 180 ms. Closing (Échap): the host is told at once — it hides the
   // bubble, the agent keeps working — and the surface goes in 120 ms; it stays invisible until the next `layout` / `focus`.
   function bOpen() {
-    app.classList.remove("b-out", "b-in");
+    app.classList.remove("b-out", "b-in", "b-gone"); app.inert = false; app.removeAttribute("aria-hidden");
     if (!S.replay) { void app.offsetWidth; app.classList.add("b-in"); }
     requestAnimationFrame(() => { if (BUB() && !S.perms.length && !S.bview && !S.st.running) cin.focus(); });
   }
@@ -1342,7 +1347,7 @@
   // The surface never scrolls: a focus landing on something the window does not show yet (it is being resized) must not shift it.
   app.addEventListener("scroll", () => { if (BUB() && (app.scrollTop || app.scrollLeft)) { app.scrollTop = 0; app.scrollLeft = 0; } });
   document.addEventListener("scroll", () => { if (BUB() && (window.scrollX || window.scrollY)) window.scrollTo(0, 0); });
-  function bClose() { chipHover(null, false); post("close"); app.classList.remove("b-in"); app.classList.add("b-out"); }
+  function bClose() { chipHover(null, false); post("close"); app.classList.remove("b-in"); app.classList.add("b-out"); app.inert = true; app.setAttribute("aria-hidden", "true"); }
 
   function renderDockB(force) {
     const p = S.perms[0], s = activeStrip(), running = !!S.st.running, none = !log.firstChild;
@@ -1400,8 +1405,8 @@
       if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (instead.value.trim()) permRespond(p, reject, instead.value.trim()); else allow.click(); }
     });
     const card = h("div", { class: "bperm" + (S.replay || p.shown ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t" },
-      h("div", { class: "bperm-rows" }, file, h("label", { class: "bperm-in" }, icon("pencilFill", "ic"), instead)),
-      h("div", { class: "bperm-ft" }, sw, refuse, allow));
+      h("div", { class: "bperm-rows" }, file, reject ? h("label", { class: "bperm-in" }, icon("pencilFill", "ic"), instead) : null),
+      h("div", { class: "bperm-ft" }, sw, reject ? refuse : null, allow));   // F10
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); allow.click(); } });
     if (!p.shown) requestAnimationFrame(() => { if (allow.isConnected) allow.focus(); });
     p.shown = true;
@@ -2466,9 +2471,9 @@
     t.workEl.remove();
     if (t.waitEl) { t.waitEl.remove(); t.waitEl = null; }
     S.perms = S.perms.filter((p) => p.turnId !== t.id);
-    const d = typeof m.durationMs === "number" ? m.durationMs : Date.now() - t.start;
+    const d = typeof m.durationMs === "number" ? m.durationMs : m.interrupted ? null : Date.now() - t.start;
     t.durMs = d;
-    setMeta(t, [t.model.replace(/\s+[\d.]+$/, ""), t.effort, dur(d)].filter(Boolean).join(" · "));
+    setMeta(t, [t.model.replace(/\s+[\d.]+$/, ""), t.effort, d == null ? "" : dur(d)].filter(Boolean).join(" · "));
     for (const s of t.segs) { if (s.kind === "text") { s.render(); s.el.classList.remove("streaming"); const rest = s.text.slice(s.spoken); if (rest.trim()) say(plain(rest)); s.spoken = s.text.length; } else s.render(); }
     const notes = { cancelled: "Arrêté.", refusal: "L'agent a refusé de continuer cette demande.", max_tokens: "La réponse a atteint sa longueur maximale. Demandez la suite pour continuer." };
     if (notes[m.stopReason] && !(t.b && m.stopReason === "cancelled")) t.el.appendChild(h("div", { class: "note", text: notes[m.stopReason] }));
@@ -2796,6 +2801,7 @@
       S.lay.maxH = Math.max(104, Number.isFinite(m.maxHeight) && m.maxHeight > 0 ? Math.floor(m.maxHeight) : 520);
       S.lay.side = ["right", "left", "below", "above", "inside"].includes(m.side) ? m.side : "right";
       S.lay.element = isStr(m.element, 300) ? m.element : "";
+      S.lay.elementKey = isStr(m.elementKey, 1000) ? m.elementKey : "";   // F6: a stable key of the element (selector or source)
       const dim = (o) => (o && Number.isFinite(o.width) && Number.isFinite(o.height) ? { w: Math.floor(o.width), h: Math.floor(o.height) } : null);
       if (m.resizeMax !== undefined) S.lay.rMax = dim(m.resizeMax);   // R40: the largest size from the anchored corner
       if (m.resizeMin !== undefined) S.lay.rMin = dim(m.resizeMin);
@@ -2812,8 +2818,11 @@
     "thread.reset"(m) {
       stashDraft();
       resetThread();
-      restoreDraft(draftKeyFor(isStr(m.conversationId, 128) ? m.conversationId : ""));
+      const conv = isStr(m.conversationId, 128) ? m.conversationId : "";
       H["thread.append"](m);
+      restoreDraft(draftKeyFor(conv, !log.firstChild));
+      // M11 (review): a replayed turn with no end while nothing runs (the browser was closed during it) ends as stopped
+      if (!S.st.running) for (const t of Array.from(S.turns.values())) if (t.running) { S.replay = true; try { onTurnEnd({ turnId: t.id, stopReason: "cancelled", interrupted: true }); } finally { S.replay = false; } }
       renderDock(true); placeholder(); updateView();
       requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
     },
@@ -2873,6 +2882,17 @@
     },
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,
     usage(m) { S.usage = m.size > 0 ? { used: Math.min(m.used, m.size), size: m.size } : null; renderGauge(); },
+    // M2 / F4 (review): a real closing decided by the host (click elsewhere, element gone, mode switch, Échap): the surface goes at
+    // once (no animation), inert and hidden from screen readers; the draft is put aside and the thread emptied, so the next
+    // opening can never show the old conversation, even for one image before its thread.reset
+    "bubble.hidden"() {
+      if (!BUB()) return;
+      closeMenu(); bTipHide(); tipHide(); chipHover(null, false); closeView(true);
+      stashDraft(); draftKey = ""; resetThread(); clear(cin);
+      app.classList.remove("b-in"); app.classList.add("b-out", "b-gone");
+      app.inert = true; app.setAttribute("aria-hidden", "true");
+      lastSize = "";
+    },
     "pointer.leave"() { tipHide(); chipHover(null, false); },   // B 1.5: the host saw the cursor leave the panel
     "annotation.kept": onKept,          // B 1.6: Ctrl+Entrée wrote the annotation(s)
   };

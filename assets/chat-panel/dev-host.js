@@ -243,6 +243,9 @@
       { type: "model.switch", agentId: "claude-code", model: "Opus 5.5", modelId: "opus", effort: "medium", effortId: "medium" }] }],
     // R47: a permission arriving in a short bubble (the host offered 200 px)
     "c-autorisation-courte": cRun({ maxHeight: 200 }).concat([C_PERM, wait(80)]),
+    // review: F10 (a request with allow_once only), M11 (a turn replayed without its end, nothing running)
+    "c-autorisation-sans-refus": cRun({ maxHeight: 303 }).concat([Object.assign({}, C_PERM, { requestId: "p9", options: [{ optionId: "allow", name: "Autoriser", kind: "allow_once" }] }), wait(60)]),
+    "c-tour-interrompu": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(), { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }] }],
     "c-messages-deux": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Rien d'autre n'a changé." },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],
@@ -402,6 +405,8 @@
     "dossier-puce": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "dossier-demande": [st({ askFolder: true, folder: null, folderSuggestion: { path: "C:\\Users\\val\\projets\\boutique", display: "C:\\Users\\…\\projets\\boutique", name: "boutique", reason: "auto" } }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.7a-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
+    "autorisation-sans-refus": [st(Object.assign({ running: true }, conv("Bouton", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()] },
+      Object.assign({}, C_PERM, { requestId: "p9", options: [{ optionId: "allow", name: "Autoriser", kind: "allow_once" }] }), wait(60)],
     "etapes-brutes": [st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart()].concat(RAW_STEPS()) }],
     "titre-renommer": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [] }],
     "6.7b-historique": [st(conv("Titre de la page", { running: true })), { type: "thread.reset", conversationId: "c1", items: [] },

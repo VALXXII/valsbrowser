@@ -892,6 +892,49 @@ try:
         host({"type": "message.agentChunk", "turnId": "t1", "messageId": "m1", "text": " Et encore"})
         car = cdp.js("Array.from(document.querySelectorAll('.text, .text *')).map(n=>getComputedStyle(n,'::after').content).filter(c=>c&&c!=='none'&&c!=='normal')")
         check(car == [], "bubble (R48): no blue typing caret after the agent's text while it streams", str(car))
+        # ---- review (design/chat-final-review.md), P's defects
+        # F10: a request without a refuse option shows no « Refuser » (it did nothing) nor the field that refuses
+        load("c-autorisation-sans-refus")
+        f10 = cdp.js("[Array.from(document.querySelectorAll('.bperm .btn')).map(b=>b.textContent), !!document.querySelector('.bperm .instead')]")
+        check(f10 == [["Autoriser"], False], "review F10 (bubble): a request with no refuse option shows only « Autoriser »", str(f10))
+        # M11: a turn replayed without its end while nothing runs ends as stopped (no endless « Travaille… »)
+        load("c-tour-interrompu")
+        m11 = cdp.js("[document.querySelector('.bt-st .lb')&&document.querySelector('.bt-st .lb').textContent, !!document.querySelector('.bt-st.run'), document.querySelector('.turn').getAttribute('aria-busy')]")
+        check(m11 == ["S'est arrêté", False, "false"], "review M11: a turn replayed with no end (browser closed during it) shows « S'est arrêté », not a ring for ever", str(m11))
+        # M2 / F4: the host closes the bubble (bubble.hidden): nothing visible nor readable, the old thread is gone before the next opening
+        load("c-fil-long")
+        host({"type": "bubble.hidden"})
+        m2 = cdp.js("(()=>{const a=document.getElementById('app');return [getComputedStyle(a).opacity, a.inert===true, a.getAttribute('aria-hidden'), document.querySelectorAll('.turn').length]})()")
+        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "element": "h1.title"})
+        first = cdp.js("[document.querySelectorAll('.turn, .um').length, document.getElementById('app').inert===true, document.getElementById('app').getAttribute('aria-hidden')]")
+        check(m2 == ["0", True, "true", 0] and first == [0, False, None], "review M2/F4: bubble.hidden makes the surface invisible, inert, hidden from screen readers and empties the thread; the next opening never shows the old conversation", f"{m2} {first}")
+        # F6: words typed in an element's bubble, the bubble closed by a click elsewhere, the element clicked again (a new
+        # conversation each time): the words come back
+        load("c-1-vide")
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Plus grand")
+        host({"type": "bubble.hidden"})
+        host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "element": "button.btn-primary", "elementKey": "main form > button.btn-primary"})
+        host({"type": "thread.reset", "conversationId": "new-2", "items": []})
+        f6 = cdp.js("document.getElementById('composer-input').textContent")
+        check(f6 == "Plus grand", "review F6: a bubble's unsent words come back when the same element is clicked again (draft kept by element while nothing is sent)", repr(f6))
+        # F5: drafts never grow without end — after 45 elements with unsent words, the oldest one is dropped, the latest kept
+        load("c-1-vide")
+        f5 = cdp.js("""(()=>{const send=window.devHost.send,cin=()=>document.getElementById('composer-input');
+          for(let i=0;i<45;i++){send({type:'layout',mode:'bubble',maxWidth:305,maxHeight:520,element:'div.e'+i,elementKey:'k'+i});send({type:'thread.reset',conversationId:'n'+i,items:[]});
+            cin().focus();document.execCommand('insertText',false,'mot '+i);send({type:'bubble.hidden'});}
+          const back=(i)=>{send({type:'layout',mode:'bubble',maxWidth:305,maxHeight:520,element:'div.e'+i,elementKey:'k'+i});send({type:'thread.reset',conversationId:'z'+i,items:[]});const t=cin().textContent;send({type:'bubble.hidden'});return t};
+          return [back(44), back(0)]})()""")
+        check(f5 == ["mot 44", ""], "review F5: drafts are capped (the oldest of 45 unsent drafts is dropped, the latest kept)", str(f5))
+        # F1: a heading made of thousands of spaces never freezes the page
+        load("c-2-envoye")
+        f1 = cdp.js("new Promise(r=>{const t0=performance.now();window.devHost.send({type:'message.agentChunk',turnId:'t1',messageId:'f1',text:'# x'+' '.repeat(5000)+'x'});requestAnimationFrame(()=>requestAnimationFrame(()=>r(Math.round(performance.now()-t0))))})")
+        host({"type": "message.agentChunk", "turnId": "t1", "messageId": "f1b", "text": "## Titre ##  "}); time.sleep(.2)
+        f1b = cdp.js("Array.from(document.querySelectorAll('.md-h')).map(h=>h.textContent.replace(/ +/g,' '))")
+        check(f1 < 300 and f1b == ["x x", "Titre"], "review F1: « # x » + 5 000 spaces + « x » renders at once (the old pattern took 41 s); closing #s still go", f"{f1} ms {f1b}")
+        # F2: a file:/// address is not a dead link
+        host({"type": "message.agentChunk", "turnId": "t1", "messageId": "f2", "text": "Voir file:///C:/site/landing.css et https://example.com"}); time.sleep(.2)
+        f2 = cdp.js("Array.from(document.querySelectorAll('.md-link')).map(a=>a.textContent)")
+        check(f2 == ["https://example.com"], "review F2: file:/// stays text (the host opens http(s) only); http(s) is still a link", str(f2))
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -1047,6 +1090,9 @@ try:
         cdp.js("window.devHost.send({type:'message.agentChunk',turnId:document.querySelectorAll('.turn')[document.querySelectorAll('.turn').length-1].dataset.turn,messageId:'zz',text:'Je cherche le style de la grille.'})"); time.sleep(.15)
         car2 = cdp.js("Array.from(document.querySelectorAll('.text, .text *')).map(n=>getComputedStyle(n,'::after').content).filter(c=>c&&c!=='none'&&c!=='normal')")
         check(car2 == [], "panel (R48): no blue typing caret after the agent's streaming text", str(car2))
+        load("autorisation-sans-refus")
+        f10p = cdp.js("[Array.from(document.querySelectorAll('.perm .btn')).map(b=>b.firstChild.textContent), !!document.querySelector('.perm .instead')]")
+        check(f10p == [["Autoriser"], False], "review F10 (panel): a request with no refuse option shows only « Autoriser »", str(f10p))
         load("etapes-brutes")
         pl4 = cdp.js("Array.from(document.querySelectorAll('.steps .step span:not(.spin):not(.fail-tag)')).map(n=>n.textContent)")
         check(pl4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build", "Modifie landing.css…"], "panel (D4): the same French labels for the steps, never the agent's raw title", str(pl4))
