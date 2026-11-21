@@ -738,7 +738,8 @@ function onFocus(e) {
   if (t.getRootNode && t.getRootNode().host) { var info = hit(r.left + 1, r.top + 1); if (info && info.el === t) cur = info; }
   down = []; keyboard = true; place(cur);
 }
-function onScroll() { if (peek || tracking()) { schedule(); return; } if (follow || cmAny()) schedule(); if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
+function onScroll() { if (follow) followPost();   // R39: the bubble moves with this very scroll, before any drawing
+  if (peek || tracking()) { schedule(); return; } if (follow || cmAny()) schedule(); if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
 function onLeave(e) { if (!idle() && !peek && !e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
 
 function selectionInfo(text) {
@@ -925,16 +926,27 @@ function cmSet(list) {
   schedule();   // R27: a frame over one of these elements draws its contour once
   return found;
 }
-function followCheck() {
-  if (!follow) return;
+// R39: where the bubble's element is, posted BEFORE anything is drawn (the drawing — frame, labels, inspector — reads
+// computed styles: it must never delay the host). Called from the scroll listener itself (the same task as the scroll)
+// and at the start of every frame / check. Returns the element and its rectangle (null: gone).
+function followPost() {
+  if (!follow) return null;
   var el = follow.el;
   if (!el || !el.isConnected) { el = follow.el = follow.selector ? cmFind(follow.selector) : null; }
-  if (!el) { bxPlace(null); if (followLast !== 'gone') { followLast = 'gone'; post({ op: 'anchor', gone: true }); } return; }
+  if (!el) { if (followLast !== 'gone') { followLast = 'gone'; post({ op: 'anchor', gone: true }); } return null; }
   var r = el.getBoundingClientRect(), o = { x: r.left + follow.ox, y: r.top + follow.oy, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
-  bxPlace(el, r);
   var key = [o.x, o.y, o.w, o.h, o.vw, o.vh].map(function (v) { return v.toFixed(1); }).join(',');
-  if (key === followLast) return;
-  followLast = key; o.op = 'anchor'; post(o);
+  if (key !== followLast) {
+    followLast = key; o.op = 'anchor'; o.sx = scrollX; o.sy = scrollY;
+    o.t = performance.timeOrigin ? performance.timeOrigin + performance.now() : Date.now();   // R39: the host measures page -> host
+    post(o);
+  }
+  return { el: el, r: r };
+}
+function followCheck() {
+  if (!follow) return;
+  var f = followPost();   // posted first
+  bxPlace(f ? f.el : null, f ? f.r : null);   // then drawn
 }
 // D1: the frame + two labels of the bubble's element (document-anchored like the marks: glued while scrolling)
 var bx = null;

@@ -20,7 +20,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 args = sys.argv[1:]
 OUT = os.path.abspath(args[args.index("--out") + 1] if "--out" in args else os.path.join(ROOT, "build", "chat-cv4-h2"))
-TOOLS = os.path.join(ROOT, "tools", "w64devkit", "bin")
+TOOLS = os.environ.get("W64DEVKIT_BIN") or os.path.join(ROOT, "tools", "w64devkit", "bin")   # override: a w64devkit of another checkout
 EDGE = next(iter(sorted(glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "EdgeCore", "*", "msedge.exe"))
                         + glob.glob(os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Microsoft", "EdgeCore", "*", "msedge.exe")), reverse=True)), None)
 os.environ["BROWSER_ANNOTATIONS_TEST"] = "1"
@@ -35,7 +35,7 @@ os.makedirs(OUT, exist_ok=True)
 exe = os.path.join(OUT, "page-v4-test.exe")
 cmd = [os.path.join(TOOLS, "g++.exe"), "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unknown-pragmas", "-Wno-cast-function-type",
        "-Wno-missing-field-initializers", "-Wno-misleading-indentation", "-static", "-municode", "-mconsole", "-Isrc",
-       "-Ideps/webview2/build/native/include", "tests/annotations-ui/page_v4_test.cpp", "src/annotations.cpp", "-o", exe,
+       "-I" + (os.environ.get("WEBVIEW2_INCLUDE") or "deps/webview2/build/native/include"), "tests/annotations-ui/page_v4_test.cpp", "src/annotations.cpp", "-o", exe,
        "-lbcrypt", "-lole32", "-lwindowscodecs", "-lshlwapi", "-lgdi32", "-luser32"]
 r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
 check(r.returncode == 0, "unit: build page_v4_test.cpp", (r.stderr or "")[-800:])
@@ -288,6 +288,12 @@ try:
     check(v["sm"] and not v["same"], "R37: a value change (padding) still moves softly", v)
     wait(cdp, 400); v = cdp.js(MEASURE)
     check(v["same"] and abs(v["dy"]) < .6, "R37: … and lands on the new value", v)
+    # R39: « anchor » posted in the scroll event's own task (before any rAF / drawing), with sx, sy, t
+    seen = cdp.js("""new Promise(r=>{const out=[];let k=0;addEventListener('scroll',()=>{const a=window.__msgs.filter(m=>m.op==='anchor').pop();
+        out.push([scrollY,a&&a.sy,a&&typeof a.t,a&&Math.abs(a.y-(document.querySelector('.pad').getBoundingClientRect().top))]);},{passive:true});
+        const f=()=>{if(++k>12)return r(out);scrollBy(0,31);requestAnimationFrame(()=>requestAnimationFrame(f))};f()})""")
+    check(len(seen) >= 10 and all(s[0] == s[1] and s[2] == "number" and s[3] < .01 for s in seen),
+          "R39: anchor posted inside the scroll event, before any drawing (sy = scrollY, t, the element's new rectangle)", f"{len(seen)} scrolls, off: {[s for s in seen if not (s[0] == s[1] and s[3] < .01)][:3]}")
     cdp.js("window.dispatchEvent(new Event('resize'))"); frames(cdp, 2)
     cdp.js(f"{H}.cmd('follow',null)")
 

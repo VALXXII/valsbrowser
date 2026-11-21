@@ -21,6 +21,18 @@ static void Peek() {
     CHECK(js.find(L"if (op === 'peek') return peekSet(arg);") != std::wstring::npos);
     CHECK(js.find(L"behavior: reduced ? 'auto' : 'smooth'") != std::wstring::npos);   // R26: soft scroll, none when reduced
 }
+static void Anchor() {   // R39: optional sx, sy, t on « anchor »
+    namespace AH = AnnotationHost;
+    const std::string head = "{\"type\":\"browser-annotation\",\"v\":1,\"nonce\":\"n4\",\"navStamp\":1,\"op\":\"anchor\",\"x\":1,\"y\":2,\"w\":3,\"h\":4,\"vw\":800,\"vh\":600";
+    auto c = AH::CheckMessage(head + ",\"sx\":0,\"sy\":1234.5,\"t\":1763650000123.25}", "n4", 1);
+    CHECK(c.env.op == AH::Op::Anchor && c.env.sy == 1234.5 && c.env.t == 1763650000123.25 && c.env.y == 2);
+    CHECK(AH::CheckMessage(head + "}", "n4", 1).env.op == AH::Op::Anchor);                        // still optional
+    CHECK(AH::CheckMessage(head + ",\"sy\":\"x\"}", "n4", 1).env.op == AH::Op::Invalid);
+    const std::wstring js = NativeChrome::Annotations::PageScript();
+    CHECK(js.find(L"function onScroll() { if (follow) followPost();") != std::wstring::npos);
+    const auto post = js.find(L"var f = followPost();   // posted first"), draw = js.find(L"bxPlace(f ? f.el : null, f ? f.r : null);");
+    CHECK(post != std::wstring::npos && draw != std::wstring::npos && post < draw);
+}
 static void Selecting() {   // latency: the light message at the click, before the full « select »
     namespace AH = AnnotationHost;
     auto check = [](const std::string& j) { return AH::CheckMessage(j, "n4", 1); };
@@ -63,7 +75,7 @@ static void Transition() {   // R36
 }
 
 int wmain(int argc, wchar_t** argv) {
-    Peek(); Selecting(); Edges(); Ctrl(); Transition();
+    Peek(); Selecting(); Anchor(); Edges(); Ctrl(); Transition();
     if (argc > 1) {
         const std::wstring out = argv[1];
         auto write = [&](const wchar_t* name, const std::wstring& text) {

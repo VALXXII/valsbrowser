@@ -76,7 +76,10 @@ enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Sel
 // gone = it is no longer in the page.
 // Selecting (latency): posted at the click, before the full « select » of the same seq: what was clicked —
 // serial = seq, selector, x / y / w / h = the element's rectangle (CSS px of the top viewport), at = the click (ms since 1970).
-struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; std::string selector; double at = 0; };
+// Anchor (R39): sx / sy = the page's scroll offset (CSS px), t = when the page measured it (ms since 1970, sub-ms):
+// optional (0 when absent), for the host's frame-by-frame measure of the page -> host lag.
+struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; std::string selector; double at = 0;
+                  double sx = 0, sy = 0, t = 0; };
 
 // Checks the frame of every message: type/version, the session nonce and the navigation stamp.
 // Anything else (unknown op, wrong types) is Invalid.
@@ -108,6 +111,9 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
         if (const auto* g = v.Get("gone"); g && g->IsBool() && g->boolean) { e.gone = true; return e; }
         auto num = [&](const char* k, double& out, double lo, double hi) { const auto* p = v.Get(k); if (!p || !p->IsNumber() || !(p->number >= lo && p->number <= hi)) return false; out = p->number; return true; };
         if (!num("x", e.x, -1e6, 1e6) || !num("y", e.y, -1e6, 1e6) || !num("w", e.w, 0, 1e6) || !num("h", e.h, 0, 1e6) || !num("vw", e.vw, 1, 1e5) || !num("vh", e.vh, 1, 1e5)) return bad("anchor");
+        if (v.Get("sx") && !num("sx", e.sx, -1e7, 1e7)) return bad("anchor sx");
+        if (v.Get("sy") && !num("sy", e.sy, -1e7, 1e7)) return bad("anchor sy");
+        if (v.Get("t") && !num("t", e.t, 0, 1e14)) return bad("anchor t");
     }
     else return bad("op");
     return e;
