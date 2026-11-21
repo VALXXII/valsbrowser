@@ -131,6 +131,10 @@ check('turn.active' in shut and '"turn.end"' in shut, 'M11: Shutdown ends the ru
 ens = block_after(turn, 'void EnsureSession(std::function<void()> ready) {')
 check('FinishTurn(' in ens, 'M13: EnsureSession ends the turn in error when no session can start')
 
+# M3: after a turn that changed only CSS (the values glide, no reload), the mark « en cours » becomes « terminé »
+atp = block_after(ui, 'void AfterTurnPage(')
+check(atp.count('ChatTransition::Reload(') >= 2 and atp.count('GlidedDone') >= 2 and 'Outcome::Glided' in ui, 'M3: every ChatTransition::Reload tells how it ended; a glide puts the « done » mark')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

@@ -46,6 +46,17 @@ void ApplyMark(const char* state, const std::string& selector) {
 }
 // After a turn that changed files: the page must show them. A dev server that reloads by itself (HMR client in the
 // page, or a navigation that already happened during the turn) is left alone; otherwise the chat reloads the page.
+// M3 (review R): a turn that changed only CSS glides the values in place, no reload — nothing re-armed the page, so the
+// « en cours » mark stayed, spinning. The transition says how it ended: a glide puts the « done » mark (a reload keeps the
+// usual re-arming path, which puts it).
+ChatTransition::Done GlidedDone() {
+    const std::string sel = doneMarkSelector;
+    return [sel](ChatTransition::Outcome o) {
+        if (o != ChatTransition::Outcome::Glided) return;
+        if (!sel.empty()) ApplyMark("done", sel); else ApplyMark("clear", "");
+        Diag(L"the page glided its new values (no reload): mark « done »");   // i18n-exempt: log detail
+    };
+}
 void AfterTurnPage(const std::vector<std::string>& paths) {   // R36: the files the turn changed (relative, « / »)
     const bool changed = !paths.empty();
     auto t = ChatTab(); if (!t || t->closed || !t->view.p) return;
@@ -59,7 +70,7 @@ void AfterTurnPage(const std::vector<std::string>& paths) {   // R36: the files 
         if (hmr) { Diag(L"dev server with hot reload detected: no reload"); if (post) SetTimer(post, MarkTimer, 700, nullptr); }
         else { Diag(L"files changed and no dev server reload: the page shows them (transition)"); 
 #if CHAT_HAS_TRANSITION
-            ChatTransition::Reload(tab->controller.p, tab->view.p, paths, motion.ReducedMotion());   // R36 (H2)
+            ChatTransition::Reload(tab->controller.p, tab->view.p, paths, motion.ReducedMotion(), GlidedDone());   // R36 (H2); M3: a glide marks « done »
 #else
             tab->view->Reload();
 #endif
@@ -68,7 +79,7 @@ void AfterTurnPage(const std::vector<std::string>& paths) {   // R36: the files 
     const wchar_t* probe = L"(function(){try{return !!(document.querySelector('script[src*=\"/@vite/client\"],script[src*=\"webpack-dev-server\"],script[src*=\"/_next/static/chunks/webpack\"],astro-dev-toolbar')"
                            L"||window.__vite_plugin_react_preamble_installed__||window.webpackHotUpdate||window.__webpack_hash__||window.__NEXT_DATA__||window.$RefreshReg$)}catch(e){return false}})()";
 #if CHAT_HAS_TRANSITION
-    if (FAILED(t->view->ExecuteScript(probe, cb))) ChatTransition::Reload(t->controller.p, t->view.p, paths, motion.ReducedMotion());   // R36 (H2)
+    if (FAILED(t->view->ExecuteScript(probe, cb))) ChatTransition::Reload(t->controller.p, t->view.p, paths, motion.ReducedMotion(), GlidedDone());   // R36 (H2); M3
 #else
     if (FAILED(t->view->ExecuteScript(probe, cb))) t->view->Reload();
 #endif
