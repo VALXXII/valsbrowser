@@ -491,6 +491,21 @@ static void TestBubble() {
         Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&
               RoomCss({100, 850, 420, 890}, false, area, 12, 1.f, 520) == 120 && RoomCss({100, 300, 420, 700}, true, area, 12, 1.25f, 520) == 470,
               "R38: the height offered is the room from the fixed edge to the page's far side (min 120, max 520)"); }
+    // R39: a scroll step carries the window — same size, same inset, same region, only moved; even past the screen's top
+    {   const Rect screen{0, 0, 1475, 1019}; const Edges over{0, 0, 0, 0};
+        const Rect s0{342, 536, 742, 641};
+        const auto f0 = FrameBubble(s0, 650, false, screen, 1.25f, over);
+        const auto same = Reframe(s0, f0.inset, f0.window.W(), f0.window.H(), 1.25f, over);
+        Check(same.window.left == f0.window.left && same.window.top == f0.window.top && same.window.W() == f0.window.W() && same.window.H() == f0.window.H() &&
+              same.region.top == f0.region.top && same.region.bottom == f0.region.bottom && same.region.left == f0.region.left && same.region.right == f0.region.right,
+              "R39: carried in place, the window is the one framed");
+        const Rect s1{342, 166, 742, 271};   // scrolled 370 px up: framed again, the window would shrink at the screen's top
+        const auto moved = Reframe(s1, f0.inset, f0.window.W(), f0.window.H(), 1.25f, over);
+        const auto reframed = FrameBubble(s1, 650, false, screen, 1.25f, over);
+        Check(moved.window.top == f0.window.top - 370 && moved.window.W() == f0.window.W() && moved.window.H() == f0.window.H() && moved.inset == f0.inset &&
+              moved.region.top == f0.region.top && moved.region.bottom == f0.region.bottom,
+              "R39: a scroll step only moves the window (no new size for the WebView, no new inset for the page)");
+        Check(!(reframed.inset == f0.inset), "R39: (framing again at the screen's top would change the inset at every step — the lag)"); }
     // R40: the handle resizes from the anchored corner, never off the page area
     {   const Rect area{0, 100, 1200, 900};
         const auto r = ResizeRoom({300, 400, 620, 600}, Side::Right, area, 12, 1.f);

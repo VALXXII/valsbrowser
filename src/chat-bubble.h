@@ -87,6 +87,20 @@ inline Grown Grow(const Rect& surface, const Edges& want, const Rect& screen, fl
 // to the surface + the overflow asked, within the margin. At rest the region is the surface: clicks around it reach
 // the page. `inset` (CSS px) says where the surface is in the window.
 struct Framed { Rect window; Edges inset; Rect region; };   // region: in the window's own pixels
+// R39: the same window (size, inset) carried by the surface: a scroll step only moves it — no new inset for the page,
+// no new size for the WebView. It may then leave the monitor's work area: that part is transparent and outside the
+// region (clipped to the page area by the caller).
+inline Framed Reframe(const Rect& surface, const Edges& inset, int winW, int winH, float k, const Edges& over) {
+    auto px = [&](int css) { return int(css * k + .5f); };
+    Framed f; f.inset = inset;
+    const int sx = px(inset.left), sy = px(inset.top);
+    f.window = {surface.left - sx, surface.top - sy, surface.left - sx + winW, surface.top - sy + winH};
+    f.region = {sx - px(std::min(over.left, inset.left)), sy - px(std::min(over.top, inset.top)),
+                sx + surface.W() + px(std::min(over.right, inset.right)), sy + surface.H() + px(std::min(over.bottom, inset.bottom))};
+    f.region.left = std::max(0, f.region.left); f.region.top = std::max(0, f.region.top);
+    f.region.right = std::min(winW, f.region.right); f.region.bottom = std::min(winH, f.region.bottom);
+    return f;
+}
 inline Framed FrameBubble(const Rect& surface, int maxH, bool bottomFixed, const Rect& screen, float k, const Edges& over, int marginCss = 400) {
     Rect full = surface;
     if (bottomFixed) full.top = std::min(surface.top, surface.bottom - maxH); else full.bottom = std::max(surface.bottom, surface.top + maxH);
@@ -97,12 +111,7 @@ inline Framed FrameBubble(const Rect& surface, int maxH, bool bottomFixed, const
     f.inset.left = css(surface.left - f.window.left); f.inset.top = css(surface.top - f.window.top);
     f.window.left = surface.left - px(f.inset.left); f.window.top = surface.top - px(f.inset.top);   // the surface exactly at the inset told
     f.inset.right = css(f.window.right - surface.right); f.inset.bottom = css(f.window.bottom - surface.bottom);
-    const int sx = px(f.inset.left), sy = px(f.inset.top);
-    f.region = {sx - px(std::min(over.left, f.inset.left)), sy - px(std::min(over.top, f.inset.top)),
-                sx + surface.W() + px(std::min(over.right, f.inset.right)), sy + surface.H() + px(std::min(over.bottom, f.inset.bottom))};
-    f.region.left = std::max(0, f.region.left); f.region.top = std::max(0, f.region.top);
-    f.region.right = std::min(f.window.W(), f.region.right); f.region.bottom = std::min(f.window.H(), f.region.bottom);
-    return f;
+    return Reframe(surface, f.inset, f.window.W(), f.window.H(), k, over);
 }
 // D1 (Paper 18NS-0 … 19IO-0, bubble open): the element's frame `18QJ-0` goes 4 px out of the element on every side;
 // its two labels (`18QK-0` selector, `18QQ-0` size) sit 24 px above the element, 20 px high, flush with the frame's

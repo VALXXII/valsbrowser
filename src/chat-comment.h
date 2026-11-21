@@ -168,22 +168,60 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     // R19: the window is the surface + a fixed transparent margin, as tall as the surface may grow; a menu or a tooltip
     // out of the surface only widens the window's region (nothing moves: same image before and after, to the pixel)
     MONITORINFO mi{sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mi);
-    const auto f = ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.side == ChatBubble::Side::Above,
-                                           {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
+    // R39: a scroll step carries the same window (size, inset): only a move. Re-framed to the screen (a new inset told to
+    // the page, a new WebView size) at the next change of size — never at each image of a scroll.
+    const bool carry = scrolling && bubble.win.right > bubble.win.left && !bubble.waitingAck;
+    const auto f = carry ? ChatBubble::Reframe(p.rect, bubble.inset, bubble.win.right - bubble.win.left, bubble.win.bottom - bubble.win.top, k, bubble.over)
+                         : ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.side == ChatBubble::Side::Above,
+                                                   {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
     const bool insetChanged = !(f.inset == bubble.inset); bubble.inset = f.inset;
     const RECT wr{f.window.left, f.window.top, f.window.right, f.window.bottom};
+    const auto vis = ChatBubble::Clip(f.region, {a.left - f.window.left, a.top - f.window.top, a.right - f.window.left, a.bottom - f.window.top});   // R29: never over the bars
+    const RECT rg{vis.left, vis.top, vis.right, vis.bottom};
+    const bool regionChanges = !bubble.waitingAck && !EqualRect(&rg, &bubble.region);
     if (!EqualRect(&wr, &bubble.win)) {
         const bool sized = wr.right - wr.left != bubble.win.right - bubble.win.left || wr.bottom - wr.top != bubble.win.bottom - bubble.win.top;
         bubble.win = wr;
+        // R39b: the window moves AND its region changes (the element passes under an edge of the page area). Between the two
+        // calls the old region would ride with the window over the browser's bars for an image: first the part both regions
+        // share (inside the page area at the old place and at the new one), then the move, then the new region.
+        if (regionChanges) {
+            RECT both{}; if (!IntersectRect(&both, &bubble.region, &rg)) both = RECT{};
+            SetWindowRgn(bubble.hwnd, CreateRectRgn(both.left, both.top, both.right, both.bottom), FALSE);
+        }
         // R39: a move (scroll) is only a move — no z-order, no copy of the old pixels, no WebView bounds
         SetWindowPos(bubble.hwnd, nullptr, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | (sized ? 0 : SWP_NOSIZE));
         if (sized) view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top});
     }
-    const auto vis = ChatBubble::Clip(f.region, {a.left - f.window.left, a.top - f.window.top, a.right - f.window.left, a.bottom - f.window.top});   // R29: never over the bars
-    const RECT rg{vis.left, vis.top, vis.right, vis.bottom};
     if (bubble.waitingAck) bubble.region = rg;   // R18: kept for the reveal; the window shows nothing until then
-    else if (!EqualRect(&rg, &bubble.region)) { bubble.region = rg; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), FALSE); }   // R41: no repaint for a region (no flash); the system owns it now
+    else if (regionChanges) { bubble.region = rg; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), FALSE); }   // R41: no repaint for a region (no flash); the system owns it now
     if (!scrolling && (sideChanged || insetChanged) && panelReady) SendLayout(false);
+}
+// R39 (measured frame by frame): the page posts « anchor » from its scroll listener, before the compositor's image of
+// that scroll reaches the screen; a window moved at once lands one screen image AHEAD of the content. The move waits
+// for the next composition (DwmFlush, on a small thread of its own), then lands with the page's image. Only the latest
+// position counts: anchors that arrive meanwhile only update the element. BROWSER_CHAT_FOLLOW_FRAMES=0 moves at once.
+struct Follower { HANDLE wake = nullptr; std::atomic<HWND> to{nullptr}; std::atomic<bool> pending{false}; } follower;
+int FollowFrames() {
+    static const int n = [] { wchar_t v[8] = L""; return GetEnvironmentVariableW(L"BROWSER_CHAT_FOLLOW_FRAMES", v, 8) ? std::clamp(_wtoi(v), 0, 3) : 1; }();
+    return n;
+}
+void FollowLater() {
+    if (!follower.wake) {
+        follower.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!follower.wake) { PlaceBubble(true); return; }
+        std::thread([] {
+            for (;;) {
+                WaitForSingleObject(follower.wake, INFINITE);
+                for (int i = 0; i < FollowFrames(); ++i) DwmFlush();
+                if (const HWND h = follower.to.load()) PostMessageW(h, WM_APP + 4, 0, 0);
+            }
+        }).detach();
+    }
+    static double askedAt = 0;   // a move asked but never delivered (the window went away meanwhile) does not block the next ones
+    if (follower.to.load() != bubble.hwnd || Ann::NowMs() - askedAt > 200) follower.pending = false;
+    follower.to = bubble.hwnd;
+    if (!follower.pending.exchange(true)) { askedAt = Ann::NowMs(); SetEvent(follower.wake); }
 }
 RECT BubbleScreenRect() { RECT r{}; if (bubble.hwnd) GetWindowRect(bubble.hwnd, &r); return r; }
 void BubbleModal(bool on) { bubble.modal = on; }
@@ -215,6 +253,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     if (m == WM_APP + 2) { if (bubble.open) { SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
     if (m == WM_APP + 3) { FinishOpening(); return 0; }   // R18: after the opening layout
+    if (m == WM_APP + 4) { follower.pending = false; if (bubble.open && bubble.known && bubble.anchor.set) PlaceBubble(true); return 0; }   // R39: the page's image is on screen
     if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     {   LRESULT r = 0; if (view.HostMessage(h, m, w, l, r)) return r; }   // R1: the page is a visual of this window: mouse, cursor, UI Automation
@@ -360,15 +399,15 @@ void OnAnchor(const AH::Envelope& e) {
     if (!bubble.open) return;
     if (e.gone) { Diag(L"the bubble's element is no longer in the page"); CloseBubble(false); return; }
     if (!bubble.known) bubble.anchor = ChatBubble::Anchor{};   // R29: the first real position of the element decides the anchor
-    const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows at once, nothing else
+    const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows, nothing else
     bubble.element = ToScreen(e.x, e.y, e.w, e.h, e.vw); bubble.known = true;
-    PlaceBubble(scrolling);
-    if (scrolling && e.t > 0) {   // R39: the page's scroll (its clock) -> the window moved, summed over 30 steps   // i18n-exempt: log detail
+    if (scrolling && FollowFrames() > 0) FollowLater(); else PlaceBubble(scrolling);
+    if (scrolling && e.t > 0) {   // R39: the page's scroll (its clock) -> here, summed over 30 steps   // i18n-exempt: log detail
         static int n = 0; static double sum = 0, worst = 0;
         FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
         const double lag = std::max(0.0, double(u.QuadPart) / 10000.0 - 11644473600000.0 - e.t);
         ++n; sum += lag; worst = std::max(worst, lag);
-        if (n == 30) { Diag(L"anchor: the window followed the page's scroll " + Ann::Ms(sum / n) + L" ms after it on average, " + Ann::Ms(worst) + L" ms at worst (30 steps)"); n = 0; sum = worst = 0; }
+        if (n == 30) { Diag(L"anchor: the page's scroll reached the host " + Ann::Ms(sum / n) + L" ms after it on average, " + Ann::Ms(worst) + L" ms at worst (30 steps); the window moves " + std::to_wstring(FollowFrames()) + L" screen image(s) later"); n = 0; sum = worst = 0; }
     }
 }
 

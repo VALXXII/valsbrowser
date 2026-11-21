@@ -23,6 +23,9 @@
 //             events streamed to the panel -> EndTurn (changes, checkpoint) -> annotations resolved / released ->
 //             the page reloads when files changed and no dev server does it -> the element gets its « done » mark.
 #include <deque>
+#include <atomic>
+#include <thread>
+#include <dwmapi.h>
 #include "chat-local.h"
 #include "chat-prompt.h"
 #include "chat-tools.h"

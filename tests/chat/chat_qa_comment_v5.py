@@ -98,7 +98,14 @@ def run_of(frame, x, test, y0=0, y1=None):
     """First and last row (in [y0, y1)) whose pixel at column x passes `test`, or None."""
     w, h, _ = frame; y1 = h if y1 is None else y1
     rows = [y for y in range(y0, y1) if test(px(frame, x, y))]
-    return (rows[0], rows[-1]) if rows else None
+    if not rows:
+        return None
+    runs = [[rows[0], rows[0]]]   # the longest continuous run (gaps of a few rows: text inside the surface)
+    for y in rows[1:]:
+        if y - runs[-1][1] <= 8: runs[-1][1] = y
+        else: runs.append([y, y])
+    best = max(runs, key=lambda r: r[1] - r[0])
+    return tuple(best) if best[1] - best[0] >= 16 else None
 
 
 class Strips(threading.Thread):
@@ -132,28 +139,32 @@ def bubble_surface():
 
 
 def region_box(hwnd):
+    """The window's region on screen; None when empty or when the window moved during the reading (two reads disagree)."""
+    w0 = V3.win_rect(hwnd)
     rg = W.RECT(); kind = u32.GetWindowRgnBox(hwnd, ctypes.byref(rg))
-    if kind == 1:
+    wr = V3.win_rect(hwnd)
+    if kind == 1 or wr != w0:
         return None
-    wr = V3.win_rect(hwnd); return (wr[0] + rg.left, wr[1] + rg.top, wr[0] + rg.right, wr[1] + rg.bottom)
+    return (wr[0] + rg.left, wr[1] + rg.top, wr[0] + rg.right, wr[1] + rg.bottom)
 
 
 # ---------------------------------------------------------------- R39 / R39b
 def follow(label, act, edge="bottom"):
     """Scroll with `act`; per image, the gap between the element's edge and the bubble's (pixels) must not change."""
-    pg = CC.page_widget(); el = CC.element_screen('#qa-mag'); sf = bubble_surface()
-    if not sf:
+    V.front(); time.sleep(0.15)
+    pg = CC.page_widget(); el = CC.element_screen('#qa-mag'); sf = bubble_surface(); bh = V.bubble_hwnd()
+    if not sf or not bh:
         return step(f'R39 · {label}: the bubble is open', False)
     xm = (el[0] + el[2]) // 2; xb = (sf[0] + sf[2]) // 2
-    top = max(0, pg[1] - 24); bottom = pg[3] + 2   # a strip of the browser's bar above the page area (R39b: never drawn over)
-    s = Strips([xm, xb], top, bottom); s.start(); time.sleep(0.12)
-    m0 = mark(); act(); time.sleep(0.6); s.stop = True; s.join()
-    y0, y1 = pg[1] - top, pg[3] - top   # the page area's rows in the strip
-    rows = []; bars = 0; blacks = 0; first = s.frames[0][1] if s.frames else None
+    top, bottom = pg[1], pg[3]
+    s = Strips([xm, xb], top, bottom); regions = V3.Sampler(lambda: region_box(bh[0][0])); s.start(); regions.start(); time.sleep(0.12)
+    m0 = mark(); act(); time.sleep(0.6); s.stop = True; regions.stop = True; s.join(); regions.join()
+    y0, y1 = 0, pg[3] - pg[1]
+    # R39b: the window's region never goes over the browser's bars (the page area's edges)
+    bars = sum(1 for _, r in regions.samples if isinstance(r, tuple) and len(r) == 4 and (r[1] < pg[1] - 1 or r[3] > pg[3] + 1))
+    rows = []; blacks = 0
     for t, (fm, fb) in s.frames:
         rm = run_of(fm, 1, magenta, y0, y1); rb = run_of(fb, 1, dark, y0, y1)
-        if first is not None:   # the browser's bar above the page: identical in every image
-            if any(px(fb, 1, y) != px(first[1], 1, y) for y in range(0, y0)): bars += 1
         if rb and any(black(px(fb, 1, y)) for y in range(rb[0], rb[1] + 1)): blacks += 1
         if not rm or not rb:
             rows.append((t, None)); continue
@@ -162,13 +173,20 @@ def follow(label, act, edge="bottom"):
         rows.append((t, None if clipped else (a, b - a)))
     seen = [r for _, r in rows if r]
     if len(seen) < 3:
-        return step(f'R39 · {label}: measurable (element and bubble seen together)', False, {'frames': len(s.frames), 'seen': len(seen)})
+        f0 = s.frames[0][1] if s.frames else None
+        diag = {'frames': len(s.frames), 'seen': len(seen), 'element': el, 'surface': sf, 'page': pg,
+                'firstMagenta': run_of(f0[0], 1, magenta, y0, y1) if f0 else None, 'firstDark': run_of(f0[1], 1, dark, y0, y1) if f0 else None}
+        if f0:
+            from PIL import Image
+            for i, fr in enumerate(f0):
+                w_, h_, raw = fr; Image.frombuffer('RGBA', (w_, h_), raw, 'raw', 'BGRA', 0, 1).convert('RGB').resize((30, h_)).save(OUT / f'r39-{label}-colonne-{i}.png')
+        return step(f'R39 · {label}: measurable (element and bubble seen together)', False, diag)
     base = seen[0][1]
     devs = [g - base for _, g in seen]
     moves = [abs(b[0] - a[0]) for a, b in zip(seen, seen[1:]) if b[0] != a[0]]
     step_px = round(sorted(moves)[len(moves) // 2], 1) if moves else 0
     bad = [d for d in devs if abs(d) > 2]
-    lag = [l for l in C.log_text()[m0:].splitlines() if 'anchor: the window followed' in l]
+    lag = [l for l in C.log_text()[m0:].splitlines() if 'anchor: the page' in l]
     m = {'frames': len(s.frames), 'measured': len(seen), 'scrolled_px': (seen[0][0] - seen[-1][0]), 'medianStepPx': step_px,
          'maxGapChangePx': max((abs(d) for d in devs), default=0), 'imagesOff': len(bad), 'offValues': bad[:12],
          'barChanged': bars, 'blackImages': blacks, 'hostLatency': lag[-2:]}
@@ -197,6 +215,7 @@ def morph(label, open_first, then):
     if not bw:
         return step(f'R41 · {label}: the bubble is open', False)
     h = bw[0][0]
+    V.front(); time.sleep(0.15)
     open_first(); time.sleep(0.5)
     before = C.panel("(function(){var m=document.querySelector('.menu:not(.menu-ghost)');if(!m)return null;var r=m.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom,devicePixelRatio]})()")
     wr = V3.win_rect(h)
@@ -204,42 +223,53 @@ def morph(label, open_first, then):
         return step(f'R41 · {label}: the first menu is open', False)
     k = before[4]; scr = lambda r: (int(wr[0] + r[0] * k), int(wr[1] + r[1] * k), int(wr[0] + r[2] * k), int(wr[1] + r[3] * k))
     old = scr(before)
-    big = (max(0, wr[0] - 400), max(0, wr[1] - 400), wr[2] + 400, wr[3] + 400)
-    f = Frames(big, 70, 0.006)
+    big = (max(0, old[0] - 160), max(0, old[1] - 160), old[2] + 160, old[3] + 160)
+    f = Frames(big, 90, 0.005)
     regions = V3.Sampler(lambda: region_box(h)); regions.start(); f.start(); time.sleep(0.04)
-    then(); time.sleep(0.45); f.stop = True; regions.stop = True; f.join(); regions.join()
+    t_click = time.perf_counter(); then(); time.sleep(0.45); f.stop = True; regions.stop = True; f.join(); regions.join()
     after = C.panel("(function(){var m=document.querySelector('.menu:not(.menu-ghost)');if(!m)return null;var r=m.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]})()")
     if not after:
         return step(f'R41 · {label}: the second menu is open', False)
     wr2 = V3.win_rect(h); new = (int(wr2[0] + after[0] * k), int(wr2[1] + after[1] * k), int(wr2[0] + after[2] * k), int(wr2[1] + after[3] * k))
     union = (min(old[0], new[0]), min(old[1], new[1]), max(old[2], new[2]), max(old[3], new[3]))
     # every region sample after the click covers what is on screen of the two menus (the window's own origin may move)
-    rs = [r for _, r in regions.samples if isinstance(r, tuple) and r and len(r) == 4]
-    short = [r for r in rs if not (r[0] <= new[0] + 1 and r[1] <= new[1] + 1 and r[2] >= new[2] - 1 and r[3] >= new[3] - 1)]
-    # every image: the new menu's box is mostly drawn (dark surface), never empty nor black
+    # the region once the page has asked for the new menu (CDP click -> page -> host: allow 60 ms): it covers the new box
+    rs = [(t, r) for t, r in regions.samples if isinstance(r, tuple) and r and len(r) == 4]
+    late = [r for t, r in rs if t > t_click + 0.06]
+    short = [r for r in late if not (r[0] <= new[0] + 1 and r[1] <= new[1] + 1 and r[2] >= new[2] - 1 and r[3] >= new[3] - 1)]
+    # every image: the box the two menus share is drawn (dark surface) — an image where it is not is a gap; black = a flash
+    inter = (max(old[0], new[0]), max(old[1], new[1]), min(old[2], new[2]), min(old[3], new[3]))
     gaps = blacks = 0; shares = []
     for _, fr in f.frames:
         n = d = b = 0
-        for y in range(new[1] - big[1] + 4, new[3] - big[1] - 4, 4):
-            for x in range(new[0] - big[0] + 4, new[2] - big[0] - 4, 4):
+        for y in range(inter[1] - big[1] + 4, inter[3] - big[1] - 4, 4):
+            for x in range(inter[0] - big[0] + 4, inter[2] - big[0] - 4, 4):
                 c = px(fr, x, y); n += 1; d += dark(c); b += black(c)
         sh = round(d / max(1, n), 2); shares.append(sh)
         if sh < 0.5: gaps += 1
         if b / max(1, n) > 0.2: blacks += 1
-    m = {'old': old, 'new': new, 'union': union, 'regionSamples': len(rs), 'regionShort': len(short), 'images': len(f.frames),
-         'drawnShare': shares[:40], 'emptyImages': gaps, 'blackImages': blacks}
+    timeline = []
+    for t, r in rs:
+        if not timeline or timeline[-1][1] != r: timeline.append((round((t - t_click) * 1000), r))
+    m = {'old': old, 'new': new, 'union': union, 'regionSamplesAfterClick': len(late), 'regionShort': len(short), 'images': len(f.frames),
+         'regionTimelineMs': timeline[:12], 'imageMs': [round((t - t_click) * 1000) for t, _ in f.frames][:60],
+         'drawnShare': shares[:60], 'emptyImages': gaps, 'blackImages': blacks}
     report['measures']['r41-' + label] = m
-    for i, (_, fr) in enumerate(f.frames[:: max(1, len(f.frames) // 6)][:6]):
+    for i, (_, fr) in enumerate(f.frames):
         save_png(fr, f'r41-{label}-{i:02d}.png')
     return step(f'R41 · {label}: the region covers the menus at every image, no empty or black image', not short and gaps == 0 and blacks == 0, m)
 
 
 def close_menus():
-    try:
-        C.key_panel('Escape', 'Escape', 27); time.sleep(0.15); C.key_panel('Escape', 'Escape', 27)
-    except Exception:
-        pass
-    time.sleep(0.3)
+    """Escape only while a menu is open (an Escape with none would close the bubble)."""
+    for _ in range(3):
+        try:
+            if not C.panel("!!document.querySelector('.menu:not(.menu-ghost)')"):
+                break
+            C.key_panel('Escape', 'Escape', 27)
+        except Exception:
+            break
+        time.sleep(0.3)
 
 
 # ---------------------------------------------------------------- R40
@@ -268,7 +298,8 @@ def run_main():
         pass
     fake = C.TOOLS / 'fake-acp-agent.exe'
     C.launch(extra_env={'BROWSER_CHAT_PANEL_IDLE_MS': '60000', 'BROWSER_CHAT_AGENT_IDLE_MS': '600000',
-                        'BROWSER_CHAT_FAKE_AGENT': f'"{fake}" --resume --claude-like --log "{flog}" --edit "{V.GAP_EDIT}"'})
+                        'BROWSER_CHAT_FAKE_AGENT': f'"{fake}" --resume --claude-like --log "{flog}" --edit "{V.GAP_EDIT}"',
+                        **({'BROWSER_CHAT_FOLLOW_FRAMES': __import__('os').environ['BROWSER_CHAT_FOLLOW_FRAMES']} if 'BROWSER_CHAT_FOLLOW_FRAMES' in __import__('os').environ else {})})
     try:
         time.sleep(1.0)
         C.shortcut('A'); step('mode on', logged(r'ANNOTATE mode on', 0, 10)); time.sleep(1.2)
@@ -285,6 +316,15 @@ def run_main():
         time.sleep(0.6)
         m2 = mark(); C.click_page('#qa-mag'); step('the bubble opens on the element', logged(r'CHAT bubble opened on', m2, 10)); logged(r'CHAT panel ready', 0, 5); time.sleep(1.2)
         capture('r39-depart')
+        V.front(); time.sleep(0.3)
+        mw = V3.win_rect(Q.main_window()); bh = V.bubble_hwnd()
+        geo = {'main': mw, 'page': CC.page_widget(), 'element': CC.element_screen('#qa-mag'), 'bubbleWindow': bh[0][3] if bh else None,
+               'bubbleRegion': region_box(bh[0][0]) if bh else None, 'surface': bubble_surface(), 'dpr': C.page('devicePixelRatio'),
+               'scroll': C.page('[scrollX,scrollY,innerWidth,innerHeight,document.scrollingElement.scrollHeight]')}
+        report['measures']['geometry'] = geo; print('geometry', geo, flush=True)
+        save_png(grab(mw), 'r39-depart-ecran.png')
+        if __import__('os').environ.get('V5_PROBE'):
+            raise SystemExit(0)
         pg = CC.page_widget(); park = (pg[0] + 12, (pg[1] + pg[3]) // 2)   # the pointer over the page, away from the bubble
 
         def reset(y):
@@ -300,12 +340,12 @@ def run_main():
             x = pg[2] - 7; drag(x, pg[1] + 40, x, pg[1] + 150, steps=14, every=0.016)
         follow('barre-de-defilement', scrollbar)
         reset(0)
+        reset(0)
         def keyboard():
-            ws = C.ws_for(C.URL)
-            for _ in range(3):
-                for kind in ('rawKeyDown', 'keyUp'):
-                    ws.call('Input.dispatchKeyEvent', {'type': kind, 'key': 'ArrowDown', 'code': 'ArrowDown', 'windowsVirtualKeyCode': 40, 'nativeVirtualKeyCode': 40})
-                time.sleep(0.12)
+            u32.SetCursorPos(pg[2] - 7, pg[1] + 30); time.sleep(0.1); mouse(0x0002); time.sleep(0.03); mouse(0x0004); time.sleep(0.15)   # the page has the keyboard (its scrollbar's thumb: no scroll)
+            u32.SetCursorPos(*park); time.sleep(0.1)
+            for vk in (0x28, 0x28, 0x28, 0x22):   # Down x3, Page Down — real keys
+                V4.key(vk); time.sleep(0.03); V4.key(vk, up=True); time.sleep(0.15)
         follow('clavier', keyboard)
 
         # ---- R39b: under the top edge (the element starts just below it), then under the bottom edge
@@ -314,15 +354,18 @@ def run_main():
         follow('bord-haut', lambda: wheel(2, 0.2), edge='bottom')
         reset(320 - 24); u32.SetCursorPos(*park); time.sleep(0.2)
         edge_frames('bord-haut', lambda: wheel(2, 0.2), 'top')
-        reset(max(0, int(320 - vh + 40))); u32.SetCursorPos(*park); time.sleep(0.2)
+        # the element lower in the document (the bubble follows it), its top 40 px above the page area's bottom
+        reset(1500 - 300); C.page("(function(){document.getElementById('qa-mag').style.top='1500px';return 1})()"); time.sleep(0.6)
+        reset(int(1500 - vh + 60)); u32.SetCursorPos(*park); time.sleep(0.2)
         follow('bord-bas', lambda: wheel(-2, 0.2), edge='top')
-        reset(max(0, int(320 - vh + 40))); u32.SetCursorPos(*park); time.sleep(0.2)
+        reset(int(1500 - vh + 60)); u32.SetCursorPos(*park); time.sleep(0.2)
         edge_frames('bord-bas', lambda: wheel(-2, 0.2), 'bottom')
+        reset(1500 - 300); C.page("(function(){document.getElementById('qa-mag').style.top='320px';return 1})()"); time.sleep(0.4)
 
         # ---- R41: menu -> menu (the bubble back at its place)
         reset(0); time.sleep(0.4)
         morph('modele-vers-mode', lambda: C.click_panel('button.m'), lambda: C.click_panel('button.tb.mode'))
-        morph('mode-vers-plus', lambda: None, lambda: C.click_panel('button[aria-label="Joindre"]'))
+        morph('mode-vers-modele', lambda: None, lambda: C.click_panel('button.m'))   # « + » in the bubble is the file picker itself (R22): no menu
         close_menus()
         morph('modele-vers-effort', lambda: C.click_panel('button.m'), lambda: C.click_panel(text='Effort'))
         close_menus()
@@ -358,8 +401,12 @@ def run_main():
             g2 = grip_point()
             drag(g2[0], g2[1], pg[2] + 400, pg[3] + 400, steps=20, every=0.016); s3 = bubble_surface()
             step('R40 · never beyond the page area', s3 and s3[2] <= pg[2] and s3[3] <= pg[3], {'surface': s3, 'page': pg})
-            g3 = grip_point()
-            drag(g3[0], g3[1], s1[0] + 20, s1[1] + 20, steps=20, every=0.016); s4 = bubble_surface()
+            C.key_panel('Escape', 'Escape', 27); time.sleep(0.8); s3b = bubble_surface()   # closed at its largest
+            step('R40 · Échap at the largest size gives the size of before back', s3b and abs((s3b[2] - s3b[0]) - (s0[2] - s0[0])) <= 2 and abs((s3b[3] - s3b[1]) - (s0[3] - s0[1])) <= 2,
+                 {'largest': s3, 'closed': s3b, 'before': s0})
+            C.click_panel('.bt-bar-main'); time.sleep(0.8); s1 = bubble_surface()
+            g3 = grip_point(); drag(g3[0], g3[1], g3[0] + 200, g3[1] + 100, steps=12, every=0.016)
+            g3 = grip_point(); drag(g3[0], g3[1], s1[0] + 20, s1[1] + 20, steps=20, every=0.016); s4 = bubble_surface()
             step('R40 · never smaller than 320 × the size before the diff', s4 and s4[2] - s4[0] >= (s1[2] - s1[0]) - 1 and s4[3] - s4[1] >= (s1[3] - s1[1]) - 1, {'surface': s4, 'view': s1})
             g4 = grip_point(); drag(g4[0], g4[1], g4[0] + 120, g4[1] + 80, steps=12, every=0.016); s5 = bubble_surface()
             C.key_panel('Escape', 'Escape', 27); time.sleep(0.8); s6 = bubble_surface()
