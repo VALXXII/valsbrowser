@@ -797,6 +797,28 @@ int wmain(int argc, wchar_t** argv) {
         Check(menu.Track(items, {300, 300}, nullptr, true, true) == 0 && !menu.LastChoiceKeyboard(), "menu: dismissed, no keyboard choice");
         menu.Dispose();
     }
+    // Menu width (2026-11-21): a long label without a shortcut and a short one with a shortcut were added up as if they
+    // shared a row (widest label + widest shortcut), so the page/link menu came out ~395 DIP for ~270 of content.
+    // Each row now needs only its own label + its own shortcut / glyph (gap 12 DIP); the widest row sets the width.
+    {
+        ContextMenu::Menu menu; menu.Init(hi, owner, root);
+        ContextMenu::Item tools = ContextMenu::Command(14, L"Outils suppl\u00e9mentaires"); tools.children = {ContextMenu::Command(41, L"Inspecter")};
+        ContextMenu::Item annotate = ContextMenu::Command(17, L"Annoter l'\u00e9l\u00e9ment"); annotate.shortcut = L"Ctrl+Maj+A";
+        std::vector<ContextMenu::Item> items{ContextMenu::Command(11, L"Ouvrir le lien dans une nouvelle fen\u00eatre"), ContextMenu::Separator(),
+            ContextMenu::Command(12, L"Enregistrer le lien sous"), ContextMenu::Command(13, L"Copier le lien"), ContextMenu::Separator(), tools, ContextMenu::Separator(),
+            ContextMenu::Command(15, L"Imprimer\u2026"), ContextMenu::Command(16, L"Enregistrer en PDF"), ContextMenu::Separator(), annotate, ContextMenu::Separator(), ContextMenu::Command(18, L"Inspecter")};
+        static ContextMenu::Menu* probed; static float measured; probed = &menu; measured = -1;
+        const UINT_PTR timer = SetTimer(nullptr, 0, 30, [](HWND, UINT, UINT_PTR id, DWORD) {
+            if (!probed->Open()) return; KillTimer(nullptr, id);
+            HWND w = probed->LevelWindow(0); RECT r{}; GetWindowRect(w, &r); measured = (r.right - r.left) * 96.f / GetDpiForWindow(w);
+            PostMessageW(w, WM_KEYDOWN, VK_ESCAPE, 0);
+        });
+        menu.Track(items, {300, 300}, nullptr, false, true); KillTimer(nullptr, timer);
+        std::printf("     link menu width: %.0f DIP\n", measured);
+        Check(measured > 0 && measured <= 300, "menu: width follows its widest row (label + its own shortcut), not widest label + widest shortcut");
+        Check(measured >= 240, "menu: the longest label still fits on one line");
+        menu.Dispose();
+    }
     // ---- Settings drawer: « Autorisations du site » opens ON its view (no root page under it) --------
     {
         BrowserSettings::State st; SettingsUI::Drawer::Hooks dh; std::function<void(std::vector<BrowserSettings::Site>)> pending;

@@ -76,7 +76,7 @@ inline std::wstring Plain(const std::wstring& label, wchar_t* mnemonic = nullptr
 }
 
 namespace Layout {
-inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 24;
+inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 12;   // label to shortcut / glyph (user: half of the former 24)
 inline constexpr float radius = NativeUI::nativeCornerRadius, rowRadius = 4, text = 14, line = 20, trailing = 16, minWidth = 200, maxWidth = 440;
 inline constexpr float submenuDelayMs = 200;
 // Leading icon column (only when a row of the level has one): 16 DIP glyph, 8 DIP to the label (Paper c-99tvvr).
@@ -237,25 +237,26 @@ class Menu {
         }
         flush(); return lines;
     }
-    // Content-driven width: the widest label, plus the shortcut column or a trailing glyph.
+    // Content-driven width: the widest ROW, each row being its own label plus its own trailing parts,
+    // exactly as Paint lays it out (glyph: trailing + gap; shortcut: keys + gap). A long label without a
+    // shortcut and a short one with a shortcut never add up (they did: ~395 DIP menus for ~270 of content).
     // A menu with described choices takes the fixed Paper width and wraps descriptions.
     void Measure(Level& l) {
-        float label = 0, shortcut = 0; bool glyph = false, described = false; l.icons = false;
+        bool described = false; l.icons = false;
+        for (const auto& item : *l.items) if (!item.separator) l.icons = l.icons || !item.icon.empty() || item.image != nullptr;
+        float need = 0;
         for (const auto& item : *l.items) {
             if (item.separator) continue;
             const float size = item.kind == Kind::Command ? Layout::text : Layout::small;
             float w = l.chrome.TextWidth(Plain(item.label), size) + Lead(item);
             if (!item.second.empty()) w += l.chrome.TextWidth(L"  " + item.second, Layout::small);
-            label = std::max(label, w);
-            if (!item.shortcut.empty()) shortcut = std::max(shortcut, KeysWidth(l, item.shortcut));
-            glyph = glyph || item.checked || !item.children.empty();
+            if (l.icons) w += Layout::icon + Layout::iconGap;
+            if (item.checked || !item.children.empty()) w += Layout::trailing + Layout::shortcutGap;
+            if (!item.shortcut.empty()) w += KeysWidth(l, item.shortcut) + Layout::shortcutGap;
+            need = std::max(need, w);
             described = described || !item.description.empty();
-            l.icons = l.icons || !item.icon.empty() || item.image != nullptr;
         }
-        if (l.icons) label += Layout::icon + Layout::iconGap;
-        float tail = shortcut > 0 ? Layout::shortcutGap + shortcut : 0;
-        if (glyph) tail = std::max(tail, Layout::shortcutGap + Layout::trailing);
-        l.width = std::clamp(std::ceil(2 * Layout::pad + 2 + Layout::padLeft + label + tail + Layout::padRight), Layout::minWidth, Layout::maxWidth);
+        l.width = std::clamp(std::ceil(2 * Layout::pad + 2 + Layout::padLeft + need + Layout::padRight), Layout::minWidth, Layout::maxWidth);
         if (described) l.width = std::max(l.width, Layout::describedWidth);
         const float textWidth = l.width - 2 * Layout::pad - 2 - Layout::padLeft - Layout::padRight - Layout::trailing - 10;
         l.tops.clear(); l.heights.clear(); l.descriptions.clear(); float y = Layout::pad + 1;
