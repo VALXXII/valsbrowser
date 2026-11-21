@@ -819,12 +819,18 @@ try:
         n0 = len(of("bubble.size"))
         cdp.js("document.querySelector('.tb.mode').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));document.querySelector('.tb.mode').click()"); time.sleep(.03)
         mid = cdp.js("(()=>{const ms=Array.from(document.querySelectorAll('.menu'));return ms.map(m=>[m.className.replace('menu ','').trim(), m.getAttribute('role')||'', Math.round(m.getBoundingClientRect().width)])})()")
+        surf = cdp.js("(()=>{const m=document.querySelector('.menu.morph-in');const s=getComputedStyle(m);return [s.animationName, s.opacity, s.backgroundColor]})()")
         union = of("bubble.size")[n0:]
+        first_ask = union[0] if union else {}
         time.sleep(.35)
         m1 = cdp.js("(()=>{const ms=document.querySelectorAll('.menu');const r=ms[0].getBoundingClientRect();return [ms.length, ms[0].getAttribute('aria-label'), Math.round(r.width), ms[0].style.transform, ms[0].classList.contains('morph-in')]})()")
         check(len(mid) == 2 and "menu-ghost" in mid[0][0] and mid[0][1] == "" and "morph-in" in mid[1][0] and 289 <= mid[1][2] <= 300 and m1 == [1, "Mode", 290, "", False],
               "bubble (cv5 R41): model menu → mode menu: the old one stays as a ghost (no surface, content fading), the new one grows from its box to 290 px in 200 ms; then a single menu", f"{mid} {m1}")
-        check(len(union) >= 1 and any(u.get("overflowTop", 0) > 0 for u in union), "bubble (cv5 R41): during the transformation the region asked covers the menus (no gap, no flash)", json.dumps(union)[:200])
+        final = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),r=document.querySelector('.menu').getBoundingClientRect();return [Math.round(a.top-r.top)+32, Math.round(r.right-a.right)+48]})()")
+        during = of("bubble.size")[n0:]
+        check(surf == ["none", "1", "rgb(36, 36, 36)"], "bubble (cv5 R41): the transforming menu's surface stays opaque (no entrance fade on it) — only its content cross-fades", str(surf))
+        check(first_ask.get("overflowTop", 0) >= final[0] - 1 and all(u.get("overflowTop", 0) >= final[0] - 1 for u in during[:-1]),
+              "bubble (cv5 R41): from the first image of the transformation, the region asked covers the new menu's FINAL box (shadow included), and shrinks only after the end", f"final top {final[0]} / asks {[u.get('overflowTop', 0) for u in during]}")
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",

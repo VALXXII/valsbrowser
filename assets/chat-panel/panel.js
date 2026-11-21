@@ -636,6 +636,7 @@
     // host grows the transparent window around the surface for it (`bubble.size` overflow*, granted by `layout.inset`).
     menuEl.style.bottom = "";
     floatSet(menuEl, (lim, H) => {
+      if (menuEl._morphBox) return menuEl._morphBox;   // R41: while it transforms, its final box (not the moving one)
       const ar = app.getBoundingClientRect(), r = anchor.getBoundingClientRect(), W = S.lay.maxW;
       menuEl.style.width = width + "px"; menuEl.style.maxHeight = "";
       const mh = menuEl.offsetHeight;
@@ -690,14 +691,20 @@
     const ar = app.getBoundingClientRect(), r = oldEl.getBoundingClientRect();
     const box = { x: r.left - ar.left, y: r.top - ar.top, w: r.width, h: r.height, pad: oldEl.classList.contains("models") ? SHADOW.none : SHADOW.menu };
     oldEl.classList.add("menu-ghost"); oldEl.setAttribute("aria-hidden", "true"); oldEl.removeAttribute("role"); oldEl.inert = true;
-    if (BUB()) floatSet(oldEl, () => box);
-    setTimeout(() => { oldEl.remove(); floatDrop(oldEl); }, MORPH_MS + 40);
+    if (BUB()) floats.set(oldEl, () => box);   // no bubble.size yet: the first one, once the new menu is placed, asks for both
+    setTimeout(() => { oldEl.remove(); floatDrop(oldEl); }, MORPH_MS + 40);   // after the new menu's own end (+20)
     return { left: r.left, top: r.top, width: r.width, height: r.height };
   }
   // The new menu starts on the old one's box (position, width, height) and moves to its own; its content fades in.
   function morphFrom(o, el) {
     const fw = el.style.width;
+    el.classList.add("morph-in");   // first: the menus' entrance (scale .97, opacity 0) must not touch this box nor this surface
     const n = el.getBoundingClientRect();
+    // the final box, shadow included, stays in the region asked of the host until the transformation is over (with the
+    // old box, kept by its ghost): the region never shrinks under the growing menu
+    const ar = app.getBoundingClientRect();
+    el._morphBox = { x: n.left - ar.left, y: n.top - ar.top, w: n.width, h: n.height, pad: el.classList.contains("models") ? SHADOW.none : SHADOW.menu };
+    if (BUB()) publishSize();
     el.classList.add("morph-in");
     el.style.transition = "none"; el.style.overflow = "hidden";
     el.style.width = o.width + "px"; el.style.height = o.height + "px";
@@ -710,6 +717,7 @@
       if (!el.isConnected) return;
       el.style.transition = ""; el.style.transform = ""; el.style.height = ""; el.style.overflow = ""; el.style.width = fw;
       el.classList.remove("morph-in");
+      el._morphBox = null;
     }, MORPH_MS + 20);
   }
   const menuItems = () => S.menu ? Array.from(S.menu.el.querySelectorAll(".mi:not([aria-disabled='true']), .menu .btn, .menu .btn-s")) : [];
