@@ -917,6 +917,14 @@ try:
         host({"type": "thread.reset", "conversationId": "new-2", "items": []})
         f6 = cdp.js("document.getElementById('composer-input').textContent")
         check(f6 == "Plus grand", "review F6: a bubble's unsent words come back when the same element is clicked again (draft kept by element while nothing is sent)", repr(f6))
+        # E4 (b): with layout.room (the page area measured by the host), a menu turns before the host has to refuse room
+        load("c-1-vide")
+        host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 520, "inset": cdp.js("window.__inset"), "room": {"top": 40, "right": 400, "bottom": 400, "left": 400}})
+        n0 = len(of("bubble.size"))
+        click(".model .m"); time.sleep(.15)
+        e4 = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),m=document.querySelector('.menu').getBoundingClientRect();return [m.top>a.top+30, Math.round(m.top-a.top)]})()")
+        asks = of("bubble.size")[n0:]
+        check(e4[0] and all((u.get("overflowTop") or 0) <= 40 for u in asks), "review E4 (b): with room 40 px above (layout.room), the model menu opens under its button at once, never asking past the page area", f"{e4} {[u.get('overflowTop', 0) for u in asks]}")
         # F5: drafts never grow without end — after 45 elements with unsent words, the oldest one is dropped, the latest kept
         load("c-1-vide")
         f5 = cdp.js("""(()=>{const send=window.devHost.send,cin=()=>document.getElementById('composer-input');

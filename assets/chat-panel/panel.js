@@ -1229,7 +1229,9 @@
     const need = { top: 0, right: 0, bottom: 0, left: 0 }, W = S.lay.maxW;
     // cv3 (R19): the host's window keeps a fixed transparent margin around the surface (`layout.inset`); a float stays inside it
     const room = {};
-    for (const k of SIDES) room[k] = Math.min(lim[k], S.insetKnown ? S.inset[k] : CAP);
+    // E4 (b): and inside the page area the host measured (`layout.room`, px from each side of the surface to the page area's
+    // edge) — a menu turns before the host has to refuse it
+    for (const k of SIDES) room[k] = Math.min(lim[k], S.insetKnown ? S.inset[k] : CAP, S.lay.room && Number.isFinite(S.lay.room[k]) ? S.lay.room[k] : CAP);
     for (const [el, placer] of Array.from(floats)) {
       if (!el.isConnected || el.hidden) { floats.delete(el); continue; }
       const r = placer(room, H), p = r.pad || SHADOW.none;
@@ -2801,7 +2803,9 @@
       S.lay.maxH = Math.max(104, Number.isFinite(m.maxHeight) && m.maxHeight > 0 ? Math.floor(m.maxHeight) : 520);
       S.lay.side = ["right", "left", "below", "above", "inside"].includes(m.side) ? m.side : "right";
       S.lay.element = isStr(m.element, 300) ? m.element : "";
-      S.lay.elementKey = isStr(m.elementKey, 1000) ? m.elementKey : "";   // F6: a stable key of the element (selector or source)
+      S.lay.elementKey = isStr(m.elementKey, 1000) ? m.elementKey : "";
+      if (m.room && typeof m.room === "object") { const r = {}; for (const k of ["top", "right", "bottom", "left"]) if (Number.isFinite(m.room[k])) r[k] = Math.max(0, Math.floor(m.room[k])); S.lay.room = r; }
+      else if (m.open !== false) S.lay.room = null;   // F6: a stable key of the element (selector or source)
       const dim = (o) => (o && Number.isFinite(o.width) && Number.isFinite(o.height) ? { w: Math.floor(o.width), h: Math.floor(o.height) } : null);
       if (m.resizeMax !== undefined) S.lay.rMax = dim(m.resizeMax);   // R40: the largest size from the anchored corner
       if (m.resizeMin !== undefined) S.lay.rMin = dim(m.resizeMin);

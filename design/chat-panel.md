@@ -809,4 +809,7 @@ l'hôte.
   tour) se termine comme arrêté (« S'est arrêté », sans durée).
 - **F1 / F2 (Markdown)** : titres analysés sans retour arrière coûteux ; une adresse `file:///` reste du texte (l'hôte n'ouvre que
   http(s)).
+- **`layout.room` (E4 b)** : `{top, right, bottom, left}` en px CSS, la distance de chaque bord de la surface au bord de la zone
+  de page. La page place menus et infobulles dans cette place (avec l'inset) : un menu se retourne d'emblée au lieu
+  d'attendre un refus de l'hôte ; elle ne demande jamais de débord au-delà.
 
