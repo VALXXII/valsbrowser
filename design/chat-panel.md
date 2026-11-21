@@ -740,3 +740,31 @@ La saisie (mots, puces, images) appartient à une conversation : celle du pannea
 puces, et `element.attached` est ignoré en bulle. Les puces ajoutées dans le Chat à droite restent dans le brouillon du
 panneau ; la bulle de chaque élément garde ses propres mots. L'hôte tient aussi son brouillon par conversation (H1).
 
+## 23. Commentaire v5 — retours R40 et R41, côté page (21 nov. 2026)
+
+R39 / R39b (la bulle collée à son élément au défilement) sont à l'hôte (H1, H2).
+
+### 23.1 Le diff garde la taille de la bulle ; poignée de redimensionnement (R40)
+
+- **Ouverture** : le diff en grand s'ouvre à la taille qu'avait la bulle juste avant (la page ne demande plus `maxHeight`) ;
+  chaque ouverture repart de cette taille.
+- **Poignée** : en bas à droite de la surface, 4 px des bords (dans l'arrondi de 16 px), deux petits traits obliques blancs à
+  30 % dans 10 px, zone de 12 px, curseur `nwse-resize` (blanc 50 % au survol). La page gère le glisser (capture du
+  pointeur, écarts en `screenX` / `screenY`) et envoie à chaque image `bubble.size { width, height, resized: true }`, bornes
+  déjà appliquées, puis un dernier à la fin ; elle dessine aussitôt cette taille (l'hôte ne répond que s'il accorde moins).
+- **Bornes** : chaque `layout` de bulle porte `resizeMax { width, height }` (la plus grande taille possible depuis le coin
+  d'ancrage, sans sortir de l'écran) et `resizeMin { width: 320, height: <hauteur avant le diff> }`. Sans eux, la page
+  borne entre la taille d'avant et `maxWidth` / `maxHeight`. Sans `resized`, la largeur reste 320 (ou `maxWidth`).
+- **Fermeture** : la page renvoie elle-même la taille d'avant (`bubble.size` sans `resized`) ; l'hôte garde le coin
+  d'ancrage fixe pendant tout le redimensionnement (R29 / R38).
+
+### 23.2 D'un menu à l'autre : transformation (R41)
+
+Quand un menu est ouvert et qu'on en ouvre un autre (modèle → mode → « + », ou Effort ↔ Autres modèles), l'ancien ne sort
+pas : il reste à sa place sans surface (fond, bord et ombre retirés) et son contenu s'efface (120 ms) ; le nouveau part de la
+boîte de l'ancien (position, largeur, hauteur) et va vers la sienne en **200 ms** `cubic-bezier(.23, 1, .32, 1)`, son
+contenu en fondu entrant. L'appui sur le bouton d'un autre menu ne ferme pas d'abord le menu ouvert (c'est le clic qui le
+transforme). Pendant les 200 ms, les `overflow*` de `bubble.size` couvrent l'**union** des deux boîtes (ombre comprise) ;
+l'hôte applique la région demandée dès réception. Ouverture depuis l'état fermé et fermeture finale inchangées ; en
+mouvement réduit, changement direct.
+

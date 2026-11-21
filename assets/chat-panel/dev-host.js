@@ -116,6 +116,13 @@
   const typeIn = (text) => () => { const c = document.querySelector(".cin"); c.focus(); document.execCommand("insertText", false, text); };
   const click = (sel) => () => { const n = document.querySelector(sel); if (n) n.click(); };
   const wait = (ms) => () => new Promise((r) => setTimeout(r, ms));
+  // drags the diff's resize handle by (dx, dy) screen px (R40)
+  const dragGrip = (dx, dy) => () => new Promise((r) => {
+    const g = document.querySelector(".b-grip"); if (!g) { r(); return; }
+    const ev = (t, x, y) => g.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerId: 7, button: 0, buttons: t === "pointerup" ? 0 : 1, screenX: x, screenY: y, pointerType: "mouse" }));
+    ev("pointerdown", 500, 500);
+    requestAnimationFrame(() => { ev("pointermove", 500 + dx / 2, 500 + dy / 2); requestAnimationFrame(() => { ev("pointermove", 500 + dx, 500 + dy); requestAnimationFrame(() => { ev("pointerup", 500 + dx, 500 + dy); r(); }); }); });
+  });
   const blur = () => document.activeElement && document.activeElement.blur();
 
   // Comment-mode bubble (B 1.8, Paper row « Mode Commentaire »): the same thread drawn in a 305 px bubble.
@@ -161,7 +168,8 @@
     "c-2.2b-erreur": cError(),
     "c-2.2b-erreur-details": cError().concat([click(".bt-more"), wait(30)]),
     "c-3-termine": cDone(),
-    "c-3-termine-diff": cDone({ maxHeight: 303 }).concat([click(".bt-bar-main"), wait(80)]),
+    // cv5 R40: the diff opens at the bubble's size (279); the board 19IO-0 shows it 303 tall — the handle gives the 24 px
+    "c-3-termine-diff": cDone({ maxHeight: 303 }).concat([click(".bt-bar-main"), wait(80), dragGrip(0, 24), wait(80)]),
     "c-3-historique": cDone(),
     // what the boards do not draw: taller room, several files, a command, the queue between elements, menus, no folder
     "c-autorisation-grande": cRun().concat([C_PERM, wait(60)]),
@@ -213,6 +221,8 @@
       () => { window.__drafts.backToA = document.querySelector(".cin").textContent; },
       { type: "layout", mode: "panel" }, st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(20),
       () => { window.__drafts.panel = document.querySelector(".cin").textContent.replace(/\s+/g, " ").trim(); }],
+    "c-diff-redimension": cDone({ maxWidth: 320, maxHeight: 520 }).concat([click(".bt-bar-main"), wait(80)]),
+    "c-menus-morph": [LAY({ maxWidth: 320 }), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(260)],
     "c-messages-deux": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Rien d'autre n'a changé." },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],

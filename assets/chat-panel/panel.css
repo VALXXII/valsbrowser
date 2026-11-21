@@ -841,3 +841,18 @@ button.bt-st.run::before { content: ""; position: absolute; inset: -1px 0; }
   .bubble, .composer, .perm, .menu, .plan, .card4, .err, .queue, .strip { border: 1px solid CanvasText; }
   .send.ready, .btn.primary { forced-color-adjust: none; }
 }
+
+/* cv5 R41: a menu that turns into another — the old one keeps no surface, its content fades out; the new one's content fades in */
+.menu.menu-ghost { background: transparent; border-color: transparent; box-shadow: none; animation: none; pointer-events: none; z-index: 9; }
+.menu.menu-ghost > * { animation: fade-out 120ms ease-out both; }
+.menu.morph-in { animation: none; }
+.menu.morph-in > * { animation: fade 200ms var(--ease-out) both; }
+@keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+/* cv5 R40: the resize handle of the diff « en grand » */
+.b-grip { display: none; }
+.bub #app.view .b-grip:not([hidden]) { display: flex; position: absolute; right: 4px; bottom: 4px; width: 12px; height: 12px; align-items: center; justify-content: center; cursor: nwse-resize; z-index: 4; touch-action: none; }
+.b-grip svg { width: 10px; height: 10px; }
+.b-grip path { stroke: #FFFFFF4D; stroke-width: 1.2; stroke-linecap: round; fill: none; }
+@media (hover: hover) { .bub #app.view .b-grip:hover path { stroke: #FFFFFF80; } }
+.bub #app.resizing, .bub #app.resizing * { cursor: nwse-resize !important; user-select: none; }
+

@@ -631,8 +631,8 @@ try:
         click(".bt-bar-main"); time.sleep(.2)
         v = cdp.js("""(()=>{const v=document.getElementById('bview');return {open:!v.hidden,title:v.querySelector('.t').textContent,nums:Array.from(v.querySelectorAll('.num')).map(n=>n.textContent),lines:v.querySelectorAll('.l').length,
           copy:!!v.querySelector('.bview-copy'),composer:V('.composer'),asked:window.__posted.filter(m=>m.type==='checkpoint.viewChanges').map(m=>m.turnId)}})()""")
-        check(v["open"] and v["title"] == "checkout.css" and v["nums"] == ["+6", "−2"] and v["lines"] == 3 and v["copy"] and v["composer"] == 1 and v["asked"] == ["t1"] and sizes()[-1] == [305, 520],
-              "bubble (done): the bar opens the file's diff in the bubble (title, +6 −2, Copier), asks the host for the full diff, takes maxHeight", json.dumps(v, ensure_ascii=False) + f" {sizes()[-1]}")
+        check(v["open"] and v["title"] == "checkout.css" and v["nums"] == ["+6", "−2"] and v["lines"] == 3 and v["copy"] and v["composer"] == 1 and v["asked"] == ["t1"] and sizes()[-1] == [305, 279],
+              "bubble (done, cv5 R40): the bar opens the file's diff in the bubble (title, +6 −2, Copier), asks the host for the full diff, at the bubble's size of before (279)", json.dumps(v, ensure_ascii=False) + f" {sizes()[-1]}")
         click(".bview-copy"); click(".bview-x")
         check(len(of("copy")) == 2 and cdp.js("document.getElementById('bview').hidden") and "bt-bar-main" in cdp.js("document.activeElement.className") and sizes()[-1] == [305, 279], "bubble (done): Copier in the diff; closing returns to the bar and to 279")
         load("c-diff-plusieurs-fichiers")
@@ -793,6 +793,38 @@ try:
         dr = cdp.js("window.__drafts")
         check(dr == {"bubbleA": "", "chipsInBubble": 0, "bubbleB": "", "backToA": "Texte pour A", "panel": "div.hero-visual Pour le panneau"},
               "bubble (cv4 R35): the panel's chip and words stay in the panel's draft; each element's bubble keeps its own words; a bubble never shows a chip", json.dumps(dr, ensure_ascii=False))
+        # cv5 R40: the diff keeps the bubble's size; its handle resizes it within resizeMin / resizeMax; closing gives the size back
+        load("c-diff-redimension")
+        g0 = cdp.js("(()=>{const g=document.querySelector('.b-grip'),r=g.getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect(),cs=getComputedStyle(g);return [!g.hidden, Math.round(a.right-r.right), Math.round(a.bottom-r.bottom), cs.cursor, getComputedStyle(g.querySelector('path')).stroke, Math.round(g.querySelector('svg').getBoundingClientRect().width)]})()")
+        s0 = sizes()[-1]
+        host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 320, "maxHeight": 520, "resizeMax": {"width": 480, "height": 600}, "resizeMin": {"width": 320, "height": s0[1]}, "inset": cdp.js("window.__inset")})
+        def drag(dx, dy):
+            cdp.js(f"(()=>{{const g=document.querySelector('.b-grip');const ev=(t,x,y)=>g.dispatchEvent(new PointerEvent(t,{{bubbles:true,pointerId:7,button:0,buttons:t==='pointerup'?0:1,screenX:x,screenY:y,pointerType:'mouse'}}));ev('pointerdown',500,500);ev('pointermove',{500 + dx},{500 + dy});ev('pointerup',{500 + dx},{500 + dy});}})()"); time.sleep(.15)
+        drag(100, 150)
+        big = of("bubble.size")[-1]
+        bw = cdp.js("Math.round(document.getElementById('app').getBoundingClientRect().width)")
+        drag(400, 900)
+        capped = of("bubble.size")[-1]
+        drag(-900, -900)
+        floor = of("bubble.size")[-1]
+        click(".bview-x"); time.sleep(.15)
+        back = of("bubble.size")[-1]
+        check(g0 == [True, 4, 4, "nwse-resize", "rgba(255, 255, 255, 0.3)", 10] and s0[0] == 320, "bubble (cv5 R40): the diff opens at the bubble's size; its handle (two strokes, white 30 %, 10 px) sits bottom right with a resize cursor", f"{g0} {s0}")
+        check(big.get("resized") is True and [big["width"], big["height"]] == [420, s0[1] + 150] and bw == 420 and [capped["width"], capped["height"]] == [480, 600] and [floor["width"], floor["height"]] == [320, s0[1]],
+              "bubble (cv5 R40): dragging sends bubble.size {resized: true} at each image, bounded by resizeMin (320 × the height of before) and resizeMax", f"{big} {capped} {floor}")
+        check("resized" not in back and [back["width"], back["height"]] == [320, s0[1]] and cdp.js("Math.round(document.getElementById('app').getBoundingClientRect().width)") == 320, "bubble (cv5 R40): closing the diff sends the size of before (no resized)", json.dumps(back))
+        # cv5 R41: from one menu to another, the surface transforms (no exit), the region covers both
+        load("c-menus-morph")
+        m0 = cdp.js("(()=>{const r=document.querySelector('.menu').getBoundingClientRect();return [r.left,r.top,r.width,r.height]})()")
+        n0 = len(of("bubble.size"))
+        cdp.js("document.querySelector('.tb.mode').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));document.querySelector('.tb.mode').click()"); time.sleep(.03)
+        mid = cdp.js("(()=>{const ms=Array.from(document.querySelectorAll('.menu'));return ms.map(m=>[m.className.replace('menu ','').trim(), m.getAttribute('role')||'', Math.round(m.getBoundingClientRect().width)])})()")
+        union = of("bubble.size")[n0:]
+        time.sleep(.35)
+        m1 = cdp.js("(()=>{const ms=document.querySelectorAll('.menu');const r=ms[0].getBoundingClientRect();return [ms.length, ms[0].getAttribute('aria-label'), Math.round(r.width), ms[0].style.transform, ms[0].classList.contains('morph-in')]})()")
+        check(len(mid) == 2 and "menu-ghost" in mid[0][0] and mid[0][1] == "" and "morph-in" in mid[1][0] and 289 <= mid[1][2] <= 300 and m1 == [1, "Mode", 290, "", False],
+              "bubble (cv5 R41): model menu → mode menu: the old one stays as a ghost (no surface, content fading), the new one grows from its box to 290 px in 200 ms; then a single menu", f"{mid} {m1}")
+        check(len(union) >= 1 and any(u.get("overflowTop", 0) > 0 for u in union), "bubble (cv5 R41): during the transformation the region asked covers the menus (no gap, no flash)", json.dumps(union)[:200])
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",

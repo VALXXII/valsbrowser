@@ -212,6 +212,11 @@
   const changesEl = h("div", { class: "changes", id: "changes", role: "dialog", "aria-modal": "false", "aria-label": "Changements", hidden: true });
   // Bubble only (B 1.8): the diff « en grand », the hairline above the input, the fade over a scrolled thread, the steps' bubble
   const bviewEl = h("div", { class: "bview", id: "bview", role: "dialog", "aria-modal": "false", hidden: true });
+  // cv5 R40: the resize handle of the diff « en grand » — two short oblique strokes, white 30 %, 10 px, bottom right
+  const gripSvg = document.createElementNS(SVGNS, "svg");
+  gripSvg.setAttribute("viewBox", "0 0 10 10"); gripSvg.setAttribute("aria-hidden", "true"); gripSvg.setAttribute("class", "i");
+  for (const d of ["M9 3 L3 9", "M9 6.5 L6.5 9"]) { const pth = document.createElementNS(SVGNS, "path"); pth.setAttribute("d", d); gripSvg.appendChild(pth); }
+  const gripEl = h("div", { class: "b-grip", role: "separator", "aria-orientation": "horizontal", "aria-label": "Redimensionner l'aperçu", tabindex: "-1", hidden: true }, gripSvg);
   const ruleEl = h("div", { class: "b-rule", "aria-hidden": "true", hidden: true });
   const fadeEl = h("div", { class: "b-fade", "aria-hidden": "true" });
   const btipEl = h("div", { class: "b-tip", id: "b-tip", role: "tooltip", hidden: true });
@@ -219,7 +224,33 @@
   // Menus and hover bubbles live in their own layer, outside the surface: in the bubble they may leave it (B 1.9, R3) —
   // the host grows the transparent window around the surface for them. The layer has the surface's origin.
   const menuLayer = h("div", { class: "layer" }, btipEl);
-  app.append(hd, main, fadeEl, live, alertLive);
+  app.append(hd, main, fadeEl, gripEl, live, alertLive);
+  let grip = null, gripFrame = 0;
+  function sizeBounds() {
+    const base = S.viewBase || { w: S.lay.maxW, h: S.pendH || 224 };
+    const min = { w: S.lay.rMin ? Math.max(S.lay.rMin.w, base.w) : base.w, h: Math.max(S.lay.rMin ? S.lay.rMin.h : 0, base.h) };   // the host says 320
+    const max = S.lay.rMax || { w: S.lay.maxW, h: S.lay.maxH };
+    return { min, max: { w: Math.max(min.w, max.w), h: Math.max(min.h, max.h) } };
+  }
+  gripEl.addEventListener("pointerdown", (e) => {
+    if (!BUB() || !S.bview || e.button !== 0) return;
+    e.preventDefault();
+    try { gripEl.setPointerCapture(e.pointerId); } catch (err) { /* a synthetic pointer (QA) has nothing to capture */ }
+    const cur = S.bsize || { w: curW(), h: S.pendH || Math.ceil(bubbleNatural()) };
+    grip = { id: e.pointerId, sx: e.screenX, sy: e.screenY, w0: cur.w, h0: cur.h };
+    app.classList.add("resizing");
+  });
+  gripEl.addEventListener("pointermove", (e) => {
+    if (!grip || e.pointerId !== grip.id) return;
+    const b = sizeBounds();
+    const w = Math.round(Math.max(b.min.w, Math.min(b.max.w, grip.w0 + e.screenX - grip.sx)));
+    const hh = Math.round(Math.max(b.min.h, Math.min(b.max.h, grip.h0 + e.screenY - grip.sy)));
+    S.bsize = { w, h: hh };
+    if (!gripFrame) gripFrame = requestAnimationFrame(() => { gripFrame = 0; publishSize(); });   // one bubble.size per image
+  });
+  const gripEnd = (e) => { if (!grip || e.pointerId !== grip.id) return; grip = null; app.classList.remove("resizing"); cancelAnimationFrame(gripFrame); gripFrame = 0; publishSize(); };
+  gripEl.addEventListener("pointerup", gripEnd);
+  gripEl.addEventListener("pointercancel", gripEnd);
   document.body.appendChild(menuLayer);
 
   scroller.addEventListener("scroll", () => {
@@ -627,12 +658,17 @@
   // Button-opened menu: focus moves in, arrows move, Enter picks, Escape returns to the trigger.
   function openMenu(anchor, opts) {
     if (S.menu && S.menu.anchor === anchor && !opts.keep) { closeMenu(true); return; }
-    closeMenu();
+    // cv5 R41: another menu already open (not a combo) — it does not leave; the new one grows out of it (morph)
+    const prev = S.menu && !S.menu.combo && S.menu.anchor !== anchor && !isReduced() ? S.menu : null;
+    let from = null;
+    if (prev) { from = ghostMenu(prev.el); closeSub(); S.menu = null; if (prev.anchor) prev.anchor.setAttribute("aria-expanded", "false"); }
+    else closeMenu();
     const el = h("div", { class: "menu" + (opts.cls ? " " + opts.cls : ""), role: "menu", "aria-label": opts.label, tabindex: "-1" });
     S.menu = { el, anchor, opts };
     fillMenu(el, opts.items);
     menuLayer.appendChild(el);
     place(el, anchor, opts.align, opts.width);
+    if (from) morphFrom(from, el);
     anchor.setAttribute("aria-expanded", "true");
     const items = menuItems();
     (items.find((i) => i.getAttribute("aria-checked") === "true") || items[0] || el).focus({ preventScroll: BUB() });   // bubble: the window grows for the menu, nothing must scroll meanwhile
@@ -646,6 +682,35 @@
       else if (e.key === "ArrowRight" && document.activeElement && document.activeElement.dataset.sub) { e.preventDefault(); document.activeElement.click(); }
       else if (e.key === "ArrowLeft" && S.menu && S.menu.view && S.menu.view !== "main") { e.preventDefault(); showModelView("main", S.menu.view); }
     });
+  }
+  // R41 (cv5): the old menu stays where it was, without its surface, its content fading out; its box stays in the region
+  // asked of the host (the union of both) until the end, so no image shows a gap or a flash.
+  const MORPH_MS = 200;
+  function ghostMenu(oldEl) {
+    const ar = app.getBoundingClientRect(), r = oldEl.getBoundingClientRect();
+    const box = { x: r.left - ar.left, y: r.top - ar.top, w: r.width, h: r.height, pad: oldEl.classList.contains("models") ? SHADOW.none : SHADOW.menu };
+    oldEl.classList.add("menu-ghost"); oldEl.setAttribute("aria-hidden", "true"); oldEl.removeAttribute("role"); oldEl.inert = true;
+    if (BUB()) floatSet(oldEl, () => box);
+    setTimeout(() => { oldEl.remove(); floatDrop(oldEl); }, MORPH_MS + 40);
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  }
+  // The new menu starts on the old one's box (position, width, height) and moves to its own; its content fades in.
+  function morphFrom(o, el) {
+    const fw = el.style.width;
+    const n = el.getBoundingClientRect();
+    el.classList.add("morph-in");
+    el.style.transition = "none"; el.style.overflow = "hidden";
+    el.style.width = o.width + "px"; el.style.height = o.height + "px";
+    const r0 = el.getBoundingClientRect();
+    el.style.transform = "translate(" + (o.left - r0.left) + "px," + (o.top - r0.top) + "px)";
+    void el.offsetWidth;
+    el.style.transition = "transform " + MORPH_MS + "ms var(--ease-out), width " + MORPH_MS + "ms var(--ease-out), height " + MORPH_MS + "ms var(--ease-out)";
+    el.style.transform = "none"; el.style.width = n.width + "px"; el.style.height = n.height + "px";
+    setTimeout(() => {
+      if (!el.isConnected) return;
+      el.style.transition = ""; el.style.transform = ""; el.style.height = ""; el.style.overflow = ""; el.style.width = fw;
+      el.classList.remove("morph-in");
+    }, MORPH_MS + 20);
   }
   const menuItems = () => S.menu ? Array.from(S.menu.el.querySelectorAll(".mi:not([aria-disabled='true']), .menu .btn, .menu .btn-s")) : [];
   function fillMenu(el, items) {
@@ -670,6 +735,8 @@
   }
   document.addEventListener("pointerdown", (e) => {
     if (BUB() && !app.contains(e.target) && !menuLayer.contains(e.target)) { bTipHide(); tipHide(); }
+    const trigger = e.target && e.target.closest && e.target.closest(".foot [aria-haspopup='menu']");
+    if (S.menu && !S.menu.combo && trigger && trigger !== S.menu.anchor) return;   // R41: its click turns this menu into the other
     if (S.menu && !S.menu.el.contains(e.target) && !(S.sub && S.sub.el.contains(e.target)) && !(S.menu.anchor && S.menu.anchor.contains(e.target)) && e.target !== cin && !cin.contains(e.target)) closeMenu();
   }, true);
 
@@ -705,7 +772,12 @@
     if (!S.menu || !row) return;
     clearTimeout(subTimer);
     if (S.sub && S.sub.view === view) { if (focus) subFocus(); return; }
-    closeSub();
+    let from = null;
+    if (S.sub && !isReduced()) {   // R41: Effort ↔ Autres modèles: the sub-menu transforms
+      const old = S.sub; S.sub = null; clearTimeout(subTimer);
+      if (old.row) old.row.setAttribute("aria-expanded", "false");
+      from = ghostMenu(old.el);
+    } else closeSub();
     const width = view === "effort" ? 214 : 300;
     const el = h("div", { class: "menu models sub-menu", role: "menu", "aria-label": view === "effort" ? "Effort" : "Autres modèles", tabindex: "-1" });
     fillMenu(el, subItems(view));
@@ -725,6 +797,7 @@
       el.style.setProperty("--origin", "top " + from);
       return { x, y, w: width, h: sh, pad: SHADOW.none };
     });
+    if (from) morphFrom(from, el);
     el.addEventListener("pointerover", () => clearTimeout(subTimer));
     el.addEventListener("keydown", (e) => {
       const its = Array.from(el.querySelectorAll(".mi:not([aria-disabled='true'])")), i = its.indexOf(document.activeElement);
@@ -1116,7 +1189,11 @@
   // Its height follows its content — every change is published (`bubble.size`) and the host resizes the window.
   // Nothing is ever drawn outside the bubble: menus and hover bubbles open inside it.
   let lastSize = "";
+  const curW = () => (S.bview && S.bsize ? S.bsize.w : S.lay.maxW);
   function bubbleNatural() {
+    // cv5 R40: the diff « en grand » keeps the bubble's size of before (or the one chosen with the handle)
+    if (S.bview && S.bsize) return S.bsize.h;
+    if (S.bview && S.viewBase && !(S.bview.kind === "perm" && !S.bview.p.diff)) return S.viewBase.h;
     if (S.bview) {                                           // the diff « en grand » takes all the room there is;
       const box = !(S.bview.kind === "perm" && !S.bview.p.diff) ? null : bviewEl.querySelector(".bview-body");
       if (!box) return S.lay.maxH;
@@ -1170,22 +1247,27 @@
     S.inset = v;
     const st = document.documentElement.style;
     // R19: the height the page asked for and the host's inset land together — the surface never moves nor stretches
-    if (BUB() && S.pendH) st.setProperty("--bh", S.pendH + "px");
+    if (BUB() && S.pendH) { st.setProperty("--bh", S.pendH + "px"); st.setProperty("--bw", curW() + "px"); }
     for (const k of SIDES) st.setProperty("--i" + k[0], v[k] + "px");
     for (const k of SIDES) if (floats.size && S.ovAsk[k] > v[k] && lim[k] > v[k]) lim[k] = v[k];
     if (floats.size) publishSize();
   }
   function publishSize(force) {
     if (!BUB() || S.fatal) return;
-    const hgt = Math.max(1, Math.min(S.lay.maxH, Math.ceil(bubbleNatural())));
+    const hgt = Math.max(1, Math.min(S.bsize ? Infinity : S.lay.maxH, Math.ceil(bubbleNatural())));
     const need = floats.size ? floatNeed(hgt) : { top: 0, right: 0, bottom: 0, left: 0 };
-    const key = S.lay.maxW + "x" + hgt + ":" + SIDES.map((k) => need[k]).join(",");
+    const key = curW() + "x" + hgt + ":" + SIDES.map((k) => need[k]).join(",") + (S.bsize ? ":r" : "");
     bFade();
     S.pendH = hgt;   // R19: drawn when the host answers (layout open:false), with its inset, in the same task
     if (!force && key === lastSize) return;
     lastSize = key;
     S.ovAsk = need;
-    const m = { width: S.lay.maxW, height: hgt };
+    const m = { width: curW(), height: hgt };
+    if (S.bview && S.bsize) {   // R40: a size chosen with the handle — drawn at once (the host only answers when it grants less)
+      m.resized = true;
+      const st = document.documentElement.style;
+      st.setProperty("--bw", m.width + "px"); st.setProperty("--bh", hgt + "px");
+    }
     if (need.top) m.overflowTop = need.top;
     if (need.right) m.overflowRight = need.right;
     if (need.bottom) m.overflowBottom = need.bottom;
@@ -1347,8 +1429,9 @@
   // The diff « en grand » (Paper 19ON-0 for a request, 19IO-0 for a finished turn): it takes the bubble, the thread waits.
   function openView(v) {
     closeMenu(); bTipHide();
+    S.viewBase = { w: S.lay.maxW, h: S.pendH || Math.ceil(bubbleNatural()) }; S.bsize = null;   // R40: the size of before
     S.bview = v;
-    app.classList.add("view");
+    app.classList.add("view"); gripEl.hidden = !BUB();
     if (v.kind === "changes") post("checkpoint.viewChanges", { turnId: v.t.id });
     renderView();
     updateView(); renderDock(true); publishSize();
@@ -1358,7 +1441,9 @@
   function closeView(silent) {
     const v = S.bview;
     if (!v) return;
-    S.bview = null; app.classList.remove("view"); clear(bviewEl); bviewEl.hidden = true;
+    S.bview = null; app.classList.remove("view"); gripEl.hidden = true; clear(bviewEl); bviewEl.hidden = true;
+    const wasResized = !!S.bsize; S.bsize = null; S.viewBase = null;   // R40: closing gives the size of before back
+    if (wasResized) { document.documentElement.style.setProperty("--bw", S.lay.maxW + "px"); lastSize = ""; }
     if (silent) return;
     updateView(); renderDock(true); publishSize();
     const back = v.kind === "perm" ? dock.querySelector(".bperm-file") : v.t.barEl && v.t.barEl.querySelector(".bt-bar-main");
@@ -2649,6 +2734,9 @@
       S.lay.maxH = Math.max(104, Number.isFinite(m.maxHeight) && m.maxHeight > 0 ? Math.floor(m.maxHeight) : 520);
       S.lay.side = ["right", "left", "below", "above", "inside"].includes(m.side) ? m.side : "right";
       S.lay.element = isStr(m.element, 300) ? m.element : "";
+      const dim = (o) => (o && Number.isFinite(o.width) && Number.isFinite(o.height) ? { w: Math.floor(o.width), h: Math.floor(o.height) } : null);
+      if (m.resizeMax !== undefined) S.lay.rMax = dim(m.resizeMax);   // R40: the largest size from the anchored corner
+      if (m.resizeMin !== undefined) S.lay.rMin = dim(m.resizeMin);
       applyLayout(was !== m.mode);
       if (!BUB()) { applyInset(null); return; }
       // B 1.9: an opening layout is acknowledged (`bubble.size`, even unchanged). A layout with `open: false` is the
