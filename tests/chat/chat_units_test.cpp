@@ -589,6 +589,21 @@ static void TestBubble() {
         Check(kk.ok && kk.f.window.top == f.window.top && kk.f.window.bottom == f.window.bottom && f.inset.top <= PageInsetCapCss && f.inset.top > 400
               && kk.f.window.top + px(std::min(kk.f.inset.top, PageInsetCapCss)) == grown.top,
               "CAP 1000: grown up 600 px at once — the same window, drawn exactly where its region is (before, at 400: framed again, a jump)"); }
+    // Q pass 1, defect 5 (E4): a menu asked beyond the window kept for the opening (after a scroll) never frames it again —
+    // the surface does not move; the window gives what it has (the page turns the menu, R3)
+    {   const Rect screen{0, 0, 1840, 1000}; const float k = 1.25f;
+        const Rect s0{342, 60, 742, 165};   // near the screen's top: its window was framed with a small top inset
+        const auto f0 = FrameBubble(s0, int(520 * k), false, screen, k, Edges{});
+        const Rect scrolled{342, 247, 742, 352};   // 150 CSS px lower after a scroll
+        const auto kept = FrameKept(scrolled, false, false, RelativeTo(f0.window, CornerOf(s0, false, false)), k, Edges{300, 0, 0, 0});   // the model menu asks 300 above
+        Check(kept.ok && kept.f.inset.top == f0.inset.top && kept.f.window.top == f0.window.top + 187 && kept.f.region.top >= 0,
+              "Q 5: a menu beyond the window keeps the window and the surface where they are (21 px jump before)"); }
+    // Q pass 1, defect 6 (E1): a stable key for an element without a safe selector (same-origin iframe, web component)
+    {   const std::vector<std::string> shadow{"my-card"};
+        Check(UnsafeAnchorKey("same-origin", "button.cta", {}) == UnsafeAnchorKey("same-origin", "button.cta", {}) &&
+              UnsafeAnchorKey("same-origin", "button.cta", {}) != UnsafeAnchorKey("main", "button.cta", shadow) && !UnsafeAnchorKey("main", "button.cta", shadow).empty(),
+              "Q 6: the same element gives the same key; a frame or a shadow root tells it apart");
+        Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};
@@ -695,6 +710,10 @@ static void TestAnchorStore(const std::wstring& root) {
     CS::Conversation plain; plain.head.id = "c_plain"; plain.head.origin = "http://localhost:5173"; plain.head.updatedAt = 900001; plain.items.push_back(StrictJson::Value::Obj());
     hist.Save(plain); bool plainOk = false; for (const auto& r : hist.List()) if (r.id == "c_plain") plainOk = !r.Anchored();
     Check(plainOk, "a panel conversation has no element");
+    {   CS::Conversation k; k.head.id = "c_keyed"; k.head.origin = "http://localhost:5173"; k.head.updatedAt = 900020; k.head.anchorKey = "same-origin||button.cta"; k.head.anchorLabel = "button.cta"; k.head.anchorPage = "http://localhost:5173/";
+        k.items.push_back(StrictJson::Value::Obj()); hist.Save(k); bool keyed = false;
+        for (const auto& r : hist.List()) if (r.id == "c_keyed") keyed = r.Anchored() && !r.Marked() && r.anchorKey == "same-origin||button.cta" && r.anchorSelector.empty();
+        Check(keyed, "Q 6: a conversation of an element in a frame / web component keeps its key (anchored, no frame mark drawn by selector)"); }
     {   // M12 (review R): two saves of the same conversation finishing out of order (thread pool) never leave the older one on disk
         CS::Conversation newer = c; newer.head.updatedAt = 900010; newer.head.title = "Neuf"; newer.items.push_back(StrictJson::Value::Obj());
         CS::Conversation older = c; older.head.updatedAt = 900005; older.head.title = "Vieux";

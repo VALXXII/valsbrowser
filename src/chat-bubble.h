@@ -147,7 +147,9 @@ inline Kept FrameKept(const Rect& surface, bool fromRight, bool fromBottom, cons
     inset.right = css(w.right - surface.right); inset.bottom = css(w.bottom - surface.bottom);
     if (px(over.top) > surface.top - w.top || px(over.left) > surface.left - w.left || px(over.right) > w.right - surface.right || px(over.bottom) > w.bottom - surface.bottom) {
         const Edges b = Bounded(over);
-        if (b.top > inset.top || b.left > inset.left || b.right > inset.right || b.bottom > inset.bottom) return out;   // a menu that the window cannot hold any more
+        // Q pass 1, defect 5 (E4): a menu the window cannot hold any more no longer frames it again (the surface moved for a few
+        // images): the window gives what it has, the page turns its menu (R3, inset)
+        (void)b;
     }
     out.ok = true; out.f = Reframe(surface, inset, w.W(), w.H(), k, over); return out;
 }
@@ -209,6 +211,12 @@ inline Rect Anchored(const Anchor& a, const Rect& element, int w, int h) {
 inline int BottomShift(const Rect& surface, const Rect& area, int margin, bool atDocumentEnd) {
     const int over = surface.bottom - (area.bottom - margin);
     return atDocumentEnd && over > 0 ? std::min(over, std::max(0, surface.top - (area.top + margin))) : 0;
+}
+// Q pass 1, defect 6 (E1): an element without a safe selector — in a same-origin iframe, or in a web component's shadow
+// root — is found again by this key (frame kind, shadow path, selector inside). Nothing to key: "" (cross-origin, no selector).
+inline std::string UnsafeAnchorKey(const std::string& frameKind, const std::string& selector, const std::vector<std::string>& shadowPath) {
+    if (selector.empty() || frameKind == "cross-origin") return "";
+    std::string k = frameKind + "|"; for (const auto& s : shadowPath) k += s + ">>"; return k + "|" + selector;
 }
 // A bubble asked open while one is open: the same one (kept as it is) only for the same conversation — or, when a
 // conversation is not known yet on one side, the same element. Anything else is another element: a new opening.

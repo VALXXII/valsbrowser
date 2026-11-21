@@ -138,15 +138,16 @@ struct Header {
     // page's URL without its fragment; selector: unique in that page when it was aimed; label « button.btn-primary »;
     // anchorSource: its file:line when known (« index.html:25 »).
     std::string anchorSelector, anchorLabel, anchorPage, anchorSource;
+    std::string anchorKey;   // Q 6 (E1): an element without a safe selector (same-origin iframe, web component) is found again by this key; never followed by selector
     bool sent = true;   // R32: a message (or a kept annotation) left this conversation; false: never shown as an element's conversation
-    bool Anchored() const { return !anchorSelector.empty(); }
-    bool Marked() const { return Anchored() && sent; }   // R32: the frame + icon of 18IJ-0, only after a message was sent
+    bool Anchored() const { return !anchorSelector.empty() || !anchorKey.empty(); }
+    bool Marked() const { return !anchorSelector.empty() && sent; }   // R32: the frame + icon of 18IJ-0, only after a message was sent (drawn by its selector)
     SJ::Value ToJson() const {
         SJ::Value o = SJ::Value::Obj(); o.Set("id", SJ::Value::Str(id)); o.Set("origin", SJ::Value::Str(origin)); o.Set("siteLabel", SJ::Value::Str(siteLabel));
         o.Set("title", SJ::Value::Str(title)); o.Set("agentId", SJ::Value::Str(agentId)); o.Set("sessionId", SJ::Value::Str(sessionId)); o.Set("source", SJ::Value::Str(source));
         o.Set("folder", SJ::Value::Str(Utf8(folder))); o.Set("createdAt", SJ::Value::Int(createdAt)); o.Set("updatedAt", SJ::Value::Int(updatedAt)); o.Set("promptVersion", SJ::Value::Int(promptVersion));
         if (windowTokens > 0) { o.Set("usedTokens", SJ::Value::Int(usedTokens)); o.Set("windowTokens", SJ::Value::Int(windowTokens)); }
-        if (Anchored()) { SJ::Value a = SJ::Value::Obj(); a.Set("selector", SJ::Value::Str(anchorSelector)); a.Set("label", SJ::Value::Str(anchorLabel)); a.Set("page", SJ::Value::Str(anchorPage));
+        if (Anchored()) { SJ::Value a = SJ::Value::Obj(); a.Set("selector", SJ::Value::Str(anchorSelector)); if (!anchorKey.empty()) a.Set("key", SJ::Value::Str(anchorKey)); a.Set("label", SJ::Value::Str(anchorLabel)); a.Set("page", SJ::Value::Str(anchorPage));
                           if (!anchorSource.empty()) a.Set("source", SJ::Value::Str(anchorSource)); if (!sent) a.Set("sent", SJ::Value::Bool(false)); o.Set("anchor", std::move(a)); }
         return o;
     }
@@ -160,7 +161,8 @@ struct Header {
         h.sent = true;
         if (const auto* a = v.Get("anchor"); a && a->IsObject()) {
             h.anchorSelector = Str(*a, "selector", 2048); h.anchorLabel = Str(*a, "label", 300); h.anchorPage = Str(*a, "page", 4096); h.anchorSource = Str(*a, "source", 300);
-            if (h.anchorPage.empty()) h.anchorSelector.clear();
+            h.anchorKey = Str(*a, "key", 4096);
+            if (h.anchorPage.empty()) { h.anchorSelector.clear(); h.anchorKey.clear(); }
             if (const auto* s = a->Get("sent"); s && s->IsBool()) h.sent = s->boolean;   // absent (before R32): sent
         }
         return true;

@@ -92,7 +92,7 @@ bool SentConvo(const Convo& c) {
 // A conversation's header joins the list (or is updated) when it is saved — once something was sent from it (R2: a click
 // on an element, then closing its bubble, leaves no frame + icon).
 void NoteAnchored(const ChatStore::Header& h) {
-    if (!h.Marked() || h.origin != ModeOrigin()) return;
+    if (!h.Anchored() || !h.sent || h.origin != ModeOrigin()) return;   // Q 6: an element's conversation kept by key too
     if (h.id == convo.data.head.id && !SentConvo(convo)) return;
     for (auto& a : anchored) if (a.id == h.id) { a = h; return; }
     anchored.insert(anchored.begin(), h);
@@ -111,7 +111,7 @@ void RefreshAnchored() {
                  anchoredLoading = false; if (origin != ModeOrigin()) return;
                  anchoredOrigin = origin;
                  std::vector<ChatStore::Header> keep;
-                 for (const auto& h : *out) if (h.origin == origin && h.Marked()) keep.push_back(h);   // R32: never one that sent nothing
+                 for (const auto& h : *out) if (h.origin == origin && h.Anchored() && h.sent) keep.push_back(h);   // R32: never one that sent nothing
                  for (const Convo* mem : {&convo, aside.on ? &aside.c : nullptr}) if (mem && mem->data.head.Anchored() && SentConvo(*mem)) { bool in = false; for (const auto& k : keep) in = in || k.id == mem->data.head.id; if (!in && !mem->data.head.id.empty()) keep.insert(keep.begin(), mem->data.head); }   // R2: only once sent
                  anchored = std::move(keep); SyncMarks();
              });
@@ -290,7 +290,13 @@ void BubbleBack(const wchar_t* why) {
 void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD, DWORD) {
     if (!bubble.open || !fg || !bubble.hwnd) return;
     DWORD pid = 0; GetWindowThreadProcessId(fg, &pid);
-    if (pid == GetCurrentProcessId()) { if (bubble.away) BubbleBack(L"the browser is back in front"); return; }   // i18n-exempt: log detail
+    if (pid == GetCurrentProcessId()) {
+        if (bubble.away) BubbleBack(L"the browser is back in front");   // i18n-exempt: log detail
+        // Q pass 1, defect 4 (M4): the bubble had the keyboard when another application came — the browser back in front gives
+        // it back, also when the bubble was not hidden (a short visit) — else the keys and Échap went to the browser's band
+        else if (bubble.hadKeyboard && fg != bubble.hwnd && !bubble.waitingAck) { Diag(L"the browser is back in front: the keyboard goes back to the bubble"); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0); }   // i18n-exempt: log detail
+        return;
+    }
     // another application in front while the browser's window (not the bubble) had it: the same check as WM_ACTIVATE's
     if (!bubble.away && !bubble.modal) PostMessageW(bubble.hwnd, WM_APP + 1, 0, 0);
 }
@@ -628,8 +634,8 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
              });
 }
 // A new conversation for an element (the engine's when nothing runs, else aside: its first message will wait).
-std::string NewAnchoredConversation(const std::string& selector, const std::string& label, const std::string& page, const std::string& source) {
-    auto setAnchor = [&](ChatStore::Header& h) { h.anchorSelector = selector; h.anchorLabel = label; h.anchorPage = page; h.anchorSource = source; if (!label.empty() && h.title.empty()) h.title = ChatPrompt::OneLine(label, 44); };
+std::string NewAnchoredConversation(const std::string& selector, const std::string& label, const std::string& page, const std::string& source, const std::string& key = "") {
+    auto setAnchor = [&](ChatStore::Header& h) { h.anchorSelector = selector; h.anchorKey = selector.empty() ? key : std::string(); h.anchorLabel = label; h.anchorPage = page; h.anchorSource = source; if (!label.empty() && h.title.empty()) h.title = ChatPrompt::OneLine(label, 44); };
     if (!turn.active) {
         ParkAside(); NewConversation(); setAnchor(convo.data.head); SendState(); return convo.data.head.id;
     }
@@ -700,6 +706,7 @@ void SyncMarks() {
         for (const auto* hp : all) { const auto& h = *hp;
             if (h.origin != here.origin || h.anchorPage != page) continue;
             if (bubble.open && bubble.conv == h.id) { found0.insert(h.id); continue; }   // D1: its bubble is open: the frame + labels, not the icon
+            if (h.anchorSelector.empty()) { found0.insert(h.id); continue; }   // Q 6: an element in a frame / web component: no mark drawn by selector
             SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(h.id)); o.Set("selector", Str(h.anchorSelector)); o.Set("state", Str(MarkState(h.id)));
             if (MarkState(h.id) == "waiting") o.Set("waitLabel", Str(T8(I18n::Id::chat_mark_waiting)));
             list.Push(std::move(o));
@@ -796,24 +803,30 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     const RECT element = ToScreen(Ann::s.sel.target.rect.x, Ann::s.sel.target.rect.y, Ann::s.sel.target.rect.width, Ann::s.sel.target.rect.height, Ann::s.sel.target.viewport.width);
     const ChatStore::Header* existing = nullptr;
     if (!sel.empty()) for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == sel) { existing = &h; break; }
+    // Q 6 (E1): no safe selector (iframe, web component): its conversation is found again by its key
+    const std::string key = sel.empty() ? ChatBubble::UnsafeAnchorKey(Ann::s.sel.frameKind, tgt.selector, tgt.shadowPath) : std::string();
+    if (!existing && !key.empty()) for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorKey == key) { existing = &h; break; }
+    for (const Convo* mem : {&convo, aside.on ? &aside.c : nullptr}) if (!existing && mem && !key.empty() && mem->data.head.anchorKey == key && mem->data.head.anchorPage == page && SentConvo(*mem)) existing = &mem->data.head;
     if (existing) {   // its conversation: the bubble opens on it again
         const std::string id = existing->id, s = existing->anchorSelector, l = existing->anchorLabel;
         if (bubble.open && bubble.conv == id) { BubbleBack(L"a click on its element"); EnsureOnScreen(L"a click on its element"); return true; }   // already open: shown (hidden by another application meanwhile)   // i18n-exempt: log detail
         if (anchorElements.find(id) == anchorElements.end()) { Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = id; aiming[serial] = std::move(e); QuerySource(t, serial); }
         const std::string page2 = page;
-        ShowConversation(id, [id, element, s, l] { OpenBubble(id, &element, s, false, l); },
+        ShowConversation(id, [id, element, s, l] { OpenBubble(id, &element, s, s.empty(), l); },   // Q 6: no selector — the element itself is followed
                          [id, element, s, l, page2, serial] {   // R6: unreadable — a new conversation for the element, in its bubble
                              const std::string fresh = NewAnchoredConversation(s, l, page2, "");
                              for (auto& a : aiming) if (a.first == serial && a.second.anchorFor == id) a.second.anchorFor = fresh;
                              if (auto it = anchorElements.find(id); it != anchorElements.end()) { anchorElements[fresh] = it->second; anchorElements.erase(it); }
-                             OpenBubble(fresh, &element, s, false, l);
+                             OpenBubble(fresh, &element, s, s.empty(), l);
                          });
         return true;
     }
-    // a click elsewhere while a bubble is up (or that just closed it): it only closes the bubble
-    if (bubble.open || Ann::NowMs() - bubble.closedAt < 400) { if (bubble.open) CloseBubble(true); Diag(L"a click elsewhere closed the bubble"); return true; }
+    // Q pass 1, defect 1 (the user's journey): a click on another element while a bubble is open opens THAT element's bubble
+    // (before: it only closed the open one, 3 times out of 4 nothing opened). Only a click right after a close does nothing.
+    if (!bubble.open && Ann::NowMs() - bubble.closedAt < 400) { Diag(L"a click right after the bubble closed: nothing opened"); return true; }   // i18n-exempt: log detail
     if (aiming.size() >= 10) return false;   // R35: the panel's chips are not this bubble's
-    const std::string id = NewAnchoredConversation(sel, label, page, "");
+    if (bubble.open) { Diag(L"a click on another element: its bubble opens"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
+    const std::string id = NewAnchoredConversation(sel, label, page, "", key);
     Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = id; aiming[serial] = std::move(e); QuerySource(t, serial);
     OpenBubble(id, &element, sel, sel.empty(), label);
     return true;

@@ -189,6 +189,16 @@ cap_page = _re.search(r'CAP = (\d+)', (ROOT / 'assets' / 'chat-panel' / 'panel.j
 cap_host = _re.search(r'PageInsetCapCss = (\d+)', code('chat-bubble.h'))
 check(cap_page and cap_host and cap_page.group(1) == cap_host.group(1), 'Q r44: PageInsetCapCss (host) == CAP (page)', (cap_host and cap_host.group(1), cap_page and cap_page.group(1)))
 
+# Q pass 1, defect 1 (the user's journey): a click on B while A's bubble is open opens B — it no longer only closes A
+take1 = block_after(comment, 'bool TakeCommentSelection(')
+check('a click elsewhere closed the bubble' not in take1 and 'if (!bubble.open && Ann::NowMs() - bubble.closedAt < 400)' in take1,
+      'Q 1: a click on another element while a bubble is open opens that element\'s bubble (only a click right after closing does nothing)')
+# Q pass 1, defect 4 (M4): back in front from another application, the bubble that had the keyboard gets it — even when it was not hidden
+fg = block_after(comment, 'void CALLBACK ForegroundChanged(')
+check('hadKeyboard' in fg and 'WM_APP + 2' in fg, 'Q 4: the browser back in front gives the keyboard to the bubble that had it')
+# Q pass 1, defect 6 (E1): an element in an iframe or a web component finds its conversation again by a stable key
+check('anchorKey' in take1 and 'UnsafeAnchorKey(' in take1, 'Q 6: an element without a safe selector is found again by its key')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
