@@ -571,6 +571,15 @@ bool SwitchEngineTo(const std::string& id) {
     SendState(); SendThread(); SendQueue(); RefreshWaitStrip();
     return true;
 }
+// C2 (review R): a conversation shown « aside » (another element's bubble opened while a turn ran) stayed aside after
+// that turn: what was sent from it went into the engine's conversation. When nothing runs, it becomes the engine's —
+// the same path as a queued message of another element (SwitchEngineTo).
+bool TakeShownAside() {
+    if (!aside.on || turn.active || aside.c.data.head.id.empty()) return false;
+    const std::string id = aside.c.data.head.id;
+    Diag(L"nothing runs: the conversation shown (" + W(id) + L") becomes the engine's");   // i18n-exempt: log detail
+    return SwitchEngineTo(id);
+}
 // The bubble's element joins every message of its bubble (contract B 1.8 §19.4: the page does not list it).
 void AddAnchorElement(std::vector<std::string>& ids) {
     if (!bubble.open) return;

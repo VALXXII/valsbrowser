@@ -554,6 +554,7 @@ std::string LastUserText() { for (auto it = convo.data.items.rbegin(); it != con
 void SendOrQueue(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts) {
     if (text.find_first_not_of(" \t\r\n") == std::string::npos && els.empty() && atts.empty()) return;
     if (!Usable()) return;
+    TakeShownAside();   // C2: shown aside and nothing runs any more: its message goes to ITS conversation
     if (turn.active) { Queued q{NewId("q_"), text, els, atts}; if (aside.on) q.convId = aside.c.data.head.id; queue.push_back(std::move(q)); SendQueue(); RefreshWaitStrip(); SyncMarks(); }
     else StartTurn(text, els, atts);
 }
@@ -614,6 +615,7 @@ void Mentions(const std::string& query) {
 // discreet line (`annotation.kept`, kept with the conversation); a failed write is said in the composer.
 void KeepAnnotation(const std::string& text, const std::vector<std::string>& ids) {
     if (!site.local || site.file || site.origin.empty()) return;
+    TakeShownAside();   // C2
     std::vector<Element> els; for (const auto& id : ids) if (auto it = composerElements.find(id); it != composerElements.end()) { els.push_back(std::move(it->second)); composerElements.erase(it); }
     if (els.empty()) return;
     std::string words = text; for (const auto& e : els) for (auto at = words.find(e.label); !e.label.empty() && at != std::string::npos; at = words.find(e.label)) words.erase(at, e.label.size());

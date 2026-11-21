@@ -63,6 +63,17 @@ order = [ready.find(x) for x in ('Send("hello"', 'SendLayout(', 'SendState();', 
 check(ready and all(p >= 0 for p in order) and order == sorted(order),
       'C1: « ready » sends hello, layout, state, thread, commands, queue — in that order, none left in a comment', order)
 
+turn = code('chat-host-turn.h'); batch = code('chat-host-batch.h'); comment = code('chat-comment.h')
+
+# C2: a conversation shown « aside » while nothing runs becomes the engine's before anything is sent from it, and at the
+# end of a turn when nothing waits for another conversation
+soq = block_after(ui, 'void SendOrQueue(')
+check(0 <= soq.find('TakeShownAside()') < soq.find('StartTurn('), 'C2: SendOrQueue takes the conversation shown aside before starting a turn')
+check('TakeShownAside()' in block_after(turn, 'void ProcessQueue() {'), 'C2: the end of a turn (ProcessQueue, nothing queued) gives the engine to the conversation shown')
+check('TakeShownAside()' in block_after(batch, 'void StartBatchTurn('), 'C2: a batch sent from a bubble aside goes to its conversation')
+check('TakeShownAside()' in block_after(ui, 'void KeepAnnotation('), 'C2: Ctrl+Entrée in a bubble aside keeps the line in its conversation')
+check('SwitchEngineTo(' in block_after(comment, 'bool TakeShownAside()'), 'C2: by the same path as a queued message (SwitchEngineTo)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

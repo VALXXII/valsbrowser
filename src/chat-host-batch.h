@@ -140,6 +140,7 @@ void BatchTurnEnded(const std::string& stopReason) { ReconcileBatch(stopReason.e
 
 // `ids`: the ticked annotations of the batch posed in the composer; `precision`: what the user added (may be empty).
 void StartBatchTurn(const std::string& precision, const std::string& batchId, const std::vector<std::string>& ids) {
+    TakeShownAside();   // C2
     if (turn.active || !Usable()) return;
     if (batchId != composerBatch.id || composerBatch.items.empty()) { Diag(L"send with a batch that is not the one in the composer: ignored"); return; }
     Batch b; b.id = composerBatch.id;
