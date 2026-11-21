@@ -49,6 +49,9 @@ def main() -> int:
     run = subprocess.run([str(exe)], cwd=ROOT, capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)
     print((run.stdout + run.stderr).rstrip())
     ok = run.returncode == 0
+    contracts = subprocess.run([sys.executable, '-I', str(ROOT / 'tests' / 'chat' / 'host_contract_test.py')], cwd=ROOT, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    print((contracts.stdout + contracts.stderr).rstrip())
+    ok = ok and contracts.returncode == 0
     if fingerprint() != before:
         print('FAIL a real Claude / Codex configuration file changed during the tests')
         ok = False

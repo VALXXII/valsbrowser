@@ -673,7 +673,8 @@ void OnPanelMessage(const std::string& json) {
         panelReady = true; stats.readyAt = Ann::NowMs();
         Diag(L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
-        Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else SendLayout(false);   // R34: the layout the page needs, always first SendState(); SendThread(); SendCommands(); SendQueue();
+        Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else SendLayout(false);   // R34: the layout the page needs, always first
+        SendState(); SendThread(); SendCommands(); SendQueue();   // C1 (review R): were left in the comment above — a bubble opened before the page was ready got no thread
         if (!BubbleOpen() && !BubbleWarm())   // R35: the panel's draft (its chips) stays the panel's
             for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
