@@ -100,6 +100,16 @@ for t in ('setModel', 'setEffort', 'setMode'):
           'E3: « ' + t + ' » from a bubble aside keeps the choice for that conversation, the running session untouched')
 check('aside.on' in block_after(ui, 'void MarkSwitch('), 'E3: the « Passé à … » mark goes into the conversation shown aside')
 
+# E1: the click's early « selecting » gave a selector; when the full « select » says it is not a safe one (iframe, shadow,
+# not unique), the bubble takes the real one — or follows the current element
+take = block_after(comment, 'bool TakeCommentSelection(')
+done = block_after(take, 'if (early.on && early.seq == Ann::s.sel.seq')
+check('selectorUnique' in done and 'FollowBubbleElement(' in done, 'E1: the full selection corrects the selector the early opening followed')
+
+# E5: a conversation already being read is not read again — one reading, one opening (the latest « then » wins)
+show = block_after(comment, 'void ShowConversation(const std::string& id, std::function<void()> then')
+check('loadingConv' in show and show.find('loadingConv') < show.find('Ann::Run('), 'E5: a second ShowConversation of the same conversation while it is read does not read it again')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

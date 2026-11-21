@@ -533,6 +533,9 @@ void ShowAside(Convo c) {
 }
 // Shows a conversation (the bubble's): the engine's (A) when it is that one; else, while A works, B « aside »; when nothing
 // runs, B becomes the engine's (the agent starts for it). `then` runs once it is in place.
+// E5 (review R): the click's early « selecting » and its full « select » both asked to read the same conversation from the
+// disk: two readings, two openings, the agent started then stopped. One reading per conversation; the latest « then » wins.
+std::string loadingConv; std::function<void()> loadingThen, loadingMissing;
 void ShowConversation(const std::string& id, std::function<void()> then, std::function<void()> missing = nullptr) {
     if (id == convo.data.head.id) { if (aside.on) { ParkAside(); SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); } if (then) then(); return; }
     if (aside.on && aside.c.data.head.id == id) { if (then) then(); return; }
@@ -543,9 +546,13 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
         convo = std::move(c); RebuildTurnMaps(); SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); MaybeStartSession();
         if (then) then(); if (HasQueued(convo.data.head.id)) ProcessQueue(); return;
     }
+    if (id == loadingConv) { loadingThen = std::move(then); loadingMissing = std::move(missing); Diag(L"conversation already being read: one reading (" + W(id) + L")"); return; }   // E5   // i18n-exempt: log detail
+    loadingConv = id; loadingThen = std::move(then); loadingMissing = std::move(missing);
     auto out = std::make_shared<ChatStore::Conversation>(); auto ok = std::make_shared<bool>(false);
     Ann::Run([out, ok, id] { *ok = History().Load(id, *out); },
-             [out, ok, then, missing, id] {
+             [out, ok, id] {
+                 if (loadingConv != id) return;   // replaced by another reading meanwhile
+                 auto then = std::move(loadingThen); auto missing = std::move(loadingMissing); loadingConv.clear(); loadingThen = nullptr; loadingMissing = nullptr;
                  if (!*ok || out->head.origin != site.origin) {
                      Diag(L"conversation not found: " + W(id));
                      // R6: it is forgotten (its element must not keep a frame that opens nothing)
@@ -703,6 +710,14 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     PrepareChat(t);
     if (early.on && early.seq == Ann::s.sel.seq && bubble.open && bubble.conv == early.conv) {   // R18: the bubble is already open: completed
         early.on = false;
+        {   // E1 (review R): the early opening followed the click's selector; the full selection says whether it is a safe one
+            const auto& tq = Ann::s.pending.target;
+            const std::string safe = Ann::s.sel.frameKind == "main" && tq.shadowPath.empty() && tq.selectorUnique ? tq.selector : std::string();
+            if (safe != bubble.selector) {
+                Diag(safe.empty() ? std::wstring(L"the click's selector is not a safe one (frame, shadow or not unique): the bubble follows the element itself") : L"the bubble follows the full selection's selector");   // i18n-exempt: log detail
+                bubble.selector = safe; FollowBubbleElement(safe.empty());
+            }
+        }
         const auto& tg = Ann::s.pending.target; const std::string label = tg.path.empty() ? tg.tag : tg.path.back();
         if (!label.empty() && label != bubble.label) {
             bubble.label = label;
