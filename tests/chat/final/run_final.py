@@ -101,7 +101,7 @@ def write_report(results):
             lines += ['', f'## Monkey {d.name}', '', f'{len(r.get("done", []))} actions, {r["measures"].get("invariantChecks", 0)} vérifications d\'invariants, '
                       f'{len(r["failures"])} échec(s).']
             for f in r['failures'][:10]:
-                lines.append(f'- pas {f.get("index")} ({(f.get("action") or {}).get("kind")}) : {f["step"]} — capture `{f.get("capture")}`, rejouer : `{f.get("replay")}`')
+                lines.append(f'- pas {f.get("index")} ({(f.get("action") or {}).get("kind") if isinstance(f.get("action"), dict) else f.get("action")}) : {f["step"]} — capture `{f.get("capture")}`, rejouer : `{f.get("replay")}`')
     (OUT / 'report.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print('report:', OUT / 'report.md')
 

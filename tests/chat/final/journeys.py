@@ -872,8 +872,7 @@ def j_c3_history(j):
     j.R.capture('c3-historique')
 
 
-@journey('c1_prechauffage_retarde', 'review C1 with the warm-up held back (BROWSER_CHAT_TEST_WARM_DELAY_MS, asked to H1): a click before the chat page is ready',
-         extra_env={'BROWSER_CHAT_TEST_WARM_DELAY_MS': '4000'})
+@journey('c1_prechauffage_retarde', 'review C1 with the warm-up held back (BROWSER_CHAT_TEST_WARM_DELAY_MS, asked to H1): a click before the chat page is ready')
 def j_c1_delay(j):
     j.open_on('a.btn-primary', 'A'); j.send('a.btn-primary', 'reply', token='jetonC1d'); j.close()
     F.release_all(); C.quit_all(); time.sleep(1.0)
