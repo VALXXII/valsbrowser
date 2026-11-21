@@ -716,7 +716,7 @@
     setTimeout(() => {
       if (!el.isConnected) return;
       el.style.transition = ""; el.style.transform = ""; el.style.height = ""; el.style.overflow = ""; el.style.width = fw;
-      el.classList.remove("morph-in");
+      el.classList.replace("morph-in", "morphed");   // the menus' entrance stays blocked: removing it replayed the fade from 0
       el._morphBox = null;
     }, MORPH_MS + 20);
   }

@@ -831,6 +831,12 @@ try:
         check(surf == ["none", "1", "rgb(36, 36, 36)"], "bubble (cv5 R41): the transforming menu's surface stays opaque (no entrance fade on it) — only its content cross-fades", str(surf))
         check(first_ask.get("overflowTop", 0) >= final[0] - 1 and all(u.get("overflowTop", 0) >= final[0] - 1 for u in during[:-1]),
               "bubble (cv5 R41): from the first image of the transformation, the region asked covers the new menu's FINAL box (shadow included), and shrinks only after the end", f"final top {final[0]} / asks {[u.get('overflowTop', 0) for u in during]}")
+        # R41 (H1's measure): no image with a translucent menu surface, from the click to 500 ms after (end of the morph included)
+        load("c-menus-morph")
+        op = cdp.js("""new Promise(r=>{const b=document.querySelector('.tb.mode');b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));b.click();
+          const t0=performance.now(),seen=[];const f=()=>{const m=document.querySelector('.menu:not(.menu-ghost)');if(m)seen.push(+getComputedStyle(m).opacity);
+          if(performance.now()-t0<520)requestAnimationFrame(f);else r({frames:seen.length,min:Math.min(...seen)})};requestAnimationFrame(f)})""")
+        check(op["frames"] >= 20 and op["min"] == 1, "bubble (cv5 R41): the new menu's surface is opaque at every image from the click to 500 ms after — the entrance fade never replays at the end", json.dumps(op))
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",

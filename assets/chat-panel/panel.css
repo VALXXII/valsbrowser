@@ -847,7 +847,8 @@ button.bt-st.run::before { content: ""; position: absolute; inset: -1px 0; }
    stays opaque from the first image — only the content cross-fades (H1's measure: translucent at +42..+83 ms otherwise) */
 .menu.menu-ghost, :root:not(.reduce-motion) .menu.menu-ghost { background: transparent; border-color: transparent; box-shadow: none; animation: none; pointer-events: none; z-index: 9; }
 .menu.menu-ghost > * { animation: fade-out 120ms ease-out both; }
-.menu.morph-in, :root:not(.reduce-motion) .menu.morph-in { animation: none; opacity: 1; }
+.menu.morph-in, :root:not(.reduce-motion) .menu.morph-in,
+.menu.morphed, :root:not(.reduce-motion) .menu.morphed { animation: none; opacity: 1; }
 .menu.morph-in > * { animation: fade 200ms var(--ease-out) both; }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
 /* cv5 R40: the resize handle of the diff « en grand » */
