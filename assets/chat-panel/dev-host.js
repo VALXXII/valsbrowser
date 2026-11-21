@@ -241,6 +241,8 @@
     "c-modele-change": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CEND }, { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 },
       { type: "model.switch", agentId: "claude-code", model: "Opus 5.5", modelId: "opus", effort: "medium", effortId: "medium" }] }],
+    // R47: a permission arriving in a short bubble (the host offered 200 px)
+    "c-autorisation-courte": cRun({ maxHeight: 200 }).concat([C_PERM, wait(80)]),
     "c-messages-deux": [LAY({ maxWidth: 320 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
       { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: CTEXT }, { type: "message.agentChunk", turnId: "t1", messageId: "m2", text: "Rien d'autre n'a changé." },
       { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],

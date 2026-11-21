@@ -224,7 +224,9 @@
   // Menus and hover bubbles live in their own layer, outside the surface: in the bubble they may leave it (B 1.9, R3) —
   // the host grows the transparent window around the surface for them. The layer has the surface's origin.
   const menuLayer = h("div", { class: "layer" }, btipEl);
-  app.append(hd, main, fadeEl, gripEl, live, alertLive);
+  app.append(hd, main, gripEl, live, alertLive);
+  // R47: the fade covers the top of the thread only (it lives in the thread's box), never the permission card nor its buttons
+  body.appendChild(fadeEl);
   let grip = null, gripFrame = 0;
   function sizeBounds() {
     const base = S.viewBase || { w: S.lay.maxW, h: S.pendH || 224 };

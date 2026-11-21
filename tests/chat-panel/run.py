@@ -389,7 +389,7 @@ try:
                 spec = FID[name] if isinstance(FID[name], dict) else {"nodes": FID[name]}
                 fidelity[name] = cdp.js("(" + FID_JS + ")(" + json.dumps(spec["nodes"]) + "," + json.dumps(spec.get("root", "#app")) + "," + str(spec.get("dy", 0)) + ")")
             over = cdp.js("(()=>{const s=document.querySelector('.scroller'),a=document.getElementById('app');return [s.scrollHeight-s.clientHeight, s.scrollTop, a.scrollTop, Math.round(a.getBoundingClientRect().height)]})()")
-            if name in ("c-2-autorisation", "c-fil-long", "c-autorisation-reouverte"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
+            if name in ("c-2-autorisation", "c-fil-long", "c-autorisation-reouverte", "c-autorisation-courte"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
             else: check(over[:3] == [0, 0, 0] and size and over[3] == size[1], f"{name}: the window fits the content exactly (nothing scrolls, nothing is cut)", str(over) + " " + str(size))
             out = os.path.join(COMMENT, name + ".png")
             cdp.call("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
@@ -870,6 +870,28 @@ try:
         check(ms == [["Passé à Opus 5.5 · Moyen", "flex"], ["Passé à Codex", "flex"]], "bubble (R42): `model.switch` draws a discreet grey line « Passé à Opus 5.5 · Moyen » (« Passé à Codex » without a model)", str(ms))
         load("c-modele-change")
         check(cdp.js("Array.from(document.querySelectorAll('.mswitch')).map(n=>n.textContent)") == ["Passé à Opus 5.5 · Moyen"], "bubble (R42): the « Passé à » line comes back with the conversation (thread.reset)")
+        # R47: with little room, the whole permission card shows (buttons included); only the thread's top fades, never the card
+        for nm in ("c-2-autorisation", "c-autorisation-courte"):
+            load(nm)
+            pr = cdp.js("""(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.bperm').getBoundingClientRect(),f=document.querySelector('.b-fade').getBoundingClientRect(),
+              b=Array.from(document.querySelectorAll('.bperm .btn')).map(x=>x.getBoundingClientRect()),s=document.querySelector('.scroller').getBoundingClientRect();
+              return {inside:b.every(x=>x.bottom<=a.bottom-11.5&&x.top>=a.top), fadeOverCard:f.bottom>c.top+0.5, fadeInThread:f.top>=s.top-0.5&&f.bottom<=s.bottom+0.5, faded:document.getElementById('app').classList.contains('faded'), h:Math.round(a.height)}})()""")
+            check(pr["inside"] and not pr["fadeOverCard"] and pr["fadeInThread"], f"bubble (R47, {nm}): the permission card and its buttons are whole inside the bubble; the fade stays on the thread's top, never on the card", json.dumps(pr))
+        # R47 (the user's sequence: a permission in the bubble, the page scrolled up then down): if the host offers less room for a
+        # while, then the room of before, the bubble asks its full height again — whole card, nothing faded but the thread's top
+        load("c-2-autorisation")
+        before = sizes()[-1]
+        host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 150, "inset": cdp.js("window.__inset")})
+        small = sizes()[-1]
+        host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 303, "inset": cdp.js("window.__inset")})
+        after = sizes()[-1]
+        back47 = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),b=Array.from(document.querySelectorAll('.bperm .btn')).map(x=>x.getBoundingClientRect()),c=document.querySelector('.bperm'),f=document.querySelector('.b-fade').getBoundingClientRect();return [Math.round(a.height), b.every(x=>x.bottom<=a.bottom-11.5), getComputedStyle(c).opacity, f.bottom<=c.getBoundingClientRect().top+0.5]})()")
+        check(small[1] < before[1] and after == before and back47 == [before[1], True, "1", True], "bubble (R47): less room for a while, then the room of before — the bubble asks its full height again, the card whole and opaque, the fade off the card", f"{before} {small} {after} {back47}")
+        # R48: no typing caret at the end of the agent's text while it streams (bubble and panel)
+        load("c-2-envoye")
+        host({"type": "message.agentChunk", "turnId": "t1", "messageId": "m1", "text": " Et encore"})
+        car = cdp.js("Array.from(document.querySelectorAll('.text, .text *')).map(n=>getComputedStyle(n,'::after').content).filter(c=>c&&c!=='none'&&c!=='normal')")
+        check(car == [], "bubble (R48): no blue typing caret after the agent's text while it streams", str(car))
         # R7: no element chip under the user's message in the bubble
         load("c-2-puce")
         check(cdp.js("document.querySelectorAll('.um .chip').length") == 0 and cdp.js("document.querySelector('.um .bubble').textContent") == "Fais en sorte que le bouton prenne toute la largeur du form",
@@ -1021,6 +1043,10 @@ try:
         load("suivi")
         p43 = cdp.js("[document.querySelectorAll('.follow').length, Array.from(document.querySelectorAll('.turn .text')).map(t=>t.textContent)]")
         check(p43 == [0, ["J'ai raccourci le texte."]], "panel (R43): a finished turn shows only its answer — the announcements are gone (folded with the steps)", str(p43))
+        load("6.10-travaille")
+        cdp.js("window.devHost.send({type:'message.agentChunk',turnId:document.querySelectorAll('.turn')[document.querySelectorAll('.turn').length-1].dataset.turn,messageId:'zz',text:'Je cherche le style de la grille.'})"); time.sleep(.15)
+        car2 = cdp.js("Array.from(document.querySelectorAll('.text, .text *')).map(n=>getComputedStyle(n,'::after').content).filter(c=>c&&c!=='none'&&c!=='normal')")
+        check(car2 == [], "panel (R48): no blue typing caret after the agent's streaming text", str(car2))
         load("etapes-brutes")
         pl4 = cdp.js("Array.from(document.querySelectorAll('.steps .step span:not(.spin):not(.fail-tag)')).map(n=>n.textContent)")
         check(pl4 == ["A lu index.html", "A utilisé 1 outil MCP", "A lancé npm run build", "Modifie landing.css…"], "panel (D4): the same French labels for the steps, never the agent's raw title", str(pl4))

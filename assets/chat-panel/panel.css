@@ -179,7 +179,7 @@ svg.i { display: block; flex-shrink: 0; }
 .spin svg, svg.spin { animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .text { color: var(--w90); font-size: 14px; line-height: 20px; display: flex; flex-direction: column; gap: 10px; }
-.text.streaming > :last-child::after { content: "\258D"; color: var(--accent-ink); margin-left: 1px; }
+/* R48: no typing caret at the end of the agent's text (follow-up lines and answers, bubble and panel) — nothing replaces it */
 .waiting { display: flex; align-items: center; gap: 8px; color: var(--w80); font-size: 13px; line-height: 18px; }
 .waiting svg { width: 16px; height: 16px; }
 .working { font-size: 14px; font-weight: 500; line-height: 16px; color: var(--w40); }
@@ -645,7 +645,7 @@ svg.i { display: block; flex-shrink: 0; }
 /* R18: a short slide from the element's side (faster than the Settings drawer), with a fade; nothing scales */
 @keyframes b-in { from { opacity: 0; transform: translate(var(--b-dx, -12px), var(--b-dy, 0)); } to { opacity: 1; transform: none; } }
 /* the thread scrolls once the bubble is at its maximum: its top fades (1AS0-0) */
-.bub .b-fade { display: block; position: absolute; top: 0; left: 0; right: 0; height: 96px; z-index: 3; pointer-events: none; opacity: 0;
+.bub .b-fade { display: block; position: absolute; top: 0; left: 0; right: 0; height: min(96px, 40%); z-index: 3; pointer-events: none; opacity: 0;
   background-image: linear-gradient(in oklab 180.49deg, var(--raised) 10.75%, color-mix(in srgb, var(--raised) 0%, transparent) 98.04%); transition: opacity 150ms ease; }
 .bub #app.faded .b-fade { opacity: 1; }
 .bub #app.view .b-fade { opacity: 0; }
@@ -717,7 +717,7 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 @media (hover: hover) { .bt-copy:hover, .bview-copy:hover { background: var(--raised); } .bt-bar-main:hover .cv { opacity: .9; } }
 
 /* input (18TO-0, 1AHR-0): no frame of its own — the bubble is the frame */
-.bub .dock { padding: 0; gap: 8px; }
+.bub .dock { padding: 0; gap: 8px; flex-shrink: 0; }   /* R47: the input / the permission card never shrink — the thread gives way */
 .bub .composer { background: none; border: 0; border-radius: 0; padding: 0; gap: 12px; }
 .bub #app.has-thread .composer { gap: 8px; }
 .bub .cin { color: var(--w90); max-height: 100px; }
