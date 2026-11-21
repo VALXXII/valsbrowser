@@ -277,7 +277,7 @@ class Popover {
     bool visible_ = false, keyboard_ = false, entering_ = false, exiting_ = false, drawer_ = false;
     int hover_ = 0, pressed_ = 0, focus_ = 0, dragging_ = -1, tipFor_ = 0; float grab_ = 0, scroll_ = 0;
     POINT final_{}; Motion::Time opened_{}, lastStep_{};
-    static constexpr UINT_PTR FrameTimer = 1;
+    static constexpr UINT_PTR FrameTimer = 1; bool frameArmed_ = false;
     static constexpr long long GroupKey = 10;
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
@@ -310,7 +310,10 @@ class Popover {
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
     }
     void Invalidate() { if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE); }
-    void Wake() { if (hwnd_) SetTimer(hwnd_, FrameTimer, 10, nullptr); }
+    // Arms the frame timer once: SetTimer on an armed timer restarts its countdown, so re-arming on every pointer
+    // move (a drag sends one every 1-2 ms) kept WM_TIMER from ever firing and the lit tick froze until the pointer paused.
+    void Wake() { if (hwnd_ && !frameArmed_) frameArmed_ = SetTimer(hwnd_, FrameTimer, 10, nullptr) != 0; }
+    void Rest() { if (hwnd_) KillTimer(hwnd_, FrameTimer); frameArmed_ = false; lastStep_ = {}; }
     void Interact() { const auto now = Motion::Now(); motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : (dragging_ >= 0 ? SliderHit(dragging_) : 0), now); Invalidate(); if (motion_.NextWake(now).delay) Wake(); SyncTip(false); }
     // Presented ticks glide to the nearest tick of each row's value (exponential, 40 ms).
     bool StepTicks(Motion::Time now) {
@@ -334,7 +337,7 @@ class Popover {
             if (std::chrono::duration<double, std::milli>(now - opened_).count() >= ms) { if (exiting_) { exiting_ = false; Hidden(false, false); return; } entering_ = false; SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA); }
         }
         Invalidate();
-        if (!entering_ && !exiting_ && !ticks && !motion_.NextWake(now).delay) { KillTimer(hwnd_, FrameTimer); lastStep_ = {}; }
+        if (!entering_ && !exiting_ && !ticks && !motion_.NextWake(now).delay) Rest();
     }
     void Place() {
         if (drawer_ && hooks_.drawerArea) {
@@ -429,7 +432,7 @@ class Popover {
         if (uia_.Listening()) { uia_.ChildrenChanged(GroupKey); if (focus_) uia_.Raise(focus_, UIA_AutomationFocusChangedEventId); }
     }
     void Hidden(bool keyboard, bool notify = true) {
-        ShowWindow(hwnd_, SW_HIDE); KillTimer(hwnd_, FrameTimer); lastStep_ = {}; drawer_ = false;
+        ShowWindow(hwnd_, SW_HIDE); Rest(); drawer_ = false;
         if (notify && hooks_.closed) hooks_.closed(keyboard);
     }
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
