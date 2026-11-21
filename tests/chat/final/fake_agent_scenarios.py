@@ -183,6 +183,22 @@ def main():
             a.send({'method': 'session/cancel', 'params': {'sessionId': sid}})
     check('vrai-lent: silence for about 2.5 s, then an announcement', first is not None and 2.3 <= first <= 4.0, first)
     check('vrai-lent: session/cancel during the tool call -> cancelled', answer and answer['result']['stopReason'] == 'cancelled', answer)
+    # vrai-sourd: a cancel changes nothing, chunks go on (review M1)
+    rid = a.next; a.next += 1; t0 = time.time()
+    a.send({'id': rid, 'method': 'session/prompt', 'params': {'sessionId': sid, 'prompt': [{'type': 'text', 'text': 'vrai-sourd'}]}})
+    time.sleep(0.6); a.send({'method': 'session/cancel', 'params': {'sessionId': sid}}); after = 0; answered = False
+    while time.time() - t0 < 3.0:
+        try:
+            m = a.q.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if m.get('id') == rid:
+            answered = True
+        elif time.time() - t0 > 1.2 and m.get('method') == 'session/update':
+            after += 1
+    check('vrai-sourd: after session/cancel the chunks go on, no answer', after >= 5 and not answered, (after, answered))
+    a.close()
+    a, init, new = start(exe); sid = new['result']['sessionId']
     # old scenarios unchanged
     r, seen = prompt(a, sid, 'reply')
     check('old scenario « reply » unchanged', text_of(seen) == 'Bonjour — voici la réponse.')

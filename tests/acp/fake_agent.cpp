@@ -45,6 +45,7 @@
 //     vrai-surcharge    an announcement, then the API's 529 overloaded error (JSON-RPC error, as the adapter reports it)
 //     vrai-lent         2.5 s of silence, an announcement, a 3 s tool call (session/cancel stops it), then the answer
 //     vrai-erreur-outil a tool call that fails, the agent says so and tries another way, then the answer
+//     vrai-sourd        deaf to session/cancel: a chunk every 200 ms for 60 s whatever the client says, then end_turn
 //   commands            available_commands_update                       title        session_info_update
 //   mcptool             an MCP tool asked for by its raw name: "mcptool <title>|<arguments JSON>[|<result text>]" in the message
 //                       several calls in one turn: specs separated by ";;"; a part "wait <ms>" pauses between two calls
@@ -468,6 +469,14 @@ void Realistic(const SJ::Value& id, const std::string& text, const std::function
     const auto usage = [&] { Update(Obj({{"sessionUpdate", S("usage_update")}, {"used", I(4321)}, {"size", I(200000)}})); };
     const SJ::Value diff = Obj({{"type", S("diff")}, {"path", S(file)}, {"oldText", S(".hero-actions {\n  display: flex;\n  gap: 4px;\n}\n")},
                                 {"newText", S(".hero-actions {\n  display: flex;\n  gap: 8px;\n}\n")}});
+    if (has("vrai-sourd")) {   // review M1: an agent that never answers the cancel (the host must give up on its own)
+        for (int i = 0; i < 300; ++i) {
+            Chunk("agent_message_chunk", i ? "… " : "Je travaille. ");
+            Pump(200);
+        }
+        Result(id, Obj({{"stopReason", S("end_turn")}}));
+        return;
+    }
     if (has("vrai-surcharge")) {
         Stream("Je regarde le fichier de styles. ");
         Pump(300);

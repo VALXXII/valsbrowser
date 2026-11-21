@@ -40,9 +40,9 @@ COVERED_ELSEWHERE = {
 }
 
 
-def journey(name, retours, agent_args=''):
+def journey(name, retours, agent_args='', extra_env=None):
     def deco(fn):
-        JOURNEYS.append({'name': name, 'retours': retours, 'fn': fn, 'agent': agent_args}); return fn
+        JOURNEYS.append({'name': name, 'retours': retours, 'fn': fn, 'agent': agent_args, 'env': extra_env}); return fn
     return deco
 
 
@@ -807,12 +807,72 @@ def j_m2(j):
     j.inv.m.open = 'h1.hero-title'; j.inv.rebase(); j.check('M2')
 
 
+
+@journey('m1_arreter_agent_sourd', 'review M1 (« Arrêter » while the agent never answers the cancel: the turn ends within ~5 s, the next message works)')
+def j_m1(j):
+    j.open_on('a.btn-primary', 'A')
+    m = F.log_mark(); F.type_and_send('vrai-sourd jetonM1', 'bubble'); j.inv.m.conv['a.btn-primary'] = 'jetonM1'; time.sleep(1.5)
+    t0 = time.time(); j.step('« Arrêter » clicked', F.real_click_chat(text='Arrêter'))
+    ended = F.wait_log(r'CHAT turn t\d+ ended', m, 12); secs = round(time.time() - t0, 1)
+    j.step('M1 · the turn ends on its own within ~6 s of « Arrêter »', ended and secs <= 7, secs)
+    time.sleep(0.8); st = F.chat_state('bubble')
+    j.step('M1 · the bubble is usable again (no « Arrêter »)', not st.get('busy'), (st.get('text') or '')[-200:])
+    m = F.log_mark(); F.type_and_send('reply jetonM1b', 'bubble'); j.inv.m.conv['a.btn-primary'] = 'jetonM1b'
+    j.step('M1 · the next message is answered', F.wait_log(r'CHAT turn t\d+ ended', m, 20)); j.inv.sent('bubble', 'jetonM1b', 'M1 next')
+    j.check('M1')
+
+
+@journey('c3_historique_du_lanceur', 'review C3 (a conversation whose element is gone, opened from the launcher\'s history: it opens and stays) — to enable after H1\'s fix')
+def j_c3_history(j):
+    j.open_on('p.hero-text', 'text'); j.send('p.hero-text', 'reply', token='jetonC3h')
+    # the element leaves the site for good: the agent renames its class in landing.html (the page reloads)
+    m = F.log_mark(); F.type_and_send('apply landing.html|<p class="hero-text"|<p class="hero-copy"', 'bubble')
+    F.wait_log(r'CHAT permission asked', m, 20); F.answer_permission('Autoriser', 'bubble', m)
+    j.step('the element is gone from the page after the edit', F.wait_log(r'CHAT turn t\d+ ended', m, 20) and (time.sleep(2.5) or True)
+           and not F.page("!!document.querySelector('p.hero-text')"))
+    j.inv.allow_close = True; F.escape_chat('bubble'); time.sleep(0.6); j.inv.m.open = None
+    j.inv.m.conv.pop('p.hero-text', None)
+    m = F.log_mark(); F.front()
+    j.step('the launcher (bottom right) opens the history', C.invoke('AnnotationLauncher')); time.sleep(1.0)
+    names = C.uia('-List') or ''
+    rows = [l for l in names.splitlines() if 'hero-text' in l or 'jetonC3h' in l or 'Bonjour' in l]
+    j.R.data['measures']['historyRows'] = rows[:6]
+    name = rows[0].split(' | ')[1] if rows else None
+    if not j.step('C3 · the conversation whose element is gone is listed', name, names.splitlines()[-30:]):
+        return
+    C.uia('-Name', name, '-Invoke'); time.sleep(1.5)
+    shown, rb = F.bubble_shown(); st = F.chat_state('bubble')
+    j.step('C3 · it opens in the bubble (bottom right) with its conversation', shown and 'jetonC3h' in (st.get('text') or ''), {'region': rb})
+    time.sleep(2.0)
+    j.step('C3 · and stays open (never closed as « element no longer in the page »)', F.bubble_shown()[0] and 'no longer in the page' not in C.log_text()[m:], [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][-5:])
+    j.R.capture('c3-historique')
+
+
+@journey('c1_prechauffage_retarde', 'review C1 with the warm-up held back (BROWSER_CHAT_TEST_WARM_DELAY_MS, asked to H1): a click before the chat page is ready',
+         extra_env={'BROWSER_CHAT_TEST_WARM_DELAY_MS': '4000'})
+def j_c1_delay(j):
+    j.open_on('a.btn-primary', 'A'); j.send('a.btn-primary', 'reply', token='jetonC1d'); j.close()
+    F.release_all(); C.quit_all(); time.sleep(1.0)
+    F.launch(fresh=False, extra_env={'BROWSER_CHAT_TEST_WARM_DELAY_MS': '4000'})
+    j.inv.m.open = None; j.inv.log_at = F.log_mark(); j.inv.uia_base = None
+    F.front(); m = F.log_mark(); C.shortcut('A'); F.wait_log(r'ANNOTATE mode on', m, 10); F.set_layout('comment')
+    j.R.data['measures']['warmDelayed'] = bool(F.wait_log(r'warm[^\n]*delay|held back', m, 0.5))
+    p = F.element_point('a.btn-primary'); t = time.perf_counter(); F.click_at(*p, settle=0.02)
+    j.inv.after_element_click('a.btn-primary', t, 'C1 click before the chat page is ready', mark=m)
+    samples = []; t0 = time.time()
+    while time.time() - t0 < 5:
+        st = F.chat_state('bubble'); samples.append((round(time.time() - t0, 2), st.get('model'), 'jetonC1d' in (st.get('text') or '')))
+        time.sleep(0.1)
+    bad = [x for x in samples if x[1] is not None and (not x[2] or (x[1] or '').endswith('Agent'))]
+    j.step('C1 · as soon as the page shows: the conversation and the model (never « Agent », never an empty thread)', not bad and any(x[2] for x in samples), bad[:5])
+    j.check('C1 delayed')
+
 # ---------------------------------------------------------------- runner
 def run_one(jn):
     name = jn['name']; print(f'===== {name} ({jn["retours"]})', flush=True)
     j = J(name); before = C.fingerprints(); uia = None
     try:
-        F.launch(jn['agent'])
+        F.launch(jn['agent'], extra_env=jn.get('env'))
         F.mode_on('comment')
         uia = F.Uia(); j.uia = uia; j.inv = F.Invariants(j.R, uia)
         F.ERRORS.collect()
