@@ -212,6 +212,11 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
                                                      {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
     if (!kept.ok) { bubble.frameKept = true; bubble.frameRel = ChatBubble::RelativeTo(f.window, ChatBubble::CornerOf(p.rect, p.fromRight, p.fromBottom)); }
     const bool insetChanged = !(f.inset == bubble.inset); bubble.inset = f.inset;
+    {   // Q's invariant (region == surface): where the page will draw the surface (its CAP on the inset) is where the host shows it
+        auto px = [&](int c) { return int(c * k + .5f); };
+        const int dx = f.window.left + px(std::min(f.inset.left, ChatBubble::PageInsetCapCss)) - p.rect.left, dy = f.window.top + px(std::min(f.inset.top, ChatBubble::PageInsetCapCss)) - p.rect.top;
+        if (std::abs(dx) > 1 || std::abs(dy) > 1) Diag(L"bubble drawn away from its region (" + std::to_wstring(dx) + L", " + std::to_wstring(dy) + L" px): inset " + std::to_wstring(f.inset.left) + L"," + std::to_wstring(f.inset.top));   // i18n-exempt: log detail
+    }
     const RECT wr{f.window.left, f.window.top, f.window.right, f.window.bottom};
     const auto vis = ChatBubble::Clip(f.region, {a.left - f.window.left, a.top - f.window.top, a.right - f.window.left, a.bottom - f.window.top});   // R29: never over the bars
     const RECT rg{vis.left, vis.top, vis.right, vis.bottom};

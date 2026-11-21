@@ -89,6 +89,7 @@ struct Edges {
     bool operator==(const Edges& o) const { return top == o.top && right == o.right && bottom == o.bottom && left == o.left; }
 };
 inline constexpr int MaxOverflowCss = 400;
+inline constexpr int PageInsetCapCss = 400;   // the page (panel.js applyInset, CAP) never draws the surface further than this into its window
 inline Edges Bounded(Edges e) { auto b = [](int v) { return Clamp(v, 0, MaxOverflowCss); }; return {b(e.top), b(e.right), b(e.bottom), b(e.left)}; }
 struct Grown { Rect window; Edges inset; };
 // surface: the surface on screen (px); want: CSS px; screen: the work area of the monitor (px); k: px per CSS px.
@@ -140,6 +141,7 @@ inline Kept FrameKept(const Rect& surface, bool fromRight, bool fromBottom, cons
     Kept out;
     if (surface.left < w.left || surface.top < w.top || surface.right > w.right || surface.bottom > w.bottom) return out;
     Edges inset{css(surface.top - w.top), css(w.right - surface.right), css(w.bottom - surface.bottom), css(surface.left - w.left)};
+    if (inset.top > PageInsetCapCss || inset.left > PageInsetCapCss) return out;   // Q r06: the page would draw it elsewhere — framed again
     const int dx = (surface.left - px(inset.left)) - w.left, dy = (surface.top - px(inset.top)) - w.top;   // the surface exactly at the inset told
     w.left += dx; w.right += dx; w.top += dy; w.bottom += dy;
     inset.right = css(w.right - surface.right); inset.bottom = css(w.bottom - surface.bottom);
@@ -156,6 +158,12 @@ inline Framed FrameBubble(const Rect& surface, int maxH, bool bottomFixed, const
     auto px = [&](int css) { return int(css * k + .5f); };
     auto css = [&](int p) { return k > 0 ? int(p / k) : 0; };
     Framed f; f.window = g.window;
+    // Q's real-window failure (r44 / r06 / r47): the page never draws its surface further than PageInsetCapCss into the
+    // window (panel.js CAP). A bottom-fixed bubble asked room to grow up (up to 520) + the margin: an inset of ~560, drawn at
+    // 400 — the surface 160 CSS px above the region shown, nothing on screen. No side of the window goes further than that.
+    // Only the top and left insets place the drawing (right / bottom only bound the page's menus): those two are capped.
+    const int cap = px(PageInsetCapCss);
+    f.window.left = std::max(f.window.left, surface.left - cap); f.window.top = std::max(f.window.top, surface.top - cap);
     f.inset.left = css(surface.left - f.window.left); f.inset.top = css(surface.top - f.window.top);
     f.window.left = surface.left - px(f.inset.left); f.window.top = surface.top - px(f.inset.top);   // the surface exactly at the inset told
     f.inset.right = css(f.window.right - surface.right); f.inset.bottom = css(f.window.bottom - surface.bottom);

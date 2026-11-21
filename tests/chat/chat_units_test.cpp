@@ -466,8 +466,10 @@ static void TestBubble() {
         const auto grown = FrameBubble(taller, 520, false, screen, k, Edges{});
         Check(grown.window.left == rest.window.left && grown.window.top == rest.window.top && grown.window.bottom == rest.window.bottom && grown.inset.top == rest.inset.top, "R19: a taller surface keeps the window (top side fixed)");
         const Rect above{800, 600, 1120, 704}, aboveTaller{800, 500, 1120, 704};
-        const auto a1 = FrameBubble(above, 520, true, screen, k, Edges{}), a2 = FrameBubble(aboveTaller, 520, true, screen, k, Edges{});
-        Check(a1.window.top == a2.window.top && a1.window.bottom == a2.window.bottom && a2.inset.top == a1.inset.top - 100, "R19: side « above »: the bottom stays, the window too; only the inset's top changes (page: same task)");
+        const auto a1 = FrameBubble(above, 520, true, screen, k, Edges{});
+        const auto a2 = FrameKept(aboveTaller, false, true, RelativeTo(a1.window, CornerOf(above, false, true)), k, Edges{});   // the host carries the opening's window (E4)
+        Check(a2.ok && a1.window.top == a2.f.window.top && a1.window.bottom == a2.f.window.bottom && a2.f.inset.top == a1.inset.top - 100 && a1.inset.top <= PageInsetCapCss,
+              "R19: side « above »: the bottom stays, the window too; only the inset's top changes (page: same task) — the inset within the page's CAP");
         const auto hi = FrameBubble(surface, 520, false, screen, 1.25f, Edges{});
         Check(hi.window.left + int(hi.inset.left * 1.25f + .5f) == surface.left && hi.window.top + int(hi.inset.top * 1.25f + .5f) == surface.top, "R19: at 125 % the surface sits exactly at the inset told"); }
     // R13: the agents' last option lists kept on disk (the bubble shows its model picker at once, before any session)
@@ -560,6 +562,23 @@ static void TestBubble() {
         Check(SameBubble("c_a", "section.hero", "c_a", "section.hero") && SameBubble("c_a", "section.hero", "c_a", "#hero"), "the same conversation (its full selection after the early open): kept");
         Check(SameBubble("", "section.hero", "c_a", "section.hero") && !SameBubble("", "section.hero", "c_a", "h2") && !SameBubble("", "", "", ""), "no conversation known yet: the same element only");
         Check(!SameBubble("c_a", "section.hero", "c_b", "section.hero"), "a fresh conversation for the same element (R6): opened again"); }
+    // Q's real-window failure (r44 / r06 / r47, div.plans, 1836 x 831 px, k 1.25): inside the element, bottom corner (bottom
+    // fixed). The page draws the surface at min(inset, 400) (its CAP): every inset the host tells must stay <= 400, or the
+    // surface is drawn higher than the region the host shows — nothing on screen
+    {   const Rect screen{0, 0, 1840, 1000}; const Edges none{0, 0, 0, 0}; const float k = 1.25f; const int cap = PageInsetCapCss;
+        auto pageDraws = [&](const Framed& f) { auto px = [&](int c) { return int(c * k + .5f); };
+            return Rect{f.window.left + px(std::min(f.inset.left, cap)), f.window.top + px(std::min(f.inset.top, cap)), 0, 0}; };
+        const Rect s{98, 701, 498, 806};   // the surface the host placed (bottom fixed, near the screen's bottom)
+        const auto f = FrameBubble(s, int(520 * k), true, screen, k, none);
+        const auto d = pageDraws(f);
+        Check(f.inset.top <= cap && f.inset.left <= cap, "Q r44: the insets that place the drawing (top, left) never above the page's CAP (400)");
+        Check(d.left == s.left && d.top == s.top, "Q r44: the page draws the surface exactly where the host shows its region");
+        Check(f.region.top == s.top - f.window.top && f.region.bottom == s.bottom - f.window.top, "Q r44: region == surface (no menu open)");
+        const Rect grown{98, 701 - 400, 498, 806};   // a long answer: it grows up 400 px — carried if it fits, else framed again, never above the CAP
+        const auto kk = FrameKept(grown, false, true, RelativeTo(f.window, CornerOf(s, false, true)), k, none);
+        Check(!kk.ok || (kk.f.inset.top <= cap && pageDraws(kk.f).top == grown.top), "Q r06: a bubble growing up is never drawn away from its region");
+        const Rect top{98, 150, 498, 255}; const auto ft = FrameBubble(top, int(520 * k), false, screen, k, none);
+        Check(ft.inset.top <= cap && ft.inset.left <= cap && pageDraws(ft).top == top.top && pageDraws(ft).left == top.left, "Q: top fixed too — drawn where its region is"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};
