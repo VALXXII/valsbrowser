@@ -296,12 +296,16 @@ def j_ctrl(j):
         hover = [x for x in F.overlay_nodes() if x['cls'].split()[:1] == ['x'] and 'opacity: 1' in x['style']]
         m = F.log_mark(); F.mouse(0x0002); time.sleep(0.03); F.mouse(0x0004); time.sleep(0.8)
         lines = C.log_text()[m:]
-        j.step('R31 · Ctrl held: the system cursor, no hover frame', held in V4.SYSTEM.values() and held != aim and not hover, {'held': held, 'aim': aim, 'system': V4.SYSTEM, 'hover': len(hover)})
+        # the page makes its aiming cursor again when it changes (H2): compare the KIND of cursor (one of Windows' own or
+        # the page's), never the handle
+        j.step('R31 · Ctrl held: the system cursor, no hover frame', held in V4.SYSTEM.values() and aim not in V4.SYSTEM.values() and not hover,
+               {'held': held, 'aim': aim, 'system': V4.SYSTEM, 'hover': len(hover)})
         j.step('R31 · Ctrl held: a click goes to the site (no element aimed, no bubble)', 'element aimed' not in lines and 'bubble opened' not in lines, lines[-600:])
     finally:
         F.key(0x11, True)
     time.sleep(0.4)
-    j.step('R31 · Ctrl released: the aiming cursor is back', V4.cursor_now() == aim, {'now': V4.cursor_now(), 'aim': aim})
+    F.u32.SetCursorPos(p[0] + 2, p[1] + 1); time.sleep(0.3); now = V4.cursor_now()
+    j.step('R31 · Ctrl released: the aiming cursor is back (not one of Windows own cursors)', now not in V4.SYSTEM.values(), {'now': now, 'aim': aim, 'system': V4.SYSTEM})
     j.check('after Ctrl')
     j.open_on('h1.hero-title', 'a click after Ctrl: selects again'); j.check('selected')
 
