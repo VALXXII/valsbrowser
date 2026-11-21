@@ -66,8 +66,12 @@ def real_click(sel, front=True):
     """A real click (SendInput) in the middle of a page element — what the user does."""
     if front:
         V.front()
-    el = CC.element_screen(sel)
-    u32.SetCursorPos((el[0] + el[2]) // 2, (el[1] + el[3]) // 2); time.sleep(0.08)
+    el = CC.element_screen(sel); y = (el[1] + el[3]) // 2
+    bw = V.bubble_hwnd(); rb = region_box(bw[0][0]) if bw and u32.IsWindowVisible(bw[0][0]) else None
+    # a visible point of the element (the open bubble may cover its middle — the user clicks what they see)
+    xs = [(el[0] + el[2]) // 2, el[0] + 30, el[2] - 30]
+    x = next((x for x in xs if not (rb and rb[0] <= x <= rb[2] and rb[1] <= y <= rb[3])), xs[0])
+    u32.SetCursorPos(x, y); time.sleep(0.08)
     mouse(0x0002); time.sleep(0.03); mouse(0x0004)
 
 

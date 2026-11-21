@@ -266,7 +266,8 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // message was sent was the start of the user's stuck turn).
     if (m == WM_APP + 1 || (m == WM_TIMER && w == 0xB1)) {
         if (m == WM_TIMER) KillTimer(h, 0xB1);
-        if (!bubble.open || bubble.modal || Ann::NowMs() - bubble.openedAt <= 500) return 0;
+        if (!bubble.open || bubble.modal) return 0;
+        if (const double since = Ann::NowMs() - bubble.openedAt; since <= 500) { SetTimer(h, 0xB1, UINT(520 - since), nullptr); return 0; }   // just opened: looked at again after, not dropped
         const HWND fg = GetForegroundWindow(); DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
         if (!fg) { if (m == WM_APP + 1) SetTimer(h, 0xB1, 250, nullptr); else BubbleAway(L"nobody"); return 0; }
         if (fg == h || pid == GetCurrentProcessId()) return 0;
