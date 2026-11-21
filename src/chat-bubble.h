@@ -131,17 +131,27 @@ inline bool TransparentBackground(bool visual, bool inBubble) { return visual ||
 // moves up once by what is missing (`BottomShift`).
 struct Anchor { bool set = false; Side side = Side::Right; int dx = 0, dy = 0; };   // dy: from the element's top to the fixed edge
 inline Anchor AnchorOf(const Placement& p, const Rect& element) {
-    Anchor a; a.set = true; a.side = p.side; a.dx = p.rect.left - element.left;
+    Anchor a; a.set = true; a.side = p.side; a.dx = (p.side == Side::Left ? p.rect.right : p.rect.left) - element.left;   // R40: at its left, the right edge stays
     a.dy = (p.side == Side::Above ? p.rect.bottom : p.rect.top) - element.top; return a;
 }
 inline Rect Anchored(const Anchor& a, const Rect& element, int w, int h) {
-    Rect r; r.left = element.left + a.dx; r.right = r.left + w;
+    Rect r;
+    if (a.side == Side::Left) { r.right = element.left + a.dx; r.left = r.right - w; } else { r.left = element.left + a.dx; r.right = r.left + w; }
     if (a.side == Side::Above) { r.bottom = element.top + a.dy; r.top = r.bottom - h; } else { r.top = element.top + a.dy; r.bottom = r.top + h; }
     return r;
 }
 inline int BottomShift(const Rect& surface, const Rect& area, int margin, bool atDocumentEnd) {
     const int over = surface.bottom - (area.bottom - margin);
     return atDocumentEnd && over > 0 ? std::min(over, std::max(0, surface.top - (area.top + margin))) : 0;
+}
+// R40: the largest size the bubble may be resized to from its fixed corner, staying in the page area (CSS px).
+struct ResizeMax { int width = 0, height = 0; };
+inline ResizeMax ResizeRoom(const Rect& surface, Side side, const Rect& area, int margin, float k) {
+    auto css = [&](int px) { return k > 0 ? std::max(0, int(px / k)) : 0; };
+    ResizeMax m;
+    m.width = css(side == Side::Left ? surface.right - (area.left + margin) : (area.right - margin) - surface.left);
+    m.height = css(side == Side::Above ? surface.bottom - (area.top + margin) : (area.bottom - margin) - surface.top);
+    return m;
 }
 // R38: the height the bubble may take is the room between its fixed edge and the page area's far side (its content
 // scrolls inside beyond that): a diff, an expanded permission or error opens in place and never makes it move.

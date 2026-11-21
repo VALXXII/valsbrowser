@@ -39,6 +39,8 @@ struct BubbleState {
     bool followCurrent = false;                                      // the deferred work of the opening (FinishOpening)
     ChatBubble::Anchor anchor;                                       // R29: frozen once placed (offset from the element, fixed edge)
     int roomCss = 0;                                                 // R38: the height offered to the page (room below / above its fixed edge)
+    bool resized = false; int baseHCss = 0;                          // R40: a size the user chose with the handle (diff open) / the height before it
+    ChatBubble::ResizeMax resizeMax;                                 // R40: sent with every layout
     bool endAsked = false;                                           // R29: the document's end asked once per opening
     int sizeW = -1, sizeH = -1;                                      // the last bubble.size (a repeat gets no answer: contract §20)
 } bubble;
@@ -115,12 +117,16 @@ void SendLayout(bool openNow) {
     if (ChatBubble::BubbleLayout(CommentLayout(), Shown(), bubble.open, bubble.warm)) {   // R34: one rule
         m.Set("mode", Str(std::string("bubble"))); m.Set("maxWidth", SJ::Value::Int(BubbleWidthCss)); m.Set("maxHeight", SJ::Value::Int(bubble.roomCss > 0 ? bubble.roomCss : std::min(BubbleMaxHeightCss, FreeHeightCss())));   // R38
         m.Set("side", Str(std::string(SideName(bubble.side)))); if (!bubble.label.empty()) m.Set("element", Str(bubble.label)); m.Set("open", SJ::Value::Bool(openNow));
+        if (bubble.resizeMax.width > 0) {   // R40: the handle's bounds (the anchored corner stays where it is)
+            SJ::Value mx = SJ::Value::Obj(); mx.Set("width", SJ::Value::Int(std::max(BubbleWidthCss, bubble.resizeMax.width))); mx.Set("height", SJ::Value::Int(bubble.resizeMax.height)); m.Set("resizeMax", std::move(mx));
+            SJ::Value mn = SJ::Value::Obj(); mn.Set("width", SJ::Value::Int(BubbleWidthCss)); mn.Set("height", SJ::Value::Int(bubble.baseHCss > 0 ? bubble.baseHCss : bubble.sizeH)); m.Set("resizeMin", std::move(mn));
+        }
         {   SJ::Value in = SJ::Value::Obj(); in.Set("top", SJ::Value::Int(bubble.inset.top)); in.Set("right", SJ::Value::Int(bubble.inset.right)); in.Set("bottom", SJ::Value::Int(bubble.inset.bottom)); in.Set("left", SJ::Value::Int(bubble.inset.left));
             m.Set("inset", std::move(in)); }   // R3: where the surface sits in the window (0 at rest: Paper's bubble has no shadow)
     } else m.Set("mode", Str(std::string("panel")));
     Send("layout", std::move(m));
 }
-void PlaceBubble();
+void PlaceBubble(bool scrolling);
 // R29: near the end of the document (the page cannot scroll further), a bubble that would be cut moves up once.
 void AskDocumentEnd() {
     bubble.endAsked = true; auto t = ChatTab(); if (!t) t = Active(); if (!t || !t->view.p) return;
@@ -136,12 +142,12 @@ void AskDocumentEnd() {
     if (FAILED(t->view->ExecuteScript(L"(function(){var s=document.scrollingElement||document.documentElement;return s.scrollHeight-innerHeight-scrollY<4})()", cb))) {}
     cb->Release();
 }
-void PlaceBubble() {
+void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — the window only follows it, nothing else
     if (!bubble.hwnd || !bubble.open) return;
     const RECT a = PageArea(); const float k = Dpi();
     int w = bubble.w ? bubble.w : int(std::lround(BubbleWidthCss * k)), h = bubble.h ? bubble.h : int(std::lround(BubbleStartHeightCss * k));
     const ChatBubble::Rect area{a.left, a.top, a.right, a.bottom}; const int margin = int(std::lround(BubbleMarginCss * k)), gap = int(std::lround(BubbleGapCss * k));
-    ChatBubble::Fit(w, h, area, margin, int(std::lround(BubbleWidthCss * k)), int(std::lround(BubbleMaxHeightCss * k)));
+    if (!bubble.resized) ChatBubble::Fit(w, h, area, margin, int(std::lround(BubbleWidthCss * k)), int(std::lround(BubbleMaxHeightCss * k)));   // R40: a size chosen with the handle is kept
     // no element known yet (opened from the history, or waiting for the page): the bottom right corner of the page
     const RECT e = bubble.known ? bubble.element : RECT{a.right - margin, a.bottom - margin, a.right - margin, a.bottom - margin};
     const ChatBubble::Rect er{e.left, e.top, e.right, e.bottom};
@@ -151,9 +157,14 @@ void PlaceBubble() {
         if (bubble.known) bubble.anchor = ChatBubble::AnchorOf(p, er);
     } else { p.side = bubble.anchor.side; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side;
-    {   const int room = ChatBubble::RoomCss(p.rect, p.side == ChatBubble::Side::Above, area, margin, k, BubbleMaxHeightCss);   // R38
-        if (room != bubble.roomCss) { bubble.roomCss = room; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false); } }
-    if (bubble.anchor.set && !bubble.endAsked && p.rect.bottom > area.bottom - margin && p.side != ChatBubble::Side::Above) AskDocumentEnd();   // R29: the one exception
+    if (!scrolling) {   // R38 / R40: the room and the handle's bounds are told on a new size, never at each scroll step (R39)
+        const int room = ChatBubble::RoomCss(p.rect, p.side == ChatBubble::Side::Above, area, margin, k, BubbleMaxHeightCss);
+        const auto rm = ChatBubble::ResizeRoom(p.rect, p.side, area, margin, k);
+        if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
+            bubble.roomCss = room; bubble.resizeMax = rm; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false);
+        }
+    }
+    if (!scrolling && bubble.anchor.set && !bubble.endAsked && p.rect.bottom > area.bottom - margin && p.side != ChatBubble::Side::Above) AskDocumentEnd();   // R29: the one exception
     // R19: the window is the surface + a fixed transparent margin, as tall as the surface may grow; a menu or a tooltip
     // out of the surface only widens the window's region (nothing moves: same image before and after, to the pixel)
     MONITORINFO mi{sizeof(mi)}; GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mi);
@@ -162,15 +173,17 @@ void PlaceBubble() {
     const bool insetChanged = !(f.inset == bubble.inset); bubble.inset = f.inset;
     const RECT wr{f.window.left, f.window.top, f.window.right, f.window.bottom};
     if (!EqualRect(&wr, &bubble.win)) {
+        const bool sized = wr.right - wr.left != bubble.win.right - bubble.win.left || wr.bottom - wr.top != bubble.win.bottom - bubble.win.top;
         bubble.win = wr;
-        SetWindowPos(bubble.hwnd, HWND_TOP, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_NOACTIVATE);
-        view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top});
+        // R39: a move (scroll) is only a move — no z-order, no copy of the old pixels, no WebView bounds
+        SetWindowPos(bubble.hwnd, nullptr, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | (sized ? 0 : SWP_NOSIZE));
+        if (sized) view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top});
     }
     const auto vis = ChatBubble::Clip(f.region, {a.left - f.window.left, a.top - f.window.top, a.right - f.window.left, a.bottom - f.window.top});   // R29: never over the bars
     const RECT rg{vis.left, vis.top, vis.right, vis.bottom};
     if (bubble.waitingAck) bubble.region = rg;   // R18: kept for the reveal; the window shows nothing until then
-    else if (!EqualRect(&rg, &bubble.region)) { bubble.region = rg; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); }   // the system owns the region now
-    if ((sideChanged || insetChanged) && panelReady) SendLayout(false);
+    else if (!EqualRect(&rg, &bubble.region)) { bubble.region = rg; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), FALSE); }   // R41: no repaint for a region (no flash); the system owns it now
+    if (!scrolling && (sideChanged || insetChanged) && panelReady) SendLayout(false);
 }
 RECT BubbleScreenRect() { RECT r{}; if (bubble.hwnd) GetWindowRect(bubble.hwnd, &r); return r; }
 void BubbleModal(bool on) { bubble.modal = on; }
@@ -254,7 +267,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     const bool again = bubble.open;
     bubble.open = true; bubble.conv = conv; bubble.selector = selector; bubble.label = label;
     bubble.known = element != nullptr; if (element) bubble.element = *element;
-    if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; }
+    if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; bubble.resized = false; bubble.baseHCss = 0; bubble.resizeMax = ChatBubble::ResizeMax{}; }
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, 10, 10})) { bubble.open = false; Diag(L"bubble WebView creation refused"); return; } }
     else view.Reparent(bubble.hwnd, {0, 0, 10, 10});
@@ -323,13 +336,21 @@ void CloseBubble(bool focusPage) {
     Diag(L"bubble closed (the agent goes on)");
     if (focusPage && Ann::s.active) { SetForegroundWindow(window); FocusChatPage(); }
 }
-void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over) {
+void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     if (!bubble.open) return;
+    if (!resized && bubble.resized) Diag(L"the bubble is back to its size (diff closed)");
+    bubble.resized = resized;   // R40
     over = ChatBubble::Bounded(over);
     if (wCss == bubble.sizeW && hCss == bubble.sizeH && over == bubble.over) { RevealBubble(L"on the acknowledgement"); return; }   // contract §20: a repeat gets no answer   // i18n-exempt: log detail
     bubble.sizeW = wCss; bubble.sizeH = hCss; bubble.over = over;
     const float k = Dpi();
-    bubble.w = int(std::lround(std::clamp(wCss, 200, BubbleWidthCss) * k)); bubble.h = int(std::lround(std::clamp(hCss, 40, BubbleMaxHeightCss) * k));
+    if (resized) {   // R40: the handle — width 320 .. its room, height the size before the diff .. its room; the anchored corner stays
+        const int maxW = std::max(BubbleWidthCss, bubble.resizeMax.width), maxH = std::max(bubble.baseHCss, bubble.resizeMax.height);
+        bubble.w = int(std::lround(std::clamp(wCss, BubbleWidthCss, std::max(BubbleWidthCss, maxW)) * k)); bubble.h = int(std::lround(std::clamp(hCss, std::max(40, bubble.baseHCss), std::max(40, maxH)) * k));
+    } else {
+        bubble.baseHCss = std::clamp(hCss, 40, BubbleMaxHeightCss);
+        bubble.w = int(std::lround(std::clamp(wCss, 200, BubbleWidthCss) * k)); bubble.h = int(std::lround(std::clamp(hCss, 40, BubbleMaxHeightCss) * k));
+    }
     const auto before = bubble.inset; PlaceBubble();
     if (bubble.inset == before && panelReady) SendLayout(false);   // R3: every new bubble.size gets its inset (PlaceBubble sent it if it changed)
     RevealBubble(L"on the acknowledgement");   // R18   // i18n-exempt: log detail
@@ -339,8 +360,16 @@ void OnAnchor(const AH::Envelope& e) {
     if (!bubble.open) return;
     if (e.gone) { Diag(L"the bubble's element is no longer in the page"); CloseBubble(false); return; }
     if (!bubble.known) bubble.anchor = ChatBubble::Anchor{};   // R29: the first real position of the element decides the anchor
+    const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows at once, nothing else
     bubble.element = ToScreen(e.x, e.y, e.w, e.h, e.vw); bubble.known = true;
-    PlaceBubble();
+    PlaceBubble(scrolling);
+    if (scrolling && e.t > 0) {   // R39: the page's scroll (its clock) -> the window moved, summed over 30 steps   // i18n-exempt: log detail
+        static int n = 0; static double sum = 0, worst = 0;
+        FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
+        const double lag = std::max(0.0, double(u.QuadPart) / 10000.0 - 11644473600000.0 - e.t);
+        ++n; sum += lag; worst = std::max(worst, lag);
+        if (n == 30) { Diag(L"anchor: the window followed the page's scroll " + Ann::Ms(sum / n) + L" ms after it on average, " + Ann::Ms(worst) + L" ms at worst (30 steps)"); n = 0; sum = worst = 0; }
+    }
 }
 
 // ---------------------------------------------------------------- which conversation is shown

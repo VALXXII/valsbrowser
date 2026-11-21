@@ -675,7 +675,8 @@ void OnPanelMessage(const std::string& json) {
     if (type == "bubble.size") {   // contract B 1.8, + R3 overflow (§20)
         const auto* w = v.Get("width"); const auto* h = v.Get("height"); if (!w || !h || !w->IsNumber() || !h->IsNumber()) return;
         auto edge = [&](const char* k) { const auto* e = v.Get(k); return e && e->IsNumber() && e->number >= 0 && e->number <= 10000 ? int(e->number) : 0; };
-        OnBubbleSize(int(w->number), int(h->number), {edge("overflowTop"), edge("overflowRight"), edge("overflowBottom"), edge("overflowLeft")});
+        const auto* rz = v.Get("resized");   // R40: a size chosen with the handle
+        OnBubbleSize(int(w->number), int(h->number), {edge("overflowTop"), edge("overflowRight"), edge("overflowBottom"), edge("overflowLeft")}, rz && rz->IsBool() && rz->boolean);
         return;
     }
     if (type == "annotation.show") { ShowAnnotation(m.Id("id")); return; }

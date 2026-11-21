@@ -491,6 +491,18 @@ static void TestBubble() {
         Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&
               RoomCss({100, 850, 420, 890}, false, area, 12, 1.f, 520) == 120 && RoomCss({100, 300, 420, 700}, true, area, 12, 1.25f, 520) == 470,
               "R38: the height offered is the room from the fixed edge to the page's far side (min 120, max 520)"); }
+    // R40: the handle resizes from the anchored corner, never off the page area
+    {   const Rect area{0, 100, 1200, 900};
+        const auto r = ResizeRoom({300, 400, 620, 600}, Side::Right, area, 12, 1.f);
+        const auto l = ResizeRoom({300, 400, 620, 600}, Side::Left, area, 12, 1.25f);
+        const auto a = ResizeRoom({300, 400, 620, 600}, Side::Above, area, 12, 1.f);
+        Check(r.width == 888 && r.height == 488 && l.width == 486 && a.height == 488, "R40: the largest size goes from the fixed corner to the page area's far edges (CSS px)");
+        const Rect el{700, 400, 900, 450};
+        const auto p = Place(el, 320, 120, area, 12, 12, Side::Left, 4);
+        if (p.side == Side::Left) {
+            const auto aa = AnchorOf(p, el); const auto wider = Anchored(aa, el, 500, 200);
+            Check(wider.right == p.rect.right && wider.left == p.rect.right - 500 && wider.top == p.rect.top, "R40: at the element's left the bubble widens leftwards, its right edge fixed");
+        } else Check(false, "R40: a bubble asked at the left is placed at the left"); }
     // R34: the one layout rule — a fast back-and-forth between the two layouts always ends in the right one
     {   Check(BubbleLayout(true, false, true, false) && BubbleLayout(true, false, false, true), "R34: Commentaire, panel off screen, bubble open or warm: « bubble »");
         Check(!BubbleLayout(false, false, false, true) && !BubbleLayout(true, true, false, true) && !BubbleLayout(true, false, false, false), "R34: the panel chosen, or still sliding out, or no bubble: « panel »");

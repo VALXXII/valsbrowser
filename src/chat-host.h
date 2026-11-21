@@ -428,10 +428,10 @@ void SendError(const Problem& p, const std::string& detail, const char* scope = 
 
 void SyncChromeBits();
 // Mode Commentaire (chat-comment.h)
-bool CommentLayout(); bool BubbleOpen(); bool BubbleWarm(); void SyncMarks(); void CloseBubble(bool focusPage); void SendLayout(bool openNow); void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over);
+bool CommentLayout(); bool BubbleOpen(); bool BubbleWarm(); void SyncMarks(); void CloseBubble(bool focusPage); void SendLayout(bool openNow); void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized);
 bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible); bool CommentFirst(const std::shared_ptr<Tab>& t); bool KeepAnchorElement(Element& e);
 bool SwitchEngineTo(const std::string& id); void AddAnchorElement(std::vector<std::string>& ids); void RefreshWaitStrip(); void ShowEngineWork();
-void SwitchLayout(bool comment); void RefreshAnchored(); std::string BubbleSelector(); void ForgetPage(); void PlaceBubble(); std::string ShownId();
+void SwitchLayout(bool comment); void RefreshAnchored(); std::string BubbleSelector(); void ForgetPage(); void PlaceBubble(bool scrolling = false); std::string ShownId();
 } // namespace Chat
 #include "chat-host-turn.h"
 #include "chat-host-ui.h"
