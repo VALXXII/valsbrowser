@@ -490,8 +490,22 @@ def j_details(j):
         g0 = V4.fast_grab(top) if top else None
         F.real_click_chat(sel); time.sleep(0.6)
         s1 = F.bubble_surface(); sc1 = (F.chat_state('bubble').get('scroller') or {}).get('st'); g1 = V4.fast_grab(top) if top else None
-        same = g0 and g1 and g0[2] == g1[2]
-        j.step(f'R19 · menu {name}: the surface and the thread stay still (same box, same scroll, the top of the thread the same image)', s0 == s1 and sc0 == sc1 and same, {'before': s0, 'open': s1, 'scroll': (sc0, sc1), 'sameImage': same})
+        # the menu opens above its button and covers the top of the thread on purpose (P): its box and shadow are left out
+        mb = F.chat("(function(){var m=document.querySelector('.menu:not(.menu-ghost)');if(!m)return null;var r=m.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom,devicePixelRatio]})()")
+        wr = F.V3.win_rect(F.bubble_hwnd())
+        mask = (int(wr[0] + (mb[0] - 48) * mb[4]), int(wr[1] + (mb[1] - 48) * mb[4]), int(wr[0] + (mb[2] + 48) * mb[4]), int(wr[1] + (mb[3] + 48) * mb[4])) if mb else None
+        diff = 0
+        if g0 and g1:
+            w_ = g0[0]
+            for y in range(g0[1]):
+                for x in range(0, w_, 2):
+                    sx, sy = top[0] + x, top[1] + y
+                    if mask and mask[0] <= sx < mask[2] and mask[1] <= sy < mask[3]:
+                        continue
+                    i = (y * w_ + x) * 4
+                    diff += sum(abs(g0[2][i + c] - g1[2][i + c]) for c in range(3)) > 24
+        same = g0 and g1 and diff == 0
+        j.step(f'R19 · menu {name}: the surface and the thread stay still (same box, same scroll, the top of the thread the same image)', s0 == s1 and sc0 == sc1 and same, {'before': s0, 'open': s1, 'scroll': (sc0, sc1), 'pixelsChangedOutsideMenu': diff, 'menu': mask})
         F.close_menus(); time.sleep(0.4)
     j.check('details')
 
@@ -554,6 +568,12 @@ def j_speed(j):
 
 @journey('erreurs_agent', 'errors: 529 overload, a failed tool, a stop (« Arrêter »), slowness')
 def j_errors(j):
+    # a slow turn stopped first, in its own bubble (after a 529 the same bubble may hold an error state)
+    j.open_on('h1.hero-title', 'title')
+    m = F.log_mark(); F.type_and_send('vrai-lent jetonlent', 'bubble'); j.inv.m.conv['h1.hero-title'] = 'jetonlent'
+    j.step('the slow turn starts', F.wait_log(r'CHAT turn t\d+ started', m, 10)); time.sleep(1.0)
+    j.step('« Arrêter » stops a slow turn (cancelled, within 3 s)', F.real_click_chat(text='Arrêter') and F.wait_log(r'CHAT turn t\d+ ended: cancelled', m, 3), C.log_text()[m:][-600:])
+    time.sleep(0.6); j.check('after the stop'); j.close()
     j.open_on('a.btn-primary', 'A')
     m = F.log_mark(); F.type_and_send('vrai-surcharge jetonerr', 'bubble'); j.inv.m.conv['a.btn-primary'] = 'jetonerr'
     F.wait_log(r'CHAT turn t\d+ ended', m, 20); time.sleep(0.8)
@@ -561,9 +581,7 @@ def j_errors(j):
     j.step('529: an error the user understands, in French, the bubble whole', 'surcharg' in st.get('text', '').lower() or 'indisponible' in st.get('text', '').lower() or 'réessay' in st.get('text', '').lower(), st.get('text', '')[-400:])
     j.R.capture('erreur-529'); j.check('after 529')
     m = F.log_mark(); F.type_and_send('vrai-erreur-outil', 'bubble'); F.wait_log(r'CHAT turn t\d+ ended', m, 20); time.sleep(0.6); j.check('after a failed tool')
-    m = F.log_mark(); F.type_and_send('vrai-lent', 'bubble'); time.sleep(3.2)
-    j.step('« Arrêter » stops a slow turn', F.real_click_chat(text='Arrêter') and F.wait_log(r'CHAT turn t\d+ ended', m, 10))
-    time.sleep(0.6); j.check('after the stop')
+
 
 
 # ---------------------------------------------------------------- the independent review's sequences (design/chat-final-review.md, « Pour Q »)

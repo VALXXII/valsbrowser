@@ -336,9 +336,9 @@ class Monkey:
         m = F.log_mark(); t = F.click_at(*p, settle=0.0)
         self.inv.m.layout = 'comment'
         self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m)
-        st = F.chat_state('bubble')
-        if st.get('w', 0) > 700:
-            self.R.step(f'#{a["i"]} invariant: the bubble has the bubble layout (M5)', False, {'w': st.get('w')})
+        st = F.chat_state('bubble'); aw = (st['app'][2] - st['app'][0]) if st.get('app') else 0
+        if self.inv.m.open and abs(aw - 320) > 2:
+            self.R.step(f'#{a["i"]} invariant: the bubble has the bubble layout (M5: a 320 px surface)', False, {'surface width': aw, 'window': st.get('w')})
         return f'Commentaire then click {sel} 50 ms later', 0.3
 
     def keys_after_other_app(self, a):

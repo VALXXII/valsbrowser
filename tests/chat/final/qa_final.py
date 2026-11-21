@@ -752,6 +752,8 @@ class Invariants:
             if n > 1:
                 self.r.step(f'{where} · invariant: one « conversation of an element reopened » per click', False, n, {'action': where})
         self.m.open = sel; self.m.hidden_by_other = False; self.close_at = log_mark()
+        if ms is None:   # no bubble came (reported above): nothing open, no anchor — no cascade of follow-up failures
+            self.m.open = None; self.m.anchor = None; return
         el = element_screen(sel)
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
         self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
