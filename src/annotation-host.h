@@ -267,6 +267,11 @@ inline std::string PeekArg(const std::string& selector, bool active) {
     return SJ::Serialize(v);
 }
 
+// Review M4 (b): Escape from the page (the keyboard is in the site: after a click on its scroll bar, back from another
+// application). A bubble open = it closes, the mode stays; otherwise the mode is left (unless it is paused: nothing).
+enum class EscapeAction { CloseBubble, Leave, Ignore };
+inline EscapeAction OnEscape(bool paused, bool bubbleOpen) { return bubbleOpen ? EscapeAction::CloseBubble : paused ? EscapeAction::Ignore : EscapeAction::Leave; }
+
 // ---------------------------------------------------------------- capture crop
 // rect/viewport in CSS px of the top viewport; capture = the CapturePreview PNG (viewport pixels).
 struct CropPlan {

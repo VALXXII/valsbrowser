@@ -112,6 +112,8 @@ bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool cap
 void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);
 void SelectionChanged();                                 // V1.4: the selection was switched on / off (the aim button's state)
 void OnAnchor(const AnnotationHost::Envelope& e);        // Mode Commentaire: the bubble's element moved (or is gone)
+bool BubbleOpen();                                       // … its bubble is open (review M4: Escape closes it first)
+void CloseBubble(bool focusPage);
 bool CommentHistory(bool open, bool keyboard);           // Mode Commentaire: the launcher's history lists the conversations whose element is gone
 int CommentLauncherCount(bool workingOnly);              // … D3: -1 = not that layout; else how many of them (shown only when > 0)
 bool OpenFromHistory(const std::wstring& id);            // … and opens one of them
@@ -1275,7 +1277,9 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
         OnSelect(t, c.selection, lag); break; }
     case AH::Op::Hidden: OnHidden(t, c.env.serial); break;
     case AH::Op::Shown: OnShown(c.env.serial); break;
-    case AH::Op::Escape: if (!s.paused) Exit(L"escape"); break;
+    case AH::Op::Escape:   // review M4 (b): an open bubble closes first, the mode stays
+        switch (AH::OnEscape(s.paused, Chat::BubbleOpen())) { case AH::EscapeAction::CloseBubble: Chat::CloseBubble(true); break; case AH::EscapeAction::Leave: Exit(L"escape"); break; default: break; }
+        break;
     case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
     case AH::Op::Anchor: Chat::OnAnchor(c.env); break;
     case AH::Op::Selecting: if (!s.paused) Chat::OpenEarly(t, c.env); break;   // R18: before the full « select » of the same seq

@@ -57,6 +57,57 @@ static void Ctrl() {   // R31: Ctrl never consumed, shortcuts left alone
     CHECK(js.find(L"if (e.isTrusted && e.key === 'Control') { setCtrl(true); return; }") != std::wstring::npos);
     CHECK(js.find(L"on(window, 'keyup', onKeyUp, true);") != std::wstring::npos);
 }
+// Review M3: the caller hears how the transition ended (a glide too: its « done » mark), once; no WebView2 (stand-ins).
+static void TransitionDone() {
+    using namespace ChatTransition;
+    auto pump = [](const std::function<bool()>& until, int ms) {
+        const DWORD end = GetTickCount() + DWORD(ms); MSG m;
+        while (!until() && GetTickCount() < end) { while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); } Sleep(5); }
+    };
+    struct Run { std::vector<Outcome> outcomes; int reloads = 0; std::vector<std::wstring> states; };
+    auto exec = [](Run* r) {
+        return [r](const std::wstring& script, std::function<void(HRESULT, const std::wstring&)> answer) {
+            const bool swap = script.find(L"browser-restyle") != std::wstring::npos && script.find(L"__browserRestyle;return") == std::wstring::npos;
+            std::wstring a;
+            if (swap) a = r->states.empty() ? L"\"started\"" : r->states.front();
+            else { a = r->states.size() > 1 ? r->states[1] : L"\"done\""; if (r->states.size() > 2) r->states.erase(r->states.begin() + 1); }
+            answer(S_OK, a); return true;
+        };
+    };
+    {   Run r; r.states = {L"\"started\"", L"\"pending\"", L"\"done\""};   // glide: started, still pending once, done
+        Runner::Get().ReloadForTest({"styles/site.css"}, false, exec(&r), [&] { ++r.reloads; }, [&](Outcome o) { r.outcomes.push_back(o); });
+        pump([&] { return !r.outcomes.empty(); }, 3000);
+        CHECK(r.outcomes.size() == 1 && r.outcomes[0] == Outcome::Glided && r.reloads == 0);
+        CHECK(!Runner::Get().Busy());
+    }
+    {   Run r; r.states = {L"\"nomatch\""};   // not a linked sheet: the reload, then « Reloaded »
+        Runner::Get().ReloadForTest({"styles/site.css"}, false, exec(&r), [&] { ++r.reloads; }, [&](Outcome o) { r.outcomes.push_back(o); });
+        pump([&] { return !r.outcomes.empty(); }, 3000);
+        CHECK(r.outcomes.size() == 1 && r.outcomes[0] == Outcome::Reloaded && r.reloads == 1);
+    }
+    {   Run r; r.states = {L"\"started\"", L"\"failed\""};   // the swap failed in the page: fallback reload
+        Runner::Get().ReloadForTest({"styles/site.css"}, false, exec(&r), [&] { ++r.reloads; }, [&](Outcome o) { r.outcomes.push_back(o); });
+        pump([&] { return !r.outcomes.empty(); }, 3000);
+        CHECK(r.outcomes.size() == 1 && r.outcomes[0] == Outcome::Reloaded && r.reloads == 1);
+    }
+    {   Run r; r.states = {L"\"started\"", L"\"pending\"", L"\"pending\""};   // a newer transition replaces a pending glide
+        Runner::Get().ReloadForTest({"styles/site.css"}, false, exec(&r), [&] { ++r.reloads; }, [&](Outcome o) { r.outcomes.push_back(o); });
+        Run r2; Runner::Get().ReloadForTest({"index.html"}, false, exec(&r2), [&] { ++r2.reloads; }, [&](Outcome o) { r2.outcomes.push_back(o); });
+        pump([&] { return !r2.outcomes.empty(); }, 3000);
+        CHECK(r.outcomes.size() == 1 && r.outcomes[0] == Outcome::Cancelled && r.reloads == 0);
+        CHECK(r2.outcomes.size() == 1 && r2.outcomes[0] == Outcome::Reloaded && r2.reloads == 1);
+    }
+    {   Run r;   // reduced motion: never a glide, the reload
+        Runner::Get().ReloadForTest({"styles/site.css"}, true, exec(&r), [&] { ++r.reloads; }, [&](Outcome o) { r.outcomes.push_back(o); });
+        pump([&] { return !r.outcomes.empty(); }, 3000);
+        CHECK(r.outcomes.size() == 1 && r.outcomes[0] == Outcome::Reloaded && r.reloads == 1);
+    }
+}
+static void Escape() {   // review M4 (b): Escape typed in the page with a bubble open closes the bubble, not the mode
+    namespace AH = AnnotationHost;
+    CHECK(AH::OnEscape(false, true) == AH::EscapeAction::CloseBubble && AH::OnEscape(true, true) == AH::EscapeAction::CloseBubble);
+    CHECK(AH::OnEscape(false, false) == AH::EscapeAction::Leave && AH::OnEscape(true, false) == AH::EscapeAction::Ignore);
+}
 static void Transition() {   // R36
     using namespace ChatTransition;
     CHECK(StyleOnly({"styles/landing.css"}) && StyleOnly({"a.CSS", "b/c.css"}));
@@ -75,7 +126,7 @@ static void Transition() {   // R36
 }
 
 int wmain(int argc, wchar_t** argv) {
-    Peek(); Selecting(); Anchor(); Edges(); Ctrl(); Transition();
+    Peek(); Selecting(); Anchor(); Edges(); TransitionDone(); Escape(); Ctrl(); Transition();
     if (argc > 1) {
         const std::wstring out = argv[1];
         auto write = [&](const wchar_t* name, const std::wstring& text) {

@@ -189,18 +189,28 @@ inline HWND WebViewWindow(HWND parent, const RECT& bounds) {
 }
 }
 
+// Review M3: how a transition ended, told once to the caller (UI thread): Glided = the sheets were swapped in place,
+// no reload (the page script and its marks are still there: the caller puts its « done » mark itself); Reloaded = the
+// page was reloaded (with the fade or plainly: the usual re-arm path follows); Cancelled = a newer transition replaced it.
+enum class Outcome { Glided, Reloaded, Cancelled };
+using Done = std::function<void(Outcome)>;
+
 class Runner {
 public:
     static Runner& Get() { static Runner r; return r; }
     // Instead of view->Reload() after a turn. False: nothing could be done (no view).
-    bool Reload(ICoreWebView2Controller* controller, ICoreWebView2* view, const std::vector<std::string>& changedPaths, bool reduced) {
+    bool Reload(ICoreWebView2Controller* controller, ICoreWebView2* view, const std::vector<std::string>& changedPaths, bool reduced, Done done = nullptr) {
         if (!view) return false;
-        Cancel();   // a previous transition ends where it is (its capture goes at once)
-        reduced_ = reduced; ++serial_;
-        Keep(controller, view);
-        if (!reduced && StyleOnly(changedPaths)) { Swap(changedPaths); return true; }
-        Fade();
+        exec_ = nullptr; reload_ = nullptr;
+        Start(controller, view, changedPaths, reduced, std::move(done));
         return true;
+    }
+    // Tests: the same machine with the page replaced by two functions (no WebView2): `exec` runs a script and answers
+    // (hr, result as ExecuteScript gives it), `reload` stands for view->Reload(). No controller: no capture, no overlay.
+    using Exec = std::function<bool(const std::wstring& script, std::function<void(HRESULT, const std::wstring&)> answer)>;
+    void ReloadForTest(const std::vector<std::string>& changedPaths, bool reduced, Exec exec, std::function<void()> reload, Done done) {
+        exec_ = std::move(exec); reload_ = std::move(reload);
+        Start(nullptr, nullptr, changedPaths, reduced, std::move(done));
     }
     // Measures for the real-window pass (H1 / QA): the last transition's path and timings.
     struct Stats { std::wstring path; double captureMs = -1, reloadAt = -1, loadedAt = -1, fadeStart = -1, fadeEnd = -1; int fadeFrames = 0; };
@@ -208,6 +218,28 @@ public:
     bool Busy() const { return overlay_ != nullptr || swapping_; }
 
 private:
+    Done done_; Exec exec_; std::function<void()> reload_;
+    void Start(ICoreWebView2Controller* controller, ICoreWebView2* view, const std::vector<std::string>& changedPaths, bool reduced, Done done) {
+        Cancel();   // a previous transition ends where it is (its capture goes at once; its caller hears « Cancelled »)
+        reduced_ = reduced; ++serial_;
+        Keep(controller, view); done_ = std::move(done);
+        if (!reduced && StyleOnly(changedPaths)) { Swap(changedPaths); return; }
+        Fade();
+    }
+    // Runs a script in the page (or the test's stand-in); false: it could not be started.
+    bool Run(const std::wstring& script, std::function<void(HRESULT, const std::wstring&)> answer) {
+        if (exec_) return exec_(script, std::move(answer));
+        if (!view_) return false;
+        auto* cb = new detail::Fn<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>(detail::ScriptDone, [answer](HRESULT hr, LPCWSTR r) -> HRESULT {
+            answer(hr, r ? std::wstring(r) : std::wstring()); return S_OK; });
+        const bool ok = SUCCEEDED(view_->ExecuteScript(script.c_str(), cb));
+        cb->Release(); return ok;
+    }
+    void Finish(Outcome o) {
+        Done d = std::move(done_); done_ = nullptr;
+        Release();
+        if (d) d(o);
+    }
     ICoreWebView2Controller* controller_ = nullptr; ICoreWebView2* view_ = nullptr; EventRegistrationToken navToken_{}; bool navHooked_ = false;
     HWND overlay_ = nullptr, timerWnd_ = nullptr; HDC mem_ = nullptr; HBITMAP dib_ = nullptr; HGDIOBJ old_ = nullptr; SIZE size_{};
     bool reduced_ = false, swapping_ = false, reloaded_ = false, fading_ = false; unsigned serial_ = 0;
@@ -243,32 +275,29 @@ private:
     void Swap(const std::vector<std::string>& paths) {
         swapping_ = true; stats_.path = L"glide";
         const unsigned serial = serial_;
-        auto* cb = new detail::Fn<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>(detail::ScriptDone, [this, serial](HRESULT hr, LPCWSTR r) -> HRESULT {
-            if (serial != serial_ || !swapping_) return S_OK;
-            const std::wstring a = SUCCEEDED(hr) ? Unquote(r) : L"error";
+        const bool started = Run(SwapScript(paths, GlideMs), [this, serial](HRESULT hr, const std::wstring& r) {
+            if (serial != serial_ || !swapping_) return;
+            const std::wstring a = SUCCEEDED(hr) ? Unquote(r.c_str()) : L"error";
             if (a == L"started") { swapStart_ = Now(); After(TSwap, SwapCheckMs); }
-            else { swapping_ = false; stats_.path = L"fade (glide: " + a + L")"; Fade(); }
-            return S_OK; });
-        if (FAILED(view_->ExecuteScript(SwapScript(paths, GlideMs).c_str(), cb))) { swapping_ = false; Fade(); }
-        cb->Release();
+            else { swapping_ = false; stats_.path = L"fade (glide: " + a + L")"; Fade(); } });
+        if (!started && serial == serial_ && swapping_) { swapping_ = false; Fade(); }
     }
     void CheckSwap() {
-        if (!swapping_ || !view_) return;
+        if (!swapping_ || (!view_ && !exec_)) return;
         const unsigned serial = serial_;
-        auto* cb = new detail::Fn<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>(detail::ScriptDone, [this, serial](HRESULT hr, LPCWSTR r) -> HRESULT {
-            if (serial != serial_ || !swapping_) return S_OK;
-            const std::wstring s = SUCCEEDED(hr) ? Unquote(r) : L"error";
-            if (s == L"done") { swapping_ = false; stats_.fadeEnd = Since(); return S_OK; }
-            if (s == L"pending" && Now() - swapStart_ < SwapCapMs) { After(TSwap, SwapCheckMs); return S_OK; }
-            swapping_ = false; stats_.path = L"fade (glide: " + s + L")"; Fade(); return S_OK; });
-        if (FAILED(view_->ExecuteScript(SwapStateScript(), cb))) { swapping_ = false; Fade(); }
-        cb->Release();
+        const bool started = Run(SwapStateScript(), [this, serial](HRESULT hr, const std::wstring& r) {
+            if (serial != serial_ || !swapping_) return;
+            const std::wstring s = SUCCEEDED(hr) ? Unquote(r.c_str()) : L"error";
+            if (s == L"done") { swapping_ = false; stats_.fadeEnd = Since(); Finish(Outcome::Glided); return; }   // M3: the caller's « done »
+            if (s == L"pending" && Now() - swapStart_ < SwapCapMs) { After(TSwap, SwapCheckMs); return; }
+            swapping_ = false; stats_.path = L"fade (glide: " + s + L")"; Fade(); });
+        if (!started && serial == serial_ && swapping_) { swapping_ = false; Fade(); }
     }
 
     // ---- level 1: capture, reload under it, dissolve
     void Fade() {
         if (stats_.path.empty()) stats_.path = L"fade";
-        if (!controller_) { PlainReload(); return; }
+        if (!controller_ || !view_) { PlainReload(); return; }
         IStream* stream = SHCreateMemStream(nullptr, 0);
         if (!stream) { PlainReload(); return; }
         const unsigned serial = serial_;
@@ -280,7 +309,7 @@ private:
         if (FAILED(view_->CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream, cb))) { Stop(TCapture); stream->Release(); PlainReload(); }
         cb->Release();
     }
-    void PlainReload() { reloaded_ = true; stats_.reloadAt = Since(); if (view_) view_->Reload(); Release(); }
+    void PlainReload() { reloaded_ = true; stats_.reloadAt = Since(); if (reload_) reload_(); else if (view_) view_->Reload(); Finish(Outcome::Reloaded); }
     // The capture above the WebView, opaque, on screen before the reload starts.
     void Cover(IStream* png) {
         HWND parent = nullptr; RECT b{};
@@ -325,7 +354,7 @@ private:
     void Unhook() { if (navHooked_ && view_) view_->remove_NavigationCompleted(navToken_); navHooked_ = false; }
     void StartFade() {
         Stop(TCap); Stop(TSettle); Unhook();
-        if (!overlay_) { Release(); return; }
+        if (!overlay_) { Finish(Outcome::Reloaded); return; }
         if (fading_) return;
         fading_ = true; fadeT0_ = Now(); stats_.fadeStart = Since();
         After(TFade, USER_TIMER_MINIMUM);
@@ -333,7 +362,7 @@ private:
     void FadeStep() {
         const double ms = Now() - fadeT0_, o = FadeOpacity(ms, reduced_);
         ++stats_.fadeFrames;
-        if (o <= 0.002) { stats_.fadeEnd = Since(); Stop(TFade); Release(); return; }
+        if (o <= 0.002) { stats_.fadeEnd = Since(); Stop(TFade); Finish(Outcome::Reloaded); return; }
         Alpha(int(std::lround(o * 255)));
     }
     void OnTimer(UINT_PTR id) {
@@ -351,12 +380,13 @@ private:
         DropBitmap(); fading_ = false; swapping_ = false; reloaded_ = false;
         detail::Rel(controller_); detail::Rel(view_);
     }
-    void Cancel() { if (overlay_ || swapping_ || controller_ || view_) Release(); }
+    void Cancel() { Done d = std::move(done_); done_ = nullptr; if (overlay_ || swapping_ || controller_ || view_) Release(); if (d) d(Outcome::Cancelled); }
 };
 
 // R36: the call that replaces view->Reload() after an agent's turn (chat-host-ui.h, AfterTurnPage). changedPaths: the
 // files the turn changed (UTF-8, relative to the project folder, '/' separators); reduced: prefers-reduced-motion.
-inline bool Reload(ICoreWebView2Controller* controller, ICoreWebView2* view, const std::vector<std::string>& changedPaths, bool reduced) {
-    return Runner::Get().Reload(controller, view, changedPaths, reduced);
+// done (review M3): told once how it ended (Outcome).
+inline bool Reload(ICoreWebView2Controller* controller, ICoreWebView2* view, const std::vector<std::string>& changedPaths, bool reduced, Done done = nullptr) {
+    return Runner::Get().Reload(controller, view, changedPaths, reduced, std::move(done));
 }
 } // namespace ChatTransition

@@ -386,9 +386,14 @@ function sendSelect(info, selText, ev) {
   // Latency: the host learns at once WHAT was clicked (« selecting »: the selector and the element's rectangle, nothing
   // else), before the full description (styles, text, spacing: the slow part) is computed and posted (« select »).
   var at = ev && ev.timeStamp > 0 && performance.timeOrigin ? performance.timeOrigin + ev.timeStamp : Date.now();
-  var mine = ++seq, r0 = rectOf(info), el0 = info.kind === 'cross-origin' && info.el !== info.frame ? info.frame : info.el;
-  post({ op: 'selecting', seq: mine, at: at, selector: String(selectorFor(el0).sel).slice(0, 1000),
-         rect: { x: r2(r0.x), y: r2(r0.y), width: r2(r0.w), height: r2(r0.h) } });
+  var mine = ++seq;
+  // Review E1: only for what the host can follow from the top document by its selector: an element of the main document
+  // (no frame), outside any shadow root, not a text selection, whose selector names exactly it. Anything else opens at
+  // the full « select » (one frame later), which carries the frame kind and the shadow path.
+  if (selText === null && info.kind === 'main' && !info.range && !info.shadow.length && info.el.getRootNode() === D) {
+    var s0 = selectorFor(info.el), r0 = rectOf(info);
+    if (s0.unique && s0.sel.length <= 1000) post({ op: 'selecting', seq: mine, at: at, selector: s0.sel, rect: { x: r2(r0.x), y: r2(r0.y), width: r2(r0.w), height: r2(r0.h) } });
+  }
   var m = describe(info, selText);
   if (JSON.stringify(m).length > MAX_MSG) { m.target.text = m.target.text.slice(0, 400); if (m.target.selectionText) m.target.selectionText = m.target.selectionText.slice(0, 400); }
   if (JSON.stringify(m).length > MAX_MSG) { m.target.styles = {}; m.target.path = m.target.path.slice(-4); m.target.selector = m.target.selector.slice(-200); }
@@ -952,7 +957,16 @@ function followPost() {
   if (!follow) return null;
   var el = follow.el;
   if (!el || !el.isConnected) { el = follow.el = follow.selector ? cmFind(follow.selector) : null; }
-  if (!el) { if (followLast !== 'gone') { followLast = 'gone'; post({ op: 'anchor', gone: true }); } return null; }
+  // Review C3: « gone » only once the element has been missing for 500 ms and at least 2 checks (an agent's edit or a hot
+  // reload replaces it for a moment); back before that: nothing was said, it is followed again.
+  if (!el) {
+    var now = performance.now();
+    if (!follow.missSince) { follow.missSince = now; follow.missChecks = 0; }
+    follow.missChecks++;
+    if (followLast !== 'gone' && now - follow.missSince >= 500 && follow.missChecks >= 2) { followLast = 'gone'; post({ op: 'anchor', gone: true }); }
+    return null;
+  }
+  follow.missSince = 0; follow.missChecks = 0;
   var r = el.getBoundingClientRect(), o = { x: r.left + follow.ox, y: r.top + follow.oy, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
   var key = [o.x, o.y, o.w, o.h, o.vw, o.vh].map(function (v) { return v.toFixed(1); }).join(',');
   if (key !== followLast) {

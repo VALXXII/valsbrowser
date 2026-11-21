@@ -36,7 +36,7 @@ exe = os.path.join(OUT, "page-v4-test.exe")
 cmd = [os.path.join(TOOLS, "g++.exe"), "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unknown-pragmas", "-Wno-cast-function-type",
        "-Wno-missing-field-initializers", "-Wno-misleading-indentation", "-static", "-municode", "-mconsole", "-Isrc",
        "-I" + (os.environ.get("WEBVIEW2_INCLUDE") or "deps/webview2/build/native/include"), "tests/annotations-ui/page_v4_test.cpp", "src/annotations.cpp", "-o", exe,
-       "-lbcrypt", "-lole32", "-lwindowscodecs", "-lshlwapi", "-lgdi32", "-luser32"]
+       "-lbcrypt", "-lole32", "-luuid", "-lwindowscodecs", "-lshlwapi", "-lgdi32", "-luser32"]
 r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
 check(r.returncode == 0, "unit: build page_v4_test.cpp", (r.stderr or "")[-800:])
 if r.returncode: sys.exit(1)
@@ -62,7 +62,7 @@ open(os.path.join(SITE, "index.html"), "w", encoding="utf-8").write("""<!doctype
 .btn{position:absolute;left:700px;top:420px;width:120px;height:40px}
 .spacer{height:4000px}
 h2.section-title{position:absolute;left:520px;top:300px;width:301.3px;margin:0;font:600 28px serif;padding:8px 12px}</style></head><body>
-<h2 class="section-title">Nos offres</h2><div class="card"></div><div class="narrow"></div><div class="pad"><div></div><div></div><div></div></div>
+<h2 class="section-title">Nos offres</h2><x-card style="position:absolute;left:40px;top:560px;width:200px;height:60px;display:block"></x-card><iframe class="sb" srcdoc="<body style='margin:0'><div class='inner' style='width:180px;height:50px;background:#9c9'></div></body>" style="position:absolute;left:280px;top:560px;width:200px;height:60px;border:0"></iframe><div class="dup" style="position:absolute;left:520px;top:560px;width:80px;height:40px;background:#c99"></div><div class="dup" style="position:absolute;left:620px;top:560px;width:80px;height:40px;background:#c99"></div><div class="vanish" style="position:absolute;left:740px;top:560px;width:80px;height:40px;background:#99c"></div><script>customElements.define("x-card",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<div class=inner style=width:200px;height:60px;background:#cc9></div>"}})</script><div class="card"></div><div class="narrow"></div><div class="pad"><div></div><div></div><div></div></div>
 <div class="far"></div><button class="btn" onclick="window.__clicked=(window.__clicked||0)+1">site</button>
 <div class="box"></div><div class="spacer"></div></body></html>""")
 
@@ -230,6 +230,38 @@ try:
         check(ok and h and h[0][5].strip('"') == "Browser Annotation Inter", f"R45 {int(dpr*100)} %: the bundled Inter Display is the labels' font", [ok, h and h[0][5]])
         check(same_box and diff == 0, f"R45 {int(dpr*100)} %: name + size labels identical on hover and selected, pixel for pixel", f"boxes {'=' if same_box else '≠'} {h} / {s2}, {diff} px differ")
         cdp.js(f"{H}.cmd('follow',null)"); cdp.js(f"{H}.cmd('resume')"); mouse(cdp, 990, 690)
+
+    # ---------------- review E1: « selecting » only for an element of the main document, outside shadow DOM, unique selector
+    load(1.0)
+    def click_at(x, y):
+        n0 = cdp.js("window.__msgs.length")
+        mouse(cdp, x, y); frames(cdp)
+        mouse(cdp, x, y, "mousePressed", button="left", clicks=1); mouse(cdp, x, y, "mouseReleased", button="left", clicks=1); frames(cdp, 3)
+        ops = cdp.js(f"window.__msgs.slice({n0}).filter(m=>m.op==='selecting'||m.op==='select').map(m=>[m.op,m.seq,(m.selector||m.target.selector),m.frame&&m.frame.kind,m.target&&m.target.shadowPath.length,m.target&&m.target.selectorUnique])")
+        cdp.js(f"{H}.cmd('resume')"); frames(cdp)
+        return ops
+    for name, (x, y), early in (("inside an open shadow root", (140, 590), False), ("same-origin iframe", (380, 585), False), ("class not unique (the selector takes :nth-of-type: unique)", (560, 580), True), ("unique element of the page", (780, 580), True)):
+        ops = click_at(x, y)
+        full = [o for o in ops if o[0] == "select"]; light = [o for o in ops if o[0] == "selecting"]
+        safe = bool(full) and full[0][3] == "main" and full[0][4] == 0 and full[0][5] is True   # what the full « select » says of the element
+        okk = len(full) == 1 and safe == early and (len(light) == 1 and light[0][1] == full[0][1] and light[0][2] == full[0][2] if early else not light)
+        check(okk, f"E1: {name}: « selecting » {'posted' if early else 'not posted'}, the full « select » always", ops)
+
+    # ---------------- review C3: an element missing for a moment is not « gone »; gone only after 500 ms and 2 checks
+    load(1.0)
+    GONE = "window.__msgs.filter(m=>m.op==='anchor'&&m.gone).length"
+    cdp.js(f"{H}.cmd('follow',{{selector:'.vanish',draw:{{label:'div.vanish'}}}})"); wait(cdp, 300)
+    cdp.js("window.__v=document.querySelector('.vanish');window.__v.remove()"); wait(cdp, 300)
+    g1 = cdp.js(GONE)
+    cdp.js("document.body.appendChild(window.__v)"); wait(cdp, 900)
+    g2 = cdp.js(GONE); back = cdp.js("(()=>{const a=window.__msgs.filter(m=>m.op==='anchor').pop();return !!a&&!a.gone&&Math.abs(a.x-740)<1})()")
+    check(g1 == 0 and g2 == 0 and back, "C3: removed then put back within 300 ms (agent's edit): never « gone », followed again", [g1, g2, back])
+    cdp.js("window.__v.remove()"); wait(cdp, 350); g3 = cdp.js(GONE); wait(cdp, 700); g4 = cdp.js(GONE)
+    check(g3 == 0 and g4 == 1, "C3: really gone: « gone » once, after 500 ms (not at the first check)", [g3, g4])
+    cdp.js(f"{H}.cmd('follow',null)"); cdp.js("window.__msgs.length=0")
+    cdp.js(f"{H}.cmd('follow',{{selector:'.nothing-here'}})"); wait(cdp, 200); g5 = cdp.js(GONE); wait(cdp, 800); g6 = cdp.js(GONE)
+    check(g5 == 0 and g6 == 1, "C3: a selector found nowhere at the start: « gone » only after 500 ms", [g5, g6])
+    cdp.js(f"{H}.cmd('follow',null)")
 
     # ---------------- R26: peek
     load(1.0)
