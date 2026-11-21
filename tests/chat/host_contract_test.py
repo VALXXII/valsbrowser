@@ -135,6 +135,31 @@ check('FinishTurn(' in ens, 'M13: EnsureSession ends the turn in error when no s
 atp = block_after(ui, 'void AfterTurnPage(')
 check(atp.count('ChatTransition::Reload(') >= 2 and atp.count('GlidedDone') >= 2 and 'Outcome::Glided' in ui, 'M3: every ChatTransition::Reload tells how it ended; a glide puts the « done » mark')
 
+# M2 / F4 (P's contract): a real close tells the page (bubble.hidden: surface invisible, inert, aria-hidden, thread emptied);
+# an opening shows the region only at the page's acknowledgement (never the old thread for a few images)
+close = block_after(comment, 'void CloseBubble(bool focusPage) {')
+check('Send("bubble.hidden"' in close, 'M2 / F4: every real close sends bubble.hidden')
+check('Send("bubble.hidden"' not in block_after(comment, 'void BubbleAway('), 'M2: not when another application only hides it for a moment')
+check('RevealBubble(L"with the opening layout")' not in block_after(comment, 'void OpenBubble('), 'M2: the opening shows its region at the acknowledgement only')
+# M4 (a): back from another application, the bubble that had the keyboard gets it again
+back = block_after(comment, 'void BubbleBack(')
+check('hadKeyboard' in back and 'view.Focus()' in back, 'M4 (a): BubbleBack gives the keyboard back to the bubble that had it')
+check('WA_ACTIVE' in block_after(comment, 'LRESULT CALLBACK BubbleProc('), 'M4 (a): an activated bubble gives its page the keyboard')
+# M5: a click while the panel slides out: the slide ends first, and its end never hides the bubble's view
+check('PanelState::Closing' in block_after(comment, 'void OpenBubble('), 'M5: OpenBubble finishes the panel closing first')
+check('BubbleOpen()' in block_after(ui, 'void FinishClose() {'), 'M5: FinishClose does not hide the view the bubble now shows')
+# M15: the height offered is measured again when the page area changes size
+check('roomAreaH' in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'M15: a new page area size measures the height offered again')
+# M16: Commentaire entered: the chat's tab is set at once (a reload before the first click keeps the mode)
+check('PrepareChat(' in block_after(ui, 'void ModeEntered() {'), 'M16: ModeEntered in Commentaire prepares the chat (its tab)')
+# F3: « Nouveau chat » from an error card while a turn runs: stopped first, as the composer's « Nouveau chat »
+errnew = ui[ui.find('action == "newChat"'):][:300]
+check('turn.active' in errnew, 'F3: an error card\'s « Nouveau chat » waits for the running turn like the composer\'s')
+# F7: the bubble's WebView refused: the bubble closes instead of staying « open » and empty
+check('CloseBubble(' in ui[ui.find('h.created = '):][:400], 'F7: a WebView that cannot be created closes the bubble')
+# F8: after a page change, a bubble whose conversation belongs to another page closes
+check('anchorPage' in block_after(comment, 'void ScriptReady() {'), 'F8: ScriptReady closes a bubble whose page is not the one shown')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

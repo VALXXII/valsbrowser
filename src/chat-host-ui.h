@@ -464,7 +464,7 @@ void EnsureInit() {
     if (uiInit) return; uiInit = true; EnsurePost(); LoadOptionsCache();
     ChatPanelView::Hooks h;
     h.message = [](const std::string& json) { OnPanelMessage(json); };
-    h.created = [](bool ok) { stats.createdAt = Ann::NowMs(); Diag(ok ? L"panel WebView created in " + Ann::Ms(stats.createdAt - stats.requestedAt) + L" ms" : L"panel WebView could not be created"); if (!ok) ClosePanel(); else Layout(); };
+    h.created = [](bool ok) { stats.createdAt = Ann::NowMs(); Diag(ok ? L"panel WebView created in " + Ann::Ms(stats.createdAt - stats.requestedAt) + L" ms" : L"panel WebView could not be created"); if (!ok) { if (BubbleOpen()) CloseBubble(true); ClosePanel(); } else Layout(); };   // F7: a bubble without its WebView closes
     h.accelerator = [](int vk) { const int cmd = Key(UINT(vk)); if (cmd) { view.AcceleratorHandled(); PostMessageW(window, Shortcut, WPARAM(cmd), 0); } };
     h.crashed = [] { Diag(L"panel renderer failed: the panel is rebuilt at the next opening"); panelReady = false; if (Open()) ClosePanel(); view.Destroy(); };
     std::wstring exe = Ann::BrowserExe(); const auto slash = exe.find_last_of(L'\\');
@@ -518,7 +518,7 @@ void OpenPanel() {
 }
 void WarmBubble();
 void FinishClose() {
-    panelState = PanelState::Closed; view.Show(false);
+    panelState = PanelState::Closed; if (!BubbleOpen()) view.Show(false);   // M5: the bubble may have taken the view during the slide
     ::Layout(); Ann::LauncherSync(); SyncChromeBits();
     if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr);
     ArmAgentIdle();
@@ -552,7 +552,7 @@ void WarmPanel() {
     if (view.Create(environment.p, window, PanelRect(0.f))) { view.Show(false); panelWarm = true; Diag(L"panel WebView created in advance (Chat a droite)"); }   // i18n-exempt: log detail
     DetectAgents([] { MaybeStartSession(); });   // O1: its agent too: the model and effort are known before the panel shows
 }
-void ModeEntered() { SyncChromeBits(); if (CommentLayout()) SyncMarks(); else WarmPanel(); }
+void ModeEntered() { SyncChromeBits(); if (CommentLayout()) { if (auto t = Active()) PrepareChat(t); SyncMarks(); } else WarmPanel(); }   // M16: the chat's tab is set at once (a reload before the first click kept the mode off)
 void CoolBubble();
 void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
 bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
@@ -827,7 +827,7 @@ void OnPanelMessage(const std::string& json) {
         const std::string action = m.Id("actionId");
         if (action == "retry") { const std::string text = LastUserText(); if (!text.empty()) SendOrQueue(text, {}, {}); else MaybeStartSession(); }
         else if (action == "connect") Connect(agentId, "");
-        else if (action == "newChat") { NewConversation(); MaybeStartSession(); }
+        else if (action == "newChat") { if (turn.active) { queue.clear(); afterTurn = [] { NewConversation(); MaybeStartSession(); }; StopTurn(); } else { NewConversation(); MaybeStartSession(); } }   // F3: as the composer's « Nouveau chat »
         else if (action == "showWork") ShowEngineWork();   // Mode Commentaire: the work under way asks for a permission
         return;
     }

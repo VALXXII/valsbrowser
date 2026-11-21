@@ -38,6 +38,8 @@ struct BubbleState {
     bool away = false;                                               // open, hidden while another application is in front; shown again when the browser comes back
     ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
     bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
+    bool hadKeyboard = false;                                        // M4 (a): the bubble had the keyboard when another application came in front
+    int roomAreaH = 0;                                               // M15: the page area's height the offered room was measured with
     bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
     bool noFollow = false;                                           // C3: opened from the history (its element is gone): no selector followed
     bool lost = false;                                               // C3: its element is not found while its conversation works: kept at its last place
@@ -66,10 +68,16 @@ void FollowBubbleElement(bool current);
 // The page's script is (again) in the page — after a reload (the agent's edit reloads the page) its state is new: the
 // marks, and the open bubble's element (D1: its frame + labels, no hover frame), are given to it again.
 void WarmBubble(); void CoolBubble();
+const ChatStore::Header* AnchoredOf(const std::string& id);
 void ScriptReady() {   // at the first injection AND after every reload (annotation-mode.h: both paths call it)
     const auto r = ChatBubble::OnScriptIn(CommentLayout(), bubble.open);
     if (r.marks && !bubble.open) WarmBubble();   // R18: the bubble ready before the first click
     if (r.marks) SyncMarks();
+    if (bubble.open && !bubble.noFollow) if (auto t = ChatTab()) {   // F8 (review R): another page of the site now — the bubble's conversation belongs to its own page
+        std::string page; if (const auto* h = AnchoredOf(bubble.conv)) page = h->anchorPage;
+        else if (convo.data.head.id == bubble.conv) page = convo.data.head.anchorPage; else if (aside.on && aside.c.data.head.id == bubble.conv) page = aside.c.data.head.anchorPage;
+        if (!page.empty() && page != ChatBubble::PageKey(U8(t->uri))) { Diag(L"another page is shown: the bubble of the previous one closes"); CloseBubble(false); return; }   // i18n-exempt: log detail
+    }
     if (r.follow) { Diag(L"the page script came in again: the bubble's element is given back"); FollowBubbleElement(false); }
 }
 std::string ShownId() { return aside.on ? aside.c.data.head.id : convo.data.head.id; }
@@ -175,7 +183,8 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     } else { p.side = bubble.anchor.side; p.fromRight = bubble.anchor.fromRight; p.fromBottom = bubble.anchor.fromBottom; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side; bubble.fromBottom = p.fromBottom; bubble.surface = p.rect;
     if (!scrolling) {   // R38 / R40: the room and the handle's bounds are told on a new size, never at each scroll step (R39)
-        const int room = ChatBubble::OfferedRoomCss(placedNow || !bubble.anchor.set, bubble.roomCss, p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);   // R47: kept with the anchor
+        const bool areaResized = area.H() != bubble.roomAreaH; bubble.roomAreaH = area.H();   // M15: a new page area size measures it again
+        const int room = ChatBubble::OfferedRoomCss(placedNow || !bubble.anchor.set || areaResized, bubble.roomCss, p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);   // R47: kept with the anchor
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             bubble.roomCss = room; bubble.resizeMax = rm; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false);
@@ -263,6 +272,7 @@ void BubbleBack(const wchar_t* why) {
     bubble.away = false;
     PlaceBubble();   // the page may have moved meanwhile
     if (!bubble.waitingAck) { const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); ShowWindow(bubble.hwnd, SW_SHOWNA); }
+    if (bubble.hadKeyboard && !bubble.waitingAck) { SetForegroundWindow(bubble.hwnd); view.Focus(); }   // M4 (a): it had the keyboard: it gets it back
     Diag(std::wstring(L"the bubble is shown again (") + why + L")");
 }
 void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD, DWORD) {
@@ -280,6 +290,10 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // Another application takes the foreground: the bubble closes. The browser's own windows do not count: a click in the
     // page is a selection (TakeCommentSelection closes the bubble, or opens the element's), and the mode's capture and
     // focus moves activate the browser window without any click.
+    if (m == WM_ACTIVATE && (LOWORD(w) == WA_ACTIVE || LOWORD(w) == WA_CLICKACTIVE) && bubble.open) { bubble.hadKeyboard = true; view.Focus(); }   // M4 (a): activated — its page gets the keyboard
+    if (m == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE && bubble.open) {   // M4 (a): to a window of this browser, the keyboard is the browser's
+        DWORD p0 = 0; HWND to0 = reinterpret_cast<HWND>(l); if (to0) GetWindowThreadProcessId(to0, &p0); if (to0 && p0 == GetCurrentProcessId()) bubble.hadKeyboard = false;
+    }
     if (m == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE && bubble.open && !bubble.modal) {
         DWORD pid = 0; HWND to = reinterpret_cast<HWND>(l); if (to) GetWindowThreadProcessId(to, &pid);
         if (!to || pid != GetCurrentProcessId()) PostMessageW(h, WM_APP + 1, 0, 0);
@@ -364,6 +378,7 @@ void EnsureOnScreen(const wchar_t* why) {
 void OpenBubble(const std::string& conv, const RECT* element, const std::string& selector, bool followCurrent, const std::string& label) {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
     if (Open()) ClosePanel();
+    if (panelState == PanelState::Closing) FinishClose();   // M5 (review R): the panel's slide ends now — it would move and hide the view the bubble takes
     EnsureInit(); if (!EnsureBubbleWindow()) return;
     PrepareChat(t);   // once per page (cheap again)
     if (post) KillTimer(post, DestroyTimer);
@@ -398,13 +413,8 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     // R18: the opening layout leaves first; everything else waits for the next turn of the message loop
     if (panelReady) {
         SendLayout(true);
-        // R18: the page is warm: it plays its entrance as soon as it gets the layout — the surface is revealed now, on a
-        // region that reaches the window's bottom (its height is not known yet); its acknowledgement trims it, nothing moves
-        if (bubble.waitingAck) {
-            RECT c{}; GetClientRect(bubble.hwnd, &c); RECT rg = bubble.region;
-            if (bubble.fromBottom) rg.top = 0; else rg.bottom = c.bottom;
-            bubble.region = rg; RevealBubble(L"with the opening layout");   // i18n-exempt: log detail
-        }
+        // M2 (review R, P's contract): the region is shown at the page's acknowledgement of this layout (its bubble.size),
+        // never before — revealed at once, the page still showed the previous conversation for a few images
         SendState(); SendThread(); SendQueue();
         SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f));
     }
@@ -462,6 +472,7 @@ void CloseBubble(bool focusPage) {
     if (bubble.hwnd) { if (keepWarm) { SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE); if (wasAway) ShowWindow(bubble.hwnd, SW_SHOWNA); bubble.win = RECT{}; bubble.region = RECT{}; bubble.warm = true; } else ShowWindow(bubble.hwnd, SW_HIDE); }   // warm: shown, empty region
     if (!keepWarm) { view.Show(false); bubble.warm = false; if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr); }
     if (auto t = ChatTab()) Query(t, L"follow", L"null", nullptr);
+    if (panelReady) Send("bubble.hidden", SJ::Value::Obj());   // M2 / F4 (P's contract): invisible, inert, aria-hidden, thread emptied — never the old one shown again
     ArmAgentIdle(); SyncMarks();
     Diag(L"bubble closed (the agent goes on)");
     if (focusPage && Ann::s.active) { SetForegroundWindow(window); FocusChatPage(); }
