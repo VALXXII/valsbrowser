@@ -1981,6 +1981,7 @@ public:
         for (auto& g : glyphs_) Drop(g.second); glyphs_.clear();
         Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
     HWND Window() const { return hwnd_; }
+    HWND EditForTest() const { return edit_; }   // the field being edited (search, address fields)
     UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
     bool Visible() const { return visible_; }
     bool Closing() const { return closing_; }
