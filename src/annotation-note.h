@@ -477,7 +477,7 @@ class NotePopover : public Animator::Client {
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(hwnd_, NoteSpec::radius);
-        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr);
+        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr); NativeUI::SelectAllOnCtrlA(edit_);
         SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SendMessageW(edit_, EM_SETLIMITTEXT, 4000, 0);
         SetWindowSubclass(edit_, EditProc, EditSubclass, reinterpret_cast<DWORD_PTR>(this));
         // Placeholder: drawn under the caret while the field is empty, inside the field's composed image.
