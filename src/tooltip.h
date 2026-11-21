@@ -209,7 +209,8 @@ inline void DrawRich(Chrome& chrome, const std::wstring& text, size_t strongBegi
         layout->SetFontWeight(DWRITE_FONT_WEIGHT_MEDIUM, r); layout->SetDrawingEffect(emphasis, r);
     }
     b->SetColor(color); t->DrawTextLayout(D2D1::Point2F(box.left, box.top), layout, b, D2D1_DRAW_TEXT_OPTIONS_NONE);
-    if (emphasis) emphasis->Release(); layout->Release();
+    if (emphasis) emphasis->Release();
+    layout->Release();
 }
 
 // Host frame clock (Hooks::wake, the contract) or, without one, a private window timer.
@@ -266,7 +267,8 @@ class Tip {
     static std::vector<std::wstring> Keys(const std::wstring& shortcut) {
         std::vector<std::wstring> keys; std::wstring cur;
         for (size_t i = 0; i < shortcut.size(); ++i) { if (shortcut[i] == L'+' && !cur.empty()) { keys.push_back(cur); cur.clear(); } else cur += shortcut[i]; }
-        if (!cur.empty()) keys.push_back(cur); return keys;
+        if (!cur.empty()) keys.push_back(cur);
+        return keys;
     }
     static constexpr float keyMin = 24, keyGap = 4;
     float CapWidth(const std::wstring& key) { return std::max(keyMin, std::ceil(chrome_.TextWidth(key, Layout::keySize, true)) + 2 * Layout::keyPad); }
