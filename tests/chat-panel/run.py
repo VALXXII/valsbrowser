@@ -263,6 +263,40 @@ FULL = {"6.1-autorisation", "6.2-premiere-fois", "6.3-termine", "6.8-viser", "6.
 HOVER = {"6.6-survol": ".turn", "6.6-fil": ".um[data-id='u2'] .bubble", "6.11-fait": ".um[data-id='u1'] .bubble",
          "c-2.1-survol": ".bt-st", "c-3-historique": ".bt-st"}
 
+
+def bind_to_runner(p):
+    """Windows only: put the test browser in a job object closed with this process, so a killed runner
+    (timeout, closed session) never leaves headless browsers behind. Returns the job handle (kept alive)."""
+    if os.name != "nt": return None
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.OpenProcess.restype = wintypes.HANDLE
+    class BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+    class IO(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in ("R", "W", "O", "RB", "WB", "OB")]
+    class EXT(ctypes.Structure):
+        _fields_ = [("Basic", BASIC), ("Io", IO), ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+    job = k32.CreateJobObjectW(None, None)
+    if not job: return None
+    info = EXT(); info.Basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))  # JobObjectExtendedLimitInformation
+    h = k32.OpenProcess(0x0101, False, p.pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+    if h: k32.AssignProcessToJobObject(job, h); k32.CloseHandle(h)
+    return job
+
+def kill_tree(p):
+    if p is None: return
+    if os.name == "nt": subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else: p.kill()
+    try: p.wait(10)
+    except Exception: pass
+
 profile = tempfile.mkdtemp(prefix="chat-panel-qa-")
 proc = None
 try:
@@ -271,6 +305,7 @@ try:
     proc = subprocess.Popen([EDGE, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync",
                              "--disable-background-networking", "--disable-component-update", "--remote-debugging-port=0", "--user-data-dir=" + profile,
                              "--force-device-scale-factor=1", "--window-size=380,698", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    browser_job = bind_to_runner(proc)  # dies with this runner, even if it is killed
     port_file = os.path.join(profile, "DevToolsActivePort")
     for _ in range(300):
         if os.path.exists(port_file) and open(port_file).read().strip(): break
@@ -1138,10 +1173,7 @@ try:
         check(s["p95"] < 25 and s["long"] == 0, "perf: streamed text without jank", f"{s['chunks']} chunks in 3 s, {s['chars']} chars, p95 frame {s['p95']:.1f} ms, max {s['max']:.1f} ms, long tasks {s['long']}")
         shot(os.path.join(OUT, "stream-fin.png"))
 finally:
-    if proc:
-        proc.terminate()
-        try: proc.wait(10)
-        except Exception: proc.kill()
+    kill_tree(proc)  # the browser and all its child processes
     srv.shutdown()
     time.sleep(.5); shutil.rmtree(profile, ignore_errors=True)
     json.dump(report, open(os.path.join(OUT, "report.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
