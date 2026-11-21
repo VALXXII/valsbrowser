@@ -1442,6 +1442,92 @@ static void Windows(Ink& ink, const std::wstring& root) {
 }
 } // namespace ProfileAccent
 
+// ---------------------------------------------------------------------------------------
+// Text fit: no glyph past the padding of its container, French and English, 96 and 120 DPI.
+// `Bare`: every pixel of the DIP band [x0,x1)x[y0,y1) matches `ref` (no ink there).
+namespace TextFit {
+static bool Bare(const Canvas& c, float k, float x0, float y0, float x1, float y1, Rgb ref, double tol = 4) {
+    for (int y = int(std::ceil(y0 * k)); y < int(std::floor(y1 * k)); ++y)
+        for (int x = int(std::ceil(x0 * k)); x < int(std::floor(x1 * k)); ++x) if (!Close(Px(c.At(x, y)), ref, tol)) return false;
+    return true;
+}
+static const wchar_t* LangName() { return I18n::Current() == I18n::Locale::En ? L"en" : L"fr"; }
+static void Run(Ink& ink) {
+    Canvas c;
+    // 1. Connect modal: a failed app's message stays between the row's 12 DIP paddings (it wraps when longer).
+    const I18n::Id agentErrors[] = {I18n::Id::agent_bridge_missing, I18n::Id::agent_bridge_not_pe, I18n::Id::agent_bridge_linked, I18n::Id::agent_bridge_not_regular,
+        I18n::Id::agent_claude_config_invalid, I18n::Id::agent_claude_servers_not_object, I18n::Id::agent_claude_not_installed_folder, I18n::Id::agent_claude_uninstall_extension,
+        I18n::Id::agent_codex_not_installed_folder, I18n::Id::agent_codex_config_unreadable, I18n::Id::agent_connect_failed};
+    for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+        I18n::SetForProcess(lang);
+        for (auto id : agentErrors) for (UINT dpi : {96u, 120u}) {
+            const float k = dpi / 96.f;
+            ConnectView v = ConnectState_(SampleSetup()); v.setup.launch = false; v.setup.codex = {ConnectState::Failed, I18n::T(id)};
+            const auto l = LayoutConnect(ink, v);
+            Render(ink, 520, l.height + 80, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintConnectStatic(i, v, l, 0, 0); }); }, c);
+            const auto& m = l.codexMsg;
+            const bool in = Bare(c, k, 40 + 2, 40 + m.top, 40 + m.left - .5f, 40 + m.bottom, canvasRgb) && Bare(c, k, 40 + m.right + .5f, 40 + m.top, 40 + 438, 40 + m.bottom, canvasRgb);
+            CHECKM(in, "connect failure message inside the row padding (%ls, %u dpi, %ls)", LangName(), dpi, I18n::T(id));
+            const std::wstring msg = I18n::T(id); const float row = m.right - m.left;
+            const int lines = 13 + 6 + ink.Width(msg, F(12, 16)) <= row ? 1 : ink.Lines(msg, F(12, 16), row - 13 - 6);
+            CHECKM(Near(m.bottom - m.top, 16.0 * lines, .01), "connect failure message: one 16 DIP line per wrapped line (%ls)", I18n::T(id));
+            if (id == I18n::Id::agent_claude_not_installed_folder) { std::wstring n = L"textfit-connect-failed-" + std::wstring(LangName()) + L"-" + std::to_wstring(dpi) + L".png"; Save(ink, c, n.c_str()); }
+        }
+    }
+    // 2. Note « Capture impossible » pill: never wider than the note's 350 DIP layer, its text inside the pill's padding.
+    for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+        I18n::SetForProcess(lang);
+        for (UINT dpi : {96u, 120u}) {
+            const float k = dpi / 96.f; const auto r = PillRect(ink, CaptureState::Unavailable, NoteSpec::width / 2, 10, 0);
+            CHECKM(r.left >= 0 && r.right <= NoteSpec::width, "« capture impossible » pill inside its 350 DIP layer (%ls: %g..%g)", LangName(), r.left, r.right);
+            PillView pv; pv.capture = CaptureState::Unavailable;
+            Render(ink, NoteSpec::width, 50, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { PaintPill(i, pv, r); }, c);
+            const bool in = Bare(c, k, r.left + 2, r.top + 9, r.left + 1 + 7, r.bottom - 9, canvasRgb) && Bare(c, k, r.right - 1 - 7, r.top + 9, r.right - 2, r.bottom - 9, canvasRgb);   // clear of the rounded corners
+            CHECKM(in, "« capture impossible » pill: text inside its padding (%ls, %u dpi)", LangName(), dpi);
+            std::wstring n = L"textfit-note-capture-unavailable-" + std::wstring(LangName()) + L"-" + std::to_wstring(dpi) + L".png"; Save(ink, c, n.c_str());
+        }
+    }
+    I18n::SetForProcess(I18n::Locale::Fr);
+    // 3. History detail « Suivi »: the card is sized with the width its quotes wrap at in paint (left of each step's time).
+    {   HistoryView h; h.data = SampleHistory(); h.maxHeight = 2000; h.detailId = L"a1";
+        auto& e = h.data.entries[0]; using Step = HistoryEntry::Step;
+        const wchar_t* times[] = {L"14:05", L"12 nov. 14:05", L"28 sept. 23:59"};
+        const std::wstring quotes[] = {sampleNote, L"Le bouton est aligné à droite, en pleine largeur sous 640 px ; les marges du formulaire sont reprises du composant Paiement.", L"Je ne trouve pas le composant qui dessine ce bouton dans le dépôt ouvert."};
+        for (int i = 0; i < 3; ++i) { Step s; s.kind = i == 2 ? Step::Unhandled : Step::Claimed; s.agent = AgentKind::Claude; s.label = L"Prise en charge par Claude"; s.time = times[i]; s.quote = quotes[i]; e.steps.push_back(s); }
+        const auto l = LayoutHistory(ink, h); const float lane = (l.follow.right - 12) - (l.follow.left + 12);
+        float need = 10 + 16 + 8; bool differs = false;
+        for (size_t i = 0; i < e.steps.size(); ++i) {
+            const std::wstring q = L"« " + e.steps[i].quote + L" »";
+            const float painted = ink.Height(q, F(13, 18), lane - 26 - ink.Width(e.steps[i].time, F(12, 16)) - 8), old = ink.Height(q, F(13, 18), 358 - 24 - 24 - 26 - 40);
+            need += 16 + 4 + painted + (i + 1 < e.steps.size() ? 10 : 0); differs |= painted != old;
+        }
+        need += 12;
+        CHECKM(differs, "history « Suivi » fixture: a dated step wraps differently than the old fixed width (test sensitivity)");
+        CHECKM(Near(l.follow.bottom - l.follow.top, need, .01), "history « Suivi » card fits its quotes as painted (layout %g, painted %g)", l.follow.bottom - l.follow.top, need);
+        for (UINT dpi : {96u, 120u}) {
+            Render(ink, 400, l.height + 40, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 20, 20, [&] { PaintHistory(i, h, l, l.height); }); }, c);
+            std::wstring n = L"textfit-history-follow-" + std::to_wstring(dpi) + L".png"; Save(ink, c, n.c_str());
+        }
+    }
+    // 4. History list: a long site name in a section header trims before its count, never under it.
+    {   HistoryView h; h.data = SampleHistory(); h.maxHeight = 2000;
+        for (auto& e : h.data.entries) e.site = L"tres-long-sous-domaine.environnement-de-recette.exemple-entreprise.fr";
+        h.data.currentSite = h.data.entries[0].site;
+        const auto l = LayoutHistory(ink, h); const HistoryItem* head = nullptr; for (auto& it : l.items) if (it.section) { head = &it; break; }
+        CHECK(head != nullptr);
+        if (head) for (UINT dpi : {96u, 120u}) {
+            const float k = dpi / 96.f;
+            Render(ink, 400, l.height + 40, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 20, 20, [&] { PaintHistory(i, h, l, l.height); }); }, c);
+            const float top = 20 + l.listTop + head->y, right = 20 + 1 + 358 - 4 - 10; Font n = F(11, 14); n.tabular = true;
+            const float cw = ink.Width(std::to_wstring(head->count), n);
+            const Rgb ref = Px(c.At(int((20 + 1 + 6) * k), int((top + 18) * k)));
+            CHECKM(Bare(c, k, right - cw - 7.5f, top + 10, right - cw - .5f, top + 26, ref), "history section header: site trimmed before its count (%u dpi)", dpi);
+            std::wstring name = L"textfit-history-section-" + std::to_wstring(dpi) + L".png"; Save(ink, c, name.c_str());
+        }
+    }
+}
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3) { std::fprintf(stderr, "usage: annotations-ui-test.exe <repoRoot> <outDir> [--no-window]\n"); return 2; }
     const std::wstring root = argv[1]; outDir = argv[2];
@@ -1458,6 +1544,7 @@ int wmain(int argc, wchar_t** argv) {
     std::printf("Monospace family: %s\n", Utf8(ink->MonoFamily()).c_str());
     report << L"\"monoFamily\":\"" << ink->MonoFamily() << L"\",";
     GeometryTests(*ink);
+    TextFit::Run(*ink);
     Captures(*ink);
     V3Tests(*ink);
     V3B::Static(*ink);

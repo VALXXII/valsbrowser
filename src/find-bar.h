@@ -24,6 +24,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include "native-ui.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -292,7 +293,7 @@ public:
         PopupKit::Register(instance, L"LisiereFindBar", Proc);
         if (!PopupKit::CreatePopup(instance, owner, L"LisiereFindBar", TR(find_title), 0, this, Layout::radius, WS_POPUP | WS_CLIPCHILDREN)) return false;
         pump_.Bind(hwnd_, hooks_.wake);
-        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
+        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr); NativeUI::SelectAllOnCtrlA(edit_);
         if (!edit_) return false;
         SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SendMessageW(edit_, EM_SETLIMITTEXT, 1024, 0);
         SetWindowSubclass(edit_, EditProc, 0xF1, reinterpret_cast<DWORD_PTR>(this));

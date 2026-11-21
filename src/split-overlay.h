@@ -201,17 +201,39 @@ private:
         Fav(t, b, c.favicon, {r.left + 8, r.top + 8, r.left + 24, r.top + 24}, c.opacity);
         Text(t, b, c.title, {r.left + 32, r.top, r.right - 8, r.bottom}, true, c.opacity);
     }
+public:
+    // The refusal pill beside the pointer (p.x = pointer + 14), kept 8 DIP inside the window: it moves to the
+    // pointer's left when it would cross the right edge, above it near the bottom, and when the window is
+    // narrower than the pill, the detail then the title end in an ellipsis inside its 12 DIP padding.
+    struct PillLayout { D2D1_RECT_F box{}; float title = 0, detail = 0; };
+    PillLayout LayoutPill(const Pill& p, D2D1_SIZE_F surface) {
+        constexpr float margin = 8, lead = 8 + 16 + 8, tail = 12, gap = 6;
+        PillLayout o; o.title = TextWidth(p.title, true); o.detail = p.detail.empty() ? 0 : TextWidth(p.detail, false);
+        const float room = std::max(0.f, surface.width - 2 * margin);
+        float w = lead + o.title + (p.detail.empty() ? 0 : gap + o.detail) + tail;
+        if (w > room) {
+            o.detail = std::max(0.f, o.detail - (w - room));
+            if (!p.detail.empty() && o.detail < 24) o.detail = 0;   // too little left for a word: the title alone
+            o.title = std::max(0.f, std::min(o.title, room - lead - tail - (o.detail > 0 ? gap + o.detail : 0)));
+            w = std::min(w, lead + o.title + (o.detail > 0 ? gap + o.detail : 0) + tail);
+        }
+        float x = p.x; if (x + w > surface.width - margin) x = p.x - 28 - w;   // flipped: 14 DIP left of the pointer
+        x = std::max(margin, std::min(x, surface.width - margin - w));
+        float y = p.y; if (y + 32 > surface.height - margin) y = p.y - 22 - 14 - 32;   // above the pointer
+        y = std::max(margin, std::min(y, surface.height - margin - 32));
+        o.box = {x, y, x + w, y + 32}; return o;
+    }
+private:
     void DrawPill(ID2D1RenderTarget* t, ID2D1SolidColorBrush* b, const Pill& p) {
-        const float title = TextWidth(p.title, true), detail = TextWidth(p.detail, false);
-        const float w = 8 + 16 + 8 + title + (p.detail.empty() ? 0 : 6 + detail) + 12;
-        const D2D1_RECT_F r{p.x, p.y, p.x + w, p.y + 32};
+        const auto o = LayoutPill(p, t->GetSize()); const float title = o.title, detail = o.detail;
+        const D2D1_RECT_F r = o.box;
         b->SetColor(D2D1::ColorF(41 / 255.f, 41 / 255.f, 41 / 255.f)); t->FillRoundedRectangle(D2D1::RoundedRect(r, 6, 6), b);
         b->SetColor(D2D1::ColorF(1, 1, 1, .10f)); t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + .5f, r.top + .5f, r.right - .5f, r.bottom - .5f}, 5.5f, 5.5f), b, 1);
         // Neutral "not allowed" glyph: never the accent, never the danger tone.
         b->SetColor(D2D1::ColorF(1, 1, 1)); const float cx = r.left + 16, cy = r.top + 16;
         t->DrawEllipse(D2D1::Ellipse({cx, cy}, 6.5f, 6.5f), b, 1.5f); t->DrawLine({cx - 4.6f, cy + 4.6f}, {cx + 4.6f, cy - 4.6f}, b, 1.5f);
         Text(t, b, p.title, {r.left + 32, r.top, r.left + 32 + title, r.bottom}, true, 1);
-        if (!p.detail.empty()) Text(t, b, p.detail, {r.left + 38 + title, r.top, r.right - 12, r.bottom}, false, .6f);
+        if (detail > 0) Text(t, b, p.detail, {r.left + 38 + title, r.top, r.right - 12, r.bottom}, false, .6f);
     }
 };
 

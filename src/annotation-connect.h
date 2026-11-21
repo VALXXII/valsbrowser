@@ -149,6 +149,13 @@ struct ConnectLayout {
     const Block* Find(int key) const { for (auto& b : blocks) if (b.key == key) return &b; return nullptr; }
 };
 inline size_t Hash(const std::wstring& s) { return std::hash<std::wstring>{}(s); }
+// The message under an app's button (12/16): one centred line (a failure: warning icon 13 + 6 + text) while it
+// fits the row, else wrapped lines of 16 DIP inside it (a failure keeps its icon at the start of the first line).
+inline bool AppMessageFailed(const ConnectView& v, AgentKind a) { return v.App(a).state == ConnectState::Failed; }
+inline int AppMessageLines(Ink& ink, const ConnectView& v, AgentKind a, float width) {
+    const std::wstring m = v.Message(a); const float lead = AppMessageFailed(v, a) ? 13 + 6 : 0;
+    return lead + ink.Width(m, F(12, 16)) <= width ? 1 : ink.Lines(m, F(12, 16), width - lead);
+}
 inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
     using namespace ConnectSpec; ConnectLayout l; const float x0 = 1, inner = width - 2;
     float y = 1;
@@ -164,7 +171,7 @@ inline ConnectLayout LayoutConnect(Ink& ink, const ConnectView& v) {
         auto& off = a == AgentKind::Claude ? l.claudeOff : l.codexOff;
         if (v.Disconnectable(a)) { const float w = 10 + ink.Width(TR(agent_disconnect), F(12, 16, 500)) + 10; off = {br - 4 - w, y + 4, br - 4, y + button - 4}; } else off = {};
         l.blocks.push_back({key, y, button, size_t(s.state) * 1000003u ^ Hash(AppButtonLabel(a, s))}); y += button;
-        if (v.HasMessage(a)) { y += gap; msg = {bx, y, br, y + 16}; l.blocks.push_back({msgKey, y, 16, Hash(v.Message(a)) ^ size_t(s.state)}); y += 16; }
+        if (v.HasMessage(a)) { const float h = 16.f * AppMessageLines(ink, v, a, br - bx); y += gap; msg = {bx, y, br, y + h}; l.blocks.push_back({msgKey, y, h, Hash(v.Message(a)) ^ size_t(s.state)}); y += h; }
         else msg = {};
     };
     app(AgentKind::Claude, BClaude, BClaudeMsg, l.claude, l.claudeMsg); y += gap;
@@ -241,8 +248,14 @@ inline void PaintAppButton(Ink& ink, const ConnectView& v, AgentKind a, D2D1_REC
     if (v.focus == id) FocusRing(ink, r, 6, v.keyboard);
 }
 inline void PaintAppMessage(Ink& ink, const ConnectView& v, AgentKind a, D2D1_RECT_F r) {
-    const auto& s = v.App(a);
-    if (s.state == ConnectState::Failed) Pieces(ink, {PIcon(Glyphs::warningCircle, 13, Hex(Ink_::danger)), PText(s.detail, F(12, 16), Hex(Ink_::danger))}, r);
+    const auto& s = v.App(a); const bool failed = AppMessageFailed(v, a);
+    if (AppMessageLines(ink, v, a, r.right - r.left) > 1) {   // longer than the row: wrapped inside it, never past its edges
+        if (!failed) { ink.Text(v.Message(a), F(12, 16), r, Hex(0xFFFFFF99), true, Align::Center); return; }
+        ink.Icon(Glyphs::warningCircle, {r.left, r.top + 1.5f, r.left + 13, r.top + 14.5f}, Hex(Ink_::danger));
+        ink.Text(s.detail, F(12, 16), {r.left + 19, r.top, r.right, r.bottom}, Hex(Ink_::danger), true);
+        return;
+    }
+    if (failed) Pieces(ink, {PIcon(Glyphs::warningCircle, 13, Hex(Ink_::danger)), PText(s.detail, F(12, 16), Hex(Ink_::danger))}, r);
     else ink.Text(v.Message(a), F(12, 16), r, Hex(0xFFFFFF99), false, Align::Center, true);
 }
 inline void PaintConnectHeader(Ink& ink, const ConnectView& v, const ConnectLayout& l) {

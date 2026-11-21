@@ -368,6 +368,8 @@ private:
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); if (renaming_ && hooks_.relayout) hooks_.relayout(); return 0; }
         case WM_CTLCOLOREDIT: if (hooks_.editColor) { if (const LRESULT brush = hooks_.editColor(reinterpret_cast<HDC>(w), reinterpret_cast<HWND>(l))) return brush; } break;
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
+        // Placed on a monitor at another DPI: WM_SIZE read the old DPI during the move; redraw at the new one.
+        case WM_DPICHANGED: chrome_.Resize(); Invalidate(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
         case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_ && !stayForTest) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
         case WM_SETFOCUS: case WM_KILLFOCUS: Invalidate(); return 0;
@@ -421,6 +423,7 @@ public:
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     HWND Window() const { return hwnd_; }
+    UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
     bool Visible() const { return visible_; }
     bool Open() const { return visible_ && !closing_; }
     bool Closing() const { return closing_; }

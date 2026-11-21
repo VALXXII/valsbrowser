@@ -207,6 +207,17 @@ struct Renders {
             if (items[i].row.percent >= 100) Expect(b > 200 && b - r > 100, "mute glyph is the accent at 100 %");
             else Expect(std::max({r, g, b}) <= 150 && std::abs(r - b) < 12, items[i].row.percent == 0 ? "mute glyph at 0 % / muted is not bright white" : "mute glyph keeps the 50 % ink in between");
         }
+        // Text fit: the value (« 100 % », narrow no-break space in French) stays inside its column, never past the
+        // panel's 16 DIP right padding (content edge 303).
+        if (!drawer) for (int i = 0; i < static_cast<int>(items.size()) && i < L::popoverRows; ++i) {
+            const auto v = L::Value(L::RowTop(i, drawer)); const float k = dpi / 96.f; bool clear = true;
+            for (int py = static_cast<int>(std::ceil(v.top * k)); py < static_cast<int>(std::floor(v.bottom * k)); ++py)
+                for (int px = static_cast<int>(std::ceil(L::right * k)); px < static_cast<int>(std::floor((L::width - 2) * k)); ++px) {
+                    const UINT32 c = chrome.SurfacePixel((px + .5f) / k, (py + .5f) / k);
+                    if (std::abs(static_cast<int>(c & 0xff) - 0x17) > 6 || std::abs(static_cast<int>((c >> 16) & 0xff) - 0x17) > 6) clear = false;
+                }
+            Expect(clear, "volume value inside its column: nothing past the 16 DIP right padding");
+        }
         // Hovering the mute button: accent tint at 100 %, grey ghost surface otherwise.
         if (hover && AudioPanel::HitPart(hover) == 1) {
             const int i = AudioPanel::HitRow(hover); const auto m = L::Mute(L::RowTop(i, drawer));
@@ -261,6 +272,40 @@ struct Renders {
     }
 };
 
+
+// A drag must move the lit tick while the pointer moves. Bug (2026-11-21): every pointer move re-armed the
+// 10 ms frame timer, so with a fast mouse (moves every 1-2 ms) WM_TIMER never fired during the drag and the
+// lit position only caught up once the pointer paused: the slider felt laggy.
+static void DragFollowsPointer(Renders& r, const std::wstring& root) {
+    namespace L = AudioPanel::Layout;
+    HINSTANCE hi = GetModuleHandleW(nullptr);
+    WNDCLASSW wc{}; wc.lpfnWndProc = DefWindowProcW; wc.hInstance = hi; wc.lpszClassName = L"AudioDragOwner"; RegisterClassW(&wc);
+    HWND owner = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"owner", WS_POPUP | WS_VISIBLE, 40, 40, 900, 700, nullptr, nullptr, hi, nullptr);
+    AudioPanel::Popover p; int changes = 0; AudioPanel::Hooks h; h.volume = [&](const std::wstring&, int, bool) { ++changes; };
+    Expect(p.Create(hi, owner, root, h), "drag: popover created");
+    auto items = r.Items(); items[0].row.percent = 0; p.SetItems(items);
+    RECT anchor{600, 60, 624, 84}, bounds{40, 40, 940, 740}; p.Show(anchor, bounds, false);
+    auto pump = [](DWORD ms) { const DWORD end = GetTickCount() + ms; MSG m; do { while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); } Sleep(1); } while (GetTickCount() < end); };
+    pump(400);
+    const float k = GetDpiForWindow(p.Window()) / 96.f, y = (L::RowTop(0) + L::controlTop + L::control / 2) * k;
+    auto at = [&](double pct) { return MAKELPARAM(static_cast<int>(std::lround(L::XAt(pct) * k)), static_cast<int>(std::lround(y))); };
+    SendMessageW(p.Window(), WM_LBUTTONDOWN, MK_LBUTTON, at(0));
+    // A steady 300 ms sweep from 0 % to 90 %, one pointer move every ~1 ms (a 1000 Hz mouse).
+    const ULONGLONG start = GetTickCount64(); double pct = 0;
+    while (GetTickCount64() - start < 300) {
+        pct = std::min(90.0, (GetTickCount64() - start) / 300.0 * 90.0);
+        SendMessageW(p.Window(), WM_MOUSEMOVE, MK_LBUTTON, at(pct));
+        MSG m; while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); }
+        Sleep(1);
+    }
+    const float shown = p.PresentedTicks().empty() ? -1.f : p.PresentedTicks()[0];
+    const float target = static_cast<float>(L::NearestTick(static_cast<int>(std::lround(pct))));
+    std::printf("drag: pointer at %.0f %% (tick %.0f), lit tick shown at %.2f after a 300 ms sweep\n", pct, target, shown);
+    Expect(shown >= target - 2, "drag: the lit tick follows the pointer during a fast drag (within 2 ticks)");
+    SendMessageW(p.Window(), WM_LBUTTONUP, 0, at(pct)); pump(200);
+    Expect(changes > 0, "drag: the volume hook received the changes");
+    p.Dispose(); DestroyWindow(owner);
+}
 int wmain(int argc, wchar_t** argv) {
     VolumeChecks(); ReportChecks(); ClassificationChecks(); RowChecks(); IconChecks();
     if (argc >= 3) {
@@ -277,6 +322,7 @@ int wmain(int argc, wchar_t** argv) {
             Expect(beat > high + .004, "the meter moves between rests (subtly)");
         }
         Renders r{root, out};
+        DragFollowsPointer(r, root);
         auto items = r.Items();
         Expect(r.Panel(L"panel-96.png", 96, items, 0, false), "render panel 100 %");
         Expect(r.Panel(L"panel-150.png", 144, items, 0, false), "render panel 150 %");
@@ -290,6 +336,12 @@ int wmain(int argc, wchar_t** argv) {
             Expect(r.Panel(L"panel-full.png", 144, full, 0, false, AudioPanel::SliderHit(0)), "render 100 %");
             Expect(r.Panel(L"panel-full-mute-hover.png", 144, full, 0, false, AudioPanel::MuteHit(0)), "render 100 % mute hover");
             Expect(AudioPanel::Layout::TickLeft(15) + AudioPanel::Layout::tickWidth + 6 <= AudioPanel::Layout::valueLeft, "the last tick and its glow keep clear of the value");
+            for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) for (UINT dpi : {96u, 120u}) {   // text fit: « 100 % » / « 100% »
+                I18n::SetForProcess(lang); const bool en = lang == I18n::Locale::En;
+                const std::wstring name = std::wstring(L"panel-full-") + (en ? L"en-" : L"fr-") + std::to_wstring(dpi) + L".png";
+                Expect(r.Panel(name.c_str(), dpi, full, 0, false), "render 100 % (text fit, FR/EN, 96/120 dpi)");
+            }
+            I18n::SetForProcess(I18n::Locale::Fr);
         }
         {   // Seven sites: two rows + « Voir tout (7) » (Paper TGK-0), then the drawer (U40-0).
             auto many = items; while (many.size() < 7) { auto copy = items[1]; copy.row.site = L"site" + std::to_wstring(many.size()) + L".example"; copy.row.percent = 72; many.push_back(copy); }

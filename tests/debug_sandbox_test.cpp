@@ -182,6 +182,22 @@ static void NativeTests(HINSTANCE instance, const std::wstring& root) {
         toast.Update(ContextToast::SavingSpec(.9f)); Require(fourth == 0, "update keeps the callback");
         toast.ActivateForTest(ContextToast::Toast::CloseHit); Require(fourth == 0, "in-progress toast has no close");
         toast.Dispose(); Require(fourth == 1, "Dispose → done(false) once");
+        // Text fit: « Impossible d'ouvrir … » next to « Réessayer » (elements-integration's ShowWindowLaunchFailed)
+        // fits whole in its lane, French and English; captures at 96 and 120 DPI.
+        {   ContextToast::Toast fit; Require(fit.Create(instance, owner, root), "text fit toast created");
+            const std::wstring ev = root + L"/build/text-fit-evidence"; CreateDirectoryW((root + L"/build").c_str(), nullptr); CreateDirectoryW(ev.c_str(), nullptr);
+            for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+                I18n::SetForProcess(lang); const bool en = lang == I18n::Locale::En;
+                ContextToast::Spec s; s.automationId = L"WindowLaunchFailedToast"; s.icon = ContextToast::Icon::Error; s.error = true; s.durationMs = 0;
+                s.message = TR(window_launch_failed); s.detail = TR(window_launch_failed_tabs_kept); s.action = TR(downloads_action_retry);
+                fit.Show(s, page, [](bool) {});
+                std::printf("text fit (%s): window launch failed %.1f / %.1f DIP\n", en ? "en" : "fr", fit.MessageWidthForTest(), fit.StatusLaneWidthForTest());
+                for (UINT dpi : {96u, 120u}) fit.RenderForTest(root, (ev + L"/window-launch-failed-" + (en ? L"en-" : L"fr-") + std::to_wstring(dpi) + L".png").c_str(), dpi);
+                Require(fit.MessageWidthForTest() <= fit.StatusLaneWidthForTest(), en ? "text fit (en): « Couldn't open a new window » fits beside « Retry »" : "text fit (fr): « Impossible d'ouvrir … » fits beside « Réessayer »");
+            }
+            I18n::SetForProcess(I18n::Locale::Fr);
+            fit.Dispose();
+        }
     }
     // --- Tooltip (C5): never activates, never takes clicks, delay then neighbour instant.
     {

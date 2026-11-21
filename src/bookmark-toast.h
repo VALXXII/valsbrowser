@@ -35,6 +35,8 @@ class Toast {
     float TextWidth() { return std::min(Layout::maxText, std::ceil(chrome_.TextWidth(text_, 14, true, false, -.28f))); }
     float UndoWidth() { return std::ceil(chrome_.TextWidth(action_, 14, true, false, -.28f)) + 16; }
     float Width() { return Layout::padX + 16 + 8 + TextWidth() + Layout::gap + UndoWidth() + 8 + Layout::close + Layout::padX - 4; }
+    // The message's slot: its measured width, at most maxText (then an ellipsis, never a glyph cut by the clip).
+    D2D1_RECT_F TextSlot() { return {Layout::padX + 24, 0, Layout::padX + 24 + TextWidth() + 1, Layout::height}; }
     D2D1_RECT_F UndoBox() { const float x = Layout::padX + 24 + TextWidth() + Layout::gap; return {x, 9, x + UndoWidth(), 33}; }
     D2D1_RECT_F CloseBox() { const float w = Width(); return {w - Layout::padX + 4 - Layout::close, 9, w - Layout::padX + 4, 33}; }
     int HitAt(float x, float y) { auto in = [&](D2D1_RECT_F r) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }; return in(UndoBox()) ? UndoHit : in(CloseBox()) ? CloseHit : None; }
@@ -73,8 +75,8 @@ class Toast {
         t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); chrome_.keyboardModality = keyboard_;
         chrome_.Round({0, 0, w, Layout::height}, Layout::radius, r);
         chrome_.Icon(L"trash", {Layout::padX, 13, Layout::padX + 16, 29}, 16, 1);
-        t->PushAxisAlignedClip(D2D1::RectF(Layout::padX + 24, 0, Layout::padX + 24 + TextWidth(), Layout::height), D2D1_ANTIALIAS_MODE_ALIASED);
-        chrome_.Text(text_, {Layout::padX + 24, 0, Layout::padX + 24 + TextWidth() + 400, Layout::height}, 14, 1, false, true, -.28f);
+        t->PushAxisAlignedClip(D2D1::RectF(Layout::padX + 24, 0, TextSlot().right, Layout::height), D2D1_ANTIALIAS_MODE_ALIASED);
+        chrome_.Text(text_, TextSlot(), 14, 1, false, true, -.28f);
         t->PopAxisAlignedClip();
         const auto undo = UndoBox(); const auto uv = motion_.Visual(UndoHit, now);
         chrome_.Round(undo, Design::Radius::control, r + (Design::Surface::hover - r) * (uv.hover * .7f + uv.press * .3f));
@@ -149,6 +151,8 @@ public:
     bool Visible() const { return visible_ && !leaving_; }
     const std::wstring& Message() const { return text_; }
     const std::wstring& ActionLabel() const { return action_; }
+    D2D1_RECT_F TextSlotForTest() { return TextSlot(); }
+    bool TextTrimmedForTest() { return chrome_.MeasureText(text_, TextSlot(), 14, true, false, -.28f).trimmed; }
     // Keeps clear of another bottom-left card (the update toast) by `reserve` DIP.
     void SetBottomReserve(float reserve) { bottomReserve_ = reserve; if (visible_ && !leaving_) Place(1, false); }
     // `sticky`: stays until acted on (a failed save offering "Réessayer").

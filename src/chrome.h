@@ -1,6 +1,7 @@
 #pragma once
 #include "i18n.h"
 #include <d2d1_1.h>
+#include <commctrl.h>
 #include <d2d1effects.h>
 #include <dwrite_1.h>
 #include <wincodec.h>
@@ -465,13 +466,29 @@ public:
         target->FillRectangle(D2D1::RectF(std::min(edge,inner),Design::TabStrip::regionTop,std::max(edge,inner),Design::TabStrip::regionBottom),fadeBrush);
     }
     ~Chrome(){Dispose();}
-    void Dispose(){ClearTextCache();if(eyeSlash){eyeSlash->Release();eyeSlash=nullptr;}DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();audioMeter.Clear();audioSide=0;DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
+    void Dispose(){if(hwnd&&!followDpiGone&&IsWindow(hwnd))RemoveWindowSubclass(hwnd,FollowDpiProc,reinterpret_cast<UINT_PTR>(this));followDpiGone=true;ClearTextCache();if(eyeSlash){eyeSlash->Release();eyeSlash=nullptr;}DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();audioMeter.Clear();audioSide=0;DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
     HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
         hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
         fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
         hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wic));return hr;
     }
-    HRESULT Init(HWND h,const std::wstring& root){hwnd=h;HRESULT hr=InitResources(root);return FAILED(hr)?hr:Resize();}
+    HRESULT Init(HWND h,const std::wstring& root){hwnd=h;followDpiGone=false;if(h)SetWindowSubclass(h,FollowDpiProc,reinterpret_cast<UINT_PTR>(this),reinterpret_cast<DWORD_PTR>(this));HRESULT hr=InitResources(root);return FAILED(hr)?hr:Resize();}
+    // The window moved to a monitor with another DPI (or its scale changed) while the render
+    // target kept the old one: everything inside was drawn too large or too small (bug
+    // 2026-11-17, settings, history, menus... on a 100 % monitor beside a 125 % one). A move
+    // sizes the window first and changes its DPI afterwards, and a surface that keeps the
+    // same pixel size gets no WM_SIZE, so every window drawn by a Chrome re-checks its DPI
+    // itself: after a DPI change or a move, and before painting. Returns true when it changed.
+    bool FollowDpi(){if(!hwnd||!hwndTarget)return false;const UINT now=GetDpiForWindow(hwnd);if(!now||now==dpi)return false;Resize();InvalidateRect(hwnd,nullptr,FALSE);return true;}
+    static LRESULT CALLBACK FollowDpiProc(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR id,DWORD_PTR data){
+        auto* self=reinterpret_cast<Chrome*>(data);
+        if(m==WM_NCDESTROY){RemoveWindowSubclass(h,FollowDpiProc,id);if(self->hwnd==h)self->followDpiGone=true;return DefSubclassProc(h,m,w,l);}
+        if(m==WM_PAINT)self->FollowDpi();
+        const LRESULT r=DefSubclassProc(h,m,w,l);
+        if(m==WM_DPICHANGED||m==WM_WINDOWPOSCHANGED)self->FollowDpi();
+        return r;
+    }
+    bool followDpiGone=false;
     HRESULT InitOffscreen(const std::wstring& root,UINT dpiValue,float w,float h){dpi=dpiValue;width=w;height=h;HRESULT hr=InitResources(root);if(FAILED(hr))return hr;hr=wic->CreateBitmap((UINT)(w*dpi/96),(UINT)(h*dpi/96),GUID_WICPixelFormat32bppPBGRA,WICBitmapCacheOnLoad,&surface);if(FAILED(hr))return hr;hr=factory->CreateWicBitmapRenderTarget(surface,D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,D2D1::PixelFormat(),(float)dpi,(float)dpi),&target);if(FAILED(hr))return hr;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);}
     HRESULT SavePng(const wchar_t* path){if(!surface)return E_FAIL;IWICStream* stream=nullptr;IWICBitmapEncoder* encoder=nullptr;IWICBitmapFrameEncode* frame=nullptr;HRESULT hr=wic->CreateStream(&stream);if(SUCCEEDED(hr))hr=stream->InitializeFromFilename(path,GENERIC_WRITE);if(SUCCEEDED(hr))hr=wic->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder);if(SUCCEEDED(hr))hr=encoder->Initialize(stream,WICBitmapEncoderNoCache);if(SUCCEEDED(hr))hr=encoder->CreateNewFrame(&frame,nullptr);if(SUCCEEDED(hr))hr=frame->Initialize(nullptr);if(SUCCEEDED(hr))hr=frame->WriteSource(surface,nullptr);if(SUCCEEDED(hr))hr=frame->Commit();if(SUCCEEDED(hr))hr=encoder->Commit();Drop(frame);Drop(encoder);Drop(stream);return hr;}
     UINT32 SurfacePixel(float x,float y){UINT32 pixel=0;WICRect r{(INT)(x*dpi/96),(INT)(y*dpi/96),1,1};if(surface)surface->CopyPixels(&r,4,4,(BYTE*)&pixel);return pixel;}

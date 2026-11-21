@@ -20,6 +20,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include "native-ui.h"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -126,8 +127,8 @@ public:
     // ---- life cycle ----
     void Attach(HWND host, Hooks hooks, Style style) {
         host_ = host; hooks_ = std::move(hooks); style_ = style;
-        name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, host, nullptr, GetModuleHandleW(nullptr), nullptr);
-        hex_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, host, nullptr, GetModuleHandleW(nullptr), nullptr);
+        name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, host, nullptr, GetModuleHandleW(nullptr), nullptr); NativeUI::SelectAllOnCtrlA(name_);
+        hex_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 10, 10, host, nullptr, GetModuleHandleW(nullptr), nullptr); NativeUI::SelectAllOnCtrlA(hex_);
         for (HWND e : {name_, hex_}) if (e) { SetWindowSubclass(e, EditProc, 0, reinterpret_cast<DWORD_PTR>(this)); SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); }
         if (name_) SendMessageW(name_, EM_LIMITTEXT, 2 * Profiles::MaxNameLength, 0);   // UTF-16 units; the 32 characters are enforced in WM_CHAR
         if (hex_) SendMessageW(hex_, EM_LIMITTEXT, 7, 0);

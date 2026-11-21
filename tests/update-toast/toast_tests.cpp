@@ -24,7 +24,7 @@ static View V(Phase p, std::uint64_t received = 0, std::uint64_t total = 0, doub
 static void FrenchModelTests() {
     CHECK(I18n::Current() == I18n::Locale::Fr);
     auto a = Describe(V(Phase::Available));
-    CHECK(a.title == L"Nouvelle mise à jour disponible" && a.buttons.size() == 1 && a.buttons[0].action == Action::Download);
+    CHECK(a.title == L"Mise à jour disponible" && a.buttons.size() == 1 && a.buttons[0].action == Action::Download);
     auto d = Describe(V(Phase::Downloading, 52848230, 209715200, 14));
     CHECK(d.size == L"50,4/200,0 Mo" && d.eta == L"00:14");
     CHECK(Describe(V(Phase::Downloading, 3 * 1048576 + 300000, 0, -1)).size == L"3,3 Mo");
@@ -257,13 +257,19 @@ static void PainterTests(Painter& painter) {
         int lines = 0; const float w = painter.BalancedWidth(body, 235, &lines);
         CHECK(lines == 2 && w < 235 && painter.Lines(Role::Body, body, w) == 2);
     }
-    // Every title / label fits on one line down to the minimum card width: no clipped glyphs.
-    for (auto* title : {L"New update available", L"Downloading...", L"Ready for install", L"Update installed", L"Installing...", L"Update failed"}) {
-        const float room = ContentWidth(MinWidth) - Paper::titleIcon - Paper::titleGap;
-        CHECK(painter.NaturalWidth(Role::Title, title) <= room);
+    // Every title / label of every interface language fits on one line down to the minimum card width: no
+    // glyph past the padding (2026-11-17: « Nouvelle mise à jour disponible » ran into the card's right edge).
+    for (auto locale : {I18n::Locale::Fr, I18n::Locale::En}) {
+        using I18n::Id;
+        for (Id id : {Id::update_toast_available, Id::update_toast_downloading, Id::update_toast_ready, Id::update_toast_installed, Id::update_toast_installing, Id::update_toast_failed}) {
+            const float room = ContentWidth(MinWidth) - Paper::titleIcon - Paper::titleGap, w = painter.NaturalWidth(Role::Title, I18n::In(locale, id));
+            if (w > room) std::fprintf(stderr, "  title too wide: %.1f > %.1f DIP (id %d, %s)\n", w, room, (int)id, locale == I18n::Locale::Fr ? "fr" : "en");
+            CHECK(w <= room);
+        }
+        CHECK(painter.NaturalWidth(Role::Button, I18n::In(locale, Id::update_toast_restart_install)) <= ContentWidth(MinWidth) - 2 * Paper::buttonPadX);
+        for (Id id : {Id::update_toast_dismiss, Id::downloads_action_retry})
+            CHECK(painter.NaturalWidth(Role::Button, I18n::In(locale, id)) <= (ContentWidth(MinWidth) - 8) / 2 - 2 * Paper::buttonPadX);
     }
-    CHECK(painter.NaturalWidth(Role::Button, L"Restart and install") <= ContentWidth(MinWidth) - 2 * Paper::buttonPadX);
-    CHECK(painter.NaturalWidth(Role::Button, L"Dismiss") <= (ContentWidth(MinWidth) - 8) / 2 - 2 * Paper::buttonPadX);
     // Measured heights equal Paper's.
     CHECK(Near(painter.Measure(Describe(V(Phase::Available)), 269).height, Paper::available));
     CHECK(Near(painter.Measure(Describe(V(Phase::Ready)), 269).height, Paper::ready));

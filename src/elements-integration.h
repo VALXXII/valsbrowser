@@ -397,6 +397,26 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
     OP::Spec spec;spec.kind=OP::Kind::Permission;spec.origin=OriginLabel(uri);spec.permissions={(int)kind};spec.userInitiated=user!=FALSE;
     const std::wstring key=OriginOf(uri);Log(L"PERMISSION request kind="+std::to_wstring(kind)+L" "+key);
+    // Persistent storage only keeps the site's own data from automatic eviction when the disk is
+    // short: Chrome and Edge never ask about it, and x.com asked on every visit. User decision
+    // 2026-11-17: allowed silently, never saved in the profile (no lasting « autorisé » chip).
+    if((int)kind==SiteRequest::Kind::PersistentStorage){
+        args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+        {Com<ICoreWebView2PermissionRequestedEventArgs3> a3;if(SUCCEEDED(args->QueryInterface(IID_ICoreWebView2PermissionRequestedEventArgs3,(void**)&a3.p))&&a3.p)a3->put_SavesInProfile(FALSE);}
+        Log(L"PERMISSION kind=13 allowed silently");deferral->Complete();return S_OK;
+    }
+    // The same document asking again for a kind already answered (Meet re-requests camera and
+    // microphone on every device check): the earlier answer stands for this document, no new
+    // popover, nothing saved in the profile. A navigation clears it (ElementsNavigationStarting).
+    if(auto* st=SiteStateOf(t);st&&!st->demo&&st->requester==key){
+        const bool granted=SiteRequest::Has(st->g.granted,(int)kind),blocked=SiteRequest::Has(st->g.blocked,(int)kind);
+        if(granted||blocked){
+            if(granted){args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);Com<ICoreWebView2PermissionRequestedEventArgs3> a3;if(SUCCEEDED(args->QueryInterface(IID_ICoreWebView2PermissionRequestedEventArgs3,(void**)&a3.p))&&a3.p)a3->put_SavesInProfile(FALSE);}
+            else deny(false);
+            Log(L"PERMISSION kind="+std::to_wstring(kind)+(granted?L" reused allow":L" reused block"));
+            deferral->Complete();return S_OK;
+        }
+    }
     std::weak_ptr<Tab> weakTab=t;
     AskPrompt(std::move(spec),t,[args,deferral,deny,kind,weakTab,key](OP::Result& r){
         Com<ICoreWebView2PermissionRequestedEventArgs3> a3;const bool has3=SUCCEEDED(args->QueryInterface(IID_ICoreWebView2PermissionRequestedEventArgs3,(void**)&a3.p))&&a3.p;

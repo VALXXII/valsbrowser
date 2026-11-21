@@ -193,6 +193,7 @@ public:
         hr = write->CreateEllipsisTrimmingSign(formats[(int)Role::Button], &ellipsis);
         if (FAILED(hr)) return hr;
         DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+        formats[(int)Role::Title]->SetTrimming(&trim, ellipsis);   // a title never runs past the card padding
         formats[(int)Role::Button]->SetTrimming(&trim, ellipsis);
         formats[(int)Role::Stat]->SetTrimming(&trim, ellipsis);
         for (Glyph g : {Glyph::Info, Glyph::Download, Glyph::CheckCircle, Glyph::ArrowDown, Glyph::Timer}) {
@@ -299,7 +300,7 @@ public:
         Rect icon = g.icon; icon.top += dy; icon.bottom += dy;
         Icon(c.icon, icon, Paper::titleIcon, Paper::iconOpacity * a, lf.iconScale);
         // Title text box is the 14 DIP line box centred in the 16 DIP row.
-        Label(Role::Title, c.title, g.title.left, g.title.top + dy + (Paper::titleRow - Paper::titleLine) / 2, 4096, Paper::textOpacity * a);
+        Label(Role::Title, c.title, g.title.left, g.title.top + dy + (Paper::titleRow - Paper::titleLine) / 2, g.title.Width(), Paper::textOpacity * a);
         if (g.body.Height() > 0) {
             const float w = BalancedWidth(c.body, g.body.Width(), nullptr);
             Label(Role::Body, c.body, g.body.left, g.body.top + dy, w, Paper::textOpacity * a);
