@@ -161,7 +161,9 @@ def follow(label, act, edge="bottom"):
     m0 = mark(); act(); time.sleep(0.6); s.stop = True; regions.stop = True; s.join(); regions.join()
     y0, y1 = 0, pg[3] - pg[1]
     # R39b: the window's region never goes over the browser's bars (the page area's edges)
-    bars = sum(1 for _, r in regions.samples if isinstance(r, tuple) and len(r) == 4 and (r[1] < pg[1] - 1 or r[3] > pg[3] + 1))
+    t0 = regions.samples[0][0] if regions.samples else 0
+    over = [(round((t - t0) * 1000), r) for t, r in regions.samples if isinstance(r, tuple) and len(r) == 4 and (r[1] < pg[1] - 1 or r[3] > pg[3] + 1)]
+    bars = len(over)
     rows = []; blacks = 0
     for t, (fm, fb) in s.frames:
         rm = run_of(fm, 1, magenta, y0, y1); rb = run_of(fb, 1, dark, y0, y1)
@@ -189,7 +191,7 @@ def follow(label, act, edge="bottom"):
     lag = [l for l in C.log_text()[m0:].splitlines() if 'anchor: the page' in l]
     m = {'frames': len(s.frames), 'measured': len(seen), 'scrolled_px': (seen[0][0] - seen[-1][0]), 'medianStepPx': step_px,
          'maxGapChangePx': max((abs(d) for d in devs), default=0), 'imagesOff': len(bad), 'offValues': bad[:12],
-         'barChanged': bars, 'blackImages': blacks, 'hostLatency': lag[-2:]}
+         'barChanged': bars, 'overBars': over[:6], 'page': pg, 'blackImages': blacks, 'hostLatency': lag[-2:]}
     report['measures']['r39-' + label] = m
     moved = abs(m['scrolled_px']) > 20
     step(f'R39 · {label}: the bubble follows its element at every image (gap constant ±2 px, {len(seen)} images)', moved and not bad, m)
@@ -274,7 +276,7 @@ def close_menus():
 
 # ---------------------------------------------------------------- R40
 def drag(x0, y0, x1, y1, steps=24, every=0.016):
-    u32.SetCursorPos(x0, y0); time.sleep(0.1); mouse(0x0002); time.sleep(0.05)
+    V.front(); u32.SetCursorPos(x0, y0); time.sleep(0.1); mouse(0x0002); time.sleep(0.05)
     for i in range(1, steps + 1):
         u32.SetCursorPos(int(x0 + (x1 - x0) * i / steps), int(y0 + (y1 - y0) * i / steps)); time.sleep(every)
     time.sleep(0.05); mouse(0x0004); time.sleep(0.4)
@@ -362,6 +364,8 @@ def run_main():
         edge_frames('bord-bas', lambda: wheel(-2, 0.2), 'bottom')
         reset(1500 - 300); C.page("(function(){document.getElementById('qa-mag').style.top='320px';return 1})()"); time.sleep(0.4)
 
+        if __import__('os').environ.get('V5_ONLY') == 'r39':
+            raise SystemExit(0)
         # ---- R41: menu -> menu (the bubble back at its place)
         reset(0); time.sleep(0.4)
         morph('modele-vers-mode', lambda: C.click_panel('button.m'), lambda: C.click_panel('button.tb.mode'))
