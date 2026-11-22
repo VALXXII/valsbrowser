@@ -152,6 +152,29 @@ void SendLayout(bool openNow) {
     } else m.Set("mode", Str(std::string("panel")));
     Send("layout", std::move(m));
 }
+// R39 (Q: the page's scroll reached the host 85 ms late at worst): is the UI thread held up? While a bubble is open a
+// small thread posts a beat every 10 ms; a beat handled more than 40 ms late is logged with the last thing the chat ran.
+// R18: the click's early opening (its « selecting »), and the opening time by phase
+struct EarlyOpen { bool on = false; std::int64_t seq = -1; std::string conv; double at = 0; double clickLag = -1; } early;
+struct UiWatch { std::atomic<HWND> to{nullptr}; std::atomic<bool> started{false}; double worst = 0, since = 0; } uiWatch;
+const char* uiLast = "-";
+void UiWatchStart() {
+    if (uiWatch.started.exchange(true)) return;
+    std::thread([] {
+        for (;;) {
+            Sleep(10);
+            const HWND h = uiWatch.to.load(); if (!h) { Sleep(40); continue; }
+            FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
+            PostMessageW(h, WM_APP + 5, WPARAM(u.QuadPart & 0xFFFFFFFFFFFFull), 0);
+        }
+    }).detach();
+}
+void UiBeat(WPARAM sent) {
+    FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
+    const double late = double((u.QuadPart & 0xFFFFFFFFFFFFull) - (unsigned long long)sent) / 10000.0;
+    static double loggedAt = -1e9; const double now = Ann::NowMs();   // one line per hold-up (its late beats come together)
+    if (late > 40 && late < 60000 && now - loggedAt > 100) loggedAt = now, Diag(L"UI thread held up " + Ann::Ms(late) + L" ms (last: " + W(std::string(uiLast)) + L")");   // i18n-exempt: log detail
+}
 void PlaceBubble(bool scrolling);
 // R29: near the end of the document (the page cannot scroll further), a bubble that would be cut moves up once.
 void AskDocumentEnd() {
@@ -180,6 +203,7 @@ int PlannedHeightPx(float k) {
 }
 void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — the window only follows it, nothing else
     if (!bubble.hwnd || !bubble.open) return;
+    uiLast = scrolling ? "place (scroll)" : "place"; uiWatch.to = bubble.hwnd;
     const RECT a = PageArea(); const float k = Dpi();
     int w = bubble.w ? bubble.w : int(std::lround(BubbleWidthCss * k)), h = bubble.h ? bubble.h : int(std::lround(BubbleStartHeightCss * k));
     const ChatBubble::Rect area{a.left, a.top, a.right, a.bottom}; const int margin = int(std::lround(BubbleMarginCss * k)), gap = int(std::lround(BubbleGapCss * k));
@@ -433,6 +457,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (!followPositions.empty()) FollowLater();
         return 0;
     }
+    if (m == WM_APP + 5) { UiBeat(w); return 0; }   // R39: the UI thread watch
     if (m == WM_TIMER && w == 0xB3) { KeyboardTry(); return 0; }   // M4
     if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
@@ -581,6 +606,9 @@ void RevealBubble(const wchar_t* why) {
     ShowWindow(bubble.hwnd, SW_SHOWNA); SetForegroundWindow(bubble.hwnd);
     PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // the caret to the bubble
     Diag(std::wstring(L"bubble shown at its place ") + why + L" after " + Ann::Ms(Ann::NowMs() - bubble.openedAt) + L" ms");
+    if (early.conv == bubble.conv && early.at > 0 && bubble.openedAt - early.at < 2000)   // opening time, by phase (section.hero 150 to 167 ms for 150)
+        Diag(L"opening time: click -> host " + (early.clickLag >= 0 ? Ann::Ms(early.clickLag) : std::wstring(L"?")) + L" ms, host -> bubble opened " + Ann::Ms(bubble.openedAt - early.at) +
+             L" ms (conversation switch / reading), opened -> shown " + Ann::Ms(Ann::NowMs() - bubble.openedAt) + L" ms (the page's layout and acknowledgement)");   // i18n-exempt: log detail
 }
 // M6 / F5 (review R): a bubble closed with nothing sent (or the panel chosen) leaves no conversation tied to its element —
 // the panel showed it titled with the element, and a first message from the panel marked the element; its image is freed
@@ -598,7 +626,7 @@ void CloseBubble(bool focusPage) {
     if (!bubble.open) return;
     ForgetUnsent(bubble.conv);   // M6 / F5
     const bool wasAway = bubble.away;
-    bubble.open = false; bubble.away = false; bubble.closedAt = Ann::NowMs(); bubble.waitingAck = false; if (bubble.hwnd) KillTimer(bubble.hwnd, 0xB2);
+    bubble.open = false; bubble.away = false; bubble.closedAt = Ann::NowMs(); uiWatch.to = nullptr; bubble.waitingAck = false; if (bubble.hwnd) KillTimer(bubble.hwnd, 0xB2);
     const bool keepWarm = CommentLayout() && Ann::s.active && !privateWindow;   // R18: ready for the next click
     if (bubble.hwnd) { if (keepWarm) { SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE); if (wasAway) ShowWindow(bubble.hwnd, SW_SHOWNA); bubble.win = RECT{}; bubble.region = RECT{}; bubble.warm = true; } else ShowWindow(bubble.hwnd, SW_HIDE); }   // warm: shown, empty region
     if (!keepWarm) { view.Show(false); bubble.warm = false; if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr); }
@@ -627,6 +655,7 @@ void RevealCard() {
 }
 void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     if (!bubble.open) return;
+    uiLast = "bubble.size";
     if (!resized && bubble.resized) Diag(L"the bubble is back to its size (diff closed)");
     bubble.resized = resized;   // R40
     over = ChatBubble::Bounded(over);
@@ -661,6 +690,7 @@ bool BubbleBusy() {
 }
 void OnAnchor(const AH::Envelope& e) {
     if (!bubble.open) return;
+    uiLast = "anchor";
     if (e.gone) {   // C3 (review R): never closed while its conversation works or waits — kept at its last place
         if (BubbleBusy()) { if (!bubble.lost) { bubble.lost = true; Diag(L"the bubble's element is not found while its conversation works: the bubble stays at its last place"); } return; }   // i18n-exempt: log detail
         Diag(L"the bubble's element is no longer in the page, nothing runs: closed (its conversation is in the history)"); CloseBubble(false); return;   // i18n-exempt: log detail
@@ -725,18 +755,31 @@ void ShowAside(Convo c) {
 // E5 (review R): the click's early « selecting » and its full « select » both asked to read the same conversation from the
 // disk: two readings, two openings, the agent started then stopped. One reading per conversation; the latest « then » wins.
 std::string loadingConv; std::function<void()> loadingThen, loadingMissing;
-void ShowConversation(const std::string& id, std::function<void()> then, std::function<void()> missing = nullptr) {
-    if (id == convo.data.head.id) { if (aside.on) { ParkAside(); SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); } if (then) then(); return; }
+// Opening time (section.hero, 150 to 167 ms for 150): a bubble opened on a click (`forBubble`) sends the conversation's
+// state, thread and queue itself with its opening layout, and starts its agent once it is shown (FinishOpening). The switch
+// no longer sends them first: a long thread was serialized and rendered twice, and the agent started, before the opening.
+bool switchForBubble = false;
+void SwitchedShown(bool forBubble) {   // the engine's conversation changed: the page shows it (unless a bubble opening does)
+    if (forBubble && bubble.open) { RefreshWaitStrip(); return; }
+    SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); MaybeStartSession();
+}
+void ShowConversation(const std::string& id, std::function<void()> then, std::function<void()> missing = nullptr, bool forBubble = false) {
+    if (id == convo.data.head.id) {
+        if (aside.on) { ParkAside(); if (!forBubble) { SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); } }
+        if (then) then(); if (forBubble && !bubble.open) { SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); } return;
+    }
     if (aside.on && aside.c.data.head.id == id) { if (then) then(); return; }
     if (auto it = parked.find(id); it != parked.end()) {
         Convo c = std::move(it->second); parked.erase(it);
         if (turn.active) { ShowAside(std::move(c)); if (then) then(); return; }
         ParkAside(); DisposeSession(L"another element");   // i18n-exempt: log reason
-        convo = std::move(c); RebuildTurnMaps(); SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); MaybeStartSession();
-        if (then) then(); if (HasQueued(convo.data.head.id)) ProcessQueue(); return;
+        convo = std::move(c); RebuildTurnMaps();
+        if (!forBubble) SwitchedShown(false);
+        if (then) then(); if (forBubble) SwitchedShown(true);
+        if (HasQueued(convo.data.head.id)) ProcessQueue(); return;
     }
-    if (id == loadingConv) { loadingThen = std::move(then); loadingMissing = std::move(missing); Diag(L"conversation already being read: one reading (" + W(id) + L")"); return; }   // E5   // i18n-exempt: log detail
-    loadingConv = id; loadingThen = std::move(then); loadingMissing = std::move(missing);
+    if (id == loadingConv) { loadingThen = std::move(then); loadingMissing = std::move(missing); switchForBubble = forBubble; Diag(L"conversation already being read: one reading (" + W(id) + L")"); return; }   // E5   // i18n-exempt: log detail
+    loadingConv = id; loadingThen = std::move(then); loadingMissing = std::move(missing); switchForBubble = forBubble;
     auto out = std::make_shared<ChatStore::Conversation>(); auto ok = std::make_shared<bool>(false);
     Ann::Run([out, ok, id] { *ok = History().Load(id, *out); },
              [out, ok, id] {
@@ -752,9 +795,10 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
                  if (turn.active) { ShowAside(std::move(c)); if (then) then(); return; }
                  ParkAside(); DisposeSession(L"another element"); convo = std::move(c);   // i18n-exempt: log reason
                  if (AgentOf(convo.data.head.agentId)) agentId = convo.data.head.agentId;
-                 RebuildTurnMaps(); SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); MaybeStartSession();
+                 const bool forBubble = switchForBubble; switchForBubble = false;
+                 RebuildTurnMaps(); if (!forBubble) SwitchedShown(false);
                  Diag(L"conversation of an element reopened: " + W(convo.data.head.id));
-                 if (then) then();
+                 if (then) then(); if (forBubble) SwitchedShown(true);
              });
 }
 // A new conversation for an element (the engine's when nothing runs, else aside: its first message will wait).
@@ -878,7 +922,7 @@ void LauncherRefresh() {
 // whose description takes longer. The bubble opens on it at once — on the element's conversation, or a new one — and the
 // « select » that follows (same seq) only completes it (label, image, source). A « select » that never comes leaves a
 // working bubble, anchored by the selector.
-struct EarlyOpen { bool on = false; std::int64_t seq = -1; std::string conv; double at = 0; } early;
+// (EarlyOpen: declared with the UI thread watch, above — the opening time reads it)
 std::string LabelOfSelector(const std::string& s) {
     std::string last = s; if (const auto p = s.find_last_of(" >"); p != std::string::npos) last = s.substr(p + 1);
     if (const auto c = last.find(':'); c != std::string::npos) last = last.substr(0, c);
@@ -892,14 +936,14 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
     const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);
-    early = EarlyOpen{true, env.serial, "", Ann::NowMs()};
+    early = EarlyOpen{true, env.serial, "", Ann::NowMs()}; UiWatchStart();
     Diag(L"the click's « selecting » " + std::to_wstring(env.serial) + L": " + W(env.selector) + L" (" + std::to_wstring(int(env.w)) + L"x" + std::to_wstring(int(env.h)) + L")" +
          (env.px >= 0 ? L" clicked at " + std::to_wstring(int(env.px)) + L"," + std::to_wstring(int(env.py)) : std::wstring()));   // monkey: what the page sent   // i18n-exempt: log detail
     if (env.at > 0) { FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;   // R18: the click (page clock) -> here
-        const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; Diag(L"the click's « selecting » reached the host " + Ann::Ms(std::max(0.0, now - env.at)) + L" ms after the click"); }
+        const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; early.clickLag = std::max(0.0, now - env.at); Diag(L"the click's « selecting » reached the host " + Ann::Ms(early.clickLag) + L" ms after the click"); }
     for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == env.selector) {   // its conversation
         const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
-        ShowConversation(id, [id, element, l] { OpenBubble(id, &element, ShownSelector(id), false, l); });
+        ShowConversation(id, [id, element, l] { OpenBubble(id, &element, ShownSelector(id), false, l); }, nullptr, true);   // opening time: one sending, with the opening
         Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
         return true;
     }

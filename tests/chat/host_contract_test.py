@@ -271,6 +271,12 @@ check(fl.find('DwmFlush()') >= 0 and fl.find('FollowSampleAtComposition) gen = f
 pb = block_after(comment, 'void PlaceBubble(bool scrolling) {')
 check('ChatBubble::ScrollFrame(' in pb and 'a scroll step changed the bubble' in pb, 'R39: a scroll step goes through ScrollFrame (a move only), any other change is logged')
 
+# opening time (section.hero 150 to 167 ms): a click's bubble sends its conversation once, with its opening; diagnostics
+sc = block_after(comment, 'void ShowConversation(')
+oe = block_after(comment, 'bool OpenEarly(')
+check('if (!forBubble) SwitchedShown(false);' in sc and ', nullptr, true);' in oe, 'opening time: the switch does not send the thread before the opening does (one sending)')
+check('opening time: click -> host' in block_after(comment, 'void RevealBubble(const wchar_t* why) {') and 'UI thread held up' in comment, 'diagnostics: the opening by phase, the UI thread held up while a bubble is open')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
