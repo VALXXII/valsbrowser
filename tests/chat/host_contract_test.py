@@ -233,7 +233,7 @@ check('SendState()' in block_after(comment, 'void ForgetUnsent('), 'M6 #86: the 
 
 # Placement = Paper (Q's invariant: +12 / -4 at a side, 12 px inside a corner; never slid to keep room)
 bub = code('chat-bubble.h'); place = bub[bub.find('inline Placement Place('):bub.find('inline bool SentItem(')]   # (its signature has a « {} » default)
-check('element.top - lead' in place and 'element.right + gap' in place and 'whole(p.rect)' in place and place.count('Clamp(') == 2, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
+check('element.top - lead' in place and 'element.right + gap' in place and 'whole(planned(p))' in place and place.count('Clamp(') == 2, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
 consts = code('chat-comment.h')
 check('BubbleGapCss = 12' in consts and 'BubbleLeadCss = 4' in consts, 'Paper: gap 12, lead 4 (CSS px)')
 check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'R29 (the user): natural height, never bounded by the room under the fixed edge')
@@ -245,6 +245,13 @@ check('RevealCardSoon()' in block_after(code('chat-host.h'), 'void SendError('),
 rv = block_after(comment, 'void RevealCard() {')
 check('RevealScrollCss(' in rv and 'scrollBy' in rv and 'Reduced()' in rv and 'lastScrollAt' in rv, 'R47: the page scrolls by what is missing, softly (or at once with reduced motion), never while the user scrolls')
 check('RevealCard()' in block_after(comment, 'void OnBubbleSize('), 'R47: checked at the bubble\'s next size (the card is in it)')
+
+# Decision: the opening height = the conversation's last height (saved with it), else 520 when it has content
+pl2 = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+ph = block_after(comment, 'int PlannedHeightPx(float k) {')
+check('PlannedHeightPx(' in pl2 and 'bubbleHeight' in ph and 'ShownItems()' in ph, 'decision: PlaceBubble plans with the conversation\'s last height (else 520 with content)')
+check('bubbleHeight' in block_after(comment, 'void OnBubbleSize('), 'decision: the height of the conversation is kept with it')
+check('PanelKeyboardBack(' in block_after(comment, 'void CALLBACK ForegroundChanged('), 'M4 panel (2): the keyboard back to the panel is delayed and repeated (after a chip)')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

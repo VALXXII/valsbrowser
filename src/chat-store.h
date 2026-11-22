@@ -134,6 +134,7 @@ struct Header {
     std::string id, origin, siteLabel, title, agentId, sessionId, source;   // source: "Checkout.astro:42" of the first aimed element
     std::wstring folder; std::int64_t createdAt = 0, updatedAt = 0; int promptVersion = 0;
     std::int64_t usedTokens = 0, windowTokens = 0;   // last context usage the agent reported (the panel's gauge)
+    int bubbleHeight = 0;   // its bubble's last height (CSS px): the height it will have at its next opening (R44)
     // Comment mode: the element this conversation belongs to (empty selector: a conversation of the panel). page: the
     // page's URL without its fragment; selector: unique in that page when it was aimed; label « button.btn-primary »;
     // anchorSource: its file:line when known (« index.html:25 »).
@@ -146,6 +147,7 @@ struct Header {
         SJ::Value o = SJ::Value::Obj(); o.Set("id", SJ::Value::Str(id)); o.Set("origin", SJ::Value::Str(origin)); o.Set("siteLabel", SJ::Value::Str(siteLabel));
         o.Set("title", SJ::Value::Str(title)); o.Set("agentId", SJ::Value::Str(agentId)); o.Set("sessionId", SJ::Value::Str(sessionId)); o.Set("source", SJ::Value::Str(source));
         o.Set("folder", SJ::Value::Str(Utf8(folder))); o.Set("createdAt", SJ::Value::Int(createdAt)); o.Set("updatedAt", SJ::Value::Int(updatedAt)); o.Set("promptVersion", SJ::Value::Int(promptVersion));
+        if (bubbleHeight > 0) o.Set("bubbleHeight", SJ::Value::Int(bubbleHeight));
         if (windowTokens > 0) { o.Set("usedTokens", SJ::Value::Int(usedTokens)); o.Set("windowTokens", SJ::Value::Int(windowTokens)); }
         if (Anchored()) { SJ::Value a = SJ::Value::Obj(); a.Set("selector", SJ::Value::Str(anchorSelector)); if (!anchorKey.empty()) a.Set("key", SJ::Value::Str(anchorKey)); a.Set("label", SJ::Value::Str(anchorLabel)); a.Set("page", SJ::Value::Str(anchorPage));
                           if (!anchorSource.empty()) a.Set("source", SJ::Value::Str(anchorSource)); if (!sent) a.Set("sent", SJ::Value::Bool(false)); o.Set("anchor", std::move(a)); }
@@ -157,6 +159,7 @@ struct Header {
         h.origin = Str(v, "origin", 300); h.siteLabel = Str(v, "siteLabel", 300); h.title = Str(v, "title", 400); h.agentId = Str(v, "agentId", 128);
         h.sessionId = Str(v, "sessionId", 512); h.source = Str(v, "source", 300); h.folder = Wide(Str(v, "folder", 2048));
         h.createdAt = Int(v, "createdAt"); h.updatedAt = Int(v, "updatedAt"); h.promptVersion = int(Int(v, "promptVersion"));
+        h.bubbleHeight = int(std::max<std::int64_t>(0, std::min<std::int64_t>(2000, Int(v, "bubbleHeight"))));
         h.usedTokens = std::max<std::int64_t>(0, Int(v, "usedTokens")); h.windowTokens = std::max<std::int64_t>(0, Int(v, "windowTokens"));
         h.sent = true;
         if (const auto* a = v.Get("anchor"); a && a->IsObject()) {

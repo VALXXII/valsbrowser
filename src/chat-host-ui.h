@@ -407,6 +407,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
         if (w == FolderTimer) { KillTimer(h, FolderTimer); AskPageMarks(folderMarksOrigin, folderMarksTries); return 0; }
+        if (w == PanelFocusTimer) { void PanelKeyboardTry(); PanelKeyboardTry(); return 0; }   // M4 panel (2)
         if (w == HeldTimer) { KillTimer(h, HeldTimer); ReleaseHeld(); return 0; }   // M14: the element never came: the message leaves without it
         if (w == StopTimer) { KillTimer(h, StopTimer); if (turn.active && turn.cancelled) { DisposeSession(L"stop not answered"); if (turn.active) FinishTurn("cancelled"); } return 0; }   // M1   // i18n-exempt: log reason
         if (w == HoverTimer) { if ((!Open() && !BubbleOpen()) || !panelReady) { KillTimer(h, HoverTimer); return 0; } if (!PointerInPanel()) { KillTimer(h, HoverTimer); Send("pointer.leave"); Diag(L"pointer left the panel: hover tooltip closed"); } return 0; }

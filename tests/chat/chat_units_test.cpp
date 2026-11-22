@@ -514,10 +514,10 @@ static void TestBubble() {
         const Rect area{3, 141, 1840, 931};
         const int W = px(320), h = px(104), gap = px(12), lead = px(4), corner = px(12), margin = px(12);
         const Rect btn{63, 556, 327, 625};   // a.btn-primary
-        const auto a = Place(btn, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        const auto a = Place(btn, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
         Check(a.side == Side::Right && a.rect.left == btn.right + gap && a.rect.top == btn.top - lead, "Paper: a.btn-primary — at its right, +12, its top at the element's top - 4 (was -361.6)");
         const Rect title{63, 291, 624, 546};   // h1.hero-title
-        const auto t = Place(title, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        const auto t = Place(title, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
         Check(t.side == Side::Right && t.rect.left == title.right + gap && t.rect.top == title.top - lead, "Paper: h1.hero-title — +12, top -4 (was -84.8)");
         const Rect plans{65, 250, 1742, 805};   // div.plans, page-wide: no side has room (sides, below, above)
         const auto pl = Place(plans, W, h, area, gap, margin, Side::Right, lead, 0, Point{200, 760, true}, corner);   // a new bubble (no content yet)
@@ -529,10 +529,10 @@ static void TestBubble() {
         const auto grown = Anchored(AnchorOf(pl, plans), plans, W, px(400));
         Check(grown.bottom == pl.rect.bottom && grown.top == pl.rect.bottom - px(400), "R29: then it grows up from its fixed bottom");
         const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: not slid up — the next side where it is whole
-        const auto lo = Place(low, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        const auto lo = Place(low, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
         Check(lo.side == Side::Above && lo.rect.bottom == low.top - gap && lo.rect.left == low.left - lead, "Paper: no room at its sides nor below — above it, -12, left -4, never slid");
         const Rect tall{0, 0, 1840, 3000};   // taller than the window: inside its visible part, top right corner (no click)
-        const auto d = Place(tall, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        const auto d = Place(tall, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
         Check(d.side == Side::Inside && d.rect.right == area.right - corner && d.rect.top == area.top + corner, "Paper: an element taller than the window — inside its visible part, 12 px from the corner");
         Check(FullyVisible({10, 150, 330, 254}, area) && !FullyVisible({10, 900, 330, 1000}, area) && !FullyVisible({}, area), "whole in the visible area or not"); }
     // E2 / M9: every new session gets the choice just made, else the one remembered for the site, else the agent's own
@@ -609,6 +609,33 @@ static void TestBubble() {
     // R47 (coordinator): how far the site's page scrolls so the bubble's last card (its buttons) is on screen — once, by what is missing
     {   Check(RevealScrollCss(1035, 931, 15, 1.25f, false) == 96 && RevealScrollCss(900, 931, 15, 1.25f, false) == 0, "R47: by what is missing to show the bubble's bottom (12 px from the edge), nothing when it is on screen");
         Check(RevealScrollCss(1035, 931, 15, 1.25f, true) == 0, "R47: never while the user scrolls"); }
+    // Decision (Q on 0.3.536, 1470 x 666 CSS, dpr 1.25): at its opening (R44) a bubble with a conversation is whole at the height it
+    // WILL have (its last height, else 520); Paper's exact positions; then R29
+    {   const float k = 1.25f; auto px = [&](int c) { return int(c * k + .5f); };
+        const Rect area{3, 141, 1840, 973};
+        const int W = px(320), h = px(104), H = px(520), gap = px(12), lead = px(4), corner = px(12);
+        auto whole = [&](const Placement& p, int hh) { const Rect r = p.fromBottom ? Rect{p.rect.left, p.rect.bottom - hh, p.rect.right, p.rect.bottom} : Rect{p.rect.left, p.rect.top, p.rect.right, p.rect.top + hh}; return FullyVisible(r, area); };
+        const Rect btn{63, 556, 327, 625};   // a.btn-primary with its conversation (it opened at [308,712,708,1362] — past 931)
+        const auto a = Place(btn, W, h, area, gap, 0, Side::Right, lead, H, Point{}, corner);
+        Check(whole(a, H) && a.rect.H() == h, "decision: a.btn-primary with a conversation — whole at the height it will have (520), shown at its current height");
+        const auto a2 = Place(btn, W, h, area, gap, 0, Side::Right, lead, px(200), Point{}, corner);   // its last height: 200
+        Check(a2.side == Side::Right && a2.rect.top == btn.top - lead && a2.rect.left == btn.right + gap && whole(a2, px(200)), "decision: its last known height fits at its right — Paper exactly (+12, -4)");
+        const Rect plans{65, 410, 1742, 785};   // div.plans with a conversation
+        const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
+        Check(whole(pl, H), "decision: div.plans with a conversation — whole with 520 at its opening");
+        const auto ab = Place({63, 840, 327, 900}, W, h, area, gap, 0, Side::Right, lead, px(300), Point{}, corner);
+        Check(ab.side == Side::Above && ab.fromBottom && ab.rect.bottom == 840 - gap && ab.rect.left == 63 - lead && whole(ab, px(300)), "decision: above — its bottom 12 px above the element, growing up, left -4"); }
+    // R47 after the page scrolled (decision): the card's buttons are clickable — the carried window's region, clipped to the page
+    // area, covers the bubble's bottom
+    {   const Rect screen{0, 0, 1840, 1000}, area{3, 141, 1840, 973}; const float k = 1.25f; const Edges none{0, 0, 0, 0};
+        const Rect before{78, 701, 478, 1035};   // its bottom (the « Autoriser » row) 62 px past the visible area
+        const auto f0 = FrameBubble(before, int(520 * k), false, screen, k, none);
+        const int s = RevealScrollCss(before.bottom, area.bottom, 15, k, false);
+        const int moved = int(s * k + .5f); const Rect after{78, 701 - moved, 478, 1035 - moved};
+        const auto f1 = Reframe(after, f0.inset, f0.window.W(), f0.window.H(), k, none);
+        const Rect shown = Clip(f1.region, {area.left - f1.window.left, area.top - f1.window.top, area.right - f1.window.left, area.bottom - f1.window.top});
+        Check(after.bottom <= area.bottom && shown.bottom + f1.window.top >= after.bottom - 1 && shown.top + f1.window.top <= after.bottom - 40,
+              "R47: after the soft scroll the region shows the bubble's bottom (the « Autoriser » row is clickable)"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};

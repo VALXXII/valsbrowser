@@ -168,6 +168,14 @@ void AskDocumentEnd() {
     if (FAILED(t->view->ExecuteScript(L"(function(){var s=document.scrollingElement||document.documentElement;return s.scrollHeight-innerHeight-scrollY<4})()", cb))) {}
     cb->Release();
 }
+// Decision (R44 at the opening): the height the bubble WILL have — its conversation's last height (saved with it), else 520
+// when the conversation has content, else its current one (a new conversation: the composer)
+int PlannedHeightPx(float k) {
+    const auto& head = aside.on ? aside.c.data.head : convo.data.head;
+    if (head.id == bubble.conv && head.bubbleHeight > 0) return int(std::lround(std::min(head.bubbleHeight, BubbleMaxHeightCss) * k));
+    if (const auto* h = AnchoredOf(bubble.conv); h && h->bubbleHeight > 0) return int(std::lround(std::min(h->bubbleHeight, BubbleMaxHeightCss) * k));
+    return ShownItems().empty() ? 0 : int(std::lround(BubbleMaxHeightCss * k));
+}
 void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — the window only follows it, nothing else
     if (!bubble.hwnd || !bubble.open) return;
     const RECT a = PageArea(); const float k = Dpi();
@@ -191,7 +199,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor; then they never change
         // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
         p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
-                              ShownItems().empty() ? 0 : int(std::lround(BubbleMaxHeightCss * k)), bubble.click, int(std::lround(BubbleGapCss * k)));   // r44: a conversation with content may take 520 (inside: its corner where that fits)
+                              PlannedHeightPx(k), bubble.click, int(std::lround(BubbleGapCss * k)));   // r44: a conversation with content may take 520 (inside: its corner where that fits)
         if (bubble.known) {
             bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true; bubble.anchorArea = a;
             Diag(std::wstring(L"bubble placed ") + W(std::string(p.why)) + L" (element " + std::to_wstring(er.W()) + L"x" + std::to_wstring(er.H()) + L", visible area " + std::to_wstring(area.W()) + L"x" + std::to_wstring(area.H()) + L")");   // i18n-exempt: log detail
@@ -348,15 +356,26 @@ void KeyboardTry() {
     } else SetTimer(bubble.hwnd, 0xB3, 60, nullptr);
 }
 bool MouseDown() { return (GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON) | GetAsyncKeyState(VK_MBUTTON)) & 0x8000; }
+// M4 panel, 2nd part (Q): after a chip (the site's page had the keyboard), another application, back — the browser's own
+// activation gives the keyboard back to the site's page after the hook: the panel's composer gets it at 120 ms and again at
+// 320 ms (unless a mouse button is down: a click in the page is the user's)
+int panelKeyboardTries = 0;
+void PanelKeyboardTry() {
+    if (!post || !Open() || bubble.open || !panelReady || MouseDown()) { if (post) KillTimer(post, PanelFocusTimer); panelKeyboardTries = 0; return; }
+    view.Focus(); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f));
+    if (--panelKeyboardTries <= 0) { KillTimer(post, PanelFocusTimer); Diag(L"the keyboard is in the panel's composer"); } else SetTimer(post, PanelFocusTimer, 200, nullptr);   // i18n-exempt: log detail
+}
+void PanelKeyboardBack() {
+    if (!post) return;
+    panelKeyboardTries = 2; SetTimer(post, PanelFocusTimer, 120, nullptr);
+    Diag(L"the browser is back in front: the keyboard goes back to the panel");   // i18n-exempt: log detail
+}
 void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD, DWORD) {
     static bool lastOurs = true;   // the previous foreground window was one of this browser's
     DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
     const bool ours = fg && OursWindow(fg), cameBack = ours && !lastOurs; if (fg) lastOurs = ours;
     // M4, panel (Q's monkey): « Chat à droite » open, back from another application (not a click): its composer gets the keys
-    if (cameBack && Open() && !bubble.open && panelReady && !MouseDown()) {
-        view.Focus(); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f));
-        Diag(L"the browser is back in front: the keyboard goes back to the panel");   // i18n-exempt: log detail
-    }
+    if (cameBack && Open() && !bubble.open && panelReady && !MouseDown()) PanelKeyboardBack();   // M4 panel (1 and 2)
     if (!bubble.open || !fg || !bubble.hwnd) return;
     {   wchar_t cls[64] = L""; GetClassNameW(fg, cls, 64); Diag(std::wstring(L"foreground: ") + cls + (ours ? (cameBack ? L" (the browser, back)" : L" (the browser)") : L" (another application)") + (bubble.away ? L", bubble hidden" : L"") + (MouseDown() ? L", mouse button down" : L"")); }   // case 3 diagnostics   // i18n-exempt: log detail
     if (ours) {
@@ -614,6 +633,8 @@ void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
         bubble.w = int(std::lround(std::clamp(wCss, BubbleWidthCss, std::max(BubbleWidthCss, maxW)) * k)); bubble.h = int(std::lround(std::clamp(hCss, std::max(40, bubble.baseHCss), std::max(40, maxH)) * k));
     } else {
         bubble.baseHCss = std::clamp(hCss, 40, BubbleMaxHeightCss);
+        {   auto& head = aside.on ? aside.c.data.head : convo.data.head;   // decision: the conversation keeps its bubble's height (its next opening plans with it)
+            if (head.id == bubble.conv && !ShownItems().empty()) head.bubbleHeight = bubble.baseHCss; }
         bubble.w = int(std::lround(std::clamp(wCss, 200, BubbleWidthCss) * k)); bubble.h = int(std::lround(std::clamp(hCss, 40, BubbleMaxHeightCss) * k));
     }
     // r44 (Q's real window, section.hero with a long conversation): the side was chosen with the opening's small height; the
