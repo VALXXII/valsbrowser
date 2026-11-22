@@ -423,6 +423,7 @@
     if (picked.length) msg.annotations = { batchId: S.batch.batchId, ids: picked.map((it) => it.id) };
     post("send", msg);
     if (BUB()) drafts.delete("b:el:" + (S.lay.elementKey || S.lay.element || ""));
+    if (BUB() && text) outboxSet(text);
     S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu();
     if (S.batch) { S.batch = null; renderBatch(); }
     updateSend();
@@ -1378,7 +1379,7 @@
     const p = S.perms[0], s = activeStrip(), running = !!S.st.running, none = !log.firstChild;
     const err = !running && !p ? S.berr : null;
     const off = !!(S.st.disabledReason || (s && s.tone === "danger"));
-    const key = JSON.stringify(["b", p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason, running, err && err.id, !!S.bview, none]);
+    const key = JSON.stringify(["b", p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason, running, err && err.id, !!S.bview, none, S.outbox && S.outbox.shown && S.outbox.text]);
     if (!force && key === lastDockKey) { composer.classList.toggle("disabled", off); updateSend(); return; }
     lastDockKey = key;
     const a = document.activeElement;
@@ -1389,6 +1390,7 @@
     if (p) { dock.appendChild(bPerm(p)); ruleEl.hidden = none || !!S.bview; return; }
     if (err) { dock.appendChild(bErrFoot(err)); ruleEl.hidden = true; return; }
     for (const q of S.queue) dock.appendChild(bQueued(q));
+    if (S.outbox && S.outbox.shown) dock.appendChild(bQueued({ text: S.outbox.text, local: true }));
     if (s) dock.appendChild(stripNode(s));
     dock.appendChild(composer);
     composer.classList.toggle("disabled", off);
@@ -1447,12 +1449,28 @@
       renderDock(true); placeholder(); } }, act ? act.label : "Réessayer");
     return h("div", { class: "b-errft", role: "group", "aria-label": "Après l'erreur" }, cancel, retry);
   }
+  // Monkey 3 #63/#70: what the bubble sent stays seen (dimmed, like a waiting message) until the host takes it — its echo
+  // (message.user) or its queue (§19.6, which then shows it with « Commencera après… » and « × »). Shown only after 150 ms:
+  // an ordinary send is echoed sooner and never flickers. Ends with the echo, the queue that holds it, an error, another element.
+  let outboxTimer = 0;
+  function outboxSet(text) {
+    clearTimeout(outboxTimer);
+    S.outbox = { text, shown: false };
+    outboxTimer = setTimeout(() => { if (S.outbox) { S.outbox.shown = true; renderDock(); } }, 150);
+  }
+  function outboxEnd(text) {
+    if (!S.outbox || (text != null && text.trim() !== S.outbox.text.trim())) return;
+    clearTimeout(outboxTimer); const was = S.outbox.shown; S.outbox = null;
+    if (was) renderDock();
+  }
   // One agent turn at a time: a request written in another element's bubble waits (B 1.8 `queue.items[].after`).
   function bQueued(q) {
+    if (q.local) return h("div", { class: "bq", role: "group", "aria-label": "Message envoyé" }, h("div", { class: "bubble pending", text: q.text }));
     return h("div", { class: "bq", role: "group", "aria-label": "Message en attente" },
       h("div", { class: "bubble pending", text: q.text }),
       h("div", { class: "bq-cap" },
-        h("span", { class: "tx" }, q.after ? ["Commencera après le travail en cours sur ", h("span", { class: "el", text: q.after })] : "En file : commencera après le travail en cours"),
+        // H1 c342b23: « held » = kept the time the element's image gets ready, then sent
+        h("span", { class: "tx" }, q.after ? ["Commencera après le travail en cours sur ", h("span", { class: "el", text: q.after })] : q.id === "held" ? "Envoi dans un instant…" : "En file : commencera après le travail en cours"),
         h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ce message de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
   }
 
@@ -1762,6 +1780,7 @@
   }
 
   function onUser(m) {
+    outboxEnd(m.text);   // also in a replay: the host may redraw the thread that already holds it
     const at = Date.parse(m.at) || Date.now();
     if (!S.lastAt || new Date(at).toDateString() !== new Date(S.lastAt).toDateString() || at - S.lastAt > 30 * 60 * 1000) add(h("div", { class: "date", text: dayLabel(at) }), false);
     S.lastAt = at;
@@ -2533,6 +2552,7 @@
   }
 
   function onError(m) {
+    outboxEnd();
     if (m.scope === "composer") {
       S.strips.set("err:" + m.id, { id: "err:" + m.id, errorId: m.id, tone: "danger", text: m.message || m.title, action: (m.actions || [])[0] });
       renderDock(true);
@@ -2825,6 +2845,7 @@
       S.lay.maxW = Math.max(240, Math.min(320, Number.isFinite(m.maxWidth) && m.maxWidth > 0 ? Math.floor(m.maxWidth) : 320));   // R20: 320 px (user's decision over Paper's 305)
       S.lay.maxH = Math.max(104, Number.isFinite(m.maxHeight) && m.maxHeight > 0 ? Math.floor(m.maxHeight) : 520);
       S.lay.side = ["right", "left", "below", "above", "inside"].includes(m.side) ? m.side : "right";
+      if (m.mode !== "bubble" || (isStr(m.elementKey, 1000) ? m.elementKey : "") !== S.lay.elementKey || (isStr(m.element, 300) ? m.element : "") !== S.lay.element) outboxEnd();
       S.lay.element = isStr(m.element, 300) ? m.element : "";
       S.lay.elementKey = isStr(m.elementKey, 1000) ? m.elementKey : "";
       if (m.room && typeof m.room === "object") { const r = {}; for (const k of ["top", "right", "bottom", "left"]) if (Number.isFinite(m.room[k])) r[k] = Math.max(0, Math.floor(m.room[k])); S.lay.room = r; }
@@ -2896,7 +2917,11 @@
       renderDock();
       const s = S.strips.get(m.id); if (s && s.tone === "danger") shout(s.text);
     },
-    queue(m) { S.queue = m.items.filter((q) => q && ID.test(q.id) && isStr(q.text)).map((q) => ({ id: q.id, text: q.text, after: isStr(q.after, 300) ? q.after : "" })); renderDock(); },
+    queue(m) {
+      S.queue = m.items.filter((q) => q && ID.test(q.id) && isStr(q.text)).map((q) => ({ id: q.id, text: q.text, after: isStr(q.after, 300) ? q.after : "" }));
+      for (const q of S.queue) outboxEnd(q.text);
+      renderDock();
+    },
     history(m) { S.history = { items: m.items.filter((i) => i && ID.test(i.id) && isStr(i.title, 300)), query: m.query }; if (S.historyOpen) renderHistoryList(); },
     "element.attached"(m) {
       if (BUB()) return;   // cv4 R35 / R7: the bubble's element is implicit — a chip never lands in a bubble

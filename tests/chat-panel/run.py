@@ -646,6 +646,43 @@ try:
         check(cdp.js("V('.strip')") == 0 and cdp.js("V('.bq-cap')") == 1, "bubble (queue): the host's `wait` strip, which says the same sentence, is not shown twice")
         click(".bq-cap .icon-btn")
         check(q == ["Mets ce titre en gras", "Commencera après le travail en cours sur button.btn-primary", 1] and "queue.remove:q1" in posted(), "bubble (queue): a request written during another element's turn waits, with its discreet line and « × »", str(q))
+        # monkey seed 3 #63/#70: in the bubble of an element that already has an exchange, the user writes and presses Entrée while
+        # another element's turn runs; the host queues it (queue.items[].after) — the waiting message is seen AT ONCE in this
+        # bubble, whole, inside the visible surface: dimmed user bubble, « Commencera après le travail en cours sur … », « × »
+        Q63_JS = """(()=>{const a=document.getElementById('app').getBoundingClientRect(),R=window.__region||{x:0,y:0,width:1e5,height:1e5};
+          const inside=(n)=>{if(!n||!n.getClientRects().length)return false;const r=n.getBoundingClientRect();const vis=(()=>{let p=n;while(p&&p!==document.body){const cs=getComputedStyle(p);if(cs.visibility==='hidden'||cs.display==='none'||+cs.opacity===0)return false;p=p.parentElement}return true})();
+            return vis&&r.width>0&&r.height>0&&r.top>=a.top-.5&&r.bottom<=a.bottom+.5&&r.left>=a.left-.5&&r.right<=a.right+.5&&r.top>=R.y-.5&&r.bottom<=R.y+R.height+.5};
+          const b=document.querySelector('.bq .bubble'),c=document.querySelector('.bq-cap .tx'),x=document.querySelector('.bq-cap .icon-btn');
+          return {text:b&&b.textContent,cap:c&&c.textContent,bubble:inside(b),cap_in:inside(c),x:inside(x),strip:V('.strip'),users:document.querySelectorAll('.um').length}})()"""
+        load("c-3-termine")
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="vrai-code jt3x6"); key("Enter"); time.sleep(.05)
+        sent = [m for m in cdp.js("window.__posted") if m["type"] == "send"]
+        host({"type": "queue", "items": [{"id": "q_a1", "text": "vrai-code jt3x6", "after": "p.hero-text"}]})
+        host({"type": "strip", "id": "wait", "tone": "neutral", "text": "Commencera après le travail en cours sur p.hero-text."})
+        time.sleep(.4)
+        q63 = cdp.js(Q63_JS)
+        check(len(sent) == 1 and sent[0]["text"] == "vrai-code jt3x6" and q63 == {"text": "vrai-code jt3x6", "cap": "Commencera après le travail en cours sur p.hero-text", "bubble": True, "cap_in": True, "x": True, "strip": 0, "users": 1},
+              "monkey 3 #63 (bubble with an exchange): a message sent during another element's turn is seen at once in this bubble — waiting bubble, « Commencera après… », « × », all inside the surface", json.dumps(q63, ensure_ascii=False))
+        # #63/#70 (the build's case: the host answered nothing for seconds while it handed the agent to the next element): the
+        # message sent from the bubble stays seen, dimmed, until the host echoes it (message.user) or queues it — then one only
+        load("c-3-termine")
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="vrai-code jt3x9"); key("Enter"); time.sleep(.4)
+        o1 = cdp.js(Q63_JS)
+        host({"type": "queue", "items": [{"id": "q_a2", "text": "vrai-code jt3x9", "after": "p.hero-text"}]}); time.sleep(.1)
+        o2 = cdp.js("[document.querySelectorAll('.bq').length, document.querySelector('.bq-cap .tx').textContent]")
+        host({"type": "queue", "items": []}); host({"type": "message.user", "id": "u9", "text": "vrai-code jt3x9", "at": "2026-11-22T10:00:00Z", "elements": []}); time.sleep(.1)
+        o3 = cdp.js("[document.querySelectorAll('.bq').length, document.querySelectorAll('.um').length]")
+        check(o1["text"] == "vrai-code jt3x9" and o1["bubble"] and o1["users"] == 1 and o2 == [1, "Commencera après le travail en cours sur p.hero-text"] and o3 == [0, 2],
+              "monkey 3 #70: before any answer of the host the sent message is already seen, dimmed, in the bubble; the host's queue then replaces it (one only), its echo ends it", json.dumps([o1, o2, o3], ensure_ascii=False))
+        # H1 c342b23: a message held while the element's image gets ready comes as the queue item « held » (no after): the
+        # same waiting bubble, the discreet « Envoi dans un instant… », « × » = queue.remove held; the next queue shows the others
+        load("c-3-termine")
+        host({"type": "queue", "items": [{"id": "held", "text": "vrai-code jt3x7"}, {"id": "q_b1", "text": "et le sous-titre", "after": "p.hero-text"}]}); time.sleep(.1)
+        hq = cdp.js(Q63_JS)
+        caps = cdp.js("Array.from(document.querySelectorAll('.bq-cap .tx')).map(n=>n.textContent)")
+        click(".bq-cap .icon-btn")
+        check(hq["text"] == "vrai-code jt3x7" and hq["bubble"] and hq["cap_in"] and hq["x"] and caps == ["Envoi dans un instant…", "Commencera après le travail en cours sur p.hero-text"] and "queue.remove:held" in posted(),
+              "H1 queue « held »: a message held for the element's image waits in the bubble with « Envoi dans un instant… » and its « × » (queue.remove held); every item received is shown", json.dumps([hq, caps], ensure_ascii=False))
         # B 1.9 (R3): menus are drop-downs above their button that may leave the bubble; the window grows around the surface
         geo_js = """(()=>{const m=document.querySelector('.menu'),r=m.getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect(),cs=getComputedStyle(m);
           return {mTop:Math.round(r.top),mBottom:Math.round(r.bottom),mLeft:Math.round(r.left),mRight:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height),aTop:Math.round(a.top),aLeft:Math.round(a.left),aH:Math.round(a.height),

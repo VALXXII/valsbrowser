@@ -502,6 +502,10 @@ message en attente (bulle estompée) et, dessous, le texte discret « Commencera
 button.btn-primary » avec « × » (`queue.remove`). Sans `after` : « En file ». Quand le tour démarre, l'hôte envoie
 `queue { items: [] }`, puis `message.user` et `turn.start` comme d'habitude. Un bandeau `strip` d'identifiant `wait`
 qui dirait la même phrase n'est pas affiché en bulle tant qu'un message en attente porte `after` (pas de doublon).
+Un message retenu le temps que l'image de l'élément soit prête arrive comme élément d'identifiant `held` (sans `after`) :
+même bulle estompée, texte discret « Envoi dans un instant… », « × » = `queue.remove { id: "held" }`. En attendant la
+réponse de l'hôte, la page garde le message envoyé visible (bulle estompée, sans texte, après 150 ms) jusqu'à son écho
+`message.user`, l'élément de file qui le porte, une erreur ou un autre élément — il ne disparaît jamais entre-temps.
 
 ### 19.7 Écarts assumés (bulle)
 
