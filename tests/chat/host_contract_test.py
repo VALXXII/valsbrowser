@@ -337,6 +337,8 @@ check('aiming.size() >= 10' not in tcs and 'BubbleClickAllowed(chips)' in tcs an
 fa = block_after(comment, 'const ChatStore::Header* FindAnchored(')
 check('parked' in fa and 'SentConvo(' in fa and 'FindAnchored(page, env.selector' in block_after(comment, 'bool OpenEarly(') and 'FindAnchored(page, sel' in block_after(comment, 'bool TakeCommentSelection('), 'F6: a click finds its element conversation in memory too (not saved yet)')
 
+# monkey 0.3.611 #116: a click in Commentaire refused by CommentFirst says why
+check('a click in Commentaire is not the chat' in block_after(ui, 'bool CommentFirst('), 'monkey #116: a refused click in Commentaire is logged')
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
