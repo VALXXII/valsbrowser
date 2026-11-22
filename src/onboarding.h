@@ -40,6 +40,7 @@
 #include "profiles.h"
 #include "ui-language.h"
 #include "onboarding-flow.h"
+#include "onboarding-model.h"
 #include "onboarding-shaders.h"
 #include "onboarding-kit.h"
 
@@ -67,17 +68,7 @@ inline constexpr int ticks = 19;
 inline constexpr float mockUnits = 1180, mockPlainUnits = 600, mockPlainH = 440, mockWideUnits = 1383, mockWideShown = 703, mockWideH = 516;
 }
 
-// What the host tells the window about the import sources (board 3).
-struct BrowserProfile { std::wstring label; bool bookmarks = false, history = false; };
-struct BrowserSource {
-    std::wstring name;                                   // « Google Chrome »
-    std::wstring detail;                                 // why it cannot be chosen (unavailable rows)
-    std::shared_ptr<const FaviconImage> logo;
-    std::vector<BrowserProfile> profiles;                // one entry per profile of that browser
-    bool available = true, file = false;                 // file: « Fichier de favoris HTML… »
-};
-struct ImportPick { int browser = -1, profile = 0; bool bookmarks = true, history = true; };
-struct ImportOutcome { bool bookmarksSaved = false, historySaved = false; std::wstring detail; };   // detail: why the first failure happened
+// BrowserSource, BrowserProfile, ImportPick, ImportOutcome: src/onboarding-model.h.
 
 struct Hooks {
     std::function<Profiles::NameError(const Profiles::Profile&)> saveProfile;     // « Continuer » on board 2: None = saved

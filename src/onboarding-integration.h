@@ -1,5 +1,6 @@
 // First-run onboarding, host side (part of main.cpp, included after browser-import-integration.h so it sees the
-// profile, import and annotation globals). Window: src/onboarding.h; flow and first-run rule: src/onboarding-flow.h.
+// profile, import and annotation globals). Window: src/onboarding.h; flow and first-run rule: src/onboarding-flow.h;
+// import view and commit: src/onboarding-import.h.
 //
 //  * When: a fresh install (installed layout, no profile registry, no data of an older build) or the
 //    « --onboarding » switch (QA, design preview; works in a portable folder too). Never in a smoke run, a private
@@ -8,57 +9,30 @@
 //  * Profile: the window's draft is saved into the profile this start opens (the default « Personnel » on a first
 //    run) with Profiles::Update — same validation and three-way registry write as Réglages › Profils. Nothing is
 //    written before « Continuer ».
-//  * Import: the same catalog, readers and transactions as Réglages › « Importer depuis un navigateur… »
-//    (src/browser-import.h, src/browser-catalog.h): discovery reads directory metadata only, the read runs on a
-//    worker thread and touches no global, the commit happens on the UI thread, one profile-store transaction per
-//    category, into the profile's own files (the browser window then loads them as on any start).
-//    « --import-sources <dir> » (tests) applies here as it does there.
+//  * Import: the same catalog, readers and transactions as Réglages › « Importer depuis un navigateur… »:
+//    discovery reads directory metadata only, the read runs on a worker thread and touches no global, the commit
+//    happens on the UI thread, one profile-store transaction per category, into the profile's own files (the
+//    browser window then loads them as on any start). « --import-sources <dir> » (tests) applies here as there.
 //  * Language: the picker pins the process language at once (no window exists yet, nothing is half translated)
 //    and writes the browser-wide preference (src/ui-language.h).
 //  * « Activer » on the annotation board: once the browser window is up, the « Connecter un agent » dialog opens
 //    (the mode itself needs a web page; connecting an agent is what turns it on for the person).
 // Logs carry counts and the source brand only: never a URL, a title or a path of the person's data.
 #include "onboarding.h"
+#include "onboarding-import.h"
 
-namespace OB = NativeChrome::OnboardingUI;
+namespace OB = NativeChrome::OnboardingUI; namespace OI = OnboardingImport;
 bool onboardingAnnotate = false;
 constexpr UINT_PTR OnboardingAnnotateTimerId = 0x4F42;
 struct OnboardingJob { unsigned token = 0; BI::Source source; BI::Options options; BI::ReadResult result; std::wstring name; };
 OB::Window* onboardingUi = nullptr; HWND onboardingWindow = nullptr;
 std::shared_ptr<OnboardingJob> onboardingFinished;          // handed back by the worker, under importLock
-std::vector<std::vector<BI::Source>> onboardingSources;     // [browser][profile], as the window lists them
-std::vector<std::wstring> onboardingNames;
+OI::Listing onboardingListing;                              // what board 3 lists, and the source behind each choice
 
-// The names people know the browsers by (the boards write « Google Chrome »).
-std::wstring OnboardingBrowserName(BI::Browser b) {
-    switch (b) {
-    case BI::Browser::Chrome: return L"Google Chrome";     // i18n-exempt: product name
-    case BI::Browser::Edge: return L"Microsoft Edge";      // i18n-exempt: product name
-    default: return BI::BrandName(b);
-    }
-}
-std::wstring OnboardingSentence(std::wstring s) { if (!s.empty()) s[0] = static_cast<wchar_t>(towupper(s[0])); return s; }
-// « Profil 1 » for Chromium's « Profile 1 » folder, « Profil principal » for « Default », else the profile's own name.
-std::wstring OnboardingProfileLabel(const BI::Source& s) {
-    if (BI::Chromium(s.browser) && s.isDefault) return OnboardingSentence(TR(import_profile_default));
-    static const std::wstring prefix = L"Profile ";   // i18n-exempt: Chromium's folder name
-    if (BI::Chromium(s.browser) && s.profile.rfind(prefix, 0) == 0 && s.profile.size() > prefix.size() && s.profile.find_first_not_of(L"0123456789", prefix.size()) == std::wstring::npos) return TRF(onboarding_import_profile_n, s.profile.substr(prefix.size()));
-    return s.profile;
-}
 std::vector<OB::BrowserSource> OnboardingSources() {
-    const std::vector<BI::Row> rows = BI::Catalog(ImportRegistered(), BI::Discover(ImportRoots()), OwnExecutable());
-    std::vector<OB::BrowserSource> out; onboardingSources.clear(); onboardingNames.clear();
-    size_t ready = 0, unavailable = 0;
-    for (const auto& r : rows) {
-        if (r.state == BI::RowState::Html) { OB::BrowserSource f; f.name = TR(import_source_html); f.file = true; out.push_back(f); onboardingSources.push_back({r.source}); onboardingNames.push_back(TR(import_source_file_short)); continue; }
-        if (!r.Available()) { OB::BrowserSource u; u.name = r.state == BI::RowState::NoData ? OnboardingBrowserName(r.source.browser) : r.name; u.detail = BI::RowDetail(r); u.available = false; u.logo = r.icon.empty() ? nullptr : BI::LoadLogo(r.icon, r.iconIndex, 96); out.push_back(u); onboardingSources.push_back({}); onboardingNames.push_back(u.name); ++unavailable; continue; }
-        const std::wstring name = OnboardingBrowserName(r.source.browser);
-        std::size_t at = 0; for (; at < out.size(); ++at) if (out[at].available && !out[at].file && out[at].name == name) break;
-        if (at == out.size()) { OB::BrowserSource b; b.name = name; b.detail = BI::RowDetail(r); b.logo = r.icon.empty() ? nullptr : BI::LoadLogo(r.icon, r.iconIndex, 96); out.push_back(b); onboardingSources.push_back({}); onboardingNames.push_back(name); }
-        out[at].profiles.push_back({OnboardingProfileLabel(r.source), r.source.bookmarks, r.source.history}); onboardingSources[at].push_back(r.source); ++ready;
-    }
-    Log(L"ONBOARDING import sources: " + std::to_wstring(ready) + L" profiles, " + std::to_wstring(unavailable) + L" browsers unavailable");
-    return out;
+    onboardingListing = OI::List(BI::Catalog(ImportRegistered(), BI::Discover(ImportRoots()), OwnExecutable()), [](const BI::Row& r) { return BI::LoadLogo(r.icon, r.iconIndex, 96); });
+    Log(L"ONBOARDING import sources: " + std::to_wstring(onboardingListing.profiles) + L" profiles, " + std::to_wstring(onboardingListing.unavailable) + L" browsers unavailable");
+    return onboardingListing.shown;
 }
 DWORD WINAPI OnboardingWorker(LPVOID param) {
     std::unique_ptr<std::shared_ptr<OnboardingJob>> job(static_cast<std::shared_ptr<OnboardingJob>*>(param));
@@ -70,14 +44,12 @@ DWORD WINAPI OnboardingWorker(LPVOID param) {
     return 0;
 }
 bool OnboardingStartImport(unsigned token, const OB::ImportPick& pick, bool bookmarks, bool history) {
-    if (pick.browser < 0 || pick.browser >= static_cast<int>(onboardingSources.size())) return false;
-    const auto& profiles = onboardingSources[static_cast<std::size_t>(pick.browser)];
-    if (pick.profile < 0 || pick.profile >= static_cast<int>(profiles.size())) return false;
-    BI::Source source = profiles[static_cast<std::size_t>(pick.profile)];
+    const BI::Source* chosen = OI::Pick(onboardingListing, pick.browser, pick.profile); if (!chosen) return false;
+    BI::Source source = *chosen;
     if (source.browser == BI::Browser::HtmlFile) { source.dir = PickBookmarksFile(onboardingWindow); if (source.dir.empty()) return false; history = false; }
     auto job = std::make_shared<OnboardingJob>();
-    job->token = token; job->source = source; job->options.bookmarks = bookmarks && (source.bookmarks || source.browser == BI::Browser::HtmlFile); job->options.history = history && source.history;
-    job->name = onboardingNames[static_cast<std::size_t>(pick.browser)];
+    job->token = token; job->source = source; job->name = onboardingListing.names[static_cast<std::size_t>(pick.browser)];
+    job->options.bookmarks = bookmarks && (source.bookmarks || source.browser == BI::Browser::HtmlFile); job->options.history = history && source.history;
     if (!job->options.bookmarks && !job->options.history) return false;
     auto* param = new std::shared_ptr<OnboardingJob>(job);
     // Generous stack: the source's folders are walked recursively (bounded to 256 levels).
@@ -94,31 +66,9 @@ void OnboardingImportRead(WPARAM token) {
     if (!job || job->token != static_cast<unsigned>(token) || !onboardingUi) return;
     // A result for an import the person cancelled, left or replaced by another one: nothing is written.
     if (onboardingUi->ImportToken() != job->token) { Log(L"ONBOARDING import dropped: no longer wanted, nothing written"); return; }
-    OB::ImportOutcome outcome; const BI::Source& s = job->source; const auto now = NativeChrome::DownloadsUI::UnixNowMs();
-    auto why = [&](BI::Failure f) { return f == BI::Failure::Busy && s.browser != BI::Browser::HtmlFile ? TRF(onboarding_import_open, job->name) : OnboardingSentence(BI::FailureText(f, s)); };
-    auto failed = [&](const std::wstring& reason) { if (outcome.detail.empty()) outcome.detail = reason; };
-    if (job->options.bookmarks) {
-        const auto& r = job->result.bookmarks;
-        if (r.failure != BI::Failure::None) { failed(why(r.failure)); Log(L"ONBOARDING bookmarks read failed " + std::to_wstring(static_cast<int>(r.failure))); }
-        else {
-            BM::Store mine; { ProfileStore::Lock lock(dataDir); std::string bytes; ProfileStore::ReadAll(BookmarksFile(), bytes); std::istringstream in(bytes); bool damaged = false; mine = BM::Store::Read(in, &damaged); }
-            BM::Store was = mine;
-            auto c = BI::CommitBookmarks(dataDir, BookmarksFile(), dataDir + L"\\bookmark-imports", was, mine, s, r.roots, now, nullptr, nullptr);
-            if (c.Saved()) { outcome.bookmarksSaved = true; Log(L"ONBOARDING bookmarks saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored)); }
-            else { failed(OnboardingSentence(c.identity == BI::Identity::Newer ? TR(import_map_newer) : c.identity == BI::Identity::Damaged ? TR(import_map_damaged) : c.identity == BI::Identity::Full ? TR(import_map_full) : TR(import_save_failed))); Log(L"ONBOARDING bookmarks save failed result=" + std::to_wstring(static_cast<int>(c.result))); }
-        }
-    }
-    if (job->options.history) {
-        const auto& r = job->result.history;
-        if (r.failure != BI::Failure::None) { failed(why(r.failure)); Log(L"ONBOARDING history read failed " + std::to_wstring(static_cast<int>(r.failure))); }
-        else {
-            AddressBar::History mine; { ProfileStore::Lock lock(dataDir); std::string bytes; ProfileStore::ReadAll(HistoryFile(), bytes); std::istringstream in(bytes); mine = AddressBar::History::Read(in); }
-            AddressBar::History was = mine;
-            auto c = BI::CommitHistory(dataDir, HistoryFile(), was, mine, r.visits, r.beyond, now, [](const std::wstring& u) { return SearchResultPage(u); });
-            if (c.Saved()) { outcome.historySaved = true; Log(L"ONBOARDING history saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored)); }
-            else { failed(OnboardingSentence(TR(import_save_failed))); Log(L"ONBOARDING history save failed result=" + std::to_wstring(static_cast<int>(c.result))); }
-        }
-    }
+    const OI::Files files{dataDir, BookmarksFile(), HistoryFile(), dataDir + L"\\bookmark-imports"};
+    const OB::ImportOutcome outcome = OI::Commit(files, job->source, job->name, job->options, job->result, NativeChrome::DownloadsUI::UnixNowMs(),
+                                                 [](const std::wstring& u) { return SearchResultPage(u); }, [](const std::wstring& line) { Log(line); });
     onboardingUi->ImportFinished(job->token, outcome);
 }
 // Read before SelectProfile (which creates the registry): is this a first run, or was the window asked for?

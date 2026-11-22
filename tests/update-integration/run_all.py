@@ -16,7 +16,7 @@ Steps:
   4. --app: static checks of the built application directory.
 """
 from __future__ import annotations
-import argparse, json, struct, subprocess, sys, time
+import argparse, json, shutil, struct, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -135,6 +135,15 @@ def existing_fixtures() -> None:
     # boards drawn off screen by the production window at 96 and 120 DPI (shaders on Direct3D, WARP without a GPU),
     # with the Paper geometry, keyboard order, events and both languages. Real window: tests/onboarding/qa.py.
     fixture('onboarding_flow_test', [*STRICT, 'tests/onboarding/onboarding_flow_test.cpp'])
+    # Its import: board 3's lists and the commit into a profile folder, on synthetic sources only (*.example)
+    onboarding_sources, onboarding_work = OUT / 'onboarding-import-sources', OUT / 'onboarding-import-work'
+    for folder in (onboarding_sources, onboarding_work):
+        if folder.exists():
+            shutil.rmtree(folder)
+    onboarding_work.mkdir(parents=True)
+    run('synthetic import sources for the onboarding', [sys.executable, '-I', ROOT / 'tests/browser-import/make_sources.py', onboarding_sources])
+    fixture('onboarding_import_test', [*STRICT, '-municode', '-Isrc', 'tests/onboarding/onboarding_import_test.cpp', '-lshell32', '-lole32', '-ladvapi32', '-lgdi32', '-luser32'],
+            [onboarding_sources, onboarding_work])
     onboarding_evidence = ROOT / 'build/onboarding-render'
     onboarding_evidence.mkdir(parents=True, exist_ok=True)
     fixture('onboarding_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/onboarding_render_test.cpp', 'src/native-lottie.cpp', THORVG,
