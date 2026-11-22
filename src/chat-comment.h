@@ -585,6 +585,7 @@ void EnsureOnScreen(const wchar_t* why) {
 }
 void OpenBubble(const std::string& conv, const RECT* element, const std::string& selector, bool followCurrent, const std::string& label) {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
+    UiSlow slowStart("opening: the panel's close and the window");   // monkey 0.3.561: host -> opened 40-50 ms right after a switch
     if (Open()) ClosePanel();
     if (panelState == PanelState::Closing) FinishClose();   // M5 (review R): the panel's slide ends now — it would move and hide the view the bubble takes
     EnsureInit(); if (!EnsureBubbleWindow()) return;
@@ -1025,7 +1026,7 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     // monkey 0.3.561 (div.plans 597 ms): a bubble open on ANOTHER element no longer waits for the full selection — the click
     // opens its element's bubble now (as TakeCommentSelection does later); a click on the open bubble's own element is left to it
     if (!ChatBubble::EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)) return false;
-    PrepareChat(t);
+    { UiSlow slowPrep("prepare the chat"); PrepareChat(t); }
     if (bubble.open) { Diag(L"a click on another element: its bubble opens (at the click)"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
     const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
@@ -1044,7 +1045,7 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
         Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
         return true;
     }
-    const std::string id = NewAnchoredConversation(env.selector, label, page, ""); early.conv = id;
+    std::string id; { UiSlow slowNew("new conversation"); id = NewAnchoredConversation(env.selector, label, page, ""); } early.conv = id;
     OpenBubble(id, &element, env.selector, false, label); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale;
     Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L")");
     return true;
