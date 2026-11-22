@@ -494,7 +494,7 @@ def j_details(j):
     ib.save(j.R.dir / 'r15-bord-gauche.png')
     j.send('section.hero', 'reply')
     chips = F.chat("document.querySelectorAll('.scroller .chip').length")
-    j.step('R7 · no element chip under the user\'s message in the bubble', not chips and 'section.hero' not in F.chat_state('bubble').get('text', ''), chips)
+    j.step('R7 · no element chip under the user\'s message in the bubble', not chips and 'section.hero' not in (F.chat("(document.querySelector('.scroller')||document.body).innerText") or ''), chips)
     plus = F.chat("(function(){var b=Array.from(document.querySelectorAll('button.tb')).find(function(e){return /Joindre/.test(e.getAttribute('aria-label')||'')});return b?{popup:b.getAttribute('aria-haspopup')}:null})()")
     j.step('R22 · « + » opens the image picker directly (no menu) — not clicked: a system dialog', plus and plus.get('popup') != 'menu', plus)
     for name, sel in (('modèle', 'button.m'), ('mode', 'button.tb.mode')):
