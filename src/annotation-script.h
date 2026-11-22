@@ -132,6 +132,7 @@ var px = -1, py = -1, haveMove = false;
 var cur = null, down = [], frozen = false, shown = false, keyboard = false, seq = 0;
 var off = false;   // V1.4: selection switched off (« pick » false): the page is the page again
 var ctrl = false;  // R31: Ctrl held = the page is the page again, for as long as it is held
+var hostCtrl = false;   // final pass 1: the host says Ctrl is held (its keyboard: the page's pointer events may not carry the flag)
 var peek = null;   // R26: the element of a chip the user rests on (panel / bubble), shown as hovered
 var trackUntil = 0;   // R36: a restyle glides: everything follows the element frame by frame until then
 function idle() { return off || ctrl; }
@@ -719,7 +720,7 @@ function frame() {
 function schedule() { if (!raf && alive) raf = requestAnimationFrame(frame); }
 
 // ---- events
-function onMove(e) { px = e.clientX; py = e.clientY; if (e.isTrusted && !!e.ctrlKey !== ctrl) setCtrl(!!e.ctrlKey); if (idle()) return; haveMove = true; keyboard = false; schedule(); }
+function onMove(e) { px = e.clientX; py = e.clientY; if (e.isTrusted && !!e.ctrlKey !== ctrl && !(hostCtrl && !e.ctrlKey)) setCtrl(!!e.ctrlKey); if (idle()) return; haveMove = true; keyboard = false; schedule(); }
 // R31: Ctrl held = the page as usual: its own cursors (the sheet is emptied), no hover frame nor inspector, no iframe
 // shields; clicks, scrolling and typing reach the site, nothing is selected. Released = the selection at once. A
 // selected element (note open, bubble) keeps its frame. The Ctrl+... shortcuts are never consumed here (onKey).
@@ -730,18 +731,27 @@ function setCtrl(v) {
   if (ctrl) { cursorSheet(false); if (!frozen && !peek) { cur = null; down = []; haveMove = false; place(null); } syncShields(); }
   else { cursorSheet(true); syncShields(); haveMove = px >= 0; schedule(); }
 }
-function onKeyUp(e) { if (e.isTrusted && e.key === 'Control') setCtrl(false); }
-function onBlur(e) { if (e.target === window) setCtrl(false); }
+function onKeyUp(e) { if (e.isTrusted && e.key === 'Control') { hostCtrl = false; setCtrl(false); } }
+function onBlur(e) { if (e.target === window && !hostCtrl) setCtrl(false); }
 // Only the user's own input is consumed: the page's synthetic events (el.click(), dispatchEvent) pass.
 // Final pass 1, defect 2: a button event never RELEASES Ctrl (in the real window the click may come without the Ctrl flag
 // while it is held: it was selected). Ctrl ends on its keyup, a window blur, or a pointer move without the flag.
-function stop(e) { if (!e.isTrusted || off) return; if (e.ctrlKey) setCtrl(true); if (ctrl) return; e.preventDefault(); e.stopImmediatePropagation(); }
+function stop(e) {
+  if (!e.isTrusted || off) return;
+  if (e.type === 'pointerdown') { dpx = e.clientX; dpy = e.clientY; }   // the press, at the pointer's fractional point (see onClick)
+  if (e.ctrlKey) setCtrl(true); if (ctrl) return; e.preventDefault(); e.stopImmediatePropagation();
+}
+var dpx = -1, dpy = -1;
 function onClick(e) {
   if (!e.isTrusted || off) return;
   if (e.ctrlKey) setCtrl(true); if (ctrl) return;   // R31: the site's click
   stop(e);
   if (e.button !== 0) return;
-  px = e.clientX; py = e.clientY; keyboard = false;
+  // Final pass 1 (R45 div.plans, monkey a.btn-primary): a click's clientX / clientY are whole CSS pixels, the pointer's are
+  // not (page zoom, scaling): at 125 % the rounded point can fall on the neighbour or the container of what the hover
+  // shows. The press's own pointer point (same gesture) is used, so the click selects exactly what the hover framed.
+  var near = dpx >= 0 && Math.abs(dpx - e.clientX) < 1 && Math.abs(dpy - e.clientY) < 1;
+  px = near ? dpx : e.clientX; py = near ? dpy : e.clientY; keyboard = false;
   frozen = false;
   var info = hit(px, py);
   if (!info) return;
@@ -1136,6 +1146,7 @@ function cmd(op, arg) {
   if (op === 'cmarks') return cmSet(arg);   // Mode Commentaire: the ids found in this page
   if (op === 'follow') return followSet(arg);
   if (op === 'peek') return peekSet(arg);   // R26: { selector, active }
+  if (op === 'ctrl') { hostCtrl = !!arg; setCtrl(hostCtrl); return true; }   // final pass 1, R31: Ctrl from the host's keyboard
 }
 
 var opts = { capture: true, passive: true };

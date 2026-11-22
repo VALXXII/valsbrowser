@@ -1091,6 +1091,13 @@ static void V3Tests(Ink& ink) {
         for (LONG y = r.top; y < r.bottom; ++y) for (LONG x = r.left; x < r.right; ++x, ++n)
             if ((cg.At(int(x - b.left), int(y - b.top)) | 0xFF000000u) != g.leftPx.bits[size_t(n)]) ++off;
         CHECKM(off == 0, "R45 native copy: the page's own label pixels, pixel for pixel (%d of %d differ)", off, n);
+        // final pass 1: the WHOLE box as on screen (edges, hatches, value labels too): the copy is exactly those pixels
+        FrameMark wm = m; wm.whole = pattern(b, 40503u);
+        Canvas cw; Render(ink, w, h, dpi, 0xF4F4F3FF, [&](Ink& i, float, float) { SelectionFrame::Paint(i, wm, {b.left, b.top}, 2); }, cw);
+        int woff = 0, wn = 0;
+        for (LONG y = b.top; y < b.bottom; ++y) for (LONG x = b.left; x < b.right; ++x, ++wn)
+            if ((cw.At(int(x - b.left), int(y - b.top)) | 0xFF000000u) != wm.whole.bits[size_t(wn)]) ++woff;
+        CHECKM(woff == 0, "R45 native copy: the whole box as on screen, pixel for pixel (%d of %d differ)", woff, wn);
     }
 }
 // Live: the launcher's windows are destroyed at rest outside the mode; the history opens alone, anchored low.

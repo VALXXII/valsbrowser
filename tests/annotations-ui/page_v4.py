@@ -63,7 +63,7 @@ open(os.path.join(SITE, "index.html"), "w", encoding="utf-8").write("""<!doctype
 .spacer{height:4000px}
 h2.section-title{position:absolute;left:520px;top:300px;width:301.3px;margin:0;font:600 28px serif;padding:8px 12px}
 div.plans{position:absolute;left:83.2px;top:640.4px;width:820.6px;height:90px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;background:#ece}</style></head><body>
-<h2 class="section-title">Nos offres</h2><div class="plans"><div></div><div></div><div></div></div><x-card style="position:absolute;left:40px;top:560px;width:200px;height:60px;display:block"></x-card><iframe class="sb" srcdoc="<body style='margin:0'><div class='inner' style='width:180px;height:50px;background:#9c9'></div></body>" style="position:absolute;left:280px;top:560px;width:200px;height:60px;border:0"></iframe><div class="dup" style="position:absolute;left:520px;top:560px;width:80px;height:40px;background:#c99"></div><div class="dup" style="position:absolute;left:620px;top:560px;width:80px;height:40px;background:#c99"></div><div class="vanish" style="position:absolute;left:740px;top:560px;width:80px;height:40px;background:#99c"></div><script>customElements.define("x-card",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<div class=inner style=width:200px;height:60px;background:#cc9></div>"}})</script><div class="card"></div><div class="narrow"></div><div class="pad"><div></div><div></div><div></div></div>
+<h2 class="section-title">Nos offres</h2><div class="gp" style="position:absolute;left:430px;top:470px;width:250px;height:40px;background:#dde"><div class="gc" style="position:absolute;left:100.6px;top:0;width:100px;height:40px;background:#bbd"></div></div><div class="plans"><div></div><div></div><div></div></div><x-card style="position:absolute;left:40px;top:560px;width:200px;height:60px;display:block"></x-card><iframe class="sb" srcdoc="<body style='margin:0'><div class='inner' style='width:180px;height:50px;background:#9c9'></div></body>" style="position:absolute;left:280px;top:560px;width:200px;height:60px;border:0"></iframe><div class="dup" style="position:absolute;left:520px;top:560px;width:80px;height:40px;background:#c99"></div><div class="dup" style="position:absolute;left:620px;top:560px;width:80px;height:40px;background:#c99"></div><div class="vanish" style="position:absolute;left:740px;top:560px;width:80px;height:40px;background:#99c"></div><script>customElements.define("x-card",class extends HTMLElement{constructor(){super();this.attachShadow({mode:"open"}).innerHTML="<div class=inner style=width:200px;height:60px;background:#cc9></div>"}})</script><div class="card"></div><div class="narrow"></div><div class="pad"><div></div><div></div><div></div></div>
 <div class="far"></div><button class="btn" onclick="window.__clicked=(window.__clicked||0)+1">site</button>
 <div class="box"></div><div class="spacer"></div></body></html>""")
 
@@ -296,6 +296,34 @@ try:
     ok = all(p[2] and p[2].startswith(p[0].split('.')[0]) and p[0].split('.')[1] in p[2] and (p[3] or '').split(' ')[-1].split(':')[0].replace('.btn.', '.').startswith(p[0].split('.')[0]) for p in picked if p[0] != 'div.hero-visual')
     check(ok, "monkey 1 step 5: each click selects the deepest element under the pointer (as the hover), never its container", picked)
     cdp.js(f"{H}.cmd('follow',null)")
+
+    # ---------------- final pass 1 (R45 div.plans, monkey a.btn-primary): the click selects what the hover shows, even on a
+    # fractional pointer position (zoom): the hover reads the pointer's fractional point, the click event has whole numbers
+    load(1.0)
+    cdp.js("scrollTo(0,0)"); frames(cdp)
+    x, y = 530.9, 490   # the child begins at 530.6 (CSS px): the pointer is over the child, the click's whole clientX (300) is not
+    mouse(cdp, x, y); frames(cdp, 4)
+    hov = cdp.js(f"{R}.querySelector('.l').textContent")
+    mouse(cdp, x, y, "mousePressed", button="left", clicks=1); mouse(cdp, x, y, "mouseReleased", button="left", clicks=1); frames(cdp, 3)
+    m = cdp.js("window.__msgs.filter(m=>m.op==='select').pop()")
+    picked = m and m["target"]["path"][-1]
+    check(hov == "div.gc" and picked == "div.gc", "click = hover on a fractional pointer position: the element under the pointer, never its neighbour / container", [hov, picked])
+    cdp.js(f"{H}.cmd('resume')")
+
+    # ---------------- final pass 1, R31 (real window: the keyboard is in the host or the bubble, the page's pointer moves
+    # carry no Ctrl flag): the host tells the page « ctrl » true / false; while held, a move without the flag keeps it
+    load(1.0)
+    mouse(cdp, 760, 440); wait(cdp, 250)
+    aim = cdp.js("getComputedStyle(document.querySelector('.btn')).cursor")
+    cdp.js(f"{H}.cmd('ctrl', true)"); frames(cdp)
+    mouse(cdp, 762, 441, "mouseMoved", mods=0); mouse(cdp, 764, 442, "mouseMoved", mods=0); frames(cdp, 3)
+    held = cdp.js(f"[getComputedStyle(document.querySelector('.btn')).cursor, getComputedStyle({R}.querySelector('.f')).opacity]")
+    n0 = cdp.js("window.__msgs.filter(m=>m.op==='select').length"); c0 = cdp.js("window.__clicked||0")
+    mouse(cdp, 764, 442, "mousePressed", mods=0, button="left", clicks=1); mouse(cdp, 764, 442, "mouseReleased", mods=0, button="left", clicks=1); frames(cdp, 3)
+    st = cdp.js("[window.__clicked||0, window.__msgs.filter(m=>m.op==='select').length]")
+    check(held[0] == "default" and held[1] == "0" and st == [c0 + 1, n0], "R31 (host Ctrl): held with moves and a click that carry no Ctrl flag: the page's cursor, no frame, the site's click", [held[0][:20], held[1], st])
+    cdp.js(f"{H}.cmd('ctrl', false)"); frames(cdp)
+    check(cdp.js("getComputedStyle(document.querySelector('.btn')).cursor") == aim, "R31 (host Ctrl): released (host): the aiming cursor at once, without moving")
 
     # ---------------- R26: peek
     load(1.0)
