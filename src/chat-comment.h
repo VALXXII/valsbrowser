@@ -174,7 +174,9 @@ int PlannedHeightPx(float k) {
     const auto& head = aside.on ? aside.c.data.head : convo.data.head;
     if (head.id == bubble.conv && head.bubbleHeight > 0) return int(std::lround(std::min(head.bubbleHeight, BubbleMaxHeightCss) * k));
     if (const auto* h = AnchoredOf(bubble.conv); h && h->bubbleHeight > 0) return int(std::lround(std::min(h->bubbleHeight, BubbleMaxHeightCss) * k));
-    return ShownItems().empty() ? 0 : int(std::lround(BubbleMaxHeightCss * k));
+    const Convo* mine = convo.data.head.id == bubble.conv ? &convo : (aside.on && aside.c.data.head.id == bubble.conv ? &aside.c : nullptr);
+    if (!mine) { const auto it = parked.find(bubble.conv); if (it != parked.end()) mine = &it->second; }
+    return mine && !mine->data.items.empty() ? int(std::lround(BubbleMaxHeightCss * k)) : 0;   // real window: the bubble's own conversation, not the one shown
 }
 void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — the window only follows it, nothing else
     if (!bubble.hwnd || !bubble.open) return;
@@ -608,9 +610,10 @@ void CloseBubble(bool focusPage) {
 // next size (the card is in it), if its bottom is past the visible area, the SITE's page scrolls softly by what is missing,
 // once; never while the user scrolls; at once with reduced motion. The bubble stays anchored to its element (it follows).
 void RevealCardSoon() { if (bubble.open && !aside.on) bubble.revealDue = true; }
+void RevealCardDone() { if (waitingPermissions.empty()) bubble.revealDue = false; }
 void RevealCard() {
     if (!bubble.revealDue || !bubble.open || bubble.waitingAck) return;
-    bubble.revealDue = false;
+    if (waitingPermissions.empty()) bubble.revealDue = false;   // real window: an authorization's card grows after it arrives (223 -> 334 px) — kept due while it waits
     auto t = ChatTab(); if (!t || !t->view.p) return;
     const RECT a = PageArea(); const float k = Dpi();
     const bool userScrolling = Ann::NowMs() - bubble.lastScrollAt < 600;
@@ -634,7 +637,7 @@ void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     } else {
         bubble.baseHCss = std::clamp(hCss, 40, BubbleMaxHeightCss);
         {   auto& head = aside.on ? aside.c.data.head : convo.data.head;   // decision: the conversation keeps its bubble's height (its next opening plans with it)
-            if (head.id == bubble.conv && !ShownItems().empty()) head.bubbleHeight = bubble.baseHCss; }
+            if (head.id == bubble.conv && !ShownItems().empty()) head.bubbleHeight = std::max(head.bubbleHeight, bubble.baseHCss); }   // real window: never the composer-only first size (a conversation only grows)
         bubble.w = int(std::lround(std::clamp(wCss, 200, BubbleWidthCss) * k)); bubble.h = int(std::lround(std::clamp(hCss, 40, BubbleMaxHeightCss) * k));
     }
     // r44 (Q's real window, section.hero with a long conversation): the side was chosen with the opening's small height; the
@@ -676,7 +679,9 @@ void OnAnchor(const AH::Envelope& e) {
         }
     }
     const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows, nothing else
-    if (scrolling) bubble.lastScrollAt = Ann::NowMs();   // R47: the user (or the page) scrolls
+    {   static double lastSy = -1;   // R47 (real window): a scroll = the page's offset changed — not the page reflowing (the agent's edit)
+        if (scrolling && e.t > 0 && lastSy >= 0 && std::abs(e.sy - lastSy) > 0.5) bubble.lastScrollAt = Ann::NowMs();
+        if (e.t > 0) lastSy = e.sy; }
     bubble.known = true;
     if (scrolling && FollowFrames() > 0) {   // F11: placed when the page's image of THIS position is on screen
         followPositions.push_back({++follower.gen, measured}); while (followPositions.size() > 8) followPositions.pop_front();

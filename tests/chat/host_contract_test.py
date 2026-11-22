@@ -249,9 +249,19 @@ check('RevealCard()' in block_after(comment, 'void OnBubbleSize('), 'R47: checke
 # Decision: the opening height = the conversation's last height (saved with it), else 520 when it has content
 pl2 = block_after(comment, 'void PlaceBubble(bool scrolling) {')
 ph = block_after(comment, 'int PlannedHeightPx(float k) {')
-check('PlannedHeightPx(' in pl2 and 'bubbleHeight' in ph and 'ShownItems()' in ph, 'decision: PlaceBubble plans with the conversation\'s last height (else 520 with content)')
+check('PlannedHeightPx(' in pl2 and 'bubbleHeight' in ph and 'data.items.empty()' in ph, 'decision: PlaceBubble plans with the conversation\'s last height (else 520 with content)')
 check('bubbleHeight' in block_after(comment, 'void OnBubbleSize('), 'decision: the height of the conversation is kept with it')
 check('PanelKeyboardBack(' in block_after(comment, 'void CALLBACK ForegroundChanged('), 'M4 panel (2): the keyboard back to the panel is delayed and repeated (after a chip)')
+
+# real window (0.3.539): the saved height never shrinks; « has content » is the bubble's own conversation; an authorization's
+# card that grows after it arrived is still brought on screen
+osz = block_after(comment, 'void OnBubbleSize(')
+check('std::max(head.bubbleHeight' in osz, 'decision: the height kept with a conversation never shrinks (the composer-only first size)')
+check('ShownItems()' not in block_after(comment, 'int PlannedHeightPx(float k) {').split('return mine')[0].split('AnchoredOf')[1] if 'AnchoredOf' in block_after(comment, 'int PlannedHeightPx(float k) {') else False, 'decision: « has content » is the bubble\'s own conversation')
+check('waitingPermissions.empty()' in block_after(comment, 'void RevealCard() {'), 'R47: the card stays due while the authorization waits (it grows after it arrives)')
+
+# real window (0.3.539): « the user is scrolling » = the page's scroll offset changed (not the page reflowing)
+check('lastSy' in block_after(comment, 'void OnAnchor('), 'R47: a scroll is an offset change, not a reflow (the reveal was skipped during the agent\'s edit)')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
