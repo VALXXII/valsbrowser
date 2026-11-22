@@ -169,6 +169,8 @@ static void TestStore(const std::wstring& root) {
     const auto q = CS::Projects::Load(file);
     Check(q.sites.size() == 2 && q.sites.at("http://localhost:5173").folder == L"C:\\sites\\boutique \xE9t\xE9" && q.sites.at("http://localhost:5173").agentId == "claude" && q.sites.at("http://localhost:5173").mode == "default" &&
           q.sites.at("http://localhost:5173").model == "sonnet" && q.sites.at("http://localhost:5173").usedAt == 100, "projects read back (non-ASCII folder)");
+    Check(q.sites.at("http://localhost:5173").effort == "high" && q.sites.at("http://127.0.0.1:5183").mode.empty() && q.sites.at("http://127.0.0.1:5183").model.empty() && q.sites.at("http://127.0.0.1:5183").effort.empty(),
+          "M: after a restart the site's mode, model and effort are read back; a site where nothing was chosen has none (« Demander » is only the start)");
     Check(q.Recent() == L"C:\\autre", "the most recently used folder");
     {   // who chose the folder: the user (kept), or the detection (replaced when the site is served from elsewhere)
         CS::Projects w; w.sites["http://localhost:1"].folder = L"C:\\a"; w.sites["http://localhost:2"].folder = L"C:\\b"; w.sites["http://localhost:2"].chosen = true;
@@ -538,6 +540,66 @@ static void TestBubble() {
     // E2 / M9: every new session gets the choice just made, else the one remembered for the site, else the agent's own
     {   Check(ChatOptions::ChoiceForNewSession("opus", "sonnet") == "opus" && ChatOptions::ChoiceForNewSession("", "sonnet") == "sonnet" && ChatOptions::ChoiceForNewSession("", "").empty(),
               "E2 / M9: the choice made, else the site's remembered one (a second element no longer falls back to the agent's default)"); }
+    // M (Q's monkey 0.3.561, seed 1 #78-#81): the mode, the model and the effort chosen — in the panel or in a bubble — are
+    // kept between the panel and the bubbles, for every new session, and after a restart. One setting of the host, as it
+    // handles it (chat-host.h SendState, chat-host-turn.h ApplyDefaults / CompleteTurn, chat-host-ui.h setMode / setModel /
+    // setEffort / PrepareChat), on the same pure rules.
+    {   struct Setting {
+            std::string start, fallback;                 // what an agent's session starts with; what the browser sets when nothing was chosen ("" = the agent's own)
+            bool prepareForgets = false;                 // PrepareChat clears the mode chosen before a session (the site's memory holds it)
+            std::string site, pending, session;          // the site's memory (projects.json) · chosen before a session / aside · the live session's value
+            bool live = false, applied = false, aside = false, owed = false;
+            std::string Wanted() const { const std::string c = ChatOptions::ChoiceForNewSession(pending, site); return c.empty() ? fallback : c; }
+            std::string Shown() const { return ChatOptions::ShownSetting(!aside, owed, ChatOptions::Intended(live ? session : start, Wanted(), applied), Wanted()); }
+            void Apply() { if (!pending.empty()) site = pending; const std::string w = Wanted(); if (!w.empty()) session = w; pending.clear(); applied = true; owed = false; }   // ApplyDefaults
+            void Start() { live = true; session = start; Apply(); }                                             // OnStarted
+            void Dispose() { live = applied = owed = false; }                                                    // DisposeSession (another element, a new conversation, idle)
+            void Choose(const std::string& id) { site = id; if (aside) { pending = id; owed = live; } else if (live) session = id; else pending = id; }   // setMode / setModel / setEffort
+            void PrepareChat() { if (prepareForgets) pending.clear(); else if (!live && pending.empty()) pending = site; }   // each opening of the panel, each page
+            void NewElement() { if (aside) return; Dispose(); Start(); }                                         // a click on another element (aside: no session of its own yet)
+            void TurnEnds() { if (owed && live) Apply(); }                                                       // CompleteTurn
+            void Restart() { const std::string kept = site; *this = Setting{start, fallback, prepareForgets}; site = kept; }   // only the site's memory is on the disk
+        };
+        const Setting mode{"auto", "default", true}, model{"sonnet", "", false}, effort{"default", "medium", false};
+        struct Case { Setting s; const char* chosen; const char* what; };
+        for (const Case& c : {Case{mode, "auto", "mode"}, Case{mode, "acceptEdits", "mode"}, Case{model, "opus", "model"}, Case{effort, "xhigh", "effort"}}) {
+            const std::string id = c.chosen, name = std::string(c.what) + " « " + id + " »";
+            {   Setting s = c.s; s.PrepareChat(); s.Start();                                                    // the panel, its session ready
+                Check(s.Shown() == (s.fallback.empty() ? s.start : s.fallback), ("M: nothing chosen — the start value (« Demander », Medium, the agent's model): " + name).c_str());
+                s.Choose(id); s.PrepareChat(); s.NewElement();                                                  // chosen in the panel, then Commentaire and a click
+                Check(s.Shown() == id && s.session == id, ("M: chosen in the panel, the bubble of an element has it: " + name).c_str());
+                s.NewElement(); s.PrepareChat(); s.NewElement();
+                Check(s.Shown() == id && s.session == id, ("M: …and every next element, and the panel again: " + name).c_str()); }
+            {   Setting s = c.s; s.PrepareChat(); s.NewElement(); s.Choose(id); s.PrepareChat(); s.Dispose(); s.Start();   // chosen in a bubble, then the panel (a new conversation)
+                Check(s.Shown() == id && s.session == id, ("M: chosen in a bubble, the panel has it: " + name).c_str()); }
+            {   Setting s = c.s; s.PrepareChat(); s.Choose(id);                                                 // chosen before any session (the agent not started yet)
+                Check(s.Shown() == id, ("M: chosen before the agent is ready — shown at once: " + name).c_str());
+                s.PrepareChat(); Check(s.Shown() == id, ("M: …still shown after the panel opens again: " + name).c_str());
+                s.Start(); s.NewElement(); Check(s.Shown() == id && s.session == id && s.site == id, ("M: …given to the first session and to the next element: " + name).c_str()); }
+            {   Setting s = c.s; s.PrepareChat(); s.Start(); s.Choose(id); s.Restart(); s.PrepareChat();        // the browser restarted
+                Check(s.Shown() == id, ("M: after a restart, shown before the agent starts: " + name).c_str());
+                s.Start(); Check(s.Shown() == id && s.session == id, ("M: after a restart, given to the session: " + name).c_str()); }
+            {   // the monkey's sequence: an element's turn waits (an authorization); the panel shows another conversation « aside »
+                Setting s = c.s; s.PrepareChat(); s.Start(); const std::string before = s.session; s.aside = true;
+                s.Choose(id);
+                Check(s.Shown() == id && s.session == before, ("M / E3: chosen aside — shown there, the running session untouched: " + name).c_str());
+                s.PrepareChat();                                                                               // #81: the panel opens again (it forgets the mode chosen before a session)
+                Check(s.Shown() == id, ("M: monkey #78-#81 — the panel opened again still shows the choice: " + name).c_str());
+                s.NewElement();                                                                                // a click on another element: its bubble, aside too
+                Check(s.Shown() == id, ("M: monkey #81 — the bubble of the next element shows the choice (it showed the other element's session): " + name).c_str());
+                s.aside = false;                                                                               // back on the element whose turn runs
+                Check(s.Shown() == id && s.session == before, ("M: the element whose turn runs shows the choice too, its turn untouched: " + name).c_str());
+                s.TurnEnds();
+                Check(s.Shown() == id && s.session == id && !s.owed, ("M: …and its session gets it when its turn ends: " + name).c_str()); }
+        }
+        Check(ChatOptions::ShownSetting(true, false, "default", "auto") == "default", "M: the session shown is the conversation's own, nothing owed — its real value (an agent that refused a mode is not hidden)");
+        Check(ChatOptions::ShownSetting(false, false, "sonnet", "") == "sonnet", "M: aside with nothing chosen and no start value of the browser's — the agent's own");
+        struct Ch { std::string value, name, description; };
+        const std::vector<Ch> models{{"default", "Default (recommended)", "Opus 5.5"}, {"opus", "Opus 5.5", ""}, {"sonnet", "Sonnet 5.5", ""}}, efforts{{"default", "Default", ""}, {"low", "Low", ""}, {"medium", "Medium", ""}, {"high", "High", ""}};
+        Check(ChatOptions::ModelForNewSession(models, "sonnet") == "sonnet" && ChatOptions::ModelForNewSession(models, "gone").empty() && ChatOptions::ModelForNewSession(models, "default").empty() && ChatOptions::ModelForNewSession(models, "").empty(),
+              "M: a new session's model — the one chosen when the agent still offers it, else the agent's own (never its alias)");
+        Check(ChatOptions::EffortForNewSession(efforts, "high") == "high" && ChatOptions::EffortForNewSession(efforts, "") == "medium" && ChatOptions::EffortForNewSession(efforts, "gone") == "medium" && ChatOptions::EffortForNewSession(efforts, "default") == "medium",
+              "M: a new session's effort — the one chosen when offered, else Medium"); }
     // R46: the session starts in « auto », the browser asks « default »: until the agent confirms, the state says « default »
     {   ChatOptions::Asked asked{"default", 1000};
         Check(ChatOptions::ShownWhileAsked("auto", asked, 1200) == "default" && ChatOptions::ShownWhileAsked("auto", asked, 2500) == "default",

@@ -52,11 +52,19 @@ template <class Choice> std::string Shown(const std::vector<Choice>& choices, co
 }
 // The effort to set when a session starts: the site's remembered choice when the agent offers it, else Medium when
 // offered; "" when nothing has to change (already set, or the agent offers neither).
+// The effort a new session gets: the user's choice when the agent offers it, else Medium when offered ("" = the agent's own).
+template <class Choice> std::string EffortForNewSession(const std::vector<Choice>& choices, const std::string& chosen) {
+    if (const auto* r = Find(choices, chosen); r && !IsAlias(*r)) return r->value;
+    if (const auto* m = Find(choices, MediumEffort)) return m->value;
+    return "";
+}
 template <class Choice> std::string EffortToApply(const std::vector<Choice>& choices, const std::string& current, const std::string& remembered) {
-    std::string want;
-    if (const auto* r = Find(choices, remembered); r && !IsAlias(*r)) want = r->value;
-    else if (const auto* m = Find(choices, MediumEffort)) want = m->value;
+    const std::string want = EffortForNewSession(choices, remembered);
     return want == current ? std::string() : want;
+}
+// The model a new session gets: the user's choice when the agent still offers it ("" = the agent's own default).
+template <class Choice> std::string ModelForNewSession(const std::vector<Choice>& choices, const std::string& chosen) {
+    const auto* r = Find(choices, chosen); return r && !IsAlias(*r) ? r->value : std::string();
 }
 
 // D6: a turn's header (« Sonnet 5.5 · Moyen ») is kept with the turn. A new conversation starts its session WITH its first
@@ -76,6 +84,16 @@ struct Asked { std::string value; double at = 0; };
 // E2 / M9 (coordinator, review R): the model, the effort and the mode the user chose are remembered per site and given to
 // every new session — a new element included; « Demander » is only the start while nothing was chosen.
 inline std::string ChoiceForNewSession(const std::string& justChosen, const std::string& remembered) { return justChosen.empty() ? remembered : justChosen; }
+// M (Q's monkey 0.3.561, seed 1 #78-#81: « Auto » chosen in the panel while another element's turn waited, then every bubble
+// and the panel showed « Demander »): what the composer shows for the mode, the model and the effort.
+//   own     the conversation shown is the one the live session works for (false: shown « aside » — another element's turn runs)
+//   owed    a choice made aside waits for the end of that session's turn (E3: a running turn is never touched)
+//   session what that session says (R28 / R46 applied); wanted: what a new session gets (the user's choice, else the start value)
+// A conversation shown aside has no session yet: it shows what ITS session will get, never the other element's session; and
+// the session a choice is owed to shows that choice (it gets it when its turn ends) — nothing changes without the user.
+inline std::string ShownSetting(bool own, bool owed, const std::string& session, const std::string& wanted) {
+    return (own && !owed) || wanted.empty() ? session : wanted;
+}
 inline std::string ShownWhileAsked(const std::string& current, Asked& asked, double now, double patienceMs = 3000) {
     if (asked.value.empty()) return current;
     if (current == asked.value || now - asked.at > patienceMs) { asked = Asked{}; return current; }

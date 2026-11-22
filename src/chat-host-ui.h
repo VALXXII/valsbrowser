@@ -776,29 +776,29 @@ void OnPanelMessage(const std::string& json) {
     if (type == "setModel") {
         const std::string id = m.Id("id"), agent = m.Id("agentId"); if (id.empty()) return;
         if (aside.on) {   // E3: another element's turn runs — never its session; this conversation gets it at its own start
-            pendingModel = id; if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].model = id; RememberChoices(); }
+            pendingModel = id; RememberSetting(&ChatStore::Project::model, id); if (session) choicesOwed |= OwedModel;   // M: the running session gets it when its turn ends
             MarkSwitch(agent.empty() ? agentId : agent, id); SendState(); return;
         }
         if (!agent.empty() && agent != agentId) { SwitchAgent(agent, id); return; }
         const auto* o = Acp::FindModelOption(agentInfo[agentId].options);
         const bool changed = id != (pendingModel.empty() ? (o ? o->currentValue : std::string()) : pendingModel);
         if (session && sessionReady && o) { session->SetConfigOption(o->id, id); askedModel = ChatOptions::Asked{id, Ann::NowMs()}; } else pendingModel = id;
-        if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].model = id; RememberChoices(); }
+        RememberSetting(&ChatStore::Project::model, id);   // M: the site's from now on — every new session, bubble or panel
         if (changed) MarkSwitch(agentId, id);   // R42: the same agent, another model — the next message, the same session
         return;
     }
     if (type == "setEffort") {
         const std::string id = m.Id("id"); const auto* o = Acp::FindEffortOption(agentInfo[agentId].options); if (id.empty()) return;
-        if (aside.on) { pendingEffort = id; if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].effort = id; RememberChoices(); } SendState(); return; }   // E3
+        if (aside.on) { pendingEffort = id; RememberSetting(&ChatStore::Project::effort, id); if (session) choicesOwed |= OwedEffort; SendState(); return; }   // E3; M: the running session gets it when its turn ends
         if (session && sessionReady && o) { session->SetConfigOption(o->id, id); askedEffort = ChatOptions::Asked{id, Ann::NowMs()}; } else pendingEffort = id;
-        if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].effort = id; RememberChoices(); }   // V1.2: the next sessions start with it (else Medium)
+        RememberSetting(&ChatStore::Project::effort, id);   // V1.2: the next sessions start with it (else Medium)
         return;
     }
     if (type == "setMode") {
         const std::string id = m.Id("id"); if (id.empty()) return; const auto mv = ModesOf(agentId, agentInfo[agentId]);
         if (!mv.list.empty() && KindOfMode(mv, id) == "other" && std::none_of(mv.list.begin(), mv.list.end(), [&](const ModeEntry& e) { return e.id == id; })) return;   // not a mode the agent offers
-        if (!site.origin.empty() && !folder.empty()) { projects.sites[site.origin].mode = id; RememberChoices(); }   // M9 (coordinator): remembered for the site, given to every new session
-        if (aside.on) { pendingMode = id; SendState(); return; }   // E3: never the running session of another element
+        RememberSetting(&ChatStore::Project::mode, id);   // M9 (coordinator): remembered for the site, given to every new session
+        if (aside.on) { pendingMode = id; if (session) choicesOwed |= OwedMode; Diag(L"mode chosen aside: « " + W(id) + L" » (the running session gets it when its turn ends)"); SendState(); return; }   // E3: never the running session of another element   // i18n-exempt: log detail
         SetAgentMode(id);
         return;
     }

@@ -76,6 +76,7 @@ void PrepareProgress() {
 // ---------------------------------------------------------------- session (one agent process per conversation)
 void DisposeSession(const wchar_t* why) {
     defaultsApplied = false;   // R28: the next session shows the browser's choices until they are applied
+    choicesOwed = 0;           // M: owed to the session that leaves — the next one gets the choices at its start
     askedModel = askedEffort = askedMode = ChatOptions::Asked{};   // R46
     if (!session) return;
     session->Dispose(); disposed.push_back(std::move(session)); session.reset();   // kept until its threads have ended (Shutdown waits)
@@ -124,6 +125,18 @@ std::string RememberedChoice(std::string ChatStore::Project::* field) {
     if (site.origin.empty()) return "";
     const auto it = projects.sites.find(site.origin); return it == projects.sites.end() ? std::string() : it->second.*field;
 }
+// M: what a new session of this site gets (the choice just made, else the site's): the model when the agent still offers it
+// ("" = the agent's own), the effort when offered (else Medium).
+std::string NewSessionModel(const Acp::ConfigOption* m) { return m ? ChatOptions::ModelForNewSession(m->choices, ChatOptions::ChoiceForNewSession(pendingModel, RememberedChoice(&ChatStore::Project::model))) : std::string(); }
+std::string NewSessionEffort(const Acp::ConfigOption* e) { return e ? ChatOptions::EffortForNewSession(e->choices, ChatOptions::ChoiceForNewSession(pendingEffort, RememberedChoice(&ChatStore::Project::effort))) : std::string(); }
+// M: a mode, a model or an effort the user chose is the site's from then on — also when it was chosen before the site had
+// its folder (kept in `pending…` until a session starts: ApplyDefaults) or through another provider's model (SwitchAgent).
+void RememberSetting(std::string ChatStore::Project::* field, const std::string& id) {
+    void RememberChoices();
+    if (id.empty() || site.origin.empty() || (folder.empty() && !projects.sites.count(site.origin))) return;   // no entry without a folder: `pending…` keeps the choice
+    if (projects.sites[site.origin].*field == id) return;
+    projects.sites[site.origin].*field = id; RememberChoices();
+}
 // …and the mode: the one chosen for this site, else the agent's « ask » mode.
 std::string WantedMode(const ModeView& mv) {
     auto has = [&](const std::string& id) { for (const auto& m : mv.list) if (m.id == id) return true; return false; };
@@ -135,6 +148,7 @@ std::string WantedMode(const ModeView& mv) {
 void ApplyDefaults() {   // the site's remembered choices, else « Demander » (decision 4): never a hard-coded id, the agent's own lists
     if (!session || !sessionReady) return;
     auto& info = agentInfo[agentId];
+    RememberSetting(&ChatStore::Project::model, pendingModel); RememberSetting(&ChatStore::Project::effort, pendingEffort); RememberSetting(&ChatStore::Project::mode, pendingMode);   // M: chosen before the session — the site's from now on (every next element)
     auto choose = [&](const Acp::ConfigOption* o, std::string& wanted) {
         if (!o || wanted.empty()) { wanted.clear(); return; }
         if (wanted != o->currentValue) for (const auto& c : o->choices) if (c.value == wanted) { session->SetConfigOption(o->id, wanted); askedModel = ChatOptions::Asked{wanted, Ann::NowMs()}; break; }
@@ -161,6 +175,23 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
     if (!want.empty() && want != mv.current) { SetAgentMode(want); Diag(L"mode set to « " + W(want) + L" » (the session started in « " + W(mv.current) + L" »)"); }
     else Diag(L"mode « " + W(mv.current) + L" » kept");
     defaultsApplied = true;   // R28: from now on the composer shows the session's own values (the same, once applied)
+    choicesOwed = 0;
+}
+// M / E3: a choice made in a conversation shown aside never touched the turn that ran; that turn has ended — its session,
+// if it stays, gets the choices now (what the composer has shown since), before any next message.
+void GiveOwedChoices() {
+    const int owed = choicesOwed; choicesOwed = 0;
+    if (!owed || !session || !sessionReady) return;
+    auto& info = agentInfo[agentId];
+    if (owed & OwedModel) if (const auto* o = Acp::FindModelOption(info.options)) {
+        const std::string want = NewSessionModel(o); if (!want.empty()) pendingModel.clear();   // "": not a model of this agent (another provider's, chosen aside) — kept as it was
+        if (!want.empty() && want != o->currentValue) { session->SetConfigOption(o->id, want); askedModel = ChatOptions::Asked{want, Ann::NowMs()}; Diag(L"model set to « " + W(want) + L" » (chosen while this session's turn ran)"); } }   // i18n-exempt: log detail
+    if (owed & OwedEffort) if (const auto* e = Acp::FindEffortOption(info.options)) {
+        const std::string want = NewSessionEffort(e); pendingEffort.clear();
+        if (!want.empty() && want != e->currentValue) { session->SetConfigOption(e->id, want); askedEffort = ChatOptions::Asked{want, Ann::NowMs()}; Diag(L"effort set to « " + W(want) + L" » (chosen while this session's turn ran)"); } }   // i18n-exempt: log detail
+    if (owed & OwedMode) {
+        const auto mv = ModesOf(agentId, info); const std::string want = WantedMode(mv); pendingMode.clear();
+        if (!want.empty() && want != mv.current) { SetAgentMode(want); Diag(L"mode set to « " + W(want) + L" » (chosen while this session's turn ran)"); } }   // i18n-exempt: log detail
 }
 void OnStarted(const Acp::StartResult& r) {
     sessionStarting = false; auto& info = agentInfo[agentId]; started = r;
@@ -647,6 +678,7 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     ApplyMark(turn.markSelector.empty() ? "clear" : "working", turn.markSelector);
     if (!turn.elements.empty()) WriteAnnotations(turn.elements, words.find_first_not_of(" \t\r\n") == std::string::npos ? text : words);   // the annotation's note: what the user wrote, not the chips' technical names
     SaveConvo();
+    GiveOwedChoices();   // M: a choice still owed to this session (made aside, no turn ended since) — before its prompt, never during a turn
     EnsureSession([] { BeginSnapshotThenPrompt(); });
     Diag(L"turn " + W(turn.id) + L" started");
 }
@@ -678,6 +710,7 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     FillTurnHeader();   // D6: kept with the turn (given back after a reload, in the history)
     const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp; const bool wasBatch = turn.batch;
     turn = Turn{}; doneMarkSelector = changed && done ? markSelector : std::string();
+    GiveOwedChoices();   // M / E3: chosen aside while this turn ran
     SendState(); SyncChromeBits(); SaveConvo();
     if (wasBatch) BatchTurnEnded(stopReason);   // the card's last word: what the store says, and what is left
     {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open() && !Ann::s.paused)); Send("pick.state", std::move(p)); }

@@ -111,6 +111,8 @@ struct AgentInfo {   // what the panel shows for one agent (state.agents)
 std::map<std::string, AgentInfo> agentInfo;
 bool panelWarm = false;   // O1: the panel's page created in advance (its agent may start)
 bool defaultsApplied = false;   // R28: the browser's model / effort / mode choices are applied to the session (until then: shown as intended)
+enum : int { OwedMode = 1, OwedModel = 2, OwedEffort = 4 };
+int choicesOwed = 0;              // M / E3: a mode, model or effort chosen « aside » while this session's turn ran — it gets them when its turn ends (GiveOwedChoices)
 
 // ---------------------------------------------------------------- state
 enum class PanelState { Closed, Opening, Open, Closing };
@@ -334,16 +336,19 @@ void SendState() {
     st.Set("agents", std::move(agents)); st.Set("agentId", Str(agentId));
     const auto& info = agentInfo[agentId];
     const auto* model = Acp::FindModelOption(info.options); const auto* effort = Acp::FindEffortOption(info.options);
-    std::string WantedEffort(const Acp::ConfigOption* e); std::string WantedMode(const ModeView& mv);
+    std::string WantedEffort(const Acp::ConfigOption* e); std::string WantedMode(const ModeView& mv); std::string NewSessionModel(const Acp::ConfigOption* m); std::string NewSessionEffort(const Acp::ConfigOption* e);
+    // M (monkey 0.3.561 #78-#81): a conversation shown aside shows what ITS session will get (the user's choice, else the
+    // start value) — never the running session of the other element; the session a choice is owed to shows that choice.
     {   std::string shown = model ? ChatOptions::Shown(model->choices, model->currentValue, DefaultModelOf(agentId, model)) : std::string();
-        if (model && !pendingModel.empty()) for (const auto& c : model->choices) if (c.value == pendingModel && !ChatOptions::IsAlias(c)) shown = ChatOptions::Intended(shown, pendingModel, defaultsApplied);   // R28
-        if (model) shown = ChatOptions::ShownWhileAsked(shown, askedModel, Ann::NowMs());   // R46
+        const std::string wanted = NewSessionModel(model);
+        if (model) shown = ChatOptions::ShownWhileAsked(ChatOptions::Intended(shown, wanted, defaultsApplied), askedModel, Ann::NowMs());   // R28, R46
+        if (model) shown = ChatOptions::ShownSetting(!aside.on, (choicesOwed & OwedModel) != 0, shown, wanted);   // M / E3
         if (aside.on && !pendingModel.empty()) shown = pendingModel;   // E3: the choice of the conversation shown aside
         st.Set("model", ChatStore::ValidId(shown) ? Str(shown) : SJ::Value::Null()); }
     // efforts (V1.2): the agent's levels without its « Default »; R28: before the browser's choice is applied, that choice
     {   std::string cur = effort && !ChatOptions::IsAlias(effort->currentValue, effort->currentValue) ? effort->currentValue : std::string();
         if (effort) cur = ChatOptions::ShownWhileAsked(ChatOptions::Intended(cur, WantedEffort(effort), defaultsApplied), askedEffort, Ann::NowMs());   // R28, R46
-        if (aside.on && !pendingEffort.empty()) cur = pendingEffort;   // E3
+        if (effort) cur = ChatOptions::ShownSetting(!aside.on, (choicesOwed & OwedEffort) != 0, cur, NewSessionEffort(effort));   // M / E3
         st.Set("efforts", OptionList(effort)); st.Set("effort", effort && ChatStore::ValidId(cur) ? Str(cur) : SJ::Value::Null()); }
     {   const auto mv = ModesOf(agentId, info); SJ::Value modes = SJ::Value::Arr();
         const std::vector<ModeEntry> shown = ShownModes(mv);
@@ -351,8 +356,11 @@ void SendState() {
             if (!shown.empty() && ids != said) { said = ids; Diag(L"modes offered: " + W(ids)); } }   // R4: the QA reads it
         for (const auto& m : shown) { if (!ChatStore::ValidId(m.id)) continue; SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name));
             if (!m.description.empty()) o.Set("description", Str(ClipUtf8(m.description, 300))); o.Set("kind", Str(m.kind)); modes.Push(std::move(o)); }
+        const std::string wantedMode = WantedMode(mv);   // the user's choice (just made, else the site's), else « Demander »
         const std::string mode = aside.on && !pendingMode.empty() ? pendingMode   // E3
-                               : ChatOptions::ShownWhileAsked(ChatOptions::Intended(mv.current, WantedMode(mv), defaultsApplied), askedMode, Ann::NowMs());   // R28, R46: never the session's starting mode in between
+                               : ChatOptions::ShownSetting(!aside.on, (choicesOwed & OwedMode) != 0, ChatOptions::ShownWhileAsked(ChatOptions::Intended(mv.current, wantedMode, defaultsApplied), askedMode, Ann::NowMs()), wantedMode);   // R28, R46: never the session's starting mode in between; M / E3: nor another element's session
+        {   static std::string saidMode; const bool owed = (choicesOwed & OwedMode) != 0; const std::string now = mode + (aside.on ? " (aside)" : "") + (owed ? " (owed)" : "");   // the QA reads it: what the composer shows, and why
+            if (!mode.empty() && now != saidMode) { saidMode = now; Diag(L"mode shown: « " + W(mode) + L" »" + (aside.on ? L" — the conversation shown is aside: what its own session will get" : owed ? L" — chosen while this session's turn ran: given at its end" : L"")); } }   // i18n-exempt: log detail
         st.Set("modes", std::move(modes)); st.Set("mode", ChatStore::ValidId(mode) ? Str(mode) : SJ::Value::Null()); }
     {   const auto& shown = aside.on ? aside.c.data.head : convo.data.head; const bool running = turn.active && !aside.on;   // contract B 1.8: the conversation shown
         SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));

@@ -90,7 +90,30 @@ check('bubble.noFollow' in block_after(comment, 'void FollowBubbleElement(bool c
 apply = block_after(turn, 'void ApplyDefaults() {')
 check(apply.count('ChoiceForNewSession(') >= 2 and 'RememberedChoice(' in apply, 'E2 / M9: ApplyDefaults gives each new session the choice made, else the one remembered for the site (model and mode)')
 set_mode = block_after(ui, 'if (type == "setMode")')
-check('.mode = id' in set_mode, 'M9: a mode chosen is remembered for the site')
+check('RememberSetting(&ChatStore::Project::mode, id)' in set_mode, 'M9: a mode chosen is remembered for the site')
+
+# M (Q's monkey 0.3.561, seed 1 #78-#81: « Auto » chosen in the panel while another element's turn waited — every bubble
+# and the panel then showed « Demander »): the mode, the model and the effort chosen are kept between the panel and the
+# bubbles. A conversation shown aside shows what its own session will get, never the other element's session; the
+# session a choice is owed to gets it when its turn ends; a choice made before a session is the site's once it starts.
+host = code('chat-host.h'); state = block_after(host, 'void SendState() {')
+check(state.count('ChatOptions::ShownSetting(!aside.on, (choicesOwed & ') == 3 and all(x in state for x in ('OwedMode', 'OwedModel', 'OwedEffort', 'NewSessionModel(model)', 'NewSessionEffort(effort)', 'WantedMode(mv)')),
+      'M: the state shows the mode, the model and the effort of the conversation shown (aside: what its session will get)')
+remember = block_after(turn, 'void RememberSetting(')
+check('projects.sites[site.origin].*field = id; RememberChoices();' in remember and 'projects.sites.count(site.origin)' in remember, 'M: one way to remember a choice for the site (panel or bubble)')
+for t, f, bit in (('setModel', 'model', 'OwedModel'), ('setEffort', 'effort', 'OwedEffort'), ('setMode', 'mode', 'OwedMode')):
+    h = block_after(ui, 'if (type == "' + t + '")')
+    check('RememberSetting(&ChatStore::Project::' + f + ', id)' in h and 'choicesOwed |= ' + bit in h and '.sites[site.origin].' not in h,
+          'M: « ' + t + ' » remembers the choice for the site wherever it is made; aside, the running session is owed it')
+check(all('RememberSetting(&ChatStore::Project::' + f + ', pending' in apply for f in ('model', 'effort', 'mode')) and 'choicesOwed = 0;' in apply,
+      'M: a choice made before the session (no folder yet, another provider) is the site\'s once the session starts')
+owed = block_after(turn, 'void GiveOwedChoices() {')
+check(all(x in owed for x in ('NewSessionModel(o)', 'NewSessionEffort(e)', 'WantedMode(mv)', 'SetAgentMode(want)', 'choicesOwed = 0;')), 'M / E3: the choices made aside are given to the session whose turn ran')
+done = block_after(turn, 'void CompleteTurn(')
+check(0 <= done.find('turn = Turn{};') < done.find('GiveOwedChoices();') < done.find('SendState();'), 'M / E3: …when that turn has ended (never during it), before the state is sent')
+check('choicesOwed = 0;' in block_after(turn, 'void DisposeSession(const wchar_t* why) {'), 'M: nothing is owed to a session that left')
+start_turn = block_after(turn, 'void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch) {')
+check(0 <= start_turn.find('GiveOwedChoices();') < start_turn.find('EnsureSession('), 'M: a choice still owed is given before the next prompt of that session (what the composer shows is what the message runs with)')
 check('ChoiceForNewSession(' in block_after(turn, 'std::string WantedMode('), 'M9: the mode shown before the session (R28) is the one it will get')
 
 # E3: a bubble shown aside (another element's turn runs) never changes the running session; its choice waits for its own
