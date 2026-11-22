@@ -152,6 +152,11 @@ int wmain(int argc, wchar_t** argv) {
         Expect(!g.window.Flow().CanImport(), "3: nothing checked: Importer disabled");
         g.window.ActivateForTest(W::Primary); Expect(g.window.Flow().screen() == Screen::ImportPick && g.started == 0, "3: the disabled button does nothing");
         Expect(g.Shot(L"state-3-nothing-checked"), "render: board 3, nothing checked");
+        {
+            const auto listed = FakeSources();
+            Expect(std::wstring(UI::SourceIcon(listed[3])) == L"file" && std::wstring(UI::SourceIcon(listed[0])) == L"favicon" && std::wstring(UI::SourceIcon(listed[2])) == L"favicon", "3: « Fichier de favoris HTML… » carries the file glyph, a browser without a logo the globe");
+            Expect(GetFileAttributesW((root + L"\\assets\\icons\\file-96.png").c_str()) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW((root + L"\\assets\\icons\\favicon-96.png").c_str()) != INVALID_FILE_ATTRIBUTES, "3: both glyphs are bundled icons");
+        }
         UI::ImportPick file = none; file.browser = 3; file.bookmarks = file.history = true; g.window.SetPickForTest(file);
         Expect(g.window.Flow().CanImport(), "3: HTML file: bookmarks only, still importable");
         Expect(g.Shot(L"state-3-html-file"), "render: board 3, HTML file (no profile select, history unavailable)");

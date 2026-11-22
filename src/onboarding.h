@@ -101,6 +101,9 @@ inline const std::vector<int>& IconOrder() {
     }();
     return order;
 }
+// The glyph of a source that has no logo of its own (assets\\icons): the HTML bookmarks file is a file, anything
+// else the globe — the same two names Réglages › « Importer depuis un navigateur… » gives its list.
+inline const wchar_t* SourceIcon(const BrowserSource& s) { return s.file ? L"file" : L"favicon"; }
 // The draft of a first run: the board's sample look (heart, 200°, 88 %) under the default profile's name.
 inline Profiles::Profile PaperSeed(const std::wstring& id, const std::wstring& name) {
     Profiles::Profile p; p.id = id; p.name = name; p.icon = L"heart"; p.hue = K::PaperHue; p.intensity = K::PaperChroma; p.neutral = false; return p;
@@ -406,7 +409,7 @@ private:
     }
     void BrowserMenu(bool keyboard) {
         std::vector<ContextMenu::Item> items;
-        for (std::size_t n = 0; n < sources_.size(); ++n) { ContextMenu::Item i; i.id = static_cast<int>(n) + 1; i.label = NativeUI::EscapeMenuText(sources_[n].name); i.description = sources_[n].detail; i.enabled = sources_[n].available; i.checked = static_cast<int>(n) == pick_.browser; i.image = sources_[n].logo; if (!i.image) i.icon = L"favicon"; items.push_back(i); }
+        for (std::size_t n = 0; n < sources_.size(); ++n) { ContextMenu::Item i; i.id = static_cast<int>(n) + 1; i.label = NativeUI::EscapeMenuText(sources_[n].name); i.description = sources_[n].detail; i.enabled = sources_[n].available; i.checked = static_cast<int>(n) == pick_.browser; i.image = sources_[n].logo; if (!i.image) i.icon = SourceIcon(sources_[n]); items.push_back(i); }
         const int chosen = Menu(items, Rect(Browser), keyboard);
         if (chosen && chosen - 1 != pick_.browser) { pick_.browser = chosen - 1; pick_.profile = 0; SyncImport(); Arrange(); Invalidate(); }
     }
@@ -736,7 +739,7 @@ private:
         float x = r.left + 10;
         if (logo) {
             const D2D1_RECT_F box = Box(x, r.top + 9, 14, 14);
-            if (!DrawLogo(logo->logo, box, a)) c_->Icon(L"favicon", box, 14, .7f * a);
+            if (!DrawLogo(logo->logo, box, a)) c_->Icon(SourceIcon(*logo), box, 14, .7f * a);
             x += 14 + 6;
         }
         K::Text(*c_, value, {x, r.top + 6, r.right - 10 - 16 - 12, r.bottom}, Label(), K::Col(K::Token::text, a), DWRITE_TEXT_ALIGNMENT_LEADING, false, true);
@@ -819,7 +822,7 @@ private:
     void DrawImportFlow(int state, Motion::Time now, float alpha) {
         const auto* s = Source(); const float top = Layout::flowTop, flowLeft = Sx(Layout::flowLeft);
         const D2D1_RECT_F logo = Box(flowLeft, Sx(top + (Layout::flowH - Layout::logo) / 2), Layout::logo, Layout::logo);
-        if (!s || !DrawLogo(s->logo, logo, alpha)) c_->Icon(L"favicon", logo, Layout::logo, .7f * alpha);
+        if (!s || !DrawLogo(s->logo, logo, alpha)) c_->Icon(s ? SourceIcon(*s) : L"favicon", logo, Layout::logo, .7f * alpha);
         std::vector<D2D1_RECT_F> bars; const float first = flowLeft + Layout::logoBox + 12, y = Sx(top + (Layout::flowH - Layout::tickH) / 2);
         for (int i = 0; i < Layout::ticks; ++i) bars.push_back(Box(first + i * Layout::tickPitch, y, Layout::tick, Layout::tickH));
         const auto ink = K::Ink(draft_);
