@@ -7,7 +7,118 @@
 #include <string>
 #include <dwmapi.h>
 #include <commctrl.h>
+#include <functional>
 namespace NativeUI {
+// Typing flicker (« quand on écrit […] le texte clignote un peu », tests/ui/edit_flicker_test.cpp).
+// A native EDIT draws straight on the screen, in steps a compositor can show: its background erased
+// before the text comes back (WM_ERASEBKGND then WM_PAINT; a multi-line EDIT erases visibly), the
+// text typed before its parent answers EN_CHANGE (an inline completion appended a moment later),
+// then a placeholder its owner paints over it afterwards through GetDC. EditBuffer makes every draw
+// of the field one finished image:
+//   - the parent's WM_CTLCOLOREDIT calls Clip(): the client area is excluded from the DC the EDIT is
+//     about to draw with, so none of its own drawing reaches the screen;
+//   - once the outermost message the EDIT is handling returns (a keystroke with everything its
+//     EN_CHANGE caused, a selection drag step, a WM_SETTEXT...), or in its WM_PAINT, the EDIT draws
+//     itself again into a memory bitmap (WM_PRINTCLIENT, erase included), the overlay (placeholder)
+//     is drawn on it, and the result is copied to the screen in one BitBlt, caret hidden meanwhile.
+// Nothing about the EDIT's look changes: same pixels, its own rendering, colours from the same
+// WM_CTLCOLOREDIT. Text, caret, selection, IME, undo, clipboard and UIA stay the EDIT's own.
+// With an overlay, the field is also recomposed when it becomes empty or stops being empty.
+// Flush(): paint a pending update now (the parent has just repainted the field around it: the EDIT's
+// colour must not lag behind it until the next turn of the message loop).
+class EditBuffer {
+public:
+    using Overlay = std::function<void(HWND edit, HDC dc, const RECT& client)>;
+    static bool Attach(HWND edit, Overlay overlay = nullptr) {
+        if (!edit || Get(edit)) return false;
+        auto* s = new State; s->overlay = std::move(overlay); s->empty = GetWindowTextLengthW(edit) == 0;
+        if (!SetPropW(edit, prop, s)) { delete s; return false; }
+        if (!SetWindowSubclass(edit, Proc, subclassId, reinterpret_cast<DWORD_PTR>(s))) { RemovePropW(edit, prop); delete s; return false; }
+        return true;
+    }
+    static bool Attached(HWND edit) { return Get(edit) != nullptr; }
+    // From the parent's WM_CTLCOLOREDIT (any EDIT: those not attached are left alone).
+    static void Clip(HWND edit, HDC dc) {
+        State* s = Get(edit);
+        if (!s || s->composing || s->bypass) return;
+        RECT client{}; GetClientRect(edit, &client);
+        ExcludeClipRect(dc, client.left, client.top, client.right, client.bottom);
+        s->drew = true;
+    }
+    static void Flush(HWND edit) { if (edit && Get(edit)) RedrawWindow(edit, nullptr, nullptr, RDW_UPDATENOW); }
+    // The field needs a new image (its colours changed): composed now, no erase on the screen.
+    static void Redraw(HWND edit) { if (!edit) return; InvalidateRect(edit, nullptr, Get(edit) ? FALSE : TRUE); Flush(edit); }
+private:
+    static constexpr UINT_PTR subclassId = 0xEDB0;
+    static constexpr wchar_t prop[] = L"NativeUI.EditBuffer";
+    struct State { Overlay overlay; bool composing = false, drew = false, bypass = false, empty = true; int depth = 0; };
+    static State* Get(HWND edit) { return edit ? static_cast<State*>(GetPropW(edit, prop)) : nullptr; }
+    // Asked as a nested message (depth > 0), so the question itself never triggers another check.
+    static bool Empty(HWND h, State& s) { ++s.depth; const bool empty = GetWindowTextLengthW(h) == 0; --s.depth; return empty; }
+    static bool Compose(HWND h, State& s, HDC dc) {
+        RECT client{}; GetClientRect(h, &client);
+        const int w = client.right, ht = client.bottom;
+        if (w <= 0 || ht <= 0) return true;
+        BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(bi.bmiHeader); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -ht; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bitmap = mem ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+        if (!bitmap) {   // no memory: the EDIT repaints itself natively once rather than leave a stale field
+            if (mem) DeleteDC(mem);
+            s.bypass = true; InvalidateRect(h, nullptr, TRUE); return false;
+        }
+        HGDIOBJ old = SelectObject(mem, bitmap);
+        s.composing = true;
+        SendMessageW(h, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(mem), PRF_CLIENT | PRF_ERASEBKGND);
+        if (s.overlay) s.overlay(h, mem, client);
+        s.composing = false;
+        GdiFlush();
+        BitBlt(dc, 0, 0, w, ht, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old); DeleteObject(bitmap); DeleteDC(mem);
+        return true;
+    }
+    static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+        auto* s = reinterpret_cast<State*>(data);
+        if (msg == WM_NCDESTROY) { RemoveWindowSubclass(h, Proc, subclassId); RemovePropW(h, prop); delete s; return DefSubclassProc(h, msg, w, l); }
+        if (s->composing) return DefSubclassProc(h, msg, w, l);   // our own WM_PRINTCLIENT pass, into memory
+        if (s->bypass) {   // one native paint after an allocation failure
+            if (msg == WM_PAINT) { const LRESULT r = DefSubclassProc(h, msg, w, l); s->bypass = false; return r; }
+            return DefSubclassProc(h, msg, w, l);
+        }
+        if (msg == WM_ERASEBKGND) return 1;   // the composed image carries the erase
+        if (msg == WM_PAINT && !w) {
+            // Our BeginPaint (caret hidden until EndPaint). The EDIT runs its own paint on a DC that
+            // shows nothing (its state stays its own), then the composed field is copied in one go.
+            ++s->depth;
+            PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+            const int saved = SaveDC(dc);
+            RECT client{}; GetClientRect(h, &client); ExcludeClipRect(dc, client.left, client.top, client.right, client.bottom);
+            const LRESULT r = DefSubclassProc(h, msg, reinterpret_cast<WPARAM>(dc), l);
+            RestoreDC(dc, saved);
+            --s->depth;
+            s->drew = false; s->empty = Empty(h, *s);
+            if (!Compose(h, *s, dc)) { EndPaint(h, &ps); return r; }
+            EndPaint(h, &ps);
+            return r;
+        }
+        const bool print = msg == WM_PRINTCLIENT || msg == WM_PRINT;
+        const int saved = print && w ? SaveDC(reinterpret_cast<HDC>(w)) : 0;
+        ++s->depth;
+        const LRESULT r = DefSubclassProc(h, msg, w, l);
+        --s->depth;
+        if (print) { if (saved) RestoreDC(reinterpret_cast<HDC>(w), saved); if (s->drew) { s->drew = false; Compose(h, *s, reinterpret_cast<HDC>(w)); } return r; }
+        if (s->depth == 0 && IsWindow(h)) {
+            if (s->overlay) { const bool empty = Empty(h, *s); if (empty != s->empty) { s->empty = empty; if (IsWindowVisible(h)) s->drew = true; } }
+            if (s->drew) {
+                s->drew = false;
+                const bool caret = GetFocus() == h; if (caret) HideCaret(h);
+                HDC dc = GetDC(h); Compose(h, *s, dc); ReleaseDC(h, dc);
+                if (caret) ShowCaret(h);
+            }
+        }
+        return r;
+    }
+};
 // EDIT controls paint their own background. Match the parent's loading fill in
 // client pixels, including when the moving edge passes through the text field.
 class AddressBackground {
@@ -71,7 +182,7 @@ public:
 // own Uniscribe layout (bidi runs reordered visually, fallback fonts, scroll offset, one inclusive
 // column) and cannot be recomputed exactly outside it; EM_POSFROMCHAR also wraps at 16 bits on long
 // scrolled text. So the geometry is never recomputed here — the EDIT draws it:
-//   1. Clip(), from the parent's WM_CTLCOLOREDIT while a selection is visible: excludes the whole
+//   1. Clip(), from the parent's WM_CTLCOLOREDIT while the field has the focus: excludes the whole
 //      client area from that DC, so nothing the EDIT draws there reaches the screen;
 //   2. once the EDIT's draw is over, Compose() asks the EDIT to draw itself again (WM_PRINTCLIENT,
 //      documented) into a memory DIB of the client size — exactly what it would have shown, native
@@ -115,7 +226,11 @@ public:
     void Clip(HWND edit, HDC dc, COLORREF otherSurface = CLR_INVALID) {
         if (edit != edit_) return;
         ordinary_.ink = GetTextColor(dc); ordinary_.surfaces[0] = GetBkColor(dc); ordinary_.surfaces[1] = otherSurface;
-        if (composing_ || !Active() || !HasSelection()) return;
+        // Every draw of the focused field is composed, not only those showing a selection: a keystroke
+        // that replaces the selected inline completion must not show the typed text alone before the
+        // new completion comes back (EditBuffer, the same double buffering). The remap itself still
+        // runs only on a visible selection the remap can tell apart (Compose).
+        if (composing_ || GetFocus() != edit_) return;
         if (bypass_) return;   // until the next WM_PAINT is over (Compose could not allocate)
         RECT client{}; GetClientRect(edit_, &client);
         ExcludeClipRect(dc, client.left, client.top, client.right, client.bottom);
@@ -256,6 +371,22 @@ private:
         return r;
     }
 };
+// Ctrl+A selects the whole text of a Win32 EDIT, which has no such shortcut of its own (it ignored the
+// keystroke, then the WM_CHAR 0x01 that TranslateMessage makes of it). Ctrl+Shift+A and Ctrl+Alt+A
+// (AltGr) stay free for their own shortcuts. Any number of other subclasses can sit on the same EDIT.
+namespace SelectAllDetail {
+inline constexpr UINT_PTR subclassId=0x5E1A;   // "select all"
+inline LRESULT CALLBACK Proc(HWND edit,UINT message,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
+    switch(message){
+    case WM_KEYDOWN:if(w=='A'&&GetKeyState(VK_CONTROL)<0&&GetKeyState(VK_SHIFT)>=0&&GetKeyState(VK_MENU)>=0){SendMessageW(edit,EM_SETSEL,0,-1);return 0;}break;
+    case WM_CHAR:if(w==1)return 0;   // Ctrl+A's control character: never typed, no beep
+        break;
+    case WM_NCDESTROY:RemoveWindowSubclass(edit,Proc,subclassId);break;
+    }
+    return DefSubclassProc(edit,message,w,l);
+}
+}
+inline bool SelectAllOnCtrlA(HWND edit){return edit&&SetWindowSubclass(edit,SelectAllDetail::Proc,SelectAllDetail::subclassId,0)!=FALSE;}
 inline std::wstring EscapeMenuText(const std::wstring& text){
     std::wstring label;label.reserve(text.size());
     for(wchar_t c:text){label+=c;if(c==L'&')label+=c;}

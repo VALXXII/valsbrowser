@@ -16,6 +16,7 @@
 #include <d2d1effects.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <string>
@@ -54,7 +55,9 @@ struct Item {
 // new tab (Ctrl / Shift) or ask for its own context menu (right click, Menu key).
 // `keyboard`: chosen with Entrée / Espace / a mnemonic / UIA Invoke (not a pointer): the focus ring
 // of whatever the choice opens follows it.
-struct Choice { int id = 0; bool ctrl = false, shift = false, context = false, keyboard = false; };
+// `drag`: a row of a menu that opted in (TrackChoice's `draggable`) was dragged past the system threshold; the menu
+// closed and the host now owns that drag (the button is still down). Never set for menus that did not opt in.
+struct Choice { int id = 0; bool ctrl = false, shift = false, context = false, keyboard = false; int drag = 0; };
 inline Item Separator() { Item item; item.separator = true; return item; }
 inline Item Header(std::wstring label, std::wstring second, std::vector<std::shared_ptr<const FaviconImage>> icons, int tag = 0) {
     Item item; item.kind = Kind::Header; item.label = std::move(label); item.second = std::move(second); item.icons = std::move(icons); item.siteIcon = true; item.enabled = false; item.tag = tag; return item;
@@ -76,7 +79,7 @@ inline std::wstring Plain(const std::wstring& label, wchar_t* mnemonic = nullptr
 }
 
 namespace Layout {
-inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 24;
+inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 12;   // label to shortcut / glyph (user: half of the former 24)
 inline constexpr float radius = NativeUI::nativeCornerRadius, rowRadius = 4, text = 14, line = 20, trailing = 16, minWidth = 200, maxWidth = 440;
 inline constexpr float submenuDelayMs = 200;
 // Leading icon column (only when a row of the level has one): 16 DIP glyph, 8 DIP to the label (Paper c-99tvvr).
@@ -141,7 +144,8 @@ class Menu {
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_;
     const Item* highlighted_ = nullptr;
     std::vector<std::unique_ptr<Level>> levels_; int depth_ = 0; // open levels
-    int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_; bool keyedChoice_ = false;   // the input that drives the current pick (keyboard vs pointer)
+    int result_ = 0; bool done_ = false, reduced_ = false; Choice choice_; bool keyedChoice_ = false;
+    std::function<bool(int)> draggable_; POINT pressAt_{}; int drag_ = 0;   // opt-in row drag (bookmark menus only)   // the input that drives the current pick (keyboard vs pointer)
     std::function<void(int)> background_; // middle click on a row: open in the background, menu stays
     bool contextRows_ = false;            // right click on a row returns it with context = true
     static constexpr UINT InvokeMessage = WM_APP + 40; // UIA actions are posted, never run inside the provider call
@@ -237,25 +241,26 @@ class Menu {
         }
         flush(); return lines;
     }
-    // Content-driven width: the widest label, plus the shortcut column or a trailing glyph.
+    // Content-driven width: the widest ROW, each row being its own label plus its own trailing parts,
+    // exactly as Paint lays it out (glyph: trailing + gap; shortcut: keys + gap). A long label without a
+    // shortcut and a short one with a shortcut never add up (they did: ~395 DIP menus for ~270 of content).
     // A menu with described choices takes the fixed Paper width and wraps descriptions.
     void Measure(Level& l) {
-        float label = 0, shortcut = 0; bool glyph = false, described = false; l.icons = false;
+        bool described = false; l.icons = false;
+        for (const auto& item : *l.items) if (!item.separator) l.icons = l.icons || !item.icon.empty() || item.image != nullptr;
+        float need = 0;
         for (const auto& item : *l.items) {
             if (item.separator) continue;
             const float size = item.kind == Kind::Command ? Layout::text : Layout::small;
             float w = l.chrome.TextWidth(Plain(item.label), size) + Lead(item);
             if (!item.second.empty()) w += l.chrome.TextWidth(L"  " + item.second, Layout::small);
-            label = std::max(label, w);
-            if (!item.shortcut.empty()) shortcut = std::max(shortcut, KeysWidth(l, item.shortcut));
-            glyph = glyph || item.checked || !item.children.empty();
+            if (l.icons) w += Layout::icon + Layout::iconGap;
+            if (item.checked || !item.children.empty()) w += Layout::trailing + Layout::shortcutGap;
+            if (!item.shortcut.empty()) w += KeysWidth(l, item.shortcut) + Layout::shortcutGap;
+            need = std::max(need, w);
             described = described || !item.description.empty();
-            l.icons = l.icons || !item.icon.empty() || item.image != nullptr;
         }
-        if (l.icons) label += Layout::icon + Layout::iconGap;
-        float tail = shortcut > 0 ? Layout::shortcutGap + shortcut : 0;
-        if (glyph) tail = std::max(tail, Layout::shortcutGap + Layout::trailing);
-        l.width = std::clamp(std::ceil(2 * Layout::pad + 2 + Layout::padLeft + label + tail + Layout::padRight), Layout::minWidth, Layout::maxWidth);
+        l.width = std::clamp(std::ceil(2 * Layout::pad + 2 + Layout::padLeft + need + Layout::padRight), Layout::minWidth, Layout::maxWidth);
         if (described) l.width = std::max(l.width, Layout::describedWidth);
         const float textWidth = l.width - 2 * Layout::pad - 2 - Layout::padLeft - Layout::padRight - Layout::trailing - 10;
         l.tops.clear(); l.heights.clear(); l.descriptions.clear(); float y = Layout::pad + 1;
@@ -543,11 +548,17 @@ class Menu {
             return 0;
         case WM_MOUSEMOVE: {
             if (!l || ignorePointer) return 0;
+            // Opt-in drag: a pressed row with a draggable id, moved past the system threshold, ends the menu and hands
+            // the drag to the host (Choice::drag). Ordinary menus (no `draggable_`) never get here.
+            if (draggable_ && (w & MK_LBUTTON) && l->pressed >= 0 && l->pressed < static_cast<int>(l->items->size())) {
+                const Item& it = (*l->items)[l->pressed]; POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; ClientToScreen(h, &p);   // the message's own point
+                if (it.id && it.enabled && draggable_(it.id) && (std::abs(p.x - pressAt_.x) > GetSystemMetrics(SM_CXDRAG) || std::abs(p.y - pressAt_.y) > GetSystemMetrics(SM_CYDRAG))) { drag_ = it.id; Finish(0); return 0; }
+            }
             TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0}; TrackMouseEvent(&track);
             PointerMove(index, GET_Y_LPARAM(lp) / Scale(*l)); return 0;
         }
         case WM_MOUSELEAVE: if (l && !ignorePointer) PointerLeave(index); return 0;
-        case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); Interact(*l); } return 0;
+        case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); if (msg == WM_LBUTTONDOWN) { pressAt_ = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; ClientToScreen(h, &pressAt_); } Interact(*l); } return 0;
         case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
             if (!l) return 0;
             const int row = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); l->pressed = -1; Interact(*l);
@@ -639,11 +650,13 @@ public:
     // Bookmark menus: the whole gesture. `background` runs on a middle click without closing;
     // a right click (or the Menu key) on a row with an id returns {id, context = true}.
     bool LastChoiceKeyboard() const { return choice_.keyboard; }   // after Track(): was the pick made from the keyboard?
-    Choice TrackChoice(const std::vector<Item>& items, POINT at, const RECT* exclude, bool keyboard, bool reduced, bool alignRight, std::function<void(int)> background) {
-        background_ = std::move(background); contextRows_ = true;
+    Choice TrackChoice(const std::vector<Item>& items, POINT at, const RECT* exclude, bool keyboard, bool reduced, bool alignRight, std::function<void(int)> background,
+                       std::function<bool(int)> draggable = {}) {
+        background_ = std::move(background); contextRows_ = true; draggable_ = std::move(draggable); drag_ = 0;
         const int id = Track(items, at, exclude, keyboard, reduced, alignRight);
-        background_ = nullptr; contextRows_ = false;
-        Choice c = choice_; c.id = id; if (!id) c = {};
+        background_ = nullptr; contextRows_ = false; draggable_ = nullptr;
+        Choice c = choice_; c.id = id; if (!id) { c = {}; c.drag = drag_; }
+        drag_ = 0;
         return c;
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.

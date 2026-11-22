@@ -181,7 +181,7 @@ int wmain(int argc, wchar_t** argv) {
     {   // Host hook (browser): the shared menu through ChooseFromMenu; keyboard flag and anchor passed.
         ContextMenu::Menu shared; shared.Init(hi, owner, root);
         int hookCalls = 0; bool sawKeyboard = false; int sawCurrent = -1; RECT sawAnchor{};
-        Modal::Dialog::Hooks h; h.dismiss = [&] { shared.Cancel(); }; h.choose = [&](const std::vector<std::wstring>& o, int cur, RECT a, bool kb) { ++hookCalls; sawKeyboard = kb; sawCurrent = cur; sawAnchor = a; return Modal::ChooseFromMenu(shared, o, cur, a, kb, true); };
+        Modal::Dialog::Hooks h; h.dismiss = [&] { shared.Cancel(); }; h.choose = [&](const Modal::Select& sel, RECT a, bool kb) { ++hookCalls; sawKeyboard = kb; sawCurrent = sel.index; sawAnchor = a; return Modal::ChooseFromMenu(shared, sel, a, kb, true); };
         Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "host hook: Create");
         int calls = 0; hd.Show(Modal::ClearDataSpec(), Area(), [&](const Modal::Result&) { ++calls; });
         while (hd.FocusForTest() != D::SelectHit) hd.KeyForTest(VK_TAB);
@@ -193,7 +193,7 @@ int wmain(int argc, wchar_t** argv) {
     {   // Select::checks (« Importer depuis un navigateur… »): choosing a source rebuilds the checks with their
         // availability; a disabled check is never toggled nor in the Tab order; the error line is cleared.
         int chosen = 1;
-        Modal::Dialog::Hooks h; h.choose = [&](const std::vector<std::wstring>&, int, RECT, bool) { return chosen; };
+        Modal::Dialog::Hooks h; h.choose = [&](const Modal::Select&, RECT, bool) { return chosen; };
         Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "select checks: Create");
         auto checksFor = [](int i) {
             Modal::Check a, b, c; a.label = L"Favoris"; b.label = L"Historique"; c.label = L"Cookies et connexions";
@@ -219,6 +219,28 @@ int wmain(int argc, wchar_t** argv) {
         Check(hd.Snapshot().checks[1] && !hd.CurrentSpec().checks[1].disabled, "select checks: back to the browser, history available again");
         hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose();
         Check(calls == 1, "select checks: done once");
+    }
+    {   // Select options with a logo, a glyph fallback, a second line and disabled rows (detected browsers, part 3):
+        // the list carries them; a disabled option can never become the value, whatever the list answers.
+        int chosen = 1;
+        Modal::Dialog::Hooks h; h.choose = [&](const Modal::Select&, RECT, bool) { return chosen; };
+        Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "select rows: Create");
+        Modal::Spec spec; spec.title = L"Importer depuis un navigateur"; spec.hasSelect = true;
+        spec.select.options = {L"Comet", L"Opera", L"Fichier de favoris HTML…"};
+        auto logo = std::make_shared<NativeChrome::FaviconImage>(); logo->width = logo->height = 1; logo->stride = 4; logo->pixels = {0, 0, 255, 255};
+        spec.select.images = {logo, nullptr, nullptr}; spec.select.icons = {L"favicon", L"favicon", L"file"};
+        spec.select.descriptions = {L"", L"Installé, pas encore pris en charge", L""}; spec.select.disabled = {false, true, false};
+        spec.buttons = {Modal::Make(Modal::CancelButton, L"Annuler", Modal::Role::Secondary, false, true, false)};
+        int calls = 0; hd.Show(spec, Area(), [&](const Modal::Result&) { ++calls; });
+        const auto items = Modal::SelectItems(hd.CurrentSpec().select);
+        Check(items.size() == 3 && items[0].image == logo && items[0].enabled && items[0].checked && !items[1].enabled && items[1].description == L"Installé, pas encore pris en charge" && items[2].icon == L"file" && !items[2].image,
+              "select rows: logo, glyph, second line and disabled state reach the list");
+        hd.ActivateForTest(D::SelectHit);
+        Check(hd.Snapshot().select == 0, "select rows: a disabled option is never chosen");
+        chosen = 2; hd.ActivateForTest(D::SelectHit);
+        Check(hd.Snapshot().select == 2, "select rows: an enabled option is chosen");
+        hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose();
+        Check(calls == 1, "select rows: done once");
     }
     {   // Abort / Dispose / owner destroyed: done({-1}) once.
         int calls = 0, button = -9;
@@ -795,6 +817,28 @@ int wmain(int argc, wchar_t** argv) {
         Check(id == 7 && menu.LastChoiceKeyboard(), "menu: Entrée picks the item, choice marked keyboard");
         PostMessageW(owner, WM_KEYDOWN, VK_ESCAPE, 0);
         Check(menu.Track(items, {300, 300}, nullptr, true, true) == 0 && !menu.LastChoiceKeyboard(), "menu: dismissed, no keyboard choice");
+        menu.Dispose();
+    }
+    // Menu width (2026-11-21): a long label without a shortcut and a short one with a shortcut were added up as if they
+    // shared a row (widest label + widest shortcut), so the page/link menu came out ~395 DIP for ~270 of content.
+    // Each row now needs only its own label + its own shortcut / glyph (gap 12 DIP); the widest row sets the width.
+    {
+        ContextMenu::Menu menu; menu.Init(hi, owner, root);
+        ContextMenu::Item tools = ContextMenu::Command(14, L"Outils suppl\u00e9mentaires"); tools.children = {ContextMenu::Command(41, L"Inspecter")};
+        ContextMenu::Item annotate = ContextMenu::Command(17, L"Annoter l'\u00e9l\u00e9ment"); annotate.shortcut = L"Ctrl+Maj+A";
+        std::vector<ContextMenu::Item> items{ContextMenu::Command(11, L"Ouvrir le lien dans une nouvelle fen\u00eatre"), ContextMenu::Separator(),
+            ContextMenu::Command(12, L"Enregistrer le lien sous"), ContextMenu::Command(13, L"Copier le lien"), ContextMenu::Separator(), tools, ContextMenu::Separator(),
+            ContextMenu::Command(15, L"Imprimer\u2026"), ContextMenu::Command(16, L"Enregistrer en PDF"), ContextMenu::Separator(), annotate, ContextMenu::Separator(), ContextMenu::Command(18, L"Inspecter")};
+        static ContextMenu::Menu* probed; static float measured; probed = &menu; measured = -1;
+        const UINT_PTR timer = SetTimer(nullptr, 0, 30, [](HWND, UINT, UINT_PTR id, DWORD) {
+            if (!probed->Open()) return; KillTimer(nullptr, id);
+            HWND w = probed->LevelWindow(0); RECT r{}; GetWindowRect(w, &r); measured = (r.right - r.left) * 96.f / GetDpiForWindow(w);
+            PostMessageW(w, WM_KEYDOWN, VK_ESCAPE, 0);
+        });
+        menu.Track(items, {300, 300}, nullptr, false, true); KillTimer(nullptr, timer);
+        std::printf("     link menu width: %.0f DIP\n", measured);
+        Check(measured > 0 && measured <= 300, "menu: width follows its widest row (label + its own shortcut), not widest label + widest shortcut");
+        Check(measured >= 240, "menu: the longest label still fits on one line");
         menu.Dispose();
     }
     // ---- Settings drawer: « Autorisations du site » opens ON its view (no root page under it) --------
