@@ -401,12 +401,17 @@ public:
     bool stayForTest = false; // QA only (--qa-drawer-stays, dev builds): an app that is not in the foreground keeps its drawer
     ULONGLONG hiddenAt = 0;
     ~Drawer() { Dispose(); }
-    void Dispose() { uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false; }
+    void Dispose() {
+        // The window may outlive this object (a scope's end, the owner destroying it later): its messages
+        // then go to DefWindowProc, never to freed memory.
+        if (hwnd_) SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
+        uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false;
+    }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, const Bookmarks::Store* store, Hooks hooks) {
         owner_ = owner; store_ = store; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 1024;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarksDrawer";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         Accessibility::Host host; host.window = hwnd_;

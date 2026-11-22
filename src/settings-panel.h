@@ -1966,6 +1966,9 @@ public:
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
     void Dispose() {
+        // The window may outlive this object (a scope's end, the owner destroying it later): its messages
+        // then go to DefWindowProc, never to freed memory.
+        if (hwnd_) SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
         edit_ = nullptr; editing_ = 0; uia_.Detach(); editor_.Detach();
