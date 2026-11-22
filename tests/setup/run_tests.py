@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse, ctypes, hashlib, json, os, shutil, struct, subprocess, sys, time, traceback, winreg
 from ctypes import wintypes as W
 from pathlib import Path
+os.environ.setdefault('BROWSER_NO_ONBOARDING', '1')   # fresh installed layout: not the first-run window (src/onboarding-flow.h)
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'build' / 'setup-tests'

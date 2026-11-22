@@ -26,6 +26,7 @@ drawer) is checked for preservation (installed) and exact one-time migration (po
 from __future__ import annotations
 import hashlib, json, os, shutil, subprocess, sys, time
 from pathlib import Path
+os.environ.setdefault('BROWSER_NO_ONBOARDING', '1')   # fresh installed layout: not the first-run window (src/onboarding-flow.h)
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent

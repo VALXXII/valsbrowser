@@ -87,6 +87,7 @@ struct Hooks {
     std::function<bool(unsigned token, const ImportPick& pick, bool bookmarks, bool history)> startImport;
     std::function<void(I18n::Locale)> language;                                   // persist the choice
     std::function<void(WPARAM, LPARAM)> message;                                  // Window::HostMessage posted by the host's worker
+    std::function<void(HWND)> created;                                            // the window exists (where the worker posts)
 };
 struct Options {
     Profiles::Profile seed;                       // the draft the profile board starts from
@@ -119,9 +120,10 @@ public:
 private:
     struct Item { int id; D2D1_RECT_F r; };
     struct Layer {
-        ID2D1Bitmap* bitmap = nullptr; ID2D1RenderTarget* owner = nullptr; Onboarding::Shaders::Frame frame; bool fresh = false;
-        void Drop() { if (bitmap) { bitmap->Release(); bitmap = nullptr; } owner = nullptr; fresh = false; }
-        bool Upload(ID2D1RenderTarget* t) {
+        ID2D1Bitmap* bitmap = nullptr; ID2D1RenderTarget* owner = nullptr; Onboarding::Shaders::Frame frame; bool fresh = false; Motion::Time shaded{};
+        void Drop() { if (bitmap) { bitmap->Release(); bitmap = nullptr; } owner = nullptr; fresh = false; shaded = {}; }
+        // `part`: the pixels of `frame` that changed (the whole frame when the bitmap is new).
+        bool Upload(ID2D1RenderTarget* t, const RECT* part = nullptr) {
             if (!t || !frame.width || !frame.height) return false;
             if (bitmap && owner == t) { const auto size = bitmap->GetPixelSize(); if (size.width != frame.width || size.height != frame.height) Drop(); }
             if (!bitmap || owner != t) {
@@ -129,6 +131,9 @@ private:
                 const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
                 if (FAILED(t->CreateBitmap(D2D1::SizeU(frame.width, frame.height), frame.bgra.data(), frame.width * 4, props, &bitmap))) { bitmap = nullptr; return false; }
                 owner = t;
+            } else if (part) {
+                const D2D1_RECT_U to{static_cast<UINT32>(part->left), static_cast<UINT32>(part->top), static_cast<UINT32>(part->right), static_cast<UINT32>(part->bottom)};
+                bitmap->CopyFromMemory(&to, frame.bgra.data() + (static_cast<std::size_t>(part->top) * frame.width + part->left) * 4, frame.width * 4);
             } else bitmap->CopyFromMemory(nullptr, frame.bgra.data(), frame.width * 4);
             fresh = true; return true;
         }
@@ -305,13 +310,15 @@ private:
         if (!importAnswered_) return run;
         return importAtAnswer_ + (1 - importAtAnswer_) * EaseOut(Ms(importAnsweredAt_, now) / 250.f);
     }
-    bool Moving(Motion::Time now) const {
-        if (changing_ || entering_ || leaving_ || ShadersLoop()) return true;
+    // Something other than a shader loop is in motion (every tick is a new picture).
+    bool Animating() const {
+        if (changing_ || entering_ || leaving_) return true;
         if (std::fabs(iconScroll_ - iconScrollTarget_) > .01f) return true;
-        if (flow_.screen() == Screen::ImportRunning || flow_.screen() == Screen::Outro) return true;
+        if (flow_.screen() == Screen::ImportRunning) return true;
         for (const auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f; if (std::fabs(g.second - want) > .001f) return true; }
-        (void)now; return false;
+        return false;
     }
+    bool Moving() const { return Animating() || ShadersLoop() || flow_.screen() == Screen::Outro; }
     void Step() {
         const auto now = Motion::Now(); const float dt = lastStep_ == Motion::Time{} ? 16 : std::min(100.f, Ms(lastStep_, now)); lastStep_ = now;
         if (entering_) { const float u = Motion::Clamp(Ms(opened_, now) / 150.f); PopupKit::SetAlpha(hwnd_, u); if (u >= 1) entering_ = false; }
@@ -320,13 +327,15 @@ private:
             PopupKit::SetAlpha(hwnd_, 1 - u);
             if (u >= 1) { done_ = true; leaving_ = false; PostMessageW(hwnd_, WM_NULL, 0, 0); return; }
         }
-        if (changing_ && Change(now) >= 1) { changing_ = false; from_ = shown_; }
+        if (changing_ && Change(now) >= 1) { changing_ = false; from_ = shown_; Invalidate(); }
         for (auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f, step = dt / 120.f; g.second = want > g.second ? std::min(want, g.second + step) : std::max(want, g.second - step); }
-        if (std::fabs(iconScroll_ - iconScrollTarget_) > .01f) { iconScroll_ += (iconScrollTarget_ - iconScroll_) * std::min(1.f, dt / 60.f); if (std::fabs(iconScroll_ - iconScrollTarget_) < .3f) iconScroll_ = iconScrollTarget_; Arrange(); }
+        if (std::fabs(iconScroll_ - iconScrollTarget_) > .01f) { iconScroll_ += (iconScrollTarget_ - iconScroll_) * std::min(1.f, dt / 60.f); if (std::fabs(iconScroll_ - iconScrollTarget_) < .3f) iconScroll_ = iconScrollTarget_; Arrange(); Invalidate(); }
+        bool settling = false; for (const auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f; if (std::fabs(g.second - want) <= .001f && g.second != want) settling = true; }
+        if (settling) Invalidate();
         if (flow_.screen() == Screen::ImportRunning && importAnswered_ && Ms(importAnsweredAt_, now) >= 250 && Ms(importStarted_, now) >= (options_.reduced ? 300 : 900)) ApplyImport();
         if (flow_.screen() == Screen::Outro && !leaving_ && Ms(outroStart_, now) >= Onboarding::OutroMs(options_.reduced)) { const Screen before = flow_.screen(); flow_.OutroDone(); Changed(before); }
-        Invalidate();
-        if (Moving(now)) RequestFrame(); else if (!clockOk_) KillTimer(hwnd_, 1);
+        if (Animating() || (ShadersLoop() && ShadeDue(now))) Invalidate();   // a tick with nothing new to show paints nothing
+        if (Moving()) RequestFrame(); else if (!clockOk_) KillTimer(hwnd_, 1);
     }
 
     // ---- flow events ----
@@ -571,8 +580,26 @@ private:
         }
         const unsigned ow = static_cast<unsigned>(std::lround(w * scale)), oh = static_cast<unsigned>(std::lround(h * scale));
         const bool current = layer.bitmap && layer.owner == t && layer.frame.width == ow && layer.frame.height == oh;
-        if (current && !loops) return;
-        if (gpu_.Render(kind, u, w, h, ow, oh, layer.frame)) layer.Upload(t); else if (!current) layer.Drop();
+        if (current && (!loops || !Due(id, now))) return;
+        // The halftone's loop only moves the dots of the logo (the picture box, 0.46 of the node's width, plus one
+        // cell): the grain around it is the same every frame, so only that square is drawn and read back.
+        RECT part{0, 0, static_cast<LONG>(ow), static_cast<LONG>(oh)}; const bool halftone = id == HalftoneWelcome || id == HalftoneOutro;
+        if (halftone && current) { const float half = (721 * .46f + 28) / 2 * scale, cx = ow / 2.f, cy = oh / 2.f; part = {static_cast<LONG>(std::floor(cx - half)), static_cast<LONG>(std::floor(cy - half)), static_cast<LONG>(std::ceil(cx + half)), static_cast<LONG>(std::ceil(cy + half))}; }
+        if (gpu_.Render(kind, u, w, h, ow, oh, layer.frame, &part)) { layer.Upload(t, current ? &part : nullptr); layer.shaded = now; } else if (!current) layer.Drop();
+    }
+    // Loop pacing: frames come at the display's rate (src/frame-clock.h); a layer is drawn again on the first
+    // tick after its own period. The halftone lattice travels about 1.3 px per second and the gradient's wave
+    // takes half a minute: 30 pictures a second show both without a visible step; the small gem follows the display.
+    static float PeriodMs(LayerId id) { return id == Gem ? 0.f : 1000.f / 30; }
+    bool Due(LayerId id, Motion::Time now) const { const Layer& l = layers_[id]; return l.shaded == Motion::Time{} || Ms(l.shaded, now) >= PeriodMs(id) - 3; }
+    bool ShadeDue(Motion::Time now) const {
+        for (Screen s : {shown_, changing_ ? from_ : shown_}) {
+            if (s == Screen::Welcome && Due(HalftoneWelcome, now)) return true;
+            if (s == Screen::Outro && Due(HalftoneOutro, now)) return true;
+            if (s == Screen::Annotation && Due(Grain, now)) return true;
+            if ((s == Screen::ImportRunning || s == Screen::ImportDone || s == Screen::ImportError) && Due(Gem, now)) return true;
+        }
+        return false;
     }
     void DrawLayer(LayerId id, D2D1_RECT_F to, float alpha) {
         const Layer& l = layers_[id]; auto* t = c_->RenderTarget();
@@ -1023,10 +1050,12 @@ private:
             pressed_ = id; focus_ = id; Invalidate(); return 0;
         }
         case WM_LBUTTONUP: {
+            // What was pressed is read first: releasing the capture sends WM_CAPTURECHANGED, which forgets it.
+            const int was = pressed_, slider = dragging_; pressed_ = None; dragging_ = None;
             if (GetCapture() == h) ReleaseCapture();
-            const float x = GET_X_LPARAM(l) / s, y = GET_Y_LPARAM(l) / s;
-            if (dragging_) { dragging_ = None; Invalidate(); return 0; }
-            const int id = Hit(x, y), was = pressed_; pressed_ = None; Invalidate();
+            const float x = GET_X_LPARAM(l) / s, y = GET_Y_LPARAM(l) / s; Invalidate();
+            if (slider) return 0;
+            const int id = Hit(x, y);
             if (id && id == was) Activate(id, false);
             return 0;
         }
@@ -1039,6 +1068,9 @@ private:
             }
             return 0;
         }
+        case WM_SETCURSOR:
+            if (LOWORD(l) == HTCLIENT && hover_ == Name && reinterpret_cast<HWND>(w) == h) { SetCursor(LoadCursor(nullptr, IDC_IBEAM)); return TRUE; }   // the name is a text field
+            break;
         case WM_KEYDOWN: Key(w); return 0;
         case WM_SYSKEYDOWN: if (w == VK_F4) { Activate(Close, true); return 0; } break;
         case WM_SIZE: if (w != SIZE_MINIMIZED) { lastStep_ = {}; RequestFrame(); } return 0;
@@ -1057,6 +1089,8 @@ public:
     HWND Handle() const { return hwnd_; }
     const Onboarding::Flow& Flow() const { return flow_; }
     const Profiles::Profile& Draft() const { return draft_; }
+    // The import the window is waiting for (0: none). The host writes nothing for any other token.
+    unsigned ImportToken() const { return flow_.screen() == Screen::ImportRunning && !importAnswered_ ? importToken_ : 0; }
     // The host's answer to Hooks::startImport (UI thread). Results of a cancelled or older import are ignored.
     void ImportFinished(unsigned token, const ImportOutcome& outcome) {
         if (!token || token != importToken_ || flow_.screen() != Screen::ImportRunning || importAnswered_) return;
@@ -1074,6 +1108,7 @@ public:
         RegisterClassExW(&wc);
         hwnd_ = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_LAYERED, wc.lpszClassName, TR(onboarding_welcome_title), WS_POPUP | WS_CLIPCHILDREN | WS_MINIMIZEBOX | WS_SYSMENU, 0, 0, 1, 1, nullptr, nullptr, instance, this);
         if (!hwnd_) return result;
+        if (options_.hooks.created) options_.hooks.created(hwnd_);
         NativeUI::ConfigureFullClientFrame(hwnd_);
         const int noBackdrop = 1; DwmSetWindowAttribute(hwnd_, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &noBackdrop, sizeof(noBackdrop));
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
@@ -1108,6 +1143,7 @@ public:
         shown_ = from_ = Screen::Welcome; RevealIcon(false);
     }
     void ActivateForTest(int id) { Arrange(); Activate(id, true); }
+    void SetLanguageForTest(I18n::Locale l) { SetLanguage(l); }   // what the language menu does with its answer
     bool KeyForTest(WPARAM key) { Arrange(); return Key(key); }
     int FocusForTest() const { return focus_; }
     void SetProgressForTest(float fraction) { progressForTest_ = fraction; }

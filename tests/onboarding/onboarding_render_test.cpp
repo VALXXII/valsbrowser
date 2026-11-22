@@ -157,6 +157,17 @@ int wmain(int argc, wchar_t** argv) {
         Expect(g.Shot(L"state-3-html-file"), "render: board 3, HTML file (no profile select, history unavailable)");
         g.window.ActivateForTest(W::SkipStep); Expect(g.window.Flow().screen() == Screen::Annotation, "3: Passer -> board 6");
         g.window.KeyForTest(VK_ESCAPE); Expect(g.window.Flow().screen() == Screen::Closed && g.window.Flow().ending() == Onboarding::Ending::Skipped, "Échap: straight to the browser");
+        // The language picker: the process language changes at once, the host is told, an untouched default name follows.
+        {
+            Fixture l; l.root = root; l.out = out; l.Setup(); l.window.SetDraftForTest(UI::PaperSeed(L"default", Profiles::DefaultName()));
+            l.window.SetLanguageForTest(I18n::Locale::En);
+            Expect(I18n::Current() == I18n::Locale::En && l.language == I18n::Locale::En, "language picker: English at once, preference handed to the host");
+            Expect(l.window.Draft().name == L"Personal", "language picker: the untouched default name follows the language");
+            l.window.SetLanguageForTest(I18n::Locale::En); Expect(I18n::Current() == I18n::Locale::En, "language picker: same language again changes nothing");
+            Profiles::Profile named = UI::PaperSeed(L"default", L"Alex"); l.window.SetDraftForTest(named);
+            l.window.SetLanguageForTest(I18n::Locale::Fr);
+            Expect(I18n::Current() == I18n::Locale::Fr && l.language == I18n::Locale::Fr && l.window.Draft().name == L"Alex", "language picker: back to French, a name the person typed is kept");
+        }
         Fixture h; h.root = root; h.out = out; h.Setup(false);
         h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::SkipStep);
         Expect(h.window.Flow().screen() == Screen::Outro, "no annotation mode in the build: board 6 is skipped");

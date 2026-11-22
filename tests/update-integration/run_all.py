@@ -131,6 +131,14 @@ def existing_fixtures() -> None:
     fixture('history_panel_test', [*STRICT, '-municode', *TVG, 'tests/history/history_panel_test.cpp', 'src/native-lottie.cpp', THORVG,
             '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
             [ROOT, history_evidence])
+    # First-run onboarding (Paper p-R-0): the flow, the first-run rule and the motion policy (pure), then the seven
+    # boards drawn off screen by the production window at 96 and 120 DPI (shaders on Direct3D, WARP without a GPU),
+    # with the Paper geometry, keyboard order, events and both languages. Real window: tests/onboarding/qa.py.
+    fixture('onboarding_flow_test', [*STRICT, 'tests/onboarding/onboarding_flow_test.cpp'])
+    onboarding_evidence = ROOT / 'build/onboarding-render'
+    onboarding_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('onboarding_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/onboarding_render_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, onboarding_evidence])
 
 
 def peer_suites() -> None:

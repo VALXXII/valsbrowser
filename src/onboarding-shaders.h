@@ -14,6 +14,8 @@
 //    one lattice step (`drift`), which gives back the very same picture — a seamless loop with no blend.
 //  * Hardware device first; WARP (software) only renders still frames (Animated() is false): 36 texture reads
 //    per pixel is not something to run on the CPU at the display's rate.
+//  * Cost: each node keeps its own targets, so a frame of the loop can redraw and read back only the part
+//    that moves (`region`: the logo of the halftone, a fifth of the node; the grain around it never changes).
 //  * The compiler (d3dcompiler_47.dll, part of Windows) is loaded on demand; any failure leaves Ready() false
 //    and the caller falls back to the plain artwork.
 #include <windows.h>
@@ -460,8 +462,18 @@ class Renderer {
     ID3D11Buffer* constants_ = nullptr; ID3D11SamplerState* sampler_ = nullptr; ID3D11RasterizerState* raster_ = nullptr;
     ID3D11ShaderResourceView* inputs_[3] = {};
     struct Target { ID3D11Texture2D* texture = nullptr; ID3D11RenderTargetView* view = nullptr; ID3D11ShaderResourceView* read = nullptr; unsigned w = 0, h = 0; };
-    Target canvas_, out_; ID3D11Texture2D* staging_ = nullptr; unsigned stagingW_ = 0, stagingH_ = 0;
+    // One set of targets per node size: its last frame stays there, so a partial redraw has something to keep.
+    struct Surface { Kind kind = Kind::Halftone; Target canvas, out; ID3D11Texture2D* staging = nullptr; unsigned stagingW = 0, stagingH = 0; bool drawn = false; };
+    std::vector<Surface> surfaces_; ID3D11RasterizerState* scissor_ = nullptr;
     bool ready_ = false, hardware_ = false; std::string error_;
+    void Free(Surface& s) { for (Target* t : {&s.canvas, &s.out}) { Detail::Release(t->read); Detail::Release(t->view); Detail::Release(t->texture); t->w = t->h = 0; } Detail::Release(s.staging); s.stagingW = s.stagingH = 0; s.drawn = false; }
+    Surface* SurfaceFor(Kind kind, unsigned cw, unsigned ch, unsigned ow, unsigned oh) {
+        for (auto& s : surfaces_) if (s.kind == kind && s.canvas.w == cw && s.canvas.h == ch && s.out.w == ow && s.out.h == oh) return &s;
+        if (surfaces_.size() >= 6) { Free(surfaces_.front()); surfaces_.erase(surfaces_.begin()); }   // a DPI change leaves old sizes behind
+        Surface s; s.kind = kind;
+        if (!MakeTarget(s.canvas, cw, ch) || !MakeTarget(s.out, ow, oh)) { Free(s); return nullptr; }
+        surfaces_.push_back(s); return &surfaces_.back();
+    }
 
     bool MakeTarget(Target& t, unsigned w, unsigned h) {
         if (t.texture && t.w == w && t.h == h) return true;
@@ -479,17 +491,18 @@ class Renderer {
         if (errors) errors->Release();
         return SUCCEEDED(hr);
     }
-    void Draw(ID3D11PixelShader* ps, ID3D11ShaderResourceView* input, const Target& to, const Uniforms& u) {
+    // `part`: only these pixels of the target are drawn again (the rest keeps the previous frame).
+    void Draw(ID3D11PixelShader* ps, ID3D11ShaderResourceView* input, const Target& to, const Uniforms& u, const D3D11_RECT* part = nullptr) {
         context_->UpdateSubresource(constants_, 0, nullptr, &u, 0, 0);
         ID3D11ShaderResourceView* none = nullptr; context_->PSSetShaderResources(0, 1, &none);
         context_->OMSetRenderTargets(1, &to.view, nullptr);
         D3D11_VIEWPORT vp{0, 0, static_cast<float>(to.w), static_cast<float>(to.h), 0, 1}; context_->RSSetViewports(1, &vp);
-        context_->RSSetState(raster_);
+        if (part) { context_->RSSetScissorRects(1, part); context_->RSSetState(scissor_); } else context_->RSSetState(raster_);
         context_->IASetInputLayout(nullptr); context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context_->VSSetShader(vs_, nullptr, 0); context_->VSSetConstantBuffers(0, 1, &constants_);
         context_->PSSetShader(ps, nullptr, 0); context_->PSSetConstantBuffers(0, 1, &constants_);
         context_->PSSetSamplers(0, 1, &sampler_); context_->PSSetShaderResources(0, 1, &input);
-        const float clear[4] = {0, 0, 0, 0}; context_->ClearRenderTargetView(to.view, clear);
+        const float clear[4] = {0, 0, 0, 0}; if (!part) context_->ClearRenderTargetView(to.view, clear);
         context_->Draw(3, 0);
         ID3D11RenderTargetView* noTarget = nullptr; context_->OMSetRenderTargets(1, &noTarget, nullptr);
     }
@@ -502,11 +515,12 @@ public:
     const std::string& Error() const { return error_; }
     void Dispose() {
         using Detail::Release;
-        Release(staging_); for (Target* t : {&canvas_, &out_}) { Release(t->read); Release(t->view); Release(t->texture); t->w = t->h = 0; }
+        for (auto& s : surfaces_) Free(s);
+        surfaces_.clear(); Release(scissor_);
         for (auto& i : inputs_) Release(i);
         for (auto& p : ps_) Release(p);
         Release(down_); Release(vs_); Release(constants_); Release(sampler_); Release(raster_); Release(context_); Release(device_);
-        ready_ = false; stagingW_ = stagingH_ = 0;
+        ready_ = false;
     }
     // `forceSoftware`: tests of the fallback path.
     bool Init(bool forceSoftware = false) {
@@ -537,7 +551,7 @@ public:
             D3D11_SAMPLER_DESC s{}; s.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR; s.AddressU = s.AddressV = s.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; s.MaxLOD = D3D11_FLOAT32_MAX; s.ComparisonFunc = D3D11_COMPARISON_NEVER;
             ok = SUCCEEDED(device_->CreateSamplerState(&s, &sampler_));
         }
-        if (ok) { D3D11_RASTERIZER_DESC r{}; r.FillMode = D3D11_FILL_SOLID; r.CullMode = D3D11_CULL_NONE; r.DepthClipEnable = TRUE; ok = SUCCEEDED(device_->CreateRasterizerState(&r, &raster_)); }
+        if (ok) { D3D11_RASTERIZER_DESC r{}; r.FillMode = D3D11_FILL_SOLID; r.CullMode = D3D11_CULL_NONE; r.DepthClipEnable = TRUE; ok = SUCCEEDED(device_->CreateRasterizerState(&r, &raster_)); r.ScissorEnable = TRUE; ok = ok && SUCCEEDED(device_->CreateRasterizerState(&r, &scissor_)); }
         if (!ok) { if (error_.empty()) error_ = "Direct3D resources"; const std::string keep = error_; Dispose(); error_ = keep; return false; }
         ready_ = true; return true;
     }
@@ -557,27 +571,39 @@ public:
     bool HasInput(Kind kind) const { return inputs_[static_cast<int>(kind)] != nullptr; }
     // Renders `kind` for a node of `cssWidth` x `cssHeight` CSS pixels (DIP) shown on `outWidth` x `outHeight`
     // device pixels. Canvas resolution as the library: max(devicePixelRatio, 2) per CSS pixel.
-    bool Render(Kind kind, Uniforms u, float cssWidth, float cssHeight, unsigned outWidth, unsigned outHeight, Frame& frame) {
+    // `region` (device pixels, in/out): when the node was already rendered at this size into `frame`, only that
+    // part is drawn and read back; otherwise the whole node is, and `region` comes back as the whole frame.
+    bool Render(Kind kind, Uniforms u, float cssWidth, float cssHeight, unsigned outWidth, unsigned outHeight, Frame& frame, RECT* region = nullptr) {
         if (!ready_ || !outWidth || !outHeight || cssWidth <= 0 || cssHeight <= 0 || !HasInput(kind)) return false;
         const float dpr = outWidth / cssWidth, ratio = std::max(dpr, 2.f);
         const unsigned cw = std::min<unsigned>(4096, static_cast<unsigned>(std::lround(std::round(cssWidth) * ratio))), ch = std::min<unsigned>(4096, static_cast<unsigned>(std::lround(std::round(cssHeight) * ratio)));
-        if (!MakeTarget(canvas_, cw, ch) || !MakeTarget(out_, outWidth, outHeight)) return false;
+        Surface* s = SurfaceFor(kind, cw, ch, outWidth, outHeight); if (!s) return false;
+        RECT part{0, 0, static_cast<LONG>(outWidth), static_cast<LONG>(outHeight)};
+        const bool partial = region && s->drawn && frame.width == outWidth && frame.height == outHeight && frame.bgra.size() == static_cast<std::size_t>(outWidth) * outHeight * 4;
+        if (partial) { part.left = std::clamp<LONG>(region->left, 0, outWidth); part.top = std::clamp<LONG>(region->top, 0, outHeight); part.right = std::clamp<LONG>(region->right, part.left, outWidth); part.bottom = std::clamp<LONG>(region->bottom, part.top, outHeight); }
+        if (region) *region = part;
+        const unsigned pw = static_cast<unsigned>(part.right - part.left), ph = static_cast<unsigned>(part.bottom - part.top); if (!pw || !ph) return true;
         u.resolution[0] = static_cast<float>(cw); u.resolution[1] = static_cast<float>(ch); u.pixelRatio = cw / std::round(cssWidth);
-        Draw(ps_[static_cast<int>(kind)], inputs_[static_cast<int>(kind)], canvas_, u);
+        const float kx = static_cast<float>(cw) / outWidth, ky = static_cast<float>(ch) / outHeight;
+        const D3D11_RECT canvasPart{std::max<LONG>(0, static_cast<LONG>(std::floor(part.left * kx)) - 2), std::max<LONG>(0, static_cast<LONG>(std::floor(part.top * ky)) - 2), std::min<LONG>(cw, static_cast<LONG>(std::ceil(part.right * kx)) + 2), std::min<LONG>(ch, static_cast<LONG>(std::ceil(part.bottom * ky)) + 2)};
+        const D3D11_RECT outPart{part.left, part.top, part.right, part.bottom};
+        Draw(ps_[static_cast<int>(kind)], inputs_[static_cast<int>(kind)], s->canvas, u, partial ? &canvasPart : nullptr);
         Uniforms d; d.p0[0] = 1.f / outWidth; d.p0[1] = 1.f / outHeight; d.p0[2] = (cw == outWidth * 2 && ch == outHeight * 2) || (cw == outWidth && ch == outHeight) ? 0.f : 1.f;
-        Draw(down_, canvas_.read, out_, d);
-        if (!staging_ || stagingW_ != outWidth || stagingH_ != outHeight) {
-            Detail::Release(staging_);
-            D3D11_TEXTURE2D_DESC s{}; s.Width = outWidth; s.Height = outHeight; s.MipLevels = 1; s.ArraySize = 1; s.Format = DXGI_FORMAT_B8G8R8A8_UNORM; s.SampleDesc.Count = 1; s.Usage = D3D11_USAGE_STAGING; s.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            if (FAILED(device_->CreateTexture2D(&s, nullptr, &staging_))) return false;
-            stagingW_ = outWidth; stagingH_ = outHeight;
+        Draw(down_, s->canvas.read, s->out, d, partial ? &outPart : nullptr);
+        s->drawn = true;
+        if (!s->staging || s->stagingW != pw || s->stagingH != ph) {
+            Detail::Release(s->staging);
+            D3D11_TEXTURE2D_DESC t{}; t.Width = pw; t.Height = ph; t.MipLevels = 1; t.ArraySize = 1; t.Format = DXGI_FORMAT_B8G8R8A8_UNORM; t.SampleDesc.Count = 1; t.Usage = D3D11_USAGE_STAGING; t.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(device_->CreateTexture2D(&t, nullptr, &s->staging))) { s->staging = nullptr; return false; }
+            s->stagingW = pw; s->stagingH = ph;
         }
-        context_->CopyResource(staging_, out_.texture);
+        const D3D11_BOX box{static_cast<UINT>(part.left), static_cast<UINT>(part.top), 0, static_cast<UINT>(part.right), static_cast<UINT>(part.bottom), 1};
+        context_->CopySubresourceRegion(s->staging, 0, 0, 0, 0, s->out.texture, 0, &box);
         D3D11_MAPPED_SUBRESOURCE map{};
-        if (FAILED(context_->Map(staging_, 0, D3D11_MAP_READ, 0, &map))) { if (device_->GetDeviceRemovedReason() != S_OK) { ready_ = false; error_ = "device removed"; } return false; }
-        frame.width = outWidth; frame.height = outHeight; frame.bgra.resize(static_cast<std::size_t>(outWidth) * outHeight * 4);
-        for (unsigned y = 0; y < outHeight; ++y) std::memcpy(frame.bgra.data() + static_cast<std::size_t>(y) * outWidth * 4, static_cast<const std::uint8_t*>(map.pData) + static_cast<std::size_t>(y) * map.RowPitch, static_cast<std::size_t>(outWidth) * 4);
-        context_->Unmap(staging_, 0);
+        if (FAILED(context_->Map(s->staging, 0, D3D11_MAP_READ, 0, &map))) { if (device_->GetDeviceRemovedReason() != S_OK) { ready_ = false; error_ = "device removed"; } return false; }
+        if (!partial) { frame.width = outWidth; frame.height = outHeight; frame.bgra.resize(static_cast<std::size_t>(outWidth) * outHeight * 4); }
+        for (unsigned y = 0; y < ph; ++y) std::memcpy(frame.bgra.data() + (static_cast<std::size_t>(part.top + y) * outWidth + part.left) * 4, static_cast<const std::uint8_t*>(map.pData) + static_cast<std::size_t>(y) * map.RowPitch, static_cast<std::size_t>(pw) * 4);
+        context_->Unmap(s->staging, 0);
         return true;
     }
 };
