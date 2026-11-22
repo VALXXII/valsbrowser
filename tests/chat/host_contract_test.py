@@ -280,6 +280,9 @@ check('opening time: click -> host' in block_after(comment, 'void RevealBubble(c
 # H2 6e60162: a « selecting » measured in another viewport is never shown on that rectangle — the page's first measure
 check('StaleViewport(env.vw, env.vh' in block_after(comment, 'bool OpenEarly(') and 'if (bubble.holdForMeasure)' in block_after(comment, 'void RevealBubble(const wchar_t* why) {') and 'released' in block_after(comment, 'void OnAnchor('), 'selecting: a stale rectangle waits for the first anchor')
 
+# monkey 0.3.561: a click over another element's open bubble opens at the click
+check('EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)' in block_after(comment, 'bool OpenEarly('), 'monkey: a click over another element open bubble opens at the click')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

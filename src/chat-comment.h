@@ -1006,8 +1006,12 @@ std::string LabelOfSelector(const std::string& s) {
 void CancelKeyboardBack() { if (bubble.hwnd && keyboardTries > 0) { KillTimer(bubble.hwnd, 0xB3); keyboardTries = 0; Diag(L"a click in the page: the keyboard stays with it"); } }   // case 3   // i18n-exempt: log detail
 bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& env) {
     CancelKeyboardBack();
-    if (!t || !CommentFirst(t) || env.selector.empty() || bubble.open || Ann::NowMs() - bubble.closedAt < 400) return false;
+    if (!t || !CommentFirst(t) || env.selector.empty() || Ann::NowMs() - bubble.closedAt < 400) return false;
+    // monkey 0.3.561 (div.plans 597 ms): a bubble open on ANOTHER element no longer waits for the full selection — the click
+    // opens its element's bubble now (as TakeCommentSelection does later); a click on the open bubble's own element is left to it
+    if (!ChatBubble::EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)) return false;
     PrepareChat(t);
+    if (bubble.open) { Diag(L"a click on another element: its bubble opens (at the click)"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
     const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
     const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);

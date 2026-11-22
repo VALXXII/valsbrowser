@@ -339,4 +339,10 @@ inline bool StaleViewport(double vw, double vh, double areaWcss, double areaHcss
     if (vw <= 0 || vh <= 0) return false;
     return std::abs(vw - areaWcss) > 2 || std::abs(vh - areaHcss) > 2;
 }
+// Monkey 0.3.561: the click's early opening (« selecting ») — no bubble open, or one open on another element (its bubble
+// opens at the click); the open bubble's own element (or a bubble whose selector is unknown) waits for the full selection.
+inline bool EarlyOpenAllowed(bool open, const std::string& openSelector, const std::string& clicked) {
+    if (clicked.empty()) return false;
+    return !open || (!openSelector.empty() && openSelector != clicked);
+}
 } // namespace ChatBubble

@@ -666,6 +666,9 @@ static void TestBubble() {
             Check(p.side == Side::Inside && FullyVisible(plan, area) && p.rect.left == plans.left + px(12) && p.slid > 0,
                   "Q r06 / M15: div.plans 300 px with a conversation of 520 — over the element, its left corner (12 px), whole in the visible area");
         } }
+    // monkey 0.3.561 (div.plans 597 ms with a bubble open on div.hero-visual): the early opening also when another element's bubble is open
+    Check(EarlyOpenAllowed(false, "", "div.plans") && EarlyOpenAllowed(true, "div.hero-visual", "div.plans"), "selecting: opens at the click, also over another element's open bubble");
+    Check(!EarlyOpenAllowed(true, "div.plans", "div.plans") && !EarlyOpenAllowed(true, "", "div.plans") && !EarlyOpenAllowed(false, "", ""), "selecting: the open bubble's own element (or an unknown one) waits for the full selection");
     // H2 6e60162: a « selecting » measured in another viewport (the panel had just closed: the page was 400 CSS px narrower)
     {   Check(StaleViewport(1070, 665, 1470, 665) && StaleViewport(1470, 600, 1470, 665), "selecting: measured in another viewport — the bubble waits for the page's first measure");
         Check(!StaleViewport(1470, 665, 1470.8, 664.4) && !StaleViewport(0, 0, 1470, 665), "selecting: the same viewport (to 2 CSS px), or none said — shown on that rectangle"); }
