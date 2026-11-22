@@ -51,7 +51,7 @@ Les captures montrent par endroits le widget d'une autre application (heure, bou
 | F5 | R18 (ouverture < 150 ms) | `m5_bascule_puis_clic` 3e essai : 152 ms. Tests aléatoires, « bascule puis clic » : 166 à 235 ms, et un clic sur div.plans à **597 ms** (monkey-2 #189). Les ouvertures sans bascule sont à 25 à 90 ms | Réduire le temps entre une bascule de disposition et le premier clic (page de la bulle déjà prête après la bascule) ; repérer la cause des 597 ms dans le journal d'ouverture | H |
 | F6 | Message affiché là où il a été envoyé | monkey-2 #29, monkey-3 #63 et #70 : après un envoi dans la bulle, le message n'est pas montré dans la conversation de cette bulle | Retrouver la conversation de l'envoi dans le journal et la page ; le message doit apparaître tout de suite dans la bulle d'où il part | H (P si la page le reçoit sans l'afficher) |
 | F7 | Accessibilité de la fenêtre | monkey-3 #214 : après une molette, l'arbre UI Automation de la fenêtre principale passe de 113 à 22 éléments | Retrouver ce qui coupe l'arbre (fenêtre de la bulle ou région ajoutée devant la page) et le rétablir | H |
-| F8 | R22 | `+` garde `aria-haspopup="menu"` alors qu'il ouvre directement le choix d'image (défaut 8 de la passe 1, pas de correctif trouvé) | Retirer `aria-haspopup` et `aria-expanded` du « + » quand il n'ouvre pas de menu | P |
+| F8 | R22 | **Corrigé** (P, 6059e55) : `panel.js` l. 567-568 retire `aria-haspopup` et `aria-expanded` quand « + » n'a qu'une action, et les remet quand il y a un vrai menu. Vérifié dans le code ; à reconfirmer dans la passe finale de Q | — | P |
 
 ### À trancher ou à vérifier (pas comptés comme défauts)
 
