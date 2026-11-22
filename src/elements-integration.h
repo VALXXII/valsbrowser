@@ -398,6 +398,27 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
     OP::Spec spec;spec.kind=OP::Kind::Permission;spec.origin=OriginLabel(uri);spec.permissions={(int)kind};spec.userInitiated=user!=FALSE;
     const std::wstring key=OriginOf(uri);Log(L"PERMISSION request kind="+std::to_wstring(kind)+L" "+key);
+    if(kind==COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS)DownloadNavigationAsked(t,uri);   // the navigation that waits for it is a download
+    // Persistent storage only keeps the site's own data from automatic eviction when the disk is
+    // short: Chrome and Edge never ask about it, and x.com asked on every visit. User decision
+    // 2026-11-17: allowed silently, never saved in the profile (no lasting « autorisé » chip).
+    if((int)kind==SiteRequest::Kind::PersistentStorage){
+        args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+        {Com<ICoreWebView2PermissionRequestedEventArgs3> a3;if(SUCCEEDED(args->QueryInterface(IID_ICoreWebView2PermissionRequestedEventArgs3,(void**)&a3.p))&&a3.p)a3->put_SavesInProfile(FALSE);}
+        Log(L"PERMISSION kind=13 allowed silently");deferral->Complete();return S_OK;
+    }
+    // The same document asking again for a kind already answered (Meet re-requests camera and
+    // microphone on every device check): the earlier answer stands for this document, no new
+    // popover, nothing saved in the profile. A navigation clears it (ElementsNavigationStarting).
+    if(auto* st=SiteStateOf(t);st&&!st->demo&&st->requester==key){
+        const bool granted=SiteRequest::Has(st->g.granted,(int)kind),blocked=SiteRequest::Has(st->g.blocked,(int)kind);
+        if(granted||blocked){
+            if(granted){args->put_State(COREWEBVIEW2_PERMISSION_STATE_ALLOW);Com<ICoreWebView2PermissionRequestedEventArgs3> a3;if(SUCCEEDED(args->QueryInterface(IID_ICoreWebView2PermissionRequestedEventArgs3,(void**)&a3.p))&&a3.p)a3->put_SavesInProfile(FALSE);}
+            else deny(false);
+            Log(L"PERMISSION kind="+std::to_wstring(kind)+(granted?L" reused allow":L" reused block"));
+            deferral->Complete();return S_OK;
+        }
+    }
     std::weak_ptr<Tab> weakTab=t;
     AskPrompt(std::move(spec),t,[args,deferral,deny,kind,weakTab,key](OP::Result& r){
         Com<ICoreWebView2PermissionRequestedEventArgs3> a3;const bool has3=SUCCEEDED(args->QueryInterface(IID_ICoreWebView2PermissionRequestedEventArgs3,(void**)&a3.p))&&a3.p;
@@ -1313,13 +1334,13 @@ void CreateElementSurfaces(){
     const std::wstring root=base;
     // The Période select (Effacer les données) drops the shared shadowless menu under its field.
     MD::Dialog::Hooks mh;mh.wake=[]{RequestElementFrame();};mh.keyboard=[]{return keyboardModality;};
-    mh.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};
+    mh.choose=[](const MD::Select& select,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,select,anchor,keyboard,motion.ReducedMotion());};
     mh.dismiss=[]{contextMenu.Cancel();};
     {MD::Dialog::Hooks nh;nh.wake=mh.wake;nh.keyboard=mh.keyboard;if(!notesCard.Create(instance,window,root,std::move(nh)))Log(L"RELEASE NOTES card unavailable");}
     if(!modal.Create(instance,window,root,std::move(mh)))Log(L"MODAL unavailable");
     OP::Prompt::Hooks ph;ph.wake=[]{RequestElementFrame();};ph.keyboard=[]{return keyboardModality;};
     // B07 « Plus d'options » and the B08 selects drop the same shared, shadowless menu.
-    ph.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};ph.dismiss=[]{contextMenu.Cancel();};
+    ph.choose=[](const MD::Select& select,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,select,anchor,keyboard,motion.ReducedMotion());};ph.dismiss=[]{contextMenu.Cancel();};
     ph.menu=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.right,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
     ph.download=[](OP::Prompt::Command c,const OP::Spec& s){PromptDownloadCommand(c,s);};
     ph.revoke=[](int kind,const OP::Spec& s){RevokeSitePermission(kind,s);};
@@ -1521,7 +1542,7 @@ void ChromeTipHover(int x,int y){
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
         RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
-        RECT bounds=WindowScreenRect();chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
+        RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
     chromeTip.Hide();
 }

@@ -228,6 +228,8 @@ class Popover {
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Popover*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (msg == WM_NCCREATE) { self = static_cast<Popover*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
+        // Destroyed with its owner (or by Dispose): the object never hears from this window again.
+        if (msg == WM_NCDESTROY) { SetWindowLongPtrW(h, GWLP_USERDATA, 0); if (self && self->hwnd_ == h) self->hwnd_ = self->name_ = self->url_ = nullptr; return DefWindowProcW(h, msg, w, l); }
         return self ? self->Handle(h, msg, w, l) : DefWindowProcW(h, msg, w, l);
     }
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -235,9 +237,10 @@ class Popover {
         switch (msg) {
         case WM_GETOBJECT: { LRESULT result; if (uia_.OnGetObject(h, w, l, result)) return result; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(name_); NativeUI::EditBuffer::Flush(url_); return 0; }
         case WM_CTLCOLOREDIT: {
             HDC dc = reinterpret_cast<HDC>(w); const bool danger = reinterpret_cast<HWND>(l) == url_ && error_ && shownError_;
+            NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc);
             SetTextColor(dc, danger ? RGB(0xFF, 0x7B, 0x6E) : RGB(255, 255, 255)); SetBkColor(dc, FieldGray()); SetBkMode(dc, OPAQUE);
             return reinterpret_cast<LRESULT>(fieldBrush_);
         }
@@ -347,7 +350,14 @@ class Popover {
     }
 public:
     ~Popover() { Dispose(); }
-    void Dispose() { uia_.Detach(); chrome_.Dispose(); if (font_) DeleteObject(font_); font_ = nullptr; if (fieldBrush_) DeleteObject(fieldBrush_); fieldBrush_ = nullptr; hwnd_ = name_ = url_ = nullptr; visible_ = false; }
+    // Also destroys the window: a Popover that goes away (a scope's end) must not leave a window
+    // whose timer or pointer messages reach freed memory (edit_flicker_test crashed that way on CI).
+    void Dispose() {
+        if (hwnd_) { KillTimer(hwnd_, FrameTimer); SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0); }
+        uia_.Detach(); chrome_.Dispose();
+        if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
+        if (font_) DeleteObject(font_); font_ = nullptr; if (fieldBrush_) DeleteObject(fieldBrush_); fieldBrush_ = nullptr; hwnd_ = name_ = url_ = nullptr; visible_ = false;
+    }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, Hooks hooks) {
         instance_ = instance; owner_ = owner; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarkPopover";
@@ -356,9 +366,9 @@ public:
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(hwnd_, Layout::radius); // no shadow: region-rounded, never DWM-rounded
-        name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
-        url_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr);
-        for (HWND e : {name_, url_}) { SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SetWindowSubclass(e, EditProc, 7, reinterpret_cast<DWORD_PTR>(this)); }
+        name_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr); NativeUI::SelectAllOnCtrlA(name_);
+        url_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, instance, nullptr); NativeUI::SelectAllOnCtrlA(url_);
+        for (HWND e : {name_, url_}) { SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SetWindowSubclass(e, EditProc, 7, reinterpret_cast<DWORD_PTR>(this)); NativeUI::EditBuffer::Attach(e); }
         SendMessageW(name_, EM_SETLIMITTEXT, 1024, 0); SendMessageW(url_, EM_SETLIMITTEXT, 4095, 0);
         fieldBrush_ = CreateSolidBrush(FieldGray());
         Accessibility::Host host; host.window = hwnd_;

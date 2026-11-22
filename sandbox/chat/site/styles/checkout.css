@@ -1,0 +1,75 @@
+/* Boutique — page de paiement du bac à sable du chat. Fichier que l'agent modifie dans les essais. */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #f4f4f3;
+  color: #1c1c1c;
+  font: 15px/20px "Inter Display", Inter, "Segoe UI", system-ui, sans-serif;
+}
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 64px;
+  background: #ffffff;
+  border-bottom: 1px solid #e6e6e4;
+}
+.brand { font-size: 17px; font-weight: 600; }
+.cart { color: #5c5c5c; font-size: 14px; }
+.checkout {
+  display: flex;
+  gap: 48px;
+  padding: 40px 64px;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 520px;
+  max-width: 100%;
+}
+.title { margin: 0 0 4px; font-size: 28px; line-height: 34px; font-weight: 500; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { color: #5c5c5c; font-size: 13px; line-height: 18px; }
+.field input {
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid #dededb;
+  border-radius: 8px;
+  background: #ffffff;
+  font: inherit;
+}
+.btn-primary {
+  width: 240px;
+  height: 44px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: #1c1c1c;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.hint { margin: 0; color: #8a8a86; font-size: 13px; }
+.summary {
+  width: 280px;
+  padding: 20px;
+  border: 1px solid #e6e6e4;
+  border-radius: 12px;
+  background: #ffffff;
+  align-self: flex-start;
+}
+.summary h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
+.lines { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lines li { display: flex; justify-content: space-between; color: #3d3d3d; }
+.btn-ghost {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid #dededb;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+}

@@ -151,7 +151,9 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         if (!always) { m.checkLabel = TR(perm_remember); m.originCheck = true; }
         m.stretchButtons = true; m.softButtons = true;
         m.buttons = {button(Id::Cancel, TR(permission_choice_block), Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, TR(permission_choice_allow), Role::Primary, true, false, false, L"PermissionAllow")};
-        m.checkValue = always;
+        // « Mémoriser pour ce site » starts checked (user decision 2026-11-17, like Chrome): an answer is kept for the
+        // site unless the user clears the check for this time only. Notifications are always remembered.
+        m.checkValue = true;
         break;
     }
     case Kind::BasicAuth: {
@@ -338,7 +340,7 @@ public:
     struct Hooks {
         std::function<void()> wake;
         // Native list of a select (B08 certificate / screen share): chosen index or -1.
-        std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        std::function<int(const Modal::Select&, RECT anchorScreen, bool keyboard)> choose;
         // B07 « Plus d'options » command list: chosen Command, 0 when dismissed (shared host menu).
         std::function<int(const std::vector<ContextMenu::Item>&, RECT anchorScreen, bool keyboard)> menu;
         std::function<void()> dismiss;   // end the host list now (the prompt closed while it was open)

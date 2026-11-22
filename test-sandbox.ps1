@@ -11,7 +11,7 @@ $flags = @('-std=c++17', '-O2', '-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wn
 $libs = @('-lole32', '-luuid', '-lcomctl32', '-lshlwapi', '-lgdi32', '-ld2d1', '-ldwrite', '-lwindowscodecs', '-ldwmapi', '-loleaut32')
 
 # Every B header compiles alone and together with chrome.h, warning-free.
-foreach ($h in 'tooltip', 'find-bar', 'context-toast', 'fullscreen-hint', 'error-pages', 'debug-sandbox', 'shortcuts-panel') {
+foreach ($h in 'tooltip-placement', 'tooltip', 'address-popup', 'download-panel', 'history-panel', 'settings-panel', 'find-bar', 'context-toast', 'fullscreen-hint', 'error-pages', 'debug-sandbox', 'shortcuts-panel') {
     Set-Content -Encoding ascii "build/sandbox/inc_$h.cpp" "#include `"../../src/$h.h`"`nint main(){return 0;}"
     $out = Gpp @flags -fsyntax-only "build/sandbox/inc_$h.cpp"
     if ($LASTEXITCODE -ne 0 -or ($out | Select-String 'warning')) { $out; throw "$h.h does not compile cleanly alone" }
@@ -19,6 +19,11 @@ foreach ($h in 'tooltip', 'find-bar', 'context-toast', 'fullscreen-hint', 'error
 Set-Content -Encoding ascii build/sandbox/inc_all.cpp ('#include "../../src/chrome.h"', '#include "../../src/find-bar.h"', '#include "../../src/error-pages.h"', '#include "../../src/context-toast.h"', '#include "../../src/tooltip.h"', '#include "../../src/fullscreen-hint.h"', '#include "../../src/debug-sandbox.h"', '#include "../../src/shortcuts-panel.h"', 'int main(){return 0;}')
 $out = Gpp @flags -fsyntax-only build/sandbox/inc_all.cpp
 if ($LASTEXITCODE -ne 0 -or ($out | Select-String 'warning')) { $out; throw 'B headers do not compile together with chrome.h' }
+
+$out = Gpp @flags tests/tooltip_placement_test.cpp -o build/sandbox/tooltip_placement_test.exe @libs
+if ($LASTEXITCODE -ne 0 -or ($out | Select-String 'warning')) { $out; throw 'Tooltip placement test compilation failed or warned.' }
+& ./build/sandbox/tooltip_placement_test.exe
+if ($LASTEXITCODE -ne 0) { throw 'Tooltip placement tests failed.' }
 
 $out = Gpp @flags tests/error_pages_test.cpp -o build/sandbox/error_pages_test.exe @libs
 if ($LASTEXITCODE -ne 0 -or ($out | Select-String 'warning')) { $out; throw 'Error page test compilation failed or warned.' }

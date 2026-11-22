@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- Test-only page used by run.py: draws the Paper reference and the panel screenshot side by side
+     and, when both have the same size, a diff heat map with the mean channel difference. -->
+<meta charset="utf-8"><title>compare</title>
+<body style="margin:0;background:#000">
+<script>
+function img(src){return new Promise((ok,ko)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=ko;i.src=src+"?"+Date.now();});}
+window.compareImages=async function(ours,ref){
+  const [a,b]=await Promise.all([img(ref),img(ours)]);
+  const same=a.width===b.width&&a.height===b.height;
+  const gap=12,w=a.width+b.width+(same?a.width+gap:0)+gap,h=Math.max(a.height,b.height);
+  const c=document.createElement("canvas");c.width=w;c.height=h;const g=c.getContext("2d");
+  g.fillStyle="#3a3a3a";g.fillRect(0,0,w,h);g.drawImage(a,0,0);g.drawImage(b,a.width+gap,0);
+  let mean=NaN,over=NaN;
+  if(same){
+    const ca=document.createElement("canvas");ca.width=a.width;ca.height=a.height;const ga=ca.getContext("2d");ga.drawImage(a,0,0);
+    const cb=document.createElement("canvas");cb.width=b.width;cb.height=b.height;const gb=cb.getContext("2d");gb.drawImage(b,0,0);
+    const da=ga.getImageData(0,0,a.width,a.height).data,db=gb.getImageData(0,0,b.width,b.height).data;
+    const out=g.createImageData(a.width,a.height);let sum=0,n=0,off=0;
+    for(let i=0;i<da.length;i+=4){const d=(Math.abs(da[i]-db[i])+Math.abs(da[i+1]-db[i+1])+Math.abs(da[i+2]-db[i+2]))/3;sum+=d;n++;if(d>48)off++;
+      out.data[i]=Math.min(255,d*3);out.data[i+1]=d>48?40:0;out.data[i+2]=0;out.data[i+3]=255;}
+    g.putImageData(out,a.width*2+gap*2,0);mean=sum/n;over=100*off/n;
+  }
+  return {png:c.toDataURL("image/png"),mean,over,w:b.width,h:b.height,mode:same?"pixel diff":"side by side"};
+};
+window.montage=async function(names,cols){
+  const ims=await Promise.all(names.map(n=>img("/out/"+n+".png")));
+  const W=380,H=698,lab=28,gap=16,rows=Math.ceil(ims.length/cols);
+  const c=document.createElement("canvas");c.width=cols*(W+gap)+gap;c.height=rows*(H+lab+gap)+gap;const g=c.getContext("2d");
+  g.fillStyle="#0E0E0E";g.fillRect(0,0,c.width,c.height);g.font="500 15px 'Segoe UI',sans-serif";
+  ims.forEach((im,i)=>{const x=gap+(i%cols)*(W+gap),y=gap+Math.floor(i/cols)*(H+lab+gap);g.fillStyle="#FFFFFFB3";g.fillText(names[i],x,y+18);
+    g.drawImage(im,0,0,Math.min(W,im.width),Math.min(H,im.height),x,y+lab,Math.min(W,im.width),Math.min(H,im.height));});
+  return c.toDataURL("image/png");
+};
+</script>

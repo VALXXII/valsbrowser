@@ -20,6 +20,7 @@
 #include <vector>
 #include "chrome.h"
 #include "native-ui.h"
+#include "tooltip.h"
 #include "downloads.h"
 #include "accessibility.h"
 
@@ -27,14 +28,22 @@ namespace NativeChrome {
 namespace DownloadsUI {
 using namespace Downloads;
 // Hit identifiers inside a surface.
-constexpr int CloseHit = 1, ViewAllHit = 2, SectionBase = 10, ActionBase = 100000;
+// No CloseHit: the surfaces have no header (Échap, a click outside or the toolbar button close them).
+constexpr int ViewAllHit = 2, SectionBase = 10, ActionBase = 100000;
 inline int SectionHit(Period period) { return SectionBase + static_cast<int>(period); }
 inline bool IsSection(int hit) { return hit >= SectionBase && hit < SectionBase + PeriodCount; }
 inline Period HitPeriod(int hit) { return static_cast<Period>(hit - SectionBase); }
-inline int ActionHit(int item, int slot) { return ActionBase + item * 2 + slot; }
+// Per row three targets: its two action buttons (slots 0, 1) and the row itself (slot 2: a finished
+// download's row opens the file, like its Open action). IsAction: any of them (the row's reveal follows).
+inline int ActionHit(int item, int slot) { return ActionBase + item * 3 + slot; }
+inline int RowHit(int item) { return ActionBase + item * 3 + 2; }
 inline bool IsAction(int hit) { return hit >= ActionBase; }
-inline int HitItem(int hit) { return (hit - ActionBase) / 2; }
-inline int HitSlot(int hit) { return (hit - ActionBase) % 2; }
+inline int HitItem(int hit) { return (hit - ActionBase) / 3; }
+inline int HitSlot(int hit) { return (hit - ActionBase) % 3; }
+inline bool IsRow(int hit) { return IsAction(hit) && HitSlot(hit) == 2; }
+// A row click (or Entrée on the focused row, or UIA Invoke) opens the file only once it is downloaded
+// and still there; rows in progress, paused, failed, blocked or cancelled do nothing.
+inline bool Openable(const Item& item) { return item.state == State::Completed && !item.missing; }
 inline std::int64_t FileTimeMs(FILETIME ft) { ULARGE_INTEGER v; v.LowPart = ft.dwLowDateTime; v.HighPart = ft.dwHighDateTime; return static_cast<std::int64_t>(v.QuadPart / 10000ULL); }
 inline std::int64_t UnixNowMs() { FILETIME ft; GetSystemTimeAsFileTime(&ft); return FileTimeMs(ft) - 11644473600000LL; }
 // Local time minus UTC (ms), for calendar-day periods.
@@ -74,7 +83,7 @@ struct Scene {
 inline std::vector<Slot> DrawerSlots(const std::vector<Item>& items, const std::array<std::vector<int>, PeriodCount>& groups,
                                      const std::array<float, PeriodCount>& open, float scroll, float* contentBottom = nullptr) {
     std::vector<Slot> slots; float y = DrawerLayout::firstSection - scroll;
-    if (items.empty()) { slots.push_back({SlotKind::Empty, -1, y}); y += Panel::tile; }
+    if (items.empty()) { slots.push_back({SlotKind::Empty, -1, Panel::firstRow - scroll}); y += Panel::tile; }   // where the popover shows it
     for (int p = 0; p < PeriodCount; ++p) {
         const auto& rows = groups[p]; if (rows.empty()) continue;
         const float o = Motion::Clamp(open[p]);
@@ -271,6 +280,8 @@ public:
         }
         const auto name = Panel::Name(top);
         chrome_.Text(FileName(item.path), {name.left, name.top, name.right, name.bottom}, Panel::line, Design::Text::muted, false, true, -.16f);
+        // Keyboard focus on a finished row (Entrée opens it): the ring around the tile + text band, 6 DIP out.
+        if (scene.focus == RowHit(item.id)) chrome_.FocusRing({Panel::padding - 6, top - 6, Panel::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6);
         Detail(item, top, scene.nowMs);
 
         // Reveal: mask, then left action, then right action.
@@ -334,13 +345,6 @@ public:
         const auto origin = D2D1::Matrix3x2F::Translation(scene.originX, scene.originY);
         target->SetTransform(D2D1::Matrix3x2F::Translation(0, -(1 - e) * Entrance::travel) * origin);
         if (entering) PushOpacity(e);
-
-        // Header
-        const auto title = Panel::Title();
-        chrome_.Text(TR(downloads_history_title), {title.left, title.top, title.right, title.bottom}, Panel::line, Design::Text::muted, false, true, -.16f);
-        const auto close = Panel::Close();
-        auto cv = Interaction(scene, CloseHit);
-        chrome_.DrawButton(L"close", {close.left, close.top, close.right, close.bottom}, Design::ButtonVariant::Ghost, {cv.hover, cv.press, false, scene.focus == CloseHit});
 
         const auto& items = *scene.items;
         const float viewBottom = std::min(scene.viewBottom, height);
@@ -411,8 +415,8 @@ public:
         std::function<void()> viewAll;                 // popover link → drawer
     };
 protected:
-    HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
-    std::vector<UINT_PTR> tips_;
+    HWND hwnd_ = nullptr, owner_ = nullptr;
+    Tooltip::Tools tip_;
     Chrome chrome_; View view_{chrome_};
     Motion::State motion_;
     std::map<int, RowReveal> reveals_;
@@ -448,8 +452,6 @@ protected:
     int Hit(float x, float y, int& item) const {
         item = -1;
         const auto origin = Origin(Motion::Now()); x -= origin.x; y -= origin.y;
-        auto close = Panel::Close();
-        if (x >= close.left && x < close.right && y >= close.top && y < close.bottom) return CloseHit;
         const auto scene = MakeScene(Motion::Now());
         if (!items_ || y < scene.viewTop || y >= scene.viewBottom) return 0;
         for (const auto& slot : Slots(scene.now)) {
@@ -470,7 +472,7 @@ protected:
                     auto box = Panel::ActionBox(slot.top, s);
                     if (x >= box.left && x < box.right && y >= box.top && y < box.bottom) return ActionHit(entry.id, s);
                 }
-                return 0;
+                return Openable(entry) ? RowHit(entry.id) : 0;   // anywhere else on a finished row: open it
             }
         }
         return 0;
@@ -505,13 +507,14 @@ protected:
         hoverItem_ = item; Interact(hit, pressed_);
     }
     std::vector<int> FocusOrder() const {
-        std::vector<int> order{CloseHit};
+        std::vector<int> order;
         if (!items_) return order;
         for (const auto& slot : Slots(Motion::Now())) {
             if (slot.kind == SlotKind::Section) order.push_back(SectionHit(static_cast<Period>(slot.index)));
             else if (slot.kind == SlotKind::ViewAll) order.push_back(ViewAllHit);
             else if (slot.kind == SlotKind::Row && slot.opacity > .5f) {
                 const auto& item = (*items_)[slot.index]; auto a = ActionsFor(item);
+                if (Openable(item)) order.push_back(RowHit(item.id));
                 if (a.first != Action::None) order.push_back(ActionHit(item.id, 0));
                 if (a.second != Action::None) order.push_back(ActionHit(item.id, 1));
             }
@@ -520,10 +523,10 @@ protected:
     }
     int IndexOf(int id) const { if (!items_) return -1; for (size_t i = 0; i < items_->size(); ++i) if ((*items_)[i].id == id) return static_cast<int>(i); return -1; }
     void Activate(int hit, bool keyboard) {
-        if (hit == CloseHit) { Dismiss(keyboard); return; }
         if (ActivateOther(hit, keyboard)) return;
         if (!IsAction(hit) || !hooks_.action) return;
         const int index = IndexOf(HitItem(hit)); if (index < 0) return;
+        if (IsRow(hit)) { if (Openable((*items_)[index])) hooks_.action(HitItem(hit), Action::Open); return; }
         const auto actions = ActionsFor((*items_)[index]);
         const Action action = HitSlot(hit) == 0 ? actions.first : actions.second;
         if (action != Action::None) hooks_.action(HitItem(hit), action);
@@ -531,15 +534,11 @@ protected:
     // Icon-only buttons carry tooltips; tools follow the laid-out rows.
     void RefreshTips() {
         if (!tip_) return;
-        for (auto id : tips_) { TOOLINFOW t{}; t.cbSize = sizeof(t); t.hwnd = hwnd_; t.uId = id; SendMessageW(tip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&t)); }
-        tips_.clear();
+        tip_.Clear();
         const auto origin = Origin(Motion::Now());
         auto add = [&](UINT_PTR id, Design::Box b, const wchar_t* text) {
-            TOOLINFOW t{}; t.cbSize = sizeof(t); t.uFlags = TTF_SUBCLASS; t.hwnd = hwnd_; t.uId = id;
-            t.rect = {Px(b.left + origin.x), Px(b.top + origin.y), Px(b.right + origin.x), Px(b.bottom + origin.y)}; t.lpszText = const_cast<wchar_t*>(text);
-            SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
+            tip_.Add(id, {Px(b.left + origin.x), Px(b.top + origin.y), Px(b.right + origin.x), Px(b.bottom + origin.y)}, text);
         };
-        add(CloseHit, Panel::Close(), TR(common_close_tip));
         if (!items_) return;
         const auto scene = MakeScene(Motion::Now());
         for (const auto& slot : Slots(scene.now)) {
@@ -593,7 +592,6 @@ public:
         RECT w{}; GetWindowRect(hwnd_, &w); const float k = Dpi() / 96.f; const auto origin = Origin(Motion::Now());
         auto screen = [&](Design::Box b) { return RECT{w.left + static_cast<LONG>((b.left + origin.x) * k), w.top + static_cast<LONG>((b.top + origin.y) * k), w.left + static_cast<LONG>((b.right + origin.x) * k), w.top + static_cast<LONG>((b.bottom + origin.y) * k)}; };
         Accessibility::Node list; list.key = 3; list.role = Accessibility::Role::List; list.name = TR(downloads_history_title); list.automationId = L"DownloadList"; list.focusable = false; list.bounds = w; out.push_back(list);
-        Accessibility::Node close; close.key = CloseHit; close.role = Accessibility::Role::Button; close.name = TR(common_close); close.accelerator = TR(key_escape); close.automationId = L"DownloadsClose"; close.bounds = screen(Panel::Close()); out.push_back(close);
         const auto scene = MakeScene(Motion::Now()); int position = 0, count = 0;
         const auto slots = Slots(scene.now);
         for (const auto& slot : slots) if (slot.kind == SlotKind::Row && slot.opacity > .5f) ++count;
@@ -602,7 +600,7 @@ public:
             if (slot.kind != SlotKind::Row || slot.opacity <= .5f || slot.index < 0 || slot.index >= static_cast<int>(items_->size())) continue;
             const auto& item = (*items_)[slot.index];
             Accessibility::Node row; row.key = RowKeyBase + item.id; row.parent = 3; row.role = Accessibility::Role::ListItem; row.name = FileName(item.path); row.status = StatusText(item);
-            row.automationId = L"DownloadItem"; row.position = ++position; row.count = count; row.focusable = false; row.bounds = screen(Panel::Hover(slot.top));
+            row.automationId = L"DownloadItem"; row.position = ++position; row.count = count; row.focusable = Openable(item); row.bounds = screen(Panel::Hover(slot.top));
             row.offscreen = slot.top + Panel::tile < scene.viewTop || slot.top > scene.viewBottom; out.push_back(row);
             const auto actions = ActionsFor(item);
             for (int sl = 0; sl < 2; ++sl) {
@@ -618,11 +616,14 @@ protected:
     void AttachAccessibility() {
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { return AccessibleNodes(); };
-        host.focused = [this]() -> long long { return visible_ && GetFocus() == hwnd_ && keyboard_ ? focus_ : 0; };
-        host.invoke = [this](long long key) { if (key > 0 && key < RowKeyBase) PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(key), 0); };
-        host.focus = [this](long long key) { if (key > 0 && key < RowKeyBase) PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(key), 1); };
+        host.focused = [this]() -> long long { return visible_ && GetFocus() == hwnd_ && keyboard_ ? UiaKey(focus_) : 0; };
+        host.invoke = [this](long long key) { if (const int hit = HitOfKey(key)) PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(hit), 0); };
+        host.focus = [this](long long key) { if (const int hit = HitOfKey(key)) PostMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(hit), 1); };
         uia_.Attach(std::move(host));
     }
+    // A row's node key is RowKeyBase + id; its hit is RowHit(id). Other nodes use their hit as key.
+    static long long UiaKey(int hit) { return IsRow(hit) ? RowKeyBase + HitItem(hit) : hit; }
+    static int HitOfKey(long long key) { return key >= RowKeyBase ? RowHit(static_cast<int>(key - RowKeyBase)) : key > 0 ? static_cast<int>(key) : 0; }
     void ClearPointer() { if (GetCapture() == hwnd_) ReleaseCapture(); reveals_.clear(); motion_.ClearInteractions(); hoverItem_ = -1; hover_ = pressed_ = 0; tracking_ = false; }
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Host*>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -651,12 +652,13 @@ protected:
         case WM_KEYDOWN: {
             if (w == VK_ESCAPE) { Dismiss(true); return 0; }
             auto order = FocusOrder();
+            if ((w == VK_TAB || w == VK_DOWN || w == VK_UP) && order.empty()) return 0;
             if (w == VK_TAB || w == VK_DOWN || w == VK_UP) {
                 keyboard_ = true; const bool back = w == VK_UP || (w == VK_TAB && GetKeyState(VK_SHIFT) < 0);
                 auto it = std::find(order.begin(), order.end(), focus_);
                 int index = it == order.end() ? (back ? static_cast<int>(order.size()) - 1 : 0) : static_cast<int>(it - order.begin()) + (back ? -1 : 1);
                 index = (index + static_cast<int>(order.size())) % static_cast<int>(order.size());
-                focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_); if (uia_.Listening()) uia_.Raise(focus_, UIA_AutomationFocusChangedEventId); return 0;
+                focus_ = order[index]; Reveal(focus_); Interact(hover_, pressed_); if (uia_.Listening()) uia_.Raise(UiaKey(focus_), UIA_AutomationFocusChangedEventId); return 0;
             }
             if ((w == VK_RETURN || w == VK_SPACE) && focus_) { keyboard_ = true; Activate(focus_, true); return 0; }
             return 0;
@@ -681,8 +683,7 @@ protected:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(downloads_history_title), WS_POPUP, 0, 0, Px(width), Px(height), owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        NativeUI::StripTooltipShadow(tip_);
+        tip_.Create(instance, hwnd_, root);
         Configure();
         AttachAccessibility();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
@@ -701,9 +702,13 @@ public:
     void ModelChangedForTest() { UpdateReveals(Motion::Now()); }
     static constexpr UINT InvokeMessageForTest() { return InvokeMessage; }
     static constexpr long long RowKeyBaseForTest() { return RowKeyBase; }
+    std::vector<int> FocusOrderForTest() const { return FocusOrder(); }
+    int FocusForTest() const { return focus_; }
+    // UIA Invoke / SetFocus on a node, as the provider calls them (posted, then pumped by the caller).
+    void InvokeNodeForTest(long long key) { if (const int hit = HitOfKey(key)) SendMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(hit), 0); }
     virtual ~Host() { Dispose(); }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
-    void Dispose() { uia_.Detach(); view_.Release(); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
+    void Dispose() { uia_.Detach(); view_.Release(); chrome_.Dispose(); tip_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
     void Invalidate() { if (hwnd_ && visible_) InvalidateRect(hwnd_, nullptr, FALSE); }
@@ -871,9 +876,8 @@ class Drawer final : public Host {
             // Content meets the moving edge through a fade, never a hard cut.
             const float edge = 4 * t * (1 - t);
             scene.fadeBottom = std::max(scene.fadeBottom, edge); scene.fadeTop = std::max(scene.fadeTop, edge);
-            scene.fadeTopSize = DrawerLayout::topFade * 2; // headers emerge from under the title through a deeper fade
-            const float headerBottom = Panel::headerTop + Panel::headerHeight; // 36: content may rise to the header line while it docks
-            scene.viewTop = headerBottom + (DrawerLayout::viewTop - headerBottom) * t;
+            scene.fadeTopSize = DrawerLayout::topFade * 2; // section headers emerge from the top edge through a deeper fade
+            scene.viewTop = Panel::ViewTop() + (DrawerLayout::viewTop - Panel::ViewTop()) * t;   // the popover's view (8) opens to the drawer's (0)
         }
     }
     Motion::Wake ExtraWake(Motion::Time now) const override {

@@ -34,6 +34,7 @@
 #include "settings.h"
 #include "context-menu.h"
 #include "native-ui.h"
+#include "tooltip.h"
 #include "modal.h"
 #include "accessibility.h"
 #include "svg-path.h"
@@ -532,8 +533,8 @@ public:
         std::function<bool(I18n::Locale)> saveLanguage;
     };
 private:
-    HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
-    std::vector<UINT_PTR> tips_; std::vector<std::wstring> tipTexts_;
+    HWND hwnd_ = nullptr, owner_ = nullptr;
+    Tooltip::Tools tip_;
     Chrome chrome_; Chrome* pc_ = &chrome_; Motion::State motion_;   // pc_: the surface painted (chrome_, or an offscreen one for RenderForTest)
     BrowserSettings::State* state_ = nullptr; Hooks hooks_;
     ID2D1GradientStopCollection* stops_ = nullptr; ID2D1LinearGradientBrush* fade_ = nullptr;
@@ -558,7 +559,7 @@ private:
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
     HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
-    HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
+    HBRUSH editBrush_ = nullptr; COLORREF editBrushColor_ = 0; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     I18n::Locale languageSaved_ = I18n::Current(); bool languageFailed_ = false;   // « Langue »: preference as saved, last save failed
@@ -830,13 +831,26 @@ private:
         const Design::Box knob{left, track.top + Layout::knobInset, left + Layout::knob + stretch, track.top + Layout::knobInset + Layout::knob};
         Fill(knob, Layout::knob / 2, knobGray, knobGray, knobGray, 1);
     }
+    // Label + trailing value on one line (value and nav rows): where each ends. The value is right-aligned
+    // before the chevron (8 DIP), the label stops 8 DIP before the value (and its glyph).
+    struct TrailingSpan { float labelLeft, labelRight, valueLeft, valueRight; };
+    TrailingSpan Trailing(const Slot& s) const {
+        const bool counted = s.hit == Permissions; const float right = Layout::Chevron(s.top).left;
+        float w = pc_->TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        TrailingSpan t; t.labelLeft = (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft;
+        // The label keeps its natural width; the value (a profile name, a folder) gets the rest and trims. When even
+        // that leaves under 48 DIP, the value keeps 48 and the label trims instead.
+        const float labelW = pc_->TextWidth(s.text, 16, false, false, -.16f);
+        w = std::min(w, std::max(std::min(w, 48.f), right - 8 - (s.valueGlyph ? 16 + 6 : 0) - 8 - t.labelLeft - labelW));
+        t.valueRight = right - 8; t.valueLeft = t.valueRight - w; t.labelRight = right - w - (s.valueGlyph ? 16 + 6 : 0) - 16; return t;
+    }
     // Label + current value + chevron: opens its list of choices (native menu).
     void ValueRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
-        const float w = pc_->TextWidth(s.value, 14, false, false, -.14f);
+        const auto t = Trailing(s); const float w = t.valueRight - t.valueLeft;
         Lead(s, v.hover);
-        Label16(s.text, (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        Label16(s.text, t.labelLeft, s.top + 6, t.labelRight, .7f + .3f * v.hover);
         pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
         pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         // A pending note (applied at the next launch) or a save error under the label: aligned with the label
@@ -943,10 +957,9 @@ private:
         RowFocus(Layout::Row(s.top), s.hit);
         auto* t = pc_->RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
         const bool counted = s.hit == Permissions; // a count reads in tabular figures; a summary in text
-        const float w = pc_->TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        const auto tr = Trailing(s); const float w = tr.valueRight - tr.valueLeft;
         Lead(s, v.hover);
-        const float glyphW = s.valueGlyph ? 16 + 6 : 0;
-        Label16(s.text, (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - glyphW - 16, .7f + .3f * v.hover);
+        Label16(s.text, tr.labelLeft, s.top + 6, tr.labelRight, .7f + .3f * v.hover);
         if (!s.value.empty()) pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, counted, false, counted ? 0.f : -.14f);
         if (s.valueGlyph) { const float x = chevron.left - 8 - w - 6 - 16; pc_->PathGlyph(s.valueGlyph, {x, s.top + 8, x + 16, s.top + 24}, 16, D2D1::ColorF(s.ink.r, s.ink.g, s.ink.b, 1)); }
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
@@ -1667,17 +1680,6 @@ private:
             break;
         case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->ApplyCaret(); return r; }
         case WM_KILLFOCUS: if (self->editing_ && !self->cancelEdit_) self->Commit(false); break;
-        case WM_PAINT: {
-            // No comctl32 v6 (no cue banner): the placeholder is painted over the empty field, as when it rests.
-            const LRESULT r = DefSubclassProc(h, msg, w, l);
-            if (GetWindowTextLengthW(h) == 0 && self->editing_) {
-                HDC dc = GetDC(h); RECT rc; GetClientRect(h, &rc);
-                const auto old = SelectObject(dc, self->editFont_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, self->Gray(.35f * .9f));
-                DrawTextW(dc, FieldTexts(self->editing_).placeholder, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-                SelectObject(dc, old); ReleaseDC(h, dc);
-            }
-            return r;
-        }
         case WM_CHAR: if (w == L'\r' || w == 27 || w == L'\t') return 0; [[fallthrough]];
         case WM_CUT: case WM_PASTE: case WM_CLEAR: case WM_UNDO: case EM_REPLACESEL: {
             // Placeholder and error follow the text as it is typed.
@@ -1687,7 +1689,7 @@ private:
                 self->SetQuery(std::move(text));
             }
             if (self->errors_[self->editing_]) { self->errors_[self->editing_] = false; self->Invalidate(); }
-            InvalidateRect(h, nullptr, TRUE); return r;
+            return r;   // the field itself is recomposed by its EditBuffer (placeholder included): no repaint per keystroke
         }
         case WM_NCDESTROY: RemoveWindowSubclass(h, EditProc, 0); break;
         }
@@ -1706,10 +1708,17 @@ private:
     void StartEdit(int hit) {
         if (!hwnd_ || !state_) return;
         if (!edit_) {
-            edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)), nullptr);
+            edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)), nullptr); NativeUI::SelectAllOnCtrlA(edit_);
             if (!edit_) return;
             SendMessageW(edit_, EM_SETLIMITTEXT, 2048, 0);
             SetWindowSubclass(edit_, EditProc, 0, reinterpret_cast<DWORD_PTR>(this));
+            // No comctl32 v6 (no cue banner): the placeholder is drawn into the empty field's image, as when it rests.
+            NativeUI::EditBuffer::Attach(edit_, [this](HWND h, HDC dc, const RECT& client) {
+                if (GetWindowTextLengthW(h) != 0 || !editing_) return;
+                RECT rc = client; const auto old = SelectObject(dc, editFont_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, Gray(.35f * .9f));
+                DrawTextW(dc, FieldTexts(editing_).placeholder, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+                SelectObject(dc, old);
+            });
         }
         const UINT dpi = GetDpiForWindow(hwnd_);
         if (!editFont_ || editDpi_ != dpi) {
@@ -1778,14 +1787,8 @@ private:
     }
     void RefreshTips() {
         if (!tip_) return;
-        for (auto id : tips_) { TOOLINFOW t{}; t.cbSize = sizeof(t); t.hwnd = hwnd_; t.uId = id; SendMessageW(tip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&t)); }
-        tips_.clear(); tipTexts_.clear(); tipTexts_.reserve(8);
-        auto add = [&](UINT_PTR id, Design::Box b, std::wstring text) {
-            tipTexts_.push_back(std::move(text));
-            TOOLINFOW t{}; t.cbSize = sizeof(t); t.uFlags = TTF_SUBCLASS; t.hwnd = hwnd_; t.uId = id;
-            t.rect = {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; t.lpszText = const_cast<wchar_t*>(tipTexts_.back().c_str());
-            SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
-        };
+        tip_.Clear();
+        auto add = [&](UINT_PTR id, Design::Box b, std::wstring text) { tip_.Add(id, {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}, std::move(text)); };
         add(Close, Layout::CloseButton(), TR(settings_close_tip));
         const View view = Current();
         if (view != View::Main) add(Back, Layout::BackButton(), TR(common_back));
@@ -1840,13 +1843,14 @@ private:
         case UiaInvoke: UiaAction(static_cast<int>(w), static_cast<long long>(l)); return 0;
         case WM_CTLCOLOREDIT: {
             { LRESULT r; if (editor_.CtlColor(reinterpret_cast<HWND>(l), reinterpret_cast<HDC>(w), r)) return r; }
-            // The EDIT blends into the field: its exact fill, text at 90% white.
+            // The EDIT blends into the field: its exact fill, text at 90% white. One brush per fill.
             HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(EditFill());
+            NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc);
             SetTextColor(dc, Gray(.9f)); SetBkColor(dc, fill);
-            if (editBrush_) DeleteObject(editBrush_);
-            editBrush_ = CreateSolidBrush(fill); return reinterpret_cast<LRESULT>(editBrush_);
+            if (!editBrush_ || fill != editBrushColor_) { if (editBrush_) DeleteObject(editBrush_); editBrush_ = CreateSolidBrush(fill); editBrushColor_ = fill; }
+            return reinterpret_cast<LRESULT>(editBrush_);
         }
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(edit_); editor_.Flush(); return 0; }
         case WM_SIZE: pc_->Resize(); Invalidate(); return 0;
         case WM_DPICHANGED: ApplyGeometry(Motion::Now(), true); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
@@ -1929,6 +1933,7 @@ public:
     const AnnotationSettings::Agents& AgentsForTest() const { return agents_; }
     std::size_t AnnotationCountForTest() const { return annotationCount_; }
     Design::Box AgentActionForTest(const Slot& s) const { return AgentAction(s); }
+    TrailingSpan TrailingForTest(const Slot& s) const { return Trailing(s); }
     float TextWidthForTest(const std::wstring& text, float size) const { return pc_->TextWidth(text, size, false, false, size >= 16 ? -.16f : -.14f); }
     void SettleForTest() { slide_.Snap(slide_.Target()); page_.Snap(page_.Target()); for (auto& l : scrolls_) l.Snap(l.Target()); for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(switches_[i].Target()); knobPress_[i].Snap(0); } }
     void ScrollForTest(float y) { scrolls_[depth_].Snap(std::clamp(y, 0.f, MaxScroll(Current(), Motion::Now(), true))); }
@@ -1954,20 +1959,24 @@ public:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(settings_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        NativeUI::StripTooltipShadow(tip_);
+        tip_.Create(instance, hwnd_, root);
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         AttachEditor(); AttachUia();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
     void Dispose() {
+        // The window may outlive this object (a scope's end, the owner destroying it later): its messages
+        // then go to DefWindowProc, never to freed memory.
+        if (hwnd_) SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
         edit_ = nullptr; editing_ = 0; uia_.Detach(); editor_.Detach();
         for (auto& g : glyphs_) Drop(g.second); glyphs_.clear();
-        Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
+        Drop(fade_); Drop(stops_); chrome_.Dispose(); tip_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     HWND Window() const { return hwnd_; }
+    HWND EditForTest() const { return edit_; }   // the field being edited (search, address fields)
+    UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
     bool Visible() const { return visible_; }
     bool Closing() const { return closing_; }
     bool Open() const { return visible_ && !closing_; }

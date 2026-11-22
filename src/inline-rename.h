@@ -10,7 +10,9 @@
 //  - Accessible name through documented Dynamic Annotation (IAccPropServices, PROPID_ACC_NAME).
 #include <windows.h>
 #include <commctrl.h>
+#include "native-ui.h"
 #include <oleacc.h>
+#include "native-ui.h"
 #include <algorithm>
 #include <functional>
 #include <string>
@@ -26,7 +28,7 @@ public:
     // `box`: the label's text box in `host` client pixels. Returns false if the EDIT could not be made.
     bool Begin(HWND host, unsigned long long id, RECT box, const std::wstring& text, Style style, const wchar_t* name, Done done) {
         Cancel();
-        HWND edit = CreateWindowExW(0, L"EDIT", text.c_str(), WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, host, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(host, GWLP_HINSTANCE)), nullptr);
+        HWND edit = CreateWindowExW(0, L"EDIT", text.c_str(), WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, host, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(host, GWLP_HINSTANCE)), nullptr); NativeUI::SelectAllOnCtrlA(edit);
         if (!edit) return false;
         edit_ = edit; host_ = host; id_ = id; done_ = std::move(done); style_ = style; composing_ = finishing_ = false;
         if (brush_) DeleteObject(brush_);
@@ -35,6 +37,7 @@ public:
         SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
         SendMessageW(edit, EM_SETLIMITTEXT, 1024, 0);
         SetWindowSubclass(edit, Proc, subclassId, reinterpret_cast<DWORD_PTR>(this));
+        EditBuffer::Attach(edit);   // every draw one finished image (native-ui.h)
         Name(edit, name);
         Move(box);
         ShowWindow(edit, SW_SHOW);
@@ -68,7 +71,7 @@ public:
     RECT Box() const { return box_; }
     bool Owns(HWND h) const { return edit_ && h == edit_; }
     // From the host's WM_CTLCOLOREDIT for Edit(): the label's colours.
-    LRESULT Color(HDC dc) const { SetTextColor(dc, style_.text); SetBkColor(dc, style_.back); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(brush_); }
+    LRESULT Color(HDC dc) const { EditBuffer::Clip(edit_, dc); SetTextColor(dc, style_.text); SetBkColor(dc, style_.back); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(brush_); }
 private:
     static constexpr UINT_PTR subclassId = 0x524E;   // "RN"
     static constexpr UINT FinishMessage = WM_APP + 0x52;

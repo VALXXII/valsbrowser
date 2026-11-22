@@ -48,52 +48,6 @@ inline std::wstring Wide(const std::string& s) {
     return o;
 }
 
-// ---------------------------------------------------------------- page messages
-enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection };
-struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; };
-
-// Checks the frame of every message: type/version, the session nonce and the navigation stamp.
-// Anything else (unknown op, wrong types) is Invalid.
-inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std::int64_t navStamp, std::string* why = nullptr) {
-    Envelope e; auto bad = [&](const char* w) { if (why) *why = w; return Envelope{}; };
-    if (!v.IsObject()) return bad("not an object");
-    const auto* type = v.Get("type"); const auto* ver = v.Get("v"); const auto* n = v.Get("nonce"); const auto* st = v.Get("navStamp"); const auto* op = v.Get("op");
-    if (!type || !type->IsString() || type->string != "browser-annotation") return bad("type");
-    if (!ver || !ver->IsNumber() || !ver->integral || ver->integer != 1) return bad("version");
-    if (!n || !n->IsString() || nonce.empty() || n->string != nonce) return bad("nonce");
-    if (!st || !st->IsNumber() || !st->integral || st->integer != navStamp) return bad("navStamp");
-    if (!op || !op->IsString()) return bad("op");
-    if (op->string == "select") e.op = Op::Select;
-    else if (op->string == "hidden") { e.op = Op::Hidden; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
-    else if (op->string == "shown") { e.op = Op::Shown; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
-    else if (op->string == "escape") e.op = Op::Escape;
-    else if (op->string == "noselection") e.op = Op::NoSelection;
-    else return bad("op");
-    return e;
-}
-
-// V3: the page frame's geometry at the selection (CSS px of the top viewport): edges (x, y, w, h), label box and
-// text, fill opacity. The host draws the edges and the label natively (never captured) and removes the fill.
-// V3-B: the spacing inspector as drawn by the page at the selection (CSS px of the top viewport): the padding ring
-// (outer = padding box with its radius, inner = content box), the gap rectangles, the value labels, and the viewport
-// (the hatches' common box). At most 96 gaps and 12 labels; anything malformed drops the inspector, never the selection.
-struct SpaceBand { int kind = 1; double x = 0, y = 0, w = 0, h = 0; };
-struct SpaceLabel { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::string text; };
-struct Mark {
-    bool present = false; double x = 0, y = 0, w = 0, h = 0, lx = 0, ly = 0, lw = 0, lh = 0, fill = 0; std::string text;
-    bool hasPad = false; double pad[8]{}; double radius = 0, innerRadius = 0, vw = 0, vh = 0;   // V3-B: padding ring, viewport
-    std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels;                                 // V3-B: gaps, value labels
-    bool HasSpace() const { return hasPad || !bands.empty(); }
-};
-struct Selection {
-    Mark mark;
-    BA::Target target;
-    std::string frameKind = "main";
-    bool keyboard = false;
-    std::int64_t seq = -1;   // the page's selection counter: its « hidden » message carries it (frame hidden for the shot)
-    double at = 0;           // the page's Date.now() at the click (ms since 1970): click -> host latency, measured only
-};
-
 namespace detail {
 inline bool Str(const SJ::Value* v, std::string& out, std::size_t maxBytes) { if (!v || !v->IsString() || v->string.size() > maxBytes) return false; out = v->string; return true; }
 inline bool Num(const SJ::Value* v, double& out, double lo, double hi) { if (!v || !v->IsNumber() || !std::isfinite(v->number) || v->number < lo || v->number > hi) return false; out = v->number; return true; }
@@ -115,6 +69,84 @@ inline bool Pairs(const SJ::Value* v, std::vector<BA::NamedValue>& out, std::siz
     return true;
 }
 }
+
+// ---------------------------------------------------------------- page messages
+enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Selecting, Mods };
+// Anchor (chat, Mode Commentaire): where the element the bubble is attached to is now, CSS px of the top viewport;
+// gone = it is no longer in the page.
+// Selecting (latency): posted at the click, before the full « select » of the same seq: what was clicked —
+// serial = seq, selector, x / y / w / h = the element's rectangle (CSS px of the top viewport), at = the click (ms since 1970).
+// Anchor (R39): sx / sy = the page's scroll offset (CSS px), t = when the page measured it (ms since 1970, sub-ms):
+// optional (0 when absent), for the host's frame-by-frame measure of the page -> host lag.
+struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; std::string selector; double at = 0;
+                  double sx = 0, sy = 0, t = 0;
+                  double px = -1, py = -1; };   // Selecting: pt = where the page saw the click (CSS px of the top viewport); -1 when absent (diagnostics only)
+
+// Checks the frame of every message: type/version, the session nonce and the navigation stamp.
+// Anything else (unknown op, wrong types) is Invalid.
+inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std::int64_t navStamp, std::string* why = nullptr) {
+    Envelope e; auto bad = [&](const char* w) { if (why) *why = w; return Envelope{}; };
+    if (!v.IsObject()) return bad("not an object");
+    const auto* type = v.Get("type"); const auto* ver = v.Get("v"); const auto* n = v.Get("nonce"); const auto* st = v.Get("navStamp"); const auto* op = v.Get("op");
+    if (!type || !type->IsString() || type->string != "browser-annotation") return bad("type");
+    if (!ver || !ver->IsNumber() || !ver->integral || ver->integer != 1) return bad("version");
+    if (!n || !n->IsString() || nonce.empty() || n->string != nonce) return bad("nonce");
+    if (!st || !st->IsNumber() || !st->integral || st->integer != navStamp) return bad("navStamp");
+    if (!op || !op->IsString()) return bad("op");
+    if (op->string == "select") e.op = Op::Select;
+    else if (op->string == "hidden") { e.op = Op::Hidden; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
+    else if (op->string == "shown") { e.op = Op::Shown; if (const auto* s = v.Get("serial"); s && s->IsNumber() && s->integral) e.serial = s->integer; }
+    else if (op->string == "selecting") {
+        const auto* q = v.Get("seq"); const auto* sel = v.Get("selector"); const auto* r = v.Get("rect");
+        if (!q || !q->IsNumber() || !q->integral || q->integer < 0 || q->integer > (std::int64_t(1) << 40)) return bad("selecting seq");
+        if (!sel || !sel->IsString() || sel->string.empty() || sel->string.size() > 4096) return bad("selecting selector");
+        if (!r || !r->IsObject() || !detail::Num(r->Get("x"), e.x, -1e7, 1e7) || !detail::Num(r->Get("y"), e.y, -1e7, 1e7) ||
+            !detail::Num(r->Get("width"), e.w, 0, 1e7) || !detail::Num(r->Get("height"), e.h, 0, 1e7)) return bad("selecting rect");
+        if (const auto* t0 = v.Get("at")) { if (!detail::Num(t0, e.at, 0, 1e14)) return bad("selecting at"); }
+        if (const auto* pt = v.Get("pt"); pt && pt->IsObject()) { double x = 0, y = 0; if (detail::Num(pt->Get("x"), x, -1e7, 1e7) && detail::Num(pt->Get("y"), y, -1e7, 1e7)) { e.px = x; e.py = y; } }   // optional
+        if (v.Get("vw") && !detail::Num(v.Get("vw"), e.vw, 1, 1e5)) return bad("selecting vw");   // the viewport of the rectangle (optional)
+        if (v.Get("vh") && !detail::Num(v.Get("vh"), e.vh, 1, 1e5)) return bad("selecting vh");
+        e.op = Op::Selecting; e.serial = q->integer; e.selector = sel->string;
+    }
+    else if (op->string == "mods") e.op = Op::Mods;   // R31: the pointer moved over the page: the host reads Ctrl
+    else if (op->string == "escape") e.op = Op::Escape;
+    else if (op->string == "noselection") e.op = Op::NoSelection;
+    else if (op->string == "anchor") {
+        e.op = Op::Anchor;
+        if (const auto* g = v.Get("gone"); g && g->IsBool() && g->boolean) { e.gone = true; return e; }
+        auto num = [&](const char* k, double& out, double lo, double hi) { const auto* p = v.Get(k); if (!p || !p->IsNumber() || !(p->number >= lo && p->number <= hi)) return false; out = p->number; return true; };
+        if (!num("x", e.x, -1e6, 1e6) || !num("y", e.y, -1e6, 1e6) || !num("w", e.w, 0, 1e6) || !num("h", e.h, 0, 1e6) || !num("vw", e.vw, 1, 1e5) || !num("vh", e.vh, 1, 1e5)) return bad("anchor");
+        if (v.Get("sx") && !num("sx", e.sx, -1e7, 1e7)) return bad("anchor sx");
+        if (v.Get("sy") && !num("sy", e.sy, -1e7, 1e7)) return bad("anchor sy");
+        if (v.Get("t") && !num("t", e.t, 0, 1e14)) return bad("anchor t");
+    }
+    else return bad("op");
+    return e;
+}
+
+// V3: the page frame's geometry at the selection (CSS px of the top viewport): edges (x, y, w, h), label box and
+// text, fill opacity. The host draws the edges and the label natively (never captured) and removes the fill.
+// V3-B: the spacing inspector as drawn by the page at the selection (CSS px of the top viewport): the padding ring
+// (outer = padding box with its radius, inner = content box), the gap rectangles, the value labels, and the viewport
+// (the hatches' common box). At most 96 gaps and 12 labels; anything malformed drops the inspector, never the selection.
+struct SpaceBand { int kind = 1; double x = 0, y = 0, w = 0, h = 0; };
+struct SpaceLabel { int kind = 0; double x = 0, y = 0, w = 0, h = 0; std::string text; };
+struct Mark {
+    bool present = false; double x = 0, y = 0, w = 0, h = 0, lx = 0, ly = 0, lw = 0, lh = 0, fill = 0; std::string text;
+    double rx = 0, ry = 0, rw = 0, rh = 0; std::string rtext;   // R14: the size label at the right (absent: none)
+    bool hasPad = false; double pad[8]{}; double radius = 0, innerRadius = 0, vw = 0, vh = 0;   // V3-B: padding ring, viewport
+    std::vector<SpaceBand> bands; std::vector<SpaceLabel> labels;                                 // V3-B: gaps, value labels
+    bool HasSpace() const { return hasPad || !bands.empty(); }
+};
+struct Selection {
+    Mark mark;
+    BA::Target target;
+    std::string frameKind = "main";
+    bool keyboard = false;
+    std::int64_t seq = -1;   // the page's selection counter: its « hidden » message carries it (frame hidden for the shot)
+    double at = 0;           // the page's Date.now() at the click (ms since 1970): click -> host latency, measured only
+};
+
 
 // V3-B: mark.sp — { pad: [ox, oy, ow, oh, ix, iy, iw, ih] | null, radius, inner, gaps: [[x, y, w, h]...],
 // labels: [[kind, x, y, w, h, text]...], vw, vh }. False = ignore it.
@@ -181,6 +213,9 @@ inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why 
             !Num(mk->Get("lx"), m.lx, -lim, lim) || !Num(mk->Get("ly"), m.ly, -lim, lim) || !Num(mk->Get("lw"), m.lw, 0, 4000) || !Num(mk->Get("lh"), m.lh, 0, 200) ||
             !Num(mk->Get("fill"), m.fill, 0, 1) || !Str(mk->Get("text"), m.text, 1024)) return bad("mark");
         m.present = true;
+        if (mk->Get("rw")) {   // R14: optional; malformed drops the size label only
+            if (!Num(mk->Get("rx"), m.rx, -lim, lim) || !Num(mk->Get("ry"), m.ry, -lim, lim) || !Num(mk->Get("rw"), m.rw, 0, 4000) || !Num(mk->Get("rh"), m.rh, 0, 200) || !Str(mk->Get("rtext"), m.rtext, 160)) { m.rw = m.rh = 0; m.rtext.clear(); }
+        }
         if (const auto* sp = mk->Get("sp"); sp && !sp->IsNull() && !ParseSpaceMark(*sp, m)) { m.hasPad = false; m.bands.clear(); m.labels.clear(); }
     }
     auto& g = s.target;
@@ -226,6 +261,21 @@ inline Checked CheckMessage(const std::string& json, const std::string& nonce, s
 inline bool LooksLikeAnnotation(const std::wstring& json) {
     return json.size() > 2 && json.find(L"\"type\":\"browser-annotation\"") != std::wstring::npos;
 }
+
+// R26: the argument of the page command « peek » (annotation-script.h, peekSet): the chip's element shown as hovered
+// (scrolled softly into view when it is not), or the end of it. {"active":true,"selector":"…"} / {"active":false}.
+inline std::string PeekArg(const std::string& selector, bool active) {
+    SJ::Value v = SJ::Value::Obj();
+    const bool on = active && !selector.empty() && selector.size() <= 4096;
+    v.Set("active", SJ::Value::Bool(on));
+    if (on) v.Set("selector", SJ::Value::Str(selector));
+    return SJ::Serialize(v);
+}
+
+// Review M4 (b): Escape from the page (the keyboard is in the site: after a click on its scroll bar, back from another
+// application). A bubble open = it closes, the mode stays; otherwise the mode is left (unless it is paused: nothing).
+enum class EscapeAction { CloseBubble, Leave, Ignore };
+inline EscapeAction OnEscape(bool paused, bool bubbleOpen) { return bubbleOpen ? EscapeAction::CloseBubble : paused ? EscapeAction::Ignore : EscapeAction::Leave; }
 
 // ---------------------------------------------------------------- capture crop
 // rect/viewport in CSS px of the top viewport; capture = the CapturePreview PNG (viewport pixels).

@@ -130,6 +130,9 @@ struct HistoryView {
     int Find(const std::wstring& id) const { for (size_t i = 0; i < data.entries.size(); ++i) if (data.entries[i].id == id) return int(i); return -1; }
     int Count(HistoryFilter f) const { int n = 0; for (auto& e : data.entries) if (Matches(e, f)) ++n; return n; }
 };
+// « Suivi »: a step's quote wraps under its label, left of the step's time (12/16 + 8): the same width
+// sizes the card (layout) and wraps the text (paint). `lane` = the card's inner width (12 DIP padding).
+inline float StepQuoteWidth(Ink& ink, const HistoryEntry::Step& s, float lane) { return lane - 26 - ink.Width(s.time, F(12, 16)) - 8; }
 inline HistoryLayout LayoutHistory(Ink& ink, const HistoryView& v) {
     using namespace HistorySpec; HistoryLayout l; const float x0 = 1, inner = width - 2;
     const int d = v.detailId.empty() ? -1 : v.Find(v.detailId);
@@ -141,7 +144,7 @@ inline HistoryLayout LayoutHistory(Ink& ink, const HistoryView& v) {
         const float nh = ink.Height(e.note, F(14, 20), inner - 32); l.note = {x0 + 16, y, x0 + inner - 16, y + nh}; y += nh + 12;
         if (!e.steps.empty()) {   // V3 « Suivi »: one line per step (icon 16, label 13/16, time at right), quotes under it
             float fh = 10 + 16 + 8;   // « Suivi » 12/16 medium, then the steps
-            for (size_t i = 0; i < e.steps.size(); ++i) { fh += 16; if (!e.steps[i].quote.empty()) fh += 4 + ink.Height(L"« " + e.steps[i].quote + L" »", F(13, 18), inner - 24 - 24 - 26 - 40); if (i + 1 < e.steps.size()) fh += 10; }
+            for (size_t i = 0; i < e.steps.size(); ++i) { fh += 16; if (!e.steps[i].quote.empty()) fh += 4 + ink.Height(L"« " + e.steps[i].quote + L" »", F(13, 18), StepQuoteWidth(ink, e.steps[i], inner - 24 - 24)); if (i + 1 < e.steps.size()) fh += 10; }
             fh += 12; l.follow = {x0 + 12, y, x0 + inner - 12, y + fh}; y += fh + 12;
             if (Unhandled(e)) { const float hh = 20 + ink.Height(UnhandledHelp(), F(13, 18), inner - 24 - 24); l.help = {x0 + 12, y, x0 + inner - 12, y + hh}; y += hh + 12; }
         } else {
@@ -293,7 +296,7 @@ inline void PaintSteps(Ink& ink, const HistoryEntry& e, const HistoryLayout& l) 
         const bool amber = s.kind == Step::Unhandled;
         ink.Text(s.label, F(13, 16, amber ? 500 : 400), {x + 26, y, r - tw - 8, y + 16}, amber ? Hex(Ink_::amber) : Hex(0xFFFFFFCC));
         y += 16;
-        if (!s.quote.empty()) { const std::wstring q = L"« " + s.quote + L" »"; const float qw = r - tw - 8 - (x + 26); const float qh = ink.Height(q, F(13, 18), qw);
+        if (!s.quote.empty()) { const std::wstring q = L"« " + s.quote + L" »"; const float qw = StepQuoteWidth(ink, s, r - x); const float qh = ink.Height(q, F(13, 18), qw);
             ink.Text(q, F(13, 18), {x + 26, y + 4, x + 26 + qw, y + 4 + qh}, Hex(0xFFFFFFB3), true); y += 4 + qh; }
         y += 10;
     }
@@ -364,8 +367,9 @@ inline void PaintHistoryBody(Ink& ink, const HistoryView& v, const HistoryLayout
             const D2D1_RECT_F r{list.left + 4 + 10, top + 10, list.right - 4 - 10, top + 26};
             Font n = F(11, 14); n.tabular = true;
             std::vector<Piece> p{PText(it.site, F(12, 16, 500), Hex(0xFFFFFFB3))}; if (it.current) p.push_back(PText(TR(history_this_page), F(11, 14), Hex(0xFFFFFF80)));
-            Pieces(ink, p, r, Align::Leading);
-            ink.Text(std::to_wstring(it.count), n, r, Hex(0xFFFFFF80), false, Align::Trailing, true);
+            const std::wstring count = std::to_wstring(it.count);
+            Pieces(ink, p, {r.left, r.top, r.right - ink.Width(count, n) - 8, r.bottom}, Align::Leading);   // the site trims before its count
+            ink.Text(count, n, r, Hex(0xFFFFFF80), false, Align::Trailing, true);
         } else PaintHistoryRow(ink, v, v.data.entries[size_t(it.entry)], {list.left + 4, top, list.right - 4, top + it.h}, it.entry);
     }
     t->PopAxisAlignedClip();

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boutique — Paiement</title>
+<link rel="stylesheet" href="styles/checkout.css">
+</head>
+<body>
+<header class="site-header" data-astro-source-file="@" data-astro-source-loc="@">
+  <strong class="brand" data-astro-source-file="@" data-astro-source-loc="@">Boutique</strong>
+  <span class="cart" id="cart">Panier · 2 articles</span>
+</header>
+<main class="checkout" data-astro-source-file="@" data-astro-source-loc="@">
+  <form class="form" onsubmit="return false" data-astro-source-file="@" data-astro-source-loc="@">
+    <h1 class="title" data-astro-source-file="@" data-astro-source-loc="@">Paiement</h1>
+    <label class="field" data-astro-source-file="@" data-astro-source-loc="@">
+      <span class="field-label">Adresse e-mail</span>
+      <input type="email" placeholder="vous@exemple.fr" autocomplete="off">
+    </label>
+    <label class="field" data-astro-source-file="@" data-astro-source-loc="@">
+      <span class="field-label">Carte</span>
+      <input type="text" placeholder="1234 1234 1234 1234" autocomplete="off">
+    </label>
+    <button class="btn-primary" type="submit" data-astro-source-file="@" data-astro-source-loc="@">Payer 48,00 €</button>
+    <p class="hint">Paiement de démonstration : rien n'est envoyé.</p>
+  </form>
+  <aside class="summary" id="summary">
+    <h2>Récapitulatif</h2>
+    <ul class="lines">
+      <li><span>Carnet ligné</span><span>18,00 €</span></li>
+      <li><span>Stylo plume</span><span>30,00 €</span></li>
+    </ul>
+    <button class="btn-ghost" type="button" id="react-button">Modifier le panier</button>
+  </aside>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

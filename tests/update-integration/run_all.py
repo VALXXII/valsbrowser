@@ -16,7 +16,7 @@ Steps:
   4. --app: static checks of the built application directory.
 """
 from __future__ import annotations
-import argparse, json, struct, subprocess, sys, time
+import argparse, json, shutil, struct, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +71,12 @@ def existing_fixtures() -> None:
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, language_evidence])
     fixture('bookmarks_test', [*STRICT, 'tests/bookmarks_test.cpp'])
+    fixture('bookmark_drag_test', [*STRICT, 'tests/bookmark_drag_test.cpp'])   # drag and drop rules (src/bookmark-drag.h)
+    promote_work = OUT / 'bookmark-promote-work'
+    promote_work.mkdir(parents=True, exist_ok=True)
+    fixture('bookmark_promote_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/bookmark_promote_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [promote_work])
+    fixture('bookmark_move_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/bookmark_move_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [promote_work])
+    fixture('browser_catalog_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/browser_catalog_test.cpp', '-lshell32', '-lole32', '-ladvapi32', '-lgdi32', '-luser32'], [promote_work])
     # Import from a browser (design/browser-data-import-plan.md): synthetic roots only, Windows' winsqlite3.dll
     import_work = OUT / 'browser-import-work'
     import_work.mkdir(parents=True, exist_ok=True)
@@ -94,8 +100,16 @@ def existing_fixtures() -> None:
     fixture('address_background_test', [*STRICT, 'tests/address_background_test.cpp', '-lgdi32', '-luser32', '-ldwmapi'])
     # Address selection in the profile colour: real EDIT pixels, keyboard/mouse/edit, live switch, 96/144/192 DPI
     fixture('address_selection_test', [*STRICT, 'tests/address_selection_test.cpp', '-lgdi32', '-luser32', '-ldwmapi', '-lcomctl32'])
+    # Typing flicker: every native text field shows no frame between before and after a keystroke (real EDITs, surface pixels)
+    flicker_evidence = ROOT / 'build/flicker-qa'
+    flicker_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('edit_flicker_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/ui/edit_flicker_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT, flicker_evidence])
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # A navigation the engine turned into a download is never an error page (src/download-navigation.h; real engine:
+    # tests/downloads/download_navigation_e2e.py)
+    fixture('download_navigation_test', [*STRICT, 'tests/download_navigation_test.cpp'])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Split view: pure model (zones, capacity, rails, springs) and host behaviour through WndProc
     fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
@@ -104,6 +118,9 @@ def existing_fixtures() -> None:
     # Screen-reader view of the chrome through a real UI Automation client (issue #2)
     # Native menus: a submenu's row hover follows the pointer mid-entrance (cascade, keyboard, reduced motion)
     fixture('context_menu_hover_test', [*LOOSE, '-municode', *TVG, 'tests/ui/context_menu_hover_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32'], [ROOT])
+    # Suggestions popup and Favoris drawer redraw at the DPI of the monitor they land on (SKIP with a single DPI, as on CI).
+    fixture('address_popup_dpi_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/ui/address_popup_dpi_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT])
+    fixture('select_all_test', [*STRICT, 'tests/ui/select_all_test.cpp', '-luser32', '-lcomctl32', '-ldwmapi', '-lgdi32'])
     fixture('accessibility_test', [*LOOSE, *TVG, WV2, 'tests/accessibility/accessibility_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-loleaut32'])
     # Download history popover/drawer (upstream PR #28/#29, same line as test-downloads.ps1)
     downloads_evidence = ROOT / 'build/downloads-qa'
@@ -117,6 +134,25 @@ def existing_fixtures() -> None:
     fixture('history_panel_test', [*STRICT, '-municode', *TVG, 'tests/history/history_panel_test.cpp', 'src/native-lottie.cpp', THORVG,
             '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
             [ROOT, history_evidence])
+    # First-run onboarding (Paper p-R-0): the flow, the first-run rule and the motion policy (pure), then the seven
+    # boards drawn off screen by the production window at 96 and 120 DPI (shaders on Direct3D, WARP without a GPU),
+    # with the Paper geometry, keyboard order, events and both languages. Real window: tests/onboarding/qa.py.
+    fixture('onboarding_flow_test', [*STRICT, 'tests/onboarding/onboarding_flow_test.cpp'])
+    # The 2 -> 3 transition as numbers: defaults, text round trip of the debug panel's file, bounds, timeline
+    fixture('onboarding_tuning_test', [*STRICT, 'tests/onboarding/onboarding_tuning_test.cpp'])
+    # Its import: board 3's lists and the commit into a profile folder, on synthetic sources only (*.example)
+    onboarding_sources, onboarding_work = OUT / 'onboarding-import-sources', OUT / 'onboarding-import-work'
+    for folder in (onboarding_sources, onboarding_work):
+        if folder.exists():
+            shutil.rmtree(folder)
+    onboarding_work.mkdir(parents=True)
+    run('synthetic import sources for the onboarding', [sys.executable, '-I', ROOT / 'tests/browser-import/make_sources.py', onboarding_sources])
+    fixture('onboarding_import_test', [*STRICT, '-municode', '-Isrc', 'tests/onboarding/onboarding_import_test.cpp', '-lshell32', '-lole32', '-ladvapi32', '-lgdi32', '-luser32'],
+            [onboarding_sources, onboarding_work])
+    onboarding_evidence = ROOT / 'build/onboarding-render'
+    onboarding_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('onboarding_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/onboarding_render_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, onboarding_evidence])
 
 
 def peer_suites() -> None:

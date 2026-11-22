@@ -181,7 +181,7 @@ int wmain(int argc, wchar_t** argv) {
     {   // Host hook (browser): the shared menu through ChooseFromMenu; keyboard flag and anchor passed.
         ContextMenu::Menu shared; shared.Init(hi, owner, root);
         int hookCalls = 0; bool sawKeyboard = false; int sawCurrent = -1; RECT sawAnchor{};
-        Modal::Dialog::Hooks h; h.dismiss = [&] { shared.Cancel(); }; h.choose = [&](const std::vector<std::wstring>& o, int cur, RECT a, bool kb) { ++hookCalls; sawKeyboard = kb; sawCurrent = cur; sawAnchor = a; return Modal::ChooseFromMenu(shared, o, cur, a, kb, true); };
+        Modal::Dialog::Hooks h; h.dismiss = [&] { shared.Cancel(); }; h.choose = [&](const Modal::Select& sel, RECT a, bool kb) { ++hookCalls; sawKeyboard = kb; sawCurrent = sel.index; sawAnchor = a; return Modal::ChooseFromMenu(shared, sel, a, kb, true); };
         Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "host hook: Create");
         int calls = 0; hd.Show(Modal::ClearDataSpec(), Area(), [&](const Modal::Result&) { ++calls; });
         while (hd.FocusForTest() != D::SelectHit) hd.KeyForTest(VK_TAB);
@@ -193,7 +193,7 @@ int wmain(int argc, wchar_t** argv) {
     {   // Select::checks (« Importer depuis un navigateur… »): choosing a source rebuilds the checks with their
         // availability; a disabled check is never toggled nor in the Tab order; the error line is cleared.
         int chosen = 1;
-        Modal::Dialog::Hooks h; h.choose = [&](const std::vector<std::wstring>&, int, RECT, bool) { return chosen; };
+        Modal::Dialog::Hooks h; h.choose = [&](const Modal::Select&, RECT, bool) { return chosen; };
         Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "select checks: Create");
         auto checksFor = [](int i) {
             Modal::Check a, b, c; a.label = L"Favoris"; b.label = L"Historique"; c.label = L"Cookies et connexions";
@@ -219,6 +219,28 @@ int wmain(int argc, wchar_t** argv) {
         Check(hd.Snapshot().checks[1] && !hd.CurrentSpec().checks[1].disabled, "select checks: back to the browser, history available again");
         hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose();
         Check(calls == 1, "select checks: done once");
+    }
+    {   // Select options with a logo, a glyph fallback, a second line and disabled rows (detected browsers, part 3):
+        // the list carries them; a disabled option can never become the value, whatever the list answers.
+        int chosen = 1;
+        Modal::Dialog::Hooks h; h.choose = [&](const Modal::Select&, RECT, bool) { return chosen; };
+        Modal::Dialog hd; Check(hd.Create(hi, owner, root, std::move(h)), "select rows: Create");
+        Modal::Spec spec; spec.title = L"Importer depuis un navigateur"; spec.hasSelect = true;
+        spec.select.options = {L"Comet", L"Opera", L"Fichier de favoris HTML…"};
+        auto logo = std::make_shared<NativeChrome::FaviconImage>(); logo->width = logo->height = 1; logo->stride = 4; logo->pixels = {0, 0, 255, 255};
+        spec.select.images = {logo, nullptr, nullptr}; spec.select.icons = {L"favicon", L"favicon", L"file"};
+        spec.select.descriptions = {L"", L"Installé, pas encore pris en charge", L""}; spec.select.disabled = {false, true, false};
+        spec.buttons = {Modal::Make(Modal::CancelButton, L"Annuler", Modal::Role::Secondary, false, true, false)};
+        int calls = 0; hd.Show(spec, Area(), [&](const Modal::Result&) { ++calls; });
+        const auto items = Modal::SelectItems(hd.CurrentSpec().select);
+        Check(items.size() == 3 && items[0].image == logo && items[0].enabled && items[0].checked && !items[1].enabled && items[1].description == L"Installé, pas encore pris en charge" && items[2].icon == L"file" && !items[2].image,
+              "select rows: logo, glyph, second line and disabled state reach the list");
+        hd.ActivateForTest(D::SelectHit);
+        Check(hd.Snapshot().select == 0, "select rows: a disabled option is never chosen");
+        chosen = 2; hd.ActivateForTest(D::SelectHit);
+        Check(hd.Snapshot().select == 2, "select rows: an enabled option is chosen");
+        hd.Abort(); hd.FinishAnimationsForTest(); hd.Dispose();
+        Check(calls == 1, "select rows: done once");
     }
     {   // Abort / Dispose / owner destroyed: done({-1}) once.
         int calls = 0, button = -9;
@@ -332,8 +354,8 @@ int wmain(int argc, wchar_t** argv) {
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
         p.Surface().FinishAnimationsForTest(); RECT w{}; GetWindowRect(p.Window(), &w);
         Check(w.left == anchor.left - MulDiv(4, GetDpiForWindow(p.Window()), 96) && w.top == anchor.bottom + MulDiv(16, GetDpiForWindow(p.Window()), 96), "permission: 4 DIP left of the indicator, 16 DIP under it (B01)");
-        p.Surface().ActivateForTest(Modal::Dialog::SimpleCheckHit); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
-        Check(calls == 1 && got.action == OriginPrompt::Action::Allow && got.remember, "permission: Autoriser + Mémoriser");
+        p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 1 && got.action == OriginPrompt::Action::Allow && got.remember, "permission: « Mémoriser pour ce site » checked by default, Autoriser remembered (user decision 2026-11-17)");
         p.Surface().FinishAnimationsForTest();
         s.permissions = {OriginPrompt::Permission::Notifications};
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
@@ -343,6 +365,11 @@ int wmain(int argc, wchar_t** argv) {
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
         p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0));
         Check(calls == 3 && got.action == OriginPrompt::Action::Block && got.remember, "permission: notifications choice always remembered (B02)");
+        p.Surface().FinishAnimationsForTest();
+        s.permissions = {OriginPrompt::Permission::Camera};
+        p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
+        p.Surface().ActivateForTest(Modal::Dialog::SimpleCheckHit); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 4 && got.action == OriginPrompt::Action::Allow && !got.remember, "permission: check cleared = Autoriser this time only");
         p.Surface().FinishAnimationsForTest();
     }
     {   // Permission popovers as drawn in Paper B02 (user edit 2026-11-12): head (glyph, title, subtitle), the
@@ -792,6 +819,28 @@ int wmain(int argc, wchar_t** argv) {
         Check(menu.Track(items, {300, 300}, nullptr, true, true) == 0 && !menu.LastChoiceKeyboard(), "menu: dismissed, no keyboard choice");
         menu.Dispose();
     }
+    // Menu width (2026-11-21): a long label without a shortcut and a short one with a shortcut were added up as if they
+    // shared a row (widest label + widest shortcut), so the page/link menu came out ~395 DIP for ~270 of content.
+    // Each row now needs only its own label + its own shortcut / glyph (gap 12 DIP); the widest row sets the width.
+    {
+        ContextMenu::Menu menu; menu.Init(hi, owner, root);
+        ContextMenu::Item tools = ContextMenu::Command(14, L"Outils suppl\u00e9mentaires"); tools.children = {ContextMenu::Command(41, L"Inspecter")};
+        ContextMenu::Item annotate = ContextMenu::Command(17, L"Annoter l'\u00e9l\u00e9ment"); annotate.shortcut = L"Ctrl+Maj+A";
+        std::vector<ContextMenu::Item> items{ContextMenu::Command(11, L"Ouvrir le lien dans une nouvelle fen\u00eatre"), ContextMenu::Separator(),
+            ContextMenu::Command(12, L"Enregistrer le lien sous"), ContextMenu::Command(13, L"Copier le lien"), ContextMenu::Separator(), tools, ContextMenu::Separator(),
+            ContextMenu::Command(15, L"Imprimer\u2026"), ContextMenu::Command(16, L"Enregistrer en PDF"), ContextMenu::Separator(), annotate, ContextMenu::Separator(), ContextMenu::Command(18, L"Inspecter")};
+        static ContextMenu::Menu* probed; static float measured; probed = &menu; measured = -1;
+        const UINT_PTR timer = SetTimer(nullptr, 0, 30, [](HWND, UINT, UINT_PTR id, DWORD) {
+            if (!probed->Open()) return; KillTimer(nullptr, id);
+            HWND w = probed->LevelWindow(0); RECT r{}; GetWindowRect(w, &r); measured = (r.right - r.left) * 96.f / GetDpiForWindow(w);
+            PostMessageW(w, WM_KEYDOWN, VK_ESCAPE, 0);
+        });
+        menu.Track(items, {300, 300}, nullptr, false, true); KillTimer(nullptr, timer);
+        std::printf("     link menu width: %.0f DIP\n", measured);
+        Check(measured > 0 && measured <= 300, "menu: width follows its widest row (label + its own shortcut), not widest label + widest shortcut");
+        Check(measured >= 240, "menu: the longest label still fits on one line");
+        menu.Dispose();
+    }
     // ---- Settings drawer: « Autorisations du site » opens ON its view (no root page under it) --------
     {
         BrowserSettings::State st; SettingsUI::Drawer::Hooks dh; std::function<void(std::vector<BrowserSettings::Site>)> pending;
@@ -857,6 +906,62 @@ int wmain(int argc, wchar_t** argv) {
         demo.Surface().KeyForTest(VK_ESCAPE);
         Check(closed == 1 && !demo.Visible(), "demo: Échap closes, closed() once");
         demo.Dispose(); Check(closed == 1, "demo: Dispose does not call closed() again");
+    }
+    {   // Text fit (French and English, 96 and 120 DPI): no text runs past its padding or into another control.
+        OriginPrompt::Prompt q; Check(q.Create(hi, owner, root, {}), "text fit prompt"); q.SetPageArea({100, 100, 1300, 900});
+        const std::wstring ev = root + L"/build/text-fit-evidence"; CreateDirectoryW((root + L"/build").c_str(), nullptr); CreateDirectoryW(ev.c_str(), nullptr);
+        auto show = [&](const OriginPrompt::Spec& sp) { q.Show(sp, {200, 150, 224, 174}, [](OriginPrompt::Result&) {}); q.Surface().FinishAnimationsForTest(); return &q.Surface(); };
+        // Reads a rendered PNG back (BGRA, top-down) to look for ink.
+        auto load = [](const std::wstring& path, UINT& w, UINT& h, std::vector<UINT32>& px) {
+            IWICImagingFactory* f = nullptr; IWICBitmapDecoder* dec = nullptr; IWICBitmapFrameDecode* fr = nullptr; IWICFormatConverter* cv = nullptr; bool ok = false;
+            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f))) && SUCCEEDED(f->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &dec))
+                && SUCCEEDED(dec->GetFrame(0, &fr)) && SUCCEEDED(f->CreateFormatConverter(&cv)) && SUCCEEDED(cv->Initialize(fr, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))
+                && SUCCEEDED(cv->GetSize(&w, &h))) { px.resize(size_t(w) * h); ok = SUCCEEDED(cv->CopyPixels(nullptr, w * 4, UINT(px.size() * 4), reinterpret_cast<BYTE*>(px.data()))); }
+            if (cv) cv->Release(); if (fr) fr->Release(); if (dec) dec->Release(); if (f) f->Release(); return ok;
+        };
+        using OP = OriginPrompt::Spec;
+        for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+            I18n::SetForProcess(lang); const std::wstring tag = lang == I18n::Locale::En ? L"en" : L"fr";
+            // B04 save / update (demonstration): « Jamais pour ce site » at the start of the row never runs into
+            // « Plus tard » + « Enregistrer / Mettre à jour » at its end; every button stays inside the padding.
+            for (auto kind : {OriginPrompt::Kind::PasswordSave, OriginPrompt::Kind::PasswordUpdate}) {
+                OP s; s.kind = kind; s.origin = L"compte.exemple.test"; s.user = L"camille.demo@exemple.test"; s.demo = true;
+                auto* dlg = show(s); const auto& spec = dlg->CurrentSpec(); const float pad = spec.padding > 0 ? spec.padding : DialogKit::Paper::padding, w = dlg->WidthForTest();
+                bool apart = true, inside = true;
+                for (size_t i = 0; i < spec.buttons.size(); ++i) {
+                    const auto a = dlg->BoxForTest(Modal::Dialog::ButtonHit(i));
+                    if (a.left < pad - .01f || a.right > w - pad + .01f) inside = false;
+                    for (size_t j = i + 1; j < spec.buttons.size(); ++j) { const auto b = dlg->BoxForTest(Modal::Dialog::ButtonHit(j));
+                        if (a.left < b.right + 4 && b.left < a.right + 4 && a.top < b.bottom && b.top < a.bottom) { apart = false; std::printf("  buttons overlap: « %ls » %.1f..%.1f / « %ls » %.1f..%.1f\n", spec.buttons[i].label.c_str(), a.left, a.right, spec.buttons[j].label.c_str(), b.left, b.right); } }
+                }
+                const char* what = kind == OriginPrompt::Kind::PasswordSave ? "save" : "update";
+                char m1[160]; std::snprintf(m1, sizeof m1, "text fit (%ls): password %s buttons never overlap (4 DIP apart at least)", tag.c_str(), what); Check(apart, m1);
+                char m2[160]; std::snprintf(m2, sizeof m2, "text fit (%ls): password %s buttons inside the popover padding", tag.c_str(), what); Check(inside, m2);
+                for (UINT dpi : {96u, 120u}) dlg->RenderForTest(ev + L"/password-" + std::wstring(what, what + std::strlen(what)) + L"-demo-" + tag + L"-" + std::to_wstring(dpi) + L".png", dpi);
+                q.Abort(); q.Surface().FinishAnimationsForTest();
+            }
+            // B08 certificate choice (radio rows): a long name ends before the radio, never under it.
+            OP cert; cert.kind = OriginPrompt::Kind::ClientCertificate; cert.origin = L"banque.exemple.test";
+            cert.accounts = {{L"Camille Démo-Fictive · Poste de travail de la direction financière", L"Émis par Autorité Démo · expire en 2027"}, {L"Poste de travail démo", L"Émis par CA Interne Démo"}};
+            auto* dlg = show(cert);
+            for (UINT dpi : {96u, 120u}) {
+                const std::wstring png = ev + L"/certificate-long-name-" + tag + L"-" + std::to_wstring(dpi) + L".png"; dlg->RenderForTest(png, dpi);
+                UINT pw = 0, ph = 0; std::vector<UINT32> px; const bool loaded = load(png, pw, ph, px); const float k = dpi / 96.f;
+                const auto r = dlg->BoxForTest(Modal::Dialog::AccountHit(0)); bool clear = loaded;
+                // From where the name must stop (radio - 4) to the radio, on the name's line (above the radio's top, and
+                // just left of it lower down): the row's own fill only.
+                const UINT32 ref = loaded ? px[size_t(std::lround((r.top + 3) * k)) * pw + size_t(std::lround((r.right - 20) * k))] : 0;
+                for (int y = int(std::ceil((r.top + 5) * k)); loaded && y < int(std::floor((r.top + 25) * k)); ++y)
+                    for (int x = int(std::ceil((r.right - 31.5f) * k)); x < int(std::floor((y < (r.top + 15) * k ? r.right - 12 : r.right - 28.5f) * k)); ++x) {
+                        const UINT32 p = px[size_t(y) * pw + size_t(x)]; int d = 0; for (int c = 0; c < 24; c += 8) d = std::max(d, std::abs(int((p >> c) & 255) - int((ref >> c) & 255)));
+                        if (d > 6) clear = false;
+                    }
+                char m3[160]; std::snprintf(m3, sizeof m3, "text fit (%ls, %u dpi): certificate name trimmed before its radio", tag.c_str(), dpi); Check(clear, m3);
+            }
+            q.Abort(); q.Surface().FinishAnimationsForTest();
+        }
+        I18n::SetForProcess(I18n::Locale::Fr);
+        q.Dispose();
     }
     d.Dispose(); DestroyWindow(owner);
     std::printf("%d checks, %d failures\n", checks, failures);

@@ -188,7 +188,8 @@ void AudioVolumeChanged(const std::wstring& site,int percent,bool commit){
     if(changed)audioScriptDirty=true;
     // Persisting and re-injecting the starting table wait for the end of the gesture (and 400 ms of rest).
     if(commit&&audioScriptDirty){KillTimer(window,AudioSaveTimerId);SetTimer(window,AudioSaveTimerId,400,nullptr);}
-    if(changed)Log(L"AUDIO volume "+site+L" "+std::to_wstring(audioVolumes.Get(site))+L"%");
+    // One log line per gesture, not per pointer move: each line opens and closes the log file on the UI thread.
+    if(commit)Log(L"AUDIO volume "+site+L" "+std::to_wstring(audioVolumes.Get(site))+L"%");
 }
 void AudioSaveDue(){
     KillTimer(window,AudioSaveTimerId);if(!audioScriptDirty)return;audioScriptDirty=false;

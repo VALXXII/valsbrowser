@@ -45,6 +45,11 @@ static void ModelChecks() {
     Item item; item.state = State::InProgress; Expect(ActionsFor(item).first == Action::Pause && ActionsFor(item).second == Action::Cancel, "in-progress actions");
     item.state = State::Completed; Expect(ActionsFor(item).first == Action::ShowInFolder && ActionsFor(item).second == Action::Open, "completed actions");
     item.missing = true; Expect(ActionsFor(item).first == Action::None && ActionsFor(item).second == Action::Remove, "deleted file actions");
+    // A row click opens only a finished download whose file is still there.
+    {   Item r; r.state = State::Completed; const bool done = DownloadsUI::Openable(r); r.missing = true; const bool gone = DownloadsUI::Openable(r); r.missing = false;
+        bool others = false; for (auto st : {State::InProgress, State::Paused, State::Failed, State::Cancelled}) { r.state = st; others = others || DownloadsUI::Openable(r); }
+        Expect(done && !gone && !others, "row click opens only a finished download whose file is still there"); }
+    Expect(DownloadsUI::IsRow(DownloadsUI::RowHit(7)) && !DownloadsUI::IsRow(DownloadsUI::ActionHit(7, 1)) && DownloadsUI::HitItem(DownloadsUI::RowHit(7)) == 7 && DownloadsUI::HitItem(DownloadsUI::ActionHit(7, 1)) == 7, "row and action targets of a row");
     // Reveal: staggered entrance, faster joint exit, continuous on interruption.
     RowReveal reveal; const auto t0 = Motion::Time{} + std::chrono::seconds(10);
     reveal.Set(true, t0, false);
@@ -62,7 +67,7 @@ static void ModelChecks() {
     Expect(reduced.Layer(2, t0 + Motion::Milliseconds(50)).offset == 0 && reduced.Layer(2, t0 + Motion::Milliseconds(50)).blur == 0, "reduced motion: fade only");
     // Geometry from the Paper frame.
     Expect(Panel::MaskSolid() == 186 && Panel::MaskStart() == 98, "mask spans the name before the actions");
-    Expect(Panel::Close().left == 232 && Panel::Close().right == 256, "header close centred on the first line");
+    Expect(Panel::Close().left == 232 && Panel::Close().right == 256, "section carets on the close-button column of the drawers' header (none drawn here)");
     // Periods: local calendar days (offset +1h here), unknown start = oldest.
     const std::int64_t day = 86400000LL, hour = 3600000LL, noon = 20000 * day + 11 * hour; // local 12:00
     Expect(PeriodOf(noon - 11 * hour, noon, hour) == Period::Today, "same local day");
@@ -86,21 +91,21 @@ static void ModelChecks() {
         Expect(DrawerMotion::morph.count() >= 400 && DrawerMotion::morph.count() <= 520, "morph settle time");
     }
     Expect(std::abs(Curves::emphasized.At(.5f) - Motion::Eased(.5f, Motion::Curve::Icon)) < .002f, "bezier matches the existing icon curve");
-    Expect(Panel::Height(4, true) == 276 && Panel::Height(9, true) == 276 && Panel::Height(0) == 100, "popover: four rows + View all");
+    Expect(Panel::Height(4, true) == 240 && Panel::Height(9, true) == 240 && Panel::Height(0) == 64, "popover: four rows + View all, no header");
     std::vector<Item> six(6); auto pop = DownloadsUI::PopoverSlots(six);
-    Expect(pop.size() == 5 && pop.back().kind == DownloadsUI::SlotKind::ViewAll && pop.back().top == 244, "popover slots");
+    Expect(pop.size() == 5 && pop.back().kind == DownloadsUI::SlotKind::ViewAll && pop.back().top == 208 && pop[0].top == 16, "popover slots: the first row on the top padding");
     std::array<std::vector<int>, PeriodCount> groups; groups[0] = {0, 1, 2, 3}; groups[1] = {4, 5};
     std::array<float, PeriodCount> open{1, 1, 1, 1, 1}; float bottom = 0;
     auto slots = DownloadsUI::DrawerSlots(six, groups, open, 0, &bottom);
-    Expect(slots.size() == 8 && slots[0].top == 59 && slots[5].kind == DownloadsUI::SlotKind::Section && slots[5].top == 299, "drawer sections on the 240 DIP stride");
-    Expect(slots[1].top == 95 && bottom == 299 + 24 + 12 + 2 * 48 + 16, "drawer rows and content end");
+    Expect(slots.size() == 8 && slots[0].top == 12 && slots[5].kind == DownloadsUI::SlotKind::Section && slots[5].top == 252, "drawer sections on the 240 DIP stride, the first label on the top padding");
+    Expect(slots[1].top == 48 && bottom == 252 + 24 + 12 + 2 * 48 + 16, "drawer rows and content end");
     open[0] = 0; auto folded = DownloadsUI::DrawerSlots(six, groups, open, 0);
-    Expect(folded.size() == 4 && folded[1].kind == DownloadsUI::SlotKind::Section && folded[1].top == 59 + 36, "folded section keeps only its header");
+    Expect(folded.size() == 4 && folded[1].kind == DownloadsUI::SlotKind::Section && folded[1].top == 12 + 36, "folded section keeps only its header");
     open[0] = .5f; auto half = DownloadsUI::DrawerSlots(six, groups, open, 0);
     auto start = DownloadsUI::MorphSlots(six, slots, 0), end = DownloadsUI::MorphSlots(six, slots, 1);
-    Expect(start[1].top == 52 && start[0].opacity == 0 && start.back().kind == DownloadsUI::SlotKind::ViewAll && start.back().opacity == 1, "morph starts as the popover");
-    Expect(end[1].top == 95 && end[0].opacity == 1 && end.back().opacity == 0 && end[5].opacity == 1, "morph lands on the drawer");
-    Expect(half[1].kind == DownloadsUI::SlotKind::Row && half[1].clipBottom == 59 + 24 + .5f * (12 + 4 * 48) && half[1].opacity == .5f, "folding rows are clipped and faded");
+    Expect(start[1].top == 16 && start[0].opacity == 0 && start.back().kind == DownloadsUI::SlotKind::ViewAll && start.back().opacity == 1, "morph starts as the popover");
+    Expect(end[1].top == 48 && end[0].opacity == 1 && end.back().opacity == 0 && end[5].opacity == 1, "morph lands on the drawer");
+    Expect(half[1].kind == DownloadsUI::SlotKind::Row && half[1].clipBottom == 12 + 24 + .5f * (12 + 4 * 48) && half[1].opacity == .5f, "folding rows are clipped and faded");
 }
 
 struct Fixture {
@@ -162,7 +167,7 @@ struct Fixture {
         scene.originX = DrawerLayout::margin * t; // popover column starts at x 0 (6 DIP in from the window edge)
         scene.viewBottom = height + (popoverHeight - Panel::padding / 2 - height) * (1 - t);
         scene.fadeBottom = Motion::Clamp((bottom - height) / Panel::pitch) * t;
-        const float edge = 4 * t * (1 - t); scene.fadeBottom = std::max(scene.fadeBottom, edge); scene.fadeTop = edge; scene.fadeTopSize = DrawerLayout::topFade * 2; scene.viewTop = 36 + (DrawerLayout::viewTop - 36) * t;
+        const float edge = 4 * t * (1 - t); scene.fadeBottom = std::max(scene.fadeBottom, edge); scene.fadeTop = edge; scene.fadeTopSize = DrawerLayout::topFade * 2; scene.viewTop = Panel::ViewTop() + (DrawerLayout::viewTop - Panel::ViewTop()) * t;
         const D2D1_RECT_F shape{DrawerLayout::margin * t, 0, Panel::width + (width - Panel::width) * t, popoverHeight + (height - popoverHeight) * t};
         return Paint(name, dpi, height, rows, {}, DownloadsUI::MorphSlots(rows, docked, t), 1, 0, scene, width, &shape);
     }
@@ -307,11 +312,56 @@ static int CancelSurfaceChecks(const std::wstring& root) {
             fired.clear(); click(((pause1->bounds.left + pause1->bounds.right) / 2.f - w.left) / k, cy / k);
             expect(fired.size() == 1 && fired[0].second == Action::Pause, "pointer: the Pause lane pauses, never cancels");
         }
-        // 4. Keyboard: Tab walks Close -> Pause -> Cancel; Entrée activates Cancel.
+        // 4. Keyboard: no close button any more: Tab walks Pause -> Cancel; Entrée activates Cancel.
         if (surface == 0) {
-            fired.clear(); for (int i = 0; i < 3; ++i) SendMessageW(host->Window(), WM_KEYDOWN, VK_TAB, 0);
+            fired.clear(); for (int i = 0; i < 2; ++i) SendMessageW(host->Window(), WM_KEYDOWN, VK_TAB, 0);
             SendMessageW(host->Window(), WM_KEYDOWN, VK_RETURN, 0);
-            expect(fired.size() == 1 && fired[0].first == 1 && fired[0].second == Action::Cancel, "keyboard: Tab x3 + Entrée cancels the active download");
+            expect(fired.size() == 1 && fired[0].first == 1 && fired[0].second == Action::Cancel, "keyboard: Tab x2 + Entrée cancels the active download");
+        }
+        // 4b. No header: no close button in the tree, the focus order or under the pointer at its former place.
+        {   bool closeNode = false; for (const auto& n : nodes) closeNode = closeNode || n.automationId == L"DownloadsClose" || n.name == TR(common_close);
+            const auto order = host->FocusOrderForTest(); bool small = false; for (int hit : order) small = small || hit < UI::ViewAllHit;
+            expect(!closeNode && !small, surface == 0 ? "popover: no close button (UIA, focus order)" : "drawer: no close button (UIA, focus order)");
+            bool list = false; for (const auto& n : nodes) list = list || (n.role == Accessibility::Role::List && n.name == TR(downloads_history_title));
+            expect(list, "UIA: the list keeps « Download history » as its name (not drawn)"); }
+        // 4c. A finished row opens its file: a click anywhere on it but its buttons, Entrée on the focused row,
+        //     UIA Invoke on its ListItem; all through the same hook as its Open action. Its buttons fire once.
+        {   const Accessibility::Node* done = nullptr; const Accessibility::Node* paused = nullptr; const Accessibility::Node* stopped = nullptr; const Accessibility::Node* folder = nullptr; const Accessibility::Node* open3 = nullptr;
+            for (const auto& n : nodes) {
+                if (n.key == UI::Host::RowKeyBaseForTest() + 3) done = &n;
+                if (n.key == UI::Host::RowKeyBaseForTest() + 2) paused = &n;
+                if (n.key == UI::Host::RowKeyBaseForTest() + 4) stopped = &n;
+                if (n.key == UI::ActionHit(3, 0)) folder = &n;
+                if (n.key == UI::ActionHit(3, 1)) open3 = &n;
+            }
+            expect(done && paused && stopped && folder && open3 && done->focusable && !paused->focusable && !stopped->focusable, "UIA: a finished row is focusable (Invoke opens it); other rows are not");
+            auto midY = [&](const Accessibility::Node* n) { return ((n->bounds.top + n->bounds.bottom) / 2.f - w.top) / k; };
+            auto midX = [&](const Accessibility::Node* n) { return ((n->bounds.left + n->bounds.right) / 2.f - w.left) / k; };
+            if (done && paused && stopped && folder && open3) {
+                fired.clear(); click(Panel::textLeft + 20, midY(done));
+                expect(fired.size() == 1 && fired[0].first == 3 && fired[0].second == Action::Open, "pointer: a click on a finished row's name opens the file (the Open hook)");
+                fired.clear(); click(Panel::padding + 10, midY(done));
+                expect(fired.size() == 1 && fired[0].second == Action::Open, "pointer: a click on a finished row's icon opens the file too");
+                fired.clear(); click(midX(folder), midY(folder));
+                expect(fired.size() == 1 && fired[0].first == 3 && fired[0].second == Action::ShowInFolder, "pointer: the folder button shows the folder, once, without opening the file");
+                fired.clear(); click(midX(open3), midY(open3));
+                expect(fired.size() == 1 && fired[0].first == 3 && fired[0].second == Action::Open, "pointer: the Open button opens once (no double fire with the row)");
+                fired.clear(); click(Panel::textLeft + 20, midY(paused)); click(Panel::textLeft + 20, midY(stopped));
+                expect(fired.empty(), "pointer: a paused or cancelled row's name does nothing");
+                // Entrée on the focused row.
+                const auto order = host->FocusOrderForTest(); const auto at = std::find(order.begin(), order.end(), UI::RowHit(3));
+                bool rows = true; for (int id : {1, 2, 4}) rows = rows && std::find(order.begin(), order.end(), UI::RowHit(id)) == order.end();
+                expect(at != order.end() && at + 1 != order.end() && *(at + 1) == UI::ActionHit(3, 0) && rows, "focus order: a finished row comes before its buttons; other rows are not stops");
+                fired.clear(); for (size_t i = 0; i < order.size() && host->FocusForTest() != UI::RowHit(3); ++i) SendMessageW(host->Window(), WM_KEYDOWN, VK_TAB, 0);
+                SendMessageW(host->Window(), WM_KEYDOWN, VK_RETURN, 0);
+                expect(host->FocusForTest() == UI::RowHit(3) && fired.size() == 1 && fired[0].first == 3 && fired[0].second == Action::Open, "keyboard: Entrée on the focused finished row opens the file");
+                fired.clear(); host->InvokeNodeForTest(UI::Host::RowKeyBaseForTest() + 3);
+                expect(fired.size() == 1 && fired[0].first == 3 && fired[0].second == Action::Open, "UIA Invoke on a finished row opens the file");
+                fired.clear(); host->InvokeNodeForTest(UI::Host::RowKeyBaseForTest() + 4); host->InvokeNodeForTest(UI::Host::RowKeyBaseForTest() + 1);
+                expect(fired.empty(), "UIA Invoke on a cancelled or active row does nothing");
+                items[2].missing = true; host->ModelChangedForTest(); fired.clear(); click(Panel::textLeft + 20, midY(done));
+                expect(fired.empty(), "pointer: a finished row whose file is gone does nothing"); items[2].missing = false; host->ModelChangedForTest();
+            }
         }
         // 5. UI Automation Invoke reaches the same action.
         fired.clear(); SendMessageW(host->Window(), UI::Host::InvokeMessageForTest(), static_cast<WPARAM>(UI::ActionHit(2, 1)), 0);
@@ -320,8 +370,8 @@ static int CancelSurfaceChecks(const std::wstring& root) {
         bool cancelFired = false; for (auto& f : fired) if (f.second == Action::Cancel) cancelFired = true;
         expect(!cancelFired, "UIA Invoke: no Cancel on a cancelled row (its slot is Remove: disabled for Cancel)");
         // 6. A row that stops being active loses its permanent actions (Cancel gone after the engine says Canceled).
-        SendMessageW(host->Window(), WM_MOUSELEAVE, 0, 0);   // pointer gone, keyboard focus on Close: only the model decides
-        SendMessageW(host->Window(), UI::Host::InvokeMessageForTest(), static_cast<WPARAM>(UI::CloseHit), 1);
+        SendMessageW(host->Window(), WM_MOUSELEAVE, 0, 0);   // pointer gone, keyboard focus on the finished row: only the model decides
+        SendMessageW(host->Window(), UI::Host::InvokeMessageForTest(), static_cast<WPARAM>(UI::RowHit(3)), 1);
         items[0].state = State::Cancelled; host->ModelChangedForTest();
         expect(!host->RevealShownForTest(1), surface == 0 ? "after cancel: the row's actions hide (no hover)" : "drawer: after cancel the actions hide");
         items[0].state = State::InProgress;
@@ -374,6 +424,31 @@ int wmain(int argc, wchar_t** argv) {
             Expect(f.Morph(name, drawerPaper, 728, DrawerMotion::morphSpring.At(i / 6.f)), "render morph frame");
         }
         Expect(f.Drawer(L"drawer-scrolled.png", drawerPaper, 728, {1, 1, 1, 1, 1}, 120, DownloadsUI::SectionHit(Period::Yesterday)), "render scrolled drawer");
+        // Text fit (French and English): the empty state and a blocked download's line fit whole in their room
+        // (no ellipsis), measured with the panel's own text stack; French captures at 96 and 120 DPI.
+        {
+            Chrome measure; Expect(SUCCEEDED(measure.InitOffscreen(f.root, 96, 300, 100)), "text fit: offscreen chrome");
+            const float blockedRoom = (Panel::width - Panel::padding) - (Panel::textLeft + Panel::detailIcon + Panel::iconGap), emptyRoom = Panel::width - 2 * Panel::padding;
+            for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+                I18n::SetForProcess(lang); const bool en = lang == I18n::Locale::En;
+                const float blocked = measure.TextWidth(FailureText(ReasonCode(I18n::Id::download_blocked_check_failed)), Panel::detailText, false, true, -.14f);
+                const float empty = measure.TextWidth(TR(downloads_empty), Panel::line, false, false, -.16f);
+                std::printf("text fit (%s): blocked line %.1f / %.1f DIP, empty state %.1f / %.1f DIP\n", en ? "en" : "fr", blocked, blockedRoom, empty, emptyRoom);
+                Expect(blocked <= blockedRoom, en ? "text fit (en): the blocked download line fits whole" : "text fit (fr): the blocked download line fits whole");
+                Expect(empty <= emptyRoom, en ? "text fit (en): the empty state fits whole" : "text fit (fr): the empty state fits whole");
+            }
+            measure.Dispose();
+            I18n::SetForProcess(I18n::Locale::Fr);
+            std::vector<Item> fr = f.items; fr[1].state = State::Failed; fr[1].reason = ReasonCode(I18n::Id::download_blocked_check_failed); fr[1].path = L"C:\\Users\\a\\Downloads\\outil-inconnu.exe";
+            std::vector<Item> none;
+            for (UINT dpi : {96u, 120u}) {
+                const std::wstring d = std::to_wstring(dpi);
+                Expect(f.Render((L"fr-popover-" + d + L".png").c_str(), dpi, {{4, -1}}, 1, 0, &fr), "render French popover");
+                Expect(f.Render((L"fr-empty-" + d + L".png").c_str(), dpi, {}, 1, 0, &none), "render French empty popover");
+                Expect(f.Drawer((L"fr-drawer-" + d + L".png").c_str(), dpi, 728, {1, 1, 1, 1, 1}, 0), "render French drawer");
+            }
+            I18n::SetForProcess(I18n::Locale::En);
+        }
         // Real toolbar (Chrome::Paint) with the animated icon, cropped to the button.
         {
             using namespace NativeChrome::DownloadIcon;

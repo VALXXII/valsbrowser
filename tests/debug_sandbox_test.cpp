@@ -182,6 +182,22 @@ static void NativeTests(HINSTANCE instance, const std::wstring& root) {
         toast.Update(ContextToast::SavingSpec(.9f)); Require(fourth == 0, "update keeps the callback");
         toast.ActivateForTest(ContextToast::Toast::CloseHit); Require(fourth == 0, "in-progress toast has no close");
         toast.Dispose(); Require(fourth == 1, "Dispose → done(false) once");
+        // Text fit: « Impossible d'ouvrir … » next to « Réessayer » (elements-integration's ShowWindowLaunchFailed)
+        // fits whole in its lane, French and English; captures at 96 and 120 DPI.
+        {   ContextToast::Toast fit; Require(fit.Create(instance, owner, root), "text fit toast created");
+            const std::wstring ev = root + L"/build/text-fit-evidence"; CreateDirectoryW((root + L"/build").c_str(), nullptr); CreateDirectoryW(ev.c_str(), nullptr);
+            for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+                I18n::SetForProcess(lang); const bool en = lang == I18n::Locale::En;
+                ContextToast::Spec s; s.automationId = L"WindowLaunchFailedToast"; s.icon = ContextToast::Icon::Error; s.error = true; s.durationMs = 0;
+                s.message = TR(window_launch_failed); s.detail = TR(window_launch_failed_tabs_kept); s.action = TR(downloads_action_retry);
+                fit.Show(s, page, [](bool) {});
+                std::printf("text fit (%s): window launch failed %.1f / %.1f DIP\n", en ? "en" : "fr", fit.MessageWidthForTest(), fit.StatusLaneWidthForTest());
+                for (UINT dpi : {96u, 120u}) fit.RenderForTest(root, (ev + L"/window-launch-failed-" + (en ? L"en-" : L"fr-") + std::to_wstring(dpi) + L".png").c_str(), dpi);
+                Require(fit.MessageWidthForTest() <= fit.StatusLaneWidthForTest(), en ? "text fit (en): « Couldn't open a new window » fits beside « Retry »" : "text fit (fr): « Impossible d'ouvrir … » fits beside « Réessayer »");
+            }
+            I18n::SetForProcess(I18n::Locale::Fr);
+            fit.Dispose();
+        }
     }
     // --- Tooltip (C5): never activates, never takes clicks, delay then neighbour instant.
     {
@@ -195,12 +211,10 @@ static void NativeTests(HINSTANCE instance, const std::wstring& root) {
         tip.Frame(Motion::Now() + Motion::Milliseconds(650)); Require(tip.Visible(), "appears after the delay");
         Require(tip.SizeDip().cy == 28, "single line 28 DIP");
         RECT r{}; GetWindowRect(tip.Window(), &r);
-        const POINT expect = PopupKit::PlaceBelow(target, {r.right - r.left, r.bottom - r.top}, PopupKit::WorkArea(target), static_cast<int>(std::lround(6 * scale)));
-        Require(r.left == expect.x && r.top == expect.y, "placed by PlaceBelow in the monitor work area");
-        const RECT area{0, 0, 1000, 700};
-        POINT p = PopupKit::PlaceBelow({100, 100, 132, 132}, {200, 28}, area, 6); Require(p.x == 100 && p.y == 138, "6 px under, left aligned");
-        p = PopupKit::PlaceBelow({100, 660, 132, 692}, {200, 28}, area, 6); Require(p.y == 660 - 6 - 28, "flips above when no room below");
-        p = PopupKit::PlaceBelow({950, 100, 982, 132}, {200, 28}, area, 6); Require(p.x == 800, "aligns to the edge when short of room");
+        const POINT expect = TooltipPlacement::Place(target, {r.right - r.left, r.bottom - r.top}, PopupKit::WorkArea(target), static_cast<int>(std::lround(6 * scale)), static_cast<int>(std::lround(8 * scale))).at;
+        Require(r.left == expect.x && r.top == expect.y, "placed by TooltipPlacement::Place in the monitor work area");
+        // User request 2026-11-20: centred on the target (the arithmetic: tests/tooltip_placement_test.cpp).
+        Require(std::abs((r.left + r.right) - (target.left + target.right)) <= 1 || r.left == PopupKit::WorkArea(target).left + std::lround(8 * scale), "tooltip centred on its target");
         tip.Hover({L"Copier le lien", L"", L""}, target); Require(tip.Visible(), "neighbour: instant");
         tip.Hide(); tip.Frame(Motion::Now() + Motion::Milliseconds(200)); Require(!tip.Visible(), "fades out");
         tip.Hover({L"Précédent", L"Alt+←", L"Clic droit ou maintien pour l'historique"}, target); Require(tip.Visible(), "within 300 ms of the last: instant");
@@ -209,6 +223,28 @@ static void NativeTests(HINSTANCE instance, const std::wstring& root) {
         tip.HideNow(); tip.Show(L"Respecter la casse", L"Alt+C", target); Require(tip.Visible(), "keyboard focus: immediate");
         Require(GetForegroundWindow() != tip.Window(), "never activates");
         tip.Dispose();
+    }
+    // --- Panel hover tips (Tooltip::Tools: history, downloads, settings, suggestions): the C5 tip, centred.
+    {
+        RECT work{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+        HWND panel = CreateWindowExW(WS_EX_TOOLWINDOW, L"LisiereBTestOwner", L"panel", WS_POPUP, work.left + 200, work.top + 100, 400, 300, nullptr, nullptr, instance, nullptr);
+        Require(panel != nullptr, "panel window");
+        Tooltip::Tools tools; Require(tools.Create(instance, panel, root) && static_cast<bool>(tools), "tools created (subclass + C5 tip)");
+        tools.Clear(); tools.Add(7, {300, 12, 330, 42}, L"Fermer"); tools.Add(8, {20, 12, 50, 42}, L"Retour");
+        Require(tools.CountForTest() == 2, "two tools");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(310, 20));
+        Require(tools.CurrentForTest() == 7 && tools.TipForTest().Pending() && !tools.TipForTest().Visible(), "hover: the toolbar's 600 ms delay");
+        tools.TipForTest().Frame(Motion::Now() + Motion::Milliseconds(650)); Require(tools.TipForTest().Visible(), "appears after the delay");
+        RECT r{}; GetWindowRect(tools.TipForTest().Window(), &r);
+        const int anchorCentre = work.left + 200 + 315;
+        Require(std::abs((r.left + r.right) / 2 - anchorCentre) <= 1, "panel tip centred on its button");
+        Require(r.top == work.top + 100 + 42 + PopupKit::Px(panel, 6), "6 DIP under the button");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(30, 20)); Require(tools.CurrentForTest() == 8 && tools.TipForTest().Visible(), "neighbour button: instant");
+        SendMessageW(panel, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(30, 20)); tools.TipForTest().Frame(Motion::Now() + Motion::Milliseconds(200));
+        Require(!tools.TipForTest().Visible(), "a click dismisses it");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(31, 21)); Require(!tools.TipForTest().Pending() && !tools.TipForTest().Visible(), "stays dismissed on the same button");
+        SendMessageW(panel, WM_MOUSEMOVE, 0, MAKELPARAM(200, 200)); Require(tools.CurrentForTest() == 0, "off the buttons: no tool");
+        tools.Dispose(); DestroyWindow(panel);
     }
     // --- Full-screen hint (C6/C7).
     {
