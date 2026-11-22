@@ -373,6 +373,7 @@ void SendCommands() {
     for (const auto& c : agentInfo[agentId].commands) { if (c.name.empty() || c.name.size() > 80) continue; SJ::Value o = SJ::Value::Obj(); o.Set("name", Str(c.name)); o.Set("description", Str(ClipUtf8(c.description, 300))); items.Push(std::move(o)); }
     SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); Send("commands", std::move(m));
 }
+bool HeldFor(const std::string& conv, std::string& text);
 void SendQueue() {
     SJ::Value items = SJ::Value::Arr();
     const std::string shown = aside.on ? aside.c.data.head.id : convo.data.head.id;
@@ -384,6 +385,8 @@ void SendQueue() {
         else o.Set("text", Str(ClipUtf8(q.text, 400)));
         items.Push(std::move(o));
     }
+    {   std::string text;   // queue #70: a message held until its element is ready (image) is shown as waiting, in its bubble
+        if (HeldFor(shown, text)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(std::string("held"))); o.Set("text", Str(ClipUtf8(text, 400))); items.Push(std::move(o)); } }
     SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); Send("queue", std::move(m));
 }
 // Context gauge (contract B 1.2): tokens used / window, as the agent last reported them for this conversation.

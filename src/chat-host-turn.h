@@ -2,7 +2,7 @@
 // Chat intégré — agent session and turns (included by src/chat-host.h; see its header for the whole picture).
 namespace Chat {
 
-void ProcessQueue(); bool TakeShownAside(); void ApplyMark(const char* state, const std::string& selector); void AfterTurnPage(const std::vector<std::string>& paths); void ArmAgentIdle(); void StopTurn();
+void ProcessQueue(); bool TakeShownAside(); void AttachQueuedAnchor(Queued& q); void ApplyMark(const char* state, const std::string& selector); void AfterTurnPage(const std::vector<std::string>& paths); void ArmAgentIdle(); void StopTurn();
 void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch = false);
 // « Traiter les annotations » (chat-host-batch.h)
 SJ::Value BatchItemJson(const BatchItem& i, bool withStatus); void BatchToolDone(ChatTools::Ours tool, const std::string& annotation, const std::string& rawInput); void BatchTurnEnded(const std::string& stopReason);
@@ -721,6 +721,7 @@ void ProcessQueue() {
     // Mode Commentaire: the next message may belong to another element's conversation — it becomes the engine's first
     if (const std::string c = queue.front().convId; !c.empty() && c != convo.data.head.id && !SwitchEngineTo(c)) { queue.pop_front(); ProcessQueue(); return; }
     Queued q = std::move(queue.front()); queue.pop_front(); SendQueue(); RefreshWaitStrip();
+    if (q.annotations.empty()) AttachQueuedAnchor(q);   // queue #63: queued before its element was ready — its element (image, source) joins it now
     if (!q.annotations.empty()) { StartBatchTurn(q.text, q.batchId, q.annotations); if (!turn.active) ProcessQueue(); return; }   // a batch replaced since is dropped: the next one runs
     StartTurn(q.text, q.elements, q.attachments);
 }

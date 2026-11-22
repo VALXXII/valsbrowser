@@ -220,6 +220,17 @@ check('anchorArea' in pl and 'FullyVisible(' in pl and pl.find('anchorArea') < p
 fgc = block_after(comment, 'void CALLBACK ForegroundChanged(')
 check('Open()' in fgc and fgc.find('Open()') < fgc.find('if (!bubble.open'), 'M4 panel: back in front, the open panel gets the keyboard (before the bubble-only checks)')
 
+# monkey seed 3 #63 / #70: a message sent from a bubble is visible at once in THAT bubble — never held out of sight
+hold = block_after(comment, 'bool HoldForAnchor(')
+check('turn.active' in hold and hold.find('turn.active') < hold.find('held = HeldSend'), 'queue #63: another turn runs — the message is queued at once (visible), not held for its image')
+check('SendQueue()' in hold, 'queue #70: a held message is shown as waiting in its bubble')
+check('HeldFor(' in block_after(code('chat-host.h'), 'void SendQueue() {'), 'queue: the held message is in the queue the page shows')
+pq = block_after(turn, 'void ProcessQueue() {')
+check('AttachQueuedAnchor(' in pq and 'anchorElements' in block_after(comment, 'void AttachQueuedAnchor('), 'queue: a queued message gets its element (image, source) when its turn starts')
+check('"held"' in block_after(ui, 'if (type == "queue.remove")') or 'CancelHeld(' in ui, 'queue: a held message can be cancelled (its cross)')
+# M6 (#86): the panel shown after a bubble closed with nothing sent never keeps that bubble's title
+check('SendState()' in block_after(comment, 'void ForgetUnsent('), 'M6 #86: the panel is told the conversation is no longer the element\'s (title)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

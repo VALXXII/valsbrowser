@@ -541,7 +541,8 @@ void ForgetUnsent(const std::string& conv) {
     if (!c || SentConvo(*c) || HasQueued(conv) || (turn.active && c == &convo)) return;
     anchorElements.erase(conv); parked.erase(conv);
     if (c->data.head.anchorSelector.empty() && c->data.head.anchorSource.empty()) return;
-    auto& h = c->data.head; h.anchorSelector.clear(); h.anchorLabel.clear(); h.anchorPage.clear(); h.anchorSource.clear(); h.title.clear();
+    auto& h = c->data.head; h.anchorSelector.clear(); h.anchorLabel.clear(); h.anchorPage.clear(); h.anchorSource.clear(); h.title.clear(); h.anchorKey.clear();
+    if (panelReady) SendState();   // M6 #86: the panel shown next never keeps that bubble's title
     Diag(L"nothing was sent from that bubble: its conversation is no longer tied to the element");   // i18n-exempt: log detail
 }
 void CloseBubble(bool focusPage) {
@@ -714,6 +715,13 @@ bool TakeShownAside() {
     return SwitchEngineTo(id);
 }
 // The bubble's element joins every message of its bubble (contract B 1.8 §19.4: the page does not list it).
+// queue #63: a message queued before its element was ready (image, source) gets it when its turn starts
+void AttachQueuedAnchor(Queued& q) {
+    const std::string qc = convo.data.head.id; bool has = false;
+    for (const auto& id : q.elements) if (const auto it = composerElements.find(id); it != composerElements.end() && it->second.anchorFor == qc) has = true;
+    const auto a = anchorElements.find(qc); if (has || a == anchorElements.end()) return;
+    Element e = a->second; e.id = "el" + std::to_string(++elementSeq); e.annId.clear(); e.annSite.clear(); e.token.clear(); q.elements.insert(q.elements.begin(), e.id); composerElements[e.id] = std::move(e);
+}
 void AddAnchorElement(std::vector<std::string>& ids) {
     if (!bubble.open) return;
     auto it = anchorElements.find(bubble.conv); if (it == anchorElements.end()) return;
@@ -885,14 +893,20 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
 struct HeldSend { bool on = false, annotate = false; std::string conv, text; std::vector<std::string> els, atts; double at = 0; } held;
 void SendOrQueue(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts);
 void KeepAnnotation(const std::string& text, const std::vector<std::string>& ids);
+bool HeldFor(const std::string& conv, std::string& text) { if (!held.on || held.conv != conv || held.annotate) return false; text = held.text; return true; }
+void CancelHeld() { if (!held.on) return; if (post) KillTimer(post, HeldTimer); held = HeldSend{}; Diag(L"the held message was cancelled"); SendQueue(); }   // i18n-exempt: log detail
 bool HoldForAnchor(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts, bool annotate) {
     if (!bubble.open || anchorElements.count(bubble.conv)) return false;
+    // queue #63 (monkey seed 3): another element's turn runs — the message waits anyway: queued at once, visible in its bubble;
+    // its element is attached when its turn starts (ProcessQueue)
+    if (turn.active && !annotate) return false;
     bool aimingIt = false; for (const auto& a : aiming) aimingIt = aimingIt || a.second.anchorFor == bubble.conv;
     if (!aimingIt) return false;
     if (held.on) ReleaseHeld();   // M14: a second send — the first one leaves now (it was erased)
     held = HeldSend{true, annotate, bubble.conv, text, els, atts, Ann::NowMs()};
     if (post) SetTimer(post, HeldTimer, 2000, nullptr);   // M14: never forever — 2 s, then without the element's image
     Diag(L"message held until the bubble's element is ready");
+    SendQueue();   // queue #70: shown as waiting in its bubble while held
     return true;
 }
 void ReleaseHeld() {
@@ -903,6 +917,7 @@ void ReleaseHeld() {
         Element e = it->second; e.id = "el" + std::to_string(++elementSeq); h.els.insert(h.els.begin(), e.id); composerElements[e.id] = std::move(e);
     }
     if (h.annotate) KeepAnnotation(h.text, h.els); else SendOrQueue(h.text, h.els, h.atts);
+    SendQueue();
 }
 bool KeepAnchorElement(Element& e) {
     if (e.anchorFor.empty()) return false;
