@@ -396,13 +396,20 @@ def inject_embedded():
 
 
 def embedded_point(host):
-    """Screen point of the block INSIDE the iframe / the shadow root of `host` (its anchor is the host)."""
+    """Screen point of the block INSIDE the iframe / the shadow root of `host` (its anchor is the host); never under the
+    open bubble (the click would reach the bubble, not the page): then the page is scrolled to free it."""
     inject_embedded()
-    r = page(EMBEDDED[host])
-    if not r:
-        return None
-    pg = page_area(); k = dpr()
-    return (int(pg[0] + r[0] * k), int(pg[1] + r[1] * k))
+    p = None
+    for _ in range(4):
+        r = page(EMBEDDED[host])
+        if not r:
+            return None
+        pg = page_area(); k = dpr(); p = (int(pg[0] + r[0] * k), int(pg[1] + r[1] * k))
+        shown, rb = bubble_shown()
+        if not (shown and isinstance(rb, tuple) and rb[0] - 6 <= p[0] <= rb[2] + 6 and rb[1] - 6 <= p[1] <= rb[3] + 6):
+            return p
+        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); wheel(2 if p[1] < (pg[1] + pg[3]) // 2 else -2, 0.05); time.sleep(0.6)
+    return p
 
 
 def keyboard_to_page(avoid=None):
@@ -487,7 +494,7 @@ STATE_JS = ("(function(){var a=document.getElementById('app')||document.body;var
             "mode:mo?mo.getAttribute('aria-label'):null,model:md?md.getAttribute('aria-label'):null,"
             "perm:pm?{box:vis(pm),buttons:btns}:null,menus:menus,diff:!!document.querySelector('.b-grip:not([hidden])'),"
             "opacity:+getComputedStyle(a).opacity,busy:/Arrêter/.test(document.body.innerText||''),"
-            "text:(document.body.innerText||'').replace(/\\s+/g,' ').slice(0,6000)}})()")
+            "text:(document.body.textContent||'').replace(/\\s+/g,' ').slice(-20000)}})()")
 
 
 def chat_state(kind='bubble'):
@@ -837,6 +844,9 @@ class Invariants:
         token = self.m.conv.get(sel)
         others = [t for s, t in self.m.conv.items() if s != sel and t]
         text = st.get('text', '')
+        t1 = time.time()
+        while token and token not in text and time.time() - t1 < 1.0:   # the older exchanges are drawn after the first image (P, 176e603)
+            time.sleep(0.1); text = (chat_state('bubble').get('text') or '')
         right_conv = (token in text if token else True) and not any(t in text for t in others)
         d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if t in text]}
         self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), natural height, < 150 ms, the right conversation',
