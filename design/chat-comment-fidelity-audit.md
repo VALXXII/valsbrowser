@@ -9,6 +9,57 @@ Ce qui a été examiné :
 
 Aucune vraie fenêtre n'a été lancée de mon côté.
 
+## Cinquième passe — 22 novembre 2026 (état actuel, build 0.3.561, HEAD 1d72bb0)
+
+### Sources
+
+- **Parcours de Q** : `build/chat-qa/final/journeys.json`, 39 parcours rejoués entre 16 h 42 et 16 h 59, après le dernier changement de l'hôte (e82d523, 16 h 35). 38 sont entièrement verts, 1 a une étape en échec.
+- **Tests aléatoires (« monkey ») de Q** : `final/monkey-1` à `3`, de 16 h 59 à 17 h 18, sur le même code. Ils s'arrêtent à 30 échecs ou finissent avec 25 à 32 échecs.
+- **Captures `comment-v5`** : R39, R39b, R41, E4 et R40 (14 h 15 à 16 h 53). Le `report.json` de comment-v5 (15 h 47) **date d'avant** la correction R39 f3842bb (15 h 48) : pour R39, ce sont les tests aléatoires qui font foi.
+- **Décisions** R1 à R48 et arbitrages de placement : cotes de Paper +12 / −4, glissement le long d'un côté, par-dessus l'élément en dernier recours, bulle entière à l'ouverture (e26c39c).
+- **Mes contrôles visuels**, sans vraie fenêtre.
+
+Les captures montrent par endroits le widget d'une autre application (heure, bouton pause) en haut de l'écran. Il ne vient pas du navigateur.
+
+### Conforme
+
+| Décisions | Preuve |
+|---|---|
+| R1, R4, R13, R20, R21, R28, R30 (forme de la bulle, modes, saisie) | Parcours `r20_r30_r01_bulle_forme` vert : 320 px, coins 16, mode en icône, modèle · effort dès la première image, entrée 250 ms |
+| R2, R27, R32 (marque seulement après envoi, un seul contour) | `r02_r32_marque_apres_envoi` vert ; `m6_clic_sans_envoi_puis_panneau` vert |
+| R6, R18 (rouvrir, A → B → A → B), E1, E2, C1 à C3 | `r06…`, `abab`, `e1_iframe_composant_web`, `e2…`, `c1…`, `c2…`, `c3…` verts. Les défauts 1 et 6 de `defauts-passe1.md` sont corrigés |
+| R7, R15, R19, R22 | `r07_r15_r19_r22_details` vert. `e4_defilement_puis_menu` : le bord haut de la surface ne bouge pas pendant l'ouverture du menu (81 images, haut constant à 41) : défaut 5 de la passe 1 corrigé |
+| R9, R47 (autorisation entière, pas grisée) | `r47_autorisation_defilement` : carte entière, Refuser et Autoriser à l'intérieur de la bulle, opacité 1, aussi après défilement |
+| R11, R23, R24 (panneau) | `r11_r23_r24_panneau` vert |
+| R14, R33, R45 (étiquettes identiques au survol, pendant la capture et sélectionnées) | `r14_r45_etiquettes` : 0 % de pixels différents sur 171 à 177 images, pour 3 éléments, à 100, 125 et 150 %. Défaut 3 de la passe 1 corrigé |
+| R26, R31, R34, R35, R42 | Parcours verts (`r26…`, `r31_ctrl_maintenu`, `r34_r35…`, `r42_modele`). Défaut 2 de la passe 1 (R31) corrigé |
+| R36, R38, R40 (diff en place, même taille, poignée) | `r38_r40_diff_poignee` vert. `comment-v5/r40-*` : le diff s'ouvre à la même taille que la bulle, l'agrandissement garde le coin haut gauche fixe. Poignée visible en bas à droite (`diff-agrandi.png`) |
+| R41 (un menu se transforme en l'autre) | `r41-modele-vers-mode-09` à `14` : la surface reste opaque, se déplace par petits pas (≈ 192 → 200 → 208 → 225 px) avec fondu croisé du contenu ; ni sortie puis entrée, ni éclair autour |
+| R43, R48, R12 (lignes de suivi, langue, pas de curseur bleu) | `r43_r48_annonces_markdown` vert |
+| R44 (entière à l'ouverture, hauteur naturelle jusqu'à 520 px) | `r44_grand_element_taille_utilisateur` vert (18 étapes) : section.hero et div.plans entières, côté choisi écrit dans le journal ; avec un long fil, la surface fait 650 px écran = 520 CSS et le fil défile à l'intérieur |
+| R46 (mode stable en collant) | `r46_coller_mode_stable` : 174 relevés, toujours « Demander ». Voir quand même F3 |
+| Placement standard | Dans les parcours, les distances de Paper (+12 / −4) sont vérifiées par l'invariant de Q et passent. Mes relevés sur `diff-agrandi.png` sont cohérents à ±1 px CSS près |
+
+### Défauts restants
+
+| # | Décision | Constat (vraie fenêtre, Q) | Correctif exact | Propriétaire |
+|---|---|---|---|---|
+| F1 | Placement Paper +12 / −4 et R44 | **Après une bascule Panneau → Commentaire suivie d'un clic, la bulle est placée par rapport à un autre rectangle que celui de l'élément cliqué.** Le journal de l'hôte annonce `element 1430x603`, `650x55`, `427x67` quand l'élément sous le clic mesure 577×441, 591×426 et 492×300. Résultat : la bulle est à 68 px sous l'élément et décalée de 619 px à gauche (monkey-1 #101), par-dessus l'élément à −508 px (monkey-2 #224), à −13,6 px (monkey-3 #117), ou au-dessus avec −52,8 px (monkey-3 #125). e82d523 (« a click's rectangle measured in another viewport ») ne suffit pas : ces échecs sont postérieurs | Après une bascule de disposition, ne placer la bulle qu'avec le rectangle de l'élément mesuré **après** le changement de zone de page, dans le même repère que la page, et pour l'élément réellement sélectionné. Ajouter au journal l'élément et le rectangle utilisés, et un test « bascule puis clic » qui compare la distance à Paper | H |
+| F2 | R39 (bulle collée à l'élément au défilement) | Tests aléatoires, après f3842bb : l'écart bulle–élément varie de 18,4 à 98,4 px pendant un défilement (monkey-3 #5, #9, #51, #78, #96, #169), jusqu'à **320,8 px** (monkey-2 #87). Objectif : ±2 px | Trouver le cas qui reste (défilement pendant une ouverture ou juste après une bascule, molette rapide) avec la trace de suivi, puis le corriger. Rejouer `chat_qa_comment_v5.py follow()` sur le build actuel | H |
+| F3 | R46 / R28 (le mode ne change jamais sans l'utilisateur) | monkey-1 #81 à #101 : après « Commentaire puis clic 50 ms plus tard », la saisie affiche « Demander » alors que l'utilisateur avait choisi « Auto », et cela reste faux sur une vingtaine d'actions, panneau compris | Pendant une bascule et l'ouverture qui suit, garder et renvoyer à la page le mode **choisi par l'utilisateur**, jamais celui de démarrage de la session ni la valeur par défaut. La page n'écrase pas un choix de l'utilisateur avec un état plus ancien | H (P si la page écrase la valeur reçue) |
+| F4 | Bulle fermée = rien à l'écran | monkey-2 #102 à #106 et #261 à #265 : après un clic dans `#qa-card` (contenu imbriqué) ou un retour depuis une autre application, la bulle est fermée mais **une région de 400×435 et de 400×105 px reste à l'écran** pendant plusieurs actions | À la fermeture, vider la région de la fenêtre de la bulle (ou la cacher) dans tous les chemins, y compris le clic dans un cadre imbriqué et le retour au premier plan | H |
+| F5 | R18 (ouverture < 150 ms) | `m5_bascule_puis_clic` 3e essai : 152 ms. Tests aléatoires, « bascule puis clic » : 166 à 235 ms, et un clic sur div.plans à **597 ms** (monkey-2 #189). Les ouvertures sans bascule sont à 25 à 90 ms | Réduire le temps entre une bascule de disposition et le premier clic (page de la bulle déjà prête après la bascule) ; repérer la cause des 597 ms dans le journal d'ouverture | H |
+| F6 | Message affiché là où il a été envoyé | monkey-2 #29, monkey-3 #63 et #70 : après un envoi dans la bulle, le message n'est pas montré dans la conversation de cette bulle | Retrouver la conversation de l'envoi dans le journal et la page ; le message doit apparaître tout de suite dans la bulle d'où il part | H (P si la page le reçoit sans l'afficher) |
+| F7 | Accessibilité de la fenêtre | monkey-3 #214 : après une molette, l'arbre UI Automation de la fenêtre principale passe de 113 à 22 éléments | Retrouver ce qui coupe l'arbre (fenêtre de la bulle ou région ajoutée devant la page) et le rétablir | H |
+| F8 | R22 | `+` garde `aria-haspopup="menu"` alors qu'il ouvre directement le choix d'image (défaut 8 de la passe 1, pas de correctif trouvé) | Retirer `aria-haspopup` et `aria-expanded` du « + » quand il n'ouvre pas de menu | P |
+
+### À trancher ou à vérifier (pas comptés comme défauts)
+
+- **monkey-3 #129** (« open → window visible » : région de 1 px quand aucun élément n'est visible) : selon R39b, la bulle défile comme le contenu de la page et sort avec son élément. Qu'elle ne soit plus visible est donc correct. **C'est l'invariant de Q qui est à revoir.**
+- **Hauteur « naturelle » quand la zone de page fait moins de 520 px** (monkey-2 #108, #199, #202 ; monkey-3 #227, #232, surface de 497 CSS pour une zone de 522) : R44 ne peut pas être tenu au-delà de la zone visible. Le fil défile alors dans la bulle, ce qui me paraît le bon comportement. À confirmer par l'utilisateur.
+- **`section.hero` (bulle à x = 2 px écran)** : la bulle est sous l'élément, alignée à −4 puis ramenée à 2 px du bord de la fenêtre (comme les étiquettes, R15). C'est cohérent avec les arbitrages.
+- **R39b au bord haut** : un contact avec la barre du navigateur était mesuré à 15 h 47, avant f3842bb. Pas de nouvelle mesure image par image : à rejouer avec `edge_frames()`.
+
 ## Quatrième passe — 20 novembre 2026, soir (R26 à R38, commits a26587f, fee8927, 53fe3ac, 9b15972, 6b5f65d ; v3 rejouée en 825f9f2)
 
 Sources :
