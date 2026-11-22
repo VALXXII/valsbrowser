@@ -677,7 +677,11 @@ def focus_composer(kind='bubble'):
 
 
 def type_and_send(text, kind='bubble'):
-    """The message typed in the composer (CDP insertText, as the keyboard would) and Entrée."""
+    """A real click in the composer (the user's way to give it the keyboard), then the message typed (CDP insertText, as
+    the keyboard would) and Entrée."""
+    p = chat_point('[contenteditable=true]', kind=kind)
+    if p:
+        click_at(*p); time.sleep(0.15)
     focus_composer(kind)
     ws = _ws_for(chat_target(kind))
     ws.call('Input.insertText', {'text': text}); time.sleep(0.15)
