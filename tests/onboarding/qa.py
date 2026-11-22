@@ -312,6 +312,52 @@ class Run:
             kill_by_path(self.dir)
 
 
+def film(seconds, every=.05):
+    """Screen frames (all monitors) for `seconds`: [(time, image)], quarter size. Needs an awake, unlocked display."""
+    from PIL import ImageGrab
+    frames, start = [], time.time()
+    while time.time() - start < seconds:
+        t = time.time() - start
+        try:
+            img = ImageGrab.grab(all_screens=True)
+        except Exception as error:
+            print('     screen frames missing:', error, flush=True)
+            return []
+        frames.append((t, img.resize((img.size[0] // 4, img.size[1] // 4))))
+        rest = every - (time.time() - start - t)
+        if rest > 0:
+            time.sleep(rest)
+    return frames
+
+
+def virtual_origin():
+    return user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)   # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN
+
+
+def mean_in(img, rect):
+    """Mean brightness (0..255) of a screen rectangle in a quarter-size frame."""
+    from PIL import ImageStat
+    ox, oy = virtual_origin()
+    box = tuple(int(v) for v in ((rect[0] - ox) / 4, (rect[1] - oy) / 4, (rect[2] - ox) / 4, (rect[3] - oy) / 4))
+    return sum(ImageStat.Stat(img.crop(box).convert('RGB')).mean) / 3
+
+
+def sheet(frames, rect, path, columns=8, limit=40):
+    """Contact sheet of the frames around `rect`, for the eye."""
+    from PIL import Image
+    if not frames:
+        return
+    ox, oy = virtual_origin()
+    box = tuple(int(v) for v in ((rect[0] - ox) / 4, (rect[1] - oy) / 4, (rect[2] - ox) / 4, (rect[3] - oy) / 4))
+    picked = frames[::max(1, len(frames) // limit)][:limit]
+    w, h = box[2] - box[0], box[3] - box[1]
+    out = Image.new('RGB', (columns * (w + 4), ((len(picked) + columns - 1) // columns) * (h + 4)), (60, 0, 0))
+    for i, (_, img) in enumerate(picked):
+        out.paste(img.crop(box), ((i % columns) * (w + 4), (i // columns) * (h + 4)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out.save(path)
+
+
 def profile_file(run, name):
     return run.app / name   # the default profile keeps the legacy layout: its files sit at the data root
 
@@ -375,11 +421,26 @@ def scenario_full(app, work, evidence):
         moved = differ(d, e, (0, 60, 720, 150))
         if moved is not None:
             check(moved > .1, 'full: the annotation gradient is animated (%.2f / 255)' % moved)
-        ui.click(667, 547); time.sleep(.45)              # « Activer »
-        run.shot('7')
+        own = ui.rect()
+        ui.click(667, 547)                               # « Activer »
+        frames = film(5.5)                               # 6 -> 7, the logo's exit, the window's exit, the browser's entrance
         main = run.browser_window()
         check(main is not None, 'full: after the closing logo the browser window opens')
         check(wait_gone(run.proc.pid, 'LisiereOnboarding'), 'full: the onboarding window is gone')
+        if main and frames:
+            r = wt.RECT(); user32.GetWindowRect(main, ctypes.byref(r)); browser = (r.left, r.top, r.right, r.bottom)
+            sheet(frames, (min(own[0], browser[0]), min(own[1], browser[1]), max(own[2], browser[2]), max(own[3], browser[3])), run.dir.parent / 'full-handoff-frames.png')
+            inner = (browser[0] + 40, browser[1] + 120, browser[2] - 40, browser[3] - 40)   # the page area of the browser
+            levels = [mean_in(img, inner) for _, img in frames]
+            logo = (own[0] + (own[2] - own[0]) * .3, own[1] + (own[3] - own[1]) * .25, own[0] + (own[2] - own[0]) * .7, own[1] + (own[3] - own[1]) * .75)
+            logos = [mean_in(img, logo) for _, img in frames]
+            print('     hand-off: %d frames; brightest page area %.0f / 255, last %.0f; logo area from %.0f down to %.0f' % (len(frames), max(levels), levels[-1], max(logos), min(logos)), flush=True)
+            check(max(levels) < 200, 'full: no white frame anywhere in the hand-off (brightest %.0f / 255)' % max(levels))
+            check(max(logos) > 60 and min(logos[logos.index(max(logos)):]) < max(logos) * .5, 'full: the logo leaves before the window does')
+            steps = [abs(levels[i + 1] - levels[i]) for i in range(len(levels) - 1)]
+            check(max(steps) < 90, 'full: the picture never jumps from one frame to the next (largest step %.0f / 255)' % max(steps))
+            check('ONBOARDING hand-off: browser painted under cover' in run.log(), 'full: the browser was painted under cover and scaled in on its picture')
+            check(user32.IsWindowVisible(main) and not cloaked(main), 'full: the real browser window is uncovered at the end')
         end = time.time() + 25
         while time.time() < end and 'ONBOARDING opens the agent connection' not in run.log():
             time.sleep(.25)
@@ -392,6 +453,12 @@ def scenario_full(app, work, evidence):
         check('home.example' not in log and 'QA L' not in log, 'full: the log carries no address and no name')
     finally:
         run.stop()
+
+
+def cloaked(hwnd):
+    value = wt.DWORD()
+    ctypes.windll.dwmapi.DwmGetWindowAttribute(wt.HWND(hwnd), 14, ctypes.byref(value), 4)   # DWMWA_CLOAKED
+    return value.value != 0
 
 
 def windows_child(parent):
@@ -569,18 +636,43 @@ def scenario_debug(app, work, evidence):
         panel = Ui(panels[0])
         panel.grab(evidence / 'debug-panel.png')
         tuning = run.app / 'onboarding-tuning.txt'
-        panel.click(16 + 268 * (600 - 60) / 1440.0, 44 + 30); time.sleep(.3)             # « Durée du contenu »: 600 ms
-        panel.click(16 + 268 * (900 - 60) / 1940.0, 44 + 4 * 42 + 30); time.sleep(.3)   # « Aperçu : durée du déplacement »: 900 ms
+        panel.click(16 + 288 * (600 - 60) / 1440.0, 84 + 29); time.sleep(.3)             # « Durée du contenu »: 600 ms
+        panel.click(16 + 288 * (900 - 60) / 1940.0, 84 + 4 * 40 + 29); time.sleep(.3)   # « Mouvement : durée »: 900 ms
         text = tuning.read_text(encoding='ascii', errors='replace') if tuning.exists() else ''
         check('transition23.duration=600' in text and 'transition23.mockDuration=900' in text, 'debug: moving a slider writes the values file at once')
-        panel.click(150, 44 + 10 * 42 + 8 + 16)                                          # « Rejouer 2 → 3 »
+        replay = (160, 84 + 13 * 40 + 8 + 16)
+        home = run.shot('replay-home')
+        panel.click(*replay)                                                             # « Rejouer 2 → 3 »
         time.sleep(.3); a = run.shot('replay-before')
-        time.sleep(.55); b = run.shot('replay-during')
-        time.sleep(1.2); c = run.shot('replay-after')
-        moved = differ(a, b, (0, 40, 720, 420)); settled = differ(b, c, (0, 40, 720, 420))
-        if moved is not None and settled is not None:
+        time.sleep(.6); b = run.shot('replay-during')
+        time.sleep(.9); c = run.shot('replay-after')
+        time.sleep(1.2); d = run.shot('replay-back')
+        moved = differ(a, b, (0, 40, 720, 420)); settled = differ(b, c, (0, 40, 720, 420)); back = differ(home, d, (0, 420, 720, 580))
+        if moved is not None and settled is not None and back is not None:
             check(moved > 1 and settled > 1, 'debug: « Rejouer 2 → 3 » shows board 2, plays the transition, ends on board 3 (%.1f, %.1f / 255)' % (moved, settled))
+            check(back < 1, 'debug: after the replay the window is back on the board it was on (%.2f / 255)' % back)
         panel.grab(evidence / 'debug-panel-tuned.png')
+        text = tuning.read_text(encoding='ascii', errors='replace')
+        check('transition12.duration=380' in text and 'exit.windowScale=0.92' in text, 'debug: the file holds every transition, one key per line')
+        # « 7 → navigateur » on a stand-in: five sections further.
+        for _ in range(5):
+            panel.click(320 - 16 - 16, 44 + 16); time.sleep(.15)
+        panel.grab(evidence / 'debug-panel-exit.png')
+        own = run.ui.rect()
+        panel.click(*replay)
+        frames = film(4.6)
+        if frames:
+            around = (own[0] - 400, own[1] - 200, own[2] + 400, own[3] + 200)
+            sheet(frames, around, run.dir.parent / 'debug-exit-replay-frames.png')
+            inner = (own[0] + 60, own[1] + 60, own[2] - 60, own[3] - 60)
+            levels = [mean_in(img, inner) for _, img in frames]
+            check(max(levels) < 200, 'debug: the replayed hand-off shows no white frame (brightest %.0f / 255)' % max(levels))
+        time.sleep(.8)
+        e = run.shot('replay-exit-back')
+        again = differ(home, e, (0, 420, 720, 580))
+        if again is not None:
+            check(again < 1 and user32.IsWindowVisible(run.ui.hwnd), 'debug: after « Rejouer 7 → navigateur » the onboarding window is back, still in debug mode (%.2f / 255)' % again)
+        check(not windows_of(run.proc.pid, 'LisiereBrowser', visible=False), 'debug: the replay did not start the browser')
         run.ui.key(VK_ESCAPE)
         check(run.browser_window() is not None, 'debug: the browser opens after Échap')
         time.sleep(.8)

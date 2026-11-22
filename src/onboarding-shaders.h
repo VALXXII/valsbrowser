@@ -59,8 +59,11 @@ inline void SetColor(float out[4], unsigned rgb, float alpha = 1) {
 // picture's own edge colour is read (its dark background), so the faint dots simply go on to the window's edges.
 // `raise`: the picture's centre moved up by this share of the picture box (the logo stays where board 1 has it
 // when the node is the whole window).
-inline Uniforms Halftone(float drift = 0, bool wholeNode = false, float raise = 0) {
+// `logoScale`, `logoAlpha` (ours, the end of the flow): the picture shrinks about its centre and fades towards
+// its own background while the lattice stays where it is — the logo leaves, the faint dots go on.
+inline Uniforms Halftone(float drift = 0, bool wholeNode = false, float raise = 0, float logoScale = 1, float logoAlpha = 1) {
     Uniforms u; u.fit = 2; u.scale = .46f; u.imageAspect = 1; u.offsetY = -raise; u.p2[2] = wholeNode ? 1.f : 0.f;
+    u.colorInner[0] = logoScale; u.colorInner[1] = logoAlpha;
     SetColor(u.colorFront, 0xFFFFFF, 1); SetColor(u.colorBack, 0x000000, 0);
     u.p0[0] = 1.19f; u.p0[1] = .58f; u.p0[2] = .67f; u.p0[3] = .12f;     // radius, contrast, size, grainMixer
     u.p1[0] = .17f; u.p1[1] = .39f; u.p1[2] = 0; u.p1[3] = 1;            // grainOverlay, grainSize, grid (square), type (gooey)
@@ -228,13 +231,15 @@ float getGooeyBall(float2 uv, float r, float baseR) {
   d = 1. - sst(0., sizeRadius, d);
   return pow(abs(d), 2. + baseR);
 }
-float getLumBall(float2 p, float2 pad, float2 inCellOffset, float contrast, float baseR, float stepSize) {
+float getLumBall(float2 p, float2 pad, float2 inCellOffset, float contrast, float baseR, float stepSize, float restLum) {
   p += inCellOffset;
   float2 uv_i = floor(p); float2 uv_f = frac(p);
   // `u_drift` (ours): the lattice slides, the picture it samples stays where it is.
   float2 samplingUV = (uv_i + .5 - inCellOffset - u_drift) * pad + float2(.5, .5);
   float outOfFrame = p2.z > .5 ? 1. : getUvFrame(samplingUV, pad * stepSize);   // p2.z (ours): dots over the whole node
-  float lum = getLumAtPx(samplingUV, contrast);
+  // u_colorInner.xy (ours): the picture's scale about its centre and how much of it is left.
+  float2 pictureUV = u_colorInner.x > 0. ? (samplingUV - .5) / u_colorInner.x + .5 : samplingUV;
+  float lum = lerp(restLum, getLumAtPx(pictureUV, contrast), saturate(u_colorInner.y));
   return getGooeyBall(uv_f, lum, baseR) * outOfFrame;
 }
 float4 PSHalftone(V v) : SV_Target {
@@ -247,11 +252,12 @@ float4 PSHalftone(V v) : SV_Target {
   float contrast = lerp(0., 15., pow(u_contrast, 1.5));
   float baseRadius = u_radius;
   float totalShape = 0.;
+  float restLum = getLumAtPx(float2(.002, .002), contrast);   // the picture's background: what the dots show without the logo
   float stepSize = 1. / stepMultiplier;
   for (int ix = 0; ix < 6; ix++) {
     for (int iy = 0; iy < 6; iy++) {
       float2 offset = float2(-.5 + ix * stepSize, -.5 + iy * stepSize);
-      totalShape += getLumBall(uv, pad, offset, contrast, baseRadius, stepSize);
+      totalShape += getLumBall(uv, pad, offset, contrast, baseRadius, stepSize, restLum);
     }
   }
   float aa = fwidth(totalShape);

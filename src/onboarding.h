@@ -45,6 +45,7 @@
 #include "onboarding-kit.h"
 #include "onboarding-tuning.h"
 #include "onboarding-debug.h"
+#include "onboarding-handoff.h"
 
 namespace NativeChrome {
 namespace OnboardingUI {
@@ -87,9 +88,10 @@ struct Options {
     bool annotation = true, reduced = false;
     bool debug = false;                           // « --onboarding-debug »: the tuning panel of the 2 → 3 transition
     std::wstring tuningFile;                      // debug only: where the panel keeps its values
+    OnboardingHandoff::Stage* stage = nullptr;    // the host's stage for the hand-off to the browser (null: the window just fades)
     Hooks hooks;
 };
-struct Result { Onboarding::Ending ending = Onboarding::Ending::Skipped; bool annotate = false, profileSaved = false; };
+struct Result { Onboarding::Ending ending = Onboarding::Ending::Skipped; bool annotate = false, profileSaved = false, handedOff = false; };   // handedOff: the stage is playing the window's exit, the browser takes its turn on it
 
 // The strip shows the icons in the board's order (briefcase, house, heart, graduation cap), then the others.
 inline const std::vector<int>& IconOrder() {
@@ -113,13 +115,13 @@ class Window {
 public:
     enum Id : int { None = 0, Lang = 1, Close = 2, Primary = 10, Back = 11, SkipAll = 12, SkipStep = 13, Cancel = 14, Decline = 15,
                     Name = 20, Hue = 21, Intensity = 22, Icons = 23, Browser = 30, Profile = 31, CheckBookmarks = 32, CheckHistory = 33, IconBase = 100 };
-    static constexpr UINT FrameMessage = WM_APP + 0x4F0, HostMessage = WM_APP + 0x4F1;
+    static constexpr UINT FrameMessage = WM_APP + 0x4F0, HostMessage = WM_APP + 0x4F1, ReplayDoneMessage = WM_APP + 0x4F2;
     static constexpr float TextGamma = 2.2f, TextContrast = .5f;
     static constexpr float WelcomeRaise = 35.5f / 721;   // (579 - 508) / 2 over the picture box
 private:
     struct Item { int id; D2D1_RECT_F r; };
     struct Layer {
-        ID2D1Bitmap* bitmap = nullptr; ID2D1RenderTarget* owner = nullptr; Onboarding::Shaders::Frame frame; bool fresh = false; Motion::Time shaded{};
+        ID2D1Bitmap* bitmap = nullptr; ID2D1RenderTarget* owner = nullptr; Onboarding::Shaders::Frame frame; bool fresh = false; Motion::Time shaded{}; float key = 0;
         void Drop() { if (bitmap) { bitmap->Release(); bitmap = nullptr; } owner = nullptr; fresh = false; shaded = {}; }
         // `part`: the pixels of `frame` that changed (the whole frame when the bitmap is new).
         bool Upload(ID2D1RenderTarget* t, const RECT* part = nullptr) {
@@ -154,6 +156,10 @@ private:
     double secondsForTest_ = -1;
     Onboarding::Tuning::Values tuning_ = Onboarding::Tuning::Defaults(); OnboardingDebug::Panel panel_;
     std::vector<BarItem> bar_; Motion::Time barAt_{};   // the imported bookmarks bar shown in the mock (boards 4 – 5.1)
+    // The end of the flow (board 7): the logo's exit inside the dot field, then the hand-off of the window.
+    Motion::Time exitAt_{}; bool exitRunning_ = false, handedOff_ = false; float logoScale_ = 1, logoAlpha_ = 1;
+    // Review panel: a transition replayed for the eye only (the flow does not move), or the hand-off on a stand-in.
+    bool replaying_ = false, exitReplay_ = false; Motion::Time replayUntil_{}; OnboardingHandoff::Stage previewStage_;
 
     // ---- small helpers ----
     float Scale() const { return dpi_ / 96.f; }
@@ -246,8 +252,9 @@ private:
         }
         return out;
     }
-    void Arrange() {
-        items_.clear(); const Screen s = flow_.screen();
+    void Arrange() { Arrange(flow_.screen()); }
+    void Arrange(Screen s) {
+        items_.clear();
         if (s == Screen::Closed || s == Screen::Outro) return;
         if (s == Screen::Profile) {
             items_.push_back({Name, NameField()});
@@ -264,6 +271,7 @@ private:
     }
     D2D1_RECT_F Rect(int id) const { for (const auto& i : items_) if (i.id == id) return i.r; return {}; }
     bool Enabled(int id) const {
+        if (replaying_) return true;   // a replayed board is shown as it looks, whatever the flow's state
         if (flow_.screen() == Screen::ImportPick) {
             if (id == Primary) return flow_.CanImport();
             if (id == CheckBookmarks) return HasBookmarks();
@@ -274,6 +282,7 @@ private:
         return true;
     }
     int Hit(float x, float y) const {
+        if (replaying_) return None;
         for (auto it = items_.rbegin(); it != items_.rend(); ++it) {
             if (!In(it->r, x, y)) continue;
             if (it->id >= IconBase && !In(Strip(), x, y)) continue;
@@ -300,10 +309,11 @@ private:
     bool ShaderOn(Screen s) const { return s == Screen::Welcome || s == Screen::Outro || s == Screen::Annotation || s == Screen::ImportRunning || s == Screen::ImportDone || s == Screen::ImportError; }
     bool ShadersLoop() const { return !offscreen_ && Onboarding::ShaderLoops(options_.reduced, gpu_.Animated(), Visible(), hwnd_ && IsIconic(hwnd_)) && (ShaderOn(shown_) || (changing_ && ShaderOn(from_))); }
     // Board 2 <-> board 3: the tunable timeline (src/onboarding-tuning.h). Reduced motion keeps the plain fade.
-    bool Tuned() const { return changing_ && !options_.reduced && ((from_ == Screen::Profile && shown_ == Screen::ImportPick) || (from_ == Screen::ImportPick && shown_ == Screen::Profile)); }
+    bool Tuned() const { return changing_ && !options_.reduced; }
+    const Onboarding::Tuning::Row& Tune() const { return tuning_[Onboarding::Tuning::Between(from_, shown_)]; }
     float Change(Motion::Time now) const {
         if (!changing_) return 1.f;
-        return Motion::Clamp(Ms(changed_, now) / (Tuned() ? Onboarding::Tuning::TotalMs(tuning_) : static_cast<float>(Onboarding::TransitionMs(options_.reduced))));
+        return Motion::Clamp(Ms(changed_, now) / (Tuned() ? Onboarding::Tuning::TotalMs(Tune()) : static_cast<float>(Onboarding::TransitionMs(options_.reduced))));
     }
     float BarShown(Motion::Time now) const { return bar_.empty() ? 0.f : offscreen_ || options_.reduced ? 1.f : Motion::Clamp(Ms(barAt_, now) / 300.f); }
     float BarItemShown(std::size_t i, Motion::Time now) const { return offscreen_ || options_.reduced ? 1.f : Motion::Clamp((Ms(barAt_, now) - 120 - 40.f * i) / 220.f); }
@@ -321,7 +331,7 @@ private:
     }
     // Something other than a shader loop is in motion (every tick is a new picture).
     bool Animating() const {
-        if (changing_ || entering_ || leaving_) return true;
+        if (changing_ || entering_ || leaving_ || replaying_ || exitRunning_) return true;
         if (std::fabs(iconScroll_ - iconScrollTarget_) > .01f) return true;
         if (flow_.screen() == Screen::ImportRunning || BarArriving()) return true;
         for (const auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f; if (std::fabs(g.second - want) > .001f) return true; }
@@ -336,13 +346,17 @@ private:
             PopupKit::SetAlpha(hwnd_, 1 - u);
             if (u >= 1) { done_ = true; leaving_ = false; PostMessageW(hwnd_, WM_NULL, 0, 0); return; }
         }
-        if (changing_ && Change(now) >= 1) { changing_ = false; from_ = shown_; Invalidate(); }
+        if (changing_ && Change(now) >= 1) {
+            changing_ = false; from_ = shown_; Invalidate();
+            if (flow_.screen() == Screen::Outro && shown_ == Screen::Outro && !exitReplay_) { exitAt_ = now; exitRunning_ = true; }   // board 7 is in place: the exit begins
+        }
+        if (replaying_ && !exitReplay_ && !changing_ && now >= replayUntil_) EndReplay();
         for (auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f, step = dt / 120.f; g.second = want > g.second ? std::min(want, g.second + step) : std::max(want, g.second - step); }
         if (std::fabs(iconScroll_ - iconScrollTarget_) > .01f) { iconScroll_ += (iconScrollTarget_ - iconScroll_) * std::min(1.f, dt / 60.f); if (std::fabs(iconScroll_ - iconScrollTarget_) < .3f) iconScroll_ = iconScrollTarget_; Arrange(); Invalidate(); }
         bool settling = false; for (const auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f; if (std::fabs(g.second - want) <= .001f && g.second != want) settling = true; }
         if (settling) Invalidate();
         if (flow_.screen() == Screen::ImportRunning && importAnswered_ && Ms(importAnsweredAt_, now) >= 250 && Ms(importStarted_, now) >= (options_.reduced ? 300 : 900)) ApplyImport();
-        if (flow_.screen() == Screen::Outro && !leaving_ && Ms(outroStart_, now) >= Onboarding::OutroMs(options_.reduced)) { const Screen before = flow_.screen(); flow_.OutroDone(); Changed(before); }
+        if (exitRunning_ && !leaving_ && !changing_) StepExit(now);
         if (Animating() || (ShadersLoop() && ShadeDue(now))) Invalidate();   // a tick with nothing new to show paints nothing
         if (Moving()) RequestFrame(); else if (!clockOk_) KillTimer(hwnd_, 1);
     }
@@ -359,6 +373,32 @@ private:
         if (now == Screen::Profile) RevealIcon(false);
         Arrange(); Invalidate(); RequestFrame();
         if (uia_.Attached()) uia_.ChildrenChanged(0);
+    }
+    // Board 7, once in place: a pause, the logo shrinks and fades inside the dot field (the dots go on), then the
+    // window itself leaves on the stage (src/onboarding-handoff.h) while the browser comes in.
+    void StepExit(Motion::Time now) {
+        const auto plan = Onboarding::Tuning::ExitPlanFor(tuning_[Onboarding::Tuning::Exit], options_.reduced);
+        const auto f = Onboarding::Tuning::ExitAt(plan, Ms(exitAt_, now));
+        logoScale_ = f.logoScale; logoAlpha_ = f.logoAlpha; Invalidate();
+        if (f.windowLeaving) { exitRunning_ = false; HandOff(plan); }
+    }
+    void HandOff(const Onboarding::Tuning::ExitPlan& plan) {
+        const bool replay = exitReplay_; OnboardingHandoff::Stage* stage = replay ? &previewStage_ : options_.stage; bool started = false;
+        if (stage && hwnd_ && !offscreen_) {
+            RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW); DwmFlush();
+            auto shot = OnboardingHandoff::Capture(hwnd_, Layout::radius * Scale());
+            if (shot.Valid()) {
+                if (replay) { const auto standIn = OnboardingHandoff::Placeholder(hwnd_); started = stage->Start(std::move(shot), plan, &standIn, hwnd_, ReplayDoneMessage); }
+                else started = stage->Start(std::move(shot), plan);
+            }
+        }
+        if (replay) { if (started) PopupKit::SetAlpha(hwnd_, 0); else EndReplay(); return; }
+        if (started) { handedOff_ = true; PopupKit::SetAlpha(hwnd_, 0); flow_.OutroDone(); done_ = true; PostMessageW(hwnd_, WM_NULL, 0, 0); }   // its picture is on the stage: the real window goes at once
+        else { const Screen before = flow_.screen(); flow_.OutroDone(); Changed(before); }   // no stage: the plain fade
+    }
+    void EndReplay() {
+        replaying_ = false; exitReplay_ = false; exitRunning_ = flow_.screen() == Screen::Outro; changing_ = false; logoScale_ = logoAlpha_ = 1;
+        shown_ = from_ = flow_.screen() == Screen::Closed ? shown_ : flow_.screen(); Arrange(); if (hwnd_) PopupKit::SetAlpha(hwnd_, 1); Invalidate(); RequestFrame();
     }
     void Leave() { if (leaving_ || done_) return; ShowEdit(false); leaving_ = true; left_ = Motion::Now(); if (offscreen_ || !hwnd_) { done_ = true; return; } RequestFrame(); }
     void SaveProfile() {
@@ -581,7 +621,7 @@ private:
         // The dot field covers the whole window on both boards (the designer's request: no square of dots around
         // the logo). Board 1's logo stays where Paper has it: the centre of a 508-high node, 35.5 above the window's.
         case HalftoneWelcome: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds)), true, WelcomeRaise); break;
-        case HalftoneOutro: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds)), true, 0); break;
+        case HalftoneOutro: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds)), true, 0, logoScale_, logoAlpha_); break;
         case Gem: w = Layout::gemW; h = Layout::gemH; kind = S::Kind::GemSmoke; u = S::GemSmoke(S::GemStillSeconds + static_cast<float>(std::fmod(seconds, S::GemPeriod))); break;
         default: {
             w = 725; h = 407; kind = S::Kind::GrainGradient; u = S::GrainGradient(S::GrainStillSeconds + static_cast<float>(std::fmod(seconds, S::GrainPeriod)));
@@ -592,7 +632,9 @@ private:
         }
         const unsigned ow = static_cast<unsigned>(std::lround(w * scale)), oh = static_cast<unsigned>(std::lround(h * scale));
         const bool current = layer.bitmap && layer.owner == t && layer.frame.width == ow && layer.frame.height == oh;
-        if (current && (!loops || !Due(id, now))) return;
+        const float key = id == HalftoneOutro ? logoScale_ * 16 + logoAlpha_ : 0;   // the logo's exit is a new picture even when nothing loops
+        if (current && key == layer.key && (!loops || !Due(id, now))) return;
+        layer.key = key;
         if (gpu_.Render(kind, u, w, h, ow, oh, layer.frame)) { layer.Upload(t); layer.shaded = now; } else if (!current) layer.Drop();   // the whole field slides: every pixel is new
     }
     // Loop pacing: frames come at the display's rate (src/frame-clock.h); a layer is drawn again on the first
@@ -928,7 +970,7 @@ private:
         TextLook(t);
         const Screen to = shown_, from = changing_ ? from_ : shown_; const float raw = Change(now); float u = EaseOut(raw);
         const bool tuned = Tuned(); Onboarding::Tuning::Frame tf;
-        if (tuned) { tf = Onboarding::Tuning::At(tuning_, Ms(changed_, now)); u = tf.mock; }
+        if (tuned) { tf = Onboarding::Tuning::At(Tune(), Ms(changed_, now)); u = tf.mock; }
         // Shader layers of the boards on screen.
         const bool loops = ShadersLoop();
         for (Screen s : {from, to}) {
@@ -958,6 +1000,7 @@ private:
         const bool swapped = !changing_ || (tuned ? tf.swapped : raw >= .4f); const Screen content = swapped ? to : from;
         const float contentAlpha = !changing_ ? 1.f : tuned ? (swapped ? tf.newAlpha : tf.oldAlpha) : raw < .4f ? 1 - raw / .4f : (raw - .4f) / .6f;
         const float headerAlpha = (from == Screen::Outro ? 0.f : 1.f) + ((to == Screen::Outro ? 0.f : 1.f) - (from == Screen::Outro ? 0.f : 1.f)) * u;
+        if (replaying_) Arrange(content);   // review: the replayed board's own boxes (input is off meanwhile)
         DrawHeader(content == Screen::Outro ? from : content, tone, headerAlpha);
         if (tuned && tf.rise > 0) {   // the new content climbs into place; the header stays put
             D2D1_MATRIX_3X2_F base; t->GetTransform(&base); t->SetTransform(D2D1::Matrix3x2F::Translation(0, tf.rise) * base);
@@ -1059,6 +1102,7 @@ private:
         case FrameMessage: if (l == FrameClock::ClockLost) { clock_.Stop(); clockOk_ = false; SetTimer(h, 1, 16, nullptr); return 0; } clock_.Acknowledge(); Step(); return 0;
         case WM_TIMER: if (w == 1) Step(); return 0;
         case HostMessage: if (options_.hooks.message) options_.hooks.message(w, l); return 0;
+        case ReplayDoneMessage: if (exitReplay_) EndReplay(); return 0;
         case WM_CTLCOLOREDIT:
             if (reinterpret_cast<HWND>(l) == edit_) { const HDC dc = reinterpret_cast<HDC>(w); NativeUI::EditBuffer::Clip(edit_, dc); SetTextColor(dc, RGB(255, 255, 255)); SetBkColor(dc, RGB(0x29, 0x29, 0x29)); return reinterpret_cast<LRESULT>(editBrush_); }
             break;
@@ -1162,7 +1206,7 @@ public:
         clockOk_ = clock_.Start(hwnd_, FrameMessage);
         if (options_.debug) {
             if (!options_.tuningFile.empty()) tuning_ = Onboarding::Tuning::Read(OnboardingDebug::Load(options_.tuningFile));
-            panel_.Open(instance, hwnd_, root_, options_.tuningFile, &tuning_, [this] { Invalidate(); }, [this] { ReplayTransition(); });
+            panel_.Open(instance, hwnd_, root_, options_.tuningFile, &tuning_, [this] { Invalidate(); }, [this](Onboarding::Tuning::Section s) { Replay(s); });
         }
         shown_ = from_ = Screen::Welcome; RevealIcon(false); Arrange(); AttachUia();
         opened_ = Motion::Now(); entering_ = true; done_ = false;
@@ -1171,7 +1215,8 @@ public:
         while (!done_ && GetMessageW(&msg, nullptr, 0, 0) > 0) { TranslateMessage(&msg); DispatchMessageW(&msg); }
         if (!done_) { PostQuitMessage(static_cast<int>(msg.wParam)); if (flow_.screen() != Screen::Closed) flow_.Skip(); }   // WM_QUIT while the window was open
         result.ending = flow_.ending() == Onboarding::Ending::None ? Onboarding::Ending::Skipped : flow_.ending();
-        result.annotate = result.ending == Onboarding::Ending::Completed && flow_.annotate(); result.profileSaved = flow_.profileApplied();
+        result.annotate = result.ending == Onboarding::Ending::Completed && flow_.annotate(); result.profileSaved = flow_.profileApplied(); result.handedOff = handedOff_;
+        previewStage_.Stop();
         panel_.Close(); clock_.Stop(); KillTimer(hwnd_, 1); uia_.Detach(); menu_.Dispose(); DropLayers(); gpu_.Dispose(); glyphs_.Clear();
         if (edit_) { RemoveWindowSubclass(edit_, EditProc, 0); DestroyWindow(edit_); edit_ = nullptr; }
         if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
@@ -1182,13 +1227,19 @@ public:
 
     // Debug panel « Rejouer 2 → 3 »: board 2 is shown again for a moment, then the transition plays. The flow is
     // taken to board 3 if it was before it (nothing is saved: review only).
-    void ReplayTransition() {
-        if (flow_.screen() == Screen::Welcome) flow_.Start();
-        if (flow_.screen() == Screen::Profile) flow_.ProfileAccepted();
-        if (flow_.screen() != Screen::ImportPick) return;
+    void Replay(Onboarding::Tuning::Section section) {
+        namespace T = Onboarding::Tuning;
+        if (offscreen_ || !hwnd_ || exitReplay_ || previewStage_.Active() || flow_.screen() == Screen::Closed || flow_.screen() == Screen::Outro) return;
+        static const Screen boards[T::Sections][2] = {{Screen::Welcome, Screen::Profile}, {Screen::Profile, Screen::ImportPick}, {Screen::ImportPick, Screen::ImportRunning}, {Screen::ImportRunning, Screen::ImportDone},
+                                                      {Screen::ImportDone, Screen::Annotation}, {Screen::Annotation, Screen::Outro}, {Screen::Outro, Screen::Outro}};
         if (!sourcesLoaded_) LoadSources();
-        ShowEdit(false); focus_ = None; from_ = Screen::Profile; shown_ = Screen::ImportPick; changing_ = !offscreen_;
-        changed_ = Motion::Now() + std::chrono::milliseconds(450); Arrange(); Invalidate(); RequestFrame();
+        ShowEdit(false); focus_ = hover_ = pressed_ = None; replaying_ = true; logoScale_ = logoAlpha_ = 1; const auto now = Motion::Now();
+        if (section == T::Exit) { exitReplay_ = true; from_ = shown_ = Screen::Outro; changing_ = false; exitAt_ = now; exitRunning_ = true; }   // « 7 → navigateur » on a stand-in for the browser
+        else {
+            from_ = boards[section][0]; shown_ = boards[section][1]; changing_ = true; changed_ = now + std::chrono::milliseconds(450);   // the first board is shown a moment, then the transition plays
+            replayUntil_ = changed_ + std::chrono::milliseconds(static_cast<int>(T::TotalMs(tuning_[section])) + 800);
+        }
+        Invalidate(); RequestFrame();
     }
     const Onboarding::Tuning::Values& TuningForTest() const { return tuning_; }
     void SetTuningForTest(const Onboarding::Tuning::Values& v) { tuning_ = v; }

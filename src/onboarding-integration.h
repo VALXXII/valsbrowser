@@ -15,6 +15,10 @@
 //    browser window then loads them as on any start). « --import-sources <dir> » (tests) applies here as there.
 //  * Language: the picker pins the process language at once (no window exists yet, nothing is half translated)
 //    and writes the browser-wide preference (src/ui-language.h).
+//  * The end: when the flow is completed the onboarding window leaves on a stage (src/onboarding-handoff.h) and
+//    the browser window comes in on it: created and painted cloaked, photographed, shown scaled-in as a picture,
+//    then uncovered under the picture's last frame. Skipping (Échap, close, « Passer et naviguer ») starts the
+//    browser the plain way.
 //  * « Activer » on the annotation board: once the browser window is up, the « Connecter un agent » dialog opens
 //    (the mode itself needs a web page; connecting an agent is what turns it on for the person).
 // Logs carry counts and the source brand only: never a URL, a title or a path of the person's data.
@@ -28,6 +32,8 @@ struct OnboardingJob { unsigned token = 0; BI::Source source; BI::Options option
 OB::Window* onboardingUi = nullptr; HWND onboardingWindow = nullptr;
 std::shared_ptr<OnboardingJob> onboardingFinished;          // handed back by the worker, under importLock
 OI::Listing onboardingListing;                              // what board 3 lists, and the source behind each choice
+OnboardingHandoff::Stage onboardingStage;                   // the window's exit and the browser's entrance, after a completed flow
+constexpr UINT_PTR OnboardingRevealTimerId = 0x4F43;
 
 std::vector<OB::BrowserSource> OnboardingSources() {
     onboardingListing = OI::List(BI::Catalog(ImportRegistered(), BI::Discover(ImportRoots()), OwnExecutable()), [](const BI::Row& r) { return BI::LoadLogo(r.icon, r.iconIndex, 96); });
@@ -104,12 +110,28 @@ void RunOnboarding(Onboarding::Reason reason) {
     o.hooks.language = [](I18n::Locale l) { if (!UiLanguage::Save(profileRoot, l)) Log(L"ONBOARDING language not saved"); else Log(std::wstring(L"ONBOARDING language ") + (l == I18n::Locale::En ? L"en" : L"fr")); };
     o.hooks.created = [](HWND h) { onboardingWindow = h; };   // where the worker posts its answer
     if (onboardingDebug) { o.debug = true; o.tuningFile = profileRoot + L"\\onboarding-tuning.txt"; Log(L"ONBOARDING debug panel (2 -> 3 transition)"); }
+    o.stage = &onboardingStage;
     OB::Window ui; onboardingUi = &ui;
     const OB::Result result = ui.Run(instance, base, std::move(o));
     onboardingUi = nullptr; onboardingWindow = nullptr;
     { std::lock_guard<std::mutex> guard(importLock); onboardingFinished.reset(); }
     onboardingAnnotate = result.annotate;
-    Log(std::wstring(L"ONBOARDING ended: ") + (result.ending == Onboarding::Ending::Completed ? L"completed" : L"skipped") + (result.profileSaved ? L", profile step done" : L"") + (result.annotate ? L", annotation asked" : L""));
+    Log(std::wstring(L"ONBOARDING ended: ") + (result.ending == Onboarding::Ending::Completed ? L"completed" : L"skipped") + (result.profileSaved ? L", profile step done" : L"") + (result.annotate ? L", annotation asked" : L"") + (result.handedOff ? L", hand-off" : L""));
+}
+// In place of ShowWindow + UpdateWindow at the end of the start. After a completed onboarding the window is
+// shown cloaked (composed by DWM, not visible), painted, photographed and handed to the stage, which plays its
+// scale-in and uncovers the real window under the last frame. Anything that goes wrong shows it the plain way.
+void OnboardingShowBrowser(int show) {
+    if (!onboardingStage.Active()) { ShowWindow(window, show); UpdateWindow(window); return; }
+    OnboardingHandoff::Cloak(window, true);
+    ShowWindow(window, show); UpdateWindow(window);
+    RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN); DwmFlush(); DwmFlush();
+    auto shot = OnboardingHandoff::Capture(window, IsZoomed(window) ? 0.f : NativeUI::nativeCornerRadius * GetDpiForWindow(window) / 96.f);
+    if (shot.Valid() && onboardingStage.Enter(std::move(shot), window)) {
+        Log(L"ONBOARDING hand-off: browser painted under cover, scale-in on its picture");
+        // Whatever happens to the stage, the window never stays hidden.
+        SetTimer(window, OnboardingRevealTimerId, 5000, [](HWND h, UINT, UINT_PTR id, DWORD) { KillTimer(h, id); OnboardingHandoff::Cloak(h, false); });
+    } else { OnboardingHandoff::Cloak(window, false); Log(L"ONBOARDING hand-off: no picture of the browser, shown directly"); }
 }
 // Once the browser window is shown.
 void OnboardingAfterStart() {

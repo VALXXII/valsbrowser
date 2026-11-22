@@ -191,10 +191,11 @@ int wmain(int argc, wchar_t** argv) {
             // The tunable 2 -> 3 timeline belongs to the window; the defaults are the shipped motion.
             Fixture t; t.root = root; t.out = out; t.Setup();
             Expect(t.window.TuningForTest() == Onboarding::Tuning::Defaults(), "tuning: a normal run plays the default 2 -> 3 transition");
-            auto v = Onboarding::Tuning::Defaults(); v[Onboarding::Tuning::Duration] = 500; t.window.SetTuningForTest(Onboarding::Tuning::Read(Onboarding::Tuning::Write(v)));
-            Expect(t.window.TuningForTest()[Onboarding::Tuning::Duration] == 500, "tuning: values read back from the panel's file drive the window");
-            t.window.ReplayTransition();
-            Expect(t.window.Flow().screen() == Screen::ImportPick && t.saved == 0, "tuning: « Rejouer 2 → 3 » lands on board 3 without saving anything");
+            namespace T = Onboarding::Tuning;
+            auto v = T::Defaults(); v[T::T23][T::Duration] = 500; v[T::Exit][T::LogoScale] = .8f; t.window.SetTuningForTest(T::Read(T::Write(v)));
+            Expect(t.window.TuningForTest()[T::T23][T::Duration] == 500 && t.window.TuningForTest()[T::Exit][T::LogoScale] == .8f && t.window.TuningForTest()[T::T12] == T::Defaults(T::T12), "tuning: values read back from the panel's file drive the window, each transition its own");
+            for (int s = 0; s < T::Sections; ++s) t.window.Replay(static_cast<T::Section>(s));
+            Expect(t.window.Flow().screen() == Screen::Welcome && t.saved == 0 && t.started == 0, "tuning: « Rejouer » is for the eye only: the flow does not move, nothing is saved or imported");
         }
         Fixture h; h.root = root; h.out = out; h.Setup(false);
         h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::SkipStep);
