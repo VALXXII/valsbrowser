@@ -197,6 +197,81 @@ int wmain(int argc, wchar_t** argv) {
             for (int s = 0; s < T::Sections; ++s) t.window.Replay(static_cast<T::Section>(s));
             Expect(t.window.Flow().screen() == Screen::Welcome && t.saved == 0 && t.started == 0, "tuning: « Rejouer » is for the eye only: the flow does not move, nothing is saved or imported");
         }
+        {
+            // Mid-transition frames: the board that leaves is drawn with ITS OWN boxes. (Bug seen by the designer:
+            // board 3's checkboxes, labels and selects piled up in the window's top-left corner for a moment.)
+            // Left of the centred title and right of the language button, the header strip holds nothing.
+            IWICImagingFactory* wic = nullptr; CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+            auto stray = [&](const std::wstring& name) {
+                Onboarding::Shaders::Image img; if (!Onboarding::Shaders::LoadPng(wic, out + L"\\" + name + L"@96.png", img)) return -1;
+                int bright = 0;
+                for (unsigned y = 0; y < 60; ++y) for (unsigned x = 0; x < 262; ++x) {
+                    if (x < 112 && y >= 8 && y < 42) continue;   // « Français » and its chevron
+                    const auto* p = &img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4]; if (p[0] > 110 || p[1] > 110 || p[2] > 110) ++bright;
+                }
+                return bright;
+            };
+            Fixture m; m.root = root; m.out = out; m.Setup(); using W3 = UI::Window;
+            struct Case { const wchar_t* name; int action; Screen from; float ms; };
+            auto frame = [&](const wchar_t* name, Screen from, float ms) { return m.window.RenderTransitionForTest(from, ms, 96, (out + L"\\" + name + L"@96.png").c_str()) ? stray(name) : -1; };
+            m.window.ActivateForTest(W3::Primary);
+            Expect(frame(L"move-1-2-early", Screen::Welcome, 20) == 0 && frame(L"move-1-2-late", Screen::Welcome, 300) == 0, "1 -> 2: nothing stray in the corner, early or late");
+            m.window.ActivateForTest(W3::Primary);
+            Expect(frame(L"move-2-3-early", Screen::Profile, 20) == 0 && frame(L"move-2-3-late", Screen::Profile, 300) == 0, "2 -> 3: nothing stray in the corner");
+            m.window.ActivateForTest(W3::Back);
+            Expect(frame(L"move-3-2-early", Screen::ImportPick, 20) == 0, "3 -> 2: board 3's selects and checkboxes leave from their own places");
+            m.window.ActivateForTest(W3::Primary); m.window.ActivateForTest(W3::Primary);
+            Expect(frame(L"move-3-4-early", Screen::ImportPick, 20) == 0, "3 -> 4: same on the way to the import");
+            m.window.ImportFinished(m.token, {true, false, L"Google Chrome est ouvert. Fermez-le, puis réessayez."});
+            Expect(frame(L"move-4-51-early", Screen::ImportRunning, 20) == 0, "4 -> 5.1: « Annuler » leaves from its own place");
+            m.window.ActivateForTest(W3::SkipStep);
+            Expect(frame(L"move-51-6-early", Screen::ImportError, 20) >= 0, "5.1 -> 6: frame rendered (the light gradient fills the corner: looked at, not counted)");
+            m.window.ActivateForTest(W3::Primary);
+            Expect(frame(L"move-6-7-early", Screen::Annotation, 20) >= 0, "6 -> 7: frame rendered");
+            if (wic) wic->Release();
+        }
+        {
+            // Board 6's dither: the annotation band's texture (src/annotation-dither.h) laid over the gradient.
+            namespace TR = Onboarding::Trame; namespace D = NativeChrome::Annotations::Dither; namespace T = Onboarding::Tuning;
+            auto raster = [](float scale, double phase, const TR::Look& look, int* dots) { const int w = static_cast<int>(725 * scale), h = static_cast<int>(407 * scale); std::vector<std::uint32_t> px(static_cast<std::size_t>(w) * h, 0xDEADBEEF); *dots = TR::Raster(D::Raster{px.data(), w, w, h}, scale, phase, look); return px; };
+            int n0 = 0, n1 = 0, n2 = 0, none = 0; const TR::Look look;
+            const auto a = raster(1, 0, look, &n0), again = raster(1, 0, look, &n1), half = raster(1, .5, look, &n2);
+            Expect(n0 > 2000 && n0 < 725 * 407 / 4 / 3 && a == again, "dither: dots on a sparse grid, the same picture for the same instant");
+            {
+                // The raster is the band's field, cell for cell (the reference: Field(), which calls the band's own WaveBand).
+                int same = 0, cells = 0;
+                for (double phase : {0.0, .37, .81}) { int n = 0; const auto px = raster(1, phase, look, &n);
+                    for (int cy = 0; cy * 2 < 407; ++cy) for (int cx = 0; cx * 2 < 725; ++cx) { const float v = TR::Field((cx + .5f) * 2, (cy + .5f) * 2, 725, 407, phase, look); const bool want = v > D::Threshold(cx, cy), tie = std::fabs(v - D::Threshold(cx, cy)) < 2e-4f; ++cells; same += tie || (px[static_cast<std::size_t>(cy * 2) * 725 + cx * 2] != 0) == want; } }
+                Expect(same == cells, "dither: every cell is the annotation band's own field (src/annotation-dither.h WaveBand), not a lookalike");
+            }
+            Expect(a != half && raster(1, Onboarding::LoopPhase(8, 8), look, &n1) == a, "dither: it moves, and the end of a pass is its start (seamless)");
+            bool grid = true, ink = true; std::uint32_t top = 0;
+            for (int y = 0; y < 407; ++y) for (int x = 0; x < 725; ++x) { const std::uint32_t p = a[static_cast<std::size_t>(y) * 725 + x]; if (!p) continue; grid = grid && (x % 2 == 0) && (y % 2 == 0); const std::uint32_t al = p >> 24; ink = ink && ((p >> 16) & 255) == al && ((p >> 8) & 255) == al && (p & 255) == al; top = std::max(top, al); }
+            Expect(grid, "dither: the band's pitch — one dot per 2 DIP cell, the last row and column of a cell left empty");
+            Expect(ink && top <= static_cast<std::uint32_t>(std::lround(.22f * 220)) + 1 && top >= 30, "dither: white ink at the band's two alphas, times its own opacity (subtle)");
+            TR::Look off = look; off.opacity = 0; raster(1, 0, off, &none);
+            Expect(none == 0, "dither: opacity 0 draws nothing");
+            int scaled = 0; const auto big = raster(1.25f, 0, look, &scaled);
+            Expect(scaled > 0 && D::CellPx(look.cell, 1.25f) == 3, "dither: cells snap to device pixels at 125 % (3 px cell, 2 px dot)");
+            // On the board: there, but quiet.
+            IWICImagingFactory* wic = nullptr; CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+            Fixture d; d.root = root; d.out = out; d.Setup(); using W4 = UI::Window; d.window.SetShaderSecondsForTest(0);
+            d.window.ActivateForTest(W4::Primary); d.window.ActivateForTest(W4::Primary); d.window.ActivateForTest(W4::SkipStep);
+            auto quiet = T::Defaults(); quiet[T::Trame][T::TrameOpacity] = 0; d.window.SetTuningForTest(quiet);
+            Expect(d.Shot(L"state-6-without-dither"), "render: board 6 without its dither");
+            d.window.SetTuningForTest(T::Defaults()); Expect(d.Shot(L"state-6-with-dither"), "render: board 6 with its dither");
+            Onboarding::Shaders::Image with, without; double sum = 0, text = 0; long changed = 0;
+            if (Onboarding::Shaders::LoadPng(wic, out + L"\\state-6-with-dither@96.png", with) && Onboarding::Shaders::LoadPng(wic, out + L"\\state-6-without-dither@96.png", without)) {
+                for (unsigned y = 0; y < 580; ++y) for (unsigned x = 0; x < 720; ++x) {
+                    const std::size_t i = (static_cast<std::size_t>(y) * 720 + x) * 4; const int dv = std::abs(with.rgba[i] - without.rgba[i]) + std::abs(with.rgba[i + 1] - without.rgba[i + 1]) + std::abs(with.rgba[i + 2] - without.rgba[i + 2]);
+                    if (y < 400) { sum += dv; changed += dv > 0; }
+                    if (y >= 415 || (y >= 183 && y < 219 && x >= 86 && x < 316) || (y >= 181 && y < 273 && x >= 341 && x < 630)) text += dv;   // the texts, the buttons, the illustration's button and note
+                }
+            }
+            Expect(changed > 1500 && sum / (720.0 * 400 * 3) < 3.0, "dither on board 6: present (thousands of pixels) and subtle (under 3 / 255 on average)");
+            Expect(text == 0, "dither on board 6: nothing of it over the texts, the buttons or the illustration");
+            if (wic) wic->Release();
+        }
         Fixture h; h.root = root; h.out = out; h.Setup(false);
         h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::SkipStep);
         Expect(h.window.Flow().screen() == Screen::Outro, "no annotation mode in the build: board 6 is skipped");

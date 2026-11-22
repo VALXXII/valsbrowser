@@ -46,6 +46,7 @@
 #include "onboarding-tuning.h"
 #include "onboarding-debug.h"
 #include "onboarding-handoff.h"
+#include "onboarding-dither.h"
 
 namespace NativeChrome {
 namespace OnboardingUI {
@@ -75,7 +76,9 @@ inline constexpr float mockUnits = 1180, mockPlainUnits = 600, mockPlainH = 440,
 
 struct Hooks {
     std::function<Profiles::NameError(const Profiles::Profile&)> saveProfile;     // « Continuer » on board 2: None = saved
-    std::function<std::vector<BrowserSource>()> sources;                          // board 3 opens (and after a language change)
+    // The import sources of board 3. Called on a WORKER thread (listing browsers, profiles and logos takes time and
+    // must never hold the window): as soon as the window opens, and again after a language change.
+    std::function<std::vector<BrowserSource>()> sources;
     // Starts the read of `pick` (worker thread); answers later with Window::ImportFinished(token, …) on the UI
     // thread. False: nothing started (file dialog cancelled, source gone).
     std::function<bool(unsigned token, const ImportPick& pick, bool bookmarks, bool history)> startImport;
@@ -115,7 +118,7 @@ class Window {
 public:
     enum Id : int { None = 0, Lang = 1, Close = 2, Primary = 10, Back = 11, SkipAll = 12, SkipStep = 13, Cancel = 14, Decline = 15,
                     Name = 20, Hue = 21, Intensity = 22, Icons = 23, Browser = 30, Profile = 31, CheckBookmarks = 32, CheckHistory = 33, IconBase = 100 };
-    static constexpr UINT FrameMessage = WM_APP + 0x4F0, HostMessage = WM_APP + 0x4F1, ReplayDoneMessage = WM_APP + 0x4F2;
+    static constexpr UINT FrameMessage = WM_APP + 0x4F0, HostMessage = WM_APP + 0x4F1, ReplayDoneMessage = WM_APP + 0x4F2, SourcesMessage = WM_APP + 0x4F3;
     static constexpr float TextGamma = 2.2f, TextContrast = .5f;
     static constexpr float WelcomeRaise = 35.5f / 721;   // (579 - 508) / 2 over the picture box
 private:
@@ -146,7 +149,7 @@ private:
     K::Glyphs glyphs_; Onboarding::Shaders::Renderer gpu_; bool gpuTried_ = false; Layer layers_[LayerCount];
     Onboarding::Flow flow_; Options options_; Profiles::Profile draft_; Profiles::NameError nameError_ = Profiles::NameError::None;
     std::vector<BrowserSource> sources_; bool sourcesLoaded_ = false; ImportPick pick_; std::wstring errorDetail_;
-    std::vector<Item> items_;
+    std::vector<Item> items_; Screen arranged_ = Screen::Welcome;   // whose boxes items_ holds
     UINT dpi_ = 96; bool done_ = false, keyboard_ = false, offscreen_ = false, syncingEdit_ = false, menuOpen_ = false;
     int focus_ = None, hover_ = None, pressed_ = None, dragging_ = None;
     std::map<int, float> glow_; float iconScroll_ = 0, iconScrollTarget_ = 0;
@@ -158,6 +161,24 @@ private:
     std::vector<BarItem> bar_; Motion::Time barAt_{};   // the imported bookmarks bar shown in the mock (boards 4 – 5.1)
     // The end of the flow (board 7): the logo's exit inside the dot field, then the hand-off of the window.
     Motion::Time exitAt_{}; bool exitRunning_ = false, handedOff_ = false; float logoScale_ = 1, logoAlpha_ = 1;
+    // Board 6's dither (src/onboarding-dither.h): rastered on the CPU at the device's pixels, 30 pictures a second.
+    ID2D1Bitmap* trame_ = nullptr; ID2D1RenderTarget* trameOwner_ = nullptr; std::vector<std::uint32_t> trameBits_; Motion::Time trameAt_{}; double trameKey_ = -1;
+    void DropTrame() { if (trame_) { trame_->Release(); trame_ = nullptr; } trameOwner_ = nullptr; trameKey_ = -1; }
+    Onboarding::Trame::Look TrameLook() const { namespace T = Onboarding::Tuning; const auto& r = tuning_[T::Trame]; Onboarding::Trame::Look l; l.opacity = r[T::TrameOpacity]; l.cell = r[T::TramePitch]; l.base = r[T::TrameBase]; l.wave = r[T::TrameWave]; return l; }
+    void ShadeTrame(ID2D1RenderTarget* t, Motion::Time now) {
+        namespace T = Onboarding::Tuning; namespace D = NativeChrome::Annotations::Dither;
+        const auto px = t->GetPixelSize(); const auto dip = t->GetSize(); const float scale = px.width / std::max(1.f, dip.width);
+        const int w = static_cast<int>(std::lround(725 * scale)), h = static_cast<int>(std::lround(407 * scale));
+        const auto look = TrameLook(); const double phase = Onboarding::LoopPhase(ShaderSeconds(now), tuning_[T::Trame][T::TramePeriod]);
+        const double key = phase * 1000 + look.opacity * 7 + look.cell * 13 + look.base * 17 + look.wave * 19 + w;
+        const bool current = trame_ && trameOwner_ == t && static_cast<int>(trame_->GetPixelSize().width) == w && static_cast<int>(trame_->GetPixelSize().height) == h;
+        if (current && (key == trameKey_ || (trameAt_ != Motion::Time{} && Ms(trameAt_, now) < 1000.f / 15 - 3))) return;   // the wave takes 8 s to pass: 15 pictures a second
+        trameBits_.resize(static_cast<std::size_t>(w) * h);
+        Onboarding::Trame::Raster(D::Raster{trameBits_.data(), w, w, h}, scale, phase, look);
+        if (!current) { DropTrame(); if (FAILED(t->CreateBitmap(D2D1::SizeU(static_cast<UINT32>(w), static_cast<UINT32>(h)), trameBits_.data(), static_cast<UINT32>(w) * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96), &trame_))) { trame_ = nullptr; return; } trameOwner_ = t; }
+        else trame_->CopyFromMemory(nullptr, trameBits_.data(), static_cast<UINT32>(w) * 4);
+        trameKey_ = key; trameAt_ = now;
+    }
     // Review panel: a transition replayed for the eye only (the flow does not move), or the hand-off on a stand-in.
     bool replaying_ = false, exitReplay_ = false; Motion::Time replayUntil_{}; OnboardingHandoff::Stage previewStage_;
 
@@ -181,8 +202,25 @@ private:
     bool HasHistory() const { const auto* s = Source(); if (!s || !s->available || s->file) return false; const auto* p = SourceProfile(); return p && p->history; }
     bool ProfileSelectShown() const { const auto* s = Source(); return s && s->profiles.size() > 1; }
     void SyncImport() { const auto* s = Source(); flow_.SetSourceAvailable(s && s->available); flow_.SetCategories(pick_.bookmarks && HasBookmarks(), pick_.history && HasHistory()); }
-    void LoadSources() {
-        sources_ = options_.hooks.sources ? options_.hooks.sources() : std::vector<BrowserSource>{}; sourcesLoaded_ = true;
+    // The sources are listed off the UI thread and adopted when they arrive (SourcesMessage). Until then board 3
+    // shows its select with « Recherche des navigateurs… » and nothing to import. Tests (no window): at once.
+    unsigned sourcesAsked_ = 0; bool sourcesLoading_ = false; float slowestChangeMs_ = 0, slowestFrameMs_ = 0; unsigned frames_ = 0;
+    struct SourcesJob { std::function<std::vector<BrowserSource>()> list; HWND window; unsigned asked; };
+    void RequestSources() {
+        if (offscreen_ || !hwnd_ || !options_.hooks.sources) { LoadSources(); return; }
+        auto* job = new SourcesJob{options_.hooks.sources, hwnd_, ++sourcesAsked_}; sourcesLoading_ = true;
+        HANDLE thread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+            std::unique_ptr<SourcesJob> j(static_cast<SourcesJob*>(p));
+            auto* found = new std::vector<BrowserSource>(j->list());
+            if (!PostMessageW(j->window, SourcesMessage, j->asked, reinterpret_cast<LPARAM>(found))) delete found;   // the window is gone
+            return 0;
+        }, job, 0, nullptr);
+        if (!thread) { delete job; sourcesLoading_ = false; LoadSources(); return; }
+        CloseHandle(thread);
+    }
+    void LoadSources() { AdoptSources(options_.hooks.sources ? options_.hooks.sources() : std::vector<BrowserSource>{}); }
+    void AdoptSources(std::vector<BrowserSource> found) {
+        sources_ = std::move(found); sourcesLoaded_ = true; sourcesLoading_ = false;
         if (!Source() || !Source()->available) { pick_.browser = -1; pick_.profile = 0; for (std::size_t i = 0; i < sources_.size(); ++i) if (sources_[i].available) { pick_.browser = static_cast<int>(i); break; } }
         if (!SourceProfile()) pick_.profile = 0;
         SyncImport();
@@ -254,7 +292,7 @@ private:
     }
     void Arrange() { Arrange(flow_.screen()); }
     void Arrange(Screen s) {
-        items_.clear();
+        items_.clear(); arranged_ = s;
         if (s == Screen::Closed || s == Screen::Outro) return;
         if (s == Screen::Profile) {
             items_.push_back({Name, NameField()});
@@ -368,7 +406,7 @@ private:
         if (now == Screen::Closed) { Leave(); return; }
         from_ = shown_; shown_ = now; changed_ = Motion::Now(); changing_ = !offscreen_;
         focus_ = None; hover_ = None; pressed_ = None; dragging_ = None; ShowEdit(false);
-        if (now == Screen::ImportPick && !sourcesLoaded_) LoadSources();
+        if (now == Screen::ImportPick && !sourcesLoaded_ && !sourcesLoading_) RequestSources();
         if (now == Screen::Outro) outroStart_ = changed_;
         if (now == Screen::Profile) RevealIcon(false);
         Arrange(); Invalidate(); RequestFrame();
@@ -430,7 +468,7 @@ private:
         if (options_.hooks.language) options_.hooks.language(l);
         if (defaultName) { draft_.name = Profiles::DefaultName(); SyncEdit(); }
         if (hwnd_) SetWindowTextW(hwnd_, TR(onboarding_welcome_title));
-        if (sourcesLoaded_) LoadSources();   // the labels follow the language
+        if (sourcesLoaded_ || sourcesLoading_) RequestSources();   // the labels follow the language
         Arrange(); Invalidate();
         if (uia_.Attached()) uia_.ChildrenChanged(0);
     }
@@ -473,9 +511,11 @@ private:
         const float u = Motion::Clamp((x - Sx(Layout::track) - Layout::thumbW / 2) / (Layout::trackW - Layout::thumbW));
         SetSlider(which, static_cast<int>(std::lround(u * (which == Hue ? 359 : 100))));
     }
+    // How long the UI thread was held by the longest board change (for the log: a change must never block).
+    struct ChangeTimer { Window& w; Motion::Time start = Motion::Now(); Screen before; ~ChangeTimer() { if (w.flow_.screen() != before) w.slowestChangeMs_ = std::max(w.slowestChangeMs_, Ms(start, Motion::Now())); } };
     void Activate(int id, bool keyboard) {
         if (!Enabled(id)) return;
-        const Screen before = flow_.screen();
+        const Screen before = flow_.screen(); const ChangeTimer timer{*this, Motion::Now(), before};
         switch (id) {
         case Lang: LanguageMenu(keyboard); return;
         case Close: case SkipAll: flow_.Skip(); break;
@@ -598,7 +638,7 @@ private:
         if (S::LoadPng(c_->Imaging(), dir + L"gem-shape.png", gem, true)) gpu_.SetInput(S::Kind::GemSmoke, gem);
         if (S::LoadPng(c_->Imaging(), dir + L"noise.png", noise)) gpu_.SetInput(S::Kind::GrainGradient, noise);
     }
-    void DropLayers() { for (auto& l : layers_) l.Drop(); DropLogos(); }
+    void DropLayers() { for (auto& l : layers_) l.Drop(); DropLogos(); DropTrame(); }
     // A source's logo at the size the board gives it (14 in the select, 42 next to the ticks).
     std::map<const FaviconImage*, ID2D1Bitmap*> logos_; ID2D1RenderTarget* logosOwner_ = nullptr;
     void DropLogos() { for (auto& l : logos_) if (l.second) l.second->Release(); logos_.clear(); logosOwner_ = nullptr; }
@@ -736,10 +776,12 @@ private:
             K::Fill(*c_, box, 0, K::Col(K::Rehue(0xDEFDFF, draft_), alpha));
             if (layers_[Grain].bitmap && layers_[Grain].owner == t) DrawLayer(Grain, box, alpha);
             else K::Gradient(*c_, box, 0, {0, box.top}, {0, box.bottom}, {{.2f, K::Rehue(0x0AF4FF, draft_), 0}, {.6f, K::Rehue(0x0099A0, draft_), 1}, {1, K::Rehue(0x01292C, draft_), 1}}, alpha);
+            if (trame_ && trameOwner_ == t) t->DrawBitmap(trame_, box, alpha, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);   // the band's dither over the gradient, under everything else
         }
     }
+    static bool Placed(D2D1_RECT_F r) { return r.right > r.left && r.bottom > r.top; }   // a control without a box is never drawn
     void DrawButton(int id, const std::wstring& label, unsigned raisedOrAccent, bool accent, int weight, float alpha) {
-        const auto r = Rect(id); const bool enabled = Enabled(id); const float a = alpha * (enabled ? 1.f : K::Token::disabled);
+        const auto r = Rect(id); if (!Placed(r)) return; const bool enabled = Enabled(id); const float a = alpha * (enabled ? 1.f : K::Token::disabled);
         const float glow = enabled ? glow_[id] : 0, press = enabled && pressed_ == id && hover_ == id ? 1.f : 0.f;
         if (accent) { const auto base = K::FromHex(raisedOrAccent); const auto c = Design::Accent::StateColor({base.r / 255.f, base.g / 255.f, base.b / 255.f}, glow, press); K::Fill(*c_, r, Layout::buttonRadius, D2D1::ColorF(c.r, c.g, c.b, a)); }
         else { const auto c = K::Lerp(K::Lerp(K::FromHex(K::Token::raised), K::FromHex(K::Token::hover), glow), K::FromHex(K::Token::pressed), press); K::Fill(*c_, r, Layout::buttonRadius, K::Col(c, a)); }
@@ -775,7 +817,8 @@ private:
         K::Text(*c_, text, {left + 20, std::ceil(top), left + 20 + w + 8, std::ceil(top) + 16}, f, K::Col(K::Token::text, alpha));
     }
     void DrawSelect(int id, const std::wstring& caption, const std::wstring& value, const BrowserSource* logo, float alpha) {
-        const auto r = Rect(id); const float a = alpha * (Enabled(id) ? 1.f : K::Token::disabled);
+        const auto r = Rect(id); if (!Placed(r)) return;
+        const float a = alpha * (Enabled(id) ? 1.f : K::Token::disabled);
         K::Text(*c_, caption, {r.left, r.top - 24, r.right + 40, r.top - 4}, Label(), K::Col(K::Token::secondary, alpha));
         K::Fill(*c_, r, 6, K::Col(K::Lerp(K::FromHex(K::Token::raised), K::FromHex(K::Token::hover), glow_[id]), a));
         float x = r.left + 10;
@@ -789,7 +832,8 @@ private:
         if (focus_ == id && keyboard_) PopupKit::InsetRing(*c_, r, 6);
     }
     void DrawCheck(int id, const std::wstring& label, bool on, float alpha) {
-        const auto r = Rect(id); const bool enabled = Enabled(id); const float a = alpha * (enabled ? 1.f : K::Token::disabled);
+        const auto r = Rect(id); if (!Placed(r)) return;
+        const bool enabled = Enabled(id); const float a = alpha * (enabled ? 1.f : K::Token::disabled);
         const D2D1_RECT_F box = Box(r.left, r.top + 4, 16, 16);
         if (on && enabled) { K::Fill(*c_, box, 3, K::Col(K::Accent(draft_), a)); glyphs_.Stroke(*c_, K::Path::check, Box(box.left + 1, box.top + 1, 14, 14), 24, 1.8f, K::Col(K::Token::text, a)); }
         else K::Border(*c_, box, 3, 1.5f, PopupKit::White(.5f * a));
@@ -854,7 +898,7 @@ private:
     void DrawImportPick(float alpha) {
         DrawTitle(TR(onboarding_import_title), K::Path::cloudDown, 128, 0, 0, alpha);
         const auto* s = Source();
-        DrawSelect(Browser, TR(onboarding_import_browser), s ? s->name : std::wstring(TR(onboarding_import_none)), s, alpha);
+        DrawSelect(Browser, TR(onboarding_import_browser), s ? s->name : std::wstring(sourcesLoaded_ ? TR(onboarding_import_none) : TR(onboarding_import_searching)), s, alpha);
         if (ProfileSelectShown()) { const auto* p = SourceProfile(); DrawSelect(Profile, TRF(onboarding_import_profile, s->name), p ? p->label : std::wstring(), nullptr, alpha); }
         DrawCheck(CheckBookmarks, TR(onboarding_import_bookmarks), pick_.bookmarks && HasBookmarks(), alpha);
         DrawCheck(CheckHistory, TR(import_item_history), pick_.history && HasHistory(), alpha);
@@ -976,7 +1020,7 @@ private:
         for (Screen s : {from, to}) {
             if (s == Screen::Welcome) Shade(HalftoneWelcome, t, now, loops);
             if (s == Screen::Outro) Shade(HalftoneOutro, t, now, loops);
-            if (s == Screen::Annotation) Shade(Grain, t, now, loops);
+            if (s == Screen::Annotation) { Shade(Grain, t, now, loops); ShadeTrame(t, now); }
             if (s == Screen::ImportRunning || s == Screen::ImportDone || s == Screen::ImportError) Shade(Gem, t, now, loops);
         }
         const float toneFrom = Annotation(from) ? 1.f : 0.f, toneTo = Annotation(to) ? 1.f : 0.f, tone = toneFrom + (toneTo - toneFrom) * u;
@@ -1000,20 +1044,27 @@ private:
         const bool swapped = !changing_ || (tuned ? tf.swapped : raw >= .4f); const Screen content = swapped ? to : from;
         const float contentAlpha = !changing_ ? 1.f : tuned ? (swapped ? tf.newAlpha : tf.oldAlpha) : raw < .4f ? 1 - raw / .4f : (raw - .4f) / .6f;
         const float headerAlpha = (from == Screen::Outro ? 0.f : 1.f) + ((to == Screen::Outro ? 0.f : 1.f) - (from == Screen::Outro ? 0.f : 1.f)) * u;
-        if (replaying_) Arrange(content);   // review: the replayed board's own boxes (input is off meanwhile)
+        // The board being drawn gets ITS boxes: during a change the one that leaves is not the flow's any more, and
+        // a control looked up in another board's boxes would be drawn at the window's corner. Input keeps the
+        // flow's board: its boxes are put back right after.
+        const Screen live = arranged_;
+        if (content != arranged_) Arrange(content);
         DrawHeader(content == Screen::Outro ? from : content, tone, headerAlpha);
         if (tuned && tf.rise > 0) {   // the new content climbs into place; the header stays put
             D2D1_MATRIX_3X2_F base; t->GetTransform(&base); t->SetTransform(D2D1::Matrix3x2F::Translation(0, tf.rise) * base);
             DrawContent(content, now, contentAlpha); t->SetTransform(base);
         } else DrawContent(content, now, contentAlpha);
+        if (arranged_ != live) Arrange(live);
         const float hairline = 1 - tone;
         if (hairline > 0) PopupKit::Outline(*c_, Layout::width, Layout::height, Layout::radius, PopupKit::White((0x1A / 255.f) * hairline));
     }
     void Paint() {
         if (!chrome_.RenderTarget()) chrome_.Resize();
         auto* t = chrome_.RenderTarget(); if (!t) return;
-        t->BeginDraw(); Draw(Motion::Now());
+        const auto began = Motion::Now();
+        t->BeginDraw(); Draw(began);
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) { DropLayers(); chrome_.RecreateTarget(); }
+        if (++frames_ > 1) slowestFrameMs_ = std::max(slowestFrameMs_, Ms(began, Motion::Now()));   // the first frame builds the shaders: before the window shows
     }
 
     // ---- UI Automation ----
@@ -1103,6 +1154,11 @@ private:
         case WM_TIMER: if (w == 1) Step(); return 0;
         case HostMessage: if (options_.hooks.message) options_.hooks.message(w, l); return 0;
         case ReplayDoneMessage: if (exitReplay_) EndReplay(); return 0;
+        case SourcesMessage: {
+            std::unique_ptr<std::vector<BrowserSource>> found(reinterpret_cast<std::vector<BrowserSource>*>(l));
+            if (found && static_cast<unsigned>(w) == sourcesAsked_) { AdoptSources(std::move(*found)); Arrange(); Invalidate(); if (uia_.Attached()) uia_.ChildrenChanged(0); }
+            return 0;
+        }
         case WM_CTLCOLOREDIT:
             if (reinterpret_cast<HWND>(l) == edit_) { const HDC dc = reinterpret_cast<HDC>(w); NativeUI::EditBuffer::Clip(edit_, dc); SetTextColor(dc, RGB(255, 255, 255)); SetBkColor(dc, RGB(0x29, 0x29, 0x29)); return reinterpret_cast<LRESULT>(editBrush_); }
             break;
@@ -1171,6 +1227,10 @@ public:
     HWND Handle() const { return hwnd_; }
     const Onboarding::Flow& Flow() const { return flow_; }
     const Profiles::Profile& Draft() const { return draft_; }
+    // The entry of board 3's « Navigateur » list that is chosen, as the host handed it (null: none).
+    const BrowserSource* PickedSource() const { return Source(); }
+    float SlowestChangeMs() const { return slowestChangeMs_; }
+    float SlowestFrameMs() const { return slowestFrameMs_; }
     // The import the window is waiting for (0: none). The host writes nothing for any other token.
     unsigned ImportToken() const { return flow_.screen() == Screen::ImportRunning && !importAnswered_ ? importToken_ : 0; }
     // The host's answer to Hooks::startImport (UI thread). Results of a cancelled or older import are ignored.
@@ -1209,6 +1269,12 @@ public:
             panel_.Open(instance, hwnd_, root_, options_.tuningFile, &tuning_, [this] { Invalidate(); }, [this](Onboarding::Tuning::Section s) { Replay(s); });
         }
         shown_ = from_ = Screen::Welcome; RevealIcon(false); Arrange(); AttachUia();
+        RequestSources();   // listed in the background while the first boards are read: ready before board 3
+        // Everything a later board needs that takes time is made ready now, before the window shows: the two
+        // pictures of the browser mock are decoded (tens of ms each, once), the shaders are built by the first
+        // frame. No board change then waits for anything.
+        chrome_.AssetBitmap(L"onboarding\\mock-plain.png"); chrome_.AssetBitmap(L"onboarding\\mock-bookmarks.png");
+        Paint();
         opened_ = Motion::Now(); entering_ = true; done_ = false;
         ShowWindow(hwnd_, SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(hwnd_); RequestFrame();
         MSG msg;
@@ -1231,10 +1297,11 @@ public:
         namespace T = Onboarding::Tuning;
         if (offscreen_ || !hwnd_ || exitReplay_ || previewStage_.Active() || flow_.screen() == Screen::Closed || flow_.screen() == Screen::Outro) return;
         static const Screen boards[T::Sections][2] = {{Screen::Welcome, Screen::Profile}, {Screen::Profile, Screen::ImportPick}, {Screen::ImportPick, Screen::ImportRunning}, {Screen::ImportRunning, Screen::ImportDone},
-                                                      {Screen::ImportDone, Screen::Annotation}, {Screen::Annotation, Screen::Outro}, {Screen::Outro, Screen::Outro}};
-        if (!sourcesLoaded_) LoadSources();
+                                                      {Screen::ImportDone, Screen::Annotation}, {Screen::Annotation, Screen::Outro}, {Screen::Outro, Screen::Outro}, {Screen::Annotation, Screen::Annotation}};
+        if (!sourcesLoaded_ && !sourcesLoading_) RequestSources();
         ShowEdit(false); focus_ = hover_ = pressed_ = None; replaying_ = true; logoScale_ = logoAlpha_ = 1; const auto now = Motion::Now();
-        if (section == T::Exit) { exitReplay_ = true; from_ = shown_ = Screen::Outro; changing_ = false; exitAt_ = now; exitRunning_ = true; }   // « 7 → navigateur » on a stand-in for the browser
+        if (section == T::Trame) { from_ = shown_ = Screen::Annotation; changing_ = false; replayUntil_ = now + std::chrono::milliseconds(6000); }   // board 6, to look at its dither
+        else if (section == T::Exit) { exitReplay_ = true; from_ = shown_ = Screen::Outro; changing_ = false; exitAt_ = now; exitRunning_ = true; }   // « 7 → navigateur » on a stand-in for the browser
         else {
             from_ = boards[section][0]; shown_ = boards[section][1]; changing_ = true; changed_ = now + std::chrono::milliseconds(450);   // the first board is shown a moment, then the transition plays
             replayUntil_ = changed_ + std::chrono::milliseconds(static_cast<int>(T::TotalMs(tuning_[section])) + 800);
@@ -1261,6 +1328,11 @@ public:
     const ImportPick& PickForTest() const { return pick_; }
     std::vector<std::pair<int, D2D1_RECT_F>> ItemsForTest(Chrome& chrome) { Chrome* keep = c_; c_ = &chrome; Arrange(); c_ = keep; std::vector<std::pair<int, D2D1_RECT_F>> out; for (const auto& i : items_) out.push_back({i.id, i.r}); return out; }
     bool ShadersReadyForTest() const { return gpu_.Ready(); }
+    // One frame of a transition, `ms` after it began (the flow must already be on `to`).
+    bool RenderTransitionForTest(Screen from, float ms, UINT dpi, const wchar_t* path) {
+        from_ = from; shown_ = flow_.screen(); changing_ = true; changed_ = Motion::Now() - std::chrono::microseconds(static_cast<long long>(ms * 1000));
+        const bool ok = RenderForTest(dpi, path); changing_ = false; from_ = shown_; return ok;
+    }
     bool RenderForTest(UINT dpi, const wchar_t* path) {
         offscreen_ = true; dpi_ = dpi;
         const bool ok = PopupKit::RenderPng(root_, Layout::width, Layout::height, dpi, path, c_, [this] {

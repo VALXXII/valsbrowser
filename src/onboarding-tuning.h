@@ -28,17 +28,19 @@
 namespace Onboarding {
 namespace Tuning {
 
-enum Section { T12, T23, T34, T45, T56, T67, Exit, Sections };
+enum Section { T12, T23, T34, T45, T56, T67, Exit, Trame, Sections };
 // Parameters of a board-to-board section.
 enum Id { Duration, OutShare, ContentRise, MockDelay, MockDuration, CurveX1, CurveY1, CurveX2, CurveY2, MockDim, Count };
 // Parameters of the hand-off.
 enum ExitId { Hold, LogoDuration, LogoScale, WindowOverlap, WindowDuration, WindowScale, BrowserOverlap, BrowserDuration, BrowserScale, ExitX1, ExitY1, ExitX2, ExitY2, ExitCount };
+// Parameters of board 6's dither (src/onboarding-dither.h).
+enum TrameId { TrameOpacity, TramePitch, TramePeriod, TrameBase, TrameWave, TrameCount };
 inline constexpr int MaxParams = 13;
 struct Param { const char* key; const wchar_t* label; const wchar_t* unit; float min, max, def, step; int decimals; };
 
-inline const char* Prefix(Section s) { static const char* p[Sections] = {"transition12", "transition23", "transition34", "transition45", "transition56", "transition67", "exit"}; return p[s]; }
-inline const wchar_t* Label(Section s) { static const wchar_t* l[Sections] = {L"1 → 2", L"2 → 3", L"3 → 4", L"4 → 5", L"5 → 6", L"6 → 7", L"7 → navigateur"}; return l[s]; }
-inline int ParamCount(Section s) { return s == Exit ? static_cast<int>(ExitCount) : static_cast<int>(Count); }
+inline const char* Prefix(Section s) { static const char* p[Sections] = {"transition12", "transition23", "transition34", "transition45", "transition56", "transition67", "exit", "trame"}; return p[s]; }
+inline const wchar_t* Label(Section s) { static const wchar_t* l[Sections] = {L"1 → 2", L"2 → 3", L"3 → 4", L"4 → 5", L"5 → 6", L"6 → 7", L"7 → navigateur", L"6 · Trame"}; return l[s]; }
+inline int ParamCount(Section s) { return s == Exit ? static_cast<int>(ExitCount) : s == Trame ? static_cast<int>(TrameCount) : static_cast<int>(Count); }
 // The designer's pace (tuned on 2 → 3, asked for everywhere): a short cross-fade of the content that leads
 // into a 740 ms main movement on cubic-bezier(0.33, 0.99, 0.42, 0.96).
 inline const Param* Params(Section s) {
@@ -69,7 +71,15 @@ inline const Param* Params(Section s) {
         {"curveX2", L"Courbe : x2", L"", 0, 1, .42f, .01f, 2},
         {"curveY2", L"Courbe : y2", L"", -.5f, 1.5f, .96f, .01f, 2},
     };
-    return s == Exit ? exit : move;
+    // Board 6's dither: the annotation band's texture (pitch 2 DIP, base 0.18, wave 1), white, subtle.
+    static const Param trame[TrameCount] = {
+        {"opacity", L"Opacité", L"", 0, 1, .22f, .01f, 2},
+        {"pitch", L"Pas des points", L"px", 2, 6, 2, 1, 0},
+        {"period", L"Durée d'un passage de la vague", L"s", 2, 30, 8, .5f, 1},
+        {"base", L"Densité du fond", L"", 0, .6f, .18f, .01f, 2},
+        {"wave", L"Amplitude de la vague", L"", 0, 1.5f, 1, .05f, 2},
+    };
+    return s == Exit ? exit : s == Trame ? trame : move;
 }
 using Row = std::array<float, MaxParams>;
 struct Values {

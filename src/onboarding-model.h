@@ -16,6 +16,7 @@ struct BrowserSource {
     std::shared_ptr<const FaviconImage> logo;
     std::vector<BrowserProfile> profiles;                // one entry per profile of that browser
     bool available = true, file = false;                 // file: « Fichier de favoris HTML… »
+    std::shared_ptr<const void> tag;                     // the host's own record of this entry (what each profile imports)
 };
 struct ImportPick { int browser = -1, profile = 0; bool bookmarks = true, history = true; };
 // One item of the source's bookmarks bar, as the browser's own bar would show it (title, folder or link).

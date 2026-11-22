@@ -31,14 +31,18 @@ constexpr UINT_PTR OnboardingAnnotateTimerId = 0x4F42;
 struct OnboardingJob { unsigned token = 0; BI::Source source; BI::Options options; BI::ReadResult result; std::wstring name; };
 OB::Window* onboardingUi = nullptr; HWND onboardingWindow = nullptr;
 std::shared_ptr<OnboardingJob> onboardingFinished;          // handed back by the worker, under importLock
-OI::Listing onboardingListing;                              // what board 3 lists, and the source behind each choice
+struct OnboardingEntry { std::vector<BI::Source> profiles; std::wstring name; };   // behind one entry of board 3's list
 OnboardingHandoff::Stage onboardingStage;                   // the window's exit and the browser's entrance, after a completed flow
 constexpr UINT_PTR OnboardingRevealTimerId = 0x4F43;
 
+// Worker thread (the window asks for it in the background): registry, folder metadata and logos only, no global.
+// Each entry carries its own sources, so a pick always resolves against the list the window is showing.
 std::vector<OB::BrowserSource> OnboardingSources() {
-    onboardingListing = OI::List(BI::Catalog(ImportRegistered(), BI::Discover(ImportRoots()), OwnExecutable()), [](const BI::Row& r) { return BI::LoadLogo(r.icon, r.iconIndex, 96); });
-    Log(L"ONBOARDING import sources: " + std::to_wstring(onboardingListing.profiles) + L" profiles, " + std::to_wstring(onboardingListing.unavailable) + L" browsers unavailable");
-    return onboardingListing.shown;
+    const ULONGLONG start = GetTickCount64();
+    OI::Listing listing = OI::List(BI::Catalog(ImportRegistered(), BI::Discover(ImportRoots()), OwnExecutable()), [](const BI::Row& r) { return BI::LoadLogo(r.icon, r.iconIndex, 96); });
+    for (std::size_t i = 0; i < listing.shown.size(); ++i) listing.shown[i].tag = std::make_shared<const OnboardingEntry>(OnboardingEntry{listing.sources[i], listing.names[i]});
+    Log(L"ONBOARDING import sources: " + std::to_wstring(listing.profiles) + L" profiles, " + std::to_wstring(listing.unavailable) + L" browsers unavailable, listed in " + std::to_wstring(GetTickCount64() - start) + L" ms off the UI thread");
+    return listing.shown;
 }
 DWORD WINAPI OnboardingWorker(LPVOID param) {
     std::unique_ptr<std::shared_ptr<OnboardingJob>> job(static_cast<std::shared_ptr<OnboardingJob>*>(param));
@@ -50,11 +54,13 @@ DWORD WINAPI OnboardingWorker(LPVOID param) {
     return 0;
 }
 bool OnboardingStartImport(unsigned token, const OB::ImportPick& pick, bool bookmarks, bool history) {
-    const BI::Source* chosen = OI::Pick(onboardingListing, pick.browser, pick.profile); if (!chosen) return false;
-    BI::Source source = *chosen;
+    const OB::BrowserSource* shown = onboardingUi ? onboardingUi->PickedSource() : nullptr;
+    const auto* entry = shown ? static_cast<const OnboardingEntry*>(shown->tag.get()) : nullptr;
+    if (!entry || pick.profile < 0 || pick.profile >= static_cast<int>(entry->profiles.size())) return false;
+    BI::Source source = entry->profiles[static_cast<std::size_t>(pick.profile)];
     if (source.browser == BI::Browser::HtmlFile) { source.dir = PickBookmarksFile(onboardingWindow); if (source.dir.empty()) return false; history = false; }
     auto job = std::make_shared<OnboardingJob>();
-    job->token = token; job->source = source; job->name = onboardingListing.names[static_cast<std::size_t>(pick.browser)];
+    job->token = token; job->source = source; job->name = entry->name;
     job->options.bookmarks = bookmarks && (source.bookmarks || source.browser == BI::Browser::HtmlFile); job->options.history = history && source.history;
     if (!job->options.bookmarks && !job->options.history) return false;
     auto* param = new std::shared_ptr<OnboardingJob>(job);
@@ -113,6 +119,7 @@ void RunOnboarding(Onboarding::Reason reason) {
     o.stage = &onboardingStage;
     OB::Window ui; onboardingUi = &ui;
     const OB::Result result = ui.Run(instance, base, std::move(o));
+    Log(L"ONBOARDING slowest board change held the UI thread " + std::to_wstring(static_cast<int>(std::lround(ui.SlowestChangeMs()))) + L" ms, slowest frame " + std::to_wstring(static_cast<int>(std::lround(ui.SlowestFrameMs()))) + L" ms");
     onboardingUi = nullptr; onboardingWindow = nullptr;
     { std::lock_guard<std::mutex> guard(importLock); onboardingFinished.reset(); }
     onboardingAnnotate = result.annotate;

@@ -25,6 +25,10 @@ int main() {
     Expect(Near(e[T::Hold], 500) && Near(e[T::LogoDuration], 740) && Near(e[T::LogoScale], .92f) && Near(e[T::WindowOverlap], 200) && Near(e[T::WindowDuration], 740) && Near(e[T::WindowScale], .92f) &&
            Near(e[T::BrowserOverlap], 300) && Near(e[T::BrowserDuration], 740) && Near(e[T::BrowserScale], .96f) && Near(e[T::ExitX1], .33f) && Near(e[T::ExitY1], .99f) && Near(e[T::ExitX2], .42f) && Near(e[T::ExitY2], .96f),
            "hand-off: logo out 740 ms to 0.92, window out 740 ms to 0.92, browser in 740 ms from 0.96, same curve");
+    const T::Row& tr = d[T::Trame];
+    Expect(Near(tr[T::TrameOpacity], .22f) && Near(tr[T::TramePitch], 2) && Near(tr[T::TramePeriod], 8) && Near(tr[T::TrameBase], .18f) && Near(tr[T::TrameWave], 1) && T::ParamCount(T::Trame) == T::TrameCount,
+           "board 6's dither: the band's pitch (2), base (0.18) and wave (1), opacity 0.22, one pass in 8 s");
+    Expect(T::Write(d).find("\ntrame.opacity=0.22\n") != std::string::npos && Near(T::Read("browser-onboarding-tuning 1\ntrame.opacity=0.4\ntrame.pitch=9\n")[T::Trame][T::TrameOpacity], .4f) && Near(T::Read("browser-onboarding-tuning 1\ntrame.pitch=9\n")[T::Trame][T::TramePitch], 6), "the dither's values are in the file too, bounded like the others");
     bool sane = true;
     for (int s = 0; s < T::Sections; ++s) for (int i = 0; i < T::ParamCount(static_cast<T::Section>(s)); ++i) { const auto& p = T::Params(static_cast<T::Section>(s))[i]; sane = sane && p.min < p.max && p.def >= p.min && p.def <= p.max && p.step > 0 && p.label && *p.label && p.key && *p.key; }
     Expect(sane && T::ParamCount(T::T23) == T::Count && T::ParamCount(T::Exit) == T::ExitCount && T::ExitCount <= T::MaxParams, "every parameter of every section has a French label, a key, bounds around its default and a step");

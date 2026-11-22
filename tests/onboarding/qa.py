@@ -358,6 +358,19 @@ def sheet(frames, rect, path, columns=8, limit=40):
     out.save(path)
 
 
+def corner_stray(img):
+    """Brightest pixel of the header strip left of the title, outside the language button (0 = nothing there).
+    A control drawn before it has its place lands in that corner (the bug the designer saw on board 3)."""
+    if img is None:
+        return None
+    s = img.size[0] / 720.0
+    worst = 0
+    for box in ((112, 2, 262, 58), (2, 43, 112, 58)):
+        area = img.crop(tuple(int(v * s) for v in box)).convert('L')
+        worst = max(worst, area.getextrema()[1])
+    return worst
+
+
 def profile_file(run, name):
     return run.app / name   # the default profile keeps the legacy layout: its files sit at the data root
 
@@ -400,8 +413,21 @@ def scenario_full(app, work, evidence):
         ui.click(183, 481); time.sleep(.3)               # the second icon: house
         ui.click(371 + 2 + 278 * 300 / 359.0, 457); time.sleep(.3)   # Teinte: 300 degrees
         c = run.shot('2-edited')
-        ui.click(656, 546); time.sleep(.8)               # « Continuer »
+        ui.click(656, 546)                               # « Continuer »
+        strays = []
+        for label in ('2-3-a', '2-3-b', '2-3-c'):        # frames inside the 2 -> 3 transition
+            time.sleep(.04); strays.append(corner_stray(run.shot(label)))
+        time.sleep(.9)
         run.shot('3')
+        ui.click(53, 546)                                # « Retour »: 3 -> 2, board 3 leaves
+        for label in ('3-2-a', '3-2-b'):
+            time.sleep(.03); strays.append(corner_stray(run.shot(label)))
+        time.sleep(1.0)
+        ui.click(656, 546)                               # « Continuer » again
+        time.sleep(.04); strays.append(corner_stray(run.shot('2-3-again')))
+        time.sleep(1.0)
+        if all(v is not None for v in strays):
+            check(max(strays) < 110, 'full: no control is ever drawn in the window\'s corner during 2 -> 3 and 3 -> 2 (brightest stray pixel %d / 255 over %d frames)' % (max(strays), len(strays)))
         registry = (run.app / 'profiles.txt').read_text(encoding='utf-8', errors='replace') if (run.app / 'profiles.txt').exists() else ''
         fields = next((line[2:].split('|') for line in registry.splitlines() if line.startswith('p=default|')), [])
         check(len(fields) >= 6 and fields[1] == 'house' and abs(int(fields[2]) - 300) <= 2 and fields[4] == '0' and fields[5] == 'QA Léa', 'full: « Continuer » wrote name, icon and hue to the profile registry (%s)' % '|'.join(fields))
@@ -418,6 +444,10 @@ def scenario_full(app, work, evidence):
         d = run.shot('6')
         time.sleep(.6)
         e = run.shot('6-later')
+        before = cpu_seconds(run.proc.pid); time.sleep(2.0); after = cpu_seconds(run.proc.pid)
+        if before is not None and after is not None:
+            print('     CPU on board 6 (gradient + dither): %.1f %% of one core' % ((after - before) / 2.0 * 100), flush=True)
+            check((after - before) / 2.0 < .30, 'full: board 6 with its dither stays light on the CPU')
         moved = differ(d, e, (0, 60, 720, 150))
         if moved is not None:
             check(moved > .1, 'full: the annotation gradient is animated (%.2f / 255)' % moved)
@@ -451,6 +481,13 @@ def scenario_full(app, work, evidence):
         check('ONBOARDING shown (requested)' in log and 'ONBOARDING ended: completed' in log and 'annotation asked' in log, 'full: log: shown, completed, annotation asked')
         check('ONBOARDING opens the agent connection' in log, 'full: « Activer » opened the agent connection in the browser')
         check('home.example' not in log and 'QA L' not in log, 'full: the log carries no address and no name')
+        import re
+        listed = re.search(r'listed in (\d+) ms off the UI thread', log); held = re.search(r'slowest board change held the UI thread (\d+) ms, slowest frame (\d+) ms', log)
+        check(listed is not None and held is not None, 'full: log: the sources were listed off the UI thread; the longest board change is measured')
+        if listed and held:
+            print('     sources listed in %s ms on a worker; longest board change held the UI thread %s ms' % (listed.group(1), held.group(1)), flush=True)
+            check(int(held.group(1)) < 50, 'full: no board change holds the UI thread (longest %s ms)' % held.group(1))
+            check(int(held.group(2)) < 100, 'full: no frame freezes the window (slowest %s ms, the shader frames included)' % held.group(2))
     finally:
         run.stop()
 
