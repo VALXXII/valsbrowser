@@ -363,8 +363,12 @@ def element_point(sel, avoid=None):
         return None
     pg = page_area(); k = r['dpr']
     pts = [(int(pg[0] + x * k), int(pg[1] + y * k)) for x, y in r['pts']]
-    if avoid:
-        pts = [p for p in pts if not (avoid[0] - 4 <= p[0] <= avoid[2] + 4 and avoid[1] - 4 <= p[1] <= avoid[3] + 4)] or pts
+    boxes = [avoid] if avoid else []
+    oa = u32.FindWindowW(None, OtherApp.TITLE)   # never under the other application's window: the click would reach it, not the page
+    if oa and u32.IsWindowVisible(oa):
+        boxes.append(tuple(V3.win_rect(oa)))
+    for bx in boxes:
+        pts = [p for p in pts if not (bx[0] - 4 <= p[0] <= bx[2] + 4 and bx[1] - 4 <= p[1] <= bx[3] + 4)] or pts
     pts = [p for p in pts if pg[0] + 4 <= p[0] <= pg[2] - 20 and pg[1] + 4 <= p[1] <= pg[3] - 4] or pts   # never the scrollbar
     return pts[len(pts) // 2]
 
