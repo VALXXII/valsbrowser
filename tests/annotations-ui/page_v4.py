@@ -226,7 +226,9 @@ try:
             box = tuple(int(round(v * dpr)) for v in (x0, y0, x1, y1)); img = img.crop(box); img.save(os.path.join(OUT, name)); return img
         a = grab(h, f"r45-hover-{int(dpr*100)}-{tsel}.png")
         mouse(cdp, tx, ty, "mousePressed", button="left", clicks=1); mouse(cdp, tx, ty, "mouseReleased", button="left", clicks=1); frames(cdp)
-        cdp.js(f"{H}.cmd('follow',{{current:true,draw:{{label:'{tsel}'}}}})"); wait(cdp, 400)
+        hand = cdp.js(f"(()=>{{{H}.cmd('follow',{{current:true,draw:{{label:'{tsel}'}}}});const f={R}.querySelector('.f');return new Promise(r=>requestAnimationFrame(()=>r([getComputedStyle(f).opacity,!!{R}.querySelector('.bf')])))}})()")
+        check(hand[0] == "0" and hand[1], f"R45 {int(dpr*100)} % {tsel}: the bubble's frame takes over in one frame (the hover fill gone at once: never two fills)", hand)
+        wait(cdp, 400)
         cdp.js("new Promise(r=>{let y=scrollY,n=0;const f=()=>{if(scrollY===y&&++n>10)r(1);else{if(scrollY!==y)n=0;y=scrollY;requestAnimationFrame(f)}};f()})")   # still (a stray restoration scroll of the test browser)
         s2 = cdp.js(LR)
         b = grab(s2, f"r45-selected-{int(dpr*100)}-{tsel}.png")   # its own place: the pixels must be the same

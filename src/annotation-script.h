@@ -664,7 +664,11 @@ function glide(on) { for (var i = 0; i < parts.length; i++) parts[i].style.trans
 
 // ---- drawing
 function place(info) {
-  if (follow && follow.draw && !(peek && info === peek)) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } return; }   // D1: the bubble's frame; R16: its inspector stays (bxPlace)
+  if (follow && follow.draw && !(peek && info === peek)) {   // D1: the bubble's frame (bx) replaces the hover / selection frame
+    // final pass 1 (R45): in the same frame, never faded (a fade would show the two 8 % fills on top of each other)
+    if (shown) { glide(false); setOpacity(0); for (var i = 0; i < parts.length; i++) void getComputedStyle(parts[i]).opacity; shown = false; }
+    glide(true); placed = null; return;
+  }   // R16: its inspector stays (bxPlace)
   if (!info) { glide(true); placed = null; if (shown) { setOpacity(0); shown = false; } placeSpace(null, false); return; }
   anchor(frameWrap, anchorEl(info));
   glide(!(shown && placed && placed.el === info.el && placed.range === info.range));   // the same element: it jumps (no lag behind a scroll)
