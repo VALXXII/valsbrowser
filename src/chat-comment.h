@@ -39,6 +39,7 @@ struct BubbleState {
     ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
     bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
     RECT anchorArea{};                                               // M15: the page area the anchor was chosen in
+    bool revealDue = false; double lastScrollAt = 0;                 // R47: a card waiting for an action to bring on screen; the user's last scroll
     bool hadKeyboard = false;                                        // M4 (a): the bubble had the keyboard when another application came in front
     int roomAreaH = 0;                                               // M15: the page area's height the offered room was measured with
     bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
@@ -202,7 +203,8 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         // R38 / R47 (the user): the height offered is the room from the bubble's fixed edge to the page area's far side,
         // measured when it is placed and kept with the anchor — its composer and an authorization stay on screen (r47: past
         // the visible area « Autoriser » could not be clicked); its position stays Paper's, never moved
-        const int room = ChatBubble::OfferedRoomCss(placedNow || !bubble.anchor.set || areaResized, bubble.roomCss, p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);
+        (void)placedNow;   // R29 (the user, coordinator's decision): natural height — never bounded by the room under the fixed edge; past the visible area the user scrolls (R47: the page brings a card on screen)
+        const int room = std::min(BubbleMaxHeightCss, std::max(120, int(area.H() / k) - 2 * BubbleMarginCss));
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
@@ -583,6 +585,22 @@ void CloseBubble(bool focusPage) {
     Diag(L"bubble closed (the agent goes on)");
     if (focusPage && Ann::s.active) { SetForegroundWindow(window); FocusChatPage(); }
 }
+// R47 (coordinator's decision): a permission or an error waiting for an action arrived for the bubble shown — at the bubble's
+// next size (the card is in it), if its bottom is past the visible area, the SITE's page scrolls softly by what is missing,
+// once; never while the user scrolls; at once with reduced motion. The bubble stays anchored to its element (it follows).
+void RevealCardSoon() { if (bubble.open && !aside.on) bubble.revealDue = true; }
+void RevealCard() {
+    if (!bubble.revealDue || !bubble.open || bubble.waitingAck) return;
+    bubble.revealDue = false;
+    auto t = ChatTab(); if (!t || !t->view.p) return;
+    const RECT a = PageArea(); const float k = Dpi();
+    const bool userScrolling = Ann::NowMs() - bubble.lastScrollAt < 600;
+    const int css = ChatBubble::RevealScrollCss(bubble.surface.bottom, a.bottom, int(std::lround(BubbleMarginCss * k)), k * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0), userScrolling);   // the page's CSS px (scale x zoom)
+    if (css <= 0) { if (userScrolling) Diag(L"a card waits for an action, the user is scrolling: the page is left where it is"); return; }   // i18n-exempt: log detail
+    const std::wstring js = L"window.scrollBy({top:" + std::to_wstring(css) + L",behavior:'" + (Ann::Reduced() ? L"instant" : L"smooth") + L"'})";
+    t->view->ExecuteScript(js.c_str(), nullptr);
+    Diag(L"a card waits for an action below the visible area: the page scrolls " + std::to_wstring(css) + L" CSS px");   // i18n-exempt: log detail
+}
 void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     if (!bubble.open) return;
     if (!resized && bubble.resized) Diag(L"the bubble is back to its size (diff closed)");
@@ -607,6 +625,7 @@ void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     const auto before = bubble.inset; PlaceBubble();
     if (bubble.inset == before && panelReady) SendLayout(false);   // R3: every new bubble.size gets its inset (PlaceBubble sent it if it changed)
     RevealBubble(L"on the acknowledgement");   // R18   // i18n-exempt: log detail
+    RevealCard();   // R47
 }
 // The element the bubble follows moved (scroll, layout, reload) or is gone.
 // C3: the bubble's conversation works or waits — a turn of it runs, an authorization of it waits, or a message of it is queued
@@ -636,6 +655,7 @@ void OnAnchor(const AH::Envelope& e) {
         }
     }
     const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows, nothing else
+    if (scrolling) bubble.lastScrollAt = Ann::NowMs();   // R47: the user (or the page) scrolls
     bubble.known = true;
     if (scrolling && FollowFrames() > 0) {   // F11: placed when the page's image of THIS position is on screen
         followPositions.push_back({++follower.gen, measured}); while (followPositions.size() > 8) followPositions.pop_front();

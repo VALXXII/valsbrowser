@@ -4,6 +4,7 @@
 // element it talks about — at its right if it fits, else at its left, else under it, else above it — and never leaves
 // the page area. All rectangles in the same unit (screen pixels of the host).
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace ChatBubble {
@@ -246,6 +247,14 @@ inline int RoomCss(const Rect& surface, bool bottomFixed, const Rect& area, int 
 inline int OfferedRoomCss(bool placedNow, int kept, const Rect& surface, bool bottomFixed, const Rect& area, int margin, float k, int maxCss) {
     if (placedNow || kept <= 0) return RoomCss(surface, bottomFixed, area, margin, k, maxCss);
     return kept;
+}
+// R47 (coordinator's decision): an authorization or an error waiting for an action arrived and the bubble's bottom (its card,
+// its buttons) is past the visible area: the site's page scrolls by what is missing (CSS px, rounded up), once; 0 when it is
+// on screen or while the user scrolls.
+inline int RevealScrollCss(int surfaceBottom, int areaBottom, int margin, float k, bool userScrolling) {
+    const int over = surfaceBottom - (areaBottom - margin);
+    if (userScrolling || over <= 0 || k <= 0) return 0;
+    return int(std::ceil(float(over) / k));
 }
 // R29: what of the window may show — never over the browser's own bars (the page area, in window pixels).
 inline Rect Clip(const Rect& a, const Rect& b) { return {std::max(a.left, b.left), std::max(a.top, b.top), std::max(std::max(a.left, b.left), std::min(a.right, b.right)), std::max(std::max(a.top, b.top), std::min(a.bottom, b.bottom))}; }

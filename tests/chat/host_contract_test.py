@@ -236,7 +236,15 @@ bub = code('chat-bubble.h'); place = bub[bub.find('inline Placement Place('):bub
 check('element.top - lead' in place and 'element.right + gap' in place and 'whole(p.rect)' in place and place.count('Clamp(') == 2, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
 consts = code('chat-comment.h')
 check('BubbleGapCss = 12' in consts and 'BubbleLeadCss = 4' in consts, 'Paper: gap 12, lead 4 (CSS px)')
-check('OfferedRoomCss(' in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'R38 / R47: the height offered is the room from the fixed edge (the composer and an authorization stay on screen), the position stays Paper')
+check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'R29 (the user): natural height, never bounded by the room under the fixed edge')
+
+# R47 (coordinator's decision): an authorization (or an error waiting for an action) whose buttons are out of the visible area
+# — the SITE's page scrolls softly just enough, once, when it arrives; not while the user scrolls; reduced motion respected
+check('RevealCardSoon()' in turn[turn.find('permission asked'):][:600] or 'RevealCardSoon()' in block_after(turn, 'void OnPermission('), 'R47: a permission asked asks for its card to be shown')
+check('RevealCardSoon()' in block_after(code('chat-host.h'), 'void SendError('), 'R47: an error waiting for an action too')
+rv = block_after(comment, 'void RevealCard() {')
+check('RevealScrollCss(' in rv and 'scrollBy' in rv and 'Reduced()' in rv and 'lastScrollAt' in rv, 'R47: the page scrolls by what is missing, softly (or at once with reduced motion), never while the user scrolls')
+check('RevealCard()' in block_after(comment, 'void OnBubbleSize('), 'R47: checked at the bubble\'s next size (the card is in it)')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

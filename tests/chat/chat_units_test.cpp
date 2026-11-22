@@ -606,6 +606,9 @@ static void TestBubble() {
               UnsafeAnchorKey("same-origin", "button.cta", {}) != UnsafeAnchorKey("main", "button.cta", shadow) && !UnsafeAnchorKey("main", "button.cta", shadow).empty(),
               "Q 6: the same element gives the same key; a frame or a shadow root tells it apart");
         Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key"); }
+    // R47 (coordinator): how far the site's page scrolls so the bubble's last card (its buttons) is on screen — once, by what is missing
+    {   Check(RevealScrollCss(1035, 931, 15, 1.25f, false) == 96 && RevealScrollCss(900, 931, 15, 1.25f, false) == 0, "R47: by what is missing to show the bubble's bottom (12 px from the edge), nothing when it is on screen");
+        Check(RevealScrollCss(1035, 931, 15, 1.25f, true) == 0, "R47: never while the user scrolls"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};
