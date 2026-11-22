@@ -140,6 +140,8 @@ GUID_TEXT(ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,"{3b40
 TaskbarIdentity::Identity taskbarIdentity; // installed copies only (ResolveBrowserPaths)
 #include "adblock-folder.h"  // the ad blocker installs from a folder that updates never move
 #include "popup-target.h"   // script-opened windows: the request lifecycle (design/popup-window-target-report.md)
+#include "download-navigation.h"   // a navigation the engine turned into a download: never an error page
+#include <map>
 PopupHost::Registry popups; extern bool unownedCallbacks;
 struct Workspace; Workspace* WorkspaceNow(); bool WorkspaceDead(Workspace* w); bool WorkspaceParked();
 bool WorkspaceEngineFailed(const std::wstring& where,HRESULT hr); bool WorkspaceCanFailAlone(); extern bool workspaceTest; extern bool qaControllerFailure; extern bool qaExpectTerminal;
@@ -197,7 +199,12 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     // Script-opened target (window.open): its about:blank is a web document, never the native home, until the user
     // deliberately goes Home (Navigate with an empty address sets blankIsHome again). popupSetup: created for a
     // pending request, not yet assigned: no script removal/reinjection meanwhile (queued in audioReinject).
-    bool blankIsHome=true,popupSetup=false,audioReinject=false,scriptCloseQueued=false; };
+    bool blankIsHome=true,popupSetup=false,audioReinject=false,scriptCloseQueued=false;
+    // A navigation that became a download (src/download-navigation.h). everShown: the tab showed a page (or is the
+    // home) at least once; a tab that never did existed only for its download and closes once it starts.
+    NativeChrome::DownloadNavigation::Tracker downloadNav; bool everShown=false;
+    // Navigate() puts the requested address in `uri` before the engine commits anything: what the tab showed before.
+    std::wstring navigateFrom,navigateTo; bool navigateFromHome=false; };
 // NEWTAB: the home tab's last render showed most visited sites (Tab is shared; kept beside it).
 // A home tab stays hidden (the native canvas shows through) unless it shows tiles.
 struct HomeTiles { std::vector<unsigned> serials; bool Has(const Tab& t)const{return std::find(serials.begin(),serials.end(),t.serial)!=serials.end();} void Set(const Tab& t,bool on){serials.erase(std::remove(serials.begin(),serials.end(),t.serial),serials.end());if(on)serials.push_back(t.serial);} } homeTiles;
@@ -244,6 +251,7 @@ void ElementsTabChanged(); void ElementsTabClosed(const std::shared_ptr<Tab>& t)
 // B01 address-bar request chip (elements-integration.h): derived from the open permission popover.
 // B07: a download the engine blocked (malicious / security check / policy).
 void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason);
+void DownloadNavigationAsked(const std::shared_ptr<Tab>& t,const std::wstring& uri);
 void SyncRequestChip(); void ElementsNavigationStarting(const std::shared_ptr<Tab>& t); void VaultNavigationStarting(const std::shared_ptr<Tab>& t,std::uint64_t navigationId,const std::wstring& uri); void VaultNavigationCompleted(const std::shared_ptr<Tab>& t,std::uint64_t navigationId,bool ok); extern int vaultKeyPress; bool VaultKeyArmed(); extern ULONGLONG vaultKeyShownAt; void RequestChipActivated(); bool RequestChipOpen(); void ElementsNavigationCompleted(const std::shared_ptr<Tab>& t,bool ok);
 void OpenSandbox(std::shared_ptr<Tab> in=nullptr); void OpenFindBar(); bool InFullscreen(); void ToggleBrowserFullscreen(); void ShowTabLimitToast(const std::wstring& url=L""); void ShowPartialRestoreToast(const std::vector<std::wstring>& urls); void Defer(std::function<void()> job); void ShowImportDialog(bool keyboard);
 void AskClearBrowsingData(bool demo=false,std::function<void(bool)> result=nullptr); bool CloseWindowAllowed(bool demo=false,std::function<void(bool)> result=nullptr);
@@ -1032,7 +1040,7 @@ void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closed
 std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
 // SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
 std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
 // ---- Address suggestions (issue #20) -----------------------------------------
 // The EDIT keeps focus: typing recomputes the list, the arrows move its active row
 // (the field shows what Enter will open), Escape restores then closes, Enter opens.
@@ -1109,6 +1117,7 @@ void CreateSuggestions(){
 // only that tab (a hidden profile's page never closes the shared window). Placeholder: a window.open target that
 // never became usable: removed without a recently-closed entry.
 enum class CloseReason { User, Script, Placeholder };
+bool KeepControllerForDownloads(const std::shared_ptr<Tab>& t);
 void CloseAt(int index,CloseReason why=CloseReason::User){if(halted||index<0||index>=(int)pages.size())return;
     popups.CancelTab(pages[index]->serial); /* a pending window.open whose opener or target closes: settled first */
     if(index>=(int)pages.size())return;
@@ -1117,7 +1126,7 @@ void CloseAt(int index,CloseReason why=CloseReason::User){if(halted||index<0||in
     if(why==CloseReason::User&&pages.size()==1&&settings.closeWithLastTab&&!smoke){Log(L"TABS last tab closed: closing the window");PostMessageW(window,WM_CLOSE,0,0);return;}
     CancelTabDrag();const bool active=index==current;int next=NativeChrome::SelectionAfterClose((int)pages.size(),current,index);
     {auto closing=pages[index];if(active&&closing->group){auto m=Members(closing->group);auto it=std::find(m.begin(),m.end(),closing);std::shared_ptr<Tab> heir=it!=m.end()&&it+1!=m.end()?*(it+1):it!=m.begin()&&it!=m.end()?*(it-1):nullptr;if(heir){const int j=TabIndexOf(heir);next=j>index?j-1:j;}}}
-    if(!WorkspaceParked()){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=pages[index];if(why!=CloseReason::Placeholder&&!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}ElementsTabClosed(t);t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();pages.erase(pages.begin()+index);DissolveSmallGroups();RefreshAudio();
+    if(!WorkspaceParked()){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=pages[index];if(why!=CloseReason::Placeholder&&!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}ElementsTabClosed(t);t->closed=true;t->favicon.Close();if(t->controller.p&&!KeepControllerForDownloads(t))t->controller->Close();pages.erase(pages.begin()+index);DissolveSmallGroups();RefreshAudio();
     if(pages.empty()){current=-1;NewTab(NewTabTarget());}else if(active)Select(next);else{current=next;motion.SelectTab((int)pages[current]->serial,NativeChrome::Motion::Now());ApplyPages();Update();}
 }
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
@@ -1377,7 +1386,10 @@ std::vector<DL::Item> downloads; int nextDownloadId=1;
 // unique across workspaces); every prune / disposal touches only the operations of ONE owner, never another
 // profile's live downloads (a parked profile's download stays cancellable after another profile clears its data).
 DL::Item* FindDownload(int id);
-struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; };
+// tab: the serial of the tab that started it. view: that tab's WebView once the tab closed while the download runs
+// (a tab opened only for its download closes at once): the engine stops raising the operation's events when its
+// WebView closes, so the closed tab's hidden controller lives until its last download ends (released with the entry).
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; };
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
 // Drops the operations of `owner` (the workspace in the globals by default) whose row is gone from its downloads.
 void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)?downloadOps.erase(it):std::next(it);}
@@ -1585,11 +1597,11 @@ bool AskDownloadPath(std::wstring& path){
     else{IShellItem* item=nullptr;PWSTR chosen=nullptr;if(SUCCEEDED(dialog->GetResult(&item))&&item&&SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&chosen))&&chosen)path=chosen;else Log(L"DOWNLOADS save dialog result unavailable");CoTaskMemFree(chosen);if(item)item->Release();}
     dialog->Release();return keep;
 }
-void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args);
+void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args,unsigned tab=0,std::shared_ptr<Com<ICoreWebView2Controller>> view=nullptr);
 // "Demander où enregistrer": the engine waits on a deferral while the save dialog
 // runs from the message loop, never re-entrantly inside its event handler.
 constexpr UINT DownloadAskMessage=WM_APP+21;
-struct PendingDownload { Com<ICoreWebView2DownloadStartingEventArgs> args; Com<ICoreWebView2Deferral> deferral; };
+struct PendingDownload { Com<ICoreWebView2DownloadStartingEventArgs> args; Com<ICoreWebView2Deferral> deferral; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; };
 std::vector<std::shared_ptr<PendingDownload>> pendingDownloads; bool downloadAsking=false;
 void AskPendingDownloads(){
     // The modal dialog pumps messages: later downloads queue up behind this loop.
@@ -1597,30 +1609,41 @@ void AskPendingDownloads(){
     while(!pendingDownloads.empty()){
         auto pending=pendingDownloads.front();pendingDownloads.erase(pendingDownloads.begin());auto* args=pending->args.p;
         LPWSTR text=nullptr;std::wstring path;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){path=text;CoTaskMemFree(text);}
-        if(!halted&&AskDownloadPath(path)){if(FAILED(args->put_ResultFilePath(path.c_str())))Log(L"DOWNLOADS put_ResultFilePath failed "+path);TrackDownload(args);}
+        if(!halted&&AskDownloadPath(path)){if(FAILED(args->put_ResultFilePath(path.c_str())))Log(L"DOWNLOADS put_ResultFilePath failed "+path);TrackDownload(args,pending->tab,pending->view);}
         else{args->put_Cancel(TRUE);Log(L"DOWNLOAD cancelled from the save dialog");}
         if(FAILED(pending->deferral->Complete()))Log(L"DOWNLOADS deferral completion failed");
     }
     downloadAsking=false;
 }
-HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args){
+HRESULT DownloadStarting(ICoreWebView2DownloadStartingEventArgs* args,unsigned tab){
     if(halted||!args)return S_OK;
     args->put_Handled(TRUE); // the native popover replaces WebView2's flyout
-    if(smoke){const auto target=base+L"\\smoke-download.txt";DeleteFileW(target.c_str());args->put_ResultFilePath(target.c_str());TrackDownload(args);return S_OK;}
+    if(smoke){const auto target=base+L"\\smoke-download.txt";DeleteFileW(target.c_str());args->put_ResultFilePath(target.c_str());TrackDownload(args,tab);return S_OK;}
     if(settings.askWhereToSave){
         auto pending=std::make_shared<PendingDownload>();
-        if(SUCCEEDED(args->GetDeferral(&pending->deferral.p))&&pending->deferral.p){pending->args.set(args);pendingDownloads.push_back(pending);PostMessageW(window,DownloadAskMessage,0,0);return S_OK;}
+        if(SUCCEEDED(args->GetDeferral(&pending->deferral.p))&&pending->deferral.p){pending->args.set(args);pending->tab=tab;pendingDownloads.push_back(pending);PostMessageW(window,DownloadAskMessage,0,0);return S_OK;}
         Log(L"DOWNLOADS deferral unavailable: saving without asking");
     }
     if(!downloadFolderOnProfile&&!settings.downloadFolder.empty()){
         LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){const auto target=UniqueDownloadPath(settings.downloadFolder,text);CoTaskMemFree(text);if(FAILED(args->put_ResultFilePath(target.c_str())))Log(L"DOWNLOADS put_ResultFilePath failed "+target);}
     }
-    TrackDownload(args);return S_OK;
+    TrackDownload(args,tab);return S_OK;
+}
+// A closing tab with a download in progress (or waiting for « Enregistrer sous »): its WebView stays, hidden, until
+// those downloads end (DownloadOperation::view), or their events would stop. True when the controller was kept.
+bool KeepControllerForDownloads(const std::shared_ptr<Tab>& t){
+    if(!t||!t->controller.p)return false;
+    std::shared_ptr<Com<ICoreWebView2Controller>> view;
+    auto keep=[&]{if(!view){view=std::make_shared<Com<ICoreWebView2Controller>>();view->set(t->controller.p);}return view;};
+    for(auto& [id,entry]:downloadOps){if(!entry||entry->tab!=t->serial||entry->view)continue;const auto* item=FindDownload(id);if(item&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))entry->view=keep();}
+    for(auto& pending:pendingDownloads)if(pending&&pending->tab==t->serial&&!pending->view)pending->view=keep();
+    if(!view)return false;
+    t->controller->put_IsVisible(FALSE);Log(L"DOWNLOAD tab closed during its download: its page stays hidden until the download ends");return true;
 }
 // History row + popover for a download whose path is settled.
-void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args){
+void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args,unsigned tab,std::shared_ptr<Com<ICoreWebView2Controller>> view){
     ICoreWebView2DownloadOperation* raw=nullptr;if(FAILED(args->get_DownloadOperation(&raw))||!raw){Log(L"DOWNLOAD operation unavailable");return;}
-    auto entry=std::make_shared<DownloadOperation>();entry->op.p=raw;entry->owner=WorkspaceNow();   // the profile that started it (scope of DownloadStarting)
+    auto entry=std::make_shared<DownloadOperation>();entry->op.p=raw;entry->owner=WorkspaceNow();entry->tab=tab;entry->view=std::move(view);   // the profile that started it (scope of DownloadStarting)
     DL::Item item;item.id=nextDownloadId++;item.started=NativeChrome::DownloadsUI::UnixNowMs();const int id=item.id;
     LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){item.path=text;CoTaskMemFree(text);}
     text=nullptr;if(SUCCEEDED(raw->get_Uri(&text))&&text){item.uri=text;CoTaskMemFree(text);}
@@ -2454,25 +2477,48 @@ bool E2EFixtureAllows(ICoreWebView2ServerCertificateErrorDetectedEventArgs* args
     return ok;
 }
 #endif
-HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2NavigationCompletedEventArgs* a){
+// ---- A navigation the engine turned into a download (src/download-navigation.h) -------------------
+// Its NavigationCompleted failure (CONNECTION_ABORTED / OPERATION_CANCELED) and its DownloadStarting come in
+// either order: a possible download's failure is held DownloadNavigation::WaitMs, then shows its error page
+// only if no download of that navigation came.
+std::map<UINT_PTR,std::function<void()>> delayedJobs;
+void CALLBACK RunDelayedJob(HWND,UINT,UINT_PTR id,DWORD){KillTimer(nullptr,id);auto it=delayedJobs.find(id);if(it==delayedJobs.end())return;auto job=std::move(it->second);delayedJobs.erase(it);if(!halted)job();}
+// Defer() after `ms` (a thread timer, no window needed), in the caller's workspace.
+void DeferAfter(UINT ms,std::function<void()> job){job=[owner=WorkspaceNow(),job=std::move(job)]{if(WorkspaceDead(owner))return;WorkspaceScope scope(owner);job();};const UINT_PTR id=SetTimer(nullptr,0,ms,RunDelayedJob);if(id)delayedJobs[id]=std::move(job);else Defer(std::move(job));}
+// The tab's navigation became a download: no error page; the tab keeps the document it shows and its address
+// (Navigate() had already put the typed address in t->uri: the shown document's own address comes back). A tab
+// that never showed anything (a link opened in a new tab, target=_blank, window.open) existed only for that
+// download: it closes, like Chrome (no « recently closed » entry, never the window; the last tab leaves a home tab).
+void NavigationBecameDownload(const std::shared_ptr<Tab>& t){
+    if(halted||!t||t->closed)return;
+    if(t->https.upgrade&&t->https.upgrade==t->downloadNav.id)t->https.upgrade=0;
+    Log(t->downloadNav.asked?L"NAVIGATION waits for the 'download multiple files' question: no error page, the tab keeps its page":L"NAVIGATION became a download: no error page, the tab keeps its page");
+    if(!t->everShown&&!t->downloadNav.asked){ /* (the question's chip belongs to that tab: it stays while it asks) */std::weak_ptr<Tab> weak=t;Defer([weak]{auto tab=weak.lock();if(!tab||tab->closed)return;const int i=TabIndexOf(tab);if(i<0)return;Log(L"DOWNLOAD tab opened only for the download: closed");CloseAt(i,CloseReason::Placeholder);});return;}
+    LPWSTR s=nullptr;if(t->view.p&&SUCCEEDED(t->view->get_Source(&s))&&s){const std::wstring shown=s;CoTaskMemFree(s);const bool hostPage=shown==L"about:blank"||shown.rfind(L"data:",0)==0;
+        if(!hostPage){t->uri=shown;t->home=false;}
+        else if(t->uri==t->navigateTo){t->uri=t->navigateFrom;t->home=t->navigateFromHome;}}   // our own document (home, error page, interstitial): the address it had
+    if(t==Active())Update();
+}
+// DownloadStarting in this tab: settles the tab's held navigation failure when it is that navigation's download.
+void DownloadNavigationStarted(const std::shared_ptr<Tab>& t,ICoreWebView2DownloadStartingEventArgs* args){
+    if(halted||!t||t->closed||!args)return;
+    Com<ICoreWebView2DownloadOperation> op;LPWSTR text=nullptr;
+    if(FAILED(args->get_DownloadOperation(&op.p))||!op.p||FAILED(op->get_Uri(&text))||!text)return;
+    const std::wstring uri=text;CoTaskMemFree(text);
+    if(t->downloadNav.DownloadStarted(uri,GetTickCount64()))NavigationBecameDownload(t);
+}
+// PermissionRequested MULTIPLE_AUTOMATIC_DOWNLOADS: the tab's navigation waits for the answer, it is a download.
+void DownloadNavigationAsked(const std::shared_ptr<Tab>& t,const std::wstring& uri){
+    if(halted||!t||t->closed)return;
+    if(t->downloadNav.DownloadAsked(uri,GetTickCount64()))NavigationBecameDownload(t);
+}
+// A failed top-level navigation that is not a download: the error page, the HTTPS-only interstitial, the site's own
+// HTTP error page or the engine's (unchanged behaviour).
+HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
     if(halted||!t||t->closed)return S_OK;
-    BOOL ok=FALSE;a->get_IsSuccess(&ok);
-    ElementsNavigationCompleted(t,ok!=FALSE);
-    UINT64 navigationId=0;
-    if(!Check(a->get_NavigationId(&navigationId),L"NavigationCompleted id"))return S_OK;
-    t->loading.Finish(navigationId,NativeChrome::Motion::Now());t->refreshing=false;
-    if(t->navInFlight==navigationId)t->navInFlight=0;VaultNavigationCompleted(t,navigationId,ok!=FALSE);
-    if(t==Active()){chrome.lottie.RefreshEnd();RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
-    if(!ok){
-        COREWEBVIEW2_WEB_ERROR_STATUS error;a->get_WebErrorStatus(&error);
-
-        // Our CANCEL of a refused server certificate may surface as « cancelled »: the recorded status wins.
-        // (WebView2 reports the cancelled request as « connection aborted/reset » or « cancelled »), only for
-        // this navigation and only when the refused request is the navigation's own URL.
-        if(t->errorPage.certStatus>=0&&navigationId==t->errorPage.startingId&&NativeChrome::ErrorPages::CertificateMatches(t->errorPage.certStatus,t->errorPage.certUri,t->errorPage.starting))error=(COREWEBVIEW2_WEB_ERROR_STATUS)t->errorPage.certStatus;
+    {
         if(error==COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)return S_OK;
         if(HttpsUpgradeFailed(t,navigationId,error))return S_OK;
-        int httpStatus=0;{Com<ICoreWebView2NavigationCompletedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationCompletedEventArgs2,(void**)&a2.p))&&a2.p&&FAILED(a2->get_HttpStatusCode(&httpStatus)))httpStatus=0;}   // 0: older runtime / no response
         Log(L"NAVIGATION FAILED engine WebErrorStatus="+std::to_wstring(error)+L" HttpStatusCode="+std::to_wstring(httpStatus)+(navigationId==t->errorPage.startingId?L" latest":L" older"));   // engine facts only (no URL, no body)
         // An HTTP 4xx/5xx answer (e.g. a 403 challenge page) IS the site's page: shown as received, never replaced.
         // Only for the tab's latest top-level navigation, never when WE refused this page's own certificate
@@ -2506,6 +2552,41 @@ HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2Navigatio
         t->revealed=true;ApplyPages();if(t==Active())Update();
         return S_OK;
     }
+}
+// The failure of a possible download (either order with DownloadStarting): settled now, or held.
+HRESULT DownloadNavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
+    namespace DN=NativeChrome::DownloadNavigation;
+    switch(t->downloadNav.Failed(navigationId,(int)error,httpStatus,GetTickCount64())){
+    case DN::Verdict::Download:NavigationBecameDownload(t);return S_OK;
+    case DN::Verdict::Wait:{
+        Log(L"NAVIGATION FAILED engine WebErrorStatus="+std::to_wstring(error)+L" HttpStatusCode="+std::to_wstring(httpStatus)+L": held for a possible download");
+        std::weak_ptr<Tab> weak=t;
+        DeferAfter((UINT)DN::WaitMs,[weak,navigationId,error,httpStatus]{auto tab=weak.lock();if(halted||!tab||tab->closed||!tab->downloadNav.Expire(navigationId))return;Log(L"NAVIGATION no download came: the failure stands");NavigationFailed(tab,navigationId,error,httpStatus);});
+        return S_OK;}
+    default:return NavigationFailed(t,navigationId,error,httpStatus);
+    }
+}
+HRESULT NavigationCompleted(const std::shared_ptr<Tab>& t,ICoreWebView2NavigationCompletedEventArgs* a){
+    if(halted||!t||t->closed)return S_OK;
+    BOOL ok=FALSE;a->get_IsSuccess(&ok);
+    ElementsNavigationCompleted(t,ok!=FALSE);
+    UINT64 navigationId=0;
+    if(!Check(a->get_NavigationId(&navigationId),L"NavigationCompleted id"))return S_OK;
+    t->loading.Finish(navigationId,NativeChrome::Motion::Now());t->refreshing=false;
+    if(t->navInFlight==navigationId)t->navInFlight=0;VaultNavigationCompleted(t,navigationId,ok!=FALSE);
+    if(t==Active()){chrome.lottie.RefreshEnd();RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
+    if(!ok){
+        COREWEBVIEW2_WEB_ERROR_STATUS error;a->get_WebErrorStatus(&error);
+
+        // Our CANCEL of a refused server certificate may surface as « cancelled »: the recorded status wins.
+        // (WebView2 reports the cancelled request as « connection aborted/reset » or « cancelled »), only for
+        // this navigation and only when the refused request is the navigation's own URL.
+        if(t->errorPage.certStatus>=0&&navigationId==t->errorPage.startingId&&NativeChrome::ErrorPages::CertificateMatches(t->errorPage.certStatus,t->errorPage.certUri,t->errorPage.starting))error=(COREWEBVIEW2_WEB_ERROR_STATUS)t->errorPage.certStatus;
+        int httpStatus=0;{Com<ICoreWebView2NavigationCompletedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationCompletedEventArgs2,(void**)&a2.p))&&a2.p&&FAILED(a2->get_HttpStatusCode(&httpStatus)))httpStatus=0;}   // 0: older runtime / no response
+        return DownloadNavigationFailed(t,navigationId,error,httpStatus);   // a navigation that became a download never reaches NavigationFailed
+    }
+    if(t->home||t->uri!=L"about:blank")t->everShown=true;
+    t->downloadNav.Shown();
     RequestFavicon(t);if(halted)return S_OK;
     Log(L"NAVIGATION OK "+t->uri);
     if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&!SearchResultPage(t->uri)&&history.Record(t->uri,t->title==TR(tab_new)?L"":t->title,NativeChrome::DownloadsUI::UnixNowMs())){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}
@@ -2592,7 +2673,7 @@ void PopupAssign(const PopupHost::RequestPtr& r){
     Log(std::wstring(L"POPUP target assigned ")+(r->blank?L"blank":L"web")+L" user="+(r->userInitiated?L"1":L"0"));
     popups.Finish(r,true);   // completes the deferral: the engine now loads the request in this target
     if(t->audioReinject){t->audioReinject=false;InjectAudioScript(t,nullptr);}
-    if(r->blank&&!t->closed){t->revealed=true;ApplyPages();if(t==Active())Update();}   // a blank document (and what the opener writes in it) shows without an HTTP NavigationCompleted
+    if(r->blank&&!t->closed){t->revealed=t->everShown=true;ApplyPages();if(t==Active())Update();}   // a blank document (and what the opener writes in it) shows without an HTTP NavigationCompleted
 }
 void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup);
 // NewWindowRequested: always handled by the host (never the engine's own unmanaged window). Admitted: HTTP(S) as
@@ -2618,7 +2699,7 @@ HRESULT NewWindowRequested(const std::shared_ptr<Tab>& opener,ICoreWebView2NewWi
 }
 void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup);
 void NewTab(std::wstring uri,int index,std::wstring title){CreateTab(std::move(uri),index,std::move(title),nullptr);}
-void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup){if(halted||!environment.p){if(popup)popups.Finish(popup,false);return;}const bool parked=WorkspaceParked(); /* a hidden profile's page opened a window: its tab, never the visible window's hover / toast */if(pages.size()>=128){if(popup)popups.Finish(popup,false);if(parked)Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return;}if(!parked){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=std::make_shared<Tab>();t->sandboxPending=sandboxNextTab&&IsSandboxUri(uri);if(IsSandboxUri(uri)&&!t->sandboxPending)uri.clear(); /* restored session or a page: never the sandbox */sandboxNextTab=false;t->uri=uri;t->home=uri.empty();t->title=std::move(title);
+void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::RequestPtr& popup){if(halted||!environment.p){if(popup)popups.Finish(popup,false);return;}const bool parked=WorkspaceParked(); /* a hidden profile's page opened a window: its tab, never the visible window's hover / toast */if(pages.size()>=128){if(popup)popups.Finish(popup,false);if(parked)Log(L"TABS limit reached in a hidden profile");else ShowTabLimitToast(uri);return;}if(!parked){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=std::make_shared<Tab>();t->sandboxPending=sandboxNextTab&&IsSandboxUri(uri);if(IsSandboxUri(uri)&&!t->sandboxPending)uri.clear(); /* restored session or a page: never the sandbox */sandboxNextTab=false;t->uri=uri;t->home=uri.empty();t->everShown=t->home; /* a home tab shows something: never closed for a download */t->title=std::move(title);
     if(popup){t->home=false;t->blankIsHome=false;t->popupSetup=true;t->sandboxPending=false;popup->target=t->serial;Workspace* owner=static_cast<Workspace*>(const_cast<void*>(popup->owner));const unsigned serial=t->serial;
         popup->dropTarget=[owner,serial]{if(halted||WorkspaceDead(owner))return;WorkspaceScope scope(owner);Defer([serial]{DropPopupTarget(serial);});};}
    if(index<0)index=(int)pages.size();index=std::min(index,(int)pages.size());/* Opening a tab (« + », Ctrl+T, a link or window.open to a new tab) blurs the page on screen out and the new tab in (tab timing); a switch between existing tabs stays immediate. Not inside a profile switch or a session restore (their own transition, keepContentTransition). */const bool openTransition=!parked&&!keepContentTransition&&current>=0&&current<(int)pages.size()&&pages[current]&&!pages[current]->closed&&pages[current]->controller.p;if(openTransition)BeginContentTransition(ContentTransition::Kind::Tab); /* the outgoing page, captured before it is hidden */CancelTabDrag();pages.insert(pages.begin()+index,t);{KeepContentTransition keep;Select(index);}if(openTransition)RevealContentTransition();std::weak_ptr<Tab> weak=t;
@@ -2652,7 +2733,7 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
         if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
         auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
         HRESULT faviconResult=t->faviconView->add_FaviconChanged(faviconChanged,&token);faviconChanged->Release();if(!Check(faviconResult,L"add_FaviconChanged"))return S_OK;
-        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
+        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);tab->downloadNav.Starting(navigationId,uri?uri:L"",GetTickCount64());if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
         HRESULT startingResult=t->view->add_NavigationStarting(starting,&token);starting->Release();if(!Check(startingResult,L"add_NavigationStarting favicon"))return S_OK;
         auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;AnnotationNavigation(t);++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);/* our own pages (error, HTTPS-only) report about:blank or data: in EVERY tab, a script-opened one included: the real address comes back regardless of blankIsHome, which only decides « home » */const bool hostPage=t->uri==L"about:blank"||t->uri.rfind(L"data:",0)==0;t->home=t->uri==L"about:blank"&&t->blankIsHome;if(!t->https.shown.empty()&&hostPage){t->uri=t->https.shown;t->home=false;}if(!t->errorPage.shown.empty()&&hostPage){t->uri=t->errorPage.shown;t->home=false;}}t->loading.Committed(NativeChrome::Motion::Now());AudioSiteChanged(t);if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
@@ -2686,7 +2767,7 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
             if(args){args->put_Action(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);COREWEBVIEW2_WEB_ERROR_STATUS st{};LPWSTR u=nullptr;
                 if(SUCCEEDED(args->get_ErrorStatus(&st)))tab->errorPage.certStatus=(int)st;if(SUCCEEDED(args->get_RequestUri(&u))&&u){tab->errorPage.certUri=u;CoTaskMemFree(u);}
                 Com<ICoreWebView2Certificate> c;LPWSTR issuer=nullptr;tab->errorPage.certIssuer.clear();if(SUCCEEDED(args->get_ServerCertificate(&c.p))&&c.p&&SUCCEEDED(c->get_Issuer(&issuer))&&issuer){tab->errorPage.certIssuer=issuer;CoTaskMemFree(issuer);}}if(tab==Active()){BuildChrome();RefreshTools();InvalidateChrome();}return S_OK;});if(FAILED(view14->add_ServerCertificateErrorDetected(cert,&token)))Log(L"CERTIFICATE add_ServerCertificateErrorDetected failed");cert->Release();}else Log(L"CERTIFICATE ICoreWebView2_14 unavailable");}
-        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{return DownloadStarting(a);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();ApplyTabSettings();ApplyMemorySaver();if(!adBlockSynced)ApplyAdBlock();}
+        {Com<ICoreWebView2_4> view4;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_4,(void**)&view4.p))&&view4.p){auto download=Callback<ICoreWebView2DownloadStartingEventHandler,ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2DownloadStartingEventArgs* a)->HRESULT{auto tab=weak.lock();if(!halted)DownloadNavigationStarted(tab,a);return DownloadStarting(a,tab?tab->serial:0);});if(FAILED(view4->add_DownloadStarting(download,&token)))Log(L"DOWNLOADS add_DownloadStarting failed");download->Release();}else Log(L"DOWNLOADS ICoreWebView2_4 unavailable: engine flyout kept");ApplyDownloadSettings();ApplyPrivacySettings();ApplyZoom(c);ApplySleepSettings();ApplyTabSettings();ApplyMemorySaver();if(!adBlockSynced)ApplyAdBlock();}
         {Com<ICoreWebView2_11> view11;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_11,(void**)&view11.p))&&view11.p){auto menu=Callback<ICoreWebView2ContextMenuRequestedEventHandler,ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ContextMenuRequestedEventArgs* a)->HRESULT{return PageContextMenu(weak.lock(),a);});if(FAILED(view11->add_ContextMenuRequested(menu,&token)))Log(L"MENU add_ContextMenuRequested failed");menu->Release();}else Log(L"MENU ICoreWebView2_11 unavailable: engine menu kept");}
 #ifdef BROWSER_E2E_FIXTURE_HOOK
         if(!popup)RegisterE2EDestinationGuards(t);   // a window.open target: after its assignment (PopupAssign)

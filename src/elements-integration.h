@@ -397,6 +397,7 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
     OP::Spec spec;spec.kind=OP::Kind::Permission;spec.origin=OriginLabel(uri);spec.permissions={(int)kind};spec.userInitiated=user!=FALSE;
     const std::wstring key=OriginOf(uri);Log(L"PERMISSION request kind="+std::to_wstring(kind)+L" "+key);
+    if(kind==COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS)DownloadNavigationAsked(t,uri);   // the navigation that waits for it is a download
     // Persistent storage only keeps the site's own data from automatic eviction when the disk is
     // short: Chrome and Edge never ask about it, and x.com asked on every visit. User decision
     // 2026-11-17: allowed silently, never saved in the profile (no lasting « autorisé » chip).
