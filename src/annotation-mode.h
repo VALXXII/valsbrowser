@@ -73,7 +73,7 @@ std::uint64_t serials = 0;                    // never reset: a new session neve
 AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
 // the image is ready) so the page is only told to resume once the engine has its frame.
-struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
+struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false, deferred = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
 ShotJob shot; bool resumeOwed = false; std::uint64_t frameSerial = 0;
 bool uiReady = false, purged = false, countLoaded = false, laterThisSession = false, connectLaunch = false;
 std::unique_ptr<BA::Store> store; std::mutex writeLock;
@@ -84,7 +84,7 @@ int claimed = 0;                              // launcher counter: annotations a
 bool statusBusy = false, statusDirty = false;
 enum class Card { None, Working, NoAgent, Added, Done, Read, Unhandled } card = Card::None; std::string cardId, cardSite;
 std::wstring loggedOnce;
-HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3, CtrlTimer = 4;
+HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2, ShotStart = WM_APP + 3; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3, CtrlTimer = 4;
 // V3: the note panel is built right after the engine is asked for the shot (building it takes 30-55 ms of the UI
 // thread: done before, it delayed the page's « hidden » and so the shot by as much). 60 ms at most after the click.
 struct PendingPanel { bool on = false; std::uint64_t serial = 0; AUI::NoteRequest req; RECT target{}, page{}; bool keyboard = false; } panel;
@@ -767,13 +767,13 @@ void HistoryStoreOp(const std::wstring& id, int op) {
 
 // ---------------------------------------------------------------- selection, capture, write
 void Exit(const wchar_t* why, bool pageChanged = false);
-void Resume() {
+void Resume(bool focusPage = true) {   // focusPage false: Mode Commentaire, the keyboard goes to the bubble (no 13-21 ms MoveFocus)
     auto t = ModeTab(); if (!t) return;
     s.frozen = false; s.cap = Cap::None; s.png.clear(); s.saving = s.captureWanted = false; s.pageSeq = -1; ++serials; s.serial = serials;
     // A shot still owed to the page's frame (« Ajouter » or Échap within ~60 ms of the click): the page resumes
     // once the engine has rendered it, never before (resuming would show the page's own edges in the shot).
     if (shot.waiting || shot.inFlight) resumeOwed = true; else Cmd(t, L"resume");
-    if (t->controller.p) t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    if (focusPage && t->controller.p) t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 }
 void Attach(const Late& l) {
     auto shot = l.shot; const std::string site = l.site, id = l.id; auto result = std::make_shared<BA::Outcome>();
@@ -924,6 +924,16 @@ bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
     return frame.Show(m);
 }
 std::wstring Clip(std::wstring t, size_t n) { for (auto& c : t) if (c == L'\n' || c == L'\r' || c == L'\t') c = L' '; if (t.size() > n) { t.resize(n); t += L"…"; } return t; }
+// The shot's start: the native copy of the frame on screen, then the page hides its own (« handoff ») — or, without the
+// native layer, the page hides its whole frame (V2). Called at once, or right after OnSelect (Mode Commentaire).
+void StartShot(const std::shared_ptr<Tab>& t) {
+    if (!t || !shot.waiting) return;
+    const auto& sel = shot.sel;
+    const double f0 = NowMs(); const bool native = ShowFrame(t, sel); shot.frameMs = NowMs() - f0; shot.handoffAt = NowMs();
+    if (native) { frameSerial = shot.serial; shot.pageSeq = sel.seq; Cmd(t, L"handoff", std::to_wstring(sel.seq)); }
+    else { shot.pageSeq = std::int64_t(shot.serial) + (std::int64_t(1) << 41); Cmd(t, L"hide", std::to_wstring(shot.pageSeq)); Log(L"ANNOTATE native frame unavailable: the page hides its frame for the shot"); }
+    if (s.serial == shot.serial) s.pageSeq = shot.pageSeq;
+}
 void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     if (s.paused) return;   // V1.4: the selection is off (the page script sends none then)
     ++serials; s.serial = serials; s.frozen = true; s.cap = Cap::Pending; s.png.clear(); s.saving = false; s.sel = sel; s.pageSeq = sel.seq;
@@ -975,15 +985,16 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         Log(L"ANNOTATE capture unavailable (plan): outside the viewport");
     } else {
         shot = ShotJob{}; shot.serial = s.serial; shot.sel = sel; shot.selectedAt = s.selectedAt; shot.lag = lag; shot.waiting = true; s.captureWanted = true;
-        const double f0 = NowMs(); const bool native = ShowFrame(t, sel); shot.frameMs = NowMs() - f0; shot.handoffAt = NowMs();
-        if (native) { frameSerial = s.serial; shot.pageSeq = sel.seq; Cmd(t, L"handoff", std::to_wstring(sel.seq)); }
-        else { shot.pageSeq = std::int64_t(s.serial) + (std::int64_t(1) << 41); Cmd(t, L"hide", std::to_wstring(shot.pageSeq)); Log(L"ANNOTATE native frame unavailable: the page hides its frame for the shot"); }
-        s.pageSeq = shot.pageSeq;
+        // Mode Commentaire (H1's opening time): the bubble is already open; the native frame (screen copy + a wait for the
+        // compositor, ~20 ms) and the shot start right after this message, so the UI thread goes back to the bubble now.
+        // The page's commands keep their order (the chat's « follow » was sent above, the « handoff » comes after).
+        if (commentFirst && EnsurePost() && PostMessageW(post, ShotStart, WPARAM(shot.serial), 0)) shot.deferred = true;
+        else StartShot(t);
         if (EnsurePost()) SetTimer(post, HideTimer, 800, nullptr);
     }
     // chat intégré (V1.3): on a local site the element always becomes a chip of the chat's composer, the panel opening
     // if it is closed; the picker goes on (the shot first). Elsewhere (no chat): the note panel, as before.
-    if (commentFirst || Chat::TakeSelection(t, s.serial, s.cap == Cap::Failed)) { Resume(); return; }
+    if (commentFirst || Chat::TakeSelection(t, s.serial, s.cap == Cap::Failed)) { Resume(!commentFirst); return; }
     panel.on = true; panel.serial = s.serial; panel.req = req; panel.target = target; panel.page = page; panel.keyboard = sel.keyboard;
     if (shot.waiting && shot.serial == s.serial && EnsurePost()) SetTimer(post, PanelTimer, 60, nullptr);   // shown by OnHidden, or by the timer
     else ShowPanel();
@@ -1249,6 +1260,7 @@ void Rearm(const std::shared_ptr<Tab>& t, std::function<void(bool)> then = nullp
 }
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == JobDone) { std::unique_ptr<Job> j(reinterpret_cast<Job*>(l)); LogMigration(); if (j->done && !halted) j->done(); return 0; }
+    if (m == ShotStart) { if (s.active && shot.waiting && shot.deferred && shot.serial == std::uint64_t(w)) { shot.deferred = false; StartShot(ModeTab()); } return 0; }
     if (m == WatchChanged) {
         watchSignal = false; if (!watch.thread) return 0;
         RefreshStatus();
@@ -1307,7 +1319,8 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
         double lag = -1;   // click -> host, from the page's Date.now() (same system clock)
         if (c.selection.at > 0) { FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
             const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; if (now - c.selection.at > -50 && now - c.selection.at < 10000) lag = std::max(0.0, now - c.selection.at); }
-        OnSelect(t, c.selection, lag); break; }
+        const double h0 = NowMs(); OnSelect(t, c.selection, lag);
+        Log(L"ANNOTATE « select » handled in " + Ms(NowMs() - h0) + L" ms on the UI thread"); break; }
     case AH::Op::Hidden: OnHidden(t, c.env.serial); break;
     case AH::Op::Shown: OnShown(c.env.serial); break;
     case AH::Op::Escape:   // review M4 (b): an open bubble closes first, the mode stays

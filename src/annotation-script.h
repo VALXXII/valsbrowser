@@ -396,7 +396,7 @@ function sendSelect(info, selText, ev) {
   if (selText === null && info.kind === 'main' && !info.range && !info.shadow.length && info.el.getRootNode() === D) {
     var s0 = selectorFor(info.el), r0 = rectOf(info);
     if (s0.unique && s0.sel.length <= 1000) post({ op: 'selecting', seq: mine, at: at, selector: s0.sel, rect: { x: r2(r0.x), y: r2(r0.y), width: r2(r0.w), height: r2(r0.h) },
-                                              pt: { x: r2(px), y: r2(py) } });   // final pass 1: where the page saw the click (host diagnostics)
+                                              pt: { x: r2(px), y: r2(py) }, vw: innerWidth, vh: innerHeight });   // the viewport the rectangle belongs to   // final pass 1: where the page saw the click (host diagnostics)
   }
   var m = describe(info, selText);
   if (JSON.stringify(m).length > MAX_MSG) { m.target.text = m.target.text.slice(0, 400); if (m.target.selectionText) m.target.selectionText = m.target.selectionText.slice(0, 400); }

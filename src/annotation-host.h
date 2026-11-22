@@ -104,6 +104,8 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
             !detail::Num(r->Get("width"), e.w, 0, 1e7) || !detail::Num(r->Get("height"), e.h, 0, 1e7)) return bad("selecting rect");
         if (const auto* t0 = v.Get("at")) { if (!detail::Num(t0, e.at, 0, 1e14)) return bad("selecting at"); }
         if (const auto* pt = v.Get("pt"); pt && pt->IsObject()) { double x = 0, y = 0; if (detail::Num(pt->Get("x"), x, -1e7, 1e7) && detail::Num(pt->Get("y"), y, -1e7, 1e7)) { e.px = x; e.py = y; } }   // optional
+        if (v.Get("vw") && !detail::Num(v.Get("vw"), e.vw, 1, 1e5)) return bad("selecting vw");   // the viewport of the rectangle (optional)
+        if (v.Get("vh") && !detail::Num(v.Get("vh"), e.vh, 1, 1e5)) return bad("selecting vh");
         e.op = Op::Selecting; e.serial = q->integer; e.selector = sel->string;
     }
     else if (op->string == "mods") e.op = Op::Mods;   // R31: the pointer moved over the page: the host reads Ctrl

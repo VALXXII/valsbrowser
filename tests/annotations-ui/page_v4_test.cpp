@@ -38,6 +38,8 @@ static void Selecting() {   // latency: the light message at the click, before t
     auto check = [](const std::string& j) { return AH::CheckMessage(j, "n4", 1); };
     const std::string head = "{\"type\":\"browser-annotation\",\"v\":1,\"nonce\":\"n4\",\"navStamp\":1,";
     auto c = check(head + "\"op\":\"selecting\",\"seq\":7,\"at\":1763650000000.5,\"selector\":\"section.hero\",\"rect\":{\"x\":10.5,\"y\":-20,\"width\":300,\"height\":40}}");
+    {   auto v = check(head + "\"op\":\"selecting\",\"seq\":8,\"selector\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1},\"vw\":1200,\"vh\":700}");
+        CHECK(v.env.op == AH::Op::Selecting && v.env.vw == 1200 && v.env.vh == 700); }   // the viewport of the click's rectangle
     CHECK(c.env.op == AH::Op::Selecting && c.env.serial == 7 && c.env.selector == "section.hero" && c.env.x == 10.5 && c.env.y == -20 && c.env.w == 300 && c.env.h == 40 && c.env.at > 1.7e12);
     CHECK(check(head + "\"op\":\"selecting\",\"seq\":7,\"selector\":\"\",\"rect\":{\"x\":0,\"y\":0,\"width\":1,\"height\":1}}").env.op == AH::Op::Invalid);
     CHECK(check(head + "\"op\":\"selecting\",\"seq\":7,\"selector\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"width\":-1,\"height\":1}}").env.op == AH::Op::Invalid);
