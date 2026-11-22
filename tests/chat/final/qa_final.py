@@ -1008,6 +1008,38 @@ class Invariants:
             broken['the chat is readable (UI Automation)'] = chats
 
 
+class FollowSampler(threading.Thread):
+    """R39 while the page scrolls: pairs (the bubble's region on screen, the element's rectangle) read as close together as
+    possible (its own DevTools connection, ~every 10 ms). The gap between the bubble and its element must not change: a
+    read skew of a few ms is allowed for (tolerance 16 px CSS) — the defect seen by comment-v5 R39 was 27 to 134 px."""
+    def __init__(self, sel):
+        super().__init__(daemon=True); self.sel = sel; self.stop = False; self.pairs = []
+        ts = _targets(C.URL); self.ws = Q.WS(ts[0]['webSocketDebuggerUrl']) if ts else None
+        self.h = bubble_hwnd(); self.pg = page_area()
+        self.js = "(function(){var e=document.querySelector(%s);if(!e)return null;var r=e.getBoundingClientRect();return [r.left,r.top,r.bottom,devicePixelRatio]})()" % json.dumps(sel)
+
+    def run(self):
+        while not self.stop and self.ws and len(self.pairs) < 400:
+            try:
+                r = self.ws.call('Runtime.evaluate', {'expression': self.js, 'returnByValue': True}).get('result', {}).get('value')
+                rb = region_box(self.h)
+            except Exception:
+                break
+            if r and isinstance(rb, tuple):
+                k = r[3]; el_top = self.pg[1] + r[1] * k; el_bottom = self.pg[1] + r[2] * k; el_left = self.pg[0] + r[0] * k
+                # only while the element and the bubble are both well inside the page area (no clipping by its edges)
+                if self.pg[1] + 4 < rb[1] and rb[3] < self.pg[3] - 4 and self.pg[1] < el_top < self.pg[3]:
+                    self.pairs.append((time.perf_counter(), rb[1] - el_top, rb[0] - el_left, k))
+            time.sleep(0.008)
+
+    def verdict(self):
+        if len(self.pairs) < 4:
+            return None
+        base = self.pairs[0][1]; k = self.pairs[0][3]
+        dev = [abs(p[1] - base) / k for p in self.pairs]
+        return {'samples': len(self.pairs), 'maxGapChangeCss': round(max(dev), 1), 'over16': sum(1 for d in dev if d > 16)}
+
+
 def guarded(report, fn, *a, **k):
     try:
         return fn(*a, **k)

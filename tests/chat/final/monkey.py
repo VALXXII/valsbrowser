@@ -364,12 +364,31 @@ class Monkey:
         F.chat("(function(){var t=document.querySelector('[contenteditable=true]');if(t){t.textContent='';t.dispatchEvent(new Event('input',{bubbles:true}))}return 1})()")
         return 'other application, back, typing', 0.2
 
+    def follow_during(self, a, act):
+        """Runs a scrolling action while sampling the open bubble against its element (R39, every ~10 ms)."""
+        sel = self.inv.m.open
+        if self.inv.m.layout != 'comment' or not sel or sel.startswith('#qa-') or not F.bubble_shown()[0]:
+            return act()
+        s = F.FollowSampler(sel); s.start()
+        try:
+            out = act()
+        finally:
+            time.sleep(0.6); s.stop = True; s.join(2)
+        v = s.verdict()
+        if v and v['over16']:
+            self.R.step(f'#{a["i"]} invariant: the bubble follows its element WHILE the page scrolls (R39, gap change <= 16 px CSS)', False, v)
+        return out
+
     def run(self, actions):
         for a in actions:
             self.R.context = {'seed': self.seed, 'index': a['i'], 'action': a,
                               'replay': f'CHAT_QA_BUILD=<build> python tests/chat/final/monkey.py --seed {self.seed} --until {a["i"]}'}
             try:
-                desc, settle = getattr(self, a['kind'])(a)
+                fn = getattr(self, a['kind'])
+                if a['kind'] in ('wheel', 'scrollbar', 'keyboard_scroll'):
+                    desc, settle = self.follow_during(a, lambda: fn(a))
+                else:
+                    desc, settle = fn(a)
             except Exception:
                 F.release_all()
                 desc, settle = f'{a["kind"]}: exception', 0.3
