@@ -109,8 +109,8 @@ int wmain(int argc, wchar_t** argv) {
         I18n::SetForProcess(I18n::Locale::Fr);
         auto fr = RN::Current();
         Check(fr.size() == 2 && fr[0].kind == RN::Kind::Added && fr[0].items.size() == 2 && fr[1].kind == RN::Kind::Fixed && fr[1].items.size() == 3, "content: Ajouts 2 + Corrections 3");
-        Check(fr[0].title == L"Ajouts" && fr[1].title == L"Corrections" && fr[0].items[0] == L"Français ou anglais, au choix dans réglages." && fr[0].items[1] == L"Sélection de l’adresse aux couleurs du profil."
-              && fr[1].items[0] == L"Changement d’onglet sans flou." && fr[1].items[1] == L"Le plein écran masque la barre du navigateur." && fr[1].items[2] == L"Renommage des dossiers de favoris sur place.", "content FR: Paper text verbatim");
+        Check(fr[0].title == L"Ajouts" && fr[1].title == L"Corrections" && fr[0].items[0] == L"Mode Commentaire : discutez d’un élément de la page avec votre agent." && fr[0].items[1] == L"Infobulles centrées, enfin visibles dans les panneaux."
+              && fr[1].items[0] == L"Un téléchargement n’affiche plus de page d’erreur." && fr[1].items[1] == L"Ctrl+A sélectionne tout dans chaque champ." && fr[1].items[2] == L"Saisie sans scintillement dans les champs de texte.", "content FR: the validated text verbatim");
         Check(std::wstring(TR(release_notes_title)) == L"Nouveautés" && std::wstring(TR(release_notes_show_all)) == L"Voir tout", "content FR: title and Voir tout");
         I18n::SetForProcess(I18n::Locale::En);
         auto en = RN::Current();
@@ -118,7 +118,7 @@ int wmain(int argc, wchar_t** argv) {
         bool differ = true; for (size_t s = 0; s < 2; ++s) for (size_t i = 0; i < en[s].items.size(); ++i) differ = differ && en[s].items[i] != fr[s].items[i];
         Check(differ, "content EN: every item translated");
         const auto spoken = RN::Spoken(en);
-        Check(spoken.find(L"Added.") != std::wstring::npos && spoken.find(L"Bookmark folders renamed in place.") != std::wstring::npos, "spoken: all sections and items");
+        Check(spoken.find(L"Added.") != std::wstring::npos && spoken.find(L"Typing without flicker in text fields.") != std::wstring::npos, "spoken: all sections and items");
         I18n::SetForProcess(I18n::Locale::Fr);
     }
 
@@ -193,13 +193,18 @@ int wmain(int argc, wchar_t** argv) {
         Check(std::fabs(close.left - 307.6f) < .01f && std::fabs(close.top - 11.8f) < .01f && std::fabs(close.right - close.left - 24) < .01f, "mini/full: close 24 at top 10.8 / right 10.4 in the padding box");
         const auto blocks = d.NoteBlocksForTest();   // rule, heading, item, item, rule, heading, item, item, item
         Check(blocks.size() == 9 && std::fabs(blocks[0].top - 53) < .01f && std::fabs(blocks[1].top - 70) < .01f && std::fabs(blocks[2].top - 106) < .01f, "layout: rule at 53, heading at 70, first item at 106 (16 gaps, 20 rows)");
-        if (fr && blocks.size() == 9) {
+        // The items' wrapping depends on the release's text (the Paper sample wrapped 2/2 then 1/2/2: 390 DIP); what is
+        // fixed is the box: 20 DIP rows, and the Full height = 210 DIP of Paper chrome, gaps and rules + the items.
+        float expectFull = 0;
+        if (blocks.size() == 9) {
             const float h[] = {blocks[2].bottom - blocks[2].top, blocks[3].bottom - blocks[3].top, blocks[6].bottom - blocks[6].top, blocks[7].bottom - blocks[7].top, blocks[8].bottom - blocks[8].top};
-            char what[200]; std::snprintf(what, sizeof what, "layout FR: Paper wrapping 2/2 then 1/2/2 lines (got %.0f %.0f / %.0f %.0f %.0f)", h[0], h[1], h[2], h[3], h[4]);
-            Check(h[0] == 40 && h[1] == 40 && h[2] == 20 && h[3] == 40 && h[4] == 40, what);
+            bool rows = true; for (float v : h) rows = rows && v >= 20 && v <= 60 && std::fabs(v - 20 * std::round(v / 20)) < .01f;
+            expectFull = 210 + h[0] + h[1] + h[2] + h[3] + h[4];
+            char what[200]; std::snprintf(what, sizeof what, "layout %ls: items on whole 20 DIP rows, 1 to 3 lines (got %.0f %.0f / %.0f %.0f %.0f)", tag.c_str(), h[0], h[1], h[2], h[3], h[4]);
+            Check(rows, what);
         }
         auto nodes = d.NodesForTest(); int texts = 0, hidden = 0; bool group = false, showAll = false, closeNode = false;
-        for (auto& n : nodes) { if (n.role == Accessibility::Role::Text) { ++texts; if (n.offscreen) ++hidden; } if (n.key == 1 && n.name == (fr ? L"Nouveautés" : L"What’s new") && n.help.find(fr ? L"Renommage des dossiers de favoris sur place." : L"Bookmark folders renamed in place.") != std::wstring::npos) group = true; if (n.key == D::NotesExpandHit && n.automationId == L"ReleaseNotesShowAll") showAll = true; if (n.key == D::CloseHit && n.automationId == L"DialogClose") closeNode = true; }
+        for (auto& n : nodes) { if (n.role == Accessibility::Role::Text) { ++texts; if (n.offscreen) ++hidden; } if (n.key == 1 && n.name == (fr ? L"Nouveautés" : L"What’s new") && n.help.find(fr ? L"Saisie sans scintillement dans les champs de texte." : L"Typing without flicker in text fields.") != std::wstring::npos) group = true; if (n.key == D::NotesExpandHit && n.automationId == L"ReleaseNotesShowAll") showAll = true; if (n.key == D::CloseHit && n.automationId == L"DialogClose") closeNode = true; }
         Check(group && showAll && closeNode && texts == 7, "uia mini: named group with every item in its description, 7 text nodes, Voir tout, Fermer");
         Check(hidden >= 3, "uia mini: items under the fade are offscreen (not claimed visible)");
         Check(d.LogoAnimatingForTest(), "logo: the clock runs while the dialog is shown");
@@ -226,7 +231,7 @@ int wmain(int argc, wchar_t** argv) {
         Check(calls == 0 && d.Visible() && !d.NotesCollapsedForTest(), "Voir tout: same dialog, Full view, nothing answered");
         Check(d.FocusForTest() == D::CloseHit, "Voir tout: focus moves to Fermer (the button is gone)");
         const float full = d.HeightForTest();
-        { char what[120]; std::snprintf(what, sizeof what, "full: height to content %.0f DIP (Paper 144O-0: about 390 in FR)", full); Check(full > 300 && (!fr || std::fabs(full - 390) < .5f) && d.ScrollMaxForTest() == 0, what); }
+        { char what[160]; std::snprintf(what, sizeof what, "full: height to content %.0f DIP = 210 (Paper 144O-0 chrome) + items %.0f", full, expectFull - 210); Check(full > 300 && std::fabs(full - expectFull) < .5f && d.ScrollMaxForTest() == 0, what); }
         nodes = d.NodesForTest(); texts = hidden = 0; bool noShowAll = true;
         for (auto& n : nodes) { if (n.role == Accessibility::Role::Text) { ++texts; if (n.offscreen) ++hidden; } if (n.key == D::NotesExpandHit) noShowAll = false; }
         Check(texts == 7 && hidden == 0 && noShowAll, "uia full: every item on screen, no Voir tout");
@@ -292,7 +297,7 @@ int wmain(int argc, wchar_t** argv) {
         { char what[120]; std::snprintf(what, sizeof what, "short window: full height capped (%.0f) and scrollable (%.0f DIP)", h, max); Check(h <= 260 - 32 + .5f && max > 0, what); }
         for (int k = 0; k < 40 && d.ScrollForTest() < max - .5f; ++k) d.KeyForTest(VK_NEXT);
         Check(std::fabs(d.ScrollForTest() - max) < .5f, "short window: Pg↓ reaches the last item");
-        auto nodes = d.NodesForTest(); bool lastOn = false; for (auto& n : nodes) if (n.role == Accessibility::Role::Text && n.name == L"Renommage des dossiers de favoris sur place.") lastOn = !n.offscreen;
+        auto nodes = d.NodesForTest(); bool lastOn = false; for (auto& n : nodes) if (n.role == Accessibility::Role::Text && n.name == L"Saisie sans scintillement dans les champs de texte.") lastOn = !n.offscreen;
         Check(lastOn, "short window: last item on screen after scrolling (UIA)");
         Check(d.RenderForTest(out + L"\\full-short-scrolled-144.png", 144), "render short scrolled");
         for (int k = 0; k < 40 && d.ScrollForTest() > 0; ++k) d.KeyForTest(VK_PRIOR);

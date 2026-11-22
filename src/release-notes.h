@@ -23,17 +23,18 @@
 namespace ReleaseNotes {
 
 // Bump together with the strings release_notes_item_* when the shipped content changes.
-inline constexpr const char* NotesId = "2026-11-language-address-tabs-fullscreen-rename";
+inline constexpr const char* NotesId = "2026-11-comment-tooltips-download-selectall-typing";
 
 enum class Kind { Added, Fixed };
 struct Section { Kind kind = Kind::Added; std::wstring title; std::vector<std::wstring> items; };
 
-// Paper content (already shipped: language choice, profile-coloured address selection; tab switch
-// without blur, fullscreen hides the browser bar, in-place rename of bookmark folders).
+// Content of the first release that shows the card (text validated by the user, 2026-11-22): comment mode and
+// centered tooltips; downloads without an error page, Ctrl+A in every field, typing without flicker.
+// Layout and styles: Paper p-L-0 142E-0 / 144O-0 (its sample text was the earlier notes).
 inline std::vector<Section> Current() {
     return {
-        {Kind::Added, TR(release_notes_added), {TR(release_notes_item_language), TR(release_notes_item_address)}},
-        {Kind::Fixed, TR(release_notes_fixed), {TR(release_notes_item_tabs), TR(release_notes_item_fullscreen), TR(release_notes_item_rename)}},
+        {Kind::Added, TR(release_notes_added), {TR(release_notes_item_comment), TR(release_notes_item_tooltips)}},
+        {Kind::Fixed, TR(release_notes_fixed), {TR(release_notes_item_download), TR(release_notes_item_select_all), TR(release_notes_item_typing)}},
     };
 }
 // Everything the notes say, in reading order (UIA description: the hidden part of the Mini included).

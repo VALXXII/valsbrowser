@@ -444,8 +444,8 @@ def run():
         print('a fixture browser is already running: close it first'); return 2
     os.makedirs(SHOTS, exist_ok=True)
     print(f'build {SRC} version {version()} notes {NOTES}', flush=True)
-    fr = {'title': 'Nouveautés', 'showall': 'Voir tout', 'close': 'Fermer', 'last': 'Renommage des dossiers de favoris sur place.'}
-    en = {'title': 'What’s new', 'showall': 'Show all', 'close': 'Close', 'last': 'Bookmark folders renamed in place.'}
+    fr = {'title': 'Nouveautés', 'showall': 'Voir tout', 'close': 'Fermer', 'last': 'Saisie sans scintillement dans les champs de texte.'}
+    en = {'title': 'What’s new', 'showall': 'Show all', 'close': 'Close', 'last': 'Typing without flicker in text fields.'}
     first = scenario_update('update-fr', 'fr', 'installed 0.3.379\n', fr)
     scenario_quiet('restart', fix_root=first)
     scenario_quiet('first-install', previous=None, expect_state=SEEN, expect_log='RELEASE NOTES baseline recorded (first install)')
