@@ -290,4 +290,34 @@ inline Rect Clip(const Rect& a, const Rect& b) { return {std::max(a.left, b.left
 inline bool BubbleLayout(bool commentLayout, bool panelShown, bool bubbleOpen, bool bubbleWarm) { return commentLayout && !panelShown && (bubbleOpen || bubbleWarm); }
 // The page an anchor belongs to: the URL without its fragment (a « #section » link does not change the page).
 inline std::string PageKey(const std::string& url) { const auto hash = url.find('#'); return hash == std::string::npos ? url : url.substr(0, hash); }
+// R39 (Q, 0.3.541): a scroll step is only a MOVE of the same window — same size, same inset (nothing told to the page, no
+// new WebView size), the surface carried by exactly the element's move. The window kept for the opening (relative to the
+// surface's fixed corner), else the window it has, carried. ok = false only when there is no window yet.
+inline Kept ScrollFrame(const Rect& surface, bool fromRight, bool fromBottom, bool frameKept, const Rect& rel, const Edges& inset, int winW, int winH, float k, const Edges& over) {
+    Kept out; if (frameKept) out = FrameKept(surface, fromRight, fromBottom, rel, k, over);
+    if (!out.ok && winW > 0 && winH > 0) { out.ok = true; out.f = Reframe(surface, inset, winW, winH, k, over); }
+    return out;
+}
+// R39 (Q, 0.3.541: up to 41 px behind with the wheel, 134 px with a fast wheel): the follow thread waits for the next
+// composition (DwmFlush) then the window places the positions « on their way to the screen ». F11 took that set when the
+// thread WOKE: a position that arrived during the wait — already on screen at that composition — waited one more cycle,
+// and each cycle then started behind (2 positions a frame: always 2 behind). It is taken AT the composition.
+inline constexpr bool FollowSampleAtComposition = true;
+// The follow pipeline, modelled (time in screen images, a composition at each whole number): `perFrame` positions arrive
+// per image, the window's thread handles the thread's message `handleDelay` after the composition. Returns, at the worst
+// placement, how many positions that were on their way to the screen at its composition were not placed by it.
+inline int FollowBehind(bool atComposition, int perFrame, double handleDelay, int frames) {
+    auto arrived = [&](double t) { int n = 0; for (int f = 0; f < frames; ++f) for (int j = 0; j < perFrame; ++j) if (f + (j + .5) / perFrame <= t) ++n; return n; };
+    int worst = 0, placed = 0; double wake = .5 / perFrame;
+    for (int guard = 0; wake < frames && guard < 10 * frames; ++guard) {
+        const double vs = std::floor(wake) + 1;   // the thread's DwmFlush returns at the next composition
+        const int gen = atComposition ? arrived(vs) : arrived(wake);
+        worst = std::max(worst, arrived(vs) - gen); placed = gen;
+        const double handled = vs + handleDelay;
+        if (arrived(handled) > placed) { wake = handled; continue; }   // more positions: the next wait starts at once
+        double next = -1; for (int f = 0; f < frames && next < 0; ++f) for (int j = 0; j < perFrame; ++j) { const double a = f + (j + .5) / perFrame; if (a > handled) { next = a; break; } }
+        if (next < 0) break; wake = next;
+    }
+    return worst;
+}
 } // namespace ChatBubble

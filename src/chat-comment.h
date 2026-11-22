@@ -231,10 +231,9 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     // E4 (review R): not only a scroll step — every placement of this opening carries the window chosen at its opening
     // (relative to the surface's fixed corner): framed again only when the surface or its overflow does not fit any more
     if (placedNow) bubble.frameKept = false;
-    ChatBubble::Kept kept; if (bubble.frameKept) kept = ChatBubble::FrameKept(p.rect, p.fromRight, p.fromBottom, bubble.frameRel, k, bubble.over);
-    if (!kept.ok && scrolling && bubble.win.right > bubble.win.left && !bubble.waitingAck) {   // R39: a scroll never frames again
-        kept.ok = true; kept.f = ChatBubble::Reframe(p.rect, bubble.inset, bubble.win.right - bubble.win.left, bubble.win.bottom - bubble.win.top, k, bubble.over);
-    }
+    ChatBubble::Kept kept;
+    if (scrolling && !bubble.waitingAck) kept = ChatBubble::ScrollFrame(p.rect, p.fromRight, p.fromBottom, bubble.frameKept, bubble.frameRel, bubble.inset, bubble.win.right - bubble.win.left, bubble.win.bottom - bubble.win.top, k, bubble.over);   // R39: a scroll only moves the same window
+    else if (bubble.frameKept) kept = ChatBubble::FrameKept(p.rect, p.fromRight, p.fromBottom, bubble.frameRel, k, bubble.over);
     const auto f = kept.ok ? kept.f
                            : ChatBubble::FrameBubble(p.rect, int(std::lround(std::min(BubbleMaxHeightCss, FreeHeightCss()) * k)), p.fromBottom,
                                                      {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom}, k, bubble.over);
@@ -254,6 +253,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     const bool regionChanges = !bubble.waitingAck && !EqualRect(&rg, &bubble.region);
     if (!EqualRect(&wr, &bubble.win)) {
         const bool sized = wr.right - wr.left != bubble.win.right - bubble.win.left || wr.bottom - wr.top != bubble.win.bottom - bubble.win.top;
+        if (scrolling && (sized || insetChanged)) Diag(L"R39: a scroll step changed the bubble's frame (it must only move it)");   // Q's invariant, never expected   // i18n-exempt: log detail
         bubble.win = wr;
         // R39b: the window moves AND its region changes (the element passes under an edge of the page area). Between the two
         // calls the old region would ride with the window over the browser's bars for an image: first the part both regions
@@ -288,8 +288,9 @@ void FollowLater() {
         std::thread([] {
             for (;;) {
                 WaitForSingleObject(follower.wake, INFINITE);
-                const unsigned gen = follower.gen.load();   // F11: the positions sent so far are on their way to the screen
+                unsigned gen = follower.gen.load();   // F11: the positions sent so far are on their way to the screen
                 for (int i = 0; i < FollowFrames(); ++i) DwmFlush();
+                if (ChatBubble::FollowSampleAtComposition) gen = follower.gen.load();   // R39 (Q 0.3.541): those that arrived during the wait too — taken at the composition, never a cycle late
                 if (const HWND h = follower.to.load()) PostMessageW(h, WM_APP + 4, WPARAM(gen), 0);
             }
         }).detach();

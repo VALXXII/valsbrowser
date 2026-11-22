@@ -265,6 +265,12 @@ check('lastSy' in block_after(comment, 'void OnAnchor('), 'R47: a scroll is an o
 
 check('bubble slid' in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'decision: « bubble slid N px along its side to be fully visible » in the log')
 
+# R39 (Q, 0.3.541): the follow takes the positions at the composition it waited for; a scroll step only moves the same window
+fl = block_after(comment, 'void FollowLater() {')
+check(fl.find('DwmFlush()') >= 0 and fl.find('FollowSampleAtComposition) gen = follower.gen.load()') > fl.find('DwmFlush()'), 'R39: the positions are taken after the composition (never a cycle late)')
+pb = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('ChatBubble::ScrollFrame(' in pb and 'a scroll step changed the bubble' in pb, 'R39: a scroll step goes through ScrollFrame (a move only), any other change is logged')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

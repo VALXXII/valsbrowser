@@ -655,6 +655,31 @@ static void TestBubble() {
         const Rect big{65, 150, 1742, 925};   // an element bigger than the bubble: inside, 12 px from the corner nearest to the click
         const auto in = Place(big, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 300, true}, corner);
         Check(in.side == Side::Inside && in.rect.left == big.left + corner && in.rect.top == big.top + corner, "decision: inside only an element bigger than the bubble — 12 px from the corner"); }
+    // R39 (Q, 0.3.541): a scroll step is only a move — the same window size and inset, the surface carried by exactly the
+    // element's move — also when the element passes under the page area's top or bottom edge; and the follow places every
+    // position that was on its way to the screen at the composition it waited for (never one cycle late)
+    {   const float k = 1.25f; const Rect area{3, 141, 1473, 1018};
+        const int w = 400, h = 105, gap = 15, lead = 5;
+        const Rect el0{53, 541, 328, 653};
+        const auto p0 = Place(el0, w, h, area, gap, 0, Side::Right, lead, 0, Point{}, 15);
+        const Anchor an = AnchorOf(p0, el0);
+        const auto f0 = FrameBubble(p0.rect, 650, p0.fromBottom, Rect{0, 0, 1536, 1032}, k, Edges{});
+        const Rect rel = RelativeTo(f0.window, CornerOf(p0.rect, p0.fromRight, p0.fromBottom));
+        bool onlyMoves = true; int steps = 0;
+        for (int dy : {16, 34, 60, -27, 13, -134, 400, 520, -900, -300, 41}) {   // wheel, fast wheel, bar, past the top, past the bottom
+            const Rect el{el0.left, el0.top + dy, el0.right, el0.bottom + dy};
+            const Rect s = Anchored(an, el, w, h);
+            const auto kept = ScrollFrame(s, p0.fromRight, p0.fromBottom, true, rel, f0.inset, f0.window.W(), f0.window.H(), k, Edges{});
+            onlyMoves = onlyMoves && kept.ok && kept.f.window.W() == f0.window.W() && kept.f.window.H() == f0.window.H() && kept.f.inset == f0.inset &&
+                        s.W() == p0.rect.W() && s.H() == p0.rect.H() && s.top - p0.rect.top == dy && kept.f.window.top - f0.window.top == dy && kept.f.window.left == f0.window.left;
+            ++steps;
+        }
+        Check(onlyMoves && steps == 11, "R39: a scroll step only moves the same window (same size, same inset, the element's exact move) — also past the top and bottom edges");
+        const auto carried = ScrollFrame(p0.rect, p0.fromRight, p0.fromBottom, false, Rect{}, f0.inset, f0.window.W(), f0.window.H(), k, Edges{});
+        Check(carried.ok && carried.f.window.W() == f0.window.W() && carried.f.inset == f0.inset, "R39: without the opening's kept frame, the window it has is carried (never framed again)");
+        Check(FollowBehind(FollowSampleAtComposition, 1, .1, 60) == 0 && FollowBehind(FollowSampleAtComposition, 2, .1, 60) == 0 && FollowBehind(FollowSampleAtComposition, 3, .3, 60) == 0,
+              "R39: the follow places every position on its way to the screen at the composition it waited for (1, 2, 3 per image)");
+        Check(FollowBehind(false, 2, .1, 60) >= 2, "R39: taken when the thread woke (F11), 2 positions per image stay 2 behind (Q: 41 px with the wheel)"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};
