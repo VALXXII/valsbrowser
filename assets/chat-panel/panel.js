@@ -1262,8 +1262,16 @@
     for (const k of SIDES) if (floats.size && S.ovAsk[k] > v[k] && lim[k] > v[k]) lim[k] = v[k];
     if (floats.size) publishSize();
   }
+  // Q's journeys: the host shows the bubble at the size of the acknowledgement of its opening layout. Sent before the
+  // thread (which H1 sends right after the layout, in the same go), it said the empty bubble's height and the bubble grew
+  // by up to 500 px once shown. The acknowledgement now leaves with the thread drawn — at its `thread.reset`, else at the
+  // next image — still the first `bubble.size` after the layout, with the height the bubble keeps.
+  let ackPending = false;
+  function ackSoon() { ackPending = true; requestAnimationFrame(ackNow); }
+  function ackNow() { if (!ackPending) return; ackPending = false; publishSize(true); }
   function publishSize(force) {
     if (!BUB() || S.fatal) return;
+    if (ackPending && !force) return;   // nothing before the acknowledgement (it carries the final size)
     const hgt = Math.max(1, Math.min(S.bsize ? Infinity : S.lay.maxH, Math.ceil(bubbleNatural())));
     const need = floats.size ? floatNeed(hgt) : { top: 0, right: 0, bottom: 0, left: 0 };
     const key = curW() + "x" + hgt + ":" + SIDES.map((k) => need[k]).join(",") + (S.bsize ? ":r" : "");
@@ -1313,7 +1321,24 @@
     renderThumbs(); updateSend();
   }
   let resetGen = 0;
-  const RESET_FIRST = 6;   // exchanges drawn before the first image
+  // Q's journeys (first openings 150 to 211 ms): each exchange costs ~3.5 ms to draw. Before the first image only the last
+  // exchanges that fill the bubble are drawn (their height estimated from their text, never under it: 1.5 × the bubble's
+  // height, at least one exchange); the bubble has its full height at once, nothing jumps when the older ones come above.
+  function firstCut(items) {
+    const users = []; items.forEach((it, i) => { if (it && it.type === "message.user") users.push(i); });
+    if (users.length < 2) return 0;
+    const want = (BUB() ? S.lay.maxH : 900) * 1.5;
+    let hgt = 0;
+    for (let u = users.length - 1, end = items.length; u >= 1; end = users[u], u--) {
+      for (let i = users[u]; i < end; i++) {
+        const it = items[i]; if (!it) continue;
+        const tx = typeof it.text === "string" ? it.text.length : 0;
+        hgt += it.type === "message.user" || it.type === "message.agentChunk" ? 24 + Math.ceil(tx / 60) * 18 : it.type === "toolCall" ? 24 : 0;
+      }
+      if (hgt >= want) return users[u];
+    }
+    return 0;
+  }
   function prependOlder(items) {
     const anchor = log.firstChild;
     const keep = { lastUser: S.lastUser, lastTurn: S.lastTurn, lastAt: S.lastAt, berr: S.berr, planPending: S.planPending, switched: S.switched };
@@ -1328,6 +1353,9 @@
     if (S.atBottom) scroller.scrollTop = scroller.scrollHeight;
     publishSize();
   }
+  // Q's journeys: the faces load when first used (font-display: block = text hidden meanwhile); ask for all of them now,
+  // so no opening waits for a face (a code block's mono, a title's medium)
+  try { for (const f of ["400 13px 'Inter Display'", "500 13px 'Inter Display'", "600 13px 'Inter Display'", "400 12px 'JetBrains Mono'"]) document.fonts.load(f).catch(() => {}); } catch (e) { /* no FontFaceSet */ }
   function resetThread() {
     resetGen++;
     closeChanges();
@@ -1400,8 +1428,21 @@
     cin.setAttribute("aria-disabled", S.st.disabledReason ? "true" : "false");
     ruleEl.hidden = running || (none && !S.bview);
     // no input during a turn: the focus waits on the bubble itself (never on « Arrêter »: Entrée must not stop the agent)
-    if (mine && document.hasFocus()) { if (running) app.focus({ preventScroll: true }); else if (!S.bview) cin.focus(); }
+    if (mine && document.hasFocus()) dockFocusSoon();
     updateSend();
+  }
+  // Q's journeys: focus() lays the page out; called by each dock drawing of an opening (thread, turn ends, state) it laid the
+  // whole thread out several times before the first image. One focus, at the image, with what is true then.
+  let dockFocusPending = false;
+  function dockFocusSoon() {
+    if (dockFocusPending) return;
+    dockFocusPending = true;
+    requestAnimationFrame(() => {
+      dockFocusPending = false;
+      const a = document.activeElement;
+      if (!BUB() || !document.hasFocus() || S.perms.length || !(composer.contains(a) || a === app || a === document.body || !a)) return;
+      if (S.st.running) { if (a !== app) app.focus({ preventScroll: true }); } else if (!S.bview && composer.isConnected && a !== cin) cin.focus();
+    });
   }
   function permRespond(p, opt, message) {
     if (!opt) return;
@@ -1771,14 +1812,17 @@
     stick();
     return node;
   }
+  // Q's journeys: a formatter made per call (toLocale…String) cost ~11 ms at the first opening with a thread (ICU data
+  // loaded then); made once, at start
+  const FMT_HM = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }), FMT_DM = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short" });
   function dayLabel(t) {
     const d = new Date(t), now = new Date();
-    const hm = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    const hm = FMT_HM.format(d);
     const sameDay = (a, b) => a.toDateString() === b.toDateString();
     const y = new Date(now); y.setDate(now.getDate() - 1);
     if (sameDay(d, now)) return "Aujourd'hui · " + hm;
     if (sameDay(d, y)) return "Hier · " + hm;
-    return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) + " · " + hm;
+    return FMT_DM.format(d) + " · " + hm;
   }
 
   function onUser(m) {
@@ -2863,7 +2907,8 @@
       if (opening) { closeMenu(); bTipHide(); }
       applyInset(m.inset);
       if (opening) bOpen();
-      updateView(); publishSize(opening);
+      updateView();
+      if (opening) ackSoon(); else publishSize();
     },
     "thread.reset"(m) {
       stashDraft();
@@ -2872,8 +2917,7 @@
       // H1's measure (opening < 150 ms): a long conversation draws its last exchanges first — what the bubble shows, at the
       // end — and the older ones right after the first image, put above without moving what is seen
       const gen = ++resetGen;
-      const users = []; m.items.forEach((it, i) => { if (it && it.type === "message.user") users.push(i); });
-      const cut = users.length > RESET_FIRST + 4 ? users[users.length - RESET_FIRST] : 0;
+      const cut = firstCut(m.items);
       if (cut > 0) {
         const older = m.items.slice(0, cut);
         const lastOlderAt = older.filter((it) => it && it.type === "message.user").map((it) => Date.parse(it.at) || 0).pop() || 0;
@@ -2885,6 +2929,7 @@
       // M11 (review): a replayed turn with no end while nothing runs (the browser was closed during it) ends as stopped
       if (!S.st.running) for (const t of Array.from(S.turns.values())) if (t.running) { S.replay = true; try { onTurnEnd({ turnId: t.id, stopReason: "cancelled", interrupted: true }); } finally { S.replay = false; } }
       renderDock(true); placeholder(); updateView();
+      scroller.scrollTop = scroller.scrollHeight; ackNow();
       requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
     },
     "thread.append"(m) {   // (see also prependOlder: the older part of a long conversation, put above after the first image)

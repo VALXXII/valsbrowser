@@ -675,9 +675,12 @@ disent). Ce paragraphe décrit la page ; l'hôte (H) a sa part (R14, R15, R16, R
   fondu, **160 ms**, `cubic-bezier(.23, 1, .32, 1)` (plus rapide que le tiroir des Réglages) ; fondu seul en mouvement réduit.
   L'hôte place et dimensionne la fenêtre avant de la montrer et ne la montre qu'après le `bubble.size` qui accuse réception
   de ce `layout` (filet de 300 ms) ; ensuite il ne la déplace plus.
-  La page envoie cet accusé dans le traitement même du `layout`, avant de dessiner le fil (1 à 3 ms). Une longue conversation
-  (plus de 10 échanges) dessine d'abord ses 6 derniers échanges — ce que la bulle montre, en bas — puis les plus anciens
-  juste après la première image, au-dessus, sans rien déplacer de ce qui est vu (40 échanges : première image 55 → ~17 ms).
+  L'accusé part avec le fil : au `thread.reset` qui suit le `layout` d'ouverture (l'hôte les envoie ensemble), sinon à
+  l'image suivante — toujours le premier `bubble.size` après le `layout`, avec la hauteur que la bulle garde (envoyé avant
+  le fil, il disait la hauteur de la bulle vide et la bulle grandissait jusqu'à 500 px une fois montrée). Une conversation
+  dessine d'abord ses derniers échanges qui remplissent la bulle (hauteur estimée d'après leur texte, 1,5 × la bulle), puis
+  les plus anciens juste après la première image, au-dessus, sans rien déplacer. Mesures (run.py, Chromium sans fenêtre) :
+  `layout` → accusé 3 ms (bulle neuve), 12 ms (conversation, aussi depuis le panneau) ; accusé → première image 1 ms.
 
 ### 21.2 Bas de la saisie de la bulle (R13, R21, R22)
 

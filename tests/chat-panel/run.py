@@ -1004,8 +1004,9 @@ try:
           const items=[];for(let i=0;i<big;i++){items.push({type:'message.user',id:'u'+i,text:'Demande '+i+' : '+'mot '.repeat(40),at:new Date().toISOString(),elements:[]},{type:'turn.start',turnId:'t'+i,model:'Sonnet 5.5',effort:'Élevé',agentId:'claude-code',at:new Date().toISOString()},{type:'message.agentChunk',turnId:'t'+i,messageId:'m'+i,text:'## Titre\\n\\n'+'Une phrase de réponse assez longue. '.repeat(30)+'\\n\\n```css\\n.a{b:c}\\n```'},{type:'turn.end',turnId:'t'+i,stopReason:'end_turn',durationMs:9000})}
           send({type:'layout',mode:'bubble',maxWidth:320,maxHeight:520,element:'section.a',elementKey:'A'});send({type:'thread.reset',conversationId:'cA',items});
           const n0=P.length,t0=performance.now();send({type:'layout',mode:'bubble',maxWidth:320,maxHeight:520,element:'section.b',elementKey:'B'});
-          const ack=P.slice(n0).findIndex(m=>m.type==='bubble.size')>=0?performance.now()-t0:-1;
+          const early=P.slice(n0).some(m=>m.type==='bubble.size');
           const t1=performance.now();send({type:'thread.reset',conversationId:'cB',items});const reset=performance.now()-t1;
+          const ack=!early&&P.slice(n0).filter(m=>m.type==='bubble.size').length===1?performance.now()-t0:-1;
           return {ack:Math.round(ack*10)/10,reset:Math.round(reset)}})"""
         PAINT_JS = """((big)=>new Promise(r=>{const send=window.devHost.send;
           const items=[];for(let i=0;i<big;i++){items.push({type:'message.user',id:'u'+i,text:'Demande '+i+' : '+'mot '.repeat(40),at:new Date().toISOString(),elements:[]},{type:'turn.start',turnId:'t'+i,model:'Sonnet 5.5',effort:'Élevé',agentId:'claude-code',at:new Date().toISOString()},{type:'message.agentChunk',turnId:'t'+i,messageId:'m'+i,text:'## Titre\\n\\n'+'Une phrase de réponse assez longue. '.repeat(30)+'\\n\\n```css\\n.a{b:c}\\n```'},{type:'turn.end',turnId:'t'+i,stopReason:'end_turn',durationMs:9000})}
@@ -1018,11 +1019,37 @@ try:
                  stayed:lastBox()===b0,atEnd:Math.round(sc.scrollHeight-sc.scrollTop-sc.clientHeight)<=1})},300)})}))"""
         load("c-1-vide")
         paint = cdp.js("(" + PAINT_JS + ")(40)")
-        check(paint["firstImage"] < 30 and paint["firstTurns"] == 6 and paint["turns"] == 40 and paint["ordered"] and paint["stayed"] and paint["atEnd"],
-              "H1 latency: a 40-exchange conversation reaches its first image fast (its last 6 exchanges; was 55 ms for all), then the older ones come above — all 40 in order, nothing seen moves, still at the end", json.dumps(paint))
+        check(paint["firstImage"] < 30 and 1 <= paint["firstTurns"] <= 6 and paint["turns"] == 40 and paint["ordered"] and paint["stayed"] and paint["atEnd"],
+              "H1 latency: a 40-exchange conversation reaches its first image fast (only its last exchanges that fill the bubble; was 55 ms for all), then the older ones come above — all 40 in order, nothing seen moves, still at the end", json.dumps(paint))
+        # Q's journeys (first openings 150 to 211 ms for < 150): the page's share, as H1 sends an opening (layout, state, thread,
+        # queue, focus in one go): layout -> acknowledgement (bubble.size), acknowledgement -> first image (rAF), for a new bubble,
+        # an existing conversation (6 exchanges), the switch from the panel (M5); median of 3. The bubble's height at the first
+        # image is its height once the older exchanges are there (no jump).
+        OPEN_JS = """((kind)=>new Promise(r=>{const send=window.devHost.send,P=window.__posted;const n=kind==='neuve'?0:6;
+          const items=[];for(let i=0;i<n;i++){items.push({type:'message.user',id:'u'+i,text:'Demande '+i+' : '+'mot '.repeat(40),at:new Date().toISOString(),elements:[]},{type:'turn.start',turnId:'t'+i,model:'Sonnet 5.5',effort:'Élevé',agentId:'claude-code',at:new Date().toISOString()},{type:'message.agentChunk',turnId:'t'+i,messageId:'m'+i,text:'## Titre\\n\\n'+'Une phrase de réponse assez longue. '.repeat(30)+'\\n\\n```css\\n.a{b:c}\\n```'},{type:'turn.end',turnId:'t'+i,stopReason:'end_turn',durationMs:9000})}
+          if(kind!=='M5')send({type:'bubble.hidden'});
+          setTimeout(()=>{const n0=P.length,t0=performance.now();
+            send({type:'layout',mode:'bubble',maxWidth:320,maxHeight:520,element:'a.btn-primary',elementKey:'K'+kind,inset:window.__inset||{top:400,right:400,bottom:400,left:400}});
+            send({type:'state',running:false,conversation:n?{id:'cX',title:'Bouton'}:null});send({type:'thread.reset',conversationId:n?'cX':'new',items});
+            let ack=P.slice(n0).filter(m=>m.type==='bubble.size').length?performance.now()-t0:-1;const acks=()=>P.slice(n0).filter(m=>m.type==='bubble.size');
+            send({type:'queue',items:[]});send({type:'focus',target:'composer'});
+            requestAnimationFrame(()=>{const img=performance.now()-t0,h0=document.getElementById('app').getBoundingClientRect().height;if(ack<0&&acks().length)ack=img;const a0=acks()[0];
+              const hA=a0?a0.height:-1;
+              setTimeout(()=>{const last=acks().pop();r({ack:Math.round(ack*10)/10,image:Math.round((img-ack)*10)/10,jump:(a0?acks().reduce((m,x)=>Math.max(m,Math.abs(x.height-hA)),0)+Math.abs(Math.round(document.getElementById('app').getBoundingClientRect().height)-hA):999)})},300)})},150)}))"""
+        opening = {}
+        for kind, start in (("neuve", "c-1-vide"), ("existante", "c-1-vide"), ("M5", "6.7a-vide")):
+            rows = []
+            for _ in range(3):
+                load(start); rows.append(cdp.js("(" + OPEN_JS + ")(" + json.dumps(kind) + ")"))
+            opening[kind] = {k: sorted(x[k] for x in rows)[1] for k in ("ack", "image")}
+            opening[kind]["jump"] = max(x["jump"] for x in rows)   # every later bubble.size and the height drawn in the end vs the acknowledged one
+        report["perf"]["opening"] = opening
+        print("     opening (page share, ms):", json.dumps(opening))
+        check(all(0 <= v["ack"] < (8 if k == "neuve" else 16) and v["image"] < 8 and v["jump"] == 0 for k, v in opening.items()),
+              "Q's journeys: the page acknowledges an opening (layout + thread, as H1 sends it) in < 8 ms for a new bubble, < 16 ms with a conversation (also from the panel, M5), its first image right after; the acknowledged height is the one the bubble keeps (no jump)", json.dumps(opening))
         load("c-1-vide")
         lat = cdp.js("(" + LAT_JS + ")(40)")
-        check(lat["ack"] >= 0 and lat["ack"] < 16, "H1 latency: the opening layout is acknowledged (bubble.size) within one image even with a 40-turn thread still drawn and another coming", json.dumps(lat))
+        check(lat["ack"] >= 0 and lat["ack"] < 16, "H1 latency: the opening layout is acknowledged (one bubble.size) with the thread that follows it, within one image, even with a 40-turn thread still drawn and another coming", json.dumps(lat))
         # F5: drafts never grow without end — after 45 elements with unsent words, the oldest one is dropped, the latest kept
         load("c-1-vide")
         f5 = cdp.js("""(()=>{const send=window.devHost.send,cin=()=>document.getElementById('composer-input');
