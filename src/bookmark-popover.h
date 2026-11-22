@@ -228,6 +228,8 @@ class Popover {
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Popover*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (msg == WM_NCCREATE) { self = static_cast<Popover*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
+        // Destroyed with its owner (or by Dispose): the object never hears from this window again.
+        if (msg == WM_NCDESTROY) { SetWindowLongPtrW(h, GWLP_USERDATA, 0); if (self && self->hwnd_ == h) self->hwnd_ = self->name_ = self->url_ = nullptr; return DefWindowProcW(h, msg, w, l); }
         return self ? self->Handle(h, msg, w, l) : DefWindowProcW(h, msg, w, l);
     }
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -348,7 +350,14 @@ class Popover {
     }
 public:
     ~Popover() { Dispose(); }
-    void Dispose() { uia_.Detach(); chrome_.Dispose(); if (font_) DeleteObject(font_); font_ = nullptr; if (fieldBrush_) DeleteObject(fieldBrush_); fieldBrush_ = nullptr; hwnd_ = name_ = url_ = nullptr; visible_ = false; }
+    // Also destroys the window: a Popover that goes away (a scope's end) must not leave a window
+    // whose timer or pointer messages reach freed memory (edit_flicker_test crashed that way on CI).
+    void Dispose() {
+        if (hwnd_) { KillTimer(hwnd_, FrameTimer); SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0); }
+        uia_.Detach(); chrome_.Dispose();
+        if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
+        if (font_) DeleteObject(font_); font_ = nullptr; if (fieldBrush_) DeleteObject(fieldBrush_); fieldBrush_ = nullptr; hwnd_ = name_ = url_ = nullptr; visible_ = false;
+    }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, Hooks hooks) {
         instance_ = instance; owner_ = owner; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_);
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarkPopover";
