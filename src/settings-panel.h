@@ -34,6 +34,7 @@
 #include "settings.h"
 #include "context-menu.h"
 #include "native-ui.h"
+#include "tooltip.h"
 #include "modal.h"
 #include "accessibility.h"
 #include "svg-path.h"
@@ -532,8 +533,8 @@ public:
         std::function<bool(I18n::Locale)> saveLanguage;
     };
 private:
-    HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
-    std::vector<UINT_PTR> tips_; std::vector<std::wstring> tipTexts_;
+    HWND hwnd_ = nullptr, owner_ = nullptr;
+    Tooltip::Tools tip_;
     Chrome chrome_; Chrome* pc_ = &chrome_; Motion::State motion_;   // pc_: the surface painted (chrome_, or an offscreen one for RenderForTest)
     BrowserSettings::State* state_ = nullptr; Hooks hooks_;
     ID2D1GradientStopCollection* stops_ = nullptr; ID2D1LinearGradientBrush* fade_ = nullptr;
@@ -1786,14 +1787,8 @@ private:
     }
     void RefreshTips() {
         if (!tip_) return;
-        for (auto id : tips_) { TOOLINFOW t{}; t.cbSize = sizeof(t); t.hwnd = hwnd_; t.uId = id; SendMessageW(tip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&t)); }
-        tips_.clear(); tipTexts_.clear(); tipTexts_.reserve(8);
-        auto add = [&](UINT_PTR id, Design::Box b, std::wstring text) {
-            tipTexts_.push_back(std::move(text));
-            TOOLINFOW t{}; t.cbSize = sizeof(t); t.uFlags = TTF_SUBCLASS; t.hwnd = hwnd_; t.uId = id;
-            t.rect = {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; t.lpszText = const_cast<wchar_t*>(tipTexts_.back().c_str());
-            SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
-        };
+        tip_.Clear();
+        auto add = [&](UINT_PTR id, Design::Box b, std::wstring text) { tip_.Add(id, {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}, std::move(text)); };
         add(Close, Layout::CloseButton(), TR(settings_close_tip));
         const View view = Current();
         if (view != View::Main) add(Back, Layout::BackButton(), TR(common_back));
@@ -1964,8 +1959,7 @@ public:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(settings_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        NativeUI::StripTooltipShadow(tip_);
+        tip_.Create(instance, hwnd_, root);
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         AttachEditor(); AttachUia();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
@@ -1976,7 +1970,7 @@ public:
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
         edit_ = nullptr; editing_ = 0; uia_.Detach(); editor_.Detach();
         for (auto& g : glyphs_) Drop(g.second); glyphs_.clear();
-        Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
+        Drop(fade_); Drop(stops_); chrome_.Dispose(); tip_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     HWND Window() const { return hwnd_; }
     HWND EditForTest() const { return edit_; }   // the field being edited (search, address fields)
     UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
