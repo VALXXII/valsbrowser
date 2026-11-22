@@ -211,6 +211,15 @@ mode = code('annotation-mode.h')
 ex = mode[mode.find('if (cmd == AnnotateExitCommand)'):][:200]
 check('Chat::BubbleOpen()' in ex and ex.find('CloseBubble') < ex.find('Ann::Exit'), 'M4: the browser shortcut Échap shortcut closes the bubble first')
 
+# M15 (Q's real window): the page area got smaller (the window resized) and the bubble is no longer whole in it — placed again
+# by the opening's rules (R44); R29 (never moved) is for a scroll, not for a window that changes size
+pl = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('anchorArea' in pl and 'FullyVisible(' in pl and pl.find('anchorArea') < pl.find('ChatBubble::Place('), 'M15: a smaller page area places a bubble that is no longer whole again')
+
+# M4 panel (Q's monkey): « Chat à droite », back from another application, the panel's composer gets the keyboard again
+fgc = block_after(comment, 'void CALLBACK ForegroundChanged(')
+check('Open()' in fgc and fgc.find('Open()') < fgc.find('if (!bubble.open'), 'M4 panel: back in front, the open panel gets the keyboard (before the bubble-only checks)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

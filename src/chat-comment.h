@@ -38,6 +38,7 @@ struct BubbleState {
     bool away = false;                                               // open, hidden while another application is in front; shown again when the browser comes back
     ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
     bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
+    RECT anchorArea{};                                               // M15: the page area the anchor was chosen in
     bool hadKeyboard = false;                                        // M4 (a): the bubble had the keyboard when another application came in front
     int roomAreaH = 0;                                               // M15: the page area's height the offered room was measured with
     bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
@@ -176,12 +177,22 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     const RECT e = bubble.known ? bubble.element : RECT{a.right - margin, a.bottom - margin, a.right - margin, a.bottom - margin};
     const ChatBubble::Rect er{e.left, e.top, e.right, e.bottom};
     ChatBubble::Placement p; bool placedNow = false;
+    // M15 (Q's real window): the page area changed size (the window was resized, not scrolled) and the bubble, where its anchor
+    // keeps it, is no longer whole in it: placed again by the opening's rules (R44), whole, at its natural height
+    if (!scrolling && bubble.anchor.set && bubble.known && !EqualRect(&a, &bubble.anchorArea)) {
+        const auto where = ChatBubble::Anchored(bubble.anchor, er, w, h);
+        if (!ChatBubble::FullyVisible(where, area)) {
+            Diag(L"the page area changed size and the bubble is no longer whole in it: placed again");   // i18n-exempt: log detail
+            bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right;
+        }
+        bubble.anchorArea = a;
+    }
     if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor; then they never change
         // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
         p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
                               int(std::lround(BubbleMaxHeightCss * k)), bubble.click, int(std::lround(BubbleGapCss * k)));
         if (bubble.known) {
-            bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true;
+            bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true; bubble.anchorArea = a;
             Diag(std::wstring(L"bubble placed ") + W(std::string(p.why)) + L" (element " + std::to_wstring(er.W()) + L"x" + std::to_wstring(er.H()) + L", visible area " + std::to_wstring(area.W()) + L"x" + std::to_wstring(area.H()) + L")");   // i18n-exempt: log detail
         }
     } else { p.side = bubble.anchor.side; p.fromRight = bubble.anchor.fromRight; p.fromBottom = bubble.anchor.fromBottom; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
@@ -316,6 +327,11 @@ void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD
     static bool lastOurs = true;   // the previous foreground window was one of this browser's
     DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
     const bool ours = fg && pid == GetCurrentProcessId(), cameBack = ours && !lastOurs; if (fg) lastOurs = ours;
+    // M4, panel (Q's monkey): « Chat à droite » open, back from another application (not a click): its composer gets the keys
+    if (cameBack && Open() && !bubble.open && panelReady && !MouseDown()) {
+        view.Focus(); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f));
+        Diag(L"the browser is back in front: the keyboard goes back to the panel");   // i18n-exempt: log detail
+    }
     if (!bubble.open || !fg || !bubble.hwnd) return;
     if (ours) {
         if (bubble.away) BubbleBack(L"the browser is back in front");   // i18n-exempt: log detail
