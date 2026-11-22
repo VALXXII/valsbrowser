@@ -370,6 +370,11 @@ EMBEDDED = {'#qa-frame': "(function(){var f=document.getElementById('qa-frame');
                         "return [b.left+b.width/2,b.top+b.height/2]})()"}
 
 
+EMBEDDED_BOX = {'#qa-frame': "(function(){var f=document.getElementById('qa-frame');var a=f.getBoundingClientRect(),b=f.contentDocument.getElementById('qa-in').getBoundingClientRect();"
+                             "return [a.left+b.left,a.top+b.top,a.left+b.right,a.top+b.bottom]})()",
+                '#qa-card': "(function(){var b=document.getElementById('qa-card').shadowRoot.getElementById('qa-sh').getBoundingClientRect();return [b.left,b.top,b.right,b.bottom]})()"}
+
+
 def inject_embedded():
     """The iframe (same origin) and the web component; again after a reload (they are not in the site's files)."""
     r = page(EMBED_JS); time.sleep(0.5 if r else 0); return r
@@ -803,6 +808,11 @@ class Invariants:
         if ms is None:   # no bubble came (reported above): nothing open, no anchor — no cascade of follow-up failures
             self.m.open = None; self.m.anchor = None; return
         el = element_screen(sel)
+        if sel in EMBEDDED_BOX:   # the block clicked inside the iframe / the shadow root is the element (its host is only the anchor)
+            r = page(EMBEDDED_BOX[sel]); pg0 = page_area(); kk = dpr()
+            if r:
+                self.distance(sel, [int(pg0[0] + r[0] * kk), int(pg0[1] + r[1] * kk), int(pg0[0] + r[2] * kk), int(pg0[1] + r[3] * kk)], sf, st.get('dpr', 1), mark, where) if sf and mark is not None else None
+                mark = None
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
         self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
         if sf and mark is not None:

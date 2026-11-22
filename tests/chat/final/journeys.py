@@ -446,7 +446,8 @@ def j_labels(j):
         for sel in ('h2.section-title', 'a.btn-primary', 'div.plans'):
             F.scroll_into_view(sel, 'center'); F.front(); time.sleep(0.3)
             el = F.element_screen(sel); k = F.dpr(); pg = F.page_area()
-            box = (max(pg[0], el[0] - int(4 * k)), max(pg[1], el[1] - int(28 * k)), min(pg[2], el[0] + int(300 * k)), min(pg[3], el[1] + int(4 * k)))
+            # the labels' row only: from the element's left to its right (+2) — the bubble now sits beside it at the top -4 (Paper)
+            box = (max(pg[0], el[0] - int(4 * k)), max(pg[1], el[1] - int(28 * k)), min(pg[2], el[2] + int(2 * k)), min(pg[3], el[1] - int(2 * k)))
             p = F.element_point(sel); F.u32.SetCursorPos(*p); time.sleep(0.8)
             ref = img(V4.fast_grab(box)); tag = f'{int(ratio * 100)}-{sel}'
             ref.save(j.R.dir / f'{tag}-survol.png')
