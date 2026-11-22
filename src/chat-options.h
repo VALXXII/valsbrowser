@@ -94,6 +94,12 @@ inline std::string ChoiceForNewSession(const std::string& justChosen, const std:
 inline std::string ShownSetting(bool own, bool owed, const std::string& session, const std::string& wanted) {
     return (own && !owed) || wanted.empty() ? session : wanted;
 }
+// M (coordinator, 22 Nov 2026): « Lancer le plan » is the user's own action — the mode that follows Plan (the one the browser
+// sets, or the one the agent goes to once its plan is accepted) becomes the user's choice: the next element does not start
+// in « Planifier » again. "" = nothing to keep (no plan launched, or still in Plan). `kind`: the host's "ask" / "auto" / "plan".
+inline std::string ModeAfterPlan(bool planLaunched, const std::string& nowId, const std::string& nowKind) {
+    return planLaunched && !nowId.empty() && nowKind != "plan" ? nowId : std::string();
+}
 inline std::string ShownWhileAsked(const std::string& current, Asked& asked, double now, double patienceMs = 3000) {
     if (asked.value.empty()) return current;
     if (current == asked.value || now - asked.at > patienceMs) { asked = Asked{}; return current; }

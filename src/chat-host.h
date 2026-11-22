@@ -130,6 +130,7 @@ struct Problem { std::wstring title, message; bool retry = true, connect = false
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
     bool batch = false;   // « Traiter les annotations »: the prompt is the batch's instruction, the card follows our tools
+    bool planLaunched = false;   // M: « Lancer le plan » accepted the agent's plan in this turn — the mode it goes to is the user's choice (KeepModeAfterPlan)
     std::string id, text, snapshotTurn, lastMessageId, thoughtId, summaryText; double startedMs = 0, thoughtStart = 0; int messageSeq = 0, thoughtSeq = 0;
     std::vector<Element> elements; std::vector<Attachment> attachments; std::uint64_t navStamp = 0;
     std::map<std::string, std::size_t> itemOf;   // message / thought / tool id -> index in convo.items

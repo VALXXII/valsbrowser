@@ -592,6 +592,16 @@ static void TestBubble() {
                 s.TurnEnds();
                 Check(s.Shown() == id && s.session == id && !s.owed, ("M: …and its session gets it when its turn ends: " + name).c_str()); }
         }
+        {   // « Lancer le plan »: the mode that follows Plan is the user's choice (the next element does not start in « Planifier » again)
+            for (const char* after : {"default", "acceptEdits"}) {   // the browser's « Demander », or the mode the agent goes to once its plan is accepted
+                Setting s = mode; s.PrepareChat(); s.Start(); s.Choose("plan");
+                s.session = after;                                                                             // the plan is launched: the session leaves Plan
+                if (const std::string kept = ChatOptions::ModeAfterPlan(true, s.session, std::string(after) == "default" ? "ask" : "auto"); !kept.empty()) s.site = kept;
+                Check(s.Shown() == after, ("M: « Lancer le plan » — the mode that follows is shown: " + std::string(after)).c_str());
+                s.NewElement();
+                Check(s.Shown() == after && s.session == after, ("M: « Lancer le plan » — the next element starts in the mode that followed, not in « Planifier » again: " + std::string(after)).c_str()); }
+            Check(ChatOptions::ModeAfterPlan(true, "plan", "plan").empty() && ChatOptions::ModeAfterPlan(true, "plan.option", "plan").empty() && ChatOptions::ModeAfterPlan(true, "", "ask").empty(), "M: a plan launched, the session still in Plan — nothing kept yet");
+            Check(ChatOptions::ModeAfterPlan(false, "default", "ask").empty() && ChatOptions::ModeAfterPlan(false, "acceptEdits", "auto").empty(), "M: no plan launched — a mode the agent changes by itself is never taken for the user's choice"); }
         Check(ChatOptions::ShownSetting(true, false, "default", "auto") == "default", "M: the session shown is the conversation's own, nothing owed — its real value (an agent that refused a mode is not hidden)");
         Check(ChatOptions::ShownSetting(false, false, "sonnet", "") == "sonnet", "M: aside with nothing chosen and no start value of the browser's — the agent's own");
         struct Ch { std::string value, name, description; };

@@ -818,9 +818,10 @@ void OnPanelMessage(const std::string& json) {
     if (type == "checkpoint.restore") { const std::string cp = m.Id("checkpointId"); std::string t; for (const auto& p : checkpointOfTurn) if (p.second == cp) t = p.first; if (!cp.empty()) Undo(t, cp); return; }
     if (type == "checkpoint.viewChanges") { ViewChanges(m.Id("turnId"), m.Text("path", 1024)); return; }
     if (type == "plan.run") {
-        if (turn.active && !turn.planPermission.empty() && session) { std::string allow; for (const auto& o : turn.planOptions) if (allow.empty() && o.kind.rfind("allow", 0) == 0) allow = o.id; if (allow.empty() && !turn.planOptions.empty()) allow = turn.planOptions.back().id; session->RespondPermission(turn.planPermission, allow); turn.planPermission.clear(); return; }
+        if (turn.active && !turn.planPermission.empty() && session) { std::string allow; for (const auto& o : turn.planOptions) if (allow.empty() && o.kind.rfind("allow", 0) == 0) allow = o.id; if (allow.empty() && !turn.planOptions.empty()) allow = turn.planOptions.back().id; turn.planLaunched = true; session->RespondPermission(turn.planPermission, allow); turn.planPermission.clear(); return; }   // M: the mode the agent goes to is kept (KeepModeAfterPlan)
         // a plan given as plain updates (no gate): leave Plan mode for the first « ask » mode, then say go
         const auto mv = ModesOf(agentId, agentInfo[agentId]); std::string next; for (const auto& md : mv.list) if (next.empty() && md.kind == "ask") next = md.id; for (const auto& md : mv.list) if (next.empty() && md.kind != "plan") next = md.id;
+        RememberSetting(&ChatStore::Project::mode, ChatOptions::ModeAfterPlan(true, next, KindOfMode(mv, next)));   // M: the user launched the plan — the next element does not start in « Planifier » again
         if (!next.empty() && session && sessionReady) SetAgentMode(next);
         SendOrQueue(T8(I18n::Id::chat_prompt_run_plan), {}, {}); return;
     }

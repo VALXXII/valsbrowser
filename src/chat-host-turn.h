@@ -177,6 +177,16 @@ void ApplyDefaults() {   // the site's remembered choices, else « Demander » (
     defaultsApplied = true;   // R28: from now on the composer shows the session's own values (the same, once applied)
     choicesOwed = 0;
 }
+// M (coordinator): « Lancer le plan » accepted the agent's plan (its own gate) — the mode the agent goes to then is the user's
+// choice from now on (the site's): the next element does not start in « Planifier » again. Only a mode the chat offers.
+void KeepModeAfterPlan() {
+    if (!turn.planLaunched) return;
+    const auto mv = ModesOf(agentId, agentInfo[agentId]);
+    const std::string kept = ChatOptions::ModeAfterPlan(true, mv.current, KindOfMode(mv, mv.current)); if (kept.empty()) return;   // still in Plan
+    turn.planLaunched = false;
+    if (std::none_of(mv.list.begin(), mv.list.end(), [&](const ModeEntry& m) { return m.id == kept; })) return;   // a mode never offered is never kept
+    RememberSetting(&ChatStore::Project::mode, kept); Diag(L"plan launched: the mode that follows, « " + W(kept) + L" », is kept as the user's choice");   // i18n-exempt: log detail
+}
 // M / E3: a choice made in a conversation shown aside never touched the turn that ran; that turn has ended — its session,
 // if it stays, gets the choices now (what the composer has shown since), before any next message.
 void GiveOwedChoices() {
@@ -506,8 +516,8 @@ void OnEvent(const Acp::Event& e) {
         if (e.permission.requestId == turn.planPermission) { turn.planPermission.clear(); break; }
         waitingPermissions.erase(e.permission.requestId);
         SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(e.permission.requestId)); Send("permission.cancel", std::move(m)); break; }
-    case T::ModesChanged: info.modes = e.modes; SendState(); break;
-    case T::ConfigOptionsChanged: { info.options = e.configOptions; SendState(); void SaveOptionsCache(); SaveOptionsCache(); break; }
+    case T::ModesChanged: info.modes = e.modes; KeepModeAfterPlan(); SendState(); break;
+    case T::ConfigOptionsChanged: { info.options = e.configOptions; KeepModeAfterPlan(); SendState(); void SaveOptionsCache(); SaveOptionsCache(); break; }
     case T::CommandsChanged: info.commands = e.commands; SendCommands(); break;
     case T::SessionTitle: if (!e.text.empty()) { convo.data.head.title = ChatPrompt::OneLine(e.text, 60); SendState(); } break;
     case T::Usage: {   // context gauge (contract B 1.2): relayed as it comes (also after a compaction), kept with the conversation
