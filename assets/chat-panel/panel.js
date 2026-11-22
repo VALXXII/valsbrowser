@@ -1353,7 +1353,9 @@
       app.style.setProperty("--b-dx", from[0] + "px"); app.style.setProperty("--b-dy", from[1] + "px");
     } else {
       for (const a of ["role", "aria-modal", "aria-label", "tabindex"]) app.removeAttribute(a);
-      app.classList.remove("b-in", "b-out", "faded", "view", "running", "has-thread");
+      // GRAVE (Q 0.3.546): a real closing (bubble.hidden: inert, aria-hidden, b-gone) before « Chat à droite » left the panel dead
+      app.classList.remove("b-in", "b-out", "b-gone", "faded", "view", "running", "has-thread");
+      app.inert = false; app.removeAttribute("aria-hidden");
       body.hidden = false; ruleEl.hidden = true; lastSize = "";
       if (sendTip.parentNode !== sendWrap) { sendWrap.appendChild(sendTip); sendTip.classList.remove("ftip", "on"); }
     }

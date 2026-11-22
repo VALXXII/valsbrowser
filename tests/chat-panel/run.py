@@ -683,6 +683,21 @@ try:
         click(".bq-cap .icon-btn")
         check(hq["text"] == "vrai-code jt3x7" and hq["bubble"] and hq["cap_in"] and hq["x"] and caps == ["Envoi dans un instant…", "Commencera après le travail en cours sur p.hero-text"] and "queue.remove:held" in posted(),
               "H1 queue « held »: a message held for the element's image waits in the bubble with « Envoi dans un instant… » and its « × » (queue.remove held); every item received is shown", json.dumps([hq, caps], ensure_ascii=False))
+        # GRAVE (Q, build 0.3.546): Commentaire, bubble on h1.hero-title, a sent and finished turn, then « Chat à droite » — the
+        # host closes the bubble for real (bubble.hidden: inert, aria-hidden, b-out b-gone) then lays the panel out: the panel
+        # must be alive at once — not inert, nothing hidden, a click in the input reaches it, Entrée sends
+        load("c-3-termine")
+        host({"type": "bubble.hidden"})
+        host({"type": "layout", "mode": "panel"}); host({"type": "state", "running": False, "conversation": {"id": "c1", "title": "Bouton de paiement"}})
+        host({"type": "thread.reset", "conversationId": "c1", "items": []}); time.sleep(.3)
+        alive = cdp.js("""(()=>{const a=document.getElementById('app'),c=document.getElementById('composer-input'),r=c.getBoundingClientRect();
+          const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+          return {inert:a.inert,hidden:a.getAttribute('aria-hidden'),cls:['b-out','b-gone','b-in'].filter(k=>a.classList.contains(k)),hit:!!hit&&(c===hit||c.contains(hit))}})()""")
+        n0 = len(cdp.js("window.__posted"))
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Depuis le panneau"); key("Enter"); time.sleep(.15)
+        sent_p = [m for m in cdp.js("window.__posted")[n0:] if m["type"] == "send"]
+        check(alive == {"inert": False, "hidden": None, "cls": [], "hit": True} and len(sent_p) == 1 and sent_p[0]["text"] == "Depuis le panneau",
+              "GRAVE (Q 0.3.546): after a real closing of the bubble (bubble.hidden), the panel laid out by « Chat à droite » is alive — not inert, not hidden, the input takes the click, Entrée sends", json.dumps([alive, sent_p], ensure_ascii=False))
         # B 1.9 (R3): menus are drop-downs above their button that may leave the bubble; the window grows around the surface
         geo_js = """(()=>{const m=document.querySelector('.menu'),r=m.getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect(),cs=getComputedStyle(m);
           return {mTop:Math.round(r.top),mBottom:Math.round(r.bottom),mLeft:Math.round(r.left),mRight:Math.round(r.right),w:Math.round(r.width),h:Math.round(r.height),aTop:Math.round(a.top),aLeft:Math.round(a.left),aH:Math.round(a.height),
