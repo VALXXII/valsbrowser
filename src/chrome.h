@@ -28,7 +28,8 @@
 
 namespace NativeChrome {
 template<class T> void Drop(T*& p){if(p){p->Release();p=nullptr;}}
-const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf"};
+// SemiBold: the onboarding boards (Paper p-R-0) set their titles and buttons in weight 600.
+const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf",L"InterDisplay-SemiBold.ttf"};
 struct FontEnumerator final:IDWriteFontFileEnumerator {
     LONG refs=1; IDWriteFactory* factory; std::wstring folder; int index=-1; IDWriteFontFile* file=nullptr;
     FontEnumerator(IDWriteFactory* f,std::wstring p):factory(f),folder(std::move(p)){factory->AddRef();}

@@ -68,7 +68,7 @@ inline Uniforms Halftone(float drift = 0) {
 // Still frame (reduced motion, software device, tests): the instant of the Paper capture kept in
 // design/onboarding-evidence/paper/ (found by scanning the period; Paper's exported `frame` is the editor's
 // running clock, not the frame of its screenshot).
-inline constexpr float GemStillSeconds = 1.10f;
+inline constexpr float GemStillSeconds = 3.35f;
 inline constexpr float GemPeriod = 6.283185307179586f;          // every time term is cos(time + …)
 inline Uniforms GemSmoke(float seconds) {
     Uniforms u; u.fit = 1; u.scale = .65f; u.imageAspect = 474.f / 447.f; u.time = std::fmod(seconds, GemPeriod);
@@ -80,7 +80,7 @@ inline Uniforms GemSmoke(float seconds) {
 }
 // GrainGradient 1CJ9-0: speed 1, scale 1, softness .7, intensity .15, noise 0, shape wave,
 // colors #0AF4FF #0099A0 #01292C, back transparent (over the node's own #DEFDFF background).
-inline constexpr float GrainStillSeconds = 26.8f;                // still frame: as GemStillSeconds
+inline constexpr float GrainStillSeconds = 13.6f;                // still frame: as GemStillSeconds
 inline constexpr float GrainPeriod = 31.41592653589793f;        // wave: cos(.5x - .4T) sin(1.5x + .2T) (.75 + .25 cos(.6T))
 inline Uniforms GrainGradient(float seconds) {
     Uniforms u; u.fit = 1; u.scale = 1; u.time = std::fmod(seconds, GrainPeriod);
@@ -514,8 +514,13 @@ public:
         Dispose(); error_.clear();
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};   // ps_4_1: CalculateLevelOfDetail
         HRESULT hr = E_FAIL; hardware_ = false;
-        if (!forceSoftware) { hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &context_); hardware_ = SUCCEEDED(hr); }
-        if (FAILED(hr)) hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &context_);
+        // d3d11.dll by name (system folder): no import, so the link lines of the executables do not change.
+        using CreateFn = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+        static HMODULE d3d = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        const auto create = d3d ? reinterpret_cast<CreateFn>(reinterpret_cast<void*>(GetProcAddress(d3d, "D3D11CreateDevice"))) : nullptr;
+        if (!create) { error_ = "d3d11.dll unavailable"; return false; }
+        if (!forceSoftware) { hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &context_); hardware_ = SUCCEEDED(hr); }
+        if (FAILED(hr)) hr = create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &context_);
         if (FAILED(hr) || !device_ || !context_) { error_ = "no Direct3D 11 device"; Dispose(); return false; }
         HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         const auto compile = compiler ? reinterpret_cast<Detail::CompileFn>(reinterpret_cast<void*>(GetProcAddress(compiler, "D3DCompile"))) : nullptr;
