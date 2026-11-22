@@ -47,7 +47,7 @@ FILES = {
 
 # Known non-interface literals: brands, product/engine names, fonts, technical tokens.
 TOKENS = {
-    'browser', 'WebView2', 'Microsoft Edge WebView2', 'Inter Display', 'Segoe UI', 'Segoe UI Variable', 'Segoe Fluent Icons',
+    'browser', 'Browser', 'WebView2', 'Microsoft Edge WebView2', 'Inter Display', 'Segoe UI', 'Segoe UI Variable', 'Segoe Fluent Icons',
     'Segoe MDL2 Assets', 'JetBrains Mono', 'DuckDuckGo', 'Google', 'Brave Search', 'Bing', 'Ecosia', 'Qwant', 'Claude',
     'Claude Desktop', 'Codex', 'OpenAI', 'Anthropic', 'GitHub', 'Windows', 'English', 'Français', 'uBlock Origin Lite',
     'ThorVG', 'Lottie', 'MCP', 'HTTPS', 'HTTP', 'JSON', 'TOML', 'PDF', 'URL', 'Ctrl', 'Alt', 'Tab',   # language-neutral keys only: no Maj/Shift/Entrée/Échap/Espace

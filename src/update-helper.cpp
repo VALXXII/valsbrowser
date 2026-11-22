@@ -397,11 +397,20 @@ int RunLauncher(int argc, wchar_t** argv) {
         }
     }
     I18n::SetForProcess(UiLanguage::Load(root + L"\\data").locale);   // installed layout: <root>\data (French when absent)
-    MessageBoxW(nullptr, TR(launcher_install_broken), L"browser", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, TR(launcher_install_broken), L"Browser", MB_OK | MB_ICONERROR);
     return 2;
 }
 
 // ---------------------------------------------------------------- install
+
+// After every install (setup or update): the Apps entry follows the version and the « Browser » name, and Browser is
+// registered with Windows as a web browser for this root (src/default-browser.h), in the person's language. Existing
+// installs get the registration at their first update by this helper.
+void RefreshIntegration(const std::wstring& root, const std::string& version) {
+    SetupKey::RefreshDisplayVersion(root, version);
+    I18n::SetForProcess(UiLanguage::Load(root + L"\\data").locale);
+    if (!SetupKey::RegisterDefaultBrowser(root)) Log("default-browser registration not written");
+}
 
 struct Plan {
     std::string nonce, version, previousVersion, previousKind;
@@ -1014,7 +1023,7 @@ int RunInstall(const std::string& nonce) {
         commitRepair();
         RecoverAnnotationsMigration(root, nonce + "-post");
         Prune(root, p.version, keepPrevious, nonce);
-        SetupKey::RefreshDisplayVersion(root, p.version);
+        RefreshIntegration(root, p.version);
         Log("installed " + p.version + " (not launched)");
         return 0;
     }
@@ -1072,7 +1081,7 @@ int RunInstall(const std::string& nonce) {
         }
         commitRepair();
         Prune(root, p.version, keepPrevious, nonce);
-        SetupKey::RefreshDisplayVersion(root, p.version);
+        RefreshIntegration(root, p.version);
         Log("installed " + p.version);
         return 0;
     }
@@ -1098,7 +1107,7 @@ int RunInstall(const std::string& nonce) {
     // Still running but silent: do not kill it. The browser acknowledges itself later via the pending record.
     if (repairOpen) Log("repair left open: committed on the new version's ack, else rolled back by the next recovery");
     WriteResult(updates, "unconfirmed", p.version, "ack-timeout");
-    SetupKey::RefreshDisplayVersion(root, p.version);
+    RefreshIntegration(root, p.version);
     Log("ack timeout; new version left running");
     return 31;
 }

@@ -299,14 +299,26 @@ def main() -> int:
         assert not (root / 'versions').exists() and not (root / 'browser.exe').exists() and not (root / 'uninstall.exe').exists()
         after = sorted(x.name for x in (root / 'data').iterdir())
         assert before == after, (before, after)
-        log(f'  program removed, shortcuts removed: {not (run / "StartMenu/Programs/browser.lnk").exists()}, data kept: {after}')
+        log(f'  program removed, shortcuts removed: {not (run / "StartMenu/Programs/Browser.lnk").exists()}, data kept: {after}')
     finally:
         import winreg
-        for sub in (key, key.rsplit('\\', 1)[0], key.rsplit('\\', 2)[0]):
+
+        def delete_tree(sub):   # this run's own test key only (uninstall entry + default-browser registration)
+            assert sub.startswith('Software\\browser-setup-tests\\'), sub
             try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub) as k:
+                    children = []
+                    while True:
+                        try:
+                            children.append(winreg.EnumKey(k, len(children)))
+                        except OSError:
+                            break
+                for c in children:
+                    delete_tree(sub + '\\' + c)
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
             except OSError:
                 pass
+        delete_tree(key.rsplit('\\', 2)[0])
         (out / 'e2e-real.txt').write_text('\n'.join(log_lines) + '\n', encoding='utf-8')
     log('E2E OK')
     (out / 'e2e-real.txt').write_text('\n'.join(log_lines) + '\n', encoding='utf-8')

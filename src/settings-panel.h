@@ -53,6 +53,7 @@ enum Hit : int {
     None = 0, Close = 1, Back = 2, EngineBase = 10, More = 20,
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
     ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43, ManagePasswords = 44, ImportData = 46,
+    DefaultBrowserHit = 47,   // « Navigateur par défaut » (root, under Langue): opens Windows' Default apps page on Browser
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
@@ -189,9 +190,13 @@ struct LayoutInput {
     float editorHeight = 0;                                    // Profils › <profil>: the editor block
     // « Langue » (shown when the host can save the preference): the saved language, and whether the last save failed.
     bool language = false; I18n::Locale languageSaved = I18n::Locale::Fr; bool languageFailed = false;
+    // « Navigateur par défaut »: -1 no row (this copy is not registered with Windows), 0 not the default, 1 the default.
+    int defaultBrowser = -1;
 };
 // Phosphor Bold « translate » (official @phosphor-icons/core path, Paper p-K-0), drawn like the Profils glyph.
 inline constexpr const char* TranslateGlyph = "M250.73,210.63l-56-112a12,12,0,0,0-21.46,0l-20.52,41A84.2,84.2,0,0,1,114,126.22,107.48,107.48,0,0,0,139.33,68H160a12,12,0,0,0,0-24H108V32a12,12,0,0,0-24,0V44H32a12,12,0,0,0,0,24h83.13A83.69,83.69,0,0,1,96,110.35,84,84,0,0,1,83.6,91a12,12,0,1,0-21.81,10A107.55,107.55,0,0,0,78,126.24,83.54,83.54,0,0,1,32,140a12,12,0,0,0,0,24,107.47,107.47,0,0,0,64-21.07,108.4,108.4,0,0,0,45.39,19.44l-24.13,48.26a12,12,0,1,0,21.46,10.73L151.41,196h65.17l12.68,25.36a12,12,0,1,0,21.47-10.73ZM163.41,172,184,130.83,204.58,172Z";
+// Phosphor Bold « browser » (official @phosphor-icons/core path): the « Navigateur par défaut » row.
+inline constexpr const char* BrowserGlyph = "M216,36H40A20,20,0,0,0,20,56V200a20,20,0,0,0,20,20H216a20,20,0,0,0,20-20V56A20,20,0,0,0,216,36Zm-4,24V84H44V60ZM44,196V108H212v88Z";
 inline std::wstring Host(const std::wstring& origin) {
     std::wstring h = origin; const auto scheme = h.find(L"://"); if (scheme != std::wstring::npos) h = h.substr(scheme + 3);
     while (!h.empty() && h.back() == L'/') h.pop_back();
@@ -241,6 +246,13 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
             else if (in.languageSaved != I18n::Current()) lines.push_back(TR(language_pending));
             auto* s = add(Kind::Value, LanguageHit, lines.empty() ? row : TwoLine(lines.size()), TR(language_label), UiLanguage::Autonym(in.languageSaved));
             s->path = TranslateGlyph; s->lines = std::move(lines); s->error = in.languageFailed;
+        }
+        // « Navigateur par défaut » (NO Paper frame yet: the Profils / Langue row pattern, to be designed): « Défini »
+        // when Browser opens the links, else the action « Définir par défaut ». The row opens Windows' Default apps
+        // page on Browser either way; nothing changes the default without the person (Windows forbids it anyway).
+        if (in.defaultBrowser >= 0) {
+            auto* s = add(Kind::Nav, DefaultBrowserHit, row, TR(settings_default_browser), in.defaultBrowser > 0 ? TR(settings_default_browser_set) : TR(settings_default_browser_action));
+            s->path = BrowserGlyph;
         }
         endGroup();
         lead(Kind::Nav, CatTabs, L"tabs-mask", TR(settings_tabs), st ? (st->restoreTabs ? TR(settings_tabs_restored) : TR(settings_tabs_not_restored)) : L"");
@@ -404,6 +416,7 @@ inline const Searchable SearchIndex[] = {
     {Suggestions, {I::settings_suggestions}, {I::settings_engine}, View::Engine, {I::search_kw_suggestions}},
     {HomePageHit, {I::settings_homepage}, {I::settings_title}, View::Main, {I::search_kw_homepage}},
     {LanguageHit, {I::language_label}, {I::settings_title}, View::Main, {I::language_keywords}},
+    {DefaultBrowserHit, {I::settings_default_browser}, {I::settings_title}, View::Main, {I::search_kw_default_browser}},
     {RestoreTabs, {I::settings_restore_tabs}, {I::settings_path_tabs_opening}, View::Tabs, {I::search_kw_restore_tabs}},
     {TabPositionHit, {I::settings_new_tabs}, {I::settings_path_tabs_opening}, View::Tabs, {I::search_kw_new_tabs}},
     {ConfirmClose, {I::settings_confirm_close}, {I::settings_path_tabs_closing}, View::Tabs, {I::search_kw_confirm_close}},
@@ -455,12 +468,13 @@ inline std::wstring Folded(const std::wstring& text) {
 }
 // Results: title matches first (with the matched span), then keyword matches.
 struct SearchResult { const Searchable* entry; size_t at = std::wstring::npos, length = 0; };
-inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool annotations = false, bool importData = true) {
+inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool annotations = false, bool importData = true, bool defaultBrowser = true) {
     std::vector<SearchResult> titled, keyed; const std::wstring q = Folded(BrowserSettings::TrimText(query));
     if (q.empty()) return {};
     for (const auto& e : SearchIndex) {
         if (!annotations && IsAnnotationEntry(e)) continue;
         if (!importData && e.hit == ImportData) continue;   // a private window has no import row
+        if (!defaultBrowser && e.hit == DefaultBrowserHit) continue;   // a copy Windows does not know has no such row
         const size_t at = Folded(I18n::T(e.title.id)).find(q);
         if (at != std::wstring::npos) titled.push_back({&e, at, q.size()});
         else if (Folded(I18n::T(e.keywords.id)).find(q) != std::wstring::npos) keyed.push_back({&e});
@@ -531,6 +545,11 @@ public:
         // saveLanguage: write it (true only once it is on disk). The process keeps its language until restarted.
         std::function<I18n::Locale()> savedLanguage;
         std::function<bool(I18n::Locale)> saveLanguage;
+        // « Navigateur par défaut » (both optional; no row without defaultBrowser or when it answers -1). defaultBrowser:
+        // -1 this copy is not registered with Windows, 0 not the default, 1 the default (read when the drawer opens and
+        // when the window comes back to the front). setDefaultBrowser: open Windows' Default apps page on Browser.
+        std::function<int()> defaultBrowser;
+        std::function<void()> setDefaultBrowser;
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr;
@@ -563,6 +582,8 @@ private:
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     I18n::Locale languageSaved_ = I18n::Current(); bool languageFailed_ = false;   // « Langue »: preference as saved, last save failed
+    int defaultBrowser_ = -1;   // « Navigateur par défaut »: as the host last answered (LayoutInput::defaultBrowser)
+    bool DefaultBrowserRow() const { return defaultBrowser_ >= 0; }
     // Profiles: the list as last read, the profile open in the detail view and its editor block.
     std::vector<ProfileItem> profiles_; int profileIndex_ = -1; std::wstring profileId_; ProfileEditor::Editor editor_;
     std::vector<std::wstring> profileNoteLines_, lastProfileNoteLines_;
@@ -639,6 +660,7 @@ private:
         if (state_) { std::wstring f = FolderText(hooks_.downloadFolder ? hooks_.downloadFolder() : state_->downloadFolder); if (f.rfind(L"…\\", 0) == 0) f = f.substr(2); in.folderName = f; } in.noSitesLines = noSitesLines_;   // i18n-exempt: path elision mark
         in.customReveal = customRevealValue_; in.homeReveal = homeRevealValue_;
         in.language = static_cast<bool>(hooks_.saveLanguage); in.languageSaved = languageSaved_; in.languageFailed = languageFailed_;
+        in.defaultBrowser = defaultBrowser_;
         in.autoplayPending = state_ && state_->autoplay != launchAutoplay_;
         in.cookiesPending = state_ && state_->blockThirdPartyCookies != launchCookies_;
         in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
@@ -1268,7 +1290,7 @@ private:
     }
     // Search ---------------------------------------------------------------------------
     void SetQuery(std::wstring q) {
-        query_ = std::move(q); results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData));
+        query_ = std::move(q); results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData), DefaultBrowserRow());
         motion_.ClearInteractions(); if (IsResult(focus_)) focus_ = 0;
         Invalidate(); Schedule(Motion::Now());
     }
@@ -1418,7 +1440,7 @@ private:
             case Kind::Switch: n = &add(s.hit, Role::Button, s.text, box); n->toggle = SwitchValue(s.hit) ? 2 : 1; n->help = join(s.lines); break;
             case Kind::Value: n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; n->expand = 1; n->help = join(s.lines); break;
             case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, TRF(settings_profiles_name, s.value), box); n->automationId = L"SettingsProfiles"; n->help = TR(settings_profiles_help); }
-                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (s.hit == ImportData) n->automationId = L"SettingsImportData"; } break;
+                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (s.hit == ImportData) n->automationId = L"SettingsImportData"; if (s.hit == DefaultBrowserHit) { n->automationId = L"SettingsDefaultBrowser"; n->help = TR(settings_default_browser_help); } } break;
             case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(TR(settings_save_in)) : s.text, box);
                 n->help = s.hit == Folder ? (hooks_.downloadFolder ? hooks_.downloadFolder() : L"") : (hooks_.annotationFolder ? hooks_.annotationFolder() : L""); break;
             case Kind::SiteRow: n = &add(s.hit, Role::Button, s.text, box); n->help = s.value; break;
@@ -1583,7 +1605,7 @@ private:
             if (chosen > 0 && static_cast<BrowserSettings::Autoplay>(chosen - 1) != state_->autoplay) { state_->autoplay = static_cast<BrowserSettings::Autoplay>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::Autoplay); }
         } else if (IsField(hit)) { if (editing_ != hit) StartEdit(hit); return; }
         else if (hit == SearchDismiss) { if (editing_) EndEdit(); ClearSearch(); }
-        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData)); }
+        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData), DefaultBrowserRow()); }
         else if (hit == CatEngine) Push(View::Engine, now);
         else if (hit == CatTabs) Push(View::Tabs, now);
         else if (hit == CatPrivacy) { LoadSites(); Push(View::Privacy, now); }
@@ -1641,6 +1663,7 @@ private:
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
         else if (hit == ManagePasswords) { if (hooks_.managePasswords) Modal([&] { hooks_.managePasswords(keyboard); }); }
         else if (hit == ImportData) { if (hooks_.importData) Modal([&] { hooks_.importData(keyboard); }); }
+        else if (hit == DefaultBrowserHit) { if (hooks_.setDefaultBrowser) hooks_.setDefaultBrowser(); }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
@@ -2014,6 +2037,7 @@ public:
             LoadSites(); // the Autorisations row shows how many sites
             LoadAnnotations(); // the « Annotations » row shows the connected agents
             if (hooks_.savedLanguage) { languageSaved_ = hooks_.savedLanguage(); languageFailed_ = false; }   // « Langue »: the preference as stored now
+            defaultBrowser_ = hooks_.defaultBrowser ? hooks_.defaultBrowser() : -1;   // « Navigateur par défaut »: Windows' answer now
             if (target != View::Main) { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); }
         }
         { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }
@@ -2060,10 +2084,17 @@ public:
         plate_.Set(EngineTop(SelectedIndex()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
         SetChecking(hooks_.version && hooks_.version().checking, now);
         if (AnnotationsOn()) MeasureAgents();   // « il y a … » follows the clock
-        if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData));
+        if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData), DefaultBrowserRow());
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }
+    // The person may have changed the default in Windows' Default apps page: read it again (window back in front).
+    void RefreshDefaultBrowser() {
+        if (!hwnd_ || !visible_ || !hooks_.defaultBrowser) return;
+        const int now = hooks_.defaultBrowser(); if (now == defaultBrowser_) return;
+        defaultBrowser_ = now; Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
+    }
+    int DefaultBrowserForTest() const { return defaultBrowser_; }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     bool Moving(Motion::Time now) const {
         bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now);

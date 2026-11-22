@@ -140,6 +140,12 @@ GUID_TEXT(ICoreWebView2ClearServerCertificateErrorActionsCompletedHandler,"{3b40
 // into the profile on screen. Defined in profile-workspace.h (end of this file).
 #include "taskbar-identity.h" // one taskbar identity for every installed version; pins relaunch the stable launcher
 TaskbarIdentity::Identity taskbarIdentity; // installed copies only (ResolveBrowserPaths)
+#include "default-browser.h" // Browser in Windows' « Applications par défaut » (registered by the setup / updater; read here)
+#include "launch-args.h"     // the link or file this launch was asked to open, apart from the switches
+// The link or file given to this launch (browser.exe <url|path>, Windows' --single-argument "%1"), as given; a
+// relative file name already made absolute. Opened once, after the session (RestoreSession), or handed to the
+// profile's running window (HandOverLaunchTarget). "" when none.
+std::wstring launchTarget;
 #include "adblock-folder.h"  // the ad blocker installs from a folder that updates never move
 #include "popup-target.h"   // script-opened windows: the request lifecycle (design/popup-window-target-report.md)
 #include "download-navigation.h"   // a navigation the engine turned into a download: never an error page
@@ -271,9 +277,9 @@ bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(boo
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
 #ifdef BROWSER_UPDATES
-    return std::wstring(L"browser ")+BROWSER_VERSION_WIDE;   // i18n-exempt: product name and version
+    return std::wstring(L"Browser ")+BROWSER_VERSION_WIDE;   // i18n-exempt: product name and version
 #else
-    return L"browser";
+    return L"Browser";
 #endif
 }
 void CheckForUpdates(); bool UpdateCheckAvailable(); bool FocusUpdateToast(); bool UpdateToastHasFocus(); void SyncUpdateToastReserve();
@@ -1030,11 +1036,15 @@ void PlaceFromMenu(const std::shared_ptr<Tab>& tab,SV::Side side){
 }
 // The blank new tab page, in the process language (lang and title only; nothing else is written in it).
 std::wstring HomeHtml(){return std::wstring(L"<!doctype html><html lang=\"")+(I18n::Current()==I18n::Locale::En?L"en":L"fr")+L"\"><meta charset=\"utf-8\"><title>"+TR(tab_new)+LR"HTML(</title><style>html,body{margin:0;background:#171717;color:white;min-height:100%;color-scheme:dark}</style><body></body></html>)HTML";}
-std::wstring Destination(std::wstring s){auto first=s.find_first_not_of(L" \t\r\n");if(first==std::wstring::npos)return L"";s=s.substr(first,s.find_last_not_of(L" \t\r\n")-first+1);if(s==L"about:blank")return s;if(_wcsicmp(s.c_str(),L"browser://debug")==0||_wcsicmp(s.c_str(),L"browser://sandbox")==0)return NativeChrome::DebugSandbox::Url;
-    auto low=s;std::transform(low.begin(),low.end(),low.begin(),towlower);if(low.rfind(L"https://",0)==0||low.rfind(L"http://",0)==0)return s;
-    if(s.find_first_of(L" \t")==std::wstring::npos && s.find(L"://")==std::wstring::npos && (s.find(L'.')!=std::wstring::npos||s.rfind(L"localhost",0)==0))return L"https://"+s;
-    return BrowserSettings::SearchUrl(settings.engine,AddressBar::PercentEncode(s),settings.customSearch);
+// What the address field opens (AddressBar::Resolve, unit-tested): http(s) and file: links as typed, a Windows path
+// (C:\…, \\serveur\…, quoted or not) as its file:/// URL, a word with a dot as https://, anything else a search.
+std::wstring Destination(std::wstring s){const auto r=AddressBar::Resolve(s);
+    switch(r.kind){case AddressBar::Typed::Empty:return L"";case AddressBar::Typed::Sandbox:return NativeChrome::DebugSandbox::Url;case AddressBar::Typed::Url:return r.value;default:break;}
+    return BrowserSettings::SearchUrl(settings.engine,AddressBar::PercentEncode(r.value),settings.customSearch);
 }
+// A launch target (link, path, words) as the tab to open: as typed in the address field, except the QA sandbox,
+// which is never opened from outside.
+std::wstring LaunchUrl(const std::wstring& target){const std::wstring d=Destination(target);return d==NativeChrome::DebugSandbox::Url?L"":d;}
 void NewTab(std::wstring uri=L"",int index=-1,std::wstring title=TR(tab_new));
 // SETTINGS(tabs): where a user-created tab ("+", Ctrl+T, menu) opens; -1 = at the end.
 int UserTabIndex(){return !smoke&&settings.tabPosition==BrowserSettings::TabPosition::NextToActive&&current>=0&&current<(int)pages.size()?current+1:-1;}
@@ -1361,7 +1371,10 @@ a:active .i{background:rgba(255,255,255,.06)}
         +L"</style><body><nav aria-label=\""+TR(newtab_frequent)+L"\"><ul>"+tiles+L"</ul></nav></body></html>";
 }
 void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come back under its switch transition
-    if(privateWindow){NewTab(NewTabTarget());return;} // a private window starts empty and restores nothing
+    // The link or file this launch was given opens once, in a new tab after the restored ones (consumed here: a later
+    // cold profile switch never reopens it).
+    const std::wstring opening=launchTarget.empty()?L"":LaunchUrl(launchTarget);launchTarget.clear();if(!opening.empty())Log(L"OPEN launch target in a new tab");
+    if(privateWindow){NewTab(opening.empty()?NewTabTarget():opening);return;} // a private window starts empty and restores nothing
     BrowserSession::State state;
     // "Restaurer les onglets" off: start on a fresh tab (the session is still saved on exit).
     // A handed-over or relaunched window always opens its session (it is why it was started).
@@ -1373,7 +1386,7 @@ void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come 
     std::vector<std::wstring> overflow; // past 128 tabs: offered in a new window, never dropped silently
     for(const auto& url:state.urls){int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);std::wstring uri(size,0);if(size)MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),uri.data(),size);if(pages.size()>=128){overflow.push_back(uri);continue;}NewTab(uri);}
     if(!overflow.empty())Defer([overflow]{ShowPartialRestoreToast(overflow);});
-    if(pages.empty())NewTab(NewTabTarget());else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);}
+    if(pages.empty())NewTab(opening.empty()?NewTabTarget():opening);else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);if(!opening.empty()){NewTab(opening);Select((int)pages.size()-1);}}
     // Restored (or first) tabs are the initial state: no entrance cascade, no selection fade.
     BuildChrome();chrome.tabMotion.Settle();motion.selection.Settle();BuildChrome();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
     sessionReady=true;if(splitTest)SetTimer(window,SplitTestTimer,1500,nullptr);
@@ -2339,6 +2352,11 @@ void CreateSettingsPanel(){
     hooks.profilesReadOnly=[]{return profileRegistry.readOnly;};
     hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};
     if(!privateWindow)hooks.importData=[](bool keyboard){ShowImportDialog(keyboard);};   // a private window imports nothing into its profile
+    // « Navigateur par défaut » (src/default-browser.h): shown when Windows knows Browser (the installed copy registered
+    // it); « Défini » when http and https open with Browser. The row only opens Windows' Default apps page on Browser:
+    // the default is never changed silently (Windows forbids it anyway).
+    hooks.defaultBrowser=[]{if(!DefaultBrowser::Registered(HKEY_CURRENT_USER))return -1;return DefaultBrowser::StatusFrom(DefaultBrowser::SystemDefault)==DefaultBrowser::Status::Default?1:0;};
+    hooks.setDefaultBrowser=[]{const std::wstring uri=DefaultBrowser::SettingsUri();Log(L"DEFAULT BROWSER Windows' Default apps page asked for");ShellExecuteW(window,L"open",uri.c_str(),nullptr,nullptr,SW_SHOWNORMAL);};
     hooks.vaultInfo=[]{return VaultInfo();};
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
@@ -4272,8 +4290,10 @@ extern std::wstring launchArgs;
 bool ForwardToInstalled(const std::wstring& installRoot=L""){
     const auto target=UpdateCore::PortableForwardTarget(ExePath(),installRoot);if(target.empty())return false;
     const auto dir=target.substr(0,target.find_last_of(L'\\'));std::wstring command=L"\""+target+L"\"";
-    // The installed copy opens the same profile (review M5): --profile <id> is passed through, nothing else.
+    // The installed copy opens the same profile (review M5): --profile <id> is passed through, and the link or file
+    // this launch was given (after --single-argument: never read as switches), nothing else.
     if(const auto at=launchArgs.find(L"--profile ");at!=std::wstring::npos){size_t b=at+10;while(b<launchArgs.size()&&launchArgs[b]==L' ')++b;size_t e=b;while(e<launchArgs.size()&&launchArgs[e]!=L' ')++e;const std::wstring id=launchArgs.substr(b,e-b);if(Profiles::ValidId(id))command+=L" --profile "+id;}
+    if(!launchTarget.empty())command+=std::wstring(L" ")+LaunchArgs::SingleArgument+L" "+LaunchArgs::Quoted(launchTarget);
     STARTUPINFOW si{sizeof(si)};PROCESS_INFORMATION pi{};
     if(!CreateProcessW(target.c_str(),command.data(),nullptr,nullptr,FALSE,0,nullptr,dir.c_str(),&si,&pi)){Log(L"UPDATE forward to installed failed, staying portable");return false;}
     AllowSetForegroundWindow(pi.dwProcessId);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
@@ -4594,7 +4614,12 @@ case WM_LBUTTONUP:{const POINT up{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(outerDrag.
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}vaultKeyPress=-1;return 0;}   /* review R3: a press never outlives its release */
 case WM_CAPTURECHANGED:case WM_CANCELMODE:if(outerDrag.active&&(msg==WM_CANCELMODE||(HWND)l!=h))OuterDragEnd(true);CancelSeparator();CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_COPYDATA:if(const int answer=ProfileCopyDataMessage(l))return answer;break;
-case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();}   /* review N6: the key re-arms when the window is activated */
+// Files dropped from Explorer on the tab strip or the toolbar (the page area is the engine's own drop): each opens
+// in a new tab, the last one shown.
+case WM_DROPFILES:{HDROP drop=(HDROP)w;const UINT n=DragQueryFileW(drop,0xFFFFFFFF,nullptr,0);int opened=0;
+    for(UINT i=0;i<n&&i<32;++i){const UINT len=DragQueryFileW(drop,i,nullptr,0);if(!len)continue;std::wstring path(len+1,L'\0');DragQueryFileW(drop,i,path.data(),len+1);path.resize(len);NewTab(AddressBar::FileUrlFromPath(path));++opened;}
+    DragFinish(drop);if(opened){Select((int)pages.size()-1);Log(L"OPEN dropped files: "+std::to_wstring(opened));}return 0;}
+case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();settingsDrawer.RefreshDefaultBrowser();}   /* review N6: the key re-arms when the window is activated */
     if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
 case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background (WM_ACTIVATEAPP: below)
 case WM_DISPLAYCHANGE:Layout();break;
@@ -4797,7 +4822,7 @@ bool StartRelaunchedInstance(){
 bool RelaunchBrowser(){engineRelaunchPending=true;return true;}
 void RunPendingRelaunch(){
     if(!engineRelaunchPending)return;engineRelaunchPending=false;
-    if(!StartRelaunchedInstance())MessageBoxW(nullptr,TR(relaunch_failed),L"browser",MB_OK|MB_ICONINFORMATION);
+    if(!StartRelaunchedInstance())MessageBoxW(nullptr,TR(relaunch_failed),L"Browser",MB_OK|MB_ICONINFORMATION);
 }
 void ShowEngineView(const WR::View& v);
 void OnEngineButton(int id){
@@ -4953,15 +4978,49 @@ void CancelContentTransitionIfMoved(){if(contentTransition.Active())contentTrans
 #include "onboarding-integration.h"
 // The window carries the identity and relaunches through the stable launcher; our Start Menu and desktop
 // shortcuts to that launcher get the same identity once (setups before 0.3.379 wrote them without it).
+// Setups before the « Browser » name wrote « browser.lnk »: ours is renamed in place first (same file, so whatever
+// was pinned from it stays; TaskbarIdentity::RenameShortcut). The taskbar's own pinned copy is Windows' and is left.
 void StampTaskbarIdentity(){
     if(!taskbarIdentity.active()||!window)return;
     if(!TaskbarIdentity::ApplyToWindow(window,taskbarIdentity))Log(L"TASKBAR identity not applied to the window");
     for(const KNOWNFOLDERID* folder:{&FOLDERID_Programs,&FOLDERID_Desktop}){PWSTR dir=nullptr;if(FAILED(SHGetKnownFolderPath(*folder,0,nullptr,&dir))||!dir){CoTaskMemFree(dir);continue;}
-        const std::wstring lnk=TaskbarIdentity::LauncherShortcut(dir);CoTaskMemFree(dir);
+        const std::wstring where(dir),lnk=TaskbarIdentity::LauncherShortcut(dir);CoTaskMemFree(dir);
+        if(TaskbarIdentity::RenameShortcut(where,taskbarIdentity.launcher)==TaskbarIdentity::Rename::Renamed)Log(L"TASKBAR shortcut renamed « Browser »: "+lnk);
         const auto r=TaskbarIdentity::StampShortcut(lnk,taskbarIdentity);
         if(r==TaskbarIdentity::Stamp::Stamped)Log(L"TASKBAR shortcut given the identity: "+lnk);else if(r==TaskbarIdentity::Stamp::Failed)Log(L"TASKBAR shortcut identity could not be written: "+lnk);}
 }
-int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */
+// A link or a file for a profile that already has a window on screen: that window opens it in a new tab and comes
+// forward, and this process ends before any window of its own. None (or it refuses): this launch opens its own
+// window with it (RestoreSession). Never for a private window, which always opens its own.
+bool HandOverLaunchTarget(){
+    if(launchTarget.empty()||smoke||privateWindow||!profilesEnabled)return false;
+    const auto live=Profiles::ActiveIn(profileRoot,profileId);if(live.empty())return false;
+    HWND target=nullptr;   // the one nearest the top of the z-order: the window the person used last
+    for(HWND h=GetTopWindow(nullptr);h&&!target;h=GetWindow(h,GW_HWNDNEXT))for(const auto& w:live)if(w.hwnd==h){target=h;break;}
+    if(!target)target=live.front().hwnd;
+    DWORD pid=0;GetWindowThreadProcessId(target,&pid);AllowSetForegroundWindow(pid);
+    const std::wstring text=L"open " /* i18n-exempt: window protocol */+launchTarget;COPYDATASTRUCT cd{ProfileCopyData,(DWORD)((text.size()+1)*sizeof(wchar_t)),(PVOID)text.c_str()};DWORD_PTR answer=0;
+    if(!SendMessageTimeoutW(target,WM_COPYDATA,0,(LPARAM)&cd,SMTO_ABORTIFHUNG,5000,&answer)||answer!=1){Log(L"OPEN hand-over refused: own window");return false;}
+    Log(L"OPEN launch target handed to the running window");return true;
+}
+// Receiver side (ProfileCopyDataMessage « open <target> »): a new tab, this window brought forward.
+void OpenHandedTarget(const std::wstring& target){
+    const std::wstring url=LaunchUrl(target);if(url.empty())return;
+    NewTab(url);Select((int)pages.size()-1);Log(L"OPEN handed target in a new tab");
+    if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);
+}
+// browser.exe [switches] [<url>|<path>] or [switches] --single-argument <url|path>: the target apart from the switches.
+std::wstring AbsoluteIfFile(const std::wstring& target){
+    const std::wstring t=AddressBar::Unquoted(target);
+    if(t.empty()||t.find(L':')!=std::wstring::npos||AddressBar::LooksLikeWindowsPath(t))return target;   // a link, a drive or share path: as given
+    wchar_t full[32768];const DWORD n=GetFullPathNameW(t.c_str(),32768,full,nullptr);if(!n||n>=32768)return target;
+    const DWORD a=GetFileAttributesW(full);return a!=INVALID_FILE_ATTRIBUTES?std::wstring(full):target;   // « page.html » in the current folder
+}
+int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
+    // The switches are read in `args` only: a link such as https://site/?--private never turns into a switch.
+    static std::wstring switchArgs;{int n=0;LPWSTR* v=CommandLineToArgvW(GetCommandLineW(),&n);if(v){const auto parsed=LaunchArgs::Parse(std::vector<std::wstring>(v+1,v+n));LocalFree(v);
+        if(!parsed.target.empty()||parsed.single){switchArgs=parsed.switches;args=switchArgs.data();launchTarget=AbsoluteIfFile(parsed.target);}}}
+    {int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */
 #ifndef BROWSER_CHANNEL_RELEASE
     for(int i=1;argv&&i<argc;++i)if(std::wstring(argv[i])==L"--qa-drawer-stays")qaDrawerStays=true;   // QA: drawer kept while the app is not in the foreground
 #endif
@@ -4980,11 +5039,14 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){{int argc=0;LPW
 #endif
     const Onboarding::Reason onboardingReason=OnboardingReason(args); // before the registry exists: first run or --onboarding (src/onboarding-integration.h)
     SelectProfile(args); // after the forward: a forwarded launch never touches this folder's profiles (review M5)
+    // A link or a file while this profile already has a window: that window opens it (onboarding, if any, belongs
+    // to the first window: a launch with a link shows it first, then opens the link in the first tab).
+    if(HandOverLaunchTarget()){CoUninitialize();return 0;}
     Log(L"START browser");{const char* st=UiLanguage::StatusText(uiLanguage.status);Log(std::wstring(L"UI LANGUAGE ")+(uiLanguage.locale==I18n::Locale::En?L"en":L"fr")+L" ("+std::wstring(st,st+std::strlen(st))+L")");}Log(std::wstring(L"VAULT state: ")+(Vault::Active()?L"active":L"inactive"));   /* P-I1: what a product run reports */
 #ifdef BROWSER_E2E_VAULT_HOST
     Log(L"E2E VAULT HOST: vault active, foreground condition lifted (test host only)");   /* binary marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif

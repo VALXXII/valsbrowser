@@ -133,16 +133,69 @@ inline Display Describe(const std::wstring& uri, bool certificateError = false) 
 }
 
 // ---- Typed text ------------------------------------------------------------
-// Same rule as the host's Destination(): a single word with a dot (or
-// localhost), or an explicit http(s) scheme, is an address; anything else searches.
-inline bool LooksLikeAddress(const std::wstring& typed) {
+// A path or link wrapped in double quotes (Explorer's « Copier en tant que chemin d'accès »): the quotes go.
+inline std::wstring Unquoted(const std::wstring& typed) {
     const std::wstring s = Trim(typed);
-    if (s.empty()) return false;
-    const std::wstring low = Lower(s);
-    if (StartsWith(low, L"https://") || StartsWith(low, L"http://") || s == L"about:blank") return true;
-    return s.find_first_of(L" \t") == std::wstring::npos && s.find(L"://") == std::wstring::npos &&
-           (s.find(L'.') != std::wstring::npos || StartsWith(low, L"localhost"));
+    return s.size() >= 2 && s.front() == L'"' && s.back() == L'"' ? Trim(s.substr(1, s.size() - 2)) : s;
 }
+// A Windows file path: « C:\dossier\page.html », « C:/dossier/page.html », « \\serveur\partage\page.html »
+// (also with the \\?\ prefix). Never a host: « localhost:8080/x » or « a:80 » have no slash after the colon.
+inline bool LooksLikeWindowsPath(const std::wstring& typed) {
+    std::wstring s = Unquoted(typed);
+    if (StartsWith(s, L"\\\\?\\UNC\\")) s = L"\\\\" + s.substr(8);
+    else if (StartsWith(s, L"\\\\?\\") || StartsWith(s, L"\\\\.\\")) s = s.substr(4);
+    const auto letter = [](wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z'); };
+    if (s.size() >= 3 && letter(s[0]) && s[1] == L':' && (s[2] == L'\\' || s[2] == L'/')) return true;
+    return s.size() > 2 && s[0] == L'\\' && s[1] == L'\\' && s[2] != L'\\' && s.find(L'\\', 2) != std::wstring::npos;
+}
+// The file: URL of a Windows path, as the engine expects it: drive « file:///C:/a%20b/c.html », share
+// « file://serveur/partage/c.html ». Path characters a URL reserves (space, %, #, ?) and every non-ASCII
+// character are percent-encoded (UTF-8), so a name such as « 100% #1.html » opens THAT file.
+inline std::wstring FileUrlFromPath(const std::wstring& typed) {
+    std::wstring s = Unquoted(typed);
+    if (StartsWith(s, L"\\\\?\\UNC\\")) s = L"\\\\" + s.substr(8);
+    else if (StartsWith(s, L"\\\\?\\") || StartsWith(s, L"\\\\.\\")) s = s.substr(4);
+    for (auto& c : s) if (c == L'\\') c = L'/';
+    auto encode = [](const std::wstring& part) {
+        std::wstring q;
+        for (unsigned char c : NativeChrome::Downloads::ToUtf8(part)) {
+            const bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || std::wstring(L"-._~!$&'()*+,;=:@/").find(static_cast<wchar_t>(c)) != std::wstring::npos;
+            if (keep) q += static_cast<wchar_t>(c);
+            else { static const wchar_t* digits = L"0123456789ABCDEF"; q += L'%'; q += digits[c >> 4]; q += digits[c & 15]; }
+        }
+        return q;
+    };
+    if (StartsWith(s, L"//")) {   // \\serveur\partage\… : the server is the URL's host
+        const auto slash = s.find(L'/', 2);
+        const std::wstring host = s.substr(2, slash == std::wstring::npos ? std::wstring::npos : slash - 2);
+        return L"file://" + Lower(host) + (slash == std::wstring::npos ? L"/" : encode(s.substr(slash)));
+    }
+    return L"file:///" + encode(s);
+}
+// What the address field (and a link given on the command line) opens: one rule for both.
+enum class Typed { Empty, Url, Sandbox, Search };
+struct Resolution { Typed kind = Typed::Empty; std::wstring value; };   // Url: the URL; Search: the trimmed words
+inline Resolution Resolve(const std::wstring& typed) {
+    const std::wstring s = Trim(typed);
+    if (s.empty()) return {};
+    if (s == L"about:blank") return {Typed::Url, s};
+    const std::wstring low = Lower(s);
+    if (low == L"browser://debug" || low == L"browser://sandbox") return {Typed::Sandbox, L""};
+    if (StartsWith(low, L"https://") || StartsWith(low, L"http://")) return {Typed::Url, s};
+    if (StartsWith(low, L"file:") && s.size() > 5) return {Typed::Url, s};   // file:///C:/… as typed
+    if (LooksLikeWindowsPath(s)) return {Typed::Url, FileUrlFromPath(s)};
+    if (s.find_first_of(L" \t") == std::wstring::npos && s.find(L"://") == std::wstring::npos && (s.find(L'.') != std::wstring::npos || StartsWith(low, L"localhost")))
+        return {Typed::Url, L"https://" + s};
+    return {Typed::Search, s};
+}
+// Same rule as Resolve (the host's Destination()): an explicit http(s) or file link, a Windows path, or a single
+// word with a dot (or localhost) is an address; anything else searches.
+inline bool LooksLikeAddress(const std::wstring& typed) {
+    const auto kind = Resolve(typed).kind;
+    return kind == Typed::Url;
+}
+// A typed file link or Windows path (no site, no favicon to look up).
+inline bool LooksLikeFile(const std::wstring& typed) { return StartsWith(Lower(Trim(typed)), L"file:") || LooksLikeWindowsPath(typed); }
 // RFC 3986 unreserved characters stay; every other UTF-8 byte is %XX.
 inline std::wstring PercentEncode(const std::wstring& s) {
     std::wstring q;
@@ -463,7 +516,7 @@ inline Suggestions Suggest(const std::wstring& typed, const History& history, bo
     const bool exact = top && (Lower(top->text) == q || (!top->alias.empty() && top->alias == q));
     if (address && out.completion.empty() && !exact) {
         Suggestion go; go.kind = Kind::Address; go.text = query;
-        go.site = SiteOf(StartsWith(Lower(query), L"http://") || StartsWith(Lower(query), L"https://") ? query : L"https://" + query);
+        if (!LooksLikeFile(query)) go.site = SiteOf(StartsWith(Lower(query), L"http://") || StartsWith(Lower(query), L"https://") ? query : L"https://" + query);
         out.rows.insert(out.rows.begin(), go);
     }
     Suggestion search; search.kind = Kind::Search; search.text = query;
