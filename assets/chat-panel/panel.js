@@ -506,10 +506,12 @@
     thumbs.hidden = S.cAtt.size === 0;
   }
 
-  cin.addEventListener("input", () => {
+  cin.addEventListener("input", (e) => {
+    if (errGhost() && !e.isComposing && hasContent()) errGhostEnd();   // H1 monkey #29: written after an error — the input comes back
     if (!composerText().trim() && !cin.querySelector(".chip")) clear(cin);
     syncChips(); detectTrigger();
   });
+  cin.addEventListener("compositionend", () => { if (errGhost() && hasContent()) errGhostEnd(); });   // …also once a composed character (IME) is done
   cin.addEventListener("focus", updateSend);
   cin.addEventListener("blur", () => setTimeout(updateSend, 0));
   cin.addEventListener("paste", (e) => {
@@ -532,7 +534,7 @@
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.isComposing) { e.preventDefault(); keep(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); return; }
     if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); document.execCommand("insertText", false, "\n"); return; }
-    if (e.key === "Tab" && e.shiftKey && shownModes().length > 1) {
+    if (e.key === "Tab" && e.shiftKey && shownModes().length > 1 && !errGhost()) {   // (out of sight after an error: Maj+Tab goes back to the buttons)
       e.preventDefault();
       const ms = shownModes(), i = ms.findIndex((m) => m.id === S.st.mode);
       const next = ms[(i + 1) % ms.length];
@@ -1418,7 +1420,17 @@
     dock.className = "dock" + (p ? " has-perm" : "");
     app.classList.toggle("running", running && !p);
     if (p) { dock.appendChild(bPerm(p)); ruleEl.hidden = none || !!S.bview; return; }
-    if (err) { dock.appendChild(bErrFoot(err)); ruleEl.hidden = true; return; }
+    if (err) {
+      // H1 (monkey seed 1 #29): the input used to leave the page here — whatever was typed next went nowhere until
+      // « Annuler ». It stays in the page, out of sight (Paper 1AAE-0 draws the two buttons alone), and keeps the keyboard:
+      // the first character written brings it back (errGhostEnd). After an error the user can always write and send.
+      dock.classList.add("err-ghost"); dock.append(composer, bErrFoot(err)); ruleEl.hidden = true;
+      composer.classList.toggle("disabled", off);
+      cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
+      cin.setAttribute("aria-disabled", S.st.disabledReason ? "true" : "false");
+      if (mine && document.hasFocus()) dockFocusSoon();
+      updateSend(); return;
+    }
     for (const q of S.queue) dock.appendChild(bQueued(q));
     if (S.outbox && S.outbox.shown) dock.appendChild(bQueued({ text: S.outbox.text, local: true }));
     if (s) dock.appendChild(stripNode(s));
@@ -1481,6 +1493,13 @@
     if (!p.shown) requestAnimationFrame(() => { if (allow.isConnected) allow.focus(); });
     p.shown = true;
     return card;
+  }
+  // H1 (monkey #29): the input is in the page behind « Annuler / Réessayer », out of sight (renderDockB). The first thing
+  // written brings it back — as « Annuler » does — with what was written and the caret at its end.
+  const errGhost = () => BUB() && dock.classList.contains("err-ghost");
+  function errGhostEnd() {
+    S.berr = null; renderDock(true); placeholder(); cin.focus();
+    const s = window.getSelection(); if (s) { s.selectAllChildren(cin); s.collapseToEnd(); }
   }
   // Paper 1AAE-0: after an error, the two ways out. « Annuler » is local (the input comes back); « Réessayer » asks the host.
   function bErrFoot(err) {
@@ -2987,7 +3006,7 @@
       app.classList.remove("b-out");
       if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }
       else if (BUB() && S.bview) { const x = bviewEl.querySelector(".bview-x"); if (x) x.focus(); }
-      else if (BUB() && (S.st.running || (S.berr && !S.st.running))) app.focus({ preventScroll: true });   // no input in these states
+      else if (BUB() && S.st.running) app.focus({ preventScroll: true });   // no input during a turn (after an error the input is out of sight but takes what is written: H1 monkey #29)
       else cin.focus();
     },
     "copy.done": onCopyDone, "changes.diff": onChangesDiff,

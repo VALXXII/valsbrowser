@@ -599,7 +599,7 @@ try:
         # error
         load("c-2.2b-erreur")
         e = cdp.js("""(()=>({color:getComputedStyle(document.querySelector('.bt-text .text')).color,line:document.querySelector('.bt-err .w').textContent,more:document.querySelector('.bt-more').getAttribute('aria-expanded'),
-          buttons:Array.from(document.querySelectorAll('.b-errft .btn')).map(b=>b.textContent),composer:V('.composer'),st:document.querySelector('.bt-stw').textContent}))()""")
+          buttons:Array.from(document.querySelectorAll('.b-errft .btn')).map(b=>b.textContent),composer:(r=>Math.round(r.width*r.height))(document.querySelector('.composer').getBoundingClientRect()),st:document.querySelector('.bt-stw').textContent}))()""")
         check(e["color"] == "rgb(255, 123, 110)" and e["line"] == "Une erreur est apparue." and e["more"] == "false" and e["buttons"] == ["Annuler", "Réessayer"] and e["composer"] == 0 and e["st"] == "",
               "bubble (error): the agent's text in red, « Une erreur est apparue. », Annuler / Réessayer in place of the input", json.dumps(e, ensure_ascii=False))
         click(".bt-more")
@@ -610,9 +610,31 @@ try:
         check(sizes()[-1] == [305, 248] and cdp.js("V('.bt-text')") == 1, "bubble (error): folded again, the bubble is back to 248")
         click(".b-errft .btn.danger")
         rt = of("retry")
-        check(rt == [{"v": 1, "type": "retry", "turnId": "t1"}] and vis(".composer"), "bubble (error): « Réessayer » sends `retry` for that turn", json.dumps(rt))
+        check(rt == [{"v": 1, "type": "retry", "turnId": "t1"}] and cdp.js("(r=>r.width>0&&r.height>0)(document.querySelector('.composer').getBoundingClientRect())"), "bubble (error): « Réessayer » sends `retry` for that turn", json.dumps(rt))
         load("c-2.2b-erreur"); click(".b-errft .btn:not(.danger)")
-        check(vis(".composer") and not vis(".b-errft") and cdp.js("document.activeElement.id") == "composer-input" and not of("retry"), "bubble (error): « Annuler » brings the input back, nothing is sent")
+        check(cdp.js("(r=>r.width>0&&r.height>0)(document.querySelector('.composer').getBoundingClientRect())") and not vis(".b-errft") and cdp.js("document.activeElement.id") == "composer-input" and not of("retry"), "bubble (error): « Annuler » brings the input back, nothing is sent")
+        # H1 (real window, monkey seed 1 #29): after a turn in error the input was taken out of the page — whatever was typed
+        # next (Entrée) sent NOTHING to the host until « Annuler ». Rule: after an error the user can always write and send.
+        # The input stays in the page (out of sight: Paper 1AAE-0 draws Annuler / Réessayer alone) and keeps the keyboard;
+        # the first character written brings it back (as « Annuler » does), Entrée sends. Typed as the monkey types.
+        drawn = lambda sel: cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(sel)});if(!n)return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(n).opacity!=='0'}})()")
+        load("c-2.2b-erreur")
+        rest = cdp.js("(()=>({foot:!!document.querySelector('.b-errft'),input:!!document.querySelector('[contenteditable=true]')}))()")
+        check(rest["foot"] and rest["input"] and not drawn(".composer") and sizes()[-1] == [305, 248], "bubble (error, monkey #29): the input is still in the page behind Annuler / Réessayer, not drawn (the bubble keeps Paper's 248)", f"{rest} drawn={drawn('.composer')} {sizes()[-1]}")
+        took = cdp.js("(()=>{const t=document.querySelector('[contenteditable=true]');if(!t)return 0;t.focus();const s=getSelection();s.selectAllChildren(t);s.collapseToEnd();return document.activeElement===t?1:0})()")
+        cdp.call("Input.insertText", text="Essaie autrement"); time.sleep(.2)
+        w = cdp.js("(()=>({text:(document.getElementById('composer-input')||{innerText:''}).innerText.trim(),focus:document.activeElement.id,foot:!!document.querySelector('.b-errft'),err:!!document.querySelector('.bt-err'),more:!!document.querySelector('.bt-more')}))()")
+        check(took == 1 and w["text"] == "Essaie autrement" and w["focus"] == "composer-input" and drawn(".composer") and not w["foot"] and w["err"] and w["more"],
+              "bubble (error, monkey #29): writing after an error brings the input back with what was written; the error and its « Plus d'infos » stay in the thread", f"focus taken {took} {json.dumps(w, ensure_ascii=False)} drawn={drawn('.composer')}")
+        cdp.call("Input.insertText", text=" svp"); time.sleep(.1)
+        check(cdp.js("(document.getElementById('composer-input')||{innerText:''}).innerText.trim()") == "Essaie autrement svp", "bubble (error, monkey #29): the caret stays at the end of what was written (the next characters follow)", cdp.js("(document.getElementById('composer-input')||{innerText:''}).innerText"))
+        key("Enter"); time.sleep(.15)
+        sent = [m.get("text") for m in of("send")]
+        check(sent == ["Essaie autrement svp"] and not of("retry"), "bubble (error, monkey #29): Entrée sends the new message to the host (no « Réessayer » needed, none sent)", json.dumps(sent, ensure_ascii=False))
+        load("c-2.2b-erreur"); cdp.js("(document.querySelector('[contenteditable=true]')||document.body).focus()"); key("Enter"); time.sleep(.1)
+        check(not of("send") and vis(".b-errft") and not drawn(".composer"), "bubble (error, monkey #29): Entrée with nothing written sends nothing and leaves Annuler / Réessayer")
+        key("Tab", mods=8); time.sleep(.1)
+        check(not of("setMode"), "bubble (error, monkey #29): Maj+Tab does not change the mode while the input is out of sight", json.dumps(of("setMode")))
 
         # result
         load("c-3-termine")

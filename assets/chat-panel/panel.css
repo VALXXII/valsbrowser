@@ -751,6 +751,10 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bq-cap .el { font-family: var(--mono); font-size: 11px; color: var(--w70); }
 .bq-cap .icon-btn svg { width: 10px; height: 10px; }
 /* after an error (1AE2-0) */
+/* H1 monkey #29: the input stays in the page behind the two buttons, out of sight (it keeps the keyboard; the first
+   character written brings it back). Out of the flow: the bubble keeps Paper's height. */
+.bub .dock.err-ghost .composer { position: absolute; left: 0; bottom: 0; width: 0; height: 0; overflow: hidden; opacity: 0; pointer-events: none; }
+.bub .dock.err-ghost .composer > :not(.cin) { display: none; }
 .b-errft { display: flex; gap: 12px; }
 .b-errft .btn { flex: 1; justify-content: center; min-width: 0; }
 .btn.danger { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
