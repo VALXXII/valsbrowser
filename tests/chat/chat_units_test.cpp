@@ -430,7 +430,7 @@ static void TestBubble() {
     p = Place({20, 120, 1180, 880}, w, h, area, gap, margin);
     Check(p.side == Side::Inside && p.rect.left >= 12 && p.rect.right <= 1188 && p.rect.top >= 112 && p.rect.bottom <= 888, "no room anywhere: inside the page area, never out of it");
     p = Place({100, 820, 400, 860}, w, h, area, gap, margin);
-    Check(p.side == Side::Right && p.rect.bottom <= 888 && p.rect.top == 888 - h, "near the bottom: slid up to stay in the page");
+    Check(p.side == Side::Above && p.rect.bottom == 812 && p.rect.left == 100, "near the bottom: not slid — the next side where it is whole (above, Paper)");
     p = Place({850, 400, 1100, 450}, w, h, area, gap, margin, Side::Below);
     Check(p.side == Side::Below, "the side it is on is kept while it still fits (a new height never makes it jump)");
     int fw = 305, fh = 900; Fit(fw, fh, area, margin, 305, 520);
@@ -507,32 +507,31 @@ static void TestBubble() {
         Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&
               RoomCss({100, 850, 420, 890}, false, area, 12, 1.f, 520) == 120 && RoomCss({100, 300, 420, 700}, true, area, 12, 1.25f, 520) == 470,
               "R38: the height offered is the room from the fixed edge to the page's far side (min 120, max 520)"); }
-    // R44: at its opening the bubble is whole in the visible area with the height it may take (520), never cut nor reduced
-    {   const Rect area{0, 141, 1470, 806};   // the user's page area (1470 x 665)
-        const int W = 320, h = 104, H = 520, gap = 12, margin = 12, lead = 4, corner = 12;
-        auto planned = [&](const Placement& p) { return p.fromBottom ? Rect{p.rect.left, p.rect.bottom - H, p.rect.right, p.rect.bottom} : Rect{p.rect.left, p.rect.top, p.rect.right, p.rect.top + H}; };
-        auto whole = [&](const Placement& p) { return FullyVisible(p.rect, area) && FullyVisible(planned(p), area); };
-        const Rect hero{0, 161, 1470, 643};   // section.hero: page-wide, 482 px, at the top
-        const auto a = Place(hero, W, h, area, gap, margin, Side::Right, lead, H, Point{300, 300, true}, corner);
-        Check(a.side == Side::Inside && !a.fromRight && !a.fromBottom && a.rect.left == 12 && a.rect.top == 173 && whole(a),
-              "R44: a page-wide element at the top: inside it, its top-left corner nearest to the click, 12 px from its edges, whole with 520 px");
-        const Rect plans{50, 356, 1420, 718};   // div.plans: page-wide, its top 215 px into the visible area (the user's log)
-        const auto old = Place(plans, W, h, area, gap, margin, Side::Right, lead);
-        Check(old.side == Side::Above, "R44: (before: chosen for the small opening height, « above » — it then grew up out of the visible area)");
-        const auto b2 = Place(plans, W, h, area, gap, margin, Side::Right, lead, H, Point{1300, 700, true}, corner);
-        Check(b2.side == Side::Inside && b2.fromRight && b2.fromBottom && b2.rect.right == 1420 - 12 && b2.rect.bottom == 706 && whole(b2),
-              "R44: div.plans clicked near its bottom right: inside, bottom right corner, it grows up and stays whole");
-        const auto c = Place({100, 700, 300, 780}, W, h, area, gap, margin, Side::Right, lead, H, Point{}, corner);
-        Check(c.side == Side::Right && whole(c), "R44: a small element at the bottom of the visible area: at its right, slid up so 520 px fit");
-        const auto d = Place({0, 0, 1470, 3000}, W, h, area, gap, margin, Side::Right, lead, H, Point{}, corner);
-        Check(d.side == Side::Inside && d.fromRight && d.rect.right == 1458 && d.rect.top == 153 && whole(d),
-              "R44: an element taller than the window: inside its visible part (no click: top right corner)");
-        const auto e = Place({600, 400, 800, 440}, W, h, area, gap, margin, Side::Right, lead, H, Point{}, corner);
-        Check(e.side == Side::Right && whole(e), "R44: a small element with room: at its right, as before");
-        const auto an = AnchorOf(b2, plans); const auto grown = Anchored(an, plans, W, 400);
-        Check(grown.bottom == b2.rect.bottom && grown.right == b2.rect.right && grown.top == b2.rect.bottom - 400 && FullyVisible(grown, area),
-              "R44 then R29: in a bottom corner the bubble keeps its corner and grows up, whole");
-        Check(FullyVisible({10, 150, 330, 254}, area) && !FullyVisible({10, 700, 330, 900}, area) && !FullyVisible({}, area), "R44: whole in the visible area or not"); }
+    // Placement = Paper (coordinator, the user saw « bulle trop loin »; Q's measures at 1470 x 632 CSS, dpr 1.25 = 1837 x 790 px):
+    // at a side +12 / top -4 exactly, inside 12 px from the corner's edges; a side only if the bubble at its CURRENT height is
+    // whole there; never moved to keep room (R44's 520 px planning put the bubble 361 px above a.btn-primary)
+    {   const float k = 1.25f; auto px = [&](int c) { return int(c * k + .5f); };
+        const Rect area{3, 141, 1840, 931};
+        const int W = px(320), h = px(104), gap = px(12), lead = px(4), corner = px(12), margin = px(12);
+        const Rect btn{63, 556, 327, 625};   // a.btn-primary
+        const auto a = Place(btn, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        Check(a.side == Side::Right && a.rect.left == btn.right + gap && a.rect.top == btn.top - lead, "Paper: a.btn-primary — at its right, +12, its top at the element's top - 4 (was -361.6)");
+        const Rect title{63, 291, 624, 546};   // h1.hero-title
+        const auto t = Place(title, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        Check(t.side == Side::Right && t.rect.left == title.right + gap && t.rect.top == title.top - lead, "Paper: h1.hero-title — +12, top -4 (was -84.8)");
+        const Rect plans{65, 250, 1742, 805};   // div.plans, page-wide: no side has room (sides, below, above)
+        const auto pl = Place(plans, W, h, area, gap, margin, Side::Right, lead, px(520), Point{200, 760, true}, corner);
+        Check(pl.side == Side::Inside && !pl.fromRight && pl.fromBottom && pl.rect.left == plans.left + corner && pl.rect.bottom == plans.bottom - corner,
+              "Paper: div.plans clicked near its bottom left — inside, 12 px from its left and bottom edges (was 96 px below its bottom)");
+        const auto grown = Anchored(AnchorOf(pl, plans), plans, W, px(400));
+        Check(grown.bottom == pl.rect.bottom && grown.top == pl.rect.bottom - px(400), "R29: then it grows up from its fixed bottom");
+        const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: not slid up — the next side where it is whole
+        const auto lo = Place(low, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        Check(lo.side == Side::Above && lo.rect.bottom == low.top - gap && lo.rect.left == low.left - lead, "Paper: no room at its sides nor below — above it, -12, left -4, never slid");
+        const Rect tall{0, 0, 1840, 3000};   // taller than the window: inside its visible part, top right corner (no click)
+        const auto d = Place(tall, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
+        Check(d.side == Side::Inside && d.rect.right == area.right - corner && d.rect.top == area.top + corner, "Paper: an element taller than the window — inside its visible part, 12 px from the corner");
+        Check(FullyVisible({10, 150, 330, 254}, area) && !FullyVisible({10, 900, 330, 1000}, area) && !FullyVisible({}, area), "whole in the visible area or not"); }
     // E2 / M9: every new session gets the choice just made, else the one remembered for the site, else the agent's own
     {   Check(ChatOptions::ChoiceForNewSession("opus", "sonnet") == "opus" && ChatOptions::ChoiceForNewSession("", "sonnet") == "sonnet" && ChatOptions::ChoiceForNewSession("", "").empty(),
               "E2 / M9: the choice made, else the site's remembered one (a second element no longer falls back to the agent's default)"); }

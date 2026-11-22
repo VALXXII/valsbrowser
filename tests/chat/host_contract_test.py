@@ -231,6 +231,13 @@ check('"held"' in block_after(ui, 'if (type == "queue.remove")') or 'CancelHeld(
 # M6 (#86): the panel shown after a bubble closed with nothing sent never keeps that bubble's title
 check('SendState()' in block_after(comment, 'void ForgetUnsent('), 'M6 #86: the panel is told the conversation is no longer the element\'s (title)')
 
+# Placement = Paper (Q's invariant: +12 / -4 at a side, 12 px inside a corner; never slid to keep room)
+bub = code('chat-bubble.h'); place = bub[bub.find('inline Placement Place('):bub.find('inline bool SentItem(')]   # (its signature has a « {} » default)
+check('element.top - lead' in place and 'element.right + gap' in place and 'whole(p.rect)' in place and place.count('Clamp(') == 2, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
+consts = code('chat-comment.h')
+check('BubbleGapCss = 12' in consts and 'BubbleLeadCss = 4' in consts, 'Paper: gap 12, lead 4 (CSS px)')
+check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'Paper: the height offered is never reduced to fit (past the visible area the user scrolls)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

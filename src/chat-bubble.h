@@ -20,56 +20,43 @@ inline void Fit(int& w, int& h, const Rect& area, int margin, int maxW, int maxH
     w = std::max(1, std::min({w, maxW, area.W() - 2 * margin}));
     h = std::max(1, std::min({h, maxH, area.H() - 2 * margin}));
 }
-// element: the element's box; size: the bubble's (w, h); area: where it may go (the page's visible area); gap: between
-// the element and the bubble; margin: from the area's edges. The bubble is aligned on the element's top (sides) or left
-// (below / above), then slid to stay inside.
-// `lead`: how far the bubble starts before the element's top (sides) or left (below / above): Paper puts it 12 px from
-// the element's right edge and 4 px above its top — on the 4 px selection frame drawn around the element.
-// `prefer`: the side the open bubble is on — kept while it still fits, so a new height never makes it jump sides.
-// R44 (test réel, section.hero / div.plans, page-wide): the side is chosen for the height the bubble MAY take (`hPlan`,
-// its maximum 520 CSS px, bounded by the area), not the small height it opens with — else « above » seemed to fit, the
-// bubble grew up out of the visible area and was cut. A side is taken only if the whole bubble fits there in the visible
-// area: right, left, below, above; else INSIDE the element, in the corner of its visible part nearest to the click
-// (`corner` px from its edges), over its content. Never outside the visible area, never made smaller to fit (R29 then).
+// element: the element's box; size: the bubble's (w, h); area: the page's visible area; gap: between the element and the
+// bubble (12); `lead` (4): Paper puts the bubble's top 4 px above the element's top at its side (on the selection frame),
+// its left 4 px before the element's left below / above it.
+// Placement = Paper, always (coordinator, the user saw « bulle trop loin »): at the right / left, the edge 12 px from the
+// element and the bubble's top = the element's top − 4, exactly; below / above, 12 px from its edge and its left at − 4;
+// inside, 12 px (`corner`) from both edges of the chosen corner, in the element. Never moved to keep room for later.
+// A side is taken only if the bubble, at its CURRENT height, is whole in the visible area from that exact position: right,
+// left, below, above; else inside the element, its visible corner nearest to the click. Then (R29) it grows from its fixed
+// edge; past the visible area the user scrolls. `prefer`: the side of the open bubble, kept while it still fits.
+// `margin` and `hPlan` are no longer used for the choice (kept for the callers; R44's planning moved the bubble away).
 inline Placement Place(const Rect& element, int w, int h, const Rect& area, int gap, int margin, Side prefer = Side::Right, int lead = 0,
                        int hPlan = 0, Point click = {}, int corner = 0) {
-    const int minX = area.left + margin, maxX = area.right - margin, minY = area.top + margin, maxY = area.bottom - margin;
-    const int H = std::max(h, std::min(hPlan, maxY - minY));   // the height planned for
-    // (x, y): the top-left of the PLANNED box; the bubble's rect has its real height, on the edge that stays
-    auto at = [&](int x, int y, Side s, bool fromRight, bool fromBottom, const char* why) {
-        Placement p; p.side = s; p.fromRight = fromRight; p.fromBottom = fromBottom; p.why = why;
-        x = Clamp(x, minX, maxX - w); y = Clamp(y, minY, maxY - H);
-        p.rect = fromBottom ? Rect{x, y + H - h, x + w, y + H} : Rect{x, y, x + w, y + h};
+    (void)margin; (void)hPlan;
+    auto exact = [&](Side s) -> Placement {
+        Placement p; p.side = s;
+        switch (s) {
+        case Side::Right: p.rect = {element.right + gap, element.top - lead, element.right + gap + w, element.top - lead + h}; p.why = "right of the element (Paper: +12, top -4): the whole bubble fits there"; break;
+        case Side::Left: p.rect = {element.left - gap - w, element.top - lead, element.left - gap, element.top - lead + h}; p.fromRight = true; p.why = "left of the element (Paper: -12, top -4): no room at its right"; break;
+        case Side::Below: p.rect = {element.left - lead, element.bottom + gap, element.left - lead + w, element.bottom + gap + h}; p.why = "below the element (Paper: +12, left -4): no room at its sides"; break;
+        default: p.rect = {element.left - lead, element.top - gap - h, element.left - lead + w, element.top - gap}; p.fromBottom = true; p.side = Side::Above; p.why = "above the element (Paper: -12, left -4): no room at its sides nor below"; break;
+        }
         return p;
     };
-    auto fits = [&](Side s) {
-        switch (s) {
-        case Side::Right: return element.right + gap + w <= maxX;
-        case Side::Left: return element.left - gap - w >= minX;
-        case Side::Below: return element.bottom + gap + H <= maxY;
-        case Side::Above: return element.top - gap - H >= minY;
-        default: return false;
-        }
-    };
-    auto put = [&](Side s) {
-        switch (s) {
-        case Side::Right: return at(element.right + gap, element.top - lead, s, false, false, "right of the element: the whole bubble fits there");
-        case Side::Left: return at(element.left - gap - w, element.top - lead, s, true, false, "left of the element: no room at its right");
-        case Side::Below: return at(element.left - lead, element.bottom + gap, s, false, false, "below the element: no room at its sides");
-        default: return at(element.left - lead, element.top - gap - H, Side::Above, false, true, "above the element: no room at its sides nor below");
-        }
-    };
-    if (prefer != Side::Inside && fits(prefer)) return put(prefer);
-    for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) if (fits(s)) return put(s);
-    // inside: the visible part of the element, its corner nearest to the click (else its top right corner)
-    const Rect vis{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};   // then kept `margin` from the area's edges
+    auto whole = [&](const Rect& r) { return r.left >= area.left && r.top >= area.top && r.right <= area.right && r.bottom <= area.bottom; };
+    if (prefer != Side::Inside) { const auto p = exact(prefer); if (whole(p.rect)) return p; }
+    for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) { const auto p = exact(s); if (whole(p.rect)) return p; }
+    // inside: the visible part of the element, its corner nearest to the click (else its top right corner), 12 px from both edges
+    const Rect vis{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};
     const bool right = click.set ? click.x > (vis.left + vis.right) / 2 : true, bottom = click.set ? click.y > (vis.top + vis.bottom) / 2 : false;
-    const int x = right ? vis.right - corner - w : vis.left + corner, y = bottom ? vis.bottom - corner - H : vis.top + corner;
-    const char* why = right ? (bottom ? "inside the element, bottom right corner (nearest to the click): no side has room for the whole bubble"
-                                      : "inside the element, top right corner (nearest to the click): no side has room for the whole bubble")
-                            : (bottom ? "inside the element, bottom left corner (nearest to the click): no side has room for the whole bubble"
-                                      : "inside the element, top left corner (nearest to the click): no side has room for the whole bubble");
-    return at(x, y, Side::Inside, right, bottom, why);
+    int x = right ? vis.right - corner - w : vis.left + corner, y = bottom ? vis.bottom - corner - h : vis.top + corner;
+    x = Clamp(x, area.left, area.right - w); y = Clamp(y, area.top, area.bottom - h);   // an element smaller than the bubble: never out of the visible area
+    Placement p; p.side = Side::Inside; p.fromRight = right; p.fromBottom = bottom; p.rect = {x, y, x + w, y + h};
+    p.why = right ? (bottom ? "inside the element, bottom right corner (nearest to the click, 12 px): no side has room for the whole bubble"
+                            : "inside the element, top right corner (nearest to the click, 12 px): no side has room for the whole bubble")
+                  : (bottom ? "inside the element, bottom left corner (nearest to the click, 12 px): no side has room for the whole bubble"
+                            : "inside the element, top left corner (nearest to the click, 12 px): no side has room for the whole bubble");
+    return p;
 }
 // R2: an element carries its frame + icon (Paper 18IJ-0) only once a message left its bubble — sent, waiting in the
 // queue, or kept as an annotation (Ctrl+Entrée). A click on an element then closing its bubble leaves nothing on it.

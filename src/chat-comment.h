@@ -199,7 +199,8 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side; bubble.fromBottom = p.fromBottom; bubble.surface = p.rect;
     if (!scrolling) {   // R38 / R40: the room and the handle's bounds are told on a new size, never at each scroll step (R39)
         const bool areaResized = area.H() != bubble.roomAreaH; bubble.roomAreaH = area.H();   // M15: a new page area size measures it again
-        const int room = ChatBubble::OfferedRoomCss(placedNow || !bubble.anchor.set || areaResized, bubble.roomCss, p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);   // R47: kept with the anchor
+        (void)placedNow;   // Paper rule (coordinator): never reduced to fit — the bubble may take 520 (bounded by the page area's height); past the visible area the user scrolls (R29)
+        const int room = std::min(BubbleMaxHeightCss, std::max(120, int(area.H() / k) - 2 * BubbleMarginCss));
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
@@ -333,6 +334,7 @@ void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD
         Diag(L"the browser is back in front: the keyboard goes back to the panel");   // i18n-exempt: log detail
     }
     if (!bubble.open || !fg || !bubble.hwnd) return;
+    {   wchar_t cls[64] = L""; GetClassNameW(fg, cls, 64); Diag(std::wstring(L"foreground: ") + cls + (ours ? (cameBack ? L" (the browser, back)" : L" (the browser)") : L" (another application)") + (bubble.away ? L", bubble hidden" : L"") + (MouseDown() ? L", mouse button down" : L"")); }   // case 3 diagnostics   // i18n-exempt: log detail
     if (ours) {
         if (bubble.away) BubbleBack(L"the browser is back in front");   // i18n-exempt: log detail
         // M4 (Q's real window): back from another application — whatever window of the browser it activates (the harness's
